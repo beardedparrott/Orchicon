@@ -541,6 +541,10 @@ type ConfigOptions struct {
 	// body's `system` field per message, which is why this list has no v1
 	// meaning.
 	Workers []adapter.WorkerAgent
+	// WorkflowRunID is the RUN's id, threaded to the worktree MCP sidecar so it can
+	// derive the run-state directory <projectDir>/.orchicon/<runID>/ its todo
+	// snapshot is written into. Empty leaves the todo panel without a channel.
+	WorkflowRunID string
 
 	// RunMCP is the RUN's MCP union (project-owned ∪ every step worker
 	// version's inline specs), resolved ONCE from the run and with
@@ -653,7 +657,7 @@ func BuildConfigContent(o ConfigOptions) string {
 	}
 	if o.CompositeTools && o.WorktreeDir != "" {
 		if _, exists := mcp["orchicon-worktree"]; !exists {
-			mcp["orchicon-worktree"] = worktreeMCPServer(o.WorktreeDir, o.ProjectDir, o.MCPBinaryPath)
+			mcp["orchicon-worktree"] = worktreeMCPServer(o.WorktreeDir, o.ProjectDir, o.WorkflowRunID, o.MCPBinaryPath)
 		}
 	}
 	// RUN-LEVEL MCP UNION. A container's serve is created ONCE and this
@@ -1029,13 +1033,21 @@ func planeMCPServer(extraEnv map[string]string, binaryPath string) map[string]an
 // runMCP select the worktree registry (no Postgres needed) bound to the
 // worker's project/worktree directory. binaryPath overrides the orchicon
 // binary used as the command (the runtime container forces the daemon mount).
-func worktreeMCPServer(dir, projectDir, binaryPath string) map[string]any {
+func worktreeMCPServer(dir, projectDir, runID, binaryPath string) map[string]any {
 	if binaryPath == "" {
 		binaryPath = orchiconBinaryPath()
 	}
 	env := map[string]string{"ORCHICON_MCP_WORKTREE_DIR": dir}
 	if projectDir != "" {
 		env["ORCHICON_MCP_PROJECT_DIR"] = projectDir
+	}
+	// THE RUN ID IS WHAT LETS THE TODO PANEL SEE ANYTHING. The sidecar derives the
+	// run-state dir from project dir + run id and writes the todo snapshot there
+	// (worktree.TodoSnapshotName); without it, `todowrite` runs, succeeds, and is
+	// invisible — the failure mode that left the panel empty while the tool
+	// answered ok:true.
+	if runID != "" && projectDir != "" {
+		env["ORCHICON_MCP_WORKFLOW_RUN_ID"] = runID
 	}
 	return map[string]any{
 		"type":        "local",

@@ -514,6 +514,11 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map
 		// serve the builder ignores them and the prompt rides the per-message
 		// `system` field as it always did.
 		Workers: workers,
+		// WorkflowRunID reaches the worktree MCP sidecar, which needs it to derive
+		// the run-state directory its todo snapshot is written into (see
+		// worktreeMCPServer). Without it the sidecar still serves every tool, but
+		// `todowrite` has nowhere the PLANE can read and the todo panel stays empty.
+		WorkflowRunID: workflowRunID,
 		// Shape is deliberately NOT set: BuildConfigContent resolves it from the
 		// host's version probe, and the container's serve runs the SAME opencode
 		// install bind-mounted from this host, so the host's answer is its answer.
@@ -1305,6 +1310,23 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		if toolName == "todowrite" {
 			items := parseTodoItems(inRaw)
 			worktree.SaveTodoSnapshot(worktree.BaseFor(executionDir(manifest)), items)
+			// AND THE RUN-STATE COPY, which is the one the todo PANEL reads.
+			//
+			// On 2.x this mirror never fires at all — our tools are MCP tools and
+			// opencode routes them through `execute`, so the transcript names the
+			// tool `execute`, not `todowrite`. That is exactly why the MCP SIDECAR
+			// writes the run-state file too (internal/mcp/worktree.go). This path
+			// covers a v1 serve, where `todowrite` can be opencode's OWN native tool
+			// and so never reaches our MCP handler.
+			//
+			// Reported rather than swallowed: a silently missing snapshot is how the
+			// panel came to show nothing while every layer believed it had succeeded.
+			if rs := worktree.RunStateDir(manifest.ProjectDir, manifest.RuntimeWorkflowID); rs != "" {
+				if err := worktree.SaveRunTodoSnapshot(rs, items); err != nil {
+					a.log.Warn("todowrite run-state snapshot not written — the todo panel will not update",
+						"execution", execID, "run", manifest.RuntimeWorkflowID, "error", err)
+				}
+			}
 		}
 
 		// Detect `write` tool calls (opencode built-in file writer)

@@ -33,6 +33,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/server"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
+	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
 func main() {
@@ -348,8 +349,13 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 	// opencode config, so the sidecar can run inside a DB-less runtime.
 	if wd := os.Getenv("ORCHICON_MCP_WORKTREE_DIR"); wd != "" {
 		pr := os.Getenv("ORCHICON_MCP_PROJECT_DIR")
-		mcpSrv := mcp.New(log, nil, mcp.NewWorktreeRegistry(wd, pr))
-		log.Info("mcp server started (worktree tools, stdio transport)", "worktree", wd, "project", pr)
+		// The run-state dir is where the todo snapshot the PLANE reads is written.
+		// Derived here from the same two vars the plane uses, so writer and reader
+		// agree by construction rather than by convention.
+		runState := worktree.RunStateDir(pr, os.Getenv("ORCHICON_MCP_WORKFLOW_RUN_ID"))
+		mcpSrv := mcp.New(log, nil, mcp.NewWorktreeRegistry(wd, pr, runState))
+		log.Info("mcp server started (worktree tools, stdio transport)",
+			"worktree", wd, "project", pr, "run_state", runState)
 		if err := mcpSrv.Run(ctx); err != nil {
 			log.Error("mcp server", "error", err)
 			return 1

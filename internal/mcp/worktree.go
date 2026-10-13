@@ -27,12 +27,18 @@ import (
 type worktreeRegistry struct {
 	baseDir     string
 	projectRoot string
+	// runStateDir is <projectDir>/.orchicon/<runID> — where the todo snapshot the
+	// PLANE reads is written (see worktree.TodoSnapshotName). Empty when the
+	// sidecar was not told its run, in which case the todo panel has no channel
+	// and `todowrite` says so rather than reporting a hollow success.
+	runStateDir string
 }
 
 // NewWorktreeRegistry returns a ToolRegistry bound to a worktree base
 // directory. All path arguments are resolved against it and can never escape.
-func NewWorktreeRegistry(baseDir, projectRoot string) ToolRegistry {
-	return &worktreeRegistry{baseDir: baseDir, projectRoot: projectRoot}
+// runStateDir may be empty (the run-state todo channel is then unavailable).
+func NewWorktreeRegistry(baseDir, projectRoot, runStateDir string) ToolRegistry {
+	return &worktreeRegistry{baseDir: baseDir, projectRoot: projectRoot, runStateDir: runStateDir}
 }
 
 func (r *worktreeRegistry) List() []ToolDef {
@@ -245,20 +251,43 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		if err := worktree.MarshalArgs(args, &a); err != nil {
 			return nil, fmt.Errorf("todowrite: %w", err)
 		}
-		// The snapshot write is authoritative for `todoread` (and the execution
-		// UI's DB-less path); it is idempotent, so a re-emitted identical array
-		// costs nothing.
+		// TWO WRITES, TWO CONSUMERS, and neither substitutes for the other:
+		//
+		//   - the RUN-STATE copy (<project>/.orchicon/<runID>/todos.json) is what
+		//     the execution view's todo panel reads, and it outlives the worktree;
+		//   - the WORKTREE copy is `todoread`'s local fallback for a session whose
+		//     sidecar was not told its run.
+		//
+		// A FAILED RUN-STATE WRITE IS REPORTED, not swallowed. The old silent
+		// version is precisely how this presented: the tool answered `ok:true`, the
+		// panel stayed empty, and nothing anywhere said why. The model sees the
+		// warning in its tool result, and the panel's absence becomes explainable.
 		worktree.SaveTodoSnapshot(b, a.Todos)
-		out, err := json.Marshal(map[string]any{
+		out := map[string]any{
 			"ok":      true,
 			"count":   len(a.Todos),
 			"message": fmt.Sprintf("todo list updated: %d item(s)", len(a.Todos)),
-		})
+		}
+		if err := worktree.SaveRunTodoSnapshot(r.runStateDir, a.Todos); err != nil {
+			out["warning"] = "the run-state snapshot was NOT written, so the operator's todo panel will not update: " + err.Error()
+		}
+		encoded, err := json.Marshal(out)
 		if err != nil {
 			return nil, fmt.Errorf("todowrite: %w", err)
 		}
-		return json.RawMessage(out), nil
+		return json.RawMessage(encoded), nil
 	case "todoread":
+		// Prefer the run-state copy: it is the authoritative one, and on 2.x it is
+		// the only one guaranteed to have been written by the time the model reads
+		// back (the tool is the writer in both cases, so they agree — but the
+		// run-state file is the one the operator can also see).
+		if items, ok := worktree.ReadRunTodoSnapshot(r.runStateDir); ok {
+			encoded, err := json.Marshal(worktree.RenderTodoList(items))
+			if err != nil {
+				return nil, fmt.Errorf("todoread: %w", err)
+			}
+			return json.RawMessage(encoded), nil
+		}
 		out, err := worktree.TodoRead(b, worktree.TodoReadArgs{})
 		if err != nil {
 			return nil, fmt.Errorf("todoread: %w", err)
