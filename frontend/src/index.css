@@ -20,12 +20,6 @@
     --kind-indigo: 234 89% 60%;
     --kind-cyan: 188 86% 32%;
     --mesh-bg: 210 40% 98%;
-    --mesh-glow-1: 199 89% 48%;
-    --mesh-glow-2: 239 84% 67%;
-    --mesh-glow-3: 271 81% 56%;
-    --mesh-glow-1-a: 0.08;
-    --mesh-glow-2-a: 0.06;
-    --mesh-glow-3-a: 0.05;
     --glass-panel-bg: 0 0% 100%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-blur: 16px;
@@ -122,12 +116,6 @@
     --input: 214 32% 91%;
     --ring: 199 89% 36%;
     --mesh-bg: 210 40% 98%;
-    --mesh-glow-1: 199 89% 48%;
-    --mesh-glow-2: 239 84% 67%;
-    --mesh-glow-3: 271 81% 56%;
-    --mesh-glow-1-a: 0.08;
-    --mesh-glow-2-a: 0.06;
-    --mesh-glow-3-a: 0.05;
     --glass-panel-bg: 0 0% 100%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-border: 222 47% 11%;
@@ -178,12 +166,6 @@
     --input: 40 20% 78%;
     --ring: 38 85% 33%;
     --mesh-bg: 48 87% 88%;
-    --mesh-glow-1: 38 85% 42%;
-    --mesh-glow-2: 15 85% 42%;
-    --mesh-glow-3: 70 30% 38%;
-    --mesh-glow-1-a: 0.09;
-    --mesh-glow-2-a: 0.07;
-    --mesh-glow-3-a: 0.05;
     --glass-panel-bg: 48 87% 88%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-border: 20 6% 18%;
@@ -236,12 +218,6 @@
     --input: 20 20% 90%;
     --ring: 350 89% 42%;
     --mesh-bg: 20 100% 97%;
-    --mesh-glow-1: 350 89% 55%;
-    --mesh-glow-2: 38 92% 50%;
-    --mesh-glow-3: 25 95% 58%;
-    --mesh-glow-1-a: 0.08;
-    --mesh-glow-2-a: 0.06;
-    --mesh-glow-3-a: 0.05;
     --glass-panel-bg: 0 0% 100%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-border: 222 47% 11%;
@@ -292,12 +268,6 @@
     --input: 142 20% 88%;
     --ring: 160 84% 28%;
     --mesh-bg: 142 40% 96%;
-    --mesh-glow-1: 160 84% 35%;
-    --mesh-glow-2: 173 80% 36%;
-    --mesh-glow-3: 188 86% 38%;
-    --mesh-glow-1-a: 0.08;
-    --mesh-glow-2-a: 0.06;
-    --mesh-glow-3-a: 0.05;
     --glass-panel-bg: 0 0% 100%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-border: 222 47% 11%;
@@ -348,12 +318,6 @@
     --input: 199 20% 88%;
     --ring: 199 89% 36%;
     --mesh-bg: 199 100% 97%;
-    --mesh-glow-1: 199 89% 48%;
-    --mesh-glow-2: 188 86% 42%;
-    --mesh-glow-3: 234 89% 65%;
-    --mesh-glow-1-a: 0.08;
-    --mesh-glow-2-a: 0.06;
-    --mesh-glow-3-a: 0.05;
     --glass-panel-bg: 0 0% 100%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-border: 222 47% 11%;
@@ -404,12 +368,6 @@
     --input: 270 20% 88%;
     --ring: 263 70% 42%;
     --mesh-bg: 270 50% 97%;
-    --mesh-glow-1: 263 70% 52%;
-    --mesh-glow-2: 234 89% 65%;
-    --mesh-glow-3: 291 80% 60%;
-    --mesh-glow-1-a: 0.08;
-    --mesh-glow-2-a: 0.06;
-    --mesh-glow-3-a: 0.05;
     --glass-panel-bg: 0 0% 100%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-border: 222 47% 11%;
@@ -460,12 +418,6 @@
     --input: 38 20% 88%;
     --ring: 30 92% 34%;
     --mesh-bg: 38 100% 96%;
-    --mesh-glow-1: 38 92% 50%;
-    --mesh-glow-2: 25 95% 53%;
-    --mesh-glow-3: 45 93% 48%;
-    --mesh-glow-1-a: 0.08;
-    --mesh-glow-2-a: 0.06;
-    --mesh-glow-3-a: 0.05;
     --glass-panel-bg: 0 0% 100%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-border: 222 47% 11%;
@@ -516,12 +468,6 @@
     --input: 214 20% 89%;
     --ring: 215 25% 32%;
     --mesh-bg: 210 20% 97%;
-    --mesh-glow-1: 215 20% 55%;
-    --mesh-glow-2: 199 40% 55%;
-    --mesh-glow-3: 263 25% 60%;
-    --mesh-glow-1-a: 0.07;
-    --mesh-glow-2-a: 0.05;
-    --mesh-glow-3-a: 0.04;
     --glass-panel-bg: 0 0% 100%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-border: 222 47% 11%;
@@ -572,12 +518,6 @@
     --input: 350 20% 89%;
     --ring: 346 77% 42%;
     --mesh-bg: 350 100% 97%;
-    --mesh-glow-1: 346 77% 55%;
-    --mesh-glow-2: 330 80% 60%;
-    --mesh-glow-3: 270 60% 62%;
-    --mesh-glow-1-a: 0.08;
-    --mesh-glow-2-a: 0.06;
-    --mesh-glow-3-a: 0.05;
     --glass-panel-bg: 0 0% 100%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-border: 222 47% 11%;
@@ -628,12 +568,6 @@
     --input: 173 20% 88%;
     --ring: 173 80% 28%;
     --mesh-bg: 173 60% 96%;
-    --mesh-glow-1: 173 80% 36%;
-    --mesh-glow-2: 188 86% 42%;
-    --mesh-glow-3: 160 60% 42%;
-    --mesh-glow-1-a: 0.08;
-    --mesh-glow-2-a: 0.06;
-    --mesh-glow-3-a: 0.05;
     --glass-panel-bg: 0 0% 100%;
     --glass-panel-bg-a: 0.72;
     --glass-panel-border: 222 47% 11%;
@@ -685,12 +619,6 @@
     --input: 217 28% 20%;
     --ring: 199 89% 52%;
     --mesh-bg: 222 35% 7%;
-    --mesh-glow-1: 199 89% 52%;
-    --mesh-glow-2: 239 84% 67%;
-    --mesh-glow-3: 271 81% 56%;
-    --mesh-glow-1-a: 0.12;
-    --mesh-glow-2-a: 0.09;
-    --mesh-glow-3-a: 0.06;
     --glass-panel-bg: 222 35% 11%;
     --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
@@ -780,12 +708,6 @@
     /* The ambient trio is the TUI's accent family: its accent (orange), its AccentIndigo (+30°, the
      * yellow sibling) and its AccentCyan (a deep amber). One hue in three passes reads as a flat wash.
      */
-    --mesh-glow-1: 25 89% 58%;
-    --mesh-glow-2: 55 89% 58%;
-    --mesh-glow-3: 25 89% 34%;
-    --mesh-glow-1-a: 0.12;
-    --mesh-glow-2-a: 0.09;
-    --mesh-glow-3-a: 0.06;
     --glass-panel-bg: 13 31% 12%;
     --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
@@ -846,12 +768,6 @@
     --input: 145 12% 20%;
     --ring: 160 60% 50%;
     --mesh-bg: 145 20% 8%;
-    --mesh-glow-1: 160 60% 45%;
-    --mesh-glow-2: 173 60% 42%;
-    --mesh-glow-3: 188 60% 45%;
-    --mesh-glow-1-a: 0.12;
-    --mesh-glow-2-a: 0.09;
-    --mesh-glow-3-a: 0.06;
     --glass-panel-bg: 145 18% 12%;
     --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
@@ -905,12 +821,6 @@
     --input: 210 18% 20%;
     --ring: 199 89% 58%;
     --mesh-bg: 210 30% 8%;
-    --mesh-glow-1: 199 89% 55%;
-    --mesh-glow-2: 234 80% 65%;
-    --mesh-glow-3: 188 80% 50%;
-    --mesh-glow-1-a: 0.12;
-    --mesh-glow-2-a: 0.09;
-    --mesh-glow-3-a: 0.06;
     --glass-panel-bg: 210 28% 12%;
     --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
@@ -964,12 +874,6 @@
     --input: 270 12% 20%;
     --ring: 263 70% 68%;
     --mesh-bg: 270 22% 9%;
-    --mesh-glow-1: 263 70% 60%;
-    --mesh-glow-2: 234 70% 65%;
-    --mesh-glow-3: 291 70% 60%;
-    --mesh-glow-1-a: 0.12;
-    --mesh-glow-2-a: 0.09;
-    --mesh-glow-3-a: 0.06;
     --glass-panel-bg: 270 20% 13%;
     --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
@@ -1023,12 +927,6 @@
     --input: 28 12% 20%;
     --ring: 38 92% 58%;
     --mesh-bg: 28 25% 8%;
-    --mesh-glow-1: 38 92% 52%;
-    --mesh-glow-2: 25 90% 55%;
-    --mesh-glow-3: 45 90% 48%;
-    --mesh-glow-1-a: 0.12;
-    --mesh-glow-2-a: 0.09;
-    --mesh-glow-3-a: 0.06;
     --glass-panel-bg: 28 22% 12%;
     --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
@@ -1082,12 +980,6 @@
     --input: 222 10% 20%;
     --ring: 215 20% 62%;
     --mesh-bg: 222 15% 8%;
-    --mesh-glow-1: 215 15% 50%;
-    --mesh-glow-2: 199 40% 50%;
-    --mesh-glow-3: 263 20% 55%;
-    --mesh-glow-1-a: 0.10;
-    --mesh-glow-2-a: 0.08;
-    --mesh-glow-3-a: 0.05;
     --glass-panel-bg: 222 15% 12%;
     --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
@@ -1141,12 +1033,6 @@
     --input: 350 12% 20%;
     --ring: 346 80% 62%;
     --mesh-bg: 350 22% 8%;
-    --mesh-glow-1: 346 77% 58%;
-    --mesh-glow-2: 330 75% 58%;
-    --mesh-glow-3: 270 50% 55%;
-    --mesh-glow-1-a: 0.12;
-    --mesh-glow-2-a: 0.09;
-    --mesh-glow-3-a: 0.06;
     --glass-panel-bg: 350 20% 12%;
     --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
@@ -1200,12 +1086,6 @@
     --input: 175 15% 26%;
     --ring: 173 72% 50%;
     --mesh-bg: 175 22% 11%;
-    --mesh-glow-1: 173 60% 42%;
-    --mesh-glow-2: 188 60% 45%;
-    --mesh-glow-3: 160 50% 42%;
-    --mesh-glow-1-a: 0.12;
-    --mesh-glow-2-a: 0.09;
-    --mesh-glow-3-a: 0.06;
     --glass-panel-bg: 175 22% 18%;
     --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
@@ -1259,12 +1139,6 @@
     --input: 355 15% 20%;
     --ring: 355 78% 58%;
     --mesh-bg: 355 30% 8%;
-    --mesh-glow-1: 355 78% 55%;
-    --mesh-glow-2: 346 70% 52%;
-    --mesh-glow-3: 38 70% 48%;
-    --mesh-glow-1-a: 0.12;
-    --mesh-glow-2-a: 0.09;
-    --mesh-glow-3-a: 0.06;
     --glass-panel-bg: 355 28% 12%;
     --glass-panel-bg-a: 0.62;
     --glass-panel-border: 0 0% 100%;
@@ -1328,12 +1202,19 @@
   }
 }
 @layer utilities {
+  /* A SOLID GROUND, deliberately. This was three radial "ambient" passes over the base
+     colour, and they read as swirls on the dark themes — a coloured radial at 0.12 alpha
+     against a dark ground is far more visible than one at 0.08 against near-white, which is
+     why only the dark family showed them. The operator: "I don't like that and would rather
+     just a solid background."
+
+     --mesh-bg is KEPT and is not the same token as --background: several themes set it a few
+     points lower (teal dark is 11% against a 14% background), so it is the app shell's own
+     ground rather than a duplicate. Painting it solid leaves the colour the operator already
+     sees, minus the swirls. The per-theme --mesh-glow-* tokens are gone with the rule that
+     was their only consumer. */
   .bg-mesh {
-    background:
-      radial-gradient(circle at 50% -20%, hsla(var(--mesh-glow-1) / var(--mesh-glow-1-a)), transparent 45%),
-      radial-gradient(circle at 80% 20%, hsla(var(--mesh-glow-2) / var(--mesh-glow-2-a)), transparent 40%),
-      radial-gradient(circle at 20% 80%, hsla(var(--mesh-glow-3) / var(--mesh-glow-3-a)), transparent 50%),
-      hsl(var(--mesh-bg));
+    background: hsl(var(--mesh-bg));
   }
   /* Scoped scrollbar for the diff rail. Wider + higher contrast than the
      global 4px / 0.15-alpha hairline (index.css:55,1311-1328). Colour comes
