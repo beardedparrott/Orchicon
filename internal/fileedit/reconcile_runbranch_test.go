@@ -3,7 +3,6 @@ package fileedit
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -29,16 +28,6 @@ import (
 // before-side was read from HEAD — which for a committed run IS the commit, so
 // before and after were the same bytes and every diff would have rendered empty.
 // Both are covered here.
-
-// gitRun runs one git command in dir, failing the test on error.
-func gitRun(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v failed: %v: %s", args, err, out)
-	}
-}
 
 // committedRunRepo builds the SHAPE OF A REAL RUN: a base branch, a run branch
 // forked from it, the run's work COMMITTED, and a CLEAN working tree — which is
@@ -68,7 +57,7 @@ func TestReconcileGitSeesACommittedRunBranch(t *testing.T) {
 	// THE PRECONDITION THAT MAKES THIS A REPRODUCTION. If the tree is not clean,
 	// the old code would have found the changes via git status and this test
 	// would prove nothing about the committed case.
-	if out, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output(); err != nil {
+	if out, err := gitCmd(dir, "status", "--porcelain").Output(); err != nil {
 		t.Fatalf("git status: %v", err)
 	} else if len(out) != 0 {
 		t.Fatalf("fixture: the working tree must be CLEAN to reproduce the bug (got %q)", out)

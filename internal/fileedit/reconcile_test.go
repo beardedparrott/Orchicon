@@ -3,7 +3,6 @@ package fileedit
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,28 +33,6 @@ func (f *fakeReconcileStore) MarkGitConfirmed(ctx context.Context, tenantID, own
 
 func (f *fakeReconcileStore) KnownPaths(ctx context.Context, tenantID, ownerKind, ownerID string) ([]string, error) {
 	return f.known, nil
-}
-
-// gitRepo creates a temp git repo with an initial tracked file so the
-// "changed" state is observable via `git status`.
-func gitRepo(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	run := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v failed: %v: %s", args, err, out)
-		}
-	}
-	run("init", "-q")
-	run("config", "user.email", "t@t")
-	run("config", "user.name", "t")
-	os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("orig\n"), 0o644)
-	run("add", "tracked.txt")
-	run("commit", "-qm", "init")
-	return dir
 }
 
 // TestReconcileGitConfirmedAndCorrective covers the two AC4 behaviours:
