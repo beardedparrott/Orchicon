@@ -407,6 +407,29 @@ func (m *chatStallMonitor) observe(etype string, part map[string]any) {
 		if args == nil {
 			args = part["args"]
 		}
+		// A SIGNATURE NEEDS IDENTITY: A TOOL NAME *AND* ITS ARGS.
+		//
+		// With neither, `tool + "|" + "null"` collapses EVERY such call into the
+		// single signature `|null`, so N unrelated calls read as N repeats of the
+		// same nothing. Measured on a live 2.x Ask turn: `8 repeats of |null`
+		// killed a turn whose tool calls were all distinct.
+		//
+		// TWO CAUSES, BOTH REAL. The ARGS half came first — reading the top-level
+		// fields instead of the v1.x `state.input` nesting collapsed every bash
+		// call to `bash|null` (the "8 different git commands" report fixed
+		// earlier). Now the NAME half, because 2.x splits tool identity across
+		// THREE events: the name on `session.tool.input.started`, the input on
+		// `session.tool.called`, and only the id when the call resolves. A
+		// resolved part therefore arrives with neither, on any mapping gap.
+		//
+		// An unidentifiable part is SKIPPED, not counted. It is absence of
+		// evidence, not evidence of a loop, and the safe direction is to MISS a
+		// loop rather than kill a working turn — the correlation fix in
+		// internal/opencode (toolCallIndex.stamp) restores the name for the
+		// normal case, so this guard only ever catches a regression.
+		if tool == "" || args == nil {
+			return
+		}
 		argsJSON, _ := json.Marshal(args)
 		sig := tool + "|" + string(argsJSON)
 		cutoff := now.Add(-m.repetitionWindow)

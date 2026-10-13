@@ -359,10 +359,13 @@ func newSessionEventAdapter(sub BusSub) *sessionEventAdapter {
 type toolCallIndex struct {
 	mu   sync.Mutex
 	args map[string]map[string]any
+	// names maps a call id to the tool NAME, which on 2.x arrives on an event of
+	// its own (`session.tool.input.started`) rather than with the call.
+	names map[string]string
 }
 
 func newToolCallIndex() *toolCallIndex {
-	return &toolCallIndex{args: make(map[string]map[string]any)}
+	return &toolCallIndex{args: make(map[string]map[string]any), names: make(map[string]string)}
 }
 
 // observe records the args of a `message.part.updated` tool part, if that is
@@ -373,7 +376,49 @@ func newToolCallIndex() *toolCallIndex {
 // progressively (a later update carries the rest of the args), and an early
 // update can carry an empty input. Later keys win.
 func (x *toolCallIndex) observe(evt BusEvent) {
-	if x == nil || evt.Type != "message.part.updated" {
+	if x == nil {
+		return
+	}
+	// ---- v2: a call's identity arrives ACROSS SEPARATE EVENTS ----------------
+	//
+	// Verified against opencode 2.x's own schema: `session.tool.input.started`
+	// carries the NAME, `session.tool.called` the INPUT, and the resolution
+	// (`session.tool.success`/`.failed`) ONLY the id — ToolBase is
+	// {sessionID, assistantMessageID, id} with no name. So neither half can be
+	// read off the resolved part, and both must be recorded to reconstruct the
+	// call at all. Without this the index never populated on 2.x (the gate below
+	// is v1-only), every resolved call was identity-less, and the stall monitor
+	// read them all as one signature — `8 repeats of |null` killing a live turn.
+	switch evt.Type {
+	case "session.tool.input.started":
+		props := evt.Props()
+		id, _ := props["id"].(string)
+		name, _ := props["name"].(string)
+		if id != "" && name != "" {
+			x.mu.Lock()
+			x.names[id] = name
+			x.mu.Unlock()
+		}
+		return
+	case "session.tool.called":
+		props := evt.Props()
+		id, _ := props["id"].(string)
+		input, _ := props["input"].(map[string]any)
+		if id != "" && len(input) > 0 {
+			x.mu.Lock()
+			dst := x.args[id]
+			if dst == nil {
+				dst = make(map[string]any, len(input))
+				x.args[id] = dst
+			}
+			for k, v := range input {
+				dst[k] = v
+			}
+			x.mu.Unlock()
+		}
+		return
+	}
+	if evt.Type != "message.part.updated" {
 		return
 	}
 	part, _ := evt.Props()["part"].(map[string]any)
@@ -407,6 +452,21 @@ func (x *toolCallIndex) observe(evt BusEvent) {
 	}
 }
 
+// stamp fills a RESOLVED tool part's missing identity from what the index
+// recorded for the same call id: the tool NAME and the call's INPUT.
+//
+// WHY IT IS NEEDED. 2.x announces a call across three events and the resolution
+// carries only the id, so a resolved part arrives with no tool and no args. Every
+// consumer keying on the call's identity then sees all such calls as one thing —
+// the stall monitor read a turn's distinct tool calls as `8 repeats of |null` and
+// killed it. Filling the part is what makes the identity usable again, and it
+// mirrors the execution path, which correlates the same three events by id
+// (session_run.rememberV2Tool/fillV2Tool).
+//
+// FILLS MISSING FIELDS ONLY, so a v1 part that already carries both is untouched.
+// The NAME entry is consumed (id → name is one-shot, and consuming it keeps the
+// map from growing for the session's life); the args entry is left in place
+// because the consent path reads it to annotate a permission ask by call id.
 // get returns a copy of the args recorded for a tool call id, or nil when the
 // call was never observed.
 func (x *toolCallIndex) get(callID string) map[string]any {
@@ -424,6 +484,41 @@ func (x *toolCallIndex) get(callID string) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// stamp fills a RESOLVED tool part's missing identity from what the index
+// recorded for the same call id: the tool NAME and the call's INPUT.
+//
+// It mirrors the execution path, which correlates the same three 2.x events by
+// id (session_run.rememberV2Tool/fillV2Tool) — the Ask path had no equivalent,
+// so every resolved part arrived with neither field and every consumer keying
+// on the call's identity collapsed them into one.
+func (x *toolCallIndex) stamp(part map[string]any) {
+	if x == nil || part == nil {
+		return
+	}
+	cid, _ := part["callID"].(string)
+	if cid == "" {
+		return
+	}
+	// NEITHER ENTRY IS CONSUMED. A call can resolve more than once (a retry, or a
+	// duplicated event), and consuming the name would leave the SECOND resolution
+	// identity-less — which is precisely the state that produced the `|null` false
+	// kill. Retaining is also consistent with the args entry, which the consent
+	// path reads by id after a call has resolved; an id→name string is the same
+	// order of memory as the args already held.
+	x.mu.Lock()
+	name := x.names[cid]
+	args := x.args[cid]
+	x.mu.Unlock()
+	if _, has := part["tool"]; !has && name != "" {
+		part["tool"] = name
+	}
+	if state, ok := part["state"].(map[string]any); ok {
+		if _, has := state["input"]; !has && args != nil {
+			state["input"] = args
+		}
+	}
 }
 
 // argsForPermission resolves the args of the tool call a permission event's
@@ -560,6 +655,12 @@ func classifyBusEventIndexed(evt BusEvent, calls *toolCallIndex) *scheduler.Sess
 		part, _ := legacy["part"].(map[string]any)
 		e := base("part", etype)
 		e.Part = part
+		// Restore the call's identity that 2.x spread across separate events,
+		// so every consumer of this part sees a real tool name and its args
+		// rather than an anonymous call (see toolCallIndex.stamp).
+		if etype == "tool_use" {
+			calls.stamp(part)
+		}
 		if etype == "reasoning" {
 			e.IsReasoning = true
 			if t, ok2 := part["text"].(string); ok2 {

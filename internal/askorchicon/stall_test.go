@@ -592,3 +592,76 @@ func TestChatStallNoToolSilenceTripsOnTheShortWindow(t *testing.T) {
 		}
 	})
 }
+
+// TestChatStallMonitorIgnoresUnidentifiableToolParts is the regression for the
+// false kill the operator reported on a live 2.x Ask turn:
+//
+//	stalled:repetition (8 repeats of |null within 5m0s on model
+//	opencode/opencode-go/deepseek-v4.1-flash)
+//
+// A signature needs a tool NAME and its ARGS. `tool` + "|" + json(args) with
+// neither yields the literal `|null`, so EVERY such part collapses into ONE
+// signature — N unrelated calls read as N repeats of the same nothing, and a
+// turn whose tool calls were all distinct was killed for looping.
+//
+// The 2.x cause is structural: a call's identity arrives across three events
+// (name on `session.tool.input.started`, input on `session.tool.called`, only
+// the id on resolution), so a resolved part can reach here with neither field
+// whenever that correlation is missing. internal/opencode now restores it; this
+// asserts the monitor cannot be tripped by a part that carries no identity at
+// all, so a FUTURE mapping gap degrades to a missed loop rather than a killed
+// turn.
+func TestChatStallMonitorIgnoresUnidentifiableToolParts(t *testing.T) {
+	m := newChatStallMonitor("opencode/opencode-go/deepseek-v4.1-flash", nil)
+	m.noProgressWindow = time.Hour
+	m.repetitionWindow = time.Hour // the reported window
+	m.repetitionCount = 5          // the reported threshold
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	// The EXACT shape a 2.x resolution produced before the correlation fix:
+	// a completed tool part with no name and no input.
+	for i := 0; i < 30; i++ {
+		m.observe("tool_use", map[string]any{
+			"type":  "tool_use",
+			"state": map[string]any{"status": "completed"}, // no input anywhere
+		})
+	}
+	// And the variant with no state at all (a mapping gap of a different shape).
+	for i := 0; i < 30; i++ {
+		m.observe("tool_use", map[string]any{"type": "tool_use"})
+	}
+	if reason := m.stallReason(); reason != "" {
+		t.Fatalf("stallReason = %q, want empty — 60 identity-less parts are not 60 repeats of one call, and "+
+			"counting them is the `|null` false kill that killed a working turn", reason)
+	}
+}
+
+// TestChatStallMonitorStillCatchesAnIdentifiedLoop is the CONTROL for the guard
+// above. Dropping unidentifiable parts must not blunt the detector: a genuine
+// loop on a call we CAN identify still trips.
+func TestChatStallMonitorStillCatchesAnIdentifiedLoop(t *testing.T) {
+	m := newChatStallMonitor("opencode/opencode-go/deepseek-v4.1-flash", nil)
+	m.noProgressWindow = time.Hour
+	m.repetitionWindow = time.Hour
+	m.repetitionCount = 5
+	base := time.Now()
+	m.now = func() time.Time { return base }
+
+	for i := 0; i < 8; i++ {
+		m.observe("tool_use", map[string]any{
+			"type":  "tool_use",
+			"tool":  "read",
+			"state": map[string]any{"status": "completed", "input": map[string]any{"path": "same.go"}},
+		})
+	}
+	reason := m.stallReason()
+	if !strings.HasPrefix(reason, "stalled:repetition") {
+		t.Fatalf("stallReason = %q, want stalled:repetition — an identified identical call repeated IS a loop, "+
+			"and the identity guard must not swallow it", reason)
+	}
+	if !strings.Contains(reason, "read|") {
+		t.Errorf("the refusal names %q, want the identified signature — an unidentifiable signature here means "+
+			"the correlation is still missing", reason)
+	}
+}
