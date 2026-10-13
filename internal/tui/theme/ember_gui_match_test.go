@@ -140,9 +140,17 @@ func TestTheGUIEmberThemeMatchesTheTUIPalette(t *testing.T) {
 		{"--nav-active-to", string(ember.AccentIndigo), "the active tab pill's gradient end"},
 		{"--nav-active-border", string(ember.Accent), "the active tab pill's border"},
 		{"--nav-active-glow", string(ember.Accent), "the active tab pill's glow"},
-		{"--mesh-glow-1", string(ember.Accent), "the ambient trio's first pass"},
-		{"--mesh-glow-2", string(ember.AccentIndigo), "the ambient trio's second pass"},
-		{"--mesh-glow-3", string(ember.AccentCyan), "the ambient trio's third pass"},
+		// THE AMBIENT TRIO IS DELIBERATELY ABSENT. Three assertions stood here, pinning the GUI
+		// theme's --mesh-glow-1/2/3 to the TUI's Accent/AccentIndigo/AccentCyan. Those tokens
+		// were the only consumer of the radial "ambient" passes behind .bg-mesh, and that rule
+		// is now a SOLID ground: the passes read as swirls on the dark family (a coloured
+		// radial at 0.12 alpha against a dark ground is far more visible than 0.08 against
+		// near-white, which is why only dark themes showed them).
+		//
+		// Asserting parity for a token that renders nothing would be the parity claim lying, so
+		// the three went with the effect. The TUI's palette VALUES (Accent/AccentIndigo/
+		// AccentCyan) are unchanged and still asserted above wherever the GUI actually uses
+		// them — the tab pill's gradient and the focus ring.
 	}
 	// THE USER CONVERSATION BUBBLE IS THE TUI'S OWN USER BAND, and it is asserted HERE rather than left to
 	// inspection because that is exactly how it went wrong. The bubble was painted with `bg-primary`, so it
