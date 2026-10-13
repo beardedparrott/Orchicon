@@ -61,7 +61,7 @@ import "os"
 // AmbientConfigEnv is every per-instance variable the host-plane launcher
 // exports into the operator's shell that a spawned child reads back.
 //
-// It is deliberately the two GROUPS that proved to leak, not "all ORCHICON_*":
+// It is deliberately the three GROUPS that proved to leak, not "all ORCHICON_*":
 // the wider prefix also carries intentional opt-ins (ORCHICON_TEST_DSN,
 // ORCHICON_SKIP_NETWORK_TESTS, ORCHICON_LIVE_*, ORCHICON_TEST_LIVE_*) which a
 // blanket unset would silently disable — turning a handful of noisy failures
@@ -78,6 +78,19 @@ var AmbientConfigEnv = []string{
 	// The detached-serve state root, which the serve command's package vars
 	// resolve at init.
 	"ORCHICON_SERVE_STATE_DIR",
+	// The plane's STATE DIRECTORY. FOUR packages resolve their own default from it —
+	// internal/config (Config.DataDir), internal/permpolicy (DefaultPath, whose
+	// result the execution guard BAKES INTO a shim script), internal/orchicon's
+	// model registry and internal/backup — and internal/server turns a whole
+	// behaviour on whether it is SET (project mounts "only run in container mode"),
+	// so an ambient value puts a test into a different MODE, not merely a different
+	// directory. What that meant in practice: this suite resolved the operator's
+	// LIVE plane state, and the guard tests read the operator's own
+	// permission-policy.yaml — which is the reason an ambient ORCHICON_GUARD_FULLSEND
+	// was reachable at all. Unsetting is the CI-equivalent (config.Default() falls
+	// back to /var/lib/orchicon when unset, which is what CI resolves), and a test
+	// that wants a data dir of its own sets one, which is scoped and overrides this.
+	"ORCHICON_DATA_DIR",
 }
 
 // UnsetAmbientConfigEnv removes the ambient plane configuration from this test
