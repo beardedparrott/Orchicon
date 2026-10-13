@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -358,6 +359,11 @@ type App struct {
 	diffPane *diffs.Model
 	diffTab  diffs.Tab
 	diffPath string
+	// diffArmedFor is the owner+liveness the pane's live stream was last SETTLED
+	// for, as "kind|id|live". The wake path re-evaluates the pane's owner on every
+	// event, so without this it would re-fetch the ledger per event — see
+	// ensureDiffStreamArmed.
+	diffArmedFor string
 	// diffPaneW is the operator's OVERRIDE for the left rail's width in cells
 	// (0 = auto). It is the ONLY extra input to diffPaneWidth, so every consumer
 	// of the width — contentWidth, refreshLayout, both SetSize calls, the mouse
@@ -1479,6 +1485,57 @@ func (m *App) diffOwner() (kind, id string) {
 		}
 	}
 	return diffs.NoneOwner, diffs.NoneOwner
+}
+
+// ensureDiffStreamArmed arms an ALREADY-OPEN pane's live stream once its owner
+// becomes live, and does nothing otherwise.
+//
+// THE BUG THIS FIXES, in the operator's words: "In the TUI it worked but not
+// while I was actively watching it. I had to hit ctrl+d again to refresh the
+// screen." The pane was armed EXACTLY ONCE, when it was opened — and at that
+// moment the turn had not started, so `diffOwnerLive` said false and no stream
+// was ever subscribed. Nothing re-evaluated it: `refreshDiffOwner` runs on a
+// tab switch and on conversation selection, NOT on the wake path, and it also
+// refuses while the COMPOSER holds focus — which is where the operator is
+// sitting while watching a turn run. So the pane's data was whatever the
+// open-time fetch saw, and only closing/reopening it (ctrl+d twice) re-armed the
+// stream and showed the files.
+//
+// TWO PROPERTIES MAKE THIS THE RIGHT SEAM. It is IDEMPOTENT — it acts only when
+// the pane is open and UNARMED with a LIVE owner, so it costs one call at a turn
+// start and nothing thereafter. And it is about DATA PLUMBING, not input
+// routing: which surface owns the keystrokes has no bearing on whether the pane
+// subscribes to its owner's ledger, so the focus gate that guarded the re-point
+// path does not belong here.
+//
+// A pane whose owner is NOT live is deliberately left alone: a finished
+// execution or an idle conversation has a durable, git-reconciled ledger and no
+// live stream to subscribe to.
+func (m *App) ensureDiffStreamArmed() tea.Cmd {
+	if !m.diffOpen || m.diffPane == nil {
+		return nil
+	}
+	kind, id := m.diffOwner()
+	if kind == diffs.NoneOwner || id == diffs.NoneOwner {
+		m.diffArmedFor = ""
+		return nil
+	}
+	// THE KEY IS WHAT KEEPS THIS CHEAP. The wake path runs on every chat event,
+	// so acting unconditionally would re-fetch the ledger continuously — SetOwner
+	// fetches. Only a CHANGE of owner or of liveness is worth acting on, which is
+	// also exactly when the answer differs.
+	live := m.diffOwnerLive(kind, id)
+	key := kind + "|" + id + "|" + strconv.FormatBool(live)
+	if key == m.diffArmedFor {
+		return nil
+	}
+	m.diffArmedFor = key
+	if m.diffPane.StreamArmed() || !live {
+		// Already subscribed, or nothing live to subscribe to (a finished run /
+		// idle conversation has a durable ledger and no stream).
+		return nil
+	}
+	return m.diffPane.SetOwner(kind, id, true)
 }
 
 // diffOwnerLive reports whether the owner's session is live (a running
@@ -4568,7 +4625,10 @@ func (m *App) onChatWake() tea.Cmd {
 		fields[len(fields)-1].Value = str.ScrollLabel()
 		st.SetDetailContentLaidOut(title, fields, str.View())
 	}
-	return nil
+	// THE PANE RE-EVALUATES ITS OWNER'S LIVENESS ON EVERY WAKE, which is what
+	// makes it follow a turn that starts AFTER it was opened — see
+	// ensureDiffStreamArmed for the operator report this closes.
+	return m.ensureDiffStreamArmed()
 }
 
 // planeUnreachable reports whether the PLANE itself is not answering — as opposed to one turn having lost
