@@ -343,34 +343,89 @@ func TestSentMessageCarriesItsAttachmentMarkers(t *testing.T) {
 
 // --- the chords ----------------------------------------------------------------------------------
 
-// THE CHORDS ARE BOUND AND REACHABLE. A chord nobody can see is a chord nobody has, so the two routes must
+// THE CHORDS ARE BOUND AND REACHABLE. A chord nobody can see is a chord nobody has, so the routes must
 // exist in the registry the help overlay renders FROM, and they must be in the composer's bypass list —
 // otherwise the textarea eats the keystroke before any route sees it.
+//
+// ctrl+f is NO LONGER ATTACH: it is FIND IN TRANSCRIPT (the universal chord finds). Attaching a file moved
+// to the /attach slash command — see TestSlashAttachAttachesTheFile, which pins that it really attaches.
 func TestAttachmentChordsAreRegisteredAndBypassTheComposer(t *testing.T) {
 	m := askRelaunched(t, "c1")
 
-	var haveFile, haveImage bool
+	var ctrlFName string
+	var haveImage bool
 	for _, r := range m.routes {
 		switch r.Keys {
 		case "ctrl+f":
-			haveFile = true
+			ctrlFName = r.Name
 		case "ctrl+v":
 			haveImage = true
 		}
 	}
-	if !haveFile {
-		t.Error("ctrl+f (attach a file by path) is not registered, so the help overlay never lists it")
+	if ctrlFName == "" {
+		t.Error("ctrl+f is not registered, so the help overlay never lists the find chord")
+	} else {
+		lower := strings.ToLower(ctrlFName)
+		if !strings.Contains(lower, "find") && !strings.Contains(lower, "search") {
+			t.Errorf("ctrl+f must now be the transcript SEARCH route, got %q", ctrlFName)
+		}
+		if strings.Contains(lower, "attach") {
+			t.Errorf("ctrl+f must no longer attach a file, got %q", ctrlFName)
+		}
 	}
 	if !haveImage {
 		t.Error("ctrl+v (paste an image) is not registered, so the help overlay never lists it")
 	}
 
-	// The bypass list is what gets the chord past the textarea.
+	// ctrl+f must STILL bypass the composer: the textarea claims ctrl+f for forward-char, so without the
+	// bypass the route never receives the key (router.go records exactly this).
 	for _, k := range []string{"ctrl+v", "ctrl+f"} {
 		if !composerBypassKeys[k] {
 			t.Errorf("%s is not in composerBypassKeys — the composer would consume it before the route "+
 				"ran, which is exactly how a bound chord ends up unreachable", k)
 		}
+	}
+}
+
+// /attach ACTUALLY ATTACHES. It delegates to the same reader ctrl+f used to use (attachFileFromPrompt), so
+// the pending-attachment strip fills and the file rides the NEXT message. The old "attachments are not
+// supported in the TUI" refusal is GONE, and the palette description no longer claims it is unsupported.
+func TestSlashAttachAttachesTheFile(t *testing.T) {
+	m := askRelaunched(t, "c1")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(path, []byte("hello attachment"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	handled, cmd := m.dispatchSlash("/attach " + path)
+	if !handled {
+		t.Fatal("/attach must be handled — a path is never silently dropped")
+	}
+	if cmd == nil {
+		t.Fatal("/attach must produce the attach command (the file is read off the disk in a command)")
+	}
+	msg, ok := cmd().(attachResultMsg)
+	if !ok {
+		t.Fatalf("the attach command produced %T, want attachResultMsg", cmd())
+	}
+	if msg.err != nil {
+		t.Fatalf("attach failed: %v", msg.err)
+	}
+	m.applyAttachResult(msg)
+	if len(m.pendingAttach) != 1 {
+		t.Fatalf("the file must be PENDING for the next message, got %d", len(m.pendingAttach))
+	}
+	if !strings.Contains(m.dock.View(), "attached") {
+		t.Fatalf("the attach must be visible in the strip, got %q", m.dock.View())
+	}
+	if strings.Contains(m.dock.View(), "not supported") {
+		t.Fatalf("the old refusal must be gone: %q", m.dock.View())
+	}
+	// The PALETTE DESCRIPTION must stop claiming the TUI cannot attach.
+	if help := strings.Join(m.slash.helpLines(), "\n"); strings.Contains(help, "not supported") {
+		t.Fatalf("/attach's palette description still claims the TUI cannot attach:\n%s", help)
 	}
 }
 

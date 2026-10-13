@@ -22,8 +22,12 @@ package tui
 //
 //	ctrl+v / the paste chord  → the SYSTEM CLIPBOARD (a screenshot lives there as image bytes, and it has
 //	                            no path to read)
-//	ctrl+f                    → a FILE PATH (the operator types or pastes the path; a file has a path and
+//	/attach <path>            → a FILE PATH (the operator types or pastes the path; a file has a path and
 //	                            may never have been on the clipboard)
+//
+// ctrl+f used to be the FILE-PATH chord; it is now FIND IN TRANSCRIPT on both surfaces, and a file path
+// is attached from the slash idiom the TUI already uses (/attach <path>), which delegates to the same
+// reader (attachFileFromPrompt) this file provides.
 //
 // See readClipboardImage for why the first one cannot be OSC 52.
 
@@ -286,7 +290,7 @@ func readClipboardImage(current []attachment) (attachment, error) {
 	argv := clipboardImageCommand()
 	if argv == nil {
 		return attachment{}, errors.New("no clipboard image reader on this machine — install " +
-			clipboardHelperHint() + ", or attach the file by path (ctrl+f)")
+			clipboardHelperHint() + ", or attach the file by path (/attach <path>)")
 	}
 	// macOS: replace the placeholder output path with a temp file, since pngpaste writes to a path rather
 	// than streaming to stdout.

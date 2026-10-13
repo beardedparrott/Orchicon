@@ -183,6 +183,14 @@ func (s *Stream) Following() bool { return s.follow }
 // ScrollToBottom pins the viewport to the newest line AND starts following it.
 func (s *Stream) ScrollToBottom() { s.Offset = s.maxOffset(); s.follow = true }
 
+// ScrollToTop pins the viewport to the FIRST line and STOPS following.
+//
+// FOLLOWING IS CLEARED ON PURPOSE: an operator who deliberately jumped to the start
+// of a long conversation is reading history, and an arriving chunk must not yank the
+// view back to the tail — the same rule Wheel applies to a deliberate scroll. The
+// transcript's jump-to-latest control resumes following via ScrollToBottom.
+func (s *Stream) ScrollToTop() { s.Offset = 0; s.follow = false }
+
 // Wheel scrolls by delta lines (positive = down).
 //
 // A wheel gesture is DELIBERATE, so this is the one place that changes the follow intent: scrolling up

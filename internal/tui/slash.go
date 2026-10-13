@@ -319,6 +319,14 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	add(SlashCommand{
+		Name: "/find", Usage: "/find <text>",
+		Desc: "search the open transcript — filters matching messages (case-insensitive); n/N step, esc clears (also ctrl+f)",
+		Run: func(m *App, args []string) tea.Cmd {
+			m.findInTranscript(strings.Join(args, " "))
+			return nil
+		},
+	})
+	add(SlashCommand{
 		Name: "/delete", Usage: "/delete",
 		Desc: "delete the open conversation (DeleteConversation)",
 		Run: func(m *App, _ []string) tea.Cmd {
@@ -548,14 +556,15 @@ func buildSlashRegistry(m *App) *slashRegistry {
 	})
 	add(SlashCommand{
 		Name: "/attach", Usage: "/attach <path>",
-		Desc:    "attach a file to the next message (not supported in the TUI)",
+		Desc:    "attach a file to the next message",
 		MinArgs: 1,
 		Run: func(m *App, args []string) tea.Cmd {
-			// Explicit, user-visible refusal — never a silent drop. The
-			// AttachConversationTurn surface is only reachable from the GUI
-			// today, so the TUI says so instead of swallowing the path.
-			m.dock.SetError("attachments are not supported in the TUI — attach " + args[0] + " in the web GUI (nothing was sent)")
-			return nil
+			// THE TUI CAN ATTACH. This delegates to the SAME reader the ctrl+f route used to use
+			// (attachFileFromPrompt), so the pending-attachment strip and the "lands on the NEXT
+			// message" contract are unchanged. The file is read OFF THE DISK in a command (it can be
+			// megabytes), never on the tea loop; because a SlashCommand.Run RETURNS a tea.Cmd, it is
+			// dispatched directly rather than staged through pendingAttachCmd.
+			return attachFileFromPrompt(strings.Join(args, " "))
 		},
 	})
 
@@ -606,6 +615,33 @@ func aliasSuffix(alias string) string {
 // slashHelpText joins help lines for the dock notice strip.
 func (m *App) slashHelpText() string {
 	return strings.Join(m.slash.helpLines(), " · ")
+}
+
+// findInTranscript is the SHARED transcript-search entry point: /find <text> and
+// the ctrl+f chord both call it, so the two surfaces can never drift (ctrl+f
+// passes the composer's text as the query). It is the behaviour /find has always
+// had, lifted out of the command so a chord can reach it. See transcript_search.go.
+func (m *App) findInTranscript(q string) {
+	if m.chatConvID == "" {
+		m.dock.SetError("no conversation open — nothing to search")
+		return
+	}
+	q = strings.TrimSpace(q)
+	if q == "" {
+		if m.clearAskSearch() {
+			m.dock.SetNotice("transcript search cleared")
+		} else {
+			m.dock.SetNotice("usage: /find <text> (or type the term and press ctrl+f)")
+		}
+		return
+	}
+	m.setAskSearch(q)
+	matches, total := transcriptSearchCount(m.chatStore.snapshot(m.chatConvID), q)
+	if matches == 0 {
+		m.dock.SetNotice(fmt.Sprintf("search %q — no matches", q))
+	} else {
+		m.dock.SetNotice(fmt.Sprintf("search %q — %d/%d matches (n/N step, esc clears)", q, matches, total))
+	}
 }
 
 // dispatchSlash parses and runs a slash command from the composer.

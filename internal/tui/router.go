@@ -139,20 +139,21 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			},
 		},
 		{
-			Name: "attach a file by path", Keys: "ctrl+f", Scope: "global",
-			// Reads the file OFF THE DISK in a command (it can be megabytes), so the tea loop is never
-			// blocked by I/O — the same reason every fetch in this shell is a command.
+			Name: "Ask transcript: find (search the transcript)", Keys: "ctrl+f", Scope: "global",
+			// CTRL+F IS FIND, THE UNIVERSAL CHORD — not attach. It searches the OPEN TRANSCRIPT, and it
+			// delegates to the SAME path /find uses (findInTranscript) so the two surfaces cannot drift;
+			// there is no new search UI here, only a chord onto the existing one (transcript_search.go).
 			//
-			// The PATH comes from the composer's own text, because a terminal cannot browse a filesystem:
-			// the operator pastes or types the path (which is how a path reaches a terminal anyway), and a
-			// successful attach CLEARS the box so the path is not also sent as prose.
+			// THE QUERY COMES FROM THE COMPOSER'S TEXT, because a terminal cannot open a search box: the
+			// operator types or pastes the term then presses ctrl+f, exactly the idiom the old attach route
+			// used for a path. A file is attached from the slash idiom the TUI already has — /attach <path>.
+			//
+			// IT IS GLOBAL AND A COMPOSER BYPASS (see composerBypassKeys): it must fire from the content
+			// pane AND while the composer holds focus. The textarea's own ctrl+f (forward-char) would
+			// otherwise eat the key, which is why the bypass entry stays.
 			Match: keyMatcher("ctrl+f"),
 			Handle: func(m *App, _ tea.Msg) bool {
-				path := m.dock.Value()
-				m.pendingAttachCmd = attachFileFromPrompt(path)
-				if strings.TrimSpace(path) != "" {
-					m.pendingAttachClear = true
-				}
+				m.findInTranscript(m.dock.Value())
 				return true
 			},
 		},
@@ -280,6 +281,56 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			Match:  keyMatcher("ctrl+down"),
 			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthReset() },
 		},
+		// THE ASK TRANSCRIPT'S SEARCH + JUMP KEYS, registered here so the `?` overlay
+		// names them (help renders FROM this registry; app_test asserts the parity).
+		// Each Handle is GATED on Ask-transcript CONTENT focus, so the binding is inert
+		// on every other screen and can never reach the composer — which consumes plain
+		// letters and Home/End as editing keys, so the gate is what keeps a search key
+		// from stealing a keystroke from typing. See transcript_search.go.
+		{
+			Name: "Ask transcript: next search match", Keys: "n", Scope: "global",
+			Match: keyMatcher("n"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				if !m.askTranscriptContentFocus() || strings.TrimSpace(m.askSearch) == "" {
+					return false
+				}
+				m.askSearchStep(1)
+				return true
+			},
+		},
+		{
+			Name: "Ask transcript: previous search match", Keys: "N", Scope: "global",
+			Match: keyMatcher("N"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				if !m.askTranscriptContentFocus() || strings.TrimSpace(m.askSearch) == "" {
+					return false
+				}
+				m.askSearchStep(-1)
+				return true
+			},
+		},
+		{
+			Name: "Ask transcript: jump to the first message", Keys: "home", Scope: "global",
+			Match: keyMatcher("home"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				if !m.askTranscriptContentFocus() {
+					return false
+				}
+				m.jumpTranscriptTop()
+				return true
+			},
+		},
+		{
+			Name: "Ask transcript: jump to the latest message", Keys: "end", Scope: "global",
+			Match: keyMatcher("end"),
+			Handle: func(m *App, _ tea.Msg) bool {
+				if !m.askTranscriptContentFocus() {
+					return false
+				}
+				m.jumpTranscriptBottom()
+				return true
+			},
+		},
 	}
 	// One chord route per tab, in tab order: F1 … F7.
 	//
@@ -350,12 +401,14 @@ var composerBypassKeys = map[string]bool{
 	// key is consumed — so a global route can never see a chord the composer was allowed to eat. This
 	// map is the documented way to keep such a chord reachable while the composer holds the focus.
 	"ctrl+y": true,
-	// THE ATTACHMENT CHORDS are here for exactly the same reason: they must work while the composer is
-	// focused, because that is where the operator is typing when they paste.
+	// THE ATTACHMENT/FIND CHORDS are here for exactly the same reason: they must work while the composer
+	// is focused, that being where the operator is typing. The textarea binds ctrl+f to forward-char, so
+	// without the bypass the find route would never receive the key.
 	//
 	//	ctrl+v — paste an image from the SYSTEM CLIPBOARD (a screenshot has no path to type)
-	//	ctrl+f — attach a FILE BY PATH (the operator pastes the path into the prompt; a file may never
-	//	         have been on the clipboard, and a terminal cannot browse a filesystem)
+	//	ctrl+f — FIND IN TRANSCRIPT (the universal chord; it searches the open transcript for the
+	//	         composer's text — see the route above). A FILE is attached with the /attach <path>
+	//	         slash command, or by pasting a path.
 	"ctrl+v": true, "ctrl+f": true,
 	// ctrl+a selects the whole composer (see its route). It has to bypass the textarea for the same reason:
 	// the textarea binds ctrl+a to "line start", so without this the route would never see the key.
@@ -1071,6 +1124,13 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		if k.String() == "esc" && m.clearConvMarks() {
 			m.refreshStreamStatus()
+			return m, nil
+		}
+		// ESC CLEARS AN ACTIVE TRANSCRIPT SEARCH before its other meanings: the search
+		// is a mode the operator entered deliberately, and esc is how they leave it
+		// (acceptance: "Esc clears back to the unfiltered transcript"). It sits AFTER
+		// the mark-clear, which keeps esc's existing "drop the selection first" rule.
+		if k.String() == "esc" && m.clearAskSearch() {
 			return m, nil
 		}
 		if m.railOwnsVerticalKey(k.String()) {
