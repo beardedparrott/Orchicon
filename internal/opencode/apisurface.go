@@ -43,6 +43,21 @@ import (
 type apiShape struct {
 	// name is "v1" or "v2" — for logs, errors and test failures, never for logic.
 	name string
+	// codeMode reports that MCP tools on this surface CANNOT BE CALLED DIRECTLY.
+	//
+	// 2.x routes every MCP tool through its `execute` tool — its own prompt says so verbatim:
+	// "Use the `execute` tool to call the tools listed below. They cannot be called directly."
+	// (packages/core/src/codemode/instructions.ts). This is the property that decides two things,
+	// and getting it wrong is silently harmful rather than loud:
+	//
+	//   - the composed prompt's tool guidance: naming `batch_read`/`todowrite` as direct calls on a
+	//     surface that forbids them asks the model for something impossible, and the model then
+	//     reports the tools as missing from its catalog (observed);
+	//   - the read/grep DENY in the permission rules, which exists ONLY to force the worker onto
+	//     those tools. Where they cannot be called, denying the built-ins removes the worker's
+	//     file-reading tools and leaves it with `shell` alone — measured on a verified 2.x run: 63
+	//     `shell` calls, zero `batch_*`.
+	codeMode bool
 	// prefix is prepended to every session route: "" on v1, "/api" on v2.
 	prefix string
 	// healthPath is the readiness probe. It is NOT prefix+something on either version: v1 uses
@@ -166,6 +181,7 @@ var shapeV1 = apiShape{
 //	| 140     | GET  | /api/event                                 | event.subscribe | Keep |
 var shapeV2 = apiShape{
 	name:                  "v2",
+	codeMode:              true,
 	prefix:                "/api",
 	healthPath:            "/api/info",
 	promptSuffix:          "prompt",

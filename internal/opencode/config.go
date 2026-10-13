@@ -700,13 +700,26 @@ func BuildConfigContent(o ConfigOptions) string {
 	// only applied alongside a registered worktree MCP — so a worker never
 	// loses file access with no batch tool to fall back on.
 	compositeTools := o.CompositeTools && o.WorktreeDir != ""
+	// THE READ/GREP DENY IS ONLY SOUND WHERE THE COMPOSITE TOOLS ARE DIRECTLY CALLABLE.
+	//
+	// It exists for one reason: to push the worker off the granular built-ins and onto
+	// batch_read/batch_grep. That reasoning holds only if the worker CAN call them. On a Code
+	// Mode surface (opencode 2.x) every MCP tool is callable ONLY from inside `execute`, so
+	// denying the built-ins does not redirect anything — it deletes the worker's file-reading
+	// tools and leaves it with `shell` alone. Measured on a verified 2.x run: 63 `shell` calls,
+	// zero `batch_*`, and the model reporting the batch tools as absent from its catalog.
+	//
+	// The MCP server itself stays REGISTERED either way (see the mcp block below): on 2.x the
+	// tools are still usable, through `execute`. Only the deny is dropped, so the worker keeps
+	// both the direct built-ins and the batch path.
+	directCompositeTools := compositeTools && !o.Shape.isV2()
 	if o.Shape.isV2() {
 		// V2 is an ordered `permissions` ARRAY with renamed actions; the V1 map
 		// would leave the sandbox unenforced, and it would fail in the permissive
 		// direction (wider tool access than intended) rather than loudly.
-		cfg["permissions"] = v2PermissionRules(o.PermissionProfile, compositeTools)
+		cfg["permissions"] = v2PermissionRules(o.PermissionProfile, directCompositeTools)
 	} else {
-		cfg["permission"] = permissionRules(o.PermissionProfile, compositeTools)
+		cfg["permission"] = permissionRules(o.PermissionProfile, directCompositeTools)
 	}
 
 	// Enable context compaction pruning for every worker session. `prune`
@@ -830,9 +843,9 @@ func BuildConfigContent(o ConfigOptions) string {
 			}
 		}
 		if o.Shape.isV2() {
-			fallback["permissions"] = v2PermissionRules(o.PermissionProfile, o.CompositeTools && o.WorktreeDir != "")
+			fallback["permissions"] = v2PermissionRules(o.PermissionProfile, directCompositeTools)
 		} else {
-			fallback["permission"] = permissionRules(o.PermissionProfile, o.CompositeTools && o.WorktreeDir != "")
+			fallback["permission"] = permissionRules(o.PermissionProfile, directCompositeTools)
 		}
 		b, _ = json.Marshal(fallback)
 	}

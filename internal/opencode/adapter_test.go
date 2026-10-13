@@ -135,7 +135,7 @@ func TestExecutionSystemPrompt(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := executionSystemPrompt(tc.manifest)
+			got := executionSystemPrompt(tc.manifest, shapeV1)
 			// The worktree-path discipline note is present only under a
 			// provisioned worktree. Reference the const directly so the test
 			// and the source cannot drift apart.
@@ -267,5 +267,40 @@ func TestTodoWriteSnapshotSidecar(t *testing.T) {
 	}
 	if !strings.Contains(out, "in_progress") {
 		t.Fatalf("todoread should surface statuses:\n%s", out)
+	}
+}
+
+// TestExecutionSystemPromptCodeMode pins the 2.x branch of the composed prompt.
+//
+// THE TWO DISCIPLINES ARE MUTUALLY EXCLUSIVE, and emitting the wrong one is silently harmful
+// rather than loud: batchToolsDiscipline tells the worker to call `batch_read` directly, which a
+// Code Mode serve FORBIDS (every MCP tool is callable only inside `execute`). A worker given that
+// instruction reports the tools as missing from its catalog and falls back to `shell` — observed on
+// a real 2.x run that made 63 shell calls and zero `batch_*`.
+func TestExecutionSystemPromptCodeMode(t *testing.T) {
+	manifest := scheduler.ExecutionManifest{
+		SystemPrompt:      "base",
+		WorktreePath:      "/srv/proj/.orchicon-worktrees/run1",
+		RuntimeWorkflowID: "run-1",
+		ProjectDir:        "/p",
+	}
+	got := executionSystemPrompt(manifest, shapeV2)
+
+	if strings.Contains(got, batchToolsDiscipline) {
+		t.Error("a Code Mode serve received the DIRECT-call batch discipline — MCP tools cannot be " +
+			"called that way on 2.x, so this asks the worker for something impossible")
+	}
+	if !strings.Contains(got, codeModeDiscipline) {
+		t.Error("a Code Mode serve did not receive the Code Mode discipline — the worker is left to " +
+			"discover that its tools are unreachable directly")
+	}
+	// The namespace is the ONE thing the model cannot infer: our server is registered as
+	// `orchicon-worktree`, so a bare `batch_read` resolves to nothing.
+	if !strings.Contains(got, `tools["orchicon-worktree"]`) {
+		t.Error("the Code Mode discipline does not name the MCP namespace, so the call form is unusable")
+	}
+	// A v1 serve must keep the historical behaviour byte-for-byte.
+	if v1 := executionSystemPrompt(manifest, shapeV1); !strings.Contains(v1, batchToolsDiscipline) {
+		t.Error("a v1 serve lost the direct-call batch discipline — v1 tool calls are direct and unchanged")
 	}
 }

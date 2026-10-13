@@ -606,7 +606,7 @@ func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, 
 		callbacks: callbacks,
 		client:    client,
 		modelRef:  modelRef,
-		system:    executionSystemPrompt(manifest),
+		system:    executionSystemPrompt(manifest, client.shape),
 		done:      make(chan struct{}),
 		stats:     &execStreamState{},
 		// Unified warn→escalate→abort ladder. The spend accumulator starts
@@ -626,16 +626,48 @@ func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, 
 // built-in tools — the whole point of the composite-tools feature (fewer
 // turns, less re-sent context). Host-serve executions (RuntimeWorkflowID
 // empty) have no composite tools and get the bare worker system prompt.
-func executionSystemPrompt(manifest scheduler.ExecutionManifest) string {
+func executionSystemPrompt(manifest scheduler.ExecutionManifest, shape apiShape) string {
 	sp := manifest.SystemPrompt
 	if manifest.WorktreePath != "" {
 		sp += worktreePathDiscipline
 	}
 	if manifest.RuntimeWorkflowID != "" && manifest.ProjectDir != "" {
-		sp += batchToolsDiscipline
+		// WHICH DISCIPLINE DEPENDS ON WHETHER THE TOOLS CAN BE CALLED AT ALL, and the two are not
+		// interchangeable. batchToolsDiscipline tells the worker to reach for `batch_read` directly;
+		// on a Code Mode surface that instruction is UNSATISFIABLE — MCP tools are callable only
+		// from inside `execute` — and a worker given it reports the tools as missing from its
+		// catalog and falls back to `shell` (observed on a real 2.x run). One of these is always
+		// emitted for a composite-tools run; neither is emitted for a run without them.
+		if shape.codeMode {
+			sp += codeModeDiscipline
+		} else {
+			sp += batchToolsDiscipline
+		}
 	}
 	return sp
 }
+
+// codeModeDiscipline steers a composite-tools worker on an opencode 2.x serve, where MCP tools
+// CANNOT be called directly (see apiShape.codeMode).
+//
+// It names the exact call form rather than describing it, because the namespace is the one thing
+// the model cannot infer: our server is registered as `orchicon-worktree`, so the tools are reached
+// as `tools["orchicon-worktree"].<name>(...)` inside an `execute` call and never by a bare name.
+// The model discovered this form by searching, unaided — this just saves it the detour.
+const codeModeDiscipline = "\n\n# Tool discipline (Code Mode)\n" +
+	"THIS SERVES OPENCODE 2.x, WHOSE CODE MODE FORBIDS CALLING MCP TOOLS DIRECTLY. " +
+	"You have an `execute` tool that runs JavaScript, and our file/todo tools are MCP tools — " +
+	"they are reachable ONLY from inside `execute`, never as a top-level tool call:\n" +
+	"- Read: `return await tools[\"orchicon-worktree\"].batch_read({ paths: [\"a.go\", \"b.go\"] })`\n" +
+	"- Search: `return await tools[\"orchicon-worktree\"].batch_grep({ patterns: [\"foo\", \"bar\"] })`\n" +
+	"- Write: `return await tools[\"orchicon-worktree\"].batch_write({ writes: [...] })`\n" +
+	"- Todos: `return await tools[\"orchicon-worktree\"].todowrite({ todos: [{content,status,priority}] })`\n" +
+	"If unsure of a name, find it first: `return search({ query: \"batch\" })`. Do NOT guess tool names.\n" +
+	"`shell` / `edit` / `write` / `read` / `grep` ARE directly callable and fine for a single quick " +
+	"operation. But BATCH your file access through `execute`: one `batch_read` carrying many paths is " +
+	"one turn, where several `shell` calls are several.\n" +
+	"Never re-read a file whose content is already in context — every extra call re-sends the whole " +
+	"conversation.\n"
 
 // batchToolsDiscipline steers the worker to the composite context-efficient
 // file tools. It is phrased defensively ("if available") so a worker whose

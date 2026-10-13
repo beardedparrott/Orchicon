@@ -599,3 +599,55 @@ func TestProvenanceOfServeConfigNamesOnly(t *testing.T) {
 		t.Fatalf("provenance is not the sorted name set: %q", got)
 	}
 }
+
+// TestBuildConfigContentCodeModeDoesNotDenyReadGrep is the regression pin for the 2.x gate.
+//
+// THE DENY AND THE SURFACE MUST AGREE. Denying the built-in read/grep exists for exactly one reason:
+// to push the worker onto batch_read/batch_grep. That reasoning needs the worker to be ABLE to call
+// them, and on a Code Mode serve it cannot — every MCP tool is reachable only from inside `execute`
+// (opencode's own prompt: "They cannot be called directly"). So the deny stops redirecting anything
+// and instead deletes the worker's file-reading tools, leaving it with `shell` alone. Measured on a
+// verified 2.x run before this gate: 63 `shell` calls, zero `batch_*`.
+//
+// The other half matters as much: the worktree MCP server must STAY REGISTERED. The tools are not
+// broken on 2.x, only differently reached, so dropping the deny must not drop the server.
+func TestBuildConfigContentCodeModeDoesNotDenyReadGrep(t *testing.T) {
+	out := BuildConfigContent(ConfigOptions{
+		AgentName:      workerAgent,
+		AgentPrompt:    sessionToolShell,
+		DefaultAgent:   workerAgent,
+		Shape:          ConfigShapeV2,
+		CompositeTools: true,
+		WorktreeDir:    "/worktree",
+	})
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("config content is not valid JSON: %v", err)
+	}
+
+	// The server stays: on 2.x the tools work, through `execute`.
+	mcp, ok := cfg["mcp"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected an mcp block, got %#v", cfg["mcp"])
+	}
+	servers, _ := mcp["servers"].(map[string]any)
+	if _, ok := servers["orchicon-worktree"]; !ok {
+		t.Fatalf("the worktree MCP server must stay registered on a Code Mode serve, got %#v", mcp)
+	}
+
+	// The v2 permission document is an ordered ARRAY (see configshape.go).
+	perms, ok := cfg["permissions"].([]any)
+	if !ok {
+		t.Fatalf("expected a v2 `permissions` array, got %#v", cfg["permissions"])
+	}
+	for _, e := range perms {
+		m, _ := e.(map[string]any)
+		if m == nil {
+			continue
+		}
+		if act, _ := m["action"].(string); act == readToolDeny || act == grepToolDeny {
+			t.Errorf("a Code Mode serve denies %q — those tools cannot be called directly there, so this "+
+				"removes the worker's file-reading path and leaves it with shell alone: %#v", act, m)
+		}
+	}
+}
