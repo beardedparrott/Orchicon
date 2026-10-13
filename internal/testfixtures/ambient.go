@@ -11,7 +11,7 @@
 // the code is fine and the environment is the defect.
 //
 // It was real. Running `go test ./...` in a shell with a live host plane
-// produced four failing packages, every one of them a test that spawns a
+// produced five failing packages, every one of them a test that spawns a
 // process:
 //
 //	cmd/orchicon     TestServeStatePathsShape — asserts the DEFAULT `.dev`
@@ -27,12 +27,25 @@
 //	                 profile differently from the documented default. The
 //	                 guard's job is to REFUSE; a leaked policy made it refuse
 //	                 differently rather than not at all.
+//	internal/askorchicon
+//	                 AskGuardEnvironFor appends to os.Environ() too, and its OFF
+//	                 case emits NOTHING ("unset is the absence of the mode"), so an
+//	                 ambient ORCHICON_GUARD_FULLSEND survived into the shim; where the
+//	                 policy is readable, fullsend skips the sanctioned-set tests by
+//	                 design and `rm <out-of-project>` RAN where the test asserts a
+//	                 refusal (measured: a clean env REFUSES that target, an ambient
+//	                 fullsend DELETES it; a denying policy entry and the never-allow
+//	                 class still refuse under fullsend). The policy is readable via
+//	                 the launcher's ORCHICON_DATA_DIR, which permpolicy.DefaultPath
+//	                 resolves through — and which these tests inherit too, so the
+//	                 same element is worth watching. Found later than the four
+//	                 above, by running the suite from inside an Ask conversation.
 //
-// All four pass the moment those variables are unset, which is what identified
+// All five pass the moment those variables are unset, which is what identified
 // the cause rather than any behaviour of the tests.
 //
 // WHY IT LIVES HERE. The variables are per-INSTANCE, so no package owns them,
-// and four packages need the same list. Deriving it from the one place that
+// and five packages need the same list. Deriving it from the one place that
 // already knows the per-instance set (scripts/container.sh) keeps a var added
 // there from silently reappearing as a failure here.
 //
