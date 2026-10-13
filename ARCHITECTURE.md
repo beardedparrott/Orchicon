@@ -982,6 +982,15 @@ after waiting for it), then resolves every published port. `ORCHICON_PLANE_RESID
 shared and a test asserts the two agree (`TestInstallPortDefaultsMatchContainerScript`), so an instance's
 ports do not depend on which entry point created it.
 
+**`orchicon restart` is the other half of the install question, and it exists because of a property of the
+shape rather than a missing convenience.** A plane **inherits its environment when it STARTS** (`startHostPlane`
+passes `os.Environ()` on, and `serve --detach` does the same), so `PATH` is fixed at start time and nothing
+refreshes it. An adapter CLI installed *after* the plane booted is therefore invisible to it, while
+`orchicon install` — correctly — declines to restart a plane that is already healthy on the installed binary.
+The only remaining route was `serve --stop` followed by an install: a restart in disguise, under a verb about
+serving. `orchicon restart` restarts the instance so its components re-read their environment, and is what the
+guide and the model-picker remedy now point at.
+
 **Three instance columns, and a resolved port PER INSTANCE.** `dev`, `prod` and a throwaway **`test`**
 instance each have their own defaults, so a third can run beside the other two without a collision (the
 old shape fell anything that was not literally `prod` into dev's column, which collided silently):
@@ -1109,6 +1118,19 @@ The native adapter runs worker executions in-process against the tenant's config
 Worker executions run through a **persistent opencode session** — the ONLY execution transport (the legacy one-shot `opencode run` subprocess path was removed: a run that cannot get a session fails fast, `failed_to_start` → workflow recovery, instead of silently degrading to a second, inferior transport). One `opencode serve` instance owns each execution's session and its agent loop; the goal is the first user message, and liveness nudges + mid-run human messages join the session's per-session prompt queue (serialized by the server, so an injected message lands at the next turn boundary).
 
 **Serve topology** (two populations, one `SessionClient` — `internal/opencode/session.go`):
+- **The API shape is chosen per serve** (`internal/opencode/apisurface.go`), because opencode 2.x is a
+  **different wire protocol** from 1.x rather than a set of options on one. The adapter speaks **both**, and
+  the version comes from the serve's own reported value — so an existing 1.x install keeps working and a
+  fresh 2.x install is not held back. Four surfaces differ: the **prompt body** (`{text, files}` vs
+  `{text}`), **session creation and its response envelope**, the **models listing** (`--standalone` is a 2.x
+  flag), and the **event vocabulary**. The vocabulary is the one that fails silently, and it is why this is
+  called out here rather than left to the adapter: a client reading 1.x part names against a 2.x serve sees a
+  stream whose events it does not recognise — including the one that ends a turn — so **the end of a turn is
+  indistinguishable from the middle of one** and a run never completes. Unknown event shapes are therefore
+  **passed through rather than dropped**, so the next protocol change degrades into visible unrecognised
+  events instead of a hang. 2.x also brings **Code Mode**: MCP tools are reachable **only** inside `execute`
+  as `tools["<server>"].<tool>`, which the worker prompt teaches, and the composite-tools `read`/`grep` deny
+  is gated on the version that needs it.
 - **Always-on host serve** (`internal/opencode/servehost.go`) for the in-process population — standalone dispatches, follow-ups, Ask Orchicon later, and any execution not bound to a workflow run. Spawned by the control plane at boot, supervised by a health watchdog with restart + backoff, against a **dedicated** persistent data dir (`~/.local/share/orchicon/opencode`, seeded with the operator's model auth — never shares an `opencode.db` with the operator's own opencode). Sessions survive serve restarts. The operator's MCP servers are merged in, plus the built-in Orchicon MCP (tenant-scoped).
 - **Per-workflow-run container serve** for workflow executions. The supervisor starts `opencode serve` as a detached child (0.0.0.0, fixed port 4096, same guard + **stable** XDG data dir `/tmp/orchicon-serve-data`), owns the serve password (idempotent handshake), and the daemon returns the plane-reachable base URL (`http://<container-ip>:4096`) in `CreateResponse.ServeURL`. The serve is **warmed at container-create time** (the run-start gate passes `ServeConfig` to the daemon's checkout), so dispatch never cold-starts it. The plane reaches the serve **directly on the docker bridge** — no published port, no docker-proxy (a containerized plane cannot reach the host loopback, and published-port forwarding to a serve that starts lazily races). The serve config omits the operator's MCP servers (`SkipUserMCP`): a serve eagerly connects to every configured MCP server at startup, and the `orchicon`/`orchicon-dev` entries (which `docker exec` into containers) would hang it.
  - **Serve watchdog** (`internal/runtime/agent.go` `watchServe`): the supervisor polls the container serve every 10s and restarts it (in place, same port + password + stable XDG data dir, so sessions survive and the SSE client re-attaches by id) when it stops answering `/global/health` — covering a serve that WEDGES (alive but hung), which `watchExec` (process-exit only) never sees. The `runServe` idempotent handshake is liveness-gated: a registered-but-unhealthy serve is reported as DOWN (and restarted) rather than "up", so a dispatch never burns its 30s readiness probe against a dead serve.

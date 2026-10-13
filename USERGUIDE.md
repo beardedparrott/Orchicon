@@ -132,9 +132,11 @@ own user.
 **If you install it while the plane is already running**, note that the discovery
 of OpenCode's models and MCP servers happens **at plane startup**. A plane that
 booted before the CLI existed keeps reporting `model discovery is not configured`,
-so install the CLI and then **restart the plane** — the model picker's adapter tier
-will then list the OpenCode models. *Dispatched work* does not need the restart:
-the adapter resolves the binary when it dispatches.
+so install the CLI and then **restart the plane** with `orchicon restart` — the
+model picker's adapter tier will then list the OpenCode models. (`orchicon install`
+will *not* do it: it is idempotent and deliberately leaves a healthy plane alone, so
+the only other way was `serve --stop` and an install.) *Dispatched work* does not need
+the restart: the adapter resolves the binary when it dispatches.
 
 **Escape hatch.** If the CLI lives somewhere unusual, point Orchicon at it rather
 than moving it:
@@ -2285,7 +2287,8 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon serve` | Run the control plane with the embedded frontend (headless, migrations on boot) |
 | `orchicon serve --detach` / `--stop` | Manage a background `serve` instance (PID file; logs in `.dev/logs/`) |
 | `orchicon container` | Run the whole stack as PID 1 (the single-container image) |
-| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info |
+| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info. **Idempotent** — re-running converges an existing instance and upgrades a superseded plane. It deliberately does **not** restart a plane that is already healthy on the installed binary |
+| `orchicon restart` | Restart this instance so its components re-read their environment (`--instance <dev\|test\|prod>` to choose which). Use it after installing an adapter CLI or changing `PATH` — see below |
 | `orchicon runtime-daemon` | Host process owning the Docker socket; spawns per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 |
 | `orchicon runtime-client` | Forwards dispatches into the runtime container |

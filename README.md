@@ -36,18 +36,22 @@ The documentation lives at the project root:
 
 ## Last Release Changes
 
-- **a permission card you can finally answer**: The card that asks whether a call may proceed had three ways of failing you, and all three are closed.
-- **the pane says what it is waiting for**: The conversation's status line no longer reads the stream's silence while a card is waiting on you.
-- **a Windows installer that reports itself**: On Windows the stack runs inside WSL2, and the installer had two ways of leaving you with nothing to go
-- **choose your ports, and uninstall safely**: Installing alongside something that already holds a default port no longer means a raw bind error: the
-- **Iteration works in its own worktree**: Iteration mode now does its work in its own git worktree, on one branch per conversation, rather than in
-- **work items you can skip on purpose**: `skipped` was already a real status — the sequence engine consumed it, and it carried the meaning
-- Paste into a permission card's free-text row works again.
-- `ctrl+x` on a work item is the GUI's DELETE, not a soft cancel.
-- A work-item search reaches matches inside collapsed nodes.
-- A worker version's `concurrency_limit` is enforced. It was stored, plumbed and displayed everywhere and
-- Backups work on a host-resident instance — the configuration a fresh install now produces. `pg_dump` was
-- The transcript's activity line stays in step with the turn: its "newest call Ns ago" age no longer counts
+- **OpenCode 2.x**: Orchicon runs on the current opencode, and on the previous one.
+- **a runtime container that can start an adapter**: `serve handshake: exit status 1`, on every workflow execution using the opencode adapter.
+- **install and WSL, finished**: The adapter CLI has to be installed as your own user, and inside WSL on Windows.
+- **`orchicon restart`**: There is now a command that restarts a plane, and it says so.
+- **WSL renders the themes' real colour**: Every dark theme showed **black** instead of its tint, and the palette was never the problem.
+- **the execution diff shows your work**: The diff panel for a workflow execution had recorded **nothing, ever**.
+- **find, and navigate, from where you actually are**: `ctrl+f` in the TUI opens a search box you type into, filtering the conversation as you go.
+- **The transcript stops yanking you back to the bottom.** Scrolling up, or jumping to the top, held: live replies no longer snap the view down.
+- **Page 2 of every runs list works.** The pagination cursor sat in the wrong position, so a list's second page failed to parse while the first looked fine.
+- **One log line per 200ms tick was 99.5% of all log volume.** It is a debug line now.
+- **`orchicon serve` names the directory it cannot write**, instead of calling a fine policy file invalid.
+- **The connection screen opens on username and password.** An API key cannot be had until you have logged in, so the TUI stopped asking for one.
+- **The default theme is Forest in both clients**, and Teal Depths is three points lighter — a dark ground should read as tinted, not black.
+- **A rejected tool call keeps its reason.** The refusal was discarded before anyone read it, leaving a failed command with nothing to act on.
+- **Rebuilt code can no longer be left serving.** A rebuild replaces the binary; a launcher that took "something answers on the port" as current left the old process running the superseded build.
+- **A workspace's todo list survives the run**, and the transcript's changed-file list stops going blank mid-turn.
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
 
