@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DOWNWARD_KEYS,
+  atBottom,
   UPWARD_KEYS,
   bottomScrollTop,
   distanceFromBottom,
@@ -8,6 +9,7 @@ import {
   isNearBottom,
   isNearTop,
   keyReleasesStick,
+  nextStick,
   topScrollTop,
   wheelReleasesStick,
 } from "./chat-scroll";
@@ -101,6 +103,40 @@ describe("chat-scroll — the live stick", () => {
     // ...and the same for a top drive on a conversation that shrank.
     const shrunk = { scrollTop: 0, scrollHeight: 200, clientHeight: 400 };
     expect(hasArrived(shrunk, "top")).toBe(true);
+  });
+
+  it("RE-ACQUIRES only at the ACTUAL tail, not in the margin", () => {
+    // THE RUBBERBAND. The operator: "the GUI is still rubberbanding to the bottom of the
+    // page."
+    //
+    // A deliberate upward gesture releases the stick, and the scroll that gesture caused is
+    // still inside the 80px margin. A margin-based position test therefore re-arms the stick
+    // immediately — the release is undone by the very motion it produced, and the next
+    // chunk snaps the view back to the tail. On a trackpad, whose wheel events are a few
+    // pixels each, no gesture can get outside the margin at all, so the view is pinned
+    // however hard the operator scrolls.
+    expect(atBottom(nearTail)).toBe(false); // inside the margin, but NOT at the tail
+    expect(nextStick(nearTail, false)).toBe(false); // ...so it must not re-arm
+
+    // And it DOES re-acquire the moment they reach the end.
+    expect(nextStick(tail, false)).toBe(true);
+  });
+
+  it("keeps FOLLOWING through the margin, so slack never breaks the follow", () => {
+    // The other half of the asymmetry, and the reason both tests exist: while already
+    // following, the same margin position must KEEP following — requiring the exact tail
+    // would drop the follow on any rounding or tiny content change.
+    expect(nextStick(nearTail, true)).toBe(true);
+    expect(nextStick(tail, true)).toBe(true);
+    // And leaving the margin still releases.
+    expect(nextStick(reading, true)).toBe(false);
+  });
+
+  it("absorbs sub-pixel rounding at the tail", () => {
+    // A browser's scrollTop is a float after a device-pixel-ratio scale, so a view that is
+    // visually at the tail can measure a fraction short of it.
+    expect(atBottom({ ...tail, scrollTop: 599.4 })).toBe(true);
+    expect(atBottom({ ...tail, scrollTop: 590 })).toBe(false);
   });
 
   it("reads an upward gesture as intent, whether it is a wheel or a key", () => {

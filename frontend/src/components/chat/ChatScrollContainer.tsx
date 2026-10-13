@@ -8,6 +8,7 @@ import {
   isNearTop,
   keyReleasesStick,
   metricsOf,
+  nextStick,
   topScrollTop,
   wheelReleasesStick,
   type ScrollEnd,
@@ -51,8 +52,21 @@ export function ChatScrollContainer({
       if (!hasArrived(metrics, driveRef.current)) return;
       driveRef.current = null; // arrived: the next scroll is the operator's
     }
+    // THE TWO HALVES OF THE RULE, AND THEY ARE NOT THE SAME TEST.
+    //
+    // WHILE FOLLOWING, the 80px margin is right: a view pinned to the tail must stay pinned
+    // through a few pixels of slack, or any rounding or tiny content change would drop the
+    // follow.
+    //
+    // WHILE NOT FOLLOWING, re-acquiring needs the ACTUAL tail — the operator's own words,
+    // "This should only do this if you are ACTIVELY at the bottom." Using the margin here is
+    // the rubberband: a deliberate wheel-up releases the stick, and the very scroll that
+    // gesture caused is still inside the margin, so a position test RE-ARMS it immediately,
+    // the next chunk snaps the view back down, and the operator cannot leave. On a trackpad
+    // — whose wheel events are a few pixels each — no single gesture can ever get outside
+    // the margin, so the view is pinned however hard they scroll.
     const nearBottom = isNearBottom(metrics);
-    stickRef.current = nearBottom;
+    stickRef.current = nextStick(metrics, stickRef.current);
     setShowJump(!nearBottom);
     setShowTop(!isNearTop(metrics));
   }, []);

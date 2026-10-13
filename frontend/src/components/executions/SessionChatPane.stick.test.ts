@@ -38,6 +38,10 @@ describe("SessionChatPane — the live stick", () => {
     expect(src).toContain('addEventListener("mousedown"');
   });
 
+  it("re-acquires the stick only at the ACTUAL tail, not in the margin", () => {
+    expect(src).toContain("nextStick(metrics, stickRef.current)");
+  });
+
   it("drives the smooth jump to an END, so the animation cannot release the stick mid-flight", () => {
     expect(src).toContain('driveRef.current = "bottom"');
   });

@@ -41,6 +41,13 @@ describe("ChatScrollContainer", () => {
     expect(src).toContain('addEventListener("mousedown"');
   });
 
+  it("re-acquires the stick only at the ACTUAL tail, not in the margin", () => {
+    // The rubberband guard (see nextStick in chat-scroll.ts): the decision must go through
+    // the shared function, not be re-derived here as a bare near-bottom test — which is
+    // exactly the shape that pinned the operator to the tail.
+    expect(src).toContain("nextStick(metrics, stickRef.current)");
+  });
+
   it("keeps the two controls and the live-stick plumbing", () => {
     expect(src).toContain("jump to top");
     expect(src).toContain("jump to latest");

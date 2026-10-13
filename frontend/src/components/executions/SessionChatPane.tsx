@@ -38,6 +38,7 @@ import {
   isNearBottom,
   keyReleasesStick,
   metricsOf,
+  nextStick,
   wheelReleasesStick,
   type ScrollEnd,
 } from "@/lib/chat-scroll";
@@ -685,8 +686,12 @@ export function SessionChatPane({
       if (!hasArrived(metrics, driveRef.current)) return;
       driveRef.current = null;
     }
+    // THE TWO HALVES OF THE RULE — see the same note in ChatScrollContainer and atBottom's
+    // own comment. Re-acquiring needs the ACTUAL tail: a deliberate wheel-up leaves the view
+    // inside the near-bottom margin, and a position test there would re-arm the stick on the
+    // very scroll the gesture caused, pinning the operator to the tail.
     const nearBottom = isNearBottom(metrics);
-    stickRef.current = nearBottom;
+    stickRef.current = nextStick(metrics, stickRef.current);
     setShowJump(!nearBottom);
   }, []);
 

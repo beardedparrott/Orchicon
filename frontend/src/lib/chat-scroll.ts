@@ -49,6 +49,36 @@ export function isNearBottom(m: ScrollMetrics, threshold = STICK_THRESHOLD_PX): 
 }
 
 /**
+ * AT_BOTTOM_EPSILON_PX absorbs sub-pixel rounding so "at the bottom" is reachable at all.
+ * A browser's scrollTop is a float after a device-pixel-ratio scale, so a view that is
+ * visually at the tail can measure a fraction of a pixel short of it.
+ */
+export const AT_BOTTOM_EPSILON_PX = 1;
+
+/**
+ * atBottom reports whether the view is AT the tail — not merely near it.
+ *
+ * WHY THIS EXISTS ALONGSIDE isNearBottom, because the two look like the same question and
+ * are not. They answer the two halves of the live-stick rule:
+ *
+ *   - WHILE FOLLOWING, the margin is right. A view pinned to the tail must stay pinned
+ *     through a few pixels of slack; requiring the exact tail would drop the follow on any
+ *     rounding or tiny content change, which is the opposite failure.
+ *   - WHILE NOT FOLLOWING, re-acquiring needs the ACTUAL tail. The operator's own words:
+ *     "This should only do this if you are ACTIVELY at the bottom."
+ *
+ * Using the margin for the second half is the rubberband. A deliberate upward gesture
+ * releases the stick, and then the very scroll that gesture caused is still inside the
+ * margin — so a position test re-arms the stick immediately, the next chunk snaps the view
+ * back to the tail, and the operator cannot leave. On a trackpad, whose wheel events are a
+ * few pixels each, no single gesture can ever get outside the margin, so the view is pinned
+ * no matter how hard they scroll.
+ */
+export function atBottom(m: ScrollMetrics, epsilon = AT_BOTTOM_EPSILON_PX): boolean {
+  return distanceFromBottom(m) <= epsilon;
+}
+
+/**
  * isNearTop reports whether the view is close enough to the first message that a
  * jump-to-top control has nothing to do. Content ABOVE the fold is what makes the
  * control useful, so this is the same margin measured from the top.
@@ -98,6 +128,27 @@ export type ScrollEnd = "bottom" | "top";
  */
 export function hasArrived(m: ScrollMetrics, end: ScrollEnd): boolean {
   return end === "bottom" ? isNearBottom(m) : isNearTop(m);
+}
+
+/**
+ * nextStick decides the live stick after a scroll event, given whether it was ON before.
+ *
+ * THE ASYMMETRY IS THE WHOLE POINT, and it is why this is a function rather than a
+ * condition written at each call site: the two states ask DIFFERENT questions of the same
+ * position.
+ *
+ *   - ALREADY FOLLOWING → isNearBottom. The margin absorbs slack, so the follow survives
+ *     rounding and tiny content changes.
+ *   - NOT FOLLOWING → atBottom. The ACTUAL tail, because re-acquiring on the margin is the
+ *     rubberband: a deliberate wheel-up leaves the view inside the margin, so a
+ *     margin-based test re-arms the stick on the very scroll that gesture caused and the
+ *     next chunk snaps the view back down.
+ *
+ * The operator's own words for the second half: "This should only do this if you are
+ * ACTIVELY at the bottom."
+ */
+export function nextStick(m: ScrollMetrics, wasSticking: boolean): boolean {
+  return wasSticking ? isNearBottom(m) : atBottom(m);
 }
 
 /**
