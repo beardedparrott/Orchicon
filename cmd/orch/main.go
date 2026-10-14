@@ -142,9 +142,30 @@ func run(fl *flags) error {
 		return err
 	}
 	cfg, err := config.Load(path)
+	// AN UNREADABLE CONFIG IS PRESERVED, NEVER SILENTLY OVERWRITTEN.
+	//
+	// The recovery below is "start from an empty config" — and the connection screen then
+	// SAVES one, which would destroy whatever the unreadable file held. That is right for a
+	// genuinely corrupt file and WRONG for a file this build merely cannot parse, which is
+	// reachable in ordinary operation: the parser rejects an unknown key on purpose
+	// (config.TestUnknownKeyStillRejected for why), and this repo deliberately keeps TWO
+	// orch vintages sharing ONE config file — the dev-tracked `orch` symlink and the frozen
+	// prod snapshot, whose Makefile target exists precisely so the prod snapshot "moves
+	// only on prod rebuild". A key the newer client writes therefore makes every launch of
+	// the older one look exactly like corruption.
+	//
+	// So the file is moved aside first: the wipe becomes visible, reversible, and provable
+	// against what was actually there. The reason is carried into the connection screen
+	// rather than printed, because the TUI takes over the terminal immediately and anything
+	// written to stderr would be painted over — and a preserved file with no explanation is
+	// its own kind of silent.
+	loadWarning := ""
 	if err != nil {
-		// A corrupt config file must not wedge the client: start fresh
-		// (the connection screen re-creates it on save).
+		if backup, berr := config.PreserveUnreadable(path); berr == nil {
+			loadWarning = fmt.Sprintf("%s could not be read (%v). It has been preserved at %s, and this session starts from an empty config — sign in again, and check that file before the preserved copy is cleaned up.", path, err, backup)
+		} else {
+			loadWarning = fmt.Sprintf("%s could not be read (%v), and it could not be preserved: %v", path, err, berr)
+		}
 		cfg = &config.Config{Profiles: map[string]*config.Profile{}}
 	}
 	profile := config.Resolve(cfg)
@@ -159,7 +180,7 @@ func run(fl *flags) error {
 	}
 
 	if profile == nil || profile.Token == "" {
-		p, err := runConnection(path, profile, "")
+		p, err := runConnection(path, profile, loadWarning)
 		if err != nil {
 			return err
 		}

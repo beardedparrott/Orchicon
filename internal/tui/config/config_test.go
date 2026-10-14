@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -288,7 +290,130 @@ func TestDiffRailWidthRoundTripsWithoutAProfile(t *testing.T) {
 	}
 }
 
+// cfgWithToken builds a one-profile config whose token is the given string, so a test
+// can tell two documents apart by reading the file.
+func cfgWithToken(tok string) *Config {
+	return &Config{
+		Active:   "default",
+		Profiles: map[string]*Profile{"default": {Name: "default", URL: "http://localhost:8080", AuthMethod: AuthAPIKey, Token: tok}},
+	}
+}
+
+// THE WRITE REPLACES THE FILE; IT DOES NOT TRUNCATE IT IN PLACE.
+//
+// This is what makes a second orch process safe to run, and it is observable WITHOUT the
+// platform's inode API — which matters, because this repo builds for Windows too and
+// syscall.Stat_t.Ino does not exist there. A handle opened BEFORE a save keeps pointing
+// at the OLD file, so after the save it must still read the OLD complete document. Under
+// os.WriteFile the same handle would see the NEW bytes, and a reader that chanced on the
+// window between truncate and write would see a PARTIAL document — which the launch path
+// treats as corruption, starts from an empty config, and then SAVES over the other
+// instance's profile.
+func TestSaveReplacesTheFileInsteadOfTruncatingIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	if err := Save(path, cfgWithToken("first")); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	held, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer held.Close()
+	before, err := io.ReadAll(held)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(before), "first") {
+		t.Fatalf("fixture: the held handle did not read the first document:\n%s", before)
+	}
+
+	if err := Save(path, cfgWithToken("second")); err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+
+	if _, err := held.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	after, err := io.ReadAll(held)
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if !strings.Contains(string(after), "first") {
+		t.Fatalf("the handle opened before the save now reads the NEW document — the save truncated "+
+			"the file in place instead of replacing it, which is exactly the window in which a "+
+			"second orch process can read a half-written config:\n%s", after)
+	}
+
+	// The path itself names the new document, and nothing extra was left behind.
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Profiles["default"] == nil || got.Profiles["default"].Token != "second" {
+		t.Fatalf("the path does not name the new document: %+v", got.Profiles)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("a temp file was left behind: %s (it holds credentials)", e.Name())
+		}
+	}
+}
+
+// PreserveUnreadable must MOVE the file, so the save that follows cannot destroy it, and
+// must not overwrite a backup an earlier failure already made.
+func TestPreserveUnreadableMovesTheFileAside(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	const contents = "active = \"default\"\n\n[profiles.default]\nurl = \"http://localhost:8091\"\ntoken = \"keep-me\"\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	backup, err := PreserveUnreadable(path)
+	if err != nil {
+		t.Fatalf("preserve: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the original is still at %s — the next save would overwrite it", path)
+	}
+	kept, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatalf("the preserved copy is not readable: %v", err)
+	}
+	if string(kept) != contents {
+		t.Errorf("the preserved copy differs from what was there:\n%s", kept)
+	}
+
+	// A second unreadable config must not land on the first backup.
+	if err := os.WriteFile(path, []byte("active = \"other\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := PreserveUnreadable(path)
+	if err != nil {
+		t.Fatalf("second preserve: %v", err)
+	}
+	if second == backup {
+		t.Fatalf("the second backup reused the first one's name (%s), destroying it", backup)
+	}
+	if got, err := os.ReadFile(backup); err != nil || string(got) != contents {
+		t.Errorf("the first backup was damaged by the second: %q (%v)", got, err)
+	}
+}
+
 // The parser still REJECTS a genuinely unknown key: the new case must not have loosened the default.
+//
+// That strictness is deliberate and is NOT relaxed by the multi-instance work: the
+// per-key cases above are what make a new field a compile-visible obligation, and a
+// tolerated typo would silently drop a credential. What multi-instance needed instead is
+// that an unreadable file is PRESERVED rather than overwritten — see
+// config.PreserveUnreadable and the launch path's use of it — so the strictness costs an
+// operator a re-login and never an unexplained wipe of the other instance's profile.
 func TestUnknownKeyStillRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	if err := os.WriteFile(path, []byte("active = \"x\"\nsome_future_key = \"v\"\n"), 0o600); err != nil {

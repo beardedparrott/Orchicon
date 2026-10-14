@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // AuthMethod selects how orch authenticates to the plane.
@@ -166,17 +167,102 @@ func Load(path string) (*Config, error) {
 
 // Save writes the config as TOML with 0600 perms (0700 dir). The file
 // holds bearer credentials, so perms are a security requirement, not style.
+//
+// THE WRITE IS ATOMIC — a temp file in the SAME directory, fsync, rename — and that is
+// a MULTI-PROCESS requirement, not fastidiousness. orch is meant to run more than once
+// at a time (one process per instance; see ORCHICON_PROFILE), and every one of those
+// processes READS and WRITES this single file: the display preferences on each toggle,
+// the profile on a connect. os.WriteFile truncates IN PLACE, so a second process
+// loading the config during a write could read a HALF-WRITTEN document — and a parse
+// failure is not harmless here, because the launch path's recovery from an unreadable
+// config is to start from an EMPTY one and then save it, destroying the other
+// instance's profile and credentials. A rename replaces the whole file in one step, so
+// a reader sees either the old document or the new one and never a partial one.
+//
+// fsync BEFORE the rename, so a crash cannot leave a renamed-but-empty file — the same
+// truncation reached by another route.
 func Save(path string, cfg *Config) error {
 	if cfg == nil {
 		return errors.New("config: nil")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(render(cfg)), 0o600); err != nil {
-		return fmt.Errorf("write config: %w", err)
+	// The temp file goes in the SAME directory on purpose: a rename is only atomic within
+	// one filesystem, and /tmp is commonly a different one (a tmpfs), where it would
+	// silently degrade to copy-then-unlink and reopen the window this closes.
+	tmp, err := os.CreateTemp(dir, FileName+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create config temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	// A no-op after a successful rename (the source is gone) and the cleanup for every
+	// error path below, so a failed save cannot leave credential-bearing droppings in
+	// the operator's config directory.
+	defer func() { _ = os.Remove(tmpName) }()
+	// CreateTemp already uses 0600, and this is stated anyway: these are the perms the
+	// file's own contract depends on, so they are not to be inherited from a helper.
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("config temp perms: %w", err)
+	}
+	if _, err := tmp.WriteString(render(cfg)); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write config temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync config temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close config temp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace config: %w", err)
 	}
 	return nil
+}
+
+// PreservedSuffix marks the path an unreadable config is moved aside to.
+const PreservedSuffix = ".unreadable"
+
+// PreserveUnreadable moves an unreadable config aside and returns the path it was
+// preserved at, so a caller that MUST start from an empty config can do so without
+// destroying what it could not read.
+//
+// WHY THIS EXISTS. The launch path's recovery from a load error is "start fresh, then
+// the connection screen saves a new config" — and that save OVERWRITES the file. Against
+// a genuinely corrupt file those bytes are already worthless; against a file this build
+// merely cannot PARSE it is destruction, and that is reachable in ordinary operation.
+// The parser deliberately rejects an unknown key (TestUnknownKeyStillRejected), and this
+// repo deliberately keeps TWO orch vintages sharing ONE config file — the dev-tracked
+// `orch` symlink and the frozen prod snapshot (see the Makefile's orch-launchers, whose
+// whole point is that the snapshot "moves only on prod rebuild"). So the newer client
+// writing a key the older one does not know makes every launch of the older one look
+// exactly like corruption. Preserving the file means the wipe is never silent and never
+// final — and proves what was there, which an overwrite cannot.
+//
+// RENAME, not copy: it is atomic, and it guarantees the next Save cannot clobber the
+// original, which is the entire point.
+func PreserveUnreadable(path string) (string, error) {
+	stamp := time.Now().UTC().Format("20060102T150405")
+	backup := path + PreservedSuffix + "-" + stamp
+	// A second unreadable config inside the same second must not overwrite the first
+	// backup — the one that already holds an operator's live credentials.
+	for n := 1; ; n++ {
+		if _, err := os.Stat(backup); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if n > 1000 {
+			return "", fmt.Errorf("config: no free name to preserve %s", path)
+		}
+		backup = fmt.Sprintf("%s%s-%s-%d", path, PreservedSuffix, stamp, n)
+	}
+	if err := os.Rename(path, backup); err != nil {
+		return "", fmt.Errorf("preserve unreadable config: %w", err)
+	}
+	return backup, nil
 }
 
 // Resolve picks the effective profile: env overrides first (ephemeral,
