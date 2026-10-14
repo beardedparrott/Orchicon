@@ -118,6 +118,101 @@ func TestAnOversizeHistoryIsStillPersistedAndSurvivesARestart(t *testing.T) {
 	}
 }
 
+// screenshotPayload builds a base64-shaped payload of n characters that gzip CANNOT
+// rescue. Gzip recovers only the 25% that base64's 6-bits-per-byte encoding wastes,
+// so a payload of this shape stays oversized — which is exactly what a real
+// obs-get-source-screenshot result does. A repeated filler string would compress to
+// nothing and make the test below vacuous, which is why the compressible fixture
+// above never caught this.
+func screenshotPayload(n int) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	const prefix = "data:image/png;base64,"
+	var sb strings.Builder
+	sb.Grow(len(prefix) + n)
+	sb.WriteString(prefix)
+	seed := uint64(0x2545F4914F6CDD1D)
+	for i := 0; i < n; i++ {
+		// xorshift64: an LCG's high bits are correlated enough that gzip still found
+		// ~25% redundancy, which is why this is not an LCG.
+		seed ^= seed << 13
+		seed ^= seed >> 7
+		seed ^= seed << 17
+		sb.WriteByte(alphabet[seed&63])
+	}
+	return sb.String()
+}
+
+// TestAHistoryWhoseBulkIsABase64ToolResultIsStillPersisted pins the shape the cap's
+// first implementation could not handle — the one that wedged a live conversation.
+//
+// The oversize fixture above is COMPRESSIBLE text, so gzip fits it whole and the
+// last-resort reduction is never reached. A real `obs` MCP conversation is the
+// opposite shape: the bytes are base64 screenshots inside TOOL RESULTS, which are
+// near-incompressible and are NOT the Image content part. Measured on the live
+// session: gz_bytes 25,828,015 against a 16,777,216 cap, images_dropped 0. So the
+// image-only last resort reclaimed NOTHING, marshal returned nil, no file was
+// written, and the log recorded the consequence verbatim: the file on disk is now
+// stale and "a restart will reload it and LOSE every message committed since the
+// last successful persist".
+func TestAHistoryWhoseBulkIsABase64ToolResultIsStillPersisted(t *testing.T) {
+	dir := t.TempDir()
+
+	ask := "is the scene showing up?"
+	use := ContentToolUse{ToolCallID: "call_obs", Name: "obs-get-source-screenshot",
+		ArgsJSON: `{"sourceName":"Screen Capture"}`}
+	// ~24MB of base64. THE SIZE IS NOT ARBITRARY: base64 packs 6 bits into an 8-bit
+	// byte, so gzip reclaims only the 25% the ENCODING wastes and essentially nothing
+	// more (measured: 17MB -> 12.8MB, a ratio of 0.753). Real PNG base64 behaves the
+	// same way, which is precisely why the live history could not be rescued by
+	// compression — so the fixture must clear the cap AFTER that 25%, not before.
+	res := ContentToolResult{ToolCallID: "call_obs", Content: screenshotPayload(24_000_000)}
+	history := []Message{
+		{Role: RoleUser, Content: []Content{{Text: &ask}}},
+		{Role: RoleAssistant, Content: []Content{{ToolUse: &use}}},
+		{Role: RoleTool, Content: []Content{{ToolResult: &res}}},
+	}
+
+	// Assert the fixture really is the unfixable-by-compression shape, or this test
+	// would pass for the wrong reason.
+	raw, err := marshalAskHistory(history)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	gz, err := gzipAskHistory(raw)
+	if err != nil {
+		t.Fatalf("gzip fixture: %v", err)
+	}
+	if len(gz) <= askHistoryMaxBytes {
+		t.Fatalf("fixture compresses to %d bytes, under the %d cap — this test needs a history that "+
+			"gzip alone cannot rescue", len(gz), askHistoryMaxBytes)
+	}
+
+	_, sid, path := persistentBridge(t, dir, history)
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("an oversize history wrote NO file (%v). The image-only last resort cannot see base64 "+
+			"inside a tool result, so it reclaimed nothing and gave up: the file on disk is now stale, and "+
+			"a restart silently loses every message committed since the last successful persist", err)
+	}
+	if info.Size() > askHistoryMaxBytes {
+		t.Fatalf("the persisted file is %d bytes, over the %d cap", info.Size(), askHistoryMaxBytes)
+	}
+
+	// A restart must reload the WHOLE conversation: a reduction may elide a payload,
+	// never a message.
+	restarted := NewBridge(nil, "", nil)
+	restarted.SetAskHistoryDir(dir)
+	got := restarted.loadAskHistoryLocked(sid)
+	if len(got) != len(history) {
+		t.Fatalf("a restart reloaded %d of %d messages", len(got), len(history))
+	}
+	// The pairing survives, or the reloaded history is rejected on its first replay.
+	if got[2].Content[0].ToolResult == nil || got[2].Content[0].ToolResult.ToolCallID != "call_obs" {
+		t.Error("the reloaded history lost its tool-result pairing")
+	}
+}
+
 // TestAPlainJSONHistoryFromAnEarlierReleaseStillLoads pins the read side against
 // the format the previous release wrote: a history file must survive the upgrade.
 func TestAPlainJSONHistoryFromAnEarlierReleaseStillLoads(t *testing.T) {
