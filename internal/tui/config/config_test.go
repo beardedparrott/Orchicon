@@ -64,6 +64,15 @@ func TestSavePermsAndRoundTrip(t *testing.T) {
 }
 
 func TestResolveEnvWinsAndNeverPersists(t *testing.T) {
+	// A NAMED SELECTION OUTRANKS THE ACTIVE PROFILE, so a suite that ran with
+	// ORCHICON_PROFILE exported in the operator's shell would resolve a different profile
+	// than these tests mean — and ORCHICON_PROFILE is now the DOCUMENTED way to pin a
+	// process, so exporting it is normal rather than exotic. Cleared explicitly here (and in
+	// the sibling Resolve tests) so the contract under test is the one with nothing named.
+	//
+	// NOTE: ORCHICON_URL/ORCHICON_TOKEN have the same latent exposure and are NOT cleared
+	// anywhere in this suite — a pre-existing gap, left alone here rather than widened.
+	t.Setenv(EnvProfile, "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, FileName)
 	fileCfg := &Config{
@@ -101,6 +110,7 @@ func TestResolveEnvWinsAndNeverPersists(t *testing.T) {
 }
 
 func TestResolveFileProfile(t *testing.T) {
+	t.Setenv(EnvProfile, "")
 	cfg := &Config{
 		Active:   "prod",
 		Profiles: map[string]*Profile{"prod": {Name: "prod", URL: "https://p.example.com/", AuthMethod: AuthAPIKey, Token: "t1"}},
@@ -112,6 +122,7 @@ func TestResolveFileProfile(t *testing.T) {
 }
 
 func TestResolveEnvURLWithTokenFromProfile(t *testing.T) {
+	t.Setenv(EnvProfile, "")
 	// ORCHICON_URL alone + active file profile: env URL wins, file token is
 	// NOT applied to the ephemeral env profile (different instance).
 	t.Setenv(EnvURL, "https://other.example.com")
@@ -130,6 +141,7 @@ func TestResolveEnvURLWithTokenFromProfile(t *testing.T) {
 }
 
 func TestResolveNothingConfigured(t *testing.T) {
+	t.Setenv(EnvProfile, "")
 	t.Setenv(EnvURL, "")
 	t.Setenv(EnvToken, "")
 	if p := Resolve(&Config{Profiles: map[string]*Profile{}}); p != nil {
