@@ -9,7 +9,7 @@ package orchicon
 // every later turn was persisted nowhere and the next restart reloaded a stale
 // transcript — or, if the history never fit at all, reloaded nothing and left the
 // model on the system prompt's short history digest alone. The tests below pin the
-// three shapes a history can now be written in, and the one that matters most:
+// four shapes a history can now be written in, and the one that matters most:
 // whatever its size, a persisted history is still there after a restart.
 
 import (
