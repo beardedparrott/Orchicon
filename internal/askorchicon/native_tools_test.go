@@ -26,6 +26,32 @@ func stubAskFileRoot(dir string) func() {
 	})
 }
 
+// canonicalTempDir returns a throwaway directory whose path carries NO symlinked
+// component, so the path a fixture HANDS to the suite and the path the KERNEL
+// reports for that same directory are one string.
+//
+// t.TempDir() cannot promise that on this project: `go test` inherits GOTMPDIR
+// (the Makefile points it at $(DEV_TOOLS)/gotmp) and os.MkdirTemp honours it
+// when $TMPDIR is unset. In a WORKTREE, .dev/tools is a symlink into the main
+// checkout, so the temp dir has two spellings and the fixture holds the
+// worktree one.
+//
+// It matters specifically for bash, and nowhere else in this package: the tool
+// sets cmd.Dir and bash's `pwd` reports the directory as GETCWD sees it, i.e.
+// fully resolved. A fixture that keeps the unresolved spelling is therefore
+// comparing two spellings of the SAME directory and fails in a worktree while
+// passing in a main checkout. Same class as the internal/runtime mount
+// fixtures, fixed the same way.
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("canonicalize temp dir %s: %v", dir, err)
+	}
+	return resolved
+}
+
 // TestNativeAskToolDefsCarryJSONSchema (kept from the pre-parity adapter)
 // still holds with the combined surface: product tools ride the registry
 // schema rendering.
@@ -218,7 +244,7 @@ func TestNativeAskBashCwdIsTheSuiteRoot(t *testing.T) {
 	r := testToolRegistry()
 	p := (&Service{toolRegistry: r}).NativeAskTools()
 	ctx := context.Background()
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	restore := stubAskFileRoot(root)
 	defer restore()
 
@@ -230,7 +256,7 @@ func TestNativeAskBashCwdIsTheSuiteRoot(t *testing.T) {
 		t.Fatalf("bash default cwd = %q, want the suite root %q", out, root)
 	}
 
-	elsewhere := t.TempDir()
+	elsewhere := canonicalTempDir(t)
 	out, err = p.ExecuteAskTool(ctx, "bash", `{"command":"cd `+elsewhere+` && pwd"}`)
 	if err != nil {
 		t.Fatalf("bash cd elsewhere: %v", err)

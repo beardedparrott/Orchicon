@@ -153,7 +153,14 @@ case "$CACHE_REAL" in
     echo "gocache-trim: refusing to trim '$CACHE_REAL' — that is not a build cache" >&2
     exit 2 ;;
 esac
-if [ -d "$CACHE_REAL/.git" ]; then
+# A repository root presents `.git` in TWO shapes, and the guard must
+# refuse both: a main checkout has a `.git` DIRECTORY, while a linked
+# worktree (`git worktree add`) has a `.git` FILE holding a `gitdir:`
+# pointer. Guarding on `-d` alone therefore let a WORKTREE ROOT through a
+# check whose entire purpose is to stop "mistyped a path to somebody's
+# data" — and this project runs its agents in worktrees, so the hole was
+# live rather than theoretical. `-e` matches either shape.
+if [ -e "$CACHE_REAL/.git" ]; then
   echo "gocache-trim: refusing to trim '$CACHE_REAL' — it is a git repository root, not a build cache" >&2
   exit 2
 fi

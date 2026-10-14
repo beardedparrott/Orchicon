@@ -14,7 +14,7 @@ import (
 // ~/.local/bin, and its install root under ~/.local/share/claude.
 func claudeHome(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
+	home := canonicalTempHome(t)
 	mustMkdir(t, filepath.Join(home, ".claude", "projects"))
 	mustWrite(t, filepath.Join(home, ".claude.json"), "{}")
 	root := filepath.Join(home, ".local", "share", "claude", "versions", "2.1.261")
