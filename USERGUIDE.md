@@ -509,10 +509,10 @@ publishing, approving, cancelling, retrying and bulk operations are all availabl
 from either. A change made in one is a change made in the other, because both read
 and write the same plane API.
 
-**They share one default look.** The GUI's default dark theme is **Forest Night**
-and the TUI's launch default is the matching **`forest`** palette, so a fresh GUI and
-a fresh TUI open in the same colours. Each is a *default, not a pin* — a stored
-preference always wins.
+**Their default looks differ, deliberately.** The GUI opens on **Teal Depths** and the
+TUI's launch default is the **`forest`** palette — each chosen for its own surface rather
+than matched to the other. Each is a *default, not a pin*: a stored preference always
+wins, and every palette is available in both clients.
 
 ---
 

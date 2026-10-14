@@ -409,9 +409,13 @@ func transparentCopy(base *Theme, name string) *Theme {
 //
 // (This one comes BACK: the operator has moved this default more than once — ember, then `forest`, then
 // `slate`, then `teal`, and now `forest` again. Every previous name remains selectable; only the
-// out-of-the-box default moves. It is chosen to MATCH THE GUI, whose default dark slot names the forest
-// family too, so a fresh TUI and a fresh GUI still open in the same colours — see
-// frontend/src/lib/theme-store.ts, which is changed with this and not independently.)
+// out-of-the-box default moves.
+//
+// IT IS INDEPENDENT OF THE GUI'S DEFAULT, and correcting that is why this note was rewritten. An earlier
+// version claimed the two were "chosen to MATCH", and the GUI's default was moved to forest to make the
+// claim true — but the operator's request was for the TUI ALONE, and the GUI's own default is Teal Depths
+// (frontend/src/lib/theme-store.ts). Two clients, two defaults, no coupling: do not re-couple them
+// without asking, and do not read the other client's default as a reason to move this one.)
 const DefaultName = "forest"
 
 // Resolved active colors, re-pointed by Use. Render paths read these via

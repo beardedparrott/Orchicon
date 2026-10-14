@@ -146,8 +146,8 @@ func TestTheLaunchDefaultIsForestAndDark(t *testing.T) {
 	if DefaultName != "forest" {
 		t.Errorf("the launch default is %q, want \"forest\" (the operator's request: \"The default TUI "+
 			"theme should be forest.\"). If this was changed deliberately, update the comment on "+
-			"DefaultName too — and note that the GUI's default dark slot is meant to track it "+
-			"(frontend/src/lib/theme-store.ts), so the two move together or neither does.", DefaultName)
+			"DefaultName too. This is the TUI's default ALONE: the GUI has its own (Teal Depths, "+
+			"frontend/src/lib/theme-store.ts) and the two are deliberately NOT coupled.", DefaultName)
 	}
 	// Dark means the background is darker than the text — the same test cursor_caret_test.go uses.
 	if relLuminance(string(th.Bg)) >= relLuminance(string(th.Text)) {
