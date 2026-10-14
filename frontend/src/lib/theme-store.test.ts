@@ -12,6 +12,11 @@ import path from "node:path";
  * I introduced this drift myself: changing DEFAULT_DARK_THEME to Teal Depths left index.html naming
  * Forest Night, and nothing failed. The file's own comment says the two must agree; a comment cannot
  * enforce it.
+ *
+ * WHAT THIS PINS IS THE PAIR BEING IN SYNC, NOT WHAT THE VALUE IS — and the distinction was tested by
+ * history. The default was later moved to Forest Night and both halves were moved together, so this
+ * passed, which is correct: "out of sync" is the only failure it exists for. (That move was then
+ * reverted — the GUI's default is Teal Depths again; see theme-store.ts for why.)
  */
 describe("pre-hydration theme", () => {
   const root = path.join(__dirname, "../..");

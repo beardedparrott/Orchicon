@@ -48,7 +48,7 @@ The documentation lives at the project root:
 - **One log line per 200ms tick was 99.5% of all log volume.** It is a debug line now.
 - **`orchicon serve` names the directory it cannot write**, instead of calling a fine policy file invalid.
 - **The connection screen opens on username and password.** An API key cannot be had until you have logged in, so the TUI stopped asking for one.
-- **The default theme is Forest in both clients**, and Teal Depths is three points lighter — a dark ground should read as tinted, not black.
+- **Teal Depths is three points lighter** — a dark ground should read as tinted rather than black.
 - **A rejected tool call keeps its reason.** The refusal was discarded before anyone read it, leaving a failed command with nothing to act on.
 - **Rebuilt code can no longer be left serving.** A rebuild replaces the binary; a launcher that took "something answers on the port" as current left the old process running the superseded build.
 - **A workspace's todo list survives the run**, and the transcript's changed-file list stops going blank mid-turn.
