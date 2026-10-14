@@ -424,3 +424,81 @@ func TestUnknownKeyStillRejected(t *testing.T) {
 			"default (the property that makes the parser case mandatory for every new key)")
 	}
 }
+
+// A NAMED SELECTION PINS THIS PROCESS, AND DOES NOT TOUCH THE SHARED `active` SLOT.
+//
+// That separation is the whole reason ORCHICON_PROFILE exists: `active` is one global
+// value written by every connect and read by every process, so it cannot say "this
+// process is the dev one". A named selection is process state, so two orch processes can
+// hold two instances at once — the operator's "orch should have no issues running more
+// than one orch running on different ports".
+func TestANamedProfilePinsTheProcessRegardlessOfActive(t *testing.T) {
+	t.Setenv(EnvURL, "")
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvProfile, "")
+	cfg := &Config{
+		Active: "localhost-8091",
+		Profiles: map[string]*Profile{
+			"localhost-8080": {Name: "localhost-8080", URL: "http://localhost:8080", AuthMethod: AuthAPIKey, Token: "dev"},
+			"localhost-8091": {Name: "localhost-8091", URL: "http://localhost:8091", AuthMethod: AuthAPIKey, Token: "prod"},
+		},
+	}
+
+	// The explicit argument form.
+	if got := ResolveNamed(cfg, "localhost-8080"); got == nil || got.URL != "http://localhost:8080" || got.Token != "dev" {
+		t.Fatalf("the named selection was ignored: %+v", got)
+	}
+	// The environment form, which is what a launcher sets.
+	t.Setenv(EnvProfile, "localhost-8080")
+	if got := Resolve(cfg); got == nil || got.Token != "dev" {
+		t.Fatalf("ORCHICON_PROFILE was ignored by Resolve: %+v", got)
+	}
+	// With nothing named, `active` still decides — the existing contract, unchanged.
+	t.Setenv(EnvProfile, "")
+	if got := Resolve(cfg); got == nil || got.Token != "prod" {
+		t.Fatalf("the active profile must still be the default: %+v", got)
+	}
+	// And selecting a profile must not rewrite the shared slot.
+	if cfg.Active != "localhost-8091" {
+		t.Errorf("selection changed Active to %q — a per-process pin must not rewrite the file's slot", cfg.Active)
+	}
+}
+
+// AN UNKNOWN NAME MUST NOT SILENTLY BECOME A DIFFERENT INSTANCE.
+func TestAnUnknownProfileNameResolvesToNothing(t *testing.T) {
+	t.Setenv(EnvURL, "")
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvProfile, "")
+	cfg := &Config{
+		Active:   "localhost-8091",
+		Profiles: map[string]*Profile{"localhost-8091": {Name: "localhost-8091", URL: "http://localhost:8091", Token: "prod"}},
+	}
+	if got := ResolveNamed(cfg, "typo-9000"); got != nil {
+		t.Fatalf("an unknown name resolved to %+v instead of nothing — the operator would be shown a "+
+			"DIFFERENT instance than the one they asked for, which is the confusion the named "+
+			"selection exists to remove", got)
+	}
+}
+
+// A named profile plus an env URL mixes the two in the documented way: the credential
+// identifies WHO (the profile), the URL says WHERE (the environment). Pinned because it is
+// the only combination that combines an explicit selection with an override.
+func TestANamedProfileKeepsItsCredentialUnderAnEnvURL(t *testing.T) {
+	t.Setenv(EnvProfile, "")
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvURL, "https://tunnel.example.com")
+	cfg := &Config{
+		Active:   "localhost-8080",
+		Profiles: map[string]*Profile{"localhost-8080": {Name: "localhost-8080", URL: "http://localhost:8080", AuthMethod: AuthAPIKey, Token: "dev"}},
+	}
+	got := ResolveNamed(cfg, "localhost-8080")
+	if got == nil {
+		t.Fatal("a named profile with an env URL must still resolve")
+	}
+	if got.URL != "https://tunnel.example.com" {
+		t.Errorf("URL = %q, want the environment's", got.URL)
+	}
+	if got.Token != "dev" {
+		t.Errorf("Token = %q, want the NAMED profile's — the env URL says where, it does not say who", got.Token)
+	}
+}

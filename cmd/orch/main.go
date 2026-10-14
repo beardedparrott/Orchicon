@@ -7,12 +7,18 @@
 //
 // Usage:
 //
-//	orch                 launch the TUI (connection screen on first run)
-//	orch version         print the client version (same as orchicon version)
+//	orch                    launch the TUI (connection screen on first run)
+//	orch --profile NAME     pin THIS PROCESS to a saved profile
+//	orch version            print the client version (same as orchicon version)
 //	orch --url URL --token KEY / --insecure   flag overrides (env wins)
 //
 // Credentials persist in ~/.orchicon/config (0600). ORCHICON_URL and
 // ORCHICON_TOKEN override the config file and are never persisted.
+//
+// ORCHICON_PROFILE selects a NAMED profile for THIS PROCESS without changing which
+// profile a bare `orch` uses, so several orch processes can talk to several instances
+// at once. Each instance is saved under its own name (its host:port), so connecting to a
+// second instance no longer replaces the first one's entry.
 package main
 
 import (
@@ -37,7 +43,12 @@ import (
 
 // flags carries CLI overrides (env still wins — see resolveProfile).
 type flags struct {
-	url      string
+	url string
+	// profile selects a NAMED profile for this process (one instance per process). It is
+	// the flag form of ORCHICON_PROFILE, and the env wins over it for the same reason
+	// ORCHICON_URL wins over --url: a launcher can pin an instance without the caller
+	// being able to override it by accident.
+	profile  string
 	token    string
 	insecure bool
 	showVer  bool
@@ -108,6 +119,11 @@ func parseArgs(args []string) *flags {
 				i++
 				fl.token = args[i]
 			}
+		case "--profile", "-p":
+			if i+1 < len(args) {
+				i++
+				fl.profile = args[i]
+			}
 		case "--insecure", "-k":
 			fl.insecure = true
 		case "--help", "-h":
@@ -124,12 +140,17 @@ func parseArgs(args []string) *flags {
 const usage = `orch — Orchicon remote client (TUI)
 
 Usage:
-  orch                 launch the TUI
-  orch version         print the client version
+  orch                   launch the TUI
+  orch --profile NAME    pin this process to a saved profile (one per instance)
+  orch version           print the client version
   orch --url URL --token oc_... [--insecure]
 
 Credentials persist in ~/.orchicon/config (0600).
 ORCHICON_URL / ORCHICON_TOKEN override the config file.
+ORCHICON_PROFILE selects a named profile for THIS PROCESS without changing which
+profile a plain "orch" uses, so several orch processes can talk to several instances
+at once. Each instance is saved under its own name (its host:port), so connecting to a
+second instance no longer replaces the first one's entry.
 Create an API key in the web GUI (Settings → API keys) with read
 scopes for the areas orch displays.
 `
@@ -168,7 +189,29 @@ func run(fl *flags) error {
 		}
 		cfg = &config.Config{Profiles: map[string]*config.Profile{}}
 	}
-	profile := config.Resolve(cfg)
+	// WHICH INSTANCE THIS PROCESS TALKS TO. ORCHICON_PROFILE pins it BY NAME, and the env
+	// wins over the flag for the same reason ORCHICON_URL does; with neither, the file's
+	// `active` decides, exactly as before.
+	//
+	// This is what makes several orch processes possible at once. `active` is ONE global
+	// slot — it is written by every connect and read by every process — so it can never
+	// express "this process is the dev one". A named selection is process state.
+	requested := strings.TrimSpace(os.Getenv(config.EnvProfile))
+	if requested == "" {
+		requested = strings.TrimSpace(fl.profile)
+	}
+	profile := config.ResolveNamed(cfg, requested)
+	if requested != "" && profile == nil {
+		// SAY SO, AND DO NOT SUBSTITUTE ANOTHER INSTANCE. Falling back to `active` here is
+		// how an operator who asked for prod ends up reading dev's conversations — and then
+		// blaming the TUI for showing the wrong thing.
+		msg := fmt.Sprintf("no profile named %q in %s — connect to that instance once (it is saved under its host:port), or correct ORCHICON_PROFILE/--profile", requested, path)
+		if loadWarning != "" {
+			loadWarning += "; also, " + msg
+		} else {
+			loadWarning = msg
+		}
+	}
 	if profile == nil && fl.url != "" {
 		profile = &config.Profile{URL: strings.TrimRight(fl.url, "/"), AuthMethod: config.AuthAPIKey, Token: fl.token, InsecureSkipVerify: fl.insecure}
 	}

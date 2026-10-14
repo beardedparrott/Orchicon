@@ -26,6 +26,22 @@ const (
 const (
 	EnvURL   = "ORCHICON_URL"
 	EnvToken = "ORCHICON_TOKEN"
+	// EnvProfile pins THIS PROCESS to a NAMED profile without touching the file's
+	// `active`.
+	//
+	// THAT SEPARATION IS THE POINT. `active` is a single global slot: it says which
+	// profile a bare `orch` uses, and every connect sets it, so it cannot express "this
+	// process is the dev one" — two processes reading it are reading the same answer.
+	// A named selection is per-process (an environment variable IS process state), so
+	// several orch processes can hold several instances at once with no interference:
+	//
+	//	ORCHICON_PROFILE=localhost-8080 orch   # this shell is dev
+	//	ORCHICON_PROFILE=localhost-8091 orch   # this shell is prod
+	//
+	// An unknown name resolves to NO profile rather than falling back to `active` — a
+	// silent fallback is how an operator who asked for one instance ends up talking to
+	// another, which is the failure this exists to prevent.
+	EnvProfile = "ORCHICON_PROFILE"
 	// EnvTheme is an explicit palette override. It wins over the config file so
 	// the theme can be pinned in an environment where the config is not
 	// writable or not persisted (a launcher with an ephemeral HOME, a container,
@@ -268,10 +284,32 @@ func PreserveUnreadable(path string) (string, error) {
 // Resolve picks the effective profile: env overrides first (ephemeral,
 // never persisted), then the active profile from the file. Returns nil
 // when nothing is configured — the connection screen's cue.
-func Resolve(cfg *Config) *Profile {
+func Resolve(cfg *Config) *Profile { return ResolveNamed(cfg, "") }
+
+// ResolveNamed is Resolve with an EXPLICIT profile selection (ORCHICON_PROFILE, or the
+// --profile flag), which is what makes more than one orch process possible at once.
+// name is trimmed; empty means "no explicit selection", in which case ORCHICON_PROFILE
+// is consulted and then the file's `active` is used, exactly as before.
+//
+// PRECEDENCE, and the one deliberate difference from the URL/token overrides:
+//
+//   - No selection + ORCHICON_URL  → the EPHEMERAL "env" profile, never persisted. This
+//     is the ad-hoc "just point me at this host" form and it is unchanged.
+//   - A selection + ORCHICON_URL   → the NAMED profile's credentials against the URL the
+//     environment asked for (a tunnel, a remote host, a moved port). Stated because it is
+//     the only combination that mixes the two, and it is the useful reading: the
+//     credential identifies WHO, the URL says WHERE.
+//   - A selection + no ORCHICON_URL → that profile, verbatim.
+func ResolveNamed(cfg *Config, name string) *Profile {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = strings.TrimSpace(os.Getenv(EnvProfile))
+	}
 	envURL := strings.TrimSpace(os.Getenv(EnvURL))
 	envToken := os.Getenv(EnvToken)
-	if envURL != "" {
+
+	// The ephemeral env profile, still reached ONLY when nothing was named.
+	if envURL != "" && name == "" {
 		p := &Profile{
 			Name:       "env",
 			URL:        strings.TrimRight(envURL, "/"),
@@ -283,18 +321,34 @@ func Resolve(cfg *Config) *Profile {
 		}
 		return p
 	}
-	if cfg == nil || cfg.Active == "" {
+
+	if cfg == nil {
 		return nil
 	}
-	p, ok := cfg.Profiles[cfg.Active]
+	slot := name
+	if slot == "" {
+		slot = cfg.Active
+	}
+	if slot == "" {
+		return nil
+	}
+	p, ok := cfg.Profiles[slot]
 	if !ok || p == nil {
+		// AN ABSENT NAMED PROFILE RESOLVES TO NOTHING — it does NOT fall back to
+		// `active`. Falling back would silently connect an operator who asked for one
+		// instance to a different one, which is precisely the confusion the explicit
+		// selection exists to remove (and the caller reports the name it could not find).
 		return nil
 	}
 	cp := *p
 	if envToken != "" {
-		cp.Token = envToken // token override on the active profile, in memory only
+		cp.Token = envToken // token override, in memory only
 	}
-	cp.URL = strings.TrimRight(cp.URL, "/")
+	if envURL != "" {
+		cp.URL = strings.TrimRight(envURL, "/")
+	} else {
+		cp.URL = strings.TrimRight(cp.URL, "/")
+	}
 	return &cp
 }
 
