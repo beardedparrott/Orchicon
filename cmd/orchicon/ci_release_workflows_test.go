@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -220,4 +221,146 @@ func jobsIn(src string) []job {
 			body: strings.Join(lines[cur+1:], "\n")})
 	}
 	return out
+}
+
+// ---------------------------------------------------------------------------
+// THE PRUNE WORKFLOW REPORTED SUCCESS WHILE DELETING NOTHING, FOR ITS WHOLE LIFE.
+//
+// `prune-releases.yml` enforces the release cap. Its job has no `actions/checkout` (it deletes
+// releases; it never needed the source), so `gh` could not work out WHICH repository it was
+// talking to and every `gh release list` failed with "fatal: not a git repository". That
+// failure was invisible twice over:
+//
+//   - `set -e` did not catch it, because the failing command was not the last in the pipeline
+//     and bash returns a pipeline's LAST status without `pipefail`;
+//   - so the empty list flowed into a `while` loop that did nothing, and the step exited 0.
+//
+// Measured consequence: 13 releases against `MAX_RELEASES: 5`, with a green run every time.
+//
+// These two assertions cover the CLASS rather than the file, over every workflow that exists —
+// because the next job to call `gh` without a checkout, or to pipe a fallible command, will make
+// exactly the same mistake. Both scanners strip comments first: the notes explaining this bug
+// quote `gh release list` and mention pipelines, and a detector tripped by its own documentation
+// would be worse than none.
+func workflowFiles(t *testing.T) []string {
+	t.Helper()
+	paths, err := filepath.Glob("../../.github/workflows/*.yml")
+	if err != nil {
+		t.Fatalf("glob workflows: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no workflow files found — this guard would pass vacuously")
+	}
+	return paths
+}
+
+// stripComment removes a line's YAML/shell comment (and trims it).
+func stripComment(line string) string {
+	if i := strings.Index(line, "#"); i >= 0 {
+		line = line[:i]
+	}
+	return strings.TrimSpace(line)
+}
+
+// TestEveryWorkflowThatRunsGhCanResolveTheRepo pins the first half: a workflow invoking `gh`
+// must either check the repo out or tell gh which repo it is (`GH_REPO`).
+func TestEveryWorkflowThatRunsGhCanResolveTheRepo(t *testing.T) {
+	for _, path := range workflowFiles(t) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		// COMMENTS ARE STRIPPED BEFORE EVERY CHECK HERE, and it is not tidiness: the note this
+		// change adds to prune-releases.yml QUOTES both "GH_REPO" and "actions/checkout" while
+		// explaining the bug, so a raw substring test kept passing after the real env var was
+		// deleted — a detector tripped by its own documentation. Caught by negative control.
+		var code []string
+		for _, line := range strings.Split(string(b), "\n") {
+			code = append(code, stripComment(line))
+		}
+		body := strings.Join(code, "\n")
+		usesGh := false
+		for _, l := range code {
+			if strings.HasPrefix(l, "gh ") || strings.Contains(l, "| gh ") {
+				usesGh = true
+				break
+			}
+		}
+		if !usesGh {
+			continue
+		}
+		if !strings.Contains(body, "actions/checkout") && !strings.Contains(body, "GH_REPO") {
+			t.Errorf("%s runs `gh` but gives it no repository context: with no actions/checkout,\n"+
+				"gh cannot resolve the repo and EVERY gh call fails with \"fatal: not a git "+
+				"repository\".\nAdd `GH_REPO: ${{ github.repository }}` to the step's env (or check "+
+				"the repo out).", filepath.Base(path))
+		}
+	}
+}
+
+// isPipe reports whether a line contains a shell PIPE — a `|` that is not part of `||`.
+//
+// THE DISTINCTION IS NOT PEDANTRY. `||` is logical OR, and `cmd || true` is the standard way to
+// tolerate a failure, which is the OPPOSITE of what this guard is looking for: the first draft
+// of it counted `cp README.md "$ASSET/" 2>/dev/null || true` as a pipeline and demanded
+// pipefail for a block that has no pipeline at all. A detector that cries wolf on a common
+// idiom is a detector people turn off.
+func isPipe(l string) bool {
+	for i := 0; i < len(l); i++ {
+		if l[i] != '|' {
+			continue
+		}
+		if (i > 0 && l[i-1] == '|') || (i+1 < len(l) && l[i+1] == '|') {
+			continue // half of a `||`
+		}
+		return true
+	}
+	return false
+}
+
+// TestEveryWorkflowPipelineUsesPipefailAtLeastWhereItMatters pins the second half: a `run:`
+// block containing a shell pipeline must set `pipefail`, or a failing command's status is
+// discarded in favour of the last command's — which is how a hard failure becomes a green run.
+func TestEveryWorkflowPipelineUsesPipefailAtLeastWhereItMatters(t *testing.T) {
+	for _, path := range workflowFiles(t) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		lines := strings.Split(string(b), "\n")
+		for i := 0; i < len(lines); i++ {
+			// A multi-line `run: |` block. Its body is the following lines, more indented.
+			if !strings.HasSuffix(strings.TrimSpace(lines[i]), "run: |") {
+				continue
+			}
+			indent := len(lines[i]) - len(strings.TrimLeft(lines[i], " "))
+			var body []string
+			for j := i + 1; j < len(lines); j++ {
+				l := lines[j]
+				if strings.TrimSpace(l) == "" {
+					body = append(body, "")
+					continue
+				}
+				if len(l)-len(strings.TrimLeft(l, " ")) <= indent {
+					break // dedented: the block ended
+				}
+				body = append(body, stripComment(l))
+			}
+			hasPipe, hasPipefail := false, false
+			for _, l := range body {
+				if isPipe(l) {
+					hasPipe = true
+				}
+				if strings.Contains(l, "pipefail") {
+					hasPipefail = true
+				}
+			}
+			if hasPipe && !hasPipefail {
+				t.Errorf("%s line %d: a `run: |` block contains a pipeline but does not set "+
+					"`pipefail`.\nWithout it the block's status is its LAST command's, so a "+
+					"failing `gh`/`curl`/`docker` at the head of the pipe is swallowed and the "+
+					"step reports success.\nUse `set -euo pipefail`.", filepath.Base(path), i+1)
+			}
+		}
+	}
 }
