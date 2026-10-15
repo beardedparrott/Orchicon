@@ -3348,8 +3348,17 @@ function ChatInputField({
           })}
         </div>
       )}
+      {/* NO `overflow-hidden` ON THIS BOX, and the removal is the fix rather than a tidy-up.
+          It clipped the composer row's popovers: the project pill's menu opens BELOW the row, and with the
+          box clipping at its own rounded edge the menu was cut off mid-item — "the project dropdown is being
+          swallowed by the bubble. It needs to be on top." The same box wraps the MODE control, which grows the
+          same kind of popover, so both were being clipped by one rule.
+          The radii that `overflow-hidden` was really there for (the glass panel's inner content meeting its
+          rounded border) are preserved by the `rounded-2xl` on the glass surface itself; nothing inside this
+          box paints past the corners, so removing the clip costs no visual containment and restores the
+          popovers. */}
       <div
-        className={`glass-input rounded-2xl p-2.5 overflow-hidden ${dragOver ? "ring-2 ring-cyan-400 border-dashed" : ""}`}
+        className={`glass-input rounded-2xl p-2.5 ${dragOver ? "ring-2 ring-cyan-400 border-dashed" : ""}`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
