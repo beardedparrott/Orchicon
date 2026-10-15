@@ -15,6 +15,72 @@
 > tells the tooling which version these highlights describe; update it
 > when you cut.
 
+## v0.5.43
+
+### New: an installer you can trust with more than one stack
+The installer grew a real vocabulary and a measure of consent. `--instance dev|prod|test` scopes **every**
+action to one stack, so installing, updating or removing one can no longer reach into another — and
+`--uninstall`, `--purge` and `--remove-binary` are now separate verbs, because "Uninstall" that leaves a web
+server running (or takes your data with it) is not one operation. Installing over an existing instance
+**converges** it rather than doing something adjacent: a present image tag is no longer mistaken for a current
+one, and the canary ships an image so a canary install serves a UI at all. Windows reached parity with the
+POSIX path — the uninstall verbs, the instance prompt, and the URLs, which had been **guessing at ports**.
+Every destructive verb is instance-bound, including `-ForceClean`, which had been acting without asking which
+stack you meant.
+
+### New: a canary install path on `develop`
+The installer could only be tested after it shipped, which is how two releases carried a broken one. There is
+now a canary install path on `develop`, plus a real install-path test that runs the **actual** installer
+against a locally-served artifact and a stub docker, so it needs no network, no Docker and no release. It is
+a standing gate on the POSIX path, and the Windows path has a harness that cannot touch a real resource.
+
+### New: one profile per instance, and one instance per process
+`orch` is meant to run more than once at a time; it could not. Every profile was named the literal `default`,
+so connecting to a second instance **overwrote the first one's** URL and tokens in place — that was the whole
+of "it seems to flop which port you are connecting to each time". Profiles are now keyed by the instance's
+host:port, and `ORCHICON_PROFILE` (or `--profile`) selects one **for this process** without touching the
+global active profile, so one shell can be dev while another is prod. An unknown name resolves to no profile
+and says so, rather than silently reading the other instance's conversations.
+
+Alongside it, a config write can no longer destroy a **different** instance's profile: `Save` was truncating
+in place, so a reader during a write could see a half-written document — and the recovery path for an
+unreadable config is to start empty and then **save**, which would have overwritten it. Writes are now atomic
+(temp file, fsync, same-directory rename), and an unreadable config is **moved aside** with its reason shown
+instead of being discarded in silence.
+
+### New: in-transcript search, in both clients
+Find a phrase in a long conversation and step through the matches with `n`/`N` (TUI) or prev/next (GUI),
+with jump-to-top and jump-to-bottom for navigating a conversation you are already in. Every occurrence is now
+**highlighted in the text**, so a match in a long reply is something you can see rather than something you
+have to hunt for — the filter answered "which message", and this answers "which line".
+
+### New: the Ask pane is live as it is written
+A reply now streams into the transcript as the model writes it, instead of appearing only when the turn
+finished. The card asking you a clarifying question, or for a permission, is drawn **after** the text it is
+about — information, then the question — and out of the way of the running reply. A card raised while you are
+looking at another window now reaches you without a reload, and answering one in either client settles it in
+both.
+
+### Also in this release
+- **A payload-too-large refusal recovers instead of wedging.** A `413` from the gateway matched none of the
+  known limits, so the oversize-prompt hatch was never reached and every retry re-sent the identical body.
+  A transport body cap and a model context window are different limits with the same remedy — send fewer
+  bytes — and both now take it.
+- **A restart can no longer lose your conversation.** The history reducer knew about images and nothing else,
+  so a turn whose bulk was base64 **tool results** reclaimed nothing and wrote no file at all — leaving a
+  stale snapshot that only the restart path consults.
+- **Freeing `ctrl+f` for search.** It had been "attach a file by path" in the TUI and nothing in the GUI;
+  `/attach` now does the attaching, and the chord does the finding.
+- **A permission card settles on the server's answer**, not on a guess about whether a turn is still running.
+- **The release pruner had been a silent no-op its whole life** — the cap it exists to enforce was never
+  enforced.
+- **The GUI's default theme is Teal Depths again**, three points lighter, and the app background is a solid
+  colour — the ambient swirls were legible only in the dark themes.
+- **A canary binary no longer ships without a frontend**, which had made a canary install serve an auth error
+  instead of a UI.
+- **The footer band stops jumping.** An empty card line was collapsing it, and the screen bounced.
+- **The installer's common commands are in the install docs**, rather than only in the README's flags.
+
 ## v0.5.39
 
 ### New: OpenCode 2.x
