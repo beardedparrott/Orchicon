@@ -139,3 +139,84 @@ func TestDeltaForwardDoesNotLeakFoldedThink(t *testing.T) {
 		t.Errorf("the visible text after the think block was not streamed: %q", got)
 	}
 }
+
+// TestReasoningIsNotStreamedAsDeltas is the regression for "your reasoning block is repeating over and over
+// in the TUI as you stream".
+//
+// REASONING HAS EXACTLY ONE CLIENT-SIDE SOURCE: THE MIRROR ROW. The collector writes the accumulated
+// reasoning into the acked assistant message every ~200ms, and both clients render it from there — the TUI
+// through its 1s transcript poll (`conversationItems` -> `m.GetReasoning()`), the GUI through the list poll.
+//
+// Forwarding reasoning DELTAS on the stream as well gives the TUI a SECOND source, because it has an arm for
+// ChatStreamResponse_Reasoning that appends each chunk to the live buffer. The block is then appended once
+// from the stream AND again from every poll that re-reads the row, so it repeats and grows for the whole
+// turn. That is not a theoretical hazard: it shipped, briefly, as part of the live-text fix, and the operator
+// caught it immediately.
+//
+// TEXT IS THE OPPOSITE CASE, which is why the two are not symmetric: text had NO live path at all (the
+// report this work started from), so it must be forwarded. Reasoning already streamed through the mirror and
+// needed nothing. Asserting both directions here is the point — a future reader who "makes them consistent"
+// would reintroduce this bug.
+func TestReasoningIsNotStreamedAsDeltas(t *testing.T) {
+	client := &fakeSessionClient{}
+
+	var mu sync.Mutex
+	var reasoningChunks int
+	var textChunks int
+
+	opts := turnCollectOpts{
+		client:         client,
+		sessionID:      "ses_live",
+		reuseSystem:    "REUSE_SYSTEM",
+		modelRef:       "opencode/deepseek-v4-flash-free",
+		userMsg:        "hello",
+		assistantMsgID: "msg_a",
+		onStreamEvent: func(r *apiv1.ChatStreamResponse) {
+			mu.Lock()
+			defer mu.Unlock()
+			if rc := r.GetReasoning(); rc != nil && rc.GetContent() != "" {
+				reasoningChunks++
+			}
+			if tc := r.GetTextChunk(); tc != nil && tc.GetContent() != "" {
+				textChunks++
+			}
+		},
+	}
+
+	go func() {
+		waitForSend(t, client, 1)
+		// The shape the adapter streams: interleaved reasoning and text DELTAS.
+		client.sub.feed(busReasoningDelta("ses_live", "thinking one. "))
+		client.sub.feed(busDelta("ses_live", "answer text "))
+		client.sub.feed(busReasoningDelta("ses_live", "thinking two. "))
+		client.sub.feed(busDelta("ses_live", "more answer text"))
+		client.sub.feed(busIdle("ses_live"))
+	}()
+
+	reply, reasoning, _, err := collectTurn(t, client, opts)
+	if err != nil {
+		t.Fatalf("collect error: %v", err)
+	}
+
+	mu.Lock()
+	rsnChunks, txtChunks := reasoningChunks, textChunks
+	mu.Unlock()
+
+	// THE INVARIANT: no reasoning on the stream, because the mirror row already carries it.
+	if rsnChunks != 0 {
+		t.Errorf("the collector streamed %d reasoning chunk(s): reasoning would then reach the TUI from BOTH "+
+			"the stream and the mirror row, which is the repeating-block bug", rsnChunks)
+	}
+	// AND THE OTHER DIRECTION, so this test documents the asymmetry rather than half of it: text MUST stream,
+	// and its durable copy must still be intact.
+	if txtChunks == 0 {
+		t.Error("no text was streamed: text has no live path other than the stream, which is what this work " +
+			"was for")
+	}
+	if !strings.Contains(reply, "answer text") || !strings.Contains(reply, "more answer text") {
+		t.Errorf("the durable reply lost its text: %q", reply)
+	}
+	if !strings.Contains(strings.Join(reasoning, " "), "thinking one") {
+		t.Errorf("the durable reasoning is missing, so the mirror row has nothing to render: %q", reasoning)
+	}
+}

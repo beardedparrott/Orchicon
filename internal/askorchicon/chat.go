@@ -2310,15 +2310,21 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 				// segmenter road instead of raw-appending to the tail.
 				if evt.IsReasoning && !segThink.inThink() {
 					liveReasoning.WriteString(evt.Text)
-					// A native reasoning delta is streamed to the client on its own arm, so the
-					// thinking block keeps growing live (see the completed `case "reasoning"`).
-					if c.onStreamEvent != nil {
-						c.onStreamEvent(&apiv1.ChatStreamResponse{
-							Event: &apiv1.ChatStreamResponse_Reasoning{
-								Reasoning: &apiv1.ReasoningChunk{Content: evt.Text},
-							},
-						})
-					}
+					// NOT FORWARDED ON THE STREAM, and that is deliberate — it was, briefly, and it
+					// duplicated every reasoning block in the TUI ("your reasoning block is repeating over
+					// and over as you stream").
+					//
+					// Reasoning has exactly ONE source on the client side: the MIRROR ROW. The collector
+					// writes the accumulated reasoning into the acked assistant message every ~200ms, and
+					// both clients render it from there — the TUI via its 1s transcript poll
+					// (controller.go: m.GetReasoning()), the GUI via the list poll. Forwarding deltas as
+					// well gave the TUI a SECOND source (its ChatStreamResponse_Reasoning arm), so the
+					// block was appended once from the stream and again from every poll that re-read the
+					// row — growing, repeated text for the whole turn.
+					//
+					// TEXT IS DIFFERENT and IS forwarded (see the segmenter's emitText below): it had no
+					// live path at all, which was the actual report. Reasoning already streamed fine
+					// through the mirror, so it needed nothing.
 				} else {
 					segThink.feed(evt.Text,
 						// emitText is the DEMUXED clean-text seam: a folded think body never reaches
