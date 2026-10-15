@@ -27,6 +27,11 @@ export function useListConversations(opts?: { refetchInterval?: number | false }
     // state (sidebar indicators + Stop affordances) stays fresh across tabs
     // and devices; false = no polling.
     refetchInterval: opts?.refetchInterval ?? false,
+    // AND IT KEEPS POLLING WHILE THE TAB IS NOT FOCUSED, like the other Ask pollers (see the note on
+    // usePendingAsks): the running markers and Stop affordances matter most on a tab the operator has
+    // stepped away from and come back to, and a window-focus refetch now catches that up regardless.
+    refetchIntervalInBackground: (opts?.refetchInterval ?? false) !== false,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -195,6 +200,22 @@ export function usePendingAsks(conversationId: string, opts?: { refetchInterval?
     // both are gated on the turn union (this client's slot OR the server's own turn_in_flight), which
     // is what covers a turn this client never streamed.
     refetchInterval: opts?.refetchInterval ?? false,
+    // AND IT KEEPS POLLING WHILE THE TAB IS NOT FOCUSED — the half of this bug that the interval alone
+    // did not fix.
+    //
+    // TanStack defaults `refetchIntervalInBackground` to FALSE, which PAUSES a poller whenever its
+    // window is not focused; `refetchOnWindowFocus` is also false globally (main.tsx). So a card raised
+    // while the operator was looking at another window — or recording, which is how this was reported —
+    // had NO path to the screen: the live socket only pushes to a subscribed client, the discovery read
+    // was paused, and nothing caught up on return. The reload they were pressing was the only thing that
+    // re-ran the query, which is exactly "I had to hit refresh to see the card".
+    //
+    // A CARD IS AN OPERATOR-BLOCKING WAIT: the turn is parked until someone answers, so background
+    // polling here is not churn — reaching the person who is NOT looking at the tab is the entire point.
+    // `refetchOnWindowFocus` is opted back IN for the same reason, so returning to the tab repaints
+    // immediately rather than waiting out the next interval.
+    refetchIntervalInBackground: (opts?.refetchInterval ?? false) !== false,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -209,6 +230,11 @@ export function useListMessages(conversationId: string, opts?: { refetchInterval
     // Poll while a turn is pending so the detached collector's persisted
     // reply (or error) appears without a manual refresh.
     refetchInterval: opts?.refetchInterval ?? false,
+    // KEEPS POLLING WHILE UNFOCUSED, for the same reason as the pending-ask read above: this is the
+    // pane's only other path to a running turn's output, and a paused poller plus
+    // refetchOnWindowFocus:false meant a hidden tab showed nothing new until it was reloaded.
+    refetchIntervalInBackground: (opts?.refetchInterval ?? false) !== false,
+    refetchOnWindowFocus: true,
   });
 }
 
