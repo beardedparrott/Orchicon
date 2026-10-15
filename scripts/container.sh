@@ -496,8 +496,35 @@ plane_stop() {
   while IFS= read -r kv; do
     [ -n "$kv" ] && envargs+=("$kv")
   done < <(plane_env "$inst")
-  env -u ORCHICON_CONTAINER_MODE ${envargs[@]+"${envargs[@]}"} "$bin" serve --stop \
-    || log_dim "no detached host plane running for $inst"
+  # THE STOP IS VERIFIED, AND ITS FAILURE IS PROPAGATED.
+  #
+  # This used to run `serve --stop` and swallow ANY non-zero exit as "no detached host plane running". That
+  # conflated three different outcomes — nothing was running, the stop succeeded, and THE PROCESS REFUSED TO
+  # DIE — and the third one is the dangerous one. A surviving plane keeps the port, so the next start loses
+  # the race and the OLD binary keeps serving; every command in the chain still reports success, and the
+  # operator is left believing they are on new code. Their report: "I did that and the serve was still
+  # running and I had to do a kill -9 on the PIDs... I have run into this problem a few times now where I
+  # thought I was on the newest code but was still running a stale binary."
+  #
+  # `serve --stop` now waits, escalates to SIGKILL, and exits non-zero whenever a process survives. So its
+  # exit code is `down`'s exit code: nothing-running is a WARNING (it is a legitimate no-op), a survivor is
+  # an ERROR that must halt whatever asked for the stop.
+  local stop_rc=0
+  env -u ORCHICON_CONTAINER_MODE ${envargs[@]+"${envargs[@]}"} "$bin" serve --stop || stop_rc=$?
+  case "$stop_rc" in
+    0) : ;;
+    *)
+      # Distinguish "there was nothing to stop" from "a plane would not stop". `serve --status` answers from
+      # the SAME PID file the stop resolved, so a live process there means the stop genuinely failed.
+      if env -u ORCHICON_CONTAINER_MODE ${envargs[@]+"${envargs[@]}"} "$bin" serve --status >/dev/null 2>&1; then
+        log_err "$inst host plane is STILL RUNNING after serve --stop — refusing to report the instance as down."
+        log_err "  A surviving plane keeps the port, so the next start would lose the race and keep serving"
+        log_err "  the OLD binary. Check $inst's logs, stop it manually, then retry."
+        return 1
+      fi
+      log_dim "no detached host plane running for $inst"
+      ;;
+  esac
 }
 
 # plane_status prints the host plane's PID/log state and probes its /healthz.
@@ -1427,7 +1454,13 @@ down_instance() {
   # inverse is a feature: `plane-stop` leaves the services container running.)
   if [ "$(residency_for 2>/dev/null || echo host)" = "host" ] \
     || [ -f "$HOST_DATA_DIR/serve/pids/orchicon.pid" ]; then
-    plane_stop "$inst"
+    # THE STOP MUST SUCCEED BEFORE THE INSTANCE IS REPORTED AS DOWN. A plane that ignored --stop keeps the
+    # port, so the container's publish would fail and, for a rebuild, the OLD binary would go on serving
+    # while this reported success. Halting here is the difference between "down" and "believed down".
+    if ! plane_stop "$inst"; then
+      log_err "$inst could not be stopped — leaving the instance in place rather than reporting it down."
+      return 1
+    fi
   fi
   if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
     docker rm -f "$NAME" >/dev/null

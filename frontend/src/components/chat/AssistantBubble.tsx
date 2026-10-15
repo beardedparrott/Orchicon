@@ -8,6 +8,8 @@ interface AssistantBubbleProps {
   at?: number;
   label?: string;
   className?: string;
+  /** The active transcript-search query, so hits are marked where they are. */
+  highlight?: string;
 }
 
 export function AssistantBubble({
@@ -15,6 +17,7 @@ export function AssistantBubble({
   at,
   label = "Orchicon",
   className,
+  highlight = "",
 }: AssistantBubbleProps) {
   const [open, setOpen] = useState(true);
   const [raw, setRaw] = useState(false);
@@ -67,7 +70,7 @@ export function AssistantBubble({
                   {text}
                 </pre>
               ) : (
-                <Markdown>{text}</Markdown>
+                <Markdown highlight={highlight}>{text}</Markdown>
               )}
             </div>
           </div>

@@ -218,7 +218,10 @@ func (m *App) panelTranscript(w, n int) []string {
 	// items — markdown, lipgloss and box drawing for each — nine times a second, to draw the
 	// nine rows the strip can show; that is the operator's "the entire TUI unresponsive".
 	// The strip passes no copy glyph: a click here does not copy.
-	rendered, _ := m.renderCache.Render(m.chatConvID, chat.GroupByPhase(items), w, "", m.foldedReasoning)
+	// NO SEARCH QUERY: this strip has no find box, so it draws the conversation unmarked (the Ask pane
+	// passes m.askSearch for the same conversation — see app.go). Passing "" rather than the shell's live
+	// query is what keeps the two surfaces from disagreeing about what a hit looks like.
+	rendered, _ := m.renderCache.Render(m.chatConvID, chat.GroupByPhase(items), w, "", m.foldedReasoning, "")
 	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
 	if len(lines) == 1 && lines[0] == "" {
 		lines = nil

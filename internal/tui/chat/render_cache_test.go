@@ -57,7 +57,7 @@ func renderFold(key string) bool { return key == "r-1" }
 func renderBoth(t *testing.T, cache *RenderCache, items []ChatItem, width int, glyph string, why string) {
 	t.Helper()
 	wantBody, wantSpans := RenderItemsSpansWithCopy(items, width, glyph, renderFold)
-	gotBody, gotSpans := cache.Render("conv-1", items, width, glyph, renderFold)
+	gotBody, gotSpans := cache.Render("conv-1", items, width, glyph, renderFold, "")
 	if gotBody != wantBody {
 		t.Fatalf("%s: the cached render differs from the uncached one.\n--- cached ---\n%s\n--- reference ---\n%s",
 			why, gotBody, wantBody)
@@ -165,7 +165,7 @@ func TestCachedRenderMatchesUncachedRender(t *testing.T) {
 		cache := NewRenderCache()
 		items := richConversation()
 		// Warm the cache with the pre-mutation items, at the width and glyph the app uses.
-		cache.Render("conv-1", items, 100, CopyGlyph, renderFold)
+		cache.Render("conv-1", items, 100, CopyGlyph, renderFold, "")
 		renderBoth(t, cache, items, 100, CopyGlyph, "warm "+m.name)
 
 		m.do(items)
@@ -179,10 +179,10 @@ func TestCachedRenderMatchesUncachedRender(t *testing.T) {
 func TestACachedSegmentIsNotSharedAcrossSurfaces(t *testing.T) {
 	cache := NewRenderCache()
 	items := richConversation()
-	cache.Render("conv-1", items, 100, CopyGlyph, renderFold) // the pane
+	cache.Render("conv-1", items, 100, CopyGlyph, renderFold, "") // the pane
 	renderBoth(t, cache, items, 40, CopyGlyph, "a narrower pane")
 	renderBoth(t, cache, items, 100, "", "the strip (no copy glyph)")
-	body, _ := cache.Render("conv-2", items, 100, CopyGlyph, renderFold)
+	body, _ := cache.Render("conv-2", items, 100, CopyGlyph, renderFold, "")
 	want, _ := RenderItemsSpansWithCopy(items, 100, CopyGlyph, renderFold)
 	if body != want {
 		t.Fatal("another conversation's items were served this conversation's cached render")
@@ -196,21 +196,21 @@ func TestAnUnchangedFrameRendersNothing(t *testing.T) {
 	cache := NewRenderCache()
 	items := richConversation()
 
-	cache.Render("conv-1", items, 100, CopyGlyph, renderFold)
+	cache.Render("conv-1", items, 100, CopyGlyph, renderFold, "")
 	first := cache.layoutsForTest()
 	if first != len(items) {
 		t.Fatalf("the first frame laid out %d of %d items", first, len(items))
 	}
 
-	cache.Render("conv-1", items, 100, CopyGlyph, renderFold)
-	cache.Render("conv-1", items, 100, CopyGlyph, renderFold)
+	cache.Render("conv-1", items, 100, CopyGlyph, renderFold, "")
+	cache.Render("conv-1", items, 100, CopyGlyph, renderFold, "")
 	if got := cache.layoutsForTest(); got != first {
 		t.Fatalf("repainting an UNCHANGED conversation laid out %d more items — the cache is not being hit", got-first)
 	}
 
 	// One delta into the newest message: one item was re-rendered, not all of them.
 	items[len(items)-2].Ask.AnswerText = "develop"
-	cache.Render("conv-1", items, 100, CopyGlyph, renderFold)
+	cache.Render("conv-1", items, 100, CopyGlyph, renderFold, "")
 	if got := cache.layoutsForTest(); got != first+1 {
 		t.Fatalf("changing one item laid out %d items, want exactly 1", got-first)
 	}
@@ -222,7 +222,7 @@ func TestAnUnchangedFrameRendersNothing(t *testing.T) {
 func TestANilCacheRendersWithoutRemembering(t *testing.T) {
 	var cache *RenderCache
 	items := richConversation()
-	body, spans := cache.Render("conv-1", items, 100, CopyGlyph, renderFold)
+	body, spans := cache.Render("conv-1", items, 100, CopyGlyph, renderFold, "")
 	wantBody, wantSpans := RenderItemsSpansWithCopy(items, 100, CopyGlyph, renderFold)
 	if body != wantBody || !reflect.DeepEqual(spans, wantSpans) {
 		t.Fatal("a nil cache must render exactly what the cacheless renderer does")

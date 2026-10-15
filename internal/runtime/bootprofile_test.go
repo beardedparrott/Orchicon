@@ -233,6 +233,46 @@ func TestAdapterKindsWireDistinction(t *testing.T) {
 	}
 }
 
+// canonicalTempHome returns a throwaway home directory whose path contains NO
+// symlinked component.
+//
+// t.TempDir() cannot promise that, and on this project it usually will not:
+// `go test` inherits GOTMPDIR — the Makefile points it at $(DEV_TOOLS)/gotmp —
+// and os.MkdirTemp honours $TMPDIR, falling back to $GOTMPDIR when TMPDIR is
+// unset. In a WORKTREE, .dev/tools is a symlink to the main checkout, so the
+// temp dir is reached by a PATH THAT TRAVERSES A SYMLINK and has two spellings:
+// the worktree spelling a fixture hands out, and the realpath the kernel
+// reports for the same directory.
+//
+// That matters here because these fixtures are HOMES, and the code under test
+// emits bind-mount sources with filepath.Join (unresolved), while the tests
+// resolve the launcher symlink with filepath.EvalSymlinks (fully resolved). The
+// two then compare a symlinked spelling against a real one, find no common
+// prefix, and report that the launcher "would DANGLE inside the container" —
+// for the one mount that demonstrably does not, because the same spelling is
+// what the daemon actually passes as the bind source.
+//
+// Resolving the ROOT here is the narrow fix: every child of the fixture is then
+// reached through a symlink-free path, so the mount sources and the launcher's
+// resolved target share one spelling and cannot diverge below it. The
+// production rule is deliberately untouched — the daemon does NOT resolve
+// HostHome (internal/runtime/daemon.go passes it verbatim), so a test that
+// resolved only its own expectations would assert a behavior the product does
+// not have.
+//
+// /tmp is deliberately NOT the answer: its realpath differs on macOS
+// (/private/tmp), so a fixture pinned there would fail differently rather than
+// stop being path-dependent.
+func canonicalTempHome(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("canonicalize temp home %s: %v", dir, err)
+	}
+	return resolved
+}
+
 // claudeMountHome builds a fake host home laid out exactly as the claude
 // NATIVE installer leaves it: a writable config home (~/.claude/), the
 // rewritten ~/.claude.json, a launcher SYMLINK at ~/.local/bin/claude, and the
@@ -240,7 +280,7 @@ func TestAdapterKindsWireDistinction(t *testing.T) {
 // into. Used by the mount and symlink-resolution tests.
 func claudeMountHome(t *testing.T) (home, launcher, versionedBinary string) {
 	t.Helper()
-	home = t.TempDir()
+	home = canonicalTempHome(t)
 	mkdir := func(parts ...string) {
 		t.Helper()
 		if err := os.MkdirAll(filepath.Join(append([]string{home}, parts...)...), 0o755); err != nil {
@@ -353,6 +393,18 @@ func TestClaudeLauncherSymlinkTargetMounted(t *testing.T) {
 	}
 	if !mounted {
 		t.Fatalf("the launcher symlink target %s is under NONE of the mounted dirs %v — it would DANGLE inside the container", resolved, srcs)
+	}
+	// DIRECTION CHECK. The loop above compares paths that both live on the
+	// operator's HOST, which is the only comparison a unit test can make — but a
+	// bind mount resolves INSIDE the container, so a host-side spelling mismatch
+	// says nothing about whether the link dangles in there. Assert the direction
+	// that actually decides it: the target's path RELATIVE TO the mounted install
+	// root must survive the mount intact. If these two ever disagree, the host
+	// comparison is the one to distrust (and canonicalTempHome is why it should
+	// not).
+	rel, err := filepath.Rel(filepath.Join(home, ".local", "share", "claude"), resolved)
+	if err != nil || rel == "." || rel == "" || strings.HasPrefix(rel, "..") {
+		t.Fatalf("the launcher target %s escapes the mounted install root: rel=%q err=%v", resolved, rel, err)
 	}
 	// The install root must be mounted as its own declaration (the design
 	// mounts at identical absolute paths, so the link resolves only if the

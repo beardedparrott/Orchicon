@@ -21,6 +21,7 @@
 // buttons, so keyboard activation and focus order come from the platform.
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, FolderClosed } from "lucide-react";
 
 import type { ScopeOption } from "@/lib/conversationProjects";
@@ -55,6 +56,43 @@ export function ProjectScopeSelect({
 }: ProjectScopeSelectProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [menuStyle, setMenuStyle] = useState<React.CSSProperties>({});
+
+  // THE MENU IS PORTALED, AND THAT IS THE FIX FOR "the project dropdown is being swallowed by the bubble".
+  //
+  // It used to be a plain absolutely-positioned child, which put it inside its ancestors' overflow. That is
+  // fine in the SIDEBAR, but this control is also the composer row's project pill — and the composer sits in a
+  // column whose every ancestor clips (`overflow-hidden` on the chat row, on <main>, on the page shell). The
+  // menu was cut off at the bubble's edge; measured in a real browser, FOUR ancestors clipped it and it opened
+  // downward off the bottom of the viewport.
+  //
+  // Fixing those ancestors is not an option: they clip the chat scroll region, which is what their
+  // overflow-hidden is FOR. A portaled menu escapes the whole chain in one move, and it is the pattern this
+  // codebase already uses for the sibling composer controls (mode-toggle, fullsend-toggle, AskModelChip) — so
+  // the row's three popovers now behave identically instead of two of them floating and one being clipped.
+  //
+  // ABOVE-THE-TRIGGER, like the mode toggle: the composer is pinned to the bottom of its column, so a menu
+  // below it would leave the viewport.
+  useEffect(() => {
+    if (!open || !rootRef.current) return;
+    const place = () => {
+      const rect = rootRef.current!.getBoundingClientRect();
+      setMenuStyle({
+        position: "fixed",
+        bottom: `${window.innerHeight - rect.top + 4}px`,
+        right: `${Math.max(8, window.innerWidth - rect.right)}px`,
+        minWidth: `${rect.width}px`,
+      });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open]);
 
   // Click-outside and Escape. Bound only while open, so a closed control adds no document listener — and the
   // listener is on `mousedown` rather than `click` so the menu closes BEFORE a click lands on whatever is
@@ -62,7 +100,11 @@ export function ProjectScopeSelect({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      // The menu is PORTALED, so it is not a DOM descendant of this control — treating it as outside would
+      // close the menu on the very click that selects an option.
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
@@ -110,16 +152,18 @@ export function ProjectScopeSelect({
         <ChevronDown aria-hidden="true" className={cn("shrink-0", compact ? "h-2.5 w-2.5" : "h-3 w-3")} />
       </button>
 
-      {open && (
+      {open &&
+        createPortal(
         <div
+          ref={menuRef}
           role="listbox"
           aria-label={label}
           data-testid="project-scope-menu"
+          style={menuStyle}
           className={cn(
-            "absolute z-30 mt-1 min-w-[190px] max-h-72 overflow-y-auto rounded-md border border-black/10 dark:border-white/10 bg-popover shadow-lg p-1",
+            "z-50 min-w-[190px] max-h-72 overflow-y-auto rounded-md border border-black/10 dark:border-white/10 bg-popover text-popover-foreground shadow-lg p-1",
             // The row's control is at the right edge of a 288px panel, so it opens leftward; the header's has
             // room and opens leftward-aligned too, since the header is the panel's own width.
-            compact ? "right-0" : "left-0",
           )}
         >
           {options.map((o) => (
@@ -150,8 +194,9 @@ export function ProjectScopeSelect({
               <span className="ml-auto shrink-0 tabular-nums text-[10px] text-muted-foreground/80">{o.count}</span>
             </button>
           ))}
-        </div>
-      )}
+        </div>,
+        document.body,
+        )}
     </div>
   );
 }

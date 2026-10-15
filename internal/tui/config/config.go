@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // AuthMethod selects how orch authenticates to the plane.
@@ -25,6 +26,22 @@ const (
 const (
 	EnvURL   = "ORCHICON_URL"
 	EnvToken = "ORCHICON_TOKEN"
+	// EnvProfile pins THIS PROCESS to a NAMED profile without touching the file's
+	// `active`.
+	//
+	// THAT SEPARATION IS THE POINT. `active` is a single global slot: it says which
+	// profile a bare `orch` uses, and every connect sets it, so it cannot express "this
+	// process is the dev one" — two processes reading it are reading the same answer.
+	// A named selection is per-process (an environment variable IS process state), so
+	// several orch processes can hold several instances at once with no interference:
+	//
+	//	ORCHICON_PROFILE=localhost-8080 orch   # this shell is dev
+	//	ORCHICON_PROFILE=localhost-8091 orch   # this shell is prod
+	//
+	// An unknown name resolves to NO profile rather than falling back to `active` — a
+	// silent fallback is how an operator who asked for one instance ends up talking to
+	// another, which is the failure this exists to prevent.
+	EnvProfile = "ORCHICON_PROFILE"
 	// EnvTheme is an explicit palette override. It wins over the config file so
 	// the theme can be pinned in an environment where the config is not
 	// writable or not persisted (a launcher with an ephemeral HOME, a container,
@@ -166,26 +183,133 @@ func Load(path string) (*Config, error) {
 
 // Save writes the config as TOML with 0600 perms (0700 dir). The file
 // holds bearer credentials, so perms are a security requirement, not style.
+//
+// THE WRITE IS ATOMIC — a temp file in the SAME directory, fsync, rename — and that is
+// a MULTI-PROCESS requirement, not fastidiousness. orch is meant to run more than once
+// at a time (one process per instance; see ORCHICON_PROFILE), and every one of those
+// processes READS and WRITES this single file: the display preferences on each toggle,
+// the profile on a connect. os.WriteFile truncates IN PLACE, so a second process
+// loading the config during a write could read a HALF-WRITTEN document — and a parse
+// failure is not harmless here, because the launch path's recovery from an unreadable
+// config is to start from an EMPTY one and then save it, destroying the other
+// instance's profile and credentials. A rename replaces the whole file in one step, so
+// a reader sees either the old document or the new one and never a partial one.
+//
+// fsync BEFORE the rename, so a crash cannot leave a renamed-but-empty file — the same
+// truncation reached by another route.
 func Save(path string, cfg *Config) error {
 	if cfg == nil {
 		return errors.New("config: nil")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(render(cfg)), 0o600); err != nil {
-		return fmt.Errorf("write config: %w", err)
+	// The temp file goes in the SAME directory on purpose: a rename is only atomic within
+	// one filesystem, and /tmp is commonly a different one (a tmpfs), where it would
+	// silently degrade to copy-then-unlink and reopen the window this closes.
+	tmp, err := os.CreateTemp(dir, FileName+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create config temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	// A no-op after a successful rename (the source is gone) and the cleanup for every
+	// error path below, so a failed save cannot leave credential-bearing droppings in
+	// the operator's config directory.
+	defer func() { _ = os.Remove(tmpName) }()
+	// CreateTemp already uses 0600, and this is stated anyway: these are the perms the
+	// file's own contract depends on, so they are not to be inherited from a helper.
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("config temp perms: %w", err)
+	}
+	if _, err := tmp.WriteString(render(cfg)); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write config temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync config temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close config temp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace config: %w", err)
 	}
 	return nil
+}
+
+// PreservedSuffix marks the path an unreadable config is moved aside to.
+const PreservedSuffix = ".unreadable"
+
+// PreserveUnreadable moves an unreadable config aside and returns the path it was
+// preserved at, so a caller that MUST start from an empty config can do so without
+// destroying what it could not read.
+//
+// WHY THIS EXISTS. The launch path's recovery from a load error is "start fresh, then
+// the connection screen saves a new config" — and that save OVERWRITES the file. Against
+// a genuinely corrupt file those bytes are already worthless; against a file this build
+// merely cannot PARSE it is destruction, and that is reachable in ordinary operation.
+// The parser deliberately rejects an unknown key (TestUnknownKeyStillRejected), and this
+// repo deliberately keeps TWO orch vintages sharing ONE config file — the dev-tracked
+// `orch` symlink and the frozen prod snapshot (see the Makefile's orch-launchers, whose
+// whole point is that the snapshot "moves only on prod rebuild"). So the newer client
+// writing a key the older one does not know makes every launch of the older one look
+// exactly like corruption. Preserving the file means the wipe is never silent and never
+// final — and proves what was there, which an overwrite cannot.
+//
+// RENAME, not copy: it is atomic, and it guarantees the next Save cannot clobber the
+// original, which is the entire point.
+func PreserveUnreadable(path string) (string, error) {
+	stamp := time.Now().UTC().Format("20060102T150405")
+	backup := path + PreservedSuffix + "-" + stamp
+	// A second unreadable config inside the same second must not overwrite the first
+	// backup — the one that already holds an operator's live credentials.
+	for n := 1; ; n++ {
+		if _, err := os.Stat(backup); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if n > 1000 {
+			return "", fmt.Errorf("config: no free name to preserve %s", path)
+		}
+		backup = fmt.Sprintf("%s%s-%s-%d", path, PreservedSuffix, stamp, n)
+	}
+	if err := os.Rename(path, backup); err != nil {
+		return "", fmt.Errorf("preserve unreadable config: %w", err)
+	}
+	return backup, nil
 }
 
 // Resolve picks the effective profile: env overrides first (ephemeral,
 // never persisted), then the active profile from the file. Returns nil
 // when nothing is configured — the connection screen's cue.
-func Resolve(cfg *Config) *Profile {
+func Resolve(cfg *Config) *Profile { return ResolveNamed(cfg, "") }
+
+// ResolveNamed is Resolve with an EXPLICIT profile selection (ORCHICON_PROFILE, or the
+// --profile flag), which is what makes more than one orch process possible at once.
+// name is trimmed; empty means "no explicit selection", in which case ORCHICON_PROFILE
+// is consulted and then the file's `active` is used, exactly as before.
+//
+// PRECEDENCE, and the one deliberate difference from the URL/token overrides:
+//
+//   - No selection + ORCHICON_URL  → the EPHEMERAL "env" profile, never persisted. This
+//     is the ad-hoc "just point me at this host" form and it is unchanged.
+//   - A selection + ORCHICON_URL   → the NAMED profile's credentials against the URL the
+//     environment asked for (a tunnel, a remote host, a moved port). Stated because it is
+//     the only combination that mixes the two, and it is the useful reading: the
+//     credential identifies WHO, the URL says WHERE.
+//   - A selection + no ORCHICON_URL → that profile, verbatim.
+func ResolveNamed(cfg *Config, name string) *Profile {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = strings.TrimSpace(os.Getenv(EnvProfile))
+	}
 	envURL := strings.TrimSpace(os.Getenv(EnvURL))
 	envToken := os.Getenv(EnvToken)
-	if envURL != "" {
+
+	// The ephemeral env profile, still reached ONLY when nothing was named.
+	if envURL != "" && name == "" {
 		p := &Profile{
 			Name:       "env",
 			URL:        strings.TrimRight(envURL, "/"),
@@ -197,18 +321,34 @@ func Resolve(cfg *Config) *Profile {
 		}
 		return p
 	}
-	if cfg == nil || cfg.Active == "" {
+
+	if cfg == nil {
 		return nil
 	}
-	p, ok := cfg.Profiles[cfg.Active]
+	slot := name
+	if slot == "" {
+		slot = cfg.Active
+	}
+	if slot == "" {
+		return nil
+	}
+	p, ok := cfg.Profiles[slot]
 	if !ok || p == nil {
+		// AN ABSENT NAMED PROFILE RESOLVES TO NOTHING — it does NOT fall back to
+		// `active`. Falling back would silently connect an operator who asked for one
+		// instance to a different one, which is precisely the confusion the explicit
+		// selection exists to remove (and the caller reports the name it could not find).
 		return nil
 	}
 	cp := *p
 	if envToken != "" {
-		cp.Token = envToken // token override on the active profile, in memory only
+		cp.Token = envToken // token override, in memory only
 	}
-	cp.URL = strings.TrimRight(cp.URL, "/")
+	if envURL != "" {
+		cp.URL = strings.TrimRight(envURL, "/")
+	} else {
+		cp.URL = strings.TrimRight(cp.URL, "/")
+	}
 	return &cp
 }
 

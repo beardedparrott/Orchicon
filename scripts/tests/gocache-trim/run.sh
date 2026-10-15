@@ -199,11 +199,46 @@ else
   check "a missing directory is refused" "non-zero exit" "non-zero exit"
 fi
 
+# A repo root presents `.git` in two shapes: a DIRECTORY (main checkout) or a
+# FILE holding a `gitdir:` pointer (linked worktree, `git worktree add`). Both
+# must be refused. This was asserted only against $REPO_ROOT — i.e. only the
+# shape of whichever checkout the suite happened to live in — which is how the
+# guard's `-d`-only blind spot stayed hidden: it passes in a main checkout, and
+# in a worktree it was masked by a coincidence. The worktree root contains a
+# two-char hex-named directory (`db/`), so the SHAPE check below satisfied
+# ITSELF, the trim proceeded, and the assertion failed for a reason that named
+# nothing.
+#
+# So the fixtures are built to LOOK LIKE A GO CACHE (they carry trim.txt). That
+# is load-bearing, not decoration: a fixture with no cache shape is refused by
+# the shape check whatever the git guard does, so it would pass VACUOUSLY and
+# pin nothing. Looking like a cache leaves the git guard as the only thing that
+# can refuse it, so a guard that stops refusing cannot hide behind the shape
+# check. The end-to-end $REPO_ROOT case is kept alongside them.
 if bash "$TRIM_SH" "$REPO_ROOT" --cap-mb 1 >/dev/null 2>&1; then
   check "a git repo root is refused" "non-zero exit" "exit 0"
 else
   check "a git repo root is refused" "non-zero exit" "non-zero exit"
 fi
+
+GITDIR_ROOT="$WORK/gitdir-root"; new_cache "$GITDIR_ROOT"; mkdir -p "$GITDIR_ROOT/.git"
+echo "important" > "$GITDIR_ROOT/notes.md"
+if bash "$TRIM_SH" "$GITDIR_ROOT" --cap-mb 1 >/dev/null 2>&1; then
+  check "a .git DIRECTORY root is refused" "non-zero exit" "exit 0"
+else
+  check "a .git DIRECTORY root is refused" "non-zero exit" "non-zero exit"
+fi
+check "the refused repo root survives intact" "important" "$(cat "$GITDIR_ROOT/notes.md" 2>/dev/null)"
+
+GITFILE_ROOT="$WORK/gitfile-root"; new_cache "$GITFILE_ROOT"
+printf 'gitdir: %s\n' "$GITDIR_ROOT/.git" > "$GITFILE_ROOT/.git"
+echo "important" > "$GITFILE_ROOT/notes.md"
+if bash "$TRIM_SH" "$GITFILE_ROOT" --cap-mb 1 >/dev/null 2>&1; then
+  check "a .git FILE (linked worktree) root is refused" "non-zero exit" "exit 0"
+else
+  check "a .git FILE (linked worktree) root is refused" "non-zero exit" "non-zero exit"
+fi
+check "the refused worktree root survives intact" "important" "$(cat "$GITFILE_ROOT/notes.md" 2>/dev/null)"
 
 if bash "$TRIM_SH" "$C1" --cap-mb notanumber >/dev/null 2>&1; then
   check "a non-numeric cap is refused" "non-zero exit" "exit 0"

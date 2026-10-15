@@ -210,7 +210,11 @@ func (m *App) applyLaunchDirScope() {
 	// THE SCOPE LABEL STAYS QUIET (this is an automatic default, not a declared switch — the existing
 	// contract), but the CONSEQUENCE is not: the operator is told what was hidden and how to widen it.
 	var extra []string
-	if hidden := m.scopeHiddenCount(); hidden > 0 {
+	hidden := m.scopeHiddenCount()
+	// Record what THIS notice already covers, so the list-reload path (noteScopeHidesNewRows) only speaks
+	// up when a row arrives that this line did not account for — one voice for the same fact.
+	m.scopeHiddenNoticed = hidden
+	if hidden > 0 {
 		extra = append(extra, fmt.Sprintf("scope: %s — %d conversation(s) not shown; /project to widen",
 			projectScopeLabel(p.ID, projectScopeOptions(m.railProjects, m.conversations)), hidden))
 	}
@@ -218,6 +222,38 @@ func (m *App) applyLaunchDirScope() {
 	// itself, and about anything the operator still needs to hear, like a degraded palette; the caller's
 	// own note rides in the SAME notice rather than replacing it.
 	m.applyScopeTheme(false, extra...)
+}
+
+// noteScopeHidesNewRows re-announces an ACTIVE scope's narrowing when a re-read of the conversation list
+// shows it is hiding a row the operator has not been told about.
+//
+// THE DEFECT THIS FIXES. `applyLaunchDirScope` announces what a narrowing hides, but it runs ONCE, against
+// the list held at that moment. Nothing announced it again, and nothing else re-reads the scope after a
+// list reload — so a conversation that appears in the list LATER is hidden silently, with no notice, no
+// count change the operator can see, and no clue that a filter is responsible. That is the reported case
+// exactly: a conversation created in the GUI while the TUI sits in a project scope never appears, and the
+// only thing that looks like a fix is leaving and re-entering, because re-entry reset the pane. The row was
+// always in the list; the scope was hiding it quietly.
+//
+// IT IS DRIVEN BY THE FULL LOADED LIST, NOT BY THE SCOPED COUNT ALONE. `scopeHiddenCount` is computed from
+// `m.conversations`, so it changes when a new conversation is hidden — and comparing it against the last
+// number ANNOUNCED is what makes this fire on the hidden row that just arrived, rather than on every
+// reload. A plain "hidden > 0" test would re-notice on every tick and turn the status line into noise.
+//
+// IT SAYS NOTHING WHEN THERE IS NOTHING NEW: an unchanged count, or a scope hiding nothing, is not news.
+// The silent-when-unchanged rule is the same one `applyLaunchDirScope` follows for a narrowing that hides
+// nothing.
+func (m *App) noteScopeHidesNewRows() {
+	hidden := m.scopeHiddenCount()
+	if hidden == m.scopeHiddenNoticed {
+		return // nothing new is being hidden: no notice, no churn on the status line
+	}
+	m.scopeHiddenNoticed = hidden
+	if hidden == 0 {
+		return // the scope no longer hides anything — there is nothing to warn about
+	}
+	m.dock.SetNotice(fmt.Sprintf("scope: %s — %d conversation(s) not shown; /project to widen",
+		projectScopeLabel(m.projectScope, projectScopeOptions(m.railProjects, m.conversations)), hidden))
 }
 
 // scopeHiddenCount is how many of the LOADED conversations the active scope hides. 0 for All projects
