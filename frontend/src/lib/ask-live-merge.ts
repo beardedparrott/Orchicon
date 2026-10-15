@@ -23,6 +23,21 @@
 
 export interface MirrorRowMessage {
   id: string;
+  /**
+   * toolCalls is what makes the mirror row more than a copy of the live text.
+   *
+   * THE BUG THIS FIELD FIXES. The supersession rule drops the in-flight row while live items are drawing
+   * the reply, and that was right for TEXT — the live copy is the same text, drawn sooner. But the row also
+   * carries the turn's TOOL CALLS, and a recorded `ask_user` call is what renders the clarifying card
+   * (MessageBubble: `message.toolCalls.find(isAskUserToolCall)`). So dropping the row dropped the card:
+   * the operator saw "Orchicon is weighing… · no output for 123s" with a card sitting unrendered, and a
+   * page reload showed it — because a fresh load has NO live items, so the row (and its card) rendered.
+   * Reloading was not "refreshing stale state"; it was the only path that drew the row at all.
+   *
+   * The live stream does not carry tool calls, so nothing else can render them. The row is therefore kept
+   * whenever it carries any.
+   */
+  toolCalls?: readonly unknown[] | null;
 }
 
 /**
@@ -35,16 +50,23 @@ export interface MirrorRowMessage {
  * @param hasLiveItems  this client holds live text/reasoning items to render instead
  */
 export function mirrorRowSuperseded(
-  messageId: string,
+  message: MirrorRowMessage,
   pendingReplyId: string | null,
   isStreaming: boolean,
   hasLiveItems: boolean,
 ): boolean {
   if (!isStreaming) return false; // no live stream here: the row IS the view (reload / other tab)
   if (!pendingReplyId) return false; // no acked id: cannot tell which row is the mirror
-  if (messageId !== pendingReplyId) return false; // only the in-flight row is superseded
+  if (message.id !== pendingReplyId) return false; // only the in-flight row is superseded
   // No live items to draw would make this a BLANK turn, so the mirror is kept as the fallback.
-  return hasLiveItems;
+  if (!hasLiveItems) return false;
+  // AND A ROW CARRYING TOOL CALLS IS NEVER SUPERSEDED, even though its TEXT is a duplicate of the live
+  // copy. The live stream carries text and reasoning only — never tool calls — so this row is the ONLY
+  // thing that can render the turn's card, its tool ledger, or a recorded ask_user call. Dropping it for
+  // the sake of the text would take those with it, which is exactly what happened: the card existed in
+  // the transcript and could not be drawn, and only a reload (which has no live items) revealed it.
+  if ((message.toolCalls ?? []).length > 0) return false;
+  return true;
 }
 
 /**
@@ -59,7 +81,7 @@ export function dropSupersededMirror<T extends MirrorRowMessage>(
   hasLiveItems: boolean,
 ): T[] {
   if (!isStreaming || !hasLiveItems || !pendingReplyId) return [...messages];
-  return messages.filter((m) => !mirrorRowSuperseded(m.id, pendingReplyId, isStreaming, hasLiveItems));
+  return messages.filter((m) => !mirrorRowSuperseded(m, pendingReplyId, isStreaming, hasLiveItems));
 }
 
 /** hasLiveTextItems reports whether the grouped stream holds text/reasoning worth drawing. */

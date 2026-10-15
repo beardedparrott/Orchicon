@@ -666,6 +666,19 @@ function AskOrchiconPage() {
   //
   // IT IS EXACTLY ONE COPY. The mirror row is dropped whenever this list is non-empty (the same
   // supersession rule the render uses), so the search never sees the turn twice.
+  // THE CARD THAT MUST BE DRAWN AFTER THE LIVE TEXT.
+  //
+  // The in-flight row carries the recorded ask_user call, and while a reply streams that row sorts BEFORE the
+  // live text (it predates it) — so the card, drawn as the last thing inside the row, lands between the row's
+  // prose and the live copy. The operator: "the card IS there. However, it's at the top of the text that was
+  // sent rather than at the bottom after the text."
+  //
+  // So it is LIFTED OUT of the row and emitted after the live items, which is where it belongs: the newest
+  // thing in the turn, and the thing being asked of the operator. Only while live items exist — with no live
+  // stream the row IS the turn (a reload, another tab), and the card draws in its own place.
+  const inFlightMsg = durableMessages.find((m) => m.id === pendingReplyId);
+  const liftedCard = hasLive && inFlightMsg ? askCardOf(inFlightMsg) : null;
+
   const liveBlocks: TranscriptBlock[] = hasLive
     ? groupedStream
         .filter((it) => it.kind === "text" || it.kind === "user")
@@ -2273,6 +2286,13 @@ function AskOrchiconPage() {
                             onRetry={handleRetry}
                             onSelectOption={handleSendMessage}
                             highlight={searchQuery}
+                            // The in-flight row's card is drawn after the live text instead (see
+                            // liftedCard): inside this row it would be stranded mid-reply.
+                            cardLifted={
+                              !!liftedCard &&
+                              block.kind === "message" &&
+                              block.message.id === pendingReplyId
+                            }
                           />
                         )}
                       </div>
@@ -2308,6 +2328,23 @@ function AskOrchiconPage() {
                         return null;
                     }
                   })}
+
+                {/* THE LIFTED CARD — after the live text, because that is where the operator expects the
+                    thing they are being asked to answer. See liftedCard for why it cannot live inside the
+                    row that records it while a reply is still streaming. */}
+                {liftedCard && (
+                  <div data-testid="ask-card-live">
+                    <AskCard
+                      question={liftedCard.question}
+                      options={liftedCard.options}
+                      allowOther={liftedCard.allowOther}
+                      answered={liftedCard.answered}
+                      answer={liftedCard.answer}
+                      error={liftedCard.error}
+                      onSelect={handleSendMessage}
+                    />
+                  </div>
+                )}
 
                 {/* THE ACTIVITY LINE — for the WHOLE turn, not only before the first token.
                     The operator, on the old rule: "After the initial 'Orchicon is thinking...',
@@ -2670,11 +2707,44 @@ function AskOrchiconPage() {
 
 // --- MessageBubble: renders a single persisted ChatMessage ----------
 
+/**
+ * askCardOf returns a row's clarifying card — the recorded ask_user call — when it should be drawn.
+ *
+ * IT EXISTS SO THE CARD CAN BE RENDERED SOMEWHERE OTHER THAN INSIDE THE ROW, and that separation is the
+ * fix for "it's at the top of the text that was sent rather than at the bottom after the text".
+ *
+ * The card is the last thing inside MessageBubble, which is correct WHEN THE ROW IS THE WHOLE TURN. It is
+ * wrong while a reply is still streaming: the row the card lives on sorts BEFORE the live text (it predates
+ * it), so drawing the card inside that row puts it between the row's own prose and the live copy — the card
+ * ends up stranded mid-reply, above text that arrived after the question was asked.
+ *
+ * So the caller lifts the card out of the row and emits it after the live text, which is where the operator
+ * expects it (the newest thing, the thing being asked of them). The row keeps its prose and its reasoning.
+ */
+function askCardOf(message: ChatMessage) {
+  const call = (message.toolCalls ?? []).find((c) => isAskUserToolCall(c.functionName));
+  if (!call) return null;
+  const parsed = parseAskUserArgs(call.arguments);
+  const result = (message.toolResults ?? []).find((r) => r.toolCallId === call.id);
+  const plan = askCardPlan(true, !!parsed, !!result);
+  if (!plan.render) return null;
+  return {
+    id: call.id,
+    question: parsed?.question ?? "",
+    options: parsed?.options ?? [],
+    allowOther: parsed?.allowOther,
+    answered: !!result,
+    answer: result?.output ?? "",
+    error: plan.error,
+  };
+}
+
 function MessageBubble({
   message,
   onRetry,
   onSelectOption,
   highlight = "",
+  cardLifted = false,
 }: {
   message: ChatMessage;
   onRetry?: () => void;
@@ -2685,6 +2755,12 @@ function MessageBubble({
   // marked WHERE IT IS: the filter already answers "which message", and on a long reply the operator
   // needs "which line". Empty (no search) renders exactly as before.
   highlight?: string;
+  /**
+   * cardLifted tells this bubble its clarifying card is being drawn ELSEWHERE (after the live text) and it
+   * must not draw its own copy. See askCardOf: while a reply streams, the row the card lives on sorts before
+   * the live text, so drawing the card inside the row strands it mid-reply.
+   */
+  cardLifted?: boolean;
 }) {
   // WHICH SHELL DRAWS THIS MESSAGE. Decided in one tested place (lib/ask-bubble.ts)
   // rather than by a fall-through: `system` is the PLATFORM speaking about the
@@ -2788,7 +2864,7 @@ function MessageBubble({
           of a bunch of other text you sent. That is not intuitive. It should be at
           the bottom (newest/recent)." The TUI emits its card last for the same
           reason (chat.conversationItems), so the two clients read the same way. */}
-      {askCall && askPlan.render && (
+      {askCall && askPlan.render && !cardLifted && (
         <AskCard
           question={askParsed?.question ?? ""}
           options={askParsed?.options ?? []}

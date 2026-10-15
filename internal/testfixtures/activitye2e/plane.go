@@ -49,6 +49,18 @@ const (
 	Title = "activity-e2e"
 	// AssistantMsgID is the acked reply id the turn is persisted under.
 	AssistantMsgID = "a1"
+
+	// AskCallID / AskQuestion / AskOption are the recorded `ask_user` call the assistant row can carry.
+	//
+	// WHY THIS EXISTS. The GUI draws a clarifying card from a RECORDED TOOL CALL on the assistant row
+	// (MessageBubble: `message.toolCalls.find(isAskUserToolCall)`), not from the live stream — the stream
+	// carries text and reasoning only. So "a card renders on a live turn" is a claim about the DURABLE row
+	// being drawn while the turn is still streaming, and it needs a fixture where the row carries an ask
+	// while live items exist. That combination is exactly what was broken: the in-flight row was dropped in
+	// favour of the live copy, taking the card with it.
+	AskCallID   = "tc-ask"
+	AskQuestion = "E2EASK Which thread should I take further?"
+	AskOption   = "E2EOPTION"
 	// Prompt is the message the TUI types. It asks for work of MIXED CLASSES — a read, a grep, a
 	// bash and a modify — which is what makes every bucket of the counter legible in one turn.
 	Prompt = "E2EPROMPT inspect files and run the tests"
@@ -96,6 +108,9 @@ var scriptCalls = []string{"read", "batch_grep", "bash", "write"}
 
 // Plane is the fixture Ask service plus its control surface.
 type Plane struct {
+	// askOn makes the assistant row carry a recorded ask_user call.
+	askOn bool
+
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 
 	mu       sync.Mutex
@@ -209,6 +224,13 @@ func (p *Plane) Streamed() string {
 	return p.streamed
 }
 
+// SetAsk arms (or disarms) the recorded ask_user call on the assistant row.
+func (p *Plane) SetAsk(on bool) {
+	p.mu.Lock()
+	p.askOn = on
+	p.mu.Unlock()
+}
+
 func (p *Plane) appendStreamed(s string) {
 	p.mu.Lock()
 	p.streamed += s
@@ -320,12 +342,21 @@ func (p *Plane) ListMessages(_ context.Context, req *connect.Request[v1.ListMess
 		Content:        p.prompt,
 		CreatedAt:      timestamppb.New(base),
 	}
+	toolCalls := append([]*v1.ToolCall(nil), p.toolRows...)
+	if p.askOn {
+		// A recorded clarifying call, in the arguments shape the client parses.
+		toolCalls = append(toolCalls, &v1.ToolCall{
+			Id:           AskCallID,
+			FunctionName: "ask_user",
+			Arguments:    `{"question":"` + AskQuestion + `","options":["` + AskOption + `","Second option"],"allow_other":true}`,
+		})
+	}
 	assistant := &v1.ChatMessage{
 		Id:             AssistantMsgID,
 		ConversationId: ConvID,
 		Role:           "assistant",
 		Content:        p.streamed,
-		ToolCalls:      append([]*v1.ToolCall(nil), p.toolRows...),
+		ToolCalls:      toolCalls,
 		CreatedAt:      timestamppb.New(base.Add(time.Second)),
 	}
 	p.mu.Unlock()
@@ -694,6 +725,12 @@ func Mux(plane *Plane, sessions *Sessions, dir string) http.Handler {
 			return
 		}
 		JSON(w, http.StatusOK, map[string]any{"ok": true, "phase": plane.Phase()})
+	})
+	mux.HandleFunc("/__e2e/ask", func(w http.ResponseWriter, r *http.Request) {
+		// Arm (or disarm) the recorded ask_user call the assistant row carries, so a probe can ask for a
+		// clarifying CARD while the turn is still streaming.
+		plane.SetAsk(r.URL.Query().Get("on") != "0")
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/__e2e/stamp", func(w http.ResponseWriter, r *http.Request) {
 		var v int64
