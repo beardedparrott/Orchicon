@@ -64,6 +64,12 @@ const (
 	// AskID is the pending ask's id — the same value the stream emits and ListPendingAsks serves, so a
 	// discovered ask and a streamed ask dedupe to ONE card (applyAskChunk keys on it).
 	AskID = "perm-e2e"
+	// PermID / PermCommand are the PERMISSION ask's identity: a bash approval, which is the other kind of
+	// card the same path draws. It has NO question — that is the discriminator ConsentAskCard uses to tell a
+	// permission request from a clarifying question — and it must be treated identically, because the rule
+	// is about whether the operator still has to act, not about which kind of ask it is.
+	PermID      = "perm-bash-e2e"
+	PermCommand = "npm run build"
 	// Prompt is the message the TUI types. It asks for work of MIXED CLASSES — a read, a grep, a
 	// bash and a modify — which is what makes every bucket of the counter legible in one turn.
 	Prompt = "E2EPROMPT inspect files and run the tests"
@@ -113,6 +119,8 @@ var scriptCalls = []string{"read", "batch_grep", "bash", "write"}
 type Plane struct {
 	// askOn makes the assistant row carry a recorded ask_user call.
 	askOn bool
+	// permOn arms an OPEN PERMISSION ask on the same path (see SetPermission).
+	permOn bool
 
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 
@@ -251,6 +259,33 @@ func (p *Plane) pendingAsk() *v1.PermissionAsk {
 	}
 }
 
+// permissionAsk builds the OPEN permission request as the client receives it: a bash approval, with a
+// command and NO question. ConsentAskCard renders it with the three consent actions rather than the question
+// card's options, and the ordering rule must place it exactly where a question goes.
+func (p *Plane) permissionAsk() *v1.PermissionAsk {
+	return &v1.PermissionAsk{
+		AskId:          PermID,
+		ConversationId: ConvID,
+		Tool:           "bash",
+		Command:        PermCommand,
+		Summary:        "bash: " + PermCommand,
+	}
+}
+
+// SetPermission arms (or disarms) the OPEN permission ask.
+func (p *Plane) SetPermission(on bool) {
+	p.mu.Lock()
+	p.permOn = on
+	p.mu.Unlock()
+}
+
+// PermissionArmed reports whether the permission ask is armed.
+func (p *Plane) PermissionArmed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.permOn
+}
+
 // SetAsk arms (or disarms) the recorded ask_user call on the assistant row.
 func (p *Plane) SetAsk(on bool) {
 	p.mu.Lock()
@@ -362,7 +397,10 @@ func (p *Plane) GetConversation(_ context.Context, req *connect.Request[v1.GetCo
 func (p *Plane) ListPendingAsks(_ context.Context, req *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error) {
 	out := &v1.ListPendingAsksResponse{}
 	if p.AskArmed() {
-		out.Asks = []*v1.PermissionAsk{p.pendingAsk()}
+		out.Asks = append(out.Asks, p.pendingAsk())
+	}
+	if p.PermissionArmed() {
+		out.Asks = append(out.Asks, p.permissionAsk())
 	}
 	return connect.NewResponse(out), nil
 }
@@ -483,6 +521,12 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 	if p.AskArmed() {
 		if err := send(&v1.ChatStreamResponse{Event: &v1.ChatStreamResponse_PermissionAsk{
 			PermissionAsk: p.pendingAsk()}}); err != nil {
+			return nil
+		}
+	}
+	if p.PermissionArmed() {
+		if err := send(&v1.ChatStreamResponse{Event: &v1.ChatStreamResponse_PermissionAsk{
+			PermissionAsk: p.permissionAsk()}}); err != nil {
 			return nil
 		}
 	}
@@ -778,6 +822,10 @@ func Mux(plane *Plane, sessions *Sessions, dir string) http.Handler {
 			return
 		}
 		JSON(w, http.StatusOK, map[string]any{"ok": true, "phase": plane.Phase()})
+	})
+	mux.HandleFunc("/__e2e/permission", func(w http.ResponseWriter, r *http.Request) {
+		plane.SetPermission(r.URL.Query().Get("on") != "0")
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/__e2e/ask", func(w http.ResponseWriter, r *http.Request) {
 		// Arm (or disarm) the recorded ask_user call the assistant row carries, so a probe can ask for a
