@@ -61,6 +61,9 @@ const (
 	AskCallID   = "tc-ask"
 	AskQuestion = "E2EASK Which thread should I take further?"
 	AskOption   = "E2EOPTION"
+	// AskID is the pending ask's id — the same value the stream emits and ListPendingAsks serves, so a
+	// discovered ask and a streamed ask dedupe to ONE card (applyAskChunk keys on it).
+	AskID = "perm-e2e"
 	// Prompt is the message the TUI types. It asks for work of MIXED CLASSES — a read, a grep, a
 	// bash and a modify — which is what makes every bucket of the counter legible in one turn.
 	Prompt = "E2EPROMPT inspect files and run the tests"
@@ -224,6 +227,30 @@ func (p *Plane) Streamed() string {
 	return p.streamed
 }
 
+// AskArmed reports whether the pending ask is armed.
+func (p *Plane) AskArmed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.askOn
+}
+
+// pendingAsk builds the OPEN question as the client receives it.
+//
+// IT IS A PermissionAsk WITH A NON-EMPTY `question`, which is the discriminator ConsentAskCard uses to tell a
+// clarifying question from a permission request — the same message the turn stream emits and ListPendingAsks
+// serves, deliberately, so a streamed ask and a discovered one cannot drift into two renderings.
+func (p *Plane) pendingAsk() *v1.PermissionAsk {
+	return &v1.PermissionAsk{
+		AskId:          AskID,
+		ConversationId: ConvID,
+		Tool:           "ask_user",
+		Question:       AskQuestion,
+		Options:        []string{AskOption, "Second option"},
+		AllowOther:     true,
+		Summary:        "asking: " + AskQuestion,
+	}
+}
+
 // SetAsk arms (or disarms) the recorded ask_user call on the assistant row.
 func (p *Plane) SetAsk(on bool) {
 	p.mu.Lock()
@@ -329,6 +356,17 @@ func (p *Plane) GetConversation(_ context.Context, req *connect.Request[v1.GetCo
 // db.ListMessages holds and both clients reverse (chat.conversationItems, askOrchicon.ts). The
 // assistant row carries BOTH the streamed text and the turn's accumulated tool rows, which is the
 // shape a real persisted turn has.
+// ListPendingAsks serves the conversation's OPEN asks — the discovery read, and the shape a fresh page load
+// uses. An ask that is armed is reported here, which is what makes "the card appears after a reload" and "the
+// card appears live" the same card.
+func (p *Plane) ListPendingAsks(_ context.Context, req *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error) {
+	out := &v1.ListPendingAsksResponse{}
+	if p.AskArmed() {
+		out.Asks = []*v1.PermissionAsk{p.pendingAsk()}
+	}
+	return connect.NewResponse(out), nil
+}
+
 func (p *Plane) ListMessages(_ context.Context, req *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {
 	if p.Phase() == PhaseDown {
 		return nil, p.down()
@@ -344,12 +382,17 @@ func (p *Plane) ListMessages(_ context.Context, req *connect.Request[v1.ListMess
 	}
 	toolCalls := append([]*v1.ToolCall(nil), p.toolRows...)
 	if p.askOn {
-		// A recorded clarifying call, in the arguments shape the client parses.
-		toolCalls = append(toolCalls, &v1.ToolCall{
-			Id:           AskCallID,
-			FunctionName: "ask_user",
-			Arguments:    `{"question":"` + AskQuestion + `","options":["` + AskOption + `","Second option"],"allow_other":true}`,
-		})
+		// THE LEDGER SHAPE PRODUCTION ACTUALLY HAS, copied from a live conversation's row: the blocking
+		// `ask_user` call is recorded with EMPTY arguments, and the ask itself is a separate
+		// `permission.question` record. Neither parses into a card, which is the point — the card comes from
+		// the PENDING ASK (streamed, and served by ListPendingAsks), not from the row.
+		//
+		// Modelling it with parseable arguments would put TWO cards on screen for one question and make this
+		// fixture test a path production does not take.
+		toolCalls = append(toolCalls,
+			&v1.ToolCall{Id: AskCallID, FunctionName: "orchicon_ask_user", Arguments: ""},
+			&v1.ToolCall{Id: "perm-9", FunctionName: "permission.question", Arguments: ""},
+		)
 	}
 	assistant := &v1.ChatMessage{
 		Id:             AssistantMsgID,
@@ -432,6 +475,16 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 	if err := send(&v1.ChatStreamResponse{Event: &v1.ChatStreamResponse_TextChunk{
 		TextChunk: &v1.TextChunk{Content: first}}}); err != nil {
 		return nil
+	}
+
+	// THEN THE QUESTION, after text has already streamed. This ordering is the point: the operator's report is
+	// that the card is drawn ABOVE that text, and a fixture that raised the ask before any text could not
+	// reproduce it.
+	if p.AskArmed() {
+		if err := send(&v1.ChatStreamResponse{Event: &v1.ChatStreamResponse_PermissionAsk{
+			PermissionAsk: p.pendingAsk()}}); err != nil {
+			return nil
+		}
 	}
 
 	// THEN THE WORK, one call at a time: the counters appear and GROW. The settle beat before the

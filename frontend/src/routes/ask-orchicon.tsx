@@ -714,7 +714,30 @@ function AskOrchiconPage() {
   // streaming reply twice; WITH a search that render is gated off and these blocks are the only way the
   // text the operator is looking at can be searched.
   const searchBlocks = searchActive ? [...transcriptBlocks, ...liveBlocks] : transcriptBlocks;
-  const transcriptSlots: TranscriptSlot[] = interleave(searchBlocks, activeStream?.asks);
+
+  // AN UNANSWERED QUESTION IS NOT A TRANSCRIPT ENTRY — IT BELONGS AT THE BOTTOM.
+  //
+  // Cards used to be interleaved by arrival time like any other block, which is right for a SETTLED record
+  // ("an operator scrolling back must see that a grant was given and what it covered") and WRONG for an open
+  // question. The interleave puts every slot in time order and the live text is rendered AFTER all slots, so a
+  // question raised mid-reply was drawn above the very text it was about:
+  //
+  //   the operator: "The Ask card is on TOP of the text. A question shouldn't come before the information. It
+  //   goes information -> Question. It should be at the bottom of the screen."
+  //
+  // So the two are split by whether the operator still has to act:
+  //
+  //   PENDING (outcome === null) — drawn LAST, after the live text and after everything else. It is the live
+  //     end of the conversation: the turn is parked on it, and it is the one thing being asked of them.
+  //   SETTLED — stays interleaved where it happened, because that is history now and history reads in order.
+  //
+  // When a question is answered it moves to the settled side and takes its place in the timeline, so a
+  // scroll-back still shows what was asked and what was chosen.
+  const asksAll = activeStream?.asks;
+  const settledAsks = (asksAll ?? []).filter((a) => a.outcome !== null);
+  const openAsks = (asksAll ?? []).filter((a) => a.outcome === null);
+
+  const transcriptSlots: TranscriptSlot[] = interleave(searchBlocks, settledAsks);
   const visibleSlots = filterByQuery(
     transcriptSlots,
     searchQuery,
@@ -2328,6 +2351,35 @@ function AskOrchiconPage() {
                         return null;
                     }
                   })}
+
+                {/* THE OPEN QUESTIONS — last, after the live text and every block, because a question comes
+                    after the information it is about. See openAsks: a PENDING ask is the live end of the
+                    conversation (the turn is parked on it), so it is drawn where the newest thing goes, while
+                    a settled record stays interleaved where it happened. */}
+                {!searchActive &&
+                  openAsks.map((a) => (
+                    <div key={`open-ask:${a.key}`} data-testid="ask-card-open">
+                      <ConsentAskCard
+                        ask={a.ask}
+                        outcome={null}
+                        busy={!!askInFlight[a.ask.askId]}
+                        onDecide={(choice) =>
+                          void handleAskDecision(activeConvId!, a.ask.askId, choice)
+                        }
+                        onAnswer={(text) =>
+                          void handleAskDecision(
+                            activeConvId!,
+                            a.ask.askId,
+                            PermissionChoice.UNSPECIFIED,
+                            text,
+                          )
+                        }
+                        onEscape={() =>
+                          void handleAskDecision(activeConvId!, a.ask.askId, PermissionChoice.DENY)
+                        }
+                      />
+                    </div>
+                  ))}
 
                 {/* THE LIFTED CARD — after the live text, because that is where the operator expects the
                     thing they are being asked to answer. See liftedCard for why it cannot live inside the
