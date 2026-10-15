@@ -38,9 +38,12 @@ import { ProjectScopeSelect } from "@/components/conversations/ProjectScopeSelec
 import {
   ALL_PROJECTS,
   categoriesForScope,
+  composerProjectChoices,
+  effectiveComposerProject,
   filterConversationsByScope,
   scopeLabel,
   scopeOptions,
+  type ScopeOption,
 } from "@/lib/conversationProjects";
 import { conversationModeLabel, conversationModeMeta } from "@/lib/conversationModes";
 import { runningConvIds } from "@/lib/ask-running";
@@ -75,6 +78,10 @@ import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
 import { COMPACT_COMMAND, parseComposerCommand } from "@/lib/composer-command";
 import { bubbleKindFor } from "@/lib/ask-bubble";
+import {
+  dropSupersededMirror,
+  hasLiveTextItems,
+} from "@/lib/ask-live-merge";
 import {
   groupStreamItems,
   nextChunkKey,
@@ -296,6 +303,24 @@ function AskOrchiconPage() {
     ConversationMode.BRAINSTORM,
   );
 
+  // THE PROJECT A NOT-YET-CREATED CONVERSATION WILL BE CREATED IN, chosen from the composer.
+  //
+  // THE GAP THIS CLOSES. The GUI had NO way to set a conversation's project at creation: the only
+  // control was the rail's per-row "move to project", which is reachable only AFTER the chat exists.
+  // So a conversation you meant to file in a workspace was born unassigned, and filing it happened as
+  // a second, separate action — which is exactly the sequence the operator described ("you have to
+  // chat first, then go over and change it in the drop down once it's in the rail").
+  //
+  // The TUI does not have this problem because it INFERS the workspace from the directory it was
+  // launched in. That inference is not something this client can port faithfully — it has no launch
+  // directory — but choosing it explicitly at the point of use is the same power, and it is how the
+  // MODE already works on this row (see localMode above): held here before a conversation exists,
+  // handed to the create call, retargeted directly once there is a row to write to.
+  //
+  // Empty means "not chosen yet", which falls back to the rail's scope (scopeProjectId) so the
+  // composer can never silently disagree with the workspace the sidebar is showing.
+  const [composerProjectId, setComposerProjectId] = useState<string | null>(null);
+
   // The model a NOT-YET-CREATED conversation will be created with. The chat box
   // shows an "Ask Orchicon Anything..." hero before any conversation exists, and
   // the operator must be able to choose the model THERE too — so with no
@@ -468,6 +493,18 @@ function AskOrchiconPage() {
   const pendingReplyId = activeStream?.pendingReplyId ?? null;
   const streamItems = activeStream?.items ?? [];
 
+  // Group streaming items into coalesced bubbles.
+  //
+  // DECLARED HERE, ABOVE ITS FIRST CONSUMER, and the move is load-bearing: the transcript builder
+  // below needs it to decide whether the live stream is already drawing the running reply (see
+  // lib/ask-live-merge), and this file's own rule is that a `const` used above its declaration is a
+  // TDZ error the production build rejects (the same reason `messages` and the turn union were
+  // moved up). It depends on nothing but `streamItems`, which is the line above.
+  const groupedStream = useMemo(
+    () => groupStreamItems(streamItems),
+    [streamItems],
+  );
+
   // THE TURN'S IN-FLIGHT UNION IS DECLARED HERE, ABOVE ITS FIRST CONSUMER, and the move is a
   // pure reordering: `listPollMs` is already in scope (state, declared with the other list-poll
   // state), and nothing between here and their old site read `conversations`/`activeConv`. TWO
@@ -548,7 +585,13 @@ function AskOrchiconPage() {
   // what the operator caught, from the other side — the TUI appeared stalled while
   // this client was quietly displaying the waiting card. Both clients now reconcile
   // against the server's pending set, so neither depends on having caught an event.
-  const { data: pendingAsks } = usePendingAsks(activeConvId ?? "");
+  // GATED ON THE TURN UNION, not on this client's stream slot. A card can be raised by a turn this client
+  // never streamed (started in the TUI or another tab, or one whose socket dropped), which is precisely the
+  // case the discovery read exists for — gating it on our own slot would leave it asleep in that case, i.e.
+  // broken in exactly the situation it is needed. `turnInFlight` is declared above.
+  const { data: pendingAsks } = usePendingAsks(activeConvId ?? "", {
+    refetchInterval: transcriptPollMs(turnInFlight),
+  });
   useEffect(() => {
     if (!activeConvId || !pendingAsks || pendingAsks.length === 0) return;
     // Through the SAME fold the wire arm uses, so a card delivered both ways is drawn
@@ -568,8 +611,85 @@ function AskOrchiconPage() {
   const showOptimistic =
     !!optimisticUserMsg &&
     !messages?.some((m) => m.content === optimisticUserMsg && m.role === "user");
+  // THE RUNNING REPLY ARRIVES TWICE, so exactly ONE copy is drawn. The server streams it as it is
+  // written AND mirrors it into the acked row (so a client with no live stream still sees it).
+  // While this client holds live text/reasoning, the live copy is the one that grows and the
+  // in-flight row is skipped; with no live items the row is the fallback, and after the turn the
+  // live items are cleared and the row (now the complete reply) is the only copy. See
+  // lib/ask-live-merge.ts — and note this must hold for BOTH the transcript and the scroll dep
+  // below, or the reply is drawn once and counted twice.
+  // IN-TRANSCRIPT SEARCH, declared HERE because the supersession decision below reads it. (The filter
+  // helpers it feeds are unit-tested in @/lib/transcript-search; the interleaved transcript is built once
+  // so the filter and the render cannot disagree about slot order.)
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeMatch, setActiveMatch] = useState(0);
+  const searchActive = searchQuery.trim() !== "";
+
+  // AND IT MUST ACCOUNT FOR SEARCH. The live items are NOT DRAWN while a search filter is active — the
+  // render gates them on `!searchActive` so the view shows only matches — so treating them as "present"
+  // would suppress the mirror row while nothing replaced it, and an in-flight reply would DISAPPEAR the
+  // moment the operator opened the find box. Measured in a browser: the transcript went to "No matches"
+  // with the streamed text still arriving. The supersession rule is about what is ON SCREEN, so it asks
+  // whether the live copy is being drawn, not merely whether it exists.
+  const hasLive = hasLiveTextItems(groupedStream);
+  // AND THE RULE IS THE SAME UNDER SEARCH. An earlier attempt made this false while searching (to keep the
+  // mirror row as a fallback) — but the search then had nothing to filter, because the live blocks below
+  // were keyed off this value too. Making it unconditional keeps ONE decision: while live text exists it is
+  // the copy both DRAWN and SEARCHED; the mirror row is the fallback for a client with no live items.
+  const liveItemsPresent = hasLive;
+  // groupedStream DOES need to be declared before this use; it is a `const` above (useMemo), and
+  // this file's own rule is that a const used above its declaration is a TDZ error the production
+  // build rejects.
+  const durableMessages = dropSupersededMirror(
+    messages ?? [],
+    pendingReplyId,
+    isStreaming,
+    liveItemsPresent,
+  );
+
+  // A LIVE-ONLY TURN MUST STILL BE SEARCHABLE.
+  //
+  // While the mirror row is suppressed in favour of the live stream items, the reply exists in
+  // `groupedStream` and NOT in `messages` — but the transcript renders it from `visibleSlots`, which is
+  // built from `transcriptBlocks` (the durable messages). So a search during an in-flight turn would find
+  // NOTHING: the very text on screen is not among the blocks being filtered. Measured in a browser: an
+  // active search reported "No matches" while the reply was visibly streaming.
+  //
+  // Normalized here rather than suppressed in the search, so the filter sees exactly ONE copy of the text
+  // — the same copy the supersession rule chose to draw. A turn whose transcript is complete (no live
+  // items) produces an empty list and changes nothing, which is the common case.
+  // The live copy as SEARCHABLE blocks, so the text an operator is looking at during an in-flight turn can
+  // be found. It exists because the transcript renders `visibleSlots` (built from the durable messages)
+  // while the running reply is drawn from `groupedStream` — so on a live turn the visible text is not among
+  // the blocks the filter sees, and a search found nothing at all. Measured in a browser: "No matches" while
+  // the reply streamed on screen.
+  //
+  // IT IS EXACTLY ONE COPY. The mirror row is dropped whenever this list is non-empty (the same
+  // supersession rule the render uses), so the search never sees the turn twice.
+  // THE CARD THAT MUST BE DRAWN AFTER THE LIVE TEXT.
+  //
+  // The in-flight row carries the recorded ask_user call, and while a reply streams that row sorts BEFORE the
+  // live text (it predates it) — so the card, drawn as the last thing inside the row, lands between the row's
+  // prose and the live copy. The operator: "the card IS there. However, it's at the top of the text that was
+  // sent rather than at the bottom after the text."
+  //
+  // So it is LIFTED OUT of the row and emitted after the live items, which is where it belongs: the newest
+  // thing in the turn, and the thing being asked of the operator. Only while live items exist — with no live
+  // stream the row IS the turn (a reload, another tab), and the card draws in its own place.
+  const inFlightMsg = durableMessages.find((m) => m.id === pendingReplyId);
+  const liftedCard = hasLive && inFlightMsg ? askCardOf(inFlightMsg) : null;
+
+  const liveBlocks: TranscriptBlock[] = hasLive
+    ? groupedStream
+        .filter((it) => it.kind === "text" || it.kind === "user")
+        .map((it) => ({
+          kind: "message" as const,
+          at: it.at,
+          message: { id: `live-${it.key}`, role: "assistant", content: it.text } as ChatMessage,
+        }))
+    : [];
   const transcriptBlocks: TranscriptBlock[] = [];
-  for (const msg of messages ?? []) {
+  for (const msg of durableMessages) {
     transcriptBlocks.push({
       kind: "message",
       at: Number(msg.createdAt?.seconds ?? 0) * 1000,
@@ -589,10 +709,35 @@ function AskOrchiconPage() {
   // already-loaded messages only (no server search, no regex, no persisted history:
   // all out of scope). The interleaved transcript is built ONCE here so the filter
   // and the render cannot disagree about slot order.
-  const [searchQuery, setSearchQuery] = useState("");
-  const [activeMatch, setActiveMatch] = useState(0);
-  const transcriptSlots: TranscriptSlot[] = interleave(transcriptBlocks, activeStream?.asks);
-  const searchActive = searchQuery.trim() !== "";
+  // The live blocks ride along ONLY while a search is active. Without a search the live copy is already
+  // painted from `groupedStream` (the render's own live-item map), so adding it here too would draw every
+  // streaming reply twice; WITH a search that render is gated off and these blocks are the only way the
+  // text the operator is looking at can be searched.
+  const searchBlocks = searchActive ? [...transcriptBlocks, ...liveBlocks] : transcriptBlocks;
+
+  // AN UNANSWERED QUESTION IS NOT A TRANSCRIPT ENTRY — IT BELONGS AT THE BOTTOM.
+  //
+  // Cards used to be interleaved by arrival time like any other block, which is right for a SETTLED record
+  // ("an operator scrolling back must see that a grant was given and what it covered") and WRONG for an open
+  // question. The interleave puts every slot in time order and the live text is rendered AFTER all slots, so a
+  // question raised mid-reply was drawn above the very text it was about:
+  //
+  //   the operator: "The Ask card is on TOP of the text. A question shouldn't come before the information. It
+  //   goes information -> Question. It should be at the bottom of the screen."
+  //
+  // So the two are split by whether the operator still has to act:
+  //
+  //   PENDING (outcome === null) — drawn LAST, after the live text and after everything else. It is the live
+  //     end of the conversation: the turn is parked on it, and it is the one thing being asked of them.
+  //   SETTLED — stays interleaved where it happened, because that is history now and history reads in order.
+  //
+  // When a question is answered it moves to the settled side and takes its place in the timeline, so a
+  // scroll-back still shows what was asked and what was chosen.
+  const asksAll = activeStream?.asks;
+  const settledAsks = (asksAll ?? []).filter((a) => a.outcome !== null);
+  const openAsks = (asksAll ?? []).filter((a) => a.outcome === null);
+
+  const transcriptSlots: TranscriptSlot[] = interleave(searchBlocks, settledAsks);
   const visibleSlots = filterByQuery(
     transcriptSlots,
     searchQuery,
@@ -1027,6 +1172,11 @@ function AskOrchiconPage() {
     // there IS an active conversation, so after New Chat the previous conversation's mode stayed in state and
     // was handed to the next conversation at creation. A mode belongs to the conversation that was set on.
     setLocalMode(ConversationMode.BRAINSTORM);
+    // AND THE PROJECT PICK IS CLEARED WITH IT, for the same reason and by the same rule: a workspace
+    // belongs to the conversation it was chosen for. Leaving it set would file the NEXT new chat into
+    // a workspace the operator picked for the previous one — silent, and the exact class of leak the
+    // mode comment above records.
+    setComposerProjectId(null);
   }, []);
 
   const handleDeleteConv = useCallback(
@@ -1720,6 +1870,52 @@ function AskOrchiconPage() {
     [projectScopeOptions, setConvProject, toast],
   );
 
+  // Sync the composer's project from the open conversation, exactly as the mode above is synced: an
+  // explicit choice is cleared when the open conversation changes, so the pill always shows the row it
+  // would actually write to rather than a stale pick from a previous chat.
+  useEffect(() => {
+    setComposerProjectId(null);
+  }, [activeConvId]);
+
+  // THE PROJECT THE COMPOSER SHOWS AND USES. An explicit pick wins; otherwise the rail's scope, so a
+  // conversation started while the sidebar is scoped to a workspace is created in it without the
+  // operator having to also touch the pill. "All projects" and the unassigned scope both yield "", so
+  // an unscoped view still creates unassigned, and a "not chosen" pill cannot silently invent a home.
+  // The DECISION lives in lib/conversationProjects, as a pure function, because this route cannot be
+  // rendered by the test setup — logic left inline here is logic nothing can assert. See its own tests.
+  const effectiveProjectId = effectiveComposerProject(
+    composerProjectId,
+    scopeProjectId,
+    projects,
+  );
+
+  // The option list for the composer pill: the same choices the rail's move control offers, minus
+  // "All projects" (a way to LOOK at the list, not a place to put a conversation).
+  const composerProjectOptions = useMemo(
+    () => composerProjectChoices(projectScopeOptions),
+    [projectScopeOptions],
+  );
+
+  // handleComposerProjectChange writes the project the way the OTHER project control on this page
+  // does. See its sibling above (setConvProject): the SAME rpc, so the two clients — and the two
+  // controls in this one — cannot disagree about what "belongs to a project" means.
+  //
+  // WITH NO OPEN CONVERSATION THERE IS NOTHING TO WRITE, so the choice is simply held for the create
+  // that follows; with one open, the choice is applied immediately and the list is invalidated by the
+  // mutation so the rail's scope and counts follow it.
+  const handleComposerProjectChange = useCallback(
+    (next: string) => {
+      setComposerProjectId(next || null);
+      if (activeConvId) {
+        setConvProject.mutate(
+          { id: activeConvId, projectId: next },
+          { onError: () => toast.error("Failed to move conversation", { title: "Error" }) },
+        );
+      }
+    },
+    [activeConvId, setConvProject, toast],
+  );
+
   // Build categorized conversation groups — WITHIN THE PROJECT SCOPE.
   const categorizedConversations = useMemo(() => {
     if (!conversations) return { categorized: new Map<string, string[]>(), uncategorized: [] as string[] };
@@ -1756,19 +1952,24 @@ function AskOrchiconPage() {
     return new Map(conversations.map((c) => [c.id, c]));
   }, [conversations]);
 
-  // Group streaming items into coalesced bubbles.
-  const groupedStream = useMemo(
-    () => groupStreamItems(streamItems),
-    [streamItems],
-  );
+  // (groupedStream is declared ABOVE, beside `streamItems`: the transcript builder reads it.)
 
   // Merge durable messages with streaming items for display.
   // Durable messages are the source of truth; streaming items fill in the gap.
   const displayMessages = useMemo(() => {
-    if (!isStreaming || groupedStream.length === 0) return messages ?? [];
+    // The SAME supersession rule as the transcript above: with live items drawing the running
+    // reply, the mirrored row must not be merged in beside them or the reply is drawn twice. This
+    // is the scroll dep and the empty-check input, so it must agree with `transcriptBlocks`.
+    const durable = dropSupersededMirror(
+      messages ?? [],
+      pendingReplyId,
+      isStreaming,
+      hasLiveTextItems(groupedStream),
+    );
+    if (!isStreaming || groupedStream.length === 0) return durable;
     // Build a simple merged list: durable messages + streaming items.
-    return [...(messages ?? []), ...groupedStream] as ChatMessage[];
-  }, [messages, isStreaming, groupedStream]);
+    return [...durable, ...groupedStream] as ChatMessage[];
+  }, [messages, isStreaming, groupedStream, pendingReplyId]);
 
   // (There was a `lastMessageId` here, used to decide whether a clarifying-question
   // card was still interactive by asking "does a later message exist?". That was right
@@ -1842,10 +2043,10 @@ function AskOrchiconPage() {
                       // The model chosen on the hero, if any — this is what makes
                       // the chip work before a conversation exists.
                       modelRef: pendingModel,
-                      // The project the scope has selected, when it names a real one — so a new conversation
-                      // started while scoped to a project is created IN that workspace. An unscoped view (All
-                      // projects) or the No-project scope creates unassigned, exactly as before.
-                      projectId: scopeProjectId,
+                      // The project chosen on the composer pill, falling back to the sidebar's scope — so a
+                      // new conversation is filed in the workspace the operator picked, or the one they are
+                      // looking at. An unscoped, unpicked view creates unassigned, exactly as before.
+                      projectId: effectiveProjectId,
                     });
                     if (conv?.id) {
                       // Consumed by THIS conversation; a later new chat starts
@@ -1871,6 +2072,9 @@ function AskOrchiconPage() {
                 placeholder="Ask Orchicon Anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
+                projectOptions={composerProjectOptions}
+                projectId={effectiveProjectId}
+                onProjectChange={handleComposerProjectChange}
                 convId={activeConvId}
                 modelRef={askModel}
                 onModelChange={handleAskModelChange}
@@ -2104,6 +2308,14 @@ function AskOrchiconPage() {
                             message={block.message}
                             onRetry={handleRetry}
                             onSelectOption={handleSendMessage}
+                            highlight={searchQuery}
+                            // The in-flight row's card is drawn after the live text instead (see
+                            // liftedCard): inside this row it would be stranded mid-reply.
+                            cardLifted={
+                              !!liftedCard &&
+                              block.kind === "message" &&
+                              block.message.id === pendingReplyId
+                            }
                           />
                         )}
                       </div>
@@ -2139,6 +2351,52 @@ function AskOrchiconPage() {
                         return null;
                     }
                   })}
+
+                {/* THE OPEN QUESTIONS — last, after the live text and every block, because a question comes
+                    after the information it is about. See openAsks: a PENDING ask is the live end of the
+                    conversation (the turn is parked on it), so it is drawn where the newest thing goes, while
+                    a settled record stays interleaved where it happened. */}
+                {!searchActive &&
+                  openAsks.map((a) => (
+                    <div key={`open-ask:${a.key}`} data-testid="ask-card-open">
+                      <ConsentAskCard
+                        ask={a.ask}
+                        outcome={null}
+                        busy={!!askInFlight[a.ask.askId]}
+                        onDecide={(choice) =>
+                          void handleAskDecision(activeConvId!, a.ask.askId, choice)
+                        }
+                        onAnswer={(text) =>
+                          void handleAskDecision(
+                            activeConvId!,
+                            a.ask.askId,
+                            PermissionChoice.UNSPECIFIED,
+                            text,
+                          )
+                        }
+                        onEscape={() =>
+                          void handleAskDecision(activeConvId!, a.ask.askId, PermissionChoice.DENY)
+                        }
+                      />
+                    </div>
+                  ))}
+
+                {/* THE LIFTED CARD — after the live text, because that is where the operator expects the
+                    thing they are being asked to answer. See liftedCard for why it cannot live inside the
+                    row that records it while a reply is still streaming. */}
+                {liftedCard && (
+                  <div data-testid="ask-card-live">
+                    <AskCard
+                      question={liftedCard.question}
+                      options={liftedCard.options}
+                      allowOther={liftedCard.allowOther}
+                      answered={liftedCard.answered}
+                      answer={liftedCard.answer}
+                      error={liftedCard.error}
+                      onSelect={handleSendMessage}
+                    />
+                  </div>
+                )}
 
                 {/* THE ACTIVITY LINE — for the WHOLE turn, not only before the first token.
                     The operator, on the old rule: "After the initial 'Orchicon is thinking...',
@@ -2217,6 +2475,9 @@ function AskOrchiconPage() {
                 placeholder="Ask Orchicon Anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
+                projectOptions={composerProjectOptions}
+                projectId={effectiveProjectId}
+                onProjectChange={handleComposerProjectChange}
                 fullsend={!!activeConv?.fullsend}
                 onFullsendChange={handleFullsendChange}
                 convId={activeConvId}
@@ -2498,16 +2759,60 @@ function AskOrchiconPage() {
 
 // --- MessageBubble: renders a single persisted ChatMessage ----------
 
+/**
+ * askCardOf returns a row's clarifying card — the recorded ask_user call — when it should be drawn.
+ *
+ * IT EXISTS SO THE CARD CAN BE RENDERED SOMEWHERE OTHER THAN INSIDE THE ROW, and that separation is the
+ * fix for "it's at the top of the text that was sent rather than at the bottom after the text".
+ *
+ * The card is the last thing inside MessageBubble, which is correct WHEN THE ROW IS THE WHOLE TURN. It is
+ * wrong while a reply is still streaming: the row the card lives on sorts BEFORE the live text (it predates
+ * it), so drawing the card inside that row puts it between the row's own prose and the live copy — the card
+ * ends up stranded mid-reply, above text that arrived after the question was asked.
+ *
+ * So the caller lifts the card out of the row and emits it after the live text, which is where the operator
+ * expects it (the newest thing, the thing being asked of them). The row keeps its prose and its reasoning.
+ */
+function askCardOf(message: ChatMessage) {
+  const call = (message.toolCalls ?? []).find((c) => isAskUserToolCall(c.functionName));
+  if (!call) return null;
+  const parsed = parseAskUserArgs(call.arguments);
+  const result = (message.toolResults ?? []).find((r) => r.toolCallId === call.id);
+  const plan = askCardPlan(true, !!parsed, !!result);
+  if (!plan.render) return null;
+  return {
+    id: call.id,
+    question: parsed?.question ?? "",
+    options: parsed?.options ?? [],
+    allowOther: parsed?.allowOther,
+    answered: !!result,
+    answer: result?.output ?? "",
+    error: plan.error,
+  };
+}
+
 function MessageBubble({
   message,
   onRetry,
   onSelectOption,
+  highlight = "",
+  cardLifted = false,
 }: {
   message: ChatMessage;
   onRetry?: () => void;
   // onSelectOption sends a clicked clarifying-question option as the answer to the
   // PAUSED turn (it goes over the reply RPC as the ask_user tool result).
   onSelectOption?: (label: string) => void;
+  // highlight is the active in-transcript search query. It is threaded to the bubbles so a match is
+  // marked WHERE IT IS: the filter already answers "which message", and on a long reply the operator
+  // needs "which line". Empty (no search) renders exactly as before.
+  highlight?: string;
+  /**
+   * cardLifted tells this bubble its clarifying card is being drawn ELSEWHERE (after the live text) and it
+   * must not draw its own copy. See askCardOf: while a reply streams, the row the card lives on sorts before
+   * the live text, so drawing the card inside the row strands it mid-reply.
+   */
+  cardLifted?: boolean;
 }) {
   // WHICH SHELL DRAWS THIS MESSAGE. Decided in one tested place (lib/ask-bubble.ts)
   // rather than by a fall-through: `system` is the PLATFORM speaking about the
@@ -2516,7 +2821,7 @@ function MessageBubble({
   const kind = bubbleKindFor(message);
 
   if (kind === "user") {
-    return <UserBubble text={message.content} source="you" />;
+    return <UserBubble text={message.content} source="you" highlight={highlight} />;
   }
 
   if (kind === "notice") {
@@ -2600,6 +2905,7 @@ function MessageBubble({
         <AssistantBubble
           text={message.content}
           label="Orchicon"
+          highlight={highlight}
         />
       )}
       {/* THE QUESTION CARD IS THE LAST THING IN THE MESSAGE.
@@ -2610,7 +2916,7 @@ function MessageBubble({
           of a bunch of other text you sent. That is not intuitive. It should be at
           the bottom (newest/recent)." The TUI emits its card last for the same
           reason (chat.conversationItems), so the two clients read the same way. */}
-      {askCall && askPlan.render && (
+      {askCall && askPlan.render && !cardLifted && (
         <AskCard
           question={askParsed?.question ?? ""}
           options={askParsed?.options ?? []}
@@ -2638,6 +2944,9 @@ function ChatInputField({
   placeholder = "Ask Orchicon anything...",
   mode = ConversationMode.BRAINSTORM,
   onModeChange,
+  projectOptions,
+  projectId = "",
+  onProjectChange,
   fullsend = false,
   onFullsendChange,
   convId,
@@ -2654,6 +2963,13 @@ function ChatInputField({
   placeholder?: string;
   mode?: ConversationMode;
   onModeChange?: (mode: ConversationMode) => void;
+  // THE PROJECT CONTROL on the composer row, alongside the mode. It is supplied whenever there is a
+  // list of projects to choose from, which includes the HERO (no conversation yet) — that is the
+  // whole point, because choosing the workspace at creation is what was missing. OnChange holds the
+  // choice before a conversation exists and applies it immediately once one does.
+  projectOptions?: ScopeOption[];
+  projectId?: string;
+  onProjectChange?: (projectId: string) => void;
   // fullsend is the conversation's FULLSEND state AS THE SERVER REPORTS IT, and
   // onFullsendChange writes it. Both are SUPPLIED ONLY WHEN A CONVERSATION IS OPEN: there is no
   // pending form (see handleFullsendChange), so the control is absent on the hero rather than
@@ -3222,8 +3538,17 @@ function ChatInputField({
           })}
         </div>
       )}
+      {/* NO `overflow-hidden` ON THIS BOX, and the removal is the fix rather than a tidy-up.
+          It clipped the composer row's popovers: the project pill's menu opens BELOW the row, and with the
+          box clipping at its own rounded edge the menu was cut off mid-item — "the project dropdown is being
+          swallowed by the bubble. It needs to be on top." The same box wraps the MODE control, which grows the
+          same kind of popover, so both were being clipped by one rule.
+          The radii that `overflow-hidden` was really there for (the glass panel's inner content meeting its
+          rounded border) are preserved by the `rounded-2xl` on the glass surface itself; nothing inside this
+          box paints past the corners, so removing the clip costs no visual containment and restores the
+          popovers. */}
       <div
-        className={`glass-input rounded-2xl p-2.5 overflow-hidden ${dragOver ? "ring-2 ring-cyan-400 border-dashed" : ""}`}
+        className={`glass-input rounded-2xl p-2.5 ${dragOver ? "ring-2 ring-cyan-400 border-dashed" : ""}`}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -3387,6 +3712,19 @@ function ChatInputField({
               <FullsendToggle
                 on={!!fullsend}
                 onChange={onFullsendChange}
+              />
+            )}
+            {/* THE PROJECT PILL SITS BESIDE THE MODE, because they answer the same kind of question
+                at the same moment: which persona, and which workspace. It reuses the sidebar's
+                ProjectScopeSelect so the option list, the archived marker and the unknown-project
+                fallback are decided in ONE place — and it opens LEFTWARD-safe from this row (the
+                trigger is the rightmost control in the composer). */}
+            {onProjectChange && projectOptions && projectOptions.length > 0 && (
+              <ProjectScopeSelect
+                options={projectOptions}
+                value={projectId}
+                onChange={onProjectChange}
+                label="Conversation project"
               />
             )}
             {onModeChange && (
@@ -3843,6 +4181,5 @@ function UncategorizedDropZone({
     </div>
   );
 }
-
 
 export default AskOrchiconPage;

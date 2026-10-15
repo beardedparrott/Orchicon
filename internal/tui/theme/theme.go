@@ -346,6 +346,13 @@ func Use(name string) bool {
 	// (see md.codeBlock). The fill is the theme's raised surface and the text is the body colour, so the
 	// block reads as a block and its contents read as code — not as prose on a slightly different grey.
 	md.SetCodeBlock(string(t.Text), string(t.SurfaceAlt))
+	// AND THE SEARCH MATCH BAND. `Warn` is the palette's "attention" hue — the amber every theme already
+	// calls for warnings and pending states — and a search hit IS an attention state: something the operator
+	// asked to be pointed at. Using the theme's OWN attention colour rather than a fixed yellow is what makes
+	// the band belong in every theme in the picker instead of clashing with half of them, the same reasoning
+	// every other token here follows. The restore pair is the (text, surface) the row sits on, because a hit
+	// is drawn INSIDE whatever band contains it.
+	md.SetSearchHighlight(string(t.Text), string(t.Warn), string(t.Text), string(t.SurfaceAlt))
 	return true
 }
 

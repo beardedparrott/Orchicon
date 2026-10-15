@@ -317,11 +317,35 @@ func (m *Model) probe(ctx context.Context) (*Result, error) {
 	return &Result{Profile: m.buildProfile(lr.AccessToken, refresh), ServerVersion: vr.Version}, nil
 }
 
+// profileNameForURL names a profile after the INSTANCE its URL points at, so two
+// instances get two slots in the config file instead of fighting over one.
+//
+// HOST:PORT, with the separators turned into '-' so the result is a valid TOML section
+// key ([profiles.localhost-8080]). A URL with no host falls back to "default", which is
+// also what SaveProfile uses for an unnamed profile. The connection screen's validate()
+// already requires a scheme and host before a probe runs, so the fallback is for safety
+// and for callers that build a profile without probing.
+func profileNameForURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return "default"
+	}
+	// A literal IPv6 host carries '[' and ']', which cannot appear in a TOML bare key, so
+	// they are dropped along with the ':' separator. '.' is folded in as well: it is legal
+	// in a hostname and NOT legal in a TOML bare key, and render() writes this name as
+	// `[profiles.<name>]`.
+	name := strings.NewReplacer(":", "-", ".", "-", "[", "", "]", "").Replace(u.Host)
+	if name == "" {
+		return "default"
+	}
+	return name
+}
+
 // buildProfile assembles the profile from the form. token overrides the
 // credential field (password mode stores the minted access token, never
 // the password); refresh carries the login's refresh token.
 func (m *Model) buildProfile(token, refresh string) *config.Profile {
-	name := "default"
+	name := profileNameForURL(m.currentURL())
 	method := config.AuthAPIKey
 	if !m.authAPI {
 		method = config.AuthPassword
@@ -335,6 +359,22 @@ func (m *Model) buildProfile(token, refresh string) *config.Profile {
 		user = m.username()
 	}
 	url_ := m.currentURL()
+	// AN EXPLICIT NAME IS CARRIED; OTHERWISE THE INSTANCE NAMES ITSELF.
+	//
+	// The name used to be the literal "default" for EVERY url, and SaveProfile sets
+	// cfg.Active to it — so connecting to a SECOND instance overwrote the first instance's
+	// profile (URL, token, refresh token) IN PLACE, and every later launch went to whichever
+	// instance was connected to last. That is the whole of the operator's "it seems to flop
+	// which port you are connecting to each time you run it": there was only ever one slot
+	// for two instances. Deriving the name from host:port gives each instance its own entry,
+	// so both survive, `orch` keeps landing on the last one chosen (Active), and
+	// ORCHICON_PROFILE can pin a process to a specific one.
+	//
+	// "default" IS DELIBERATELY NOT CARRIED. A profile under that name was written by the
+	// single-slot build, and its URL may well be a DIFFERENT instance than the one being
+	// connected to now — that mixed-up pair is how this bug shows itself. Reusing the name
+	// would re-create the collision. It is left on disk rather than deleted, because it may
+	// still hold a working credential the operator wants.
 	if m.profile != nil && m.profile.Name != "" && m.profile.Name != "default" {
 		name = m.profile.Name
 	}

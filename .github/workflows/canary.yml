@@ -163,6 +163,7 @@ jobs:
 
       - name: Push the image
         run: |
+          set -eo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker push ghcr.io/beardedparrott/orchicon:canary
 

@@ -95,7 +95,7 @@ func TestRealWedgeHistoryIsRescuedByTheReactivePath(t *testing.T) {
 	b.chatHistory = map[string][]Message{sid: history}
 	realErr := fmt.Errorf("orchicon bridge: start Ask turn: provider status 400 400 Bad Request: " +
 		`{"error":{"message":"This model's maximum context length is 1048576 tokens. However, you requested 1049352 tokens (1016584 in the messages, 32768 in the completion). Please reduce the length of the messages"}}`)
-	if !isContextLengthError(realErr) {
+	if !isOversizePromptError(realErr) {
 		t.Fatal("the real provider error must be recognized, or recovery never triggers for this exact case")
 	}
 	prov := &scriptedProvider{errs: []error{realErr, nil}}

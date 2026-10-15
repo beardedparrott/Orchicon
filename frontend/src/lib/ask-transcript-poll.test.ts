@@ -34,6 +34,15 @@ describe("the transcript query in ask-orchicon", () => {
     expect(src).toContain("refetchInterval: transcriptPollMs(turnInFlight)");
   });
 
+  it("drives the CARD discovery read from the same cadence, so a missed ask event is recoverable", () => {
+    // THE REPORTED BUG: "every time a card was passed, I had to hit refresh on the browser for it to
+    // appear." `usePendingAsks` is the discovery half of the card path and had NO interval, so it read once
+    // and never again — a card whose stream event was missed stayed invisible until a reload. The guard is
+    // on the WIRING, because the mapping above can be perfectly correct while nothing calls it.
+    expect(src).toContain("usePendingAsks(activeConvId ?? \"\", {");
+    expect(src).toContain("refetchInterval: transcriptPollMs(turnInFlight)");
+  });
+
   it("no longer gates the poll on isStreaming — the half-turn gate that caused it", () => {
     // THE REGRESSION, caught literally: `{ refetchInterval: isStreaming ? 2000 : false }`.
     expect(src).not.toContain("refetchInterval: isStreaming ? 2000 : false");
@@ -48,5 +57,31 @@ describe("the transcript query in ask-orchicon", () => {
     expect(union).toBeGreaterThan(-1);
     expect(query).toBeGreaterThan(-1);
     expect(union).toBeLessThan(query);
+  });
+});
+
+// --- the CARD discovery read uses the same turn-driven cadence -------------------------------
+//
+// The operator, mid-session: "every time a card was passed, I had to hit refresh on the browser for it to
+// appear."
+//
+// `usePendingAsks` is the discovery half of the card path — the half that exists so a card does not depend on
+// having caught a live stream event. It had NO refetch interval at all, so it read once at mount and never
+// again: an ask raised by a turn already in flight reached the client only if the socket delivered it, and
+// when that arm missed nothing re-asked until a page reload re-ran the query. These pin the rule the fix
+// depends on: while a turn is in flight the discovery read is on the same cadence as the transcript.
+describe("card discovery cadence", () => {
+  it("polls while a turn is in flight, so a missed stream event is not permanent", () => {
+    expect(transcriptPollMs(true)).toBe(TRANSCRIPT_POLL_MS);
+  });
+
+  it("stops when no turn is in flight — no idle network churn", () => {
+    expect(transcriptPollMs(false)).toBe(false);
+  });
+
+  it("is a positive interval, because a zero or negative one would disable polling entirely", () => {
+    // `setInterval(fn, 0)` is not "poll as fast as possible" in every runtime, and a 0 value here would
+    // silently reintroduce the bug: the read would never repeat.
+    expect(TRANSCRIPT_POLL_MS).toBeGreaterThan(0);
   });
 });

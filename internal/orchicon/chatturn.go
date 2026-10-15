@@ -465,7 +465,7 @@ func (b *NativeBridge) persistAskHistoryLocked(sessionID string) {
 // returns the bytes to write, or nil when nothing can be written (already
 // logged).
 //
-// THREE SHAPES, IN ORDER OF FIDELITY, because the only wrong answer is writing
+// FOUR SHAPES, IN ORDER OF FIDELITY, because the only wrong answer is writing
 // nothing:
 //
 //  1. PLAIN JSON while it fits under the cap. This is the format every earlier
@@ -483,6 +483,13 @@ func (b *NativeBridge) persistAskHistoryLocked(sessionID string) {
 //     so dropping them is what brings a genuinely enormous history back under the
 //     cap — and every affected image is replaced by an explicit marker rather
 //     than vanishing, so the surviving transcript still says one was there.
+//  4. GZIP WITH TOOL PAYLOADS ELIDED, as the LAST resort. Step 3 is blind to the
+//     shape that actually overflowed a live session: a base64 screenshot inside a
+//     TOOL RESULT (obs-get-source-screenshot returns one), which is not an Image
+//     content part at all — so images_dropped was 0 and step 3 reclaimed nothing.
+//     Step 4 is the SAME pass the reactive path runs
+//     (ReduceConversationHistoryForContext), reused rather than reimplemented,
+//     so the two paths cannot disagree about what "too big" means.
 func (b *NativeBridge) marshalAskHistoryForStorage(sessionID string, history []Message) []byte {
 	raw, err := marshalAskHistory(history)
 	if err != nil {
@@ -509,13 +516,49 @@ func (b *NativeBridge) marshalAskHistoryForStorage(sessionID string, history []M
 		return nil
 	}
 	if len(gz) > askHistoryMaxBytes {
-		// AN ERROR, NOT A WARNING, and the consequence is spelled out: the file on disk is now STALE by
-		// everything committed since the last successful persist, and the load path only consults the file when
-		// the in-memory history is EMPTY — i.e. exactly after a restart. So this state means "a restart loses
-		// every message since then", silently, which is the failure mode this whole guard exists to stop.
-		b.log.Error("orchicon: ask history is oversize even after dropping image payloads — the FILE ON DISK IS NOW STALE, and a restart will reload it and LOSE every message committed since the last successful persist",
-			"session", sessionID, "gz_bytes", len(gz), "cap", askHistoryMaxBytes, "images_dropped", images)
-		return nil
+		// STEP 4: ELIDE THE TOOL PAYLOADS TOO.
+		//
+		// Dropping images is tried first because it is the CHEAPEST reduction: the tool
+		// context the turn reasoned over survives intact. But it is blind to the shape
+		// that actually overflows — a base64 payload inside a TOOL RESULT, which is not
+		// the Image content part. Measured on the live session: gz_bytes 25,828,015
+		// against a 16,777,216 cap with images_dropped 0, so step 3 had nothing to do
+		// and this function gave up, leaving the file on disk stale and a restart
+		// silently short of every message committed since.
+		//
+		// This is the SAME pass the reactive path uses, reused deliberately: it elides
+		// tool results and tool-call arguments while preserving every role, every
+		// message and every tool_use/tool_result PAIRING, so what lands on disk still
+		// replays without a provider rejection. It also caps an individual huge text
+		// part, which is a genuine loss — accepted here for the same reason the rest of
+		// this function accepts one: the alternative is not a smaller file, it is NO
+		// file, and then a restart reloads a snapshot missing everything since.
+		elided, st := ReduceConversationHistoryForContext(reduced, 0)
+		raw, err = marshalAskHistory(elided)
+		if err != nil {
+			b.log.Warn("orchicon: ask history marshal failed after eliding tool payloads", "session", sessionID, "error", err)
+			return nil
+		}
+		if gz, err = gzipAskHistory(raw); err != nil {
+			b.log.Warn("orchicon: ask history compress failed after eliding tool payloads", "session", sessionID, "error", err)
+			return nil
+		}
+		if len(gz) > askHistoryMaxBytes {
+			// AN ERROR, NOT A WARNING, and the consequence is spelled out: the file on disk is now STALE by
+			// everything committed since the last successful persist, and the load path only consults the file when
+			// the in-memory history is EMPTY — i.e. exactly after a restart. So this state means "a restart loses
+			// every message since then", silently, which is the failure mode this whole guard exists to stop.
+			b.log.Error("orchicon: ask history is oversize even after dropping images and eliding tool payloads — the FILE ON DISK IS NOW STALE, and a restart will reload it and LOSE every message committed since the last successful persist",
+				"session", sessionID, "gz_bytes", len(gz), "cap", askHistoryMaxBytes,
+				"images_dropped", images, "tool_results_elided", st.ToolResultsElided,
+				"tool_args_truncated", st.ToolArgsTruncated, "text_parts_truncated", st.TextPartsTruncated)
+			return nil
+		}
+		b.log.Warn("orchicon: ask history persisted with tool payloads elided to stay within the persistence cap — every message and every tool pairing is preserved, the payloads are not",
+			"session", sessionID, "gz_bytes", len(gz), "images_dropped", images,
+			"tool_results_elided", st.ToolResultsElided, "tool_args_truncated", st.ToolArgsTruncated,
+			"text_parts_truncated", st.TextPartsTruncated)
+		return gz
 	}
 	b.log.Warn("orchicon: ask history persisted with image payloads dropped to stay within the persistence cap — text and tool context are preserved, the images are not",
 		"session", sessionID, "gz_bytes", len(gz), "images_dropped", images)

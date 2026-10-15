@@ -33,8 +33,20 @@ jobs:
       - name: Delete releases beyond the cap
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # gh HAS TO BE TOLD WHICH REPOSITORY, because this job has no actions/checkout — it
+          # deletes releases, so it never needed the source. Without this every `gh release
+          # list` failed with "fatal: not a git repository", and the pipeline below swallowed
+          # that failure and exited 0: the job reported SUCCESS while deleting nothing. Measured
+          # consequence — 13 releases against a cap of 5, and every prune run since this
+          # workflow was written a green no-op.
+          GH_REPO: ${{ github.repository }}
         run: |
-          set -e
+          # pipefail IS THE POINT, not hygiene. Without it a pipeline's status is its LAST
+          # command's, so `gh release list` failing produced an empty list that flowed into a
+          # no-op while loop — a silent success. `-u` too: an unset variable in the arithmetic
+          # below would otherwise become an empty string and `tail -n +` would delete the wrong
+          # set. (`set -e` alone was here and caught none of this.)
+          set -euo pipefail
           echo "Keeping the newest ${MAX_RELEASES} releases."
           # `gh release list` sorts newest-first; keep the first MAX_RELEASES,
           # delete the rest. --yes skips confirmation; no --cleanup-tag so the

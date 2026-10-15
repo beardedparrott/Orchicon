@@ -192,6 +192,7 @@ jobs:
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
+          set -eo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker push "ghcr.io/beardedparrott/orchicon:${ORCHICON_VERSION}"
           docker push ghcr.io/beardedparrott/orchicon:latest
@@ -220,6 +221,7 @@ jobs:
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
+          set -eo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker push "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}"
           docker push ghcr.io/beardedparrott/orchicon-runtime:latest
@@ -248,7 +250,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
+          set -eo pipefail
           VERSION="${{ inputs.version || github.ref_name }}"
           if [ -z "$VERSION" ]; then
             echo "::error::Could not determine version tag (no input, no ref_name)"

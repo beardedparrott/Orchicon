@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +64,15 @@ func TestSavePermsAndRoundTrip(t *testing.T) {
 }
 
 func TestResolveEnvWinsAndNeverPersists(t *testing.T) {
+	// A NAMED SELECTION OUTRANKS THE ACTIVE PROFILE, so a suite that ran with
+	// ORCHICON_PROFILE exported in the operator's shell would resolve a different profile
+	// than these tests mean — and ORCHICON_PROFILE is now the DOCUMENTED way to pin a
+	// process, so exporting it is normal rather than exotic. Cleared explicitly here (and in
+	// the sibling Resolve tests) so the contract under test is the one with nothing named.
+	//
+	// NOTE: ORCHICON_URL/ORCHICON_TOKEN have the same latent exposure and are NOT cleared
+	// anywhere in this suite — a pre-existing gap, left alone here rather than widened.
+	t.Setenv(EnvProfile, "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, FileName)
 	fileCfg := &Config{
@@ -99,6 +110,7 @@ func TestResolveEnvWinsAndNeverPersists(t *testing.T) {
 }
 
 func TestResolveFileProfile(t *testing.T) {
+	t.Setenv(EnvProfile, "")
 	cfg := &Config{
 		Active:   "prod",
 		Profiles: map[string]*Profile{"prod": {Name: "prod", URL: "https://p.example.com/", AuthMethod: AuthAPIKey, Token: "t1"}},
@@ -110,6 +122,7 @@ func TestResolveFileProfile(t *testing.T) {
 }
 
 func TestResolveEnvURLWithTokenFromProfile(t *testing.T) {
+	t.Setenv(EnvProfile, "")
 	// ORCHICON_URL alone + active file profile: env URL wins, file token is
 	// NOT applied to the ephemeral env profile (different instance).
 	t.Setenv(EnvURL, "https://other.example.com")
@@ -128,6 +141,7 @@ func TestResolveEnvURLWithTokenFromProfile(t *testing.T) {
 }
 
 func TestResolveNothingConfigured(t *testing.T) {
+	t.Setenv(EnvProfile, "")
 	t.Setenv(EnvURL, "")
 	t.Setenv(EnvToken, "")
 	if p := Resolve(&Config{Profiles: map[string]*Profile{}}); p != nil {
@@ -288,7 +302,130 @@ func TestDiffRailWidthRoundTripsWithoutAProfile(t *testing.T) {
 	}
 }
 
+// cfgWithToken builds a one-profile config whose token is the given string, so a test
+// can tell two documents apart by reading the file.
+func cfgWithToken(tok string) *Config {
+	return &Config{
+		Active:   "default",
+		Profiles: map[string]*Profile{"default": {Name: "default", URL: "http://localhost:8080", AuthMethod: AuthAPIKey, Token: tok}},
+	}
+}
+
+// THE WRITE REPLACES THE FILE; IT DOES NOT TRUNCATE IT IN PLACE.
+//
+// This is what makes a second orch process safe to run, and it is observable WITHOUT the
+// platform's inode API — which matters, because this repo builds for Windows too and
+// syscall.Stat_t.Ino does not exist there. A handle opened BEFORE a save keeps pointing
+// at the OLD file, so after the save it must still read the OLD complete document. Under
+// os.WriteFile the same handle would see the NEW bytes, and a reader that chanced on the
+// window between truncate and write would see a PARTIAL document — which the launch path
+// treats as corruption, starts from an empty config, and then SAVES over the other
+// instance's profile.
+func TestSaveReplacesTheFileInsteadOfTruncatingIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	if err := Save(path, cfgWithToken("first")); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	held, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer held.Close()
+	before, err := io.ReadAll(held)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(before), "first") {
+		t.Fatalf("fixture: the held handle did not read the first document:\n%s", before)
+	}
+
+	if err := Save(path, cfgWithToken("second")); err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+
+	if _, err := held.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	after, err := io.ReadAll(held)
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if !strings.Contains(string(after), "first") {
+		t.Fatalf("the handle opened before the save now reads the NEW document — the save truncated "+
+			"the file in place instead of replacing it, which is exactly the window in which a "+
+			"second orch process can read a half-written config:\n%s", after)
+	}
+
+	// The path itself names the new document, and nothing extra was left behind.
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Profiles["default"] == nil || got.Profiles["default"].Token != "second" {
+		t.Fatalf("the path does not name the new document: %+v", got.Profiles)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("a temp file was left behind: %s (it holds credentials)", e.Name())
+		}
+	}
+}
+
+// PreserveUnreadable must MOVE the file, so the save that follows cannot destroy it, and
+// must not overwrite a backup an earlier failure already made.
+func TestPreserveUnreadableMovesTheFileAside(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	const contents = "active = \"default\"\n\n[profiles.default]\nurl = \"http://localhost:8091\"\ntoken = \"keep-me\"\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	backup, err := PreserveUnreadable(path)
+	if err != nil {
+		t.Fatalf("preserve: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the original is still at %s — the next save would overwrite it", path)
+	}
+	kept, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatalf("the preserved copy is not readable: %v", err)
+	}
+	if string(kept) != contents {
+		t.Errorf("the preserved copy differs from what was there:\n%s", kept)
+	}
+
+	// A second unreadable config must not land on the first backup.
+	if err := os.WriteFile(path, []byte("active = \"other\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := PreserveUnreadable(path)
+	if err != nil {
+		t.Fatalf("second preserve: %v", err)
+	}
+	if second == backup {
+		t.Fatalf("the second backup reused the first one's name (%s), destroying it", backup)
+	}
+	if got, err := os.ReadFile(backup); err != nil || string(got) != contents {
+		t.Errorf("the first backup was damaged by the second: %q (%v)", got, err)
+	}
+}
+
 // The parser still REJECTS a genuinely unknown key: the new case must not have loosened the default.
+//
+// That strictness is deliberate and is NOT relaxed by the multi-instance work: the
+// per-key cases above are what make a new field a compile-visible obligation, and a
+// tolerated typo would silently drop a credential. What multi-instance needed instead is
+// that an unreadable file is PRESERVED rather than overwritten — see
+// config.PreserveUnreadable and the launch path's use of it — so the strictness costs an
+// operator a re-login and never an unexplained wipe of the other instance's profile.
 func TestUnknownKeyStillRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	if err := os.WriteFile(path, []byte("active = \"x\"\nsome_future_key = \"v\"\n"), 0o600); err != nil {
@@ -297,5 +434,83 @@ func TestUnknownKeyStillRejected(t *testing.T) {
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load accepted an unknown key — a typo'd or foreign key must be a hard error, not a silent " +
 			"default (the property that makes the parser case mandatory for every new key)")
+	}
+}
+
+// A NAMED SELECTION PINS THIS PROCESS, AND DOES NOT TOUCH THE SHARED `active` SLOT.
+//
+// That separation is the whole reason ORCHICON_PROFILE exists: `active` is one global
+// value written by every connect and read by every process, so it cannot say "this
+// process is the dev one". A named selection is process state, so two orch processes can
+// hold two instances at once — the operator's "orch should have no issues running more
+// than one orch running on different ports".
+func TestANamedProfilePinsTheProcessRegardlessOfActive(t *testing.T) {
+	t.Setenv(EnvURL, "")
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvProfile, "")
+	cfg := &Config{
+		Active: "localhost-8091",
+		Profiles: map[string]*Profile{
+			"localhost-8080": {Name: "localhost-8080", URL: "http://localhost:8080", AuthMethod: AuthAPIKey, Token: "dev"},
+			"localhost-8091": {Name: "localhost-8091", URL: "http://localhost:8091", AuthMethod: AuthAPIKey, Token: "prod"},
+		},
+	}
+
+	// The explicit argument form.
+	if got := ResolveNamed(cfg, "localhost-8080"); got == nil || got.URL != "http://localhost:8080" || got.Token != "dev" {
+		t.Fatalf("the named selection was ignored: %+v", got)
+	}
+	// The environment form, which is what a launcher sets.
+	t.Setenv(EnvProfile, "localhost-8080")
+	if got := Resolve(cfg); got == nil || got.Token != "dev" {
+		t.Fatalf("ORCHICON_PROFILE was ignored by Resolve: %+v", got)
+	}
+	// With nothing named, `active` still decides — the existing contract, unchanged.
+	t.Setenv(EnvProfile, "")
+	if got := Resolve(cfg); got == nil || got.Token != "prod" {
+		t.Fatalf("the active profile must still be the default: %+v", got)
+	}
+	// And selecting a profile must not rewrite the shared slot.
+	if cfg.Active != "localhost-8091" {
+		t.Errorf("selection changed Active to %q — a per-process pin must not rewrite the file's slot", cfg.Active)
+	}
+}
+
+// AN UNKNOWN NAME MUST NOT SILENTLY BECOME A DIFFERENT INSTANCE.
+func TestAnUnknownProfileNameResolvesToNothing(t *testing.T) {
+	t.Setenv(EnvURL, "")
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvProfile, "")
+	cfg := &Config{
+		Active:   "localhost-8091",
+		Profiles: map[string]*Profile{"localhost-8091": {Name: "localhost-8091", URL: "http://localhost:8091", Token: "prod"}},
+	}
+	if got := ResolveNamed(cfg, "typo-9000"); got != nil {
+		t.Fatalf("an unknown name resolved to %+v instead of nothing — the operator would be shown a "+
+			"DIFFERENT instance than the one they asked for, which is the confusion the named "+
+			"selection exists to remove", got)
+	}
+}
+
+// A named profile plus an env URL mixes the two in the documented way: the credential
+// identifies WHO (the profile), the URL says WHERE (the environment). Pinned because it is
+// the only combination that combines an explicit selection with an override.
+func TestANamedProfileKeepsItsCredentialUnderAnEnvURL(t *testing.T) {
+	t.Setenv(EnvProfile, "")
+	t.Setenv(EnvToken, "")
+	t.Setenv(EnvURL, "https://tunnel.example.com")
+	cfg := &Config{
+		Active:   "localhost-8080",
+		Profiles: map[string]*Profile{"localhost-8080": {Name: "localhost-8080", URL: "http://localhost:8080", AuthMethod: AuthAPIKey, Token: "dev"}},
+	}
+	got := ResolveNamed(cfg, "localhost-8080")
+	if got == nil {
+		t.Fatal("a named profile with an env URL must still resolve")
+	}
+	if got.URL != "https://tunnel.example.com" {
+		t.Errorf("URL = %q, want the environment's", got.URL)
+	}
+	if got.Token != "dev" {
+		t.Errorf("Token = %q, want the NAMED profile's — the env URL says where, it does not say who", got.Token)
 	}
 }

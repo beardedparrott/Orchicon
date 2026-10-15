@@ -29,10 +29,14 @@ import (
 )
 
 // contextReduceStages is the bounded escalation tried when a provider rejects a
-// turn for exceeding its context window: first reduce all but the most recent
-// turns (surgical — the live thread stays intact), then, only if the provider
-// still refuses, reduce the whole history including the tail. Two stages, then
-// give up: an unbounded retry loop against a hard limit would burn the turn.
+// turn for being TOO LARGE: first reduce all but the most recent turns
+// (surgical — the live thread stays intact), then, only if the provider still
+// refuses, reduce the whole history including the tail. Two stages, then give
+// up: an unbounded retry loop against a hard limit would burn the turn.
+//
+// "Too large" deliberately covers both the model's context window and a
+// transport body cap (413) — see oversizePromptSignatures for why one ladder
+// serves both.
 var contextReduceStages = []int{6, 0}
 
 const (
@@ -61,28 +65,63 @@ const (
 	textPartCapChars = 4000
 )
 
-// contextLengthSignatures are the provider phrasings that mean "the prompt
-// exceeded my context window". There is no shared error type across the native
-// wires, so detection is textual and deliberately conservative: a MISS simply
-// means no reduction is attempted (the turn fails exactly as it does today),
-// never that a healthy turn is mangled.
-var contextLengthSignatures = []string{
+// oversizePromptSignatures are the provider AND transport phrasings that mean
+// "this prompt was rejected for being too big". There is no shared error type
+// across the native wires, so detection is textual and deliberately
+// conservative: a MISS simply means no reduction is attempted (the turn fails
+// exactly as it does today), never that a healthy turn is mangled.
+//
+// TWO DIFFERENT LIMITS, ONE REMEDY. A model context-window overflow and a
+// transport body cap are NOT the same limit and must not be conflated — but the
+// answer to both is the same sentence, because the remedy is "send fewer
+// bytes": ReduceConversationHistoryForContext elides exactly the bulk in either
+// case (tool results and image payloads). One hatch therefore legitimately
+// serves both, and nothing here claims the limits are the same.
+//
+// THE SECOND FAMILY IS HERE BECAUSE ITS ABSENCE WEDGED A LIVE CONVERSATION. A
+// native Ask turn with the `obs` MCP server attached accumulated
+// obs-get-source-screenshot output — "Gets a Base64-encoded screenshot of a
+// source" — and that returns as TOOL-RESULT TEXT, not as the Image content
+// part, so trimAskHistoryImages counted 0 images while the history reached
+// 25.8MB gzipped. The request body then crossed the gateway's limit and EVERY
+// send came back:
+//
+//	provider status 413 413 Request Entity Too Large: <html>…413 Payload Too
+//	Large…cloudflare…</html>
+//
+// No signature above matched it, so the hatch never opened, the identical
+// oversized body was re-sent on every retry, and the conversation could not
+// recover — which is the operator's "it keeps erroring every turn retry".
+//
+// `status 413` is safe to trust because the ONLY producer of that phrasing is
+// the provider-status formatter (provider.go: "provider status %d %s: %s"), and
+// it is included alongside the human phrases because a gateway body is often
+// bare HTML with no JSON error object at all.
+var oversizePromptSignatures = []string{
+	// The MODEL's context window.
 	"maximum context length",
 	"context length exceeded",
 	"context_length_exceeded",
 	"prompt is too long",
 	"reduce the length",
 	"too many tokens",
+	// A TRANSPORT / CDN / GATEWAY BODY LIMIT (HTTP 413).
+	"status 413",
+	"entity too large",
+	"payload too large",
+	"content too large",
+	"request body too large",
 }
 
-// isContextLengthError reports whether err is a provider context-window
-// overflow.
-func isContextLengthError(err error) bool {
+// isOversizePromptError reports whether err is a prompt rejected for its SIZE —
+// either the model's context window or a transport/CDN body limit (413). Both
+// are answered by the same remedy; see oversizePromptSignatures.
+func isOversizePromptError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	for _, sig := range contextLengthSignatures {
+	for _, sig := range oversizePromptSignatures {
 		if strings.Contains(msg, sig) {
 			return true
 		}
@@ -256,7 +295,7 @@ func conversationBytes(history []Message) int {
 // provider accepted.
 func (b *NativeBridge) startTurnWithContextRecovery(turnCtx context.Context, prov Provider, req *TurnRequest, sessionID string) (TurnStream, error) {
 	stream, err := prov.StreamTurn(turnCtx, *req)
-	if err == nil || !isContextLengthError(err) {
+	if err == nil || !isOversizePromptError(err) {
 		return stream, err
 	}
 	firstErr := err
@@ -278,7 +317,7 @@ func (b *NativeBridge) startTurnWithContextRecovery(turnCtx context.Context, pro
 		if stream, err = prov.StreamTurn(turnCtx, *req); err == nil {
 			return stream, nil
 		}
-		if !isContextLengthError(err) {
+		if !isOversizePromptError(err) {
 			return nil, err
 		}
 	}

@@ -62,3 +62,54 @@ export function searchStatusLabel(
   if (matchCount === 0) return "No matches";
   return `${matchCount}/${total} matches`;
 }
+
+/**
+ * matchRanges finds every occurrence of the query in text, as [start, end) offsets.
+ *
+ * WHY OFFSETS RATHER THAN A SPLIT. The caller has to render the text in pieces — some wrapped in a mark,
+ * some not — and offsets are the only form that lets it keep the ORIGINAL casing. A split on a
+ * lowercased copy would return lowercased fragments, so a match would be displayed in the wrong case.
+ *
+ * OVERLAPPING MATCHES ARE NOT PRODUCED: one occurrence cannot start inside another of the same needle,
+ * so the scan resumes after each match. Empty and whitespace-only queries match nothing — the "no
+ * filter" state must not mark every position in the transcript.
+ */
+export function matchRanges(text: string, query: string): Array<[number, number]> {
+  const q = normalizeQuery(query);
+  if (q === "" || text === "") return [];
+  const hay = text.toLowerCase();
+  const out: Array<[number, number]> = [];
+  let from = 0;
+  for (;;) {
+    const at = hay.indexOf(q, from);
+    if (at === -1) break;
+    out.push([at, at + q.length]);
+    from = at + q.length;
+  }
+  return out;
+}
+
+/** One piece of text with its verdict: tagged when it is a match the caller should mark. */
+export interface MatchPiece {
+  text: string;
+  match: boolean;
+}
+
+/**
+ * splitMatches cuts text into alternating plain/matched pieces for rendering, preserving the original
+ * case and the surrounding text exactly. Text with no matches comes back as ONE untagged piece, so a
+ * caller that always goes through this path renders unmarked text byte-for-byte as before.
+ */
+export function splitMatches(text: string, query: string): MatchPiece[] {
+  const ranges = matchRanges(text, query);
+  if (ranges.length === 0) return [{ text, match: false }];
+  const out: MatchPiece[] = [];
+  let at = 0;
+  for (const [start, end] of ranges) {
+    if (start > at) out.push({ text: text.slice(at, start), match: false });
+    out.push({ text: text.slice(start, end), match: true });
+    at = end;
+  }
+  if (at < text.length) out.push({ text: text.slice(at), match: false });
+  return out;
+}
