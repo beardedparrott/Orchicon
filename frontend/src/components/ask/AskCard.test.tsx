@@ -206,13 +206,25 @@ describe("card keyboard model and wiring", () => {
     expect(routeSrc).toContain('chunk.event.case === "permissionAsk"');
     expect(routeSrc).toContain("askOrchiconClient.replyPermissionAsk(");
     expect(routeSrc).toContain("asks: resolveAsk(prev.asks, askId");
-    // THE CARD IS A BLOCK IN THE CONVERSATION, NOT AN APPENDIX. The ask list is
-    // interleaved with the messages by arrival time, so it is rendered through
-    // `interleave(transcriptBlocks, …)` rather than as its own trailing
-    // `activeStream?.asks.map(...)` list pinned to the bottom — the operator's
-    // "the permission blocks in the GUI are still remaining at the bottom at the
-    // end of a turn which makes no sense."
-    expect(routeSrc).toContain("interleave(transcriptBlocks, activeStream?.asks)");
+    // AN ANSWERED CARD IS A BLOCK IN THE CONVERSATION, NOT AN APPENDIX: a SETTLED ask is interleaved with
+    // the messages by arrival time, so it moves up as the conversation grows — the operator's "the
+    // permission blocks in the GUI are still remaining at the bottom at the end of a turn which makes no
+    // sense."
+    //
+    // THE BLOCK SOURCE IS `searchBlocks` (the durable blocks, plus the live stream items while a search is
+    // active so an in-flight reply is searchable), and the ASK SOURCE IS `settledAsks` — an OPEN ask is
+    // deliberately NOT interleaved any more, because a question must come AFTER the information it is
+    // about, not before it:
+    //
+    //   the operator: "The Ask card is on TOP of the text. A question shouldn't come before the
+    //   information. It goes information -> Question. It should be at the bottom of the screen."
+    expect(routeSrc).toContain("interleave(searchBlocks, settledAsks)");
+    // The OPEN asks are drawn last instead — and the split keys on OUTCOME, not on the tool name, so a
+    // permission card gets the same treatment as a clarifying question: both are `outcome === null` while
+    // the operator still has to act on them.
+    expect(routeSrc).toContain("const openAsks = (asksAll ?? []).filter((a) => a.outcome === null)");
+    expect(routeSrc).toContain("const settledAsks = (asksAll ?? []).filter((a) => a.outcome !== null)");
+    expect(routeSrc).toContain("openAsks.map((a) => (");
     // Escape denies, through the same handler as the Deny action.
     expect(routeSrc).toContain("PermissionChoice.DENY");
     expect(routeSrc).toContain("e.defaultPrevented");

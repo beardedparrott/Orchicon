@@ -19,6 +19,8 @@ import { ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
 import {
   ALL_PROJECTS,
   categoriesForScope,
+  composerProjectChoices,
+  effectiveComposerProject,
   filterConversationsByScope,
   isArchivedProject,
   projectStatusWord,
@@ -233,5 +235,66 @@ describe("project status", () => {
     expect(projectStatusWord(ProjectStatus.UNSPECIFIED)).toBe("");
     expect(projectStatusWord(999 as ProjectStatus)).toBe("");
     expect(projectStatusWord(undefined)).toBe("");
+  });
+});
+
+// --- the composer's project control ---------------------------------------------------------------
+//
+// The operator: "There is no way to set a new conversation to a project. You have to chat first, then go over
+// and change it in the drop down once it's in the rail." These pin the two decisions the composer pill makes,
+// extracted from the route because this project's convention is that logic left inline in
+// routes/ask-orchicon.tsx is logic no test can reach (the route cannot be rendered by the test setup).
+
+describe("effectiveComposerProject", () => {
+  const projects = [
+    { id: "p1", name: "One", status: ProjectStatus.ACTIVE },
+    { id: "p2", name: "Two", status: ProjectStatus.ACTIVE },
+  ];
+
+  it("uses an explicit pick", () => {
+    expect(effectiveComposerProject("p2", "p1", projects)).toBe("p2");
+  });
+
+  it("falls back to the sidebar scope when nothing has been picked", () => {
+    // The composer and the sidebar are two views of one decision: a chat started while the sidebar is
+    // scoped to a workspace belongs in it without a second action.
+    expect(effectiveComposerProject(null, "p1", projects)).toBe("p1");
+  });
+
+  it("treats an explicit No-project choice as a real choice, not as 'unchosen'", () => {
+    // null and "" are different answers. If "" fell through to the scope, the operator could not create an
+    // unassigned conversation while scoped to a project.
+    expect(effectiveComposerProject("", "p1", projects)).toBe("");
+  });
+
+  it("creates unassigned when neither is set", () => {
+    expect(effectiveComposerProject(null, "", projects)).toBe("");
+  });
+
+  it("never forwards a project the list does not contain", () => {
+    // The server rejects an unknown project id on create, so forwarding one fails the send outright
+    // instead of filing the chat as unassigned.
+    expect(effectiveComposerProject("ghost", "", projects)).toBe("");
+    expect(effectiveComposerProject(null, "ghost", projects)).toBe("");
+    expect(effectiveComposerProject("p1", "", undefined)).toBe("");
+  });
+});
+
+describe("composerProjectChoices", () => {
+  it("drops All projects, which is a way to look, not a place to put a conversation", () => {
+    const opts = [
+      { value: ALL_PROJECTS, label: "All projects", count: 3, archived: false },
+      { value: "p1", label: "Orchicon", count: 2, archived: false },
+      { value: "", label: "No project", count: 1, archived: false },
+    ];
+    const got = composerProjectChoices(opts);
+    expect(got.map((o: { value: string }) => o.value)).toEqual(["p1", ""]);
+  });
+
+  it("keeps No project, because it is a real home", () => {
+    const got = composerProjectChoices([
+      { value: "", label: "No project", count: 0, archived: false },
+    ]);
+    expect(got).toHaveLength(1);
   });
 });

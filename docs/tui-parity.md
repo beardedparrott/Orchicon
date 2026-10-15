@@ -277,6 +277,7 @@ mouse-first and already has a NATIVE control for every per-conversation command:
 | `/new` | the sidebar `+` "New Chat" |
 | `/rename`, `/delete` | the sidebar row actions |
 | `/mode` | the mode dropdown (`ModeToggle`) |
+| `/project` | the composer's project pill (and the sidebar's workspace scope) |
 | `/models`, `/model` | the composer's model chip |
 | `/attach` | the paperclip |
 | `/diff` | the diff-sidebar toggle |
@@ -286,6 +287,20 @@ mouse-first and already has a NATIVE control for every per-conversation command:
 
 So a palette would mean re-implementing controls that already exist, for one command that did
 not have one. `Compact` was that command, and it now has a button.
+
+`/project` was the other one, and the reason it was missing is worth recording because it was a
+GAP rather than a difference. The TUI infers the workspace from the directory it was launched in
+and applies it as the rail's scope, so a conversation started there is created IN that project
+without the operator doing anything. The GUI's project controls were both on the SIDEBAR — a header
+scope dropdown, and a per-row "move to project" — so a chat meant for a workspace was normally born
+unassigned and then filed as a second, separate action (and the scope dropdown influenced creation
+only as a side effect of scoping the list, which is not the same as choosing where this chat goes).
+The composer's
+project pill closes that: it sits beside the mode because the two answer the same kind of question
+at the same moment (which persona, which workspace), it is offered on the hero BEFORE a
+conversation exists, and it falls back to the sidebar's scope so the two controls cannot disagree
+about where a new chat will land. The GUI still does not INFER a workspace — it has no launch
+directory to infer from — so this is explicit choice rather than parity of inference.
 
 What IS built is the PARSER (`lib/composer-command.ts`), kept deliberately because it mirrors
 `internal/tui/slash.go` `ParseSlash` — the two frontdoors must agree on what a command IS.

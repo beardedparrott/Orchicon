@@ -49,6 +49,27 @@ const (
 	Title = "activity-e2e"
 	// AssistantMsgID is the acked reply id the turn is persisted under.
 	AssistantMsgID = "a1"
+
+	// AskCallID / AskQuestion / AskOption are the recorded `ask_user` call the assistant row can carry.
+	//
+	// WHY THIS EXISTS. The GUI draws a clarifying card from a RECORDED TOOL CALL on the assistant row
+	// (MessageBubble: `message.toolCalls.find(isAskUserToolCall)`), not from the live stream — the stream
+	// carries text and reasoning only. So "a card renders on a live turn" is a claim about the DURABLE row
+	// being drawn while the turn is still streaming, and it needs a fixture where the row carries an ask
+	// while live items exist. That combination is exactly what was broken: the in-flight row was dropped in
+	// favour of the live copy, taking the card with it.
+	AskCallID   = "tc-ask"
+	AskQuestion = "E2EASK Which thread should I take further?"
+	AskOption   = "E2EOPTION"
+	// AskID is the pending ask's id — the same value the stream emits and ListPendingAsks serves, so a
+	// discovered ask and a streamed ask dedupe to ONE card (applyAskChunk keys on it).
+	AskID = "perm-e2e"
+	// PermID / PermCommand are the PERMISSION ask's identity: a bash approval, which is the other kind of
+	// card the same path draws. It has NO question — that is the discriminator ConsentAskCard uses to tell a
+	// permission request from a clarifying question — and it must be treated identically, because the rule
+	// is about whether the operator still has to act, not about which kind of ask it is.
+	PermID      = "perm-bash-e2e"
+	PermCommand = "npm run build"
 	// Prompt is the message the TUI types. It asks for work of MIXED CLASSES — a read, a grep, a
 	// bash and a modify — which is what makes every bucket of the counter legible in one turn.
 	Prompt = "E2EPROMPT inspect files and run the tests"
@@ -96,6 +117,11 @@ var scriptCalls = []string{"read", "batch_grep", "bash", "write"}
 
 // Plane is the fixture Ask service plus its control surface.
 type Plane struct {
+	// askOn makes the assistant row carry a recorded ask_user call.
+	askOn bool
+	// permOn arms an OPEN PERMISSION ask on the same path (see SetPermission).
+	permOn bool
+
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 
 	mu       sync.Mutex
@@ -209,6 +235,64 @@ func (p *Plane) Streamed() string {
 	return p.streamed
 }
 
+// AskArmed reports whether the pending ask is armed.
+func (p *Plane) AskArmed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.askOn
+}
+
+// pendingAsk builds the OPEN question as the client receives it.
+//
+// IT IS A PermissionAsk WITH A NON-EMPTY `question`, which is the discriminator ConsentAskCard uses to tell a
+// clarifying question from a permission request — the same message the turn stream emits and ListPendingAsks
+// serves, deliberately, so a streamed ask and a discovered one cannot drift into two renderings.
+func (p *Plane) pendingAsk() *v1.PermissionAsk {
+	return &v1.PermissionAsk{
+		AskId:          AskID,
+		ConversationId: ConvID,
+		Tool:           "ask_user",
+		Question:       AskQuestion,
+		Options:        []string{AskOption, "Second option"},
+		AllowOther:     true,
+		Summary:        "asking: " + AskQuestion,
+	}
+}
+
+// permissionAsk builds the OPEN permission request as the client receives it: a bash approval, with a
+// command and NO question. ConsentAskCard renders it with the three consent actions rather than the question
+// card's options, and the ordering rule must place it exactly where a question goes.
+func (p *Plane) permissionAsk() *v1.PermissionAsk {
+	return &v1.PermissionAsk{
+		AskId:          PermID,
+		ConversationId: ConvID,
+		Tool:           "bash",
+		Command:        PermCommand,
+		Summary:        "bash: " + PermCommand,
+	}
+}
+
+// SetPermission arms (or disarms) the OPEN permission ask.
+func (p *Plane) SetPermission(on bool) {
+	p.mu.Lock()
+	p.permOn = on
+	p.mu.Unlock()
+}
+
+// PermissionArmed reports whether the permission ask is armed.
+func (p *Plane) PermissionArmed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.permOn
+}
+
+// SetAsk arms (or disarms) the recorded ask_user call on the assistant row.
+func (p *Plane) SetAsk(on bool) {
+	p.mu.Lock()
+	p.askOn = on
+	p.mu.Unlock()
+}
+
 func (p *Plane) appendStreamed(s string) {
 	p.mu.Lock()
 	p.streamed += s
@@ -307,6 +391,20 @@ func (p *Plane) GetConversation(_ context.Context, req *connect.Request[v1.GetCo
 // db.ListMessages holds and both clients reverse (chat.conversationItems, askOrchicon.ts). The
 // assistant row carries BOTH the streamed text and the turn's accumulated tool rows, which is the
 // shape a real persisted turn has.
+// ListPendingAsks serves the conversation's OPEN asks — the discovery read, and the shape a fresh page load
+// uses. An ask that is armed is reported here, which is what makes "the card appears after a reload" and "the
+// card appears live" the same card.
+func (p *Plane) ListPendingAsks(_ context.Context, req *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error) {
+	out := &v1.ListPendingAsksResponse{}
+	if p.AskArmed() {
+		out.Asks = append(out.Asks, p.pendingAsk())
+	}
+	if p.PermissionArmed() {
+		out.Asks = append(out.Asks, p.permissionAsk())
+	}
+	return connect.NewResponse(out), nil
+}
+
 func (p *Plane) ListMessages(_ context.Context, req *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {
 	if p.Phase() == PhaseDown {
 		return nil, p.down()
@@ -320,12 +418,26 @@ func (p *Plane) ListMessages(_ context.Context, req *connect.Request[v1.ListMess
 		Content:        p.prompt,
 		CreatedAt:      timestamppb.New(base),
 	}
+	toolCalls := append([]*v1.ToolCall(nil), p.toolRows...)
+	if p.askOn {
+		// THE LEDGER SHAPE PRODUCTION ACTUALLY HAS, copied from a live conversation's row: the blocking
+		// `ask_user` call is recorded with EMPTY arguments, and the ask itself is a separate
+		// `permission.question` record. Neither parses into a card, which is the point — the card comes from
+		// the PENDING ASK (streamed, and served by ListPendingAsks), not from the row.
+		//
+		// Modelling it with parseable arguments would put TWO cards on screen for one question and make this
+		// fixture test a path production does not take.
+		toolCalls = append(toolCalls,
+			&v1.ToolCall{Id: AskCallID, FunctionName: "orchicon_ask_user", Arguments: ""},
+			&v1.ToolCall{Id: "perm-9", FunctionName: "permission.question", Arguments: ""},
+		)
+	}
 	assistant := &v1.ChatMessage{
 		Id:             AssistantMsgID,
 		ConversationId: ConvID,
 		Role:           "assistant",
 		Content:        p.streamed,
-		ToolCalls:      append([]*v1.ToolCall(nil), p.toolRows...),
+		ToolCalls:      toolCalls,
 		CreatedAt:      timestamppb.New(base.Add(time.Second)),
 	}
 	p.mu.Unlock()
@@ -401,6 +513,22 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 	if err := send(&v1.ChatStreamResponse{Event: &v1.ChatStreamResponse_TextChunk{
 		TextChunk: &v1.TextChunk{Content: first}}}); err != nil {
 		return nil
+	}
+
+	// THEN THE QUESTION, after text has already streamed. This ordering is the point: the operator's report is
+	// that the card is drawn ABOVE that text, and a fixture that raised the ask before any text could not
+	// reproduce it.
+	if p.AskArmed() {
+		if err := send(&v1.ChatStreamResponse{Event: &v1.ChatStreamResponse_PermissionAsk{
+			PermissionAsk: p.pendingAsk()}}); err != nil {
+			return nil
+		}
+	}
+	if p.PermissionArmed() {
+		if err := send(&v1.ChatStreamResponse{Event: &v1.ChatStreamResponse_PermissionAsk{
+			PermissionAsk: p.permissionAsk()}}); err != nil {
+			return nil
+		}
 	}
 
 	// THEN THE WORK, one call at a time: the counters appear and GROW. The settle beat before the
@@ -694,6 +822,16 @@ func Mux(plane *Plane, sessions *Sessions, dir string) http.Handler {
 			return
 		}
 		JSON(w, http.StatusOK, map[string]any{"ok": true, "phase": plane.Phase()})
+	})
+	mux.HandleFunc("/__e2e/permission", func(w http.ResponseWriter, r *http.Request) {
+		plane.SetPermission(r.URL.Query().Get("on") != "0")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/__e2e/ask", func(w http.ResponseWriter, r *http.Request) {
+		// Arm (or disarm) the recorded ask_user call the assistant row carries, so a probe can ask for a
+		// clarifying CARD while the turn is still streaming.
+		plane.SetAsk(r.URL.Query().Get("on") != "0")
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/__e2e/stamp", func(w http.ResponseWriter, r *http.Request) {
 		var v int64

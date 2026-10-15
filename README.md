@@ -36,22 +36,20 @@ The documentation lives at the project root:
 
 ## Last Release Changes
 
-- **OpenCode 2.x**: Orchicon runs on the current opencode, and on the previous one.
-- **a runtime container that can start an adapter**: `serve handshake: exit status 1`, on every workflow execution using the opencode adapter.
-- **install and WSL, finished**: The adapter CLI has to be installed as your own user, and inside WSL on Windows.
-- **`orchicon restart`**: There is now a command that restarts a plane, and it says so.
-- **WSL renders the themes' real colour**: Every dark theme showed **black** instead of its tint, and the palette was never the problem.
-- **the execution diff shows your work**: The diff panel for a workflow execution had recorded **nothing, ever**.
-- **find, and navigate, from where you actually are**: `ctrl+f` in the TUI opens a search box you type into, filtering the conversation as you go.
-- **The transcript stops yanking you back to the bottom.** Scrolling up, or jumping to the top, held: live replies no longer snap the view down.
-- **Page 2 of every runs list works.** The pagination cursor sat in the wrong position, so a list's second page failed to parse while the first looked fine.
-- **One log line per 200ms tick was 99.5% of all log volume.** It is a debug line now.
-- **`orchicon serve` names the directory it cannot write**, instead of calling a fine policy file invalid.
-- **The connection screen opens on username and password.** An API key cannot be had until you have logged in, so the TUI stopped asking for one.
-- **Teal Depths is three points lighter** — a dark ground should read as tinted rather than black.
-- **A rejected tool call keeps its reason.** The refusal was discarded before anyone read it, leaving a failed command with nothing to act on.
-- **Rebuilt code can no longer be left serving.** A rebuild replaces the binary; a launcher that took "something answers on the port" as current left the old process running the superseded build.
-- **A workspace's todo list survives the run**, and the transcript's changed-file list stops going blank mid-turn.
+- **an installer you can trust with more than one stack**: The installer grew a real vocabulary and a measure of consent.
+- **a canary install path on `develop`**: The installer could only be tested after it shipped, which is how two releases carried a broken one.
+- **one profile per instance, and one instance per process**: `orch` is meant to run more than once at a time; it could not.
+- **in-transcript search, in both clients**: Find a phrase in a long conversation and step through the matches with `n`/`N` (TUI) or prev/next (GUI),
+- **the Ask pane is live as it is written**: A reply now streams into the transcript as the model writes it, instead of appearing only when the turn
+- **A payload-too-large refusal recovers instead of wedging.** A `413` from the gateway matched none of the
+- **A restart can no longer lose your conversation.** The history reducer knew about images and nothing else,
+- **Freeing `ctrl+f` for search.** It had been "attach a file by path" in the TUI and nothing in the GUI;
+- **A permission card settles on the server's answer**, not on a guess about whether a turn is still running.
+- **The release pruner had been a silent no-op its whole life** — the cap it exists to enforce was never
+- **The GUI's default theme is Teal Depths again**, three points lighter, and the app background is a solid
+- **A canary binary no longer ships without a frontend**, which had made a canary install serve an auth error
+- **The footer band stops jumping.** An empty card line was collapsing it, and the screen bounced.
+- **The installer's common commands are in the install docs**, rather than only in the README's flags.
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
 

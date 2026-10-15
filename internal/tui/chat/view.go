@@ -166,7 +166,7 @@ func RenderItemsSpans(items []ChatItem, maxWidth int, collapse ...func(key strin
 	if len(collapse) > 0 && collapse[0] != nil {
 		folded = collapse[0]
 	}
-	return renderItems(items, maxWidth, folded, "", nil, "")
+	return renderItems(items, maxWidth, folded, "", nil, "", "")
 }
 
 // CopyGlyph marks what the operator can CLICK TO COPY in the transcript.
@@ -188,17 +188,17 @@ const CopyGlyph = "⧉"
 // same conversation but a click there does nothing, and marking it copyable would be a lie. Passing the glyph
 // is what keeps the affordance where the gesture is.
 func RenderItemsSpansWithCopy(items []ChatItem, maxWidth int, copyGlyph string, collapse func(key string) bool) (string, []ItemSpan) {
-	return renderItems(items, maxWidth, collapse, copyGlyph, nil, "")
+	return renderItems(items, maxWidth, collapse, copyGlyph, nil, "", "")
 }
 
 // renderItems is the shared body: the two entry points differ only in whether a copy affordance is drawn.
-func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, copyGlyph string, cache *RenderCache, scope string) (string, []ItemSpan) {
+func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, copyGlyph string, cache *RenderCache, scope, searchQ string) (string, []ItemSpan) {
 	var b strings.Builder
 	spans := make([]ItemSpan, 0, len(items))
 	lineIdx := 0
 	for _, it := range items {
 		// ONE ITEM AT A TIME, so a frame that changes one message costs one message. See renderOne.
-		seg, code, askOpts := renderOne(it, maxWidth, folded, copyGlyph, cache, scope)
+		seg, code, askOpts := renderOne(it, maxWidth, folded, copyGlyph, cache, scope, searchQ)
 		// THE ITEM'S OWN LINES. This used to be `strings.Count(b.String()[before:], "\n")` — a scan to
 		// the END of the accumulated body, once per item, i.e. O(n^2) over a conversation. Counting the
 		// segment this item just produced is the same number in O(1), and it is what lets the segment be
@@ -222,20 +222,20 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 // rendering the same conversation at different widths cannot share an entry by accident (the width and
 // the glyph are part of the key) and neither can it draw a stale form of an item that has changed (the
 // fingerprint is too).
-func renderOne(it ChatItem, maxWidth int, folded func(key string) bool, copyGlyph string, cache *RenderCache, scope string) (string, []CodeSpan, []AskOptionSpan) {
+func renderOne(it ChatItem, maxWidth int, folded func(key string) bool, copyGlyph string, cache *RenderCache, scope, searchQ string) (string, []CodeSpan, []AskOptionSpan) {
 	fold := false
 	if folded != nil {
 		fold = folded(it.Key)
 	}
 	if cache == nil {
-		return renderItem(it, maxWidth, fold, copyGlyph)
+		return renderItem(it, maxWidth, fold, copyGlyph, searchQ)
 	}
 	sig := renderSig(it)
-	if seg, code, askOpts, ok := cache.get(scope, it.Key, maxWidth, copyGlyph, fold, sig); ok {
+	if seg, code, askOpts, ok := cache.get(scope, it.Key, maxWidth, copyGlyph, fold, searchQ, sig); ok {
 		return seg, code, askOpts
 	}
-	seg, code, askOpts := renderItem(it, maxWidth, fold, copyGlyph)
-	cache.put(scope, it.Key, maxWidth, copyGlyph, fold, sig, seg, code, askOpts)
+	seg, code, askOpts := renderItem(it, maxWidth, fold, copyGlyph, searchQ)
+	cache.put(scope, it.Key, maxWidth, copyGlyph, fold, searchQ, sig, seg, code, askOpts)
 	return seg, code, askOpts
 }
 
@@ -246,7 +246,7 @@ func renderOne(it ChatItem, maxWidth int, folded func(key string) bool, copyGlyp
 // Keeping the geometry and the drawing in one place is the invariant this file already rests on (see
 // ItemSpan.Options): a second implementation that measured what the first one drew would drift, and the
 // failure mode of that drift is a click that answers with the wrong option.
-func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string) (string, []CodeSpan, []AskOptionSpan) {
+func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string, searchQ string) (string, []CodeSpan, []AskOptionSpan) {
 	var b strings.Builder
 	var code []CodeSpan
 	var askOpts []AskOptionSpan
@@ -263,11 +263,11 @@ func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string) (string,
 			// noise — the composer's hint row already says "click your message to copy".)
 			label = label + " \x1b[1m" + copyGlyph + "\x1b[22m"
 		}
-		body, cs := renderUserChatMessageSpans(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, label, copyGlyph)
+		body, cs := renderChatMessageSpansOpts(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, label, copyGlyph, true, searchQ)
 		b.WriteString(body)
 		code = cs
 	case KindText:
-		body, cs := renderChatMessageSpans(it.Text, theme.BubbleModel, maxWidth, false, "", copyGlyph)
+		body, cs := renderChatMessageSpansOpts(it.Text, theme.BubbleModel, maxWidth, false, "", copyGlyph, false, searchQ)
 		b.WriteString(body)
 		code = cs
 	case KindReasoning:
@@ -387,7 +387,7 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 // machine-wrapped and joining its lines is what lets it reflow to the pane. See renderUserChatMessageSpans for
 // the operator's, which does not.
 func renderChatMessageSpans(text string, style lipgloss.Style, maxWidth int, right bool, label, copyGlyph string) (string, []CodeSpan) {
-	return renderChatMessageSpansOpts(text, style, maxWidth, right, label, copyGlyph, false)
+	return renderChatMessageSpansOpts(text, style, maxWidth, right, label, copyGlyph, false, "")
 }
 
 // renderUserChatMessageSpans is renderChatMessageSpans for the OPERATOR'S OWN band: A NEWLINE THEY TYPED IS A
@@ -403,12 +403,12 @@ func renderChatMessageSpans(text string, style lipgloss.Style, maxWidth int, rig
 // than at md's entry point would be the same thing; the option lives in md because the collapse happens in the
 // parser, and md is where the parser is.
 func renderUserChatMessageSpans(text string, style lipgloss.Style, maxWidth int, right bool, label, copyGlyph string) (string, []CodeSpan) {
-	return renderChatMessageSpansOpts(text, style, maxWidth, right, label, copyGlyph, true)
+	return renderChatMessageSpansOpts(text, style, maxWidth, right, label, copyGlyph, true, "")
 }
 
 // renderChatMessageSpansOpts is the shared body: the two entry points differ only in whether a source newline
 // inside a paragraph is a line break.
-func renderChatMessageSpansOpts(text string, style lipgloss.Style, maxWidth int, right bool, label, copyGlyph string, userBreaks bool) (string, []CodeSpan) {
+func renderChatMessageSpansOpts(text string, style lipgloss.Style, maxWidth int, right bool, label, copyGlyph string, userBreaks bool, searchQ string) (string, []CodeSpan) {
 	if strings.TrimSpace(text) == "" {
 		return "", nil
 	}
@@ -437,10 +437,6 @@ func renderChatMessageSpansOpts(text string, style lipgloss.Style, maxWidth int,
 	//
 	// THE RENDERER IS CHOSEN BY WHO WROTE THE TEXT — see renderUserChatMessageSpans: the operator's own band
 	// keeps the newlines they typed, the model's collapses them so its prose reflows.
-	renderMD := md.RenderOnSpans
-	if userBreaks {
-		renderMD = md.RenderUserOnSpans
-	}
 	// THE OPERATOR'S BAND IS RIGHT-ALIGNED AS A BLOCK, AND THE LABEL IS PAID FOR OUT OF THE SAME BUDGET.
 	//
 	// The operator: "See how when it drops a line it starts from the right and not the left? It leaves a large
@@ -468,7 +464,24 @@ func renderChatMessageSpansOpts(text string, style lipgloss.Style, maxWidth int,
 			bodyWidth = 8
 		}
 	}
-	body, mdSpans := renderMD(text, bodyWidth, md.SurfaceOf(style), copyGlyph)
+	// THE SEARCH-AWARE ENTRY POINT WHEN A QUERY IS ARMED. The query travels with the render rather than as
+	// package state, exactly as the chip surface does, so a transcript rendered for a surface that is not
+	// searched cannot inherit marks from one that is.
+	renderMD := md.RenderOnSpans
+	if userBreaks {
+		renderMD = md.RenderUserOnSpans
+	}
+	var body []string
+	var mdSpans []md.CodeSpan
+	if searchQ != "" {
+		if userBreaks {
+			body, mdSpans = md.RenderUserOnSpansSearch(text, bodyWidth, md.SurfaceOf(style), searchQ, copyGlyph)
+		} else {
+			body, mdSpans = md.RenderOnSpansSearch(text, bodyWidth, md.SurfaceOf(style), searchQ, copyGlyph)
+		}
+	} else {
+		body, mdSpans = renderMD(text, bodyWidth, md.SurfaceOf(style), copyGlyph)
+	}
 	if len(body) == 0 {
 		body = []string{text}
 	}

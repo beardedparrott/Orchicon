@@ -4,9 +4,11 @@ interface UserBubbleProps {
   text: string;
   source?: string;
   className?: string;
+  /** The active transcript-search query, so hits are marked where they are. */
+  highlight?: string;
 }
 
-export function UserBubble({ text, source = "you", className }: UserBubbleProps) {
+export function UserBubble({ text, source = "you", className, highlight = "" }: UserBubbleProps) {
   const label =
     source === "nudge"
       ? "liveness check"
@@ -25,7 +27,7 @@ export function UserBubble({ text, source = "you", className }: UserBubbleProps)
         <div className="break-words [overflow-wrap:anywhere]">
           {/* preserveBreaks: this is the operator's OWN text. The line breaks they typed are the line breaks
               they meant — the operator's "it's all just a bunch of text bunched up". */}
-          <Markdown preserveBreaks>{text}</Markdown>
+          <Markdown preserveBreaks highlight={highlight}>{text}</Markdown>
         </div>
       </div>
     </div>

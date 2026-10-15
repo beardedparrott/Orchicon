@@ -466,9 +466,13 @@ type App struct {
 	convScroll int
 	// Rail load state (Phase 2c finding 9): the rail is never a silent
 	// empty box — a failed load holds an explicit error + retry state.
-	convErr     string // last rail load failure (auth/API); "" = healthy
-	convLoaded  bool   // a successful rail load has landed
-	convLoading bool   // a rail load is in flight
+	convErr    string // last rail load failure (auth/API); "" = healthy
+	convLoaded bool   // a successful rail load has landed
+	// scopeHiddenNoticed is the number of conversations the ACTIVE scope was last REPORTED to be hiding.
+	// It exists so the scope's narrowing is announced again when a re-read reveals a NEW row it hides
+	// (see noteScopeHidesNewRows) without re-noticing on every reload: only a CHANGE is news.
+	scopeHiddenNoticed int
+	convLoading        bool // a rail load is in flight
 
 	// failedTurnRestored latches the message id of a durable failed turn whose draft has been put back in the
 	// composer, so the restore happens ONCE per failed row and not on every poll that re-delivers it (the
@@ -3411,14 +3415,21 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	// nothing but "All projects". This is the self-healing half — every conversations load retries while the
 	// project list is still missing, whichever path asked for the conversations. (railProjectsLoaded, not
 	// len(railProjects): a tenant with no projects must not re-request on every load forever.)
+	// THE LIST IS ASSIGNED ONCE, AHEAD OF THE BRANCH BELOW, because the scope notice reads it and must fire
+	// on BOTH paths: when the rail's project list has not landed yet this function returns early, and a
+	// scope hiding a newly-arrived row is exactly as true there as anywhere else.
+	m.conversations = msg.Convs
+	// AND AN ACTIVE SCOPE SAYS SO WHEN THIS RELOAD PUT A NEW ROW BEHIND IT. The list is the ONLY place a
+	// conversation created in the other client becomes known, and the scope's own notice is written when the
+	// scope is SET — so without this, a row that arrives later is hidden in silence and the operator cannot
+	// tell a filter from a conversation that never arrived. See noteScopeHidesNewRows.
+	m.noteScopeHidesNewRows()
 	if !m.railProjectsLoaded && m.clients != nil {
-		m.conversations = msg.Convs
 		// The composer strip is pushed from the list it derives from (AC 9): the
 		// mode pill reads currentModeLabel(), which reads THIS list.
 		m.syncComposerStats()
 		return tea.Batch(m.onChatWake(), m.loadRailProjects(), m.waitChat(), m.reattachFromRail())
 	}
-	m.conversations = msg.Convs
 	if m.convSel >= len(m.railRows()) {
 		m.convSel = 0
 	}
@@ -4802,7 +4813,11 @@ func (m *App) syncTranscript(convID string, str *kit2.Stream, items []chat.ChatI
 	// The spans are the CLICK GEOMETRY, and they come from the same render that produced the lines being
 	// drawn — so a click cannot resolve against a layout the screen is not showing. Stored per conversation,
 	// beside transcriptLines.
-	body, spans := m.renderCache.Render(convID, chat.GroupByPhase(items), w, chat.CopyGlyph, m.foldedReasoning)
+	// THE ASK SEARCH TRAVELS WITH THIS RENDER, and only this one: this is the pane the find box belongs to,
+	// so this is the pane whose hits are marked. The slide-out strip on the other screens renders the same
+	// conversation WITHOUT the query (see chatpanel.go) — it has no find box, and marking it would claim a
+	// search control that is not there.
+	body, spans := m.renderCache.Render(convID, chat.GroupByPhase(items), w, chat.CopyGlyph, m.foldedReasoning, m.askSearch)
 	if m.transcriptSpans == nil {
 		m.transcriptSpans = map[string][]chat.ItemSpan{}
 	}

@@ -88,7 +88,7 @@ func BenchmarkRenderItems50(b *testing.B) {
 // the conversation: a frame is rendered through exactly the path the strip uses.
 func benchmarkFrame(cache *RenderCache, items []ChatItem) {
 	grouped := GroupByPhase(items)
-	body, _ := cache.Render("bench", grouped, 100, "", nil)
+	body, _ := cache.Render("bench", grouped, 100, "", nil, "")
 	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
 	if len(lines) == 0 {
 		panic("benchmarkFrame rendered nothing")
