@@ -38,9 +38,12 @@ import { ProjectScopeSelect } from "@/components/conversations/ProjectScopeSelec
 import {
   ALL_PROJECTS,
   categoriesForScope,
+  composerProjectChoices,
+  effectiveComposerProject,
   filterConversationsByScope,
   scopeLabel,
   scopeOptions,
+  type ScopeOption,
 } from "@/lib/conversationProjects";
 import { conversationModeLabel, conversationModeMeta } from "@/lib/conversationModes";
 import { runningConvIds } from "@/lib/ask-running";
@@ -299,6 +302,24 @@ function AskOrchiconPage() {
   const [localMode, setLocalMode] = useState<ConversationMode>(
     ConversationMode.BRAINSTORM,
   );
+
+  // THE PROJECT A NOT-YET-CREATED CONVERSATION WILL BE CREATED IN, chosen from the composer.
+  //
+  // THE GAP THIS CLOSES. The GUI had NO way to set a conversation's project at creation: the only
+  // control was the rail's per-row "move to project", which is reachable only AFTER the chat exists.
+  // So a conversation you meant to file in a workspace was born unassigned, and filing it happened as
+  // a second, separate action — which is exactly the sequence the operator described ("you have to
+  // chat first, then go over and change it in the drop down once it's in the rail").
+  //
+  // The TUI does not have this problem because it INFERS the workspace from the directory it was
+  // launched in. That inference is not something this client can port faithfully — it has no launch
+  // directory — but choosing it explicitly at the point of use is the same power, and it is how the
+  // MODE already works on this row (see localMode above): held here before a conversation exists,
+  // handed to the create call, retargeted directly once there is a row to write to.
+  //
+  // Empty means "not chosen yet", which falls back to the rail's scope (scopeProjectId) so the
+  // composer can never silently disagree with the workspace the sidebar is showing.
+  const [composerProjectId, setComposerProjectId] = useState<string | null>(null);
 
   // The model a NOT-YET-CREATED conversation will be created with. The chat box
   // shows an "Ask Orchicon Anything..." hero before any conversation exists, and
@@ -1060,6 +1081,11 @@ function AskOrchiconPage() {
     // there IS an active conversation, so after New Chat the previous conversation's mode stayed in state and
     // was handed to the next conversation at creation. A mode belongs to the conversation that was set on.
     setLocalMode(ConversationMode.BRAINSTORM);
+    // AND THE PROJECT PICK IS CLEARED WITH IT, for the same reason and by the same rule: a workspace
+    // belongs to the conversation it was chosen for. Leaving it set would file the NEXT new chat into
+    // a workspace the operator picked for the previous one — silent, and the exact class of leak the
+    // mode comment above records.
+    setComposerProjectId(null);
   }, []);
 
   const handleDeleteConv = useCallback(
@@ -1753,6 +1779,52 @@ function AskOrchiconPage() {
     [projectScopeOptions, setConvProject, toast],
   );
 
+  // Sync the composer's project from the open conversation, exactly as the mode above is synced: an
+  // explicit choice is cleared when the open conversation changes, so the pill always shows the row it
+  // would actually write to rather than a stale pick from a previous chat.
+  useEffect(() => {
+    setComposerProjectId(null);
+  }, [activeConvId]);
+
+  // THE PROJECT THE COMPOSER SHOWS AND USES. An explicit pick wins; otherwise the rail's scope, so a
+  // conversation started while the sidebar is scoped to a workspace is created in it without the
+  // operator having to also touch the pill. "All projects" and the unassigned scope both yield "", so
+  // an unscoped view still creates unassigned, and a "not chosen" pill cannot silently invent a home.
+  // The DECISION lives in lib/conversationProjects, as a pure function, because this route cannot be
+  // rendered by the test setup — logic left inline here is logic nothing can assert. See its own tests.
+  const effectiveProjectId = effectiveComposerProject(
+    composerProjectId,
+    scopeProjectId,
+    projects,
+  );
+
+  // The option list for the composer pill: the same choices the rail's move control offers, minus
+  // "All projects" (a way to LOOK at the list, not a place to put a conversation).
+  const composerProjectOptions = useMemo(
+    () => composerProjectChoices(projectScopeOptions),
+    [projectScopeOptions],
+  );
+
+  // handleComposerProjectChange writes the project the way the OTHER project control on this page
+  // does. See its sibling above (setConvProject): the SAME rpc, so the two clients — and the two
+  // controls in this one — cannot disagree about what "belongs to a project" means.
+  //
+  // WITH NO OPEN CONVERSATION THERE IS NOTHING TO WRITE, so the choice is simply held for the create
+  // that follows; with one open, the choice is applied immediately and the list is invalidated by the
+  // mutation so the rail's scope and counts follow it.
+  const handleComposerProjectChange = useCallback(
+    (next: string) => {
+      setComposerProjectId(next || null);
+      if (activeConvId) {
+        setConvProject.mutate(
+          { id: activeConvId, projectId: next },
+          { onError: () => toast.error("Failed to move conversation", { title: "Error" }) },
+        );
+      }
+    },
+    [activeConvId, setConvProject, toast],
+  );
+
   // Build categorized conversation groups — WITHIN THE PROJECT SCOPE.
   const categorizedConversations = useMemo(() => {
     if (!conversations) return { categorized: new Map<string, string[]>(), uncategorized: [] as string[] };
@@ -1880,10 +1952,10 @@ function AskOrchiconPage() {
                       // The model chosen on the hero, if any — this is what makes
                       // the chip work before a conversation exists.
                       modelRef: pendingModel,
-                      // The project the scope has selected, when it names a real one — so a new conversation
-                      // started while scoped to a project is created IN that workspace. An unscoped view (All
-                      // projects) or the No-project scope creates unassigned, exactly as before.
-                      projectId: scopeProjectId,
+                      // The project chosen on the composer pill, falling back to the sidebar's scope — so a
+                      // new conversation is filed in the workspace the operator picked, or the one they are
+                      // looking at. An unscoped, unpicked view creates unassigned, exactly as before.
+                      projectId: effectiveProjectId,
                     });
                     if (conv?.id) {
                       // Consumed by THIS conversation; a later new chat starts
@@ -1909,6 +1981,9 @@ function AskOrchiconPage() {
                 placeholder="Ask Orchicon Anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
+                projectOptions={composerProjectOptions}
+                projectId={effectiveProjectId}
+                onProjectChange={handleComposerProjectChange}
                 convId={activeConvId}
                 modelRef={askModel}
                 onModelChange={handleAskModelChange}
@@ -2255,6 +2330,9 @@ function AskOrchiconPage() {
                 placeholder="Ask Orchicon Anything..."
                 mode={localMode}
                 onModeChange={handleModeChange}
+                projectOptions={composerProjectOptions}
+                projectId={effectiveProjectId}
+                onProjectChange={handleComposerProjectChange}
                 fullsend={!!activeConv?.fullsend}
                 onFullsendChange={handleFullsendChange}
                 convId={activeConvId}
@@ -2676,6 +2754,9 @@ function ChatInputField({
   placeholder = "Ask Orchicon anything...",
   mode = ConversationMode.BRAINSTORM,
   onModeChange,
+  projectOptions,
+  projectId = "",
+  onProjectChange,
   fullsend = false,
   onFullsendChange,
   convId,
@@ -2692,6 +2773,13 @@ function ChatInputField({
   placeholder?: string;
   mode?: ConversationMode;
   onModeChange?: (mode: ConversationMode) => void;
+  // THE PROJECT CONTROL on the composer row, alongside the mode. It is supplied whenever there is a
+  // list of projects to choose from, which includes the HERO (no conversation yet) — that is the
+  // whole point, because choosing the workspace at creation is what was missing. OnChange holds the
+  // choice before a conversation exists and applies it immediately once one does.
+  projectOptions?: ScopeOption[];
+  projectId?: string;
+  onProjectChange?: (projectId: string) => void;
   // fullsend is the conversation's FULLSEND state AS THE SERVER REPORTS IT, and
   // onFullsendChange writes it. Both are SUPPLIED ONLY WHEN A CONVERSATION IS OPEN: there is no
   // pending form (see handleFullsendChange), so the control is absent on the hero rather than
@@ -3427,6 +3515,19 @@ function ChatInputField({
                 onChange={onFullsendChange}
               />
             )}
+            {/* THE PROJECT PILL SITS BESIDE THE MODE, because they answer the same kind of question
+                at the same moment: which persona, and which workspace. It reuses the sidebar's
+                ProjectScopeSelect so the option list, the archived marker and the unknown-project
+                fallback are decided in ONE place — and it opens LEFTWARD-safe from this row (the
+                trigger is the rightmost control in the composer). */}
+            {onProjectChange && projectOptions && projectOptions.length > 0 && (
+              <ProjectScopeSelect
+                options={projectOptions}
+                value={projectId}
+                onChange={onProjectChange}
+                label="Conversation project"
+              />
+            )}
             {onModeChange && (
               <ModeToggle
                 mode={mode}
@@ -3881,6 +3982,5 @@ function UncategorizedDropZone({
     </div>
   );
 }
-
 
 export default AskOrchiconPage;

@@ -591,7 +591,7 @@ the work itself, and dispatch it — depending on the **mode** you select.
   delete conversations. A **pulsing dot and Stop button** appear on any
   conversation with a turn running, so a turn is stoppable even when you are
   looking at a different conversation.
-- **Composer** (bottom) — the input, with a mode dropdown and a **model chip**.
+- **Composer** (bottom) — the input, with a **project pill**, a mode dropdown and a **model chip**.
 
 ### The three modes
 
@@ -625,6 +625,7 @@ different mode no longer applies.
 | **Send** | Send the message. Enter sends; Shift+Enter inserts a newline. |
 | **Stop** | Abort the in-flight reply. The turn stops generating immediately and the session stays alive for your next message. |
 | **Compact** | Summarize the conversation history to free context. Disabled, with the reason shown, when there is no conversation or a turn is in flight. |
+| **Project pill** | Choose the **project (workspace)** this conversation belongs to. Before a conversation exists it sets the project the new chat is created in; on an open conversation it moves it, the same action as the sidebar's "move to project". It falls back to whatever project the sidebar is scoped to, so the two controls cannot disagree. |
 | **Mode dropdown** | Switch between Brainstorm / Iteration / Quick Work. |
 | **Model chip** | Opens the three-tier **model picker** (adapter → provider → searchable model) and sets the model for the open conversation. |
 | **Paperclip** | Attach a file to the next message. |

@@ -204,3 +204,40 @@ export function categoriesForScope<T extends { id: string }>(
   if (scope === ALL_PROJECTS) return [...categories];
   return categories.filter((c) => (categorized.get(c.id)?.length ?? 0) > 0);
 }
+
+/**
+ * composerProjectChoices is what the COMPOSER's project pill offers: the same list the sidebar's move
+ * control uses, without "All projects".
+ *
+ * "All projects" is dropped for the same reason the row's control drops it — it is a way to LOOK at the
+ * conversation list, not a place to put a conversation — so the two controls present one set of choices and
+ * cannot disagree about where a chat can live.
+ */
+export function composerProjectChoices(options: readonly ScopeOption[]): ScopeOption[] {
+  return options.filter((o) => o.value !== ALL_PROJECTS);
+}
+
+/**
+ * effectiveComposerProject resolves the project a conversation created from the composer will be filed in.
+ *
+ * AN EXPLICIT PICK WINS; OTHERWISE THE SIDEBAR'S SCOPE. That fallback is deliberate rather than incidental:
+ * the composer and the sidebar are two views of one decision, so a conversation started while the sidebar is
+ * scoped to a workspace is created IN it without the operator also having to touch the pill. It also means the
+ * control cannot quietly disagree with the workspace the operator is looking at.
+ *
+ * `null` means "not chosen yet" and is distinct from `""`, which is a real choice (No project). Conflating them
+ * would make "choose nothing" indistinguishable from "have not chosen", and the former must win over the scope.
+ *
+ * A pick that names a project the project list does not contain falls back to the scope, mirroring
+ * `activeProjectID` in the TUI: an unknown id would be REJECTED by the server on create, so forwarding one
+ * would fail the send outright instead of filing the chat as unassigned.
+ */
+export function effectiveComposerProject(
+  picked: string | null,
+  scopeProjectId: string,
+  projects: readonly ScopedProject[] | undefined,
+): string {
+  const candidate = picked ?? scopeProjectId;
+  if (candidate === "") return "";
+  return (projects ?? []).some((p) => p.id === candidate) ? candidate : "";
+}
