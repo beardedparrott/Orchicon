@@ -585,7 +585,13 @@ function AskOrchiconPage() {
   // what the operator caught, from the other side — the TUI appeared stalled while
   // this client was quietly displaying the waiting card. Both clients now reconcile
   // against the server's pending set, so neither depends on having caught an event.
-  const { data: pendingAsks } = usePendingAsks(activeConvId ?? "");
+  // GATED ON THE TURN UNION, not on this client's stream slot. A card can be raised by a turn this client
+  // never streamed (started in the TUI or another tab, or one whose socket dropped), which is precisely the
+  // case the discovery read exists for — gating it on our own slot would leave it asleep in that case, i.e.
+  // broken in exactly the situation it is needed. `turnInFlight` is declared above.
+  const { data: pendingAsks } = usePendingAsks(activeConvId ?? "", {
+    refetchInterval: transcriptPollMs(turnInFlight),
+  });
   useEffect(() => {
     if (!activeConvId || !pendingAsks || pendingAsks.length === 0) return;
     // Through the SAME fold the wire arm uses, so a card delivered both ways is drawn

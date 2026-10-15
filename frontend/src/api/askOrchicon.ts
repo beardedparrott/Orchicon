@@ -171,7 +171,7 @@ export function useCompactConversation() {
  * Results are folded in with applyAskChunk, which dedupes by ask id, so calling this
  * alongside the stream is free: a card delivered both ways is drawn once.
  */
-export function usePendingAsks(conversationId: string) {
+export function usePendingAsks(conversationId: string, opts?: { refetchInterval?: number | false }) {
   return useQuery({
     queryKey: ["ask", "pendingAsks", conversationId] as const,
     queryFn: async () => {
@@ -179,6 +179,22 @@ export function usePendingAsks(conversationId: string) {
       return res.asks as PermissionAsk[];
     },
     enabled: Boolean(conversationId),
+    // POLLED WHILE A TURN RUNS, and this is the fix for "every time a card was passed, I had to hit
+    // refresh on the browser for it to appear".
+    //
+    // This query is the DISCOVERY half of the card path, and its own doc says it exists so "neither
+    // client depends on having caught an event". It did not do that: it had NO refetch interval, so it
+    // read ONCE at mount and never again. An ask raised by a turn already in flight therefore reached
+    // this client only if the live socket delivered it — and when that arm missed (a dropped or
+    // half-open socket, a watcher that was not subscribed at the moment the ask was raised, a turn
+    // started in the other client), NOTHING re-asked, so the card was invisible until a page reload
+    // re-ran the query from scratch. That is exactly the reported symptom, and it is the same defect
+    // the transcript poll exists to prevent on the message side.
+    //
+    // The cadence follows the transcript poll, so the two cannot disagree about how fresh the pane is:
+    // both are gated on the turn union (this client's slot OR the server's own turn_in_flight), which
+    // is what covers a turn this client never streamed.
+    refetchInterval: opts?.refetchInterval ?? false,
   });
 }
 
