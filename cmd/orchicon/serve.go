@@ -447,26 +447,116 @@ func serveDetach() int {
 }
 
 // serveStop sends SIGTERM to a detached serve and clears the PID file.
+// serveStopGrace is how long a plane is given to exit on SIGTERM before it is killed.
+//
+// A server that closes listeners, drains connections and closes its pools needs more than an instant; one
+// that is refusing to die needs to be escalated to. 10s is the same order the container's own stop
+// grace takes, and it is a variable only so a test does not have to wait it out.
+var serveStopGrace = 10 * time.Second
+
+// serveStop signals the detached plane to stop, WAITS for it to actually go, ESCALATES if it does not, and
+// reports only what it verified.
+//
+// WHY WAITING AND ESCALATING ARE THE WHOLE POINT. This used to send SIGTERM, delete the PID file
+// unconditionally, and print "✓ serve stopped" — never checking. A plane that ignored SIGTERM (a goroutine
+// wedged in a blocked write, a stuck shutdown hook, a process parked on a socket) therefore SURVIVED while
+// the command reported success AND THREW AWAY THE PID FILE. After that there was no way back with this
+// tool: `--stop` and `--status` both resolve from the PID file, so both then answered "serve is not
+// running" while the old process still owned the port and kept serving its old binary.
+//
+// OBSERVED, REPEATEDLY, BY THE OPERATOR: "I did that and the serve was still running and I had to do a
+// kill -9 on the PIDs... I have run into this problem a few times now where I thought I was on the newest
+// code but was still running a stale binary." The stale binary was this bug: a rebuild would stop nothing,
+// start a second binary, lose the race for the port, and leave the OLD plane serving the OLD UI while every
+// command said the restart had succeeded.
+//
+// SO: the PID file is removed ONLY when the process is confirmed gone, and a survivor is reported as a
+// FAILURE (non-zero) so the caller — `scripts/container.sh plane_stop`, `make rebuild-*` — cannot continue
+// as though the plane were down. A stop that cannot stop is not a success.
 func serveStop() int {
-	pid, running := procRunning(servePIDFile())
+	pidFile := servePIDFile()
+	pid, running := procRunning(pidFile)
 	if !running {
+		// A PID FILE NAMING NOTHING IS STALE STATE, not merely an absent plane: it is what makes `--status`
+		// keep claiming a plane exists. Clearing it here is safe precisely because we have just proved the
+		// process is not running — and it cannot mask a survivor, since a survivor is `running`.
+		if _, err := os.Stat(pidFile); err == nil {
+			_ = os.Remove(pidFile)
+		}
 		fmt.Println("serve is not running")
 		return 1
 	}
 	pidNum, err := strconv.Atoi(pid)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "✗ invalid PID file (%s): %v\n", servePIDFile(), err)
+		fmt.Fprintf(os.Stderr, "✗ invalid PID file (%s): %v\n", pidFile, err)
 		return 1
 	}
-	if proc, err := os.FindProcess(pidNum); err == nil {
-		if err := proc.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			fmt.Fprintf(os.Stderr, "✗ failed to signal PID %d: %v\n", pidNum, err)
-			return 1
-		}
+	staleState := func() {
+		// The PID file names a process that is gone or that we cannot see: it is stale, and leaving it
+		// would make `--status` claim a plane exists.
+		_ = os.Remove(pidFile)
 	}
-	_ = os.Remove(servePIDFile())
-	fmt.Printf("✓ serve stopped (PID %d)\n", pidNum)
-	return 0
+	proc, err := os.FindProcess(pidNum)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ no such process %d (%v) — removing the stale PID file\n", pidNum, err)
+		staleState()
+		return 1
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			fmt.Printf("✓ serve was already gone (PID %d)\n", pidNum)
+			staleState()
+			return 0
+		}
+		fmt.Fprintf(os.Stderr, "✗ failed to signal PID %d: %v\n", pidNum, err)
+		return 1
+	}
+	if waitForExit(pidNum, serveStopGrace) {
+		staleState()
+		fmt.Printf("✓ serve stopped (PID %d)\n", pidNum)
+		return 0
+	}
+	// IT IGNORED SIGTERM. Escalate, exactly as the operator was doing by hand — and say so, because a
+	// killed server may have skipped its shutdown path.
+	fmt.Fprintf(os.Stderr, "… PID %d did not exit within %s — escalating to SIGKILL\n", pidNum, serveStopGrace)
+	if err := proc.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		fmt.Fprintf(os.Stderr, "✗ SIGKILL to PID %d failed: %v — the PID file is KEPT so --status still "+
+			"reports the process\n", pidNum, err)
+		return 1
+	}
+	if waitForExit(pidNum, serveStopGrace) {
+		staleState()
+		fmt.Printf("✓ serve killed (PID %d) — it ignored SIGTERM\n", pidNum)
+		return 0
+	}
+	// Neither signal took. KEEP the PID file: a state file that names a live process is the only remaining
+	// handle on it, and reporting success here is what made the stale plane invisible.
+	fmt.Fprintf(os.Stderr, "✗ PID %d is STILL RUNNING after SIGKILL — it may be unkillable (a stuck syscall "+
+		"or a zombie). The PID file is kept at %s; investigate before rebuilding, or the next start will "+
+		"lose the port race and keep serving this process.\n", pidNum, pidFile)
+	return 1
+}
+
+// waitForExit polls until the process is gone, or the grace expires. Signal 0 is the probe: it succeeds
+// while the PID exists, so "gone" means the kernel no longer has it — not merely that it stopped listening.
+func waitForExit(pid int, grace time.Duration) bool {
+	deadline := time.Now().Add(grace)
+	for {
+		if _, alive := procRunningPID(pid); !alive {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// procRunningPID reports whether a PID is a running process, independent of any PID FILE — the check
+// waitForExit needs, since the file it started from may already be gone. It shares pidAlive's definition of
+// "running" (a zombie is not), so the stop path and --status cannot disagree.
+func procRunningPID(pid int) (string, bool) {
+	return strconv.Itoa(pid), pidAlive(pid)
 }
 
 // serveStatus prints whether a detached serve is running.

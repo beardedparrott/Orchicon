@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -64,14 +65,54 @@ func procRunning(pidFile string) (string, bool) {
 	if err != nil {
 		return pid, false
 	}
-	proc, err := os.FindProcess(p)
+	return pid, pidAlive(p)
+}
+
+// pidAlive reports whether a PID is a RUNNING process.
+//
+// SIGNAL 0 ALONE IS NOT THE TEST, and getting that wrong made stop verification lie in the other
+// direction. `signal 0` succeeds for a ZOMBIE — a process that has exited but whose parent has not yet
+// reaped it — and for a stopped-but-traced process, so a server that had genuinely died could still read
+// as alive. `waitForExit` uses this to decide whether a stop is confirmed, so a zombie would make a
+// SUCCESSFUL stop report failure and keep the PID file, which is exactly the state that misleads the next
+// rebuild. It was caught by driving serveStop against a real child that ignored SIGTERM.
+//
+// So the state is read from /proc where it is available, and only an R or S or D or T process counts as
+// running. Any other state (Z for zombie, X for dead) is not a live process. Where /proc is not readable
+// (a non-Linux host, a locked-down procfs) the signal probe stands alone, which is the previous behaviour.
+func pidAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
 	if err != nil {
-		return pid, false
+		return false
 	}
 	if proc.Signal(syscall.Signal(0)) != nil {
-		return pid, false
+		return false
 	}
-	return pid, true
+	if state, ok := procStateChar(pid); ok {
+		switch state {
+		case 'R', 'S', 'D', 'T', 't', 'W':
+			return true
+		default:
+			// Z (zombie), X (dead), or anything unrecognised: not a running server.
+			return false
+		}
+	}
+	return true
+}
+
+// procStateChar reads the process state character from /proc/<pid>/stat, whose format is
+// `pid (comm) state ...` — and `comm` may itself contain spaces and parentheses, so the state is the first
+// field AFTER THE LAST ')' rather than a fixed offset.
+func procStateChar(pid int) (byte, bool) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	i := bytes.LastIndexByte(b, ')')
+	if i < 0 || i+2 >= len(b) {
+		return 0, false
+	}
+	return b[i+2], true
 }
 
 // withFrontend wraps the API handler so that non-API requests serve the
