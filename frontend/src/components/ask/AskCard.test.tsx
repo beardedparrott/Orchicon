@@ -212,7 +212,10 @@ describe("card keyboard model and wiring", () => {
     // `activeStream?.asks.map(...)` list pinned to the bottom — the operator's
     // "the permission blocks in the GUI are still remaining at the bottom at the
     // end of a turn which makes no sense."
-    expect(routeSrc).toContain("interleave(transcriptBlocks, activeStream?.asks)");
+    // The interleave's BLOCK SOURCE is `searchBlocks` — the durable blocks, plus the live stream items
+    // while a search is active so an in-flight reply is searchable (see the route). The assertion is on
+    // the interleave call itself, which is what "the card is a block, not an appendix" means.
+    expect(routeSrc).toContain("interleave(searchBlocks, activeStream?.asks)");
     // Escape denies, through the same handler as the Deny action.
     expect(routeSrc).toContain("PermissionChoice.DENY");
     expect(routeSrc).toContain("e.defaultPrevented");

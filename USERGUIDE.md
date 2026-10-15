@@ -1719,9 +1719,11 @@ advertises the chord whenever there is a split on screen.
   (line breaks are kept; the row holds your words, not a structured field). A row you
   have handed back to the composer with `ctrl+g` does not take it.
 - **`ctrl+f`** opens the **find box** — a search over the conversation you are
-  reading. Type the term in the box: the transcript filters **as you type** and the
-  box reports the match count. **Enter** keeps the search and hands the keyboard to
-  the transcript; **esc** cancels and puts back the transcript you had.
+  reading. Type the term in the box: the transcript filters **as you type**, every
+  occurrence is **highlighted** in the text so you can see *where* the match is rather
+  than only that the message contains one, and the box reports the match count.
+  **Enter** keeps the search and hands the keyboard to the transcript; **esc** cancels
+  and puts back the transcript you had.
 - **Pasted text never sends until you press Enter.**
 - **`ctrl+y`** stops an in-flight reply (the GUI's Stop button). The affordance row
   offers it while a reply streams.

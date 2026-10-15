@@ -78,6 +78,11 @@ type renderCacheKey struct {
 	// glyph is the copy affordance the item was drawn with. It is a parameter rather
 	// than package state (see RenderItemsSpansWithCopy) and it changes the text.
 	glyph string
+	// query is the in-transcript SEARCH armed when the segment was rendered. A searched segment is
+	// DIFFERENT TEXT (it carries match-band escapes), so it must never be served to a render that is not
+	// searching — nor to one searching for something else. Without this the first painted conversation
+	// would keep its marks after the search was cleared, and a later query would show the OLD query's hits.
+	query string
 	// folded is whether this item's reasoning body was drawn collapsed. The predicate
 	// is a function of the item's key, so it resolves to one bool per item and can be
 	// keyed.
@@ -107,19 +112,19 @@ func NewRenderCache() *RenderCache {
 // scope names what the items belong to (the conversation id): items are only ever
 // rendered as part of a conversation, and two conversations can hold items with the
 // same key. copyGlyph is "" for a surface where a click copies nothing.
-func (c *RenderCache) Render(scope string, items []ChatItem, maxWidth int, copyGlyph string, fold func(key string) bool) (string, []ItemSpan) {
+func (c *RenderCache) Render(scope string, items []ChatItem, maxWidth int, copyGlyph string, fold func(key string) bool, searchQ string) (string, []ItemSpan) {
 	if c == nil {
-		return renderItems(items, maxWidth, fold, copyGlyph, nil, "")
+		return renderItems(items, maxWidth, fold, copyGlyph, nil, "", searchQ)
 	}
-	return renderItems(items, maxWidth, fold, copyGlyph, c, scope)
+	return renderItems(items, maxWidth, fold, copyGlyph, c, scope, searchQ)
 }
 
 // get returns the remembered segment for an item, when the entry is there AND was
 // rendered from an item identical to this one.
-func (c *RenderCache) get(scope, key string, width int, glyph string, folded bool, sig uint64) (string, []CodeSpan, []AskOptionSpan, bool) {
+func (c *RenderCache) get(scope, key string, width int, glyph string, folded bool, query string, sig uint64) (string, []CodeSpan, []AskOptionSpan, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.entries[renderCacheKey{scope: scope, key: key, width: width, glyph: glyph, folded: folded}]
+	e, ok := c.entries[renderCacheKey{scope: scope, key: key, width: width, glyph: glyph, folded: folded, query: query}]
 	if !ok || e.sig != sig {
 		return "", nil, nil, false
 	}
@@ -127,13 +132,13 @@ func (c *RenderCache) get(scope, key string, width int, glyph string, folded boo
 }
 
 // put remembers a segment, replacing whatever this item had before.
-func (c *RenderCache) put(scope, key string, width int, glyph string, folded bool, sig uint64, seg string, code []CodeSpan, askOpts []AskOptionSpan) {
+func (c *RenderCache) put(scope, key string, width int, glyph string, folded bool, query string, sig uint64, seg string, code []CodeSpan, askOpts []AskOptionSpan) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.entries) >= renderCacheMaxEntries {
 		c.entries = make(map[renderCacheKey]renderCacheEntry)
 	}
-	c.entries[renderCacheKey{scope: scope, key: key, width: width, glyph: glyph, folded: folded}] = renderCacheEntry{
+	c.entries[renderCacheKey{scope: scope, key: key, width: width, glyph: glyph, folded: folded, query: query}] = renderCacheEntry{
 		sig: sig, seg: seg, code: code, askOpts: askOpts,
 	}
 	c.layouts++

@@ -4813,7 +4813,11 @@ func (m *App) syncTranscript(convID string, str *kit2.Stream, items []chat.ChatI
 	// The spans are the CLICK GEOMETRY, and they come from the same render that produced the lines being
 	// drawn — so a click cannot resolve against a layout the screen is not showing. Stored per conversation,
 	// beside transcriptLines.
-	body, spans := m.renderCache.Render(convID, chat.GroupByPhase(items), w, chat.CopyGlyph, m.foldedReasoning)
+	// THE ASK SEARCH TRAVELS WITH THIS RENDER, and only this one: this is the pane the find box belongs to,
+	// so this is the pane whose hits are marked. The slide-out strip on the other screens renders the same
+	// conversation WITHOUT the query (see chatpanel.go) — it has no find box, and marking it would claim a
+	// search control that is not there.
+	body, spans := m.renderCache.Render(convID, chat.GroupByPhase(items), w, chat.CopyGlyph, m.foldedReasoning, m.askSearch)
 	if m.transcriptSpans == nil {
 		m.transcriptSpans = map[string][]chat.ItemSpan{}
 	}

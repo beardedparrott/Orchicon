@@ -59,7 +59,7 @@ func TestASystemRowBecomesANoticeNotTheModelsText(t *testing.T) {
 }
 
 func TestANoticeRendersAsANoticeAndNotAsAModelBubble(t *testing.T) {
-	notice, _, _ := renderItem(ChatItem{Kind: KindNotice, Text: noticeContent, Key: "m-m2"}, 80, false, "")
+	notice, _, _ := renderItem(ChatItem{Kind: KindNotice, Text: noticeContent, Key: "m-m2"}, 80, false, "", "")
 	if strings.TrimSpace(notice) == "" {
 		t.Fatal("a notice rendered to nothing")
 	}
@@ -74,7 +74,7 @@ func TestANoticeRendersAsANoticeAndNotAsAModelBubble(t *testing.T) {
 	}
 	// And it must not be the same output as the assistant rendering of the same text,
 	// which is what the fall-through produced.
-	asAssistant, _, _ := renderItem(ChatItem{Kind: KindText, Text: noticeContent, Key: "m-m2"}, 80, false, "")
+	asAssistant, _, _ := renderItem(ChatItem{Kind: KindText, Text: noticeContent, Key: "m-m2"}, 80, false, "", "")
 	if notice == asAssistant {
 		t.Fatal("a notice renders identically to the assistant's own bubble — the distinction the " +
 			"operator has to make is exactly this one")

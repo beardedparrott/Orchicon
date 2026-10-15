@@ -612,7 +612,25 @@ function AskOrchiconPage() {
   // live items are cleared and the row (now the complete reply) is the only copy. See
   // lib/ask-live-merge.ts — and note this must hold for BOTH the transcript and the scroll dep
   // below, or the reply is drawn once and counted twice.
-  const liveItemsPresent = hasLiveTextItems(groupedStream);
+  // IN-TRANSCRIPT SEARCH, declared HERE because the supersession decision below reads it. (The filter
+  // helpers it feeds are unit-tested in @/lib/transcript-search; the interleaved transcript is built once
+  // so the filter and the render cannot disagree about slot order.)
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeMatch, setActiveMatch] = useState(0);
+  const searchActive = searchQuery.trim() !== "";
+
+  // AND IT MUST ACCOUNT FOR SEARCH. The live items are NOT DRAWN while a search filter is active — the
+  // render gates them on `!searchActive` so the view shows only matches — so treating them as "present"
+  // would suppress the mirror row while nothing replaced it, and an in-flight reply would DISAPPEAR the
+  // moment the operator opened the find box. Measured in a browser: the transcript went to "No matches"
+  // with the streamed text still arriving. The supersession rule is about what is ON SCREEN, so it asks
+  // whether the live copy is being drawn, not merely whether it exists.
+  const hasLive = hasLiveTextItems(groupedStream);
+  // AND THE RULE IS THE SAME UNDER SEARCH. An earlier attempt made this false while searching (to keep the
+  // mirror row as a fallback) — but the search then had nothing to filter, because the live blocks below
+  // were keyed off this value too. Making it unconditional keeps ONE decision: while live text exists it is
+  // the copy both DRAWN and SEARCHED; the mirror row is the fallback for a client with no live items.
+  const liveItemsPresent = hasLive;
   // groupedStream DOES need to be declared before this use; it is a `const` above (useMemo), and
   // this file's own rule is that a const used above its declaration is a TDZ error the production
   // build rejects.
@@ -622,6 +640,35 @@ function AskOrchiconPage() {
     isStreaming,
     liveItemsPresent,
   );
+
+  // A LIVE-ONLY TURN MUST STILL BE SEARCHABLE.
+  //
+  // While the mirror row is suppressed in favour of the live stream items, the reply exists in
+  // `groupedStream` and NOT in `messages` — but the transcript renders it from `visibleSlots`, which is
+  // built from `transcriptBlocks` (the durable messages). So a search during an in-flight turn would find
+  // NOTHING: the very text on screen is not among the blocks being filtered. Measured in a browser: an
+  // active search reported "No matches" while the reply was visibly streaming.
+  //
+  // Normalized here rather than suppressed in the search, so the filter sees exactly ONE copy of the text
+  // — the same copy the supersession rule chose to draw. A turn whose transcript is complete (no live
+  // items) produces an empty list and changes nothing, which is the common case.
+  // The live copy as SEARCHABLE blocks, so the text an operator is looking at during an in-flight turn can
+  // be found. It exists because the transcript renders `visibleSlots` (built from the durable messages)
+  // while the running reply is drawn from `groupedStream` — so on a live turn the visible text is not among
+  // the blocks the filter sees, and a search found nothing at all. Measured in a browser: "No matches" while
+  // the reply streamed on screen.
+  //
+  // IT IS EXACTLY ONE COPY. The mirror row is dropped whenever this list is non-empty (the same
+  // supersession rule the render uses), so the search never sees the turn twice.
+  const liveBlocks: TranscriptBlock[] = hasLive
+    ? groupedStream
+        .filter((it) => it.kind === "text" || it.kind === "user")
+        .map((it) => ({
+          kind: "message" as const,
+          at: it.at,
+          message: { id: `live-${it.key}`, role: "assistant", content: it.text } as ChatMessage,
+        }))
+    : [];
   const transcriptBlocks: TranscriptBlock[] = [];
   for (const msg of durableMessages) {
     transcriptBlocks.push({
@@ -643,10 +690,12 @@ function AskOrchiconPage() {
   // already-loaded messages only (no server search, no regex, no persisted history:
   // all out of scope). The interleaved transcript is built ONCE here so the filter
   // and the render cannot disagree about slot order.
-  const [searchQuery, setSearchQuery] = useState("");
-  const [activeMatch, setActiveMatch] = useState(0);
-  const transcriptSlots: TranscriptSlot[] = interleave(transcriptBlocks, activeStream?.asks);
-  const searchActive = searchQuery.trim() !== "";
+  // The live blocks ride along ONLY while a search is active. Without a search the live copy is already
+  // painted from `groupedStream` (the render's own live-item map), so adding it here too would draw every
+  // streaming reply twice; WITH a search that render is gated off and these blocks are the only way the
+  // text the operator is looking at can be searched.
+  const searchBlocks = searchActive ? [...transcriptBlocks, ...liveBlocks] : transcriptBlocks;
+  const transcriptSlots: TranscriptSlot[] = interleave(searchBlocks, activeStream?.asks);
   const visibleSlots = filterByQuery(
     transcriptSlots,
     searchQuery,
@@ -2217,6 +2266,7 @@ function AskOrchiconPage() {
                             message={block.message}
                             onRetry={handleRetry}
                             onSelectOption={handleSendMessage}
+                            highlight={searchQuery}
                           />
                         )}
                       </div>
@@ -2618,12 +2668,17 @@ function MessageBubble({
   message,
   onRetry,
   onSelectOption,
+  highlight = "",
 }: {
   message: ChatMessage;
   onRetry?: () => void;
   // onSelectOption sends a clicked clarifying-question option as the answer to the
   // PAUSED turn (it goes over the reply RPC as the ask_user tool result).
   onSelectOption?: (label: string) => void;
+  // highlight is the active in-transcript search query. It is threaded to the bubbles so a match is
+  // marked WHERE IT IS: the filter already answers "which message", and on a long reply the operator
+  // needs "which line". Empty (no search) renders exactly as before.
+  highlight?: string;
 }) {
   // WHICH SHELL DRAWS THIS MESSAGE. Decided in one tested place (lib/ask-bubble.ts)
   // rather than by a fall-through: `system` is the PLATFORM speaking about the
@@ -2632,7 +2687,7 @@ function MessageBubble({
   const kind = bubbleKindFor(message);
 
   if (kind === "user") {
-    return <UserBubble text={message.content} source="you" />;
+    return <UserBubble text={message.content} source="you" highlight={highlight} />;
   }
 
   if (kind === "notice") {
@@ -2716,6 +2771,7 @@ function MessageBubble({
         <AssistantBubble
           text={message.content}
           label="Orchicon"
+          highlight={highlight}
         />
       )}
       {/* THE QUESTION CARD IS THE LAST THING IN THE MESSAGE.

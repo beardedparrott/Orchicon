@@ -1,10 +1,81 @@
+import { Children, cloneElement, isValidElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkEmoji from "remark-emoji";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
+import { SearchHighlight } from "@/components/chat/SearchHighlight";
 import { remarkHardBreaks } from "@/lib/remarkHardBreaks";
 import { cn } from "@/lib/utils";
+
+// markChildren wraps every TEXT RUN inside a block element in SearchHighlight, so an in-transcript search
+// can mark the hits where they actually are.
+//
+// WHY IT RECURSES rather than marking only direct string children: react-markdown hands a paragraph
+// ["plain ", <strong>["bold"]</strong>, " tail"] as children, and a match inside the emphasis is exactly
+// as findable as one outside it. Marking only the top level would leave hits inside bold/link/code
+// unmarked and make the highlight look patchy for no reason the operator could see.
+//
+// IT CLONES HOST ELEMENTS ONLY IN SO FAR AS IT MUST — `{...el.props, children: …}` — so an element's own
+// attributes, className and handler identity are untouched. Nothing here runs when no search is active:
+// componentsFor returns the plain COMPONENTS object outright, so the default render path cannot regress.
+function markChildren(children: ReactNode, query: string): ReactNode {
+  return Children.map(children, (child) => {
+    if (typeof child === "string") {
+      return <SearchHighlight text={child} query={query} />;
+    }
+    if (isValidElement(child)) {
+      const el = child as ReactElement<{ children?: ReactNode }>;
+      if (el.props && "children" in el.props) {
+        return cloneElement(el, {
+          ...el.props,
+          children: markChildren(el.props.children, query),
+        } as Partial<{ children?: ReactNode }>);
+      }
+    }
+    return child;
+  });
+}
+
+/** componentsFor returns the renderer set, with text runs marked when a search query is active. */
+function componentsFor(query: string): Components {
+  const q = query.trim();
+  if (q === "") return COMPONENTS;
+  const mark = (children: ReactNode) => markChildren(children, q);
+  return {
+    ...COMPONENTS,
+    // Every element that can HOLD prose. Inline spans (strong/em/a/code) are handled by the recursion
+    // above, so only the containers need an entry.
+    h1: ({ className, children, ...props }) => (
+      <h1 className={cn("mb-3 mt-5 text-xl font-bold first:mt-0", className)} {...props}>{mark(children)}</h1>
+    ),
+    h2: ({ className, children, ...props }) => (
+      <h2 className={cn("mb-2 mt-4 text-lg font-semibold", className)} {...props}>{mark(children)}</h2>
+    ),
+    h3: ({ className, children, ...props }) => (
+      <h3 className={cn("mb-1.5 mt-3 text-base font-medium", className)} {...props}>{mark(children)}</h3>
+    ),
+    p: ({ className, children, ...props }) => (
+      <p className={cn("mb-2 last:mb-0", className)} {...props}>{mark(children)}</p>
+    ),
+    li: ({ className, children, ...props }) => (
+      <li className={cn("mb-0.5", className)} {...props}>{mark(children)}</li>
+    ),
+    th: ({ className, children, ...props }) => (
+      <th className={cn("border-b px-2 py-1 font-medium text-muted-foreground", className)} {...props}>{mark(children)}</th>
+    ),
+    td: ({ className, children, ...props }) => (
+      <td className={cn("border-b px-2 py-1", className)} {...props}>{mark(children)}</td>
+    ),
+    blockquote: ({ className, children, ...props }) => (
+      <blockquote
+        className={cn("mb-2 border-l-2 border-muted-foreground/30 pl-3 italic text-muted-foreground last:mb-0", className)}
+        {...props}
+      >{mark(children)}</blockquote>
+    ),
+  };
+}
 
 const COMPONENTS: Components = {
   h1: ({ className, ...props }) => (
@@ -89,6 +160,7 @@ export function Markdown({
   children,
   className,
   preserveBreaks = false,
+  highlight = "",
 }: {
   children?: string | null;
   className?: string;
@@ -103,6 +175,12 @@ export function Markdown({
    * prompt panel, reasoning, or any stored description that happens to be rendered through this component.
    */
   preserveBreaks?: boolean;
+  /**
+   * highlight is the ACTIVE in-transcript search query. Every occurrence inside this text is wrapped in
+   * <mark>, so the operator can see WHERE the match is rather than only that the message contains one.
+   * Empty (the default) renders exactly as before — see componentsFor.
+   */
+  highlight?: string;
 }) {
   if (!children) return null;
   const remarkPlugins = preserveBreaks
@@ -110,7 +188,7 @@ export function Markdown({
     : [remarkGfm, remarkEmoji];
   return (
     <div className={cn("text-sm leading-relaxed break-words [overflow-wrap:anywhere]", className)}>
-      <ReactMarkdown components={COMPONENTS} remarkPlugins={remarkPlugins}>
+      <ReactMarkdown components={componentsFor(highlight)} remarkPlugins={remarkPlugins}>
         {children}
       </ReactMarkdown>
     </div>

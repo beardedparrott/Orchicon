@@ -157,6 +157,15 @@ func SetCodeBlock(fg, bg string) {
 	blockFg, blockBg = fg, bg
 }
 
+// Search-highlight state, set by SetSearchHighlight and armed per render by setSearchQuery.
+var (
+	hlFg        string
+	hlBg        string
+	hlRestoreFg string
+	hlRestoreBg string
+	searchQ     string
+)
+
 // blockActive reports whether a code block can be drawn on its fill.
 //
 // FOUR CONDITIONS, and the last two are the same fail-closed rule the chip follows. The block's own pair
@@ -203,6 +212,78 @@ func accentActive() bool {
 // accentOpen starts the accent; accentClose returns to the colour it was drawn inside.
 func accentOpen() string  { return sgr(38, accentFg) }
 func accentClose() string { return sgr(38, accentRestore) }
+
+// SetSearchHighlight sets the in-transcript search MATCH colours: the band drawn behind a hit, and the
+// colour the text returns to after it. The theme calls it on every switch, like every other token.
+//
+// WHY A BAND RATHER THAN JUST A COLOUR. The operator: "it doesn't highlight the findings so it makes it
+// rather difficult in a large stream of text to find where the found item is on the page." On a full
+// transcript the words are already coloured (structure, code, reasoning), so a foreground-only cue would
+// vanish into prose that is coloured for other reasons. A background is unambiguous and reads at a glance,
+// which is the entire job.
+//
+// THE RESTORE ARGUMENT IS NOT OPTIONAL, and it is the reason this mirrors the chip and the accent: a
+// `[39m`/`[49m` close would drop the rest of the line to the TERMINAL's defaults — the band hole the
+// chip section documents — so the close re-asserts the colours the text was drawn inside.
+func SetSearchHighlight(fg, bg, restoreFg, restoreBg string) {
+	renderMu.Lock()
+	defer renderMu.Unlock()
+	hlFg, hlBg, hlRestoreFg, hlRestoreBg = fg, bg, restoreFg, restoreBg
+}
+
+// setSearchQuery arms the highlight for one render: every occurrence of q in rendered text is marked. It is
+// scoped to the render (like the chip surface) rather than kept as ambient state, so a caller that does not
+// pass a query cannot inherit one.
+func setSearchQuery(q string) {
+	searchQ = strings.ToLower(strings.TrimSpace(q))
+}
+
+// highlightActive reports whether a match can be drawn: a non-empty query and a complete, parseable colour
+// set. Fail-closed, like the chip and the accent — a band whose close cannot restore the surface would leak
+// its background across the rest of the row.
+func highlightActive() bool {
+	if searchQ == "" || hlFg == "" || hlBg == "" {
+		return false
+	}
+	if sgr(38, hlRestoreFg) == "" || sgr(48, hlRestoreBg) == "" {
+		return false
+	}
+	return sgr(38, hlFg) != "" && sgr(48, hlBg) != ""
+}
+
+func highlightOpen() string  { return sgr(38, hlFg) + sgr(48, hlBg) }
+func highlightClose() string { return sgr(38, hlRestoreFg) + sgr(48, hlRestoreBg) }
+
+// markSearchHits wraps every occurrence of the active query in the match band. It returns the string
+// unchanged when no query is armed or nothing matches, so the unsearched render is byte-for-byte as before.
+//
+// IT MATCHES CASE-INSENSITIVELY (the search's own rule) but PRESERVES THE ORIGINAL CASE in the output: the
+// offsets come from a lowercased copy, the text emitted comes from the original.
+func markSearchHits(text string) string {
+	if !highlightActive() || text == "" {
+		return text
+	}
+	lower := strings.ToLower(text)
+	var b strings.Builder
+	from := 0
+	for {
+		at := strings.Index(lower[from:], searchQ)
+		if at < 0 {
+			break
+		}
+		at += from
+		b.WriteString(text[from:at])
+		b.WriteString(highlightOpen())
+		b.WriteString(text[at : at+len(searchQ)])
+		b.WriteString(highlightClose())
+		from = at + len(searchQ)
+	}
+	if from == 0 {
+		return text
+	}
+	b.WriteString(text[from:])
+	return b.String()
+}
 
 // AccentMarker wraps a run of text — a list marker, which is written into an INDENT rather than emitted
 // as a span — in the structural accent. Returns the text unchanged when no accent is configured, so a
@@ -349,8 +430,15 @@ func (s span) width() int { return lipgloss.Width(s.text) }
 // render applies the span's attributes. Spans with no attributes pass through untouched, so plain
 // prose carries no escape codes at all.
 func (s span) render() string {
-	if s.a == 0 || s.text == "" {
+	if s.text == "" {
 		return s.text
+	}
+	// PLAIN PROSE IS THE COMMON CASE AND MUST STILL BE MARKED. This used to return `s.text` outright for a
+	// span with no attributes — which is every ordinary paragraph — so a search highlighted only hits that
+	// happened to land inside a styled run, and missed the plain text the operator is usually looking at.
+	// Caught by the first test that searched plain prose: `match bands = 0` on "alpha needle beta needle".
+	if s.a == 0 {
+		return markSearchHits(s.text)
 	}
 	// A CODE SPAN GETS THE CHIP when one is configured, and reverse video otherwise. The chip is
 	// stripped out of the attribute set first: it is drawn with colours, not with SGR 7, so leaving
@@ -366,7 +454,14 @@ func (s span) render() string {
 		rest := s.a &^ aAccent
 		return accentOpen() + rest.open() + s.text + rest.off() + accentClose()
 	}
-	return s.a.open() + s.text + s.a.off()
+	// SEARCH HITS ARE MARKED LAST, on the fully-styled text, so a hit is marked whether it lands in plain
+	// prose, a bold run, a heading or a code chip — and so the match is computed against the text as the
+	// operator sees it rather than against a source form that may have lost emphasis markers.
+	//
+	// MARKING HERE RATHER THAN IN THE PARSER is what keeps it exact: the parser transforms source (consuming
+	// emphasis and link syntax), and a mark applied before that could be split by a transformation, while one
+	// applied to the finished span cannot.
+	return markSearchHits(s.a.open() + s.text + s.a.off())
 }
 
 func spansText(spans []span) string {
@@ -438,6 +533,58 @@ func RenderOn(src string, width int, sf Surface) []string {
 	chipSurface, chipOn = sf, true
 	defer func() { chipOn, chipSurface = false, Surface{} }()
 	return render(src, width)
+}
+
+// RenderOnSearch is RenderOn with the in-transcript SEARCH armed: every occurrence of query in the rendered
+// text is drawn in the match band. An empty query renders exactly as RenderOn, which is the state before a
+// search starts and after it is cleared.
+//
+// THE QUERY IS RENDER-SCOPED, not ambient, for the same reason the chip surface is: the transcript is
+// rendered from several places and a caller that did not pass a query must not inherit one from a previous
+// paint. It is restored on the way out even on a panic, so a mid-render failure cannot leave the next
+// render marking hits.
+func RenderOnSearch(src string, width int, sf Surface, query string) []string {
+	renderMu.Lock()
+	defer renderMu.Unlock()
+	chipSurface, chipOn = sf, true
+	prev := searchQ
+	setSearchQuery(query)
+	defer func() { chipOn, chipSurface = false, Surface{}; searchQ = prev }()
+	return render(src, width)
+}
+
+// RenderOnSpansSearch is RenderOnSpans with the in-transcript SEARCH armed — see RenderOnSearch for why the
+// query is render-scoped. It is the entry point the transcript uses while a search is active, so hits are
+// marked in both the model's band and the operator's own.
+func RenderOnSpansSearch(src string, width int, sf Surface, query string, copyGlyph ...string) ([]string, []CodeSpan) {
+	return renderWithSearch(src, width, sf, false, query, copyGlyph...)
+}
+
+// RenderUserOnSpansSearch is RenderUserOnSpans with the search armed.
+func RenderUserOnSpansSearch(src string, width int, sf Surface, query string, copyGlyph ...string) ([]string, []CodeSpan) {
+	return renderWithSearch(src, width, sf, true, query, copyGlyph...)
+}
+
+// renderWithSearch is renderWith plus the search query, armed and restored around the render. One body, so a
+// layout fix cannot land on one path and miss the other — the same reason renderWith exists.
+func renderWithSearch(src string, width int, sf Surface, userBreaks bool, query string, copyGlyph ...string) ([]string, []CodeSpan) {
+	renderMu.Lock()
+	defer renderMu.Unlock()
+	chipSurface, chipOn = sf, true
+	blockGlyph = ""
+	hardBreaks = userBreaks
+	prevQ := searchQ
+	setSearchQuery(query)
+	if len(copyGlyph) > 0 {
+		blockGlyph = copyGlyph[0]
+	}
+	defer func() {
+		chipOn, chipSurface = false, Surface{}
+		blockGlyph = ""
+		hardBreaks = false
+		searchQ = prevQ
+	}()
+	return renderSpans(src, width)
 }
 
 // RenderOnSpans is RenderOn plus where each code block landed and what its source was, and an optional COPY
