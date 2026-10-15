@@ -76,6 +76,10 @@ import { useToast, useToastStore } from "@/components/ui/toast";
 import { COMPACT_COMMAND, parseComposerCommand } from "@/lib/composer-command";
 import { bubbleKindFor } from "@/lib/ask-bubble";
 import {
+  dropSupersededMirror,
+  hasLiveTextItems,
+} from "@/lib/ask-live-merge";
+import {
   groupStreamItems,
   nextChunkKey,
   type StreamItem,
@@ -468,6 +472,18 @@ function AskOrchiconPage() {
   const pendingReplyId = activeStream?.pendingReplyId ?? null;
   const streamItems = activeStream?.items ?? [];
 
+  // Group streaming items into coalesced bubbles.
+  //
+  // DECLARED HERE, ABOVE ITS FIRST CONSUMER, and the move is load-bearing: the transcript builder
+  // below needs it to decide whether the live stream is already drawing the running reply (see
+  // lib/ask-live-merge), and this file's own rule is that a `const` used above its declaration is a
+  // TDZ error the production build rejects (the same reason `messages` and the turn union were
+  // moved up). It depends on nothing but `streamItems`, which is the line above.
+  const groupedStream = useMemo(
+    () => groupStreamItems(streamItems),
+    [streamItems],
+  );
+
   // THE TURN'S IN-FLIGHT UNION IS DECLARED HERE, ABOVE ITS FIRST CONSUMER, and the move is a
   // pure reordering: `listPollMs` is already in scope (state, declared with the other list-poll
   // state), and nothing between here and their old site read `conversations`/`activeConv`. TWO
@@ -568,8 +584,25 @@ function AskOrchiconPage() {
   const showOptimistic =
     !!optimisticUserMsg &&
     !messages?.some((m) => m.content === optimisticUserMsg && m.role === "user");
+  // THE RUNNING REPLY ARRIVES TWICE, so exactly ONE copy is drawn. The server streams it as it is
+  // written AND mirrors it into the acked row (so a client with no live stream still sees it).
+  // While this client holds live text/reasoning, the live copy is the one that grows and the
+  // in-flight row is skipped; with no live items the row is the fallback, and after the turn the
+  // live items are cleared and the row (now the complete reply) is the only copy. See
+  // lib/ask-live-merge.ts — and note this must hold for BOTH the transcript and the scroll dep
+  // below, or the reply is drawn once and counted twice.
+  const liveItemsPresent = hasLiveTextItems(groupedStream);
+  // groupedStream DOES need to be declared before this use; it is a `const` above (useMemo), and
+  // this file's own rule is that a const used above its declaration is a TDZ error the production
+  // build rejects.
+  const durableMessages = dropSupersededMirror(
+    messages ?? [],
+    pendingReplyId,
+    isStreaming,
+    liveItemsPresent,
+  );
   const transcriptBlocks: TranscriptBlock[] = [];
-  for (const msg of messages ?? []) {
+  for (const msg of durableMessages) {
     transcriptBlocks.push({
       kind: "message",
       at: Number(msg.createdAt?.seconds ?? 0) * 1000,
@@ -1756,19 +1789,24 @@ function AskOrchiconPage() {
     return new Map(conversations.map((c) => [c.id, c]));
   }, [conversations]);
 
-  // Group streaming items into coalesced bubbles.
-  const groupedStream = useMemo(
-    () => groupStreamItems(streamItems),
-    [streamItems],
-  );
+  // (groupedStream is declared ABOVE, beside `streamItems`: the transcript builder reads it.)
 
   // Merge durable messages with streaming items for display.
   // Durable messages are the source of truth; streaming items fill in the gap.
   const displayMessages = useMemo(() => {
-    if (!isStreaming || groupedStream.length === 0) return messages ?? [];
+    // The SAME supersession rule as the transcript above: with live items drawing the running
+    // reply, the mirrored row must not be merged in beside them or the reply is drawn twice. This
+    // is the scroll dep and the empty-check input, so it must agree with `transcriptBlocks`.
+    const durable = dropSupersededMirror(
+      messages ?? [],
+      pendingReplyId,
+      isStreaming,
+      hasLiveTextItems(groupedStream),
+    );
+    if (!isStreaming || groupedStream.length === 0) return durable;
     // Build a simple merged list: durable messages + streaming items.
-    return [...(messages ?? []), ...groupedStream] as ChatMessage[];
-  }, [messages, isStreaming, groupedStream]);
+    return [...durable, ...groupedStream] as ChatMessage[];
+  }, [messages, isStreaming, groupedStream, pendingReplyId]);
 
   // (There was a `lastMessageId` here, used to decide whether a clarifying-question
   // card was still interactive by asking "does a later message exist?". That was right

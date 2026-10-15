@@ -79,6 +79,12 @@ const COMPONENTS: Components = {
   ),
 };
 
+// NOTE ON `prose-custom`, which used to be on the wrapper div: it was DEAD. Introduced with this
+// component and never defined — not in src/index.css (checked across the whole tree, and absent
+// from the built stylesheet too), and `@tailwindcss/typography`, whose `prose` modifiers the name
+// imitates, is not a dependency. It styled nothing. It also was not needed: the wrapper sets the
+// text utilities it actually wants (text-sm / leading-relaxed / the wrapping rule) and every
+// element is styled explicitly through COMPONENTS below, so dropping the class changes no pixel.
 export function Markdown({
   children,
   className,
@@ -103,7 +109,7 @@ export function Markdown({
     ? [remarkGfm, remarkEmoji, remarkHardBreaks]
     : [remarkGfm, remarkEmoji];
   return (
-    <div className={cn("prose-custom text-sm leading-relaxed break-words [overflow-wrap:anywhere]", className)}>
+    <div className={cn("text-sm leading-relaxed break-words [overflow-wrap:anywhere]", className)}>
       <ReactMarkdown components={COMPONENTS} remarkPlugins={remarkPlugins}>
         {children}
       </ReactMarkdown>
