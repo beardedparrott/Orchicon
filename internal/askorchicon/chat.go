@@ -2310,9 +2310,32 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 				// segmenter road instead of raw-appending to the tail.
 				if evt.IsReasoning && !segThink.inThink() {
 					liveReasoning.WriteString(evt.Text)
+					// A native reasoning delta is streamed to the client on its own arm, so the
+					// thinking block keeps growing live (see the completed `case "reasoning"`).
+					if c.onStreamEvent != nil {
+						c.onStreamEvent(&apiv1.ChatStreamResponse{
+							Event: &apiv1.ChatStreamResponse_Reasoning{
+								Reasoning: &apiv1.ReasoningChunk{Content: evt.Text},
+							},
+						})
+					}
 				} else {
 					segThink.feed(evt.Text,
-						func(t string) { liveText.WriteString(t) },
+						// emitText is the DEMUXED clean-text seam: a folded think body never reaches
+						// this callback, so forwarding it streams the answer as it is typed WITHOUT
+						// leaking  thinking tags into the visible reply. This is the whole reason the
+						// delta arm can stream at all — the segmenter has already done the demux that a
+						// raw delta forward would have leaked through.
+						func(t string) {
+							liveText.WriteString(t)
+							if c.onStreamEvent != nil {
+								c.onStreamEvent(&apiv1.ChatStreamResponse{
+									Event: &apiv1.ChatStreamResponse_TextChunk{
+										TextChunk: &apiv1.TextChunk{Content: t},
+									},
+								})
+							}
+						},
 						func(b string) { liveReasoning.WriteString(b) },
 						func(b string) {
 							liveReasoning.Reset()
