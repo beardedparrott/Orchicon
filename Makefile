@@ -69,6 +69,34 @@ endif
 # Stated as ONE variable used by every target that walks the tree, so a target
 # added later cannot forget it. Any dir under tmp/ is skipped, including a
 # worktree (those are skipped for a different reason — they DO have a go.mod).
+#
+# CROSS-COMPILE WAS THE TARGET THAT HAD NOT USED IT, and it is the one that proves the rule,
+# because it is the only target that vets an EXPLICIT `./...` of its own. It was added after
+# this variable and walked the tree directly, so a stray file under tmp/ broke `make
+# rebuild-dev` at the CROSS-COMPILE step — "vet: tmp/.../restore.go: undefined: PolicyEvaluator"
+# — while `make vet` and `make test` stayed GREEN, because they do consult this variable. Same
+# class of scratch-vs-gate failure as the one above, in the one gate that skipped the guard.
+# It now reads PKGS like the rest, so there is no longer a target that walks the tree without it.
+#
+# A FAILED `go list` IS NOT AN EMPTY ONE — and the guard below could not tell them apart.
+# `2>/dev/null` threw away the ONLY line that explains a failure, so both cases produced an empty
+# PKGS and the guard blamed the one cause it knew about: "no packages matched". That cost a full
+# diagnosis of a HEALTHY tree. An agent had run with a RELATIVE GOMODCACHE — relative to the repo
+# root, so the cache landed INSIDE the repo at tmp/orchicon/gomodcache — leaving ~1.2 GB of module
+# sources under tmp/ with no go.mod. `go list ./...` then aborted the WHOLE pattern —
+#
+#	pattern ./...: directory tmp/orchicon/gomodcache/github.com/arbovm/levenshtein@...:
+#	outside main module or its selected dependencies
+#
+# — and printed NOTHING on stdout, so `make vet` reported "no packages matched ./... (tmp/
+# excluded)" over 98 perfectly good packages and `make rebuild-dev` could not run at all. The
+# message invited the one conclusion that was FALSE ("the merge broke the module").
+#
+# So the failure is CAPTURED here and reported in `go`'s own words, while the empty-match text
+# survives as the OTHER arm of the guard. Recursive (`=`, not `:=`) as before: PKGS is read inside
+# recipes, and `:=` would run `go list` at PARSE time — in a worktree or on a fresh clone where the
+# toolchain or the module graph is not ready yet. Cost: one extra `go list` per gate run, ~0.2s warm.
+GO_LIST_ERR = $(shell $(GO) list ./... 2>&1 >/dev/null | head -3)
 PKGS = $(shell $(GO) list ./... 2>/dev/null | grep -v '/tmp/')
 
 BUF         := buf
@@ -193,7 +221,7 @@ run: fetch-tags fe-build ## Run the control plane from source
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
 test: ## Run Go tests
-	@test -n "$(PKGS)" || { printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; exit 1; }
+	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
 	@# A TEST MUST NEVER TOUCH THE DEVELOPER'S REAL CONFIG.
 	@#
 	@# One did: TestThemeCommand drives `/theme light` then `/theme dark`, and SetTheme persists the
@@ -224,7 +252,7 @@ test: ## Run Go tests
 	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(PKGS)
 
 vet: ## Run go vet
-	@test -n "$(PKGS)" || { printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; exit 1; }
+	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
 	$(GO) vet $(PKGS)
 
 tidy: ## Run go mod tidy
@@ -745,6 +773,7 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
 CROSS_TMP := $(CURDIR)/.cross-compile
 .PHONY: cross-compile
 cross-compile: ## Compile the shipped binaries for every release platform (catches platform-specific breaks)
+	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
 	@set -e; mkdir -p $(CROSS_TMP); xcache="$$(mktemp -d $(CROSS_TMP)/cache.XXXXXX)"; tmp="$$(mktemp -d $(CROSS_TMP)/out.XXXXXX)"; \
 	trap 'rm -rf "$$tmp" "$$xcache"' EXIT; \
 	echo "==> cross-compile cache: $$xcache (throwaway — never pollutes $(GOCACHE))"; \
@@ -752,7 +781,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 	  os="$${t%%/*}"; arch="$${t##*/}"; \
 	  echo "==> $$os/$$arch"; \
 	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) build -o "$$tmp/" ./cmd/orchicon ./cmd/orch; \
-	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) vet ./...; \
+	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) vet $(PKGS); \
 	done; \
 	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile and typecheck"
 
@@ -781,6 +810,18 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # because the `go build ./cmd/...` above already populates most of the module's cache) — nothing
 # beside the ~21 s build it rides on, and it is the difference between "the command packages
 # compile" and "the module compiles, tests included, for every platform we gate."
+#
+# AND IT VETS `$(PKGS)`, WHICH IS THAT SAME `./...` LIST MINUS THE GITIGNORED SCRATCH — not a
+# narrowing of the scope argued above. `PKGS` IS a module-wide `go list ./...` (strict, so a real
+# module breakage still fails it); all it removes is the packages under tmp/, which have no go.mod
+# and are not this module's code. The scope that mattered here — every package of the module,
+# test files included, per platform — is intact. What is gone is the ability of a leftover
+# scratch file to break the COMPILE gate, which is the one gate that must never be hostage to
+# scratch: it is the reason `make vet`/`make test` stayed green while this target failed, and
+# the reason a healthy tree could not be rebuilt. Checked, not assumed: `GOOS=windows go list
+# ./...` and the host listing return the SAME package set, so resolving the list on the host
+# loses nothing platform-specific. The guard above the loop refuses an empty list, because
+# `go vet` with no arguments would silently vet the CURRENT DIRECTORY and report success.
 
 # ALL THREE test targets, because each side added one to the same line: this branch adds the
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
