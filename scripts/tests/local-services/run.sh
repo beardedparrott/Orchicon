@@ -134,6 +134,11 @@ check_lacks    "make migrate instance=prod does not fall back to dev's 5432" ":5
 
 MIGRATE_DEV="$(make_n migrate)"
 check_contains "make migrate (default) resolves dev's :5432 DSN" ":5432/" "$MIGRATE_DEV"
+# THE ENGINE, not just the DSN. The Atlas CLI cannot read this migration directory at all (it
+# rejects the paired *_down.sql as a duplicate version) and it needs a network install, so an
+# offline inner loop must apply through the repo's own engine - the one the plane and CI use.
+check_contains "make migrate applies through the repo's own engine" "atlas-ci" "$MIGRATE_DEV"
+check_lacks    "make migrate needs no atlas CLI install (offline)" "atlasgo.sh" "$MIGRATE_DEV"
 
 RLS_PROD="$(make_n rls-check instance=prod)"
 check_contains "make rls-check instance=prod uses the same :5433 DSN" ":5433/" "$RLS_PROD"

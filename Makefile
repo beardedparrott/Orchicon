@@ -267,6 +267,7 @@ clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygien
 	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
 	@rm -f $(BIN_DIR)/orchicon
 	@rm -f $(BIN_DIR)/orch
+	@rm -f $(BIN_DIR)/atlas-ci
 	# Stale copies of the binary dropped into the container/runtime build
 	# contexts by older scripts. The runtime image no longer bakes the
 	# binary (the daemon bind-mounts its own executable), so a leftover
@@ -351,9 +352,20 @@ clean-docker: ## Prune Orchicon's dangling images and stopped containers (never 
 
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check synth-data
+# APPLIED BY THE REPO'S OWN ENGINE, NOT THE ATLAS CLI. internal/migrate over the embedded
+# db/migrations is what the plane applies on boot and what CI applies (tools/atlas-ci), so
+# `make migrate` cannot disagree with either - the DSN resolved above is the only variable.
+# The CLI path could not read this directory AT ALL: Atlas rejects the paired *_down.sql as a
+# duplicate migration version, with the exact CLI the dev image installs (`curl -sSfL
+# https://atlasgo.sh | sh`). It also wanted a network install and a matching CLI build, neither
+# of which an offline, container-less inner loop has. migrate-diff / migrate-hash still use the
+# CLI: they GENERATE and HASH the directory, which the Go engine deliberately does not do.
+# BUILT, THEN RUN. `go run` would do the same compile, but its throwaway binary lands in the
+# shared Go build cache, which some sandboxes refuse to exec from; bin/ is this repo's
+# own artifact dir (gitignored) and `make clean` owns it.
 migrate: ## Apply pending Atlas migrations to $$DB_URL (instance=<dev|prod|test> picks the instance)
-	@command -v $(ATLAS_BIN) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
-	cd db && $(ATLAS_BIN) migrate apply --env local --url "$(DB_URL)"
+	@$(GO) build -o $(BIN_DIR)/atlas-ci ./tools/atlas-ci
+	DB_URL="$(DB_URL)" $(BIN_DIR)/atlas-ci
 
 migrate-diff: ## Generate a new migration from db/schema.hcl (usage: make migrate-diff name=foo)
 	@test -n "$(name)" || { echo "usage: make migrate-diff name=<migration_name>"; exit 1; }
