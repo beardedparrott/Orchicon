@@ -183,7 +183,10 @@ func TestInterjectRecyclesWedgedSession(t *testing.T) {
 	// persisted on that session.
 	client.sub.feed(busText(interjectSend.sessionID, "steered reply"))
 	client.sub.feed(busIdle(interjectSend.sessionID))
-	msg := waitForMessage(t, pool, convID, ackB)
+	// The row is written TWICE — the in-flight partial mirror first, then the
+	// terminal finalize that records the session. A bare waitForMessage returns on
+	// whichever lands first, so reading metadata off it races the finalize.
+	msg := waitForMessageSessionID(t, pool, convID, ackB)
 	if strings.TrimSpace(msg.Content) != "steered reply" {
 		t.Errorf("interjection reply = %q, want %q", msg.Content, "steered reply")
 	}
