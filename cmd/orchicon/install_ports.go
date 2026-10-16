@@ -537,23 +537,33 @@ func resolveInstallPorts(instance, residency string, out io.Writer, tty *os.File
 	// Rung 0, and it must come FIRST: a running instance of ours owns its ports.
 	// Probing them would report our own listener as a conflict; see
 	// runningInstancePorts for why that would split the instance.
-	if running, _ := containerRunning(name); running {
-		if live, ok := runningInstancePorts(name, specs); ok {
-			fmt.Fprintf(out, "instance %q is already running — keeping its ports\n", name)
-			for _, p := range specs {
-				if _, ok := live[p.Env]; !ok {
-					// Not published by the container in this shape (the plane port in
-					// host residency): resolve it the way the plane was started. The
-					// instance is already validated above, so a default exists.
-					if d, ok := p.defaultFor(instance); ok {
-						live[p.Env] = d
+	//
+	// IT IS INSIDE THE ENGINE GATE, and that is deliberate: rung 0 asks a CONTAINER
+	// whether it is already running (`docker inspect`), so on a host with no engine
+	// there is no container to ask and nothing to read ports back from. Reaching it
+	// unguarded would put an ungated `docker` invocation on the no-engine install
+	// path — exactly the silent failure this item removes. The fall-through is
+	// correct for that host: no container is running by definition, so resolving the
+	// ports fresh (env pins, then planInstallPorts) is the right rung.
+	if containerEngineAvailable() {
+		if running, _ := containerRunning(name); running {
+			if live, ok := runningInstancePorts(name, specs); ok {
+				fmt.Fprintf(out, "instance %q is already running — keeping its ports\n", name)
+				for _, p := range specs {
+					if _, ok := live[p.Env]; !ok {
+						// Not published by the container in this shape (the plane port in
+						// host residency): resolve it the way the plane was started. The
+						// instance is already validated above, so a default exists.
+						if d, ok := p.defaultFor(instance); ok {
+							live[p.Env] = d
+						}
 					}
+					fmt.Fprintf(out, "  %s: %d\n", p.Label, live[p.Env])
 				}
-				fmt.Fprintf(out, "  %s: %d\n", p.Label, live[p.Env])
+				return live, nil
 			}
-			return live, nil
+			fmt.Fprintf(out, "warning: %s is running but its published ports could not be read — resolving ports fresh\n", name)
 		}
-		fmt.Fprintf(out, "warning: %s is running but its published ports could not be read — resolving ports fresh\n", name)
 	}
 
 	pinned := map[string]int{}

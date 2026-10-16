@@ -930,3 +930,52 @@ func TestEnvWithoutStripsOnlyTheNamedKeys(t *testing.T) {
 // TestEnsureHostDataDirKeepsAnExistingKEK / TestEnsureHostDataDirRefusesToOrphanASecret, which assert the
 // same property (plus the FATAL failure mode) against the function that exists now: with no container-era
 // volume to copy from, the guard is the whole of the behaviour.
+
+// TestResolveInstallPortsNeedsNoEngine is acceptance criterion 4 at the RESOLVER: the port table is resolved
+// on a host with NO container engine, and resolving it must not need one.
+//
+// RUNG 0 OF resolveInstallPorts IS THE ONLY PLACE THE RESOLVER ASKS A CONTAINER ANYTHING — it reads a running
+// instance's published ports back with `docker inspect`. On a host with no engine there is no container to
+// ask, so that rung must be SKIPPED (not attempted and failed): an ungated `docker` invocation on the
+// no-engine path is exactly the silent failure this item removes, and it is the one docker call site the
+// install's residency gate does not otherwise cover. Here PATH holds no docker, so a probe that stayed
+// unguarded could only ever shell a binary that is not there.
+func TestResolveInstallPortsNeedsNoEngine(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no docker, no pg_isready — nothing to exec
+	t.Setenv("ORCHICON_STRICT_PORTS", "")
+	t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
+
+	if containerEngineAvailable() {
+		t.Fatal("an empty PATH must not report a container engine")
+	}
+	var out bytes.Buffer
+	ports, err := resolveInstallPorts("dev", residencyHost, &out, nil)
+	if err != nil {
+		t.Fatalf("a host with no container engine must still resolve its ports: %v", err)
+	}
+	if ports["ORCHICON_CONTROL_PORT"] <= 0 {
+		t.Errorf("the control port must resolve without an engine; got %d", ports["ORCHICON_CONTROL_PORT"])
+	}
+	if strings.Contains(out.String(), "already running") {
+		t.Errorf("no engine means no running container to read ports back from:\n%s", out.String())
+	}
+}
+
+// TestPortResolverGatesItsContainerRead pins the GATE STRUCTURALLY, which is the half the behavioural test
+// above cannot express: with a docker stub on PATH the engine probe is true and rung 0 legitimately runs, so
+// "the read is skipped when there is no engine" has to be asserted against the guard itself.
+//
+// It is deliberately narrow — the read must sit INSIDE `if containerEngineAvailable() {` — because that is
+// the contract: rung 0 asks a CONTAINER, and a container can only be asked when an engine is installed.
+func TestPortResolverGatesItsContainerRead(t *testing.T) {
+	src, err := os.ReadFile("install_ports.go")
+	if err != nil {
+		t.Fatalf("read install_ports.go: %v", err)
+	}
+	body := string(src)
+	guarded := "if containerEngineAvailable() {\n\t\tif running, _ := containerRunning(name); running {"
+	if !strings.Contains(body, guarded) {
+		t.Errorf("resolveInstallPorts must read a running container's ports ONLY when an engine is available; "+
+			"expected the guarded block:\n%s", guarded)
+	}
+}
