@@ -131,3 +131,91 @@ func TestMakefilePKGSReportsAFailedGoList(t *testing.T) {
 		}
 	}
 }
+
+// TestCrossCompileVetsTheFilteredPackageList pins the SECOND half of the same defect, and the two
+// halves are separate facts that failed separately.
+//
+// THE FAILURE THIS PINS. The Makefile states its scratch exclusion as "ONE variable used by every
+// target that walks the tree, so a target added later cannot forget it" — but `cross-compile` WAS
+// such a target and had forgotten it: it vetted a literal `./...` of its own.
+//
+//	tmp/cleanup-backup-.../gotmp-preserved/restore.go: undefined: PolicyEvaluator
+//	make: *** [Makefile:748: cross-compile] Error 1
+//
+// `tmp/` is the gitignored scratch dir and carries no go.mod, so `./...` walks into it and compiles
+// whatever is lying there as part of this module. The file was a preserved snapshot of a moved
+// type, so it could never compile — and it was PRESERVED ON PURPOSE, which is the point: scratch a
+// human deliberately keeps is still scratch, and the gate must not be hostage to it.
+//
+// THE ASYMMETRY IS THE INVARIANT WORTH PINNING. `make vet` and `make test` consult PKGS, so they
+// saw nothing wrong and reported GREEN; `cross-compile` did not, so it failed. A tree could be
+// declared healthy by every gate except the one that runs last in `rebuild-dev` — which is exactly
+// how a correct-looking fix came back broken. So this test asserts BOTH: that cross-compile vets
+// the filtered list, and that NO target anywhere vets a bare `./...` — because the next target that
+// walks the tree is the one that will forget, and prose in a comment cannot stop it.
+func TestCrossCompileVetsTheFilteredPackageList(t *testing.T) {
+	logical := makefileLogicalLines(readRootFile(t, "../../Makefile"))
+
+	// --- no target may vet a bare `./...` — the general form of the defect --------------------
+	for _, line := range logical {
+		if strings.Contains(line, "$(GO) vet ./...") {
+			t.Errorf("a target vets a literal `./...`:\n  %s\n"+
+				"`./...` walks the gitignored scratch dir tmp/, which has no go.mod, so any stray file "+
+				"left there is compiled as part of this module and can fail the gate on a healthy tree. "+
+				"Vet $(PKGS), which is the same module-wide listing with tmp/ removed.", line)
+		}
+	}
+
+	// Scope the rest to the cross-compile recipe: from its target line to the next line that starts
+	// in column 0 (the next target, comment or variable).
+	start := -1
+	for i, line := range logical {
+		if strings.HasPrefix(line, "cross-compile:") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("cross-compile is gone from the Makefile — it is the gate that compiles the shipped " +
+			"binaries for every release platform.")
+	}
+	var recipe []string
+	for _, line := range logical[start+1:] {
+		if line == "" || (line[0] != '\t' && line[0] != ' ') {
+			break
+		}
+		recipe = append(recipe, line)
+	}
+	if len(recipe) == 0 {
+		t.Fatal("the cross-compile recipe is empty — refusing to assert over nothing.")
+	}
+	joined := strings.Join(recipe, "\n")
+
+	// --- it vets, and it vets the FILTERED list -----------------------------------------------
+	if !strings.Contains(joined, "$(GO) vet $(PKGS)") {
+		t.Errorf("cross-compile does not vet the filtered package list:\n  %s\n"+
+			"Without this it vets whatever `./...` resolves to, scratch included — the failure above.", joined)
+	}
+
+	// --- and the scope it defends is NOT narrowed ---------------------------------------------
+	//	The comment in the Makefile argues at length for a module-wide vet rather than just the two
+	//	command packages. `$(PKGS)` preserves that: it IS a module-wide `go list ./...`, strict,
+	//	with the go.mod-less scratch removed. Assert the pieces that make that true.
+	if !strings.Contains(joined, "$(GO) build -o \"$$tmp/\" ./cmd/orchicon ./cmd/orch") {
+		t.Errorf("cross-compile no longer builds BOTH shipped binaries:\n  %s", joined)
+	}
+	if !strings.Contains(joined, `GOOS="$$os"`) || !strings.Contains(joined, `GOARCH="$$arch"`) {
+		t.Errorf("cross-compile no longer drives the vet with the loop's per-platform GOOS/GOARCH:\n"+
+			"  %s\n"+
+			"Vetting on the host only would miss the platform-specific breaks this gate exists for.", joined)
+	}
+
+	// --- an empty list must refuse, not silently pass -----------------------------------------
+	//	`go vet` with NO arguments vets the package in the current directory, so an empty PKGS would
+	//	make the gate report success while checking one package instead of the module.
+	if !strings.Contains(joined, `test -n "$(PKGS)"`) {
+		t.Errorf("cross-compile lost its empty-PKGS guard:\n  %s\n"+
+			"An empty list reaches `go vet` as no arguments at all, which vets the CURRENT DIRECTORY "+
+			"and reports success — a gate that passes while checking almost nothing.", joined)
+	}
+}
