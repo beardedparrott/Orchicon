@@ -73,6 +73,19 @@ data/
 .gtmp/
 # Go build cache (GOCACHE) — local dev artifact, never committed.
 .gocache/
+# Repo-root Go caches a session created by pointing GOCACHE/.GOMODCACHE at the
+# tree (.gc/build, .gc/go/pkg/mod, .gomodcache). Local dev artifacts, never
+# committed — and NOT to be walked by `go list ./...`, which aborts the whole
+# pattern when it finds an embedded module cache with no go.mod.
+.gc/
+.gomodcache/
+# Review-harness GOTMPDIR scratch (leaked test worktrees + go-build temp) —
+# local dev artifact, never committed. The DIRECTORY is held by the tracked
+# .review-tmp/x placeholder, so ignore its CONTENTS, not the dir: a negated file
+# inside an ignored directory cannot be re-included, and ignoring the dir would
+# hide the placeholder.
+.review-tmp/*
+!.review-tmp/x
 # Workflow-runner scratch caches (Go build/test + GOTMPDIR) — never committed.
 .cache-build/
 .qa-gocache/
