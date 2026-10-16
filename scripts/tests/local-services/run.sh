@@ -109,6 +109,22 @@ check "services-port dev nats-mon"  "8222" "$(cs services-port dev nats-mon)"
 OVR="$(cd "$REPO_ROOT" && ORCHICON_POSTGRES_PORT=6543 "$CONTAINER_SH" services-port dev postgres 2>&1)"
 check "services-port honours ORCHICON_POSTGRES_PORT" "6543" "$OVR"
 
+# THE SHELL HALF MUST MIRROR THE GO HALF'S RECORD-FIRST RULE. `orchicon services
+# up` binds the ports the instance's install RECORDED (ports.json) when it has
+# them, and the defaults+overrides otherwise; a DSN derived the other way round
+# would point the plane at a port the started services never bound. The record is
+# ALL-OR-NOTHING (both postgres and nats present), exactly as servicesPortsFor
+# decides, so a partial record falls back rather than resolving key-by-key.
+REC_HOME="$(mktemp -d)"
+mkdir -p "$REC_HOME/.local/share/orchicon-dev"
+printf '{\n  "ORCHICON_POSTGRES_PORT": 6001,\n  "ORCHICON_NATS_PORT": 6002,\n  "ORCHICON_CONTROL_PORT": 6003\n}\n' \
+  > "$REC_HOME/.local/share/orchicon-dev/ports.json"
+check "services-port uses the RECORDED postgres port" "6001" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$CONTAINER_SH" services-port dev postgres 2>&1)"
+check "services-port uses the RECORDED control port" "6003" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$CONTAINER_SH" services-port dev control 2>&1)"
+check_contains "db-url agrees with the RECORD" "6001" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$CONTAINER_SH" db-url dev 2>&1)"
+printf '{\n  "ORCHICON_POSTGRES_PORT": 6001\n}\n' > "$REC_HOME/.local/share/orchicon-dev/ports.json"
+check "a PARTIAL record falls back to the default (all-or-nothing)" "5432" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$CONTAINER_SH" services-port dev postgres 2>&1)"
+
 check_contains "db-url dev uses 5432"  ":5432/" "$(cs db-url dev)"
 check_contains "db-url prod uses 5433" ":5433/" "$(cs db-url prod)"
 check_contains "db-url is a postgres DSN" "postgres://orchicon:orchicon@localhost:" "$(cs db-url dev)"
@@ -142,6 +158,11 @@ check_lacks    "make migrate needs no atlas CLI install (offline)" "atlasgo.sh" 
 
 RLS_PROD="$(make_n rls-check instance=prod)"
 check_contains "make rls-check instance=prod uses the same :5433 DSN" ":5433/" "$RLS_PROD"
+# THE INSTANCE TRAVELS WITH THE DSN. check-rls.sh resolves the instance's OWN
+# downloaded psql from ORCHICON_INSTANCE, so a prod run that left it at dev would
+# reach for dev's record (and then the dev container) — the wrong instance's tools.
+check_contains "make rls-check instance=prod tells check-rls.sh which instance" "ORCHICON_INSTANCE=prod" "$RLS_PROD"
+check_contains "make rls-check (default) names dev" "ORCHICON_INSTANCE=dev" "$(make_n rls-check)"
 
 # --- (iii) services is a prerequisite of `run` ALONE ---------------------
 echo
@@ -151,6 +172,13 @@ RUN="$(make_n run)"
 check_contains "make run starts the instance's local services" "services up" "$RUN"
 check_contains "make run points the plane at the derived DSN" "ORCHICON_POSTGRES_DSN=" "$RUN"
 check_contains "make run points the plane at the instance's NATS port" "ORCHICON_NATS_URL=" "$RUN"
+# THE PLANE'S OWN BIND IS PER-INSTANCE TOO, and a wildcard would be a collision
+# AND a LAN exposure: the config default is `:8080` (dev's port on every
+# interface), so `instance=prod` would take dev's 8080. Exported from the same table.
+RUN_PROD="$(make_n run instance=prod)"
+check_contains "make run instance=prod binds prod's control port" "services-port prod control" "$RUN_PROD"
+check_contains "make run instance=prod binds loopback, not a wildcard" "127.0.0.1:" "$RUN_PROD"
+check_lacks    "make run instance=prod does not leave ORCHICON_HTTP_ADDR at dev's wildcard" "ORCHICON_HTTP_ADDR=:8080" "$RUN_PROD"
 
 for t in migrate "rls-check" test; do
   check_lacks "make $t does NOT start host services" "services up" "$(make_n "$t")"
@@ -192,6 +220,12 @@ check_contains 'main.go documents services in printHelp' 'bin + " services"' "$M
 
 SERVICES_GO="$(cat "${REPO_ROOT}/cmd/orchicon/services.go" 2>/dev/null || true)"
 check_contains "cmd/orchicon/services.go defines runServices" "func runServices(" "$SERVICES_GO"
+
+echo
+echo "  local-services harness: ${PASSED} passed, ${FAILED} failed, ${SKIPPED} skipped"
+[ "$FAILED" -eq 0 ] || exit 1
+exit 0
+es(" "$SERVICES_GO"
 
 echo
 echo "  local-services harness: ${PASSED} passed, ${FAILED} failed, ${SKIPPED} skipped"
