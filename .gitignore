@@ -107,3 +107,6 @@ deploy/runtime/orch
 # Orchicon: ignore nested step worktrees (parallel-branch children)
 01*/
 .restore-from-snapshot.sh
+
+# cross-compile throwaway cache/output (see Makefile CROSS_TMP)
+.cross-compile/

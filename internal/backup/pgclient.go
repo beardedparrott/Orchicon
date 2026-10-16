@@ -36,11 +36,13 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -64,6 +66,11 @@ const (
 	// host-plane DSN carries the PUBLISHED port instead, which is why the container
 	// client rewrites it: dev publishes 5432:5432, prod 5433:5432.
 	containerPGPort = "5432"
+
+	// dataDirEnv is the control plane's state dir (internal/config, and the same
+	// variable internal/backup/backup.go's DefaultDir reads). The infra-binaries
+	// record written by cmd/orchicon/binaries.go lives directly under it.
+	dataDirEnv = "ORCHICON_DATA_DIR"
 
 	// pgToolDump / pgToolRestore are the two tools this package drives.
 	pgToolDump    = "pg_dump"
@@ -90,11 +97,20 @@ func (c pgClient) local() bool { return c.container == "" }
 // `exec: "pg_dump": executable file not found in $PATH` from the deep end.
 func (c pgClient) execPath(tool string) (string, error) {
 	if c.local() {
+		// FIRST the instance's OWN resolved record — the distribution the supervisor
+		// runs is the one whose client version matches its server exactly, and on a
+		// downloaded install it is on no PATH at all. See resolvedInfraBinary.
+		if p := infraRecordLookup(tool); p != "" {
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				return p, nil
+			}
+		}
 		path, err := exec.LookPath(tool)
 		if err != nil {
 			return "", fmt.Errorf("%s is not on this PATH and no Postgres container was reachable to run it in — "+
 				"set %s=<container> to name the instance's services container, or install postgresql-client "+
-				"(the container's own %s always matches its server version)", tool, pgContainerEnv, tool)
+				"(the container's own %s always matches its server version; a host-resident install that "+
+				"downloaded its own Postgres has one at $%s/%s)", tool, pgContainerEnv, tool, dataDirEnv, infraRecordFile)
 		}
 		return path, nil
 	}
@@ -142,6 +158,52 @@ func (realProber) output(name string, args ...string) (string, error) {
 
 // probe is the package-level seam (swapped by tests).
 var probe pgProber = realProber{}
+
+// infraRecordLookup is the seam through which a LOCAL client prefers the Postgres
+// distribution the resolver already chose, over whatever PATH happens to hold. It is
+// a var so a test can point it at a fixture record without a data dir.
+var infraRecordLookup = resolvedInfraBinary
+
+// infraRecordFile is the record cmd/orchicon/binaries.go writes ONCE per instance
+// ("ONE RESOLVER, ONE RECORD"): <DataDir>/infra-binaries.json, keyed by field name.
+const infraRecordFile = "infra-binaries.json"
+
+// resolvedInfraBinary returns the absolute path of a resolved PostgreSQL tool from
+// the instance's own record, or "" when there is no record or no such field.
+//
+// WHY THE RECORD AND NOT PATH. On a host whose Postgres came from the DOWNLOAD path
+// the distribution is unpacked at <DataDir>/bin/postgres/bin, which is on NOBODY's
+// PATH — so `exec.LookPath("pg_dump")` fails on the very install the resolver just
+// provisioned, and `orchicon db backup` reported:
+//
+//	pg_dump is not on this PATH and no Postgres container was reachable to run it in
+//
+// Reading the record is not a second resolution path: it is the SAME answer the
+// supervisor that runs the server used, which is the whole reason the record exists.
+// PATH stays as the fallback for a container-resident plane and for a host with its
+// own postgresql-client.
+//
+// A malformed or unreadable record is NOT an error here — it degrades to the PATH
+// lookup and its existing actionable message, because a broken record must not be
+// able to make backup impossible on a host where a working client is on PATH.
+func resolvedInfraBinary(tool string) string {
+	dataDir := strings.TrimSpace(os.Getenv(dataDirEnv))
+	if dataDir == "" {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(dataDir, infraRecordFile))
+	if err != nil {
+		return ""
+	}
+	var rec map[string]any
+	if err := json.Unmarshal(b, &rec); err != nil {
+		return ""
+	}
+	// The keys are the record's JSON field names, which are the tool names for the
+	// tools this package drives (pg_dump, psql).
+	v, _ := rec[tool].(string)
+	return strings.TrimSpace(v)
+}
 
 // resolvePGClient decides how to reach the database named by dsn.
 //

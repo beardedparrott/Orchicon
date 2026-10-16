@@ -546,8 +546,12 @@ func TestPartitionBinsSplitsPresentFromMissing(t *testing.T) {
 	if strings.Join(present, ",") != "postgres,pg_ctl" {
 		t.Errorf("present = %v, want [postgres pg_ctl]", present)
 	}
-	if strings.Join(missing, ",") != "initdb,pg_isready,createdb" {
-		t.Errorf("missing = %v, want [initdb pg_isready createdb]", missing)
+	// pg_dump AND psql ARE REQUIRED TOO, and this assertion is where that is pinned:
+	// they are what `orchicon db backup`/`restore` exec, and leaving them out of the
+	// required set is what made every backup on a downloaded host install fail with
+	// "pg_dump is not on this PATH and no Postgres container was reachable".
+	if strings.Join(missing, ",") != "initdb,pg_isready,createdb,pg_dump,psql" {
+		t.Errorf("missing = %v, want [initdb pg_isready createdb pg_dump psql]", missing)
 	}
 	// A DIRECTORY named like a binary is not a binary.
 	if err := os.MkdirAll(filepath.Join(dir, "createdb"), 0o755); err != nil {

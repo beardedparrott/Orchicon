@@ -161,10 +161,17 @@ func TestStartConversationTurnStallAborts(t *testing.T) {
 	}
 	// The stall monitor trips, aborts the serve session, and persists a
 	// clear retryable error naming the model + remediation (the deliberate
-	// diagnostics wording from 7390089e1) — not a 30-minute timeout wait.
+	// diagnostics wording from 7390089e1, reworded by 0dc7f3b4/#707 to lead
+	// with the likeliest cause) — not a 30-minute timeout wait.
+	//
+	// THE ONE THING THIS ASSERTS IS THE STALL, not the prose: `stalled:no_progress`
+	// is the machine-readable reason the monitor emits, and `produced no output`
+	// is what the turn fails with. Pinning those two keeps the property (a stalled
+	// turn fails loudly instead of hanging) while leaving the exact user-facing
+	// sentence free to change.
 	errText, _ := meta["error"].(string)
-	if !strings.Contains(errText, "stopped responding") || !strings.Contains(errText, "stalled") {
-		t.Errorf("metadata.error = %q, want a stall message mentioning 'stopped responding' and 'stalled'", errText)
+	if !strings.Contains(errText, "stalled:no_progress") || !strings.Contains(errText, "produced no output") {
+		t.Errorf("metadata.error = %q, want a no-progress stall error ('stalled:no_progress' + 'produced no output')", errText)
 	}
 	client.mu.Lock()
 	defer client.mu.Unlock()
@@ -204,9 +211,11 @@ func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
 	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
+	// The repetition signal is the machine-readable half and is stable; the
+	// user-facing sentence is not (see the no-progress case above).
 	errText, _ := meta["error"].(string)
-	if !strings.Contains(errText, "stopped responding") || !strings.Contains(errText, "stalled:repetition") {
-		t.Errorf("metadata.error = %q, want a repetition stall message", errText)
+	if !strings.Contains(errText, "stalled:repetition") {
+		t.Errorf("metadata.error = %q, want a repetition stall message ('stalled:repetition')", errText)
 	}
 }
 
