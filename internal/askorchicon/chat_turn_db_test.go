@@ -357,6 +357,41 @@ func waitForMessage(t *testing.T, pool *db.Pool, convID, id string) db.MessageRo
 	}
 }
 
+// waitForMessageSessionID waits until the reply row carries a session_id in its
+// metadata — i.e. the TERMINAL finalize (persistConversationReply) has landed.
+//
+// waitForMessage ALONE IS NOT ENOUGH FOR A METADATA ASSERTION. A live turn writes
+// the row TWICE: the throttled in-flight partial mirror (upsertPartialMessage,
+// whose metadata carries only model_ref) and then the terminal finalize, which is
+// what records session_id. waitForMessage returns on whichever write it observes
+// FIRST, so a bare waitForMessage followed by a metadata read races the two and
+// flakes (observed ~1 run in 4 on TestInterjectRecyclesWedgedSession: the read
+// caught the partial, session_id was <nil>). The finalize is guaranteed to be the
+// LAST write to the row (the flusher is cancelled and drained before it), so
+// waiting for the session_id is both correct and terminating.
+func waitForMessageSessionID(t *testing.T, pool *db.Pool, convID, id string) db.MessageRow {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		for _, m := range listMessages(t, pool, convID) {
+			if m.ID != id {
+				continue
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(m.Metadata, &meta); err == nil {
+				if sid, _ := meta["session_id"].(string); sid != "" {
+					return m
+				}
+			}
+		}
+		select {
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatalf("message %s never carried a session_id (the terminal finalize never landed)", id)
+		}
+	}
+}
+
 // TestStartConversationTurnReturnsAckAndPersistsReplyAfterReturn verifies the
 // acceptance criteria: the send RPC returns immediately (an ack with the
 // assistant message id) and the reply is collected on a detached context and
@@ -894,7 +929,7 @@ func TestStartConversationTurnServeLossFreshSessionFallback(t *testing.T) {
 
 	// 3. The reply is persisted in the SAME conversation (fresh session
 	// seeded from the DB transcript).
-	msg := waitForMessage(t, pool, convID, ackID)
+	msg := waitForMessageSessionID(t, pool, convID, ackID)
 	if strings.TrimSpace(msg.Content) != "recovered" {
 		t.Errorf("persisted reply = %q, want recovered", msg.Content)
 	}
