@@ -260,6 +260,10 @@ func httpHealthy(url string, timeout time.Duration) bool {
 //   - A data dir that ALREADY HOLDS INSTANCE STATE (blobs/, serve/, ports.json, a postgres cluster) with NO
 //     KEK is a FATAL error, not a warning: minting a fresh KEK there orphans every tenant secret, and a
 //     warning on stdout is exactly how that goes unnoticed.
+//   - AN OPERATOR-MANAGED KEK IS NOT A MISSING KEK. secretcrypto.ResolveKEK returns an ORCHICON_SECRETS_KEK
+//     override VERBATIM and never writes <DataDir>/secrets/kek, so a deployment that supplies one — a
+//     documented mode that planeEnv deliberately inherits — reaches the guard below with a populated data dir
+//     and no key FILE. The key is not lost, it is supplied from outside, and the guard must not fire.
 //
 // WHY THE VOLUME COPY IS GONE: the container shape that wrote a docker volume is being retired, so there is
 // no container-era volume to migrate FROM on a fresh install. What must survive is the FAIL-SAFE, and it is
@@ -268,6 +272,24 @@ func ensureHostDataDir(instance, hostDataDir string, out io.Writer) error {
 	kekPath := filepath.Join(hostDataDir, "secrets", "kek")
 	if _, err := os.Stat(kekPath); err == nil {
 		fmt.Fprintf(out, "host data dir already carries a KEK (%s) — leaving it untouched\n", hostDataDir)
+		return nil
+	}
+	// AN OPERATOR-MANAGED KEK IS KEY MATERIAL, and it never lands in the file checked above: ResolveKEK
+	// returns the ORCHICON_SECRETS_KEK override verbatim. So a deployment that supplies it (KMS, a secret
+	// manager, one key shared across replicas — a mode planeEnv deliberately carries through) arrives here
+	// with blobs/, serve/ and a postgres cluster on disk and NO secrets/kek.
+	//
+	// THAT IS NOT A LOST KEK, so the guard below must not fire. Refusing here would break convergence for
+	// exactly the deployment the guard protects: a re-run of a healthy env-KEK install would stop with
+	// "ORPHANS EVERY TENANT SECRET" and tell the operator to restore a file that was never part of it. The
+	// rule is unchanged for the case that matters — state with NEITHER a key file NOR an override is still
+	// FATAL, because there a fresh KEK really would orphan stored secrets.
+	//
+	// The override is deliberately NOT validated here: a malformed one is the plane's warning to give
+	// (server.go logs "secrets KEK unavailable" and disables the store), and an install must not be refused
+	// over a setting.
+	if strings.TrimSpace(os.Getenv("ORCHICON_SECRETS_KEK")) != "" {
+		fmt.Fprintf(out, "the KEK for %s is supplied by ORCHICON_SECRETS_KEK — no secrets/kek file is minted or expected\n", hostDataDir)
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Join(hostDataDir, "secrets"), 0o700); err != nil {
