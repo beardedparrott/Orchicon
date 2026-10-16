@@ -74,7 +74,15 @@ PKGS = $(shell $(GO) list ./... 2>/dev/null | grep -v '/tmp/')
 BUF         := buf
 ATLAS       := atlas
 NPX         := npx
-DB_URL      ?= postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable
+
+# THE INSTANCE THIS CHECKOUT'S DATABASE TARGETS. One word picks it:
+# `make migrate instance=prod` uses prod's 5433, the default dev uses 5432. DB_URL
+# is DERIVED from it through scripts/container.sh db-url — the same per-instance
+# port table the launcher and `orchicon install` use — so the DSN and the bound
+# port cannot drift and two instances on one host never collide (AC4). The
+# fallback keeps DB_URL non-empty when scripts/ (or bash) is unavailable.
+instance    ?= dev
+DB_URL      ?= $(shell scripts/container.sh db-url $(instance) 2>/dev/null || echo postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable)
 BIN_DIR     := bin
 
 # Git metadata injected into the binary via -ldflags (internal/version).
@@ -189,7 +197,19 @@ build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orch ./cmd/orch
 
-run: fetch-tags fe-build ## Run the control plane from source
+# run STARTS THIS INSTANCE'S LOCAL SERVICES FIRST (the `services` prerequisite),
+# so it works on a host with no container engine and no Postgres installed:
+# startHostServices re-execs this binary as `container` with host service
+# residency, which downloads the pinned Postgres + NATS on first use
+# (cmd/orchicon/binaries.go). The plane's OWN env is then pointed at the instance
+# the services bound — the plane's config defaults are dev's 5432/4222
+# (internal/config/config.go), so without these exports `instance=prod` would
+# reach dev's database.
+run: services fetch-tags fe-build ## Run the control plane from source (starts this instance's local services first)
+	ORCHICON_INSTANCE=$(instance) \
+	ORCHICON_DATA_DIR="$${ORCHICON_DATA_DIR:-$$HOME/.local/share/orchicon-$(instance)}" \
+	ORCHICON_POSTGRES_DSN="$(DB_URL)" \
+	ORCHICON_NATS_URL="nats://localhost:$$(scripts/container.sh services-port $(instance) nats)" \
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
 test: ## Run Go tests
@@ -219,6 +239,11 @@ test: ## Run Go tests
 	@# cleared here as well so anything running under `make` matches CI even in a package that has no
 	@# isolate file yet. It is NOT env -i: the opt-in variables (ORCHICON_TEST_DSN,
 	@# ORCHICON_SKIP_NETWORK_TESTS, ORCHICON_LIVE_*) are deliberately left reachable.
+	@# SERVICES ARE DELIBERATELY NOT A PREREQUISITE OF test, and ORCHICON_SERVICE_RESIDENCY is
+	@# deliberately NOT in the unset list below. CI runs this after `container up` against the container
+	@# DB, so starting host services here would double-bind 5432; and a developer's inner-loop services
+	@# (make services) must stay reachable, which is what the opt-in variables are for. The isolation
+	@# that matters — config, live plane, guard — is unchanged.
 	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
 	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR; do unset "$$v"; done; \
 	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(PKGS)
@@ -326,7 +351,7 @@ clean-docker: ## Prune Orchicon's dangling images and stopped containers (never 
 
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check synth-data
-migrate: ## Apply pending Atlas migrations to $$DB_URL
+migrate: ## Apply pending Atlas migrations to $$DB_URL (instance=<dev|prod|test> picks the instance)
 	@command -v $(ATLAS_BIN) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
 	cd db && $(ATLAS_BIN) migrate apply --env local --url "$(DB_URL)"
 
@@ -340,6 +365,25 @@ migrate-hash: ## Recompute the Atlas migration directory hash (after hand-edits)
 
 rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 §8.5)
 	scripts/check-rls.sh "$(DB_URL)"
+
+# --- Local services (the de-containerized inner loop) ----------------------
+#
+# On a host with NO container engine these are the backend `make run` and
+# `make migrate` talk to. `orchicon services up` reuses the SAME host-services
+# supervisor the installer uses (startHostServices → `orchicon container` with
+# ORCHICON_SERVICE_RESIDENCY=host), so there is one implementation of "run the
+# services as this user's processes". Only `run` depends on it: `migrate` and
+# `rls-check` run in CI AFTER `container up` against the container DB, so a
+# `services` prerequisite there would double-bind 5432.
+.PHONY: services services-down services-status
+services: ## Start this instance's local Postgres + NATS on the host (no container engine needed)
+	ORCHICON_TELEMETRY=none $(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon services up $(instance)
+
+services-down: ## Stop this instance's local services and verify the ports are free
+	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon services down $(instance)
+
+services-status: ## Show this instance's local services state and its DSN
+	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon services status $(instance)
 
 synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
 	scripts/check_no_synth_data.sh
@@ -421,6 +465,14 @@ install-path-test: ## Run the real installer against a locally-served artifact, 
 .PHONY: host-residency-test
 host-residency-test: ## CI gate: the instance launch shape (residency default, per-instance ports, plane binds)
 	bash scripts/tests/host-residency/run.sh
+
+# local-services-test pins the INNER LOOP: that DB_URL is DERIVED per instance,
+# that the pure query verbs honour overrides, that `services` is a prerequisite
+# of `run` alone, and that the `test` isolation contract is unbroken. Offline —
+# no Docker and no database.
+.PHONY: local-services-test
+local-services-test: ## CI gate: the local-services inner loop (derived DB_URL, per-instance ports, help rows)
+	bash scripts/tests/local-services/run.sh
 
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
@@ -786,7 +838,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
