@@ -44,7 +44,6 @@ type servicePorts struct {
 	postgres    int
 	nats        int
 	natsMonitor int
-	otlpGRPC    int
 	tempo       int
 	loki        int
 	vm          int
@@ -95,13 +94,16 @@ func (s *supervisor) asUser(uid, gid int, command string, args []string) (string
 
 // servicePortDefaults are the in-container literals, unchanged from before this
 // change — the container residency must bind and probe exactly what it does
-// today.
+// today. The telemetry children's entries are the ports their EMBEDDED CONFIG
+// files declare (tempo.yaml http_listen_port, loki.yaml http_listen_port,
+// grafana.ini http_port); they are recorded here as the single source for that
+// child's readiness probe, and TestServiceProbesMatchTheirBind pins them to the
+// configs so the two cannot drift.
 func servicePortDefaults() servicePorts {
 	return servicePorts{
 		postgres:    5432,
 		nats:        4222,
 		natsMonitor: 8222,
-		otlpGRPC:    4317,
 		tempo:       3200,
 		loki:        3100,
 		vm:          8428,
@@ -116,6 +118,17 @@ func servicePortDefaults() servicePorts {
 // done by -p in the launcher. Host residency honours them, because there the
 // supervisor's ports ARE host ports and two instances on one host must not
 // collide.
+//
+// ONLY THE PORTS THE SUPERVISOR ITSELF DECIDES ARE OVERRIDABLE — the ones it
+// passes to the child as command-line arguments (postgres -p, nats -p/-m, vm
+// -httpListenAddr). Honouring a knob for a child whose listen port lives in an
+// EMBEDDED CONFIG (tempo/loki/grafana) would move only that child's readiness
+// PROBE: the child would bind the config's port while the gate waited on the
+// knob's, so the gate could never pass and the supervisor would report a healthy
+// service as never-ready. A knob that breaks readiness is worse than a knob that
+// does not exist, so those three keep their config's port in BOTH residencies
+// (which is a no-op, since the defaults ARE the config's ports); moving them
+// per-instance needs the config templated, which is a flagged follow-on.
 func servicePortsFor(residency string) servicePorts {
 	p := servicePortDefaults()
 	if residency != residencyHost {
@@ -128,11 +141,7 @@ func servicePortsFor(residency string) servicePorts {
 		{"ORCHICON_POSTGRES_PORT", &p.postgres},
 		{"ORCHICON_NATS_PORT", &p.nats},
 		{"ORCHICON_NATS_MONITOR_PORT", &p.natsMonitor},
-		{"ORCHICON_OTLP_GRPC_PORT", &p.otlpGRPC},
-		{"ORCHICON_TEMPO_PORT", &p.tempo},
-		{"ORCHICON_LOKI_PORT", &p.loki},
 		{"ORCHICON_VM_PORT", &p.vm},
-		{"ORCHICON_GRAFANA_PORT", &p.grafana},
 	}
 	for _, o := range overrides {
 		if v := os.Getenv(o.env); v != "" {

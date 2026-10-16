@@ -6,8 +6,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	assets "github.com/beardedparrott/orchicon"
 )
 
 // Services-only mode is the OPT-IN half of host residency: the launcher sets
@@ -509,5 +512,89 @@ func TestDefaultDataDirFor(t *testing.T) {
 		if !strings.HasPrefix(host, home) {
 			t.Errorf("host data dir %q is not under the invoking user's home %q", host, home)
 		}
+	}
+}
+
+// A readiness gate is only meaningful if it probes the port the child REALLY
+// binds. For postgres/nats/vm the supervisor decides the port and passes it in
+// argv, so the bind and the probe read the same field by construction; this
+// asserts BOTH sides of that in BOTH residencies.
+func TestServiceProbeMatchesItsBindArg(t *testing.T) {
+	for _, residency := range []string{residencyContainer, residencyHost} {
+		t.Run(residency, func(t *testing.T) {
+			s := &supervisor{log: testLogger(), dataDir: t.TempDir(),
+				residency: residency, ports: servicePortsFor(residency)}
+			p := s.ports
+
+			pg := strings.Join(s.postgresProc().args, " ")
+			if !strings.Contains(pg, "-p "+strconv.Itoa(p.postgres)) {
+				t.Errorf("postgres does not bind the probed port %d: %s", p.postgres, pg)
+			}
+			nats := strings.Join(s.natsProc().args, " ")
+			if !strings.Contains(nats, "-p "+strconv.Itoa(p.nats)) {
+				t.Errorf("nats does not bind the probed client port %d: %s", p.nats, nats)
+			}
+			if !strings.Contains(nats, "-m "+strconv.Itoa(p.natsMonitor)) {
+				t.Errorf("nats does not serve monitoring on the probed port %d: %s", p.natsMonitor, nats)
+			}
+			vm := strings.Join(s.vmProc().args, " ")
+			if !strings.Contains(vm, "-httpListenAddr=:"+strconv.Itoa(p.vm)) {
+				t.Errorf("victoriametrics does not listen on the probed port %d: %s", p.vm, vm)
+			}
+		})
+	}
+}
+
+// tempo/loki/grafana do NOT take their listen port in argv: it lives in an
+// EMBEDDED CONFIG (tempo.yaml, loki.yaml, grafana.ini) that writeConfigs ships
+// verbatim. The probe port is therefore only correct because it COPIES the
+// config — so parse the shipped configs and pin the field to them, in both
+// residencies. A knob that moved one of these fields without moving the config
+// would leave the gate waiting on a port nothing listens on, and the supervisor
+// would report a healthy child as never-ready forever.
+func TestServiceProbesMatchEmbeddedConfigPorts(t *testing.T) {
+	configPort := func(path, key string) int {
+		t.Helper()
+		data, err := assets.ContainerFS.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", path, err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, key) {
+				continue
+			}
+			rest := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(strings.TrimPrefix(trimmed, key)), "=: "))
+			n, err := strconv.Atoi(rest)
+			if err != nil {
+				t.Fatalf("%s: cannot parse %q port from %q: %v", path, key, trimmed, err)
+			}
+			return n
+		}
+		t.Fatalf("%s declares no %s", path, key)
+		return 0
+	}
+
+	cases := []struct {
+		name, path, key, env string
+		field                func(servicePorts) int
+	}{
+		{"tempo", "deploy/container/configs/tempo.yaml", "http_listen_port", "ORCHICON_TEMPO_PORT", func(p servicePorts) int { return p.tempo }},
+		{"loki", "deploy/container/configs/loki.yaml", "http_listen_port", "ORCHICON_LOKI_PORT", func(p servicePorts) int { return p.loki }},
+		{"grafana", "deploy/container/configs/grafana.ini", "http_port", "ORCHICON_GRAFANA_PORT", func(p servicePorts) int { return p.grafana }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := configPort(tc.path, tc.key)
+			// The ambient knob must NOT move the probe: the child still binds
+			// the config's port, so probing the knob's port would never pass.
+			t.Setenv(tc.env, strconv.Itoa(want+1))
+			for _, residency := range []string{residencyContainer, residencyHost} {
+				if got := tc.field(servicePortsFor(residency)); got != want {
+					t.Errorf("%s residency: %s probes %d but %s binds %d — the gate can never pass",
+						residency, tc.name, got, tc.path, want)
+				}
+			}
+		})
 	}
 }
