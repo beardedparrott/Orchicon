@@ -31,12 +31,26 @@ func openCodeAuthPath(home string) string {
 // adapter_credentials_live_test.go re-checks every entry below against the
 // registry on any host that has it.
 //
-// Two ids the registry does not carry are mapped from Orchicon's own provider
-// registry instead (internal/providers builtinSecretNames, which agrees with the
-// models.dev index on every id the two share): commandcode and command-code are
-// third-party provider PACKAGES rather than registry entries. `ollama` and
-// `ollama-cloud` share OLLAMA_API_KEY deliberately — models.dev keys Ollama
-// Cloud by OLLAMA_API_KEY, and the local server needs no token at all.
+// Two ids are mapped from Orchicon's own provider registry instead
+// (internal/providers builtinSecretNames, which agrees with the models.dev index
+// on every id the two share): commandcode and command-code are served by a
+// third-party opencode provider PACKAGE rather than by models.dev's provider of
+// the same name.
+//
+// `commandcode` HAS since appeared in models.json, carrying [CMD_API_KEY] — it
+// did not when this map was written. The map still does NOT follow it, and that
+// is deliberate: the registry entry describes models.dev's own provider for that
+// id, while a host that installs the package serves it through
+// commandcode-go-opencode-provider, whose src/auth.ts reads COMMANDCODE_API_KEY
+// and whose plugin.ts sets that name on the provider. Adopting CMD_API_KEY here
+// would hand the package a variable it never reads, which fails exactly like no
+// credential at all. The divergence is asserted, not left to prose —
+// adapter_credentials_live_test.go's registryExemptProviders carries these ids
+// with this reason.
+//
+// `command-code` is not a models.dev entry at all. `ollama` and `ollama-cloud`
+// share OLLAMA_API_KEY deliberately — models.dev keys Ollama Cloud by
+// OLLAMA_API_KEY, and the local server needs no token at all.
 var providerAPIKeyEnv = map[string]string{
 	"anthropic":    "ANTHROPIC_API_KEY",
 	"openai":       "OPENAI_API_KEY",
