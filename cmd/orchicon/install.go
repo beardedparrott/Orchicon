@@ -1010,7 +1010,12 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 	fmt.Println("  Manage the instance:")
 	if hostServices {
 		fmt.Println("    Restart: orchicon restart   (stops and restarts the host plane and services)")
-		fmt.Println("    Stop:    orchicon serve --stop   (then stop the host services)")
+		// THE STATE DIR IS NAMED, NOT ASSUMED. `serve --stop` resolves its PID file from
+		// ORCHICON_SERVE_STATE_DIR, whose default is a RELATIVE `.dev` — so a bare
+		// `orchicon serve --stop` run from any other directory looks in the wrong place and answers
+		// "serve is not running" over a plane that is very much up. The install already knows the
+		// per-instance state dir, so it prints the command that actually stops THIS instance.
+		fmt.Printf("    Stop:    ORCHICON_SERVE_STATE_DIR=%s/serve orchicon serve --stop\n", hostDataDirFor(instance))
 		fmt.Printf("    Logs:    %s/serve/logs/orchicon.log and %s/services.log\n", hostDataDirFor(instance), hostDataDirFor(instance))
 	} else {
 		fmt.Printf("    Stop:   docker stop %s\n", name)
@@ -1018,8 +1023,20 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 		fmt.Printf("    Logs:   docker logs -f %s\n", name)
 	}
 	fmt.Println()
-	fmt.Printf("  Runtime daemon (per-workflow runtime containers): running\n")
-	fmt.Printf("    socket: %s/runtime.sock   runtime image: %s\n", socketDir, runtimeImage)
+	// PER-WORKFLOW RUNTIME CONTAINERS BELONG TO THE CONTAINER ENGINE, so this block reports the shape the
+	// install actually produced. It used to be unconditional, and on a host with no engine that made the
+	// summary CONTRADICT the install: the same run printed "runtime containers are unavailable (work runs
+	// in-process)" in step 1 and then closed by promising "every execution runs in its own short-lived
+	// container" and reporting a runtime daemon that will never launch one. The daemon process does run on
+	// such a host, but it has no engine to spawn containers with — describing it as the container carrier is
+	// exactly the kind of dead-container claim this item removes from the install path.
+	if containersUsed {
+		fmt.Printf("  Runtime daemon (per-workflow runtime containers): running\n")
+		fmt.Printf("    socket: %s/runtime.sock   runtime image: %s\n", socketDir, runtimeImage)
+	} else {
+		fmt.Println("  Runtime daemon: running, but there is NO container engine on this host —")
+		fmt.Println("    per-workflow runtime containers cannot be launched, so work runs in-process.")
+	}
 	if hostServices {
 		fmt.Printf("  Data: host data dir (see above; the KEK lives in its secrets/)\n")
 	} else {
@@ -1032,7 +1049,12 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 		fmt.Printf("    export PATH=\"$PATH:%s\"\n", installDir)
 	}
 	fmt.Println()
-	fmt.Println("  Per-workflow runtime containers are used automatically when a")
-	fmt.Println("  workflow runs. Open the UI, log in with the dev IdP, and create")
-	fmt.Println("  a workflow — every execution runs in its own short-lived container.")
+	if containersUsed {
+		fmt.Println("  Per-workflow runtime containers are used automatically when a")
+		fmt.Println("  workflow runs. Open the UI, log in with the dev IdP, and create")
+		fmt.Println("  a workflow — every execution runs in its own short-lived container.")
+	} else {
+		fmt.Println("  Open the UI, log in with the dev IdP, and create a workflow —")
+		fmt.Println("  every execution runs IN-PROCESS on this host (no runtime container).")
+	}
 }

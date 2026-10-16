@@ -140,6 +140,55 @@ func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
 	}
 }
 
+// TestPrintInstallInfoIsHonestAboutTheNoEngineShape is the regression for a summary that CONTRADICTED its own
+// install. A host with no container engine is a supported shape this change introduced, and the run announces
+// it in step 1 ("runtime containers are unavailable (work runs in-process)") — but the summary's tail was
+// unconditional, so the SAME run then reported a runtime daemon for per-workflow runtime containers and
+// promised "every execution runs in its own short-lived container". On that host no runtime container can
+// ever be launched, so the closing advice described a carrier the install never produced — the same class of
+// defect as the dead `docker inspect` this item removes, arriving through the install's own output.
+//
+// BOTH DIRECTIONS ARE ASSERTED, because a summary gutted to the no-engine shape would stop reporting the
+// container carrier where it IS the truth.
+func TestPrintInstallInfoIsHonestAboutTheNoEngineShape(t *testing.T) {
+	// No engine, so printInstallInfo's `containersUsed` is false — the install's threaded decision.
+	t.Setenv("PATH", t.TempDir())
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8092, "ORCHICON_GRAFANA_PORT": 3004}
+
+	noEngine := captureStdout(t, func() {
+		printInstallInfo("test", residencyHost, "orchicon-cnt-test", "orchicon-cnt-test-data",
+			"/tmp/orchicon-runtime", "http://localhost:8092/healthz",
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, false, true)
+	})
+	if strings.Contains(noEngine, "short-lived container") {
+		t.Errorf("a no-engine install must NOT promise a per-workflow runtime container it cannot launch:\n%s", noEngine)
+	}
+	if strings.Contains(noEngine, "runtime containers): running") {
+		t.Errorf("a no-engine install must not report the container runtime daemon as the carrier:\n%s", noEngine)
+	}
+	if !strings.Contains(noEngine, "IN-PROCESS") {
+		t.Errorf("the no-engine summary must say work runs in-process:\n%s", noEngine)
+	}
+	// The stop recipe must name the state dir: a bare `serve --stop` resolves a RELATIVE `.dev` and answers
+	// "serve is not running" over a plane that is up.
+	if !strings.Contains(noEngine, "ORCHICON_SERVE_STATE_DIR=") {
+		t.Errorf("the host stop recipe must name the instance's serve state dir, or it stops nothing:\n%s", noEngine)
+	}
+
+	// The OTHER direction: with an engine the container-carrier lines must still be there.
+	withEngine := captureStdout(t, func() {
+		printInstallInfo("dev", residencyHost, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
+			"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, true, true)
+	})
+	if !strings.Contains(withEngine, "short-lived container") {
+		t.Errorf("an engine-backed install must still describe the runtime container carrier:\n%s", withEngine)
+	}
+	if strings.Contains(withEngine, "IN-PROCESS") {
+		t.Errorf("an engine-backed install must NOT say work runs in-process:\n%s", withEngine)
+	}
+}
+
 // ----- the download failure posture (AC#6) -----
 
 // TestDownloadFailureReportsABoundedTail mirrors TestTailWriterKeepsOnlyTheTail for
