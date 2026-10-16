@@ -73,7 +73,7 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 		return captureStdout(t, func() {
 			printInstallInfo("dev", residencyContainer, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
 				"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
-				"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, healthy)
+				"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, false, healthy)
 		})
 	}
 
@@ -108,6 +108,84 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 			}
 			t.Errorf("%s: the summary box is not rectangular (%s):\n%s", name, strings.Join(got, ", "), out)
 		}
+	}
+}
+
+// TestPrintInstallInfoUsesTheInstallsEngineDecision pins the SINGLE-DECISION property the install asserts
+// everywhere else: the carrier is decided ONCE (install.go's `containersUsed`) and every downstream surface
+// reports THAT decision. printInstallInfo used to re-probe with containerEngineAvailable(), a SECOND decision
+// that can disagree with the one the install acted on — so the summary could describe a carrier the install
+// never created.
+//
+// The disagreement is made OBSERVABLE by construction: the install's decision is "containers ARE used" while
+// the environment has NO engine on PATH, so a re-probe answers the opposite. The summary must follow the
+// threaded decision (services in the instance container), never the re-probe (host processes of this user).
+func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no engine: a re-probe would answer "no containers"
+	if containerEngineAvailable() {
+		t.Fatal("the fixture needs an empty PATH to make the re-probe disagree")
+	}
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_GRAFANA_PORT": 3002}
+	out := captureStdout(t, func() {
+		// residencyHost with containersUsed=true: a host plane whose services run in the instance container.
+		printInstallInfo("dev", residencyHost, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
+			"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, true, true)
+	})
+	if !strings.Contains(out, "the services run in orchicon-cnt-dev") {
+		t.Errorf("the summary must report the install's decision (services in the container); got:\n%s", out)
+	}
+	if strings.Contains(out, "HOST processes") {
+		t.Errorf("the summary must NOT re-probe the engine and contradict the install: got:\n%s", out)
+	}
+}
+
+// TestPrintInstallInfoIsHonestAboutTheNoEngineShape is the regression for a summary that CONTRADICTED its own
+// install. A host with no container engine is a supported shape this change introduced, and the run announces
+// it in step 1 ("runtime containers are unavailable (work runs in-process)") — but the summary's tail was
+// unconditional, so the SAME run then reported a runtime daemon for per-workflow runtime containers and
+// promised "every execution runs in its own short-lived container". On that host no runtime container can
+// ever be launched, so the closing advice described a carrier the install never produced — the same class of
+// defect as the dead `docker inspect` this item removes, arriving through the install's own output.
+//
+// BOTH DIRECTIONS ARE ASSERTED, because a summary gutted to the no-engine shape would stop reporting the
+// container carrier where it IS the truth.
+func TestPrintInstallInfoIsHonestAboutTheNoEngineShape(t *testing.T) {
+	// No engine, so printInstallInfo's `containersUsed` is false — the install's threaded decision.
+	t.Setenv("PATH", t.TempDir())
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8092, "ORCHICON_GRAFANA_PORT": 3004}
+
+	noEngine := captureStdout(t, func() {
+		printInstallInfo("test", residencyHost, "orchicon-cnt-test", "orchicon-cnt-test-data",
+			"/tmp/orchicon-runtime", "http://localhost:8092/healthz",
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, false, true)
+	})
+	if strings.Contains(noEngine, "short-lived container") {
+		t.Errorf("a no-engine install must NOT promise a per-workflow runtime container it cannot launch:\n%s", noEngine)
+	}
+	if strings.Contains(noEngine, "runtime containers): running") {
+		t.Errorf("a no-engine install must not report the container runtime daemon as the carrier:\n%s", noEngine)
+	}
+	if !strings.Contains(noEngine, "IN-PROCESS") {
+		t.Errorf("the no-engine summary must say work runs in-process:\n%s", noEngine)
+	}
+	// The stop recipe must name the state dir: a bare `serve --stop` resolves a RELATIVE `.dev` and answers
+	// "serve is not running" over a plane that is up.
+	if !strings.Contains(noEngine, "ORCHICON_SERVE_STATE_DIR=") {
+		t.Errorf("the host stop recipe must name the instance's serve state dir, or it stops nothing:\n%s", noEngine)
+	}
+
+	// The OTHER direction: with an engine the container-carrier lines must still be there.
+	withEngine := captureStdout(t, func() {
+		printInstallInfo("dev", residencyHost, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
+			"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, true, true)
+	})
+	if !strings.Contains(withEngine, "short-lived container") {
+		t.Errorf("an engine-backed install must still describe the runtime container carrier:\n%s", withEngine)
+	}
+	if strings.Contains(withEngine, "IN-PROCESS") {
+		t.Errorf("an engine-backed install must NOT say work runs in-process:\n%s", withEngine)
 	}
 }
 

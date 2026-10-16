@@ -23,7 +23,10 @@ package main
 // else. A Windows liveness probe that is WRONG in the other direction — reporting a stale PID as live,
 // or a live plane as drifted and restarting it — is the failure mode this file exists to avoid.
 
-import "io"
+import (
+	"fmt"
+	"io"
+)
 
 // planeDrift cannot identify a serving process on Windows (no /proc/<pid>/exe), so it reports
 // planeUnknown and the caller leaves the running plane alone.
@@ -34,3 +37,11 @@ func servingPlanePID(instance string) (int, bool) { return 0, false }
 
 // servingPlaneAlive cannot ask syscall.Kill on Windows, so it never claims a PID-file process is alive.
 func servingPlaneAlive(instance string) bool { return false }
+
+// terminateProcess asks a host process to stop. WINDOWS HAS NO SIGTERM TO SEND, and this file's doctrine is
+// that a probe which cannot tell the truth says so rather than guessing — so instead of pretending a
+// graceful stop happened (or hard-killing a supervisor whose postgres children would be orphaned), it
+// reports a clear error and lets the caller print "could not stop" and carry on.
+func terminateProcess(pid int) error {
+	return fmt.Errorf("cannot signal host process %d on Windows (no SIGTERM) — stop the instance from Task Manager, then re-run `orchicon install`", pid)
+}

@@ -348,6 +348,56 @@ func runningInstancePorts(name string, specs []installPort) (map[string]int, boo
 	return parseInstancePorts(out, specs)
 }
 
+// runningHostInstancePorts is rung 0 for the HOST carrier — the no-engine counterpart of
+// runningInstancePorts. It answers the question the container read-back answers on an engine-backed host: "is
+// this instance already running, and if so which ports does it own?"
+//
+// IT ANSWERS FROM THE INSTANCE'S OWN RECORD, because on a host with no engine that is the only truthful
+// source: there is no container to inspect, and the running plane and host services are plain host processes.
+// The record IS the instance's own statement of what it bound (writeResolvedPorts at install time, read back
+// by restart.go for the same reason), so re-resolving away from it is not a fresh answer — it is a second
+// one that disagrees with the first.
+//
+// IT ASKS WHETHER ANYTHING OF OURS IS ACTUALLY UP FIRST. A record on disk is not proof of a running
+// instance: an instance whose plane and services have both been stopped must be able to re-resolve its ports
+// like any other, and reusing a stale record there would bind ports the operator may since have freed on
+// purpose. The liveness probes are the same ones the rest of the install path uses — the detached plane's
+// PID file (servingPlaneAlive) and the host-services supervisor's PID (hostServicesAlive) — so "up" means the
+// same thing here as it does in startHostServices' idempotence check.
+//
+// ok=false is a fall-through, never an error: no record, an unreadable record, or nothing of ours running all
+// mean "resolve the ports fresh", which is the correct rung for a host that has no running instance. An
+// UNREADABLE record is treated the same way deliberately — a corrupt ports.json must not fail an install over
+// ports, and the fresh resolution below still refuses to take a port another process holds.
+func runningHostInstancePorts(instance string, specs []installPort, out io.Writer) (map[string]int, bool) {
+	if !servingPlaneAlive(instance) && !hostServicesAlive(instance) {
+		return nil, false
+	}
+	live, err := readResolvedPorts(instance)
+	if err != nil || len(live) == 0 {
+		return nil, false
+	}
+	filled := map[string]int{}
+	for _, p := range specs {
+		v, ok := live[p.Env]
+		if !ok || v <= 0 {
+			// Not in the record for this shape: resolve it the way the plane was started. The
+			// instance is validated by the caller, so a default exists.
+			d, ok := p.defaultFor(instance)
+			if !ok {
+				return nil, false
+			}
+			v = d
+		}
+		filled[p.Env] = v
+	}
+	fmt.Fprintf(out, "instance %q is already running — keeping its ports\n", instance)
+	for _, p := range specs {
+		fmt.Fprintf(out, "  %s: %d\n", p.Label, filled[p.Env])
+	}
+	return filled, true
+}
+
 // promptTerminal opens the CONTROLLING TERMINAL for the port prompt — never
 // stdin (see the file comment). The bool reports whether the caller owns the
 // file and must close it: os.Stdin is borrowed, /dev/tty is ours.
@@ -537,23 +587,51 @@ func resolveInstallPorts(instance, residency string, out io.Writer, tty *os.File
 	// Rung 0, and it must come FIRST: a running instance of ours owns its ports.
 	// Probing them would report our own listener as a conflict; see
 	// runningInstancePorts for why that would split the instance.
-	if running, _ := containerRunning(name); running {
-		if live, ok := runningInstancePorts(name, specs); ok {
-			fmt.Fprintf(out, "instance %q is already running — keeping its ports\n", name)
-			for _, p := range specs {
-				if _, ok := live[p.Env]; !ok {
-					// Not published by the container in this shape (the plane port in
-					// host residency): resolve it the way the plane was started. The
-					// instance is already validated above, so a default exists.
-					if d, ok := p.defaultFor(instance); ok {
-						live[p.Env] = d
+	//
+	// IT IS INSIDE THE ENGINE GATE, and that is deliberate: rung 0 asks a CONTAINER
+	// whether it is already running (`docker inspect`), so on a host with no engine
+	// there is no container to ask and nothing to read ports back from. Reaching it
+	// unguarded would put an ungated `docker` invocation on the no-engine install
+	// path — exactly the silent failure this item removes.
+	//
+	// THE NO-ENGINE HALF OF RUNG 0 IS THE RECORD, NOT NOTHING. "No container is
+	// running by definition" is true and is NOT the same as "this instance is not
+	// running": on a host with no engine the instance is a HOST PLANE plus host
+	// services, and a re-run finds both HOLDING THIS INSTANCE'S OWN PORTS. Falling
+	// straight through to fresh resolution therefore probes our own listeners as
+	// conflicts and moves the instance's ports out from under it — control
+	// 8092→8093, postgres 5434→5435, measured, not theorised — after which
+	// startHostServices starts a SECOND host stack on the shifted ports and
+	// startHostPlane tries a second plane. Two stacks on one instance is the exact
+	// opposite of the convergence criterion 6 asks for, so the host carrier gets the
+	// same rung the container carrier has, sourced from the record the instance's own
+	// install wrote (readResolvedPorts) rather than from an engine.
+	if containerEngineAvailable() {
+		if running, _ := containerRunning(name); running {
+			if live, ok := runningInstancePorts(name, specs); ok {
+				fmt.Fprintf(out, "instance %q is already running — keeping its ports\n", name)
+				for _, p := range specs {
+					if _, ok := live[p.Env]; !ok {
+						// Not published by the container in this shape (the plane port in
+						// host residency): resolve it the way the plane was started. The
+						// instance is already validated above, so a default exists.
+						if d, ok := p.defaultFor(instance); ok {
+							live[p.Env] = d
+						}
 					}
+					fmt.Fprintf(out, "  %s: %d\n", p.Label, live[p.Env])
 				}
-				fmt.Fprintf(out, "  %s: %d\n", p.Label, live[p.Env])
+				return live, nil
 			}
-			return live, nil
+			fmt.Fprintf(out, "warning: %s is running but its published ports could not be read — resolving ports fresh\n", name)
 		}
-		fmt.Fprintf(out, "warning: %s is running but its published ports could not be read — resolving ports fresh\n", name)
+	}
+	// The host carrier's rung 0. It is not an `else`: whichever carrier actually has THIS instance up owns its
+	// ports, and a host plane behind a running services container is still this instance running (and still
+	// holding the ports its own install recorded). The engine gate above decides only whether a CONTAINER may
+	// be asked; it never decides whether the instance is up.
+	if live, ok := runningHostInstancePorts(instance, specs, out); ok {
+		return live, nil
 	}
 
 	pinned := map[string]int{}
