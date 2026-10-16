@@ -14,8 +14,21 @@
 > you'd use it — not commit-by-commit detail. The `## vX.Y.Z` heading
 > tells the tooling which version these highlights describe; update it
 > when you cut.
+>
+> READ THE HEADING OFF THE TAG, and do not predict it. The version a release
+> will carry is `auto-release`'s to compute, and it counts from the highest
+> tag of ANY kind — including the `vX.Y.<n>` bump that `develop-bump` pushes
+> every time `develop` advances. So a merge to develop can move the next
+> release up by one before you have written a word: v0.5.43 was the develop
+> bump, and the release that followed it shipped as v0.5.44.
+>
+> A stale heading does NOT fail the build, which is what makes it easy to
+> miss: `scripts/gen-release-notes.sh` prints its own heading (the tag) and
+> falls back to the FIRST section, emitting a `::warning::` that names both
+> numbers. The published release reads correctly while this file is wrong —
+> so grep the release log for that warning rather than assuming the two agree.
 
-## v0.5.43
+## v0.5.44
 
 ### New: an installer you can trust with more than one stack
 The installer grew a real vocabulary and a measure of consent. `--instance dev|prod|test` scopes **every**
