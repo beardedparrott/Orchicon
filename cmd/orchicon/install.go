@@ -288,6 +288,18 @@ func runInstall(args []string, log *slog.Logger) error {
 		if err := startHostPlane(instance, ports, hostDir, filepath.Join(socketDir, "runtime.sock"), os.Stdout); err != nil {
 			return err
 		}
+		// THE HOST SHAPE IS RECORDED HERE, on the same success path ensureInstallContainer records on the
+		// container path — and it has to be recorded on BOTH, because the record is the ONLY thing
+		// `orchicon restart` (and every other plane-lifecycle surface that reuses startHostPlane/stopHostPlane)
+		// has to decide which carrier to bounce.
+		//
+		// WITHOUT THIS THE HOST-SERVICES PATH LEFT NO RECORD AT ALL. The record was written only by the
+		// container arm, which a host with no engine never reaches: so an install with no engine SUCCEEDED,
+		// printed a summary whose own restart recipe is `orchicon restart`, and that command then answered
+		// "no install record for instance %q — nothing is installed for it" over the instance this very run
+		// had just brought up. Observed by reading the flow, not by a user — the same class of defect as the
+		// dead `docker inspect`, arriving through the command the installer recommends.
+		recordResidency(instance, residency)
 	}
 
 	// 5. Wait for the control plane to serve health, ON THE PORT THIS INSTALL
@@ -379,7 +391,22 @@ func runInstall(args []string, log *slog.Logger) error {
 
 	if !healthy {
 		fmt.Printf("warning: the control plane did not answer %s within %s\n", healthURL, healthWait)
-		fmt.Printf("  the instance itself is up. find out why the plane is not:\n    docker logs --tail 50 %s\n", name)
+		// POINT AT THE LOG THAT EXISTS ON THIS HOST. `docker logs` is the right answer for exactly one of the
+		// three combinations — a plane running in the instance container — and on a host with no engine it
+		// names a binary that is not installed. That is the same defect this item removes from the install
+		// path, so it is removed from the install's ADVICE too: the host plane writes to the instance state
+		// dir, and the services write to services.log when they are host processes.
+		fmt.Println("  the instance itself is up. find out why the plane is not:")
+		if residency == residencyHost {
+			fmt.Printf("    %s\n", filepath.Join(hostDataDirFor(instance), "serve", "logs", "orchicon.log"))
+			if containersUsed {
+				fmt.Printf("    docker logs --tail 50 %s   (the services container)\n", name)
+			} else {
+				fmt.Printf("    %s   (the host services)\n", filepath.Join(hostDataDirFor(instance), "services.log"))
+			}
+		} else {
+			fmt.Printf("    docker logs --tail 50 %s\n", name)
+		}
 		fmt.Println("  then re-run `orchicon install` — it is idempotent")
 	}
 

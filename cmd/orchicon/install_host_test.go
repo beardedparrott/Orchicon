@@ -595,6 +595,80 @@ func TestWaitServicesReadyWarnsRatherThanFailing(t *testing.T) {
 	}
 }
 
+// TestHostInstallRecordsItsShape is the regression for a gap this item's own de-containerization opened. It is
+// a WIRING assertion because the defect was a MISSING CALL rather than a wrong value: `recordResidency` was
+// written ONLY by `ensureInstallContainer`, which the host-services path (a host with no engine) never reaches.
+// A no-engine install therefore finished with no record at all — and `orchicon restart`, which reads the record
+// to decide which carrier to bounce, refused with "no install record for instance %q — nothing is installed for
+// it" over the instance the SAME RUN had just brought up and told the operator to restart.
+//
+// The behavioural half is asserted too: the record the host path writes is exactly the one restart's
+// precondition reads back.
+func TestHostInstallRecordsItsShape(t *testing.T) {
+	src, err := os.ReadFile("install.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	start := strings.Index(body, "func runInstall(")
+	if start < 0 {
+		t.Fatal("install.go no longer defines runInstall — this assertion needs repointing")
+	}
+	// The install FLOW, i.e. runInstall's body (up to the next top-level func declaration).
+	flow := body[start:]
+	if end := strings.Index(flow[1:], "\nfunc "); end > 0 {
+		flow = flow[:1+end]
+	}
+	// VACUITY GUARD: the assertion below is only meaningful if this is still the flow that starts the host plane.
+	if !strings.Contains(flow, "startHostPlane(") {
+		t.Fatal("runInstall no longer starts the host plane — this assertion needs repointing, not deletion")
+	}
+	if !strings.Contains(flow, "recordResidency(instance, residency)") {
+		t.Error("the install FLOW must record the shape it created: the host-services path never calls " +
+			"ensureInstallContainer, so a no-engine install would leave NO record and `orchicon restart` would " +
+			"refuse the instance the install just brought up")
+	}
+
+	// BEHAVIOURAL: what that call writes is what restart reads back.
+	t.Setenv("HOME", t.TempDir())
+	recordResidency("dev", residencyHost)
+	if got, ok := recordedResidency("dev"); !ok || got != residencyHost {
+		t.Fatalf("restart's precondition: recordedResidency = (%q, %v), want (host, true)", got, ok)
+	}
+}
+
+// TestNoEngineInstallAdviceNamesAHostLog is the second half of the same defect class, on the install's ADVICE
+// rather than its behaviour: the "the plane is not answering" arm used to print `docker logs --tail 50 <name>`
+// unconditionally. On a host with no engine that names a binary which is not installed — a dead docker
+// invocation in the install path, arriving through its error message. The arm is now shape-aware, and this
+// pins the property that matters: the host arm points at the plane's own log file.
+func TestNoEngineInstallAdviceNamesAHostLog(t *testing.T) {
+	src, err := os.ReadFile("install.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	i := strings.Index(body, "the instance itself is up. find out why the plane is not")
+	if i < 0 {
+		t.Fatal("the not-answering advice moved — this assertion needs repointing, not deletion")
+	}
+	arm := body[i:]
+	if end := strings.Index(arm, "then re-run"); end > 0 {
+		arm = arm[:end]
+	}
+	// The host half must name the plane's log FILE, not a docker command.
+	if !strings.Contains(arm, `"serve", "logs", "orchicon.log"`) {
+		t.Errorf("the host-plane advice must point at the plane's log file; got:\n%s", arm)
+	}
+	if !strings.Contains(arm, "services.log") {
+		t.Errorf("the no-engine advice must name the host services log; got:\n%s", arm)
+	}
+	// `docker logs` must survive for the container shape only — guarded by the shape, never printed bare.
+	if !strings.Contains(arm, "if residency == residencyHost") {
+		t.Errorf("`docker logs` must be shape-guarded, not printed on every host; got:\n%s", arm)
+	}
+}
+
 // TestPgIsReadyPrefersTheRecordedBinary pins the resolution order: the binaries the install RESOLVED win, so the
 // readiness probe asks the client that matches the server the install runs.
 func TestPgIsReadyPrefersTheRecordedBinary(t *testing.T) {
