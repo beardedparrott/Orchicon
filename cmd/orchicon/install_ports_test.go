@@ -102,9 +102,15 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 		"ORCHICON_NATS_MONITOR_PORT": {8222, 8223, 8224, 8222},
 		"ORCHICON_OTLP_GRPC_PORT":    {4317, 4319, 4321, 4317},
 		"ORCHICON_OTLP_HTTP_PORT":    {4318, 4320, 4322, 4318},
-		"ORCHICON_TEMPO_PORT":        {3200, 3201, 3202, 3200},
-		"ORCHICON_LOKI_PORT":         {3100, 3101, 3102, 3100},
-		"ORCHICON_VM_PORT":           {8428, 8429, 8430, 8428},
+		// The offset receivers and the collector health endpoint: no container-side
+		// publish, but they still need per-instance host defaults or two host
+		// instances collide on the same number.
+		"ORCHICON_TEMPO_OTLP_GRPC_PORT": {14317, 14318, 14319, 14317},
+		"ORCHICON_TEMPO_OTLP_HTTP_PORT": {14318, 14319, 14320, 14318},
+		"ORCHICON_OTEL_HEALTH_PORT":     {13133, 13134, 13135, 13133},
+		"ORCHICON_TEMPO_PORT":           {3200, 3201, 3202, 3200},
+		"ORCHICON_LOKI_PORT":            {3100, 3101, 3102, 3100},
+		"ORCHICON_VM_PORT":              {8428, 8429, 8430, 8428},
 	}
 	for _, p := range installerPorts() {
 		w, ok := wantDefaults[p.Env]

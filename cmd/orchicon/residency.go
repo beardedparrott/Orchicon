@@ -48,6 +48,25 @@ type servicePorts struct {
 	loki        int
 	vm          int
 	grafana     int
+
+	// The telemetry children's port fields below are NOT in argv: each lives in
+	// an embedded config (tempo.yaml, loki.yaml, otel-collector.yaml) that
+	// writeConfigs ships with @TOKEN@ placeholders. Binding and probing read the
+	// SAME field here, so a knob that moves one moves the other — the config is
+	// templated from this table (see writeConfigs).
+	//
+	// TEMPO'S OTLP RECEIVERS ARE OFFSET FROM THE COLLECTOR'S ON PURPOSE
+	// (deploy/container/Dockerfile header comment): the two used to share one
+	// network namespace, so 14317/14318 keep the collector's own 4317/4318
+	// free. On a host they no longer share a namespace, but the collector's
+	// config points at the current ports — changing the offset is a coordinated
+	// edit across tempo.yaml, otel-collector.yaml and the readiness probes, not
+	// a cleanup. TestCollectorPointsAtTempoOffset pins it.
+	tempoOTLPGRPC     int
+	tempoOTLPHTTP     int
+	collectorOTLPGRPC int
+	collectorOTLPHTTP int
+	collectorHealth   int
 }
 
 // serviceResidencyFromEnv resolves the service residency.
@@ -101,13 +120,18 @@ func (s *supervisor) asUser(uid, gid int, command string, args []string) (string
 // configs so the two cannot drift.
 func servicePortDefaults() servicePorts {
 	return servicePorts{
-		postgres:    5432,
-		nats:        4222,
-		natsMonitor: 8222,
-		tempo:       3200,
-		loki:        3100,
-		vm:          8428,
-		grafana:     3000,
+		postgres:          5432,
+		nats:              4222,
+		natsMonitor:       8222,
+		tempo:             3200,
+		loki:              3100,
+		vm:                8428,
+		grafana:           3000,
+		tempoOTLPGRPC:     14317,
+		tempoOTLPHTTP:     14318,
+		collectorOTLPGRPC: 4317,
+		collectorOTLPHTTP: 4318,
+		collectorHealth:   13133,
 	}
 }
 
@@ -119,16 +143,18 @@ func servicePortDefaults() servicePorts {
 // supervisor's ports ARE host ports and two instances on one host must not
 // collide.
 //
-// ONLY THE PORTS THE SUPERVISOR ITSELF DECIDES ARE OVERRIDABLE — the ones it
-// passes to the child as command-line arguments (postgres -p, nats -p/-m, vm
-// -httpListenAddr). Honouring a knob for a child whose listen port lives in an
-// EMBEDDED CONFIG (tempo/loki/grafana) would move only that child's readiness
-// PROBE: the child would bind the config's port while the gate waited on the
-// knob's, so the gate could never pass and the supervisor would report a healthy
-// service as never-ready. A knob that breaks readiness is worse than a knob that
-// does not exist, so those three keep their config's port in BOTH residencies
-// (which is a no-op, since the defaults ARE the config's ports); moving them
-// per-instance needs the config templated, which is a flagged follow-on.
+// EVERY PORT IN THIS TABLE IS OVERRIDABLE IN HOST RESIDENCY, INCLUDING THE ONES
+// THAT LIVE IN AN EMBEDDED CONFIG — because those configs are now TEMPLATED from
+// this same table. The earlier limitation ("honouring a knob for a child whose
+// listen port lives in an embedded config would move only that child's readiness
+// PROBE") no longer exists: writeConfigs substitutes these fields into tempo.yaml,
+// loki.yaml, grafana.ini and otel-collector.yaml, so the child BINDS the knob's
+// port and the gate PROBES the same number. In CONTAINER residency nothing is
+// overridable — the container's ports are its own private namespace and the host
+// mapping is done by -p in the launcher.
+//
+// The env names match install_ports.go / scripts/container.sh, so a host-resident
+// install needs no second vocabulary.
 func servicePortsFor(residency string) servicePorts {
 	p := servicePortDefaults()
 	if residency != residencyHost {
@@ -142,6 +168,14 @@ func servicePortsFor(residency string) servicePorts {
 		{"ORCHICON_NATS_PORT", &p.nats},
 		{"ORCHICON_NATS_MONITOR_PORT", &p.natsMonitor},
 		{"ORCHICON_VM_PORT", &p.vm},
+		{"ORCHICON_TEMPO_PORT", &p.tempo},
+		{"ORCHICON_LOKI_PORT", &p.loki},
+		{"ORCHICON_GRAFANA_PORT", &p.grafana},
+		{"ORCHICON_OTLP_GRPC_PORT", &p.collectorOTLPGRPC},
+		{"ORCHICON_OTLP_HTTP_PORT", &p.collectorOTLPHTTP},
+		{"ORCHICON_TEMPO_OTLP_GRPC_PORT", &p.tempoOTLPGRPC},
+		{"ORCHICON_TEMPO_OTLP_HTTP_PORT", &p.tempoOTLPHTTP},
+		{"ORCHICON_OTEL_HEALTH_PORT", &p.collectorHealth},
 	}
 	for _, o := range overrides {
 		if v := os.Getenv(o.env); v != "" {

@@ -223,7 +223,7 @@ sequenceDiagram
 
 2. **Transactional Outbox** — Every mutation writes an outbox row in the same database transaction as the state change. A background relay polls unpublished rows every 500ms and publishes to NATS JetStream for at-least-once delivery.
 
-3. **Single Binary** — The Go binary embeds the single-container runtime configs (`deploy/container/configs/`), SQL migrations, and the built frontend SPA via `go:embed`. No external dependencies at runtime beyond Docker. The **single container** (`orchicon container` runs the whole stack as PID-1 — §Single-Container Deployment) is the only full-stack deployment; the same binary also runs headless via `orchicon serve`.
+3. **Single Binary** — The Go binary embeds the supervised services' runtime configs (`deploy/configs/` — Tempo/Loki/OTel-collector/Grafana, with `@DATA_DIR@` and `@…_PORT@` placeholders the supervisor substitutes), SQL migrations, and the built frontend SPA via `go:embed`. No external dependencies at runtime beyond Docker. The **single container** (`orchicon container` runs the whole stack as PID-1 — §Single-Container Deployment) is the only full-stack deployment; the same binary also runs headless via `orchicon serve`.
 
 4. **Non-blocking OTel** — The OpenTelemetry pipeline uses `grpc.NewClient` (non-blocking dial), so the control plane boots in <2 seconds even when the OTel collector is not yet healthy.
 
@@ -915,8 +915,28 @@ come from the host: **detected if present, otherwise downloaded on first run**
   no component re-derives the answer independently.
 - **Version checked** for a *detected* PostgreSQL: a server older than the minimum is
   reported and refused, not attempted. **Minimum supported PostgreSQL: 14.**
-- Pinned versions: **PostgreSQL 16.4**, **NATS server 2.10.29** (matching the
-  container image lines). Overridable per §Environment Variables.
+- The **telemetry backends** take the same path — Tempo, Loki, VictoriaMetrics and
+  the OTel collector are each a **single static Go binary** with no initialisation
+  step, so they are detected-else-downloaded exactly like Postgres and NATS. They
+  are acquired **only when telemetry is embedded** (`ORCHICON_TELEMETRY=embedded`):
+  a `none`/`remote` boot must not fetch ~300 MB of backends it will never start.
+- **Flat archives.** The four telemetry publishers put the binary at the archive
+  **root** (no top-level directory), unlike the PostgreSQL and NATS tarballs which
+  wrap everything in one. The extractor distinguishes the two (`infraArtifact.Nested`)
+  and installs each under its **canonical** name, so a member like Loki's
+  `loki-linux-amd64` lands as `loki`. Loki's zips carry no exec bit on their members,
+  so a download is chmod'ed 0755 on unix.
+- Pinned versions: **PostgreSQL 16.4**, **NATS server 2.10.29**, **Tempo 2.7.1**,
+  **Loki 3.4.2**, **VictoriaMetrics 1.111.0**, **otelcol-contrib 0.119.0** — the
+  same versions `deploy/container/Dockerfile` pins, since the same binaries run in
+  either shape. Overridable per §Environment Variables (`ORCHICON_INFRA_URL_<NAME>`
+  / `ORCHICON_INFRA_SHA256_<NAME>`).
+- The telemetry children's listen ports live in their **config files**, which are
+  templated from the same resolved port table the readiness probes read
+  (`servicePorts`), so a host install can move a port without breaking its gate.
+  **Tempo's OTLP receivers stay offset** from the collector's own (14317/14318 vs
+  4317/4318), pinned by `TestCollectorPointsAtTempoOffset`: the two shared one
+  network namespace in the image, and the collector's config points at Tempo's ports.
 
 The `:dev` runtime image's own sandbox plane uses the same detection rule for its
 self-gate (all four server binaries from one directory, or the plane is skipped), so
@@ -1686,9 +1706,11 @@ volume cannot grow unbounded:
 
 | Backend | Retention | Config |
 |---|---|---|
-| Loki (logs) | 14 days | `retention_period: 336h` + compactor (`retention_enabled`, `delete_request_store: filesystem`) in `deploy/container/configs/loki.yaml` |
-| Tempo (traces) | 14 days | `compactor.compaction.block_retention: 336h` in `deploy/container/configs/tempo.yaml` |
+| Loki (logs) | 14 days | `retention_period: 336h` + compactor (`retention_enabled`, `delete_request_store: filesystem`) in `deploy/configs/loki.yaml` |
+| Tempo (traces) | 14 days | `compactor.compaction.block_retention: 336h` in `deploy/configs/tempo.yaml` |
 | VictoriaMetrics (metrics) | 30 days | `-retentionPeriod=720h` flag in `cmd/orchicon/container.go` |
+
+The three values are **asserted** by `TestRetentionPreserved` (`cmd/orchicon/container_services_test.go`), not merely documented: a silently lost retention setting is invisible until the disk fills, which is the opposite of what it is for.
 
 ---
 
@@ -1699,7 +1721,7 @@ volume cannot grow unbounded:
 | Symptom | Likely Cause | Fix |
 |---|---|---|
 | Instance stays `unhealthy` | Corrupt/stale state | `scripts/container.sh down dev && scripts/container.sh up dev`, or start fresh with `ORCHICON_PG_VOLUME=fresh` |
-| Grafana datasources missing | Embedded configs stale | Re-build the image so `deploy/container/configs/grafana-provisioning/` is re-embedded (`make container-build`) |
+| Grafana datasources missing | Embedded configs stale | Re-build the image so `deploy/configs/grafana-provisioning/` is re-embedded (`make container-build`) |
 | Control plane won't connect to DB | Postgres not healthy yet | Wait for the PID-1 supervisor to bring postgres up; check `scripts/container.sh logs dev` and `ORCHICON_POSTGRES_DSN` |
 | Postgres data-corruption guard blocks start | Compose-era postgres still owns the volume | Stop the old compose-era postgres container first, or use `ORCHICON_PG_VOLUME=fresh` |
 

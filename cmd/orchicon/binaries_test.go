@@ -209,8 +209,14 @@ func natsFixtureBody(t *testing.T, goos string) []byte {
 	})
 }
 
-// newFixtureOptions assembles the full download fixture: a server serving both
+// newFixtureOptions assembles the download fixture: a server serving both
 // artifacts and options pointing at it.
+//
+// ONLY IS POSTGRES+NATS. These tests pin the postgres/nats contract and their
+// fixture serves only those two artifacts, so without the subset the four
+// telemetry backends would fall through to their PINNED URLs — the suite would
+// reach the network and report "mixed" where "detected" is expected. The
+// telemetry subset has its own fixture (telemetryFixtureOptions).
 func newFixtureOptions(t *testing.T, dataDir string) (acquireOptions, *[]string) {
 	t.Helper()
 	bodies := map[string][]byte{
@@ -218,7 +224,9 @@ func newFixtureOptions(t *testing.T, dataDir string) (acquireOptions, *[]string)
 		"nats-server": natsFixtureBody(t, "linux"),
 	}
 	srv, hits := fixtureServer(t, bodies)
-	return downloadOptions(t, srv, bodies, dataDir), hits
+	opt := downloadOptions(t, srv, bodies, dataDir)
+	opt.Only = []string{"postgres", "nats-server"}
+	return opt, hits
 }
 
 // ----- the five cases -----
@@ -735,7 +743,10 @@ func TestRealPinnedArtifactsDownloadAndVerify(t *testing.T) {
 		t.Skip("set ORCHICON_TEST_REAL_DOWNLOAD=1 to fetch the real pinned artifacts")
 	}
 	dataDir := t.TempDir()
-	opt := defaultAcquireOptions(dataDir)
+	// The pinned linux/amd64 postgres+nats builds: this test is about THEIR
+	// checksums, and the four telemetry backends are ~300 MB that add nothing to
+	// what is asserted here.
+	opt := defaultAcquireOptions(dataDir, "postgres", "nats-server")
 	// Detection off, so this exercises the download path for BOTH artifacts.
 	opt.PathEnv = filepath.Join(dataDir, "empty-path")
 	opt.RestrictToPath = true
@@ -799,6 +810,10 @@ func TestMountedBinDirIsDetected(t *testing.T) {
 		GOOS: "linux", GOARCH: "amd64", DataDir: guestData,
 		PathEnv: filepath.Join(guestData, "empty"), RestrictToPath: true,
 		Out: io.Discard,
+		// The mount carries postgres+nats only, and this test is about THAT mount
+		// being detected — without the subset the telemetry artifacts would go to
+		// their pinned URLs and the suite would reach the network.
+		Only: []string{"postgres", "nats-server"},
 	}
 	rec, err := acquireInfraBinaries(context.Background(), opt)
 	if err != nil {
@@ -941,7 +956,7 @@ func tarGzEntries(t *testing.T, entries []tarEntry) []byte {
 // perfectly good distro install and this would be the only test that noticed.
 func TestRealHostInstallIsDetectedAndNotDownloaded(t *testing.T) {
 	dataDir := t.TempDir()
-	opt := defaultAcquireOptions(dataDir)
+	opt := defaultAcquireOptions(dataDir, "postgres", "nats-server")
 	opt.Out = io.Discard
 
 	det, err := detectInfraBinaries(opt)
@@ -967,5 +982,275 @@ func TestRealHostInstallIsDetectedAndNotDownloaded(t *testing.T) {
 	// host does not fail the very next check after being accepted here.
 	if major, ok := parsePostgresMajor(rec.PostgresVersion); !ok || major < minPostgresMajor {
 		t.Errorf("detected PostgreSQL %q parses to major %d (ok=%v), want >= %d", rec.PostgresVersion, major, ok, minPostgresMajor)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The four telemetry backends: FLAT archives, port offsets, the Only subset.
+// ---------------------------------------------------------------------------
+
+// flatFixtureBody builds an archive shaped like the publisher's for one of the
+// four telemetry artifacts: the binary at the ARCHIVE ROOT (no top-level dir),
+// under the member name that platform ships. Loki's members carry a platform
+// suffix and are zipped; the other three are tarballs with the plain name.
+func flatFixtureBody(t *testing.T, a infraArtifact, goos, goarch string) []byte {
+	t.Helper()
+	member := memberFor(a, goos, goarch)
+	body := "#!/bin/sh\nprintf '" + a.Name + " version fixture\\n'\n"
+	entries := map[string]string{member: body}
+	// Tempo's real tar carries siblings; the extractor must take only the binary,
+	// because a prefix match would otherwise pick tempo-cli.
+	if a.Name == "tempo" {
+		entries["CHANGELOG.md"] = "docs\n"
+		entries["LICENSE"] = "license\n"
+		entries["tempo-cli"] = "#!/bin/sh\n"
+	}
+	if strings.HasSuffix(member, ".exe") || a.Name == "loki" {
+		return zipBytes(t, entries)
+	}
+	return tarGz(t, entries)
+}
+
+// telemetryFixtureOptions assembles a fixture server serving all four telemetry
+// artifacts (plus postgres/nats) and points the options at it.
+func telemetryFixtureOptions(t *testing.T, dataDir string, only ...string) (acquireOptions, *[]string) {
+	t.Helper()
+	bodies := map[string][]byte{
+		"postgres":    pgFixtureBody(t, "linux"),
+		"nats-server": natsFixtureBody(t, "linux"),
+	}
+	for _, a := range infraArtifacts {
+		switch a.Name {
+		case "postgres", "nats-server":
+			continue
+		}
+		bodies[a.Name] = flatFixtureBody(t, a, "linux", "amd64")
+	}
+	srv, hits := fixtureServer(t, bodies)
+	opt := downloadOptions(t, srv, bodies, dataDir)
+	opt.Only = only
+	return opt, hits
+}
+
+// TestFlatArchiveKeepsEntries is THE REGRESSION TEST for the bug this change
+// exists to fix. The pre-existing extractor stripped the archive's first path
+// segment and skipped entries with no slash — correct for PostgreSQL's and NATS's
+// single-top-level-directory layouts, and DESTRUCTIVE for a flat archive: the
+// entry "tempo" has no '/', so it was skipped and acquisition failed with "the
+// downloaded tempo archive did not contain tempo".
+//
+// It also pins the two things the flat path must do that the nested path must not:
+// take ONLY the declared member (tempo's tar carries tempo-cli, and a prefix match
+// would run the wrong binary), and install it under its CANONICAL name (Loki's
+// member is loki-linux-amd64, but the supervisor execs `loki`).
+func TestFlatArchiveKeepsEntries(t *testing.T) {
+	cases := []struct {
+		name, goos, wantMember string
+	}{
+		{"tempo", "linux", "tempo"},
+		{"loki", "linux", "loki-linux-amd64"},
+		{"victoria-metrics-prod", "linux", "victoria-metrics-prod"},
+		{"otelcol-contrib", "linux", "otelcol-contrib"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, ok := artifactFor(tc.name)
+			if !ok {
+				t.Fatalf("no artifact named %q", tc.name)
+			}
+			if a.Nested {
+				t.Fatalf("%s must be marked FLAT — its binary is at the archive root", tc.name)
+			}
+			if got := memberFor(a, tc.goos, "amd64"); got != tc.wantMember {
+				t.Fatalf("memberFor(%s) = %q, want %q", tc.name, got, tc.wantMember)
+			}
+			archive := filepath.Join(t.TempDir(), "fixture")
+			if err := os.WriteFile(archive, flatFixtureBody(t, a, tc.goos, "amd64"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(t.TempDir(), "out")
+			if err := extractArchive(archive, a, out, tc.goos); err != nil {
+				t.Fatalf("extract: %v", err)
+			}
+			canonical := filepath.Join(out, canonicalName(a, tc.goos))
+			if _, err := os.Stat(canonical); err != nil {
+				t.Fatalf("the flat archive's binary must land at its canonical path %s: %v", canonical, err)
+			}
+			// The siblings must NOT be unpacked: only the declared member is kept.
+			for _, extra := range []string{"CHANGELOG.md", "LICENSE", "tempo-cli", tc.wantMember} {
+				if extra == canonicalName(a, tc.goos) {
+					continue
+				}
+				if _, err := os.Stat(filepath.Join(out, extra)); err == nil && extra == "tempo-cli" {
+					t.Errorf("a flat single-binary artifact must not unpack %q — that is a DIFFERENT executable", extra)
+				}
+			}
+		})
+	}
+}
+
+// TestPinnedTelemetryArtifactsCoverPlatforms keeps the four new rows honest the
+// same way the loop in TestPinnedArtifactsCoverTheSupportedPlatforms does, and
+// additionally requires a member name wherever the archive's member is not the
+// executable's own name (Loki, VictoriaMetrics on windows).
+func TestPinnedTelemetryArtifactsCoverPlatforms(t *testing.T) {
+	platforms := []string{"linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64", "windows/amd64"}
+	for _, name := range telemetryArtifactNames {
+		a, ok := artifactFor(name)
+		if !ok {
+			t.Fatalf("the pinned table has no artifact named %q", name)
+		}
+		if a.Nested {
+			t.Errorf("%s must be FLAT (Nested:false): its binary is at the archive root", name)
+		}
+		if a.Distribution {
+			t.Errorf("%s is a single binary, not a distribution", name)
+		}
+		if len(a.Required) != 1 {
+			t.Fatalf("%s must require exactly one executable, got %v", name, a.Required)
+		}
+		for _, plat := range platforms {
+			if a.URLs[plat] == "" {
+				t.Errorf("%s has no pinned URL for %s", name, plat)
+			}
+			if len(a.Checksums[plat]) != 64 {
+				t.Errorf("%s/%s checksum is %d chars, want a 64-char SHA256", name, plat, len(a.Checksums[plat]))
+			}
+			// Every platform must resolve a member name, or extraction has nothing
+			// to match on.
+			parts := strings.SplitN(plat, "/", 2)
+			if memberFor(a, parts[0], parts[1]) == "" {
+				t.Errorf("%s/%s resolves no archive member", name, plat)
+			}
+		}
+		for plat := range a.Members {
+			if a.URLs[plat] == "" {
+				t.Errorf("%s declares a member for %s but no URL", name, plat)
+			}
+		}
+	}
+}
+
+// TestAcquireDownloadsTelemetryBinaries pins AC1 and AC2's acquisition half: all
+// four backends resolve through the SAME detect-else-download mechanism as
+// postgres/nats, land under the instance data dir, and are recorded.
+func TestAcquireDownloadsTelemetryBinaries(t *testing.T) {
+	dataDir := t.TempDir()
+	opt, _ := telemetryFixtureOptions(t, dataDir)
+
+	rec, err := acquireInfraBinaries(context.Background(), opt)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	for _, name := range telemetryArtifactNames {
+		p := rec.telemetryPath(name)
+		if p == "" {
+			t.Errorf("%s was not resolved — the acquisition gate dropped it", name)
+		}
+		if !filepath.IsAbs(p) || !strings.HasPrefix(p, dataDir) {
+			t.Errorf("%s resolved to %q, want an absolute path under %s", name, p, dataDir)
+		}
+		st, err := os.Stat(p)
+		if err != nil || st.IsDir() {
+			t.Errorf("%s does not exist as a file after acquisition: %v", name, err)
+		}
+		// THE EXEC BIT: Loki's zip members carry no mode, so a download that did
+		// not chmod would install a binary the supervisor cannot run.
+		if st != nil && st.Mode().Perm()&0o111 == 0 {
+			t.Errorf("%s is not executable (%04o) — the supervisor could not start it", p, st.Mode().Perm())
+		}
+	}
+	// The record must round-trip the four paths, so a later process reads the same
+	// answer instead of probing again.
+	back, err := loadInfraBinaries(dataDir)
+	if err != nil {
+		t.Fatalf("loadInfraBinaries: %v", err)
+	}
+	if back.Tempo != rec.Tempo || back.Loki != rec.Loki ||
+		back.VictoriaMetrics != rec.VictoriaMetrics || back.OTelCollector != rec.OTelCollector {
+		t.Errorf("the recorded telemetry set differs from the returned one:\n got %+v\nwant %+v", back, rec)
+	}
+}
+
+// TestAcquireOnlyHonoursTheSubset pins AC7's acquisition half: a boot that does not
+// run telemetry must not download it. `Only` is the mechanism.
+func TestAcquireOnlyHonoursTheSubset(t *testing.T) {
+	dataDir := t.TempDir()
+	opt, hits := telemetryFixtureOptions(t, dataDir, "postgres", "nats-server")
+
+	rec, err := acquireInfraBinaries(context.Background(), opt)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	for _, name := range telemetryArtifactNames {
+		if p := rec.telemetryPath(name); p != "" {
+			t.Errorf("%s was acquired even though this boot excluded it (%s)", name, p)
+		}
+	}
+	// A record with no telemetry paths must still LOAD: an ORCHICON_TELEMETRY=none
+	// boot writes exactly this record, and loadInfraBinaries refusing it would turn
+	// every such boot into a failed install.
+	if _, err := loadInfraBinaries(dataDir); err != nil {
+		t.Errorf("a postgres+nats-only record must be loadable: %v", err)
+	}
+	for _, h := range *hits {
+		switch h {
+		case "postgres", "nats-server":
+		default:
+			t.Errorf("the fixture server was hit for %q, which this acquisition excluded", h)
+		}
+	}
+	// And the supervisor's own gate agrees with the subset it passes.
+	off := &supervisor{telemetryEnabled: false}
+	if got := off.acquiredArtifacts(); len(got) != 2 {
+		t.Errorf("telemetry-off acquires %v, want postgres+nats only", got)
+	}
+	if got := (&supervisor{telemetryEnabled: true}).acquiredArtifacts(); got != nil {
+		t.Errorf("telemetry-on must acquire EVERY artifact (nil Only), got %v", got)
+	}
+}
+
+// TestAcquireDetectsInstalledTelemetryBackends pins the OTHER half of AC1: a host
+// that already has the backends must DETECT them (no download, no network). It is
+// the mirror of TestRealTelemetryDetectionUsesAnInstalledBuild, done hermetically
+// with shims so it does not depend on what this machine happens to have.
+func TestAcquireDetectsInstalledTelemetryBackends(t *testing.T) {
+	dataDir := t.TempDir()
+	// Only the four: this test is about THEIR detection, and the fixture's
+	// postgres/nats would otherwise be downloaded (correctly) and muddy the
+	// "nothing was fetched" claim.
+	opt, hits := telemetryFixtureOptions(t, dataDir, telemetryArtifactNames...)
+
+	// A PATH holding every artifact under BOTH names the resolver accepts: the
+	// canonical executable name and Loki's platform-suffixed member name.
+	binDirPath := t.TempDir()
+	for _, name := range telemetryArtifactNames {
+		a, _ := artifactFor(name)
+		shim(t, binDirPath, a.Required[0], name+" version shim", "linux")
+	}
+	// Loki's published member name is also accepted.
+	shim(t, binDirPath, "loki-linux-amd64", "loki version shim", "linux")
+
+	opt.PathEnv = binDirPath
+	rec, err := acquireInfraBinaries(context.Background(), opt)
+	if err != nil {
+		t.Fatalf("acquire with all four installed on PATH: %v", err)
+	}
+	for _, name := range telemetryArtifactNames {
+		p := rec.telemetryPath(name)
+		if !strings.HasPrefix(p, binDirPath) {
+			t.Errorf("%s = %q, want the installed copy under %s", name, p, binDirPath)
+		}
+	}
+	if len(*hits) != 0 {
+		t.Errorf("nothing may be downloaded when all four are installed; the fixture server was hit for %v", *hits)
+	}
+	if rec.Source != "detected" {
+		t.Errorf("Source = %q, want \"detected\"", rec.Source)
+	}
+	for _, name := range telemetryArtifactNames {
+		if rec.telemetryVersion(name) == "" {
+			t.Errorf("%s has no recorded version", name)
+		}
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -72,6 +74,11 @@ func testInfra() *infraBinaries {
 		Source: "detected", Postgres: "/pg/bin/postgres", Initdb: "/pg/bin/initdb",
 		PgCtl: "/pg/bin/pg_ctl", PgIsReady: "/pg/bin/pg_isready", Createdb: "/pg/bin/createdb",
 		NatsServer: "/usr/local/bin/nats-server",
+		// The four telemetry backends, so a proc exec'ing s.resolved().X is
+		// distinguishable from one exec'ing a bare name (the point of routing the
+		// children through the resolved record).
+		Tempo: "/inst/bin/tempo", Loki: "/inst/bin/loki",
+		VictoriaMetrics: "/inst/bin/victoria-metrics-prod", OTelCollector: "/inst/bin/otelcol-contrib",
 	}
 }
 
@@ -674,56 +681,208 @@ func TestPostgresSocketDirIsResidencyScoped(t *testing.T) {
 	}
 }
 
-// tempo/loki/grafana do NOT take their listen port in argv: it lives in an
-// EMBEDDED CONFIG (tempo.yaml, loki.yaml, grafana.ini) that writeConfigs ships
-// verbatim. The probe port is therefore only correct because it COPIES the
-// config — so parse the shipped configs and pin the field to them, in both
+// embeddedConfigPort resolves the integer a config declares for key, after
+// substituting the @TOKEN@ placeholders the way writeConfigs does. A token is a
+// LEGITIMATE value now: the listen ports are templated from the resolved port
+// table, so a bare strconv.Atoi would fail on "@TEMPO_HTTP_PORT@" and this helper
+// is what keeps the drift check meaningful.
+//
+// nth selects among repeated keys (endpoint: 0.0.0.0: appears for the collector's
+// gRPC receiver, its HTTP receiver and its health extension). It is substituted
+// from the container defaults, so the returned number is the same integer the
+// child would bind in that residency — which is what these tests then compare
+// against servicePortsFor.
+func embeddedConfigPort(t *testing.T, path, key string, nth int, ports servicePorts) int {
+	t.Helper()
+	data, err := assets.ServiceConfigsFS.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read embedded %s: %v", path, err)
+	}
+	tokens := (&supervisor{dataDir: "/data", ports: ports}).configTokens()
+	keys := make([]string, 0, len(tokens))
+	for k := range tokens {
+		keys = append(keys, k)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(keys)))
+	body := applyConfigTokens(keys, string(data), tokens)
+
+	seen := 0
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, key) {
+			continue
+		}
+		if seen < nth {
+			seen++
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(strings.TrimPrefix(trimmed, key)), "=: "))
+		// A quoted scalar (endpoint: "0.0.0.0:14317") is legitimate YAML.
+		rest = strings.Trim(strings.TrimSpace(rest), `"'`)
+		n, err := strconv.Atoi(rest)
+		if err != nil {
+			t.Fatalf("%s: cannot parse %q port from %q: %v", path, key, trimmed, err)
+		}
+		return n
+	}
+	t.Fatalf("%s declares no %s (occurrence %d)", path, key, nth)
+	return 0
+}
+
+// The telemetry children's listen ports live in an EMBEDDED CONFIG (tempo.yaml,
+// loki.yaml, grafana.ini, otel-collector.yaml), NOT in argv. The probe port is
+// therefore only correct because it COPIES the config — so parse the shipped
+// configs (resolving the @TOKEN@s) and pin each field to them, in both
 // residencies. A knob that moved one of these fields without moving the config
 // would leave the gate waiting on a port nothing listens on, and the supervisor
 // would report a healthy child as never-ready forever.
 func TestServiceProbesMatchEmbeddedConfigPorts(t *testing.T) {
-	configPort := func(path, key string) int {
-		t.Helper()
-		data, err := assets.ContainerFS.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read embedded %s: %v", path, err)
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			trimmed := strings.TrimSpace(line)
-			if !strings.HasPrefix(trimmed, key) {
-				continue
-			}
-			rest := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(strings.TrimPrefix(trimmed, key)), "=: "))
-			n, err := strconv.Atoi(rest)
-			if err != nil {
-				t.Fatalf("%s: cannot parse %q port from %q: %v", path, key, trimmed, err)
-			}
-			return n
-		}
-		t.Fatalf("%s declares no %s", path, key)
-		return 0
-	}
-
+	base := servicePortDefaults()
 	cases := []struct {
 		name, path, key, env string
+		nth                  int
 		field                func(servicePorts) int
 	}{
-		{"tempo", "deploy/container/configs/tempo.yaml", "http_listen_port", "ORCHICON_TEMPO_PORT", func(p servicePorts) int { return p.tempo }},
-		{"loki", "deploy/container/configs/loki.yaml", "http_listen_port", "ORCHICON_LOKI_PORT", func(p servicePorts) int { return p.loki }},
-		{"grafana", "deploy/container/configs/grafana.ini", "http_port", "ORCHICON_GRAFANA_PORT", func(p servicePorts) int { return p.grafana }},
+		{"tempo", "deploy/configs/tempo.yaml", "http_listen_port", "ORCHICON_TEMPO_PORT", 0, func(p servicePorts) int { return p.tempo }},
+		{"loki", "deploy/configs/loki.yaml", "http_listen_port", "ORCHICON_LOKI_PORT", 0, func(p servicePorts) int { return p.loki }},
+		{"grafana", "deploy/configs/grafana.ini", "http_port", "ORCHICON_GRAFANA_PORT", 0, func(p servicePorts) int { return p.grafana }},
+		{"tempo-otlp-grpc", "deploy/configs/tempo.yaml", `endpoint: "0.0.0.0:`, "ORCHICON_TEMPO_OTLP_GRPC_PORT", 0, func(p servicePorts) int { return p.tempoOTLPGRPC }},
+		{"tempo-otlp-http", "deploy/configs/tempo.yaml", `endpoint: "0.0.0.0:`, "ORCHICON_TEMPO_OTLP_HTTP_PORT", 1, func(p servicePorts) int { return p.tempoOTLPHTTP }},
+		{"collector-otlp-grpc", "deploy/configs/otel-collector.yaml", "endpoint: 0.0.0.0:", "ORCHICON_OTLP_GRPC_PORT", 0, func(p servicePorts) int { return p.collectorOTLPGRPC }},
+		{"collector-otlp-http", "deploy/configs/otel-collector.yaml", "endpoint: 0.0.0.0:", "ORCHICON_OTLP_HTTP_PORT", 1, func(p servicePorts) int { return p.collectorOTLPHTTP }},
+		{"collector-health", "deploy/configs/otel-collector.yaml", "endpoint: 0.0.0.0:", "ORCHICON_OTEL_HEALTH_PORT", 2, func(p servicePorts) int { return p.collectorHealth }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			want := configPort(tc.path, tc.key)
-			// The ambient knob must NOT move the probe: the child still binds
-			// the config's port, so probing the knob's port would never pass.
-			t.Setenv(tc.env, strconv.Itoa(want+1))
+			want := embeddedConfigPort(t, tc.path, tc.key, tc.nth, base)
+			// The ambient knob must resolve to the SAME number, because the config
+			// is templated from it: that is the whole contract being pinned.
+			t.Setenv(tc.env, strconv.Itoa(want))
 			for _, residency := range []string{residencyContainer, residencyHost} {
 				if got := tc.field(servicePortsFor(residency)); got != want {
-					t.Errorf("%s residency: %s probes %d but %s binds %d — the gate can never pass",
+					t.Errorf("%s residency: %s probes %d but %s declares %d — the gate can never pass",
 						residency, tc.name, got, tc.path, want)
 				}
 			}
 		})
+	}
+}
+
+// The collector's tempo exporter must point at TEMPO's OTLP HTTP receiver, which
+// is OFFSET from the collector's own OTLP HTTP port (they shared one network
+// namespace in the container image). Pinning the offset against the collector's
+// own port is what makes a future "let's just use 4318" cleanup fail loudly
+// instead of silently splitting the pipeline.
+func TestCollectorPointsAtTempoOffset(t *testing.T) {
+	p := servicePortDefaults()
+	tempoOTLP := embeddedConfigPort(t, "deploy/configs/otel-collector.yaml", "endpoint: http://localhost:", 0, p)
+	if tempoOTLP != p.tempoOTLPHTTP {
+		t.Errorf("the collector's tempo exporter points at %d, but tempo's OTLP HTTP receiver is %d",
+			tempoOTLP, p.tempoOTLPHTTP)
+	}
+	if tempoOTLP == p.collectorOTLPHTTP {
+		t.Errorf("the collector's tempo exporter and its own OTLP HTTP receiver are both %d — the offset was removed", tempoOTLP)
+	}
+	// And tempo really does bind the port the exporter names.
+	if got := embeddedConfigPort(t, "deploy/configs/tempo.yaml", `endpoint: "0.0.0.0:`, 1, p); got != tempoOTLP {
+		t.Errorf("tempo's OTLP HTTP receiver binds %d but the collector exports to %d", got, tempoOTLP)
+	}
+}
+
+// Retention must be preserved EXACTLY: a lost retention setting is invisible
+// until the disk fills, which is the opposite of what this change is for. Asserted
+// against the shipped configs and the vm argv, not against a comment.
+func TestRetentionPreserved(t *testing.T) {
+	tempo, err := assets.ServiceConfigsFS.ReadFile("deploy/configs/tempo.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(tempo), "block_retention: 336h") {
+		t.Error("tempo.yaml no longer pins block_retention: 336h (14 days) — the trace blocks would grow unbounded")
+	}
+	loki, err := assets.ServiceConfigsFS.ReadFile("deploy/configs/loki.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"retention_period: 336h", "retention_enabled: true", "delete_request_store: filesystem"} {
+		if !strings.Contains(string(loki), want) {
+			t.Errorf("loki.yaml no longer carries %q — retention_period alone is INERT without the compactor block", want)
+		}
+	}
+	s := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(),
+		residency: residencyContainer, ports: servicePortsFor(residencyContainer)}
+	if args := strings.Join(s.vmProc().args, " "); !strings.Contains(args, "-retentionPeriod=720h") {
+		t.Errorf("victoriametrics no longer pins -retentionPeriod=720h (30 days): %s", args)
+	}
+}
+
+// Every telemetry child execs the path the RESOLVER recorded, never a bare name on
+// PATH: a downloaded binary lives in this instance's data dir, which is not on
+// PATH, so a bare name would silently run a different build (or none).
+func TestTelemetryChildrenExecResolvedPaths(t *testing.T) {
+	s := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(),
+		residency: residencyContainer, ports: servicePortsFor(residencyContainer)}
+	want := map[string]string{
+		"tempo":           testInfra().Tempo,
+		"loki":            testInfra().Loki,
+		"victoriametrics": testInfra().VictoriaMetrics,
+		"otel-collector":  testInfra().OTelCollector,
+	}
+	for _, p := range []*managedProc{s.tempoProc(), s.lokiProc(), s.vmProc(), s.collectorProc()} {
+		if got, ok := want[p.name]; !ok {
+			t.Errorf("unexpected telemetry child %q", p.name)
+		} else if p.command != got {
+			t.Errorf("%s command = %q, want the resolved path %q (a bare name would run a different binary)", p.name, p.command, got)
+		}
+	}
+}
+
+// writeConfigs must leave NO unresolved @TOKEN@ behind — a literal token is a
+// config the child cannot parse — and must still substitute @DATA_DIR@.
+func TestWriteConfigsResolvesPortTokens(t *testing.T) {
+	dataDir := t.TempDir()
+	s := &supervisor{log: testLogger(), dataDir: dataDir, infra: testInfra(),
+		configDir: filepath.Join(dataDir, configDirName),
+		residency: residencyHost, ports: servicePortsFor(residencyHost)}
+	if err := s.writeConfigs(); err != nil {
+		t.Fatalf("writeConfigs: %v", err)
+	}
+	configDir := filepath.Join(dataDir, configDirName)
+	err := filepath.WalkDir(configDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if filepath.Ext(path) == ".json" {
+			return nil // the dashboard JSON is not templated
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(body), "@") {
+			// Only a well-formed token is a failure; a bare @ could be prose.
+			for _, tok := range regexp.MustCompile(`@[A-Z_]+@`).FindAllString(string(body), -1) {
+				t.Errorf("%s still contains the unresolved token %s", path, tok)
+			}
+		}
+		if strings.Contains(string(body), "@DATA_DIR@") {
+			t.Errorf("%s did not get @DATA_DIR@ substituted", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The relocated configs really did land, and the resolved ports really are the
+	// table's values (not the file's old literals).
+	tempo, err := os.ReadFile(filepath.Join(configDir, "tempo.yaml"))
+	if err != nil {
+		t.Fatalf("read the written tempo.yaml: %v", err)
+	}
+	if !strings.Contains(string(tempo), "http_listen_port: "+strconv.Itoa(s.ports.tempo)) {
+		t.Errorf("the written tempo.yaml does not carry the resolved port %d:\n%s", s.ports.tempo, tempo)
+	}
+	if !strings.Contains(string(tempo), "block_retention: 336h") {
+		t.Error("the written tempo.yaml lost its retention setting")
 	}
 }
