@@ -95,3 +95,10 @@ func servingPlaneAlive(instance string) bool {
 	}
 	return syscall.Kill(pid, 0) == nil
 }
+
+// terminateProcess asks a host process to stop. It is the ONE place that sends a signal to a host process
+// this installer started, so it lives in the Unix half with the other syscall.Kill users (see the file
+// header): a Windows build must not carry a SIGTERM it cannot send.
+func terminateProcess(pid int) error {
+	return syscall.Kill(pid, syscall.SIGTERM)
+}
