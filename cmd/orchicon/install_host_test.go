@@ -612,6 +612,68 @@ func TestServicesReadyUsesResolvedPortsAndDirectProbes(t *testing.T) {
 	}
 }
 
+// TestServicesReadyIsNotNegativeForACarrierItCannotProbe is the regression for a false negative this item's own
+// re-signature opened, and it is the reason servicesProbeableFromHost exists.
+//
+// The omitted key used to read as PORT 0 and be probed: a container-RESIDENT instance keeps postgres and nats
+// inside the container's network namespace and publishes neither on a host port, so its resolved port set names
+// only the control and Grafana ports. `planInstallPorts` writes a key only for the ports `activeInstallPorts`
+// yields, so the two service keys are ABSENT — `servicesReady` then ran `pg_isready -p 0` and probed
+// `http://127.0.0.1:0/healthz`, answered false, and the install's own repair gate
+// (`!healthy || !servicesReady(instance, ports)`) fired on EVERY re-run: a `docker restart` of a perfectly
+// healthy instance container, which is the opposite of the convergence criterion 6 requires.
+//
+// The port set is DERIVED FROM THE REAL TABLE rather than hand-written, so a future change to which ports a
+// shape binds moves this test with it instead of leaving it asserting a shape that no longer exists.
+func TestServicesReadyIsNotNegativeForACarrierItCannotProbe(t *testing.T) {
+	// The container shape: its services are internal, so NO host service port exists to ask about.
+	containerPorts := map[string]int{}
+	for _, p := range activeInstallPorts(residencyContainer) {
+		containerPorts[p.Env] = 1234 // any resolved value; the KEYS are what this test is about
+	}
+	// VACUITY GUARD: the premise is that this shape publishes NO service port. If the table ever gives it one,
+	// this test measures nothing and must be repointed rather than kept green.
+	if containerPorts["ORCHICON_POSTGRES_PORT"] != 0 || containerPorts["ORCHICON_NATS_MONITOR_PORT"] != 0 {
+		t.Fatal("the container shape now resolves a service port — this regression test needs repointing")
+	}
+	// An EMPTY PATH, so a "ready" answer cannot come from a real pg_isready on the host: the only thing that
+	// can make this true is the absence of a probe.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+
+	if !servicesReady("dev", containerPorts) {
+		t.Error("a carrier with no host endpoint must NOT be reported as not-ready: that false negative makes " +
+			"the install's repair gate restart a healthy container-resident instance on every re-run")
+	}
+	// ...and the wait must not manufacture a countdown against a port it has no endpoint for.
+	var out bytes.Buffer
+	if !waitServicesReadyFor("dev", containerPorts, 2, time.Millisecond, &out) {
+		t.Error("the wait must report the carrier ready, not time out on an endpoint that was never published")
+	}
+	got := out.String()
+	if strings.Contains(got, "waiting for") {
+		t.Errorf("there is nothing to wait on, so the wait must not announce one; got:\n%s", got)
+	}
+	if strings.Contains(got, "warning:") {
+		t.Errorf("a carrier with no host endpoint must not warn about readiness; got:\n%s", got)
+	}
+	if !strings.Contains(got, "published on no host port") {
+		t.Errorf("the wait must say WHY it is not waiting; got:\n%s", got)
+	}
+
+	// The HOST shape still gets a real probe — this must not have been "fixed" by disabling the probe outright.
+	hostPorts := map[string]int{}
+	for _, p := range activeInstallPorts(residencyHost) {
+		hostPorts[p.Env] = 1
+	}
+	if hostPorts["ORCHICON_POSTGRES_PORT"] == 0 || hostPorts["ORCHICON_NATS_MONITOR_PORT"] == 0 {
+		t.Fatal("the host shape must publish its service ports — the probe is load-bearing there")
+	}
+	if servicesReady("dev", hostPorts) {
+		t.Error("nothing is listening on the host ports, so the host carrier must still probe and report false")
+	}
+}
+
 // TestWaitServicesReadyWarnsRatherThanFailing is acceptance criterion 2's posture: the wait ANNOUNCES before
 // it waits (a silent minute reads as a hang), WARNS rather than failing on timeout, and still RETURNS the
 // bool the caller acts on.

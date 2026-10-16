@@ -321,6 +321,14 @@ func waitServicesReady(instance string, ports map[string]int, out io.Writer) boo
 // assert the announce-then-warn posture without sitting through a real minute. The exported behaviour is
 // exactly the wrapper above: announce → poll → warn → return whether it came up.
 func waitServicesReadyFor(instance string, ports map[string]int, tries int, sleep time.Duration, out io.Writer) bool {
+	// NO HOST ENDPOINT TO WAIT ON: see servicesReady for why this carrier cannot be probed from here, and why
+	// that is NOT the same as "not ready". There is deliberately no wait at all in that case — announcing one
+	// would print a countdown against port 0, i.e. a wait on nothing dressed as a wait.
+	if !servicesProbeableFromHost(ports) {
+		fmt.Fprintf(out, "%s services run inside the instance container and are published on no host port — "+
+			"their readiness is the plane's own health\n", instance)
+		return true
+	}
 	// Announced before the wait: this can sit here for a minute, and a silent minute
 	// reads as a hang.
 	fmt.Fprintf(out, "waiting for %s services (postgres 127.0.0.1:%d, nats monitor 127.0.0.1:%d) …\n",
@@ -343,13 +351,45 @@ func waitServicesReadyFor(instance string, ports map[string]int, tries int, slee
 //
 // THE PROBES ARE DIRECT, NOT `docker exec`. Asking the container was how the installer learned about the
 // services, and it encoded WHERE they live into the question — so a host with no container could not ask it
-// at all. These two probes work for BOTH carriers (a 127.0.0.1 loopback publish from the instance container,
-// or a host process from host service residency), because they reach the RESOLVED host ports either way.
+// at all. These two probes work for BOTH host-reachable carriers (a 127.0.0.1 loopback publish from the
+// instance container in HOST residency, or a host process from host service residency), because they reach
+// the RESOLVED host ports either way.
+//
+// IT MUST NOT REPORT "NOT READY" FOR A CARRIER IT HAS NO HOST ENDPOINT FOR, and that is a real bug this
+// function used to have. A container-RESIDENT plane keeps postgres and nats in the container's OWN network
+// namespace and publishes NEITHER on a host port (install_ports.go: their ContainerBind is bindNone), so the
+// resolved port set for that shape names only the control and Grafana ports — the two service keys are
+// ABSENT, read as port 0, and the probe then asked a nonexistent endpoint and answered false. Consequence:
+// the install's own repair gate (`!healthy || !servicesReady(instance, ports)`) fired on EVERY
+// container-resident install, `docker restart`ing the instance container — and the plane inside it — on every
+// re-run over a perfectly healthy instance. That is the exact opposite of the convergence criterion 6 asks
+// for, and it is why the missing key answers TRUE below rather than false.
+//
+// TRUE IS ALSO TRUE IN SUBSTANCE THERE: container.go blocks the plane's boot on postgres → nats ("Block on
+// each so the plane never boots without its backends"), so a container-resident plane that answers /healthz
+// has its backends up, and the plane's health is the gate that actually applies to that carrier.
 func servicesReady(instance string, ports map[string]int) bool {
+	if !servicesProbeableFromHost(ports) {
+		// No host-visible endpoint: this is not this function's question. The fail-safe direction is the same
+		// one recordedResidency takes — never manufacture a negative you cannot observe (see above).
+		return true
+	}
 	pg := exec.Command(pgIsReadyBin(instance),
 		"-h", "127.0.0.1", "-p", strconv.Itoa(ports["ORCHICON_POSTGRES_PORT"]), "-U", "orchicon")
 	nats := fmt.Sprintf("http://127.0.0.1:%d/healthz", ports["ORCHICON_NATS_MONITOR_PORT"])
 	return pg.Run() == nil && httpHealthy(nats, 3*time.Second)
+}
+
+// servicesProbeableFromHost reports whether this instance has a host endpoint to ask at all, i.e. whether its
+// Postgres and NATS are published on a resolved host port.
+//
+// THE RESOLVED PORT SET IS THE RIGHT SIGNAL because it IS the carrier: activeInstallPorts gives the host
+// shape the service ports (they are published on 127.0.0.1 so a host plane can reach them) and gives the
+// container-resident shape only the control and Grafana ports (its services are internal). Keying on the
+// ports rather than on a residency string keeps the one place that decides which ports exist
+// (install_ports.go's table) authoritative.
+func servicesProbeableFromHost(ports map[string]int) bool {
+	return ports["ORCHICON_POSTGRES_PORT"] > 0 && ports["ORCHICON_NATS_MONITOR_PORT"] > 0
 }
 
 // pgIsReadyBin resolves the `pg_isready` to probe with — the one belonging to the PostgreSQL the install
