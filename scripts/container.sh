@@ -31,6 +31,8 @@
 #   scripts/container.sh plane-start [dev|prod]   # start the HOST plane for a host-resident instance
 #   scripts/container.sh plane-stop [dev|prod]    # stop the HOST plane (services container keeps running)
 #   scripts/container.sh plane-status [dev|prod]  # host plane PID + health
+#   scripts/container.sh services-port <inst> <postgres|nats|nats-mon>  # host port (pure)
+#   scripts/container.sh db-url [dev|prod|test]    # the DSN for that instance's host services (pure)
 #   scripts/container.sh uninstall [dev|prod|test] [--yes]
 #                                                 # remove ONE instance AND its
 #                                                 # data (destructive; needs --yes)
@@ -1633,6 +1635,49 @@ logs_instance() {
   docker logs -f "$NAME"
 }
 
+# services-port <instance> <postgres|nats|nats-mon> — echo the host port this
+# instance's HOST SERVICES bind.
+#
+# PURE: it resolves through instance_info (which is the ONE per-instance table,
+# and which applies the ORCHICON_*_PORT overrides at its single choke point) and
+# prints; it never touches Docker.
+#
+# WHY IT IS A VERB RATHER THAN A LITERAL IN THE MAKEFILE: DB_URL used to be
+# `postgres://…@localhost:5432/…` — dev's number, written down twice. Prod is
+# 5433, so that literal silently pointed make migrate / make rls-check at DEV's
+# database while standing in a prod checkout. Deriving it from the same table
+# that starts the services is what makes the two impossible to disagree.
+services_port() {
+  local inst="${1:-dev}" svc="${2:-postgres}"
+  # An unknown instance must REFUSE, not fall through to an unbound variable:
+  # `set -u` would abort the caller with "PG_PORT: unbound variable", which names
+  # nothing the operator can act on. instance_info already prints which instances
+  # exist; propagate its failure instead of talking over it.
+  instance_info "$inst" || return 1
+  case "$svc" in
+    postgres|pg) echo "$PG_PORT" ;;
+    nats)        echo "$NATS_PORT" ;;
+    nats-mon)    echo "$NATS_MON_PORT" ;;
+    *)
+      echo "unknown service: $svc (use postgres|nats|nats-mon)" >&2
+      return 1
+      ;;
+  esac
+}
+
+# db-url <instance> — the DSN the plane, `make migrate` and `make rls-check`
+# should use for this instance's host services. Port DERIVED (services-port), so
+# it follows an ORCHICON_POSTGRES_PORT override automatically and can never
+# drift from the port the services actually bound.
+#
+# The credentials/database half matches what `orchicon services up` creates
+# (user orchicon, database orchicon, trust auth on loopback).
+db_url() {
+  local inst="${1:-dev}" port
+  port="$(services_port "$inst" postgres)" || return 1
+  echo "postgres://orchicon:orchicon@localhost:${port}/orchicon?sslmode=disable"
+}
+
 # A third positional picks the plane shape for THIS invocation, so the
 # self-contained shape needs no environment change:
 #   scripts/container.sh up dev container
@@ -1644,12 +1689,21 @@ logs_instance() {
 CONFIRM_DESTROY="${CONFIRM_DESTROY:-0}"
 
 if [ -n "${3:-}" ]; then
-  case "${3}" in
-    host|container) export ORCHICON_PLANE_RESIDENCY="${3}" ;;
-    --yes|-y) CONFIRM_DESTROY=1 ;;
+  # THE PURE QUERY VERBS TAKE A REAL THIRD ARGUMENT (`services-port <inst> <svc>`),
+  # so the residency override must not claim it. Scoped by the command NAME rather
+  # than by "does it look like a residency": a typo in a residency must still be
+  # refused, and widening this to a generic rule is how that refusal would be lost.
+  case "${1:-}" in
+    services-port|db-url) ;;
     *)
-      echo "third argument must be 'host', 'container', or '--yes' (got '${3}')" >&2
-      exit 2
+      case "${3}" in
+        host|container) export ORCHICON_PLANE_RESIDENCY="${3}" ;;
+        --yes|-y) CONFIRM_DESTROY=1 ;;
+        *)
+          echo "third argument must be 'host', 'container', or '--yes' (got '${3}')" >&2
+          exit 2
+          ;;
+      esac
       ;;
   esac
 fi
@@ -1673,6 +1727,11 @@ case "${1:-}" in
   plane-start) plane_start "${2:-dev}" ;;
   plane-stop) plane_stop "${2:-dev}" ;;
   plane-status) plane_status "${2:-dev}" ;;
+  # Pure, docker-free queries against the per-instance port table — what the
+  # Makefile derives DB_URL from (see db-url's own comment for why a literal
+  # there was a real bug, not merely a duplication).
+  services-port) services_port "${2:-dev}" "${3:-postgres}" ;;
+  db-url) db_url "${2:-dev}" ;;
   runtime-daemon) start_runtime_daemon ;;
   runtime-stop)
     # Stop the runtime daemon (and any runtime containers) for an instance.
@@ -1698,7 +1757,7 @@ case "${1:-}" in
     docker ps -a --filter label=orchicon.workflow --format 'table {{.Names}}\t{{.Status}}'
     ;;
   *)
-    echo "Usage: $0 {build|rebuild [dev|prod|test]|sync-mounts [dev|prod|test]|up [dev|prod|test]|down [dev|prod|test]|uninstall [dev|prod|test] --yes|status [dev|prod|test]|logs [dev|prod|test]|plane-bind [dev|prod|test]|shape [dev|prod|test]|verify [dev|prod|test]|plane-start|plane-stop|plane-status [dev|prod|test]|ps|runtime-daemon|runtime-stop}"
+    echo "Usage: $0 {build|rebuild [dev|prod|test]|sync-mounts [dev|prod|test]|up [dev|prod|test]|down [dev|prod|test]|uninstall [dev|prod|test] --yes|status [dev|prod|test]|logs [dev|prod|test]|plane-bind [dev|prod|test]|shape [dev|prod|test]|verify [dev|prod|test]|plane-start|plane-stop|plane-status [dev|prod|test]|services-port [dev|prod|test] [postgres|nats|nats-mon]|db-url [dev|prod|test]|ps|runtime-daemon|runtime-stop}"
     echo "  ORCHICON_PLANE_RESIDENCY=host|container  (default host) picks the shape per invocation;"
     echo "  a third positional overrides it for one call, e.g. 'up dev container'."
     echo "  'uninstall <inst> --yes' removes that instance AND its data (irreversible)."

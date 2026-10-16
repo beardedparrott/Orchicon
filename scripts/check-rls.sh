@@ -10,7 +10,8 @@
 #
 # If psql is not on PATH (common on dev hosts) or the URL is unreachable
 # (postgres runs inside the single-container instance, not on the host),
-# falls back to `docker exec` into the dev container instance.
+# falls back to the psql in the `orchicon services` bindir and then to
+# `docker exec` into the dev container instance.
 #
 # When NO database is reachable at all (host psql absent/unreachable AND the
 # instance container is not running) the gate is SKIPPED with a warning and
@@ -27,12 +28,24 @@ fi
 URL="$1"
 CONTAINER="orchicon-cnt-dev"
 
-# Stream SQL results when a DB is reachable (host psql first, then the dev
-# instance container). Returns 3 when no DB is reachable so the caller can
-# skip the gate.
+# Stream SQL results when a DB is reachable (host psql first, then the
+# `orchicon services` bindir, then the dev instance container). Returns 3 when no
+# DB is reachable so the caller can skip the gate.
+#
+# THE BINDIR RUNG IS WHAT KEEPS THIS GATE ALIVE WITHOUT A CONTAINER. A developer
+# running the host services has a perfectly good psql sitting in the acquired
+# Postgres bindir and NOT on PATH — so without this rung the gate would report
+# "no reachable Postgres" on a host whose Postgres was up and reachable. It is the
+# same bindir `orchicon services` uses, resolved by the same function
+# (ORCHICON_PG_BINDIR wins, else the instance's data dir).
 run_sql() {
   if command -v psql >/dev/null 2>&1 && psql "$URL" -c "SELECT 1" >/dev/null 2>&1; then
     psql "$URL" -t -A -F '|'
+    return 0
+  fi
+  local bindir_psql="${ORCHICON_PG_BINDIR:-$HOME/.local/share/orchicon-${ORCHICON_INSTANCE:-dev}/services/pg/bin}/psql"
+  if [ -x "$bindir_psql" ] && "$bindir_psql" "$URL" -c "SELECT 1" >/dev/null 2>&1; then
+    "$bindir_psql" "$URL" -t -A -F '|'
     return 0
   fi
   if docker exec -i "$CONTAINER" psql "$URL" -c "SELECT 1" >/dev/null 2>&1; then
@@ -70,7 +83,7 @@ rc=$?
 set -e
 
 if [ "$rc" -eq 3 ]; then
-  echo "RLS gate SKIPPED: no reachable Postgres (host psql unavailable and $CONTAINER not running)." >&2
+  echo "RLS gate SKIPPED: no reachable Postgres (host psql unavailable, no host-services bindir, and $CONTAINER not running)." >&2
   echo "Start the instance (scripts/container.sh up dev) or run with a reachable DB_URL to enforce this gate." >&2
   exit 0
 fi

@@ -75,6 +75,8 @@ func main() {
 			os.Exit(exitOnErr(runInstall(os.Args[2:], log)))
 		case "restart":
 			os.Exit(exitOnErr(runRestart(os.Args[2:], log)))
+		case "services":
+			os.Exit(runServices(os.Args[2:]))
 		case "version", "--version", "-v":
 			fmt.Println(version.Current().String())
 			return
@@ -283,6 +285,10 @@ func printHelp() {
 			"Restart the instance so its components re-read their environment.",
 			"Use this after installing an adapter CLI or changing PATH: a plane inherits its",
 			"environment when it STARTS, so `install` alone will not refresh it."}},
+		{cmd: bin + " services", desc: []string{
+			"Start/stop this instance's Postgres + NATS on the HOST, with no container engine.",
+			"services up | down | status — the backend `make run` / `make migrate` need.",
+			"`up` is idempotent: an instance already serving is reported, not restarted."}},
 		{cmd: bin + " version", desc: []string{"Print version info"}},
 		{cmd: bin + " notices", desc: []string{"Print third-party license + notice text"}},
 

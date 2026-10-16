@@ -146,6 +146,24 @@ type supervisor struct {
 	// opens postgres up to the launcher's loopback port publish.
 	servicesOnly bool
 
+	// hostMode runs postgres + nats DIRECTLY ON THE HOST, as the current user,
+	// out of a private bindir and data dir — no `setpriv`, no uid 70, no
+	// /var/lib/orchicon, no docker bridge. It is the `orchicon services` path:
+	// the container half of this supervisor (multi-uid layout, bridge-scoped
+	// pg_hba trust) is exactly what must NOT happen on a developer's machine,
+	// which is why this is a branch rather than a flag on servicesOnly.
+	//
+	// When set, pgPort/natsPort/natsMonPort/binDir are the instance's resolved
+	// values and at least binDir must be populated before prepareHost runs.
+	hostMode    bool
+	pgPort      int
+	natsPort    int
+	natsMonPort int
+	binDir      string
+	// natsBin is the nats-server EXECUTABLE (host mode); the container branch
+	// resolves it from PATH instead.
+	natsBin string
+
 	// hostUID/hostGID/hostHome identify the HOST user (set by
 	// scripts/container.sh via ORCHICON_HOST_*). The control plane and its
 	// worker subprocesses run as this user so files they create in mounted
@@ -187,6 +205,9 @@ type managedProc struct {
 // control plane as the host user, the plane-writable dirs (backups, blob
 // store) are created with that user's ownership.
 func (s *supervisor) prepare(ctx context.Context) error {
+	if s.hostMode {
+		return s.prepareHost(ctx)
+	}
 	s.configDir = filepath.Join(s.dataDir, configDirName)
 	for _, d := range []string{s.dataDir, s.configDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -281,6 +302,58 @@ func (s *supervisor) writeConfigs() error {
 		content := strings.ReplaceAll(string(data), "@DATA_DIR@", s.dataDir)
 		return os.WriteFile(target, []byte(content), 0o644)
 	})
+}
+
+// prepareHost is the HOST half of prepare: a private, current-user postgres
+// cluster and a NATS data dir under the instance's data dir.
+//
+// WHAT IT DELIBERATELY DOES NOT DO, each for a reason measured or read here:
+//
+//   - NO setpriv / NO uid 70. Postgres refuses to run as root, and on a host the
+//     current user is already unprivileged, so the container's uid dance is both
+//     unnecessary and impossible (a developer cannot chown to uid 70).
+//   - NO ensurePostgresHBATrust. That exists because a PUBLISHED container port
+//     arrives from the docker bridge gateway rather than loopback; on the host
+//     postgres binds 127.0.0.1 only and initdb's own loopback trust rules are
+//     exactly right. Widening them here would hand every local process
+//     password-less superuser access for no benefit.
+//   - NO writeConfigs. The embedded telemetry configs are Travis-for-the-container
+//     (Tempo/Loki/Grafana paths under the container layout); the host services
+//     run postgres + nats only, and writing configs nothing reads would imply
+//     otherwise.
+func (s *supervisor) prepareHost(ctx context.Context) error {
+	pgData := filepath.Join(s.dataDir, "postgres")
+	natsData := filepath.Join(s.dataDir, "nats")
+	sockDir := s.pgSocketDir()
+	for _, d := range []string{s.dataDir, pgData, natsData, sockDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("create %s: %w", d, err)
+		}
+	}
+	if s.binDir == "" {
+		return fmt.Errorf("host services need a populated bindir (ensureServiceBinaries)")
+	}
+	// initdb is idempotent by the PG_VERSION marker, exactly as the container
+	// path (its author never runs twice).
+	if _, err := os.Stat(filepath.Join(pgData, "PG_VERSION")); err != nil {
+		cmd := exec.CommandContext(ctx, filepath.Join(s.binDir, "initdb"),
+			"-D", pgData, "-U", "orchicon", "--auth=trust", "-E", "UTF8")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("initdb (host): %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		s.log.Info("initialized host postgres cluster", "data", pgData, "user", "orchicon")
+	}
+	return nil
+}
+
+// pgSocketDir is the private directory postgres places its Unix-domain socket in
+// for HOST services. It lives under the instance data dir (not /var/run, not
+// /tmp): the instance's own tree is the only place guaranteed writable by the
+// current user, and tying the socket to the instance keeps two instances' sockets
+// disjoint for the same reason their ports are.
+func (s *supervisor) pgSocketDir() string {
+	return filepath.Join(s.dataDir, "services", "run")
 }
 
 // initPostgres runs initdb on the data dir if it is not yet initialized.
@@ -442,6 +515,13 @@ func servicesOnlyFromEnv() bool {
 // so services-only mode must listen beyond loopback. Default (containerized
 // plane) keeps today's value untouched.
 func (s *supervisor) postgresListenAddr() string {
+	// HOST MODE IS LOOPBACK AND ONLY LOOPBACK. There is no published port to
+	// widen for, so a broader bind would be a LAN-reachable database with trust
+	// authentication — the one outcome the container path's /32 gateway rule
+	// exists to avoid.
+	if s.hostMode {
+		return "127.0.0.1"
+	}
 	if s.servicesOnly {
 		return "0.0.0.0"
 	}
@@ -716,6 +796,40 @@ func httpReady(url string) func(context.Context) bool {
 
 func (s *supervisor) postgresProc() *managedProc {
 	dataDir := filepath.Join(s.dataDir, "postgres")
+	if s.hostMode {
+		port := strconv.Itoa(s.pgPort)
+		addr := "127.0.0.1:" + port
+		return &managedProc{
+			name:    "postgres",
+			command: filepath.Join(s.binDir, "postgres"),
+			args: []string{"-D", dataDir, "-p", port,
+				"-c", "listen_addresses=" + s.postgresListenAddr(),
+				// A WRITABLE socket dir, passed EXPLICITLY, because postgres's
+				// compiled-in default is not usable here. Debian/Ubuntu (and the
+				// upstream theseus-rs tarball is built the same way) compile in
+				// `unix_socket_directories=/var/run/postgresql`, which a non-root
+				// developer cannot write — so postgres dies at startup with
+				// `could not create lock file "/var/run/postgresql/.s.PGSQL.<port>.lock":
+				// Permission denied` after logging nothing else (measured). The
+				// container path never hits this because it runs as uid 70 inside an
+				// image where that dir exists and is owned by that uid; hosting the
+				// cluster as the current user makes an explicit, private dir mandatory.
+				"-c", "unix_socket_directories=" + s.pgSocketDir()},
+			ready: func(ctx context.Context) bool { return tcpReady(ctx, addr) },
+			postReady: func(ctx context.Context) error {
+				// Create the orchicon database on first boot (idempotent).
+				// "already exists" is the success case for a re-run.
+				cmd := exec.CommandContext(ctx, filepath.Join(s.binDir, "createdb"),
+					"-U", "orchicon", "-h", "127.0.0.1", "-p", port, "orchicon")
+				out, err := cmd.CombinedOutput()
+				if err != nil && !strings.Contains(string(out), "already exists") {
+					return fmt.Errorf("create orchicon db: %w: %s", err, strings.TrimSpace(string(out)))
+				}
+				return nil
+			},
+			restart: true,
+		}
+	}
 	uid, gid := s.postgresUIDGID()
 	return &managedProc{
 		name:    "postgres",
@@ -739,6 +853,24 @@ func (s *supervisor) postgresProc() *managedProc {
 }
 
 func (s *supervisor) natsProc() *managedProc {
+	if s.hostMode {
+		// THE CLIENT AND MONITOR PORTS ARE PASSED EXPLICITLY here, unlike the
+		// container branch where 4222/8222 are the defaults. Two instances on one
+		// host must not both take 4222, and the readiness probe has to poll the
+		// port THIS instance bound rather than a convention.
+		command := s.natsBin
+		if command == "" {
+			command = "nats-server"
+		}
+		return &managedProc{
+			name:    "nats",
+			command: command,
+			args: []string{"-js", "-sd", filepath.Join(s.dataDir, "nats"),
+				"-p", strconv.Itoa(s.natsPort), "-m", strconv.Itoa(s.natsMonPort)},
+			ready:   httpReady(fmt.Sprintf("http://127.0.0.1:%d/healthz", s.natsMonPort)),
+			restart: true,
+		}
+	}
 	return &managedProc{
 		name:    "nats",
 		command: "nats-server",
