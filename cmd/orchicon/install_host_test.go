@@ -441,6 +441,10 @@ func TestEnsureHostDataDirKeepsAnExistingKEK(t *testing.T) {
 func TestEnsureHostDataDirRefusesToOrphanASecret(t *testing.T) {
 	for _, marker := range []string{"blobs", "postgres", "serve", "config"} {
 		t.Run(marker, func(t *testing.T) {
+			// HERMETIC: an operator-managed KEK is key material this guard must NOT read as lost (see
+			// TestEnsureHostDataDirHonoursAnOperatorManagedKEK), so this test states its own environment
+			// rather than inheriting one.
+			t.Setenv("ORCHICON_SECRETS_KEK", "")
 			dir := t.TempDir()
 			var out bytes.Buffer
 			if err := os.MkdirAll(filepath.Join(dir, marker), 0o755); err != nil {
@@ -466,6 +470,7 @@ func TestEnsureHostDataDirRefusesToOrphanASecret(t *testing.T) {
 // infra-binaries.json (step 1.7) into this very directory EARLIER in the same run. If either counted as
 // instance state, EVERY fresh install would be refused after having written them — so they must not.
 func TestEnsureHostDataDirAllowsAFreshInstallMidRun(t *testing.T) {
+	t.Setenv("ORCHICON_SECRETS_KEK", "") // hermetic: this test is about the fresh-dir path, not about an env KEK
 	dir := t.TempDir()
 	var out bytes.Buffer
 	// What the earlier install steps have already laid down in the data dir.
@@ -487,9 +492,48 @@ func TestEnsureHostDataDirAllowsAFreshInstallMidRun(t *testing.T) {
 	}
 }
 
+// TestEnsureHostDataDirHonoursAnOperatorManagedKEK is the third half of criterion 3, and it is the case the
+// guard's own reasoning has to get right: an operator-managed KEK (ORCHICON_SECRETS_KEK) is NOT a lost KEK.
+//
+// secretcrypto.ResolveKEK returns that override VERBATIM and never mints <DataDir>/secrets/kek, so a
+// deployment that supplies it — a documented mode (KMS, a secret manager, one key shared across replicas)
+// that planeEnv deliberately inherits — has a POPULATED data dir and NO key file. Without the arm this test
+// pins, re-running `orchicon install` on such a perfectly healthy instance refuses with "ORPHANS EVERY TENANT
+// SECRET" and sends the operator to look for a secrets/kek backup that never existed. That is the opposite of
+// criterion 6's convergence, and it is the guard firing on the one configuration where the key is provably
+// not lost.
+func TestEnsureHostDataDirHonoursAnOperatorManagedKEK(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	// What a known-good env-KEK install leaves behind: instance state, and no secrets/kek.
+	for _, marker := range []string{"blobs", "serve", "postgres"} {
+		if err := os.MkdirAll(filepath.Join(dir, marker), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("ORCHICON_SECRETS_KEK", "c2VjcmV0LWtleS1tYXRlcmlhbC0zMmJ5dGVzISE=")
+	if err := ensureHostDataDir("dev", dir, &out); err != nil {
+		t.Fatalf("an operator-managed KEK must not read as a lost KEK: %v", err)
+	}
+	if !strings.Contains(out.String(), "ORCHICON_SECRETS_KEK") {
+		t.Errorf("the install must say where the KEK comes from; got:\n%s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "secrets", "kek")); err == nil {
+		t.Error("an env-supplied KEK must not be written into the data dir as a file")
+	}
+
+	// THE OVERRIDE GONE IS THE REAL ORPHAN CASE, and it stays FATAL — this must not have been "fixed" by
+	// disabling the guard outright.
+	t.Setenv("ORCHICON_SECRETS_KEK", "")
+	if err := ensureHostDataDir("dev", dir, &out); err == nil {
+		t.Fatal("state with NO key file and NO override must still be refused")
+	}
+}
+
 // TestEnsureHostDataDirCreatesOnAFreshDir pins the ordinary first install: an empty dir is prepared, the
 // secrets dir is created private, and no KEK is minted here (first boot mints it).
 func TestEnsureHostDataDirCreatesOnAFreshDir(t *testing.T) {
+	t.Setenv("ORCHICON_SECRETS_KEK", "") // hermetic: this test is about the fresh-dir path, not about an env KEK
 	dir := t.TempDir()
 	var out bytes.Buffer
 	if err := ensureHostDataDir("dev", dir, &out); err != nil {
