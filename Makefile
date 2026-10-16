@@ -746,8 +746,20 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 	  os="$${t%%/*}"; arch="$${t##*/}"; \
 	  echo "==> $$os/$$arch"; \
 	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) build -o "$$tmp/" ./cmd/orchicon ./cmd/orch; \
+	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) vet ./cmd/orchicon ./cmd/orch; \
 	done; \
-	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile"
+	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile and typecheck"
+
+# WHY `go vet` IS IN THE LOOP ABOVE, AND NOT ONLY `go build`: `go build` never compiles `_test.go`, so
+# a cross-platform break that lives in a TEST file is invisible to it. Not hypothetical: with Windows
+# in CROSS_PLATFORMS but only `go build` running, this gate stayed GREEN while
+#   GOOS=windows go test -c ./cmd/orchicon
+# failed with `cmd/orchicon/binaries_test.go:48:31: undefined: shellQuote` — shellQuote is pure Go,
+# but it sat in `//go:build !windows` killorphans_test.go, and binaries_test.go is untagged on purpose
+# (it drives the resolver through a `goos` argument, so it builds Windows-shaped paths on every host).
+# `go vet` typechecks the package TOGETHER WITH its test files under the target GOOS, so it catches
+# exactly that class for ~0.1 s per platform out of a ~21 s cold build. It compiles the tests without
+# running them, which is what this gate is: a COMPILE check.
 
 # ALL THREE test targets, because each side added one to the same line: this branch adds the
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
