@@ -402,8 +402,14 @@ install-path-test: ## Run the real installer against a locally-served artifact, 
 # `up` produces, that each instance's ports and plane URL are its own (a shared value points one
 # instance's workers at another's database), and that the host plane's two listeners cannot collide.
 #
-# IT IS DOCKER-FREE, which is why it belongs in this gate rather than behind a container job: it
-# resolves shapes through container.sh's own functions with a stubbed log and no engine.
+# IT GUARDS TWO IMPLEMENTATIONS. The bash half drives container.sh's own functions (the launcher a dev
+# checkout uses); the GO half drives `go test ./cmd/orchicon` against install_host.go (the binary a
+# curl-installed host has — container.sh is NOT in the release archive). The two must agree, and the Go half
+# is the one that matters for an installed host, so it is asserted rather than assumed.
+#
+# IT IS DOCKER-FREE, which is why it belongs in this gate rather than behind a container job: the bash half
+# resolves shapes through container.sh's own functions with a stubbed log and no engine, the bridge is PINNED
+# (ORCHICON_DOCKER_BRIDGE_IP) rather than discovered, and the Go half asserts the no-engine shape explicitly.
 #
 # IT IS ALSO THE HARNESS THAT WOULD HAVE CAUGHT 5cc8039c'S FALLOUT. That commit deliberately changed
 # the default residency and did not update this harness, which then failed for weeks — unnoticed,

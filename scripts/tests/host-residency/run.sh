@@ -413,6 +413,47 @@ else
 fi
 
 echo
+echo "  -- the Go installer's shape (install_host.go) --"
+#
+# THE HARNESS'S ORIGINAL TARGET WAS container.sh, AND THE GAP THAT MATTERS IS THE OTHER LAUNCHER.
+# `orchicon install` implements the SAME host-residency shape in GO (install_host.go) — the bash half above no
+# longer guards it, because a `curl | bash` host has no container.sh behind the binary at all. So this second
+# phase drives the Go side directly, asserting the SAME three properties against the implementation that
+# actually ships:
+#
+#   1. the bind and the advertised URL share ONE bridge IP and THIS instance's port (per-instance, so two
+#      instances cannot point at each other's plane);
+#   2. with no container engine (or ORCHICON_RUNTIME_CONTAINERS=0) NEITHER variable is present and no
+#      0.0.0.0 appears anywhere;
+#   3. install_host.go contains no engine invocation at all.
+#
+# `go test -run` EXIT CODE IS THE SIGNAL — a renamed Go test makes the filter match nothing and `go test`
+# reports "no tests to run", which fails. The harness must NEVER pass vacuously (see extract_fn above).
+GO_SHAPE_TESTS='TestPlaneBindAndShape|TestInstallShapeWithoutAContainerEngine|TestInstallHostHasNoDockerInvocation|TestEnsureHostDataDir'
+if (cd "${REPO_ROOT}" && go test ./cmd/orchicon -run "^(${GO_SHAPE_TESTS})$" -count=1 >/dev/null 2>&1); then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "the Go installer shape tests" "green"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "the Go installer shape tests" "red (run: go test ./cmd/orchicon -run '${GO_SHAPE_TESTS}')"
+  FAILED=$((FAILED + 1))
+fi
+
+# A VACUITY GUARD, stated separately from the test run: the tests must EXIST, not merely exit 0.
+#
+# THE OUTPUT IS CAPTURED RATHER THAN PIPED INTO `grep -q`, and that is not style: `set -o pipefail` is on, and
+# `grep -q` exits the moment it matches, which SIGPIPEs `go test` — so the pipeline would report go test's 141
+# and this guard would fail while the tests passed. Observed, not theorised.
+GO_SHAPE_OUT="$(cd "${REPO_ROOT}" && go test ./cmd/orchicon -run "^(${GO_SHAPE_TESTS})$" -count=1 -v 2>&1)"
+case "$GO_SHAPE_OUT" in
+  *'=== RUN'*)
+    printf '  \033[32mPASS\033[0m  %-52s %s\n' "the Go shape tests actually ran" "ran"
+    PASSED=$((PASSED + 1)) ;;
+  *)
+    printf '  \033[31mFAIL\033[0m  %-52s %s\n' "the Go shape tests actually ran" "NO TESTS MATCHED (the harness must never pass vacuously)"
+    FAILED=$((FAILED + 1)) ;;
+esac
+
+echo
 echo "  host-residency harness: ${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ] || exit 1
 exit 0
