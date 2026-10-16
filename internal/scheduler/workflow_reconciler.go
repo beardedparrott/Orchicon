@@ -1228,10 +1228,26 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				if failed {
 					finalStatus = domain.StepRunFailed
 				}
-				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				// CARRY THE VERDICT WITH THE TERMINAL MARK. The step run's
+				// `_decision` is written by the TaskReconciler (propagateStepRunResults,
+				// on the execution's completion) while THIS reconciler marks the step
+				// terminal from the execution's STATUS, in its own pass. Two reconcilers,
+				// two scan loops: there is a window where the step run is `succeeded` and
+				// its Result still carries only the dispatch-time keys. A loop_decision
+				// reading it in that window sees NO verdict, falls through to the
+				// missing-decision branch, and re-asks the reviewer for a decision it had
+				// already given. Measured on run 01M522422MB39XNM0R6819JGXM: every loop
+				// iteration was created 47-108ms BEFORE the reviewer step run received its
+				// `_decision`, so all three re-asks fired on verdicts that already existed,
+				// burned max_reask (3), and failed the run.
+				fields := db.UpdateWorkflowStepRunFields{
 					Status:  strPtr(finalStatus),
 					EndedAt: &endNow,
-				})
+				}
+				if merged, merr := r.stepRunResultWithVerdict(ctx, ttx.Tx, tenantID, sr); merr == nil && merged != nil {
+					fields.Result = &merged
+				}
+				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, fields)
 				if err != nil {
 					return fmt.Errorf("mark task step terminal: %w", err)
 				}
@@ -4661,6 +4677,72 @@ func maxDAGPasses() int {
 //
 // Terminal failure only occurs after all attempts are exhausted,
 // regardless of strategy.
+// stepRunResultWithVerdict returns a step run's Result with its execution's
+// verdict folded in, so the step run is never marked TERMINAL without the
+// decision its execution produced.
+//
+// WHY THIS EXISTS. A step run's `_decision` is written by the TaskReconciler
+// (propagateStepRunResults, on the execution's completion) while the WORKFLOW
+// reconciler marks the step run terminal from the execution's STATUS in its own
+// pass. Those are two reconcilers with two independent scan loops, so there is
+// a window in which the step run is `succeeded` and its Result still carries
+// only the dispatch-time keys. A loop_decision that reads it in that window
+// finds no verdict, falls through to the missing-decision branch, and re-asks
+// the reviewer for a decision the reviewer had already given.
+//
+// MEASURED, not theorised: on run 01M522422MB39XNM0R6819JGXM (SDLC non-human)
+// every loop_decision iteration was created 47-108ms BEFORE the reviewer's step
+// run received its `_decision` -- loop1 at 10:32:33.873 vs rev1 at
+// 10:32:33.981, loop3 at 10:47:41.073 vs rev2 at 10:47:41.120. All three
+// re-asks therefore fired on verdicts that already existed in the execution's
+// stdout, consumed max_reask (default 3), and failed the run -- while every
+// reviewer execution had itself SUCCEEDED and signed off with
+// `ORCHICON WORKER SUMMARY: success`.
+//
+// Reading the execution here is reading GROUND TRUTH rather than waiting on a
+// second writer, the same direction effectivePRURL already takes for a PR URL.
+// The merge is ADDITIVE -- an existing key always wins -- so a verdict the
+// TaskReconciler has already written is never clobbered, and a step run whose
+// Result is already complete is returned unchanged in substance.
+func (r *WorkflowReconciler) stepRunResultWithVerdict(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow) ([]byte, error) {
+	if sr.WorkerExecutionID == "" {
+		return nil, nil
+	}
+	exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID)
+	if err != nil {
+		return nil, err
+	}
+	merged := map[string]any{}
+	if len(sr.Result) > 0 {
+		_ = json.Unmarshal(sr.Result, &merged)
+	}
+	output := string(exec.Output)
+	// The decision signal is the first word after the summary marker -- the
+	// SAME single source of truth the TaskReconciler extracts from, so the two
+	// paths cannot disagree about what the reviewer said.
+	if _, ok := merged["_decision"]; !ok {
+		if d := extractSummaryDecision(output); d != "" {
+			merged["_decision"] = d
+		}
+	}
+	if _, ok := merged["_summary"]; !ok {
+		if sum := extractWorkerSummary(output); sum != "" {
+			merged["_summary"] = sum
+		}
+	}
+	if _, ok := merged["_worker"]; !ok && exec.WorkerID != "" {
+		merged["_worker"] = exec.WorkerID
+	}
+	if _, ok := merged["_worker_name"]; !ok && exec.WorkerName != "" {
+		merged["_worker_name"] = exec.WorkerName
+	}
+	raw, err := json.Marshal(merged)
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenantID string, run *db.WorkflowRunRow, sr db.WorkflowStepRunRow, stepConfig string, runByID map[string]db.WorkflowStepRunRow, recoveryTriggers *[]recoveryTriggerReq) (bool, bool, error) {
 	var parsed struct {
 		WorkItemID string `json:"_work_item_id"`
