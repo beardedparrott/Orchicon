@@ -186,9 +186,22 @@ done
 
 TEST="$(make_n test)"
 check_contains "make test still sets ORCHICON_CONFIG_DIR" "ORCHICON_CONFIG_DIR=" "$TEST"
-# THE UNSET LIST ITSELF, not the whole recipe: the recipe's own explanatory
-# comments mention the services variable on purpose, so a whole-recipe search
-# would confuse prose with code.
+
+# THE `instance ?= dev` DEFAULT MUST NOT SILENCE THE TARGETS THAT REQUIRE A CHOICE.
+# `container-rebuild`/`full-rebuild` are DESTRUCTIVE and deliberately refuse to run
+# without an explicit instance; a `?=` default makes their `test -n "$(instance)"`
+# see "dev" and pass, so `make full-rebuild` with no argument silently rebuilt dev
+# instead of printing its usage line. They must test the operator's CHOICE, not the
+# default — and a real one must still get through.
+# `make -n` EXPANDS $(instance_given), so the assertion is on the EXPANDED signal,
+# not the variable name: the guard must read `test -n ""` (empty => refuse) with no
+# argument, and a non-empty value when the operator names one.
+check_contains "Makefile defines the instance_given choice test" 'instance_given = $(filter' "$(cat "$MAKEFILE")"
+for t in container-rebuild full-rebuild; do
+  check_contains "make $t refuses WITHOUT an explicit instance" 'test -n ""' "$(make_n "$t" 2>&1 | grep -m1 'test -n' || true)"
+  check_contains "make $t instance=prod still proceeds" 'test -n "command line"' "$(make_n "$t" instance=prod 2>&1 | grep -m1 'test -n' || true)"
+done
+
 # The list spans two recipe lines (a trailing backslash), so both are joined.
 UNSET_LINE="$(printf '%s\n' "$TEST" | grep -A1 -m1 'for v in ORCHICON_GUARD_POLICY' | tr '\n' ' ' || true)"
 check_contains "make test still unsets the ambient config/plane vars" "ORCHICON_SERVE_STATE_DIR; do unset" "$UNSET_LINE"
@@ -220,12 +233,6 @@ check_contains 'main.go documents services in printHelp' 'bin + " services"' "$M
 
 SERVICES_GO="$(cat "${REPO_ROOT}/cmd/orchicon/services.go" 2>/dev/null || true)"
 check_contains "cmd/orchicon/services.go defines runServices" "func runServices(" "$SERVICES_GO"
-
-echo
-echo "  local-services harness: ${PASSED} passed, ${FAILED} failed, ${SKIPPED} skipped"
-[ "$FAILED" -eq 0 ] || exit 1
-exit 0
-es(" "$SERVICES_GO"
 
 echo
 echo "  local-services harness: ${PASSED} passed, ${FAILED} failed, ${SKIPPED} skipped"

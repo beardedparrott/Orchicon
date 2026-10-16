@@ -111,6 +111,24 @@ NPX         := npx
 # fallback keeps DB_URL non-empty when scripts/ (or bash) is unavailable.
 instance    ?= dev
 DB_URL      ?= $(shell scripts/container.sh db-url $(instance) 2>/dev/null || echo postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable)
+
+# ...BUT THE DEFAULT MUST NOT SILENCE THE TARGETS THAT REQUIRE A CHOICE.
+#
+# `instance ?= dev` is what makes `make run`/`migrate`/`services` work with no
+# argument (AC1), and it is a DEFAULT, not a decision. Two targets deliberately
+# REFUSE to run without an explicit instance — `container-rebuild` and
+# `full-rebuild` (DESTRUCTIVE: they stop an instance and rebuild its image) —
+# and they test it with `test -n "$(instance)"`. A `?=` default makes that test
+# see "dev" and pass, so `make full-rebuild` with no argument silently rebuilt
+# and restarted DEV instead of printing its usage line: the guard is dead.
+# That is not hypothetical drift, it is this variable's blast radius.
+#
+# `instance_given` is non-empty ONLY when the operator named the instance on the
+# command line or in the environment — `$(origin)` is `file` for this default.
+# The two guards test THIS, so a bare `make full-rebuild` refuses again while
+# `make full-rebuild instance=dev` (and the `rebuild-*` wrappers, which pass
+# `instance=` explicitly) still work.
+instance_given = $(filter command line environment override,$(origin instance))
 BIN_DIR     := bin
 
 # Git metadata injected into the binary via -ldflags (internal/version).
@@ -614,7 +632,7 @@ runtime-daemon: ## Start the host-side workflow runtime daemon
 runtime-stop: ## Stop the host-side workflow runtime daemon
 	scripts/container.sh runtime-stop
 container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild instance=dev|prod|test [residency=host|container])
-	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod|test"; exit 1; }
+	@test -n "$(instance_given)" || { echo "usage: make container-rebuild instance=dev|prod|test"; exit 1; }
 	# residency is passed down as ENV (per invocation) — never exported globally,
 	# so rebuilding one instance cannot change the other's shape.
 	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh down $(instance)
@@ -679,7 +697,7 @@ container-ps: ## List orchicon container instances
 #                                 half of the fix: cross-compile no longer dumps foreign-platform
 #                                 artifacts into the shared cache, and this keeps the rest honest)
 full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod|test)
-	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
+	@test -n "$(instance_given)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
 	$(MAKE) build
 	$(MAKE) ci
 	$(MAKE) migrate-hash
