@@ -307,6 +307,57 @@ func assertNoBridgeShape(t *testing.T) {
 	}
 }
 
+// TestInstallShapeWithAContainerEngine is acceptance criterion 7's other half, and the counterpart of
+// TestInstallShapeWithoutAContainerEngine: WHEN a container engine IS installed the install takes the
+// with-containers shape — the bridge bind and the advertised URL ARE produced, from ONE place, at THIS
+// instance's port — so the two carriers an install can have are both pinned rather than only the new one.
+//
+// The engine probe is asserted to be a PATH LOOKUP and not an engine call, and BEHAVIOURALLY rather than by
+// reading the source: the fake engine RECORDS that it ran, so "the probe never executes docker" is a fact
+// this test measures. That property is what lets a machine with no engine answer "no" without a doomed
+// invocation — the defect this item removes from the install path.
+func TestInstallShapeWithAContainerEngine(t *testing.T) {
+	bin := t.TempDir()
+	ran := filepath.Join(bin, "ran.txt")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + ran + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
+	t.Setenv("ORCHICON_DOCKER_BRIDGE_IP", "172.99.0.1")
+
+	if !containerEngineAvailable() {
+		t.Fatal("a docker binary on PATH must report an engine")
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Fatal("the engine probe must be a PATH lookup, never an engine call — the fake docker was executed")
+	}
+	if !runtimeContainersInUse() {
+		t.Fatal("an engine on PATH must mean runtime containers are in use")
+	}
+
+	// The with-containers shape: the bind and the URL exist, agree, and carry THIS instance's port.
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 9080}
+	env, err := planeEnv("dev", ports, "/tmp/d", "/tmp/s.sock")
+	if err != nil {
+		t.Fatalf("planeEnv with an engine: %v", err)
+	}
+	joined := strings.Join(env, "\n")
+	for _, want := range []string{
+		"ORCHICON_HTTP_ADDR=127.0.0.1:9080",
+		"ORCHICON_HTTP_EXTRA_BIND=172.99.0.1:9080",
+		"ORCHICON_PLANE_PUBLIC_URL=http://172.99.0.1:9080",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the with-engine shape is missing %q; got:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "0.0.0.0") {
+		t.Errorf("the with-engine shape must still never bind a wildcard:\n%s", joined)
+	}
+}
+
 // TestResidencyIsRecordedAndReadBack is acceptance criterion 6's destructive half: a recorded shape that
 // MATCHES converges, an ABSENT/UNREADABLE record reports ok=false, and a caller's `!known` arm therefore
 // leaves a live instance alone rather than recreating it.
