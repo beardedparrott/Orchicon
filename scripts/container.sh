@@ -796,7 +796,9 @@ build_image() {
   # its Dockerfile (or, for :gui/:dev, the base it derives from) changed.
   local RT_DOCKERFILE="$PROJECT_ROOT/deploy/runtime/Dockerfile"
   local RT_CONTEXT="$PROJECT_ROOT/deploy/runtime"
-  local APP_VERSION="${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || echo dev)}"
+  # --match 'v[0-9]*': a moving prerelease tag (canary) must never be read as the version — see the
+  # Makefile's VERSION for the observed failure.
+  local APP_VERSION="${VERSION:-$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo dev)}"
   local RT_BASE_VERSION RT_GUI_VERSION RT_DEV_VERSION
   RT_BASE_VERSION="$(runtime_image_version "$RT_DOCKERFILE" "$APP_VERSION")"
 

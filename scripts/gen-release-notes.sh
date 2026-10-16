@@ -76,7 +76,7 @@ if [ "$MODE" = "body" ] && [ -z "$VERSION" ]; then
   if [ -n "${GITHUB_REF_NAME:-}" ]; then
     VERSION="$GITHUB_REF_NAME"
   else
-    VERSION="$(git describe --tags --abbrev=0 2>/dev/null || echo "latest")"
+    VERSION="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo "latest")"
   fi
 fi
 
