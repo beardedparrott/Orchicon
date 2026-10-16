@@ -73,6 +73,16 @@ const (
 	pinnedNATSServerVersion = "2.10.29"
 	// pinnedPostgresVersion is the release tag of the pinned binaries build.
 	pinnedPostgresVersion = "16.4.0"
+
+	// The four telemetry backends' pinned versions. EACH MUST MATCH THE VERSION
+	// deploy/container/Dockerfile PINS, because the same binaries run in either
+	// shape (that Dockerfile is now the reference, not the source). The pinned
+	// URL is the PUBLISHER'S OWN release asset for that tag — the tag's downloads
+	// page and the archives were checked by hand when this table was written.
+	pinnedTempoVersion           = "2.7.1"
+	pinnedLokiVersion            = "3.4.2"
+	pinnedVictoriaMetricsVersion = "1.111.0"
+	pinnedOTelCollectorVersion   = "0.119.0"
 	// minPostgresMajor is the oldest supported PostgreSQL major version.
 	minPostgresMajor = 14
 
@@ -132,24 +142,61 @@ var postgresOptionalClientBins = []string{"pg_restore"}
 // natsRequiredBins are the binaries the NATS component execs.
 var natsRequiredBins = []string{"nats-server"}
 
+// The four telemetry backends are each a SINGLE STATIC GO BINARY with no
+// initialisation step, so they take the same detect-else-download path as
+// postgres/nats — but they are NOT scattered across a distribution: one
+// required executable each, unpacked flat.
+var (
+	tempoRequiredBins = []string{"tempo"}
+	// Loki's archive members carry a PLATFORM SUFFIX (loki-linux-amd64), so the
+	// member name is not the executable name — see infraArtifact.Members.
+	lokiRequiredBins = []string{"loki"}
+	// The VictoriaMetrics build is named victoria-metrics-prod on unix and
+	// victoria-metrics-windows-amd64-prod.exe on windows.
+	vmRequiredBins            = []string{"victoria-metrics-prod"}
+	otelCollectorRequiredBins = []string{"otelcol-contrib"}
+)
+
+// telemetryArtifactNames are the four artifacts that exist only for an
+// embedded-telemetry boot, in dependency order (the collector's exporters point
+// at the other three). It is the set the supervisor names when it wants every
+// artifact (acquireInfraBinaries treats an empty Only as "all") and the set a
+// test iterates to prove the table is complete.
+var telemetryArtifactNames = []string{"tempo", "loki", "victoria-metrics-prod", "otelcol-contrib"}
+
 // infraBinaries is the resolved set — recorded once, read by every service proc.
 //
 // It is deliberately a flat set of ABSOLUTE paths rather than a bin dir to be
 // searched later: a search is a second resolution path, and the record exists so
 // there is only one.
 type infraBinaries struct {
-	Source          string `json:"source"` // "detected" | "downloaded" | "mixed"
-	Postgres        string `json:"postgres"`
-	Initdb          string `json:"initdb"`
-	PgCtl           string `json:"pg_ctl"`
-	PgIsReady       string `json:"pg_isready"`
-	Createdb        string `json:"createdb"`
-	PgDump          string `json:"pg_dump"`
-	Psql            string `json:"psql"`
-	PgRestore       string `json:"pg_restore,omitempty"`
-	NatsServer      string `json:"nats_server"`
+	Source     string `json:"source"` // "detected" | "downloaded" | "mixed"
+	Postgres   string `json:"postgres"`
+	Initdb     string `json:"initdb"`
+	PgCtl      string `json:"pg_ctl"`
+	PgIsReady  string `json:"pg_isready"`
+	Createdb   string `json:"createdb"`
+	PgDump     string `json:"pg_dump"`
+	Psql       string `json:"psql"`
+	PgRestore  string `json:"pg_restore,omitempty"`
+	NatsServer string `json:"nats_server"`
+
+	// The four telemetry backends. EMPTY IS A VALID VALUE: a boot with
+	// ORCHICON_TELEMETRY=none never acquires them, and loadInfraBinaries must not
+	// reject that record (the completeness gate for these is at the call site
+	// that actually needs them).
+	Tempo           string `json:"tempo,omitempty"`
+	Loki            string `json:"loki,omitempty"`
+	VictoriaMetrics string `json:"victoria_metrics,omitempty"`
+	OTelCollector   string `json:"otel_collector,omitempty"`
+
 	PostgresVersion string `json:"postgres_version"`
 	NatsVersion     string `json:"nats_version"`
+
+	TempoVersion           string `json:"tempo_version,omitempty"`
+	LokiVersion            string `json:"loki_version,omitempty"`
+	VictoriaMetricsVersion string `json:"victoria_metrics_version,omitempty"`
+	OTelCollectorVersion   string `json:"otel_collector_version,omitempty"`
 }
 
 // acquireOptions carries every host interaction so the mechanism is deterministic
@@ -173,6 +220,13 @@ type acquireOptions struct {
 	// SkipDownload makes absence fatal instead of downloading — for a host that
 	// forbids network access at install time.
 	SkipDownload bool
+	// Only restricts resolution to the named artifacts. EMPTY MEANS EVERY
+	// ARTIFACT. It exists because the supervisor knows whether THIS boot runs the
+	// telemetry backends (ORCHICON_TELEMETRY), and a `none` boot must not download
+	// ~300 MB of backends it will never start. It is not a correctness gate: an
+	// artifact named here that is absent is still a hard failure when downloading
+	// is forbidden.
+	Only []string
 	// RestrictToPath limits detection to PathEnv ALONE, skipping the platform's
 	// conventional install locations. It exists for tests: a test asserting "absent"
 	// must not accidentally succeed because the machine running it happens to have
@@ -198,6 +252,18 @@ type infraArtifact struct {
 	// needs its share/ and lib/ beside its bin/); otherwise the single binary is
 	// installed as <DataDir>/bin/<Name>.
 	Distribution bool
+	// Nested says the archive wraps everything in ONE top-level directory, which
+	// must be stripped on unpack (today's behaviour, and what PostgreSQL and NATS
+	// both do). FALSE — the four telemetry artifacts — means the binary sits at
+	// the archive ROOT, and stripping a segment would DELETE the binary: the entry
+	// "tempo" has no '/', so the strip yields "" and the entry is skipped.
+	Nested bool
+	// Members maps "<goos>/<goarch>" to the archive member's BASE NAME, for an
+	// artifact whose member name differs per platform and from the executable
+	// name (Loki ships loki-linux-amd64 / loki-windows-amd64.exe). A platform
+	// absent from the map falls back to exeName(Required[0], goos), which is what
+	// tempo/otelcol/vm need on unix.
+	Members map[string]string
 	// URLs and Checksums are keyed "<goos>/<goarch>".
 	URLs      map[string]string
 	Checksums map[string]string
@@ -212,6 +278,7 @@ var infraArtifacts = []infraArtifact{
 		Version:      pinnedPostgresVersion,
 		Required:     postgresRequiredBins,
 		Distribution: true,
+		Nested:       true, // theseus-rs wraps the tree in postgresql-<ver>-<target>/
 		URLs: map[string]string{
 			"linux/amd64":   "https://github.com/theseus-rs/postgresql-binaries/releases/download/16.4.0/postgresql-16.4.0-x86_64-unknown-linux-gnu.tar.gz",
 			"linux/arm64":   "https://github.com/theseus-rs/postgresql-binaries/releases/download/16.4.0/postgresql-16.4.0-aarch64-unknown-linux-gnu.tar.gz",
@@ -231,6 +298,7 @@ var infraArtifacts = []infraArtifact{
 		Name:     "nats-server",
 		Version:  pinnedNATSServerVersion,
 		Required: natsRequiredBins,
+		Nested:   true, // nats-io wraps the binary in nats-server-<ver>-<plat>/
 		URLs: map[string]string{
 			"linux/amd64":   "https://github.com/nats-io/nats-server/releases/download/v2.10.29/nats-server-v2.10.29-linux-amd64.tar.gz",
 			"linux/arm64":   "https://github.com/nats-io/nats-server/releases/download/v2.10.29/nats-server-v2.10.29-linux-arm64.tar.gz",
@@ -244,6 +312,110 @@ var infraArtifacts = []infraArtifact{
 			"darwin/amd64":  "330c9e2f41ba8cc04c5b08c95ff3a1c4e7ff724dd3856039985de2ffe79aa9fc",
 			"darwin/arm64":  "d7d8277882679d072c12f200c7b7006ee19aece00d2a0d75c3fbf2bf7fbd08ba",
 			"windows/amd64": "98657bf4d5a9ce44168c019ba6894cda8e22e6adc8798edc05c168db7262de29",
+		},
+	},
+	// -----------------------------------------------------------------------
+	// The four telemetry backends. ALL FOUR ARE FLAT (`Nested: false`): the
+	// binary sits at the archive ROOT, which is why the pre-existing extractor —
+	// written for PostgreSQL's and NATS's single-top-level-dir layouts, and which
+	// STRIPS the first path segment — silently dropped all four. The member names
+	// below were read from the publishers' own archives, not assumed: tempo's tar
+	// carries CHANGELOG.md/LICENSE/README.md/tempo-cli/tempo-query/tempo (so
+	// `tempo-cli` must NOT be picked), and VictoriaMetrics' windows zip carries
+	// exactly one member.
+	// -----------------------------------------------------------------------
+	{
+		Name:     "tempo",
+		Version:  pinnedTempoVersion,
+		Required: tempoRequiredBins,
+		URLs: map[string]string{
+			"linux/amd64":   "https://github.com/grafana/tempo/releases/download/v2.7.1/tempo_2.7.1_linux_amd64.tar.gz",
+			"linux/arm64":   "https://github.com/grafana/tempo/releases/download/v2.7.1/tempo_2.7.1_linux_arm64.tar.gz",
+			"darwin/amd64":  "https://github.com/grafana/tempo/releases/download/v2.7.1/tempo_2.7.1_darwin_amd64.tar.gz",
+			"darwin/arm64":  "https://github.com/grafana/tempo/releases/download/v2.7.1/tempo_2.7.1_darwin_arm64.tar.gz",
+			"windows/amd64": "https://github.com/grafana/tempo/releases/download/v2.7.1/tempo_2.7.1_windows_amd64.tar.gz",
+		},
+		Checksums: map[string]string{
+			"linux/amd64":   "18b073854f94089a4700aa7dc88dceba840baa485535efd36f18152fced08f89",
+			"linux/arm64":   "6db8768b213b39c365963b492d9f616511cd59297aeffdcbe3fc4efd4c404c7e",
+			"darwin/amd64":  "6c4c677b1ef2ed51ef5fed5895a1cded31a34d2415254966df39aa0094d52d8e",
+			"darwin/arm64":  "c3c2b71c6bfb933ba52446cae461f866cf0999ed823a97b5fa492f35e82ac240",
+			"windows/amd64": "e8974db07f25c87166401c3f3002a514b866ed0cadad358cebc419a15ce9c01b",
+		},
+	},
+	{
+		Name:     "loki",
+		Version:  pinnedLokiVersion,
+		Required: lokiRequiredBins,
+		// GRAFANA'S LOKI MEMBERS CARRY A PLATFORM SUFFIX and are NOT the binary's
+		// name, so every platform needs an explicit entry: there is no sane
+		// fallback that would find `loki-linux-amd64`. All five were read from the
+		// archives.
+		Members: map[string]string{
+			"linux/amd64":   "loki-linux-amd64",
+			"linux/arm64":   "loki-linux-arm64",
+			"darwin/amd64":  "loki-darwin-amd64",
+			"darwin/arm64":  "loki-darwin-arm64",
+			"windows/amd64": "loki-windows-amd64.exe",
+		},
+		URLs: map[string]string{
+			"linux/amd64":   "https://github.com/grafana/loki/releases/download/v3.4.2/loki-linux-amd64.zip",
+			"linux/arm64":   "https://github.com/grafana/loki/releases/download/v3.4.2/loki-linux-arm64.zip",
+			"darwin/amd64":  "https://github.com/grafana/loki/releases/download/v3.4.2/loki-darwin-amd64.zip",
+			"darwin/arm64":  "https://github.com/grafana/loki/releases/download/v3.4.2/loki-darwin-arm64.zip",
+			"windows/amd64": "https://github.com/grafana/loki/releases/download/v3.4.2/loki-windows-amd64.exe.zip",
+		},
+		Checksums: map[string]string{
+			"linux/amd64":   "4449378c6e74281e99163dec9cca70479b6095d139c0403042f59bd962ec8791",
+			"linux/arm64":   "4717319ef63a1e3155d596f0a8290af7522c19c5f6d7a8170d935aa098e2989e",
+			"darwin/amd64":  "500ce13683b50ddc500fbbf315a5e880ef0417ecc042dcae7aa991a55ae3e789",
+			"darwin/arm64":  "fe9cc0f2accdc5697381ee3309d440f55a63bbbb08a9aef71e5c8f2e749a4312",
+			"windows/amd64": "c2c4950f2f82f8ab0dba1544962b0be3b5efaf8a72b3f0316b51b38c28cc19ce",
+		},
+	},
+	{
+		Name:     "victoria-metrics-prod",
+		Version:  pinnedVictoriaMetricsVersion,
+		Required: vmRequiredBins,
+		// The windows zip's single member is victoria-metrics-windows-amd64-prod.exe;
+		// the unix tarballs carry `victoria-metrics-prod` at the root, which the
+		// required-name fallback resolves. The member is installed under its
+		// CANONICAL name, so every platform ends up exec'ing one predictable path.
+		Members: map[string]string{
+			"windows/amd64": "victoria-metrics-windows-amd64-prod.exe",
+		},
+		URLs: map[string]string{
+			"linux/amd64":   "https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v1.111.0/victoria-metrics-linux-amd64-v1.111.0.tar.gz",
+			"linux/arm64":   "https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v1.111.0/victoria-metrics-linux-arm64-v1.111.0.tar.gz",
+			"darwin/amd64":  "https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v1.111.0/victoria-metrics-darwin-amd64-v1.111.0.tar.gz",
+			"darwin/arm64":  "https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v1.111.0/victoria-metrics-darwin-arm64-v1.111.0.tar.gz",
+			"windows/amd64": "https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v1.111.0/victoria-metrics-windows-amd64-v1.111.0.zip",
+		},
+		Checksums: map[string]string{
+			"linux/amd64":   "1c7328173ef352fa9cdaa0957ff43b752e9458755e0a9588cce4b52fe189ab8f",
+			"linux/arm64":   "e8c0beb78e4b4888b4911a0689a66a79c5290f06a07a4548f2b36fc2d6a70616",
+			"darwin/amd64":  "e3ed428f21c3cd42470f3154ded844886a5202abca74c626e64c2d36ec033cda",
+			"darwin/arm64":  "39a74b3cb712f84675eedc372e0d4de14f0562c40e20e3bb8b059448939f4047",
+			"windows/amd64": "a7b929573f79e69029495213ec7bfa917f2a6052350af7e1be6d6bd85cec863a",
+		},
+	},
+	{
+		Name:     "otelcol-contrib",
+		Version:  pinnedOTelCollectorVersion,
+		Required: otelCollectorRequiredBins,
+		URLs: map[string]string{
+			"linux/amd64":   "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.119.0/otelcol-contrib_0.119.0_linux_amd64.tar.gz",
+			"linux/arm64":   "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.119.0/otelcol-contrib_0.119.0_linux_arm64.tar.gz",
+			"darwin/amd64":  "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.119.0/otelcol-contrib_0.119.0_darwin_amd64.tar.gz",
+			"darwin/arm64":  "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.119.0/otelcol-contrib_0.119.0_darwin_arm64.tar.gz",
+			"windows/amd64": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.119.0/otelcol-contrib_0.119.0_windows_amd64.tar.gz",
+		},
+		Checksums: map[string]string{
+			"linux/amd64":   "4ee77545daaad658f7282bff98704bc1f31107890e2a2e1d4b1fc31da4648111",
+			"linux/arm64":   "c5f4480504a12d9445ef5c3d754bd2824a2ea5dbc516c0edd52bb05c3e72f1f7",
+			"darwin/amd64":  "8c67ef47afd44dc68e778dbb8933d98007534f5db48286516f9d66b9e635b441",
+			"darwin/arm64":  "d56e8003c5d37ccee27ea35a3a392a6dcdc2b5e25c492a6ff5512a633c390798",
+			"windows/amd64": "c1eac16de17383cdebc0e5691b69691a3f32aa28442d9090c53df6b6eb35cf84",
 		},
 	},
 }
@@ -280,6 +452,52 @@ func exeName(name, goos string) string {
 		return name + ".exe"
 	}
 	return name
+}
+
+// memberFor is the ARCHIVE MEMBER base name an artifact's current platform ships
+// its binary under. An explicit Members entry wins (Loki names its members
+// loki-linux-amd64, which no fallback could guess); otherwise it is the required
+// binary under the platform's executable suffix, which is what tempo,
+// victoria-metrics on unix and otelcol-contrib all use.
+func memberFor(a infraArtifact, goos, goarch string) string {
+	if m := a.Members[goos+"/"+goarch]; m != "" {
+		return m
+	}
+	if len(a.Required) == 0 {
+		return ""
+	}
+	return exeName(a.Required[0], goos)
+}
+
+// canonicalName is the name an acquired binary is INSTALLED under — always the
+// required base name for this platform, never the archive's member name. That is
+// what lets a flat archive whose member is loki-linux-amd64 land as `loki`, so a
+// single predictable path is exec'd on every platform.
+func canonicalName(a infraArtifact, goos string) string {
+	if len(a.Required) == 0 {
+		return ""
+	}
+	return exeName(a.Required[0], goos)
+}
+
+// selectedArtifacts filters the pinned table to the artifacts this acquisition
+// covers: every one when Only is empty, otherwise exactly the names it lists (in
+// the table's order, so the missing-list order is stable).
+func selectedArtifacts(opt acquireOptions) []infraArtifact {
+	if len(opt.Only) == 0 {
+		return infraArtifacts
+	}
+	want := make(map[string]bool, len(opt.Only))
+	for _, n := range opt.Only {
+		want[n] = true
+	}
+	var out []infraArtifact
+	for _, a := range infraArtifacts {
+		if want[a.Name] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // lookPathIn resolves name against the given dirs, in order. It is a PATH-local
@@ -455,7 +673,7 @@ type detectResult struct {
 	missing []string
 }
 
-// detectInfraBinaries probes for both artifacts independently.
+// detectInfraBinaries probes for every SELECTED artifact independently.
 //
 // It returns an error ONLY for a host with a Postgres install we must not use
 // (partial, or too old). A host with no Postgres at all is not an error here — it
@@ -463,25 +681,121 @@ type detectResult struct {
 func detectInfraBinaries(opt acquireOptions) (*detectResult, error) {
 	res := &detectResult{rec: &infraBinaries{}}
 
-	dir, err := detectPostgresDir(opt)
-	switch {
-	case err != nil && !errors.Is(err, errInfraAbsent):
-		return nil, err
-	case errors.Is(err, errInfraAbsent):
-		res.missing = append(res.missing, "postgres")
-	default:
-		if err := res.rec.fillPostgres(dir, opt); err != nil {
-			return nil, err
+	for _, a := range selectedArtifacts(opt) {
+		switch a.Name {
+		case "postgres":
+			dir, err := detectPostgresDir(opt)
+			switch {
+			case err != nil && !errors.Is(err, errInfraAbsent):
+				return nil, err
+			case errors.Is(err, errInfraAbsent):
+				res.missing = append(res.missing, "postgres")
+			default:
+				if err := res.rec.fillPostgres(dir, opt); err != nil {
+					return nil, err
+				}
+			}
+		case "nats-server":
+			if p, version, ok := detectNatsServer(opt); ok {
+				res.rec.NatsServer, res.rec.NatsVersion = p, version
+			} else {
+				res.missing = append(res.missing, "nats-server")
+			}
+		default:
+			// THE TELEMETRY BACKENDS: single static Go binaries with no
+			// initialisation step, so detection is a PATH-shaped probe and there is
+			// nothing to validate — unlike PostgreSQL there is no share dir, no
+			// minimum version and no partial-install shape.
+			if p, version, ok := detectSingleBinary(a, opt); ok {
+				res.rec.setTelemetryArtifact(a.Name, p, version)
+			} else {
+				res.missing = append(res.missing, a.Name)
+			}
 		}
 	}
-
-	if p, version, ok := detectNatsServer(opt); ok {
-		res.rec.NatsServer = p
-		res.rec.NatsVersion = version
-	} else {
-		res.missing = append(res.missing, "nats-server")
-	}
 	return res, nil
+}
+
+// telemetryPath is the recorded path for one telemetry artifact, or "" when this
+// boot did not acquire it.
+func (rec *infraBinaries) telemetryPath(name string) string {
+	switch name {
+	case "tempo":
+		return rec.Tempo
+	case "loki":
+		return rec.Loki
+	case "victoria-metrics-prod":
+		return rec.VictoriaMetrics
+	case "otelcol-contrib":
+		return rec.OTelCollector
+	}
+	return ""
+}
+
+// telemetryVersion is the recorded version line for one telemetry artifact, or ""
+// when this boot did not acquire it. The read-side twin of setTelemetryArtifact.
+func (rec *infraBinaries) telemetryVersion(name string) string {
+	switch name {
+	case "tempo":
+		return rec.TempoVersion
+	case "loki":
+		return rec.LokiVersion
+	case "victoria-metrics-prod":
+		return rec.VictoriaMetricsVersion
+	case "otelcol-contrib":
+		return rec.OTelCollectorVersion
+	}
+	return ""
+}
+
+// setTelemetryArtifact records a resolved telemetry backend. It is the ONE place
+// the name → field mapping lives for writes, mirroring telemetryPath for reads.
+func (rec *infraBinaries) setTelemetryArtifact(name, path, version string) {
+	switch name {
+	case "tempo":
+		rec.Tempo, rec.TempoVersion = path, version
+	case "loki":
+		rec.Loki, rec.LokiVersion = path, version
+	case "victoria-metrics-prod":
+		rec.VictoriaMetrics, rec.VictoriaMetricsVersion = path, version
+	case "otelcol-contrib":
+		rec.OTelCollector, rec.OTelCollectorVersion = path, version
+	}
+}
+
+// detectSingleBinary looks for a single-binary artifact on the caller's PATH, in
+// the conventional user/Homebrew locations, and in this instance's own bin dir (a
+// previous run's unpacked download is indistinguishable from an explicit choice).
+// The version is best-effort: an artifact that will not report one still runs.
+func detectSingleBinary(a infraArtifact, opt acquireOptions) (path, version string, ok bool) {
+	dirs := filepath.SplitList(opt.PathEnv)
+	if !opt.RestrictToPath {
+		if home := homeDir(); home != "" {
+			dirs = append(dirs, filepath.Join(home, ".local", "bin"))
+		}
+		dirs = append(dirs, "/usr/local/bin", "/opt/homebrew/bin", "/usr/bin")
+	}
+	if opt.DataDir != "" {
+		dirs = append(dirs, binDir(opt.DataDir))
+	}
+	goos, goarch := artifactPlatform(opt)
+	// The looked-up name is the CANONICAL one — an acquired download is installed
+	// under it, and the member-suffixed loki names never land in the bin dir.
+	p, ok := lookPathIn(dirs, strings.TrimSuffix(canonicalName(a, goos), ".exe"), goos)
+	if !ok {
+		// A host that installed the platform-suffixed member by hand (loki's
+		// published name) is still a usable install, so the member is accepted too.
+		if m := strings.TrimSuffix(memberFor(a, goos, goarch), ".exe"); m != "" && m != strings.TrimSuffix(canonicalName(a, goos), ".exe") {
+			p, ok = lookPathIn(dirs, m, goos)
+		}
+	}
+	if !ok {
+		return "", "", false
+	}
+	if out, err := exec.Command(p, "--version").Output(); err == nil {
+		version = strings.TrimSpace(string(out))
+	}
+	return p, version, true
 }
 
 // detectPostgresDir finds the first candidate dir holding a `postgres` SERVER.
@@ -668,7 +982,15 @@ func downloadArtifact(ctx context.Context, a infraArtifact, opt acquireOptions) 
 
 	// The archive lands under the data dir (not the system temp dir) so a no-root
 	// host with a small /tmp can still install.
-	archive := filepath.Join(binDir(opt.DataDir), "."+a.Name+".download")
+	//
+	// THE SUFFIX IS COPIED FROM THE URL AND IS NOT COSMETIC: extractArchive picks
+	// tar.gz-vs-zip from this name. A bare ".download" therefore sent EVERY zip
+	// artifact to the gzip reader — Loki on all platforms, and nats-server on
+	// Windows — failing with "read ... as gzip: invalid header" on a download that
+	// had already passed its checksum. Taken from the URL because that is where the
+	// publisher states the format, and a single-binary artifact's format is a
+	// property of the artifact, not of the platform running the install.
+	archive := filepath.Join(binDir(opt.DataDir), "."+a.Name+".download"+archiveSuffix(url))
 	defer os.Remove(archive)
 
 	fmt.Fprintf(opt.progressOut(), "  downloading %s %s from %s\n", a.Name, a.Version, url)
@@ -699,6 +1021,16 @@ func downloadArtifact(ctx context.Context, a infraArtifact, opt acquireOptions) 
 		p, ok := findExtracted(target, bin, a, goos)
 		if !ok {
 			return nil, fmt.Errorf("the downloaded %s %s archive did not contain %s — refusing to use an incomplete install", a.Name, a.Version, exeName(bin, goos))
+		}
+		// MAKE IT RUNNABLE. writeExtracted only sets 0755 when the ARCHIVE'S OWN
+		// mode carried an exec bit, and the flat single-binary zips Loki publishes
+		// carry 0644 — so without this the download would install a
+		// checksum-perfect `loki` that the supervisor could not exec. Windows has
+		// no executable bit, so it is skipped there rather than fought with.
+		if goos != "windows" {
+			if err := os.Chmod(p, 0o755); err != nil {
+				return nil, fmt.Errorf("make %s executable: %w", p, err)
+			}
 		}
 		paths[bin] = p
 	}
@@ -851,10 +1183,54 @@ func verifyChecksum(path, want string, opt acquireOptions) error {
 // input even when it is checksummed, and a path escape would write outside the
 // instance data dir.
 func extractArchive(archive string, a infraArtifact, dst, goos string) error {
-	if strings.HasSuffix(archive, ".zip") {
+	if isZipArchive(archive, a, goos) {
 		return extractZip(archive, a, dst, goos)
 	}
 	return extractTarGz(archive, a, dst, goos)
+}
+
+// archiveSuffix is the file-name suffix that identifies an artifact's archive
+// format, taken from its download URL ("" when the URL names neither form).
+func archiveSuffix(url string) string {
+	u := strings.ToLower(url)
+	for _, ext := range []string{".tar.gz", ".tgz", ".zip"} {
+		if strings.HasSuffix(u, ext) {
+			return ext
+		}
+	}
+	return ""
+}
+
+// isZipArchive decides the unpacker for an artifact. The PUBLISHED URL is
+// authoritative — that is where the publisher states the format — and the file
+// name is only the fallback for a caller unpacking an untracked fixture.
+//
+// It cannot be read off the download's own file name (which is why the name now
+// carries the URL's suffix): the temporary name used to be a bare ".download", so
+// every ZIP artifact — Loki on every platform, and nats-server on Windows — was
+// handed to the gzip reader and failed with "read ... as gzip: invalid header"
+// AFTER its checksum had passed.
+func isZipArchive(archive string, a infraArtifact, goos string) bool {
+	if u := artifactURLForFormat(a, goos); u != "" {
+		return strings.HasSuffix(strings.ToLower(u), ".zip")
+	}
+	return strings.HasSuffix(strings.ToLower(archive), ".zip")
+}
+
+// artifactURLForFormat returns one pinned URL for the artifact: the packaging
+// format is the same on every platform, so any entry answers "is this publisher
+// shipping zips?". Operator URL overrides are deliberately NOT consulted — those
+// may point at a mirror, but the format is the publisher's own fact.
+func artifactURLForFormat(a infraArtifact, goos string) string {
+	if u := a.URLs[goos+"/"+runtime.GOARCH]; u != "" {
+		return u
+	}
+	for _, plat := range []string{"linux/amd64", "darwin/amd64", "windows/amd64"} {
+		if u := a.URLs[plat]; u != "" {
+			return u
+		}
+	}
+	return ""
 }
 
 // extractTarGz unpacks a .tar.gz, flattening the archive's single top-level
@@ -975,6 +1351,20 @@ func extractZip(archive string, a infraArtifact, dst, goos string) error {
 // extractRelPath maps an archive entry name to a destination-relative path,
 // rejecting anything that would escape dst, and reports whether the entry should
 // be skipped entirely.
+//
+// THE TWO ARCHIVE LAYOUTS ARE DIFFERENT AND MUST NOT SHARE ONE RULE:
+//
+//   - NESTED (postgres, nats-server): everything sits under ONE top-level
+//     directory, which is stripped. PostgreSQL resolves its share/ and lib/
+//     relative to its own executable, so the tree must end up as <dst>/{bin,lib,
+//     share} with nothing in between.
+//   - FLAT (the four telemetry backends): the binary sits at the archive ROOT with
+//     siblings (tempo's tar also carries CHANGELOG.md, LICENSE, tempo-cli,
+//     tempo-query). Stripping a segment here would be DESTRUCTIVE: an entry named
+//     "tempo" has no '/', so the strip produced "" and the entry was SKIPPED —
+//     which is how the four binaries silently vanished. A flat artifact therefore
+//     keeps the root and accepts ONLY the member this platform declares, emitting
+//     the CANONICAL name so `loki-linux-amd64` installs as `loki`.
 func extractRelPath(name string, a infraArtifact, goos string) (rel string, skip bool, err error) {
 	n := filepath.ToSlash(strings.TrimPrefix(filepath.ToSlash(name), "./"))
 	if n == "" || n == "." {
@@ -982,6 +1372,13 @@ func extractRelPath(name string, a infraArtifact, goos string) (rel string, skip
 	}
 	if pathIsAbs(n) || hasDotDotSegment(n) {
 		return "", false, fmt.Errorf("refusing to extract %q — the entry escapes the destination", name)
+	}
+	if !a.Nested {
+		// FLAT: the entry must be a ROOT entry, never nested.
+		if strings.Contains(n, "/") {
+			return "", true, nil
+		}
+		return flatMemberRelPath(n, a, goos)
 	}
 	// Strip the archive's single top-level directory.
 	if i := strings.Index(n, "/"); i >= 0 {
@@ -995,12 +1392,42 @@ func extractRelPath(name string, a infraArtifact, goos string) (rel string, skip
 	if a.Distribution {
 		return n, false, nil
 	}
-	// A single-binary artifact: keep only the binary itself.
+	// A nested single-binary artifact: keep only the binary itself.
 	wanted := exeName(a.Required[0], goos)
 	if filepath.Base(n) != wanted {
 		return "", true, nil
 	}
 	return wanted, false, nil
+}
+
+// flatMemberRelPath decides whether a flat archive's ROOT entry is the binary we
+// install, and under what name. The member names are matched EXACTLY — tempo's
+// archive also carries tempo-cli and tempo-query, so a prefix or substring match
+// would pick the wrong executable — and the install name is always the CANONICAL
+// one, so `loki-linux-amd64` lands as `loki`.
+//
+// MEMBERS IS CONSULTED FOR EVERY ARCH OF THIS goos, not one arch: extraction is
+// handed only the goos (the caller may be unpacking a fixture for a platform other
+// than the host's), and "which member name does Loki use on linux" has one answer
+// regardless of arm64-vs-amd64 for the name itself. The per-arch key is still what
+// pins each platform's URL and checksum.
+func flatMemberRelPath(base string, a infraArtifact, goos string) (rel string, skip bool, err error) {
+	if len(a.Required) == 0 {
+		return "", true, nil
+	}
+	canvas := canonicalName(a, goos)
+	if base == canvas {
+		return canvas, false, nil
+	}
+	for key, member := range a.Members {
+		if !strings.HasPrefix(key, goos+"/") {
+			continue
+		}
+		if base == member {
+			return canvas, false, nil
+		}
+	}
+	return "", true, nil
 }
 
 // hasDotDotSegment reports whether any path segment is exactly "..", so an entry
@@ -1116,11 +1543,15 @@ func writeExtracted(target string, r io.Reader, mode os.FileMode) error {
 // acquireInfraBinaries is the SINGLE mechanism: detect, else download, else fail;
 // record what was resolved and where; return the record.
 //
-// The two artifacts are resolved INDEPENDENTLY on purpose. A host that already has
+// The artifacts are resolved INDEPENDENTLY on purpose. A host that already has
 // Postgres but not NATS should download one thing, not two — and, more importantly,
 // a host with a BROKEN Postgres install must be told about it rather than have a
 // supported build downloaded over the top, because that would hide the operator's
 // actual problem.
+//
+// ONLY SELECTS THE ARTIFACT SET (see acquireOptions.Only): the supervisor passes
+// postgres+nats alone for an ORCHICON_TELEMETRY=none boot, so a disabled telemetry
+// plane does not download ~300 MB of backends it will never start.
 func acquireInfraBinaries(ctx context.Context, opt acquireOptions) (*infraBinaries, error) {
 	if opt.DataDir == "" {
 		return nil, errors.New("no data dir to acquire the infrastructure binaries into")
@@ -1150,6 +1581,12 @@ func acquireInfraBinaries(ctx context.Context, opt acquireOptions) (*infraBinari
 	if rec.NatsServer != "" {
 		sources["detected"] = true
 		fmt.Fprintf(opt.progressOut(), "using the nats-server already installed at %s\n", rec.NatsServer)
+	}
+	for _, name := range telemetryArtifactNames {
+		if p := rec.telemetryPath(name); p != "" {
+			sources["detected"] = true
+			fmt.Fprintf(opt.progressOut(), "using the %s already installed at %s\n", name, p)
+		}
 	}
 
 	// 2. DOWNLOAD what detection did not find.
@@ -1190,6 +1627,10 @@ func acquireInfraBinaries(ctx context.Context, opt acquireOptions) (*infraBinari
 		case "nats-server":
 			rec.NatsServer = paths["nats-server"]
 			rec.NatsVersion = artifactReportedVersion(rec.NatsServer, a.Version)
+		default:
+			// A telemetry backend: single binary, installed under its canonical name.
+			set := paths[a.Required[0]]
+			rec.setTelemetryArtifact(name, set, artifactReportedVersion(set, a.Version))
 		}
 	}
 
@@ -1247,30 +1688,75 @@ func checkRecordComplete(rec *infraBinaries, opt acquireOptions) error {
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	for _, b := range postgresRequiredBins {
-		p := fieldFor(rec, b)
-		st, err := os.Stat(p)
+	// WHICH ARTIFACTS THIS ACQUISITION COVERED, so the gate proves the record
+	// complete FOR THAT SET and no more. An artifact excluded by Only legitimately
+	// has no path in the record; requiring one anyway would make Only a half-wired
+	// option that fails on the very subset it was asked for.
+	covered := map[string]bool{}
+	for _, name := range selectedArtifactNames(opt) {
+		covered[name] = true
+	}
+	if covered["postgres"] {
+		for _, b := range postgresRequiredBins {
+			p := fieldFor(rec, b)
+			st, err := os.Stat(p)
+			if err != nil {
+				return fmt.Errorf("resolved PostgreSQL binary %s is not usable (%s): %w", b, p, err)
+			}
+			if st.IsDir() {
+				return fmt.Errorf("resolved PostgreSQL binary %s is a directory, not a binary: %s", b, p)
+			}
+			if goos != "windows" && st.Mode().Perm()&0o111 == 0 {
+				return fmt.Errorf("resolved PostgreSQL binary %s is not executable by the postgres user (%04o): %s", b, st.Mode().Perm(), p)
+			}
+		}
+		if err := checkPostgresShare(rec.Initdb, goos); err != nil {
+			return err
+		}
+	}
+	if covered["nats-server"] {
+		st, err := os.Stat(rec.NatsServer)
 		if err != nil {
-			return fmt.Errorf("resolved PostgreSQL binary %s is not usable (%s): %w", b, p, err)
+			return fmt.Errorf("resolved nats-server is not usable (%s): %w", rec.NatsServer, err)
 		}
 		if st.IsDir() {
-			return fmt.Errorf("resolved PostgreSQL binary %s is a directory, not a binary: %s", b, p)
+			return fmt.Errorf("resolved nats-server is a directory, not a binary: %s", rec.NatsServer)
+		}
+	}
+	// THE TELEMETRY BACKENDS, checked only for the artifacts THIS acquisition
+	// actually resolved: a boot that was not asked for them legitimately has no
+	// path for any of them, and requiring one here would turn every
+	// ORCHICON_TELEMETRY=none boot into a failed install. The exec bit matters
+	// MORE here than for the others — two of the four ship in zips whose members
+	// carry no exec bit, which is exactly what downloadArtifact chmods around.
+	for _, name := range selectedArtifactNames(opt) {
+		p := rec.telemetryPath(name)
+		if p == "" {
+			continue
+		}
+		st, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("resolved %s is not usable (%s): %w", name, p, err)
+		}
+		if st.IsDir() {
+			return fmt.Errorf("resolved %s is a directory, not a binary: %s", name, p)
 		}
 		if goos != "windows" && st.Mode().Perm()&0o111 == 0 {
-			return fmt.Errorf("resolved PostgreSQL binary %s is not executable by the postgres user (%04o): %s", b, st.Mode().Perm(), p)
+			return fmt.Errorf("resolved %s is not executable (%04o): %s", name, st.Mode().Perm(), p)
 		}
 	}
-	if err := checkPostgresShare(rec.Initdb, goos); err != nil {
-		return err
-	}
-	st, err := os.Stat(rec.NatsServer)
-	if err != nil {
-		return fmt.Errorf("resolved nats-server is not usable (%s): %w", rec.NatsServer, err)
-	}
-	if st.IsDir() {
-		return fmt.Errorf("resolved nats-server is a directory, not a binary: %s", rec.NatsServer)
-	}
 	return nil
+}
+
+// selectedArtifactNames is selectedArtifacts' names, for callers that only need
+// to know WHICH artifacts this acquisition covered.
+func selectedArtifactNames(opt acquireOptions) []string {
+	arts := selectedArtifacts(opt)
+	out := make([]string, 0, len(arts))
+	for _, a := range arts {
+		out = append(out, a.Name)
+	}
+	return out
 }
 
 // fieldFor returns the recorded path for a required PostgreSQL binary name.
@@ -1333,7 +1819,11 @@ func skipDownloadFromEnv() bool {
 // the instance data dir, the pinned artifacts, and whatever the environment
 // overrides. ONE constructor so a caller cannot accidentally assemble options that
 // disagree with the other caller's.
-func defaultAcquireOptions(dataDir string) acquireOptions {
+//
+// only RESTRICTS THE ARTIFACT SET (empty = every artifact). The supervisor passes
+// the telemetry subset conditionally, so ORCHICON_TELEMETRY=none means neither the
+// procs NOR the downloads. `install` passes nothing and gets everything.
+func defaultAcquireOptions(dataDir string, only ...string) acquireOptions {
 	opt := acquireOptions{
 		DataDir:      dataDir,
 		PathEnv:      os.Getenv("PATH"),
@@ -1341,8 +1831,13 @@ func defaultAcquireOptions(dataDir string) acquireOptions {
 		URLs:         map[string]string{},
 		Checksums:    map[string]string{},
 		Out:          os.Stdout,
+		Only:         only,
 	}
 	goos, goarch := artifactPlatform(opt)
+	// The OVERRIDE KNOBS ARE READ FOR EVERY PINNED ARTIFACT, not just the selected
+	// ones: a mirror configured for a telemetry backend must still be honoured on
+	// the boot that fetches it, and reading the environment the same way regardless
+	// of the subset is what keeps one constructor honest.
 	for _, a := range infraArtifacts {
 		suffix := envNameForArtifact(a.Name)
 		if u := strings.TrimSpace(os.Getenv("ORCHICON_INFRA_URL_" + suffix)); u != "" {

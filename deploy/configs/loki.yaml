@@ -1,9 +1,10 @@
-# Loki — log backend for the Orchicon single-container image.
-# @DATA_DIR@ is replaced with the container data dir at startup.
+# Loki — log backend for the Orchicon supervised service set.
+# @DATA_DIR@ and the @…_PORT@ tokens are replaced at startup from the
+# instance's resolved port table (see tempo.yaml's header).
 auth_enabled: false
 
 server:
-  http_listen_port: 3100
+  http_listen_port: @LOKI_HTTP_PORT@
   # Offset the gRPC listener from the default 9095 (which collides with
   # another process in the single-container network namespace).
   grpc_listen_port: 9096

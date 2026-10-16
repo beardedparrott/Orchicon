@@ -34,20 +34,24 @@ const MigrationsDir = "db/migrations"
 // FrontendDir is the directory within FrontendFS containing the SPA.
 const FrontendDir = "frontend/dist"
 
-// ContainerFS embeds the single-container runtime configs
-// (deploy/container/configs/) — Tempo/Loki/OTel-collector/Grafana configs
-// with @DATA_DIR@ placeholders, plus the Grafana provisioning. The `orchicon
-// container` supervisor (cmd/orchicon/container.go) writes these into the
-// container data dir, substituting the data dir path, and spawns each
-// process against them.
+// ServiceConfigsFS embeds the SUPERVISED SERVICES' runtime configs
+// (deploy/configs/) — Tempo/Loki/OTel-collector/Grafana configs with
+// @DATA_DIR@ and @…_PORT@ placeholders, plus the Grafana provisioning. The
+// `orchicon container` supervisor (cmd/orchicon/container.go) writes these
+// into the instance data dir, substituting the data dir and the resolved port
+// table, and spawns each process against them. The configs are NOT
+// container-specific: the same supervisor runs the services as HOST processes
+// under ORCHICON_SERVICE_RESIDENCY=host, so the dir is named for what it
+// holds rather than for the shape that used to be the only one.
 //
-// NOTE: this embeds ONLY deploy/container/configs. Do NOT embed
-// deploy/container/ as a whole — container.sh copies bin/orchicon there
-// for the docker build, and go:embed would recursively embed the previous
-// binary, doubling the binary on every rebuild (75MB -> ... -> 1.9GB).
+// NOTE: this embeds ONLY deploy/configs. Do NOT embed deploy/container/ as a
+// whole — container.sh copies bin/orchicon there for the docker build, and
+// go:embed would recursively embed the previous binary, doubling the binary on
+// every rebuild (75MB -> ... -> 1.9GB). Embedding deploy/configs is safe on
+// its own: nothing is ever copied into it at build time.
 //
-//go:embed all:deploy/container/configs
-var ContainerFS embed.FS
+//go:embed all:deploy/configs
+var ServiceConfigsFS embed.FS
 
 // RuntimeImageTemplatesFS embeds the stock runtime-image Dockerfiles
 // (deploy/runtime/Dockerfile + variants). The Runtime Images page serves

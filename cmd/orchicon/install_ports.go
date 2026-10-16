@@ -175,6 +175,17 @@ func installerPorts() []installPort {
 			ContainerPort: 4317, ContainerBind: bindNone, HostBind: bindLoopback},
 		{Env: "ORCHICON_OTLP_HTTP_PORT", Label: "OTLP HTTP (telemetry)", Defaults: portDefaults(4318, 4320, 4322),
 			ContainerPort: 4318, ContainerBind: bindNone, HostBind: bindLoopback},
+		// Tempo's OTLP receivers are OFFSET from the collector's own (the two shared
+		// one network namespace), so they are separate rows with their own defaults.
+		// bindNone: internal plumbing the collector reaches over loopback.
+		{Env: "ORCHICON_TEMPO_OTLP_GRPC_PORT", Label: "Tempo OTLP gRPC", Defaults: portDefaults(14317, 14318, 14319),
+			ContainerPort: 14317, ContainerBind: bindNone, HostBind: bindNone},
+		{Env: "ORCHICON_TEMPO_OTLP_HTTP_PORT", Label: "Tempo OTLP HTTP", Defaults: portDefaults(14318, 14319, 14320),
+			ContainerPort: 14318, ContainerBind: bindNone, HostBind: bindNone},
+		// The collector's health extension has no container-side publish, but a host
+		// install needs a per-instance offset or two instances collide on 13133.
+		{Env: "ORCHICON_OTEL_HEALTH_PORT", Label: "OTel collector health", Defaults: portDefaults(13133, 13134, 13135),
+			ContainerPort: 13133, ContainerBind: bindNone, HostBind: bindNone},
 		{Env: "ORCHICON_TEMPO_PORT", Label: "Tempo (traces)", Defaults: portDefaults(3200, 3201, 3202),
 			ContainerPort: 3200, ContainerBind: bindNone, HostBind: bindLoopback},
 		{Env: "ORCHICON_LOKI_PORT", Label: "Loki (logs)", Defaults: portDefaults(3100, 3101, 3102),

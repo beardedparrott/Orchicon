@@ -23,9 +23,9 @@
 // without a plane looks like a failed boot.
 //
 // Data lives under ORCHICON_DATA_DIR (default /var/lib/orchicon). Config
-// files are written there from the embedded ContainerFS, with @DATA_DIR@
-// substituted for the data dir, so Tempo/Loki/Grafana/collector find their
-// config without any repo mounts.
+// files are written there from the embedded ServiceConfigsFS, with @DATA_DIR@
+// and the resolved @…_PORT@ placeholders substituted, so
+// Tempo/Loki/Grafana/collector find their config without any repo mounts.
 package main
 
 import (
@@ -41,6 +41,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,10 +93,15 @@ func runContainer(args []string) int {
 		residency:    residency,
 		ports:        servicePortsFor(residency),
 		servicesOnly: servicesOnly,
-		hostUID:      envInt("ORCHICON_HOST_UID", 0),
-		hostGID:      envInt("ORCHICON_HOST_GID", 0),
-		hostHome:     env("ORCHICON_HOST_HOME", "/root"),
-		children:     make(map[string]*procState),
+		// Set BEFORE prepare(): prepare() is what acquires the binaries, and it
+		// must know whether the four telemetry backends are part of this boot —
+		// a plane with ORCHICON_TELEMETRY=none must not download ~300 MB of
+		// backends it will never start.
+		telemetryEnabled: telemetryMode == "embedded",
+		hostUID:          envInt("ORCHICON_HOST_UID", 0),
+		hostGID:          envInt("ORCHICON_HOST_GID", 0),
+		hostHome:         env("ORCHICON_HOST_HOME", "/root"),
+		children:         make(map[string]*procState),
 	}
 	if err := sup.prepare(ctx); err != nil {
 		log.Error("container prepare failed", "error", err)
@@ -172,6 +178,12 @@ type supervisor struct {
 	// servicesOnly skips the control-plane child (it runs on the host) and
 	// opens postgres up to the launcher's loopback port publish.
 	servicesOnly bool
+
+	// telemetryEnabled is whether this boot runs the four telemetry backends
+	// (ORCHICON_TELEMETRY=embedded). It gates ACQUISITION as well as the proc
+	// fleet: the backends are ~300 MB of downloads, and a `none` boot must not
+	// fetch them.
+	telemetryEnabled bool
 
 	// hostUID/hostGID/hostHome identify the HOST user (set by
 	// scripts/container.sh via ORCHICON_HOST_*). The control plane and its
@@ -260,7 +272,11 @@ func (s *supervisor) prepare(ctx context.Context) error {
 	// re-deriving it here would be the second resolution path this record exists
 	// to prevent.
 	if s.infra == nil {
-		infra, err := acquireInfraBinaries(ctx, defaultAcquireOptions(s.dataDir))
+		// THE ARTIFACT SUBSET IS THIS BOOT'S DECISION, not the resolver's: an
+		// embedded-telemetry boot needs all six artifacts, a `none`/`remote` boot
+		// needs postgres and nats only. Passing the subset keeps a disabled boot
+		// from downloading backends it will never exec (AC7).
+		infra, err := acquireInfraBinaries(ctx, defaultAcquireOptions(s.dataDir, s.acquiredArtifacts()...))
 		if err != nil {
 			return fmt.Errorf("acquire infrastructure binaries: %w", err)
 		}
@@ -269,7 +285,10 @@ func (s *supervisor) prepare(ctx context.Context) error {
 			"source", infra.Source,
 			"postgres", infra.Postgres,
 			"postgres_version", infra.PostgresVersion,
-			"nats", infra.NatsServer)
+			"nats", infra.NatsServer,
+			"telemetry_enabled", s.telemetryEnabled,
+			"tempo", infra.Tempo, "loki", infra.Loki,
+			"victoria_metrics", infra.VictoriaMetrics, "otel_collector", infra.OTelCollector)
 	}
 	// THE PRIVILEGE GUARD RUNS BEFORE initdb, NOT AFTER IT. Postgres on Windows refuses
 	// to run under an Administrators token, and the refusal would otherwise arrive from
@@ -290,6 +309,17 @@ func (s *supervisor) prepare(ctx context.Context) error {
 		return s.ensurePostgresHBATrust()
 	}
 	return nil
+}
+
+// acquiredArtifacts is the artifact subset THIS boot needs: every artifact when
+// telemetry is embedded, postgres + nats alone otherwise. One method rather than
+// an inline slice so the acquisition gate and the proc fleet read the same
+// condition.
+func (s *supervisor) acquiredArtifacts() []string {
+	if s.telemetryEnabled {
+		return nil // every artifact
+	}
+	return []string{"postgres", "nats-server"}
 }
 
 // prepareContainerOwnership is the CONTAINER-ONLY half of prepare: it creates
@@ -351,12 +381,56 @@ func (s *supervisor) prepareContainerOwnership() error {
 	return nil
 }
 
-// writeConfigs lays out the embedded ContainerFS into the config dir,
-// substituting @DATA_DIR@ with the real data dir. The embedded paths start
-// with "deploy/container/configs/".
+// configTokens is the substitution table writeConfigs applies to every embedded
+// config: the data dir plus EVERY port the child binds. ONE TABLE, read by both
+// writeConfigs and the tests, so a token added to a config without a value here
+// fails immediately instead of shipping a literal "@…@" to a child that then
+// refuses to parse its config.
+//
+// THE PORTS ARE HERE AND NOT IN ARGV because that is where tempo/loki/grafana/
+// the collector keep them: their listen ports live in the config file. Templating
+// the config from the same servicePorts the readiness probe reads is what makes
+// them movable on a host without breaking the gate — the earlier code could only
+// probe the config's hardcoded port.
+func (s *supervisor) configTokens() map[string]string {
+	p := s.ports
+	return map[string]string{
+		"@DATA_DIR@":                 s.dataDir,
+		"@TEMPO_HTTP_PORT@":          strconv.Itoa(p.tempo),
+		"@TEMPO_OTLP_GRPC_PORT@":     strconv.Itoa(p.tempoOTLPGRPC),
+		"@TEMPO_OTLP_HTTP_PORT@":     strconv.Itoa(p.tempoOTLPHTTP),
+		"@LOKI_HTTP_PORT@":           strconv.Itoa(p.loki),
+		"@VM_HTTP_PORT@":             strconv.Itoa(p.vm),
+		"@GRAFANA_HTTP_PORT@":        strconv.Itoa(p.grafana),
+		"@COLLECTOR_OTLP_GRPC_PORT@": strconv.Itoa(p.collectorOTLPGRPC),
+		"@COLLECTOR_OTLP_HTTP_PORT@": strconv.Itoa(p.collectorOTLPHTTP),
+		"@COLLECTOR_HEALTH_PORT@":    strconv.Itoa(p.collectorHealth),
+	}
+}
+
+// applyConfigTokens substitutes every configTokens key in body. Tokens are
+// substituted LONGEST FIRST so a name that is a prefix of another
+// (@TEMPO_OTLP_GRPC_PORT@ vs @TEMPO_OTLP_HTTP_PORT@ is fine, but the general
+// rule matters) can never be partially rewritten by a shorter match.
+func applyConfigTokens(keys []string, body string, tokens map[string]string) string {
+	for _, k := range keys {
+		body = strings.ReplaceAll(body, k, tokens[k])
+	}
+	return body
+}
+
+// writeConfigs lays out the embedded ServiceConfigsFS into the config dir,
+// substituting the data dir and the resolved port table. The embedded paths
+// start with "deploy/configs/".
 func (s *supervisor) writeConfigs() error {
-	const prefix = "deploy/container/configs/"
-	return fs.WalkDir(assets.ContainerFS, ".", func(path string, d fs.DirEntry, walkErr error) error {
+	const prefix = "deploy/configs/"
+	tokens := s.configTokens()
+	keys := make([]string, 0, len(tokens))
+	for k := range tokens {
+		keys = append(keys, k)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(keys)))
+	return fs.WalkDir(assets.ServiceConfigsFS, ".", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -368,11 +442,11 @@ func (s *supervisor) writeConfigs() error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		data, err := assets.ContainerFS.ReadFile(path)
+		data, err := assets.ServiceConfigsFS.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read embedded %s: %w", path, err)
 		}
-		content := strings.ReplaceAll(string(data), "@DATA_DIR@", s.dataDir)
+		content := applyConfigTokens(keys, string(data), tokens)
 		return os.WriteFile(target, []byte(content), 0o644)
 	})
 }
@@ -1008,7 +1082,7 @@ func (s *supervisor) natsProc() *managedProc {
 func (s *supervisor) tempoProc() *managedProc {
 	return &managedProc{
 		name:    "tempo",
-		command: "tempo",
+		command: s.resolved().Tempo,
 		args:    []string{"-config.file=" + filepath.Join(s.configDir, "tempo.yaml")},
 		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.tempo) + "/ready"),
 		restart: true,
@@ -1018,7 +1092,7 @@ func (s *supervisor) tempoProc() *managedProc {
 func (s *supervisor) lokiProc() *managedProc {
 	return &managedProc{
 		name:    "loki",
-		command: "loki",
+		command: s.resolved().Loki,
 		args:    []string{"-config.file=" + filepath.Join(s.configDir, "loki.yaml")},
 		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.loki) + "/ready"),
 		restart: true,
@@ -1028,7 +1102,7 @@ func (s *supervisor) lokiProc() *managedProc {
 func (s *supervisor) vmProc() *managedProc {
 	return &managedProc{
 		name:    "victoriametrics",
-		command: "victoria-metrics-prod",
+		command: s.resolved().VictoriaMetrics,
 		args: []string{"-storageDataPath=" + filepath.Join(s.dataDir, "victoriametrics"),
 			"-retentionPeriod=720h", "-httpListenAddr=:" + strconv.Itoa(s.ports.vm)},
 		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.vm) + "/health"),
@@ -1039,9 +1113,11 @@ func (s *supervisor) vmProc() *managedProc {
 func (s *supervisor) collectorProc() *managedProc {
 	return &managedProc{
 		name:    "otel-collector",
-		command: "otelcol-contrib",
+		command: s.resolved().OTelCollector,
 		args:    []string{"--config=" + filepath.Join(s.configDir, "otel-collector.yaml")},
-		ready:   func(ctx context.Context) bool { return tcpReady(ctx, "localhost:13133") },
+		ready: func(ctx context.Context) bool {
+			return tcpReady(ctx, "localhost:"+strconv.Itoa(s.ports.collectorHealth))
+		},
 		restart: true,
 	}
 }

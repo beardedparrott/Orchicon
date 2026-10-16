@@ -1,5 +1,6 @@
-# Grafana provisioning — datasources for the Orchicon single-container image.
-# All backends are localhost (same network namespace).
+# Grafana provisioning — datasources for the Orchicon supervised service set.
+# The backend URLs carry @…_PORT@ tokens because the ports are per-instance on a
+# host (see tempo.yaml's header); writeConfigs substitutes the resolved table.
 apiVersion: 1
 
 datasources:
@@ -7,7 +8,7 @@ datasources:
     uid: tempo
     type: tempo
     access: proxy
-    url: http://localhost:3200
+    url: http://localhost:@TEMPO_HTTP_PORT@
     jsonData:
       httpMethod: GET
       serviceMap:
@@ -17,7 +18,7 @@ datasources:
     uid: loki
     type: loki
     access: proxy
-    url: http://localhost:3100
+    url: http://localhost:@LOKI_HTTP_PORT@
     jsonData:
       maxLines: 1000
 
@@ -25,5 +26,5 @@ datasources:
     uid: victoriametrics
     type: prometheus
     access: proxy
-    url: http://localhost:8428
+    url: http://localhost:@VM_HTTP_PORT@
     isDefault: true
