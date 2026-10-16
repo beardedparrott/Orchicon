@@ -746,7 +746,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 	  os="$${t%%/*}"; arch="$${t##*/}"; \
 	  echo "==> $$os/$$arch"; \
 	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) build -o "$$tmp/" ./cmd/orchicon ./cmd/orch; \
-	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) vet ./cmd/orchicon ./cmd/orch; \
+	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) vet ./...; \
 	done; \
 	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile and typecheck"
 
@@ -760,6 +760,21 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # `go vet` typechecks the package TOGETHER WITH its test files under the target GOOS, so it catches
 # exactly that class for ~0.1 s per platform out of a ~21 s cold build. It compiles the tests without
 # running them, which is what this gate is: a COMPILE check.
+#
+# `./...` AND NOT `./cmd/orchicon ./cmd/orch`, and that scope was the second half of the same bug.
+# The FIRST fix (1efd8b40) added this vet but pointed it only at the two command packages, so it
+# still could not see the rest of the module — and the rest of the module carried the identical
+# defect: internal/mcpclient/manager_test.go was untagged, and its orphan/sweep tests call
+# `syscall.Kill(pid, 0)` and read `/proc/<pid>/{exe,stat,environ}`:
+#
+#   GOOS=windows go test -c ./internal/mcpclient
+#   internal/mcpclient/manager_test.go:363:20: undefined: syscall.Kill
+#
+# A gate scoped to the packages a platform happens to break IN is not a gate for that platform.
+# `./...` costs ~4 s on top of the two-package vet COLD (measured: 58 s -> 62 s for one platform,
+# because the `go build ./cmd/...` above already populates most of the module's cache) — nothing
+# beside the ~21 s build it rides on, and it is the difference between "the command packages
+# compile" and "the module compiles, tests included, for every platform we gate."
 
 # ALL THREE test targets, because each side added one to the same line: this branch adds the
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
