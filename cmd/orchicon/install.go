@@ -83,6 +83,15 @@ func runInstall(args []string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// 1.6a. THE PRIVILEGE GUARD COMES BEFORE ANYTHING ELSE THAT COSTS ANYTHING.
+	// Postgres refuses to run under an Administrators token on Windows, and an
+	// elevated `orchicon install` would otherwise spend the image pull, write the
+	// dirs, resolve the binaries and report success — and then be unable to start the
+	// database. Failing here names the cause and the remedy while nothing has been
+	// created yet. It is a no-op on Linux and macOS (privilege.go).
+	if err := ensureHostPostgresPrivileges(residency); err != nil {
+		return err
+	}
 	tty, ttyOwned := promptTerminal()
 	if ttyOwned {
 		defer tty.Close()

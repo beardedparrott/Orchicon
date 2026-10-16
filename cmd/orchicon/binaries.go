@@ -102,11 +102,32 @@ const (
 // "the host's copy is broken" — only the former is a reason to download.
 var errInfraAbsent = errors.New("infrastructure binaries not found")
 
-// postgresRequiredBins are the server binaries the stack actually execs. A dir
+// postgresRequiredBins are the server and client binaries the stack actually execs. A dir
 // with only some of them is a PARTIAL install and is rejected: initdb, pg_ctl,
 // pg_isready, createdb and postgres are each invoked by name somewhere in
 // cmd/orchicon/container.go, so "almost all of them" fails at boot.
-var postgresRequiredBins = []string{"postgres", "initdb", "pg_ctl", "pg_isready", "createdb"}
+//
+// pg_dump AND psql ARE IN THIS LIST, and that is a fix rather than a tidy-up. They are
+// what `orchicon db backup` and `orchicon db restore` exec (internal/backup: pgToolDump
+// = pg_dump, pgToolRestore = psql), and on a host whose Postgres came from the DOWNLOAD
+// path they were sitting at <DataDir>/bin/postgres/bin/pg_dump while the resolver
+// recorded only the five server binaries — so exec.LookPath("pg_dump") could not see
+// them and EVERY `orchicon db backup` on a downloaded host install failed with
+// "pg_dump is not on this PATH and no Postgres container was reachable to run it in".
+// They are required because the pinned distribution ships them on every platform we
+// pin (verified by listing the unpacked 16.4.0 archives: linux tarball and
+// windows-msvc zip both carry pg_dump, psql and pg_restore in bin/), and a dir that
+// carries the server but not the matching client cannot serve this instance's backups.
+var postgresRequiredBins = []string{"postgres", "initdb", "pg_ctl", "pg_isready", "createdb", "pg_dump", "psql"}
+
+// postgresOptionalClientBins are recorded when the chosen dir carries them, but are NOT
+// part of the completeness gate: nothing in this binary execs them yet (restore drives
+// psql, not pg_restore), so requiring them would reject a valid server install over a
+// tool we do not call — the trade the required-list comment above warns about. Recorded
+// anyway because the record is the one place a later `orchicon db restore --format=c`
+// would look, and re-probing PATH for it would be the second resolution path this file
+// exists to prevent.
+var postgresOptionalClientBins = []string{"pg_restore"}
 
 // natsRequiredBins are the binaries the NATS component execs.
 var natsRequiredBins = []string{"nats-server"}
@@ -123,6 +144,9 @@ type infraBinaries struct {
 	PgCtl           string `json:"pg_ctl"`
 	PgIsReady       string `json:"pg_isready"`
 	Createdb        string `json:"createdb"`
+	PgDump          string `json:"pg_dump"`
+	Psql            string `json:"psql"`
+	PgRestore       string `json:"pg_restore,omitempty"`
 	NatsServer      string `json:"nats_server"`
 	PostgresVersion string `json:"postgres_version"`
 	NatsVersion     string `json:"nats_version"`
@@ -281,6 +305,16 @@ func lookPathIn(dirs []string, name, goos string) (string, bool) {
 		return p, true
 	}
 	return "", false
+}
+
+// optionalBin returns path when it names an existing, non-directory file, else "".
+// It exists for postgresOptionalClientBins, whose absence must never make a dir
+// "partial" — see that list's comment.
+func optionalBin(path, goos string) string {
+	if st, err := os.Stat(path); err == nil && !st.IsDir() {
+		return path
+	}
+	return ""
 }
 
 // partitionBins splits a bin dir into the binaries present and those missing.
@@ -490,6 +524,13 @@ func (rec *infraBinaries) fillPostgres(dir string, opt acquireOptions) error {
 	p := func(name string) string { return filepath.Join(dir, exeName(name, opt.GOOS)) }
 	rec.Postgres, rec.Initdb, rec.PgCtl = p("postgres"), p("initdb"), p("pg_ctl")
 	rec.PgIsReady, rec.Createdb = p("pg_isready"), p("createdb")
+	// THE CLIENT TOOLS COME FROM THE SAME DIR, and that is deliberate: a dir holding
+	// the SERVER is a complete distribution, and its client tools match its server
+	// version exactly. Taking pg_dump from PATH instead is how a host with an older
+	// postgresql-client produces "server version mismatch; aborting" on a backup that
+	// was otherwise fine.
+	rec.PgDump, rec.Psql = p("pg_dump"), p("psql")
+	rec.PgRestore = optionalBin(p("pg_restore"), opt.GOOS)
 
 	version, err := postgresVersionOf(rec.Postgres)
 	if err != nil {
@@ -1134,6 +1175,12 @@ func acquireInfraBinaries(ctx context.Context, opt acquireOptions) (*infraBinari
 			rec.PgCtl = paths["pg_ctl"]
 			rec.PgIsReady = paths["pg_isready"]
 			rec.Createdb = paths["createdb"]
+			rec.PgDump = paths["pg_dump"]
+			rec.Psql = paths["psql"]
+			// The optional extras live beside the resolved server, so the unpacked
+			// target is found relative to it rather than re-derived from the artifact
+			// name (which would be a second opinion about where the download landed).
+			rec.PgRestore = optionalBin(filepath.Join(filepath.Dir(rec.Postgres), exeName("pg_restore", opt.GOOS)), opt.GOOS)
 			// ASK THE BINARY, and keep the pinned tag only as a fallback. The record
 			// is read by every later component, so it must mean the SAME thing on
 			// both paths: a detected install records the version its server
@@ -1239,6 +1286,10 @@ func fieldFor(rec *infraBinaries, bin string) string {
 		return rec.PgIsReady
 	case "createdb":
 		return rec.Createdb
+	case "pg_dump":
+		return rec.PgDump
+	case "psql":
+		return rec.Psql
 	}
 	return ""
 }

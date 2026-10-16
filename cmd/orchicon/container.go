@@ -271,6 +271,15 @@ func (s *supervisor) prepare(ctx context.Context) error {
 			"postgres_version", infra.PostgresVersion,
 			"nats", infra.NatsServer)
 	}
+	// THE PRIVILEGE GUARD RUNS BEFORE initdb, NOT AFTER IT. Postgres on Windows refuses
+	// to run under an Administrators token, and the refusal would otherwise arrive from
+	// inside initdb with no cause named — the "install that appears to work and then
+	// cannot start the database" failure. This process is what execs initdb and
+	// postgres, so this is the earliest moment that actually matters. It is a no-op on
+	// every platform except an elevated Windows shell (see privilege.go).
+	if err := ensureHostPostgresPrivileges(s.residency); err != nil {
+		return err
+	}
 	if err := s.initPostgres(); err != nil {
 		return err
 	}
@@ -372,6 +381,16 @@ func (s *supervisor) writeConfigs() error {
 // Postgres refuses to run as root, so it runs as the owner of the data dir
 // (default uid 70 — the uid the compose-stack alpine postgres volumes are
 // created with — via setpriv).
+//
+// IDEMPOTENT ON EVERY PLATFORM, by the PG_VERSION check below rather than by
+// anything platform-specific: initdb is destructive against an initialized dir, so
+// the check is the whole guard and it reads the same marker on Linux, macOS and
+// Windows.
+//
+// `--auth=trust` IS DELIBERATE, and its justification on a HOST is different from
+// its justification in the container — the container's ("the loopback publish is the
+// boundary") does NOT transfer. See pgHBATrustRules, which is where the HBA rules
+// and the re-derived reason live.
 func (s *supervisor) initPostgres() error {
 	dataDir := filepath.Join(s.dataDir, "postgres")
 	if _, err := os.Stat(filepath.Join(dataDir, "PG_VERSION")); err == nil {
@@ -387,6 +406,20 @@ func (s *supervisor) initPostgres() error {
 		if err := os.Chown(dataDir, uid, gid); err != nil {
 			return fmt.Errorf("chown postgres data dir: %w", err)
 		}
+	} else if err := hostDataDirWritable(dataDir); err != nil {
+		// CRITERION 3, THE HOST HALF: "a data dir owned by another user produces
+		// an ACTIONABLE error rather than a corruption risk."
+		//
+		// On a host we cannot chown (no root), so an uninitialized dir owned by
+		// someone else is exactly the shape that used to surface as initdb's own
+		// "could not change permissions of directory ...: Operation not permitted"
+		// — or, worse, as a HALF-WRITTEN data dir if initdb got far enough to write
+		// before failing. The probe below touches the dir the same way initdb will,
+		// BEFORE initdb runs, so the failure names the cause and the remedy while
+		// nothing has been created. It is a file create, not a chmod: on Windows a
+		// foreign-owned dir under a different ACL fails the same way and this is the
+		// portable way to observe it.
+		return err
 	}
 	command, args := s.asUser(uid, gid, s.resolved().Initdb,
 		[]string{"-D", dataDir, "-U", "orchicon", "--auth=trust", "-E", "UTF8"})
@@ -413,6 +446,55 @@ func (s *supervisor) initPostgres() error {
 // must stay the only way in. Only when the gateway cannot be detected (an
 // isolated or unusual network) do we fall back to the wide rules, where that
 // publish is still the boundary.
+//
+// ---- HOST RESIDENCY: THE TRUST DECISION IS RE-DERIVED HERE, NOT INHERITED ----
+//
+// The paragraph above concludes "trust is safe because the publish is the
+// boundary", and THAT CONCLUSION DOES NOT TRANSFER to a host. On a host there is
+// no network namespace and no publish, so the boundary the container leans on does
+// not exist. Re-derived from what trust actually means:
+//
+// initdb --auth=trust writes, verbatim (pinned by the test at
+// container_services_test.go, "selftest of the body initdb writes"):
+//
+//	local   all   all                  trust
+//	host    all   all   127.0.0.1/32   trust
+//	host    all   all   ::1/128        trust
+//
+// Trust means an admitted PEER is accepted as whatever user it names with NO
+// PASSWORD — and `all` includes the `orchicon` bootstrap SUPERUSER.
+//
+// NAMED EXPOSURE, host topology: any unprivileged LOCAL USER on this machine (and
+// any local process) shares the host's loopback, so they can run
+//
+//	psql "postgres://orchicon@localhost:<port>/orchicon"
+//
+// and be accepted as bootstrap superuser, with no password. In the container the
+// population that could do this was "processes inside this one container"; on a
+// host it is "everyone with a shell on this box". That is a STRICTLY WIDER trust
+// set, and it is the honest cost of this decision.
+//
+// WHAT BOUNDS IT (each already true, and each load-bearing):
+//  1. postgresListenAddr() is "localhost" in host residency, so postgres never
+//     binds a routable interface and none of these rules is reachable off-box.
+//  2. ensurePostgresHBATrust() is NOT called in host residency (prepare() gates it
+//     on `s.servicesOnly && !s.isHost()`), so no gateway or wildcard rule is ever
+//     ADDED on a host — the HBA stays initdb's loopback-only default above.
+//  3. The data dir is created 0700 by initPostgres, owned by the invoking user.
+//  4. The tenant-secrets KEK is a SEPARATE file at <dataDir>/secrets/kek, mode
+//     0600, so reading the database does not by itself decrypt tenant secrets.
+//
+// DECISION: KEEP --auth=trust for host residency. Do not switch to scram-sha-256.
+// Rationale: Orchicon's host residency is a single-operator workstation shape (the
+// same posture the container sandbox plane takes in internal/runtime/agent.go),
+// and a password would have to be generated and stored on this same host, which
+// does NOT raise the bar against a local user who can already read the 0700 data
+// dir. Note this is a change to the STATED CONCLUSION, not to the value: the
+// container's reason does not hold here, so the host states its own.
+//
+// REVISITABLE: if a MULTI-USER host ever becomes a supported target, switch the
+// host HBA to scram-sha-256 with a generated password under <dataDir>/secrets/
+// (mode 0600) and put it in the DSN. Recorded here rather than silently deferred.
 func pgHBATrustRules() []string {
 	if gw := bridgeGatewayIP(); gw != "" {
 		return []string{fmt.Sprintf("host all all %s/32 trust", gw)}
@@ -552,8 +634,15 @@ func (s *supervisor) postgresUIDGID() (int, int) {
 	// Host residency runs as the INVOKING USER — the whole point of the shape.
 	// uid 70 is a container-era concern (the compose-stack alpine postgres
 	// volumes), so it must never be the host default.
+	//
+	// THE VALUES COME FROM A PLATFORM SEAM, not os.Getuid()/os.Getgid(), because
+	// those return -1 on Windows (os/syscall_windows.go) — a sentinel that only stays
+	// harmless because asUser returns the command verbatim in host residency. Windows
+	// reports 0 instead, which is what asUser's `uid != 0` test means: there is no uid
+	// to drop to. Nothing chowns with these values; host residency never calls
+	// os.Chown.
 	if s.isHost() {
-		return os.Getuid(), os.Getgid()
+		return invokingUID(), invokingGID()
 	}
 	dataDir := filepath.Join(s.dataDir, "postgres")
 	if fi, err := os.Stat(dataDir); err == nil {
@@ -582,7 +671,13 @@ func (s *supervisor) postgresUIDGID() (int, int) {
 // user, so the socket lives there. Same fix, same reason, as the container
 // sandbox plane (internal/runtime/agent.go).
 func (s *supervisor) postgresSocketDir() string {
-	if s.isHost() {
+	// WINDOWS HAS NO UNIX-DOMAIN SOCKETS. The Unix socket transport does not exist
+	// there, so the flag must not be passed to postgres.exe at all — at best it is
+	// ignored, at worst it is a startup error, and either way claiming a socket
+	// directory on a platform that has none is a lie the next reader has to disprove.
+	// unixSocketsSupported is the platform seam (true on Linux/macOS, false on
+	// Windows), so this is a compile-time fact rather than a runtime probe.
+	if s.isHost() && unixSocketsSupported {
 		return s.dataDir
 	}
 	return ""

@@ -351,3 +351,74 @@ func installFakeTool(t *testing.T, name, script string) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
+
+// ORCHICON_DATA_DIR names the instance's own state dir, and cmd/orchicon/binaries.go
+// records the resolved PostgreSQL distribution there. On a host whose Postgres came
+// from the DOWNLOAD path that distribution is at <DataDir>/bin/postgres/bin — on NO
+// PATH at all — so without this the local client is unfindable on the very install
+// the resolver provisioned. This is that case, pinned.
+func TestLocalClientPrefersTheResolvedRecord(t *testing.T) {
+	dataDir := t.TempDir()
+	toolsDir := filepath.Join(dataDir, "bin", "postgres", "bin")
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolved := filepath.Join(toolsDir, "pg_dump")
+	if err := os.WriteFile(resolved, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A record shaped exactly like the resolver writes it (JSON field names).
+	rec := fmt.Sprintf(`{"source":"downloaded","pg_dump":%q,"psql":%q}`, resolved, filepath.Join(toolsDir, "psql"))
+	if err := os.WriteFile(filepath.Join(dataDir, "infra-binaries.json"), []byte(rec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ORCHICON_DATA_DIR", dataDir)
+	t.Setenv(pgContainerEnv, "")
+	// NO pg_dump ON PATH, so only the record can resolve it.
+	t.Setenv("PATH", t.TempDir())
+	useProber(t, fakeProber{dockerOnPath: false})
+
+	client, err := resolvePGClient(devDSN)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !client.local() {
+		t.Fatalf("no container is reachable, so the client must be local: %+v", client)
+	}
+	got, err := client.execPath(pgToolDump)
+	if err != nil {
+		t.Fatalf("the resolved record was not consulted: %v", err)
+	}
+	if got != resolved {
+		t.Fatalf("execPath = %q, want the resolved absolute path %q", got, resolved)
+	}
+}
+
+// A MISSING or malformed record must degrade to the PATH lookup and its actionable
+// message — a broken record can never be what makes backup impossible.
+func TestBrokenRecordDegradesToPathAndStillExplains(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, "infra-binaries.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ORCHICON_DATA_DIR", dataDir)
+	t.Setenv(pgContainerEnv, "")
+	t.Setenv("PATH", t.TempDir())
+	useProber(t, fakeProber{dockerOnPath: false})
+
+	client, err := resolvePGClient(devDSN)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	_, err = client.execPath(pgToolDump)
+	if err == nil {
+		t.Fatal("with no record and no PATH there is no client, and that must be an error")
+	}
+	if !strings.Contains(err.Error(), pgContainerEnv) {
+		t.Fatalf("the error must still offer a next step, got: %v", err)
+	}
+	// The record's own location is named too, so a host install can find it.
+	if !strings.Contains(err.Error(), "infra-binaries.json") {
+		t.Fatalf("the error must name the record the resolver writes, got: %v", err)
+	}
+}
