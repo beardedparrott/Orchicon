@@ -302,6 +302,79 @@ else
   bad "the image ref is not lowercased — ghcr would reject 'Orchicon'"
 fi
 
+# --- 9. THE INFRASTRUCTURE BINARIES HAVE ONE RESOLVER, AND IT RECORDS --------------
+# There is no image carrying postgres/nats any more, so the installer either finds them
+# on the host or downloads them. Both must go through ONE mechanism that RECORDS what it
+# resolved: a second resolution path (or a service proc falling back to a bare name on
+# PATH) would let the installer report one postgres while the services run another, and
+# a downloaded binary would be invisible to a proc that only knew the name. Asserted at
+# the source because the assertion is about WHICH CALL PATH exists, which no run of the
+# installer against a local artifact can observe.
+say ""
+say "[9] the infrastructure binaries have one resolver, and it records"
+
+BINARIES_SRC_FILE="${REPO_ROOT}/cmd/orchicon/binaries.go"
+if [ -f "${BINARIES_SRC_FILE}" ]; then
+  ok "cmd/orchicon/binaries.go exists (the single acquisition mechanism)"
+else
+  bad "cmd/orchicon/binaries.go is missing — postgres/nats would come from PATH only"
+fi
+BINARIES_SRC="$(cat "${BINARIES_SRC_FILE}" 2>/dev/null || true)"
+if printf '%s' "${BINARIES_SRC}" | grep -q 'func acquireInfraBinaries('; then
+  ok "it exposes one acquisition entry point (acquireInfraBinaries)"
+else
+  bad "acquireInfraBinaries is missing — components would resolve the binaries independently"
+fi
+if printf '%s' "${BINARIES_SRC}" | grep -q 'infra-binaries.json'; then
+  ok "it records what it resolved"
+else
+  bad "the resolver does not record its result — a second component would re-derive it and could disagree"
+fi
+if printf '%s' "${BINARIES_SRC}" | grep -q 'checksum mismatch'; then
+  ok "a checksum mismatch is a hard failure"
+else
+  bad "no checksum-mismatch refusal — an unverified download could be used"
+fi
+if printf '%s' "${BINARIES_SRC}" | grep -q 'minPostgresMajor'; then
+  ok "a detected PostgreSQL is version-checked against a documented minimum"
+else
+  bad "no minimum PostgreSQL version — a too-old detected server would be attempted"
+fi
+
+# The CONSUMERS must read the record, not a bare name. A service proc that still
+CONTAINER_SRC="$(cat "${REPO_ROOT}/cmd/orchicon/container.go")"
+if printf '%s' "${CONTAINER_SRC}" | grep -q 's.resolved().Postgres' \
+   && printf '%s' "${CONTAINER_SRC}" | grep -q 's.resolved().Initdb' \
+   && printf '%s' "${CONTAINER_SRC}" | grep -q 's.resolved().Createdb' \
+   && printf '%s' "${CONTAINER_SRC}" | grep -q 's.resolved().NatsServer'; then
+  ok "every service proc execs the RESOLVED path"
+else
+  bad "a service proc does not use the resolved path — a DOWNLOADED binary would be invisible to it"
+fi
+# The EXACT invocation literals the bare-name version used. Checking the invocation
+# (not the word) matters: "postgres" also appears as a log-field key and a subdir name,
+# and matching those would be a false failure that teaches the operator to ignore this
+# check.
+bare=""
+for literal in '"initdb", "-D"' '"postgres", "-D"' 'exec.CommandContext(ctx, "createdb"' 'command: "nats-server"'; do
+  if printf '%s' "${CONTAINER_SRC}" | grep -qF "${literal}"; then
+    bare="${bare}
+  ${literal}"
+  fi
+done
+if [ -z "${bare}" ]; then
+  ok "no bare infrastructure-binary name is exec'd (the resolved paths replaced every one)"
+else
+  bad "a bare infrastructure-binary invocation survives — a DOWNLOADED binary would be invisible to it:${bare}"
+fi
+
+# Documentation of the minimum version, because it is a support promise.
+if grep -q 'Minimum supported PostgreSQL' "${REPO_ROOT}/ARCHITECTURE.md"; then
+  ok "ARCHITECTURE.md documents the minimum supported PostgreSQL"
+else
+  bad "the minimum supported PostgreSQL version is not documented"
+fi
+
 say ""
 if [ "${FAIL}" -eq 0 ]; then
   say "RESULT: all ${PASS} assertion(s) passed"

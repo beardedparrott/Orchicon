@@ -50,8 +50,19 @@ func TestPostgresListenAddr(t *testing.T) {
 	}
 }
 
+// testInfra is a hand-built resolved set for tests that construct a supervisor
+// directly instead of through prepare(). The paths are never executed by these
+// tests — they only prove a proc carries the RESOLVED path rather than a bare name.
+func testInfra() *infraBinaries {
+	return &infraBinaries{
+		Source: "detected", Postgres: "/pg/bin/postgres", Initdb: "/pg/bin/initdb",
+		PgCtl: "/pg/bin/pg_ctl", PgIsReady: "/pg/bin/pg_isready", Createdb: "/pg/bin/createdb",
+		NatsServer: "/usr/local/bin/nats-server",
+	}
+}
+
 func TestPostgresProcUsesListenAddr(t *testing.T) {
-	sup := &supervisor{log: testLogger(), dataDir: t.TempDir(), servicesOnly: true}
+	sup := &supervisor{log: testLogger(), dataDir: t.TempDir(), servicesOnly: true, infra: testInfra()}
 	if args := strings.Join(sup.postgresProc().args, " "); !strings.Contains(args, "-c listen_addresses=0.0.0.0") {
 		t.Errorf("services-only postgres args do not widen the listen address: %s", args)
 	}
@@ -66,7 +77,7 @@ func testLogger() *slog.Logger {
 }
 
 func TestEnsurePostgresHBATrust(t *testing.T) {
-	sup := &supervisor{log: testLogger(), dataDir: t.TempDir()}
+	sup := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra()}
 	dir := filepath.Join(sup.dataDir, "postgres")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -107,7 +118,7 @@ func TestEnsurePostgresHBATrust(t *testing.T) {
 	}
 
 	// A data dir without a pg_hba yet is not an error — initPostgres owns it.
-	fresh := &supervisor{log: testLogger(), dataDir: t.TempDir()}
+	fresh := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra()}
 	if err := fresh.ensurePostgresHBATrust(); err != nil {
 		t.Errorf("missing pg_hba.conf must be a no-op, got %v", err)
 	}
