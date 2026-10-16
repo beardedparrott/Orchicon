@@ -116,6 +116,34 @@ func runInstall(args []string, log *slog.Logger) error {
 	// that has already resolved everything, and the wrapper's fallback is the documented default.
 	writeResolvedPorts(instance, ports)
 
+	// 1.7. RESOLVE THE INFRASTRUCTURE BINARIES. The services container needs a
+	// PostgreSQL server and a NATS server, and there is no image carrying them any
+	// more — so this is the step that decides whether a normal person can install
+	// Orchicon at all.
+	//
+	// IT RUNS HERE, ON THE HOST, BEFORE THE CONTAINER EXISTS, for two reasons that
+	// are both about the operator rather than about tidiness. First, the download is
+	// the second-slowest part of a fresh install after the image pull, and an
+	// operator must see it start before being asked nothing else. Second, the host
+	// path needs NO ROOT: the build lands under the instance's own state dir, which
+	// the operator already owns, so this works on a machine where `sudo` is not
+	// available. (ensureInstallContainer then mounts that dir into the instance, so
+	// the services container runs the SAME binaries rather than downloading a second
+	// copy of them.)
+	//
+	// A failure here is fatal, deliberately: "the instance came up with no database"
+	// is a much worse outcome than "the install stopped and said why".
+	installPhase("resolving the infrastructure binaries (postgres, nats)")
+	{
+		opt := defaultAcquireOptions(hostDataDirFor(instance))
+		infra, err := acquireInfraBinaries(context.Background(), opt)
+		if err != nil {
+			return fmt.Errorf("resolve the infrastructure binaries: %w", err)
+		}
+		fmt.Printf("infrastructure binaries: %s — postgres %s (%s), nats-server %s (%s)\n",
+			infra.Source, infra.PostgresVersion, infra.Postgres, infra.NatsVersion, infra.NatsServer)
+	}
+
 	// 2. Ensure the published images are present (skip the pull when the tag is
 	// already local — idempotent re-runs and local dev images).
 	//
@@ -624,6 +652,22 @@ func ensureInstallContainer(instance, residency, name, dataVolume, socketDir, im
 		"-e", fmt.Sprintf("ORCHICON_HOST_GID=%d", hostGID),
 		"-e", "ORCHICON_HOST_HOME=" + home,
 		"-e", "ORCHICON_INSTANCE=" + instance,
+	}
+	// THE INFRASTRUCTURE BINARIES ARE MOUNTED, NOT RE-DOWNLOADED. `orchicon install`
+	// resolved them into the instance's host state dir (step 1.7) precisely so the
+	// operator needs no root; this nested bind makes that resolution visible to the
+	// services container at the path it already looks in, so its supervisor finds a
+	// COMPLETE postgres/nats-server and downloads nothing itself. The nested mount
+	// sits on top of the data volume, so it is authoritative for that one subdir and
+	// the rest of the volume is untouched.
+	//
+	// A MOUNTED-AND-PRESENT BIN DIR IS THE HEALTHY CASE, but it is not the only one:
+	// the supervisor still resolves and records for itself on boot, which is what
+	// covers a hand-run `docker run` and an instance created before this step
+	// existed. Both paths go through the same resolver, so AC "one record, no
+	// re-derivation" holds either way.
+	if st, statErr := os.Stat(filepath.Join(hostDataDirFor(instance), infraBinDirName)); statErr == nil && st.IsDir() {
+		args = append(args, "-v", filepath.Join(hostDataDirFor(instance), infraBinDirName)+":"+binDir("/var/lib/orchicon"))
 	}
 	// The residency is CREATE-time state: the supervisor reads this flag to decide
 	// whether to boot the plane inside this container or leave it to the host.

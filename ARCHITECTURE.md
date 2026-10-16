@@ -890,6 +890,38 @@ For a fast Go-only iteration (no frontend change), `make build` alone uses the s
 
 Orchicon can run two isolated single-container instances side by side: a **dev** instance (`orchicon-cnt-dev`, http://localhost:8080, Grafana http://localhost:3002) for daily development and a **prod** instance (`orchicon-cnt-prod`, http://localhost:8091, Grafana http://localhost:3003) for the production pipeline. They share no ports, databases, or state — restarts to one never affect the other. `scripts/container.sh up dev|prod` manages each, reusing the compose-era Postgres volumes so data carries over. See §Single-Container Deployment.
 
+### Infrastructure Binaries (Postgres + NATS)
+
+There is no container image carrying the infrastructure binaries any more, so they
+come from the host: **detected if present, otherwise downloaded on first run**
+(`cmd/orchicon/binaries.go`, the one resolver for every one of them).
+
+- **Detected** on `PATH` *and* the platform's conventional install locations — for
+  PostgreSQL that includes `/usr/lib/postgresql/*/bin` (Debian/Ubuntu put the
+  **server** there and only the client tools on `PATH`, so a `PATH`-only probe would
+  miss a perfectly good server and download a second one). A **partial** install
+  (e.g. `postgres` present, `initdb` missing — the client-only package shape) is
+  **rejected with a message naming the missing binaries**, never silently downloaded
+  over.
+- **Downloaded** when genuinely absent: a pinned, checksum-verified build unpacked
+  into `<DataDir>/bin`, **with no root or admin** — the build lands in the instance
+  state dir the operator already owns. A **checksum mismatch is a hard failure**; the
+  download is deleted and there is no fallback to an unverified binary. Progress is
+  streamed and a failure reports *why* with a bounded tail (the same posture as
+  `docker pull`).
+- **Recorded once** at `<DataDir>/infra-binaries.json`: the resolved absolute paths
+  plus the version each binary reports. **Every** service process execs the path in
+  that record instead of a bare name, so a downloaded binary is visible to them and
+  no component re-derives the answer independently.
+- **Version checked** for a *detected* PostgreSQL: a server older than the minimum is
+  reported and refused, not attempted. **Minimum supported PostgreSQL: 14.**
+- Pinned versions: **PostgreSQL 16.4**, **NATS server 2.10.29** (matching the
+  container image lines). Overridable per §Environment Variables.
+
+The `:dev` runtime image's own sandbox plane uses the same detection rule for its
+self-gate (all four server binaries from one directory, or the plane is skipped), so
+a host that satisfies one satisfies the other.
+
 ### Single-Container Deployment
 
 The entire Orchicon stack — Postgres, NATS, the Grafana telemetry plane (Tempo, Loki, VictoriaMetrics, OTel collector, Grafana), and the control plane — can run in **one container**. The `orchicon` binary is the PID-1 supervisor (`orchicon container`, `cmd/orchicon/container.go`):
@@ -1591,6 +1623,9 @@ therefore kept out of it.
 | `ORCHICON_RUNTIME_POOL_IDLE` | `10m` | Warm pool: how long a clean container may sit unused before it is idle-reaped. |
 | `ORCHICON_RUNTIME_LEASE_MAX` | `30m` | Warm pool: how long a LEASED container's lease may stay unrenewed before it is reaped with its container (the aborted-run leak class — a live run renews every ≤30s via the adopt sweep). |
 | `ORCHICON_INDEX_CHECK_INTERVAL` | `6h` | Control plane: how often the amcheck index-integrity sweep runs (0 = boot check only). A corrupted btree index silently hides rows from `=` lookups; the sweep validates every user btree index and rebuilds corrupt ones with `REINDEX INDEX CONCURRENTLY` |
+| `ORCHICON_SKIP_DOWNLOAD` | *(unset)* | `1` forbids the infrastructure-binary download: a missing `postgres`/`nats-server` then fails the install with a message naming it, instead of reaching the network. For a host that blocks outbound access at install time |
+| `ORCHICON_INFRA_URL_<NAME>` | *(pinned)* | Override the download URL for one infrastructure artifact — `POSTGRES` or `NATS_SERVER` (the artifact name upper-cased, `-`→`_`). For a mirror or an internal artifact store |
+| `ORCHICON_INFRA_SHA256_<NAME>` | *(pinned)* | The SHA256 the download is verified against, for the same artifact set. A mirror serving the pinned artifact needs only the URL override; this exists so a mirror serving a *rebuild* can still be verified. **A download with no pinned or overridden checksum is refused outright** |
 
 ---
 

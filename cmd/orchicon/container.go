@@ -185,6 +185,15 @@ type supervisor struct {
 	// (used to authenticate the gh CLI for PR/merge workers).
 	ghToken string
 
+	// infra is the RESOLVED infrastructure binaries (postgres, initdb, pg_ctl,
+	// pg_isready, createdb, nats-server), set once by prepare() and read by every
+	// service proc below.
+	//
+	// EVERY proc execs these absolute paths rather than a bare name on PATH: a
+	// downloaded binary lives in this instance's data dir, which is not on PATH, so
+	// a bare name would silently run a DIFFERENT postgres from the host (or none).
+	infra *infraBinaries
+
 	mu       sync.Mutex
 	children map[string]*procState
 }
@@ -231,6 +240,36 @@ func (s *supervisor) prepare(ctx context.Context) error {
 	}
 	if err := s.writeConfigs(); err != nil {
 		return err
+	}
+
+	// Resolve the infrastructure binaries ONCE, before anything execs them, and
+	// hold the result on the supervisor. This is the authoritative acquisition
+	// point: this process is what actually runs postgres/nats, and it is what owns
+	// the instance data dir the downloaded build is unpacked into.
+	//
+	// The resolved set is also written to <dataDir>/infra-binaries.json, so a
+	// failure here can be diagnosed from the record and so a later process reads
+	// the same answer instead of probing again.
+	//
+	// THE OPTIONS COME FROM THE SHARED CONSTRUCTOR, not assembled here: that is what
+	// makes ORCHICON_SKIP_DOWNLOAD and the URL/checksum overrides mean the same thing
+	// to this boot as they do to `orchicon install`. Two callers assembling their own
+	// options is how one of them silently stops honoring an operator's setting.
+	// A supervisor that already carries a resolved set (a test fixture, or a
+	// caller that resolved earlier) KEEPS it: resolution happens once, and
+	// re-deriving it here would be the second resolution path this record exists
+	// to prevent.
+	if s.infra == nil {
+		infra, err := acquireInfraBinaries(ctx, defaultAcquireOptions(s.dataDir))
+		if err != nil {
+			return fmt.Errorf("acquire infrastructure binaries: %w", err)
+		}
+		s.infra = infra
+		s.log.Info("infrastructure binaries resolved",
+			"source", infra.Source,
+			"postgres", infra.Postgres,
+			"postgres_version", infra.PostgresVersion,
+			"nats", infra.NatsServer)
 	}
 	if err := s.initPostgres(); err != nil {
 		return err
@@ -349,7 +388,7 @@ func (s *supervisor) initPostgres() error {
 			return fmt.Errorf("chown postgres data dir: %w", err)
 		}
 	}
-	command, args := s.asUser(uid, gid, "initdb",
+	command, args := s.asUser(uid, gid, s.resolved().Initdb,
 		[]string{"-D", dataDir, "-U", "orchicon", "--auth=trust", "-E", "UTF8"})
 	cmd := exec.Command(command, args...)
 	out, err := cmd.CombinedOutput()
@@ -812,6 +851,22 @@ func httpReady(url string) func(context.Context) bool {
 	}
 }
 
+// resolved returns the infrastructure-binary record, and PANICS when it is
+// missing.
+//
+// THE PANIC IS THE POINT. Every consumer of this record execs a binary, and the
+// only way it can be missing is a supervisor built without prepare() — a
+// programming error. Falling back to the bare name would be a SECOND resolution
+// path (it would find whatever `postgres` happens to be on PATH, which for a
+// downloaded install is the wrong server or none at all), and the whole reason this
+// record exists is that there is exactly one answer.
+func (s *supervisor) resolved() *infraBinaries {
+	if s.infra == nil {
+		panic("supervisor.infrastructure binaries were not resolved — prepare() must run before any service proc")
+	}
+	return s.infra
+}
+
 // ----- process definitions -----
 
 func (s *supervisor) postgresProc() *managedProc {
@@ -822,7 +877,7 @@ func (s *supervisor) postgresProc() *managedProc {
 	if socketDir := s.postgresSocketDir(); socketDir != "" {
 		pgArgs = append(pgArgs, "-c", "unix_socket_directories="+socketDir)
 	}
-	command, args := s.asUser(uid, gid, "postgres", pgArgs)
+	command, args := s.asUser(uid, gid, s.resolved().Postgres, pgArgs)
 	return &managedProc{
 		name:    "postgres",
 		command: command,
@@ -832,7 +887,7 @@ func (s *supervisor) postgresProc() *managedProc {
 			// Create the orchicon database on first boot (idempotent).
 			// createdb exits 0 when created and errors on duplicate;
 			// "already exists" is fine.
-			cmd := exec.CommandContext(ctx, "createdb", "-U", "orchicon", "-h", "localhost", "-p", port, "orchicon")
+			cmd := exec.CommandContext(ctx, s.resolved().Createdb, "-U", "orchicon", "-h", "localhost", "-p", port, "orchicon")
 			out, err := cmd.CombinedOutput()
 			if err != nil && !strings.Contains(string(out), "already exists") {
 				return fmt.Errorf("create orchicon db: %w: %s", err, strings.TrimSpace(string(out)))
@@ -847,7 +902,7 @@ func (s *supervisor) natsProc() *managedProc {
 	monitor := strconv.Itoa(s.ports.natsMonitor)
 	return &managedProc{
 		name:    "nats",
-		command: "nats-server",
+		command: s.resolved().NatsServer,
 		args: []string{"-js", "-sd", filepath.Join(s.dataDir, "nats"),
 			"-p", strconv.Itoa(s.ports.nats), "-m", monitor},
 		ready:   httpReady("http://localhost:" + monitor + "/healthz"),

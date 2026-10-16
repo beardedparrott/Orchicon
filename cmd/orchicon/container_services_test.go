@@ -64,8 +64,19 @@ func TestPostgresListenAddr(t *testing.T) {
 	}
 }
 
+// testInfra is a hand-built resolved set for tests that construct a supervisor
+// directly instead of through prepare(). The paths are never executed by these
+// tests — they only prove a proc carries the RESOLVED path rather than a bare name.
+func testInfra() *infraBinaries {
+	return &infraBinaries{
+		Source: "detected", Postgres: "/pg/bin/postgres", Initdb: "/pg/bin/initdb",
+		PgCtl: "/pg/bin/pg_ctl", PgIsReady: "/pg/bin/pg_isready", Createdb: "/pg/bin/createdb",
+		NatsServer: "/usr/local/bin/nats-server",
+	}
+}
+
 func TestPostgresProcUsesListenAddr(t *testing.T) {
-	sup := &supervisor{log: testLogger(), dataDir: t.TempDir(), servicesOnly: true}
+	sup := &supervisor{log: testLogger(), dataDir: t.TempDir(), servicesOnly: true, infra: testInfra()}
 	if args := strings.Join(sup.postgresProc().args, " "); !strings.Contains(args, "-c listen_addresses=0.0.0.0") {
 		t.Errorf("services-only postgres args do not widen the listen address: %s", args)
 	}
@@ -80,7 +91,7 @@ func testLogger() *slog.Logger {
 }
 
 func TestEnsurePostgresHBATrust(t *testing.T) {
-	sup := &supervisor{log: testLogger(), dataDir: t.TempDir()}
+	sup := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra()}
 	dir := filepath.Join(sup.dataDir, "postgres")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -121,7 +132,7 @@ func TestEnsurePostgresHBATrust(t *testing.T) {
 	}
 
 	// A data dir without a pg_hba yet is not an error — initPostgres owns it.
-	fresh := &supervisor{log: testLogger(), dataDir: t.TempDir()}
+	fresh := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra()}
 	if err := fresh.ensurePostgresHBATrust(); err != nil {
 		t.Errorf("missing pg_hba.conf must be a no-op, got %v", err)
 	}
@@ -268,11 +279,11 @@ func TestIsHostZeroValueIsContainerResidency(t *testing.T) {
 // resident service is a direct process of the invoking user. Container
 // residency with a non-root uid must still produce setpriv, unchanged.
 func TestPostgresProcRequiresNoSetprivInHostResidency(t *testing.T) {
-	host := &supervisor{log: testLogger(), dataDir: t.TempDir(),
+	host := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(),
 		residency: residencyHost, ports: servicePortsFor(residencyHost)}
 	p := host.postgresProc()
-	if p.command != "postgres" {
-		t.Errorf("host residency: command = %q, want postgres (no setpriv)", p.command)
+	if p.command != testInfra().Postgres {
+		t.Errorf("host residency: command = %q, want the resolved postgres %q (no setpriv)", p.command, testInfra().Postgres)
 	}
 	joined := strings.Join(p.args, " ")
 	for _, banned := range []string{"setpriv", "--reuid", "--regid", "--clear-groups"} {
@@ -281,7 +292,7 @@ func TestPostgresProcRequiresNoSetprivInHostResidency(t *testing.T) {
 		}
 	}
 
-	container := &supervisor{log: testLogger(), dataDir: t.TempDir(),
+	container := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(),
 		residency: residencyContainer, hostUID: 70, hostGID: 70,
 		ports: servicePortsFor(residencyContainer)}
 	cp := container.postgresProc()
@@ -387,8 +398,12 @@ func TestPostgresUIDGIDHostResidency(t *testing.T) {
 func TestPrepareHostResidencyDoesNotChown(t *testing.T) {
 	home := t.TempDir()
 	sup := &supervisor{
-		log:       testLogger(),
-		dataDir:   t.TempDir(),
+		log:     testLogger(),
+		dataDir: t.TempDir(),
+		// Pre-resolved so prepare does not attempt a real acquisition: this
+		// test is about ownership, and a real acquisition would touch the
+		// network on a host that happens to be missing an infra binary.
+		infra:     testInfra(),
 		residency: residencyHost,
 		// Deliberately non-zero: the container path WOULD touch the home.
 		hostUID:  1000,
@@ -478,7 +493,7 @@ func TestServiceSetParityBothResidencies(t *testing.T) {
 	want := []string{"postgres", "nats", "tempo", "loki", "victoriametrics", "otel-collector", "grafana"}
 	for _, residency := range []string{residencyHost, residencyContainer} {
 		t.Run(residency, func(t *testing.T) {
-			s := &supervisor{log: testLogger(), dataDir: t.TempDir(),
+			s := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(),
 				residency: residency, ports: servicePortsFor(residency)}
 			procs := []*managedProc{s.postgresProc(), s.natsProc(), s.tempoProc(), s.lokiProc(), s.vmProc(), s.collectorProc(), s.grafanaProc()}
 			if len(procs) != len(want) {
@@ -523,7 +538,7 @@ func TestDefaultDataDirFor(t *testing.T) {
 func TestServiceProbeMatchesItsBindArg(t *testing.T) {
 	for _, residency := range []string{residencyContainer, residencyHost} {
 		t.Run(residency, func(t *testing.T) {
-			s := &supervisor{log: testLogger(), dataDir: t.TempDir(),
+			s := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(),
 				residency: residency, ports: servicePortsFor(residency)}
 			p := s.ports
 
@@ -552,14 +567,14 @@ func TestServiceProbeMatchesItsBindArg(t *testing.T) {
 // through s.ports / asUser; for container residency those must resolve to
 // exactly these values.)
 func TestContainerResidencyArgvUnchanged(t *testing.T) {
-	s := &supervisor{log: testLogger(), dataDir: t.TempDir(), hostUID: 70, hostGID: 70,
+	s := &supervisor{log: testLogger(), dataDir: t.TempDir(), hostUID: 70, hostGID: 70, infra: testInfra(),
 		residency: residencyContainer, ports: servicePortsFor(residencyContainer)}
 
 	pg := s.postgresProc()
 	if pg.command != "setpriv" {
 		t.Fatalf("container postgres command = %q, want setpriv", pg.command)
 	}
-	wantPG := "--reuid=70 --regid=70 --clear-groups postgres -D " + filepath.Join(s.dataDir, "postgres") + " -p 5432 -c listen_addresses=localhost"
+	wantPG := "--reuid=70 --regid=70 --clear-groups " + testInfra().Postgres + " -D " + filepath.Join(s.dataDir, "postgres") + " -p 5432 -c listen_addresses=localhost"
 	if got := strings.Join(pg.args, " "); got != wantPG {
 		t.Errorf("container postgres argv drifted:\n got %s\nwant %s", got, wantPG)
 	}
@@ -642,7 +657,7 @@ func TestPostgresSocketDirIsResidencyScoped(t *testing.T) {
 		t.Errorf("explicit container residency moved the socket dir: got %q", got)
 	}
 
-	host := &supervisor{log: testLogger(), dataDir: t.TempDir(), residency: residencyHost}
+	host := &supervisor{log: testLogger(), dataDir: t.TempDir(), residency: residencyHost, infra: testInfra()}
 	if got := host.postgresSocketDir(); got != host.dataDir {
 		t.Errorf("host residency socket dir = %q, want the data dir %q", got, host.dataDir)
 	}
@@ -653,7 +668,7 @@ func TestPostgresSocketDirIsResidencyScoped(t *testing.T) {
 
 	// And the container child must NOT carry the flag, so today's argv is
 	// byte-for-byte what it was.
-	c := &supervisor{log: testLogger(), dataDir: t.TempDir(), residency: residencyContainer}
+	c := &supervisor{log: testLogger(), dataDir: t.TempDir(), residency: residencyContainer, infra: testInfra()}
 	if cargs := strings.Join(c.postgresProc().args, " "); strings.Contains(cargs, "unix_socket_directories") {
 		t.Errorf("container residency argv changed: %s", cargs)
 	}

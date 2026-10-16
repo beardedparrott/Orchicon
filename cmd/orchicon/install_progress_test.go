@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -103,5 +108,70 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 			}
 			t.Errorf("%s: the summary box is not rectangular (%s):\n%s", name, strings.Join(got, ", "), out)
 		}
+	}
+}
+
+// ----- the download failure posture (AC#6) -----
+
+// TestDownloadFailureReportsABoundedTail mirrors TestTailWriterKeepsOnlyTheTail for
+// the DOWNLOAD path. A failed download must report WHY, and the explanation must
+// stay bounded: a proxy's error page or a huge HTML 404 printed whole would bury the
+// actual failure in an unattended install's log.
+func TestDownloadFailureReportsABoundedTail(t *testing.T) {
+	// A body much larger than the tail limit, with a distinctive marker at the END —
+	// which is the part a bounded tail must keep, since the last bytes are where a
+	// server puts its actual explanation.
+	const marker = "THE-ACTUAL-REASON"
+	long := strings.Repeat("filler ", 4000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, long+marker)
+	}))
+	defer srv.Close()
+
+	dst := filepath.Join(t.TempDir(), "download")
+	opt := acquireOptions{Out: io.Discard, HTTPClient: srv.Client()}
+	err := downloadToFile(context.Background(), srv.URL+"/x", dst, opt)
+	if err == nil {
+		t.Fatal("a 500 must be a failure")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "500") {
+		t.Errorf("the error must carry the HTTP status; got:\n%s", msg)
+	}
+	if !strings.Contains(msg, marker) {
+		t.Errorf("the error must carry the TAIL of the server's explanation; got:\n%s", msg)
+	}
+	if len(msg) > downloadTailLimit+2048 {
+		t.Errorf("the reported tail must stay bounded (got %d bytes of error); the whole body must not be echoed", len(msg))
+	}
+	if _, statErr := os.Stat(dst); statErr == nil {
+		t.Error("a failed download must not leave a file behind that a later step could mistake for the artifact")
+	}
+}
+
+// TestDownloadProgressIsStreamedOncePerChunk pins the other half of AC#6: progress is
+// STREAMED (so a working download is distinguishable from a hung one) but not per
+// read (so it does not flood the log).
+func TestDownloadProgressIsStreamedOncePerChunk(t *testing.T) {
+	// 3.5 steps worth of body: enough for a few progress lines, far short of noisy.
+	body := bytes.Repeat([]byte("x"), 3*downloadProgressStep+downloadProgressStep/2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	opt := acquireOptions{Out: &out, HTTPClient: srv.Client()}
+	if err := downloadToFile(context.Background(), srv.URL+"/y", filepath.Join(t.TempDir(), "d"), opt); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "MiB") {
+		t.Errorf("progress must be reported as it happens, not only at the end; got:\n%s", got)
+	}
+	if lines := strings.Count(got, "\n"); lines > 8 {
+		t.Errorf("progress must not print a line per read (%d lines for a few MiB); got:\n%s", lines, got)
 	}
 }
