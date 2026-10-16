@@ -69,6 +69,26 @@ endif
 # Stated as ONE variable used by every target that walks the tree, so a target
 # added later cannot forget it. Any dir under tmp/ is skipped, including a
 # worktree (those are skipped for a different reason — they DO have a go.mod).
+#
+# A FAILED `go list` IS NOT AN EMPTY ONE — and the guard below could not tell them apart.
+# `2>/dev/null` threw away the ONLY line that explains a failure, so both cases produced an empty
+# PKGS and the guard blamed the one cause it knew about: "no packages matched". That cost a full
+# diagnosis of a HEALTHY tree. An agent had run with a RELATIVE GOMODCACHE — relative to the repo
+# root, so the cache landed INSIDE the repo at tmp/orchicon/gomodcache — leaving ~1.2 GB of module
+# sources under tmp/ with no go.mod. `go list ./...` then aborted the WHOLE pattern —
+#
+#	pattern ./...: directory tmp/orchicon/gomodcache/github.com/arbovm/levenshtein@...:
+#	outside main module or its selected dependencies
+#
+# — and printed NOTHING on stdout, so `make vet` reported "no packages matched ./... (tmp/
+# excluded)" over 98 perfectly good packages and `make rebuild-dev` could not run at all. The
+# message invited the one conclusion that was FALSE ("the merge broke the module").
+#
+# So the failure is CAPTURED here and reported in `go`'s own words, while the empty-match text
+# survives as the OTHER arm of the guard. Recursive (`=`, not `:=`) as before: PKGS is read inside
+# recipes, and `:=` would run `go list` at PARSE time — in a worktree or on a fresh clone where the
+# toolchain or the module graph is not ready yet. Cost: one extra `go list` per gate run, ~0.2s warm.
+GO_LIST_ERR = $(shell $(GO) list ./... 2>&1 >/dev/null | head -3)
 PKGS = $(shell $(GO) list ./... 2>/dev/null | grep -v '/tmp/')
 
 BUF         := buf
@@ -193,7 +213,7 @@ run: fetch-tags fe-build ## Run the control plane from source
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
 test: ## Run Go tests
-	@test -n "$(PKGS)" || { printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; exit 1; }
+	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
 	@# A TEST MUST NEVER TOUCH THE DEVELOPER'S REAL CONFIG.
 	@#
 	@# One did: TestThemeCommand drives `/theme light` then `/theme dark`, and SetTheme persists the
@@ -224,7 +244,7 @@ test: ## Run Go tests
 	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(PKGS)
 
 vet: ## Run go vet
-	@test -n "$(PKGS)" || { printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; exit 1; }
+	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
 	$(GO) vet $(PKGS)
 
 tidy: ## Run go mod tidy
