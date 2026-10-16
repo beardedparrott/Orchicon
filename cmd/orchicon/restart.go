@@ -29,6 +29,11 @@ import (
 //
 // THE PORTS ARE READ BACK, never re-resolved: a restart must not ask a question, and the ports it must
 // bind are already recorded (writeResolvedPorts at install time).
+//
+// THE SHAPE IS READ BACK TOO (recordedResidency), never asked of an engine: with the container removed from
+// the install path there may be no engine to ask, and the record is per-instance. The container arm below
+// therefore only ever touches a container when an engine-backed container shape was RECORDED — a host-
+// resident instance never restarts a container, and a host with no engine never runs a docker command at all.
 func runRestart(args []string, log *slog.Logger) error {
 	bin := filepath.Base(os.Args[0])
 	instance := env("ORCHICON_INSTANCE", "dev")
@@ -48,11 +53,11 @@ func runRestart(args []string, log *slog.Logger) error {
 			"may not contain a path separator or \"..\"", instance)
 	}
 
-	residency, ok := containerResidency(name)
+	residency, ok := recordedResidency(instance)
 	if !ok {
-		return fmt.Errorf("no container named %s — nothing is running for instance %q.\n"+
+		return fmt.Errorf("no install record for instance %q — nothing is installed for it.\n"+
 			"  Install it first:  %s install\n"+
-			"  Another instance:  ORCHICON_INSTANCE=<name> %s restart", name, instance, bin, bin)
+			"  Another instance:  ORCHICON_INSTANCE=<name> %s restart", instance, bin, bin)
 	}
 
 	ports, err := readResolvedPorts(instance)

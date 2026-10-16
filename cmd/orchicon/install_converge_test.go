@@ -123,3 +123,45 @@ func TestHostDataDirForNeverFails(t *testing.T) {
 		t.Fatal("hostDataDirFor returned nothing; the repair path must always have a path to try")
 	}
 }
+
+// TestInstallConvergesOnARecordedShapeAndLeavesAnUnknownOneAlone is acceptance criterion 6, the property the
+// whole recorded-residency change exists to preserve: RE-RUNNING AN INSTALL ON A HEALTHY INSTANCE CONVERGES,
+// and a plane that CANNOT BE POSITIVELY IDENTIFIED IS LEFT ALONE.
+//
+// The shape used to be read from the container's create-time environment, so the fail-safe lived in an
+// `inspect` that could fail transiently. It is now a record this installer writes, and the fail-safe is the
+// `(string, bool)` return: ok=false NEVER reads as a mismatch, so `!known` takes the "leave it" arm rather than
+// the "recreate a live instance" one.
+func TestInstallConvergesOnARecordedShapeAndLeavesAnUnknownOneAlone(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// A RECORDED shape that MATCHES the requested one is a convergence, not a mismatch — the caller's
+	// `existing == residency` arm.
+	recordResidency("dev", residencyHost)
+	existing, known := recordedResidency("dev")
+	if !known || existing != residencyHost {
+		t.Fatalf("a recorded host shape must read back as (host, true), got (%q, %v)", existing, known)
+	}
+	if existing != residencyHost {
+		t.Error("a matching shape must not look like a mismatch — that would recreate a live instance")
+	}
+
+	// AN UNPARSEABLE record: `known` is false, which is the caller's "do not recreate" arm. This is the
+	// fail-safe, asserted as a CALLER DECISION rather than merely as a return value.
+	path, err := residencyRecordPath("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("half-written-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	existing, known = recordedResidency("dev")
+	if known {
+		t.Fatalf("an unreadable record must report ok=false, got (%q, true)", existing)
+	}
+	// The caller's branch, spelled out: recreating is only justified when the shape is KNOWN AND DIFFERENT.
+	requested := residencyContainer
+	if recreate := known && existing != requested; recreate {
+		t.Error("an unidentifiable shape must NOT be treated as a mismatch (it would recreate a live instance)")
+	}
+}

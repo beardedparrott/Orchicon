@@ -88,7 +88,12 @@ BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 # embed an older version (a rebuild could report v0.1.181 for merged v0.1.183 code).
 # Recursive (`=` + `?=`) so the tag is resolved at recipe time, AFTER the fetch-tags
 # prerequisite has synced the local tags.
-VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
+# `--match 'v[0-9]*'` KEEPS A MOVING PRERELEASE TAG OUT OF THE VERSION. `git describe --tags` accepts ANY
+# tag, and with several lightweight tags on one commit the tie-break is LEXICAL — so on a commit the canary
+# build had tagged, `canary` beat `v0.5.45` and a local rebuild reported "orchicon canary" for a tree that
+# WAS v0.5.45. Releases are unaffected (CI takes the version from GITHUB_REF_NAME on a tag checkout); it
+# bites local rebuilds, which is where it was noticed. Keep this match on every describe call site.
+VERSION ?= $(shell git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo dev)
 LDFLAGS     = -X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(GIT_COMMIT) \
                -X github.com/beardedparrott/orchicon/internal/version.gitTag=$(VERSION) \
                -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(BUILD_DATE)
@@ -397,8 +402,14 @@ install-path-test: ## Run the real installer against a locally-served artifact, 
 # `up` produces, that each instance's ports and plane URL are its own (a shared value points one
 # instance's workers at another's database), and that the host plane's two listeners cannot collide.
 #
-# IT IS DOCKER-FREE, which is why it belongs in this gate rather than behind a container job: it
-# resolves shapes through container.sh's own functions with a stubbed log and no engine.
+# IT GUARDS TWO IMPLEMENTATIONS. The bash half drives container.sh's own functions (the launcher a dev
+# checkout uses); the GO half drives `go test ./cmd/orchicon` against install_host.go (the binary a
+# curl-installed host has — container.sh is NOT in the release archive). The two must agree, and the Go half
+# is the one that matters for an installed host, so it is asserted rather than assumed.
+#
+# IT IS DOCKER-FREE, which is why it belongs in this gate rather than behind a container job: the bash half
+# resolves shapes through container.sh's own functions with a stubbed log and no engine, the bridge is PINNED
+# (ORCHICON_DOCKER_BRIDGE_IP) rather than discovered, and the Go half asserts the no-engine shape explicitly.
 #
 # IT IS ALSO THE HARNESS THAT WOULD HAVE CAUGHT 5cc8039c'S FALLOUT. That commit deliberately changed
 # the default residency and did not update this harness, which then failed for weeks — unnoticed,
@@ -448,6 +459,17 @@ site-check: ## Assert the landing page's nav and version-stamp invariants
 	@# all inline, the footer version is a build-time stamp) — deliberately
 	@# dependency-free, because no browser can run in the CI container.
 	bash scripts/tests/site-nav-layout/run.sh
+
+# version-tag-match — every version resolution must restrict itself to version-shaped tags.
+#
+# `canary` is a real tag and it MOVES (the canary build re-points it at develop's tip), so a bare
+# `git describe --tags` can resolve a local rebuild's version to "canary" instead of the version it is —
+# observed as {"version":"canary"} from a tree whose content was v0.5.45. Releases are unaffected (CI takes
+# the version from GITHUB_REF_NAME on a tag checkout), which is exactly why nothing caught it: only local
+# rebuilds and the site/notes scripts ever resolve it this way.
+.PHONY: version-tag-match
+version-tag-match: ## Assert no version resolution accepts a moving tag (canary)
+	bash scripts/tests/version-tag-match/run.sh
 
 docs-check: ## Validate every Mermaid diagram in the root docs with a real parser
 	@# The prefix is REUSED once installed, so a repeat run is instant rather than re-resolving the
@@ -705,29 +727,67 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
   # platform takes ~21s and writes ~1.1 GB, so all four from a clean cache is a couple of minutes of
   # CPU — paid once per gate run, in exchange for a shared cache that no longer carries foreign bytes.
   #
-  # WINDOWS IS NOT HERE, deliberately: no Windows artifact ships any more (nothing consumed one — see
-  # release.yml), so there is nothing for a Windows compile to protect. The incident below is still
-  # worth reading, because it is why this list is derived from the RELEASE MATRIX rather than picked
-  # by hand.
-  CROSS_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+  # WINDOWS IS HERE, and it is the point of the difference between this list and the release matrix.
+  # This list is the COMPILE GATE, not the ship list: Postgres now runs as a HOST process on Windows
+  # (cmd/orchicon/privilege_windows.go, hostproc_windows.go), so a windows/amd64 build break is a
+  # release-blocking failure for that host even though no Windows artifact is published. It is not a
+  # hypothetical: cmd/orchicon/install_host.go called syscall.Kill from an UNTAGGED file, and
+  # windows/amd64 and windows/arm64 failed to build for it while this gate stayed green — because
+  # Windows was not in this list. release.yml's matrix is a SEPARATE decision (what SHIPS) and is
+  # deliberately left alone; the gate and the matrix now differ on purpose.
+  CROSS_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
+
+# CROSS_TMP is where cross-compile keeps its throwaway cache and output. It is under the repo rather
+# than mktemp's default because the default is /tmp, and /tmp is a 2 GB tmpfs on some hosts: this gate
+# writes ~1.1 GB of cache per platform, so with Windows included it would fill that tmpfs PART WAY
+# THROUGH and surface the disk as a COMPILE ERROR on whichever platform happened to hit it last. The
+# directory is gitignored and removed by the trap, so nothing is left behind.
+CROSS_TMP := $(CURDIR)/.cross-compile
 .PHONY: cross-compile
 cross-compile: ## Compile the shipped binaries for every release platform (catches platform-specific breaks)
-	@set -e; tmp="$$(mktemp -d)"; xcache="$$(mktemp -d)"; \
+	@set -e; mkdir -p $(CROSS_TMP); xcache="$$(mktemp -d $(CROSS_TMP)/cache.XXXXXX)"; tmp="$$(mktemp -d $(CROSS_TMP)/out.XXXXXX)"; \
 	trap 'rm -rf "$$tmp" "$$xcache"' EXIT; \
 	echo "==> cross-compile cache: $$xcache (throwaway — never pollutes $(GOCACHE))"; \
 	for t in $(CROSS_PLATFORMS); do \
 	  os="$${t%%/*}"; arch="$${t##*/}"; \
 	  echo "==> $$os/$$arch"; \
 	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) build -o "$$tmp/" ./cmd/orchicon ./cmd/orch; \
+	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) vet ./...; \
 	done; \
-	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile"
+	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile and typecheck"
+
+# WHY `go vet` IS IN THE LOOP ABOVE, AND NOT ONLY `go build`: `go build` never compiles `_test.go`, so
+# a cross-platform break that lives in a TEST file is invisible to it. Not hypothetical: with Windows
+# in CROSS_PLATFORMS but only `go build` running, this gate stayed GREEN while
+#   GOOS=windows go test -c ./cmd/orchicon
+# failed with `cmd/orchicon/binaries_test.go:48:31: undefined: shellQuote` — shellQuote is pure Go,
+# but it sat in `//go:build !windows` killorphans_test.go, and binaries_test.go is untagged on purpose
+# (it drives the resolver through a `goos` argument, so it builds Windows-shaped paths on every host).
+# `go vet` typechecks the package TOGETHER WITH its test files under the target GOOS, so it catches
+# exactly that class for ~0.1 s per platform out of a ~21 s cold build. It compiles the tests without
+# running them, which is what this gate is: a COMPILE check.
+#
+# `./...` AND NOT `./cmd/orchicon ./cmd/orch`, and that scope was the second half of the same bug.
+# The FIRST fix (1efd8b40) added this vet but pointed it only at the two command packages, so it
+# still could not see the rest of the module — and the rest of the module carried the identical
+# defect: internal/mcpclient/manager_test.go was untagged, and its orphan/sweep tests call
+# `syscall.Kill(pid, 0)` and read `/proc/<pid>/{exe,stat,environ}`:
+#
+#   GOOS=windows go test -c ./internal/mcpclient
+#   internal/mcpclient/manager_test.go:363:20: undefined: syscall.Kill
+#
+# A gate scoped to the packages a platform happens to break IN is not a gate for that platform.
+# `./...` costs ~4 s on top of the two-package vet COLD (measured: 58 s -> 62 s for one platform,
+# because the `go build ./cmd/...` above already populates most of the module's cache) — nothing
+# beside the ~21 s build it rides on, and it is the difference between "the command packages
+# compile" and "the module compiles, tests included, for every platform we gate."
 
 # ALL THREE test targets, because each side added one to the same line: this branch adds the
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test cache-trim-test disk-report-test cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
-ci: ci-go fe-lint fe-test site-check ## Run the full CI gate locally (Go + frontend + landing page)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci: ci-go fe-lint fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
 tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)

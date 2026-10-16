@@ -58,7 +58,9 @@ func fakePgrep(t *testing.T) (marker string) {
 	return marker
 }
 
-func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+// shellQuote now lives in shquote_test.go, which has no build tag: it is pure
+// Go and is shared with the untagged binaries_test.go, so defining it in this
+// `!windows` file made THAT file uncompilable for Windows. See shquote_test.go.
 
 // startLiveParentedSleep starts a sleep that is THIS process's child: its
 // parent is alive, so it is not an orphan.

@@ -20,110 +20,139 @@ package main
 import (
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
-// containerResidency reports the plane residency a container was CREATED for,
-// read from its own environment.
+// residencyRecordFile is the per-instance record of the plane's SHAPE, written next to the other install
+// records in the instance state dir (ports.json, infra-binaries.json).
 //
-// The services-only flag is CREATE-time state — `docker start` cannot rewrite it
-// — so it is the authoritative record of an instance's shape: the supervisor
-// reads it to decide whether to boot the plane inside the container or leave it
-// to the host. A successful inspect with no flag means container residency,
-// which is what an instance created before the host-residency migration is.
+// RESIDENCY STOPPED BEING SOMETHING AN ENGINE IS ASKED ABOUT. It used to come from `docker inspect` on the
+// instance container's create-time environment (ORCHICON_CONTAINER_SERVICES_ONLY=1); with the container gone
+// there is nothing to inspect, and on a machine with no engine a `docker` invocation in an install path is
+// exactly the thing that fails silently. The installer therefore RECORDS the shape it created, and reads it
+// back. It is per-instance by construction (it lives in that instance's state dir), which is what keeps two
+// instances from disagreeing about each other's shape.
+const residencyRecordFile = "residency"
+
+// residencyRecordPath is <hostDataDir>/residency — the instance's own state dir, never a shared location.
+func residencyRecordPath(instance string) (string, error) {
+	dir, err := hostDataDir(instance)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, residencyRecordFile), nil
+}
+
+// recordedResidency reports the shape this install created for the instance.
 //
-// The bool reports whether the shape was readable at all: the caller must NOT
-// treat an unreadable shape as a mismatch, because recreating a live instance on
-// a transient inspect failure is worse than leaving a wrong-shaped one visible.
-func containerResidency(name string) (string, bool) {
-	out, err := exec.Command("docker", "inspect",
-		"--format", "{{range .Config.Env}}{{println .}}{{end}}", name).Output()
+// THE BOOL IS THE WHOLE POINT, and it is the direct successor of containerResidency's contract: ok=false
+// means the shape was NOT readable — absent, empty, or holding something that is not `host`/`container` — and
+// every caller must treat that as "leave it alone", NEVER as a mismatch. Recreating a live instance because
+// a shape could not be read is worse than leaving a wrong-shaped one for the operator to see.
+//
+// NO ERROR IS SURFACED, deliberately. An unreadable record cannot be turned into an error by a caller,
+// which is what makes the fail-safe mechanical rather than a discipline each call site has to remember.
+func recordedResidency(instance string) (string, bool) {
+	path, err := residencyRecordPath(instance)
 	if err != nil {
 		return "", false
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.TrimSpace(line) == "ORCHICON_CONTAINER_SERVICES_ONLY=1" {
-			return residencyHost, true
-		}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
 	}
-	return residencyContainer, true
+	switch v := strings.TrimSpace(string(b)); v {
+	case residencyHost, residencyContainer:
+		return v, true
+	default:
+		return "", false
+	}
 }
 
-// bridgeIP resolves the docker bridge address — the address a runtime container
-// on the default bridge uses to reach the HOST.
-//
-// A HOST-RESIDENT plane must bind it, and a published host port cannot be used
-// in its place: docker's hairpin NAT drops gateway→published-port traffic from
-// bridge containers, which is exactly the plane-channel MCP timeout this bind
-// removes.
-//
-// Resolution order mirrors container.sh: ORCHICON_DOCKER_BRIDGE_IP (tests and
-// hand-pinning) → docker's own IPAM config → the docker0 interface address.
-//
-// An unresolvable bridge is a HARD error. There is deliberately no 0.0.0.0
-// fallback — that is the LAN exposure the operator rejected — and no guessed
-// address, because a wrong bind surfaces much later as "workers cannot reach the
-// plane" rather than as a failure here.
-func bridgeIP() (string, error) {
-	if v := strings.TrimSpace(os.Getenv("ORCHICON_DOCKER_BRIDGE_IP")); v != "" {
-		return v, nil
+// recordResidency writes the shape down. Best-effort like writeResolvedPorts: the install has already
+// succeeded by the time this runs, and losing the record costs the operator a re-resolved shape, not a
+// broken instance.
+func recordResidency(instance, residency string) {
+	path, err := residencyRecordPath(instance)
+	if err != nil {
+		fmt.Printf("warning: could not locate the instance state dir to record the residency: %v\n", err)
+		return
 	}
-	if out, err := exec.Command("docker", "network", "inspect", "bridge",
-		"--format", "{{(index .IPAM.Config 0).Gateway}}").Output(); err == nil {
-		ip := strings.TrimSpace(string(out))
-		// The Go template prints "<no value>" for a nil gateway.
-		if ip != "" && ip != "<no value>" && ip != "null" {
-			return ip, nil
-		}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fmt.Printf("warning: could not record the residency shape: %v\n", err)
+		return
 	}
-	// docker0 fallback through net.Interfaces rather than shelling out to `ip`:
-	// no external binary, and it works wherever the interface is readable.
-	if iface, err := net.InterfaceByName("docker0"); err == nil {
-		if addrs, err := iface.Addrs(); err == nil {
-			for _, a := range addrs {
-				if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil {
-					return ipn.IP.String(), nil
-				}
-			}
-		}
+	if err := os.WriteFile(path, []byte(residency+"\n"), 0o644); err != nil {
+		fmt.Printf("warning: could not record the residency shape: %v\n", err)
 	}
-	return "", fmt.Errorf("cannot resolve the docker bridge address (docker network inspect bridge / docker0) — " +
-		"pin it with ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip>; refusing to guess or bind 0.0.0.0")
 }
 
-// healthArgs returns the container healthcheck overrides for a residency.
+// runtimeContainersEnv is the explicit override for whether runtime containers are in use. Unset means
+// "decide from the host" (see runtimeContainersInUse), which is what a plain install needs.
+const runtimeContainersEnv = "ORCHICON_RUNTIME_CONTAINERS"
+
+// containerEngineAvailable reports whether a container engine is INSTALLED, as a PATH probe.
 //
-// THE IMAGE'S HEALTHCHECK PROBES THE PLANE, and in host residency the plane is
-// NOT in the container — nothing listens on :8080 there, so a perfectly healthy
-// services-only container reports UNHEALTHY FOREVER. That is not hypothetical:
-// it was observed on a real instance this installer created (FailingStreak 92,
-// every probe exit 1) before the override was carried over.
+// IT IS A LookPath AND NOT AN ENGINE CALL, on purpose: `docker version` needs a running daemon and can
+// fail for a dozen reasons that have nothing to do with whether the binary exists, and a machine with no
+// Docker must be able to answer "no" without an error. The daemon check happens later, in install.go, and
+// ONLY when this returns true — so a host with no engine never runs a doomed `docker version`.
+func containerEngineAvailable() bool {
+	_, err := exec.LookPath("docker")
+	return err == nil
+}
+
+// runtimeContainersInUse reports whether this install should assume runtime containers. Order:
 //
-// scripts/container.sh documents exactly this and applies the same override
-// (its instance-scoped HEALTH_ARGS); the installer must agree with it, or an
-// installed host-resident instance looks broken while it is actually working —
-// which is worse than broken, because it teaches the operator to ignore the
-// container's health.
+//  1. ORCHICON_RUNTIME_CONTAINERS — an explicit answer (`0|off|no|false|none` = no, anything else = yes).
+//  2. ORCHICON_DOCKER_BRIDGE_IP non-empty — a PINNED bridge is proof of intent: an operator who named the
+//     bridge they want their containers to use is running containers.
+//  3. otherwise, the engine probe.
 //
-// Container residency needs NO override: the plane runs inside the container, so
-// the image's own :8080 probe is correct and is left to the image.
-func healthArgs(residency string) []string {
-	if residency != residencyHost {
-		return nil
+// The middle rung is what keeps a pinned-bridge host working with no daemon reachable, and it is why the
+// per-instance bind/URL test stays meaningful when the engine is absent.
+func runtimeContainersInUse() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(runtimeContainersEnv))) {
+	case "0", "off", "no", "false", "none":
+		return false
+	case "":
+		// fall through to the next rung
+	default:
+		return true
 	}
-	return []string{
-		"--health-cmd", "pg_isready -h localhost -p 5432 -U orchicon && curl -fs http://localhost:8222/healthz",
-		"--health-interval", "10s", "--health-timeout", "5s",
-		"--health-start-period", "30s", "--health-retries", "20",
+	if strings.TrimSpace(os.Getenv("ORCHICON_DOCKER_BRIDGE_IP")) != "" {
+		return true
 	}
+	return containerEngineAvailable()
+}
+
+// planeBindEnv is the ONE place the bridge bind and the advertised plane URL are computed.
+//
+// IT RETURNS ("", "", nil) WHEN RUNTIME CONTAINERS ARE NOT IN USE. That is the whole de-containerization
+// change: a local-mode user has no bridge, needs no bind, and must not have an install fail over it. It is
+// an ERROR only in the case where containers ARE in use — because there the bind is load-bearing: a plane
+// its own workers cannot reach is worse than one that refuses to start, and there is deliberately no
+// 0.0.0.0 fallback (that is the LAN exposure the operator rejected).
+//
+// BOTH VALUES COME FROM THIS ONE CALL — the same IP and the SAME instance's control port — because a bind
+// computed at one call site and a URL at another is how the two drift apart and how one instance's workers
+// end up pointed at another's plane. The port is read from the phase-0-resolved set, never re-derived.
+func planeBindEnv(ports map[string]int) (bind, url string, err error) {
+	if !runtimeContainersInUse() {
+		return "", "", nil
+	}
+	ip, err := bridgeIP()
+	if err != nil {
+		return "", "", err
+	}
+	control := ports["ORCHICON_CONTROL_PORT"]
+	return fmt.Sprintf("%s:%d", ip, control), fmt.Sprintf("http://%s:%d", ip, control), nil
 }
 
 // planeEnv builds the HOST plane's environment for an instance.
@@ -131,10 +160,12 @@ func healthArgs(residency string) []string {
 // EVERY value is derived from the RESOLVED ports, so no value can be global: a
 // shared HTTP port or plane URL would silently point one instance's workers at
 // the other's plane. The bind and the advertised URL are computed from the SAME
-// bridge IP and the SAME port in ONE place, so what the plane listens on and
-// what it hands its run containers can never disagree.
+// bridge IP and the SAME port in ONE place (planeBindEnv), so what the plane
+// listens on and what it hands its run containers can never disagree — and the
+// pair is present ONLY when runtime containers are in use, because a host with
+// no container engine has no bridge to bind and needs none.
 func planeEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket string) ([]string, error) {
-	ip, err := bridgeIP()
+	bind, url, err := planeBindEnv(ports)
 	if err != nil {
 		return nil, err
 	}
@@ -148,10 +179,6 @@ func planeEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket 
 		// keeps host clients (orch, the GUI) working and leaves the bridge address
 		// free for the listener that exists to serve runtime containers.
 		fmt.Sprintf("ORCHICON_HTTP_ADDR=127.0.0.1:%d", control),
-		// HOST-RESIDENT LISTENERS: the plane answers on loopback AND on the bridge
-		// at THIS instance's port, and hands its run containers THAT address.
-		fmt.Sprintf("ORCHICON_HTTP_EXTRA_BIND=%s:%d", ip, control),
-		fmt.Sprintf("ORCHICON_PLANE_PUBLIC_URL=http://%s:%d", ip, control),
 		fmt.Sprintf("ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:%d/orchicon?sslmode=disable", ports["ORCHICON_POSTGRES_PORT"]),
 		fmt.Sprintf("ORCHICON_NATS_URL=nats://localhost:%d", ports["ORCHICON_NATS_PORT"]),
 		fmt.Sprintf("ORCHICON_OTEL_ENDPOINT=localhost:%d", ports["ORCHICON_OTLP_GRPC_PORT"]),
@@ -162,13 +189,24 @@ func planeEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket 
 		fmt.Sprintf("ORCHICON_LOKI_URL=http://localhost:%d", ports["ORCHICON_LOKI_PORT"]),
 		fmt.Sprintf("ORCHICON_VM_URL=http://localhost:%d", ports["ORCHICON_VM_PORT"]),
 		// The KEK and ask-history live here; the VALUE moves between shapes, the
-		// expectation (<DataDir>/secrets/kek) does not — see migrateHostDataDir.
+		// expectation (<DataDir>/secrets/kek) does not — see ensureHostDataDir.
 		"ORCHICON_DATA_DIR=" + hostDataDir,
 		"ORCHICON_BLOB_DIR=" + filepath.Join(hostDataDir, "blobs"),
 		"ORCHICON_RUNTIME_SOCKET=" + runtimeSocket,
 		// Per-instance PID/log file for serve --detach/--stop: two host planes
 		// must never share one, or stopping dev would kill prod.
 		"ORCHICON_SERVE_STATE_DIR=" + filepath.Join(hostDataDir, "serve"),
+	}
+	// ONLY WHEN RUNTIME CONTAINERS ARE IN USE. Absent is the correct state for a host with no container
+	// engine: there is no bridge to bind, no run container to reach the plane, and inventing a wildcard
+	// bind here is the LAN exposure the operator rejected. See planeBindEnv — both entries come from that
+	// ONE call, so they cannot disagree, and they carry THIS instance's port so two instances cannot be
+	// pointed at each other's plane.
+	if bind != "" {
+		env = append(env,
+			"ORCHICON_HTTP_EXTRA_BIND="+bind,
+			"ORCHICON_PLANE_PUBLIC_URL="+url,
+		)
 	}
 	// Identity/keys the operator already set are INHERITED rather than invented —
 	// a deployment that picked its own tenant or signing key must keep them, or
@@ -211,81 +249,185 @@ func httpHealthy(url string, timeout time.Duration) bool {
 	return resp.StatusCode == 200
 }
 
-// migrateHostDataDir performs the ONE-TIME switch-over from a containerized
-// plane's data volume to the host path.
+// ensureHostDataDir prepares the HOST data dir before the plane starts, PRESERVING THE KEK.
 //
-// THE KEK LIVES AT <DataDir>/secrets/kek, so switching ORCHICON_DATA_DIR without
-// carrying it over ORPHANS EVERY TENANT SECRET — the data is still there and
-// simply stops decrypting. An existing host KEK is therefore never overwritten,
-// and a failure here is fatal rather than a warning.
+// THE KEK LIVES AT <DataDir>/secrets/kek, so pointing an instance at a data dir without carrying it over
+// ORPHANS EVERY TENANT SECRET — the data is still there and simply stops decrypting. Two rules follow, and
+// both are kept here even though the docker-volume COPY this function used to perform is gone:
 //
-// The copy is ONE docker invocation (busybox `cp -a`) rather than the launcher's
-// `docker run … tar cf - | tar xf -` pipeline: same result, no dependency on a
-// host `tar`, and no pipe to lose a partial copy through.
-func migrateHostDataDir(instance, volume, hostDataDir string, out io.Writer) error {
+//   - An EXISTING <DataDir>/secrets/kek is never overwritten and never re-minted. It is the operator's key
+//     material and the difference between a working instance and a decryptable-looking one.
+//   - A data dir that ALREADY HOLDS INSTANCE STATE (blobs/, serve/, ports.json, a postgres cluster) with NO
+//     KEK is a FATAL error, not a warning: minting a fresh KEK there orphans every tenant secret, and a
+//     warning on stdout is exactly how that goes unnoticed.
+//   - AN OPERATOR-MANAGED KEK IS NOT A MISSING KEK. secretcrypto.ResolveKEK returns an ORCHICON_SECRETS_KEK
+//     override VERBATIM and never writes <DataDir>/secrets/kek, so a deployment that supplies one — a
+//     documented mode that planeEnv deliberately inherits — reaches the guard below with a populated data dir
+//     and no key FILE. The key is not lost, it is supplied from outside, and the guard must not fire.
+//
+// WHY THE VOLUME COPY IS GONE: the container shape that wrote a docker volume is being retired, so there is
+// no container-era volume to migrate FROM on a fresh install. What must survive is the FAIL-SAFE, and it is
+// strictly stronger now — the guard runs on every install, not just the first switch-over.
+func ensureHostDataDir(instance, hostDataDir string, out io.Writer) error {
 	kekPath := filepath.Join(hostDataDir, "secrets", "kek")
 	if _, err := os.Stat(kekPath); err == nil {
 		fmt.Fprintf(out, "host data dir already carries a KEK (%s) — leaving it untouched\n", hostDataDir)
 		return nil
 	}
-	if err := exec.Command("docker", "volume", "inspect", volume).Run(); err != nil {
-		fmt.Fprintf(out, "no existing data volume (%s) — starting with a fresh host data dir\n", volume)
+	// AN OPERATOR-MANAGED KEK IS KEY MATERIAL, and it never lands in the file checked above: ResolveKEK
+	// returns the ORCHICON_SECRETS_KEK override verbatim. So a deployment that supplies it (KMS, a secret
+	// manager, one key shared across replicas — a mode planeEnv deliberately carries through) arrives here
+	// with blobs/, serve/ and a postgres cluster on disk and NO secrets/kek.
+	//
+	// THAT IS NOT A LOST KEK, so the guard below must not fire. Refusing here would break convergence for
+	// exactly the deployment the guard protects: a re-run of a healthy env-KEK install would stop with
+	// "ORPHANS EVERY TENANT SECRET" and tell the operator to restore a file that was never part of it. The
+	// rule is unchanged for the case that matters — state with NEITHER a key file NOR an override is still
+	// FATAL, because there a fresh KEK really would orphan stored secrets.
+	//
+	// The override is deliberately NOT validated here: a malformed one is the plane's warning to give
+	// (server.go logs "secrets KEK unavailable" and disables the store), and an install must not be refused
+	// over a setting.
+	if strings.TrimSpace(os.Getenv("ORCHICON_SECRETS_KEK")) != "" {
+		fmt.Fprintf(out, "the KEK for %s is supplied by ORCHICON_SECRETS_KEK — no secrets/kek file is minted or expected\n", hostDataDir)
 		return nil
 	}
-	listing, _ := exec.Command("docker", "run", "--rm", "-v", volume+":/from", "alpine", "ls", "-A", "/from").Output()
-	if strings.TrimSpace(string(listing)) == "" {
-		fmt.Fprintf(out, "data volume %s is empty — nothing to migrate\n", volume)
-		return nil
+	if err := os.MkdirAll(filepath.Join(hostDataDir, "secrets"), 0o700); err != nil {
+		return fmt.Errorf("create the host secrets dir %s: %w", filepath.Join(hostDataDir, "secrets"), err)
 	}
-	fmt.Fprintf(out, "first host switch-over for %s: copying volume %s to %s\n", instance, volume, hostDataDir)
-	if err := os.MkdirAll(hostDataDir, 0o755); err != nil {
-		return fmt.Errorf("create host data dir %s: %w", hostDataDir, err)
+	// Instance state with NO KEK: refuse. This is the orphan guard, and it is the reason this function is
+	// allowed to be an error rather than a log line.
+	if leftovers := hostDataDirInstanceState(hostDataDir); len(leftovers) > 0 {
+		return fmt.Errorf("the host data dir %s already holds instance state (%s) but no KEK at %s —\n"+
+			"  switching the data dir without the KEK ORPHANS EVERY TENANT SECRET, so this install will not mint a new one over it.\n"+
+			"  Restore %s from a backup, or move %s aside and install into a fresh dir",
+			hostDataDir, strings.Join(leftovers, ", "), kekPath, kekPath, hostDataDir)
 	}
-	copyCmd := exec.Command("docker", "run", "--rm",
-		"-v", volume+":/from", "-v", hostDataDir+":/to",
-		"alpine", "cp", "-a", "/from/.", "/to/")
-	if o, err := copyCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("copy %s to %s: %v: %s", volume, hostDataDir, err, strings.TrimSpace(string(o)))
-	}
-	if _, err := os.Stat(kekPath); err == nil {
-		fmt.Fprintln(out, "copied the instance data; KEK preserved, tenant secrets keep decrypting")
-	} else {
-		fmt.Fprintln(out, "warning: copied, but the volume has no secrets/kek — a NEW KEK will be created")
-	}
+	fmt.Fprintf(out, "no KEK yet in %s — one is minted on first boot\n", hostDataDir)
 	return nil
 }
 
-// waitServicesReady blocks until the container accepts postgres and nats
-// connections, so the host plane never boots its migrations against a
-// half-started backend.
+// hostDataDirInstanceState names the entries that prove a data dir belongs to a LIVE instance rather than
+// being a directory an install is still filling. It is deliberately a small, explicit list: these are the
+// artifacts the plane and its services create, and finding any of them without a KEK means the KEK was LOST
+// rather than never created.
 //
-// A timeout WARNS rather than failing, mirroring the launcher: a slow first boot
-// should not abort an install that is otherwise complete, and the plane's own
-// retries cover a backend that comes up late.
+// ports.json AND infra-binaries.json ARE NOT IN IT, and that is a correctness requirement rather than a
+// judgement call: `orchicon install` writes BOTH of them into this very directory EARLIER in the same run
+// (step 1.6 records the resolved ports, step 1.7 resolves the infra binaries) — before this guard is reached.
+// Counting them as instance state would refuse EVERY fresh install. They are records an install lays down,
+// not state an instance produces, and resolvedPortsFile says as much: "a state dir containing ONLY this file
+// is not an instance".
+func hostDataDirInstanceState(hostDataDir string) []string {
+	var found []string
+	for _, name := range []string{"blobs", "serve", "postgres", "config"} {
+		if _, err := os.Stat(filepath.Join(hostDataDir, name)); err == nil {
+			found = append(found, name)
+		}
+	}
+	return found
+}
+
 // waitServicesReady waits for an instance's services and REPORTS whether they came up. It used to return
 // nothing, so a caller could not act on "the stack is not ready" — which is one of the states the install's
 // repair pass exists to fix.
-func waitServicesReady(name string, out io.Writer) bool {
+//
+// A timeout WARNS rather than failing: a slow first boot should not abort an install that is otherwise
+// complete, and the plane's own retries cover a backend that comes up late. The WAIT is announced first,
+// because a silent minute reads as a hang.
+func waitServicesReady(instance string, ports map[string]int, out io.Writer) bool {
+	return waitServicesReadyFor(instance, ports, 60, time.Second, out)
+}
+
+// waitServicesReadyFor is waitServicesReady with the retry count and interval made explicit, so a test can
+// assert the announce-then-warn posture without sitting through a real minute. The exported behaviour is
+// exactly the wrapper above: announce → poll → warn → return whether it came up.
+func waitServicesReadyFor(instance string, ports map[string]int, tries int, sleep time.Duration, out io.Writer) bool {
+	// NO HOST ENDPOINT TO WAIT ON: see servicesReady for why this carrier cannot be probed from here, and why
+	// that is NOT the same as "not ready". There is deliberately no wait at all in that case — announcing one
+	// would print a countdown against port 0, i.e. a wait on nothing dressed as a wait.
+	if !servicesProbeableFromHost(ports) {
+		fmt.Fprintf(out, "%s services run inside the instance container and are published on no host port — "+
+			"their readiness is the plane's own health\n", instance)
+		return true
+	}
 	// Announced before the wait: this can sit here for a minute, and a silent minute
 	// reads as a hang.
-	fmt.Fprintf(out, "waiting for %s services (postgres 5432, nats monitor 8222) …\n", name)
-	for i := 0; i < 60; i++ {
-		if servicesReady(name) {
-			fmt.Fprintf(out, "%s services ready (postgres 5432, nats monitor 8222)\n", name)
+	fmt.Fprintf(out, "waiting for %s services (postgres 127.0.0.1:%d, nats monitor 127.0.0.1:%d) …\n",
+		instance, ports["ORCHICON_POSTGRES_PORT"], ports["ORCHICON_NATS_MONITOR_PORT"])
+	for i := 0; i < tries; i++ {
+		if servicesReady(instance, ports) {
+			fmt.Fprintf(out, "%s services ready (postgres 127.0.0.1:%d, nats monitor 127.0.0.1:%d)\n",
+				instance, ports["ORCHICON_POSTGRES_PORT"], ports["ORCHICON_NATS_MONITOR_PORT"])
 			return true
 		}
-		time.Sleep(time.Second)
+		time.Sleep(sleep)
 	}
-	fmt.Fprintf(out, "warning: %s services were not confirmed ready within 60s — continuing\n", name)
+	fmt.Fprintf(out, "warning: %s services were not confirmed ready within %s — continuing\n",
+		instance, time.Duration(tries)*sleep)
 	return false
 }
 
 // servicesReady asks the instance's services the same two questions the waiting loop does, as a boolean: is
 // Postgres accepting connections, and is the NATS monitor healthy.
-func servicesReady(name string) bool {
-	pg := exec.Command("docker", "exec", name, "pg_isready", "-h", "localhost", "-p", "5432", "-U", "orchicon")
-	nats := exec.Command("docker", "exec", name, "curl", "-fs", "http://localhost:8222/healthz")
-	return pg.Run() == nil && nats.Run() == nil
+//
+// THE PROBES ARE DIRECT, NOT `docker exec`. Asking the container was how the installer learned about the
+// services, and it encoded WHERE they live into the question — so a host with no container could not ask it
+// at all. These two probes work for BOTH host-reachable carriers (a 127.0.0.1 loopback publish from the
+// instance container in HOST residency, or a host process from host service residency), because they reach
+// the RESOLVED host ports either way.
+//
+// IT MUST NOT REPORT "NOT READY" FOR A CARRIER IT HAS NO HOST ENDPOINT FOR, and that is a real bug this
+// function used to have. A container-RESIDENT plane keeps postgres and nats in the container's OWN network
+// namespace and publishes NEITHER on a host port (install_ports.go: their ContainerBind is bindNone), so the
+// resolved port set for that shape names only the control and Grafana ports — the two service keys are
+// ABSENT, read as port 0, and the probe then asked a nonexistent endpoint and answered false. Consequence:
+// the install's own repair gate (`!healthy || !servicesReady(instance, ports)`) fired on EVERY
+// container-resident install, `docker restart`ing the instance container — and the plane inside it — on every
+// re-run over a perfectly healthy instance. That is the exact opposite of the convergence criterion 6 asks
+// for, and it is why the missing key answers TRUE below rather than false.
+//
+// TRUE IS ALSO TRUE IN SUBSTANCE THERE: container.go blocks the plane's boot on postgres → nats ("Block on
+// each so the plane never boots without its backends"), so a container-resident plane that answers /healthz
+// has its backends up, and the plane's health is the gate that actually applies to that carrier.
+func servicesReady(instance string, ports map[string]int) bool {
+	if !servicesProbeableFromHost(ports) {
+		// No host-visible endpoint: this is not this function's question. The fail-safe direction is the same
+		// one recordedResidency takes — never manufacture a negative you cannot observe (see above).
+		return true
+	}
+	pg := exec.Command(pgIsReadyBin(instance),
+		"-h", "127.0.0.1", "-p", strconv.Itoa(ports["ORCHICON_POSTGRES_PORT"]), "-U", "orchicon")
+	nats := fmt.Sprintf("http://127.0.0.1:%d/healthz", ports["ORCHICON_NATS_MONITOR_PORT"])
+	return pg.Run() == nil && httpHealthy(nats, 3*time.Second)
+}
+
+// servicesProbeableFromHost reports whether this instance has a host endpoint to ask at all, i.e. whether its
+// Postgres and NATS are published on a resolved host port.
+//
+// THE RESOLVED PORT SET IS THE RIGHT SIGNAL because it IS the carrier: activeInstallPorts gives the host
+// shape the service ports (they are published on 127.0.0.1 so a host plane can reach them) and gives the
+// container-resident shape only the control and Grafana ports (its services are internal). Keying on the
+// ports rather than on a residency string keeps the one place that decides which ports exist
+// (install_ports.go's table) authoritative.
+func servicesProbeableFromHost(ports map[string]int) bool {
+	return ports["ORCHICON_POSTGRES_PORT"] > 0 && ports["ORCHICON_NATS_MONITOR_PORT"] > 0
+}
+
+// pgIsReadyBin resolves the `pg_isready` to probe with — the one belonging to the PostgreSQL the install
+// actually resolved (recorded in the instance's infra-binaries.json), falling back to PATH.
+//
+// THE RECORDED BINARY FIRST, because the point of the record is that both server and client tools come from
+// THE SAME distribution: probing PATH on a host whose PATH holds an older postgres would ask a client that
+// does not match the server, and "is postgres ready" would answer for the wrong build. The PATH fallback
+// covers a hand-run instance that never went through the resolver — the same shape loadInfraBinaries already
+// accommodates.
+func pgIsReadyBin(instance string) string {
+	rec, err := loadInfraBinaries(hostDataDirFor(instance))
+	if err == nil && rec.PgIsReady != "" {
+		return rec.PgIsReady
+	}
+	return "pg_isready"
 }
 
 // planeDrift says whether the host plane now serving matches the binary this install put in place.
@@ -299,67 +441,6 @@ const (
 	// planeDrifted: the plane is running a superseded binary and should be restarted.
 	planeDrifted
 )
-
-// planeDrift identifies the serving plane from the instance's PID file and compares its executable with
-// this one.
-//
-// WHY THE PID FILE AND /proc: they are the only truthful source. A version endpoint would answer with
-// whatever the OLD process believes about itself, and a timestamp comparison cannot see a rebuilt binary of
-// the same version. `/proc/<pid>/exe` shows the APEX of the running process, and a replaced path reports
-// `(deleted)` — the exact fingerprint of "the installer overwrote the binary under a live plane".
-func planeDrift(instance string, out io.Writer) planeDriftState {
-	self, err := os.Executable()
-	if err != nil {
-		return planeUnknown
-	}
-	self, err = filepath.EvalSymlinks(self)
-	if err != nil {
-		return planeUnknown
-	}
-	pid, ok := servingPlanePID(instance)
-	if !ok {
-		return planeUnknown
-	}
-	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-	if err != nil {
-		return planeUnknown
-	}
-	// A path is `(deleted)`-suffixed once the file it names has been replaced. Anything else is compared
-	// against the binary we are running from.
-	if strings.HasSuffix(exe, " (deleted)") {
-		return planeDrifted
-	}
-	if exe != self {
-		// Serving from a DIFFERENT path than the binary this install just placed in the install dir. It may
-		// be a dev checkout serving deliberately; only a plane the INSTALLER started is ours to restart, and
-		// the PID file is what distinguishes them.
-		fmt.Fprintf(out, "  (plane runs from %s, not %s — leaving it)\n", exe, self)
-		return planeUnknown
-	}
-	return planeCurrent
-}
-
-// servingPlanePID reads the instance's detached-plane PID file and reports whether that process is alive.
-func servingPlanePID(instance string) (int, bool) {
-	dataDir, err := hostDataDir(instance)
-	if err != nil {
-		return 0, false
-	}
-	stateDir := filepath.Join(dataDir, "serve")
-	b, err := os.ReadFile(filepath.Join(stateDir, "pids", "orchicon.pid"))
-	if err != nil {
-		return 0, false
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || pid <= 0 {
-		return 0, false
-	}
-	// The PID file outlives the process; /proc is what says whether it is still that process.
-	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err != nil {
-		return 0, false
-	}
-	return pid, true
-}
 
 // stopHostPlane stops the instance's detached host plane, so the caller can start it on the installed
 // binary.
@@ -396,13 +477,149 @@ func stopHostPlane(instance string, out io.Writer) error {
 	return fmt.Errorf("the host plane for %s did not stop — it may still be shutting down", instance)
 }
 
-// servingPlaneAlive reports whether the instance's PID-file process is still running.
-func servingPlaneAlive(instance string) bool {
-	pid, ok := servingPlanePID(instance)
-	if !ok {
+// hostServicesPIDFile is where the host-services supervisor's PID is recorded, under the instance's own
+// serve dir so it is per-instance like every other piece of instance state.
+func hostServicesPIDFile(instance string) (string, error) {
+	dir, err := hostDataDir(instance)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "serve", "services.pid"), nil
+}
+
+// hostServicesAlive reports whether the host-services supervisor this installer started is still running, from
+// the PID file startHostServices records. A missing/unreadable/stale PID file is false, never an error: it is
+// the same "is anything of ours up?" question servingPlaneAlive answers for the plane, and the two together
+// are what let a re-run tell "this instance is running" from "this instance's records merely exist".
+func hostServicesAlive(instance string) bool {
+	pidFile, err := hostServicesPIDFile(instance)
+	if err != nil {
 		return false
 	}
-	return syscall.Kill(pid, 0) == nil
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return false
+	}
+	return pidAlive(pid)
+}
+
+// hostServicesPortEnvs are the port knobs the host-services supervisor reads (residency.go's
+// servicePortsFor), in the exact names install_ports.go and scripts/container.sh already use — so a
+// host-resident install needs no second vocabulary.
+var hostServicesPortEnvs = []string{
+	"ORCHICON_POSTGRES_PORT",
+	"ORCHICON_NATS_PORT",
+	"ORCHICON_NATS_MONITOR_PORT",
+	"ORCHICON_OTLP_GRPC_PORT",
+	"ORCHICON_OTLP_HTTP_PORT",
+	"ORCHICON_TEMPO_PORT",
+	"ORCHICON_LOKI_PORT",
+	"ORCHICON_VM_PORT",
+	"ORCHICON_GRAFANA_PORT",
+	"ORCHICON_TEMPO_OTLP_GRPC_PORT",
+	"ORCHICON_TEMPO_OTLP_HTTP_PORT",
+	"ORCHICON_OTEL_HEALTH_PORT",
+}
+
+// startHostServices starts the instance's SERVICES as HOST PROCESSES, detached, and records the PID.
+//
+// WHY A RE-EXEC AS `container`: container.go's supervisor ALREADY implements exactly this — runContainer
+// resolves the service residency, and with ORCHICON_SERVICE_RESIDENCY=host it runs postgres, nats and the
+// telemetry children as processes of the invoking user with NO control-plane child and no container engine
+// (container.go: `servicesOnly := servicesOnlyFromEnv() || residency == residencyHost`). Writing a second
+// supervisor here would be a second implementation of the same thing, so this re-execs this binary.
+//
+// IT IS IDEMPOTENT: already-ready services are left alone, which is what keeps a re-run a convergence rather
+// than a second stack racing the first for the same ports.
+func startHostServices(instance string, ports map[string]int, hostDataDir string, out io.Writer) error {
+	if servicesReady(instance, ports) {
+		fmt.Fprintf(out, "host services for %s are already ready — leaving them running\n", instance)
+		return nil
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate this binary to start the host services: %w", err)
+	}
+	// ORCHICON_CONTAINER_MODE is stripped for the same reason startHostPlane strips it: a stray export in a
+	// shell profile must never flip a host process into container semantics.
+	env := envWithout(os.Environ(), "ORCHICON_CONTAINER_MODE", servicesOnlyEnv)
+	env = append(env,
+		"ORCHICON_INSTANCE="+instance,
+		// THE ONE KNOB THAT DECIDES THE CARRIER: host services run as this user's processes.
+		"ORCHICON_SERVICE_RESIDENCY="+residencyHost,
+		"ORCHICON_DATA_DIR="+hostDataDir,
+	)
+	for _, k := range hostServicesPortEnvs {
+		if v, ok := ports[k]; ok {
+			env = append(env, fmt.Sprintf("%s=%d", k, v))
+		}
+	}
+	pidFile, err := hostServicesPIDFile(instance)
+	if err != nil {
+		return fmt.Errorf("resolve the host-services PID file for %s: %w", instance, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0o755); err != nil {
+		return fmt.Errorf("create the host-services state dir %s: %w", filepath.Dir(pidFile), err)
+	}
+	fmt.Fprintf(out, "starting the host services for %s (postgres, nats, telemetry as processes of this user) …\n", instance)
+	pid, err := startDetachedDaemonEnv(self, []string{"container"}, env, filepath.Join(hostDataDir, "services.log"))
+	if err != nil {
+		return fmt.Errorf("start the host services for %s: %w", instance, err)
+	}
+	// THE PID IS RECORDED because there is no pre-written PID file to read the way `serve --detach` has one:
+	// stopHostServices needs to know which process it may signal, and guessing by port owner would signal
+	// something this installer did not start.
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+		return fmt.Errorf("record the host-services PID at %s: %w", pidFile, err)
+	}
+	return nil
+}
+
+// stopHostServices stops the host-services supervisor this installer started, so the caller can start it
+// again on the installed binaries.
+//
+// A MISSING PID FILE IS NOT AN ERROR: an instance whose services were never started as host processes (or
+// were already stopped) has nothing to stop, and failing here would make the repair pass refuse to act.
+// A process that will not die IS an error — the port is still held and a start would fail.
+func stopHostServices(instance string, out io.Writer) error {
+	pidFile, err := hostServicesPIDFile(instance)
+	if err != nil {
+		return fmt.Errorf("resolve the host-services PID file for %s: %w", instance, err)
+	}
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		fmt.Fprintf(out, "no host services recorded for %s — nothing to stop\n", instance)
+		return nil
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		fmt.Fprintf(out, "no host services recorded for %s — nothing to stop\n", instance)
+		_ = os.Remove(pidFile)
+		return nil
+	}
+	if !pidAlive(pid) {
+		fmt.Fprintf(out, "the host services for %s (pid %d) are no longer running\n", instance, pid)
+		_ = os.Remove(pidFile)
+		return nil
+	}
+	if err := terminateProcess(pid); err != nil {
+		return fmt.Errorf("stop the host services for %s (pid %d): %w", instance, pid, err)
+	}
+	// BOUNDED, so a supervisor that ignores SIGTERM is REPORTED rather than slept through — the same posture
+	// stopHostPlane takes, and for the same reason: the ports are still held until it exits, so the start
+	// that follows would fail with a bind error that names nothing.
+	for i := 0; i < 40; i++ {
+		if !pidAlive(pid) {
+			_ = os.Remove(pidFile)
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("the host services for %s (pid %d) did not stop — they may still be shutting down", instance, pid)
 }
 
 // startHostPlane launches the HOST plane for an instance, detached, and waits

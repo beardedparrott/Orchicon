@@ -192,12 +192,12 @@ set +e
 OUT="$(bash "${INSTALLER}" --instance production --no-setup --dry-run 2>&1)"
 RC=$?
 set -e
-if [ "${RC}" -ne 0 ] && printf '%s' "${OUT}" | grep -q "unknown instance"; then
+if [ "${RC}" -ne 0 ] && grep -q "unknown instance" <<<"${OUT}"; then
   ok "an unknown instance is refused, naming the known set"
 else
   bad "an unknown instance is refused (rc=${RC}, said: $(printf '%s' "${OUT}" | head -1))"
 fi
-if printf '%s' "${OUT}" | grep -q "dev, test, prod"; then
+if grep -q "dev, test, prod" <<<"${OUT}"; then
   ok "the refusal names the valid choices"
 else
   bad "the refusal names the valid choices"
@@ -205,10 +205,10 @@ fi
 
 # And the instance must actually scope the acting: a dry-run force-clean for `test` may name ONLY test.
 OUT="$(bash "${INSTALLER}" --force-clean --instance test --dry-run 2>&1 || true)"
-if printf '%s' "${OUT}" | grep -q "orchicon-cnt-test" && ! printf '%s' "${OUT}" | grep -qE "orchicon-cnt-(dev|prod)"; then
+if grep -q "orchicon-cnt-test" <<<"${OUT}" && ! grep -qE "orchicon-cnt-(dev|prod)" <<<"${OUT}"; then
   ok "--instance test scopes the acting to the test container alone"
 else
-  bad "--instance test scopes the acting (named: $(printf '%s' "${OUT}" | grep -o 'orchicon-cnt-[a-z]*' | sort -u | tr '\n' ' '))"
+  bad "--instance test scopes the acting (named: $(grep -o 'orchicon-cnt-[a-z]*' <<<"${OUT}" | sort -u | tr '\n' ' '))"
 fi
 
 # --- 6. INSTALL ASKS WHICH INSTANCE (detached, so the no-terminal path is the one exercised)
@@ -225,18 +225,18 @@ detached() {
     --version "${VERSION}" --install-dir "${DEST}-d" "$@" < /dev/null 2>&1
 }
 OUT="$(detached --no-setup)"
-if printf '%s' "${OUT}" | grep -q "using 'dev'"; then
+if grep -q "using 'dev'" <<<"${OUT}"; then
   ok "with no terminal it takes the documented default (dev) rather than blocking"
 else
   bad "with no terminal it takes the documented default — got: $(printf '%s' "${OUT}" | head -2 | tr '\n' ' ')"
 fi
 OUT="$(detached --instance test --no-setup)"
-if printf '%s' "${OUT}" | grep -q "Installed"; then
+if grep -q "Installed" <<<"${OUT}"; then
   ok "--instance test is honoured without a prompt"
 else
   bad "--instance test is honoured (got: $(printf '%s' "${OUT}" | head -2 | tr '\n' ' '))"
 fi
-if printf '%s' "${OUT}" | grep -qi "Which instance"; then
+if grep -qi "Which instance" <<<"${OUT}"; then
   bad "--instance test still prompted — the flag must skip the question"
 else
   ok "and it does not prompt when the instance is given"
@@ -285,21 +285,106 @@ say ""
 say "[8] the install names the version's container image"
 
 INSTALLER_SRC="$(cat "${INSTALLER}")"
-if printf '%s' "${INSTALLER_SRC}" | grep -q 'ORCHICON_CONTAINER_IMAGE="\$image_ref"'; then
+if grep -q 'ORCHICON_CONTAINER_IMAGE="\$image_ref"' <<<"${INSTALLER_SRC}"; then
   ok "the setup step passes ORCHICON_CONTAINER_IMAGE"
 else
   bad "the setup step does not name the container image — the stack would come from whatever :latest the host has"
 fi
-if printf '%s' "${INSTALLER_SRC}" | grep -q 'image_ref="ghcr.io/'; then
+if grep -q 'image_ref="ghcr.io/' <<<"${INSTALLER_SRC}"; then
   ok "and the ref is derived from the version, not hardcoded"
 else
   bad "the image ref is not derived from the version"
 fi
 # ghcr requires a lowercase repository name, and GITHUB_REPO is "Orchicon".
-if printf '%s' "${INSTALLER_SRC}" | grep -q 'tr "\[:upper:\]" "\[:lower:\]"'; then
+if grep -q 'tr "\[:upper:\]" "\[:lower:\]"' <<<"${INSTALLER_SRC}"; then
   ok "and it is lowercased (ghcr rejects uppercase)"
 else
   bad "the image ref is not lowercased — ghcr would reject 'Orchicon'"
+fi
+
+# --- 9. THE INFRASTRUCTURE BINARIES HAVE ONE RESOLVER, AND IT RECORDS --------------
+# There is no image carrying postgres/nats any more, so the installer either finds them
+# on the host or downloads them. Both must go through ONE mechanism that RECORDS what it
+# resolved: a second resolution path (or a service proc falling back to a bare name on
+# PATH) would let the installer report one postgres while the services run another, and
+# a downloaded binary would be invisible to a proc that only knew the name. Asserted at
+# the source because the assertion is about WHICH CALL PATH exists, which no run of the
+# installer against a local artifact can observe.
+say ""
+say "[9] the infrastructure binaries have one resolver, and it records"
+
+BINARIES_SRC_FILE="${REPO_ROOT}/cmd/orchicon/binaries.go"
+if [ -f "${BINARIES_SRC_FILE}" ]; then
+  ok "cmd/orchicon/binaries.go exists (the single acquisition mechanism)"
+else
+  bad "cmd/orchicon/binaries.go is missing — postgres/nats would come from PATH only"
+fi
+BINARIES_SRC="$(cat "${BINARIES_SRC_FILE}" 2>/dev/null || true)"
+if grep -q 'func acquireInfraBinaries(' <<<"${BINARIES_SRC}"; then
+  ok "it exposes one acquisition entry point (acquireInfraBinaries)"
+else
+  bad "acquireInfraBinaries is missing — components would resolve the binaries independently"
+fi
+if grep -q 'infra-binaries.json' <<<"${BINARIES_SRC}"; then
+  ok "it records what it resolved"
+else
+  bad "the resolver does not record its result — a second component would re-derive it and could disagree"
+fi
+if grep -q 'checksum mismatch' <<<"${BINARIES_SRC}"; then
+  ok "a checksum mismatch is a hard failure"
+else
+  bad "no checksum-mismatch refusal — an unverified download could be used"
+fi
+if grep -q 'minPostgresMajor' <<<"${BINARIES_SRC}"; then
+  ok "a detected PostgreSQL is version-checked against a documented minimum"
+else
+  bad "no minimum PostgreSQL version — a too-old detected server would be attempted"
+fi
+
+# The CONSUMERS must read the record, not a bare name. A service proc that still
+CONTAINER_SRC="$(cat "${REPO_ROOT}/cmd/orchicon/container.go")"
+if grep -q 's.resolved().Postgres' <<<"${CONTAINER_SRC}" \
+   && grep -q 's.resolved().Initdb' <<<"${CONTAINER_SRC}" \
+   && grep -q 's.resolved().Createdb' <<<"${CONTAINER_SRC}" \
+   && grep -q 's.resolved().NatsServer' <<<"${CONTAINER_SRC}"; then
+  ok "every service proc execs the RESOLVED path"
+else
+  bad "a service proc does not use the resolved path — a DOWNLOADED binary would be invisible to it"
+fi
+# The EXACT invocation literals the bare-name version used. Checking the invocation
+# (not the word) matters: "postgres" also appears as a log-field key and a subdir name,
+# and matching those would be a false failure that teaches the operator to ignore this
+# check.
+bare=""
+for literal in '"initdb", "-D"' '"postgres", "-D"' 'exec.CommandContext(ctx, "createdb"' 'command: "nats-server"'; do
+  if grep -qF "${literal}" <<<"${CONTAINER_SRC}"; then
+    bare="${bare}
+  ${literal}"
+  fi
+done
+if [ -z "${bare}" ]; then
+  ok "no bare infrastructure-binary name is exec'd (the resolved paths replaced every one)"
+else
+  bad "a bare infrastructure-binary invocation survives — a DOWNLOADED binary would be invisible to it:${bare}"
+fi
+
+# THE RESOLVED BIN DIR MUST REACH THE INSTANCE. A host-side resolution is only
+# useful if the services container can SEE it: a build downloaded under the
+# instance's host state dir is not on the container's PATH, so without this mount
+# the container's supervisor would resolve for itself and download a second copy
+# (or fail). Source-level, because it is about which docker arg is constructed.
+INSTALL_GO_SRC="$(cat "${REPO_ROOT}/cmd/orchicon/install.go")"
+if grep -qF 'infraBinDirName)+":"+binDir("/var/lib/orchicon")' <<<"${INSTALL_GO_SRC}"; then
+  ok "the resolved bin dir is mounted into the instance (a DOWNLOADED binary is visible to its procs)"
+else
+  bad "the resolved bin dir is not mounted — a DOWNLOADED binary would be invisible to the instance's procs"
+fi
+
+# Documentation of the minimum version, because it is a support promise.
+if grep -q 'Minimum supported PostgreSQL' "${REPO_ROOT}/ARCHITECTURE.md"; then
+  ok "ARCHITECTURE.md documents the minimum supported PostgreSQL"
+else
+  bad "the minimum supported PostgreSQL version is not documented"
 fi
 
 say ""

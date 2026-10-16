@@ -1,13 +1,16 @@
-# OTel collector config for the Orchicon single-container image.
-# All backends are localhost (same network namespace). Tempo's OTLP HTTP
-# receiver is on :14318 (offset from the collector's own :4318).
+# OTel collector config for the Orchicon supervised service set.
+# @DATA_DIR@ and the @…_PORT@ tokens are replaced at startup from the
+# instance's resolved port table (see tempo.yaml's header). The backend
+# endpoints are the SAME resolved ports the children bind — including Tempo's
+# offset OTLP HTTP receiver, which is @TEMPO_OTLP_HTTP_PORT@ rather than the
+# collector's own @COLLECTOR_OTLP_HTTP_PORT@.
 receivers:
   otlp:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:4317
+        endpoint: 0.0.0.0:@COLLECTOR_OTLP_GRPC_PORT@
       http:
-        endpoint: 0.0.0.0:4318
+        endpoint: 0.0.0.0:@COLLECTOR_OTLP_HTTP_PORT@
 
 processors:
   batch:
@@ -21,25 +24,25 @@ processors:
 exporters:
   # Traces → Tempo (OTLP HTTP).
   otlphttp/tempo:
-    endpoint: http://localhost:14318
+    endpoint: http://localhost:@TEMPO_OTLP_HTTP_PORT@
     tls:
       insecure: true
   # Logs → Loki (OTLP HTTP endpoint).
   otlphttp/loki:
-    endpoint: http://localhost:3100/otlp
+    endpoint: http://localhost:@LOKI_HTTP_PORT@/otlp
     tls:
       insecure: true
   # Metrics → VictoriaMetrics (Prometheus remote write).
   # add_metric_suffixes=false keeps the canonical orchidicon_* names.
   prometheusremotewrite:
-    endpoint: http://localhost:8428/api/v1/write
+    endpoint: http://localhost:@VM_HTTP_PORT@/api/v1/write
     add_metric_suffixes: false
     resource_to_telemetry_conversion:
       enabled: true
 
 extensions:
   health_check:
-    endpoint: 0.0.0.0:13133
+    endpoint: 0.0.0.0:@COLLECTOR_HEALTH_PORT@
 
 service:
   extensions: [health_check]

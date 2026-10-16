@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -102,9 +104,15 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 		"ORCHICON_NATS_MONITOR_PORT": {8222, 8223, 8224, 8222},
 		"ORCHICON_OTLP_GRPC_PORT":    {4317, 4319, 4321, 4317},
 		"ORCHICON_OTLP_HTTP_PORT":    {4318, 4320, 4322, 4318},
-		"ORCHICON_TEMPO_PORT":        {3200, 3201, 3202, 3200},
-		"ORCHICON_LOKI_PORT":         {3100, 3101, 3102, 3100},
-		"ORCHICON_VM_PORT":           {8428, 8429, 8430, 8428},
+		// The offset receivers and the collector health endpoint: no container-side
+		// publish, but they still need per-instance host defaults or two host
+		// instances collide on the same number.
+		"ORCHICON_TEMPO_OTLP_GRPC_PORT": {14317, 14318, 14319, 14317},
+		"ORCHICON_TEMPO_OTLP_HTTP_PORT": {14318, 14319, 14320, 14318},
+		"ORCHICON_OTEL_HEALTH_PORT":     {13133, 13134, 13135, 13133},
+		"ORCHICON_TEMPO_PORT":           {3200, 3201, 3202, 3200},
+		"ORCHICON_LOKI_PORT":            {3100, 3101, 3102, 3100},
+		"ORCHICON_VM_PORT":              {8428, 8429, 8430, 8428},
 	}
 	for _, p := range installerPorts() {
 		w, ok := wantDefaults[p.Env]
@@ -562,5 +570,116 @@ func TestNextFreePortHonoursClaimed(t *testing.T) {
 	}
 	if got != 7002 {
 		t.Fatalf("nextFreePortFor = %d, want 7002 (both claimed ports skipped)", got)
+	}
+}
+
+// TestRerunOnARunningHostInstanceKeepsItsPorts is acceptance criterion 6 at the PORT RESOLVER: a re-run on a
+// healthy no-engine instance CONVERGES — it keeps the ports the instance is already bound on rather than
+// re-resolving them away.
+//
+// WHY THIS EXISTS, and it was measured rather than reasoned about. Rung 0 of resolveInstallPorts ("a running
+// instance of ours owns its ports") asked a CONTAINER, so the de-containerization gated it behind the engine
+// probe — correct, since `docker inspect` may not run on a host with no engine — but left the no-engine host
+// with NO rung 0 at all. A re-run then went straight to fresh resolution and probed the instance's OWN
+// listeners as conflicts: control 8092→8093, postgres 5434→5435, Grafana 3004→3005. Downstream that is not
+// merely cosmetic: startHostServices' readiness probe asks the SHIFTED ports, finds nothing, and starts a
+// SECOND host stack beside the running one, while startHostPlane tries a second plane. Two stacks on one
+// instance is the opposite of convergence, and the ports the operator sees change under them.
+//
+// The instance is made "running" with the records a real install leaves and the liveness the real probes read:
+// the plane's PID file names THIS test process (a certainly-alive PID, exactly as install_converge_test.go
+// does), and the instance's ports are held by real listeners so a re-resolution WOULD move them.
+func TestRerunOnARunningHostInstanceKeepsItsPorts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir()) // no docker, no pg_isready: the no-engine host
+	t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
+	t.Setenv("ORCHICON_STRICT_PORTS", "")
+	for _, p := range activeInstallPorts(residencyHost) {
+		t.Setenv(p.Env, "")
+	}
+
+	// WHAT A PREVIOUS INSTALL LEFT BEHIND, for THIS instance.
+	recordResidency("test", residencyHost)
+	recorded := map[string]int{}
+	for _, p := range activeInstallPorts(residencyHost) {
+		d, ok := p.defaultFor("test")
+		if !ok {
+			t.Fatalf("the port table has no default for test/%s", p.Env)
+		}
+		recorded[p.Env] = d
+	}
+	writeResolvedPorts("test", recorded)
+
+	// THE INSTANCE IS UP: its detached plane's PID file names a live process.
+	dataDir, err := hostDataDir("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pidDir := filepath.Join(dataDir, "serve", "pids")
+	if err := os.MkdirAll(pidDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pidDir, "orchicon.pid"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !servingPlaneAlive("test") {
+		t.Fatal("the fixture's plane must read as alive")
+	}
+
+	// ...and its ports are BOUND, so a fresh resolution would have to move them. Every port the shape owns
+	// is held, so the test cannot pass merely because nothing collided.
+	var held []net.Listener
+	defer func() {
+		for _, l := range held {
+			_ = l.Close()
+		}
+	}()
+	for _, p := range activeInstallPorts(residencyHost) {
+		l, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(recorded[p.Env]))
+		if err != nil {
+			t.Skipf("port %d is not free in this environment: %v", recorded[p.Env], err)
+		}
+		held = append(held, l)
+	}
+
+	var out bytes.Buffer
+	got, err := resolveInstallPorts("test", residencyHost, &out, nil)
+	if err != nil {
+		t.Fatalf("resolveInstallPorts: %v", err)
+	}
+	if !strings.Contains(out.String(), "keeping its ports") {
+		t.Errorf("a re-run on a running instance must say it is keeping its ports; got:\n%s", out.String())
+	}
+	for env, want := range recorded {
+		if got[env] != want {
+			t.Errorf("%s moved on a re-run: %d -> %d (a re-run must CONVERGE, not re-resolve the instance's own "+
+				"ports away — the shifted ports then get a second host stack started on them)", env, want, got[env])
+		}
+	}
+
+	// A STOPPED INSTANCE IS NOT PROTECTED BY ITS STALE RECORD: with nothing of ours alive, the resolver must
+	// fall through and resolve fresh (here onto the same free defaults), never bind a port on the strength of a
+	// file alone. The listeners are released first so this half is a stopped instance, not a held port set.
+	for _, l := range held {
+		_ = l.Close()
+	}
+	held = nil
+	if err := os.WriteFile(filepath.Join(pidDir, "orchicon.pid"), []byte("999999999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if servingPlaneAlive("test") {
+		t.Fatal("a PID that names no live process must not read as a plane")
+	}
+	var out2 bytes.Buffer
+	got2, err := resolveInstallPorts("test", residencyHost, &out2, nil)
+	if err != nil {
+		t.Fatalf("resolveInstallPorts (stopped): %v", err)
+	}
+	if strings.Contains(out2.String(), "keeping its ports") {
+		t.Errorf("a STOPPED instance must not reuse a stale record; got:\n%s", out2.String())
+	}
+	if got2["ORCHICON_CONTROL_PORT"] != recorded["ORCHICON_CONTROL_PORT"] {
+		t.Errorf("control port = %d, want the free default %d", got2["ORCHICON_CONTROL_PORT"], recorded["ORCHICON_CONTROL_PORT"])
 	}
 }
