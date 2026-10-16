@@ -812,3 +812,110 @@ func TestMountedBinDirIsDetected(t *testing.T) {
 		t.Errorf("NatsServer = %q, want a path under the container data dir (%s)", rec.NatsServer, guestData)
 	}
 }
+
+// TestExtractRefusesALinkThatEscapesTheDestination pins the escape a NAME-ONLY
+// check cannot see.
+//
+// extractRelPath rejects absolute names and `..` segments, so the joined path is
+// textually inside dst — but an archive can create a symlink first and then write
+// THROUGH it, and filepath.Join cannot notice. Probed against a hand-built tampered
+// archive: `root/evil -> <a directory outside dst>` followed by `root/evil/pwned`
+// wrote outside the destination before the link/join checks existed. An archive is
+// untrusted input even when its checksum matches — the checksum proves which bytes
+// arrived, not that they are safe to unpack.
+func TestExtractRefusesALinkThatEscapesTheDestination(t *testing.T) {
+	t.Run("symlink-then-write-through-it", func(t *testing.T) {
+		dst := t.TempDir()
+		outside := t.TempDir()
+		archive := filepath.Join(t.TempDir(), "a.tar.gz")
+		if err := os.WriteFile(archive, tarGzEntries(t, []tarEntry{
+			{name: "root/evil", link: outside, symlink: true},
+			{name: "root/evil/pwned", body: "escaped"},
+		}), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		a, _ := artifactFor("postgres")
+		if err := extractTarGz(archive, a, dst, "linux"); err == nil {
+			t.Fatal("a link pointing outside the destination must be refused")
+		}
+		if _, err := os.Stat(filepath.Join(outside, "pwned")); err == nil {
+			t.Fatal("the escape SUCCEEDED: a file was written outside the destination")
+		}
+	})
+
+	t.Run("absolute-outside-target", func(t *testing.T) {
+		dst := t.TempDir()
+		archive := filepath.Join(t.TempDir(), "a.tar.gz")
+		if err := os.WriteFile(archive, tarGzEntries(t, []tarEntry{
+			{name: "root/escape", link: "/etc/passwd", symlink: true},
+		}), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		a, _ := artifactFor("postgres")
+		if err := extractTarGz(archive, a, dst, "linux"); err == nil {
+			t.Fatal("an absolute link target outside the destination must be refused")
+		}
+	})
+
+	// The refusal must not be blanket: the pinned PostgreSQL build legitimately
+	// carries sibling symlinks in lib/ (libpq.so -> libpq.so.5.16), and rejecting
+	// those would break the download path the whole feature exists for.
+	t.Run("sibling-links-are-still-accepted", func(t *testing.T) {
+		dst := t.TempDir()
+		archive := filepath.Join(t.TempDir(), "a.tar.gz")
+		if err := os.WriteFile(archive, tarGzEntries(t, []tarEntry{
+			{name: "root/lib/libpq.so.5.16", body: "real"},
+			{name: "root/lib/libpq.so", link: "libpq.so.5.16", symlink: true},
+		}), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		a, _ := artifactFor("postgres")
+		if err := extractTarGz(archive, a, dst, "linux"); err != nil {
+			t.Fatalf("a sibling symlink inside the destination must be accepted: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(dst, "lib", "libpq.so")); err != nil {
+			t.Errorf("the sibling symlink must exist: %v", err)
+		}
+	})
+}
+
+// tarEntry describes one fixture archive entry for tarGzEntries.
+type tarEntry struct {
+	name    string
+	body    string
+	link    string
+	symlink bool
+}
+
+// tarGzEntries builds a .tar.gz from an ORDERED entry list, so a test can pin an
+// archive in which one entry deliberately precedes another.
+func tarGzEntries(t *testing.T, entries []tarEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, e := range entries {
+		h := &tar.Header{Name: e.name, Mode: 0o755, Size: int64(len(e.body))}
+		switch {
+		case e.symlink:
+			h.Typeflag, h.Linkname = tar.TypeSymlink, e.link
+		default:
+			h.Typeflag = tar.TypeReg
+		}
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+		if e.body != "" {
+			if _, err := tw.Write([]byte(e.body)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}

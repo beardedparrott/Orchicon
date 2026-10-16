@@ -154,7 +154,10 @@ type acquireOptions struct {
 	// must not accidentally succeed because the machine running it happens to have
 	// /usr/lib/postgresql/*/bin installed.
 	RestrictToPath bool
-	// Out is the progress stream (default os.Stdout).
+	// Out is the progress stream. A nil Out means NOTHING is written
+	// (progressOut returns io.Discard); the production constructors
+	// (defaultAcquireOptions) set os.Stdout, and tests that do not care pass
+	// io.Discard explicitly.
 	Out io.Writer
 }
 
@@ -848,7 +851,10 @@ func extractTarGz(archive string, a infraArtifact, dst, goos string) error {
 		if skip {
 			continue
 		}
-		target := filepath.Join(dst, rel)
+		target, err := secureJoin(dst, rel)
+		if err != nil {
+			return fmt.Errorf("%s: %w", archive, err)
+		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
@@ -858,13 +864,24 @@ func extractTarGz(archive string, a infraArtifact, dst, goos string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return fmt.Errorf("create %s: %w", filepath.Dir(target), err)
 			}
-			_ = os.Remove(target)
-			link := hdr.Linkname
+			// A LINK'S TARGET IS UNTRUSTED INPUT TOO, and validating only the entry
+			// NAME above leaves the escape this used to have: a symlink whose target
+			// is outside dst, followed by an entry that writes THROUGH it, lands
+			// outside the instance data dir (probed against a real tampered archive:
+			// it did). So the target is resolved and required to stay inside dst
+			// before anything is created.
+			link, base := hdr.Linkname, filepath.Dir(target)
 			if hdr.Typeflag == tar.TypeLink {
-				if lrel, lskip, err := extractRelPath(link, a, goos); err == nil && !lskip {
-					link = filepath.Join(dst, lrel)
+				lrel, lskip, lerr := extractRelPath(link, a, goos)
+				if lerr != nil || lskip {
+					return fmt.Errorf("%s: hard link %s -> %q is not a usable entry: %v", archive, hdr.Name, hdr.Linkname, lerr)
 				}
+				link, base = filepath.Join(dst, lrel), dst
 			}
+			if err := checkLinkTarget(dst, base, link); err != nil {
+				return fmt.Errorf("%s: %w", archive, err)
+			}
+			_ = os.Remove(target)
 			if err := os.Symlink(link, target); err != nil && !os.IsExist(err) {
 				return fmt.Errorf("symlink %s: %w", target, err)
 			}
@@ -891,7 +908,10 @@ func extractZip(archive string, a infraArtifact, dst, goos string) error {
 		if skip {
 			continue
 		}
-		target := filepath.Join(dst, rel)
+		target, err := secureJoin(dst, rel)
+		if err != nil {
+			return fmt.Errorf("%s: %w", archive, err)
+		}
 		if f.FileInfo().IsDir() {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return fmt.Errorf("create %s: %w", target, err)
@@ -960,6 +980,60 @@ func pathIsAbs(n string) bool {
 		return true
 	}
 	return len(n) >= 2 && n[1] == ':'
+}
+
+// secureJoin joins an already-validated entry-relative path onto dst, refusing to
+// TRAVERSE a symlinked component on the way there.
+//
+// VALIDATING THE NAME IS NOT ENOUGH. extractRelPath rejects absolute names and
+// `..` segments, so the joined path is textually inside dst — but a symlink
+// created earlier in the SAME archive can point a later entry's parent back out of
+// dst, and filepath.Join cannot see that. (Probed: a `root/evil -> <a directory
+// outside dst>` symlink followed by `root/evil/pwned` wrote outside dst.) Every
+// component below dst is therefore lstat'd, and a symlink anywhere along the way is
+// a refusal rather than a write.
+func secureJoin(dst, rel string) (string, error) {
+	target := filepath.Join(dst, rel)
+	base := filepath.Clean(dst)
+	// Split on the ARCHIVE's separator ('/'), not the host's: on Windows
+	// filepath.Separator is '\\', so splitting on it would leave the whole relative
+	// path as one segment and silently skip the intermediate-component check.
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(rel)), "/")
+	cur := base
+	for i, p := range parts {
+		cur = filepath.Join(cur, filepath.FromSlash(p))
+		if i == len(parts)-1 {
+			break // the leaf itself is replaced or created, not traversed
+		}
+		if st, err := os.Lstat(cur); err == nil && st.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("refusing to extract %q — %s is a symlink, so the entry would escape the destination", rel, cur)
+		}
+	}
+	return target, nil
+}
+
+// checkLinkTarget requires a link's resolved target to stay inside dst. An
+// absolute target is legal ONLY when it is already inside dst (a hard link to a
+// sibling we just unpacked); anything pointing out of the instance data dir is
+// refused, never created.
+//
+// An archive is untrusted input even when its checksum matches: the checksum
+// proves WHICH bytes arrived, not that their contents are safe to unpack.
+func checkLinkTarget(dst, base, link string) error {
+	if strings.TrimSpace(link) == "" {
+		return errors.New("refusing a link with an empty target")
+	}
+	var joined string
+	if filepath.IsAbs(link) || pathIsAbs(link) {
+		joined = filepath.Clean(filepath.FromSlash(link))
+	} else {
+		joined = filepath.Clean(filepath.Join(base, filepath.FromSlash(link)))
+	}
+	want := filepath.Clean(dst)
+	if joined == want || strings.HasPrefix(joined, want+string(filepath.Separator)) {
+		return nil
+	}
+	return fmt.Errorf("refusing a link to %q — it would escape the destination (%s)", link, joined)
 }
 
 // writeExtracted writes one extracted file, clearing the executable bit on
