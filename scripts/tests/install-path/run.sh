@@ -368,6 +368,18 @@ else
   bad "a bare infrastructure-binary invocation survives — a DOWNLOADED binary would be invisible to it:${bare}"
 fi
 
+# THE RESOLVED BIN DIR MUST REACH THE INSTANCE. A host-side resolution is only
+# useful if the services container can SEE it: a build downloaded under the
+# instance's host state dir is not on the container's PATH, so without this mount
+# the container's supervisor would resolve for itself and download a second copy
+# (or fail). Source-level, because it is about which docker arg is constructed.
+INSTALL_GO_SRC="$(cat "${REPO_ROOT}/cmd/orchicon/install.go")"
+if printf '%s' "${INSTALL_GO_SRC}" | grep -qF 'infraBinDirName)+":"+binDir("/var/lib/orchicon")'; then
+  ok "the resolved bin dir is mounted into the instance (a DOWNLOADED binary is visible to its procs)"
+else
+  bad "the resolved bin dir is not mounted — a DOWNLOADED binary would be invisible to the instance's procs"
+fi
+
 # Documentation of the minimum version, because it is a support promise.
 if grep -q 'Minimum supported PostgreSQL' "${REPO_ROOT}/ARCHITECTURE.md"; then
   ok "ARCHITECTURE.md documents the minimum supported PostgreSQL"

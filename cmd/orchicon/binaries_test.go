@@ -919,3 +919,49 @@ func tarGzEntries(t *testing.T, entries []tarEntry) []byte {
 	}
 	return buf.Bytes()
 }
+
+// ----- the real host (no fixture, no network) -----
+
+// TestRealHostInstallIsDetectedAndNotDownloaded is the one case a fixture CANNOT
+// make: that detection finds a REAL install on the machine running the suite, in
+// whatever layout that machine actually uses, and reaches for the network for
+// nothing.
+//
+// IT IS GUARDED SO IT CAN NEVER DOWNLOAD. The pre-flight bails on a host without a
+// complete install, and SkipDownload makes "did not download" a hard property of the
+// call rather than an assumption — if detection were wrong, this fails loudly
+// instead of fetching a build. That matters because the fixture tests can all pass
+// while a real host's layout is rejected: the Debian/Ubuntu server lives in
+// /usr/lib/postgresql/<major>/bin with its share dir at /usr/share/postgresql/<major>,
+// NOT beside bin/, so a share-dir check that only looked beside bin/ would reject a
+// perfectly good distro install and this would be the only test that noticed.
+func TestRealHostInstallIsDetectedAndNotDownloaded(t *testing.T) {
+	dataDir := t.TempDir()
+	opt := defaultAcquireOptions(dataDir)
+	opt.Out = io.Discard
+
+	det, err := detectInfraBinaries(opt)
+	if err != nil {
+		t.Skipf("this host has no usable PostgreSQL install to detect: %v", err)
+	}
+	if len(det.missing) > 0 {
+		t.Skipf("this host is missing %v — nothing to detect", det.missing)
+	}
+
+	opt.SkipDownload = true // a hard guarantee that this test never reaches the network
+	rec, err := acquireInfraBinaries(context.Background(), opt)
+	if err != nil {
+		t.Fatalf("a host with a complete install must be DETECTED, not downloaded: %v", err)
+	}
+	if rec.Source != "detected" {
+		t.Errorf("Source = %q, want \"detected\" on a host that already has both", rec.Source)
+	}
+	if strings.HasPrefix(rec.Postgres, dataDir) {
+		t.Errorf("Postgres = %q is under the data dir — a real detected install must be used in place, not re-fetched", rec.Postgres)
+	}
+	// The detected server must be one this build will actually accept, so a detected
+	// host does not fail the very next check after being accepted here.
+	if major, ok := parsePostgresMajor(rec.PostgresVersion); !ok || major < minPostgresMajor {
+		t.Errorf("detected PostgreSQL %q parses to major %d (ok=%v), want >= %d", rec.PostgresVersion, major, ok, minPostgresMajor)
+	}
+}
