@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	assets "github.com/beardedparrott/orchicon"
 )
@@ -542,6 +543,119 @@ func TestServiceProbeMatchesItsBindArg(t *testing.T) {
 				t.Errorf("victoriametrics does not listen on the probed port %d: %s", p.vm, vm)
 			}
 		})
+	}
+}
+
+// Criterion 4: container residency is UNCHANGED. The pre-change argv and probe
+// ports are pinned here as literals, so any drift in the container path — not
+// just in the host path — fails loudly. (The residency refactor routes these
+// through s.ports / asUser; for container residency those must resolve to
+// exactly these values.)
+func TestContainerResidencyArgvUnchanged(t *testing.T) {
+	s := &supervisor{log: testLogger(), dataDir: t.TempDir(), hostUID: 70, hostGID: 70,
+		residency: residencyContainer, ports: servicePortsFor(residencyContainer)}
+
+	pg := s.postgresProc()
+	if pg.command != "setpriv" {
+		t.Fatalf("container postgres command = %q, want setpriv", pg.command)
+	}
+	wantPG := "--reuid=70 --regid=70 --clear-groups postgres -D " + filepath.Join(s.dataDir, "postgres") + " -p 5432 -c listen_addresses=localhost"
+	if got := strings.Join(pg.args, " "); got != wantPG {
+		t.Errorf("container postgres argv drifted:\n got %s\nwant %s", got, wantPG)
+	}
+
+	wantNats := "-js -sd " + filepath.Join(s.dataDir, "nats") + " -p 4222 -m 8222"
+	if got := strings.Join(s.natsProc().args, " "); got != wantNats {
+		t.Errorf("container nats argv drifted:\n got %s\nwant %s", got, wantNats)
+	}
+
+	wantVM := "-storageDataPath=" + filepath.Join(s.dataDir, "victoriametrics") + " -retentionPeriod=720h -httpListenAddr=:8428"
+	if got := strings.Join(s.vmProc().args, " "); got != wantVM {
+		t.Errorf("container victoriametrics argv drifted:\n got %s\nwant %s", got, wantVM)
+	}
+
+	for _, p := range []*managedProc{s.tempoProc(), s.lokiProc(), s.collectorProc(), s.grafanaProc()} {
+		switch p.name {
+		case "tempo":
+			if got := strings.Join(p.args, " "); got != "-config.file="+filepath.Join(s.configDir, "tempo.yaml") {
+				t.Errorf("container tempo argv drifted: %s", got)
+			}
+		case "loki":
+			if got := strings.Join(p.args, " "); got != "-config.file="+filepath.Join(s.configDir, "loki.yaml") {
+				t.Errorf("container loki argv drifted: %s", got)
+			}
+		case "otel-collector":
+			if got := strings.Join(p.args, " "); got != "--config="+filepath.Join(s.configDir, "otel-collector.yaml") {
+				t.Errorf("container otel argv drifted: %s", got)
+			}
+		case "grafana":
+			if got := strings.Join(p.args, " "); got != "server --homepath=/usr/share/grafana --config="+filepath.Join(s.configDir, "grafana.ini") {
+				t.Errorf("container grafana argv drifted: %s", got)
+			}
+		}
+	}
+}
+
+// reapRestart must escalate the backoff (2,4,8,16,32s cap) across CONSECUTIVE
+// crashes of one child, not restart-loop at a flat 2s.
+//
+// THIS IS THE REGRESSION THE QA PASS FOUND. `start` installs a FRESH procState
+// whose `restarts` is 0, so incrementing the OLD state and then calling
+// `start` threw the count away: every crash recomputed from 0, and a crashed
+// child was retried every 2s forever — the cap never engaged and a permanently
+// broken child hot-looped. The fix carries the count into the new procState.
+func TestRestartBackoffEscalatesAndCaps(t *testing.T) {
+	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second, 32 * time.Second}
+	for i, w := range want {
+		if got := restartBackoff(i + 1); got != w {
+			t.Errorf("restart #%d: backoff = %v, want %v", i+1, got, w)
+		}
+	}
+}
+
+// reapRestart must carry the consecutive-crash count into the procState that
+// start() installs; otherwise the escalation above is unreachable.
+func TestReapRestartCarriesRestartCount(t *testing.T) {
+	src := readFile(t, "container.go")
+	if !strings.Contains(src, "ns.restarts = st.restarts") {
+		t.Error("reapRestart no longer carries the restart count into the fresh procState: backoff cannot escalate")
+	}
+	if !strings.Contains(src, "backoff := restartBackoff(st.restarts)") {
+		t.Error("reapRestart no longer derives its backoff from the consecutive-crash count")
+	}
+}
+
+// Host residency runs postgres as the INVOKING USER, who does NOT own
+// /var/run/postgresql (the postgres package owns it as postgres:postgres), so
+// postgres refuses to start with "could not create lock file
+// .../.s.PGSQL.<port>.lock: Permission denied" and the readiness gate can never
+// pass. The socket must move to the data dir, which the invoking user owns —
+// the same fix the container sandbox plane makes (internal/runtime/agent.go).
+//
+// Container residency must keep postgres on its own default: there the child
+// runs as uid 70, which owns /var/run/postgresql (this is criterion 4).
+func TestPostgresSocketDirIsResidencyScoped(t *testing.T) {
+	if got := (&supervisor{}).postgresSocketDir(); got != "" {
+		t.Errorf("container residency must leave postgres on its default socket dir: got %q", got)
+	}
+	if got := (&supervisor{residency: residencyContainer}).postgresSocketDir(); got != "" {
+		t.Errorf("explicit container residency moved the socket dir: got %q", got)
+	}
+
+	host := &supervisor{log: testLogger(), dataDir: t.TempDir(), residency: residencyHost}
+	if got := host.postgresSocketDir(); got != host.dataDir {
+		t.Errorf("host residency socket dir = %q, want the data dir %q", got, host.dataDir)
+	}
+	args := strings.Join(host.postgresProc().args, " ")
+	if !strings.Contains(args, "-c unix_socket_directories="+host.dataDir) {
+		t.Errorf("host residency postgres does not bind its socket in the data dir: %s", args)
+	}
+
+	// And the container child must NOT carry the flag, so today's argv is
+	// byte-for-byte what it was.
+	c := &supervisor{log: testLogger(), dataDir: t.TempDir(), residency: residencyContainer}
+	if cargs := strings.Join(c.postgresProc().args, " "); strings.Contains(cargs, "unix_socket_directories") {
+		t.Errorf("container residency argv changed: %s", cargs)
 	}
 }
 

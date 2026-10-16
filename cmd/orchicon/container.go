@@ -528,6 +528,27 @@ func (s *supervisor) postgresUIDGID() (int, int) {
 	return 70, 70
 }
 
+// postgresSocketDir is the directory postgres keeps its Unix-domain socket and
+// its .s.PGSQL.<port>.lock in, or "" to leave postgres on its own default.
+//
+// CONTAINER RESIDENCY KEEPS THE DEFAULT (/var/run/postgresql): there the child
+// runs as the postgres user (uid 70), which owns that directory, exactly as it
+// does today.
+//
+// HOST RESIDENCY MUST NOT: it runs postgres as the INVOKING USER, who does not
+// own /var/run/postgresql — the postgres package owns it as postgres:postgres,
+// group-writable only to that group — so postgres refuses to start
+// ("could not create lock file .../.s.PGSQL.<port>.lock: Permission denied")
+// and the readiness gate can never pass. The data dir belongs to the invoking
+// user, so the socket lives there. Same fix, same reason, as the container
+// sandbox plane (internal/runtime/agent.go).
+func (s *supervisor) postgresSocketDir() string {
+	if s.isHost() {
+		return s.dataDir
+	}
+	return ""
+}
+
 // start spawns a child and begins supervising it (log pipe + exit monitor).
 func (s *supervisor) start(ctx context.Context, p *managedProc) error {
 	cmd := exec.CommandContext(ctx, p.command, p.args...)
@@ -618,6 +639,13 @@ func (s *supervisor) monitor(ctx context.Context) error {
 	}
 }
 
+// restartBackoff is the delay before the Nth consecutive restart of a crashed
+// child: 2s, then 4, 8, 16, and 32s — capped there so a permanently broken child
+// is retried every 32s instead of hot-looping.
+func restartBackoff(restarts int) time.Duration {
+	return time.Duration(1<<min(restarts, 5)) * time.Second
+}
+
 // reapRestart checks all children for exits and restarts crashed ones.
 func (s *supervisor) reapRestart(ctx context.Context) {
 	s.mu.Lock()
@@ -638,12 +666,21 @@ func (s *supervisor) reapRestart(ctx context.Context) {
 				continue
 			}
 			st.restarts++
-			backoff := time.Duration(1<<min(st.restarts, 5)) * time.Second // 2,4,8,16,32s cap
+			backoff := restartBackoff(st.restarts)
 			s.log.Warn("component exited; restarting", "component", st.proc.name,
 				"restarts", st.restarts, "backoff", backoff.String(), "error", err)
 			time.Sleep(backoff)
 			if err := s.start(ctx, st.proc); err != nil {
 				s.log.Error("restart failed", "component", st.proc.name, "error", err)
+			} else {
+				// start() installs a FRESH procState (restarts=0). Carry the
+				// consecutive-crash count forward, or the backoff never escalates:
+				// every restart would recompute from 1 and sleep 2s forever.
+				s.mu.Lock()
+				if ns := s.children[st.proc.name]; ns != nil {
+					ns.restarts = st.restarts
+				}
+				s.mu.Unlock()
 			}
 		default:
 		}
@@ -781,8 +818,11 @@ func (s *supervisor) postgresProc() *managedProc {
 	dataDir := filepath.Join(s.dataDir, "postgres")
 	uid, gid := s.postgresUIDGID()
 	port := strconv.Itoa(s.ports.postgres)
-	command, args := s.asUser(uid, gid, "postgres",
-		[]string{"-D", dataDir, "-p", port, "-c", "listen_addresses=" + s.postgresListenAddr()})
+	pgArgs := []string{"-D", dataDir, "-p", port, "-c", "listen_addresses=" + s.postgresListenAddr()}
+	if socketDir := s.postgresSocketDir(); socketDir != "" {
+		pgArgs = append(pgArgs, "-c", "unix_socket_directories="+socketDir)
+	}
+	command, args := s.asUser(uid, gid, "postgres", pgArgs)
 	return &managedProc{
 		name:    "postgres",
 		command: command,
