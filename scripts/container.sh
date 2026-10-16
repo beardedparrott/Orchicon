@@ -1644,22 +1644,59 @@ logs_instance() {
 # here reads instance_info, so an ORCHICON_*_PORT override moves the port and the
 # derived URL together — the property AC4 depends on.
 
+# _recorded_port prints the port an instance's INSTALL RECORDED for one env key
+# (ports.json in the instance state dir), or nothing when there is no usable
+# record.
+#
+# WHY THE RECORD IS CONSULTED FIRST: `orchicon services up` (the Go half,
+# cmd/orchicon/services.go servicesPortsFor) binds the RECORDED ports when the
+# instance has them, because re-running over a live stack must keep the ports it
+# is already on. The DSN the inner loop derives must therefore agree with the
+# RECORD, not the defaults — otherwise `make run` would point the plane at a port
+# the started services never bound (exactly the "a URL pointing at a port this
+# install never bound" defect the per-instance table exists to prevent).
+#
+# THE RECORD IS ALL-OR-NOTHING, MATCHING THE GO HALF EXACTLY: servicesPortsFor
+# only trusts the record when it carries BOTH postgres and nats ("> 0"), and
+# falls back to defaults + overrides otherwise. A partial record must NOT be
+# consulted key-by-key here or the two halves would disagree on the instance shape
+# they resolve — the very drift this derivation exists to prevent.
+_recorded_port() {
+  local inst="$1" env="$2" file pg nats
+  instance_info "$inst" || return 1
+  file="$HOST_DATA_DIR/ports.json"
+  [ -f "$file" ] || return 0
+  pg="$(sed -n 's/.*"ORCHICON_POSTGRES_PORT"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$file" | head -1)"
+  nats="$(sed -n 's/.*"ORCHICON_NATS_PORT"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$file" | head -1)"
+  [ -n "$pg" ] && [ -n "$nats" ] || return 0
+  sed -n "s/.*\"${env}\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$file" | head -1
+}
+
 # services_port prints one service's HOST port for an instance.
 #
 # The Go side (cmd/orchicon/install_ports.go) is the other half of this table and
 # a test asserts the two agree; both apply the same ORCHICON_*_PORT knobs at
-# instance_info's ONE override choke point.
+# instance_info's ONE override choke point. The RECORD is consulted FIRST (see
+# _recorded_port), matching the Go half's record-first rule; the defaults+env path
+# below is the developer-who-never-installed shape.
 services_port() {
-  local inst="${1:-dev}" svc="${2:-postgres}"
+  local inst="${1:-dev}" svc="${2:-postgres}" key="" def=""
   instance_info "$inst" || return 1
   case "$svc" in
-    postgres|pg) echo "$PG_PORT" ;;
-    nats) echo "$NATS_PORT" ;;
-    nats-mon|nats-monitor) echo "$NATS_MON_PORT" ;;
-    control|plane) echo "$PLANE_HTTP_PORT" ;;
-    grafana) echo "$GRAFANA_HOST_PORT" ;;
+    postgres|pg) key=ORCHICON_POSTGRES_PORT; def="$PG_PORT" ;;
+    nats) key=ORCHICON_NATS_PORT; def="$NATS_PORT" ;;
+    nats-mon|nats-monitor) key=ORCHICON_NATS_MONITOR_PORT; def="$NATS_MON_PORT" ;;
+    control|plane) key=ORCHICON_CONTROL_PORT; def="$PLANE_HTTP_PORT" ;;
+    grafana) key=ORCHICON_GRAFANA_PORT; def="$GRAFANA_HOST_PORT" ;;
     *) echo "unknown service: $svc (use postgres|nats|nats-mon|control|grafana)" >&2; return 1 ;;
   esac
+  local rec
+  rec="$(_recorded_port "$inst" "$key")"
+  if [ -n "$rec" ]; then
+    echo "$rec"
+  else
+    echo "$def"
+  fi
 }
 
 # db_url prints the Postgres DSN for an instance, DERIVED from services_port so

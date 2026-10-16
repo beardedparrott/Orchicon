@@ -232,10 +232,15 @@ build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into
 # (cmd/orchicon/binaries.go). The plane's OWN env is then pointed at the instance
 # the services bound — the plane's config defaults are dev's 5432/4222
 # (internal/config/config.go), so without these exports `instance=prod` would
-# reach dev's database.
+# reach dev's database. ORCHICON_HTTP_ADDR is exported for the SAME reason, one
+# layer up: the config default is a WILDCARD `:8080` (dev's port) on EVERY
+# interface, so `instance=prod` would take dev's 8080 — the collision AC4
+# forbids — and expose the plane on the LAN. The launcher binds this instance's
+# own loopback port (scripts/container.sh plane_env), and so does this.
 run: services fetch-tags fe-build ## Run the control plane from source (starts this instance's local services first)
 	ORCHICON_INSTANCE=$(instance) \
 	ORCHICON_DATA_DIR="$${ORCHICON_DATA_DIR:-$$HOME/.local/share/orchicon-$(instance)}" \
+	ORCHICON_HTTP_ADDR="127.0.0.1:$$(scripts/container.sh services-port $(instance) control)" \
 	ORCHICON_POSTGRES_DSN="$(DB_URL)" \
 	ORCHICON_NATS_URL="nats://localhost:$$(scripts/container.sh services-port $(instance) nats)" \
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
@@ -404,7 +409,9 @@ migrate-hash: ## Recompute the Atlas migration directory hash (after hand-edits)
 	cd db && $(ATLAS_BIN) migrate hash --dir "file://migrations"
 
 rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 §8.5)
-	scripts/check-rls.sh "$(DB_URL)"
+	@# ORCHICON_INSTANCE travels WITH the DSN: check-rls.sh resolves the instance's OWN
+	@# downloaded psql from it, so `rls-check instance=prod` must not read dev's record.
+	ORCHICON_INSTANCE=$(instance) scripts/check-rls.sh "$(DB_URL)"
 
 # --- Local services (the de-containerized inner loop) ----------------------
 #
