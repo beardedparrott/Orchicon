@@ -88,7 +88,12 @@ BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 # embed an older version (a rebuild could report v0.1.181 for merged v0.1.183 code).
 # Recursive (`=` + `?=`) so the tag is resolved at recipe time, AFTER the fetch-tags
 # prerequisite has synced the local tags.
-VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
+# `--match 'v[0-9]*'` KEEPS A MOVING PRERELEASE TAG OUT OF THE VERSION. `git describe --tags` accepts ANY
+# tag, and with several lightweight tags on one commit the tie-break is LEXICAL — so on a commit the canary
+# build had tagged, `canary` beat `v0.5.45` and a local rebuild reported "orchicon canary" for a tree that
+# WAS v0.5.45. Releases are unaffected (CI takes the version from GITHUB_REF_NAME on a tag checkout); it
+# bites local rebuilds, which is where it was noticed. Keep this match on every describe call site.
+VERSION ?= $(shell git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo dev)
 LDFLAGS     = -X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(GIT_COMMIT) \
                -X github.com/beardedparrott/orchicon/internal/version.gitTag=$(VERSION) \
                -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(BUILD_DATE)
@@ -449,6 +454,17 @@ site-check: ## Assert the landing page's nav and version-stamp invariants
 	@# dependency-free, because no browser can run in the CI container.
 	bash scripts/tests/site-nav-layout/run.sh
 
+# version-tag-match — every version resolution must restrict itself to version-shaped tags.
+#
+# `canary` is a real tag and it MOVES (the canary build re-points it at develop's tip), so a bare
+# `git describe --tags` can resolve a local rebuild's version to "canary" instead of the version it is —
+# observed as {"version":"canary"} from a tree whose content was v0.5.45. Releases are unaffected (CI takes
+# the version from GITHUB_REF_NAME on a tag checkout), which is exactly why nothing caught it: only local
+# rebuilds and the site/notes scripts ever resolve it this way.
+.PHONY: version-tag-match
+version-tag-match: ## Assert no version resolution accepts a moving tag (canary)
+	bash scripts/tests/version-tag-match/run.sh
+
 docs-check: ## Validate every Mermaid diagram in the root docs with a real parser
 	@# The prefix is REUSED once installed, so a repeat run is instant rather than re-resolving the
 	@# tree every time; CI passes ORCHICON_MERMAID_PREFIX from its own $RUNNER_TEMP install.
@@ -726,8 +742,8 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test cache-trim-test disk-report-test cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
-ci: ci-go fe-lint fe-test site-check ## Run the full CI gate locally (Go + frontend + landing page)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci: ci-go fe-lint fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
 tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)
