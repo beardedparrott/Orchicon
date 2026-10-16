@@ -74,13 +74,23 @@ func runContainer(args []string) int {
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	log.Info("orchicon container starting", "version", version.Current().String())
 
-	dataDir := env(dataDirEnv, "/var/lib/orchicon")
+	// residency is WHERE THE SERVICES RUN. It is NOT ORCHICON_PLANE_RESIDENCY
+	// (which is where the PLANE runs and defaults to host) — see residency.go.
+	residency := serviceResidencyFromEnv()
+	dataDir := env(dataDirEnv, defaultDataDirFor(residency))
 	telemetryMode := env(telemetryEnv, "embedded")
-	servicesOnly := servicesOnlyFromEnv()
+	// A host-resident service set has no container to hold a plane child — the
+	// plane is a host process of its own, exactly the shape services-only mode
+	// already describes. The child is skipped by the SAME branch.
+	servicesOnly := servicesOnlyFromEnv() || residency == residencyHost
+	log.Info("service residency resolved", "residency", residency,
+		"setpriv", residency != residencyHost, "data_dir", dataDir, "env", serviceResidencyEnv)
 
 	sup := &supervisor{
 		log:          log,
 		dataDir:      dataDir,
+		residency:    residency,
+		ports:        servicePortsFor(residency),
 		servicesOnly: servicesOnly,
 		hostUID:      envInt("ORCHICON_HOST_UID", 0),
 		hostGID:      envInt("ORCHICON_HOST_GID", 0),
@@ -117,11 +127,18 @@ func runContainer(args []string) int {
 	}
 
 	if servicesOnly {
-		// Loud on purpose: a container running without a plane is a supported
-		// shape here (the plane is a HOST process), and nothing else in the
-		// log would say so.
-		log.Info("services-only mode: postgres, nats and telemetry run in this container; the control plane runs on the HOST",
-			"residency", "host", "env", servicesOnlyEnv+"=1")
+		// Loud on purpose: a supervisor running without a plane is a supported
+		// shape here, and nothing else in the log would say so. The two ways to
+		// reach it read differently, because they are different shapes: a
+		// CONTAINER whose plane is a host process, and HOST-resident services
+		// with no container at all.
+		if residency == residencyHost {
+			log.Info("host service residency: postgres, nats and telemetry run as processes of the invoking user; no control-plane child",
+				"residency", residency, "env", serviceResidencyEnv+"="+residencyHost)
+		} else {
+			log.Info("services-only mode: postgres, nats and telemetry run in this container; the control plane runs on the HOST",
+				"residency", "host", "env", servicesOnlyEnv+"=1")
+		}
 	} else if err := sup.startAndWait(ctx, sup.planeProc(), 120*time.Second); err != nil {
 		log.Error("control plane did not become ready", "error", err)
 	}
@@ -141,6 +158,16 @@ type supervisor struct {
 	log       *slog.Logger
 	dataDir   string
 	configDir string
+
+	// residency is WHERE THE SERVICES RUN: residencyHost (direct processes of
+	// the invoking user) or residencyContainer (today's in-container shape).
+	// THE ZERO VALUE IS CONTAINER RESIDENCY, so every supervisor literal that
+	// does not set it — including the existing tests — keeps today's behaviour.
+	residency string
+
+	// ports is the single decision point for each service's bind port and its
+	// readiness probe; see servicePortsFor in residency.go.
+	ports servicePorts
 
 	// servicesOnly skips the control-plane child (it runs on the host) and
 	// opens postgres up to the launcher's loopback port publish.
@@ -193,6 +220,36 @@ func (s *supervisor) prepare(ctx context.Context) error {
 			return fmt.Errorf("create %s: %w", d, err)
 		}
 	}
+	// Container residency only: the host user's home subdirs and the
+	// ownership handoff are a container-era concern. Host residency runs as
+	// the INVOKING USER already, so there is no chown to perform and no
+	// container home to populate — running as that user is the point.
+	if !s.isHost() {
+		if err := s.prepareContainerOwnership(); err != nil {
+			return err
+		}
+	}
+	if err := s.writeConfigs(); err != nil {
+		return err
+	}
+	if err := s.initPostgres(); err != nil {
+		return err
+	}
+	if s.servicesOnly && !s.isHost() {
+		// Every boot, not just the first: a migrated volume already carries a
+		// pg_hba.conf and initdb (its author) never runs again. Host residency
+		// has no published port, so the bridge-gateway rule is never needed.
+		return s.ensurePostgresHBATrust()
+	}
+	return nil
+}
+
+// prepareContainerOwnership is the CONTAINER-ONLY half of prepare: it creates
+// the home subdirs the host-user workers need and hands the data dir over.
+//
+// Host residency never calls it — running as the invoking user is the point,
+// and there is no container home to populate.
+func (s *supervisor) prepareContainerOwnership() error {
 	if s.hostUID != 0 {
 		// Worker processes run as the HOST user (uid/gid from
 		// ORCHICON_HOST_*). The container's home is a root-created,
@@ -243,17 +300,6 @@ func (s *supervisor) prepare(ctx context.Context) error {
 			}
 		}
 	}
-	if err := s.writeConfigs(); err != nil {
-		return err
-	}
-	if err := s.initPostgres(); err != nil {
-		return err
-	}
-	if s.servicesOnly {
-		// Every boot, not just the first: a migrated volume already carries a
-		// pg_hba.conf and initdb (its author) never runs again.
-		return s.ensurePostgresHBATrust()
-	}
 	return nil
 }
 
@@ -296,11 +342,16 @@ func (s *supervisor) initPostgres() error {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.Chown(dataDir, uid, gid); err != nil {
-		return fmt.Errorf("chown postgres data dir: %w", err)
+	// Host residency runs as the invoking user, so the dir is already theirs —
+	// there is nothing to hand over (and chown is impossible without root).
+	if !s.isHost() {
+		if err := os.Chown(dataDir, uid, gid); err != nil {
+			return fmt.Errorf("chown postgres data dir: %w", err)
+		}
 	}
-	cmd := exec.Command("setpriv", fmt.Sprintf("--reuid=%d", uid), fmt.Sprintf("--regid=%d", gid), "--clear-groups",
-		"initdb", "-D", dataDir, "-U", "orchicon", "--auth=trust", "-E", "UTF8")
+	command, args := s.asUser(uid, gid, "initdb",
+		[]string{"-D", dataDir, "-U", "orchicon", "--auth=trust", "-E", "UTF8"})
+	cmd := exec.Command(command, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("initdb: %w: %s", err, strings.TrimSpace(string(out)))
@@ -442,6 +493,12 @@ func servicesOnlyFromEnv() bool {
 // so services-only mode must listen beyond loopback. Default (containerized
 // plane) keeps today's value untouched.
 func (s *supervisor) postgresListenAddr() string {
+	// Host residency stays on loopback: nothing forwards to a host process, and
+	// the host plane reaches postgres over loopback, which initdb --auth=trust
+	// already trusts. Widening the address would only expose the database.
+	if s.isHost() {
+		return "localhost"
+	}
 	if s.servicesOnly {
 		return "0.0.0.0"
 	}
@@ -453,6 +510,12 @@ func (s *supervisor) postgresListenAddr() string {
 // matches the existing owner so the data is readable; otherwise it uses
 // uid 70, matching the postgres:16-alpine compose volumes.
 func (s *supervisor) postgresUIDGID() (int, int) {
+	// Host residency runs as the INVOKING USER — the whole point of the shape.
+	// uid 70 is a container-era concern (the compose-stack alpine postgres
+	// volumes), so it must never be the host default.
+	if s.isHost() {
+		return os.Getuid(), os.Getgid()
+	}
 	dataDir := filepath.Join(s.dataDir, "postgres")
 	if fi, err := os.Stat(dataDir); err == nil {
 		// Preserve a non-root owner (e.g. a compose-era volume owned by
@@ -717,17 +780,19 @@ func httpReady(url string) func(context.Context) bool {
 func (s *supervisor) postgresProc() *managedProc {
 	dataDir := filepath.Join(s.dataDir, "postgres")
 	uid, gid := s.postgresUIDGID()
+	port := strconv.Itoa(s.ports.postgres)
+	command, args := s.asUser(uid, gid, "postgres",
+		[]string{"-D", dataDir, "-p", port, "-c", "listen_addresses=" + s.postgresListenAddr()})
 	return &managedProc{
 		name:    "postgres",
-		command: "setpriv",
-		args: []string{fmt.Sprintf("--reuid=%d", uid), fmt.Sprintf("--regid=%d", gid), "--clear-groups",
-			"postgres", "-D", dataDir, "-p", "5432", "-c", "listen_addresses=" + s.postgresListenAddr()},
-		ready: func(ctx context.Context) bool { return tcpReady(ctx, "localhost:5432") },
+		command: command,
+		args:    args,
+		ready:   func(ctx context.Context) bool { return tcpReady(ctx, "localhost:"+port) },
 		postReady: func(ctx context.Context) error {
 			// Create the orchicon database on first boot (idempotent).
 			// createdb exits 0 when created and errors on duplicate;
 			// "already exists" is fine.
-			cmd := exec.CommandContext(ctx, "createdb", "-U", "orchicon", "-h", "localhost", "-p", "5432", "orchicon")
+			cmd := exec.CommandContext(ctx, "createdb", "-U", "orchicon", "-h", "localhost", "-p", port, "orchicon")
 			out, err := cmd.CombinedOutput()
 			if err != nil && !strings.Contains(string(out), "already exists") {
 				return fmt.Errorf("create orchicon db: %w: %s", err, strings.TrimSpace(string(out)))
@@ -739,11 +804,13 @@ func (s *supervisor) postgresProc() *managedProc {
 }
 
 func (s *supervisor) natsProc() *managedProc {
+	monitor := strconv.Itoa(s.ports.natsMonitor)
 	return &managedProc{
 		name:    "nats",
 		command: "nats-server",
-		args:    []string{"-js", "-sd", filepath.Join(s.dataDir, "nats"), "-m", "8222"},
-		ready:   httpReady("http://localhost:8222/healthz"),
+		args: []string{"-js", "-sd", filepath.Join(s.dataDir, "nats"),
+			"-p", strconv.Itoa(s.ports.nats), "-m", monitor},
+		ready:   httpReady("http://localhost:" + monitor + "/healthz"),
 		restart: true,
 	}
 }
@@ -753,7 +820,7 @@ func (s *supervisor) tempoProc() *managedProc {
 		name:    "tempo",
 		command: "tempo",
 		args:    []string{"-config.file=" + filepath.Join(s.configDir, "tempo.yaml")},
-		ready:   httpReady("http://localhost:3200/ready"),
+		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.tempo) + "/ready"),
 		restart: true,
 	}
 }
@@ -763,7 +830,7 @@ func (s *supervisor) lokiProc() *managedProc {
 		name:    "loki",
 		command: "loki",
 		args:    []string{"-config.file=" + filepath.Join(s.configDir, "loki.yaml")},
-		ready:   httpReady("http://localhost:3100/ready"),
+		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.loki) + "/ready"),
 		restart: true,
 	}
 }
@@ -773,8 +840,8 @@ func (s *supervisor) vmProc() *managedProc {
 		name:    "victoriametrics",
 		command: "victoria-metrics-prod",
 		args: []string{"-storageDataPath=" + filepath.Join(s.dataDir, "victoriametrics"),
-			"-retentionPeriod=720h", "-httpListenAddr=:8428"},
-		ready:   httpReady("http://localhost:8428/health"),
+			"-retentionPeriod=720h", "-httpListenAddr=:" + strconv.Itoa(s.ports.vm)},
+		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.vm) + "/health"),
 		restart: true,
 	}
 }
@@ -804,7 +871,7 @@ func (s *supervisor) grafanaProc() *managedProc {
 			"GF_AUTH_BASIC_ENABLED=false",
 			"GF_AUTH_DISABLE_LOGIN_FORM=true",
 		},
-		ready:   httpReady("http://localhost:3000/api/health"),
+		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.grafana) + "/api/health"),
 		restart: true,
 	}
 }
@@ -828,15 +895,8 @@ func (s *supervisor) planeProc() *managedProc {
 		childEnv = append(childEnv, "ORCHICON_BLOB_DIR="+filepath.Join(s.dataDir, "blobs"))
 	}
 
-	command, args := self, []string{"serve"}
-	if s.hostUID != 0 {
-		command = "setpriv"
-		args = []string{
-			fmt.Sprintf("--reuid=%d", s.hostUID),
-			fmt.Sprintf("--regid=%d", s.hostGID),
-			"--clear-groups",
-			self, "serve",
-		}
+	command, args := s.asUser(s.hostUID, s.hostGID, self, []string{"serve"})
+	if s.hostUID != 0 && !s.isHost() {
 		// HOME must point at the host user's home so opencode finds its
 		// config/auth and git picks up the user's identity.
 		childEnv = append(childEnv, "HOME="+s.hostHome)
