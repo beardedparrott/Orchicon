@@ -416,7 +416,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	installDir := env("ORCHICON_INSTALL_DIR", defaultInstallDir())
 	installOrchLauncher(installDir)
 
-	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, ports, healthy)
+	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, ports, containersUsed, healthy)
 	return nil
 }
 
@@ -950,11 +950,17 @@ func containerExists(name string) (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, ports map[string]int, healthy bool) {
+func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, ports map[string]int, containersUsed, healthy bool) {
 	// WHERE THE SERVICES RUN follows from the shape and the host: a host-resident plane has its services as
 	// host processes when there is no engine to put them in a container, and in the instance container when
-	// there is. Derived here rather than threaded through, because this is a SUMMARY of what the install did.
-	hostServices := residency == residencyHost && !containerEngineAvailable()
+	// there is.
+	//
+	// THE ENGINE DECISION IS THE INSTALL'S OWN, THREADED IN RATHER THAN RE-PROBED. This used to call
+	// containerEngineAvailable() again right here, which is a SECOND decision that can disagree with the one
+	// the install actually acted on (a PATH that changes mid-run, a probe that answers differently) — so the
+	// summary could describe a carrier the install never created. The install decides this ONCE; the summary
+	// reports THAT decision.
+	hostServices := residency == residencyHost && !containersUsed
 	// Read back the ports this install actually bound: re-deriving them from the
 	// instance name would print a URL pointing at a port we never bound.
 	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])

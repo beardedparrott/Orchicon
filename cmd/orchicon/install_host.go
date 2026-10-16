@@ -487,6 +487,26 @@ func hostServicesPIDFile(instance string) (string, error) {
 	return filepath.Join(dir, "serve", "services.pid"), nil
 }
 
+// hostServicesAlive reports whether the host-services supervisor this installer started is still running, from
+// the PID file startHostServices records. A missing/unreadable/stale PID file is false, never an error: it is
+// the same "is anything of ours up?" question servingPlaneAlive answers for the plane, and the two together
+// are what let a re-run tell "this instance is running" from "this instance's records merely exist".
+func hostServicesAlive(instance string) bool {
+	pidFile, err := hostServicesPIDFile(instance)
+	if err != nil {
+		return false
+	}
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return false
+	}
+	return pidAlive(pid)
+}
+
 // hostServicesPortEnvs are the port knobs the host-services supervisor reads (residency.go's
 // servicePortsFor), in the exact names install_ports.go and scripts/container.sh already use — so a
 // host-resident install needs no second vocabulary.

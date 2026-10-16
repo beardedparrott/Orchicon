@@ -73,7 +73,7 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 		return captureStdout(t, func() {
 			printInstallInfo("dev", residencyContainer, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
 				"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
-				"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, healthy)
+				"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, false, healthy)
 		})
 	}
 
@@ -108,6 +108,35 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 			}
 			t.Errorf("%s: the summary box is not rectangular (%s):\n%s", name, strings.Join(got, ", "), out)
 		}
+	}
+}
+
+// TestPrintInstallInfoUsesTheInstallsEngineDecision pins the SINGLE-DECISION property the install asserts
+// everywhere else: the carrier is decided ONCE (install.go's `containersUsed`) and every downstream surface
+// reports THAT decision. printInstallInfo used to re-probe with containerEngineAvailable(), a SECOND decision
+// that can disagree with the one the install acted on — so the summary could describe a carrier the install
+// never created.
+//
+// The disagreement is made OBSERVABLE by construction: the install's decision is "containers ARE used" while
+// the environment has NO engine on PATH, so a re-probe answers the opposite. The summary must follow the
+// threaded decision (services in the instance container), never the re-probe (host processes of this user).
+func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no engine: a re-probe would answer "no containers"
+	if containerEngineAvailable() {
+		t.Fatal("the fixture needs an empty PATH to make the re-probe disagree")
+	}
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_GRAFANA_PORT": 3002}
+	out := captureStdout(t, func() {
+		// residencyHost with containersUsed=true: a host plane whose services run in the instance container.
+		printInstallInfo("dev", residencyHost, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
+			"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, true, true)
+	})
+	if !strings.Contains(out, "the services run in orchicon-cnt-dev") {
+		t.Errorf("the summary must report the install's decision (services in the container); got:\n%s", out)
+	}
+	if strings.Contains(out, "HOST processes") {
+		t.Errorf("the summary must NOT re-probe the engine and contradict the install: got:\n%s", out)
 	}
 }
 

@@ -425,11 +425,14 @@ echo "  -- the Go installer's shape (install_host.go) --"
 #      instances cannot point at each other's plane);
 #   2. with no container engine (or ORCHICON_RUNTIME_CONTAINERS=0) NEITHER variable is present and no
 #      0.0.0.0 appears anywhere;
-#   3. install_host.go contains no engine invocation at all.
+#   3. install_host.go contains no engine invocation at all;
+#   4. a RE-RUN on a running no-engine instance KEEPS the ports it already bound (convergence) — the failure
+#      mode being that re-resolution probes the instance's own listeners, moves every port, and gets a second
+#      host stack started beside the first.
 #
 # `go test -run` EXIT CODE IS THE SIGNAL — a renamed Go test makes the filter match nothing and `go test`
 # reports "no tests to run", which fails. The harness must NEVER pass vacuously (see extract_fn above).
-GO_SHAPE_TESTS='TestPlaneBindAndShape|TestInstallShapeWithoutAContainerEngine|TestInstallHostHasNoDockerInvocation|TestEnsureHostDataDir'
+GO_SHAPE_TESTS='TestPlaneBindAndShape|TestInstallShapeWithoutAContainerEngine|TestInstallHostHasNoDockerInvocation|TestEnsureHostDataDir|TestRerunOnARunningHostInstanceKeepsItsPorts'
 if (cd "${REPO_ROOT}" && go test ./cmd/orchicon -run "^(${GO_SHAPE_TESTS})$" -count=1 >/dev/null 2>&1); then
   printf '  \033[32mPASS\033[0m  %-52s %s\n' "the Go installer shape tests" "green"
   PASSED=$((PASSED + 1))
