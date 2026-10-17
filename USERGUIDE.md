@@ -331,8 +331,8 @@ The `orchicon` binary is the PID-1 supervisor (`orchicon container`).
 git clone https://github.com/beardedparrott/Orchicon.git
 cd Orchicon
 make build                  # → bin/orchicon (headless control plane + PID-1 supervisor)
-make container-build        # build the single-container image
-scripts/container.sh up dev # start the dev instance (http://localhost:8080)
+make instance-build         # build bin/orchicon (the instance runs on the host: no image)
+make instance-up            # start the dev instance (http://localhost:8080)
 ```
 
 With the frontend in dev mode: `make fe-install` (first time) then `make fe-dev` —

@@ -8,21 +8,30 @@
 # nats, telemetry — and the PLANE itself) is which, or which command reaches it.
 #
 # USAGE
-#   scripts/orchicon.sh start   [dev|prod]   # services + plane for one instance
-#   scripts/orchicon.sh stop    [dev|prod]   # stop both halves
-#   scripts/orchicon.sh restart [dev|prod]
-#   scripts/orchicon.sh status  [dev|prod]   # what is up, and is it really healthy
-#   scripts/orchicon.sh logs    [dev|prod]   # the plane's log (follows when a tty)
-#   scripts/orchicon.sh rebuild [dev|prod]   # rebuild + restart (quick path; see below)
+#   scripts/orchicon.sh start   [dev|prod|test]  # services + plane for one instance
+#   scripts/orchicon.sh stop    [dev|prod|test]  # stop both halves
+#   scripts/orchicon.sh restart [dev|prod|test]
+#   scripts/orchicon.sh status  [dev|prod|test]  # what is up, and is it really
+#                                                # healthy; NO argument: them ALL
+#   scripts/orchicon.sh logs    [dev|prod|test]  # the plane's log (follows when a tty)
+#   scripts/orchicon.sh rebuild [dev|prod|test]  # rebuild + restart (quick path;
+#                                                # see below)
 #   scripts/orchicon.sh help
 #
-# INSTANCES. `dev` listens on 127.0.0.1:8080, `prod` on 127.0.0.1:8091 — the
-# DEFAULT ports; the port an instance actually bound is read from its record
-# (<data dir>/ports.json), so an install on a non-default control port is
-# reported at the port it is on. They are
-# fully separate — separate data dirs (~/.local/share/orchicon-<instance>),
-# separate databases, separate ports — so stopping or restarting one never
-# touches the other. Default: dev. Anything else is refused (exit 2).
+# INSTANCES. Three: `dev` (127.0.0.1:8080), `prod` (127.0.0.1:8091) and `test`
+# (127.0.0.1:8092 — a throwaway to rebuild and tear down beside the other two).
+# Those are the DEFAULT ports; the port an instance actually bound is read from
+# its record (<data dir>/ports.json), so an install on a non-default control
+# port is reported at the port it is on. They are fully separate — separate data
+# dirs (~/.local/share/orchicon-<instance>), separate databases, separate ports
+# — so stopping or restarting one never touches the other. Default: dev. Any
+# OTHER name is refused (exit 2): the name becomes a state directory, and an
+# instance the port table does not define would silently inherit dev's ports.
+#
+# `status` WITH NO INSTANCE REPORTS EVERY INSTANCE on the host. That is the
+# question an operator actually asks — "what is running here?" — and it is what
+# `make instance-ps` calls; a `dev` default here made that target unable to
+# answer it.
 #
 # CLIENT
 #   The TUI talks to an instance through a profile in ~/.orchicon/config:
@@ -84,22 +93,27 @@ usage() {
 orchicon.sh — start/stop the Orchicon plane and its services on the host.
 
 USAGE
-  scripts/orchicon.sh start   [dev|prod]   # services + plane for one instance
-  scripts/orchicon.sh stop    [dev|prod]   # stop both halves
-  scripts/orchicon.sh restart [dev|prod]
-  scripts/orchicon.sh status  [dev|prod]   # what is up, and is it really healthy
-  scripts/orchicon.sh logs    [dev|prod]   # the plane's log (follows when a tty)
-  scripts/orchicon.sh rebuild [dev|prod]   # rebuild + restart (quick path)
+  scripts/orchicon.sh start   [dev|prod|test]  # services + plane for one instance
+  scripts/orchicon.sh stop    [dev|prod|test]  # stop both halves
+  scripts/orchicon.sh restart [dev|prod|test]
+  scripts/orchicon.sh status  [dev|prod|test]  # what is up, and is it really
+                                               # healthy; NO argument: them ALL
+  scripts/orchicon.sh logs    [dev|prod|test]  # the plane's log (follows when a tty)
+  scripts/orchicon.sh rebuild [dev|prod|test]  # rebuild + restart (quick path)
   scripts/orchicon.sh help
 
 INSTANCES
   dev   plane http://127.0.0.1:8080   data ~/.local/share/orchicon-dev
   prod  plane http://127.0.0.1:8091   data ~/.local/share/orchicon-prod
+  test  plane http://127.0.0.1:8092   data ~/.local/share/orchicon-test
+        (a throwaway to rebuild and tear down beside the other two)
   Those are the DEFAULT control ports. The port an instance actually bound is
   read from its record (<data dir>/ports.json), so an install on any other port
   is still reported at the port it is really on.
   Fully separate data dirs, databases and ports: stopping or restarting one
-  never touches the other. Default instance: dev. Anything else is refused.
+  never touches the other. Default instance: dev; `status` with NO instance
+  reports them ALL (that is what `make instance-ps` asks). Any other name is
+  refused: an undefined instance would silently reuse dev's ports.
 
 CLIENT
   TUI   /connect in ~/.orchicon/config, then `orch`
@@ -128,7 +142,7 @@ ORCHICON_SH_USAGE
 }
 
 die_inst() {
-  echo "orchicon.sh: unknown instance '$1' — expected 'dev' or 'prod'" >&2
+  echo "orchicon.sh: unknown instance '$1' — expected 'dev', 'prod' or 'test'" >&2
   exit 2
 }
 
@@ -160,8 +174,13 @@ require_bin() {
 #   plane pid/log   serveStateDir = <data dir>/serve   (cmd/orchicon/serve_state.go)
 #   services log    <data dir>/services.log
 instance_paths() {
+  # The three the port table defines (`dev|prod|test`, cmd/orchicon/install_ports.go
+  # instanceOrder — which asserts it matches the launcher's own columns). Anything
+  # else is refused rather than falling through to dev's numbers: an undefined
+  # instance that inherits dev's ports collides with dev, and the failure surfaces
+  # as a bind error far from the cause.
   case "$1" in
-    dev|prod) ;;
+    dev|prod|test) ;;
     *) die_inst "$1" ;;
   esac
   DATA_DIR="$HOME/.local/share/orchicon-$1"
@@ -173,6 +192,7 @@ instance_paths() {
   case "$1" in
     dev) PLANE_PORT_DEFAULT=8080 ;;
     prod) PLANE_PORT_DEFAULT=8091 ;;
+    test) PLANE_PORT_DEFAULT=8092 ;;
   esac
 }
 
@@ -202,6 +222,7 @@ plane_port_for() {
     case "$inst" in
       dev) p=8080 ;;
       prod) p=8091 ;;
+      test) p=8092 ;;
     esac
   fi
   printf '%s\n' "$p"
@@ -469,6 +490,32 @@ logs_instance() {
   fi
 }
 
+# status_all answers "what is running on THIS host?" without naming an instance —
+# the question `make instance-ps` asks. It reports every instance the port table
+# defines, and says so plainly when an instance has never been installed rather
+# than silently omitting it (an instance missing from the list reads as "not
+# running", which is a different fact from "does not exist here").
+#
+# EXIT IS AGGREGATE AND HONEST: 0 only when every INSTALLED instance is up, 1
+# when any of them is down, and 1 when none exists — the same "a status that
+# cannot verify must not claim success" rule the single-instance path obeys.
+status_all() {
+  local rc=0 found=0 inst
+  for inst in dev prod test; do
+    if [ -d "$HOME/.local/share/orchicon-$inst" ]; then
+      found=1
+      status_instance "$inst" || rc=1
+      echo
+    fi
+  done
+  if [ "$found" -eq 0 ]; then
+    echo "no orchicon instances installed on this host (no ~/.local/share/orchicon-<dev|prod|test>)"
+    echo "  start one with: scripts/orchicon.sh start dev"
+    return 1
+  fi
+  return "$rc"
+}
+
 rebuild_instance() {
   local inst="$1"
   instance_paths "$inst"
@@ -484,11 +531,21 @@ rebuild_instance() {
 }
 
 cmd="${1:-help}"
-inst="${2:-dev}"
+# NO DEFAULT AT THE TOP. `status` must be able to mean "every instance", so the
+# dev default is applied by each verb that needs ONE instance, below — a single
+# `inst="${2:-dev}"` here silently turned `make instance-ps` into `status dev`.
+inst="${2:-}"
 
 case "$cmd" in
   start|up|stop|down|restart|status|logs|rebuild)
-    case "$inst" in dev|prod) ;; *) die_inst "$inst" ;; esac
+    if [ "$cmd" = status ] && [ -z "$inst" ]; then
+      resolve_ctl
+      status_all
+      exit $?
+    fi
+    inst="${inst:-dev}"
+    # An instance the port table does not define is refused, never defaulted.
+    case "$inst" in dev|prod|test) ;; *) die_inst "$inst" ;; esac
     resolve_ctl
     case "$cmd" in
       start|up) start_instance "$inst" ;;

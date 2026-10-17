@@ -217,7 +217,7 @@ TEST="$(make_n test)"
 check_contains "make test still sets ORCHICON_CONFIG_DIR" "ORCHICON_CONFIG_DIR=" "$TEST"
 
 # THE `instance ?= dev` DEFAULT MUST NOT SILENCE THE TARGETS THAT REQUIRE A CHOICE.
-# `container-rebuild`/`full-rebuild` are DESTRUCTIVE and deliberately refuse to run
+# `instance-rebuild`/`full-rebuild` are DESTRUCTIVE and deliberately refuse to run
 # without an explicit instance; a `?=` default makes their `test -n "$(instance)"`
 # see "dev" and pass, so `make full-rebuild` with no argument silently rebuilt dev
 # instead of printing its usage line. They must test the operator's CHOICE, not the
@@ -226,7 +226,7 @@ check_contains "make test still sets ORCHICON_CONFIG_DIR" "ORCHICON_CONFIG_DIR="
 # not the variable name: the guard must read `test -n ""` (empty => refuse) with no
 # argument, and a non-empty value when the operator names one.
 check_contains "Makefile defines the instance_given choice test" 'instance_given = $(filter' "$(cat "$MAKEFILE")"
-for t in container-rebuild full-rebuild; do
+for t in instance-rebuild full-rebuild; do
   check_contains "make $t refuses WITHOUT an explicit instance" 'test -n ""' "$(make_n "$t" 2>&1 | grep -m1 'test -n' || true)"
   check_contains "make $t instance=prod still proceeds" 'test -n "command line"' "$(make_n "$t" instance=prod 2>&1 | grep -m1 'test -n' || true)"
 done
@@ -247,6 +247,51 @@ check_contains "make help lists 'services'"        "services "        "$HELP"
 check_contains "make help lists 'services-down'"   "services-down "   "$HELP"
 check_contains "make help lists 'services-status'" "services-status " "$HELP"
 check_contains "make help documents instance= for migrate" "instance=<dev|prod|test>" "$HELP"
+
+# --- (iv-b) the instance-* rename, in BOTH directions ---------------------
+echo
+echo "  -- instance-* targets replaced container-* (old names are aliases) --"
+
+for t in instance-build instance-up instance-down instance-restart instance-status instance-logs instance-ps instance-rebuild runtime-build runtime-daemon runtime-stop; do
+  check_contains "make help lists $t" "$t " "$HELP"
+done
+check_lacks "make help lists no deprecated container-* target" "container-" "$HELP"
+
+# A TARGET NAME MAY CONTAIN A DIGIT, and the generator must not drop it: the awk
+# regex was [a-zA-Z_-]+, so install-ps1-test had a `##` description in the file and
+# still never appeared — `make help` denying a target that exists is the same lie as
+# listing one that does not.
+check_contains "make help lists a digit-bearing target (install-ps1-test)" "install-ps1-test " "$HELP"
+
+# THE RENAME MUST NOT SMUGGLE THE CONTAINER BACK IN. Every instance target delegates
+# to the launcher's VERBS; not one recipe may name the retiring container.sh — a
+# host-resident instance is the whole point of the rename.
+for t in instance-up instance-down instance-restart instance-status instance-logs instance-ps; do
+  check_lacks "make $t reaches no container.sh" "container.sh" "$(make_n "$t")"
+done
+
+# THE OLD NAMES STILL WORK, as aliases that say what they became. Muscle memory is
+# the asset this rename protects, so a dead verb would be the failure.
+for pair in container-build:instance-build container-up:instance-up container-down:instance-down \
+            container-rebuild:instance-rebuild container-status:instance-status \
+            container-logs:instance-logs container-ps:instance-ps; do
+  old="${pair%%:*}"; new="${pair##*:}"
+  ALIAS="$(make_n "$old")"
+  check_contains "make $old announces $new" "is now $new" "$ALIAS"
+  check_contains "make $old really runs $new" "$new" "$ALIAS"
+done
+
+# ...AND THE ALIAS MUST NOT DEFEAT THE DESTRUCTIVE GUARD: instance= is forwarded only
+# when the operator named one, so a bare `make container-rebuild` still refuses.
+check_contains "make container-rebuild still refuses without an instance" 'test -n ""' "$(make_n container-rebuild 2>&1 | grep -m1 'test -n' || true)"
+check_contains "make container-rebuild honours a named instance" 'test -n "command line"' "$(make_n container-rebuild instance=prod 2>&1 | grep -m1 'test -n' || true)"
+
+# THE RUNTIME TARGETS MOVED TO runtime.sh, and they must not go back through
+# container.sh either.
+for t in runtime-build runtime-daemon runtime-stop runtime-status; do
+  check_contains "make $t runs scripts/runtime.sh" "scripts/runtime.sh" "$(make_n "$t")"
+  check_lacks "make $t reaches no container.sh" "container.sh" "$(make_n "$t")"
+done
 
 # --- (v) vacuity guards: the things under test EXIST ---------------------
 echo
