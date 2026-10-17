@@ -1635,6 +1635,96 @@ logs_instance() {
   docker logs -f "$NAME"
 }
 
+# --- pure query verbs (no docker, no side effects) --------------------------
+#
+# These three exist so the INNER LOOP derives its connection facts from the SAME
+# per-instance table the launcher and `orchicon install` use, instead of a
+# literal. A literal 5432 in the Makefile is how a prod checkout's `make migrate`
+# reached dev's database, and how two instances on one host collided. Everything
+# here reads instance_info, so an ORCHICON_*_PORT override moves the port and the
+# derived URL together — the property AC4 depends on.
+
+# _recorded_port prints the port an instance's INSTALL RECORDED for one env key
+# (ports.json in the instance state dir), or nothing when there is no usable
+# record.
+#
+# WHY THE RECORD IS CONSULTED FIRST: `orchicon services up` (the Go half,
+# cmd/orchicon/services.go servicesPortsFor) binds the RECORDED ports when the
+# instance has them, because re-running over a live stack must keep the ports it
+# is already on. The DSN the inner loop derives must therefore agree with the
+# RECORD, not the defaults — otherwise `make run` would point the plane at a port
+# the started services never bound (exactly the "a URL pointing at a port this
+# install never bound" defect the per-instance table exists to prevent).
+#
+# THE RECORD IS ALL-OR-NOTHING, MATCHING THE GO HALF EXACTLY: servicesPortsFor
+# only trusts the record when it carries BOTH postgres and nats ("> 0"), and
+# falls back to defaults + overrides otherwise. A partial record must NOT be
+# consulted key-by-key here or the two halves would disagree on the instance shape
+# they resolve — the very drift this derivation exists to prevent.
+_recorded_port() {
+  local inst="$1" env="$2" file pg nats
+  instance_info "$inst" || return 1
+  file="$HOST_DATA_DIR/ports.json"
+  [ -f "$file" ] || return 0
+  pg="$(sed -n 's/.*"ORCHICON_POSTGRES_PORT"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$file" | head -1)"
+  nats="$(sed -n 's/.*"ORCHICON_NATS_PORT"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$file" | head -1)"
+  [ -n "$pg" ] && [ -n "$nats" ] || return 0
+  sed -n "s/.*\"${env}\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$file" | head -1
+}
+
+# services_port prints one service's HOST port for an instance.
+#
+# The Go side (cmd/orchicon/install_ports.go) is the other half of this table and
+# a test asserts the two agree; both apply the same ORCHICON_*_PORT knobs at
+# instance_info's ONE override choke point. The RECORD is consulted FIRST (see
+# _recorded_port), matching the Go half's record-first rule; the defaults+env path
+# below is the developer-who-never-installed shape.
+services_port() {
+  local inst="${1:-dev}" svc="${2:-postgres}" key="" def=""
+  instance_info "$inst" || return 1
+  case "$svc" in
+    postgres|pg) key=ORCHICON_POSTGRES_PORT; def="$PG_PORT" ;;
+    nats) key=ORCHICON_NATS_PORT; def="$NATS_PORT" ;;
+    nats-mon|nats-monitor) key=ORCHICON_NATS_MONITOR_PORT; def="$NATS_MON_PORT" ;;
+    control|plane) key=ORCHICON_CONTROL_PORT; def="$PLANE_HTTP_PORT" ;;
+    grafana) key=ORCHICON_GRAFANA_PORT; def="$GRAFANA_HOST_PORT" ;;
+    *) echo "unknown service: $svc (use postgres|nats|nats-mon|control|grafana)" >&2; return 1 ;;
+  esac
+  local rec
+  rec="$(_recorded_port "$inst" "$key")"
+  if [ -n "$rec" ]; then
+    echo "$rec"
+  else
+    echo "$def"
+  fi
+}
+
+# db_url prints the Postgres DSN for an instance, DERIVED from services_port so
+# the DSN and the bound port can never disagree. This is what the Makefile's
+# DB_URL resolves through, so `make migrate instance=prod` reaches prod's 5433.
+db_url() {
+  local inst="${1:-dev}" port
+  port="$(services_port "$inst" postgres)" || return 1
+  echo "postgres://orchicon:orchicon@localhost:${port}/orchicon?sslmode=disable"
+}
+
+# pg_psql prints the psql of the PostgreSQL this instance RESOLVED, read from the
+# record the install wrote (<hostDataDir>/infra-binaries.json), or nothing when
+# there is no such record.
+#
+# IT IS THE RUNG THAT MAKES check-rls.sh REACHABLE ON A DE-CONTAINERIZED HOST: a
+# developer with no system psql and no container still has one here, at
+# <DataDir>/bin/postgres/bin/psql, which is not on PATH. The record is written
+# with a stable 2-space indent (cmd/orchicon/binaries.go recordInfraBinaries), so
+# the "psql" key is read without a jq dependency.
+pg_psql() {
+  local inst="${1:-dev}" file
+  instance_info "$inst" || return 1
+  file="$HOST_DATA_DIR/infra-binaries.json"
+  [ -f "$file" ] || return 1
+  sed -n 's/.*"psql"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -1
+}
+
 # A third positional picks the plane shape for THIS invocation, so the
 # self-contained shape needs no environment change:
 #   scripts/container.sh up dev container
@@ -1645,16 +1735,27 @@ logs_instance() {
 # effect of where a flag happened to sit.
 CONFIRM_DESTROY="${CONFIRM_DESTROY:-0}"
 
-if [ -n "${3:-}" ]; then
-  case "${3}" in
-    host|container) export ORCHICON_PLANE_RESIDENCY="${3}" ;;
-    --yes|-y) CONFIRM_DESTROY=1 ;;
-    *)
-      echo "third argument must be 'host', 'container', or '--yes' (got '${3}')" >&2
-      exit 2
-      ;;
-  esac
-fi
+# THE GUARD IS SCOPED TO THE VERBS THAT TAKE A SHAPE.
+#
+# `services-port <inst> <svc>` has a REAL third word (the service name), and a
+# job-level guard that claimed every third positional would refuse it. So the
+# residency/--yes interpretation applies only to the management verbs; the pure
+# query verbs pass their third word straight through to their handler.
+case "${1:-}" in
+  services-port|db-url|pg-psql) ;;
+  *)
+    if [ -n "${3:-}" ]; then
+      case "${3}" in
+        host|container) export ORCHICON_PLANE_RESIDENCY="${3}" ;;
+        --yes|-y) CONFIRM_DESTROY=1 ;;
+        *)
+          echo "third argument must be 'host', 'container', or '--yes' (got '${3}')" >&2
+          exit 2
+          ;;
+      esac
+    fi
+    ;;
+esac
 
 case "${1:-}" in
   build) build_image ;;
@@ -1675,6 +1776,12 @@ case "${1:-}" in
   plane-start) plane_start "${2:-dev}" ;;
   plane-stop) plane_stop "${2:-dev}" ;;
   plane-status) plane_status "${2:-dev}" ;;
+  # Pure per-instance queries the inner loop derives from (no docker, no side
+  # effects): the service's HOST port, the Postgres DSN built from it, and the
+  # resolved psql path for the RLS gate.
+  services-port) services_port "${2:-dev}" "${3:-postgres}" ;;
+  db-url) db_url "${2:-dev}" ;;
+  pg-psql) pg_psql "${2:-dev}" ;;
   runtime-daemon) start_runtime_daemon ;;
   runtime-stop)
     # Stop the runtime daemon (and any runtime containers) for an instance.
@@ -1700,7 +1807,9 @@ case "${1:-}" in
     docker ps -a --filter label=orchicon.workflow --format 'table {{.Names}}\t{{.Status}}'
     ;;
   *)
-    echo "Usage: $0 {build|rebuild [dev|prod|test]|sync-mounts [dev|prod|test]|up [dev|prod|test]|down [dev|prod|test]|uninstall [dev|prod|test] --yes|status [dev|prod|test]|logs [dev|prod|test]|plane-bind [dev|prod|test]|shape [dev|prod|test]|verify [dev|prod|test]|plane-start|plane-stop|plane-status [dev|prod|test]|ps|runtime-daemon|runtime-stop}"
+    echo "Usage: $0 {build|rebuild [dev|prod|test]|sync-mounts [dev|prod|test]|up [dev|prod|test]|down [dev|prod|test]|uninstall [dev|prod|test] --yes|status [dev|prod|test]|logs [dev|prod|test]|plane-bind [dev|prod|test]|shape [dev|prod|test]|verify [dev|prod|test]|plane-start|plane-stop|plane-status [dev|prod|test]|services-port [dev|prod|test] [postgres|nats|nats-mon|control|grafana]|db-url [dev|prod|test]|pg-psql [dev|prod|test]|ps|runtime-daemon|runtime-stop}"
+    echo "  services-port/db-url/pg-psql: pure per-instance queries (a service's host port, the derived"
+    echo "    Postgres DSN, the resolved psql path) — what the Makefile and check-rls.sh derive from."
     echo "  ORCHICON_PLANE_RESIDENCY=host|container  (default host) picks the shape per invocation;"
     echo "  a third positional overrides it for one call, e.g. 'up dev container'."
     echo "  'uninstall <inst> --yes' removes that instance AND its data (irreversible)."

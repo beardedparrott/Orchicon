@@ -102,7 +102,47 @@ PKGS = $(shell $(GO) list ./... 2>/dev/null | grep -v '/tmp/')
 BUF         := buf
 ATLAS       := atlas
 NPX         := npx
-DB_URL      ?= postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable
+
+# THE INSTANCE THIS CHECKOUT'S DATABASE TARGETS. One word picks it:
+# `make migrate instance=prod` uses prod's 5433, the default dev uses 5432. DB_URL
+# is DERIVED from it through scripts/container.sh db-url — the same per-instance
+# port table the launcher and `orchicon install` use — so the DSN and the bound
+# port cannot drift and two instances on one host never collide (AC4).
+#
+# IT IS EMPTY WHEN IT CANNOT BE DERIVED, AND THAT IS THE POINT. It first shipped with
+# a `|| echo <dev DSN>` fallback, which turned EVERY resolution failure into dev:
+# `make migrate instance=staging` (a typo, or an instance the table does not define)
+# printed no error and applied DEV's migrations to DEV's database, and
+# `make rls-check instance=staging` then gated dev — the exact collision AC4 exists to
+# prevent, reintroduced by a literal. So a failed resolution stays EMPTY and
+# db_url_required refuses with the reason. Export DB_URL yourself to target a database
+# this table does not describe.
+instance    ?= dev
+DB_URL      ?= $(shell scripts/container.sh db-url $(instance) 2>/dev/null)
+
+# THE REFUSAL THAT REPLACES THE FALLBACK. Every target that OPENS $(DB_URL) runs this
+# first, so "I do not know which instance you mean" is an error naming the instance and
+# the remedy instead of a silent dev default. One definition, so the message cannot
+# drift between migrate and rls-check.
+db_url_required = @test -n "$(DB_URL)" || { echo "cannot resolve DB_URL for instance '$(instance)': scripts/container.sh db-url refused it." >&2; echo "  Use instance=<dev|prod|test> (the per-instance port table), or set DB_URL explicitly." >&2; exit 1; }
+
+# ...BUT THE DEFAULT MUST NOT SILENCE THE TARGETS THAT REQUIRE A CHOICE.
+#
+# `instance ?= dev` is what makes `make run`/`migrate`/`services` work with no
+# argument (AC1), and it is a DEFAULT, not a decision. Two targets deliberately
+# REFUSE to run without an explicit instance — `container-rebuild` and
+# `full-rebuild` (DESTRUCTIVE: they stop an instance and rebuild its image) —
+# and they test it with `test -n "$(instance)"`. A `?=` default makes that test
+# see "dev" and pass, so `make full-rebuild` with no argument silently rebuilt
+# and restarted DEV instead of printing its usage line: the guard is dead.
+# That is not hypothetical drift, it is this variable's blast radius.
+#
+# `instance_given` is non-empty ONLY when the operator named the instance on the
+# command line or in the environment — `$(origin)` is `file` for this default.
+# The two guards test THIS, so a bare `make full-rebuild` refuses again while
+# `make full-rebuild instance=dev` (and the `rebuild-*` wrappers, which pass
+# `instance=` explicitly) still work.
+instance_given = $(filter command line environment override,$(origin instance))
 BIN_DIR     := bin
 
 # Git metadata injected into the binary via -ldflags (internal/version).
@@ -217,7 +257,24 @@ build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orch ./cmd/orch
 
-run: fetch-tags fe-build ## Run the control plane from source
+# run STARTS THIS INSTANCE'S LOCAL SERVICES FIRST (the `services` prerequisite),
+# so it works on a host with no container engine and no Postgres installed:
+# startHostServices re-execs this binary as `container` with host service
+# residency, which downloads the pinned Postgres + NATS on first use
+# (cmd/orchicon/binaries.go). The plane's OWN env is then pointed at the instance
+# the services bound — the plane's config defaults are dev's 5432/4222
+# (internal/config/config.go), so without these exports `instance=prod` would
+# reach dev's database. ORCHICON_HTTP_ADDR is exported for the SAME reason, one
+# layer up: the config default is a WILDCARD `:8080` (dev's port) on EVERY
+# interface, so `instance=prod` would take dev's 8080 — the collision AC4
+# forbids — and expose the plane on the LAN. The launcher binds this instance's
+# own loopback port (scripts/container.sh plane_env), and so does this.
+run: services fetch-tags fe-build ## Run the control plane from source (starts this instance's local services first)
+	ORCHICON_INSTANCE=$(instance) \
+	ORCHICON_DATA_DIR="$${ORCHICON_DATA_DIR:-$$HOME/.local/share/orchicon-$(instance)}" \
+	ORCHICON_HTTP_ADDR="127.0.0.1:$$(scripts/container.sh services-port $(instance) control)" \
+	ORCHICON_POSTGRES_DSN="$(DB_URL)" \
+	ORCHICON_NATS_URL="nats://localhost:$$(scripts/container.sh services-port $(instance) nats)" \
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
 test: ## Run Go tests
@@ -247,6 +304,11 @@ test: ## Run Go tests
 	@# cleared here as well so anything running under `make` matches CI even in a package that has no
 	@# isolate file yet. It is NOT env -i: the opt-in variables (ORCHICON_TEST_DSN,
 	@# ORCHICON_SKIP_NETWORK_TESTS, ORCHICON_LIVE_*) are deliberately left reachable.
+	@# SERVICES ARE DELIBERATELY NOT A PREREQUISITE OF test, and ORCHICON_SERVICE_RESIDENCY is
+	@# deliberately NOT in the unset list below. CI runs this after `container up` against the container
+	@# DB, so starting host services here would double-bind 5432; and a developer's inner-loop services
+	@# (make services) must stay reachable, which is what the opt-in variables are for. The isolation
+	@# that matters — config, live plane, guard — is unchanged.
 	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
 	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR; do unset "$$v"; done; \
 	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(PKGS)
@@ -270,6 +332,7 @@ clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygien
 	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
 	@rm -f $(BIN_DIR)/orchicon
 	@rm -f $(BIN_DIR)/orch
+	@rm -f $(BIN_DIR)/atlas-ci
 	# Stale copies of the binary dropped into the container/runtime build
 	# contexts by older scripts. The runtime image no longer bakes the
 	# binary (the daemon bind-mounts its own executable), so a leftover
@@ -354,9 +417,21 @@ clean-docker: ## Prune Orchicon's dangling images and stopped containers (never 
 
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check synth-data
-migrate: ## Apply pending Atlas migrations to $$DB_URL
-	@command -v $(ATLAS_BIN) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
-	cd db && $(ATLAS_BIN) migrate apply --env local --url "$(DB_URL)"
+# APPLIED BY THE REPO'S OWN ENGINE, NOT THE ATLAS CLI. internal/migrate over the embedded
+# db/migrations is what the plane applies on boot and what CI applies (tools/atlas-ci), so
+# `make migrate` cannot disagree with either - the DSN resolved above is the only variable.
+# The CLI path could not read this directory AT ALL: Atlas rejects the paired *_down.sql as a
+# duplicate migration version, with the exact CLI the dev image installs (`curl -sSfL
+# https://atlasgo.sh | sh`). It also wanted a network install and a matching CLI build, neither
+# of which an offline, container-less inner loop has. migrate-diff / migrate-hash still use the
+# CLI: they GENERATE and HASH the directory, which the Go engine deliberately does not do.
+# BUILT, THEN RUN. `go run` would do the same compile, but its throwaway binary lands in the
+# shared Go build cache, which some sandboxes refuse to exec from; bin/ is this repo's
+# own artifact dir (gitignored) and `make clean` owns it.
+migrate: ## Apply pending Atlas migrations to $$DB_URL (instance=<dev|prod|test> picks the instance)
+	$(db_url_required)
+	@$(GO) build -o $(BIN_DIR)/atlas-ci ./tools/atlas-ci
+	DB_URL="$(DB_URL)" $(BIN_DIR)/atlas-ci
 
 migrate-diff: ## Generate a new migration from db/schema.hcl (usage: make migrate-diff name=foo)
 	@test -n "$(name)" || { echo "usage: make migrate-diff name=<migration_name>"; exit 1; }
@@ -367,7 +442,29 @@ migrate-hash: ## Recompute the Atlas migration directory hash (after hand-edits)
 	cd db && $(ATLAS_BIN) migrate hash --dir "file://migrations"
 
 rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 §8.5)
-	scripts/check-rls.sh "$(DB_URL)"
+	@# ORCHICON_INSTANCE travels WITH the DSN: check-rls.sh resolves the instance's OWN
+	@# downloaded psql from it, so `rls-check instance=prod` must not read dev's record.
+	$(db_url_required)
+	ORCHICON_INSTANCE=$(instance) scripts/check-rls.sh "$(DB_URL)"
+
+# --- Local services (the de-containerized inner loop) ----------------------
+#
+# On a host with NO container engine these are the backend `make run` and
+# `make migrate` talk to. `orchicon services up` reuses the SAME host-services
+# supervisor the installer uses (startHostServices → `orchicon container` with
+# ORCHICON_SERVICE_RESIDENCY=host), so there is one implementation of "run the
+# services as this user's processes". Only `run` depends on it: `migrate` and
+# `rls-check` run in CI AFTER `container up` against the container DB, so a
+# `services` prerequisite there would double-bind 5432.
+.PHONY: services services-down services-status
+services: ## Start this instance's local Postgres + NATS on the host (no container engine needed)
+	ORCHICON_TELEMETRY=none $(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon services up $(instance)
+
+services-down: ## Stop this instance's local services and verify the ports are free
+	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon services down $(instance)
+
+services-status: ## Show this instance's local services state and its DSN
+	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon services status $(instance)
 
 synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
 	scripts/check_no_synth_data.sh
@@ -449,6 +546,14 @@ install-path-test: ## Run the real installer against a locally-served artifact, 
 .PHONY: host-residency-test
 host-residency-test: ## CI gate: the instance launch shape (residency default, per-instance ports, plane binds)
 	bash scripts/tests/host-residency/run.sh
+
+# local-services-test pins the INNER LOOP: that DB_URL is DERIVED per instance,
+# that the pure query verbs honour overrides, that `services` is a prerequisite
+# of `run` alone, and that the `test` isolation contract is unbroken. Offline —
+# no Docker and no database.
+.PHONY: local-services-test
+local-services-test: ## CI gate: the local-services inner loop (derived DB_URL, per-instance ports, help rows)
+	bash scripts/tests/local-services/run.sh
 
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
@@ -543,7 +648,7 @@ runtime-daemon: ## Start the host-side workflow runtime daemon
 runtime-stop: ## Stop the host-side workflow runtime daemon
 	scripts/container.sh runtime-stop
 container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild instance=dev|prod|test [residency=host|container])
-	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod|test"; exit 1; }
+	@test -n "$(instance_given)" || { echo "usage: make container-rebuild instance=dev|prod|test"; exit 1; }
 	# residency is passed down as ENV (per invocation) — never exported globally,
 	# so rebuilding one instance cannot change the other's shape.
 	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh down $(instance)
@@ -608,7 +713,7 @@ container-ps: ## List orchicon container instances
 #                                 half of the fix: cross-compile no longer dumps foreign-platform
 #                                 artifacts into the shared cache, and this keeps the rest honest)
 full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod|test)
-	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
+	@test -n "$(instance_given)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
 	$(MAKE) build
 	$(MAKE) ci
 	$(MAKE) migrate-hash
@@ -827,7 +932,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate

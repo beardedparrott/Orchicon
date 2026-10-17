@@ -1034,6 +1034,24 @@ after waiting for it), then resolves every published port. `ORCHICON_PLANE_RESID
 shared and a test asserts the two agree (`TestInstallPortDefaultsMatchContainerScript`), so an instance's
 ports do not depend on which entry point created it.
 
+#### The inner loop with no container: `make services`
+
+The host-residency work above makes the *plane* run on the host while the services stay in the container. This subsection is the other half: running **the services themselves** on the host, with **no container engine and no Postgres installed** — so `make run`, `make migrate` and `make rls-check` work from a plain source checkout.
+
+| Command | What it does |
+|---|---|
+| `make services` | Start this instance's Postgres + NATS as processes of your user (telemetry off). Idempotent — starting what is already running is a no-op that says so. |
+| `make services-status` | Report the state and the derived DSN. Exit 0 when up, 1 when down. |
+| `make services-down` | Stop them and **verify the ports came free** — an orphaned Postgres still holding 5432 is named, not silently left behind. |
+| `make run` | Starts the local services first (a `services` prerequisite), then the plane, with the instance's DSN + NATS URL exported into its environment. |
+| `make migrate instance=prod` | Applies migrations to THAT instance's database. |
+
+- **One implementation, not two.** `orchicon services up` reuses `startHostServices` (`cmd/orchicon/install_host.go`), which re-execs the binary as `orchicon container` with `ORCHICON_SERVICE_RESIDENCY=host`. That supervisor already runs postgres/nats/telemetry as the invoking user and **downloads the pinned Postgres + NATS on first use** when the host has none (`cmd/orchicon/binaries.go`, detect-else-download, SHA256-verified), so a host with no Postgres installed still gets one.
+- **`DB_URL` is DERIVED, never a literal.** `instance ?= dev` picks the instance and `DB_URL ?= $(shell scripts/container.sh db-url $(instance) …)` resolves it through the SAME per-instance port table the launcher and `orchicon install` use (dev 5432, prod 5433, test 5434; NATS 4222/4223/4224). An explicit `DB_URL` still wins, and `ORCHICON_*_PORT` overrides move the port and the DSN together.
+- **`services` is a prerequisite of `run` ALONE.** `migrate`, `rls-check` and `test` keep consuming `$(DB_URL)` without starting anything — CI runs them after `container up` against the container DB, so a `services` prerequisite there would double-bind 5432. The `make test` isolation contract (the ambient config/plane unset list, `ORCHICON_CONFIG_DIR`, the `ORCHICON_TEST_DSN` opt-in) is unchanged.
+- **The RLS gate reaches a de-containerized host.** `scripts/check-rls.sh` gained a rung between "psql on PATH" and "docker exec" that uses the instance's OWN downloaded psql (`scripts/container.sh pg-psql`, read from `<DataDir>/infra-binaries.json`).
+- **Verified offline** by `make local-services-test` (`scripts/tests/local-services/run.sh`) plus the Go tests in `cmd/orchicon` (`services_test.go`, `help_test.go`).
+
 **`orchicon restart` is the other half of the install question, and it exists because of a property of the
 shape rather than a missing convenience.** A plane **inherits its environment when it STARTS** (`startHostPlane`
 passes `os.Environ()` on, and `serve --detach` does the same), so `PATH` is fixed at start time and nothing
