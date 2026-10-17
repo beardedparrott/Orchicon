@@ -467,7 +467,27 @@ func (s *supervisor) writeConfigs() error {
 // and the re-derived reason live.
 func (s *supervisor) initPostgres() error {
 	dataDir := filepath.Join(s.dataDir, "postgres")
+	initialized := false
 	if _, err := os.Stat(filepath.Join(dataDir, "PG_VERSION")); err == nil {
+		initialized = true
+	}
+	// THE CONTAINER-ERA CLUSTER GUARD, host residency only.
+	//
+	// The two shapes keep postgres in different places — a docker volume
+	// (container) versus <dataDir>/postgres (host) — and nothing migrated between
+	// them. So on a host boot: with NO cluster here, initdb would create an empty
+	// database beside the real one; with a STALE cluster here, postgres would start
+	// on old data. Both look healthy from outside, which is why this runs BEFORE
+	// initdb and refuses rather than warns. See postgres_legacy_volume.go.
+	//
+	// It is a no-op for a container-resident supervisor, for an instance with no
+	// container-era volume, and on a host with no engine.
+	if s.isHost() {
+		if err := guardContainerEraPostgresCluster(s.dataDir, initialized, os.Stderr); err != nil {
+			return err
+		}
+	}
+	if initialized {
 		return nil // already initialized
 	}
 	uid, gid := s.postgresUIDGID()
