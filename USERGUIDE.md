@@ -2306,7 +2306,7 @@ The `orchicon` binary runs the plane and its supporting services.
 | Script | Description |
 |---|---|
 | `scripts/container.sh` | Build / up / down / status / logs / ps / runtime-daemon / runtime-stop for the dev + prod container instances |
-| `scripts/orchicon.sh` | Start / stop / restart / status / logs / rebuild the **host-resident** plane (dev or prod), services container included |
+| `scripts/orchicon.sh` | Start / stop / restart / status / logs / rebuild the **host-resident** plane and its host services (dev or prod); delegates every verb to the CLI's own control surface (`orchicon instance` when present, else `install` / `restart` / `serve` / `services`) |
 
 **The terminal client is a separate binary:** run `orch` for the TUI described in
 Part II.
