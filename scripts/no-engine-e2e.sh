@@ -160,6 +160,25 @@ check_absent() { # check_absent <desc> <file> <needle> [owner]
   else check "$desc" 0; fi
 }
 
+# --- content gates: an absence in an EMPTY capture is not evidence ----------
+# H1 (iteration 2): a 0-byte capture made "the marker is NOT in the served
+# bundle", the stale-`dist` control and the escape hatch all PASS on a plane that
+# served no UI at all. The rule is structural, not per-site: every assertion that
+# reads the CONTENT of a capture goes through these, so a capture with bytes gets
+# the real check and an empty one is SKIP — never PASS, because it proves nothing
+# either way. scripts/tests/no-engine-e2e-assertions/run.sh holds it to that.
+gated_absent() { # gated_absent <desc> <capture> <needle> <why-if-empty> [owner]
+  local desc="$1" file="$2" needle="$3" why="$4" owner="${5:-}"
+  if [ -s "$file" ]; then check_absent "$desc" "$file" "$needle" "$owner"
+  else skip "$desc" "$why"; fi
+}
+
+gated_contains() { # gated_contains <desc> <capture> <needle> <why-if-empty> [owner]
+  local desc="$1" file="$2" needle="$3" why="$4" owner="${5:-}"
+  if [ -s "$file" ]; then check_contains "$desc" "$file" "$needle" "$owner"
+  else skip "$desc" "$why"; fi
+}
+
 step_file() { printf 'step-%s.log' "$CURRENT_STEP"; }
 
 begin_step() { # begin_step <n> <name>
@@ -870,8 +889,10 @@ step3_connect() {
   script -q -c "timeout 12 '$BIN/orch' --url '$(api_base "$INSTANCE")' --token '$token'" "$cap" >/dev/null 2>&1
   printf 'capture: %s (%s bytes)\n' "${cap#"$REPO_ROOT"/}" "$(wc -c <"$cap" 2>/dev/null || echo 0)" >>"$log"
   check "orch renders a screen (capture is non-trivial)" "$([ -s "$cap" ] && [ "$(wc -c <"$cap")" -gt 200 ] && echo 0 || echo 1)"
-  check_absent "the client did not fail to reach the plane" "$cap" "connection refused"
-  check_absent "the client did not fail to dial the plane" "$cap" "dial tcp"
+  gated_absent "the client did not fail to reach the plane" "$cap" "connection refused" \
+    "the TUI capture is EMPTY — a failure text absent from an empty capture proves nothing"
+  gated_absent "the client did not fail to dial the plane" "$cap" "dial tcp" \
+    "the TUI capture is EMPTY — a failure text absent from an empty capture proves nothing"
   grep -qiE 'orchicon|work|runs|127\.0\.0\.1' "$cap" 2>/dev/null \
     && check "the rendered screen names the plane it reached" 0 \
     || check "the rendered screen names the plane it reached" 1 "cmd/orch/main.go:215-220"
@@ -918,11 +939,8 @@ step4_rebuild_live() {
     check "the served bundle is fetchable (independent: HTTP GET of the served asset)" 1 "cmd/orchicon/serve_state.go:124-141 (no embedded dist -> / is the API, 401) — see 01-served-index.txt"
   fi
   dist_bundle_bytes >"${EVIDENCE}/04-dist-bundle.txt" 2>/dev/null || true
-  if [ "$bundle_ok" = "1" ]; then
-    check_absent "the marker is NOT in the served bundle before the edit (clean baseline)" "$bundle" "$MARKER"
-  else
-    skip "the marker is NOT in the served bundle before the edit (clean baseline)" "the served bundle is UNFETCHABLE — an absence in an empty capture proves nothing"
-  fi
+  gated_absent "the marker is NOT in the served bundle before the edit (clean baseline)" "$bundle" "$MARKER" \
+    "the served bundle is UNFETCHABLE — an absence in an empty capture proves nothing"
 
   git -C "$REPO_ROOT" checkout -- "$MARKER_SRC" 2>/dev/null || true
   apply_marker_edit
@@ -941,12 +959,17 @@ step4_rebuild_live() {
   # is the stamp check's product (Makefile:569-581), the SERVED bytes are the
   # embed/restart's product. AC3 needs both, and the dist half is judged even
   # when the server half cannot be fetched.
-  if [ "$bundle_ok" = "1" ]; then
-    check_contains "THE CHANGE IS LIVE: the SERVED bundle carries the new marker" \
-      "${EVIDENCE}/04-served-bundle-after.txt" "$MARKER" "Makefile:569-581"
-  else
-    skip "THE CHANGE IS LIVE: the SERVED bundle carries the new marker" "the served bundle was UNFETCHABLE at the baseline — AC3's served half is UNPROVEN, not passed (see 01-served-index.txt)"
+  # The baseline was fetchable, so an empty capture HERE is a regression the
+  # rebuild introduced, not a host condition: it is a FAIL, and the content
+  # assertions below are then SKIPped by the gate rather than passing empty.
+  if [ "$bundle_ok" = "1" ] && [ ! -s "${EVIDENCE}/04-served-bundle-after.txt" ]; then
+    check "the plane still serves the bundle after the rebuild (the fetch returned no bytes)" 1 \
+      "Makefile:272-278 + cmd/orchicon/serve_state.go:124-141 — see 01-served-index.txt"
   fi
+  gated_contains "THE CHANGE IS LIVE: the SERVED bundle carries the new marker" \
+    "${EVIDENCE}/04-served-bundle-after.txt" "$MARKER" \
+    "the served bundle was UNFETCHABLE — AC3's served half is UNPROVEN, not passed (see 01-served-index.txt)" \
+    "Makefile:569-581"
   check_contains "the BUILT dist carries the new marker after make build (the build half of AC3)" \
     "${EVIDENCE}/04-dist-bundle-after.txt" "$MARKER" "Makefile:569-581"
 
@@ -963,14 +986,14 @@ EOF
   restart_plane "$INSTANCE" "${EVIDENCE}/04-run-after-stale-control.log" >/dev/null 2>&1 || true
   served_bundle_bytes "$INSTANCE" >"${EVIDENCE}/04-served-bundle-stale-control.txt" 2>/dev/null || true
   dist_bundle_bytes >"${EVIDENCE}/04-dist-bundle-stale-control.txt" 2>/dev/null || true
-  if [ "$bundle_ok" = "1" ]; then
-    check_absent "STALE-DIST CONTROL: a dist newer than src does not ship the previous UI (SERVED)" \
-      "${EVIDENCE}/04-served-bundle-stale-control.txt" "$MARKER" "Makefile:574-581 then Makefile:655 (only container-rebuild forces force-fe=1)"
-  else
-    skip "STALE-DIST CONTROL: a dist newer than src does not ship the previous UI (SERVED)" "the served bundle was UNFETCHABLE at the baseline — see 01-served-index.txt"
-  fi
-  check_absent "STALE-DIST CONTROL (BUILT): a dist newer than src does not keep the previous bundle" \
-    "${EVIDENCE}/04-dist-bundle-stale-control.txt" "$MARKER" "Makefile:574-581 (only container-rebuild forces force-fe=1)"
+  gated_absent "STALE-DIST CONTROL: a dist newer than src does not ship the previous UI (SERVED)" \
+    "${EVIDENCE}/04-served-bundle-stale-control.txt" "$MARKER" \
+    "the served bundle was UNFETCHABLE — see 01-served-index.txt" \
+    "Makefile:574-581 then Makefile:655 (only container-rebuild forces force-fe=1)"
+  gated_absent "STALE-DIST CONTROL (BUILT): a dist newer than src does not keep the previous bundle" \
+    "${EVIDENCE}/04-dist-bundle-stale-control.txt" "$MARKER" \
+    "the BUILT dist capture is EMPTY (frontend/dist carries no *.js) — an absence in an empty dist proves nothing" \
+    "Makefile:574-581 (only container-rebuild forces force-fe=1)"
 
   # --- the documented escape hatch must actually work -----------------------
   if tee_step run_make "$INSTANCE" build force-fe=1; then check "make build force-fe=1 (the engine-free escape hatch) succeeds" 0
@@ -978,14 +1001,12 @@ EOF
   restart_plane "$INSTANCE" "${EVIDENCE}/04-run-after-force-fe.log" >/dev/null 2>&1 || true
   served_bundle_bytes "$INSTANCE" >"${EVIDENCE}/04-served-bundle-force-fe.txt" 2>/dev/null || true
   dist_bundle_bytes >"${EVIDENCE}/04-dist-bundle-force-fe.txt" 2>/dev/null || true
-  if [ "$bundle_ok" = "1" ]; then
-    check_absent "the escape hatch clears the marker from the SERVED bundle" \
-      "${EVIDENCE}/04-served-bundle-force-fe.txt" "$MARKER"
-  else
-    skip "the escape hatch clears the marker from the SERVED bundle" "the served bundle was UNFETCHABLE — an absence in an empty capture proves nothing"
-  fi
-  check_absent "the escape hatch clears the marker from the BUILT dist" \
-    "${EVIDENCE}/04-dist-bundle-force-fe.txt" "$MARKER"
+  gated_absent "the escape hatch clears the marker from the SERVED bundle" \
+    "${EVIDENCE}/04-served-bundle-force-fe.txt" "$MARKER" \
+    "the served bundle was UNFETCHABLE — an absence in an empty capture proves nothing"
+  gated_absent "the escape hatch clears the marker from the BUILT dist" \
+    "${EVIDENCE}/04-dist-bundle-force-fe.txt" "$MARKER" \
+    "the BUILT dist capture is EMPTY (frontend/dist carries no *.js) — an absence in an empty dist proves nothing"
   check "the working tree is restored (frontend/src is clean)" \
     "$(git -C "$REPO_ROOT" diff --quiet -- "$MARKER_SRC" && echo 0 || echo 1)"
 }
@@ -1016,11 +1037,15 @@ step5_state() {
   } >"$gt" 2>&1
   tee -a "$log" <"$gt" >/dev/null 2>&1 || true
 
-  check_absent "status makes no claim it cannot verify (no container-derived 'not created')" \
-    "$out" "not created" "scripts/container.sh:1603-1630 status_instances (unguarded 'docker ps')"
-  check_absent "status does not leak a container error" "$out" "docker: command not found" \
+  gated_absent "status makes no claim it cannot verify (no container-derived 'not created')" \
+    "$out" "not created" \
+    "status printed NOTHING — an absent claim in empty output proves nothing" \
+    "scripts/container.sh:1603-1630 status_instances (unguarded 'docker ps')"
+  gated_absent "status does not leak a container error" "$out" "docker: command not found" \
+    "status printed NOTHING — an absent error in empty output proves nothing" \
     "scripts/container.sh:1603-1630"
-  check_absent "status does not leak a container error (docker: not found)" "$out" "docker: not found" \
+  gated_absent "status does not leak a container error (docker: not found)" "$out" "docker: not found" \
+    "status printed NOTHING — an absent error in empty output proves nothing" \
     "scripts/container.sh:1603-1630"
   grep -qE "$INSTANCE" "$out" \
     && check "status names the instance" 0 \
@@ -1157,8 +1182,10 @@ step8_hygiene() {
   else
     check "make clean-docker is a clean no-op with no container engine (exit $rc)" 1 "Makefile:413-416"
   fi
-  check_absent "clean-docker does not fail with a container error" "$log" "docker: command not found" "Makefile:413-416"
-  check_absent "clean-docker does not fail with a container error (docker: not found)" "$log" "docker: not found" "Makefile:413-416"
+  gated_absent "clean-docker does not fail with a container error" "$log" "docker: command not found" \
+    "the cleanup log is EMPTY — an absent error text proves nothing" "Makefile:413-416"
+  gated_absent "clean-docker does not fail with a container error (docker: not found)" "$log" "docker: not found" \
+    "the cleanup log is EMPTY — an absent error text proves nothing" "Makefile:413-416"
 
   rc=0
   run_make "$INSTANCE" clean-docker >"${EVIDENCE}/08-cleanup-second.log" 2>&1 || rc=$?
@@ -1425,4 +1452,7 @@ main() {
   exit 0
 }
 
-main "$@"
+# Sourced (scripts/tests/no-engine-e2e-assertions/run.sh) the FUNCTIONS are the
+# subject and nothing may execute: the offline gate proves the vacuous-PASS rule
+# without downloading Postgres, binding a port, or touching the tree.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi

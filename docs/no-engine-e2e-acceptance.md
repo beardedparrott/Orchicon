@@ -293,11 +293,17 @@ UI at all. They are the harness's own guarantee that a green line means somethin
 1. **Fetchability gates content.** Step 4 captures the bytes a browser would receive.
    If that capture fails, every assertion that reads bundle *content* is `SKIP`
    ("AC3's served half is UNPROVEN"), never `PASS` — an absence in a 0-byte file
-   proves nothing.
+   proves nothing. The rule is structural, not per-site: every content assertion
+   goes through `gated_absent`/`gated_contains`, so a capture with bytes gets the
+   real verdict and an empty one is `SKIP`. `make no-engine-e2e-assertions-test`
+   (part of `ci-go`) holds the harness to it, including a check that step 4
+   contains no raw `check_absent` — a future edit cannot reintroduce the hole.
 2. **Built bytes and served bytes are both recorded.** `04-dist-bundle*.txt` is what
    `make build` produced, `04-served-bundle*.txt` is what the server returned. They
    disagree only when the defect is in the stamp check (`Makefile:569-581`) or in the
-   embed/restart path — the two places the report needs to name.
+   embed/restart path — the two places the report needs to name. Both halves are
+   gated the same way: an empty `04-dist-bundle*.txt` (no `frontend/dist/*.js`) makes
+   the stale-`dist` control and the escape-hatch assertions `SKIP`, never `PASS`.
 3. **A directory is not a toolchain.** Preflight requires
    `frontend/node_modules/.bin/{tsc,vite}`; a half-extracted `node_modules` (what an
    interrupted `npm install` leaves) is `RUN INVALID` with the fix `cd frontend &&
