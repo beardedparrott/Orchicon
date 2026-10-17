@@ -54,6 +54,14 @@ expect() { # <label> <expected> <actual>
 
 spin() { echo; echo "  -- $* --"; }
 
+# body_of <fn> / has / hasnt — one step function's own text, matched with bash
+# patterns rather than `sed ... | grep -q`. A `grep -q` that matches early closes
+# the pipe, and that SIGPIPE made THIS gate flake (observed once in seven runs): a
+# CI gate that occasionally red-lights a correct tree is a broken gate.
+body_of() { sed -n "/^$1() {/,/^}/p" "$HARNESS"; }
+has()   { case "$1" in *"$2"*) echo yes ;; *) echo no ;; esac; }
+hasnt() { case "$1" in *"$2"*) echo no ;; *) echo yes ;; esac; }
+
 # --- the harness must be SOURCEABLE ---------------------------------------
 spin "the harness is a library when sourced"
 SOURCE_RC=0
@@ -160,17 +168,17 @@ done
 # rejection (AC7). If these needles disappear, the assertions became reports.
 spin "rule 3b: the decisive ACs read INDEPENDENT evidence"
 expect "AC3 reads the engine's own ps output (not the plane's report)" "yes" \
-  "$(sed -n '/^step3_container_run() {/,/^}/p' "$HARNESS" | grep -q 'engine_capture .*ps -a' && echo yes || echo no)"
+  "$(case "$(body_of step3_container_run)" in *engine_capture*"ps -a"*) echo yes ;; *) echo no ;; esac)"
 expect "AC3 compares the in-container hostname against the host's" "yes" \
-  "$(sed -n '/^step3_container_run() {/,/^}/p' "$HARNESS" | grep -q 'hostname' && echo yes || echo no)"
+  "$(has "$(body_of step3_container_run)" hostname)"
 expect "AC7 attempts a REAL create on the daemon socket" "yes" \
-  "$(sed -n '/^step7_gate_check() {/,/^}/p' "$HARNESS" | grep -q 'unix-socket' && echo yes || echo no)"
+  "$(has "$(body_of step7_gate_check)" unix-socket)"
 expect "AC2 asserts availability on /enginez" "yes" \
   "$(grep -q 'enginez?refresh=1' "$HARNESS" && echo yes || echo no)"
 expect "AC2 has an ADVERSARIAL control (availability only after verify)" "yes" \
   "$(grep -q 'ORCHICON_ENGINE_VERIFY_IMAGE' "$HARNESS" && echo yes || echo no)"
 expect "AC8 records the runtime-mode contradiction instead of reinterpreting it" "yes" \
-  "$(sed -n '/^step8_all_native() {/,/^}/p' "$HARNESS" | grep -q 'lifecycle.go:958-975' && echo yes || echo no)"
+  "$(has "$(body_of step8_all_native)" 'lifecycle.go:958-975')"
 
 # --- rule 4: an assertion that CANNOT pass is a false defect ---------------
 # A vacuous PASS hides a real failure; an impossible assertion INVENTS one, and a
@@ -182,9 +190,9 @@ expect "the E2E workflow is worker-free (an END step, not a task step with no re
 expect "the mode AC1 asserts is read from the PROJECT (the run has no such field)" "yes" \
   "$(grep -q '01-project-after-run.json' "$HARNESS" && ! grep -q '01-run-final.json" "EXECUTION_MODE_LOCAL' "$HARNESS" && echo yes || echo no)"
 expect "the in-run marker is interpolated INTO the container exec command" "yes" \
-  "$(sed -n '/^step3_container_run() {/,/^}/p' "$HARNESS" | grep -q 'runtime-e2e marker=' && echo yes || echo no)"
+  "$(has "$(body_of step3_container_run)" 'runtime-e2e marker=')"
 expect "the availability control uses an engine the probe cannot DRIVE (not a verify image)" "yes" \
-  "$(sed -n '/^step2_opt_in() {/,/^}/p' "$HARNESS" | grep -q 'stub-bin' && echo yes || echo no)"
+  "$(has "$(body_of step2_opt_in)" stub-bin)"
 expect "the stream chunk count walks Connect ENVELOPES, not lines" "yes" \
   "$(grep -q 'connect_frames() {' "$HARNESS" && ! grep -q "grep -c ''" "$HARNESS" && echo yes || echo no)"
 
