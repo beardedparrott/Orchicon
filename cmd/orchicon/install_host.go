@@ -23,12 +23,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-
-	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
 // residencyRecordFile is the per-instance record of the plane's SHAPE, written next to the other install

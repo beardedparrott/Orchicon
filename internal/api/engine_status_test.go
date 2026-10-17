@@ -24,7 +24,7 @@ func testEngineProbe(goos string, env map[string]string, bins map[string]string,
 			}
 			return "", errors.New("not found")
 		},
-		Run: func(_ context.Context, bin string, args ...string) (string, error) { return run(bin, args) },
+		Run:    func(_ context.Context, bin string, args ...string) (string, error) { return run(bin, args) },
 		Stat:   func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
 		GOOS:   goos,
 		Getenv: func(k string) string { return env[k] },

@@ -9,30 +9,63 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
-// engineCLI is the binary the INSTALL PATH drives for image and container operations.
+// engineCLI is the binary the INSTALL PATH drives for image and container operations,
+// set once by resolveContainerEngine when the ladder reached "ready".
 //
 // It used to be the literal "docker" in every call site, which made "containers available"
 // mean "docker installed" no matter what the resolver said. The resolver now owns the
-// decision (podman first, docker second) and this var is set from it once, in
-// resolveContainerEngine, before any image or container work. The default stays "docker" so
-// every path that does not go through the ladder — `orchicon restart`, the bridge probe on a
-// recorded docker install — behaves exactly as before.
-var engineCLI = "docker"
+// decision (podman first, docker second).
+var engineCLI string
+
+// engineResolved / engineMu memoise the LAZY resolution below (see engineBinary).
+var (
+	engineMu       sync.Mutex
+	engineResolved string
+)
+
+// engineBinary is the engine binary to invoke.
+//
+// THE INSTALL'S DECISION WINS (engineCLI, set by resolveContainerEngine). Everything else —
+// `orchicon restart` on a recorded container shape, the bridge probe, the port read-back —
+// never runs the ladder, and those paths must NOT default to the literal "docker": on the
+// podman-only host this feature exists to produce, `docker restart` is a command-not-found
+// and an instance that cannot be restarted. So the default is resolved LAZILY with the same
+// rules (podman first, then docker), memoised because a restart asks more than once, and
+// still "docker" when Detect cannot see anything — which is exactly what those paths did
+// before this change.
+func engineBinary() string {
+	if engineCLI != "" {
+		return engineCLI
+	}
+	engineMu.Lock()
+	defer engineMu.Unlock()
+	if engineResolved != "" {
+		return engineResolved
+	}
+	engineResolved = "docker"
+	if e, err := containerengine.Detect(containerengine.DefaultProbe()); err == nil && e.Bin != "" {
+		engineResolved = e.Bin
+	}
+	return engineResolved
+}
 
 // engineCommand is an engine invocation through the resolved binary.
-func engineCommand(args ...string) *exec.Cmd { return exec.Command(engineCLI, args...) }
+func engineCommand(args ...string) *exec.Cmd { return exec.Command(engineBinary(), args...) }
 
-// engineStatus is the availability decision the install MADE, cached for the summary and
-// served by /enginez through the state file. It is a decision, not a re-probe: an install
-// summary that re-detected could describe a carrier the install never created (the same
-// defect printInstallInfo's containersUsed comment records).
+// engineStatus is the availability decision the install MADE, cached for the summary. It is a
+// decision, not a re-probe: an install summary that re-detected could describe a carrier the
+// install never created (the same defect printInstallInfo's containersUsed comment records).
+//
+// The plane's /enginez is a SEPARATE, live probe (internal/api/engine_status.go) — the two
+// agree because both go through internal/containerengine, not because they share a file.
 var engineStatus containerengine.Status
 
-// resolveContainerEngine is the whole engine decision, as SIX RUNGGS whose every failure is
+// resolveContainerEngine is the whole engine decision, as SIX RUNGS whose every failure is
 // a warning that falls through to the local shape (AC6): detect → minimum version → opt-in
 // provisioning → `podman machine` → verify-by-running-a-container → available.
 //

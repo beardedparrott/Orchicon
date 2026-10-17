@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/beardedparrott/orchicon/internal/containerengine"
-	"unicode/utf8"
 )
 
 // These tests cover the two changes that make `orchicon install` legible while it
