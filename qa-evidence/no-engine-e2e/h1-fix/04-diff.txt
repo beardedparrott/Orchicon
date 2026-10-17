@@ -1,0 +1,14 @@
+diff --git a/frontend/src/main.tsx b/frontend/src/main.tsx
+index 4fcd3d68ad..3a0a49b809 100644
+--- a/frontend/src/main.tsx
++++ b/frontend/src/main.tsx
+@@ -64,3 +64,9 @@ createRoot(root).render(
+     </QueryClientProvider>
+   </StrictMode>
+ );
++
++// no-engine-e2e acceptance marker (removed by the harness): proves the SERVED
++// bundle came from this working tree and not from a stale dist.
++if (typeof document !== "undefined") {
++  document.documentElement.setAttribute("data-no-engine-e2e", "NO-ENGINE-E2E-20261017T055514Z-122703");
++}

@@ -174,7 +174,7 @@ help: ## Show available targets
 	@# every target with a number in it — install-ps1-test was in the file with its `##`
 	@# description and simply never printed, so the one list a developer trusts said the
 	@# target did not exist. `make help` must list what is there.
-	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 # --- Tooling ---------------------------------------------------------------
 # buf is pinned (version + SHA256) and installed into ./bin by `make tools`
@@ -605,6 +605,14 @@ orchicon-cli-test: ## CI gate: scripts/orchicon.sh (verbs, help completeness, de
 .PHONY: local-services-test
 local-services-test: ## CI gate: the local-services inner loop (derived DB_URL, per-instance ports, help rows)
 	bash scripts/tests/local-services/run.sh
+
+# no-engine-e2e-assertions-test pins the acceptance harness's OWN HONESTY: an
+# assertion that reads a captured file can never PASS on an empty capture (that
+# is how AC3 was once reported verified on a plane serving no UI at all). Offline
+# — it sources the harness's functions and touches no engine, port or database.
+.PHONY: no-engine-e2e-assertions-test
+no-engine-e2e-assertions-test: ## CI gate: the no-engine acceptance harness never PASSes on an empty capture
+	bash scripts/tests/no-engine-e2e-assertions/run.sh
 
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
@@ -1045,7 +1053,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
