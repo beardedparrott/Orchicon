@@ -224,7 +224,7 @@ done
 out="$("$SCRIPT" frobnicate dev 2>&1)"
 assert_rc "$?" 2 "an unknown command exits 2"
 assert_contains "$out" "unknown command 'frobnicate'" "an unknown command is named"
-assert_contains "$out" "expected start|stop|restart|status|logs|rebuild|help" "the error lists the verbs"
+assert_contains "$out" "expected start|stop|restart|status|logs|rebuild|uninstall|help" "the error lists the verbs"
 
 # ── 3. the shared lifecycle surface, when the binary has one (AC7) ─────────
 echo "-- delegation to the shared surface"

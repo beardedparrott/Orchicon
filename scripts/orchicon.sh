@@ -16,6 +16,9 @@
 #   scripts/orchicon.sh logs    [dev|prod|test]  # the plane's log (follows when a tty)
 #   scripts/orchicon.sh rebuild [dev|prod|test]  # rebuild + restart (quick path;
 #                                                # see below)
+#   scripts/orchicon.sh uninstall <dev|prod|test> --yes
+#                                                # REMOVE one instance AND its
+#                                                # data (destructive, confirmed)
 #   scripts/orchicon.sh help
 #
 # INSTANCES. Three: `dev` (127.0.0.1:8080), `prod` (127.0.0.1:8091) and `test`
@@ -32,6 +35,17 @@
 # question an operator actually asks — "what is running here?" — and it is what
 # `make instance-ps` calls; a `dev` default here made that target unable to
 # answer it.
+#
+# `uninstall` REMOVES ONE INSTANCE AND EVERYTHING IT OWNS — its plane, its
+# container, its data volume, its host data dir (which holds the secrets KEK)
+# and its runtime containers — and NOTHING ELSE: a dev teardown never touches
+# prod's or test's row of the table. It is DESTRUCTIVE, so it prints what it
+# will remove FIRST and refuses without `--yes` (or ORCHICON_CONFIRM_DESTROY=1).
+# It also REFUSES an omitted instance instead of defaulting to `dev`, because a
+# stray Enter must never pick the stack whose database and KEK are about to be
+# deleted. It never removes dev/prod's legacy PG_VOLUME, which may hold data
+# this instance never owned. The body is scripts/lib/teardown.sh; this is the
+# verb `make rebuild-test` names for tearing its throwaway instance down.
 #
 # CLIENT
 #   The TUI talks to an instance through a profile in ~/.orchicon/config:
@@ -70,6 +84,20 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# THE INSTANCE TABLE IS NOT IN THIS FILE. scripts/lib/instances.sh is the ONE
+# place the shell side enumerates dev/test/prod and resolves each one's ports and
+# data dir; cmd/orchicon/install_ports.go's instanceOrder is the Go home of the
+# same set, and TestInstallPortDefaultsMatchShellInstanceTable asserts the two
+# agree in both directions. This script READS that table instead of repeating it,
+# so a fourth instance cannot be half-added here, and a port cannot be
+# remembered in one place and forgotten in another.
+PROJECT_ROOT="$ROOT"
+. "$ROOT/scripts/lib/instances.sh"
+# Teardown is the ONE destructive path: `uninstall` below is a thin dispatch
+# into scripts/lib/teardown.sh, the same file the legacy launcher's `uninstall`
+# verb calls, so there is one teardown and not two.
+. "$ROOT/scripts/lib/teardown.sh"
 
 # The binary that owns the lifecycle. Prefer an explicit ORCHICON_BIN, then the
 # repo build, then PATH; resolved lazily so `help` works on a checkout that has
@@ -125,10 +153,11 @@ SHAPE
   explicit value you export is honoured).
 
 DELEGATION
-  Every verb is dispatched to the CLI's shared control surface
+  Every LIFECYCLE verb is dispatched to the CLI's shared control surface
   (`orchicon instance <verb>` when available, else that binary's component
   verbs). This script holds no lifecycle logic, so it cannot drift from the
-  CLI, the TUI or the desktop app.
+  CLI, the TUI or the desktop app. The one exception is `uninstall`, which is
+  instance-scoped teardown in scripts/lib/teardown.sh.
 
 STATUS
   Reads the plane's PID-file state and asks /healthz before calling an instance
@@ -137,17 +166,29 @@ STATUS
 REBUILD
   Rebuilds and restarts WITHOUT running the test suite (the quick path).
   To gate on tests/checks first, use: make rebuild-<instance>
+
+UNINSTALL
+  uninstall <dev|prod|test> --yes  removes ONE instance and its data — its
+  plane, container, volume, host data dir (the secrets KEK) and its runtime
+  containers — and nothing else. It is destructive and confirmed: it prints
+  what it will remove BEFORE removing it, refuses without --yes (or
+  ORCHICON_CONFIRM_DESTROY=1), and REFUSES an omitted instance rather than
+  defaulting to dev. dev/prod's legacy postgres volume is never removed: it may
+  hold data this instance never owned. This is how the throwaway `test`
+  instance is torn down (`make rebuild-test` names it).
 ORCHICON_SH_USAGE
   exit "${1:-0}"
 }
 
 die_inst() {
-  echo "orchicon.sh: unknown instance '$1' — expected 'dev', 'prod' or 'test'" >&2
+  # The expected set is PRINTED FROM THE TABLE, so this message cannot list an
+  # instance the table does not define (or miss one it does).
+  echo "orchicon.sh: unknown instance '$1' — expected one of: $ORCHICON_INSTANCES" >&2
   exit 2
 }
 
 die_cmd() {
-  echo "orchicon.sh: unknown command '$1' — expected start|stop|restart|status|logs|rebuild|help" >&2
+  echo "orchicon.sh: unknown command '$1' — expected start|stop|restart|status|logs|rebuild|uninstall|help" >&2
   echo >&2
   usage 2
 }
@@ -174,26 +215,23 @@ require_bin() {
 #   plane pid/log   serveStateDir = <data dir>/serve   (cmd/orchicon/serve_state.go)
 #   services log    <data dir>/services.log
 instance_paths() {
-  # The three the port table defines (`dev|prod|test`, cmd/orchicon/install_ports.go
-  # instanceOrder — which asserts it matches the launcher's own columns). Anything
-  # else is refused rather than falling through to dev's numbers: an undefined
-  # instance that inherits dev's ports collides with dev, and the failure surfaces
-  # as a bind error far from the cause.
-  case "$1" in
-    dev|prod|test) ;;
-    *) die_inst "$1" ;;
-  esac
-  DATA_DIR="$HOME/.local/share/orchicon-$1"
+  # The instances the SHARED TABLE defines (scripts/lib/instances.sh, whose Go
+  # counterpart instanceOrder asserts it). Anything else is refused rather than
+  # falling through to dev's numbers: an undefined instance that inherits dev's
+  # ports collides with dev, and the failure surfaces as a bind error far from
+  # the cause.
+  instance_exists "$1" || die_inst "$1"
+  instance_info "$1"
+  DATA_DIR="$HOST_DATA_DIR"
   SERVE_STATE_DIR="$DATA_DIR/serve"
   PLANE_LOG="$SERVE_STATE_DIR/logs/orchicon.log"
   SERVICES_LOG="$DATA_DIR/services.log"
   PLANE_PORT="$(plane_port_for "$1")"
   PLANE_URL="http://127.0.0.1:$PLANE_PORT"
-  case "$1" in
-    dev) PLANE_PORT_DEFAULT=8080 ;;
-    prod) PLANE_PORT_DEFAULT=8091 ;;
-    test) PLANE_PORT_DEFAULT=8092 ;;
-  esac
+  # This instance's column of the table, which already carries an
+  # ORCHICON_CONTROL_PORT override — so the "default" the post-start summary
+  # compares against and the table can never disagree.
+  PLANE_PORT_DEFAULT="$PLANE_HTTP_PORT"
 }
 
 # plane_port_for resolves the CONTROL-plane port the way the CLI resolves it,
@@ -208,7 +246,9 @@ instance_paths() {
 #                  the CLI itself reads records before defaults), so it wins;
 #   ORCHICON_CONTROL_PORT  honoured only when there is no record yet — the
 #                  override a forthcoming `install` will bind;
-#   default column 8080 (dev) / 8091 (prod).
+#   default column this instance's column of scripts/lib/instances.sh — the one
+#                  shell home of the table (8080 dev / 8091 prod / 8092 test),
+#                  never a literal repeated here.
 plane_port_for() {
   local inst="$1" p=""
   if [ -r "$DATA_DIR/ports.json" ]; then
@@ -216,14 +256,11 @@ plane_port_for() {
            "$DATA_DIR/ports.json" 2>/dev/null | head -1)"
   fi
   if [ -z "$p" ]; then
-    p="${ORCHICON_CONTROL_PORT:-}"
-  fi
-  if [ -z "$p" ]; then
-    case "$inst" in
-      dev) p=8080 ;;
-      prod) p=8091 ;;
-      test) p=8092 ;;
-    esac
+    # NO RECORD YET: the instance's OWN column of the shared table (which
+    # already applies ORCHICON_CONTROL_PORT). Not a literal here — a second copy
+    # of these numbers is a second place to forget one of them.
+    instance_info "$inst" >/dev/null 2>&1 || die_inst "$inst"
+    p="$PLANE_HTTP_PORT"
   fi
   printf '%s\n' "$p"
 }
@@ -501,7 +538,7 @@ logs_instance() {
 # cannot verify must not claim success" rule the single-instance path obeys.
 status_all() {
   local rc=0 found=0 inst
-  for inst in dev prod test; do
+  for inst in $ORCHICON_INSTANCES; do
     if [ -d "$HOME/.local/share/orchicon-$inst" ]; then
       found=1
       status_instance "$inst" || rc=1
@@ -509,7 +546,7 @@ status_all() {
     fi
   done
   if [ "$found" -eq 0 ]; then
-    echo "no orchicon instances installed on this host (no ~/.local/share/orchicon-<dev|prod|test>)"
+    echo "no orchicon instances installed on this host (no ~/.local/share/orchicon-<$ORCHICON_INSTANCES>)"
     echo "  start one with: scripts/orchicon.sh start dev"
     return 1
   fi
@@ -544,8 +581,8 @@ case "$cmd" in
       exit $?
     fi
     inst="${inst:-dev}"
-    # An instance the port table does not define is refused, never defaulted.
-    case "$inst" in dev|prod|test) ;; *) die_inst "$inst" ;; esac
+    # An instance the shared table does not define is refused, never defaulted.
+    instance_exists "$inst" || die_inst "$inst"
     resolve_ctl
     case "$cmd" in
       start|up) start_instance "$inst" ;;
@@ -555,6 +592,29 @@ case "$cmd" in
       logs) logs_instance "$inst" ;;
       rebuild) rebuild_instance "$inst" ;;
     esac
+    ;;
+  uninstall)
+    # NO DEFAULT ON A DESTRUCTIVE VERB. Every verb above falls back to `dev`;
+    # this one refuses an omitted instance outright, because a stray Enter must
+    # never choose the stack whose database and KEK are about to be deleted.
+    if [ -z "$inst" ]; then
+      echo "orchicon.sh: uninstall needs an explicit instance (one of: $ORCHICON_INSTANCES)" >&2
+      exit 2
+    fi
+    instance_exists "$inst" || die_inst "$inst"
+    shift 2 || true
+    # --yes is the in-script confirmation; ORCHICON_CONFIRM_DESTROY=1 is the
+    # env-only form. An UNKNOWN argument is refused rather than ignored: on a
+    # destructive verb a silently dropped flag is a dropped confirmation.
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --yes|-y) CONFIRM_DESTROY=1 ;;
+        *) echo "orchicon.sh: unexpected argument '$1' (uninstall takes <dev|prod|test> [--yes])" >&2; exit 2 ;;
+      esac
+      shift
+    done
+    instance_paths "$inst"
+    uninstall_instance "$inst"
     ;;
   help|-h|--help|"")
     usage 0

@@ -2305,8 +2305,10 @@ The `orchicon` binary runs the plane and its supporting services.
 
 | Script | Description |
 |---|---|
-| `scripts/container.sh` | Build / up / down / status / logs / ps / runtime-daemon / runtime-stop for the dev + prod container instances |
-| `scripts/orchicon.sh` | Start / stop / restart / status / logs / rebuild the **host-resident** plane and its host services (dev or prod); delegates every verb to the CLI's own control surface (`orchicon instance` when present, else `install` / `restart` / `serve` / `services`) |
+| `scripts/orchicon.sh` | Start / stop / restart / status / logs / rebuild the **host-resident** plane and its host services for any instance (dev, prod or test); delegates every lifecycle verb to the CLI's own control surface (`orchicon instance` when present, else `install` / `restart` / `serve` / `services`) |
+| `scripts/orchicon.sh uninstall <dev\|prod\|test> --yes` | **Remove ONE instance and its data** — plane, container, volume, host state dir (destructive, confirmed, prints what it deletes first; never touches a sibling) |
+| `scripts/lib/instances.sh` | The ONE shell home of the instance table (dev/test/prod columns with their ports and data dirs); `cmd/orchicon/install_ports.go`'s `instanceOrder` is the Go home, and `TestInstallPortDefaultsMatchShellInstanceTable` asserts the two agree |
+| `scripts/container.sh` | Build / up / down / status / logs / ps / runtime-daemon / runtime-stop for the dev + prod + test container instances (the container-residency shape; `scripts/orchicon.sh` is the day-to-day entry point and the documented teardown) |
 
 **The terminal client is a separate binary:** run `orch` for the TUI described in
 Part II.

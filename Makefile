@@ -199,6 +199,20 @@ BUF_BIN     = $(if $(wildcard $(BIN_DIR)/buf),$(BIN_DIR)/buf,buf)
 # this one was on the same filesystem an `rm` emptied. Prefer our own copies, then PATH.
 ATLAS_BIN   = $(if $(wildcard $(BIN_DIR)/atlas),$(BIN_DIR)/atlas,$(if $(wildcard $(DEV_TOOLS)/bin/atlas),$(DEV_TOOLS)/bin/atlas,atlas))
 
+# ENGINE is the container engine every hygiene/teardown recipe drives (docker or
+# podman). It resolves through scripts/lib/engine.sh — the ONE resolver the shell
+# libs also use — so `make clean-docker` and `scripts/orchicon.sh uninstall`
+# cannot disagree about which engine they are pruning with. The lib is SOURCED
+# (it defines a function, it is not an executable), so make dots it into one
+# POSIX shell and asks engine_cmd; `engine_available` is the same call. Recursive `=` on
+# purpose: it resolves per invocation, so a newly installed podman is picked up
+# without a fresh `make`. Empty when neither engine is installed, which
+# clean-docker treats as a LOUD SKIP (hygiene must not fail a build).
+# ORCHICON_ENGINE pins it (make ORCHICON_ENGINE=podman clean-docker, or the env var —
+# make does not put a command-line variable in $(shell)'s environment, so it is checked
+# as a make variable FIRST and the resolver second).
+ENGINE      = $(if $(ORCHICON_ENGINE),$(ORCHICON_ENGINE),$(shell . scripts/lib/engine.sh 2>/dev/null && engine_cmd))
+
 .PHONY: toolchain
 toolchain: ## Show the Go toolchain + env this Makefile will build with
 	@echo "GO       = $(GO)"
@@ -338,12 +352,16 @@ clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygien
 	@rm -f $(BIN_DIR)/orchicon
 	@rm -f $(BIN_DIR)/orch
 	@rm -f $(BIN_DIR)/atlas-ci
-	# Stale copies of the binary dropped into the container/runtime build
-	# contexts by older scripts. The runtime image no longer bakes the
-	# binary (the daemon bind-mounts its own executable), so a leftover
-	# deploy/runtime/orchicon would only bloat the build context -- remove
-	# both here so a heavy dev session never leaves them behind.
-	@rm -f deploy/container/orchicon deploy/runtime/orchicon
+	# Stale copies of the binary that the hand-build recipe drops into a build
+	# context (`cp bin/orchicon deploy/<context>/` — ARCHITECTURE.md's "build
+	# the image by hand" steps). The runtime image no longer bakes the binary
+	# (the daemon bind-mounts its own executable), so a leftover copy would only
+	# bloat that context -- removed here so a heavy dev session never leaves one
+	# behind. BOTH contexts are swept because both still exist and both accept a
+	# copy; the line is a no-op for whichever one goes away first. Only
+	# `orchicon` is ever copied in -- the TUI client (bin/orch) is not -- so
+	# there is no second name to sweep.
+	@rm -f deploy/runtime/orchicon deploy/container/orchicon
 
 # cache-trim bounds the Go build cache by SIZE, evicting the coldest entries first.
 #
@@ -395,7 +413,14 @@ cache-check: ## Show the Go build cache size against the trim cap
 	  echo "within cap"; \
 	fi
 
-# clean-docker reclaims disk from ORCHICON's own Docker build leftovers, and nothing else.
+# clean-docker reclaims disk from ORCHICON's own container-engine build leftovers, and nothing else.
+#
+# IT IS ENGINE-AWARE, NOT ENGINE-LOYAL. Every recipe line below drives $(ENGINE)
+# (docker or podman, resolved by scripts/lib/engine.sh) because this project now
+# runs on either. Podman's `container prune`/`image prune` are the same operations
+# with the same filters, so the scoping story is unchanged -- but it has to be
+# re-stated for podman, because the incident below is not a docker bug: it is a
+# property of HOST-WIDE prunes, and podman has them too.
 #
 # EVERY PRUNE HERE IS SCOPED TO WHAT THIS PROJECT OWNS, which the first version of this target was
 # not. It ran `docker container prune -f` and `docker volume prune -f` — both HOST-WIDE. On a machine
@@ -415,10 +440,18 @@ cache-check: ## Show the Go build cache size against the trim cap
 #   volumes     GONE, deliberately. There is no filter that makes this ours: we create no labelled
 #               volumes, so any predicate would be a guess about someone else's data. An operator who
 #               wants a host-wide volume prune can run it themselves, knowing what it does.
+#
+# PODMAN'S `volume prune` IS THE SAME HOST-WIDE OPERATION with the same absence of an ownership
+# filter, so the refusal applies to both engines and is not a docker-only scruple. Do not "fix" this
+# by adding a label filter to the volume prune: we do not label the volumes we create, so such a
+# filter would either match nothing (a lie that looks like a fix) or match someone else's volume by
+# accident. The one engine-level asymmetry worth knowing: podman also keeps build-cache and pod
+# namespaces, and pruning those is likewise host-wide -- so they are not pruned here either.
 .PHONY: clean-docker
-clean-docker: ## Prune Orchicon's dangling images and stopped containers (never volumes)
-	@docker image prune -f --filter "dangling=true"
-	@docker container prune -f --filter "label=orchicon-instance"
+clean-docker: ## Prune Orchicon's dangling images and stopped containers, never volumes (docker or podman)
+	@test -n "$(ENGINE)" || { echo "==> no container engine found (docker/podman) — nothing to prune"; exit 0; }
+	@$(ENGINE) image prune -f --filter "dangling=true"
+	@$(ENGINE) container prune -f --filter "label=orchicon-instance"
 
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check synth-data
@@ -799,8 +832,11 @@ rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD ins
 
 # rebuild-test mirrors the other two, minus the launcher: a throwaway instance
 # exists to be rebuilt and torn down repeatedly, and it needs no dedicated TUI
-# client. Teardown is `make instance-down instance=test`; deleting the instance's
-# data directory on top of that is the launcher's job (scripts/orchicon.sh).
+# client (that is why there is deliberately no `make orch-launcher-test` below —
+# a throwaway is reached by running it, not by holding a TUI client pinned to it).
+# Teardown is `scripts/orchicon.sh uninstall test --yes`: `make instance-down`
+# merely stops it, this REMOVES the instance and its data — which is the whole
+# point of a throwaway instance.
 rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST instance
 	$(MAKE) full-rebuild instance=test
 
@@ -808,15 +844,28 @@ rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST ins
 # Two orch clients on PATH: `orch` tracks bin/orch (dev vintage) and
 # `orch-prod` is a snapshot COPY of bin/orch refreshed only by the prod
 # path — so a prod-vintage client survives later `rebuild-dev` runs (the
-# operator holds prod back when dev has breaking changes). Wrapper scripts
-# orch-dev / orch-prod preset ORCHICON_URL per instance and carry a clearly
-# marked ORCHICON_TOKEN line for the user to fill per instance (dev and
-# prod have separate identity stores, so one config token cannot serve
-# both). Wrappers are generated only if absent (never overwritten) and
-# chmod 600.
+# operator holds prod back when dev has breaking changes).
+#
+# THERE IS ONE WRAPPER, `orch-dev`, and only one. It presets ORCHICON_URL for
+# the dev instance and carries a clearly marked ORCHICON_TOKEN line for the user
+# to fill (dev and prod have separate identity stores, so one config token
+# cannot serve both). There cannot be an `orch-prod` WRAPPER: that path is
+# occupied by the snapshot COPY of the binary above, so a generate-if-absent
+# wrapper for it could never be written -- the copy always creates the file
+# first, so the block that used to sit in orch-launcher-prod reported "already
+# exists" and never ran once. Prod is selected through `orch-prod` itself plus
+# the ~/.orchicon/config profile that names the instance. The dev wrapper is
+# generated only if absent (never overwritten) and chmod 600.
+#
+# NO `test` LAUNCHER, DELIBERATELY. The dev/prod split exists because an operator
+# holds two LONG-LIVED instances at different vintages; the `test` instance is a
+# throwaway that exists to be rebuilt and torn down (see rebuild-test above), so
+# it needs no dedicated TUI client and gets no wrapper here. It is still a first
+# class instance everywhere else: it has its own port column, data dir and
+# database in scripts/lib/instances.sh, and `make rebuild-test` drives it.
 LAUNCHER_DIR ?= $(HOME)/.local/bin
 .PHONY: orch-launchers orch-launcher-dev orch-launcher-prod
-orch-launchers: ## Install/refresh the dual orch launchers into ~/.local/bin (orch + orch-prod + wrappers)
+orch-launchers: ## Install/refresh the dual orch launchers into ~/.local/bin (orch + orch-prod + the orch-dev wrapper)
 	@test -f $(BIN_DIR)/orch || { echo "ERROR: $(BIN_DIR)/orch not found — run 'make build' first"; exit 1; }
 	@mkdir -p $(LAUNCHER_DIR)
 	# orch: dev-tracked symlink to bin/orch (refreshed on every dev rebuild).
@@ -834,16 +883,17 @@ orch-launchers: ## Install/refresh the dual orch launchers into ~/.local/bin (or
 	else \
 		echo "==> $(LAUNCHER_DIR)/orch-dev already exists — leaving untouched"; \
 	fi
-	@if [ ! -f "$(LAUNCHER_DIR)/orch-prod" ]; then \
-		printf '#!/bin/sh\n# orch-prod: prod instance launcher (generated by make orch-launchers).\n# Fill in the token for the PROD instance below (dev and prod have separate\n# identity stores, so each instance needs its own token).\nexport ORCHICON_URL=http://localhost:8091\nexport ORCHICON_TOKEN=\nexec "$(LAUNCHER_DIR)/orch-prod" "$$@"\n' > "$(LAUNCHER_DIR)/orch-prod"; \
-		chmod 600 "$(LAUNCHER_DIR)/orch-prod"; \
-		echo "==> generated $(LAUNCHER_DIR)/orch-prod (fill in ORCHICON_TOKEN)"; \
-	else \
-		echo "==> $(LAUNCHER_DIR)/orch-prod already exists — leaving untouched"; \
-	fi
+	# NO `orch-prod` WRAPPER, AND THAT IS NOT AN OVERSIGHT: `orch-prod` is the
+	# SNAPSHOT COPY of the binary made above, so a generate-if-absent wrapper for
+	# the same path could never be written -- the copy always creates the file
+	# first, so the block reported "already exists" and never ran once. The
+	# dev/prod split is carried by the two BINARIES plus the ~/.orchicon/config
+	# profile that names the instance; only the dev wrapper needs a token file.
 	@echo ""
-	@echo "  Tokens are per-instance (separate identity stores). Fill ORCHICON_TOKEN"
-	@echo "  in $(LAUNCHER_DIR)/orch-dev and $(LAUNCHER_DIR)/orch-prod."
+	@echo "  Tokens are per-instance (dev and prod have separate identity stores)."
+	@echo "  Fill ORCHICON_TOKEN in $(LAUNCHER_DIR)/orch-dev; orch-prod selects the"
+	@echo "  prod instance through its profile in ~/.orchicon/config."
+
 
 # orch-launcher-dev refreshes the dev-tracked launcher (orch symlink +
 # orch-dev wrapper) after a dev rebuild.
@@ -860,8 +910,8 @@ orch-launcher-dev: ## Refresh the dev orch launcher after a dev rebuild
 		echo "==> $(LAUNCHER_DIR)/orch-dev already exists — leaving untouched"; \
 	fi
 
-# orch-launcher-prod refreshes the prod snapshot (orch-prod copy + wrapper)
-# after a prod rebuild. The dev launcher is left untouched, so a prod-vintage
+# orch-launcher-prod refreshes the prod snapshot (the orch-prod copy) after a
+# prod rebuild. The dev launcher is left untouched, so a prod-vintage
 # client survives later rebuild-dev runs.
 orch-launcher-prod: ## Refresh the prod orch launcher snapshot after a prod rebuild
 	@test -f $(BIN_DIR)/orch || { echo "ERROR: $(BIN_DIR)/orch not found — run 'make build' first"; exit 1; }
@@ -869,13 +919,9 @@ orch-launcher-prod: ## Refresh the prod orch launcher snapshot after a prod rebu
 	@cp -f "$(BIN_DIR)/orch" "$(LAUNCHER_DIR)/orch-prod"
 	@chmod +x "$(LAUNCHER_DIR)/orch-prod"
 	@echo "==> orch-prod launcher refreshed: $(LAUNCHER_DIR)/orch-prod (snapshot copy, prod vintage)"
-	@if [ ! -f "$(LAUNCHER_DIR)/orch-prod" ]; then \
-		printf '#!/bin/sh\n# orch-prod: prod instance launcher (generated by make orch-launchers).\n# Fill in the token for the PROD instance below (dev and prod have separate\n# identity stores, so each instance needs its own token).\nexport ORCHICON_URL=http://localhost:8091\nexport ORCHICON_TOKEN=\nexec "$(LAUNCHER_DIR)/orch-prod" "$$@"\n' > "$(LAUNCHER_DIR)/orch-prod"; \
-		chmod 600 "$(LAUNCHER_DIR)/orch-prod"; \
-		echo "==> generated $(LAUNCHER_DIR)/orch-prod (fill in ORCHICON_TOKEN)"; \
-	else \
-		echo "==> $(LAUNCHER_DIR)/orch-prod already exists — leaving untouched"; \
-	fi
+	# No wrapper is generated here on purpose -- see the section header: the
+	# snapshot copy above IS $(LAUNCHER_DIR)/orch-prod, so a generate-if-absent
+	# wrapper for the same path could never be written.
 
 # --- Install ---------------------------------------------------------------
 #
