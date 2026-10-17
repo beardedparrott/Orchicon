@@ -89,6 +89,10 @@ cs() {
 
 make_n() { ( cd "$REPO_ROOT" && make -n "$@" ) 2>&1 | strip_banners; }
 make_do() { ( cd "$REPO_ROOT" && make "$@" ) 2>&1 | strip_banners; }
+# make_rc prints "refused" when make exits non-zero and "ran" when it succeeds, so an
+# ASSERTION CAN BE ABOUT THE EXIT STATUS rather than about printed text. make_do cannot
+# be used for that: it pipes through strip_banners, so $? is the pipe's, not make's.
+make_rc() { ( cd "$REPO_ROOT" && make "$@" ) >/dev/null 2>&1; if [ $? -ne 0 ]; then echo refused; else echo ran; fi; }
 
 echo "container.sh under test: ${CONTAINER_SH}"
 echo "Makefile under test:     ${MAKEFILE}"
@@ -155,6 +159,18 @@ check_contains "make migrate (default) resolves dev's :5432 DSN" ":5432/" "$MIGR
 # offline inner loop must apply through the repo's own engine - the one the plane and CI use.
 check_contains "make migrate applies through the repo's own engine" "atlas-ci" "$MIGRATE_DEV"
 check_lacks    "make migrate needs no atlas CLI install (offline)" "atlasgo.sh" "$MIGRATE_DEV"
+
+# THE TYPO RUNG. DB_URL first shipped with a `|| echo <dev DSN>` fallback, so an instance
+# the table does not know resolved to DEV: `make migrate instance=staging` reported nothing
+# wrong and applied dev's migrations to dev's database (and `rls-check instance=staging`
+# gated dev). A failed resolution must be a REFUSAL that NAMES the instance, never a silent
+# dev default - the silent default IS the collision the per-instance table prevents.
+check_lacks    "make migrate instance=staging never resolves to dev's 5432" ":5432/" "$(make_n migrate instance=staging)"
+check          "make migrate instance=staging is refused (non-zero)" "refused" "$(make_rc migrate instance=staging)"
+check_contains "the refusal names the instance" "instance 'staging'" "$(make_do migrate instance=staging || true)"
+check_contains "the refusal offers DB_URL as the way out" "set DB_URL explicitly" "$(make_do migrate instance=staging || true)"
+check          "make rls-check instance=staging is refused too" "refused" "$(make_rc rls-check instance=staging)"
+check_contains "make migrate (dev) passes its own DB_URL guard" 'test -n "postgres://' "$MIGRATE_DEV"
 
 RLS_PROD="$(make_n rls-check instance=prod)"
 check_contains "make rls-check instance=prod uses the same :5433 DSN" ":5433/" "$RLS_PROD"

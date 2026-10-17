@@ -107,10 +107,24 @@ NPX         := npx
 # `make migrate instance=prod` uses prod's 5433, the default dev uses 5432. DB_URL
 # is DERIVED from it through scripts/container.sh db-url — the same per-instance
 # port table the launcher and `orchicon install` use — so the DSN and the bound
-# port cannot drift and two instances on one host never collide (AC4). The
-# fallback keeps DB_URL non-empty when scripts/ (or bash) is unavailable.
+# port cannot drift and two instances on one host never collide (AC4).
+#
+# IT IS EMPTY WHEN IT CANNOT BE DERIVED, AND THAT IS THE POINT. It first shipped with
+# a `|| echo <dev DSN>` fallback, which turned EVERY resolution failure into dev:
+# `make migrate instance=staging` (a typo, or an instance the table does not define)
+# printed no error and applied DEV's migrations to DEV's database, and
+# `make rls-check instance=staging` then gated dev — the exact collision AC4 exists to
+# prevent, reintroduced by a literal. So a failed resolution stays EMPTY and
+# db_url_required refuses with the reason. Export DB_URL yourself to target a database
+# this table does not describe.
 instance    ?= dev
-DB_URL      ?= $(shell scripts/container.sh db-url $(instance) 2>/dev/null || echo postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable)
+DB_URL      ?= $(shell scripts/container.sh db-url $(instance) 2>/dev/null)
+
+# THE REFUSAL THAT REPLACES THE FALLBACK. Every target that OPENS $(DB_URL) runs this
+# first, so "I do not know which instance you mean" is an error naming the instance and
+# the remedy instead of a silent dev default. One definition, so the message cannot
+# drift between migrate and rls-check.
+db_url_required = @test -n "$(DB_URL)" || { echo "cannot resolve DB_URL for instance '$(instance)': scripts/container.sh db-url refused it." >&2; echo "  Use instance=<dev|prod|test> (the per-instance port table), or set DB_URL explicitly." >&2; exit 1; }
 
 # ...BUT THE DEFAULT MUST NOT SILENCE THE TARGETS THAT REQUIRE A CHOICE.
 #
@@ -415,6 +429,7 @@ clean-docker: ## Prune Orchicon's dangling images and stopped containers (never 
 # shared Go build cache, which some sandboxes refuse to exec from; bin/ is this repo's
 # own artifact dir (gitignored) and `make clean` owns it.
 migrate: ## Apply pending Atlas migrations to $$DB_URL (instance=<dev|prod|test> picks the instance)
+	$(db_url_required)
 	@$(GO) build -o $(BIN_DIR)/atlas-ci ./tools/atlas-ci
 	DB_URL="$(DB_URL)" $(BIN_DIR)/atlas-ci
 
@@ -429,6 +444,7 @@ migrate-hash: ## Recompute the Atlas migration directory hash (after hand-edits)
 rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 §8.5)
 	@# ORCHICON_INSTANCE travels WITH the DSN: check-rls.sh resolves the instance's OWN
 	@# downloaded psql from it, so `rls-check instance=prod` must not read dev's record.
+	$(db_url_required)
 	ORCHICON_INSTANCE=$(instance) scripts/check-rls.sh "$(DB_URL)"
 
 # --- Local services (the de-containerized inner loop) ----------------------
