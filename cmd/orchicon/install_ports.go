@@ -30,19 +30,8 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-)
-
-// Plane residency: WHERE the control plane process runs. `host` is the
-// product's default (scripts/container.sh residency_for resolves ${...:-host}):
-// the container runs the SERVICES only and the plane runs on the host as its
-// own `orchicon serve` process. `container` is the self-contained shape, with
-// the whole stack — plane included — inside the instance container.
-const (
-	residencyHost      = "host"
-	residencyContainer = "container"
 )
 
 // residencyForInstall resolves the plane residency for this install.
@@ -61,24 +50,6 @@ func residencyForInstall() (string, error) {
 		return "", fmt.Errorf("ORCHICON_PLANE_RESIDENCY must be %q or %q (got %q)", residencyHost, residencyContainer, v)
 	}
 	return v, nil
-}
-
-// hostDataDir is the per-instance host state directory — where the secrets KEK,
-// the blob store, the ask history and the detached plane's PID file live.
-//
-// IT IS DERIVED FROM THE INSTANCE, exactly as container.sh's instance_info does,
-// and ORCHICON_DATA_DIR is deliberately NOT read here. That is not an oversight:
-// container.sh's plane_env SETS ORCHICON_DATA_DIR for the host plane, so an
-// operator-exported value is overwritten there — and the KEK lives at
-// <DataDir>/secrets/kek. Two launchers disagreeing about the data dir is the one
-// disagreement that silently orphans every tenant secret, so this follows the
-// launcher rather than inventing a knob.
-func hostDataDir(instance string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory for the instance data dir: %w", err)
-	}
-	return filepath.Join(home, ".local", "share", "orchicon-"+instance), nil
 }
 
 // portBinding says how a port is exposed to the host in a given residency.

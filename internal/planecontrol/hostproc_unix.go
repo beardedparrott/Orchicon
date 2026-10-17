@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package planecontrol
 
 // hostproc_unix.go — the host plane's PROCESS IDENTITY probe. It is Unix-shaped by construction: it
 // reads `/proc/<pid>/exe` to learn what a running plane is actually executing, and it asks
@@ -15,6 +15,9 @@ package main
 // not travel with the code, so the platform pair is re-stated here. hostproc_windows.go is the other
 // half, and the pair is what makes "Windows degrades deliberately" true in the compiler rather than in a
 // comment.
+//
+// THE PAIR MOVED HERE from cmd/orchicon so the TUI (`cmd/orch`) and the Wails app can reach it at all: a
+// `package main` cannot be imported, so a lifecycle layer left there was callable by exactly one caller.
 
 import (
 	"fmt"
@@ -26,53 +29,53 @@ import (
 	"syscall"
 )
 
-// planeDrift identifies the serving plane from the instance's PID file and compares its executable with
-// this one.
+// procExe resolves /proc/<pid>/exe — the APEX of what a running process executes. It is what makes "is the
+// serving plane the binary in hand" answerable at all, and it is a seam so Status's binary reporting is
+// assertable without spawning processes.
+func procExe(pid int) (string, error) { return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid)) }
+
+// drift identifies the serving plane from the instance's PID file and compares its executable with this
+// one.
 //
 // WHY THE PID FILE AND /proc: they are the only truthful source. A version endpoint would answer with
 // whatever the OLD process believes about itself, and a timestamp comparison cannot see a rebuilt binary of
 // the same version. `/proc/<pid>/exe` shows the APEX of the running process, and a replaced path reports
 // `(deleted)` — the exact fingerprint of "the installer overwrote the binary under a live plane".
-func planeDrift(instance string, out io.Writer) planeDriftState {
-	self, err := os.Executable()
+func Drift(instance string, out io.Writer) DriftState {
+	self, err := executable()
 	if err != nil {
-		return planeUnknown
+		return Unknown
 	}
 	self, err = filepath.EvalSymlinks(self)
 	if err != nil {
-		return planeUnknown
+		return Unknown
 	}
-	pid, ok := servingPlanePID(instance)
+	pid, ok := ServingPlanePID(instance)
 	if !ok {
-		return planeUnknown
+		return Unknown
 	}
-	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	exe, err := procExe(pid)
 	if err != nil {
-		return planeUnknown
+		return Unknown
 	}
 	// A path is `(deleted)`-suffixed once the file it names has been replaced. Anything else is compared
 	// against the binary we are running from.
 	if strings.HasSuffix(exe, " (deleted)") {
-		return planeDrifted
+		return Drifted
 	}
 	if exe != self {
 		// Serving from a DIFFERENT path than the binary this install just placed in the install dir. It may
 		// be a dev checkout serving deliberately; only a plane the INSTALLER started is ours to restart, and
 		// the PID file is what distinguishes them.
 		fmt.Fprintf(out, "  (plane runs from %s, not %s — leaving it)\n", exe, self)
-		return planeUnknown
+		return Unknown
 	}
-	return planeCurrent
+	return Current
 }
 
-// servingPlanePID reads the instance's detached-plane PID file and reports whether that process is alive.
-func servingPlanePID(instance string) (int, bool) {
-	dataDir, err := hostDataDir(instance)
-	if err != nil {
-		return 0, false
-	}
-	stateDir := filepath.Join(dataDir, "serve")
-	b, err := os.ReadFile(filepath.Join(stateDir, "pids", "orchicon.pid"))
+// ServingPlanePID reads the instance's detached-plane PID file and reports whether that process is alive.
+func ServingPlanePID(instance string) (int, bool) {
+	b, err := os.ReadFile(ServePIDFile(instance))
 	if err != nil {
 		return 0, false
 	}
@@ -87,18 +90,18 @@ func servingPlanePID(instance string) (int, bool) {
 	return pid, true
 }
 
-// servingPlaneAlive reports whether the instance's PID-file process is still running.
-func servingPlaneAlive(instance string) bool {
-	pid, ok := servingPlanePID(instance)
+// ServingPlaneAlive reports whether the instance's PID-file process is still running.
+func ServingPlaneAlive(instance string) bool {
+	pid, ok := ServingPlanePID(instance)
 	if !ok {
 		return false
 	}
 	return syscall.Kill(pid, 0) == nil
 }
 
-// terminateProcess asks a host process to stop. It is the ONE place that sends a signal to a host process
-// this installer started, so it lives in the Unix half with the other syscall.Kill users (see the file
+// TerminateProcess asks a host process to stop. It is the ONE place that sends a signal to a host process
+// this layer started, so it lives in the Unix half with the other syscall.Kill users (see the file
 // header): a Windows build must not carry a SIGTERM it cannot send.
-func terminateProcess(pid int) error {
+func TerminateProcess(pid int) error {
 	return syscall.Kill(pid, syscall.SIGTERM)
 }

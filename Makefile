@@ -750,6 +750,31 @@ instance-rebuild: ## Stop this instance, rebuild the binaries, start it (usage: 
 	$(MAKE) instance-down instance=$(instance)
 	$(MAKE) instance-build force-fe=1
 	$(MAKE) instance-up instance=$(instance)
+
+# --- Plane lifecycle (ONE local mechanism, no API path) ----------------------
+# These are the PLANE-only half of instance-up/instance-down: they leave the
+# instance's host services exactly as they are, which is what a restart onto a
+# freshly built binary needs.
+#
+# EVERY PATH HERE IS THE SAME LOCAL MECHANISM the TUI, the desktop app and the
+# launcher call — `orchicon plane ...`, implemented once in
+# internal/planecontrol. There is no lifecycle RPC and this file composes none:
+# a browser cannot spawn a process, which is the only reason the API path ever
+# existed, and the browser is not a lifecycle surface. Anything that needs a
+# remote control is a separate decision, not a target here.
+.PHONY: plane-status plane-start plane-stop plane-restart
+plane-status: ## Show this instance's plane: PID, serving BINARY, drift, health
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
+	@$(BIN_DIR)/orchicon plane status $(instance)
+plane-start: ## Start this instance's plane only (idempotent; leaves its services alone)
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
+	@$(BIN_DIR)/orchicon plane start $(instance)
+plane-stop: ## Stop this instance's plane only (graceful, bounded, verified)
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — nothing to stop"; exit 1; }
+	@$(BIN_DIR)/orchicon plane stop $(instance)
+plane-restart: ## Restart this instance's plane so it re-reads its environment
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
+	@$(BIN_DIR)/orchicon plane restart $(instance)
 # --- Runtime image + daemon (podman; no instance lifecycle) ------------------
 # `runtime.sh` owns both: the version-gated build of the three stock runtime
 # images, and the host daemon's lifecycle. They used to live in container.sh.
@@ -799,6 +824,12 @@ container-logs:
 container-ps:
 	@echo "container-ps is now instance-ps"
 	@$(MAKE) instance-ps
+
+# --- Plane lifecycle — see "Instances (host-resident dev loop)" above --------
+# plane-status / plane-start / plane-stop / plane-restart are defined THERE, next to
+# instance-up/instance-down, because they are the plane-only half of that pair. They are
+# deliberately not repeated here: two recipes for one target is exactly the drift this
+# branch removed from the shell side, and `make` can only be right about one of them.
 
 # --- Full rebuild (one command) --------------------------------------------
 # A single command that runs everything needed before/for an instance rebuild:

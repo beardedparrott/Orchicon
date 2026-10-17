@@ -203,75 +203,14 @@ plane_start() {
     log_err "  build it first (make build) or set ORCHICON_HOST_BIN"
     return 1
   fi
-  if curl -fs "http://localhost:$PLANE_HTTP_PORT/healthz" >/dev/null 2>&1; then
-    # A PLANE THAT ANSWERS IS NOT NECESSARILY THE PLANE WE JUST BUILT.
-    #
-    # This used to be a bare health check: anything answering on the port counted as this instance's
-    # current plane. But a rebuild REPLACES the binary while the running process keeps executing the
-    # old inode, so the plane answers health perfectly while serving superseded code — and this
-    # function returned success, leaving it that way indefinitely. The Go installer learned this
-    # (planeDrift, cmd/orchicon/install_host.go); the launcher had not.
-    #
-    # The stale process reports itself: its PID file names it, and /proc/<pid>/exe ends in
-    # " (deleted)" once the path it was launched from has been replaced underneath it — precisely the
-    # state a rebuild creates. THAT is the signal used here, and deliberately not "the executable
-    # differs from the built binary": a dev checkout legitimately serves from bin/orchicon, and a
-    # mismatch test would restart a plane the operator chose to keep. A non-matching PATH is left
-    # alone for the same reason planeDrift leaves it alone.
-    local stale_pid="" pidfile="$HOST_DATA_DIR/serve/pids/orchicon.pid"
-    if [ -f "$pidfile" ]; then
-      local pid exe
-      pid=$(tr -d '[:space:]' < "$pidfile" 2>/dev/null || true)
-      if [ -n "$pid" ] && [ -e "/proc/$pid/exe" ]; then
-        exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
-        case "$exe" in
-          *" (deleted)") stale_pid="$pid" ;;
-        esac
-      fi
-    fi
-    if [ -z "$stale_pid" ]; then
-      log_ok "$inst host plane already serving http://localhost:$PLANE_HTTP_PORT"
-      return 0
-    fi
-    log_warn "$inst host plane (pid $stale_pid) is STALE — its binary was replaced (rebuilt) under it. Restarting it on the current binary."
-    plane_stop "$inst" || log_warn "  could not stop the stale plane cleanly; attempting a start anyway"
-    # Fall through to the start below, which is the whole point: the operator asked for this plane
-    # to be running, and it now will be running the binary they just built.
-  fi
-  # A host plane its own workers cannot reach is worse than one that refuses
-  # to start: every orchicon-plane MCP call in every dispatched run would time
-  # out. So the bridge bind is REQUIRED here. There is no loopback-only
-  # fallback and no 0.0.0.0 fallback (the operator rejected LAN exposure).
-  if ! bridge_bind_env "$inst" >/dev/null; then
-    log_err "$inst: refusing to start the host plane — the docker bridge address is unresolved,"
-    log_err "  so its run containers could not reach it (the bind would be loopback only)."
-    log_err "  pin it: ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip> $0 plane-start $inst"
-    return 1
-  fi
-  local envargs=()
-  local kv
-  while IFS= read -r kv; do
-    [ -n "$kv" ] && envargs+=("$kv")
-  done < <(plane_env "$inst")
-  log_dim "starting the host plane for $inst ($bin)"
-  # env -u ORCHICON_CONTAINER_MODE: a stray export in a shell profile must
-  # never flip the HOST plane into container semantics — it would then rewrite
-  # custom provider URLs (which are already correct on the host).
-  if ! env -u ORCHICON_CONTAINER_MODE ${envargs[@]+"${envargs[@]}"} "$bin" serve --detach; then
-    log_err "could not start the host plane for $inst"
-    return 1
-  fi
-  local i
-  for i in $(seq 1 60); do
-    if curl -fs "http://localhost:$PLANE_HTTP_PORT/healthz" >/dev/null 2>&1; then
-      log_ok "$inst host plane ready: http://localhost:$PLANE_HTTP_PORT"
-      return 0
-    fi
-    sleep 1
-  done
-  log_err "$inst host plane did not answer http://localhost:$PLANE_HTTP_PORT/healthz within 60s"
-  log_dim "  logs: $HOST_DATA_DIR/serve/logs/orchicon.log"
-  return 1
+  # ONE IMPLEMENTATION: `orchicon plane start` (internal/planecontrol). This local mechanism is what the TUI,
+  # the desktop app and the CLI call — there is no lifecycle RPC, because every one of those surfaces runs on
+  # the same host as the plane. The stale-plane check (planeDrift), the planeUnknown fail-safe and the bounded
+  # stop live THERE, so a fix to the lifecycle lands in ONE place. The bash body that used to sit here is
+  # DELETED rather than kept as a "fallback": it was unreachable below the binary guard above, and an
+  # unreachable second implementation is the drift this delegation exists to remove.
+  ORCHICON_INSTANCE="$inst" "$bin" plane start
+  return $?
 }
 
 
@@ -285,18 +224,10 @@ plane_status() {
     log_dim "host plane binary missing ($bin) — no host plane can be running"
     return 1
   fi
-  local envargs=()
-  local kv
-  while IFS= read -r kv; do
-    [ -n "$kv" ] && envargs+=("$kv")
-  done < <(plane_env "$inst")
-  env -u ORCHICON_CONTAINER_MODE ${envargs[@]+"${envargs[@]}"} "$bin" serve --status || true
-  if curl -fs "http://localhost:$PLANE_HTTP_PORT/healthz" >/dev/null 2>&1; then
-    log_ok "$inst host plane healthy at http://localhost:$PLANE_HTTP_PORT"
-    return 0
-  fi
-  log_warn "$inst host plane is not answering http://localhost:$PLANE_HTTP_PORT/healthz"
-  return 1
+  # ONE IMPLEMENTATION: `orchicon plane status` — instance, PID, the BINARY serving, drift and health. The
+  # bash body that used to sit here is deleted: unreachable below the binary guard.
+  ORCHICON_INSTANCE="$inst" "$bin" plane status
+  return $?
 }
 
 # wait_services_ready blocks until the container accepts postgres and nats

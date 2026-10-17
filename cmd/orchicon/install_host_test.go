@@ -581,13 +581,26 @@ func TestInstallHostHasNoDockerInvocation(t *testing.T) {
 			}
 		}
 	}
-	// The engine probe DELEGATES to internal/containerengine, which owns the search order —
-	// so the installer and the plane's /enginez answer with the same rules. It is still a
-	// PATH/stat probe: containerengine.Detect runs no engine command (the version read is a
-	// separate, opt-in call), which TestInstallShapeWithAContainerEngine measures
-	// behaviourally by asserting the fake binary never ran.
-	if !strings.Contains(body, `containerengine.Detect(containerengine.DefaultProbe())`) {
-		t.Errorf("the engine probe must delegate to containerengine.Detect:\n%s", body)
+	// The engine probe DELEGATES to internal/containerengine, which owns the search order (podman
+	// first, then docker), so the installer and the plane's /enginez answer with the same rules. It
+	// is still a PATH/stat probe: containerengine.Detect runs no engine command (the version read is
+	// a separate, opt-in call).
+	//
+	// THE PROBE MOVED WITH THE CODE, and the assertion follows it to its one home. The lifecycle
+	// layer now lives in internal/planecontrol (a `package main` cannot be imported, so the TUI and
+	// the desktop app could not reach it), and containerEngineAvailable moved with it.
+	shared, err := os.ReadFile(filepath.Join("..", "..", "internal", "planecontrol", "env.go"))
+	if err != nil {
+		t.Fatalf("read internal/planecontrol/env.go: %v", err)
+	}
+	if !strings.Contains(string(shared), `containerengine.Detect(containerengine.DefaultProbe())`) {
+		t.Errorf("the engine probe must delegate to containerengine.Detect, in internal/planecontrol/env.go:\n%s", shared)
+	}
+	// ...and no second copy survives in the file it was moved OUT of. A probe left behind here would
+	// be the drift the delegation removes: two answers to "is there an engine".
+	if strings.Contains(body, `containerengine.Detect`) || strings.Contains(body, `exec.LookPath("docker")`) {
+		t.Errorf("install_host.go must not keep a second copy of the engine probe — it lives in " +
+			"internal/planecontrol/env.go")
 	}
 	// ...and the two symbols the item retires are gone from the whole package, not merely unused here.
 	files, err := filepath.Glob("*.go")
