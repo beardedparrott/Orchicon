@@ -622,15 +622,23 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	}
 	args := []string{"run", "-d", "--name", name,
 		"--label", "orchicon.workflow=" + workflowLabel,
-		"--label", "orchicon.instance=" + instanceID(req.InstanceID),
-		// Stable name for the HOST from inside every runtime container,
-		// independent of the docker bridge subnet. A host-resident plane
-		// advertises host.docker.internal (lifecycle.go planePublicURL) so a
-		// worker's orchicon-plane MCP channel can dial it; without this
-		// mapping that name only resolves under Docker Desktop, and the old
-		// hardcoded 172.17.0.1 breaks whenever the bridge subnet changes.
-		// host-gateway is docker's own "the host, whatever its bridge IP is".
-		"--add-host", "host.docker.internal:host-gateway",
+	}
+	// Instance scoping labels: the daemon's historical `orchicon.instance`
+	// (what listRuntimes/sweep-pre-restart filter on — both Docker and
+	// Podman accept `--filter label=k=v` identically) plus the reverse-DNS
+	// `io.orchicon.instance` for external tooling. Two instances sharing one
+	// daemon can never reap each other's runtimes as long as the value is
+	// per-instance.
+	args = append(args, instanceLabelArgs(req.InstanceID)...)
+	// Stable name for the HOST from inside every runtime container,
+	// independent of the bridge subnet. A host-resident plane advertises
+	// that alias (lifecycle.go planePublicURL -> engine.go planeHostAlias) so
+	// a worker's orchicon-plane MCP channel can dial it. Docker needs the
+	// explicit host-gateway mapping (host-gateway is docker's own "the host,
+	// whatever its bridge IP is"); Podman injects host.containers.internal
+	// natively, so hostGatewayArgs returns nothing there.
+	args = append(args, hostGatewayArgs()...)
+	args = append(args,
 		"--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID),
 		"--cpus", d.CPUs,
 		"--memory", d.Memory,
@@ -643,7 +651,7 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		// being exec adds no host-escape surface — noexec was incidental
 		// Docker defaulting, not a security boundary.
 		"--tmpfs", fmt.Sprintf("/tmp:rw,size=%s,exec", d.TmpfsSize),
-	}
+	)
 	// NO port publish: the plane reaches the container's opencode serve
 	// DIRECTLY on the docker bridge via the container IP (the serve binds
 	// 0.0.0.0 inside, reachable from any bridge container AND the host,
@@ -1154,6 +1162,27 @@ func instanceID(id string) string {
 		return "dev"
 	}
 	return id
+}
+
+// instanceLabelArgs returns the create args that scope a runtime container
+// to exactly ONE instance. The value is written under two keys:
+//
+//   - `orchicon.instance`, the historical key the daemon filters on
+//     (listRuntimes) and the pre-restart sweep scans;
+//   - `io.orchicon.instance`, the reverse-DNS form external tooling expects
+//     (`podman ps --filter label=io.orchicon.instance=dev`).
+//
+// The filter side stays on the historical key on purpose: a container is
+// always created by this daemon, so it always carries both, and keeping the
+// filter unchanged means an engine switch cannot make existing containers
+// invisible to the reapers. Podman's `--filter label=k=v` is the same syntax
+// as Docker's.
+func instanceLabelArgs(instance string) []string {
+	v := instanceID(instance)
+	return []string{
+		"--label", "orchicon.instance=" + v,
+		"--label", "io.orchicon.instance=" + v,
+	}
 }
 
 // containerExists reports whether a container with this name exists

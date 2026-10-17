@@ -584,9 +584,18 @@ func planePublicURL() string {
 		if ip := containerIPAddress(); ip != "" {
 			return "http://" + ip + ":" + port
 		}
-		// Container mode with an unresolvable own IP: keep the historical
-		// gateway fallback rather than emitting an empty URL (docker always
-		// writes /etc/hosts, so this is a guard, not a path).
+		if containerResidencyNeedsOverride() {
+			// Podman (typically rootless, and always across the podman-machine
+			// VM boundary on macOS/Windows) gives a container no bridge IP and
+			// has no 172.17.0.1 gateway. There is NO derivable address: return
+			// empty so the caller fails LOUDLY and names
+			// ORCHICON_PLANE_PUBLIC_URL, instead of handing the run a Docker
+			// bridge URL that can only time out.
+			return ""
+		}
+		// Docker container mode with an unresolvable own IP: keep the
+		// historical gateway fallback rather than emitting an empty URL
+		// (docker always writes /etc/hosts, so this is a guard, not a path).
 		return "http://172.17.0.1:" + port
 	}
 	if b := os.Getenv("ORCHICON_HTTP_EXTRA_BIND"); b != "" {
@@ -594,7 +603,11 @@ func planePublicURL() string {
 			return "http://" + host + ":" + port
 		}
 	}
-	return "http://host.docker.internal:" + port
+	// Host-resident plane reached by name: the alias depends on the engine
+	// (docker host.docker.internal / podman host.containers.internal) — see
+	// engine.go planeHostAlias. Podman on macOS/Windows crosses the podman
+	// machine VM boundary here, so the alias, not the port, is what changes.
+	return "http://" + planeHostAlias() + ":" + port
 }
 
 // containerIPAddress resolves the current container's bridge IP. Docker
@@ -758,8 +771,12 @@ func (l *Lifecycle) mintPlaneCredentialUncached(ctx context.Context, run db.Work
 		return nil, fmt.Errorf("plane credential: commit: %w", err)
 	}
 	l.log.Info("plane credential minted", "run", run.ID, "worker", worker.ID, "role", worker.RoleRef, "scopes", len(role.Entitlements))
+	planeURL := planePublicURL()
+	if planeURL == "" {
+		return nil, fmt.Errorf("plane credential: this instance's plane URL is not derivable for a container-resident plane under %s (no bridge IP inside the container) — set ORCHICON_PLANE_PUBLIC_URL to the address this instance's workers can dial", engineKind())
+	}
 	env := map[string]string{
-		"ORCHICON_PLANE_URL":           planePublicURL(),
+		"ORCHICON_PLANE_URL":           planeURL,
 		"ORCHICON_PLANE_TOKEN":         plaintext,
 		"ORCHICON_MCP_TENANT_ID":       run.TenantID,
 		"ORCHICON_MCP_WORKFLOW_RUN_ID": run.ID,

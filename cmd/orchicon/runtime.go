@@ -71,8 +71,12 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 	}
 
 	d := &runtime.Daemon{
-		SocketPath:    socketPath,
-		DockerBin:     "docker",
+		SocketPath: socketPath,
+		// The engine CLI (docker by default) is resolved through the runtime
+		// package's single engine seam so Podman is selectable
+		// (ORCHICON_RUNTIME_ENGINE / ORCHICON_CONTAINER_BIN) without every
+		// exec site knowing which engine it drives.
+		DockerBin:     runtime.EngineBinary(),
 		Image:         env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest"),
 		Images:        runtimeImagesAllowlist(env("ORCHICON_RUNTIME_IMAGES", "")),
 		UserID:        hostUID,
