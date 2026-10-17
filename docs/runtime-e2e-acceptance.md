@@ -73,9 +73,14 @@ scripts/orchicon.sh start dev            # services + plane, host processes
 # create the project with execution_mode=local, start the workflow, wait for terminal
 ```
 
-**What it proves:** the run reaches `WORKFLOW_RUN_STATUS_COMPLETED` with the
-project's `execution_mode` read back as `EXECUTION_MODE_LOCAL`, on a host where no
-engine binary exists and the plane log carries no `workflow runtime ensured` lease.
+**What it proves:** the run reaches `WORKFLOW_RUN_STATUS_COMPLETED`, on a host
+where no engine binary exists and the plane log carries no `workflow runtime
+ensured` lease, with the project's `execution_mode` read back as
+`EXECUTION_MODE_LOCAL` **after** the run. (`WorkflowRun` carries no
+`execution_mode` field — `proto/orchicon/api/v1/workflow.proto:82` — so the mode is
+read where the plane exposes it: the project the bridge gates on. The workflow the
+harness creates is a single `STEP_KIND_END` step: worker-free, so it really does
+complete on a bare host.)
 
 **Blind spot if it fails:** a container appeared or an engine was invoked for a
 local-mode run — owner `internal/execution/service.go:1365-1409` /
@@ -95,14 +100,23 @@ rungs (detect → install → minimum → `podman machine` → **verify by runni
 container** → ready), and `GET /enginez` reports `available=true`, `state=ready`
 **only after** the verify succeeded.
 
-**Adversarial control (this is the half that matters):** restart with
-`ORCHICON_ENGINE_VERIFY_IMAGE` set to an unrunnable ref. The install must NOT print
-`container engine ready`, and `/enginez` must NOT report `ready`. If it does, the
-availability surface is claiming an engine the install refused — owner
-`internal/api/engine_status.go:49` + `internal/containerengine/detect.go`.
+**Adversarial controls (this is the half that matters), in two halves:**
+
+1. **The install.** Restart with `ORCHICON_ENGINE_VERIFY_IMAGE` set to an unrunnable
+   ref. The verify phase must have run and the install must NOT print `container
+   engine ready` — owner `internal/containerengine/verify.go:26`.
+2. **The availability surface.** `/enginez` is `containerengine.Inspect`: a cheap
+   probe that deliberately never runs a container
+   (`internal/containerengine/detect.go:343-345`), so a broken verify *image* is
+   invisible to it **by design**. Asserting otherwise would file a defect against an
+   innocent owner. The honest control is an engine the probe cannot *drive*: restart
+   with a stub `podman`/`docker` first on `PATH` and `ORCHICON_PROVISION_ENGINE=0`
+   (so nothing can install over the stub). `/enginez` must then report
+   `state=unavailable`, never `ready` — owner `internal/api/engine_status.go:49` +
+   `internal/containerengine/detect.go:369-372`.
 
 Evidence: `02-install.log`, `02-enginez.json`, `02-install-adversarial.log`,
-`02-enginez-adversarial.json`.
+`02-install-undriveable-engine.log`, `02-enginez-adversarial.json`, `stub-bin/`.
 
 ### 3. The same workflow, now inside a container (AC3)
 
@@ -220,7 +234,14 @@ reinterpret AC8, and it does not patch the lifecycle. Evidence: `08-all-native.t
 - A **container that exists** is not "the work ran inside it" — the hostnames must
   differ.
 - An **engine that did not answer** is not "no container was created".
-- `make runtime-e2e-assertions-test` pins all four rules, structurally, offline.
+- A **stream counted in lines** is not a stream: Connect frames are concatenated
+  without separators, so a whole streamed build log is one line. The chunk count
+  walks the envelope bytes (`connect_frames`).
+- An assertion that **cannot be satisfied on a correct system** is a false defect,
+  not a pass: the created workflow must be worker-free, the in-run marker must be
+  interpolated *into* the container command, and `/enginez` is only ever held to
+  what `Inspect` actually claims.
+- `make runtime-e2e-assertions-test` pins all five rules, structurally, offline.
 
 ## Known limits (state them, never paper over them)
 

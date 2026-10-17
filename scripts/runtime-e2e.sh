@@ -388,8 +388,15 @@ step1_local_run() {
   # The workflow: supplied, or one all-native step created here so the SAME
   # definition can be re-run in step 8.
   if [ -z "$WORKFLOW_ID" ] && [ -n "$PROJECT_ID" ]; then
+    # ONE STEP, AND WORKER-FREE. STEP_KIND_TASK with no `ref` is a definition error
+    # the reconciler rejects outright ("worker step %q has no worker ref",
+    # workflow_reconciler.go:2345-2347), so a task step here would fail the run on a
+    # CORRECT system and file a defect against the plane. STEP_KIND_END is the
+    # terminal sink that "always succeeds when deps satisfied" with NO dispatch
+    # (workflow_reconciler.go:2781-2794): all-native, workerless, and the SAME
+    # definition is what steps 3-8 re-run.
     code="$(api_post /orchicon.api.v1.WorkflowService/CreateWorkflow \
-      "$(printf '{"projectId":"%s","name":"runtime-e2e %s","steps":"[{\\"id\\":\\"probe\\",\\"name\\":\\"probe\\",\\"kind\\":\\"STEP_KIND_TASK\\",\\"config\\":\\"{}\\",\\"dependsOn\\":[]}]","requestId":"%s-wf"}' "$PROJECT_ID" "$MARKER" "$MARKER")" \
+      "$(printf '{"projectId":"%s","name":"runtime-e2e %s","steps":"[{\\"id\\":\\"probe\\",\\"name\\":\\"probe\\",\\"kind\\":\\"STEP_KIND_END\\",\\"config\\":\\"{}\\",\\"dependsOn\\":[]}]","requestId":"%s-wf"}' "$PROJECT_ID" "$MARKER" "$MARKER")" \
       "${EVIDENCE}/01-workflow-create.json")"
     WORKFLOW_ID="$(json_field "${EVIDENCE}/01-workflow-create.json" id)"
     check "a one-step all-native workflow was created (HTTP ${code})" \
@@ -412,9 +419,16 @@ step1_local_run() {
     "${EVIDENCE}/01-run-final.json" "WORKFLOW_RUN_STATUS_COMPLETED" \
     "the run capture is EMPTY — the run's fate was never read, so AC1 is UNPROVEN" \
     "internal/execution/service.go:1365-1409"
-  gated_contains "the run resolved to LOCAL mode (the gate that keeps work in-process)" \
-    "${EVIDENCE}/01-run-final.json" "EXECUTION_MODE_LOCAL" \
-    "the run capture is EMPTY — the mode was never read" \
+  # THE MODE IS READ FROM THE PROJECT, NOT FROM THE RUN. WorkflowRun carries no
+  # execution_mode field (workflow.proto:82-105), so asserting one on the run
+  # capture would fail on a correct system AND name an innocent owner. What the
+  # bridge gates on is the PROJECT's mode at dispatch time, so that is read back
+  # AFTER the run and asserted local.
+  api_post /orchicon.api/v1.ProjectService/GetProject "{\"id\":\"${PROJECT_ID}\"}" \
+    "${EVIDENCE}/01-project-after-run.json" >/dev/null 2>&1 || true
+  gated_contains "the project was still in LOCAL mode across the run (the gate that keeps work in-process)" \
+    "${EVIDENCE}/01-project-after-run.json" "EXECUTION_MODE_LOCAL" \
+    "the post-run project capture is EMPTY — the mode the run was gated on was never read" \
     "internal/scheduler/bridge.go:60-68"
 
   # ZERO engine invocations is proven on the host, not by the plane's report:
@@ -493,6 +507,15 @@ step2_opt_in() {
     "${EVIDENCE}/02-install.log" "container engine ready" \
     "the install log is EMPTY — see 02-install.log" \
     "cmd/orchicon/install_engine.go:148-160"
+  # ORDER, NOT JUST PRESENCE. "Availability only after verifying the engine works"
+  # is a claim about SEQUENCE: `container engine ready` must come after the verify
+  # phase in the same run's output, else "ready" could precede any verification.
+  local verify_at ready_at
+  verify_at="$(grep -nF "verifying the container engine" "${EVIDENCE}/02-install.log" 2>/dev/null | head -1 | cut -d: -f1)"
+  ready_at="$(grep -nF "container engine ready" "${EVIDENCE}/02-install.log" 2>/dev/null | head -1 | cut -d: -f1)"
+  check "ready is claimed AFTER the verify phase, in sequence (not merely present)" \
+    "$( [ -n "${verify_at:-}" ] && [ -n "${ready_at:-}" ] && [ "${ready_at:-0}" -gt "${verify_at:-0}" ] && echo 0 || echo 1 )" \
+    "cmd/orchicon/install_engine.go:148-160"
   check "an engine binary now exists on the host (the install really happened)" \
     "$( [ -n "$(engine_bin)" ] && echo 0 || echo 1 )" "internal/containerengine/provision.go:76-103"
   engine_capture "${EVIDENCE}/02-engine-version.txt" --version >/dev/null 2>&1 || true
@@ -515,20 +538,44 @@ step2_opt_in() {
     "the /enginez capture is EMPTY — see 02-enginez.json" \
     "internal/api/engine_status.go:49"
 
-  # ADVERSARIAL CONTROL (D4): force the verify to fail and prove the plane does
-  # NOT claim availability over a broken engine. Without this, "ready" is a
-  # claim nobody ever tried to falsify.
+  # ADVERSARIAL CONTROL (D4), PART 1 — the INSTALL. Force the verify to fail and
+  # prove the install does NOT claim ready over a broken engine. Without this,
+  # "ready" is a claim nobody ever tried to falsify.
   ORCHICON_PROVISION_ENGINE=1 ORCHICON_ENGINE_VERIFY_IMAGE="${ORCHICON_E2E_BROKEN_IMAGE:-docker.io/library/definitely-not-an-image:0}" \
     ./scripts/orchicon.sh restart "$INSTANCE" >"${EVIDENCE}/02-install-adversarial.log" 2>&1 || true
   gated_absent "ADVERSARIAL: a broken verify image does NOT produce a ready claim" \
     "${EVIDENCE}/02-install-adversarial.log" "container engine ready" \
     "the adversarial install log is EMPTY — the control never ran, so the claim stays unproven" \
     "internal/containerengine/verify.go:26"
+  gated_contains "ADVERSARIAL: the verify phase really ran before refusing (not a skipped install)" \
+    "${EVIDENCE}/02-install-adversarial.log" "verifying the container engine" \
+    "the adversarial install log is EMPTY — the verify phase never ran, so a refusal there proves nothing" \
+    "cmd/orchicon/install_engine.go:148-156"
+
+  # PART 2 — the AVAILABILITY SURFACE. /enginez is containerengine.Inspect: a cheap
+  # probe that DELIBERATELY never runs a container (that is Verify, the installer's
+  # job — detect.go:343-345). A broken verify IMAGE is therefore invisible to it by
+  # design, so asserting otherwise would file a defect against an innocent owner.
+  # The honest control is an engine the probe cannot DRIVE at all: a stub `podman`
+  # that fails every call. /enginez must then read unavailable, never ready, and
+  # PROVISIONING IS OFF so the control can never install over the stub.
+  local stub="${EVIDENCE}/stub-bin"
+  mkdir -p "$stub"
+  printf '#!/bin/sh\necho "stub engine: the acceptance control broke me" >&2\nexit 1\n' >"${stub}/podman"
+  printf '#!/bin/sh\necho "stub engine: the acceptance control broke me" >&2\nexit 1\n' >"${stub}/docker"
+  chmod +x "${stub}/podman" "${stub}/docker"
+  PATH="${stub}:${PATH}" ORCHICON_PROVISION_ENGINE=0 \
+    ./scripts/orchicon.sh restart "$INSTANCE" >"${EVIDENCE}/02-install-undriveable-engine.log" 2>&1 || true
+  wait_http /healthz 90 || say "  (the plane did not answer after the undriveable-engine restart — see 02-install-undriveable-engine.log)"
+  gated_absent "ADVERSARIAL: the install does not claim ready over an engine it cannot drive" \
+    "${EVIDENCE}/02-install-undriveable-engine.log" "container engine ready" \
+    "the undriveable-engine install log is EMPTY — the control never ran" \
+    "internal/containerengine/detect.go:369-372"
   curl -sS --max-time 15 "$(api_base)/enginez?refresh=1" >"${EVIDENCE}/02-enginez-adversarial.json" 2>>"${EVIDENCE}/$(step_file)" || true
-  gated_absent "ADVERSARIAL: /enginez does not report ready over a broken engine" \
+  gated_absent "ADVERSARIAL: /enginez does not report ready for an engine it cannot drive" \
     "${EVIDENCE}/02-enginez-adversarial.json" '"state":"ready"' \
     "the adversarial /enginez capture is EMPTY — the surface never answered" \
-    "internal/api/engine_status.go:49 + internal/containerengine/detect.go"
+    "internal/api/engine_status.go:49 + internal/containerengine/detect.go:369-372"
 
   # Restore a working plane for steps 3-8 (the control above deliberately broke it).
   ORCHICON_PROVISION_ENGINE=1 ./scripts/orchicon.sh restart "$INSTANCE" >>"${EVIDENCE}/02-install.log" 2>&1 || true
@@ -582,8 +629,13 @@ step3_container_run() {
       "internal/runtime/daemon.go:152"
     # NOT MERELY THAT A CONTAINER EXISTS: this is the in-run half. The step's own
     # output must carry the CONTAINER's hostname, which cannot equal the host's.
+    # THE MARKER IS INTERPOLATED INTO THE IN-CONTAINER COMMAND on purpose: with a
+    # single-quoted command the run marker never reaches the container, so the
+    # "is it OUR container, and did something execute inside it" half of AC3 would
+    # fail on a correct system. As written, the marker can only appear if this exec
+    # really ran inside the container this run created.
     engine_capture "${EVIDENCE}/03-in-container-hostname.txt" \
-      exec "$CONTAINER_NAME" sh -c 'hostname; echo "orchicon.workflow=$(hostname)"' >/dev/null 2>&1 || true
+      exec "$CONTAINER_NAME" sh -c "hostname; echo \"runtime-e2e marker=${MARKER}\"" >/dev/null 2>&1 || true
     local chost hhost
     chost="$(awk 'NR==1 {print $1}' "${EVIDENCE}/03-in-container-hostname.txt" 2>/dev/null)"
     hhost="$(hostname)"
@@ -698,10 +750,11 @@ step6_image_path() {
   fi
   connect_stream /orchicon.api.v1.RuntimeImageService/BuildRuntimeImage \
     "$(printf '{"id":"%s"}' "$IMAGE_ID")" "${EVIDENCE}/06-image-build.log"
-  # A stream is a sequence of Connect envelopes: count DATA frames, not bytes, so
-  # "it streamed" cannot be satisfied by one blob at the end.
+  # A stream is a sequence of Connect envelopes: count DATA frames, not LINES. The
+  # frames are concatenated with no separator, so a whole streamed build log is ONE
+  # line and a line count would deny a stream that really did stream.
   local frames
-  frames="$(grep -c '' "${EVIDENCE}/06-image-build.log" 2>/dev/null || echo 0)"
+  frames="$(connect_frames "${EVIDENCE}/06-image-build.log")"
   gated_contains "the build log STREAMS (the first chunk arrives before the build ends)" \
     "${EVIDENCE}/06-image-build.log" "{" \
     "the build stream capture is EMPTY — the build never streamed, so AC6 is UNPROVEN" \
@@ -725,16 +778,24 @@ step6_image_path() {
   check "a run using the custom image starts" \
     "$( [ -n "$rid" ] && echo 0 || echo 1 )" "internal/runtimeimage/service.go:496-556"
   [ -n "$rid" ] && wait_run_terminal "$rid" "${EVIDENCE}/06-run-final.json" 900
-  gated_contains "the run pinned the custom image (the run's own runtime_image field)" \
-    "${EVIDENCE}/06-run-final.json" "${CUSTOM_IMAGE_REF:-}" \
-    "the run capture is EMPTY — the image the run used was never read" \
-    "internal/runtimeimage/service.go:496-556"
+  # An EMPTY needle matches every capture, i.e. a vacuous PASS — so the tag is
+  # required for this assertion rather than silently satisfied.
+  if [ -n "${CUSTOM_IMAGE_REF:-}" ]; then
+    gated_contains "the run pinned the custom image (the run's own runtime_image field)" \
+      "${EVIDENCE}/06-run-final.json" "${CUSTOM_IMAGE_REF}" \
+      "the run capture is EMPTY — the image the run used was never read" \
+      "internal/runtimeimage/service.go:496-556"
+  else
+    skip "the run pinned the custom image" "no --custom-image tag was given, so there is no needle to search for (an empty one would match anything)"
+  fi
 }
 
 # --- step 7: the image gate -------------------------------------------------
 step7_gate_check() {
   begin_step 7 "the image gate REJECTS a non-conforming image (AC7)"
-  local sock="${ORCHICON_RUNTIME_SOCKET:-/tmp/orchicon-runtime/runtime.sock}"
+  # The daemon's socket dir is ORCHICON_RUNTIME_SOCKET_DIR (install.go:51);
+  # ORCHICON_RUNTIME_SOCKET is accepted as a whole-path override.
+  local sock="${ORCHICON_RUNTIME_SOCKET:-${ORCHICON_RUNTIME_SOCKET_DIR:-/tmp/orchicon-runtime}/runtime.sock}"
   if [ ! -S "$sock" ]; then
     skip "the gate rejects a non-conforming image" "no runtime daemon socket at ${sock} — run scripts/runtime.sh daemon-start first"
     return
@@ -842,6 +903,28 @@ connect_stream() { # connect_stream <procedure> <json> <out-file>
   curl "${args[@]}" "$(api_base)${proc}" >"$out" 2>>"${EVIDENCE}/$(step_file)" || true
 }
 
+# connect_frames <capture> — how many DATA envelopes a Connect server-stream
+# capture carries. The body is [flag u8][length u32 BE][payload] repeated, with the
+# end-of-stream trailer flagged 0x02, so a byte walk is the only honest way to say
+# "more than one chunk arrived". Line counting is NOT: the frames are concatenated
+# without separators, so an entire streamed build log is a single line.
+connect_frames() { # connect_frames <capture>
+  od -An -v -tu1 "$1" 2>/dev/null | awk '
+    { for (i = 1; i <= NF; i++) b[++n] = $i }
+    END {
+      i = 1; frames = 0
+      while (i <= n) {
+        f = b[i]; i++
+        if (f >= 2) break                                  # trailer / end-of-stream
+        if (i + 3 > n) break                               # truncated frame
+        len = b[i] * 16777216 + b[i+1] * 65536 + b[i+2] * 256 + b[i+3]
+        i += 4 + len
+        frames++
+      }
+      print frames + 0
+    }'
+}
+
 # --- summary ---------------------------------------------------------------
 verdict_for() { # verdict_for <step>
   local n="$1" st
@@ -934,7 +1017,7 @@ exit: 0 all PASS | 1 any FAIL (defect filed against the owner) | 2 run invalid (
 EOF
 }
 
-usage() { sed -n '3,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,68p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 parse_args() {
   while [ $# -gt 0 ]; do

@@ -172,6 +172,33 @@ expect "AC2 has an ADVERSARIAL control (availability only after verify)" "yes" \
 expect "AC8 records the runtime-mode contradiction instead of reinterpreting it" "yes" \
   "$(sed -n '/^step8_all_native() {/,/^}/p' "$HARNESS" | grep -q 'lifecycle.go:958-975' && echo yes || echo no)"
 
+# --- rule 4: an assertion that CANNOT pass is a false defect ---------------
+# A vacuous PASS hides a real failure; an impossible assertion INVENTS one, and a
+# harness that red-lights a correct system is worth as little as one that green-
+# lights a broken one. Each of these was an assertion the product never made.
+spin "rule 4: every assertion is satisfiable on a correct system"
+expect "the E2E workflow is worker-free (an END step, not a task step with no ref)" "yes" \
+  "$(grep -qE 'kind.{0,12}STEP_KIND_END' "$HARNESS" && ! grep -qE 'kind.{0,12}STEP_KIND_TASK' "$HARNESS" && echo yes || echo no)"
+expect "the mode AC1 asserts is read from the PROJECT (the run has no such field)" "yes" \
+  "$(grep -q '01-project-after-run.json' "$HARNESS" && ! grep -q '01-run-final.json" "EXECUTION_MODE_LOCAL' "$HARNESS" && echo yes || echo no)"
+expect "the in-run marker is interpolated INTO the container exec command" "yes" \
+  "$(sed -n '/^step3_container_run() {/,/^}/p' "$HARNESS" | grep -q 'runtime-e2e marker=' && echo yes || echo no)"
+expect "the availability control uses an engine the probe cannot DRIVE (not a verify image)" "yes" \
+  "$(sed -n '/^step2_opt_in() {/,/^}/p' "$HARNESS" | grep -q 'stub-bin' && echo yes || echo no)"
+expect "the stream chunk count walks Connect ENVELOPES, not lines" "yes" \
+  "$(grep -q 'connect_frames() {' "$HARNESS" && ! grep -q "grep -c ''" "$HARNESS" && echo yes || echo no)"
+
+# connect_frames really counts envelopes: 3 data frames + a trailer is 3, so a
+# streamed build cannot be denied for not streaming, and one blob is 1, so "more
+# than one chunk" cannot be satisfied by a single message.
+FRAMES="${EVIDENCE}/frames.bin"
+printf '\x00\x00\x00\x00\x0b{"log":"a"}\x00\x00\x00\x00\x0b{"log":"b"}\x00\x00\x00\x00\x0b{"log":"c"}\x02\x00\x00\x00\x0b{"done":true}' >"$FRAMES"
+expect "connect_frames counts 3 DATA frames (a real stream)" 3 "$(connect_frames "$FRAMES")"
+printf '\x00\x00\x00\x00\x02{}\x02\x00\x00\x00\x02{}' >"${EVIDENCE}/one.bin"
+expect "connect_frames counts a single-blob stream as 1 frame" 1 "$(connect_frames "${EVIDENCE}/one.bin")"
+: >"${EVIDENCE}/empty.bin"
+expect "connect_frames counts an EMPTY capture as 0 (never a vacuous pass)" 0 "$(connect_frames "${EVIDENCE}/empty.bin")"
+
 # --- the gate must be DISCOVERABLE ----------------------------------------
 spin "the gate is discoverable"
 HELP="$(cd "$REPO_ROOT" && make help 2>/dev/null || true)"
