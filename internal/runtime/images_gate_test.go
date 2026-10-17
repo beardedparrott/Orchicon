@@ -10,7 +10,7 @@ package runtime
 // org.orchicon.runtime-base marker must be refused just like a missing one.
 //
 // Every case drives the REAL gate (validateCreate -> imageAllowed) with the
-// engine seam (Daemon.dockerFn) so no container engine is needed.
+// engine seam (Daemon.engineFn) so no container engine is needed.
 
 import (
 	"errors"
@@ -22,7 +22,7 @@ import (
 	"testing"
 )
 
-// gateEngine builds a dockerFn that records the inspect it was asked to run
+// gateEngine builds an engineFn that records the inspect it was asked to run
 // and answers with the given label value / error, which is exactly the shape
 // `image inspect --format '{{index .Config.Labels "..."}}' <ref>` produces.
 func gateEngine(t *testing.T, wantRef, labelOut, stderr string, err error) (*[]string, func(args ...string) (string, error)) {
@@ -114,12 +114,12 @@ func TestCreateGateRejectsAnImageWithoutTheMarker(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			d := &Daemon{Image: base, Images: c.images, DockerBin: EngineDocker}
+			d := &Daemon{Image: base, Images: c.images, Engine: Engine{Name: "docker", Bin: "docker"}}
 			// Cases that must be decided without asking the engine get a
 			// seam that fails loudly if it is consulted at all.
 			engineConsulted := false
 			calls, fn := gateEngine(t, c.image, c.labelOut, c.stderr, c.err)
-			d.dockerFn = func(args ...string) (string, error) {
+			d.engineFn = func(args ...string) (string, error) {
 				engineConsulted = true
 				return fn(args...)
 			}
@@ -152,8 +152,8 @@ func TestCreateGateRejectsAnImageWithoutTheMarker(t *testing.T) {
 // labels — that is what lets the stock seeder tell "not downloaded" apart from
 // "stale, roll it forward".
 func TestImageInspectJoinsPresenceAndLabels(t *testing.T) {
-	d := &Daemon{DockerBin: EnginePodman}
-	d.dockerFn = func(args ...string) (string, error) {
+	d := &Daemon{Engine: Engine{Name: "podman", Bin: "podman"}}
+	d.engineFn = func(args ...string) (string, error) {
 		if len(args) != 5 || args[0] != "image" || args[1] != "inspect" {
 			t.Fatalf("unexpected engine call %v", args)
 		}
@@ -170,7 +170,7 @@ func TestImageInspectJoinsPresenceAndLabels(t *testing.T) {
 
 	// Absent: Podman reports an inspect failure — presence must be false and
 	// the labels empty, with no error surfacing to the caller.
-	d.dockerFn = func(args ...string) (string, error) {
+	d.engineFn = func(args ...string) (string, error) {
 		return "Error: orchicon-runtime:gui: image not known", errors.New("exit status 125")
 	}
 	absent := d.imageReport("orchicon-runtime:gui")
@@ -187,8 +187,8 @@ func TestRemoveImageIsIdempotentAndRefusesJunk(t *testing.T) {
 	const ref = "orchicon-runtime-custom:qa"
 
 	var got []string
-	d := &Daemon{DockerBin: EnginePodman}
-	d.dockerFn = func(args ...string) (string, error) {
+	d := &Daemon{Engine: Engine{Name: "podman", Bin: "podman"}}
+	d.engineFn = func(args ...string) (string, error) {
 		got = args
 		return "", nil
 	}
@@ -205,8 +205,8 @@ func TestRemoveImageIsIdempotentAndRefusesJunk(t *testing.T) {
 		"Error: " + ref + ": image not known", // podman
 		"Error: No such image: " + ref,        // docker
 	} {
-		d = &Daemon{DockerBin: EnginePodman}
-		d.dockerFn = func(args ...string) (string, error) { return wording, errors.New("exit status 125") }
+		d = &Daemon{Engine: Engine{Name: "podman", Bin: "podman"}}
+		d.engineFn = func(args ...string) (string, error) { return wording, errors.New("exit status 125") }
 		rec = httptest.NewRecorder()
 		d.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/images?ref="+ref, nil))
 		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"gone"`) {
@@ -214,8 +214,8 @@ func TestRemoveImageIsIdempotentAndRefusesJunk(t *testing.T) {
 		}
 	}
 
-	d = &Daemon{DockerBin: EnginePodman}
-	d.dockerFn = func(args ...string) (string, error) {
+	d = &Daemon{Engine: Engine{Name: "podman", Bin: "podman"}}
+	d.engineFn = func(args ...string) (string, error) {
 		t.Fatalf("a rejected ref must not reach the engine, got %v", args)
 		return "", errors.New("unreachable")
 	}
@@ -236,9 +236,9 @@ func TestBuildStreamsAndPrunesDangling(t *testing.T) {
 	if err := os.WriteFile(engine, []byte("#!/bin/sh\necho 'STEP 1/2: FROM base'\necho 'warning: something' >&2\n"), 0o755); err != nil {
 		t.Fatalf("write stub engine: %v", err)
 	}
-	d := &Daemon{DockerBin: engine, Image: "orchicon-runtime:base"}
+	d := &Daemon{Engine: Engine{Name: "podman", Bin: engine}, Image: "orchicon-runtime:base"}
 	var pruned []string
-	d.dockerFn = func(args ...string) (string, error) {
+	d.engineFn = func(args ...string) (string, error) {
 		pruned = args
 		return "", nil
 	}

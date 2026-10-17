@@ -39,7 +39,7 @@ func newLeaseTestPool(t *testing.T) (*Daemon, *daemonPool, func(runID string) Cr
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ExePath:   exe,
 		ghTokenFn: func() string { return "" },
-		dockerFn: func(args ...string) (string, error) {
+		engineFn: func(args ...string) (string, error) {
 			if len(args) >= 3 && args[0] == "rm" && args[1] == "-f" {
 				mu.Lock()
 				removed = append(removed, args[2])
@@ -49,6 +49,12 @@ func newLeaseTestPool(t *testing.T) (*Daemon, *daemonPool, func(runID string) Cr
 			// checkout's reuse-path liveness probe (inspect → Running).
 			if len(args) >= 3 && args[0] == "inspect" && args[2] == "{{.State.Running}}" {
 				return "true", nil
+			}
+			// The removal primitive polls `inspect {{.Id}}` for the engine to
+			// release the name (d.removeContainer); "" = not present, so the poll
+			// costs one tick. Stated, not incidental.
+			if len(args) >= 3 && args[0] == "inspect" && args[2] == "{{.Id}}" {
+				return "", nil
 			}
 			return "", nil
 		},

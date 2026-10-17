@@ -16,7 +16,7 @@ func TestPullSkipsWhenImageIsPresent(t *testing.T) {
 	const ref = "ghcr.io/beardedparrott/orchicon-runtime:gui"
 	d := &Daemon{Image: ref}
 	pulled := false
-	d.dockerFn = func(args ...string) (string, error) {
+	d.engineFn = func(args ...string) (string, error) {
 		if len(args) == 0 {
 			t.Fatalf("unexpected empty engine call")
 		}
@@ -55,7 +55,7 @@ func TestPullSkipsWhenImageIsPresent(t *testing.T) {
 // an engine command for a ref that is not a plain image tag.
 func TestPullRejectsBadRef(t *testing.T) {
 	d := &Daemon{Image: "orchicon-runtime:base"}
-	d.dockerFn = func(args ...string) (string, error) {
+	d.engineFn = func(args ...string) (string, error) {
 		t.Fatalf("a rejected ref must not reach the engine, got %v", args)
 		return "", errors.New("unreachable")
 	}

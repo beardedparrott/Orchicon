@@ -15,7 +15,7 @@ import (
 )
 
 // baseImageLabel marks an image as derived from the Orchicon runtime base.
-// Docker inherits labels through `FROM`, so any image built on top of the
+// Both engines inherit labels through `FROM`, so any image built on top of the
 // base carries it automatically; the container-create gate uses it to
 // accept UI-built custom images without a separate registration step.
 const baseImageLabel = "org.orchicon.runtime-base"
@@ -24,7 +24,7 @@ const baseImageLabel = "org.orchicon.runtime-base"
 // slugs: lowercase words separated by single hyphens).
 var slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
-// imageTagPattern matches a full docker image reference with a tag, e.g.
+// imageTagPattern matches a full container image reference with a tag, e.g.
 // "orchicon-runtime-custom-gui:latest" or "ghcr.io/org/name:v1".
 var imageTagPattern = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*:[A-Za-z0-9_.-]+$`)
 
@@ -112,7 +112,7 @@ func (d *Daemon) imageAllowed(name string) bool {
 			return true
 		}
 	}
-	out, err := d.docker("image", "inspect", "--format", labelTemplate(baseImageLabel), name)
+	out, err := d.engine("image", "inspect", "--format", d.Engine.ImageLabelFormat(baseImageLabel), name)
 	if err != nil {
 		return false
 	}
@@ -122,23 +122,13 @@ func (d *Daemon) imageAllowed(name string) bool {
 // imageLabel reads one config label from a local image. Best-effort: an
 // inspect failure (image missing) yields "". The image must already be local
 // for the label to exist — allowedImages only lists the base + configured
-// variants, which container.sh / the release workflow build or pull first.
+// variants, which scripts/runtime.sh / the release workflow build or pull first.
 func (d *Daemon) imageLabel(name, label string) string {
-	out, err := d.docker("image", "inspect", "--format", labelTemplate(label), name)
+	out, err := d.engine("image", "inspect", "--format", d.Engine.ImageLabelFormat(label), name)
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(out)
-}
-
-// labelTemplate is the inspect format string for ONE config label. Both
-// engines implement the same Go template over .Config.Labels, and a label set
-// in a parent image is inherited into the child's config, so the same format
-// string works verbatim under Podman and Docker. Routing every label read
-// through this one helper means a format change happens once, and a test can
-// assert it stays engine-portable.
-func labelTemplate(label string) string {
-	return `{{index .Config.Labels "` + label + `"}}`
 }
 
 // imageReport is the single inspect behind presence + both version labels.
@@ -149,8 +139,14 @@ func labelTemplate(label string) string {
 // "not downloaded" apart from "needs a rebuild".
 func (d *Daemon) imageReport(ref string) ImageInfo {
 	info := ImageInfo{Ref: ref}
-	format := `{{index .Config.Labels "org.orchicon.runtime.version"}}|{{index .Config.Labels "org.orchicon.runtime.spec-version"}}`
-	out, err := d.docker("image", "inspect", "--format", format, ref)
+	// The label template comes from the ENGINE: docker reports image labels at
+	// .Config.Labels and podman at .Labels, so a hardcoded template reads ""
+	// under the other engine — which would make the create gate reject a
+	// perfectly good stock image. The one template per engine lives in
+	// engine.go (Engine.ImageLabelFormat); compose it here, once per label.
+	format := d.Engine.ImageLabelFormat("org.orchicon.runtime.version") + "|" +
+		d.Engine.ImageLabelFormat("org.orchicon.runtime.spec-version")
+	out, err := d.engine("image", "inspect", "--format", format, ref)
 	if err != nil {
 		return info
 	}
@@ -163,19 +159,11 @@ func (d *Daemon) imageReport(ref string) ImageInfo {
 	return info
 }
 
-// engine is the resolved container engine for the image path. DockerBin is
-// the single binary every operation uses, so deriving the engine from it
-// keeps one source of truth (and lets tests construct a Daemon with only
-// DockerBin set).
-func (d *Daemon) engine() Engine {
-	return Engine{Bin: d.DockerBin, Name: EngineName(d.DockerBin)}
-}
-
 // handleImages implements the image routes:
 //
 //	GET    /v1/images          -> base + allowlist (work-item dropdown)
 //	POST   /v1/images          -> build a custom image (streams logs)
-//	DELETE /v1/images?ref=...  -> docker rmi a built image
+//	DELETE /v1/images?ref=...  -> engine rmi a built image
 func (d *Daemon) handleImages(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -202,9 +190,9 @@ func (d *Daemon) handleImages(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "bad image ref")
 			return
 		}
-		out, err := d.docker("rmi", "-f", ref)
+		out, err := d.engine("rmi", "-f", ref)
 		if err != nil {
-			if d.engine().IsAbsentOutput(out) {
+			if d.Engine.IsAbsentOutput(out) {
 				writeJSON(w, http.StatusOK, map[string]string{"status": "gone"})
 				return
 			}
@@ -235,7 +223,7 @@ func (d *Daemon) validateBuild(req BuildRequest) error {
 	return nil
 }
 
-// handleBuild runs `docker build` for a custom image, streaming log lines
+// handleBuild runs an engine `build` for a custom image, streaming log lines
 // as AgentEvent {stream,data} NDJSON until the build exits, then a final
 // AgentEvent {event:"exit", exit_code}. The Dockerfile's FROM line is
 // ALWAYS rewritten to the daemon's base image and the runtime-base label
@@ -257,7 +245,7 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 		return
 	}
 
-	cmd := exec.Command(d.DockerBin, "build", "-t", req.Tag, ctxDir)
+	cmd := exec.Command(d.engineBin(), "build", "-t", req.Tag, ctxDir)
 	cmd.Dir = ctxDir
 	code, started := d.streamCommand(w, r, req.Tag, "build", cmd)
 	if !started || code != 0 {
@@ -269,7 +257,7 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 	// tens of GB of unreferenced layers. Only untagged images are
 	// removed; running containers pin their image by ID. Podman accepts
 	// the same flags, so the prune is engine-independent.
-	if out, perr := d.docker("image", "prune", "-f", "--filter", "dangling=true"); perr == nil {
+	if out, perr := d.engine("image", "prune", "-f", "--filter", "dangling=true"); perr == nil {
 		_ = out
 	}
 }
@@ -316,7 +304,7 @@ func (d *Daemon) streamCommand(w http.ResponseWriter, r *http.Request, key, verb
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
-		httpError(w, http.StatusInternalServerError, d.engine().Name+" "+verb+": "+err.Error())
+		httpError(w, http.StatusInternalServerError, d.Engine.EngineNameForError()+" "+verb+": "+err.Error())
 		return 1, false
 	}
 	// The child owns the write ends now; holding them here would keep the
@@ -423,7 +411,7 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 		_ = enc.Encode(AgentEvent{Event: "exit", ExitCode: 0, Skipped: true})
 		return
 	}
-	cmd := exec.Command(d.DockerBin, "pull", ref)
+	cmd := exec.Command(d.engineBin(), "pull", ref)
 	d.streamCommand(w, r, ref, "pull", cmd)
 }
 
@@ -437,7 +425,7 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 
 // handleBuildCancel implements cancel/probe for in-flight builds:
 //
-//	DELETE /v1/images/build?tag=<tag> -> cancel (kills docker build)
+//	DELETE /v1/images/build?tag=<tag> -> cancel (kills the engine build)
 //	GET    /v1/images/build?tag=<tag> -> probe (building/not-building)
 func (d *Daemon) handleBuildCancel(w http.ResponseWriter, r *http.Request) {
 	tag := r.URL.Query().Get("tag")
@@ -482,12 +470,12 @@ func (d *Daemon) handleImageInspect(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "bad image ref")
 		return
 	}
-	out, err := d.docker("image", "inspect", "--format", labelTemplate("org.orchicon.runtime.spec-version"), ref)
+	out, err := d.engine("image", "inspect", "--format", d.Engine.ImageLabelFormat("org.orchicon.runtime.spec-version"), ref)
 	if err != nil {
 		writeJSON(w, http.StatusOK, ImageInspect{Exists: false})
 		return
 	}
-	// docker inspect succeeded => image exists; empty string means no label
+	// engine inspect succeeded => image exists; empty string means no label
 	writeJSON(w, http.StatusOK, ImageInspect{Exists: true, SpecVersion: strings.TrimSpace(out)})
 }
 
