@@ -2325,3 +2325,33 @@ Part II.
   and when.
 
 > **Orchicon orchestrates. Runtimes execute.**
+
+## Container engine (Podman) — detected, installed for you, verified
+
+Runtime containers need a container engine. `orchicon install` now **detects** one, **installs
+Podman for you** when there is none, brings up the **`podman machine`** on macOS and Windows,
+and **proves the engine works** by running a trivial container before it reports containers
+available. You never have to type a `podman` command.
+
+- Detection order: `podman`, then `docker` (checked on `PATH` and in the platform's usual
+  install locations). Podman is preferred, and it is the only engine Orchicon installs.
+  Docker is detected, never installed — Docker Desktop's licence is yours to accept, not ours.
+- Minimum Podman version: **4.0.0**. An older Podman is *reported* with its upgrade command
+  rather than half-used.
+- Installation always uses your platform's installer (`brew` on macOS, `winget` on Windows, the
+  distro package manager on Linux) so your package manager keeps it updated. The exact command
+  is printed before anything runs, and you are asked first. When the install cannot ask (no
+  terminal, or you decline) it prints the command and continues in **local mode** — a failed or
+  declined Podman install never breaks a working install.
+- Availability is shown in the UI where execution mode is chosen: *containers ready*, *being
+  provisioned*, or *unavailable* with the reason, and the same answer is available at
+  `GET /enginez`.
+
+Environment overrides:
+
+| Variable | Meaning |
+|---|---|
+| `ORCHICON_PROVISION_ENGINE` | `ask` (default), `1` (install without asking), `0` (never install). |
+| `ORCHICON_CONTAINER_ENGINE` | Pin the engine: `podman`, `docker`, or `none` (local mode). A pin is honoured strictly — a pinned engine that is missing or broken fails the install loudly instead of silently falling back to local mode. |
+| `ORCHICON_PODMAN_MIN_VERSION` | Accept an older Podman than the documented minimum. |
+| `ORCHICON_ENGINE_VERIFY_IMAGE` | The trivial image used to verify the engine (default `docker.io/library/alpine:3`) — point it at a local image on an air-gapped host. |

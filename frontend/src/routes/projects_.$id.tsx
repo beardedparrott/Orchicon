@@ -1,4 +1,5 @@
 import { createRoute, useNavigate } from "@tanstack/react-router";
+import { EngineAvailability } from "@/components/EngineAvailability";
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { ArrowLeft, ArrowUp, Folder } from "lucide-react";
@@ -554,6 +555,9 @@ function ProjectDetailPage() {
                   <option value="runtime">runtime — always-container (default)</option>
                   <option value="local">local — in-process (fenced)</option>
                 </select>
+                {/* Containers are what "runtime" MEANS — say whether they are available, and
+                    why not, right where the choice is made (AC5). */}
+                <EngineAvailability />
               </div>
             </div>
             {editing ? (

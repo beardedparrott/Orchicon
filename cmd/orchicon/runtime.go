@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 )
 
@@ -70,9 +71,18 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		}
 	}
 
+	// THE ENGINE BINARY IS RESOLVED, NOT ASSUMED. It used to be the literal "docker", so a
+	// host that provisioned podman through `orchicon install` still got a daemon that spawned
+	// `docker` and could launch nothing. The fallback stays "docker" so a daemon started on a
+	// host the resolver cannot see behaves exactly as it did before this change.
+	engineBin := "docker"
+	if e, err := containerengine.Detect(containerengine.DefaultProbe()); err == nil && e.Bin != "" {
+		engineBin = e.Bin
+	}
+
 	d := &runtime.Daemon{
 		SocketPath:    socketPath,
-		DockerBin:     "docker",
+		DockerBin:     engineBin,
 		Image:         env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest"),
 		Images:        runtimeImagesAllowlist(env("ORCHICON_RUNTIME_IMAGES", "")),
 		UserID:        hostUID,

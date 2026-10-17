@@ -574,9 +574,13 @@ func TestInstallHostHasNoDockerInvocation(t *testing.T) {
 			}
 		}
 	}
-	// The engine probe is a PATH LOOKUP, not an engine call — the one permitted naming of the binary.
-	if !strings.Contains(body, `exec.LookPath("docker")`) {
-		t.Errorf("the engine probe must be a LookPath (no engine call):\n%s", body)
+	// The engine probe DELEGATES to internal/containerengine, which owns the search order —
+	// so the installer and the plane's /enginez answer with the same rules. It is still a
+	// PATH/stat probe: containerengine.Detect runs no engine command (the version read is a
+	// separate, opt-in call), which TestInstallShapeWithAContainerEngine measures
+	// behaviourally by asserting the fake binary never ran.
+	if !strings.Contains(body, `containerengine.Detect(containerengine.DefaultProbe())`) {
+		t.Errorf("the engine probe must delegate to containerengine.Detect:\n%s", body)
 	}
 	// ...and the two symbols the item retires are gone from the whole package, not merely unused here.
 	files, err := filepath.Glob("*.go")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"io"
 	"log/slog"
 	"net"
@@ -58,14 +59,15 @@ func runInstall(args []string, log *slog.Logger) error {
 	// The gate is a PATH PROBE (containerEngineAvailable), never an engine call — absence must be answerable
 	// without a daemon. `docker version` runs ONLY when the binary is present, so a host with no engine never
 	// sees a doomed docker invocation, and a host WITH one still gets the loud "installed but not answering".
-	installPhase("checking the container engine")
-	containersUsed := containerEngineAvailable()
-	if containersUsed {
-		if out, err := exec.Command("docker", "version", "--format", "{{.Server.Version}}").CombinedOutput(); err != nil {
-			return fmt.Errorf("a container engine is installed but not answering (start Docker first): %v: %s", err, strings.TrimSpace(string(out)))
-		}
-	} else {
-		fmt.Println("orchicon: no container engine found — the services will run as HOST processes, and runtime containers are unavailable (work runs in-process)")
+	//
+	// THE DECISION IS NOW SIX RUNGS, and every one of them falls through to that local shape
+	// rather than failing the install (see resolveContainerEngine): detect → minimum version →
+	// opt-in provisioning → `podman machine` → a trivial container run → available. The old
+	// hard error for "an engine is installed but not answering" survives only as the
+	// explicit-pin case, because an operator who set ORCHICON_CONTAINER_ENGINE asked for it.
+	containersUsed, err := resolveContainerEngine()
+	if err != nil {
+		return err
 	}
 
 	// 1.5. An external adapter CLI is OPTIONAL. Orchicon ships its own runtime
@@ -346,7 +348,7 @@ func runInstall(args []string, log *slog.Logger) error {
 
 		// SERVICES FIRST — the plane talks to its Postgres and NATS, in whichever carrier this host uses.
 		if containersUsed {
-			if out, err := exec.Command("docker", "restart", name).CombinedOutput(); err != nil {
+			if out, err := engineCommand("restart", name).CombinedOutput(); err != nil {
 				fmt.Printf("  could not restart %s: %v: %s\n", name, err, strings.TrimSpace(string(out)))
 			} else if waitServicesReady(instance, ports, os.Stdout) {
 				fmt.Printf("  %s services are ready after the restart\n", name)
@@ -416,7 +418,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	installDir := env("ORCHICON_INSTALL_DIR", defaultInstallDir())
 	installOrchLauncher(installDir)
 
-	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, ports, containersUsed, healthy)
+	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, ports, containersUsed, healthy, engineStatus)
 	return nil
 }
 
@@ -712,7 +714,7 @@ func ensureInstallContainer(instance, residency, name, dataVolume, socketDir, im
 	// A stopped/partial container with the same name blocks recreation.
 	if exists, _ := containerExists(name); exists {
 		fmt.Printf("removing existing %s …\n", name)
-		if out, err := exec.Command("docker", "rm", "-f", name).CombinedOutput(); err != nil {
+		if out, err := engineCommand("rm", "-f", name).CombinedOutput(); err != nil {
 			return fmt.Errorf("remove existing %s: %v: %s", name, err, strings.TrimSpace(string(out)))
 		}
 	}
@@ -795,7 +797,7 @@ func ensureInstallContainer(instance, residency, name, dataVolume, socketDir, im
 	args = append(args, "-v", socketDir+":/var/run/orchicon-runtime", image)
 
 	fmt.Printf("starting %s …\n", name)
-	if out, err := exec.Command("docker", args...).CombinedOutput(); err != nil {
+	if out, err := engineCommand(args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("start %s: %v: %s", name, err, strings.TrimSpace(string(out)))
 	}
 	// THE SHAPE IS RECORDED NOW THAT THE INSTANCE EXISTS. This is the record restart.go and the next install
@@ -819,7 +821,7 @@ func dirOnPath(dir string) bool {
 
 // imagePresent reports whether a Docker image tag exists locally.
 func imagePresent(img string) bool {
-	out, err := exec.Command("docker", "image", "inspect", img).CombinedOutput()
+	out, err := engineCommand("image", "inspect", img).CombinedOutput()
 	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
@@ -882,7 +884,7 @@ func pullImage(img string) error {
 	// a working install was indistinguishable from a hung one until it was over.
 	// docker's progress now goes to this process's stdout as docker writes it, and a
 	// bounded tail is kept so a failure can still say WHY.
-	cmd := exec.Command("docker", "pull", img)
+	cmd := engineCommand("pull", img)
 	tail := &tailWriter{limit: 4096}
 	cmd.Stdout = io.MultiWriter(os.Stdout, tail)
 	cmd.Stderr = io.MultiWriter(os.Stderr, tail)
@@ -921,11 +923,11 @@ func (w *tailWriter) String() string { return string(w.buf) }
 // docker inspect failed transiently is worse than leaving a stale one for the operator to see, which is the
 // same call recordedResidency makes about the SHAPE.
 func containerImageCurrent(name, target string) bool {
-	cur, err := exec.Command("docker", "inspect", "--format", "{{.Image}}", name).Output()
+	cur, err := engineCommand("inspect", "--format", "{{.Image}}", name).Output()
 	if err != nil {
 		return true
 	}
-	want, err := exec.Command("docker", "image", "inspect", "--format", "{{.Id}}", target).Output()
+	want, err := engineCommand("image", "inspect", "--format", "{{.Id}}", target).Output()
 	if err != nil {
 		// The target is not local. It has just been pulled, so this should not happen; if it does, the
 		// container cannot be compared and is left alone rather than guessed at.
@@ -935,7 +937,7 @@ func containerImageCurrent(name, target string) bool {
 }
 
 func containerRunning(name string) (bool, error) {
-	out, err := exec.Command("docker", "inspect", "--format", "{{.State.Running}}", name).Output()
+	out, err := engineCommand("inspect", "--format", "{{.State.Running}}", name).Output()
 	if err != nil {
 		return false, err
 	}
@@ -943,14 +945,14 @@ func containerRunning(name string) (bool, error) {
 }
 
 func containerExists(name string) (bool, error) {
-	out, err := exec.Command("docker", "inspect", "--format", "{{.Id}}", name).Output()
+	out, err := engineCommand("inspect", "--format", "{{.Id}}", name).Output()
 	if err != nil {
 		return false, err
 	}
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, ports map[string]int, containersUsed, healthy bool) {
+func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, ports map[string]int, containersUsed, healthy bool, engine containerengine.Status) {
 	// WHERE THE SERVICES RUN follows from the shape and the host: a host-resident plane has its services as
 	// host processes when there is no engine to put them in a container, and in the instance container when
 	// there is.
@@ -1034,9 +1036,13 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 		fmt.Printf("  Runtime daemon (per-workflow runtime containers): running\n")
 		fmt.Printf("    socket: %s/runtime.sock   runtime image: %s\n", socketDir, runtimeImage)
 	} else {
-		fmt.Println("  Runtime daemon: running, but there is NO container engine on this host —")
+		fmt.Println("  Runtime daemon: running, but there is NO usable container engine on this host —")
 		fmt.Println("    per-workflow runtime containers cannot be launched, so work runs in-process.")
 	}
+	// THE AVAILABILITY LINE IS THE INSTALL'S OWN DECISION (ready / provisioning / unavailable
+	// with the reason), threaded in rather than re-probed — the summary must describe the
+	// carrier this run produced, never a fresh guess (AC5).
+	fmt.Printf("  Container engine: %s\n", describeEngineStatus(engine))
 	if hostServices {
 		fmt.Printf("  Data: host data dir (see above; the KEK lives in its secrets/)\n")
 	} else {
