@@ -1993,6 +1993,28 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// status when the run completes/fails. Standalone (unbound) items keep
 	// the old per-execution terminal transition + results write.
 	runActive := r.boundToActiveRun(ctx, ttx.Tx, wi)
+	// A terminal run has ALREADY decided this item's fate — the WorkflowReconciler
+	// owns that write (workflow_reconciler.go: run success and run failure both
+	// set the bound item's status in the transaction that completes the run).
+	// A per-execution verdict arriving afterwards is about ONE execution, and the
+	// execution may be superseded or reaped long after the run closed, so it must
+	// never overwrite the run's decision.
+	//
+	// This is the guard whose absence let a reaped `unhealthy` execution flip a
+	// completed item to failed at 03:11:33 and halt the whole sequence chain.
+	if runTerminal, terminal := r.boundRunTerminalStatus(ctx, ttx.Tx, wi); terminal {
+		if contradicts := lateVerdictContradictsRun(runTerminal, succeeded); contradicts {
+			// Warn ONLY when the dropped verdict contradicts the run — a failure
+			// verdict over a completed run, or a success verdict over a failed
+			// one. A verdict that agrees is ordinary bookkeeping, and lowering
+			// it to silence keeps this line meaningful.
+			r.log.Warn("ignoring late execution verdict: its run already reached a terminal state",
+				"execution", exec.ID, "work_item", wi.ID, "run", wi.WorkflowRunID,
+				"run_status", runTerminal, "verdict_succeeded", succeeded,
+				"item_status", wi.Status)
+		}
+		return
+	}
 	if runActive {
 		// Step outputs go on the step run (propagateStepRunResults) so
 		// the run view, loop decisions, and composite prompts see them.
@@ -2125,6 +2147,56 @@ func (r *TaskReconciler) boundToActiveRun(ctx context.Context, tx pgx.Tx, wi db.
 		return true
 	}
 	return false
+}
+
+// boundRunTerminalStatus reports the bound run's status when that run has
+// reached a TERMINAL state, so a per-execution verdict can tell "the run already
+// decided this item's fate" apart from "there is no run".
+//
+// WHY THIS EXISTS. boundToActiveRun answers "is the run still going?", and the
+// caller used a bare false to mean BOTH "no run" and "run finished". Those are
+// opposite facts, and conflating them let a LATE failure verdict overwrite a
+// work item whose run had already COMPLETED:
+//
+//	run 01M54CJA… finished at 03:10:22 with its PR merged (the item became succeeded)
+//	03:11:33 the liveness reaper failed a SUPERSEDED execution of that same run
+//	         → transitionWorkItemOnResult(…, false, …)
+//	         → boundToActiveRun = false (run is "completed", not active)
+//	         → the else branch wrote WorkItemFailed over succeeded
+//
+// The failed child then halted its sequence parent's whole chain in the failure
+// pre-scan, so the NEXT work item never fired until an operator manually marked
+// the item succeeded ~8 hours later. Nothing logged a word.
+func (r *TaskReconciler) boundRunTerminalStatus(ctx context.Context, tx pgx.Tx, wi db.WorkItemRow) (string, bool) {
+	if wi.WorkflowRunID == "" {
+		return "", false
+	}
+	run, err := db.GetWorkflowRun(ctx, tx, wi.TenantID, wi.WorkflowRunID)
+	if err != nil {
+		return "", false
+	}
+	switch run.Status {
+	case domain.WorkflowRunCompleted, domain.WorkflowRunFailed, domain.WorkflowRunAborted:
+		return run.Status, true
+	}
+	return "", false
+}
+
+// lateVerdictContradictsRun reports whether a per-execution verdict DISAGREES
+// with the terminal state its bound run already recorded.
+//
+// It is split out as a pure function so the rule can be pinned exhaustively
+// without a database: every (run status × verdict) pair is a different answer,
+// and the pair that caused the incident — a failure verdict over a COMPLETED run
+// — is the one that must be loud.
+//
+// "Contradicts" covers both directions deliberately. A late SUCCESS over a
+// FAILED run is just as wrong as a late failure over a completed one: the run
+// is the unit of record, and neither a superseded execution nor a reaped orphan
+// gets to relitigate it.
+func lateVerdictContradictsRun(runStatus string, verdictSucceeded bool) bool {
+	runSucceeded := runStatus == domain.WorkflowRunCompleted
+	return runSucceeded != verdictSucceeded
 }
 
 // writeOrchiconFiles writes the execution results to .orchicon/ files

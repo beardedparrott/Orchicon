@@ -37,6 +37,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1247,14 +1248,35 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				// iteration was created 47-108ms BEFORE the reviewer step run received its
 				// `_decision`, so all three re-asks fired on verdicts that already existed,
 				// burned max_reask (3), and failed the run.
-				fields := db.UpdateWorkflowStepRunFields{
-					Status:  strPtr(finalStatus),
-					EndedAt: &endNow,
-				}
-				if merged, merr := r.stepRunResultWithVerdict(ctx, ttx.Tx, tenantID, sr); merr == nil && merged != nil {
-					fields.Result = &merged
-				}
-				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, fields)
+				// THE TERMINAL MARK MUST NOT LOSE ITS VERSION. This write aborts the
+				// whole pass on a stale version, and because the pass is ONE
+				// transaction that rollback takes an UPSTREAM step's terminal mark
+				// with it — the exact shape of the 2026-10-17 field incident:
+				//
+				//	03:10:22 WARN workflow run reconcile failed
+				//	         error="mark task step terminal: db: not found"
+				//
+				// while the run itself went on to complete. Each attempt re-reads the
+				// step run and re-derives the verdict merge from the FRESH row, so the
+				// retry writes against the version that actually exists. An error is
+				// still returned after the bounded attempts: a genuinely missing row
+				// is not a race and must not be retried forever.
+				updated, err := retryStaleVersion(ctx, r.log, "mark task step terminal", func() (db.WorkflowStepRunRow, error) {
+					fresh := sr
+					if cur, gerr := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID); gerr == nil {
+						fresh = cur
+					} else if !errors.Is(gerr, db.ErrNotFound) {
+						return db.WorkflowStepRunRow{}, gerr
+					}
+					fields := db.UpdateWorkflowStepRunFields{
+						Status:  strPtr(finalStatus),
+						EndedAt: &endNow,
+					}
+					if merged, merr := r.stepRunResultWithVerdict(ctx, ttx.Tx, tenantID, fresh); merr == nil && merged != nil {
+						fields.Result = &merged
+					}
+					return db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, fresh.ID, fresh.Version, fields)
+				})
 				if err != nil {
 					return fmt.Errorf("mark task step terminal: %w", err)
 				}
@@ -4962,14 +4984,38 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 						}
 						if prURL != "" {
 							// Change 1: mirror the authoritative PR onto the step's
-							// execution row columns (the work item card reads these)
-							// so the rows agree with run_context at completion time.
-							// Best-effort / non-fatal: the PR surface is auxiliary
-							// and the pass/fail decision is already made.
-							if _, err := db.UpdateExecution(ctx, tx, tenantID, exec.ID, exec.Version,
-								db.UpdateExecutionFields{PrURL: &prURL, PrState: &prState}); err != nil {
-								r.log.Warn("step-success: update execution PR fields (best-effort)",
-									"run", run.ID, "execution", exec.ID, "error", err)
+							// execution row columns, so the rows agree with run_context
+							// at completion time.
+							//
+							// THIS WRITE USED A STALE VERSION AND WAS BEST-EFFORT, which is
+							// how a merged PR became invisible. Field incident (run
+							// 01M54EJY52ZW1NSDAQ5X07JN38): exec.Version was captured
+							// earlier in this pass, the mirror lost the optimistic-
+							// concurrency race, and the only trace was
+							//
+							//	WARN step-success: update execution PR fields (best-effort)
+							//	     execution=01M54FE48… error="db: not found"
+							//
+							// The run still completed with pr_url in run_context, so the RUN
+							// page showed the PR — but the work-item card reads the
+							// EXECUTION row, so it showed nothing at all.
+							//
+							// Each attempt RE-READS the execution for its current version: a
+							// re-send of the captured version can never match, so the read is
+							// what lets this converge instead of burning attempts. Still
+							// best-effort overall — the pass/fail decision is already made, and
+							// the work-item card now reads the run as well, so this is no
+							// longer the only copy.
+							if _, err := retryStaleVersion(ctx, r.log, "execution pr fields", func() (db.ExecutionRow, error) {
+								fresh, gerr := db.GetExecution(ctx, tx, tenantID, exec.ID)
+								if gerr != nil {
+									return db.ExecutionRow{}, gerr
+								}
+								return db.UpdateExecution(ctx, tx, tenantID, fresh.ID, fresh.Version,
+									db.UpdateExecutionFields{PrURL: &prURL, PrState: &prState})
+							}); err != nil {
+								r.log.Warn("step-success: update execution PR fields (best-effort) — run_context still carries the PR",
+									"run", run.ID, "execution", exec.ID, "pr_url", prURL, "error", err)
 							}
 							if prState == "" {
 								prState = "open"
