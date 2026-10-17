@@ -78,9 +78,15 @@ type Daemon struct {
 	activeBuilds map[string]*exec.Cmd
 	// Test seams: unexported func fields that override the production
 	// implementations. Nil (the default) = production behavior.
-	engineFn  func(args ...string) (string, error)                          // overrides engine()
-	createFn  func(name string, req CreateRequest) (*CreateResponse, error) // overrides createContainer()
-	ghTokenFn func() string                                                 // overrides the ghToken resolver (default hostGHToken)
+	engineFn        func(args ...string) (string, error)                          // overrides engine()
+	createFn        func(name string, req CreateRequest) (*CreateResponse, error) // overrides createContainer()
+	ghTokenFn       func() string                                                 // overrides the ghToken resolver (default hostGHToken)
+	engineVersionFn func() string                                                 // overrides the engine client-version probe (default: exec the engine)
+	// engine fingerprint cache: resolved ONCE per daemon process (the pool key's
+	// engine= / shape= terms). A daemon restart re-resolves it, and the pool is
+	// reset wholesale at daemon start, so a stale term can never serve.
+	engineFpOnce sync.Once
+	engineFp     string
 	// ghToken cache: daemon-resident, TTL-bounded (ORCHICON_RUNTIME_GH_TOKEN_FP_TTL,
 	// default 60s) so the pool key and the created container's GH_TOKEN come
 	// from the SAME resolution without spawning `gh auth token` per checkout.
@@ -509,6 +515,23 @@ func relayNDJSON(r io.Reader, w io.Writer, fl http.Flusher) {
 	}
 }
 
+// mountArgv renders the request's bind mounts as `-v <src>:<dst>[:ro]` argv. It
+// is a helper rather than an inline loop so the SHAPE of every mount argv is
+// testable: validateCreate admits only ABSOLUTE host paths (no named volumes — a
+// volume survives the pristine container reset, ADR-0013 §6), and
+// TestCreateMountArgvUsesHostPathsOnly pins that the argv carries exactly that.
+func mountArgv(mounts []MountSpec) []string {
+	out := make([]string, 0, 2*len(mounts))
+	for _, m := range mounts {
+		mo := ""
+		if m.RO {
+			mo = ":ro"
+		}
+		out = append(out, "-v", m.Source+":"+m.Dest+mo)
+	}
+	return out
+}
+
 // validateCreate enforces the daemon's security policy: image allowlist,
 // mount-source allowlist, argv allowlist.
 func (d *Daemon) validateCreate(req CreateRequest) error {
@@ -530,6 +553,15 @@ func (d *Daemon) validateCreate(req CreateRequest) error {
 	for _, m := range req.Mounts {
 		if m.Source == "" {
 			return fmt.Errorf("mount source required")
+		}
+		// NO NAMED VOLUMES (ADR-0013 §6, BF-3(a)): every mount source must be an
+		// ABSOLUTE HOST PATH. A bare volume name ("orchicon-data") would ask the
+		// engine for engine-managed storage, which survives `rm` and therefore
+		// survives the pristine reset — the run boundary would leak. Rejected
+		// explicitly rather than left implied by the allowed-roots check, because
+		// that implication is what the argv test pins.
+		if !filepath.IsAbs(m.Source) {
+			return fmt.Errorf("mount source must be an absolute host path, never a named volume (a volume survives the pristine container reset): %s", m.Source)
 		}
 		abs, err := filepath.Abs(m.Source)
 		if err != nil {
@@ -632,13 +664,7 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// than hidden: on an SELinux-enforcing host (Fedora/RHEL default) rootless
 	// podman denies access to these unrelabelled binds until that slice lands.
 	// Nothing about it is docker-specific, so no engine branch is needed now.
-	for _, m := range req.Mounts {
-		mo := ""
-		if m.RO {
-			mo = ":ro"
-		}
-		args = append(args, "-v", m.Source+":"+m.Dest+mo)
-	}
+	args = append(args, mountArgv(req.Mounts)...)
 	// Standard host-home mounts. The ADAPTER installs (opencode
 	// config/auth/CLI today) are CONDITIONAL on the run's boot profile
 	// (AC 1/AC 3): a native-only run mounts nothing opencode-related, so the
@@ -1021,6 +1047,34 @@ func (d *Daemon) ghToken() string {
 	return d.ghTokenVal
 }
 
+// engineInputFingerprint is the pool key's ENGINE term (ADR-0013 D7.1/D7.2):
+// the engine family, its client version, and the create-time SHAPE of a
+// container under it. Resolved ONCE per daemon process (sync.Once): an engine
+// switch or a podman upgrade on a live host must miss every warm container that
+// engine did not create, and the version must never be re-exec'd per checkout.
+//
+// The version NEVER degrades to "": an empty term would fold away and silently
+// stop covering the engine — the exact failure a fingerprint exists to prevent.
+// Unresolvable (no binary on PATH, or the exec failed) is the literal "unknown",
+// which still keys distinctly from any resolved version.
+func (d *Daemon) engineInputFingerprint() string {
+	d.engineFpOnce.Do(func() {
+		ver := ""
+		if d.engineVersionFn != nil {
+			ver = strings.TrimSpace(d.engineVersionFn())
+		} else if _, lookErr := exec.LookPath(d.Engine.binary()); lookErr == nil {
+			if out, err := d.engine(d.Engine.VersionArgs()...); err == nil {
+				ver = strings.TrimSpace(out)
+			}
+		}
+		if ver == "" {
+			ver = "unknown"
+		}
+		d.engineFp = "engine=" + d.Engine.name() + "@" + ver + "|shape=" + d.Engine.Shape()
+	})
+	return d.engineFp
+}
+
 // hostInputsFingerprint computes a fresh-per-checkout fingerprint of the
 // read-once HOST inputs baked into every runtime container at create time:
 // the DAEMON BINARY (bind-mounted read-only at /usr/local/bin/orchicon —
@@ -1036,6 +1090,11 @@ func (d *Daemon) ghToken() string {
 // silently reverts to image+mounts on a fingerprint gap; bind-mount
 // resolution at container-create time additionally picks up a rebuilt binary for
 // freshly-created containers.
+//
+// The ENGINE term (engineInputFingerprint) is folded in here too: the pool key
+// pins the engine family, its client version, and the create-time SHAPE, so an
+// engine switch or an engine upgrade on a live host cannot hand out a warm
+// container the new engine did not create (ADR-0013 D7.1/D7.2).
 func (d *Daemon) hostInputsFingerprint() string {
 	// Binary fingerprint FIRST — the bind-mount applies to EVERY runtime
 	// container (createContainer hard-fails without it), so it must color
@@ -1055,7 +1114,7 @@ func (d *Daemon) hostInputsFingerprint() string {
 	if d.HostHome != "" {
 		hostFp = hostInputsFingerprint(d.HostHome, ghTokenFingerprint(d.ghToken()))
 	}
-	return hostFp + "|" + binFp
+	return hostFp + "|" + binFp + "|" + d.engineInputFingerprint()
 }
 
 // startServe asks the in-container supervisor to bring up `opencode
@@ -1247,6 +1306,63 @@ func (d *Daemon) containerExists(name string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(out) != "", nil
+}
+
+// containerGoneWording reports whether an engine error means the container is
+// ALREADY GONE — success for a removal's purposes. The phrasings differ by
+// engine (docker: "Error: No such container: x"; podman: "Error: no container
+// with name or ID x: no such container"), and the comparison is case-insensitive
+// because the engines capitalise differently.
+func containerGoneWording(out string) bool {
+	lower := strings.ToLower(out)
+	for _, t := range []string{"no such container", "no container with name", "does not exist", "no such object"} {
+		if strings.Contains(lower, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// waitContainerGone polls until the engine reports the container absent or the
+// timeout expires. `inspect` is answered by both engines, so no engine-specific
+// `container exists` subcommand is needed; an inspect ERROR is read as "not
+// visible yet" and the poll simply continues to its deadline.
+func (d *Daemon) waitContainerGone(name string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		exists, _ := d.containerExists(name)
+		if !exists {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// removeContainer discards a runtime container and WAITS until the engine has
+// released the NAME, because the pristine reset recreates from a fresh name and a
+// lingering name turns a reset into a failed create (ADR-0013 §6, D5.2: podman
+// keeps the name reserved for a moment after `rm -f`).
+//
+// Best-effort by design: a removal that cannot prove the container gone returns
+// false and the CALLER drops the pool entry (the next checkout creates fresh)
+// rather than blocking dispatch on a wedged engine.
+func (d *Daemon) removeContainer(name string) bool {
+	if out, err := d.engine("rm", "-f", name); err != nil && !containerGoneWording(out) {
+		d.Log.Warn("remove runtime container", "container", name, "engine", strings.TrimSpace(out), "error", err)
+	}
+	if d.waitContainerGone(name, 5*time.Second) {
+		return true
+	}
+	// The name is somehow still there: one more removal, then a short re-poll.
+	_, _ = d.engine("rm", "-f", name)
+	gone := d.waitContainerGone(name, 2*time.Second)
+	if !gone {
+		d.Log.Warn("runtime container still present after removal — dropping it from the pool", "container", name)
+	}
+	return gone
 }
 
 // listRuntimes returns runtime container names, optionally scoped to one

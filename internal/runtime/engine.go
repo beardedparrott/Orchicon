@@ -140,6 +140,31 @@ func (e Engine) MissingError() error {
 	return &EngineMissingError{Name: name, Requested: e.Name, Err: cause}
 }
 
+// VersionArgs is the argv that reports the engine's CLIENT version, which both
+// engines answer with the same template (`--format {{.Client.Version}}`). It is
+// the VERSION half of the pool key's engine term (ADR-0013 D7.1): a podman
+// upgrade can change create/removal semantics under a warm container without
+// the engine NAME changing, so the version must color the key too.
+func (e Engine) VersionArgs() []string {
+	return []string{"version", "--format", "{{.Client.Version}}"}
+}
+
+// shapeRelabel is the create-time SELinux relabel marker this build emits for
+// its bind mounts. ADR-0013 D3.2 (the `,z` relabel) lands as "z"; until then it
+// is "none". It is part of Shape() precisely so that FLIPPING IT invalidates
+// every warm container created under the old mount shape — a container created
+// without a relabel cannot be relabelled in place (ADR-0013 D7.2).
+const shapeRelabel = "none"
+
+// Shape is the create-time SHAPE of a container under this engine, derived
+// purely from the Engine value (no exec): the engine family, the namespace
+// mapping it emits, and the relabel marker. Two daemons that would create
+// structurally DIFFERENT containers must never share a warm one.
+func (e Engine) Shape() string {
+	return fmt.Sprintf("engine=%s|userns=%s|relabel=%s",
+		e.name(), strings.Join(e.UsernsArgs(), ","), shapeRelabel)
+}
+
 // name is the engine's normalized family name; a zero-valued Engine is the
 // default engine, never "".
 func (e Engine) name() string {

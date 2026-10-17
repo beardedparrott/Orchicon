@@ -31,6 +31,12 @@ func (h *sweepHarness) docker(args ...string) (string, error) {
 		h.removed = append(h.removed, args[2])
 		return "", nil
 	}
+	// The removal primitive polls `inspect {{.Id}}` for the name to be released
+	// (d.removeContainer). "" means "not present", so the poll finishes on its
+	// first tick instead of waiting out the 5s timeout. Stated, not incidental.
+	if len(args) >= 3 && args[0] == "inspect" && args[2] == "{{.Id}}" {
+		return "", nil
+	}
 	return "", nil
 }
 
