@@ -257,6 +257,12 @@ for t in instance-build instance-up instance-down instance-restart instance-stat
 done
 check_lacks "make help lists no deprecated container-* target" "container-" "$HELP"
 
+# A TARGET NAME MAY CONTAIN A DIGIT, and the generator must not drop it: the awk
+# regex was [a-zA-Z_-]+, so install-ps1-test had a `##` description in the file and
+# still never appeared — `make help` denying a target that exists is the same lie as
+# listing one that does not.
+check_contains "make help lists a digit-bearing target (install-ps1-test)" "install-ps1-test " "$HELP"
+
 # THE RENAME MUST NOT SMUGGLE THE CONTAINER BACK IN. Every instance target delegates
 # to the launcher's VERBS; not one recipe may name the retiring container.sh — a
 # host-resident instance is the whole point of the rename.

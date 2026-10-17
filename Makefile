@@ -170,7 +170,11 @@ LDFLAGS     = -X github.com/beardedparrott/orchicon/internal/version.gitCommit=$
 # --- Help ------------------------------------------------------------------
 .PHONY: help
 help: ## Show available targets
-	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@# TARGET NAMES MAY CONTAIN DIGITS. The regex was [a-zA-Z_-]+, which silently dropped
+	@# every target with a number in it — install-ps1-test was in the file with its `##`
+	@# description and simply never printed, so the one list a developer trusts said the
+	@# target did not exist. `make help` must list what is there.
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 # --- Tooling ---------------------------------------------------------------
 # buf is pinned (version + SHA256) and installed into ./bin by `make tools`

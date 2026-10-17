@@ -162,7 +162,36 @@ daemon_is_stale() {
   ! cmp -s "$fresh" "$stable"
 }
 
-daemon_pid() { pgrep -f 'orchicon runtime-daemon' | head -1 || true; }
+# daemon_pid prints the pid of the HOST daemon. pgrep is preferred, but slim images
+# ship without procps, and its absence failed in the worst possible direction:
+# `pgrep: command not found` on stderr and an EMPTY pid, so `make runtime-stop`
+# reported a clean no-op ("no runtime daemon is running") while the daemon that
+# `make runtime-daemon` had just started kept serving the socket — a stop that
+# silently cannot stop what this script starts. The /proc fallback matches the
+# daemon's OWN argv (basename "orchicon", then exactly "runtime-daemon") rather
+# than its command TEXT, so a shell whose command line merely mentions the daemon
+# never matches itself.
+daemon_pid() {
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -f 'orchicon runtime-daemon' | head -1 || true
+    return 0
+  fi
+  local d pid first second
+  for d in /proc/[0-9]*; do
+    pid="${d#/proc/}"
+    [ "$pid" = "$$" ] && continue
+    first="$(tr '\0' '\n' <"$d/cmdline" 2>/dev/null | sed -n '1p' || true)"
+    case "$first" in
+      */orchicon|orchicon) ;;
+      *) continue ;;
+    esac
+    second="$(tr '\0' '\n' <"$d/cmdline" 2>/dev/null | sed -n '2p' || true)"
+    [ "$second" = "runtime-daemon" ] || continue
+    printf '%s\n' "$pid"
+    return 0
+  done
+  return 0
+}
 
 cmd_daemon_start() {
   if daemon_healthy; then
