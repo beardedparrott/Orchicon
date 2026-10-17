@@ -326,27 +326,43 @@ fi
 # A rebuild REPLACES the binary while the running process keeps executing the old inode. The plane
 # answers health perfectly, so a bare health check concluded "already serving" and returned success —
 # leaving the stale process in place indefinitely, serving code the operator had just replaced. The
-# Go installer learned this (planeDrift reads /proc/<pid>/exe); the launcher had not.
+# Go installer learned this first (planeDrift reads /proc/<pid>/exe).
+#
+# THE CHECK NOW LIVES IN ONE PLACE: internal/planecontrol (internal/planecontrol.Start's Drifted arm,
+# driven by Drift in hostproc_unix.go), and the launcher DELEGATES to `orchicon plane start`. The bash
+# body that used to implement it here is gone, so these assertions follow the guarantee to where it is
+# enforced instead of grepping a file that no longer holds it.
 #
 # THE MECHANISM IS TESTED, NOT THE PROSE, and it is testable without Docker: run a process from a
 # path, replace that path, and /proc/<pid>/exe reports the " (deleted)" suffix. That is exactly the
-# signal plane_start now looks for, so this drives the real filesystem state rather than grepping for
+# signal the shared layer keys on, so this drives the real filesystem state rather than grepping for
 # a string that might be spelled right and wired wrong.
 echo
 echo "  -- a stale plane is detected and replaced --"
 
-if grep -qF 'A PLANE THAT ANSWERS IS NOT NECESSARILY THE PLANE WE JUST BUILT' "$CONTAINER_SH"; then
-  printf '  \033[32mPASS\033[0m  %-52s %s\n' "plane_start checks for a stale plane" "present"
+PLANECONTROL_GO="${REPO_ROOT}/internal/planecontrol/planecontrol.go"
+PLANECONTROL_UNIX="${REPO_ROOT}/internal/planecontrol/hostproc_unix.go"
+
+if grep -qF 'ORCHICON_INSTANCE="$inst" "$bin" plane start' "$CONTAINER_SH"; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "plane_start delegates to the shared mechanism" "wired"
   PASSED=$((PASSED + 1))
 else
-  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "plane_start checks for a stale plane" "MISSING"
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "plane_start delegates to the shared mechanism" "MISSING"
+  FAILED=$((FAILED + 1))
+fi
+
+if grep -qF 'A PLANE THAT ANSWERS IS NOT NECESSARILY THE PLANE WE JUST INSTALLED' "$PLANECONTROL_GO"; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "the shared layer checks for a stale plane" "present"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "the shared layer checks for a stale plane" "MISSING"
   FAILED=$((FAILED + 1))
 fi
 
 # The detection must be on the " (deleted)" SUFFIX, not on a path mismatch: a dev checkout
 # legitimately serves from bin/orchicon, and a mismatch test would restart a plane the operator
 # chose to keep.
-if grep -qF '*" (deleted)")' "$CONTAINER_SH"; then
+if grep -qF 'strings.HasSuffix(exe, " (deleted)")' "$PLANECONTROL_UNIX"; then
   printf '  \033[32mPASS\033[0m  %-52s %s\n' "detection keys on the deleted-exe suffix" "present"
   PASSED=$((PASSED + 1))
 else
@@ -355,7 +371,8 @@ else
 fi
 
 # ...and it must RESTART rather than merely warn, so the plane ends up on the current binary.
-if grep -qF 'plane_stop "$inst" || log_warn' "$CONTAINER_SH"; then
+if grep -qF 'case Drifted:' "$PLANECONTROL_GO" \
+  && grep -qF 'running a superseded binary — restarting it on the installed one' "$PLANECONTROL_GO"; then
   printf '  \033[32mPASS\033[0m  %-52s %s\n' "a stale plane is stopped, then started" "wired"
   PASSED=$((PASSED + 1))
 else

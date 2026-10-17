@@ -323,11 +323,22 @@ func Start(opts Options) error {
 // sends SIGTERM, waits the supervisor's shutdown window, escalates to SIGKILL, and exits non-zero if a process
 // survives. It re-execs THIS binary with the instance's state dir, because `serve --stop` resolves its PID
 // file from ORCHICON_SERVE_STATE_DIR and a bare call would look in the wrong place.
+//
+// STOP IS IDEMPOTENT: stopping an instance that is not running is a no-op, not a failure. `serve --stop`
+// exits 1 with "serve is not running" for that case, and a `down`, a rebuild and a `plane stop` all have to be
+// safe to run twice — reporting failure there turned every `scripts/container.sh down` on a stopped instance
+// into an error.
 func Stop(opts Options) error {
 	o := opts.normalized()
 	cmdEnv := append(EnvWithout(os.Environ(), "ORCHICON_CONTAINER_MODE"),
 		ServeStateDirEnv+"="+filepath.Join(o.HostDataDir, "serve"))
 	if err := runCommand([]string{"serve", "--stop"}, cmdEnv, o.Out); err != nil {
+		// TELL "NOTHING TO STOP" APART FROM "IT WOULD NOT STOP". The PID file this layer reads is the SAME
+		// one `serve --stop` resolved (ServeStateDirEnv is what makes it so), so no live process there IS the
+		// nothing-to-stop case — while a process still in the file is a stop that FAILED, and stays an error.
+		if !planeAlive(o.Instance) {
+			return nil
+		}
 		return fmt.Errorf("stop the existing host plane for %s: %w", o.Instance, err)
 	}
 	// The socket has to be free before the new plane binds it. Bounded, and a failure here is reported rather

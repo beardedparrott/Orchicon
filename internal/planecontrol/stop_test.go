@@ -4,6 +4,7 @@ package planecontrol
 // escalates) and BOUNDED, and it REPORTS failure rather than hanging when the socket is never released.
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -49,5 +50,35 @@ func TestStopReportsSuccessOnceTheSocketIsReleased(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("the wait must stop as soon as the PID file process is gone (polled %d times)", calls)
+	}
+}
+
+// TestStopOfAnAlreadyStoppedPlaneIsANoOp — `serve --stop` exits 1 with "serve is not running" when there is
+// nothing to stop, and that must NOT surface as a failure: `down`, a rebuild and `plane stop` are all run
+// twice, and an error here aborted them on an instance that was already down.
+func TestStopOfAnAlreadyStoppedPlaneIsANoOp(t *testing.T) {
+	f := newFakeSeams(t)
+	f.runErr = errors.New("exit status 1") // what `serve --stop` returns for "serve is not running"
+	if err := Stop(Options{Instance: "dev", HostDataDir: t.TempDir()}); err != nil {
+		t.Fatalf("stopping an instance that is not running must be a NO-OP, not a failure: %v", err)
+	}
+	if len(f.runs) != 1 || strings.Join(f.runs[0].args, " ") != "serve --stop" {
+		t.Fatalf("the graceful stop must still be attempted (and clean up a stale PID file); got %v", f.runs)
+	}
+}
+
+// TestStopReportsAFailedStopOfALivePlane — the other half of the same distinction. A process still alive after
+// `serve --stop` is a stop that FAILED and must be reported, never swallowed as "nothing was running".
+func TestStopReportsAFailedStopOfALivePlane(t *testing.T) {
+	f := newFakeSeams(t)
+	f.runErr = errors.New("exit status 1")
+	f.alive = func(string) bool { return true }
+
+	err := Stop(Options{Instance: "dev", HostDataDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("a plane still alive after `serve --stop` must be reported as a FAILED stop")
+	}
+	if !strings.Contains(err.Error(), "dev") {
+		t.Errorf("the failure must name the instance; got: %v", err)
 	}
 }

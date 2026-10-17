@@ -679,6 +679,13 @@ container-ps: ## List orchicon container instances
 # These invoke `orchicon plane` — the SAME local mechanism the TUI, the desktop app and
 # scripts/container.sh call, implemented once in internal/planecontrol. There is no lifecycle RPC:
 # every one of these surfaces runs on the same host as the plane and can spawn a process.
+# The lifecycle targets below need the binary as a FILE, and nothing in this file declared it as a target —
+# `build` is phony and also builds the front end, so `make plane-stop` failed outright with "No rule to make
+# target 'bin/orchicon'". This rule builds exactly the Go binary, and only when it is missing.
+bin/orchicon:
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
+
 plane-status: bin/orchicon ## Show the instance's plane: PID, serving BINARY, drift, health
 	$(BIN_DIR)/orchicon plane status $(instance)
 plane-start: bin/orchicon ## Start the instance's host plane (idempotent)

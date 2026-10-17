@@ -24,6 +24,9 @@ type fakeSeams struct {
 	healthy   bool
 	alive     func(instance string) bool
 	binary    string
+	// runErr is what the re-exec seam returns: `serve --stop` exits 1 when there is nothing to stop, and a
+	// stop that FAILED must be distinguishable from one that had nothing to do.
+	runErr    error
 	runs      []fakeRun
 	sleeps    int
 	aliveCall int
@@ -57,7 +60,7 @@ func newFakeSeams(t *testing.T) *fakeSeams {
 	planeAlive = func(instance string) bool { f.aliveCall++; return f.alive(instance) }
 	runCommand = func(args []string, env []string, out io.Writer) error {
 		f.runs = append(f.runs, fakeRun{args: args, env: env})
-		return nil
+		return f.runErr
 	}
 	// A clock that advances one second per reading, matching startHealthPoll: every bounded loop in this package
 	// therefore ends because of its OWN bound (60 readings) rather than because the test sat through a minute.
