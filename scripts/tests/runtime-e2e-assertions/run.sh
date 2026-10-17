@@ -196,6 +196,36 @@ expect "the availability control uses an engine the probe cannot DRIVE (not a ve
 expect "the stream chunk count walks Connect ENVELOPES, not lines" "yes" \
   "$(grep -q 'connect_frames() {' "$HARNESS" && ! grep -q "grep -c ''" "$HARNESS" && echo yes || echo no)"
 
+# --- rule 5: a GREEN system must not invoice a red suite -------------------
+# Rule 4's mirror image. These were each an assertion the product could never
+# satisfy, i.e. a false defect filed against an innocent owner on a CORRECT
+# system. Each is pinned by the property that makes it satisfiable, so the fix
+# cannot be edited away.
+spin "rule 5: no assertion can fail on a correct system"
+BADPATHS="$(grep -o 'api_post /[^ "]*' "$HARNESS" | sed 's|api_post ||' | grep -vE '^/orchicon\.api\.v1\.[A-Za-z]+Service/[A-Za-z]+$' || true)"
+expect "every Connect procedure path is well-formed (a typo'd path is a silent 404 -> false FAIL)" 0 \
+  "$(printf '%s' "$BADPATHS" | grep -c . || true)"
+expect "step 4 probes run A's OWN container (the pool relocates under the same name)" "yes" \
+  "$(has "$(body_of step4_pristine_reset)" 'candidates="$a ')"
+expect "step 4 does not require run B to be a DIFFERENT container (AC4 is about state)" "yes" \
+  "$(hasnt "$(body_of step4_pristine_reset)" "not exactly run A's lease")"
+expect "step 4 observes that run B itself completed (a reset nobody observed proves nothing)" "yes" \
+  "$(has "$(body_of step4_pristine_reset)" '04-run-final.json" "WORKFLOW_RUN_STATUS_COMPLETED"')"
+expect "step 8's absence needle can exist in its own capture (no vacuous PASS)" "yes" \
+  "$(has "$(body_of step8_all_native)" 'new container appeared:')"
+expect "step 8 no longer uses a needle no capture could contain" "yes" \
+  "$(hasnt "$(body_of step8_all_native)" 'created: ${new:-none-new}')"
+expect "step 6 only sets the project image when a tag is known (empty would CLEAR it)" "yes" \
+  "$(has "$(body_of step6_image_path)" 'if [ -n "${CUSTOM_IMAGE_REF:-}" ]')"
+expect "step 5 asserts the changed-input run was accepted" "yes" \
+  "$(has "$(body_of step5_pool_reuse)" 'a run with the changed host input was accepted')"
+expect "preflight RECORDS machine state as a SKIP when the host is unprepared" "yes" \
+  "$(has "$(body_of step0_preflight)" 'skip "the frontend dependencies are installed')"
+expect "preflight aborts the session when the host is short of disk (exit 2, not a defect)" "yes" \
+  "$(has "$(body_of step0_preflight)" 'ABORT_REASON="only ${free_mb} MiB free')"
+expect "the frontend precondition no longer claims step 6 drives the page" "yes" \
+  "$(hasnt "$(body_of step0_preflight)" 'the Runtime Images page is driven in step 6')"
+
 # connect_frames really counts envelopes: 3 data frames + a trailer is 3, so a
 # streamed build cannot be denied for not streaming, and one blob is 1, so "more
 # than one chunk" cannot be satisfied by a single message.

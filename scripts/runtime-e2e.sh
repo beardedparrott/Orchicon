@@ -351,12 +351,29 @@ step0_preflight() {
   fi
   check "the instance ports are free before the session starts" 0
 
+  # MACHINE STATE IS NOT A SIBLING DEFECT. Both rows below are preconditions of
+  # the HOST, not claims about the product: as raw `check` calls they became FAIL
+  # rows naming an innocent owner, i.e. the mirror image of a vacuous pass — a
+  # green system invoicing a red suite. Too little disk makes the session
+  # impossible, so the run is INVALID (exit 2, exactly like a held port). Missing
+  # frontend deps only matter to a human hand-creating the image spec on the
+  # Runtime Images page: step 6 takes --image-id, so the harness never drives the
+  # page and a missing node_modules cannot invalidate a session.
   local free_mb
   free_mb="$(df -Pm "$REPO_ROOT" 2>/dev/null | awk 'NR==2 {print $4}')"
-  check "at least 10 GiB free for engine + images + images-to-build (have ${free_mb:-?} MiB)" \
-    "$( [ -n "${free_mb:-}" ] && [ "$free_mb" -ge 10240 ] && echo 0 || echo 1 )" "docs/runtime-e2e-acceptance.md (validity precondition)"
-  check "the frontend dependencies are installed (the Runtime Images page is driven in step 6)" \
-    "$( [ -x "${REPO_ROOT}/frontend/node_modules/.bin/vite" ] && echo 0 || echo 1 )" "Makefile fe-install (run \`make fe-install\`)"
+  if [ -n "${free_mb:-}" ] && [ "$free_mb" -lt 10240 ]; then
+    skip "at least 10 GiB free for engine + images + images-to-build (have ${free_mb} MiB)" \
+      "the host is short of disk — the base image, a built image and the containers cannot fit"
+    ABORT_REASON="only ${free_mb} MiB free: pulling the base image, building a custom image and running containers needs ~10 GiB. Free space and re-run."
+    return 1
+  fi
+  check "at least 10 GiB free for engine + images + images-to-build (have ${free_mb:-?} MiB)" 0
+  if [ -x "${REPO_ROOT}/frontend/node_modules/.bin/vite" ]; then
+    check "the frontend dependencies are installed (a human can create the image spec on the Runtime Images page)" 0
+  else
+    skip "the frontend dependencies are installed (a human can create the image spec on the Runtime Images page)" \
+      "node_modules is MISSING — the harness itself never drives the UI (step 6 takes --image-id), so the session stays valid; run \`make fe-install\` only if you mean to create the image spec by hand"
+  fi
   return 0
 }
 
@@ -424,7 +441,7 @@ step1_local_run() {
   # capture would fail on a correct system AND name an innocent owner. What the
   # bridge gates on is the PROJECT's mode at dispatch time, so that is read back
   # AFTER the run and asserted local.
-  api_post /orchicon.api/v1.ProjectService/GetProject "{\"id\":\"${PROJECT_ID}\"}" \
+  api_post /orchicon.api.v1.ProjectService/GetProject "{\"id\":\"${PROJECT_ID}\"}" \
     "${EVIDENCE}/01-project-after-run.json" >/dev/null 2>&1 || true
   gated_contains "the project was still in LOCAL mode across the run (the gate that keeps work in-process)" \
     "${EVIDENCE}/01-project-after-run.json" "EXECUTION_MODE_LOCAL" \
@@ -440,7 +457,6 @@ step1_local_run() {
     "${EVIDENCE}/01-engine-ps.txt" "orchicon.workflow" \
     "there is no engine to ask (step 1 runs on an engine-free host) — the absence is proven by 00-preflight.log instead" \
     "internal/runtime/lifecycle.go:105-107"
-  plane_log_path "$INSTANCE" >/dev/null 2>&1 || true
   local plog; plog="$(plane_log_path "$INSTANCE")"
   if [ -s "$plog" ]; then
     tail -n 4000 "$plog" >"${EVIDENCE}/01-plane-log-tail.txt" 2>/dev/null || true
@@ -669,29 +685,65 @@ step4_pristine_reset() {
     "the exec capture is EMPTY — no state was created, so the reset proves nothing" \
     "internal/runtime/pool.go:312-375"
 
-  # A SECOND run on the SAME environment (same project, same inputs).
+  # A SECOND run on the SAME environment (same project, same inputs). AC4 is a
+  # claim about STATE, never about container IDENTITY: the pool name is a
+  # deterministic hash of the environment key and a reset RELOCATES the container
+  # under that SAME name (pool.go:303-332 — remove, then re-create under
+  # poolName(envKey)). So (a) "run B was served by a DIFFERENT container" is FALSE
+  # on a correct system, and (b) probing a name picked out of a `ps` tail can read
+  # a container that never held the state and pass vacuously. Both halves are
+  # fixed here: every candidate is probed — run A's container AND any container
+  # that appeared for run B — after the reset has had a bounded chance to land.
   api_post /orchicon.api.v1.WorkflowService/StartWorkflow \
     "$(printf '{"workflowId":"%s","projectId":"%s","runContext":"{\\"marker\\":\\"%s-b\\"}"}' "$WORKFLOW_ID" "$PROJECT_ID" "$MARKER")" \
     "${EVIDENCE}/04-run-start.json" >/dev/null 2>&1 || true
   local rid; rid="$(json_field "${EVIDENCE}/04-run-start.json" id)"
-  [ -n "$rid" ] && wait_run_terminal "$rid" "${EVIDENCE}/04-run-final.json" 900
-  engine_capture "${EVIDENCE}/04-engine-ps-after.txt" ps -a --format '{{.Names}}' >/dev/null 2>&1 || true
-  local b; b="$(comm -13 <(sort -u "${EVIDENCE}/03-engine-ps-after.txt" 2>/dev/null) <(sort -u "${EVIDENCE}/04-engine-ps-after.txt" 2>/dev/null) 2>/dev/null | head -1)"
-  [ -n "$b" ] || b="$(tail -1 "${EVIDENCE}/04-engine-ps-after.txt" 2>/dev/null)"
-  { echo "run A container: $a"; echo "run B container: ${b:-<none>}"; } >"${EVIDENCE}/04-pristine-reset.txt"
-  engine_capture "${EVIDENCE}/04-state-probe.txt" \
-    exec "${b:-$a}" sh -c "test -e /tmp/${MARKER} && echo PRESENT || echo ABSENT; test -e /tmp/${MARKER}-dir && echo DIR-PRESENT || echo DIR-ABSENT" >/dev/null 2>&1 || true
-  cat "${EVIDENCE}/04-state-probe.txt" >>"${EVIDENCE}/04-pristine-reset.txt" 2>/dev/null || true
-  gated_contains "run B's container does NOT carry run A's /tmp file (the pristine reset)" \
-    "${EVIDENCE}/04-state-probe.txt" "ABSENT" \
-    "the probe capture is EMPTY — the filesystem was never read, so AC4 is UNPROVEN" \
+  if [ -n "$rid" ]; then wait_run_terminal "$rid" "${EVIDENCE}/04-run-final.json" 900
+  else : >"${EVIDENCE}/04-run-final.json"; fi
+  gated_contains "the second run on the same environment completed (the reset is observed, not assumed)" \
+    "${EVIDENCE}/04-run-final.json" "WORKFLOW_RUN_STATUS_COMPLETED" \
+    "the second run's capture is EMPTY — no run ever reached the plane's read side" \
     "internal/runtime/pool.go:312-375"
-  gated_absent "run B's container really did not keep the directory run A made" \
-    "${EVIDENCE}/04-state-probe.txt" "DIR-PRESENT" \
-    "the probe capture is EMPTY — the filesystem was never read" \
-    "internal/runtime/pool.go:312-375"
-  check "run B was served by a container that is not exactly run A's lease" \
-    "$( [ -n "${b:-}" ] && [ "${b:-}" != "$a" ] && echo 0 || echo 1 )" "internal/runtime/pool.go:312-375"
+
+  local probe="${EVIDENCE}/04-state-probe.txt" candidates="" cand="" answers=0 i=0
+  : >"$probe"
+  { echo "run A container: $a"; echo "run B run: ${rid:-<none>}"; } >"${EVIDENCE}/04-pristine-reset.txt"
+  while [ "$i" -lt 20 ]; do
+    i=$((i + 1))
+    engine_capture "${EVIDENCE}/04-engine-ps-after.txt" ps -a --format '{{.Names}}' >/dev/null 2>&1 || true
+    candidates="$a $(comm -13 <(sort -u "${EVIDENCE}/03-engine-ps-after.txt" 2>/dev/null) <(sort -u "${EVIDENCE}/04-engine-ps-after.txt" 2>/dev/null) 2>/dev/null | tr '\n' ' ')"
+    : >"$probe"
+    for cand in $candidates; do
+      engine_capture "${EVIDENCE}/04-state-probe.${cand}.txt" \
+        exec "$cand" sh -c "test -e /tmp/${MARKER} && echo FILE-PRESENT || echo ABSENT; test -e /tmp/${MARKER}-dir && echo DIR-PRESENT || echo DIR-ABSENT" \
+        >/dev/null 2>&1 || true
+      { printf 'container=%s ' "$cand"; tr '\n' ' ' <"${EVIDENCE}/04-state-probe.${cand}.txt" 2>/dev/null; printf '\n'; } >>"$probe"
+    done
+    answers="$(grep -c -e 'ABSENT' -e 'FILE-PRESENT' "$probe" 2>/dev/null || true)"
+    # A reset lands on RELEASE, so run B's container can be mid-relocation when the
+    # run turns terminal: poll for up to 60s, and stop as soon as a candidate
+    # answered and nothing of run A's survived.
+    if [ "${answers:-0}" -gt 0 ] && ! grep -qF "FILE-PRESENT" "$probe" 2>/dev/null; then break; fi
+    sleep 3
+  done
+  cat "$probe" >>"${EVIDENCE}/04-pristine-reset.txt" 2>/dev/null || true
+  if [ "${answers:-0}" = "0" ]; then
+    skip "run B's environment does not carry run A's state" \
+      "no candidate container (${candidates% }) could be executed into — the probe never ran, so AC4 is UNPROVEN"
+  else
+    gated_contains "run B's container does NOT carry run A's /tmp file (the pristine reset)" \
+      "$probe" "ABSENT" \
+      "the probe capture is EMPTY — the filesystem was never read, so AC4 is UNPROVEN" \
+      "internal/runtime/pool.go:312-375"
+    gated_absent "run B's container really did not keep the directory run A made" \
+      "$probe" "DIR-PRESENT" \
+      "the probe capture is EMPTY — the filesystem was never read" \
+      "internal/runtime/pool.go:312-375"
+    gated_absent "no probed container still holds a file run A wrote" \
+      "$probe" "FILE-PRESENT" \
+      "the probe capture is EMPTY — the filesystem was never read" \
+      "internal/runtime/pool.go:312-375"
+  fi
 }
 
 # --- step 5: warm-pool reuse, and a changed host input forcing a fresh one --
@@ -726,6 +778,8 @@ step5_pool_reuse() {
     "$(printf '{"workflowId":"%s","projectId":"%s","runContext":"{}"}' "$WORKFLOW_ID" "$PROJECT_ID")" \
     "${EVIDENCE}/05-run-start-b.json" >/dev/null 2>&1 || true
   rid="$(json_field "${EVIDENCE}/05-run-start-b.json" id)"
+  check "a run with the changed host input was accepted by the plane" \
+    "$( [ -n "$rid" ] && echo 0 || echo 1 )" "internal/execution/service.go:1365-1409"
   [ -n "$rid" ] && wait_run_terminal "$rid" "${EVIDENCE}/05-run-final-b.json" 900
   engine_capture "${EVIDENCE}/05-ps-after-change.txt" ps -a --format '{{.Names}}' >/dev/null 2>&1 || true
   { echo "before the host-input change:"; cat "${EVIDENCE}/05-ps-before-change.txt" 2>/dev/null
@@ -767,10 +821,17 @@ step6_image_path() {
     "${EVIDENCE}/06-image-redeploy.txt" "already up to date" \
     "the re-deploy capture is EMPTY — idempotency was never exercised" \
     "internal/runtimeimage/service.go:557-747"
-  # A run that names the image must start and pin it.
-  api_post /orchicon.api.v1.ProjectService/UpdateProject \
-    "$(printf '{"id":"%s","defaultRuntimeImage":"%s","requestId":"%s-img"}' "$PROJECT_ID" "${CUSTOM_IMAGE_REF:-}" "$MARKER")" \
-    "${EVIDENCE}/06-project-image.json" >/dev/null 2>&1 || true
+  # A run that names the image must start and pin it. The tag is REQUIRED for the
+  # pin assertion below (an empty needle matches every capture), and posting an
+  # EMPTY default_runtime_image CLEARS the project default instead of setting it
+  # (project.proto:177-179), so the update is only sent when the tag is known.
+  if [ -n "${CUSTOM_IMAGE_REF:-}" ]; then
+    api_post /orchicon.api.v1.ProjectService/UpdateProject \
+      "$(printf '{"id":"%s","defaultRuntimeImage":"%s","requestId":"%s-img"}' "$PROJECT_ID" "$CUSTOM_IMAGE_REF" "$MARKER")" \
+      "${EVIDENCE}/06-project-image.json" >/dev/null 2>&1 || true
+  else
+    : >"${EVIDENCE}/06-project-image.json"
+  fi
   api_post /orchicon.api.v1.WorkflowService/StartWorkflow \
     "$(printf '{"workflowId":"%s","projectId":"%s","runContext":"{}"}' "$WORKFLOW_ID" "$PROJECT_ID")" \
     "${EVIDENCE}/06-run-start.json" >/dev/null 2>&1 || true
@@ -838,9 +899,14 @@ step8_all_native() {
     echo "after:"; cat "${EVIDENCE}/08-ps-after.txt" 2>/dev/null; } >"${EVIDENCE}/08-all-native.txt"
   local new; new="$(comm -13 <(sort -u "${EVIDENCE}/08-ps-before.txt" 2>/dev/null) <(sort -u "${EVIDENCE}/08-ps-after.txt" 2>/dev/null) 2>/dev/null | head -1)"
   # GATED, because "no container was created" is an ABSENCE: an engine whose ps
-  # failed would manufacture exactly the pass this step exists to falsify.
+  # failed would manufacture exactly the pass this step exists to falsify. The
+  # needle is written INTO the capture only when the engine's own before/after
+  # diff found a new container, so it can exist only on a REAL failure — the old
+  # needle ("created: <name>") could never appear in this file at all, i.e. a PASS
+  # that proved nothing.
+  if [ -n "$new" ]; then printf 'new container appeared: %s\n' "$new" >>"${EVIDENCE}/08-all-native.txt"; fi
   gated_absent "ALL-NATIVE IN LOCAL MODE: no NEW container appeared for the run" \
-    "${EVIDENCE}/08-all-native.txt" "created: ${new:-none-new}" \
+    "${EVIDENCE}/08-all-native.txt" "new container appeared:" \
     "the engine captures are EMPTY — the engine did not answer, so \"no container\" is UNPROVEN" \
     "internal/scheduler/bridge.go:60-68"
   if [ -s "${EVIDENCE}/08-ps-after.txt" ] && [ -n "$new" ]; then
