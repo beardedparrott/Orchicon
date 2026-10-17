@@ -17,11 +17,11 @@ supplied *for free* by Docker, and appears nowhere as a contract. The evidence:
 
 | Concern | Where Docker defines it today | What we actually depend on |
 |---|---|---|
-| Control transport | `daemon.go:184-201` `ListenAndServe` → `net.Listen("unix", d.SocketPath)`, chmod `0660`; path from `cmd/orchicon/runtime.go:35` `ORCHICON_RUNTIME_SOCKET`, default `<tmp>/orchicon-runtime/runtime.sock`; dialled by `client.go:35-48` `NewClient` | AF_UNIX + filesystem permissions; the socket is bind-mounted into a containerized plane |
+| Control transport | `daemon.go:184-201` `ListenAndServe` → `net.Listen("unix", d.SocketPath)`, chmod `0660`; path from `cmd/orchicon/runtime.go:36` `ORCHICON_RUNTIME_SOCKET`, default `<tmp>/orchicon-runtime/runtime.sock`; dialled by `client.go:32-45` `NewClient` | AF_UNIX + filesystem permissions; the socket is bind-mounted into a containerized plane |
 | Addressing | `daemon.go:1135` `containerIP` reads `{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}`; `daemon.go:633` `--add-host host.docker.internal:host-gateway`; `lifecycle.go:544-597` `planePublicURL`; `install_bridge.go:35` `bridgeIP` | A *routable container IP on a shared L2 bridge*, and a host alias docker injects |
-| File/credential ingress | `daemon.go:783` `standardHostMountArgs`, `daemon.go:660-666` `-v` loop, `--tmpfs` (`:889` `tmpfsOwned`); restriction in `daemon.go:511` `validateCreate` → `:573` `withinAllowedRoots`, roots from `runtime.go:31` `ORCHICON_RUNTIME_ALLOWED_ROOTS` | Bind mounts whose *source is a host path*, plus `-e` env for secrets |
+| File/credential ingress | `daemon.go:783` `standardHostMountArgs`, `daemon.go:656-661` `-v` loop, `--tmpfs` (`:889` `tmpfsOwned`); restriction in `daemon.go:511` `validateCreate` → `:573` `withinAllowedRoots`, roots from `runtime.go:31` `ORCHICON_RUNTIME_ALLOWED_ROOTS` | Bind mounts whose *source is a host path*, plus `-e` env for secrets |
 | Instance scoping | `daemon.go:625` `--label orchicon.instance=<id>`, filtered in `daemon.go:1172` `listRuntimes`, `pool.go:455` `sweepPreRestartOrphans` | Docker labels as a queryable ownership marker |
-| Pristine reset | `pool.go:301` `resetAndPool` → `rm -f` + recreate identical spec; `--tmpfs /tmp` (`daemon.go:646`) | `docker rm -f` discards the container's writable layer; tmpfs dies with it |
+| Pristine reset | `pool.go:301` `resetAndPool` → `rm -f` + recreate identical spec; `--tmpfs /tmp` (`daemon.go:645`) | `docker rm -f` discards the container's writable layer; tmpfs dies with it |
 | Image validation | `images.go:20` `baseImageLabel = "org.orchicon.runtime-base"`, gate at `images.go:98-108` `imageAllowed` via `image inspect --format '{{index .Config.Labels ...}}'`; `spec-version` at `images.go:355`, `:377` | Label inheritance through `FROM`, readable via Docker's inspect JSON shape |
 
 **The failure this ADR prevents** is already documented in the codebase:
@@ -67,8 +67,8 @@ Two platform-wide invariants that every concern below inherits:
 
 ### Docker-defined behaviour being replaced
 A unix socket at `ORCHICON_RUNTIME_SOCKET` (default
-`<os.TempDir()>/orchicon-runtime/runtime.sock` — `cmd/orchicon/runtime.go:35`);
-`daemon.go:192` listens on it, `:199` chmods `0660`; `client.go:36-39` dials
+`<os.TempDir()>/orchicon-runtime/runtime.sock` — `cmd/orchicon/runtime.go:36`);
+`daemon.go:192` listens on it, `:199` chmods `0660`; `client.go:33-36` dials
 `unix`. It is advertised to the plane purely through the env var that
 `install_host.go:planeEnv` writes (`ORCHICON_RUNTIME_SOCKET=...`). For a
 *containerized* plane the same path is bind-mounted in, which is why the
@@ -92,7 +92,7 @@ path had to be a stable host path under `/tmp`.
   exist in today's model. A named pipe removes that credential entirely, at
   the cost of a Windows-only dependency (`go-winio`) behind a build tag.
 - **D1.2 — The endpoint is a URL with a scheme; the scheme is mandatory.**
-  Insertion point: `client.go:36` — the dial function parses
+  Insertion point: `client.go:33` — the dial function parses
   `scheme://path` and dispatches (`unix`/`npipe`; `tcp` rejected). New file
   `internal/runtime/transport.go` holds `Dial(endpoint string) (net.Conn,
   error)` plus `DefaultEndpoint(instance string) string` (per-GOOS defaults
@@ -126,7 +126,7 @@ Three separate Docker gifts, all of which disappear:
 1. `daemon.go:1135` `containerIP` — the container's bridge IP, used to build
    `CreateResponse.ServeURL` (`daemon.go:createContainer`, the
    `fmt.Sprintf("http://%s:%d", cip, port)` site) and `PlaneURL`
-   (`http://<cip>:8080`, `sandboxPlanePort`). `daemon.go:648-654` deliberately
+   (`http://<cip>:8080`, `sandboxPlanePort`). `daemon.go:647-654` deliberately
    *avoids* port publishing because `docker-proxy` binds only when the
    container's port appears, and a container→gateway connection can be dropped
    by bridge NAT.
@@ -156,7 +156,7 @@ Three separate Docker gifts, all of which disappear:
   resolves the port instead. Rootless podman's container IPs live in a
   per-user network namespace and are *not host-routable*, so this is not a
   preference — the Docker approach is structurally unavailable.
-- **D2.2 — The docker-proxy race that `daemon.go:648-654` avoids is answered
+- **D2.2 — The docker-proxy race that `daemon.go:647-654` avoids is answered
   by ordering, not by IPs.** Podman's rootless port forwarder
   (`rootlessport`) is created with the container, not lazily on first accept,
   so the race the comment describes does not reproduce. Belt-and-braces: the
@@ -168,7 +168,9 @@ Three separate Docker gifts, all of which disappear:
   **BF-4**.
 - **D2.3 — `planePublicURL` keeps its shape; its inputs change.**
   `lifecycle.go:578` order stays: (1) `ORCHICON_PLANE_PUBLIC_URL` override —
-  now **always set** by `planeBindEnv`; (2) container-mode own bridge IP —
+  set by `planeBindEnv` whenever runtime containers are in use (today gated on
+  `if bind != ""` at `install_host.go:207`, which becomes `if url != ""`;
+  §12 item 13); (2) container-mode own bridge IP —
   Linux-containerized-plane only, unchanged; (3) `ORCHICON_HTTP_EXTRA_BIND` —
   Docker-on-Linux only; (4) `host.docker.internal`. Under Podman, case 1
   supplies `http://host.docker.internal:<control port>`, case 3 never fires
@@ -188,7 +190,7 @@ Three separate Docker gifts, all of which disappear:
 ### Docker-defined behaviour being replaced
 Two ingress channels, both Docker-supplied:
 
-- **Bind mounts.** `daemon.go:660-666` turns each `MountSpec` into `-v
+- **Bind mounts.** `daemon.go:656-661` turns each `MountSpec` into `-v
   <src>:<dst>[:ro]`; `daemon.go:783` `standardHostMountArgs` appends the
   adapter installs (`adapterHostMounts`), private adapter homes as uid-owned
   `--tmpfs` (`:889` `tmpfsOwned`), `.gitconfig`/`.git-credentials`
@@ -295,7 +297,7 @@ containers; `daemon.go:1152` `instanceID` normalises the empty value to
 `projectDir`, `adapterKinds`) under a fresh `poolName`, then the serve is
 re-warmed. The guarantee is that nothing crosses between runs: the container's
 writable layer is discarded by `rm`, `--tmpfs /tmp:rw,size=…,exec`
-(`daemon.go:646`) and every `--tmpfs` `$HOME`/adapter-home (`:889`) die with
+(`daemon.go:645`) and every `--tmpfs` `$HOME`/adapter-home (`:889`) die with
 the container, and the project/worktree mounts are the *run's own* directory
 by design (they are not "container state"). `pool.go:release` (the DELETE
 route, `daemon.go:handleRuntime`) and `sweepPreRestartOrphans` are the other
@@ -353,7 +355,7 @@ configured base, is operator-allowlisted (`d.Images`), or
 "org.orchicon.runtime-base"}}'` returns `true`. `images.go:355`
 `handleImageInspect` and `images.go:140` `ImageInfo` read
 `org.orchicon.runtime.spec-version` the same way. The label is *inherited*
-through `FROM`, and `rewriteDockerfileBase` (`images.go:363-379`) guarantees
+through `FROM`, and `rewriteDockerfileBase` (`images.go:364-379`) guarantees
 every UI-built image carries it (`LABEL …=true` injected, `FROM` rewritten).
 
 ### Schema
@@ -365,7 +367,7 @@ every UI-built image carries it (`LABEL …=true` injected, `FROM` rewritten).
 | On inspect error / image absent | **reject** (`imageAllowed` returns false) | identical |
 | `spec-version` read | `{{index .Labels "org.orchicon.runtime.spec-version"}}` | `{{index .Config.Labels …}}` |
 | Build-time enforcement | unchanged: `rewriteDockerfileBase` + `podman build -t <tag> <ctx>`; `podman image prune -f --filter dangling=true` after success | `docker build` |
-| Allowlist source | `d.Image` + `ORCHICON_RUNTIME_IMAGES` (`runtime.go:81`, `images.go:allowedImages`) — engine-independent | identical |
+| Allowlist source | `d.Image` + `ORCHICON_RUNTIME_IMAGES` (`runtime.go:77`, `images.go:allowedImages`) — engine-independent | identical |
 
 **Decisions:**
 
@@ -384,7 +386,7 @@ every UI-built image carries it (`LABEL …=true` injected, `FROM` rewritten).
   podman bodies living next to each other so neither can be edited alone.
 - **D6.3 — Label inheritance is engine-independent.** Both engines inherit
   `LABEL`s through `FROM`, and the daemon never trusts an author's Dockerfile
-  (`FROM` is stripped and re-emitted, `images.go:363-379`). No schema change is
+  (`FROM` is stripped and re-emitted, `images.go:364-379`). No schema change is
   required; the requirement is stated so a future engine cannot quietly drop
   the rewrite.
 
@@ -472,7 +474,7 @@ fails, converts that cell into a blocked platform.
 The tests pin the boundary. §10 classifies each one against the schema so the
 engine task cannot quietly re-baseline a guarantee.
 
-**Decision D10.1 — `d.dockerFn` (`daemon.go:76`) stays the test seam; the
+**Decision D10.1 — `d.dockerFn` (`daemon.go:77`) stays the test seam; the
 Engine is a thin argv/format provider above it.** This is what keeps the
 majority of the suite green: the injected `dockerFn` still records the argv the
 daemon would have run, so existing argv assertions keep working while the
@@ -510,13 +512,14 @@ Engine chooses *which* argv.
 | `images_test.go:66` `TestImageTagPattern`, `:80` `TestSlugPattern` | **keep** | unchanged |
 | `images_test.go:95` `TestAllowedImagesAlwaysIncludesBase` | **keep** | unchanged |
 | *(new)* `images_test.go` `TestImageLabelFormatPerEngine` | **ADD** | pins `.Config.Labels` (docker) vs `.Labels` (podman) — §7 D6.2 |
-| `install_host_test.go:160` (`planeEnv`), `:214` (`planeEnv(dev)/planeEnv(prod)`) | **MUST CHANGE** | the bind/url pair must be empty (bind) and `host.docker.internal` (url) under the podman engine |
+| `install_host_test.go:146` `TestPlaneEnvIsPerInstanceAndComplete`, `:206` `TestPlaneBindAndShape` | **MUST CHANGE** | the bind/url pair must be empty (bind) and `host.docker.internal:<control>` (url) under the podman engine. The emitting gate is `if bind != ""` (`install_host.go:207`), which must become `if url != ""` or the podman URL is never written |
+| `install_host_test.go:560` `TestInstallHostHasNoDockerInvocation` | **MUST CHANGE** | `containerEngineAvailable` (`install_host.go:106`) probes `exec.LookPath("docker")` only; the test's banned-callee list rejects the literal `"podman"` and pins that exact LookPath, so a podman-aware probe reads as a violation until the test is told podman is an engine *probe*, never an engine *call* |
 | *(new)* `daemon_transport_test.go` | **ADD** | `DefaultEndpoint` per-GOOS + scheme parsing + rejection of `tcp` (§2 D1.2/D1.3) |
 | *(new)* `daemon_createargs_test.go` | **ADD** | no named-volume mount may appear in the create argv (§6 hard rule) |
 
-**Summary of what changes:** exactly four existing tests (`hostfp_test.go:28`,
+**Summary of what changes:** exactly five existing tests (`hostfp_test.go:28`,
 `hostfp_test.go:312`, `plane_reachability_test.go:59`,
-`install_host_test.go:160`+`:214`) plus three new ones. Every other boundary
+`install_host_test.go:146`+`:206`, `install_host_test.go:560`) plus three new ones. Every other boundary
 test is preserved as-is — because the schema deliberately preserves labels,
 the mount argv, and the remove-and-recreate reset, which is what those tests
 pin.
@@ -559,7 +562,7 @@ file, the insertion point, and the schema decision it implements.
    darwin/windows, docker on linux-as-today until the switch).
 2. **Create `internal/runtime/engine_docker.go`** — body = today’s constants:
    `--add-host host.docker.internal:host-gateway` (`daemon.go:633`), no `-p`
-   (`daemon.go:648-654`), `{{index .Config.Labels "X"}}` (`images.go:106`),
+   (`daemon.go:647-654`), `{{index .Config.Labels "X"}}` (`images.go:107`),
    `rm -f`, `ps -a --filter label=…` (`daemon.go:1172`). Returns
    `MountOption(ro)` = `":ro"` and `UsernsArgs()` = `nil`.
 3. **Create `internal/runtime/engine_podman.go`** — implements §3/§4/§6/§7:
@@ -570,7 +573,7 @@ file, the insertion point, and the schema decision it implements.
    `{{index .Labels "X"}}` (D6.2); `Reset` = `rm -f` + exists-poll (D5.1);
    retry predicate adds `"already in use"`/`"is in use"` (D5.2).
 4. **Route `Daemon.docker` (`daemon.go:1213`) through `Engine.Exec`**, keeping
-   `dockerFn` (`daemon.go:76`) as the test seam (D10.1) so argv-asserting tests
+   `dockerFn` (`daemon.go:77`) as the test seam (D10.1) so argv-asserting tests
    (`daemon_mounts_test.go`, `daemon_secrets_test.go`, `pool_sweep_test.go`)
    stay green.
 5. **`internal/runtime/transport.go` (new)** — `Dial(endpoint string)` and
@@ -583,11 +586,11 @@ file, the insertion point, and the schema decision it implements.
    `transport.Listen(d.SocketPath)`, mode `0600`, per-instance default path
    (D1.4); log the schemed endpoint at `:229`. Refuse startup when the env
    scheme contradicts the platform default (D1.3).
-7. **`internal/runtime/client.go:36` `NewClient`** — dial via
+7. **`internal/runtime/client.go:32` `NewClient`** — dial via
    `transport.Dial(endpoint)`; keep `instance` scoping (`Client.List`) unchanged
    (D4.1).
 8. **`internal/runtime/daemon.go:createContainer`** — replace the hardcoded
-   `--add-host` (`:633`), the `-v` loop (`:660-666`), `--tmpfs` (`:646`,
+   `--add-host` (`:633`), the `-v` loop (`:656-661`), `--tmpfs` (`:645`,
    `tmpfsOwned` `:889`) and the binary mount with `Engine.CreateArgs(spec)`;
    drop `containerIP` from the response builder and set `ServeURL`/`PlaneURL`
    from `Engine.PublishedPort` + `serveUsableAt` (`:1075`) (D2.1/D2.2). Delete
@@ -598,9 +601,9 @@ file, the insertion point, and the schema decision it implements.
    `AllowedRoots` against the shared set in `cmd/orchicon/runtime.go:31` and
    fail fatally (D3.1).
 10. **`internal/runtime/images.go`** — replace both `image inspect` format
-    strings (`:106`, `:355`) and `d.DockerBin build/rmi/prune`
+    strings (`:107`, `:355`) and `d.DockerBin build/rmi/prune`
     (`images.go:handleBuild`, `handleImages`) with `Engine.ImageLabel` /
-    `Engine.Exec`; keep `rewriteDockerfileBase` (`:363-379`) and the
+    `Engine.Exec`; keep `rewriteDockerfileBase` (`:364-379`) and the
     fail-closed reject on inspect error (D6.1–D6.3).
 11. **`internal/runtime/pool.go:96` `poolEnvKey`** — add `engine=<name>@<version>`
     and `shape=<mountoption|userns>` terms (D7.1/D7.2); `resetAndPool` (`:301`)
@@ -610,17 +613,74 @@ file, the insertion point, and the schema decision it implements.
 12. **`internal/runtime/hostfp.go` / `daemon.go:972` `hostInputsFingerprint`** —
     fold the engine identity/version once per process; no change to the digest
     inputs or the secret-non-exposure rules (§8).
-13. **`cmd/orchicon/install_host.go:planeBindEnv` / `:planeEnv`** — under the
-    podman engine return `bind=""` and
-    `url="http://host.docker.internal:<control>"` (INV-2, D2.3); write the
-    schemed `ORCHICON_RUNTIME_SOCKET` (D1.3). **`install_bridge.go:35`
-    `bridgeIP` is not called on the podman path.**
+13. **`cmd/orchicon/install_host.go:146` `planeBindEnv` / `:167` `planeEnv`** —
+    under the podman engine return `bind=""` and
+    `url="http://host.docker.internal:<control>"` (INV-2, D2.3). Two edits ride
+    with it: the emit gate `if bind != ""` (`install_host.go:207`) becomes
+    `if url != ""`, and `containerEngineAvailable` (`install_host.go:106`)
+    probes `podman` as well as `docker` (still a `LookPath`, never an engine
+    call). Write the schemed `ORCHICON_RUNTIME_SOCKET` at `:195` (D1.3).
+    **`install_bridge.go:35` `bridgeIP` is not called on the podman path.**
 14. **`cmd/orchicon/runtime.go`** — engine selection + daemon struct wiring
-    (`:85` `DockerBin` → `Engine`), socket default per §2, `copySelf`
+    (`:75` `DockerBin` → `Engine`; `:77` `Images`), socket default per §2, `copySelf`
     destination inside a shared root (D3.4).
-15. **Tests** — apply §10 exactly: modify the four listed files, add the three
+15. **Tests** — apply §10 exactly: modify the five listed files, add the three
     new ones. Do not regenerate golden pool keys wholesale.
 16. **Findings BF-1…BF-4** — BF-2 and BF-3 must be proven on each target
     platform (a manual create/exec/mount/rm script is sufficient) *before* the
     platform is declared supported; BF-1 is recorded as a scope limit; BF-4 is
     proven by the `serveUsableAt`-gated checkout.
+
+---
+
+## 13. Citation audit (engineering pass)
+
+Every `file:line` in this ADR was re-read against the tree that carries it. The
+§10 test table was confirmed **exactly** right (all 30-odd `func Test…` line
+numbers match). The following citations had drifted and are corrected in place;
+the list exists so a reviewer can tell a stale line from a contested claim:
+
+| Subject | Was | Now | What is actually at that line |
+|---|---|---|---|
+| socket default | `runtime.go:35` | `runtime.go:36` | `ORCHICON_RUNTIME_SOCKET` default |
+| `NewClient` + its dial | `client.go:35-48`, dial `:36-39` | `:32-45`, dial `:33-36` | `func NewClient`, the `unix` dial closure |
+| `-v` loop | `daemon.go:660-666` | `daemon.go:656-661` | `for _, m := range req.Mounts` |
+| `--tmpfs /tmp` | `daemon.go:646` | `daemon.go:645` | the `/tmp:rw,size=…,exec` arg |
+| no-publish rationale block | `daemon.go:648-654` | `daemon.go:647-654` | the "NO port publish" comment |
+| image-inspect format | `images.go:106` | `images.go:107` | `{{index .Config.Labels …}}` |
+| `rewriteDockerfileBase` | `images.go:363-379` | `images.go:364-379` | func + injected `LABEL …=true` |
+| `ORCHICON_RUNTIME_IMAGES` wiring | `runtime.go:81` | `runtime.go:77` | the `Images:` field |
+| test seam | `daemon.go:76` | `daemon.go:77` | the `dockerFn` field |
+| `DockerBin` wiring | `runtime.go:85` | `runtime.go:75` | `DockerBin: "docker"` |
+
+**One substantive correction, not a line number.** §10 originally cited
+`install_host_test.go:160`/`:214`, which are *call sites inside* tests. The row
+now names the tests (`:146` `TestPlaneEnvIsPerInstanceAndComplete`, `:206`
+`TestPlaneBindAndShape`) and adds a **fifth** must-change test,
+`:560` `TestInstallHostHasNoDockerInvocation`: it rejects the literal `"podman"`
+as a callee and *pins* `exec.LookPath("docker")` as the engine probe, so a
+podman-aware `containerEngineAvailable` (`install_host.go:106`) fails it until
+the test is taught that podman may be probed and never executed. §12 item 13
+carries the matching insertion points — including the `if bind != ""` emit gate
+at `install_host.go:207`, without which the podman URL is computed and then
+discarded.
+
+**Scope check (AC 9):** `git diff --stat develop...HEAD` for this branch touches
+this file only. No engine code was written, which is the point — the contract is
+the deliverable, and the implementer works from §12.
+
+---
+
+## 14. Acceptance-criteria trace
+
+| AC | Where it is answered |
+|---|---|
+| 1 — all six concerns × three platforms in an ADR | §2–§7; the platform matrix in §1 fixes the three columns |
+| 2 — current Docker behaviour stated per concern | each §N opens with "Docker-defined behaviour being replaced" |
+| 3 — single-valued per platform | §1 ("Every value below is single-valued") + the per-concern tables; ambiguity is resolved in the D-numbers, not deferred |
+| 4 — Windows transport decided + security consequence | §2 D1.1 (named pipe + own-SID DACL; the TCP alternative's missing credential is named) |
+| 5 — image gate + mount restriction preserved with purpose | §4 D3.1 (mount-source restriction, purpose stated), §7 D6.1 (image gate, purpose stated), §7 D6.2 (format-string pin) |
+| 6 — pristine reset mechanism + blocking findings | §6 (mechanism + hard no-named-volumes rule + D5.2 retry wording), §9 BF-2/BF-3 |
+| 7 — host-input fingerprint restated | §8 (role + mandatory `engine=`/`shape=` terms) |
+| 8 — tests reviewed, changes enumerated before engine work | §10 (per-test verdicts, five must-change, three new) + §13 audit |
+| 9 — no engine code | §0 non-goal; verified on the branch (`docs/` only) — §13 scope check |
