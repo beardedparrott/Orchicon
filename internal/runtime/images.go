@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -287,23 +288,41 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 // Returns the exit code and whether the command actually started (false
 // means an error response was already written).
 func (d *Daemon) streamCommand(w http.ResponseWriter, r *http.Request, key, verb string, cmd *exec.Cmd) (code int, started bool) {
-	stdout, err := cmd.StdoutPipe()
+	// The engine's output is read through pipes this function owns rather
+	// than exec's StdoutPipe/StderrPipe: Wait() closes StdoutPipe descriptors
+	// as soon as the child exits, which truncates whatever the relay had not
+	// read yet — the exit event could then overtake the last lines of the
+	// build log. Owning the read end lets the relays drain to EOF before the
+	// terminal event is written.
+	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return 1, false
 	}
-	stderr, err := cmd.StderrPipe()
+	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
+		stdoutR.Close()
+		stdoutW.Close()
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return 1, false
 	}
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
 	// Own process group: Podman (like Docker) runs the real builder as a
 	// child of the CLI, so cancelling must signal the tree, not the CLI.
 	setProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
+		stdoutR.Close()
+		stdoutW.Close()
+		stderrR.Close()
+		stderrW.Close()
 		httpError(w, http.StatusInternalServerError, d.engine().Name+" "+verb+": "+err.Error())
 		return 1, false
 	}
+	// The child owns the write ends now; holding them here would keep the
+	// readers from ever seeing EOF.
+	stdoutW.Close()
+	stderrW.Close()
 	// Register the in-flight command for the cancel probe.
 	d.buildMu.Lock()
 	if d.activeBuilds == nil {
@@ -339,8 +358,10 @@ func (d *Daemon) streamCommand(w http.ResponseWriter, r *http.Request, key, verb
 			}
 		}
 	}
-	go relay("stdout", stdout)
-	go relay("stderr", stderr)
+	var relayWG sync.WaitGroup
+	relayWG.Add(2)
+	go func() { defer relayWG.Done(); relay("stdout", stdoutR) }()
+	go func() { defer relayWG.Done(); relay("stderr", stderrR) }()
 
 	werr := cmd.Wait()
 	code = 0
@@ -350,6 +371,21 @@ func (d *Daemon) streamCommand(w http.ResponseWriter, r *http.Request, key, verb
 	if werr != nil {
 		code = 1
 	}
+	// Drain the engine's remaining output BEFORE the exit event: the terminal
+	// event must be the last line the UI sees, otherwise a build log loses its
+	// tail (the failure text) exactly when it matters. Bounded, because a
+	// grandchild builder can hold the write end open past the CLI's exit.
+	drained := make(chan struct{})
+	go func() { relayWG.Wait(); close(drained) }()
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		stdoutR.Close()
+		stderrR.Close()
+		<-drained
+	}
+	stdoutR.Close()
+	stderrR.Close()
 	ev := AgentEvent{Event: "exit", ExitCode: code}
 	if werr != nil {
 		ev.Error = werr.Error()
