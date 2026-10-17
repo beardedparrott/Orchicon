@@ -192,11 +192,21 @@ documents `make build force-fe=1` as the engine-free rebuild command.
 
 That blocker was itself a blind spot in the harness: it walked into an `ENOSPC` three minutes
 in and reported a wall of FAILs that blamed no one. Step 0 now **measures** the cold-build
-disk budget on all three volumes (`00-build-budget.log`), relocates the two movable pieces
-(`GOCACHE`, `TMPDIR`/`GOTMPDIR` — into the git dir, so the checkout stays clean) when a volume
-is short, and otherwise stops with `RUN INVALID` naming the fix. Measured on this same
-container-class host: `checkout 174890 MB free / need 4500`, cache volume `360 MB / need 0`
-(after relocation), `tmp 174890 MB / need 0` (after relocation) → step 0 now exits **0** here,
-where this run exited `2`. What that does *not* prove is the rest of the session — re-run it;
-`GOMODCACHE` 686 MB still has to live somewhere, and no result in this report may be read as a
-pass for steps it never reached.
+disk budget (`00-build-budget.log`) on every volume the build writes — checkout, `GOMODCACHE`,
+`GOCACHE`, the npm cache, `TMPDIR`/`GOTMPDIR` — using the paths `make` will really write, and
+relocates the three disposable ones (`GOCACHE`, the npm cache and `GOTMPDIR` into the git dir,
+so the checkout stays clean) when a volume is short — `TMPDIR` is NOT moved: a longer `TMPDIR`
+pushes unix socket paths past their 108-byte limit (`bind: invalid argument`), which is how the
+first draft of this relocation broke `internal/claude`'s consent-socket tests. Otherwise it stops with `RUN INVALID`
+naming the volume and the fix.
+
+Measured on this same container-class host (warm caches): `checkout 174644 MB free / need 5100`,
+`go-cache volume 360 MB / need 50`, `tmp 174644 MB / need 0` (after relocation) → step 0 exits
+**0** here, where this run exited `2`. The correction that matters: the **module cache's demand
+is never dropped** when `GOCACHE` moves off `$HOME` (a cold 686 MB module set has to download
+where `GOMODCACHE` lives). That case is now measured, not assumed — pointing `GOMODCACHE` at an
+empty directory on the same 360 MB volume makes step 0 exit **2** naming `GOMODCACHE` and
+`go mod download`, instead of certifying the host and dying in `go build` three minutes later.
+
+What this does *not* prove is the rest of the session — re-run it; no result in this report may
+be read as a pass for steps it never reached.

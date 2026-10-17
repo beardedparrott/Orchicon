@@ -19,7 +19,7 @@ named after the step numbers below.
 ```bash
 scripts/no-engine-e2e.sh                 # full session, dev + prod
 scripts/no-engine-e2e.sh --dry-run       # print the plan, execute nothing
-scripts/no-engine-e2e.sh --preflight-only # only step 0: is this a valid no-engine host?
+scripts/no-engine-e2e.sh --preflight-only # only step 0: is this a valid no-engine host? (starts/stops nothing)
 ```
 
 Evidence lands in `qa-evidence/no-engine-e2e/<UTC>/` (`results.tsv`, `defects.tsv`,
@@ -61,19 +61,41 @@ Two more conditions decide whether a run is meaningful:
                            --prod-pg-port 15433 --prod-nats-port 14223 --prod-control-port 18091
   ```
 
-- **Disk budget.** A cold build needs room on three volumes, and each one fails
+- **Disk budget.** A cold build needs room on four volumes, and each one fails
   differently when it is too small: `npm error code ENOSPC` inside the checkout, `write
   $WORK/b657/_pkg_.a: no space left on device` from the Go toolchain (which names a *temp
-  path*, never the host), and a half-populated module cache. Step 0 measures all three
-  (`00-build-budget.log`) so an undersized host says so instead of failing minutes later
-  and blaming nobody. If a volume is short the run is **invalid** (exit 2), not a FAIL,
-  and the message names the knob.
+  path*, never the host), a module download that dies with a truncated file, and a
+  half-populated build cache that fills up mid-run. Step 0 measures all of them — checkout,
+  `GOMODCACHE`, `GOCACHE`, the npm cache and `TMPDIR`/`GOTMPDIR` — into
+  `00-build-budget.log`, so an undersized host says so instead of failing minutes later and
+  blaming nobody. If a volume is short the run is **invalid** (exit 2), not a FAIL, and the
+  message names the volume *and* the knob that fixes it.
 
-  Two pieces are safe to move and are moved for you, with the move recorded:
-  `GOCACHE` is disposable (go rebuilds it) and `TMPDIR`/`GOTMPDIR` only hold the build's
-  `$WORK`. When `$HOME` or `/tmp` is a small tmpfs they are relocated onto the checkout's
-  volume, *inside the git dir*, so `git status` still shows a clean checkout. The **module
-  cache never moves** — a module download mid-session would change what the run proves.
+  Two things make that measurement honest rather than decorative:
+
+  - It measures the paths `make` will **really write**, not what this shell's `go` would. A
+    checkout with the project-local toolchain provisioned keeps `GOCACHE`/`GOTMPDIR`/`GOPATH`
+    under `.dev/tools` (Makefile:26-37), i.e. on the checkout's volume; otherwise the plain
+    `go env` values under `$HOME` apply. Judging `$HOME` in both cases would grade a volume
+    the build never touches.
+  - A cache counts as *cold* unless it is genuinely populated (>= 600 MB module, >= 400 MB
+    build, >= 100 MB npm). Over-estimating costs a spurious `RUN INVALID`; under-estimating
+    costs the mid-build `ENOSPC` this step exists to prevent.
+
+  Three things are safe to move and are moved for you, with the move recorded: `GOCACHE` and
+  the npm cache are disposable (go/npm rebuild them) and `GOTMPDIR` only holds the build's
+  `$WORK`. When the volume they sit on is too small they are relocated onto the checkout's
+  volume, *inside the git dir*, so `git status` still shows a clean checkout; the relocation is
+  then counted against the checkout's budget, and a relocated `GOCACHE` is budgeted as **cold**
+  because it starts empty. `TMPDIR` itself is deliberately left alone: every temp path this
+  repo's code builds under it is longer, and unix socket paths have a hard 108-byte limit, so a
+  relocated `TMPDIR` turns `listen unix` into `bind: invalid argument`. The **module cache never
+  moves** — a module download mid-session would change what the run proves — so its demand has
+  to fit where it already lives: pre-warm it (`go mod download`) or `export
+  GOMODCACHE=/big/go/pkg/mod`.
+
+  `--preflight-only` and `--dry-run` start nothing, so they stop nothing: a validity check
+  never tears down a session you already have running.
 
 - **Frontend deps.** A fresh worktree has no `frontend/node_modules`; `make build` needs
   `make fe-install` once (network on first use).

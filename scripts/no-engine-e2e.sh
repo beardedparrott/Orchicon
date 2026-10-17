@@ -382,74 +382,169 @@ ports_free_list() { # ports_free_list <port...> — print the ones that are held
 # harness exists to remove — so the budget is measured up front, written to
 # evidence, and a shortfall that cannot be fixed here INVALIDATES the run (exit 2)
 # with the knob that fixes it.
-REPO_NEED_MB=1500      # node_modules + frontend/dist + bin/ + evidence
-CACHE_NEED_MB=2200     # cold GOMODCACHE + GOCACHE
-CACHE_WARM_NEED_MB=900 # both caches already populated: incremental writes only
-TMP_NEED_MB=800        # go build $WORK + the link step (TMPDIR, NOT the checkout)
+REPO_NEED_MB=1500            # node_modules + frontend/dist + bin/ + evidence (checkout)
+MODCACHE_COLD_NEED_MB=1000   # cold `go mod download` for this module set (686 MB measured) + slack
+MODCACHE_WARM_NEED_MB=50     # module cache populated: lock/sum writes only
+BUILDCACHE_COLD_NEED_MB=2200 # empty build cache: compile every package + link
+BUILDCACHE_WARM_NEED_MB=900  # build cache populated: incremental writes only
+WORK_NEED_MB=800             # go build $WORK + the link step (GOTMPDIR — relocatable)
+TEMP_NEED_MB=200             # general TMPDIR users (npm staging, tsc); NOT relocated
+NPMCACHE_COLD_NEED_MB=600    # cold `npm install` cache, when the preflight must install deps
+NPMCACHE_WARM_NEED_MB=50
+MODCACHE_WARM_MIN_MB=600     # a cache at least this big counts as populated; else assume COLD
+BUILDCACHE_WARM_MIN_MB=400
+NPMCACHE_WARM_MIN_MB=100
 
 free_mb() { df -Pm "$1" 2>/dev/null | awk 'NR==2 {print $4}'; }
+dev_of()  { df -Pm "$1" 2>/dev/null | awk 'NR==2 {print $1}'; }
+dir_mb()  { du -sm "$1" 2>/dev/null | awk 'NR==1 {print $1}'; }
+
+# WHAT THE BUILD WILL REALLY WRITE — not what this shell's `go` would. `make`
+# exports GOCACHE/GOTMPDIR/GOPATH once the project-local toolchain is provisioned
+# (Makefile:32-37), so a provisioned checkout keeps build state on the CHECKOUT
+# volume; otherwise the plain `go env` values under $HOME apply. Measuring $HOME in
+# both cases would judge a volume the build never touches. An explicit environment
+# value wins either way (the Makefile uses `?=`).
+provisioned_tools() { [ -x "${REPO_ROOT}/.dev/tools/go/bin/go" ]; }
+effective_mod_cache() {
+  if [ -n "${GOMODCACHE:-}" ]; then printf '%s' "$GOMODCACHE"; return 0; fi
+  if provisioned_tools; then printf '%s' "${REPO_ROOT}/.dev/tools/gopath/pkg/mod"; return 0; fi
+  go env GOMODCACHE 2>/dev/null | grep . || printf '%s' "$HOME/go/pkg/mod"
+}
+effective_build_cache() {
+  if [ -n "${GOCACHE:-}" ]; then printf '%s' "$GOCACHE"; return 0; fi
+  if provisioned_tools; then printf '%s' "${REPO_ROOT}/.dev/tools/gocache"; return 0; fi
+  go env GOCACHE 2>/dev/null | grep . || printf '%s' "$HOME/.cache/go-build"
+}
+effective_work_tmp() {
+  if [ -n "${GOTMPDIR:-}" ]; then printf '%s' "$GOTMPDIR"; return 0; fi
+  if provisioned_tools; then printf '%s' "${REPO_ROOT}/.dev/tools/gotmp"; return 0; fi
+  printf '%s' "${TMPDIR:-/tmp}"
+}
 
 build_budget() {
-  local gomodcache gocache warm repo_free cache_free tmpdir tmp_free need_cache budget_log reloc gitdir
-  warm=1
-  gomodcache="$(go env GOMODCACHE 2>/dev/null || true)"
-  gocache="$(go env GOCACHE 2>/dev/null || true)"
-  [ -n "$gomodcache" ] || gomodcache="$HOME/go/pkg/mod"
-  [ -n "$gocache" ] || gocache="$HOME/.cache/go-build"
-  if ! { [ -d "$gomodcache" ] && [ -n "$(ls -A "$gomodcache" 2>/dev/null | head -1)" ]; }; then warm=0; fi
-  if ! { [ -d "$gocache" ] && [ -n "$(ls -A "$gocache" 2>/dev/null | head -1)" ]; }; then warm=0; fi
-  need_cache="$CACHE_NEED_MB"
-  [ "$warm" = "1" ] && need_cache="$CACHE_WARM_NEED_MB"
+  local gomodcache gocache npmcache worktmp cache_base
+  local mod_mb build_mb npm_mb warm_mod warm_build warm_npm
+  local repo_free mod_free build_free npm_free tmp_free work_free tmpdir
+  local need_mod need_build need_npm need_cache_vol need_build_vol need_repo need_work need_tmp
+  local same_vol short gitdir reloc gocache_reloc npm_reloc work_reloc budget_log why
+
+  gomodcache="$(effective_mod_cache)"
+  gocache="$(effective_build_cache)"
+  npmcache="$(npm config get cache 2>/dev/null | grep . || printf '%s' "$HOME/.npm")"
+  worktmp="$(effective_work_tmp)"
+  # The tools create these on first use; mkdir here so the volume they WILL be
+  # written to can be measured before a build fills it.
+  mkdir -p "$gomodcache" "$gocache" "$npmcache" "$worktmp" 2>/dev/null || true
+  cache_base="$(dirname "$gocache")"
+
+  # WARM vs COLD is a SIZE question, not an emptiness one: a half-populated cache is
+  # not "populated", and calling it that is how a budget lies. Over-estimating costs
+  # a spurious RUN INVALID; under-estimating costs a mid-build ENOSPC that names a
+  # temp path and blames nobody.
+  mod_mb="$(dir_mb "$gomodcache")"; mod_mb="${mod_mb:-0}"
+  build_mb="$(dir_mb "$gocache")"; build_mb="${build_mb:-0}"
+  npm_mb="$(dir_mb "$npmcache")"; npm_mb="${npm_mb:-0}"
+  warm_mod=0; [ "$mod_mb" -ge "$MODCACHE_WARM_MIN_MB" ] && warm_mod=1
+  warm_build=0; [ "$build_mb" -ge "$BUILDCACHE_WARM_MIN_MB" ] && warm_build=1
+  warm_npm=0; [ "$npm_mb" -ge "$NPMCACHE_WARM_MIN_MB" ] && warm_npm=1
+  need_mod="$MODCACHE_COLD_NEED_MB"; [ "$warm_mod" = 1 ] && need_mod="$MODCACHE_WARM_NEED_MB"
+  need_build="$BUILDCACHE_COLD_NEED_MB"; [ "$warm_build" = 1 ] && need_build="$BUILDCACHE_WARM_NEED_MB"
+  need_npm="$NPMCACHE_COLD_NEED_MB"; [ "$warm_npm" = 1 ] && need_npm="$NPMCACHE_WARM_NEED_MB"
 
   repo_free="$(free_mb "$REPO_ROOT")"; repo_free="${repo_free:-0}"
-  cache_free="$(free_mb "$HOME")"; cache_free="${cache_free:-0}"
+  mod_free="$(free_mb "$gomodcache")"; mod_free="${mod_free:-0}"
+  build_free="$(free_mb "$gocache")"; build_free="${build_free:-0}"
+  npm_free="$(free_mb "$npmcache")"; npm_free="${npm_free:-0}"
+  work_free="$(free_mb "$worktmp")"; work_free="${work_free:-0}"
   tmpdir="${TMPDIR:-/tmp}"
   tmp_free="$(free_mb "$tmpdir")"; tmp_free="${tmp_free:-0}"
-  reloc=""
-  gocache_reloc=""
+  same_vol=0
+  if [ -n "$(dev_of "$gocache")" ] && [ "$(dev_of "$gocache")" = "$(dev_of "$gomodcache")" ]; then same_vol=1; fi
 
   # Demand PER VOLUME, so a relocation MOVES the demand instead of pretending the
   # host grew.
   need_repo="$REPO_NEED_MB"
-  need_home="$need_cache"
-  need_tmp="$TMP_NEED_MB"
+  need_work="$WORK_NEED_MB"
+  need_tmp="$TEMP_NEED_MB"
   gitdir="$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  reloc=""; gocache_reloc=""; npm_reloc=""; work_reloc=""
 
-  # A cold go build cache is ~2 GB and $HOME is a small mount on many dev and CI
-  # hosts. The build cache is DISPOSABLE (go rebuilds it), so moving it changes
-  # nothing about what the session proves. The MODULE cache never moves: pulling
-  # modules over the network mid-session would change the claim.
-  if [ "$cache_free" -lt "$need_home" ] && [ -n "$gitdir" ] \
-     && [ "$repo_free" -ge $((need_repo + CACHE_NEED_MB)) ] \
+  # THE MODULE CACHE NEVER MOVES (a module download mid-session would change what
+  # the run proves), so its demand can only be met on the volume it already lives
+  # on — it is the one cost a relocation cannot pay down. The build cache IS
+  # disposable (go rebuilds it), so a volume too small for a cold one gets it moved
+  # into the git dir: outside the working tree, so the checkout the run proves is
+  # still clean.
+  short=0
+  if [ "$same_vol" = 1 ]; then
+    [ "$mod_free" -lt $((need_mod + need_build)) ] && short=1
+  else
+    [ "$build_free" -lt "$need_build" ] && short=1
+  fi
+  if [ "$short" = 1 ] && [ -n "$gitdir" ] \
+     && [ "$repo_free" -ge $((need_repo + BUILDCACHE_COLD_NEED_MB)) ] \
      && mkdir -p "${gitdir}/no-engine-e2e-gocache" 2>/dev/null; then
     export GOCACHE="${gitdir}/no-engine-e2e-gocache"
     gocache="$GOCACHE"
     gocache_reloc="$GOCACHE"
-    warm=0   # the relocated cache starts EMPTY: the full build-cache budget applies
-    need_repo=$((need_repo + CACHE_NEED_MB))
-    need_home=0
+    build_mb=0
+    need_repo=$((need_repo + BUILDCACHE_COLD_NEED_MB))
+    need_build=0   # the relocated cache starts EMPTY: the COLD budget moved with it
   fi
 
-  # The Go toolchain writes $WORK and the link step's temporaries to TMPDIR. On a
-  # host whose /tmp is a small tmpfs that is the FIRST thing to blow up, and its
-  # error names a temp path rather than the host — so relocate TMPDIR onto the
-  # cache volume when that volume can take it, and record the move as evidence.
-  # Two targets, best first: the cache volume (one place for all build state),
-  # then scratch INSIDE the git dir — same volume as the checkout but never part
-  # of the working tree, so `git status` stays clean and provenance is unchanged.
-  if [ "$tmp_free" -lt "$need_tmp" ]; then
-    if [ "$cache_free" -ge $((need_home + need_tmp)) ]; then
-      reloc="$HOME/.cache/no-engine-e2e/tmp"
-      need_home=$((need_home + need_tmp))
-    elif [ -n "$gitdir" ] && [ "$repo_free" -ge $((need_repo + need_tmp)) ]; then
+  # What each volume must hold once nothing else moves. GOCACHE and GOMODCACHE are
+  # usually on ONE volume ($HOME), so their demands ADD UP there.
+  if [ "$same_vol" = 1 ]; then
+    need_cache_vol=$((need_mod + need_build))
+    need_build_vol=0
+  else
+    need_cache_vol="$need_mod"
+    need_build_vol="$need_build"
+  fi
+
+  # The npm cache is disposable too, and `make fe-install` (run below when the
+  # checkout has no node_modules) writes into it first — on a tiny $HOME that turns
+  # into an ENOSPC whose message names the checkout instead of the host.
+  if [ "$npm_free" -lt "$need_npm" ] && [ -n "$gitdir" ] \
+     && [ "$repo_free" -ge $((need_repo + NPMCACHE_COLD_NEED_MB)) ] \
+     && mkdir -p "${gitdir}/no-engine-e2e-npm-cache" 2>/dev/null; then
+    export npm_config_cache="${gitdir}/no-engine-e2e-npm-cache"
+    npmcache="$npm_config_cache"
+    npm_reloc="$npmcache"
+    need_repo=$((need_repo + NPMCACHE_COLD_NEED_MB))
+    need_npm=0
+  fi
+
+  # go writes $WORK (and the link step's temporaries) to GOTMPDIR, falling back to
+  # TMPDIR. On a host whose /tmp is a small tmpfs that is the FIRST thing to blow
+  # up, and its error names a temp path rather than the host.
+  #
+  # Only GOTMPDIR is moved — deliberately NOT TMPDIR. A relocated TMPDIR lengthens
+  # every temp path this repo's own code builds under it, and unix socket paths have
+  # a hard 108-byte limit: relocating TMPDIR into a git dir turns `listen unix` into
+  # `bind: invalid argument` (verified against internal/claude's consent socket and
+  # internal/contextfiles' walk). $WORK is where the ENOSPC actually happened, so
+  # GOTMPDIR is the piece worth moving. Two targets, best first: scratch INSIDE the
+  # git dir (same volume as the checkout, never part of the working tree), then the
+  # volume the build caches sit on.
+  if [ "$work_free" -lt "$need_work" ]; then
+    if [ -n "$gitdir" ] && [ "$repo_free" -ge $((need_repo + need_work)) ]; then
       reloc="${gitdir}/no-engine-e2e-tmp"
-      need_repo=$((need_repo + need_tmp))
+      need_repo=$((need_repo + need_work))
+    elif [ "$same_vol" = 1 ] && [ "$mod_free" -ge $((need_cache_vol + need_work)) ]; then
+      reloc="${cache_base}/no-engine-e2e-tmp"
+      need_cache_vol=$((need_cache_vol + need_work))
+    elif [ "$same_vol" = 0 ] && [ "$build_free" -ge $((need_build_vol + need_work)) ]; then
+      reloc="${cache_base}/no-engine-e2e-tmp"
+      need_build_vol=$((need_build_vol + need_work))
     fi
     if [ -n "$reloc" ] && mkdir -p "$reloc" 2>/dev/null; then
-      export TMPDIR="$reloc" GOTMPDIR="$reloc"
-      tmpdir="$reloc"
-      tmp_free="$(free_mb "$tmpdir")"; tmp_free="${tmp_free:-0}"
-      need_tmp=0
+      export GOTMPDIR="$reloc"
+      worktmp="$reloc"
+      work_reloc="$reloc"
+      work_free="$(free_mb "$worktmp")"; work_free="${work_free:-0}"
+      need_work=0   # its demand now sits on the volume it moved to (counted above)
     else
       reloc=""
     fi
@@ -459,27 +554,42 @@ build_budget() {
   {
     echo "measured:        $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "go module cache: $gomodcache"
+    echo "                 ${mod_mb} MB on disk; its volume ${mod_free} MB free; needs >= ${need_mod} — NEVER relocated (a mid-session module download would change what the run proves)"
     echo "go build cache:  $gocache"
-    echo "caches warm:     $warm (1 = module + build cache populated; 0 = build cache cold)"
+    echo "                 ${build_mb} MB on disk; its volume ${build_free} MB free; needs >= ${need_build}; same volume as the module cache: ${same_vol} (1 = their demands add up)"
+    echo "npm cache:       $npmcache"
+    echo "                 ${npm_mb} MB on disk; its volume ${npm_free} MB free; needs >= ${need_npm}"
     echo "checkout volume: $REPO_ROOT -> ${repo_free} MB free, need >= ${need_repo}"
-    echo "cache volume:    $HOME -> ${cache_free} MB free, need >= ${need_home} (module cache + build cache)"
-    echo "TMPDIR:          $tmpdir -> ${tmp_free} MB free, need >= ${need_tmp} (go build \$WORK + link)"
-    [ -n "$gocache_reloc" ] && echo "GOCACHE relocated to $gocache_reloc (host $HOME cannot hold a cold build cache; disposable, so the session still proves the same thing)"
-    [ -n "$gocache_reloc" ] && echo "leave-behind:    $gocache_reloc (build cache, outside the working tree — safe to delete after the run)"
-    [ -n "$reloc" ] && echo "TMPDIR relocated to $reloc (host /tmp too small for a Go build; this is the ONLY thing changed, and it is recorded here)"
-    [ -n "$reloc" ] && echo "leave-behind:    $reloc (build scratch, outside the working tree — safe to delete after the run)"
+    echo "GOTMPDIR (\$WORK): $worktmp -> ${work_free} MB free, need >= ${need_work} (go build \$WORK + link)"
+    echo "TMPDIR (general): $tmpdir -> ${tmp_free} MB free, need >= ${need_tmp} (npm staging, tsc) — never relocated: a longer TMPDIR breaks 108-byte unix socket paths"
+    echo "caches warm:     module=${warm_mod} build=${warm_build} npm=${warm_npm} (1 = populated enough to need incremental space only)"
+    [ -n "$gocache_reloc" ] && echo "GOCACHE relocated to $gocache_reloc (its own volume cannot hold a cold build cache; disposable, so the session proves the same thing)"
+    [ -n "$npm_reloc" ] && echo "npm cache relocated to $npm_reloc (disposable)"
+    [ -n "$work_reloc" ] && echo "GOTMPDIR relocated to $work_reloc (host temp volume too small for a go build; TMPDIR itself is untouched)"
+    for d in "$gocache_reloc" "$npm_reloc" "$work_reloc"; do
+      [ -n "$d" ] && echo "leave-behind:    $d (outside the working tree — safe to delete after the run)"
+    done
     echo "this is a MEASUREMENT, not a promise: a warm-cache run needs less and the"
     echo "numbers move as the build writes. A shortfall is a HOST condition, not a"
     echo "defect in the session being proven — hence exit 2 (invalid run), not FAIL."
   } >"$budget_log" 2>&1
   sed 's/^/  /' "$budget_log" >>"${EVIDENCE}/00-preflight.log"
 
-  if [ "$repo_free" -lt "$need_repo" ] || [ "$cache_free" -lt "$need_home" ] || [ "$tmp_free" -lt "$need_tmp" ]; then
-    check "the host has the disk budget for a cold build (checkout ${repo_free}MB/${need_repo}, cache volume ${cache_free}MB/${need_home}, tmp ${tmp_free}MB/${need_tmp})" 1
-    ABORT_REASON="this host cannot finish a cold build, so the session cannot be proven here: checkout volume ${repo_free} MB free (needs >= ${need_repo}), cache volume $HOME ${cache_free} MB (needs >= ${need_home}), TMPDIR ${tmpdir} ${tmp_free} MB (needs >= ${need_tmp}). Nothing was executed — this is NOT a defect in the session. Enlarge the volume, or point the build state at one with room: export GOCACHE=/big/go-build TMPDIR=/big/tmp (see ${budget_log})."
+  if [ "$repo_free" -lt "$need_repo" ] || [ "$mod_free" -lt "$need_cache_vol" ] \
+     || [ "$build_free" -lt "$need_build_vol" ] || [ "$npm_free" -lt "$need_npm" ] \
+     || [ "$work_free" -lt "$need_work" ] || [ "$tmp_free" -lt "$need_tmp" ]; then
+    why=""
+    [ "$repo_free" -lt "$need_repo" ] && why="$why the checkout volume has ${repo_free} MB free (needs >= ${need_repo});"
+    [ "$mod_free" -lt "$need_cache_vol" ] && why="$why the Go cache volume has ${mod_free} MB free (needs >= ${need_cache_vol}) and the module cache at ${gomodcache} is never moved mid-session — pre-warm it with 'go mod download', or point it at a volume with room: export GOMODCACHE=/big/go/pkg/mod;"
+    [ "$build_free" -lt "$need_build_vol" ] && why="$why the build-cache volume has ${build_free} MB free (needs >= ${need_build_vol}, and it could not be relocated);"
+    [ "$npm_free" -lt "$need_npm" ] && why="$why the npm cache volume has ${npm_free} MB free (needs >= ${need_npm});"
+    [ "$work_free" -lt "$need_work" ] && why="$why the go \$WORK volume ${worktmp} has ${work_free} MB free (needs >= ${need_work}) — export GOTMPDIR=/big/tmp;"
+    [ "$tmp_free" -lt "$need_tmp" ] && why="$why TMPDIR ${tmpdir} has ${tmp_free} MB free (needs >= ${need_tmp}) — export TMPDIR to a volume with room (keep the path short: unix sockets cap at 108 bytes);"
+    check "the host has the disk budget for a cold build (checkout ${repo_free}/${need_repo} MB, go caches ${mod_free}/${need_cache_vol}, build cache ${build_free}/${need_build_vol}, go \$WORK ${work_free}/${need_work}, tmp ${tmp_free}/${need_tmp})" 1
+    ABORT_REASON="this host cannot finish a cold build, so the session cannot be proven here.${why} Nothing was executed — this is NOT a defect in the session. Details: ${budget_log}."
     return 1
   fi
-  check "the host has the disk budget for a cold build (checkout ${repo_free}MB, cache volume ${cache_free}MB, tmp ${tmp_free}MB)" 0
+  check "the host has the disk budget for a cold build (checkout ${repo_free}/${need_repo} MB, go caches ${mod_free}/${need_cache_vol}, build cache ${build_free}/${need_build_vol}, go \$WORK ${work_free}/${need_work}, tmp ${tmp_free}/${need_tmp})" 0
   return 0
 }
 
@@ -1160,11 +1270,15 @@ main() {
     write_summary
     say ""
     say "RUN INVALID: ${ABORT_REASON}"
+    TEARDOWN_DONE=1   # nothing was started, so nothing may be stopped
     exit 2
   fi
   if [ "$PREFLIGHT_ONLY" = "1" ]; then
     write_summary
     say "preflight only: the host is a valid no-engine host. Re-run without --preflight-only for the session."
+    # A validity check must not be a side effect: no plane and no service was
+    # started here, so tearing down would stop a developer's OWN running session.
+    TEARDOWN_DONE=1
     exit 0
   fi
 
