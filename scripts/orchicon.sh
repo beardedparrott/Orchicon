@@ -16,7 +16,10 @@
 #   scripts/orchicon.sh rebuild [dev|prod]   # rebuild + restart (quick path; see below)
 #   scripts/orchicon.sh help
 #
-# INSTANCES. `dev` listens on 127.0.0.1:8080, `prod` on 127.0.0.1:8091. They are
+# INSTANCES. `dev` listens on 127.0.0.1:8080, `prod` on 127.0.0.1:8091 — the
+# DEFAULT ports; the port an instance actually bound is read from its record
+# (<data dir>/ports.json), so an install on a non-default control port is
+# reported at the port it is on. They are
 # fully separate — separate data dirs (~/.local/share/orchicon-<instance>),
 # separate databases, separate ports — so stopping or restarting one never
 # touches the other. Default: dev. Anything else is refused (exit 2).
@@ -92,6 +95,9 @@ USAGE
 INSTANCES
   dev   plane http://127.0.0.1:8080   data ~/.local/share/orchicon-dev
   prod  plane http://127.0.0.1:8091   data ~/.local/share/orchicon-prod
+  Those are the DEFAULT control ports. The port an instance actually bound is
+  read from its record (<data dir>/ports.json), so an install on any other port
+  is still reported at the port it is really on.
   Fully separate data dirs, databases and ports: stopping or restarting one
   never touches the other. Default instance: dev. Anything else is refused.
 
@@ -146,22 +152,59 @@ require_bin() {
 
 # instance_paths mirrors the CLI's own per-instance layout, in ONE place, so a
 # stop, a status and a log tail can never disagree about which instance they
-# mean. Sources, both asserted by scripts/tests/orchicon-cli:
-#   plane port      the shared port table (cmd/orchicon/install_ports.go)
+# mean. Sources, all asserted by scripts/tests/orchicon-cli:
+#   plane port      the instance's RECORD (ports.json), else an explicit
+#                   ORCHICON_CONTROL_PORT, else its column of the shared port
+#                   table (cmd/orchicon/install_ports.go)
 #   data dir        hostDataDir  = $HOME/.local/share/orchicon-<instance>
 #   plane pid/log   serveStateDir = <data dir>/serve   (cmd/orchicon/serve_state.go)
 #   services log    <data dir>/services.log
 instance_paths() {
   case "$1" in
-    dev) PLANE_PORT=8080 ;;
-    prod) PLANE_PORT=8091 ;;
+    dev|prod) ;;
     *) die_inst "$1" ;;
   esac
   DATA_DIR="$HOME/.local/share/orchicon-$1"
   SERVE_STATE_DIR="$DATA_DIR/serve"
   PLANE_LOG="$SERVE_STATE_DIR/logs/orchicon.log"
   SERVICES_LOG="$DATA_DIR/services.log"
+  PLANE_PORT="$(plane_port_for "$1")"
   PLANE_URL="http://127.0.0.1:$PLANE_PORT"
+  case "$1" in
+    dev) PLANE_PORT_DEFAULT=8080 ;;
+    prod) PLANE_PORT_DEFAULT=8091 ;;
+  esac
+}
+
+# plane_port_for resolves the CONTROL-plane port the way the CLI resolves it,
+# instead of assuming the default. It used to be a hardcoded 8080/8091, which
+# made the post-start summary and `status` name a port this instance is NOT on
+# whenever it was installed anywhere else — because 8080 was already taken, or
+# because the operator pinned ORCHICON_CONTROL_PORT. Naming the wrong port is
+# the same unverified claim as calling a bound port "healthy": the developer is
+# sent to the wrong URL and `status` asks a port that is not this plane.
+#
+#   ports.json     what the instance ACTUALLY bound (`install` writes it, and
+#                  the CLI itself reads records before defaults), so it wins;
+#   ORCHICON_CONTROL_PORT  honoured only when there is no record yet — the
+#                  override a forthcoming `install` will bind;
+#   default column 8080 (dev) / 8091 (prod).
+plane_port_for() {
+  local inst="$1" p=""
+  if [ -r "$DATA_DIR/ports.json" ]; then
+    p="$(sed -n 's/.*"ORCHICON_CONTROL_PORT"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+           "$DATA_DIR/ports.json" 2>/dev/null | head -1)"
+  fi
+  if [ -z "$p" ]; then
+    p="${ORCHICON_CONTROL_PORT:-}"
+  fi
+  if [ -z "$p" ]; then
+    case "$inst" in
+      dev) p=8080 ;;
+      prod) p=8091 ;;
+    esac
+  fi
+  printf '%s\n' "$p"
 }
 
 # plane_health sets HEALTH to healthy | unhealthy | unverified. UNVERIFIED is a
@@ -368,6 +411,11 @@ print_summary() {
   echo "  logs    scripts/orchicon.sh logs $inst"
   echo "  shape   host — services and plane are your user's processes, no container engine"
   echo "  data    $DATA_DIR"
+  # The URL above is the port this instance is RECORDED on. When that is not the
+  # instance's default the developer deserves to know why it is not 8080/8091.
+  if [ "$PLANE_PORT" != "$PLANE_PORT_DEFAULT" ]; then
+    echo "  port    $PLANE_PORT is a non-default control port, as recorded in $DATA_DIR/ports.json"
+  fi
 }
 
 stop_instance() {
@@ -395,6 +443,10 @@ restart_instance() {
     start_host "$inst"
   fi
   echo "✓ orchicon $inst restarted"
+  # The same map `start` prints, re-resolved AFTER the restart: a restart can land
+  # the plane on a different recorded port than the one it had, and the developer
+  # must be told where it is now rather than where it was a moment ago.
+  print_summary "$inst"
 }
 
 status_instance() {

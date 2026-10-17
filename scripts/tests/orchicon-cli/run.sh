@@ -377,6 +377,50 @@ assert_contains "$start_prod" "orchicon-prod" "prod's summary carries prod's dat
 assert_not_contains "$start_dev" "8091" "dev's summary does not advertise prod's port"
 assert_not_contains "$start_prod" "8080" "prod's summary does not advertise dev's port"
 
+# ── 9b. the plane port is the instance's RECORDED port ────────────────────
+# `install` writes ports.json holding the control port the instance ACTUALLY
+# bound — because 8080 was already taken, or because the operator pinned
+# ORCHICON_CONTROL_PORT. A summary or a status that then says 8080 sends the
+# developer to the wrong URL and health-checks a port that is not this plane,
+# which is the same unverified claim as a port probe reported "healthy".
+echo "-- the port is the instance's own record"
+# `restart` prints the same map, re-resolved AFTER it ran (a restart can move the
+# plane's recorded port, and the developer must be told where it is NOW).
+out="$(export ORCHICON_CONTROL_PORT=9250; run "$SCRIPT" restart prod)"
+assert_contains "$out" "✓ orchicon prod restarted" "restart reports its own outcome"
+assert_contains "$out" "orchicon prod is up" "restart prints the where-things-are map"
+assert_contains "$out" "plane   http://127.0.0.1:9250" "restart's map is resolved after the restart"
+
+# No record yet (never installed): honour the override an install would bind,
+# else this instance's default column — the order the CLI itself uses.
+out="$(export ORCHICON_CONTROL_PORT=9250; run "$SCRIPT" status prod)"
+assert_contains "$out" "plane http://127.0.0.1:9250" "with no record, an explicit ORCHICON_CONTROL_PORT is used"
+out="$(run "$SCRIPT" status prod)"
+assert_contains "$out" "plane http://127.0.0.1:8091" "with no record and no override, prod's default column is used"
+# Now the record `install` writes: it holds the port the instance ACTUALLY
+# bound, so it wins over both the default and an ambient override.
+mkdir -p "$HOME/.local/share/orchicon-prod"
+cat >"$HOME/.local/share/orchicon-prod/ports.json" <<'PORTS_JSON'
+{
+  "ORCHICON_CONTROL_PORT": 9191,
+  "ORCHICON_POSTGRES_PORT": 5433,
+  "ORCHICON_NATS_PORT": 4223
+}
+PORTS_JSON
+: >"$CALLS"
+out="$(run ORCHICON_INSTANCE_CTL="/bin/bash $WORK/ctl" "$SCRIPT" start prod)"
+assert_contains "$out" "http://127.0.0.1:9191" "the summary prints the port the instance RECORDED"
+assert_not_contains "$out" "127.0.0.1:8091" "the summary never advertises a default port the instance is not on"
+assert_contains "$out" "non-default control port" "the summary says why the port is not the default"
+plane_up; services_up
+: >"$CALLS"
+out="$(STUB_CURL_RC=0 run "$SCRIPT" status prod)"
+assert_contains "$out" "plane http://127.0.0.1:9191" "status names the recorded port"
+assert_contains "$(cat "$CALLS")" "curl=-fsS --max-time 3 -o /dev/null http://127.0.0.1:9191/healthz" \
+  "status health-checks the recorded port, not a default"
+out="$(export ORCHICON_CONTROL_PORT=9250; run "$SCRIPT" status prod)"
+assert_contains "$out" "plane http://127.0.0.1:9191" "the record wins over an ambient ORCHICON_CONTROL_PORT"
+
 # ── 10. no reference to the retired launcher (AC9) ─────────────────────────
 echo "-- no container.sh"
 if grep -q "container\.sh" "$SCRIPT"; then
