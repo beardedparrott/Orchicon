@@ -2306,7 +2306,7 @@ The `orchicon` binary runs the plane and its supporting services.
 | Script | Description |
 |---|---|
 | `scripts/container.sh` | Build / up / down / status / logs / ps / runtime-daemon / runtime-stop for the dev + prod + test container instances |
-| `scripts/orchicon.sh uninstall <inst> --yes` | Remove ONE instance and its data (destructive, confirmed, prints what it deletes first). `scripts/container.sh uninstall` is the legacy spelling of the same teardown |
+| `scripts/orchicon.sh uninstall <inst> --yes` | Remove ONE instance and its data (destructive, confirmed, prints what it deletes first) |
 | `scripts/lib/instances.sh` | The ONE shell home of the instance table (dev/test/prod columns); `cmd/orchicon/install_ports.go`'s `instanceOrder` is the Go home, and a Go test asserts the two agree |
 | `scripts/orchicon.sh` | Start / stop / restart / status / logs / rebuild the **host-resident** plane (dev or prod), services container included |
 

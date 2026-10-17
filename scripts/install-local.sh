@@ -42,6 +42,10 @@ mkdir -p "$DEST"
 #                            process holding the file as data, which the command
 #                            line does not. It never runs alone, and its absence
 #                            is not an error.
+#
+# Where neither tool exists (a minimal container with no procps and no psmisc)
+# in_use answers "no", and the install then fails LOUDLY on "Text file busy"
+# rather than silently replacing a live binary.
 in_use() {
   if pgrep -f "$DEST/orchicon serve" >/dev/null 2>&1; then
     return 0

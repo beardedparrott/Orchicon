@@ -31,15 +31,13 @@
 #   scripts/container.sh plane-start [dev|prod]   # start the HOST plane for a host-resident instance
 #   scripts/container.sh plane-stop [dev|prod]    # stop the HOST plane (services container keeps running)
 #   scripts/container.sh plane-status [dev|prod]  # host plane PID + health
-#   scripts/container.sh uninstall [dev|prod|test] [--yes]
-#                                                 # LEGACY path: the documented
-#                                                 # verb is now
-#                                                 # `scripts/orchicon.sh uninstall
-#                                                 # <inst> --yes`. Same teardown
-#                                                 # (scripts/lib/teardown.sh), so
-#                                                 # both spellings are safe. It
-#                                                 # removes ONE instance AND its
-#                                                 # data (destructive; needs --yes)
+#
+# TEARDOWN IS NOT ADVERTISED HERE. Removing ONE instance and its data is
+# `scripts/orchicon.sh uninstall <dev|prod|test> --yes` — instance-scoped,
+# confirmed, printing what it deletes first (scripts/lib/teardown.sh). This
+# script keeps an `uninstall` arm for old callers, but it is deliberately not
+# part of the usage: a developer following this header must land on the
+# documented verb, not the legacy spelling.
 #
 # TWO SHAPES (residency, per instance, OPT-IN):
 #   container (default): everything — postgres, nats, telemetry, the control
@@ -1315,7 +1313,10 @@ case "${1:-}" in
   sync-mounts) sync_mounts "${2:-dev}" ;;
   up) up_instance "${2:-dev}" ;;
   down) down_instance "${2:-dev}" ;;
-  # uninstall removes ONE instance AND its data — destructive, needs --yes.
+  # LEGACY SPELLING, NOT ADVERTISED. Instance teardown is documented as
+  # `scripts/orchicon.sh uninstall <inst> --yes`, which runs the same
+  # lib/teardown.sh body. This arm stays so an older script or habit cannot
+  # fail; it is absent from the usage text on purpose.
   uninstall) uninstall_instance "${2:-dev}" ;;
   # Host-resident plane env for an instance (see bridge_bind_env):
   #   eval "$(scripts/container.sh plane-bind prod)" before starting that
@@ -1359,12 +1360,12 @@ case "${1:-}" in
     docker ps -a --filter label=orchicon.workflow --format 'table {{.Names}}\t{{.Status}}'
     ;;
   *)
-    echo "Usage: $0 {build|rebuild [dev|prod|test]|sync-mounts [dev|prod|test]|up [dev|prod|test]|down [dev|prod|test]|uninstall [dev|prod|test] --yes|status [dev|prod|test]|logs [dev|prod|test]|plane-bind [dev|prod|test]|shape [dev|prod|test]|verify [dev|prod|test]|plane-start|plane-stop|plane-status [dev|prod|test]|services-port [dev|prod|test] [postgres|nats|nats-mon|control|grafana]|db-url [dev|prod|test]|pg-psql [dev|prod|test]|ps|runtime-daemon|runtime-stop}"
+    echo "Usage: $0 {build|rebuild [dev|prod|test]|sync-mounts [dev|prod|test]|up [dev|prod|test]|down [dev|prod|test]|status [dev|prod|test]|logs [dev|prod|test]|plane-bind [dev|prod|test]|shape [dev|prod|test]|verify [dev|prod|test]|plane-start|plane-stop|plane-status [dev|prod|test]|services-port [dev|prod|test] [postgres|nats|nats-mon|control|grafana]|db-url [dev|prod|test]|pg-psql [dev|prod|test]|ps|runtime-daemon|runtime-stop}"
     echo "  services-port/db-url/pg-psql: pure per-instance queries (a service's host port, the derived"
     echo "    Postgres DSN, the resolved psql path) — what the Makefile and check-rls.sh derive from."
     echo "  ORCHICON_PLANE_RESIDENCY=host|container  (default host) picks the shape per invocation;"
     echo "  a third positional overrides it for one call, e.g. 'up dev container'."
-    echo "  'uninstall <inst> --yes' removes that instance AND its data (irreversible)."
+    echo "  instance teardown is scripts/orchicon.sh uninstall <inst> --yes (destructive; requires --yes)."
     echo "  plane-bind prints the host plane's PER-INSTANCE bind + URL (ORCHICON_HTTP_EXTRA_BIND, ORCHICON_PLANE_PUBLIC_URL)."
     exit 1
     ;;
