@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -39,6 +40,14 @@ const (
 // (or a docker-only host) can override the default without a rebuild.
 const EnvEngine = "ORCHICON_RUNTIME_ENGINE"
 
+// EnvEngineAlias is the engine variable the rest of the project already honours:
+// scripts/lib/engine.sh, scripts/runtime.sh (image build/pull) and the Makefile
+// all read ORCHICON_ENGINE, defaulting to podman. The daemon accepts it as a
+// FALLBACK so one host cannot end up with images built or pulled by docker while
+// containers are created by podman — `ORCHICON_ENGINE=docker scripts/runtime.sh
+// daemon-start` must mean ONE engine, whichever spelling the operator used.
+const EnvEngineAlias = "ORCHICON_ENGINE"
+
 // DefaultEngineName returns the engine the daemon uses when nothing overrides
 // it. Podman on EVERY platform, including macOS/Windows through a Podman
 // machine.
@@ -71,7 +80,8 @@ func (m *EngineMissingError) Error() string {
 		b.WriteString("    Windows:        winget install --id Docker.DockerDesktop\n")
 		fmt.Fprintf(&b, "  Or use Podman instead (the default): unset %s\n", EnvEngine)
 	}
-	fmt.Fprintf(&b, "  (this daemon was started with %s=%q)\n", EnvEngine, m.Requested)
+	fmt.Fprintf(&b, "  (this daemon was started with %s=%q; %s is accepted as an alias)\n",
+		EnvEngine, m.Requested, EnvEngineAlias)
 	b.WriteString("  Then restart the daemon: orchicon runtime-daemon")
 	return b.String()
 }
@@ -105,6 +115,17 @@ func ResolveEngine(requested string) (Engine, error) {
 		return Engine{Name: name, Bin: name}, &EngineMissingError{Name: name, Requested: requested, Err: err}
 	}
 	return Engine{Name: name, Bin: bin}, nil
+}
+
+// ResolveEngineFromEnv resolves the engine from the environment: EnvEngine first,
+// then the project-wide EnvEngineAlias, else DefaultEngineName(). One entry point,
+// so `cmd/orchicon` cannot resolve the engine differently from a sibling command.
+func ResolveEngineFromEnv() (Engine, error) {
+	requested := strings.TrimSpace(os.Getenv(EnvEngine))
+	if requested == "" {
+		requested = strings.TrimSpace(os.Getenv(EnvEngineAlias))
+	}
+	return ResolveEngine(requested)
 }
 
 // MissingError is the actionable error for THIS engine being unavailable,

@@ -9,9 +9,12 @@ package runtime
 // THESE args plus its mounts/secrets/exe tail as one real `run` argv.
 
 import (
+	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // podmanCreateDaemon is a daemon wired to the podman engine with the same
@@ -166,4 +169,89 @@ func argvHas(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestCreateContainerWiredToPodmanEngine is the WIRING half of AC 3: the podman
+// argv is not merely what createFlagArgs RETURNS, it is what createContainer
+// actually hands the engine. The seam captures the real `run` call, so a future
+// refactor that stops calling createFlagArgs (or drops the publish flags on the
+// way) fails here instead of silently creating an unreachable container.
+func TestCreateContainerWiredToPodmanEngine(t *testing.T) {
+	tmp, _ := os.CreateTemp("", "orchicon-exe-*")
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+
+	var mu sync.Mutex
+	var calls [][]string
+	runArgs := make(chan []string, 1)
+
+	d := &Daemon{
+		SocketPath:   "/tmp/test.sock",
+		Engine:       Engine{Name: "podman", Bin: "podman"},
+		Image:        "orchicon-runtime:local",
+		AllowedRoots: []string{"/tmp"},
+		ExePath:      tmp.Name(),
+		UserID:       1000,
+		GroupID:      1000,
+		CPUs:         "1", Memory: "1g", TmpfsSize: "100m",
+	}
+	d.engineFn = func(args ...string) (string, error) {
+		cp := append([]string(nil), args...)
+		mu.Lock()
+		calls = append(calls, cp)
+		mu.Unlock()
+		if len(args) >= 2 && args[0] == "inspect" {
+			// No container yet: createContainer proceeds to `run`.
+			return "", errNotFound()
+		}
+		if len(args) > 0 && args[0] == "run" {
+			select {
+			case runArgs <- cp:
+			default:
+			}
+			return "cid123", nil
+		}
+		return "ok", nil
+	}
+
+	// The readiness ping that follows a successful create execs the engine
+	// OUTSIDE the seam and keeps failing (no supervisor socket here), so the
+	// create goroutine simply gives up at its own deadline — the argv under test
+	// has already been captured.
+	go func() {
+		_, _ = d.createContainer("orchicon-rt-wired", CreateRequest{WorkflowID: "wf-wired"})
+	}()
+
+	var run []string
+	select {
+	case run = <-runArgs:
+	case <-time.After(runCallTimeout):
+		mu.Lock()
+		defer mu.Unlock()
+		t.Fatalf("podman run was never invoked within %s; captured calls: %v", runCallTimeout, calls)
+	}
+
+	// The preserved identity flags plus the podman-only additions arrive as ONE
+	// argv: --user (AC 6), keep-id beside it, and the two loopback publishes.
+	for _, want := range [][2]string{
+		{"--user", "1000:1000"},
+		{"-p", "127.0.0.1::4096"},
+		{"-p", "127.0.0.1::8080"},
+	} {
+		if !argValue(run, want[0], want[1]) {
+			t.Errorf("create argv missing %s %s: %v", want[0], want[1], run)
+		}
+	}
+	if !argvHas(run, "--userns=keep-id") {
+		t.Errorf("create argv missing --userns=keep-id (podman): %v", run)
+	}
+
+	// The publishes are FLAGS TO `run`, not part of the command: they must
+	// precede the image + entrypoint tail, or podman would exec them.
+	if len(run) < 3 {
+		t.Fatalf("create argv too short: %v", run)
+	}
+	if got, want := run[len(run)-3:], []string{"orchicon-runtime:local", "orchicon", "runtime-supervisor"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("create argv tail = %v, want %v (flags must precede the image)", got, want)
+	}
 }

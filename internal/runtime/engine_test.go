@@ -230,3 +230,54 @@ func TestEngineHostEndpoint(t *testing.T) {
 		t.Errorf("docker HostEndpoint = %s:%d, want 172.17.0.5:%d", host, port, defaultServePort)
 	}
 }
+
+// TestResolveEngineFromEnvHonoursTheProjectWideVariable pins the env precedence:
+// ORCHICON_RUNTIME_ENGINE (the ADR's spelling) wins, ORCHICON_ENGINE — which
+// scripts/lib/engine.sh, scripts/runtime.sh and the Makefile already read — is
+// honoured as a FALLBACK, and neither set means the default engine. The point is
+// that one host cannot build/pull its runtime images with one engine and create
+// containers with the other.
+func TestResolveEngineFromEnvHonoursTheProjectWideVariable(t *testing.T) {
+	cases := []struct {
+		name          string
+		runtimeEngine string
+		projectWide   string
+		want          string
+	}{
+		{name: "neither set", want: DefaultEngineName()},
+		{name: "project-wide only", projectWide: "docker", want: "docker"},
+		{name: "ADR spelling only", runtimeEngine: "podman", want: "podman"},
+		{name: "ADR spelling wins", runtimeEngine: "docker", projectWide: "podman", want: "docker"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(EnvEngine, tc.runtimeEngine)
+			t.Setenv(EnvEngineAlias, tc.projectWide)
+			eng, err := ResolveEngineFromEnv()
+			if err != nil {
+				// No engine binary in CI: the error must still name the engine the
+				// environment selected, which is what proves the precedence.
+				var miss *EngineMissingError
+				if !errors.As(err, &miss) {
+					t.Fatalf("a missing engine must be an *EngineMissingError, got %T: %v", err, err)
+				}
+				if miss.Name != tc.want {
+					t.Errorf("missing engine = %q, want %q (environment precedence)", miss.Name, tc.want)
+				}
+				return
+			}
+			if eng.Name != tc.want {
+				t.Errorf("resolved engine = %q, want %q", eng.Name, tc.want)
+			}
+		})
+	}
+
+	// A typo in the project-wide variable is REJECTED, not silently defaulted:
+	// a typo must not leave the daemon on podman while the operator believes it
+	// selected something else.
+	t.Setenv(EnvEngine, "")
+	t.Setenv(EnvEngineAlias, "containerd")
+	if _, err := ResolveEngineFromEnv(); err == nil {
+		t.Error("an unknown project-wide engine name must be an error")
+	}
+}
