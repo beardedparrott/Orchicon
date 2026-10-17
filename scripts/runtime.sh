@@ -120,10 +120,22 @@ cmd_build() {
   [ -n "$base_version" ] || die "missing $RUNTIME_CONTEXT/Dockerfile — nothing to build from"
 
   build_variant "$RUNTIME_CONTEXT/Dockerfile" "$BASE_IMAGE" "$base_version"
-  build_variant "$RUNTIME_CONTEXT/Dockerfile.gui" "$GUI_IMAGE" \
-    "$(image_version "$RUNTIME_CONTEXT/Dockerfile.gui" "$base_version")" "$BASE_IMAGE"
-  build_variant "$RUNTIME_CONTEXT/Dockerfile.dev" "$DEV_IMAGE" \
-    "$(image_version "$RUNTIME_CONTEXT/Dockerfile.dev" "$base_version")" "$BASE_IMAGE"
+  # The two variants are OPTIONAL: a tree that ships only the base Dockerfile must
+  # still build, and an absent file is not an empty version to compare against (the
+  # gate would then report "needs rebuild" and hand the engine `-f ''`). Same guard
+  # the ported code in container.sh had.
+  if [ -f "$RUNTIME_CONTEXT/Dockerfile.gui" ]; then
+    build_variant "$RUNTIME_CONTEXT/Dockerfile.gui" "$GUI_IMAGE" \
+      "$(image_version "$RUNTIME_CONTEXT/Dockerfile.gui" "$base_version")" "$BASE_IMAGE"
+  else
+    log_dim "no deploy/runtime/Dockerfile.gui — skipping the :gui variant"
+  fi
+  if [ -f "$RUNTIME_CONTEXT/Dockerfile.dev" ]; then
+    build_variant "$RUNTIME_CONTEXT/Dockerfile.dev" "$DEV_IMAGE" \
+      "$(image_version "$RUNTIME_CONTEXT/Dockerfile.dev" "$base_version")" "$BASE_IMAGE"
+  else
+    log_dim "no deploy/runtime/Dockerfile.dev — skipping the :dev variant"
+  fi
 
   # A rebuild repoints the tag and leaves the previous image dangling; repeated dev
   # builds otherwise accumulate tens of GB of unreferenced layers. Dangling only —
