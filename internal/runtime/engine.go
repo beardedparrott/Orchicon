@@ -408,3 +408,32 @@ func (e Engine) IsAbsentOutput(out string) bool {
 	}
 	return false
 }
+
+// planEngineNameForError is the engine family name for an operator-facing
+// message (lower case: "podman" / "docker").
+//
+// Resolution cannot fail into the WRONG family here: ResolveEngine reports the
+// family it resolved even when the binary is missing, so a host without the
+// engine on PATH still names the engine it was configured for.
+func planEngineNameForError() string {
+	eng, _ := ResolveEngineFromEnv()
+	return eng.name()
+}
+
+// containerResidencyNeedsOverride reports whether a CONTAINER-RESIDENT plane
+// under this engine can derive its own address at all, and therefore whether an
+// explicit ORCHICON_PLANE_PUBLIC_URL is REQUIRED.
+//
+// Docker writes "<ip> <hostname>" into the container's /etc/hosts and its
+// 172.17.0.1 gateway exists, so planePublicURL's (lifecycle.go) historical
+// gateway fallback stays a correct guard. Podman — rootless on Linux
+// (slirp4netns/pasta) and always across the podman-machine VM boundary on
+// macOS/Windows — writes no such entry and has no 172.17.0.1 gateway: there is
+// NO derivable address. Emitting the Docker gateway there would hand every
+// worker in the run a URL that can only time out, far from the cause, so
+// planePublicURL returns "" and planeURLForRun fails LOUDLY naming
+// ORCHICON_PLANE_PUBLIC_URL.
+func containerResidencyNeedsOverride() bool {
+	eng, _ := ResolveEngineFromEnv()
+	return eng.isPodman()
+}
