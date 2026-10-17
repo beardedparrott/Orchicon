@@ -217,7 +217,7 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 		delete(p.entries, chosen.name)
 		delete(p.leased, runID)
 		p.mu.Unlock()
-		_, _ = p.d.docker("rm", "-f", chosen.name)
+		_, _ = p.d.engine("rm", "-f", chosen.name)
 	}
 
 	resp, err := p.d.createContainer(poolName(key), req)
@@ -233,7 +233,7 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 		winner := p.entries[winnerName]
 		p.mu.Unlock()
 		if winner != nil {
-			_, _ = p.d.docker("rm", "-f", resp.Name)
+			_, _ = p.d.engine("rm", "-f", resp.Name)
 			return winner.response(), nil
 		}
 		p.mu.Lock()
@@ -299,7 +299,7 @@ func (p *daemonPool) release(runID string) {
 // reset is dropped — the next checkout creates fresh. The released
 // container is removed FIRST so a reset never leaks its predecessor.
 func (p *daemonPool) resetAndPool(old *poolEntry) {
-	_, _ = p.d.docker("rm", "-f", old.name)
+	_, _ = p.d.engine("rm", "-f", old.name)
 	// Re-derive the env key from the CURRENT host state instead of reusing
 	// old.envKey: a read-once host input (config/auth/adapter/token) that
 	// changed while the run was leased must land the reset container under
@@ -345,9 +345,9 @@ func (p *daemonPool) resetAndPool(old *poolEntry) {
 	p.mu.Unlock()
 	if overCap {
 		// At the per-env cap: drop the freshly-reset container (never a
-		// docker call under the pool lock).
+		// engine call under the pool lock).
 		p.d.Log.Info("pool reset: at per-env cap, dropping container", "env", ent.envKey, "container", name)
-		_, _ = p.d.docker("rm", "-f", name)
+		_, _ = p.d.engine("rm", "-f", name)
 	}
 }
 
@@ -385,7 +385,7 @@ func (p *daemonPool) idleReap() {
 	p.mu.Unlock()
 	for _, ent := range stale {
 		p.d.Log.Info("pool idle reap: removing warm container", "env", ent.envKey, "container", ent.name)
-		_, _ = p.d.docker("rm", "-f", ent.name)
+		_, _ = p.d.engine("rm", "-f", ent.name)
 		p.mu.Lock()
 		delete(p.entries, ent.name)
 		p.mu.Unlock()
@@ -492,7 +492,7 @@ func (p *daemonPool) sweepPreRestartOrphans(instance string) {
 			continue
 		}
 		p.d.Log.Info("pre-restart sweep: removing untracked container", "instance", instance, "container", n)
-		_, _ = p.d.docker("rm", "-f", n)
+		_, _ = p.d.engine("rm", "-f", n)
 	}
 }
 
@@ -554,7 +554,7 @@ func (p *daemonPool) reapStaleLeases() {
 		p.d.Log.Warn("pool stale-lease reap: removing abandoned run container",
 			"run", v.runID, "container", v.name,
 			"hint", "run died without releasing (lost terminal reap)")
-		_, _ = p.d.docker("rm", "-f", v.name)
+		_, _ = p.d.engine("rm", "-f", v.name)
 		p.mu.Lock()
 		// Delete only if the mapping still points at the same container — a
 		// concurrent checkout could have re-leased the run meanwhile.

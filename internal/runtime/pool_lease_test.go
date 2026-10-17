@@ -39,7 +39,7 @@ func newLeaseTestPool(t *testing.T) (*Daemon, *daemonPool, func(runID string) Cr
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ExePath:   exe,
 		ghTokenFn: func() string { return "" },
-		dockerFn: func(args ...string) (string, error) {
+		engineFn: func(args ...string) (string, error) {
 			if len(args) >= 3 && args[0] == "rm" && args[1] == "-f" {
 				mu.Lock()
 				removed = append(removed, args[2])
