@@ -79,10 +79,29 @@ func TestPristineResetRealEngine(t *testing.T) {
 	}
 
 	name := fmt.Sprintf("orchicon-pristine-%d", time.Now().UnixNano())
+	// containerID reads the engine's id for the container, so run A and run B can
+	// be shown to be DIFFERENT containers (a "reset" that resumed the previous
+	// one would keep its id — and its writable layer — and the state probes below
+	// would be the only thing standing between a restart and a false pass).
+	containerID := func() string {
+		t.Helper()
+		out, err := d.engine("inspect", "--format", "{{.Id}}", name)
+		if err != nil || strings.TrimSpace(out) == "" {
+			t.Fatalf("could not read the container id for %q (%s): %v", name, strings.TrimSpace(out), err)
+		}
+		return strings.TrimSpace(out)
+	}
 	// createRun runs ONE container from the same name + spec — the "identical
 	// spec" half of the reset. It returns the argv it used so run A and run B are
 	// provably created the same way.
-	createRun := func() []string {
+	//
+	// `fatal` distinguishes the two calls, and it matters: run A's failure can
+	// legitimately mean "this image has no /bin/sh + sleep" (an honest skip), but
+	// by run B the image and the engine are PROVEN — so a failed recreate is the
+	// podman hazard this tier exists to catch (a name the engine had not really
+	// released after `rm -f`). Reporting that as a skip would mask exactly the
+	// failure the test was written for, so run B's failure is fatal.
+	createRun := func(fatal bool) []string {
 		t.Helper()
 		args := []string{"run", "-d", "--name", name,
 			"--label", "orchicon.workflow=pristine-reset-test",
@@ -90,6 +109,12 @@ func TestPristineResetRealEngine(t *testing.T) {
 		}
 		if out, err := d.engine(args...); err != nil {
 			d.removeContainer(name)
+			if fatal {
+				t.Fatalf("run B could not be created after the removal primitive reported the name released "+
+					"(%s) — on %s this is the lingering-name failure the reset's bounded wait exists to "+
+					"prevent, i.e. a reset that silently fails (BF-3(b) / ADR-0013 D5.2): %v",
+					strings.TrimSpace(out), eng.EngineNameForError(), err)
+			}
 			t.Skipf("could not start %q with /bin/sh + sleep on %s (%s) — set ORCHICON_RUNTIME_TEST_IMAGE "+
 				"to an image that has them; the REAL-ENGINE pristine tier did NOT run",
 				image, eng.EngineNameForError(), strings.TrimSpace(out))
@@ -100,7 +125,8 @@ func TestPristineResetRealEngine(t *testing.T) {
 	defer cleanup()
 
 	// RUN A: a real container, real state written into its writable layer.
-	runAArgs := createRun()
+	runAArgs := createRun(false)
+	idA := containerID()
 	if out, err := d.engine("exec", name, "sh", "-c", pristineStateWriter); err != nil {
 		t.Fatalf("run A could not write its state (%s): %v", strings.TrimSpace(out), err)
 	}
@@ -120,8 +146,15 @@ func TestPristineResetRealEngine(t *testing.T) {
 			"recreate on podman", eng.EngineNameForError(), name)
 	}
 
-	// RUN B: the same spec from the same name. A fresh container, not a restart.
-	runBArgs := createRun()
+	// RUN B: the same spec from the same name. A fresh container, not a restart —
+	// so its engine id must differ from run A's (a resumed container would keep
+	// the id AND the writable layer).
+	runBArgs := createRun(true)
+	if idB := containerID(); idB == idA {
+		t.Fatalf("run B is the SAME container as run A (id %s) — the removal primitive did not recreate "+
+			"it, so the writable layer was carried across the run boundary on %s (BF-3(b))",
+			idA, eng.EngineNameForError())
+	}
 	if len(runAArgs) != len(runBArgs) {
 		t.Fatalf("run A and run B were created from different argv: %v vs %v", runAArgs, runBArgs)
 	}
