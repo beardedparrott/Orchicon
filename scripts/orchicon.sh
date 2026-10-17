@@ -1,27 +1,34 @@
 #!/usr/bin/env bash
 #
-# orchicon.sh — START/STOP THE ORCHICON PLANE ON THE HOST.
+# orchicon.sh — START/STOP AN ORCHICON INSTANCE ON THE HOST.
 #
-# WHY THIS EXISTS. Orchicon's plane runs on the HOST (a host user is the user);
-# the SERVICES it needs (Postgres, NATS, telemetry) still run in the instance's
-# container. `scripts/container.sh` owns all of that, but its name says
-# "container" and its default verb set does not make the two halves obvious. This
-# is the entry point to reach for day to day: it starts BOTH halves, stops BOTH
-# halves, and tells you what is running.
+# WHY THIS EXISTS. An instance's PLANE runs on the HOST (a host user is the user);
+# the SERVICES it needs (Postgres, NATS, telemetry) are started and stopped
+# alongside it. There is no image and no instance container: this is the entry
+# point to reach for day to day, and it starts BOTH halves, stops BOTH halves and
+# tells you what is running.
 #
 # USAGE
-#   scripts/orchicon.sh start   [dev|prod]     # services container + host plane
-#   scripts/orchicon.sh stop    [dev|prod]     # stop both halves
-#   scripts/orchicon.sh restart [dev|prod]
-#   scripts/orchicon.sh status  [dev|prod]     # what is up, and is it healthy
-#   scripts/orchicon.sh logs    [dev|prod]     # the plane's log
-#   scripts/orchicon.sh rebuild [dev|prod]     # rebuild image + restart (see note below)
+#   scripts/orchicon.sh start   [dev|prod|test]   # services + host plane
+#   scripts/orchicon.sh stop    [dev|prod|test]   # stop both halves
+#   scripts/orchicon.sh restart [dev|prod|test]
+#   scripts/orchicon.sh status  [dev|prod|test]   # what is up, and is it healthy;
+#                                                 # NO argument reports EVERY instance
+#   scripts/orchicon.sh logs    [dev|prod|test]   # the plane's log
+#   scripts/orchicon.sh rebuild [dev|prod|test]   # restart only — see the note below
 #   scripts/orchicon.sh help
 #
-# INSTANCES. `dev` listens on 127.0.0.1:8080 with its services container on
-# 5432; `prod` on 127.0.0.1:8091 with its container on 5433. They are fully
-# separate — separate databases, separate data dirs, separate permission
-# policies — so stopping one never touches the other. Default: dev.
+# INSTANCES. `dev` listens on 127.0.0.1:8080 with its services on 5432; `prod` on
+# 127.0.0.1:8091 with its services on 5433; `test` is a throwaway on its own
+# offset ports. They are fully separate — separate databases, separate data dirs,
+# separate permission policies — so stopping one never touches another.
+# Default: dev. `status` is the exception: with no argument it reports them all.
+#
+# INSTANCE NAMES ARE VALIDATED, NOT ALLOWLISTED. The name becomes a state
+# directory ($HOME/.local/share/orchicon-<inst>), so only what cannot be a path is
+# refused: `/`, `\` and `..`. Anything else is the port table's business to reject
+# with a real message — the old hardcoded dev|prod allowlist is what made
+# `make rebuild-test` fail with "unknown instance 'test'".
 #
 # CLIENT
 #   The TUI talks to an instance through a profile in ~/.orchicon/config:
@@ -30,17 +37,16 @@
 #   The GUI is served BY the plane: open http://127.0.0.1:8080 (dev) or
 #   http://127.0.0.1:8091 (prod).
 #
-# WHAT THIS DELEGATES. Everything. The launch logic — the services container,
-# its published ports, the host plane's loopback + docker-bridge listeners, the
-# per-instance data dirs and the KEK migration — lives in scripts/container.sh
-# and is not duplicated here. This script's only job is to make the HOST shape
-# the obvious default and to say plainly what it did.
+# THE VERBS ARE THE CONTRACT. start|stop|restart|status|logs|rebuild are what other
+# tooling calls — the Makefile's instance-* targets name these and nothing further,
+# so the implementation behind them can change without an edit up there. The launch
+# logic (the services, their ports, the plane's loopback + bridge listeners, the
+# per-instance data dirs, the KEK migration) is NOT duplicated here: this script's
+# job is to make the host shape the obvious default and to say plainly what it did.
 #
 # RESIDENCY. Host residency is pinned explicitly (ORCHICON_PLANE_RESIDENCY=host)
-# rather than inherited, so this script cannot silently start a container-plane
-# instance and leave you wondering why the services container has no plane in it.
-# To go back to the all-in-container shape, use container.sh directly:
-#   scripts/container.sh up dev container
+# rather than inherited, so this script cannot silently start a shape other than the
+# one the product ships.
 #
 set -euo pipefail
 
@@ -53,13 +59,22 @@ if [ ! -x "$CONTAINER_SH" ]; then
 fi
 
 usage() {
-  sed -n '3,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # THE HEADER IS THE USAGE TEXT: print the leading comment block (line 3 up to the
+  # first non-comment line) so the two cannot drift apart.
+  awk 'NR < 3 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"
   exit "${1:-0}"
 }
 
-die_inst() {
-  echo "orchicon.sh: unknown instance '$1' — expected 'dev' or 'prod'" >&2
-  exit 2
+# validate_instance_name refuses only a name that cannot BE a state directory. The
+# same rule cmd/orchicon/restart.go applies, for the same reason: the name is a
+# path, so a separator or a parent reference escapes it.
+validate_instance_name() {
+  case "$1" in
+    */*|*\\*|*..*)
+      echo "orchicon.sh: invalid instance name '$1' — it becomes a state directory, so '/', '\\' and '..' are refused" >&2
+      exit 2
+      ;;
+  esac
 }
 
 # host_up/host_down pin the residency for the ONE invocation, per instance.
@@ -70,44 +85,53 @@ host_run() {
 }
 
 cmd="${1:-help}"
-inst="${2:-dev}"
+# NO DEFAULT HERE. `status` must be able to mean "every instance", so the default
+# is applied by each verb that needs one instance (below), not once at the top.
+inst="${2:-}"
 
 case "$cmd" in
   start|up)
-    case "$inst" in dev|prod) ;; *) die_inst "$inst" ;; esac
+    inst="${inst:-dev}"; validate_instance_name "$inst"
     host_run "$inst" up
+    case "$inst" in
+      dev)  plane_url="http://127.0.0.1:8080" ;;
+      prod) plane_url="http://127.0.0.1:8091" ;;
+      *)    plane_url="(this instance's own port — see: scripts/orchicon.sh status $inst)" ;;
+    esac
     echo
     echo "── orchicon $inst is up ──────────────────────────────────────────"
-    echo "  plane   http://127.0.0.1:$([ "$inst" = prod ] && echo 8091 || echo 8080)"
+    echo "  plane   $plane_url"
     echo "  gui     open the URL above in a browser"
     echo "  tui     orch   (profile in ~/.orchicon/config)"
     echo "  logs    scripts/orchicon.sh logs $inst"
     ;;
   stop|down)
-    case "$inst" in dev|prod) ;; *) die_inst "$inst" ;; esac
+    inst="${inst:-dev}"; validate_instance_name "$inst"
     host_run "$inst" down
-    echo "✓ orchicon $inst stopped (plane and its services container)"
+    echo "✓ orchicon $inst stopped (plane and its services)"
     ;;
   restart)
-    case "$inst" in dev|prod) ;; *) die_inst "$inst" ;; esac
+    inst="${inst:-dev}"; validate_instance_name "$inst"
     host_run "$inst" down
     host_run "$inst" up
     echo "✓ orchicon $inst restarted"
     ;;
   status)
-    case "$inst" in dev|prod|"") ;; *) die_inst "$inst" ;; esac
+    # WITH NO INSTANCE: report them ALL. "What is running on this host?" is the
+    # question an operator asks without naming one, and it is what `make
+    # instance-ps` calls — a `dev` default here made that target unable to answer.
+    if [ -n "$inst" ]; then validate_instance_name "$inst"; fi
     "$CONTAINER_SH" status "$inst"
     ;;
   logs)
-    case "$inst" in dev|prod) ;; *) die_inst "$inst" ;; esac
+    inst="${inst:-dev}"; validate_instance_name "$inst"
     "$CONTAINER_SH" logs "$inst"
     ;;
   rebuild)
-    case "$inst" in dev|prod) ;; *) die_inst "$inst" ;; esac
-    # container.sh rebuild does NOT run the test suite; the Makefile target does
-    # (build → ci → migrate-hash → image → restart). For a change you intend to
-    # ship, use `make rebuild-$inst`. This verb is the quick path: rebuild the
-    # image and restart, no checks.
+    inst="${inst:-dev}"; validate_instance_name "$inst"
+    # This verb does NOT run the test suite; the Makefile target does (build → ci →
+    # migrate-hash → restart). For a change you intend to ship, use
+    # `make rebuild-$inst`. This is the quick path: rebuild and restart, no checks.
     echo "note: this rebuilds and restarts WITHOUT running the test suite."
     echo "      to gate on tests/checks, use: make rebuild-$inst"
     host_run "$inst" rebuild
