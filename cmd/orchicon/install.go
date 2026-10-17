@@ -185,7 +185,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	if containersUsed {
 		// REQUIRED images: the instance image and the workflow runtime base. Without
 		// these the install cannot produce a working instance, so a failure is fatal.
-		installPhase("pulling the published images — this is the slow part")
+		installPhase("pulling the plane image — this is the slow part")
 		// THE INSTANCE IMAGE: if the exact version's image cannot be fetched, fall back to the floating ref rather
 		// than failing an install that could otherwise succeed — a version pinned before container images were
 		// published has no tag of its own, and refusing to install it would be a regression. The fallback is
@@ -209,27 +209,19 @@ func runInstall(args []string, log *slog.Logger) error {
 			}
 			containerImage = fallback
 		}
-		if err := ensureImage(runtimeImage); err != nil {
-			return err
-		}
-		// SUPPLEMENTARY images: the :gui and :dev variants are the stock runtime
-		// images a work item can pick, not prerequisites for an install. A missing tag
-		// therefore WARNS rather than failing.
+		// RUNTIME IMAGES ARE NOT PULLED HERE. They are fetched ON DEMAND — at opt-in time (the
+		// Runtime Images page, or the moment a project is switched to runtime containers), never
+		// during install and never inside a workflow run. A project starts in execution_mode=local,
+		// so a user who never opts into containers needs no runtime image at all; pulling four
+		// multi-GB images up front made every install pay for a feature it might not use.
 		//
-		// THIS BEING FATAL IS HOW THE INSTALL BROKE. The refs were built as
-		// "<suffix>-<tag>", so the default "latest" produced "...:gui-latest" — a tag
-		// release.yml NEVER PUBLISHES (it publishes "<suffix>-<version>" plus a
-		// FLOATING ":gui"/":dev"). Every fresh install aborted right here, before
-		// creating anything, with:
-		//   pull ghcr.io/beardedparrott/orchicon-runtime:gui-latest: not found
-		// The ref is built correctly now (runtimeVariantRef), and a supplementary
-		// image can no longer fail an install even if the registry drops a tag again.
-		for _, img := range []string{runtimeVariantRef("gui", imageTag), runtimeVariantRef("dev", imageTag)} {
-			if err := ensureImage(img); err != nil {
-				fmt.Printf("warning: %v\n", err)
-				fmt.Println("  (the stock runtime image variants are supplementary — continuing)")
-			}
+		// The plane image above is a different thing: it IS the instance, so it stays required.
+		installPhase("runtime images (optional)")
+		installChoices, cerr := resolveInstallRuntimeImages(os.Stdout, os.Stdin, imageTag)
+		if cerr != nil {
+			fmt.Printf("warning: %v\n", cerr)
 		}
+		ensureInstallRuntimeImages(installChoices, os.Stdout)
 	} else {
 		installPhase("skipping the image pull — no container engine")
 		fmt.Println("orchicon: the published images are only used by container shapes, and there is nothing on this host to run them in")

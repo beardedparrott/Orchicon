@@ -45,6 +45,13 @@ const (
 	RuntimeImageStatus_RUNTIME_IMAGE_STATUS_BUILDING    RuntimeImageStatus = 2 // a build is in flight
 	RuntimeImageStatus_RUNTIME_IMAGE_STATUS_READY       RuntimeImageStatus = 3 // last build succeeded, tag usable
 	RuntimeImageStatus_RUNTIME_IMAGE_STATUS_FAILED      RuntimeImageStatus = 4 // last build failed (build_log has why)
+	// ABSENT: the spec is CORRECT but its image is not present locally and no
+	// build is running. Distinct from DRAFT (a custom spec never built) and
+	// from FAILED (a build was attempted and failed): an absent row is never
+	// auto-built, because building is far heavier than fetching. It becomes
+	// READY through BuildRuntimeImage (build a spec) or FetchRuntimeImage
+	// (download the published image) — both are explicit operator actions.
+	RuntimeImageStatus_RUNTIME_IMAGE_STATUS_ABSENT RuntimeImageStatus = 5
 )
 
 // Enum value maps for RuntimeImageStatus.
@@ -55,6 +62,7 @@ var (
 		2: "RUNTIME_IMAGE_STATUS_BUILDING",
 		3: "RUNTIME_IMAGE_STATUS_READY",
 		4: "RUNTIME_IMAGE_STATUS_FAILED",
+		5: "RUNTIME_IMAGE_STATUS_ABSENT",
 	}
 	RuntimeImageStatus_value = map[string]int32{
 		"RUNTIME_IMAGE_STATUS_UNSPECIFIED": 0,
@@ -62,6 +70,7 @@ var (
 		"RUNTIME_IMAGE_STATUS_BUILDING":    2,
 		"RUNTIME_IMAGE_STATUS_READY":       3,
 		"RUNTIME_IMAGE_STATUS_FAILED":      4,
+		"RUNTIME_IMAGE_STATUS_ABSENT":      5,
 	}
 )
 
@@ -356,13 +365,14 @@ const file_orchicon_api_v1_runtime_image_proto_rawDesc = "" +
 	"\vfailed_step\x18\x15 \x01(\tR\n" +
 	"failedStep\x12\x19\n" +
 	"\blog_tail\x18\x16 \x01(\tR\alogTail\x12)\n" +
-	"\x10failure_category\x18\x17 \x01(\tR\x0ffailureCategory*\xbe\x01\n" +
+	"\x10failure_category\x18\x17 \x01(\tR\x0ffailureCategory*\xdf\x01\n" +
 	"\x12RuntimeImageStatus\x12$\n" +
 	" RUNTIME_IMAGE_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aRUNTIME_IMAGE_STATUS_DRAFT\x10\x01\x12!\n" +
 	"\x1dRUNTIME_IMAGE_STATUS_BUILDING\x10\x02\x12\x1e\n" +
 	"\x1aRUNTIME_IMAGE_STATUS_READY\x10\x03\x12\x1f\n" +
-	"\x1bRUNTIME_IMAGE_STATUS_FAILED\x10\x04B\xcb\x01\n" +
+	"\x1bRUNTIME_IMAGE_STATUS_FAILED\x10\x04\x12\x1f\n" +
+	"\x1bRUNTIME_IMAGE_STATUS_ABSENT\x10\x05B\xcb\x01\n" +
 	"\x13com.orchicon.api.v1B\x11RuntimeImageProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (

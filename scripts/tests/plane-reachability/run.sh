@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Offline harness for scripts/container.sh's HOST-RESIDENT plane bind and
-# per-instance plane URL (bridge_ip / bridge_bind_env / PLANE_HTTP_PORT).
+# Offline harness for the HOST-RESIDENT plane bind and per-instance plane URL
+# (bridge_ip / bridge_bind_env / PLANE_HTTP_PORT). THE SUBJECT DID NOT MOVE — the
+# file did: those three now live in scripts/lib/instances.sh, the one place the
+# shell side enumerates dev/test/prod, so this harness reads that library instead
+# of the launcher. bridge_ip resolves the engine through lib/engine.sh, so that is
+# extracted too.
 #
 # WHY THIS EXISTS: a host-resident plane must listen on the loopback address
 # (host clients: orch, the GUI) AND on the docker bridge at THIS instance's
@@ -15,17 +19,17 @@
 # a cross-instance write, which is why it gets its own test
 # (internal/server/plane_crossinstance_gated_test.go).
 #
-# WHAT IS REAL HERE: container.sh's own functions, EXTRACTED BY TEXT (never
-# executed — the script drives Docker, so running it is what a test must not
-# do). Extraction is asserted, so renaming a function upstream fails loudly
-# instead of silently testing nothing.
+# WHAT IS REAL HERE: the real functions, EXTRACTED BY TEXT (never executed — they
+# drive the container engine, so running them is what a test must not do).
+# Extraction is asserted, so renaming a function upstream fails loudly instead of
+# silently testing nothing.
 #
 # WHAT IS EMULATED: docker / the docker0 interface (PATH is narrowed to a stub
 # dir, so "docker unavailable" is a real, deterministic state rather than a
 # property of whoever's machine runs this) and the bridge address itself
 # (ORCHICON_DOCKER_BRIDGE_IP, the seam container.sh exposes for exactly this).
 #
-#   scripts/tests/plane-reachability/run.sh [container.sh]
+#   scripts/tests/plane-reachability/run.sh [instances.sh]
 #
 # Set ORCHICON_TEST_DOCKER=1 to also run the REAL end-to-end reachability
 # checks (needs a live host plane + the runtime image); they are reported as a
@@ -38,7 +42,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
 CONTAINER_SH="${REPO_ROOT}/scripts/container.sh"
-[ "$#" -gt 0 ] && CONTAINER_SH="$1"
+INSTANCES_SH="${REPO_ROOT}/scripts/lib/instances.sh"
+ENGINE_SH="${REPO_ROOT}/scripts/lib/engine.sh"
+[ "$#" -gt 0 ] && INSTANCES_SH="$1"
 
 unset ORCHICON_DOCKER_BRIDGE_IP 2>/dev/null || true
 
@@ -79,30 +85,38 @@ must_fail() { # <label> <expected> <actual> — PASSes only when check() would F
 }
 
 # --- the functions under test, extracted rather than sourced ----------------
+# extract_fn <file> <fn>
 extract_fn() {
-  awk -v fn="$1" '
+  awk -v fn="$2" '
     $0 == fn "() {" { inf = 1 }
     inf { print }
     inf && $0 == "}" { exit }
-  ' "$CONTAINER_SH"
+  ' "$1"
 }
 
-echo "container.sh under test: ${CONTAINER_SH}"
+echo "instance table under test: ${INSTANCES_SH}"
 echo
 
-# log_err is a one-liner in container.sh (not extractable by the multi-line
-# pattern below) and is not what this harness asserts: supply it.
+# log_err is a one-liner (not extractable by the multi-line pattern below) and is
+# not what this harness asserts: supply it.
 log_err() { printf '%s\n' "$*" >&2; }
 
-for fn in instance_info bridge_ip bridge_bind_env; do
-  body="$(extract_fn "$fn")"
-  if [ -z "$body" ]; then
-    echo "run.sh: could not extract ${fn}() from ${CONTAINER_SH}" >&2
-    echo "        renamed? this harness must never pass vacuously." >&2
-    exit 2
-  fi
-  eval "$body"
-done
+from_one() { # <file> <fn...>
+  local file="$1"; shift
+  local fn body
+  for fn in "$@"; do
+    body="$(extract_fn "$file" "$fn")"
+    if [ -z "$body" ]; then
+      echo "run.sh: could not extract ${fn}() from ${file}" >&2
+      echo "        renamed or moved? this harness must never pass vacuously." >&2
+      exit 2
+    fi
+    eval "$body"
+  done
+}
+
+from_one "$ENGINE_SH" engine_cmd
+from_one "$INSTANCES_SH" instance_info bridge_ip bridge_bind_env
 
 # --- deterministic tool environment -----------------------------------------
 STUB="$(mktemp -d)"
@@ -189,17 +203,34 @@ PLANE_URL_REFS="$(grep -rn 'export ORCHICON_PLANE_PUBLIC_URL' --exclude-dir=plan
   "${REPO_ROOT}/scripts" "${REPO_ROOT}/.env.example" "${REPO_ROOT}/Makefile" 2>/dev/null || true)"
 check_absent "nothing export's a globally-shared ORCHICON_PLANE_PUBLIC_URL" \
   "export ORCHICON_PLANE_PUBLIC_URL" "${PLANE_URL_REFS}"
-check "container.sh computes ORCHICON_PLANE_PUBLIC_URL in exactly one place" "1" \
-  "$(grep -c "printf 'ORCHICON_PLANE_PUBLIC_URL=" "${CONTAINER_SH}" | tr -d ' ')"
+check "the instance table computes ORCHICON_PLANE_PUBLIC_URL in exactly one place" "1" \
+  "$(grep -c "printf 'ORCHICON_PLANE_PUBLIC_URL=" "${INSTANCES_SH}" | tr -d ' ')"
 check_absent ".env.example does not carry ORCHICON_PLANE_PUBLIC_URL" \
   "ORCHICON_PLANE_PUBLIC_URL" "$(cat "${REPO_ROOT}/.env.example" 2>/dev/null || true)"
 
 # --- the code-side anchors these values depend on --------------------------- #
-if grep -qF '"--add-host", "host.docker.internal:host-gateway"' "${REPO_ROOT}/internal/runtime/daemon.go"; then
-  printf '  \033[32mPASS\033[0m  %-52s %s\n' "runtime containers get the host-gateway mapping" "daemon.go create args"
+# The create args come from the engine seam (internal/runtime/engine.go), not
+# from a literal in daemon.go: the alias a runtime container uses to reach a
+# HOST-resident plane is per engine (docker host.docker.internal, mapped by
+# --add-host host-gateway; podman host.containers.internal, which podman
+# injects itself). Both halves are asserted, because a missing mapping strands
+# every plane-channel worker inside its container and a podman-only
+# --add-host would fail container creation on older builds.
+ENGINE_GO="${REPO_ROOT}/internal/runtime/engine.go"
+if grep -qF 'hostGatewayArgs()' "${REPO_ROOT}/internal/runtime/daemon.go" &&
+  grep -qF ':host-gateway' "${ENGINE_GO}" 2>/dev/null; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "runtime containers get the host-gateway mapping" "daemon.go create args (engine seam)"
   PASSED=$((PASSED + 1))
 else
-  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "runtime containers get the host-gateway mapping" "missing from daemon.go create args"
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "runtime containers get the host-gateway mapping" "missing from daemon.go create args / engine.go"
+  FAILED=$((FAILED + 1))
+fi
+if grep -qF '"host.docker.internal"' "${ENGINE_GO}" 2>/dev/null &&
+  grep -qF '"host.containers.internal"' "${ENGINE_GO}" 2>/dev/null; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "the plane host alias is per engine" "docker + podman names declared in engine.go"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "the plane host alias is per engine" "engine.go does not declare both host names"
   FAILED=$((FAILED + 1))
 fi
 # The property is "no write to the error channel", so match the WRITE, not the

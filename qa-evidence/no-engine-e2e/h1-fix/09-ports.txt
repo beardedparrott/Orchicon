@@ -1,0 +1,28 @@
+ports still held after 0s: none
+process table (postgres|nats-server|exe/orchicon):
+  19607	postgres: orchicon orchicon 127.0.0.1(33064) idle                                                                                                                    
+  19613	postgres: orchicon orchicon 127.0.0.1(33070) idle                                                                                                                    
+  19614	postgres: orchicon orchicon 127.0.0.1(33076) idle                                                                                                                    
+  19615	postgres: orchicon orchicon 127.0.0.1(33100) idle                                                                                                                    
+  19616	postgres: orchicon orchicon 127.0.0.1(33078) idle                                                                                                                    
+  19617	postgres: orchicon orchicon 127.0.0.1(33106) idle                                                                                                                    
+  19618	postgres: orchicon orchicon 127.0.0.1(33112) idle                                                                                                                    
+  19619	postgres: orchicon orchicon 127.0.0.1(33118) idle                                                                                                                    
+  19620	postgres: orchicon orchicon 127.0.0.1(33124) idle                                                                                                                    
+  19621	postgres: orchicon orchicon 127.0.0.1(33138) idle                                                                                                                    
+  19622	postgres: orchicon orchicon 127.0.0.1(33140) idle                                                                                                                    
+  19623	postgres: orchicon orchicon 127.0.0.1(33152) idle                                                                                                                    
+  19624	postgres: orchicon orchicon 127.0.0.1(33168) idle                                                                                                                    
+  19625	postgres: orchicon orchicon 127.0.0.1(33182) idle                                                                                                                    
+  19636	postgres: orchicon orchicon 127.0.0.1(33194) idle                                                                                                                    
+  19637	postgres: orchicon orchicon 127.0.0.1(33202) idle                                                                                                                    
+  21307	postgres: orchicon orchicon 127.0.0.1(37274) idle                                                                                                                    
+  21386	postgres: orchicon orchicon 127.0.0.1(59518) idle                                                                                                                    
+  21387	postgres: orchicon orchicon 127.0.0.1(59520) idle                                                                                                                    
+  42	/usr/lib/postgresql/15/bin/postgres -D /var/lib/orchicon-sandbox/postgres -p 5432 -c listen_addresses=localhost -c unix_socket_directories=/var/lib/orchicon-sandbox 
+  43	postgres: checkpointer                                                                                                                                               
+  44	postgres: background writer                                                                                                                                          
+  46	postgres: walwriter                                                                                                                                                  
+  47	postgres: autovacuum launcher                                                                                                                                        
+  48	postgres: logical replication launcher                                                                                                                               
+  53	nats-server -js -p 4222 -sd /var/lib/orchicon-sandbox/nats 

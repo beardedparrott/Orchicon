@@ -87,8 +87,10 @@ func newDaemonPool(d *Daemon) *daemonPool {
 // poolEnvKey derives the environment key for a create request: the image +
 // the sorted mount set + a fingerprint of the read-once HOST inputs baked
 // into every container at create time (opencode config/auth, the adapter
-// install, the resolved GH token — see hostfp.go). Runs with the same image +
-// mounts + host inputs share a pool; different environments never share a
+// install, the resolved GH token — see hostfp.go) — and, through that same
+// hostFp term, the ENGINE identity (family, client version, create-time shape,
+// see daemon.go:<engineInputFingerprint>). Runs with the same image + mounts +
+// host inputs + engine share a pool; different environments never share a
 // container (bind mounts are fixed at create time and cannot change on a
 // running container, and the serve caches the host inputs at boot). hostFp ==
 // "" folds away — the key then reduces to image + mounts (no behavior change
@@ -217,7 +219,7 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 		delete(p.entries, chosen.name)
 		delete(p.leased, runID)
 		p.mu.Unlock()
-		_, _ = p.d.docker("rm", "-f", chosen.name)
+		_ = p.d.removeContainer(chosen.name)
 	}
 
 	resp, err := p.d.createContainer(poolName(key), req)
@@ -233,7 +235,7 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 		winner := p.entries[winnerName]
 		p.mu.Unlock()
 		if winner != nil {
-			_, _ = p.d.docker("rm", "-f", resp.Name)
+			_ = p.d.removeContainer(resp.Name)
 			return winner.response(), nil
 		}
 		p.mu.Lock()
@@ -297,9 +299,18 @@ func (p *daemonPool) release(runID string) {
 // resetAndPool recreates a released container fresh (pristine + warm serve)
 // and returns it to the clean pool, respecting the per-env cap. A failed
 // reset is dropped — the next checkout creates fresh. The released
-// container is removed FIRST so a reset never leaks its predecessor.
+// container is removed FIRST — and the removal WAITS for the engine to release
+// the name (d.removeContainer) — so a reset never leaks its predecessor and the
+// create below never races a lingering name.
+//
+// Nothing from the released run crosses this boundary: the predecessor is
+// gone, and the replacement carries the SAME create spec (image, mounts, serve
+// config, boot profile, project dir) from a FRESH name, so installed packages,
+// /tmp, and opencode session data cannot survive (ADR-0013 §6). The replacement
+// enters the clean pool ONLY after its serve answers — a dud would otherwise sit
+// in the pool for an idle-reap lifetime.
 func (p *daemonPool) resetAndPool(old *poolEntry) {
-	_, _ = p.d.docker("rm", "-f", old.name)
+	_ = p.d.removeContainer(old.name)
 	// Re-derive the env key from the CURRENT host state instead of reusing
 	// old.envKey: a read-once host input (config/auth/adapter/token) that
 	// changed while the run was leased must land the reset container under
@@ -320,6 +331,15 @@ func (p *daemonPool) resetAndPool(old *poolEntry) {
 	resp, err := p.d.createContainer(name, req)
 	if err != nil {
 		p.d.Log.Warn("pool reset failed — dropping container", "container", old.name, "error", err)
+		return
+	}
+	// The serve probe gates the entry into the pool (ADR-0013 §6): a reset
+	// container that is not actually serving would otherwise idle in the pool
+	// for a whole idle window and hand the next run a cold container. Probe
+	// with the SAME predicate checkout uses, so pool membership and reuse agree.
+	if resp.ServeURL != "" && !serveUsableAt(resp.ServeURL, resp.ServePassword) {
+		p.d.Log.Warn("pool reset: serve not usable — dropping container", "container", name)
+		_ = p.d.removeContainer(name)
 		return
 	}
 	ent := &poolEntry{
@@ -345,9 +365,9 @@ func (p *daemonPool) resetAndPool(old *poolEntry) {
 	p.mu.Unlock()
 	if overCap {
 		// At the per-env cap: drop the freshly-reset container (never a
-		// docker call under the pool lock).
+		// engine call under the pool lock).
 		p.d.Log.Info("pool reset: at per-env cap, dropping container", "env", ent.envKey, "container", name)
-		_, _ = p.d.docker("rm", "-f", name)
+		_ = p.d.removeContainer(name)
 	}
 }
 
@@ -385,7 +405,7 @@ func (p *daemonPool) idleReap() {
 	p.mu.Unlock()
 	for _, ent := range stale {
 		p.d.Log.Info("pool idle reap: removing warm container", "env", ent.envKey, "container", ent.name)
-		_, _ = p.d.docker("rm", "-f", ent.name)
+		_ = p.d.removeContainer(ent.name)
 		p.mu.Lock()
 		delete(p.entries, ent.name)
 		p.mu.Unlock()
@@ -492,7 +512,7 @@ func (p *daemonPool) sweepPreRestartOrphans(instance string) {
 			continue
 		}
 		p.d.Log.Info("pre-restart sweep: removing untracked container", "instance", instance, "container", n)
-		_, _ = p.d.docker("rm", "-f", n)
+		_ = p.d.removeContainer(n)
 	}
 }
 
@@ -554,7 +574,7 @@ func (p *daemonPool) reapStaleLeases() {
 		p.d.Log.Warn("pool stale-lease reap: removing abandoned run container",
 			"run", v.runID, "container", v.name,
 			"hint", "run died without releasing (lost terminal reap)")
-		_, _ = p.d.docker("rm", "-f", v.name)
+		_ = p.d.removeContainer(v.name)
 		p.mu.Lock()
 		// Delete only if the mapping still points at the same container — a
 		// concurrent checkout could have re-leased the run meanwhile.

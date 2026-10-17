@@ -1,8 +1,10 @@
-import { createRoute, useNavigate } from "@tanstack/react-router";
+import { Link, createRoute, useNavigate } from "@tanstack/react-router";
 import { EngineAvailability } from "@/components/EngineAvailability";
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { ArrowLeft, ArrowUp, Folder } from "lucide-react";
+
+import { RuntimeImageStatus } from "@/api/gen/orchicon/api/v1/runtime_image_pb";
 
 import {
   useActivateProject,
@@ -15,7 +17,7 @@ import {
   projectKeys,
 } from "@/api/projects";
 import { useGetSettings } from "@/api/settings";
-import { useAvailableRuntimeImages } from "@/api/runtimeImages";
+import { useAvailableRuntimeImages, useListRuntimeImages } from "@/api/runtimeImages";
 import { useListExecutions } from "@/api/executions";
 import { useListDirPath, useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
@@ -75,6 +77,11 @@ function ProjectDetailPage() {
   const [skillDraft, setSkillDraft] = useState<string[]>([]);
   const [skillDirty, setSkillDirty] = useState(false);
   const { data: availableImages } = useAvailableRuntimeImages();
+  // The tenant's runtime image ROWS (spec + status), not just the refs above.
+  // They let the runtime-defaults card say when the selected image is not
+  // downloaded: images are fetched at OPT-IN, never mid-run, so the moment a
+  // project is pointed at a container image is the moment to surface the fetch.
+  const { data: runtimeImageRows } = useListRuntimeImages();
   // The project↔server SELECTION is gone: a definition is OWNED by its scope
   // (mcp_servers.project_id), so there is no reference set to read or save.
   // The scope's own definitions are managed by MCPServersPanel below.
@@ -90,6 +97,15 @@ function ProjectDetailPage() {
   ].filter((img, i, arr) => img && arr.indexOf(img) === i);
   const defaultImageHint =
     (availableImages as { defaultImage?: string } | undefined)?.defaultImage || runtimeOptions[0] || "base image";
+  // The image this project would run (explicit choice, else the inherited
+  // base) and its row, so ABSENT (spec correct, image NOT downloaded locally,
+  // nothing building) can be reported here rather than only as a run that
+  // failed at start.
+  const selectedImageRef =
+    draftDefaultImage || (availableImages as { defaultImage?: string } | undefined)?.defaultImage || "";
+  const selectedImageRow = (runtimeImageRows ?? []).find(
+    (r) => r?.tag && r.tag === selectedImageRef,
+  );
 
   useEffect(() => {
     setDraftMaxRuns(String(project?.maxConcurrentRuns ?? ""));
@@ -578,6 +594,25 @@ function ProjectDetailPage() {
               <p className="text-xs text-muted-foreground">
                 Current: {draftDefaultImage || `inherit (${defaultImageHint})`} · {draftExecutionMode}
               </p>
+            )}
+            {selectedImageRow?.status === RuntimeImageStatus.RUNTIME_IMAGE_STATUS_ABSENT && (
+              <div
+                role="status"
+                className="rounded-xl border border-amber-500/40 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-100"
+              >
+                <strong>{selectedImageRef}</strong> is <strong>not downloaded</strong> on this host, and
+                runtime images are never downloaded inside a run — the next run in <strong>runtime</strong>{" "}
+                mode fails at start until it is present.{" "}
+                <Link
+                  to="/runtime-images/$id"
+                  params={{ id: selectedImageRow.id }}
+                  className="underline"
+                >
+                  Open it and press Fetch
+                </Link>{" "}
+                to download the published image (Deploy instead <em>builds</em> it from the Dockerfile,
+                which is much slower).
+              </div>
             )}
           </CardContent>
         </Card>

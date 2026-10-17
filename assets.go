@@ -61,7 +61,7 @@ var ServiceConfigsFS embed.FS
 // bin/orchicon there for the docker build, and go:embed would recursively
 // embed the binary, doubling the size on every rebuild).
 //
-//go:embed deploy/runtime/Dockerfile deploy/runtime/Dockerfile.gui deploy/runtime/Dockerfile.dev
+//go:embed deploy/runtime/Dockerfile deploy/runtime/Dockerfile.gui deploy/runtime/Dockerfile.dev deploy/runtime/Dockerfile.web-research
 var RuntimeImageTemplatesFS embed.FS
 
 // ThirdPartyFS embeds third-party license + notice text so the Apache-2.0

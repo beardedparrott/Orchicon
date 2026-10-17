@@ -1,0 +1,8 @@
+0	PASS	no container engine installed (docker/podman/nerdctl/docker-compose all absent)	
+0	PASS	the tree is a git checkout	
+0	PASS	the instance ports are free before the session starts	
+0	PASS	the port table resolves the ports this run chose	
+0	PASS	frontend deps present (frontend/node_modules)	
+1	FAIL	make build succeeds with no container engine	Makefile:255 build: fetch-tags fe-build
+1	PASS	bin/orchicon is executable	
+1	FAIL	bin/orch is executable	

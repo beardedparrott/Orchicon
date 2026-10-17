@@ -12,12 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 )
 
 // runRuntimeDaemon runs the host-side runtime orchestrator (`orchicon
-// runtime-daemon`). It owns the Docker socket and serves the narrow
+// runtime-daemon`). It owns the container engine (podman by default) and serves
 // workflow-runtime API over a unix socket. Run it on the host, not in a
 // container.
 func runRuntimeDaemon(args []string, log *slog.Logger) error {
@@ -71,18 +70,26 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		}
 	}
 
-	// THE ENGINE BINARY IS RESOLVED, NOT ASSUMED. It used to be the literal "docker", so a
-	// host that provisioned podman through `orchicon install` still got a daemon that spawned
-	// `docker` and could launch nothing. The fallback stays "docker" so a daemon started on a
-	// host the resolver cannot see behaves exactly as it did before this change.
-	engineBin := "docker"
-	if e, err := containerengine.Detect(containerengine.DefaultProbe()); err == nil && e.Bin != "" {
-		engineBin = e.Bin
+	// Resolve the container engine BEFORE the daemon exists: a missing engine is
+	// an operator-facing INSTALL problem, so it must fail here with the exact
+	// install command (runtime.ResolveEngine's error) rather than surfacing later
+	// as a bare `exec: "podman": executable file not found in $PATH` on the first
+	// container create — or, worse, as a container that never becomes ready.
+	//
+	// This supersedes the earlier "resolve, don't assume `docker`" fix from the
+	// Podman-provisioning branch: the engine is still resolved rather than
+	// assumed, but the resolution now lives in internal/runtime (the seam the
+	// daemon and the scheduler share), so a missing engine is reported as the
+	// operator-facing install problem it is instead of a silent fallback.
+	eng, err := runtime.ResolveEngineFromEnv()
+	if err != nil {
+		return err
 	}
+	log.Info("runtime engine resolved", "engine", eng.Name, "bin", eng.Bin)
 
 	d := &runtime.Daemon{
 		SocketPath:    socketPath,
-		DockerBin:     engineBin,
+		Engine:        eng,
 		Image:         env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest"),
 		Images:        runtimeImagesAllowlist(env("ORCHICON_RUNTIME_IMAGES", "")),
 		UserID:        hostUID,

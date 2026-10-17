@@ -59,6 +59,11 @@ case "$1" in
 esac
 STUB
 chmod +x "${BIN}/docker"
+# The teardown drives whichever engine scripts/lib/engine.sh resolves, so BOTH
+# names are stubbed: a docker-only stub would make the podman case pass by
+# finding no engine at all, which is the opposite of what it must prove.
+cp "${BIN}/docker" "${BIN}/podman"
+chmod +x "${BIN}/podman"
 
 # Scratch everything the installer resolves: binaries, host state, data.
 INSTALL_DIR="${WORK}/opt"
@@ -274,6 +279,95 @@ if printf '%s' "${OUT}" | grep -q "using 'dev'"; then
 else
   bad "install no longer defaults to dev (got: $(printf '%s' "${OUT}" | head -2 | tr '\n' ' '))"
 fi
+
+# --- 11. THE RE-HOMED TEARDOWN: scripts/orchicon.sh uninstall ------------------
+# The instance teardown used to be `scripts/container.sh uninstall <inst> --yes`,
+# and that script owned the instance table. Both moved: the table is
+# scripts/lib/instances.sh and the documented teardown verb is
+# `scripts/orchicon.sh uninstall <inst> --yes`. The PROMISE did not move, so it is
+# re-asserted here against the new entry point — instance-scoped, refused without
+# confirmation, printing what it removes before it removes it, never touching the
+# legacy dev/prod PG_VOLUME, and driving whichever engine ORCHICON_ENGINE names.
+ORCH="${REPO_ROOT}/scripts/orchicon.sh"
+
+# tear <logfile> <engine> <env...> -- <args...> — the real verb, with HOME
+# redirected so the instance's host data dir (which holds the KEK) resolves
+# INSIDE the scratch tree. That is the whole safety story: the verb is real, the
+# instance it can reach is not.
+tear() {
+  local log="$1" engine="$2"; shift 2
+  : > "${log}"
+  env -u ORCHICON_CONFIRM_DESTROY \
+      HOME="${WORK}/home" PATH="${BIN}:${PATH}" STUB_LOG="${log}" \
+      ORCHICON_ENGINE="${engine}" ORCHICON_HOST_BIN="${WORK}/no-such-orchicon" \
+      bash "${ORCH}" uninstall "$@" 2>&1
+}
+
+echo ""
+echo "[11] scripts/orchicon.sh uninstall is instance-scoped, confirmed and engine-aware"
+mkdir -p "${WORK}/home/.local/share/orchicon-test/serve"
+printf 'kek' > "${WORK}/home/.local/share/orchicon-test/serve/kek"
+mkdir -p "${WORK}/home/.local/share/orchicon-dev" "${WORK}/home/.local/share/orchicon-prod"
+printf 'dev' > "${WORK}/home/.local/share/orchicon-dev/keep"
+printf 'prod' > "${WORK}/home/.local/share/orchicon-prod/keep"
+
+# (a) NO CONFIRMATION ⇒ NOTHING HAPPENS. The log must be EMPTY (not "only reads"):
+# a destructive verb that inspects before refusing is already on the wrong side of
+# the line the incident history draws.
+OUT="$(tear "${WORK}/l11a.log" docker test)"
+RC=$?
+if [ "${RC}" -ne 0 ]; then ok "no --yes is refused (exit ${RC})"; else bad "no --yes was ACCEPTED"; fi
+if printf '%s' "${OUT}" | grep -q "volume — DELETED"; then ok "and it prints what it would remove first"; else bad "it does not print what it would remove"; fi
+if [ ! -s "${WORK}/l11a.log" ]; then ok "and issued NO engine command at all"; else bad "it ran the engine anyway: $(head -1 "${WORK}/l11a.log")"; fi
+if [ -f "${WORK}/home/.local/share/orchicon-test/serve/kek" ]; then ok "and the instance's KEK is untouched"; else bad "it deleted data without confirmation"; fi
+
+# (b) ORCHICON_CONFIRM_DESTROY=1 is the env-only confirmation form.
+: > "${WORK}/l11b.log"
+OUT="$(env HOME="${WORK}/home" PATH="${BIN}:${PATH}" STUB_LOG="${WORK}/l11b.log" \
+       ORCHICON_ENGINE=docker ORCHICON_CONFIRM_DESTROY=1 ORCHICON_HOST_BIN="${WORK}/no-such-orchicon" \
+       bash "${ORCH}" uninstall test 2>&1)"
+RC=$?
+if [ "${RC}" -eq 0 ]; then ok "ORCHICON_CONFIRM_DESTROY=1 proceeds (exit 0)"; else bad "ORCHICON_CONFIRM_DESTROY=1 did not proceed (exit ${RC})"; fi
+if grep -q "orchicon-cnt-test-data" "${WORK}/l11b.log"; then ok "and removes the test instance's volume"; else bad "the test volume was not removed"; fi
+if [ ! -e "${WORK}/home/.local/share/orchicon-test" ]; then ok "and removes the test instance's host data dir"; else bad "the host data dir survived"; fi
+
+# (c) SCOPE: only `test`. dev/prod containers, volumes AND the legacy compose
+# volumes must be absent from the engine log — the last one is the documented
+# refusal: PG_VOLUME predates the single-container layout and may hold data this
+# instance never owned.
+LEAK="$(grep -E 'orchicon-cnt-(dev|prod)|orchicon_(prod_)?postgres-data' "${WORK}/l11b.log" 2>/dev/null | head -3 | tr '\n' ' ')"
+if [ -z "${LEAK}" ]; then ok "no sibling container, volume or legacy PG volume appears"; else bad "a sibling leaked into the engine log: ${LEAK}"; fi
+if [ -f "${WORK}/home/.local/share/orchicon-dev/keep" ] && [ -f "${WORK}/home/.local/share/orchicon-prod/keep" ]; then
+  ok "dev and prod data dirs are untouched"
+else
+  bad "a sibling instance's data dir was touched"
+fi
+
+# (d) ENGINE-AWARE: pinning podman must drive podman and NOT docker.
+: > "${WORK}/l11d.log"
+env HOME="${WORK}/home" PATH="${BIN}:${PATH}" STUB_LOG="${WORK}/l11d.log" \
+    ORCHICON_ENGINE=podman ORCHICON_CONFIRM_DESTROY=1 ORCHICON_HOST_BIN="${WORK}/no-such-orchicon" \
+    bash "${ORCH}" uninstall test >/dev/null 2>&1
+if grep -q "orchicon-cnt-test" "${WORK}/l11d.log"; then ok "ORCHICON_ENGINE=podman drives the engine for the teardown"; else bad "podman was not driven"; fi
+
+# (e) AN UNKNOWN INSTANCE IS REFUSED, never defaulted: the verb this repo
+# documents must not pick one for you.
+OUT="$(tear "${WORK}/l11e.log" docker production)"
+RC=$?
+if [ "${RC}" -ne 0 ] && printf '%s' "${OUT}" | grep -q "unknown instance"; then ok "an unknown instance is refused"; else bad "an unknown instance was not refused"; fi
+if [ ! -s "${WORK}/l11e.log" ]; then ok "and nothing was touched"; else bad "it acted on an instance nobody named"; fi
+
+# --- 12. clean-docker: engine-aware, and still scoped -------------------------
+# The other half of the same engine switch. The assertions are the ones the
+# incident history demands: it prunes through the resolved engine, it prunes by
+# our label only, and it NEVER prunes volumes — no engine has an ownership filter
+# for them, so there is no predicate that makes a volume prune ours.
+CD="$(make -s -n -f "${REPO_ROOT}/Makefile" clean-docker ORCHICON_ENGINE=podman 2>/dev/null)"
+if printf '%s' "${CD}" | grep -q "podman image prune -f --filter \"dangling=true\""; then ok "clean-docker drives the resolved engine (podman)"; else bad "clean-docker still hardcodes docker"; fi
+if printf '%s' "${CD}" | grep -q "podman container prune -f --filter \"label=orchicon-instance\""; then ok "and scopes container pruning to OUR label"; else bad "the container prune is not label-scoped"; fi
+if printf '%s' "${CD}" | grep -q "volume prune"; then bad "clean-docker prunes volumes (host-wide, unanchored)"; else ok "and never prunes volumes (no ownership filter exists)"; fi
+CD_NONE="$(env -u ORCHICON_ENGINE PATH="/usr/bin:/bin" make -s -n -f "${REPO_ROOT}/Makefile" clean-docker 2>/dev/null)"
+if printf '%s' "${CD_NONE}" | grep -q "no container engine found"; then ok "and a missing engine is a LOUD SKIP, not a failure"; else bad "a missing engine is not handled"; fi
 
 echo ""
 if [ "${FAIL}" -eq 0 ]; then
