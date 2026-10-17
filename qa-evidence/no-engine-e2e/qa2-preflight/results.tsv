@@ -1,0 +1,6 @@
+0	PASS	no container engine installed (docker/podman/nerdctl/docker-compose all absent)	
+0	PASS	the tree is a git checkout	
+0	PASS	the instance ports are free before the session starts	
+0	PASS	the port table resolves the ports this run chose	
+0	PASS	the host has the disk budget for a cold build (checkout 174802/5100 MB, go caches 342/50, build cache 342/0, go $WORK 174802/0, tmp 516/200)	
+0	SKIP	frontend deps installed (make fe-install)	

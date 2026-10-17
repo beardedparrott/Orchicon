@@ -210,3 +210,52 @@ empty directory on the same 360 MB volume makes step 0 exit **2** naming `GOMODC
 
 What this does *not* prove is the rest of the session — re-run it; no result in this report may
 be read as a pass for steps it never reached.
+
+---
+
+## 6. Run #3 — the full session ACTUALLY RAN (acceptance verdict)
+
+Evidence: `qa-evidence/no-engine-e2e/qa2-full/` (harness run `20261017T054835Z`, HEAD `1a39bbdf5`,
+no container engine, dev `15432/14222/18080`, prod `15433/14223/18091`).
+**Result: 49 PASS / 15 FAIL / 1 SKIP — the earlier disk blocker is gone** (step 0 measured
+`checkout 174831/5100 MB, go caches 342/50, go $WORK 174831/0, tmp 582/200` and the cold build
+completed). The engine-free session is now real end to end for the parts below.
+
+Steps that **PASS outright** (independent evidence beside each): **1** (`make build` → `bin/orchicon`
++ `bin/orch`; `make services` → Postgres 15432 + NATS 14222 LISTENing per `/proc/net/tcp`;
+`make run` → `/healthz {"status":"ok"}`, socket owned by a real pid), **2 migrate** (applies, second
+run a clean no-op), **7** (dev + prod coexist, different DSNs/ports, independent start/stop, prod
+survives dev's shutdown, prod's migrate never touches dev), **8 sentinel half** (nothing outside
+Orchicon's artifacts disappears), **9** (stopping leaves every port free, `services status` → down).
+
+Still-failing, now observed on a *running* session (filed, never patched here — AC11):
+
+| # | AC | Symptom (verbatim from evidence) | Owner |
+|---|---|---|---|
+| D1 | 5, 9 | `logs dev` → rc=127, `scripts/container.sh: line 1635: docker: command not found`; no log content at all | `scripts/orchicon.sh:101` → `scripts/container.sh:1632` |
+| D2 | 4, 9 | `status dev` prints `not created` + two `docker: command not found` lines on a no-engine host, never names the plane's port (18080), omits the Postgres/NATS half | `scripts/container.sh:1603-1630` |
+| D4 | 7 | `make clean-docker` rc=2 twice with `docker: command not found` — not a clean no-op | `Makefile:413-416` |
+| D5 | 5 | `make run` writes no plane log at `~/.local/share/orchicon-<inst>/serve/logs/orchicon.log` | `Makefile:272-278` |
+| D7 | 2 | `make rls-check` fails with no host `psql`: no `RLS gate OK` (and the gate did not SKIP) | `scripts/check-rls.sh:49-78` |
+| D6 | 3 | the stale-`dist` control still sees `==> frontend bundle up to date` with `dist` newer than `src` (`step-4.log:5-7`) — the mtime stamp skips the rebuild the documented path needs | `Makefile:569-581` |
+
+**Harness defect H1 (this feature's own script, NOT a sibling's — must be fixed before AC3/AC10 can
+be claimed):** step 4's served-bundle fetch wrote **0 bytes** in all four captures
+(`04-served-bundle{,-after,-force-fe,-stale-control}.txt` are empty files), so "the served bundle is
+fetchable", "the escape hatch clears the marker from the SERVED bundle" and the stale-dist control's
+PASS are **vacuous** — an empty capture satisfies a `grep -F` that is only run on non-empty input.
+**AC3 therefore stays UNPROVEN**: `make build force-fe=1` did rebuild (`==> building frontend bundle`)
+and the plane restarted, but the served bytes were never read.
+
+Step 3 remains **SKIP** (no client token in this container: no `~/.orchicon/config`, no
+`ORCHICON_TOKEN`) — a gap in the proof, not a pass; mint one and re-run for the client half.
+
+Verdict: **AC1/2/6/8/9 partly met, AC4/5/7 fail (D1/D2/D4), AC3 unproven (H1 + D6), AC10 partial.**
+The next pass must (a) fix step 4's fetch so the served bytes are actually read, then (b) re-run;
+the sibling defects above are filed against their owners.
+
+Also observed, and worth a line for AC8/AC10: a leftover `orchicon container` supervisor from an
+earlier harness run (pid 22952, `PPid: 1`) kept **respawning** `postgres -p 15432` / `nats -p 14222`,
+so a later run's preflight found the ports held by its own predecessor (`HELD 15432 14222`). The
+harness correctly refused (`RUN INVALID`) instead of lying — that half of AC10 works — but the
+leftover supervisor must be reaped by hand before a re-run.

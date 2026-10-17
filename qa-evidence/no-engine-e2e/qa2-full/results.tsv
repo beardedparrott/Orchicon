@@ -1,0 +1,65 @@
+0	PASS	no container engine installed (docker/podman/nerdctl/docker-compose all absent)	
+0	PASS	the tree is a git checkout	
+0	PASS	the instance ports are free before the session starts	
+0	PASS	the port table resolves the ports this run chose	
+0	PASS	the host has the disk budget for a cold build (checkout 174831/5100 MB, go caches 342/50, build cache 342/0, go $WORK 174831/0, tmp 582/200)	
+0	PASS	frontend deps present (frontend/node_modules)	
+1	PASS	make build succeeds with no container engine	
+1	PASS	bin/orchicon is executable	
+1	PASS	bin/orch is executable	
+1	PASS	make services starts this instance's Postgres + NATS on the host	
+1	PASS	services status reports the services up	
+1	PASS	Postgres is LISTENing on 15432 (independent: /proc/net/tcp)	
+1	PASS	NATS is LISTENing on 14222 (independent: /proc/net/tcp)	
+1	PASS	make run brings the plane up (GET /healthz -> 200)	
+1	PASS	/healthz body reports ok	
+1	PASS	the plane's HTTP port is LISTENing	
+1	PASS	the plane's listening socket belongs to a real process (pid 91975)	
+2	PASS	make migrate applies to this instance's database	
+2	PASS	a second make migrate is a clean no-op (exit 0)	
+2	FAIL	make rls-check passes with NO host psql (the downloaded-psql rung)	scripts/check-rls.sh:49-78
+2	FAIL	the RLS gate really ran (not SKIPPED) (missing 'RLS gate OK' in qa-evidence/no-engine-e2e/qa2-full/step-2.log)	
+2	PASS	the RLS gate did not silently skip	
+3	SKIP	orch connects and renders	
+4	FAIL	the served bundle is fetchable (independent: HTTP GET of the asset)	internal/api (SPA serving)
+4	PASS	the marker is NOT in the served bundle before the edit (clean baseline)	
+4	PASS	one frontend string was edited (see 04-diff.txt)	
+4	PASS	the documented rebuild path (make build) succeeds	
+4	PASS	the plane restarts after the rebuild (the bundle is go:embed-ed)	
+4	FAIL	THE CHANGE IS LIVE: the SERVED bundle carries the new marker (missing 'NO-ENGINE-E2E-20261017T054835Z-85679' in qa-evidence/no-engine-e2e/qa2-full/04-served-bundle-after.txt)	Makefile:569-581
+4	PASS	STALE-DIST CONTROL: a dist newer than src does not ship the previous UI	
+4	FAIL	make build force-fe=1 (the engine-free escape hatch) succeeds	Makefile:573-581
+4	PASS	the escape hatch clears the marker from the SERVED bundle	
+4	PASS	the working tree is restored (frontend/src is clean)	
+5	FAIL	status makes no claim it cannot verify (no container-derived 'not created') (found 'not created' in qa-evidence/no-engine-e2e/qa2-full/05-status-script.txt)	scripts/container.sh:1603-1630 status_instances (unguarded 'docker ps')
+5	FAIL	status does not leak a container error (found 'docker: command not found' in qa-evidence/no-engine-e2e/qa2-full/05-status-script.txt)	scripts/container.sh:1603-1630
+5	PASS	status does not leak a container error (docker: not found)	
+5	PASS	status names the instance	
+5	FAIL	status names the plane's port (18080)	scripts/container.sh:plane_status
+5	FAIL	status reports the SERVICES half (Postgres/NATS), not only the plane	scripts/container.sh:1603-1630
+5	PASS	status claims health only where /healthz proved it (healthz=200)	
+5	PASS	the state report needs NO container command	
+6	FAIL	scripts/orchicon.sh logs works with no container engine (exit 127)	scripts/orchicon.sh:101 (logs -> scripts/container.sh:1632 logs_instance -> 'docker logs -f')
+6	FAIL	the plane writes its log to .local/share/orchicon-dev/serve/logs/orchicon.log (the path every other verb already knows)	Makefile:272-278 (make run is foreground and writes no log) + scripts/container.sh:478
+6	PASS	the logs command shows this session's activity (steps 1-4)	
+7	PASS	the two instances resolve DIFFERENT ports	
+7	PASS	make services instance=prod starts prod's own Postgres + NATS	
+7	PASS	prod's plane answers /healthz	
+7	PASS	dev's plane still answers /healthz alongside prod	
+7	PASS	prod's Postgres is LISTENing on 15433	
+7	PASS	make migrate instance=prod applies to PROD's database	
+7	PASS	the two instances' DSNs differ (no shared database)	
+7	PASS	dev's plane is untouched by prod's migrate	
+7	PASS	dev's plane is down after stopping dev only	
+7	PASS	prod's plane survives dev's shutdown	
+7	PASS	prod's Postgres survives dev's shutdown	
+7	PASS	dev comes back up with prod still running	
+8	FAIL	make clean-docker is a clean no-op with no container engine (exit 2)	Makefile:413-416
+8	FAIL	clean-docker does not fail with a container error (found 'docker: command not found' in qa-evidence/no-engine-e2e/qa2-full/step-8.log)	Makefile:413-416
+8	PASS	clean-docker does not fail with a container error (docker: not found)	
+8	FAIL	a second cleanup is also a clean no-op (exit 0)	Makefile:413-416
+8	PASS	a path outside Orchicon's own artifacts survives the cleanup (sentinel intact)	
+8	PASS	nothing outside Orchicon's artifacts disappeared from ~/.local/share	
+9	PASS	every instance port came free (no orphaned Postgres/NATS/plane)	
+9	PASS	services status reports DOWN (exit 1) after the stop	
+10	FAIL	every earlier step is answerable from a documented command plus its evidence (14 step-level failures to attribute)	see defects.tsv
