@@ -620,6 +620,18 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		image = d.Image
 	}
 	args := d.createFlagArgs(name, req)
+	// -v <src>:<dst>[:ro] — preserved byte-identically for both engines here.
+	//
+	// STATED ADJUSTMENT (AC 3): ADR-0013 D3.2 wants a shared SELinux relabel
+	// (`:ro,z` / `,z`) on every real bind under podman on Linux, and this block
+	// — with adapterHostMounts' `:ro`/`:rw` suffix — is where it lands. It is a
+	// DELIBERATE non-adjustment in the engine-swap change (architecture note
+	// D-4): it belongs to the file/credential-ingress slice, and shipping it
+	// here would make this change's argv identical to that one's and force both
+	// to re-baseline the same six mount tests. The consequence is named rather
+	// than hidden: on an SELinux-enforcing host (Fedora/RHEL default) rootless
+	// podman denies access to these unrelabelled binds until that slice lands.
+	// Nothing about it is docker-specific, so no engine branch is needed now.
 	for _, m := range req.Mounts {
 		mo := ""
 		if m.RO {

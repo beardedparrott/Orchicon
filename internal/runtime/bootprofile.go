@@ -403,6 +403,9 @@ func adapterHostMounts(home string, kinds ...string) []string {
 			if !in.dir && st.IsDir() {
 				continue
 			}
+			// No `,z` relabel yet — ADR-0013 D3.2 lands it with the ingress
+			// slice (architecture note D-4); see the same note at the daemon's
+			// -v loop in daemon.go createContainer.
 			mode := ":ro"
 			if in.rw {
 				mode = ":rw"
