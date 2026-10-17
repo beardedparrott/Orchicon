@@ -9,7 +9,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ApproveToolCallRequest, ApproveToolCallResponse, BatchDeleteExecutionsRequest, BatchDeleteExecutionsResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, ContinueExecutionSessionRequest, ContinueExecutionSessionResponse, CreateFollowUpExecutionRequest, CreateFollowUpExecutionResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, GetExecutionSessionRequest, GetExecutionSessionResponse, GetExecutionTodosRequest, GetExecutionTodosResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ResumeExecutionRequest, ResumeExecutionResponse, SendExecutionMessageRequest, SendExecutionMessageResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
+import { ApproveToolCallRequest, ApproveToolCallResponse, BatchDeleteExecutionsRequest, BatchDeleteExecutionsResponse, CancelExecutionRequest, CancelExecutionResponse, CheckpointNowRequest, CheckpointNowResponse, ContinueExecutionSessionRequest, ContinueExecutionSessionResponse, CreateFollowUpExecutionRequest, CreateFollowUpExecutionResponse, DeleteExecutionRequest, DeleteExecutionResponse, GetExecutionRequest, GetExecutionResponse, GetExecutionSessionRequest, GetExecutionSessionResponse, GetExecutionTodosRequest, GetExecutionTodosResponse, ListExecutionsRequest, ListExecutionsResponse, ListPendingApprovalsRequest, ListPendingApprovalsResponse, PauseExecutionRequest, PauseExecutionResponse, ReleaseStuckExecutionsRequest, ReleaseStuckExecutionsResponse, ResumeExecutionRequest, ResumeExecutionResponse, SendExecutionMessageRequest, SendExecutionMessageResponse, StreamExecutionEventsRequest, StreamExecutionEventsResponse } from "./execution_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -88,6 +88,34 @@ export const ExecutionService = {
       name: "CancelExecution",
       I: CancelExecutionRequest,
       O: CancelExecutionResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ReleaseStuckExecutions runs the execution-liveness reaper NOW, scoped to
+     * one project, and reports what it released.
+     *
+     * WHY THIS EXISTS, AND WHY IT IS NOT "CANCEL N EXECUTIONS". A project can be
+     * pinned at its max-concurrent-runs cap by executions that are dead but were
+     * never reaped — the field incident was ten of them, the oldest three weeks
+     * old, holding every slot so that each new dispatch was deferred forever and
+     * the run sat "waiting for dispatch". Waiting for the next reaper tick is
+     * fine when it is one execution; it is not fine when the whole project is
+     * blocked and the operator can see why.
+     *
+     * The reaper's OWN predicate decides. This RPC does not choose which
+     * executions are dead — it asks the same liveness probe the background
+     * reaper asks, and applies the same failure action (which transitions the
+     * bound work item, so recovery behaves exactly as if the tick had caught it).
+     * A live execution is therefore never released by this call, however it
+     * looks in the list: only the probe can say otherwise, and it is the probe
+     * that is consulted.
+     *
+     * @generated from rpc orchicon.api.v1.ExecutionService.ReleaseStuckExecutions
+     */
+    releaseStuckExecutions: {
+      name: "ReleaseStuckExecutions",
+      I: ReleaseStuckExecutionsRequest,
+      O: ReleaseStuckExecutionsResponse,
       kind: MethodKind.Unary,
     },
     /**

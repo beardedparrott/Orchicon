@@ -1755,6 +1755,291 @@ export class RetryFailedWorkflowRunResponse extends Message<RetryFailedWorkflowR
 }
 
 /**
+ * RunDiagnosis explains why a workflow run is, or is not, progressing.
+ *
+ * It is a REPORT, never a decision: it classifies from recorded state so the
+ * operator can see the cause. The only thing that ever clears an execution is
+ * the liveness reaper, invoked deliberately via ReleaseStuckExecutions.
+ *
+ * @generated from message orchicon.api.v1.RunDiagnosis
+ */
+export class RunDiagnosis extends Message<RunDiagnosis> {
+  /**
+   * blocked is true when the run is running but has work it cannot advance.
+   *
+   * @generated from field: bool blocked = 1;
+   */
+  blocked = false;
+
+  /**
+   * blockage_kind is a stable, machine-readable classification. Empty when
+   * the run is not blocked. One of:
+   *
+   *   ""                       not blocked
+   *   "project_at_capacity"    the project's dispatch cap is fully occupied
+   *   "dispatch_deferred"      a step is waiting for a dispatch slot
+   *   "recovering_unresumable" a step is held in a recovery that cannot resolve
+   *   "awaiting_approval"      a human approval step is pending
+   *   "stalled_unexplained"    running, no active step, cause not identified
+   *
+   * @generated from field: string blockage_kind = 2;
+   */
+  blockageKind = "";
+
+  /**
+   * detail is a human sentence naming the cause, for display.
+   *
+   * @generated from field: string detail = 3;
+   */
+  detail = "";
+
+  /**
+   * project_id of the run's project (empty for an unbound run).
+   *
+   * @generated from field: string project_id = 4;
+   */
+  projectId = "";
+
+  /**
+   * active_executions and dispatch_limit are the count the dispatch gate
+   * compares and the SAME effective limit it enforces (the per-project value
+   * floored by the tenant's) — not the raw project column, so the card cannot
+   * disagree with the gate that is actually holding the run.
+   *
+   * @generated from field: int32 active_executions = 5;
+   */
+  activeExecutions = 0;
+
+  /**
+   * @generated from field: int32 dispatch_limit = 6;
+   */
+  dispatchLimit = 0;
+
+  /**
+   * @generated from field: bool at_capacity = 7;
+   */
+  atCapacity = false;
+
+  /**
+   * blocked_step_ids are the run's step runs currently waiting on something.
+   *
+   * @generated from field: repeated string blocked_step_ids = 8;
+   */
+  blockedStepIds: string[] = [];
+
+  /**
+   * stuck_executions hold a dispatch slot while carrying a status the liveness
+   * layer has ALREADY marked not-well — 'unhealthy', 'stalled' or
+   * 'terminating' — and are past the reap grace. These are the executions
+   * ReleaseStuckExecutions can free. An execution merely 'running' or
+   * 'dispatching' is NOT listed: it may be perfectly alive, and only the
+   * reaper's own liveness probe may decide otherwise.
+   *
+   * @generated from field: repeated orchicon.api.v1.StuckExecution stuck_executions = 9;
+   */
+  stuckExecutions: StuckExecution[] = [];
+
+  /**
+   * clearable is true when at least one slot can be freed — i.e. there is
+   * something for ReleaseStuckExecutions to do.
+   *
+   * @generated from field: bool clearable = 10;
+   */
+  clearable = false;
+
+  constructor(data?: PartialMessage<RunDiagnosis>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.RunDiagnosis";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "blocked", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 2, name: "blockage_kind", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "detail", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "active_executions", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 6, name: "dispatch_limit", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 7, name: "at_capacity", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 8, name: "blocked_step_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 9, name: "stuck_executions", kind: "message", T: StuckExecution, repeated: true },
+    { no: 10, name: "clearable", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RunDiagnosis {
+    return new RunDiagnosis().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RunDiagnosis {
+    return new RunDiagnosis().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RunDiagnosis {
+    return new RunDiagnosis().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RunDiagnosis | PlainMessage<RunDiagnosis> | undefined, b: RunDiagnosis | PlainMessage<RunDiagnosis> | undefined): boolean {
+    return proto3.util.equals(RunDiagnosis, a, b);
+  }
+}
+
+/**
+ * StuckExecution is one slot-holding execution the operator may clear.
+ *
+ * @generated from message orchicon.api.v1.StuckExecution
+ */
+export class StuckExecution extends Message<StuckExecution> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: string worker_name = 2;
+   */
+  workerName = "";
+
+  /**
+   * @generated from field: string status = 3;
+   */
+  status = "";
+
+  /**
+   * @generated from field: string health_state = 4;
+   */
+  healthState = "";
+
+  /**
+   * started_at_unix is 0 when the execution never recorded a start.
+   *
+   * @generated from field: int64 started_at_unix = 5;
+   */
+  startedAtUnix = protoInt64.zero;
+
+  /**
+   * age_seconds is measured from started_at; 0 when there is no start time.
+   *
+   * @generated from field: int64 age_seconds = 6;
+   */
+  ageSeconds = protoInt64.zero;
+
+  /**
+   * run_id is the workflow run that owns it ("" for a standalone execution).
+   *
+   * @generated from field: string run_id = 7;
+   */
+  runId = "";
+
+  constructor(data?: PartialMessage<StuckExecution>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.StuckExecution";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "worker_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "health_state", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "started_at_unix", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 6, name: "age_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 7, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): StuckExecution {
+    return new StuckExecution().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): StuckExecution {
+    return new StuckExecution().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): StuckExecution {
+    return new StuckExecution().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: StuckExecution | PlainMessage<StuckExecution> | undefined, b: StuckExecution | PlainMessage<StuckExecution> | undefined): boolean {
+    return proto3.util.equals(StuckExecution, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetWorkflowRunDiagnosisRequest
+ */
+export class GetWorkflowRunDiagnosisRequest extends Message<GetWorkflowRunDiagnosisRequest> {
+  /**
+   * @generated from field: string run_id = 1;
+   */
+  runId = "";
+
+  constructor(data?: PartialMessage<GetWorkflowRunDiagnosisRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetWorkflowRunDiagnosisRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetWorkflowRunDiagnosisRequest {
+    return new GetWorkflowRunDiagnosisRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetWorkflowRunDiagnosisRequest {
+    return new GetWorkflowRunDiagnosisRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetWorkflowRunDiagnosisRequest {
+    return new GetWorkflowRunDiagnosisRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetWorkflowRunDiagnosisRequest | PlainMessage<GetWorkflowRunDiagnosisRequest> | undefined, b: GetWorkflowRunDiagnosisRequest | PlainMessage<GetWorkflowRunDiagnosisRequest> | undefined): boolean {
+    return proto3.util.equals(GetWorkflowRunDiagnosisRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetWorkflowRunDiagnosisResponse
+ */
+export class GetWorkflowRunDiagnosisResponse extends Message<GetWorkflowRunDiagnosisResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.RunDiagnosis diagnosis = 1;
+   */
+  diagnosis?: RunDiagnosis;
+
+  constructor(data?: PartialMessage<GetWorkflowRunDiagnosisResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetWorkflowRunDiagnosisResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "diagnosis", kind: "message", T: RunDiagnosis },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetWorkflowRunDiagnosisResponse {
+    return new GetWorkflowRunDiagnosisResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetWorkflowRunDiagnosisResponse {
+    return new GetWorkflowRunDiagnosisResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetWorkflowRunDiagnosisResponse {
+    return new GetWorkflowRunDiagnosisResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetWorkflowRunDiagnosisResponse | PlainMessage<GetWorkflowRunDiagnosisResponse> | undefined, b: GetWorkflowRunDiagnosisResponse | PlainMessage<GetWorkflowRunDiagnosisResponse> | undefined): boolean {
+    return proto3.util.equals(GetWorkflowRunDiagnosisResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.DeleteWorkflowRunRequest
  */
 export class DeleteWorkflowRunRequest extends Message<DeleteWorkflowRunRequest> {

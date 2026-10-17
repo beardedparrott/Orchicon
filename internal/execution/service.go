@@ -69,6 +69,13 @@ type Service struct {
 	// cancel only marks the row terminal (no live session transport).
 	abortSession func(ctx context.Context, execID, reason string) error
 
+	// releaseStuck runs the execution-liveness reaper NOW, scoped to one
+	// project (the server's *scheduler.ExecutionReaper.ReapProject). It exists
+	// so the operator can free a project pinned at its dispatch cap without
+	// waiting for the next reaper tick. Nil = the RPC is unavailable; it must
+	// report Unimplemented rather than appear to have cleared anything.
+	releaseStuck func(ctx context.Context, projectID string) ([]string, int, error)
+
 	// In-memory approval registry: pending Tier 2 per-tool-call approval
 	// requests (docs/05 §7.1). Keyed by request_id. When the adapter
 	// emits an ApprovalRequest, the TaskReconciler registers it here;
@@ -96,6 +103,13 @@ func (s *Service) SetContinueSession(fn func(ctx context.Context, opts scheduler
 // terminated (the live session, if any, keeps running).
 func (s *Service) SetAbortExecution(fn func(ctx context.Context, execID, reason string) error) {
 	s.abortSession = fn
+}
+
+// SetReleaseStuckExecutions injects the project-scoped liveness reaper sweep
+// backed by scheduler.ExecutionReaper.ReapProject. Nil = the RPC is
+// unavailable.
+func (s *Service) SetReleaseStuckExecutions(fn func(ctx context.Context, projectID string) ([]string, int, error)) {
+	s.releaseStuck = fn
 }
 
 // pendingApproval tracks a Tier 2 approval request awaiting a human
@@ -505,6 +519,68 @@ func (s *Service) CancelExecution(ctx context.Context, req *connect.Request[apiv
 	}
 	s.log.Info("execution cancelled", "id", updated.ID, "reason", reason)
 	return connect.NewResponse(&apiv1.CancelExecutionResponse{Execution: rowToProto(updated)}), nil
+}
+
+// ReleaseStuckExecutions runs the execution-liveness reaper now, scoped to
+// one project, and reports what it released.
+//
+// The judgement is NOT made here. The injected sweep is the scheduler's
+// ReapProject, which applies the reaper's own rule — the same liveness probe
+// the background tick asks, and the same failure action (which transitions the
+// bound work item, so recovery behaves exactly as if the tick had caught it).
+// An execution the probe reports ALIVE is never released, however unhealthy it
+// looks in the listing; only the probe decides, and it is the probe that is
+// consulted.
+//
+// An empty released_ids is a SUCCESS, not a failure: it means every slot holder
+// is genuinely alive. examined distinguishes "nothing was stuck" from "nothing
+// was checked", which is the difference between a reassuring answer and a
+// meaningless one.
+func (s *Service) ReleaseStuckExecutions(ctx context.Context, req *connect.Request[apiv1.ReleaseStuckExecutionsRequest]) (*connect.Response[apiv1.ReleaseStuckExecutionsResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.ProjectId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id must not be empty"))
+	}
+	reason, err := validateTextField(req.Msg.Reason, maxReasonLen, "reason")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if s.releaseStuck == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented,
+			errors.New("execution liveness reaping is not available on this plane"))
+	}
+
+	released, examined, err := s.releaseStuck(ctx, req.Msg.ProjectId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("release stuck executions: %w", err))
+	}
+
+	// Audit the act, not just the outcome, and do it AFTER the sweep so the
+	// record names what was actually released. No transaction is held here: the
+	// sweep already committed each release, and holding one across it would
+	// serialise against the reconcilers the release is meant to unblock.
+	if len(released) > 0 {
+		ttx, terr := s.pool.BeginTenantTx(ctx, tenantID)
+		if terr != nil {
+			return nil, connect.NewError(connect.CodeInternal, terr)
+		}
+		defer ttx.Rollback(ctx)
+		if aerr := recordAudit(ctx, ttx.Tx, tenantID, "execution.stuck_released", "project", req.Msg.ProjectId,
+			nil, nil); aerr != nil {
+			s.log.Warn("release stuck executions: audit failed", "project", req.Msg.ProjectId, "error", aerr)
+		} else if cerr := ttx.Commit(ctx); cerr != nil {
+			s.log.Warn("release stuck executions: audit commit failed", "project", req.Msg.ProjectId, "error", cerr)
+		}
+	}
+	s.log.Warn("released stuck executions", "project", req.Msg.ProjectId, "examined", examined,
+		"released", len(released), "reason", reason)
+	return connect.NewResponse(&apiv1.ReleaseStuckExecutionsResponse{
+		ReleasedIds: released,
+		Examined:    int32(examined),
+	}), nil
 }
 
 // CheckpointNow requests an immediate checkpoint from the adapter

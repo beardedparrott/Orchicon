@@ -1381,6 +1381,106 @@ export class CancelExecutionResponse extends Message<CancelExecutionResponse> {
 }
 
 /**
+ * ReleaseStuckExecutionsRequest asks the liveness reaper to run now, scoped to
+ * one project. project_id is REQUIRED: releasing is a project-level remedy,
+ * because it is the project's dispatch cap that a stuck execution holds.
+ *
+ * @generated from message orchicon.api.v1.ReleaseStuckExecutionsRequest
+ */
+export class ReleaseStuckExecutionsRequest extends Message<ReleaseStuckExecutionsRequest> {
+  /**
+   * @generated from field: string project_id = 1;
+   */
+  projectId = "";
+
+  /**
+   * reason is recorded on each released execution (audit + the execution's
+   * error message), so a release is never anonymous.
+   *
+   * @generated from field: string reason = 2;
+   */
+  reason = "";
+
+  constructor(data?: PartialMessage<ReleaseStuckExecutionsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ReleaseStuckExecutionsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReleaseStuckExecutionsRequest {
+    return new ReleaseStuckExecutionsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ReleaseStuckExecutionsRequest {
+    return new ReleaseStuckExecutionsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ReleaseStuckExecutionsRequest {
+    return new ReleaseStuckExecutionsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ReleaseStuckExecutionsRequest | PlainMessage<ReleaseStuckExecutionsRequest> | undefined, b: ReleaseStuckExecutionsRequest | PlainMessage<ReleaseStuckExecutionsRequest> | undefined): boolean {
+    return proto3.util.equals(ReleaseStuckExecutionsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ReleaseStuckExecutionsResponse
+ */
+export class ReleaseStuckExecutionsResponse extends Message<ReleaseStuckExecutionsResponse> {
+  /**
+   * released_ids are the executions the reaper judged dead and failed. Empty
+   * when nothing was dead — which is a SUCCESS, not an error: it means every
+   * slot holder is genuinely alive and there is nothing to clear.
+   *
+   * @generated from field: repeated string released_ids = 2;
+   */
+  releasedIds: string[] = [];
+
+  /**
+   * examined is how many slot-holding executions the reaper looked at, so the
+   * caller can tell "nothing was stuck" from "nothing was checked".
+   *
+   * @generated from field: int32 examined = 3;
+   */
+  examined = 0;
+
+  constructor(data?: PartialMessage<ReleaseStuckExecutionsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ReleaseStuckExecutionsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 2, name: "released_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 3, name: "examined", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReleaseStuckExecutionsResponse {
+    return new ReleaseStuckExecutionsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ReleaseStuckExecutionsResponse {
+    return new ReleaseStuckExecutionsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ReleaseStuckExecutionsResponse {
+    return new ReleaseStuckExecutionsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ReleaseStuckExecutionsResponse | PlainMessage<ReleaseStuckExecutionsResponse> | undefined, b: ReleaseStuckExecutionsResponse | PlainMessage<ReleaseStuckExecutionsResponse> | undefined): boolean {
+    return proto3.util.equals(ReleaseStuckExecutionsResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.CheckpointNowRequest
  */
 export class CheckpointNowRequest extends Message<CheckpointNowRequest> {
