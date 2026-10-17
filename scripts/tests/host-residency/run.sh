@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Offline harness for the HOST-RESIDENCY launch shape in scripts/container.sh.
+# Offline harness for the HOST-RESIDENCY launch shape.
 #
 # WHY THIS EXISTS: host residency is a PER-INSTANCE, OPT-IN launch setting. Two
 # failure modes are silent and expensive, and neither needs Docker to detect:
@@ -32,12 +32,20 @@
 # connection (the peer is the docker bridge gateway, not loopback), so a publish
 # that is NOT loopback-bound would expose Postgres/NATS to the LAN.
 #
-# WHAT IS REAL HERE: container.sh's own functions, EXTRACTED BY TEXT AND NEVER
-# EXECUTED — the script drives Docker, so sourcing it would run it (and its
-# `case` block exits). Extraction is asserted, so renaming a function upstream
-# fails here loudly instead of silently testing nothing.
+# WHAT IS REAL HERE: the real functions, EXTRACTED BY TEXT AND NEVER EXECUTED —
+# the scripts drive the container engine, so sourcing them would run them.
+# Extraction is asserted, so renaming a function upstream fails here loudly
+# instead of silently testing nothing.
 #
-#   scripts/tests/host-residency/run.sh [container.sh]
+# WHERE THEY LIVE MOVED, AND THE ASSERTIONS DID NOT. The per-instance table and
+# the launch shape it composes (instance_info, residency_for, plane_env,
+# bridge_ip, bridge_bind_env) are now in scripts/lib/instances.sh — the ONE place
+# the shell side enumerates dev/test/prod — while the verbs that consume them
+# (print_shape, up_instance, plane_start) stay in scripts/container.sh. This
+# harness reads BOTH plus the engine resolver, so it keeps guarding the same
+# properties rather than being pointed at a file that no longer has a subject.
+#
+#   scripts/tests/host-residency/run.sh [instances.sh]
 #
 # Exits 0 only when every assertion passes, so it can be used as a check.
 # ============================================================================
@@ -46,7 +54,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
 CONTAINER_SH="${REPO_ROOT}/scripts/container.sh"
-[ "$#" -gt 0 ] && CONTAINER_SH="$1"
+INSTANCES_SH="${REPO_ROOT}/scripts/lib/instances.sh"
+ENGINE_SH="${REPO_ROOT}/scripts/lib/engine.sh"
+[ "$#" -gt 0 ] && INSTANCES_SH="$1"
 
 # The harness's own environment must not decide any case.
 unset ORCHICON_PLANE_RESIDENCY 2>/dev/null || true
@@ -81,26 +91,40 @@ check_lacks() { # <label> <needle> <haystack>
 }
 
 # --- the functions under test, extracted rather than sourced ----------------
+# extract_fn <file> <fn> — the function's text, never executed at extract time.
 extract_fn() {
-  awk -v fn="$1" '
+  awk -v fn="$2" '
     $0 == fn "() {" { inf = 1 }
     inf { print }
     inf && $0 == "}" { exit }
-  ' "$CONTAINER_SH"
+  ' "$1"
 }
 
-echo "container.sh under test: ${CONTAINER_SH}"
+echo "instance table under test: ${INSTANCES_SH}"
+echo "launcher under test:        ${CONTAINER_SH}"
 echo
 
-for fn in instance_info residency_for plane_env print_shape container_residency_from_env bridge_ip bridge_bind_env; do
-  body="$(extract_fn "$fn")"
-  if [ -z "$body" ]; then
-    echo "run.sh: could not extract ${fn}() from ${CONTAINER_SH}" >&2
-    echo "        renamed? this harness must never pass vacuously." >&2
-    exit 2
-  fi
-  eval "$body"
-done
+# from_one <file> <fn...> — extract each function from <file> and eval it.
+from_one() {
+  local file="$1"; shift
+  local fn body
+  for fn in "$@"; do
+    body="$(extract_fn "$file" "$fn")"
+    if [ -z "$body" ]; then
+      echo "run.sh: could not extract ${fn}() from ${file}" >&2
+      echo "        renamed or moved? this harness must never pass vacuously." >&2
+      exit 2
+    fi
+    eval "$body"
+  done
+}
+
+# The per-instance table + the shape it composes (lib/instances.sh), the engine
+# resolver it now asks for the bridge (lib/engine.sh), and the verbs that consume
+# them (container.sh).
+from_one "$INSTANCES_SH" instance_info residency_for plane_env bridge_ip bridge_bind_env
+from_one "$ENGINE_SH" engine_cmd
+from_one "$CONTAINER_SH" print_shape container_residency_from_env
 
 # residency_for/print_shape log through container.sh's helpers; stub them so the
 # harness stays independent of the script's colour handling.

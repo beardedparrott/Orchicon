@@ -31,6 +31,12 @@ func (h *sweepHarness) docker(args ...string) (string, error) {
 		h.removed = append(h.removed, args[2])
 		return "", nil
 	}
+	// The removal primitive polls `inspect {{.Id}}` for the name to be released
+	// (d.removeContainer). "" means "not present", so the poll finishes on its
+	// first tick instead of waiting out the 5s timeout. Stated, not incidental.
+	if len(args) >= 3 && args[0] == "inspect" && args[2] == "{{.Id}}" {
+		return "", nil
+	}
 	return "", nil
 }
 
@@ -60,7 +66,7 @@ func newSweepPool(t *testing.T, listed ...string) (*daemonPool, *sweepHarness) {
 	h := &sweepHarness{listed: listed}
 	d := &Daemon{
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		dockerFn: h.docker,
+		engineFn: h.docker,
 	}
 	return newDaemonPool(d), h
 }
@@ -175,7 +181,7 @@ func TestSweepRetriesAfterAFailedListing(t *testing.T) {
 	var removals []string
 	d := &Daemon{
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		dockerFn: func(args ...string) (string, error) {
+		engineFn: func(args ...string) (string, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			if len(args) > 0 && args[0] == "ps" {

@@ -22,7 +22,8 @@ import (
 )
 
 // Daemon is the host-side runtime orchestrator. It is the ONLY process
-// with access to the Docker socket: it creates/kills runtime containers
+// with access to the container engine (podman by default, docker supported):
+// it creates/kills runtime containers
 // and warms/leases them through the warm pool. The control plane reaches
 // it over a unix socket mounted into the supervisor container (see
 // client.go).
@@ -31,8 +32,11 @@ import (
 // plane cannot use the daemon to create arbitrary containers, mount
 // arbitrary paths, or run arbitrary binaries.
 type Daemon struct {
-	SocketPath   string
-	DockerBin    string
+	SocketPath string
+	// Engine is the container engine this daemon drives (podman by default,
+	// docker supported). Its identity and resolved binary live in one place
+	// (engine.go) so no call site can name a container engine of its own.
+	Engine       Engine
 	Image        string   // image + tag, e.g. orchicon-runtime:local
 	Images       []string // additional allowlisted stock image tags (base is always included)
 	UserID       int      // host uid the runtime runs as (writes project mounts)
@@ -55,7 +59,7 @@ type Daemon struct {
 	TmpfsSize string
 	// HomeTmpfsSize sizes the uid-owned tmpfs mounted at the runtime uid's
 	// $HOME, and at a private adapter data home. $HOME cannot be left to
-	// Docker's default root:0755 creation — see standardHostMountArgs.
+	// the engine's default root:0755 creation — see standardHostMountArgs.
 	HomeTmpfsSize string
 	// MaxAge / SweepInterval are retained for config compatibility; the
 	// warm pool's idle-reap now owns container cleanup (the pool is reset
@@ -66,17 +70,23 @@ type Daemon struct {
 	// pool leases/resets warm runtime containers (internal/runtime/pool.go).
 	pool *daemonPool
 	// createMu serializes createContainer so concurrent checkouts cannot
-	// race `docker run` on the same name (the pool names are unique, but
-	// serializing the docker create path keeps docker itself calm).
+	// race `run` on the same name (the pool names are unique, but
+	// serializing the engine create path keeps the engine itself calm).
 	createMu sync.Mutex
-	// activeBuilds tracks in-flight docker builds by tag so Cancel can kill them.
+	// activeBuilds tracks in-flight engine builds by tag so Cancel can kill them.
 	buildMu      sync.Mutex
 	activeBuilds map[string]*exec.Cmd
 	// Test seams: unexported func fields that override the production
 	// implementations. Nil (the default) = production behavior.
-	dockerFn  func(args ...string) (string, error)                          // overrides docker()
-	createFn  func(name string, req CreateRequest) (*CreateResponse, error) // overrides createContainer()
-	ghTokenFn func() string                                                 // overrides the ghToken resolver (default hostGHToken)
+	engineFn        func(args ...string) (string, error)                          // overrides engine()
+	createFn        func(name string, req CreateRequest) (*CreateResponse, error) // overrides createContainer()
+	ghTokenFn       func() string                                                 // overrides the ghToken resolver (default hostGHToken)
+	engineVersionFn func() string                                                 // overrides the engine client-version probe (default: exec the engine)
+	// engine fingerprint cache: resolved ONCE per daemon process (the pool key's
+	// engine= / shape= terms). A daemon restart re-resolves it, and the pool is
+	// reset wholesale at daemon start, so a stale term can never serve.
+	engineFpOnce sync.Once
+	engineFp     string
 	// ghToken cache: daemon-resident, TTL-bounded (ORCHICON_RUNTIME_GH_TOKEN_FP_TTL,
 	// default 60s) so the pool key and the created container's GH_TOKEN come
 	// from the SAME resolution without spawning `gh auth token` per checkout.
@@ -142,23 +152,22 @@ type CreateResponse struct {
 	ContainerID string `json:"container_id"`
 	Name        string `json:"name"`
 	Running     bool   `json:"running"`
-	// ServePort is the host-side loopback port published for the
-	// container's opencode serve (127.0.0.1:<ServePort>), and
-	// ServePassword its basic-auth password. ServeURL is the plane-
-	// reachable base URL (http://<gateway>:<port>) — the gateway is the
-	// docker bridge IP, reachable from BOTH a host-plane and a
-	// containerized plane (127.0.0.1 only works when the plane shares the
-	// host network namespace). Zero/empty when the daemon could not bring
-	// the serve up — the adapter degrades to one-shot execs inside the
-	// container.
+	// ServePort is the HOST port the plane dials for the container's opencode
+	// serve: 127.0.0.1:<ServePort> under podman (the port published on loopback
+	// at create time), the container's own port under docker. ServePassword is
+	// its basic-auth password. ServeURL is the full plane-reachable base URL —
+	// http://127.0.0.1:<published port> on podman, http://<container ip>:<port>
+	// on docker, which is reachable from BOTH a host-plane and a containerized
+	// plane. A serve that cannot be brought up is zero/empty here — the run-start
+	// gate then fails loudly rather than dispatching into a dead serve.
 	ServePort     int    `json:"serve_port,omitempty"`
 	ServePassword string `json:"serve_password,omitempty"`
 	ServeURL      string `json:"serve_url,omitempty"`
-	// PlaneURL is the sandbox plane's /healthz base URL
-	// (http://<container-ip>:8080), set when the container's image boots
-	// the in-container Orchicon control plane (dev images: postgres +
-	// nats-server present). Empty on base/gui images — the run-start gate
-	// probes the plane only when this is set.
+	// PlaneURL is the sandbox plane's /healthz base URL — http://<container
+	// ip>:8080 under docker, http://127.0.0.1:<published port> under podman —
+	// set when the container's image boots the in-container Orchicon control
+	// plane (dev images: postgres + nats-server present). Empty on base/gui
+	// images: the run-start gate probes the plane only when this is set.
 	PlaneURL string `json:"plane_url,omitempty"`
 }
 
@@ -176,6 +185,7 @@ func (d *Daemon) handler() http.Handler {
 	mux.HandleFunc("/v1/images", d.handleImages)
 	mux.HandleFunc("/v1/images/inspect", d.handleImageInspect)
 	mux.HandleFunc("/v1/images/build", d.handleBuildCancel)
+	mux.HandleFunc("/v1/images/pull", d.handlePull)
 	return mux
 }
 
@@ -369,7 +379,7 @@ func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	cmd := exec.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(reqJSON)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -377,7 +387,7 @@ func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID
 		return
 	}
 	if err := cmd.Start(); err != nil {
-		httpError(w, http.StatusInternalServerError, "docker exec: "+err.Error())
+		httpError(w, http.StatusInternalServerError, d.Engine.EngineNameForError()+" exec: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
@@ -438,7 +448,7 @@ func (d *Daemon) handleRuntimeStdio(w http.ResponseWriter, r *http.Request, runI
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	cmd := exec.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -451,7 +461,7 @@ func (d *Daemon) handleRuntimeStdio(w http.ResponseWriter, r *http.Request, runI
 	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
-		httpError(w, http.StatusInternalServerError, "docker exec: "+err.Error())
+		httpError(w, http.StatusInternalServerError, d.Engine.EngineNameForError()+" exec: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
@@ -506,6 +516,23 @@ func relayNDJSON(r io.Reader, w io.Writer, fl http.Flusher) {
 	}
 }
 
+// mountArgv renders the request's bind mounts as `-v <src>:<dst>[:ro]` argv. It
+// is a helper rather than an inline loop so the SHAPE of every mount argv is
+// testable: validateCreate admits only ABSOLUTE host paths (no named volumes — a
+// volume survives the pristine container reset, ADR-0013 §6), and
+// TestCreateMountArgvUsesHostPathsOnly pins that the argv carries exactly that.
+func mountArgv(mounts []MountSpec) []string {
+	out := make([]string, 0, 2*len(mounts))
+	for _, m := range mounts {
+		mo := ""
+		if m.RO {
+			mo = ":ro"
+		}
+		out = append(out, "-v", m.Source+":"+m.Dest+mo)
+	}
+	return out
+}
+
 // validateCreate enforces the daemon's security policy: image allowlist,
 // mount-source allowlist, argv allowlist.
 func (d *Daemon) validateCreate(req CreateRequest) error {
@@ -527,6 +554,15 @@ func (d *Daemon) validateCreate(req CreateRequest) error {
 	for _, m := range req.Mounts {
 		if m.Source == "" {
 			return fmt.Errorf("mount source required")
+		}
+		// NO NAMED VOLUMES (ADR-0013 §6, BF-3(a)): every mount source must be an
+		// ABSOLUTE HOST PATH. A bare volume name ("orchicon-data") would ask the
+		// engine for engine-managed storage, which survives `rm` and therefore
+		// survives the pristine reset — the run boundary would leak. Rejected
+		// explicitly rather than left implied by the allowed-roots check, because
+		// that implication is what the argv test pins.
+		if !filepath.IsAbs(m.Source) {
+			return fmt.Errorf("mount source must be an absolute host path, never a named volume (a volume survives the pristine container reset): %s", m.Source)
 		}
 		abs, err := filepath.Abs(m.Source)
 		if err != nil {
@@ -586,7 +622,7 @@ func (d *Daemon) withinAllowedRoots(path string) bool {
 // createContainer creates a runtime container with the given pool-managed
 // name, warms its opencode serve (when ServeConfig is set), and returns its
 // state. Container creation is serialized with createMu so concurrent
-// checkouts/resets cannot race `docker run` on the same name.
+// checkouts/resets cannot race `run` on the same name.
 func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateResponse, error) {
 	if d.createFn != nil {
 		return d.createFn(name, req)
@@ -607,7 +643,7 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// fresh runtime (leftover-container hygiene).
 	if exists, _ := d.containerExists(name); exists {
 		d.Log.Warn("removing stale runtime container", "name", name)
-		if out, err := d.docker("rm", "-f", name); err != nil {
+		if out, err := d.engine("rm", "-f", name); err != nil {
 			return nil, fmt.Errorf("remove stale runtime %s: %s: %w", name, out, err)
 		}
 	}
@@ -616,58 +652,20 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	if image == "" {
 		image = d.Image
 	}
-	workflowLabel := req.WorkflowID
-	if workflowLabel == "" {
-		workflowLabel = "pool"
-	}
-	args := []string{"run", "-d", "--name", name,
-		"--label", "orchicon.workflow=" + workflowLabel,
-	}
-	// Instance scoping labels: the daemon's historical `orchicon.instance`
-	// (what listRuntimes/sweep-pre-restart filter on — both Docker and
-	// Podman accept `--filter label=k=v` identically) plus the reverse-DNS
-	// `io.orchicon.instance` for external tooling. Two instances sharing one
-	// daemon can never reap each other's runtimes as long as the value is
-	// per-instance.
-	args = append(args, instanceLabelArgs(req.InstanceID)...)
-	// Stable name for the HOST from inside every runtime container,
-	// independent of the bridge subnet. A host-resident plane advertises
-	// that alias (lifecycle.go planePublicURL -> engine.go planeHostAlias) so
-	// a worker's orchicon-plane MCP channel can dial it. Docker needs the
-	// explicit host-gateway mapping (host-gateway is docker's own "the host,
-	// whatever its bridge IP is"); Podman injects host.containers.internal
-	// natively, so hostGatewayArgs returns nothing there.
-	args = append(args, hostGatewayArgs()...)
-	args = append(args,
-		"--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID),
-		"--cpus", d.CPUs,
-		"--memory", d.Memory,
-		// /tmp is a private tmpfs sized to TmpfsSize. It must be `exec`:
-		// Docker's `--tmpfs` default is noexec, which makes Go's default
-		// TMPDIR unusable (test binaries fail `fork/exec ... permission
-		// denied`) and defeats the execution-guard shim that lives under
-		// /tmp/orchicon-guard-*. The runtime user already has full
-		// write+exec access across the chowned ephemeral rootfs, so /tmp
-		// being exec adds no host-escape surface — noexec was incidental
-		// Docker defaulting, not a security boundary.
-		"--tmpfs", fmt.Sprintf("/tmp:rw,size=%s,exec", d.TmpfsSize),
-	)
-	// NO port publish: the plane reaches the container's opencode serve
-	// DIRECTLY on the docker bridge via the container IP (the serve binds
-	// 0.0.0.0 inside, reachable from any bridge container AND the host,
-	// password-gated). This avoids docker-proxy entirely — published-port
-	// forwarding to a container whose serve starts lazily is a race mine
-	// (the proxy binds only when the container's port appears; a container-
-	// to-gateway connection can be dropped by the bridge NAT). Direct IP
-	// access has no such layering. Always works whether the plane is a
-	// container or the host itself.
-	for _, m := range req.Mounts {
-		mo := ""
-		if m.RO {
-			mo = ":ro"
-		}
-		args = append(args, "-v", m.Source+":"+m.Dest+mo)
-	}
+	args := d.createFlagArgs(name, req)
+	// -v <src>:<dst>[:ro] — preserved byte-identically for both engines here.
+	//
+	// STATED ADJUSTMENT (AC 3): ADR-0013 D3.2 wants a shared SELinux relabel
+	// (`:ro,z` / `,z`) on every real bind under podman on Linux, and this block
+	// — with adapterHostMounts' `:ro`/`:rw` suffix — is where it lands. It is a
+	// DELIBERATE non-adjustment in the engine-swap change (architecture note
+	// D-4): it belongs to the file/credential-ingress slice, and shipping it
+	// here would make this change's argv identical to that one's and force both
+	// to re-baseline the same six mount tests. The consequence is named rather
+	// than hidden: on an SELinux-enforcing host (Fedora/RHEL default) rootless
+	// podman denies access to these unrelabelled binds until that slice lands.
+	// Nothing about it is docker-specific, so no engine branch is needed now.
+	args = append(args, mountArgv(req.Mounts)...)
 	// Standard host-home mounts. The ADAPTER installs (opencode
 	// config/auth/CLI today) are CONDITIONAL on the run's boot profile
 	// (AC 1/AC 3): a native-only run mounts nothing opencode-related, so the
@@ -687,8 +685,8 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// The daemon's own executable: bind-mounted read-only at
 	// /usr/local/bin/orchicon so the container can exec `orchicon
 	// runtime-supervisor` (PID 1 entrypoint below) and `orchicon
-	// runtime-client` (docker exec paths). The binary is deliberately not
-	// baked into the image; Docker resolves bind sources at `docker run`
+	// runtime-client` (engine exec paths). The binary is deliberately not
+	// baked into the image; the engine resolves bind sources at `run`
 	// time, so a rebuilt bin/orchicon is picked up by newly-created
 	// containers without an image rebuild. This mount is a HARD dependency:
 	// the entrypoint is `orchicon runtime-supervisor`, so a container
@@ -705,25 +703,35 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	args = append(args, "-v", d.ExePath+":/usr/local/bin/orchicon:ro")
 	args = append(args, image, "orchicon", "runtime-supervisor")
 
-	// Create the container, retrying past name conflicts. A container
-	// that was just removed (`docker rm -f` during a rebuild / orphan
-	// sweep) is still settling for a moment: inspect reports it gone,
-	// but `docker run` then fails with "name already in use" / "removal
-	// in progress". Remove any leftover and retry.
+	// Create the container, retrying past name conflicts. A container that was
+	// just removed (an `rm -f` during a rebuild / orphan sweep) is still
+	// settling inside the ENGINE: `ps`/`inspect` already report it gone, but
+	// `run` then fails with the engine's own name-still-in-use wording —
+	// docker says "Conflict ... is already in use" / "removal ... in progress",
+	// podman says `creating container storage: the container name "x" is
+	// already in use by y` and, right after a removal, "container is in use".
+	// The predicate therefore comes from the ENGINE (Engine.NameInUseTokens)
+	// and covers both engines' wordings: podman's teardown is slower on a
+	// macOS/Windows machine (VM-backed storage), so an unadjusted predicate
+	// turns a recoverable clash into a failed create and silently churns
+	// containers. Remove any leftover and retry — the remove-before-create is
+	// also what keeps the pristine-reset guarantee honest.
 	var out string
 	var err error
 	created := false
+	tokens := d.Engine.NameInUseTokens()
 	for attempt := 0; attempt < 3 && !created; attempt++ {
-		out, err = d.docker(args...)
+		out, err = d.engine(args...)
 		if err == nil {
 			created = true
 			break
 		}
-		if !strings.Contains(out, "Conflict") && !strings.Contains(out, "in progress") && !strings.Contains(out, "is already") {
+		if !nameInUse(out, tokens) {
 			return nil, fmt.Errorf("create runtime %s: %s: %w", name, out, err)
 		}
-		d.Log.Warn("runtime create conflict — removing stale container and retrying", "name", name, "attempt", attempt+1)
-		_, _ = d.docker("rm", "-f", name)
+		d.Log.Warn("runtime create conflict — removing stale container and retrying",
+			"name", name, "attempt", attempt+1, "engine", d.Engine.EngineNameForError())
+		_, _ = d.engine("rm", "-f", name)
 		time.Sleep(500 * time.Millisecond)
 	}
 	if !created {
@@ -757,15 +765,29 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 					if serr != nil {
 						return nil, fmt.Errorf("start %s serve in runtime %s: %w", kind, name, serr)
 					}
-					cip := d.containerIP(name)
-					resp.ServePort = port
+					// Resolve where the plane DIALS this serve. Under podman that
+					// is the loopback port published at create time (the container
+					// IP is not host-routable); under docker it is the bridge IP,
+					// unchanged. ServePort is the HOST port in both cases —
+					// lifecycle.go and the opencode adapter build
+					// `http://127.0.0.1:<ServePort>` from it, so handing back the
+					// container port would point them at nothing under podman.
+					serveBase, hostPort, berr := d.hostBaseURL(name, port)
+					if berr != nil {
+						return nil, fmt.Errorf("resolve host address for %s serve in runtime %s: %w", kind, name, berr)
+					}
+					resp.ServePort = hostPort
 					resp.ServePassword = pw
-					resp.ServeURL = fmt.Sprintf("http://%s:%d", cip, port)
-					if planeEnabled && cip != "" {
+					resp.ServeURL = serveBase
+					if planeEnabled {
 						// The supervisor booted the sandbox plane (dev image);
-						// the run-start gate verifies its /healthz on the
-						// bridge IP before any execution dispatches.
-						resp.PlaneURL = fmt.Sprintf("http://%s:%d", cip, sandboxPlanePort)
+						// the run-start gate verifies its /healthz before any
+						// execution dispatches.
+						planeBase, _, perr := d.hostBaseURL(name, sandboxPlanePort)
+						if perr != nil {
+							return nil, fmt.Errorf("resolve host address for the sandbox plane in runtime %s: %w", name, perr)
+						}
+						resp.PlaneURL = planeBase
 					}
 				}
 			}
@@ -774,6 +796,70 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		time.Sleep(250 * time.Millisecond)
 	}
 	return nil, fmt.Errorf("runtime %s started but supervisor socket not ready", name)
+}
+
+// createFlagArgs is the engine-flag prefix of a runtime create: identity,
+// ownership labels, resources, the private /tmp, and the published ports.
+// Factored out of createContainer so the exact flag set this daemon emits is
+// assertable without an engine binary (daemon_createflags_test.go pins it).
+//
+// EVERY element below was verified against both engines' CLIs. Where the two
+// engines differ, the difference is made by Engine (engine.go) rather than by a
+// literal here, so the branches sit next to each other and cannot drift:
+//
+//	run -d --name <n>                            both: identical CLI
+//	--label orchicon.workflow=/instance=         both: our ownership marker
+//	--add-host host.docker.internal:host-gateway both: podman supports
+//	                                             host-gateway as well; the
+//	                                             host.docker.internal SPELLING
+//	                                             is kept so planePublicURL's
+//	                                             string stays platform-
+//	                                             independent (ADR-0013 D2.4)
+//	--user <uid>:<gid>                           both: PRESERVED — every file
+//	                                             the container writes into a
+//	                                             bind-mounted project is the
+//	                                             operator's, never root (AC 6)
+//	--userns=keep-id                             podman only: without it a
+//	                                             rootless --user resolves into
+//	                                             the SUBUID range and the
+//	                                             project dir is written as an
+//	                                             unmapped uid
+//	--cpus <n>                                   both: core count
+//	--memory <n>                                 both: identical (4g accepted)
+//	--tmpfs /tmp:rw,size=<n>,exec                both: tmpfs defaults to
+//	                                             noexec, and Go's TMPDIR plus
+//	                                             the /tmp/orchicon-guard-* shim
+//	                                             need exec
+//	-p 127.0.0.1::4096 -p 127.0.0.1::8080        podman only: a rootless
+//	                                             container's IP is not host-
+//	                                             routable, so the loopback
+//	                                             publish IS the address the
+//	                                             plane dials (ADR-0013 D2.1);
+//	                                             docker keeps dialing the
+//	                                             bridge IP
+//
+// The published ports are the two FIXED container ports (defaultServePort,
+// sandboxPlanePort), which is what makes publishing at create time possible.
+// Publishing at create rather than on first accept is deliberate: the port
+// must exist before the serve can be reached, and the daemon re-resolves it
+// after startServe and validates it with serveUsableAt before the plane sees it
+// (ADR-0013 D2.2 — ordering answers the proxy race, not luck).
+func (d *Daemon) createFlagArgs(name string, req CreateRequest) []string {
+	workflowLabel := req.WorkflowID
+	if workflowLabel == "" {
+		workflowLabel = "pool"
+	}
+	args := d.Engine.CreateBaseArgs(name, workflowLabel, instanceID(req.InstanceID))
+	args = append(args, "--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID))
+	args = append(args, d.Engine.UsernsArgs()...)
+	args = append(args,
+		"--cpus", d.CPUs,
+		"--memory", d.Memory,
+		// A private tmpfs sized to TmpfsSize, mountable exec.
+		"--tmpfs", fmt.Sprintf("/tmp:rw,size=%s,exec", d.TmpfsSize),
+	)
+	args = append(args, d.Engine.PublishArgs(defaultServePort, sandboxPlanePort)...)
+	return args
 }
 
 // standardHostMountArgs returns the daemon-appended host-home arg block for
@@ -785,7 +871,7 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 // at an absent host dir).
 //
 // Factored out of createContainer so the mount conditionality is unit
-// testable without docker. The adapter mount set comes from the SAME
+// testable without an engine. The adapter mount set comes from the SAME
 // declaration the mount-never-bake guard reads, so the mounted set and the
 // forbidden-bake set cannot drift.
 func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
@@ -962,6 +1048,34 @@ func (d *Daemon) ghToken() string {
 	return d.ghTokenVal
 }
 
+// engineInputFingerprint is the pool key's ENGINE term (ADR-0013 D7.1/D7.2):
+// the engine family, its client version, and the create-time SHAPE of a
+// container under it. Resolved ONCE per daemon process (sync.Once): an engine
+// switch or a podman upgrade on a live host must miss every warm container that
+// engine did not create, and the version must never be re-exec'd per checkout.
+//
+// The version NEVER degrades to "": an empty term would fold away and silently
+// stop covering the engine — the exact failure a fingerprint exists to prevent.
+// Unresolvable (no binary on PATH, or the exec failed) is the literal "unknown",
+// which still keys distinctly from any resolved version.
+func (d *Daemon) engineInputFingerprint() string {
+	d.engineFpOnce.Do(func() {
+		ver := ""
+		if d.engineVersionFn != nil {
+			ver = strings.TrimSpace(d.engineVersionFn())
+		} else if _, lookErr := exec.LookPath(d.Engine.binary()); lookErr == nil {
+			if out, err := d.engine(d.Engine.VersionArgs()...); err == nil {
+				ver = strings.TrimSpace(out)
+			}
+		}
+		if ver == "" {
+			ver = "unknown"
+		}
+		d.engineFp = "engine=" + d.Engine.name() + "@" + ver + "|shape=" + d.Engine.Shape()
+	})
+	return d.engineFp
+}
+
 // hostInputsFingerprint computes a fresh-per-checkout fingerprint of the
 // read-once HOST inputs baked into every runtime container at create time:
 // the DAEMON BINARY (bind-mounted read-only at /usr/local/bin/orchicon —
@@ -975,8 +1089,13 @@ func (d *Daemon) ghToken() string {
 // instead of reusing a warm one serving the stale value. The binary term is
 // ALWAYS present ("absent" when the exe cannot be stat'd), so the key never
 // silently reverts to image+mounts on a fingerprint gap; bind-mount
-// resolution at docker run time additionally picks up a rebuilt binary for
+// resolution at container-create time additionally picks up a rebuilt binary for
 // freshly-created containers.
+//
+// The ENGINE term (engineInputFingerprint) is folded in here too: the pool key
+// pins the engine family, its client version, and the create-time SHAPE, so an
+// engine switch or an engine upgrade on a live host cannot hand out a warm
+// container the new engine did not create (ADR-0013 D7.1/D7.2).
 func (d *Daemon) hostInputsFingerprint() string {
 	// Binary fingerprint FIRST — the bind-mount applies to EVERY runtime
 	// container (createContainer hard-fails without it), so it must color
@@ -996,7 +1115,7 @@ func (d *Daemon) hostInputsFingerprint() string {
 	if d.HostHome != "" {
 		hostFp = hostInputsFingerprint(d.HostHome, ghTokenFingerprint(d.ghToken()))
 	}
-	return hostFp + "|" + binFp
+	return hostFp + "|" + binFp + "|" + d.engineInputFingerprint()
 }
 
 // startServe asks the in-container supervisor to bring up `opencode
@@ -1021,7 +1140,7 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 	if err != nil {
 		return 0, "", false, err
 	}
-	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	cmd := exec.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(reqJSON)
 	out, perr := cmd.Output()
 	if perr != nil {
@@ -1052,11 +1171,14 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 		return 0, "", false, fmt.Errorf("serve handshake: incomplete serve event (port=%d)", port)
 	}
 
-	// Resolve the container's bridge IP — the plane reaches the serve
-	// DIRECTLY at http://<container-ip>:<port> (no docker-proxy).
-	cip := d.containerIP(name)
-	if cip == "" {
-		return 0, "", false, fmt.Errorf("resolve container IP for %s", name)
+	// Resolve where the plane reaches this serve: podman's published loopback
+	// port, or docker's container IP. Resolved AFTER the handshake above (the
+	// in-container listener is already up) and validated by the usability probe
+	// below before the plane ever sees it — ordering answers the published-port
+	// race rather than a docker-proxy assumption (ADR-0013 D2.2).
+	serveBase, _, berr := d.hostBaseURL(name, port)
+	if berr != nil {
+		return 0, "", false, fmt.Errorf("resolve serve address for %s: %w", name, berr)
 	}
 
 	// The serve's cold start answers /global/health before it can handle
@@ -1064,14 +1186,14 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 	// real session create round-trip — before handing it to the plane.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if serveUsableAt(fmt.Sprintf("http://%s:%d", cip, port), password) {
+		if serveUsableAt(serveBase, password) {
 			// Give the accept path a beat after the first success.
 			time.Sleep(500 * time.Millisecond)
 			return port, password, planeEnabled, nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return 0, "", false, fmt.Errorf("serve %s:%d did not become usable within 30s", cip, port)
+	return 0, "", false, fmt.Errorf("serve %s did not become usable within 30s", serveBase)
 }
 
 // serveUsableAt is the L1 serve-readiness probe (the workflow run-start
@@ -1085,7 +1207,7 @@ func serveUsableAt(baseURL, password string) bool {
 
 	// EACH STEP TRIES EVERY PATH A SERVE MAY EXPOSE (see opencodeapi.go). ONE serve answers one of
 	// them, so this asks the gate's real question — "is this serve usable?" — without a version probe
-	// (a `docker exec` per run start) and without a cached verdict that can go stale when the
+	// (an engine exec per run start) and without a cached verdict that can go stale when the
 	// container's binary is replaced.
 	//
 	// THE HARDCODED v1 PAIR IS WHAT BROKE EXECUTIONS ON 2.x: `POST /session` is answered with 405 by
@@ -1139,17 +1261,30 @@ func anyPathOK(client *http.Client, baseURL, password, method string, paths []st
 	return false
 }
 
-// containerIP resolves a container's bridge IP.
-func (d *Daemon) containerIP(name string) string {
-	out, err := d.docker("inspect", "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name)
+// hostBaseURL resolves the host-reachable base URL for one of a container's
+// ports, plus the host port to ADVERTISE.
+//
+// Podman: the port published on the host loopback at create time (`-p
+// 127.0.0.1::<cport>`), because a rootless container's IP lives in a per-user
+// network namespace and is NOT host-routable — on macOS/Windows it is inside
+// the Podman machine VM. Docker: the container's bridge IP and the container
+// port itself, exactly as before (the grandfathered containerized-plane case
+// depends on it). Both answers come from Engine.HostEndpoint, so the two
+// branches live side by side in engine.go.
+func (d *Daemon) hostBaseURL(name string, cport int) (string, int, error) {
+	host, port, err := d.Engine.HostEndpoint(name, cport, d.engine)
 	if err != nil {
-		return ""
+		return "", 0, err
 	}
-	return strings.TrimSpace(out)
+	return fmt.Sprintf("http://%s:%d", host, port), port, nil
 }
 
+// engineBin is the executable to run: the resolved engine binary, else the
+// default engine's name (so a zero-valued Engine never execs "").
+func (d *Daemon) engineBin() string { return d.Engine.binary() }
+
 func (d *Daemon) containerRunning(name string) (bool, error) {
-	out, err := d.docker("inspect", "--format", "{{.State.Running}}", name)
+	out, err := d.engine("inspect", "--format", "{{.State.Running}}", name)
 	if err != nil {
 		return false, err
 	}
@@ -1164,35 +1299,71 @@ func instanceID(id string) string {
 	return id
 }
 
-// instanceLabelArgs returns the create args that scope a runtime container
-// to exactly ONE instance. The value is written under two keys:
-//
-//   - `orchicon.instance`, the historical key the daemon filters on
-//     (listRuntimes) and the pre-restart sweep scans;
-//   - `io.orchicon.instance`, the reverse-DNS form external tooling expects
-//     (`podman ps --filter label=io.orchicon.instance=dev`).
-//
-// The filter side stays on the historical key on purpose: a container is
-// always created by this daemon, so it always carries both, and keeping the
-// filter unchanged means an engine switch cannot make existing containers
-// invisible to the reapers. Podman's `--filter label=k=v` is the same syntax
-// as Docker's.
-func instanceLabelArgs(instance string) []string {
-	v := instanceID(instance)
-	return []string{
-		"--label", "orchicon.instance=" + v,
-		"--label", "io.orchicon.instance=" + v,
-	}
-}
-
 // containerExists reports whether a container with this name exists
 // (running or stopped).
 func (d *Daemon) containerExists(name string) (bool, error) {
-	out, err := d.docker("inspect", "--format", "{{.Id}}", name)
+	out, err := d.engine("inspect", "--format", "{{.Id}}", name)
 	if err != nil {
 		return false, err
 	}
 	return strings.TrimSpace(out) != "", nil
+}
+
+// containerGoneWording reports whether an engine error means the container is
+// ALREADY GONE — success for a removal's purposes. The phrasings differ by
+// engine (docker: "Error: No such container: x"; podman: "Error: no container
+// with name or ID x: no such container"), and the comparison is case-insensitive
+// because the engines capitalise differently.
+func containerGoneWording(out string) bool {
+	lower := strings.ToLower(out)
+	for _, t := range []string{"no such container", "no container with name", "does not exist", "no such object"} {
+		if strings.Contains(lower, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// waitContainerGone polls until the engine reports the container absent or the
+// timeout expires. `inspect` is answered by both engines, so no engine-specific
+// `container exists` subcommand is needed; an inspect ERROR is read as "not
+// visible yet" and the poll simply continues to its deadline.
+func (d *Daemon) waitContainerGone(name string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		exists, _ := d.containerExists(name)
+		if !exists {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// removeContainer discards a runtime container and WAITS until the engine has
+// released the NAME, because the pristine reset recreates from a fresh name and a
+// lingering name turns a reset into a failed create (ADR-0013 §6, D5.2: podman
+// keeps the name reserved for a moment after `rm -f`).
+//
+// Best-effort by design: a removal that cannot prove the container gone returns
+// false and the CALLER drops the pool entry (the next checkout creates fresh)
+// rather than blocking dispatch on a wedged engine.
+func (d *Daemon) removeContainer(name string) bool {
+	if out, err := d.engine("rm", "-f", name); err != nil && !containerGoneWording(out) {
+		d.Log.Warn("remove runtime container", "container", name, "engine", strings.TrimSpace(out), "error", err)
+	}
+	if d.waitContainerGone(name, 5*time.Second) {
+		return true
+	}
+	// The name is somehow still there: one more removal, then a short re-poll.
+	_, _ = d.engine("rm", "-f", name)
+	gone := d.waitContainerGone(name, 2*time.Second)
+	if !gone {
+		d.Log.Warn("runtime container still present after removal — dropping it from the pool", "container", name)
+	}
+	return gone
 }
 
 // listRuntimes returns runtime container names, optionally scoped to one
@@ -1204,7 +1375,7 @@ func (d *Daemon) listRuntimes(instance string) ([]string, error) {
 		args = append(args, "--filter", "label=orchicon.instance="+instance)
 	}
 	args = append(args, "--format", "{{.Names}}")
-	out, err := d.docker(args...)
+	out, err := d.engine(args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1222,7 +1393,7 @@ func (d *Daemon) listRuntimes(instance string) ([]string, error) {
 // success; a missing container/socket or timeout returns false.
 func (d *Daemon) pingRuntime(name string) bool {
 	req, _ := json.Marshal(AgentRequest{Cmd: "ping"})
-	cmd := exec.Command(d.DockerBin, "exec", "-i", name, "orchicon", "runtime-client")
+	cmd := exec.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(req)
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {
@@ -1238,12 +1409,15 @@ func (d *Daemon) pingRuntime(name string) bool {
 	}
 }
 
-// validateExec enforces the daemon's argv allowlist.
-func (d *Daemon) docker(args ...string) (string, error) {
-	if d.dockerFn != nil {
-		return d.dockerFn(args...)
+// engine runs ONE container-engine CLI invocation and returns its combined
+// stdout+stderr. This is the only place the daemon executes the engine binary:
+// the engine's identity and resolved path come from Engine (engine.go), so no
+// call site can name a container engine of its own.
+func (d *Daemon) engine(args ...string) (string, error) {
+	if d.engineFn != nil {
+		return d.engineFn(args...)
 	}
-	cmd := exec.Command(d.DockerBin, args...)
+	cmd := exec.Command(d.engineBin(), args...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf

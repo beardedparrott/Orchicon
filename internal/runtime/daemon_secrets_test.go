@@ -60,14 +60,14 @@ func TestCreateContainerInjectsSecretsAsEnv(t *testing.T) {
 
 	d := &Daemon{
 		SocketPath:   "/tmp/test.sock",
-		DockerBin:    "docker",
+		Engine:       Engine{Name: "docker", Bin: "docker"},
 		Image:        "orchicon-runtime:local",
 		AllowedRoots: []string{"/tmp"},
 		ExePath:      tmp.Name(),
 		CPUs:         "1", Memory: "1g", TmpfsSize: "100m",
 		HostHome: "",
 	}
-	d.dockerFn = func(args ...string) (string, error) {
+	d.engineFn = func(args ...string) (string, error) {
 		cp := append([]string(nil), args...)
 		mu.Lock()
 		calls = append(calls, cp)

@@ -1,0 +1,15 @@
+2	make rls-check passes with NO host psql (the downloaded-psql rung)	scripts/check-rls.sh:49-78
+2	the RLS gate really ran (not SKIPPED) (missing 'RLS gate OK' in qa-evidence/no-engine-e2e/qa2-full/step-2.log)	
+4	the served bundle is fetchable (independent: HTTP GET of the asset)	internal/api (SPA serving)
+4	THE CHANGE IS LIVE: the SERVED bundle carries the new marker (missing 'NO-ENGINE-E2E-20261017T054835Z-85679' in qa-evidence/no-engine-e2e/qa2-full/04-served-bundle-after.txt)	Makefile:569-581
+4	make build force-fe=1 (the engine-free escape hatch) succeeds	Makefile:573-581
+5	status makes no claim it cannot verify (no container-derived 'not created') (found 'not created' in qa-evidence/no-engine-e2e/qa2-full/05-status-script.txt)	scripts/container.sh:1603-1630 status_instances (unguarded 'docker ps')
+5	status does not leak a container error (found 'docker: command not found' in qa-evidence/no-engine-e2e/qa2-full/05-status-script.txt)	scripts/container.sh:1603-1630
+5	status names the plane's port (18080)	scripts/container.sh:plane_status
+5	status reports the SERVICES half (Postgres/NATS), not only the plane	scripts/container.sh:1603-1630
+6	scripts/orchicon.sh logs works with no container engine (exit 127)	scripts/orchicon.sh:101 (logs -> scripts/container.sh:1632 logs_instance -> 'docker logs -f')
+6	the plane writes its log to .local/share/orchicon-dev/serve/logs/orchicon.log (the path every other verb already knows)	Makefile:272-278 (make run is foreground and writes no log) + scripts/container.sh:478
+8	make clean-docker is a clean no-op with no container engine (exit 2)	Makefile:413-416
+8	clean-docker does not fail with a container error (found 'docker: command not found' in qa-evidence/no-engine-e2e/qa2-full/step-8.log)	Makefile:413-416
+8	a second cleanup is also a clean no-op (exit 0)	Makefile:413-416
+10	every earlier step is answerable from a documented command plus its evidence (14 step-level failures to attribute)	see defects.tsv

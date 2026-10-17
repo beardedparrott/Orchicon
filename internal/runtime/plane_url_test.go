@@ -12,14 +12,27 @@ import (
 // reach (hairpin-NAT drop) — so the plane-channel MCP sidecar timed out on
 // every call. In container mode the plane must advertise its OWN bridge IP +
 // internal port 8080, which runtime containers reach directly on the bridge.
+//
+// This file pins the DOCKER topology; the podman divergence (no bridge IP, no
+// 172.17.0.1 gateway, loud override required) is pinned in
+// plane_podman_test.go.
 func TestPlanePublicURLResolution(t *testing.T) {
 	// Preserve + restore env so tests are hermetic.
 	prevURL := os.Getenv("ORCHICON_PLANE_PUBLIC_URL")
 	prevMode := os.Getenv("ORCHICON_CONTAINER_MODE")
+	prevEngine := os.Getenv(EnvEngine)
+	prevEngineAlias := os.Getenv(EnvEngineAlias)
 	defer func() {
 		setEnvOrUnset("ORCHICON_PLANE_PUBLIC_URL", prevURL)
 		setEnvOrUnset("ORCHICON_CONTAINER_MODE", prevMode)
+		setEnvOrUnset(EnvEngine, prevEngine)
+		setEnvOrUnset(EnvEngineAlias, prevEngineAlias)
 	}()
+	// Docker is the engine whose container residency HAS a fallback: a rootless
+	// podman container has neither an /etc/hosts bridge IP nor a 172.17.0.1
+	// gateway, and must fail loudly instead (plane_podman_test.go).
+	os.Setenv(EnvEngine, engineDocker)
+	os.Unsetenv(EnvEngineAlias)
 
 	// 1. Explicit override always wins (trailing slash trimmed).
 	os.Setenv("ORCHICON_PLANE_PUBLIC_URL", "http://plane.example:9999/")
@@ -41,14 +54,14 @@ func TestPlanePublicURLResolution(t *testing.T) {
 		t.Fatalf("parseHostsIP = %q, want 172.17.0.3", got)
 	}
 
-	// 3. Container mode but IP unresolvable (no /etc/hosts entry): fall back
-	// rather than emitting an empty URL. The per-instance port derivation, the
-	// host-resident branches and the dev/prod crossover guard live in
-	// plane_reachability_test.go; this file keeps the container branch and
-	// parseHostsIP.
+	// 3. Container mode but IP unresolvable (no /etc/hosts entry): DOCKER keeps
+	// the historical gateway fallback rather than emitting an empty URL. The
+	// per-instance port derivation, the host-resident branches and the
+	// dev/prod crossover guard live in plane_reachability_test.go; this file
+	// keeps the container branch and parseHostsIP.
 	os.Setenv("ORCHICON_CONTAINER_MODE", "1")
 	if got := planePublicURL(); got == "" {
-		t.Fatal("container mode with unresolvable IP must not return an empty URL")
+		t.Fatal("container mode with unresolvable IP must not return an empty URL under docker")
 	}
 }
 

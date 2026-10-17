@@ -603,12 +603,21 @@ func planePublicURL() string {
 			return "http://" + host + ":" + port
 		}
 	}
-	// Host-resident plane reached by name: the alias depends on the engine
-	// (docker host.docker.internal / podman host.containers.internal) — see
-	// engine.go planeHostAlias. Podman on macOS/Windows crosses the podman
-	// machine VM boundary here, so the alias, not the port, is what changes.
-	return "http://" + planeHostAlias() + ":" + port
+	// Host-resident plane reached by name: host.docker.internal is the single
+	// spelling for BOTH engines because the daemon maps it at create time
+	// (Engine.CreateBaseArgs emits `--add-host host.docker.internal:host-gateway`
+	// for podman too — ADR-0013 D2.4), so the URL string stays
+	// platform-independent. Podman on macOS/Windows crosses the podman-machine
+	// VM boundary through that mapping; only the PORT — never the host name —
+	// distinguishes two instances.
+	return "http://host.docker.internal:" + port
 }
+
+// hostsFilePath is the file containerIPAddress reads. It is a var so a test can
+// pin the "no derivable own address" case deterministically, whatever the test
+// host's /etc/hosts happens to contain (the underivable case is the whole point
+// of the Podman container-residency override).
+var hostsFilePath = "/etc/hosts"
 
 // containerIPAddress resolves the current container's bridge IP. Docker
 // sets the container hostname to the container ID and writes
@@ -620,7 +629,7 @@ func containerIPAddress() string {
 	if err != nil || hostname == "" {
 		return ""
 	}
-	data, err := os.ReadFile("/etc/hosts")
+	data, err := os.ReadFile(hostsFilePath)
 	if err != nil {
 		return ""
 	}
@@ -702,7 +711,7 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 func planeURLForRun() (string, error) {
 	u := planePublicURL()
 	if u == "" {
-		return "", fmt.Errorf("plane credential: this instance's plane URL is not derivable for a container-resident plane under %s (no bridge IP inside the container) — set ORCHICON_PLANE_PUBLIC_URL to the address this instance's workers can dial", engineKind())
+		return "", fmt.Errorf("plane credential: this instance's plane URL is not derivable for a container-resident plane under %s (no bridge IP inside the container) — set ORCHICON_PLANE_PUBLIC_URL to the address this instance's workers can dial", planEngineNameForError())
 	}
 	return u, nil
 }
@@ -1101,6 +1110,20 @@ func contextMounts(ctxFiles []byte, projectDir string) []MountSpec {
 		out = append(out, MountSpec{Source: resolved, Dest: resolved})
 	}
 	return out
+}
+
+// ImagePresent reports whether a runtime image exists LOCALLY on the daemon's
+// host — the presence probe the reconciler's dispatch fail-fast uses.
+//
+// It inspects any ref (not just the daemon's allowlisted stock images), so a
+// tenant-built custom image is reported correctly. A nil client is headless
+// `orchicon serve`: presence is unknowable, which is an ERROR, not "absent" —
+// the caller must not turn an unwired plane into a configuration failure.
+func (l *Lifecycle) ImagePresent(ctx context.Context, ref string) (bool, error) {
+	if l == nil || l.client == nil {
+		return false, errors.New("runtime lifecycle: no runtime daemon configured")
+	}
+	return l.client.ImagePresent(ctx, ref)
 }
 
 // ReapForRun removes the runtime container for a run that reached a

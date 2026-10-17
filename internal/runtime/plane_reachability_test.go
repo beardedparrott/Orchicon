@@ -24,6 +24,11 @@ import (
 // function treats an empty value as absent.
 func clearPlaneURLEnv(t *testing.T, kv ...string) {
 	t.Helper()
+	// This file pins the DOCKER topology (historical bridge gateway + own
+	// /etc/hosts IP). Podman is the opposite under container residency — see
+	// plane_podman_test.go, which pins the loud-override path.
+	t.Setenv(EnvEngine, engineDocker)
+	t.Setenv(EnvEngineAlias, "")
 	t.Setenv("ORCHICON_PLANE_PUBLIC_URL", "")
 	t.Setenv("ORCHICON_CONTAINER_MODE", "")
 	t.Setenv("ORCHICON_HTTP_EXTRA_BIND", "")
