@@ -158,8 +158,9 @@ and [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md).
 | `orchicon runtime-daemon` | Host process owning the Docker socket; owns the warm pool of per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 (hosts the container's adapter serve, when the run needs one) |
 | `orchicon runtime-client` | Forwards daemon requests (serve handshake / ping) into the runtime container |
-| `scripts/container.sh up dev\|prod` | Start a single-container instance |
-| `scripts/container.sh runtime-daemon` / `runtime-stop` | Start / stop the runtime daemon |
+| `make instance-up` / `instance-down` / `instance-status` | Start / stop / inspect an instance on the host (no image, no instance container) |
+| `make runtime-build` | Build the workflow runtime images with podman (version-gated) |
+| `make runtime-daemon` / `runtime-stop` | Start / stop the host-side runtime daemon |
 | `orchicon version` | Print the installed version |
 
 ```bash
@@ -178,15 +179,17 @@ tasks are in the `Makefile` (`make help`).
 
 - Go 1.26+
 - Node 22+
-- Docker (the single-container deployment needs only Docker)
+- Docker or podman — needed ONLY for the workflow runtime (the runtime images and the
+  per-run containers). The instance itself runs on the host: Postgres/NATS are
+  started by `cmd/orchicon services`, and no image is built for it.
 - [`buf`](https://buf.build) and [`atlas`](https://atlasgo.io) — install
   with `make tools`
 
 ### Quick start
 
 ```bash
-make container-build          # build bin/orchicon + the container image
-make container-up             # start the dev instance on :8080 (:3002 Grafana)
+make instance-build           # build bin/orchicon + bin/orch (binaries only — no image)
+make instance-up              # start the dev instance on :8080 (host plane + services)
 # or: scripts/orchicon.sh start dev
 curl http://localhost:8080/healthz   # {"status":"ok"}
 ```

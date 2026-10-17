@@ -2,8 +2,9 @@
 # install-local.sh — Build the Orchicon binary from local source and install it.
 #
 # The binary is the control plane. The SERVICES it needs (Postgres, NATS,
-# telemetry, Grafana) run in the instance's container, and `scripts/orchicon.sh`
-# starts both halves for one instance; see the guidance printed at the end.
+# telemetry, Grafana) are host processes of the invoking user, and
+# `scripts/orchicon.sh` starts both halves for one instance; see the guidance
+# printed at the end.
 #
 # Usage:
 #   scripts/install-local.sh                         # install to ~/.local/bin/
@@ -98,16 +99,16 @@ echo ""
 echo "  ✓ $(bin/orchicon version) installed"
 
 echo ""
-echo "Run an instance (services container + host plane, one command):"
-echo "      scripts/orchicon.sh start dev        # GUI + API on http://127.0.0.1:8080"
-echo "      scripts/orchicon.sh start prod       # http://127.0.0.1:8091"
-echo "      scripts/orchicon.sh start test       # http://127.0.0.1:8092 (throwaway)"
-echo "  then  scripts/orchicon.sh status dev"
+echo "Run the full stack on THIS host (services + plane; no image, no instance container):"
+echo "      make instance-build && make instance-up   (dev instance)"
+echo "  or  scripts/orchicon.sh start dev | start prod | start test"
+echo "  then  scripts/orchicon.sh status            (what is up on this host, per instance)"
 echo ""
-echo "The three instances are separate stacks on one host — separate container,"
-echo "ports, database and data dir — so stopping one never touches the others."
+echo "The three instances are separate stacks on one host — separate ports,"
+echo "database and data dir — so stopping one never touches the others."
 echo "Remove ONE instance and its data (destructive, prints what it deletes):"
 echo "      scripts/orchicon.sh uninstall test --yes"
 echo ""
 echo "Headless plane (external Postgres/NATS, no instance container):"
 echo "      orchicon serve --detach"
+echo ""

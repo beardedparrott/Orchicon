@@ -130,8 +130,9 @@ db_url_required = @test -n "$(DB_URL)" || { echo "cannot resolve DB_URL for inst
 #
 # `instance ?= dev` is what makes `make run`/`migrate`/`services` work with no
 # argument (AC1), and it is a DEFAULT, not a decision. Two targets deliberately
-# REFUSE to run without an explicit instance — `container-rebuild` and
-# `full-rebuild` (DESTRUCTIVE: they stop an instance and rebuild its image) —
+# REFUSE to run without an explicit instance — `instance-rebuild` and
+# `full-rebuild` (DESTRUCTIVE: they stop an instance, rebuild its binaries and
+# restart it) —
 # and they test it with `test -n "$(instance)"`. A `?=` default makes that test
 # see "dev" and pass, so `make full-rebuild` with no argument silently rebuilt
 # and restarted DEV instead of printing its usage line: the guard is dead.
@@ -169,7 +170,11 @@ LDFLAGS     = -X github.com/beardedparrott/orchicon/internal/version.gitCommit=$
 # --- Help ------------------------------------------------------------------
 .PHONY: help
 help: ## Show available targets
-	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@# TARGET NAMES MAY CONTAIN DIGITS. The regex was [a-zA-Z_-]+, which silently dropped
+	@# every target with a number in it — install-ps1-test was in the file with its `##`
+	@# description and simply never printed, so the one list a developer trusts said the
+	@# target did not exist. `make help` must list what is there.
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 # --- Tooling ---------------------------------------------------------------
 # buf is pinned (version + SHA256) and installed into ./bin by `make tools`
@@ -580,6 +585,19 @@ install-path-test: ## Run the real installer against a locally-served artifact, 
 host-residency-test: ## CI gate: the instance launch shape (residency default, per-instance ports, plane binds)
 	bash scripts/tests/host-residency/run.sh
 
+# orchicon-cli-test is the gate for scripts/orchicon.sh — the command a developer
+# runs every day. It needs no container engine, no database and no running plane:
+# every delegation is asserted against stub binaries on PATH, so it runs anywhere
+# CI runs. It covers what the script alone can get wrong — a truncated `help` (the
+# usage block used to be a positional slice of the file's own header), a verb that
+# stops reaching the CLI's shared control surface, a `status` that reports health it
+# never verified, two instances that stop sharing nothing, a rebuild whose warning
+# about not running the tests goes missing, and any surviving reference to the
+# retired container launcher.
+.PHONY: orchicon-cli-test
+orchicon-cli-test: ## CI gate: scripts/orchicon.sh (verbs, help completeness, delegation, honest status)
+	bash scripts/tests/orchicon-cli/run.sh
+
 # local-services-test pins the INNER LOOP: that DB_URL is DERIVED per instance,
 # that the pure query verbs honour overrides, that `services` is a prerequisite
 # of `run` alone, and that the `test` isolation contract is unbroken. Offline —
@@ -599,7 +617,7 @@ fe-dev: ## Start the Vite dev server
 # fe-build rebuilds the production bundle only when the frontend source is
 # newer than the existing dist — repeated `make build` stays fast while any
 # frontend edit is guaranteed to land in the next binary. Set force-fe=1 to
-# ALWAYS rebuild (used by container-rebuild so a rebuilt instance is
+# ALWAYS rebuild (used by instance-rebuild so a rebuilt instance is
 # guaranteed to reflect the current source — the stamp check silently ships a
 # stale dist when the working tree is older than the last build, which is how
 # frontend fixes have repeatedly gone "invisible after a rebuild").
@@ -652,61 +670,117 @@ docs-check: ## Validate every Mermaid diagram in the root docs with a real parse
 		ORCHICON_MERMAID_PREFIX="$(CURDIR)/.mermaid-check/node_modules" node scripts/check-mermaid.mjs; \
 	fi
 
-# --- Single container (deployment) -----------------------------------------
-# The single container is the only full-stack deployment (dev + prod as two
-# instances on offset ports). See scripts/container.sh.
-.PHONY: container-build container-rebuild container-up container-down container-status container-logs container-ps runtime-build runtime-daemon runtime-stop
-# Plane residency per rebuild: `host` (the container runs the SERVICES only and
-# the plane runs on the HOST — now the product's default shape; see
-# residency_for in scripts/container.sh, which resolves ${...:-host}) or
-# `container` (the plane runs inside the instance's container, as it did before
-# the host-residency migration).
+# --- Instances (host-resident dev loop) -------------------------------------
+# The control plane runs on THIS host; `scripts/orchicon.sh` starts, stops and
+# reports it (its verbs: start|stop|restart|status|logs). Nothing here builds a
+# container image, and nothing here talks to a container engine.
 #
-# HOST IS THE DEFAULT HERE TOO, matching the launcher and the product:
-# scripts/container.sh residency_for resolves ${...:-host}. This variable used to
-# be `container`, which made this target the ONE entry point still producing the
-# old shape — so `make container-rebuild instance=dev` silently gave a different
-# residency from `make rebuild-dev`, and from every fresh install. Pass
-# `residency=container` explicitly for the self-contained shape; that is the
-# documented rollback.
-residency = host
-container-build: ## Build bin/orchicon + the container image
+# THE SHAPE IS NO LONGER A CHOICE, SO IT IS NO LONGER A VARIABLE — and that is the
+# lesson kept from the `residency` variable this section used to carry. That
+# variable existed because ONE entry point (`container-rebuild`) shipped its own
+# default while every other path took the launcher's, so a single target silently
+# produced a different shape from a fresh install and from `make rebuild-dev`. A
+# per-target default that disagrees with the product default is not an option, it
+# is a divergence with a friendly name. If a future knob makes one path differ from
+# the rest, the path is the bug — fix the path, do not add the knob.
+#
+# The plane's per-instance listeners (loopback ORCHICON_HTTP_ADDR plus the
+# docker-bridge address at THIS instance's port, so runtime containers can dial
+# it) are computed in ONE place — the launcher — and are PER INSTANCE. Never put a
+# globally-shared ORCHICON_PLANE_PUBLIC_URL in a shell profile: a globally-set
+# value points one instance's workers at the other's plane. This file re-derives
+# none of it.
+#
+# Instance selection: `instance=dev` (the default) names which stack these targets
+# act on. `instance_given` is the narrower question "did the operator actually say
+# so", and only the DESTRUCTIVE targets ask it.
+.PHONY: instance-build instance-up instance-down instance-restart instance-status instance-logs instance-ps instance-rebuild
+
+# The launcher owns instance lifecycle; this file owns the Makefile concerns
+# (build, guards, the rebuild chain). Keeping that split means the launcher can be
+# rewritten — it is, to delegate to `orchicon instance` — without a Makefile edit.
+INSTANCE_SH := scripts/orchicon.sh
+
+instance-build: ## Build the binaries an instance runs (bin/orchicon + bin/orch)
 	$(MAKE) build
-	scripts/container.sh build
-runtime-build: ## Build the workflow runtime base image
-	$(MAKE) build
-	scripts/container.sh build
+
+instance-up: ## Start this instance on the host (services + plane; instance=dev default)
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
+	@$(INSTANCE_SH) start $(instance)
+
+instance-down: ## Stop this instance on the host (plane and the services it started)
+	@$(INSTANCE_SH) stop $(instance)
+
+instance-restart: ## Restart this instance without rebuilding anything
+	@$(INSTANCE_SH) restart $(instance)
+
+instance-status: ## Show whether this instance's plane and services are up (and healthy)
+	@$(INSTANCE_SH) status $(instance)
+
+instance-logs: ## Tail this instance's plane log
+	@$(INSTANCE_SH) logs $(instance)
+
+instance-ps: ## List the ORCHICON instances on this host and their state
+	@$(INSTANCE_SH) status
+
+# DESTRUCTIVE: it stops the instance before it starts it, so it requires the
+# operator to NAME the instance. The guard tests instance_given, not instance —
+# `instance ?= dev` makes a bare `test -n "$(instance)"` see "dev" and pass, which
+# is how a bare `make full-rebuild` used to silently rebuild dev.
+instance-rebuild: ## Stop this instance, rebuild the binaries, start it (usage: make instance-rebuild instance=dev|prod|test)
+	@test -n "$(instance_given)" || { echo "usage: make instance-rebuild instance=dev|prod|test"; exit 1; }
+	$(MAKE) instance-down instance=$(instance)
+	$(MAKE) instance-build force-fe=1
+	$(MAKE) instance-up instance=$(instance)
+# --- Runtime image + daemon (podman; no instance lifecycle) ------------------
+# `runtime.sh` owns both: the version-gated build of the three stock runtime
+# images, and the host daemon's lifecycle. They used to live in container.sh.
+# The orchicon binary is NOT baked into these images — the daemon bind-mounts its
+# own executable into every runtime container — so runtime-build does not depend
+# on `make build` and a binary rebuild alone never needs an image rebuild.
+RUNTIME_SH := scripts/runtime.sh
+.PHONY: runtime-build runtime-daemon runtime-stop runtime-status
+runtime-build: ## Build the workflow runtime base images with podman (version-gated)
+	@$(RUNTIME_SH) build
 runtime-daemon: ## Start the host-side workflow runtime daemon
-	scripts/container.sh runtime-daemon
+	@$(RUNTIME_SH) daemon-start
 runtime-stop: ## Stop the host-side workflow runtime daemon
-	scripts/container.sh runtime-stop
-container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild instance=dev|prod|test [residency=host|container])
-	@test -n "$(instance_given)" || { echo "usage: make container-rebuild instance=dev|prod|test"; exit 1; }
-	# residency is passed down as ENV (per invocation) — never exported globally,
-	# so rebuilding one instance cannot change the other's shape.
-	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh down $(instance)
-	$(MAKE) container-build force-fe=1
-	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh up $(instance)
-# Host-resident plane listeners: the plane binds its loopback address
-# (ORCHICON_HTTP_ADDR → host clients: orch, the GUI) plus the docker bridge
-# address at THIS instance's port, so its run containers can dial it. Both the
-# bind (ORCHICON_HTTP_EXTRA_BIND) and the URL those containers are handed
-# (ORCHICON_PLANE_PUBLIC_URL) come from the ONE place that computes them
-# (`scripts/container.sh plane-bind <dev|prod>`, bridge_bind_env) and
-# `plane-start` picks them up through container.sh's plane_env. Both are PER
-# INSTANCE: never put a globally-shared ORCHICON_PLANE_PUBLIC_URL in a shell
-# profile — a globally-set value points one instance's workers at the other's
-# plane.
-container-up: ## Start the dev single-container instance (ORCHICON_PLANE_RESIDENCY=host opt-in: plane on the host)
-	scripts/container.sh up dev
-container-down: ## Stop the dev single-container instance
-	scripts/container.sh down dev
-container-status: ## Show single-container instance status
-	scripts/container.sh status
-container-logs: ## Tail the dev container instance logs
-	scripts/container.sh logs dev
-container-ps: ## List orchicon container instances
-	scripts/container.sh ps
+	@$(RUNTIME_SH) daemon-stop
+runtime-status: ## Show whether the runtime daemon is answering, and its socket
+	@$(RUNTIME_SH) daemon-status
+
+# --- Deprecated names (kept because muscle memory is the asset) --------------
+# These have NO `## ` comment on purpose: `make help` is generated from those, and
+# eight deprecated rows would bury the real list. Each alias says what it became
+# when you run it, so the rename is discoverable from the command itself rather
+# than from a doc you have to think to open.
+#
+# THE ALIAS MUST NOT DEFEAT THE DESTRUCTIVE GUARD. `$(MAKE) instance-rebuild
+# instance=$(instance)` would put the dev DEFAULT on the sub-make's command line,
+# where instance_given sees origin=command line and the refusal disappears. So the
+# alias forwards instance= only when the operator named one.
+.PHONY: container-build container-up container-down container-rebuild container-status container-logs container-ps
+container-build:
+	@echo "container-build is now instance-build (binaries only — there is no image to build)"
+	@$(MAKE) instance-build
+container-up:
+	@echo "container-up is now instance-up (the instance is a HOST process, not a container)"
+	@$(MAKE) instance-up instance=$(instance)
+container-down:
+	@echo "container-down is now instance-down"
+	@$(MAKE) instance-down instance=$(instance)
+container-rebuild:
+	@echo "container-rebuild is now instance-rebuild (no image build; the plane runs on the host)"
+	@$(MAKE) instance-rebuild $(if $(instance_given),instance=$(instance))
+container-status:
+	@echo "container-status is now instance-status"
+	@$(MAKE) instance-status instance=$(instance)
+container-logs:
+	@echo "container-logs is now instance-logs"
+	@$(MAKE) instance-logs instance=$(instance)
+container-ps:
+	@echo "container-ps is now instance-ps"
+	@$(MAKE) instance-ps
 
 # --- Full rebuild (one command) --------------------------------------------
 # A single command that runs everything needed before/for an instance rebuild:
@@ -717,60 +791,54 @@ container-ps: ## List orchicon container instances
 #   2. all checks/tests         (make ci:  lint gen vet test rls-check)
 #   3. migration hash sync      (make migrate-hash — keeps db/migrations/atlas.sum
 #                                 in sync so the Atlas CLI path stays happy)
-#   4. frontend + binary + image (container-build force-fe=1 — the frontend is
-#                                 rebuilt and embedded into the binary via go:embed)
-#   5. stop/restart the instance (down then up; the container boots with
-#                                 MigrateOnBoot=true, which applies any pending
-#                                 embedded migrations — so step 3 is the repo
-#                                 hash sync and step 5 surfaces the DB migration)
-#
-# The DB migration itself is applied by the container at boot (migrate.Run), so
-# there is no separate `make migrate` needed here — running it against the
-# instance's Postgres would conflict with the container-owned DB.
-.PHONY: full-rebuild rebuild-dev rebuild-prod
-# residency propagates to container-rebuild through the make chain: BOTH
-# rebuild-dev and rebuild-prod pass residency=host explicitly, so each rebuild
-# migrates its OWN instance to a host-resident plane and neither can alter the
-# other's shape. This now MATCHES the launcher's own default, which
-# residency_for in scripts/container.sh resolves as ${...:-host}; nothing here is
-# ever exported globally.
-#
-# `residency=container` on the command line OVERRIDES the target default (a
-# command-line variable beats a target-specific one), which is the documented
-# rollback: `make rebuild-prod residency=container` puts prod's plane back
-# inside its container.
+#   4. frontend + binary        (instance-build force-fe=1 — the frontend is
+#                                 rebuilt and embedded into the binary via go:embed.
+#                                 NO image is built and no container is created)
+#   5. stop/restart the instance (instance-down then instance-up; the plane on THIS
+#                                 host boots with MigrateOnBoot=true — serve.go:366 —
+#                                 which applies any pending embedded migrations, so
+#                                 step 3 is the repo hash sync and step 5 surfaces
+#                                 the DB migration)
 #   6. cache hygiene            (make cache-trim — placed AFTER the gate that grows the cache, so
 #                                 the run that just laid down a day of build artifacts also bounds
 #                                 them. It is a NO-OP when the cache is under CACHE_CAP_MB, so a
 #                                 healthy dev loop pays nothing for it. This is the "regularly"
 #                                 half of the fix: cross-compile no longer dumps foreign-platform
 #                                 artifacts into the shared cache, and this keeps the rest honest)
-full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod|test)
+#
+# The DB migration itself is applied by the PLANE at boot (migrate.Run), so there is
+# no separate `make migrate` needed here — running it against the instance's Postgres
+# would race the plane that owns that database.
+.PHONY: full-rebuild rebuild-dev rebuild-prod rebuild-test
+full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + instance restart (usage: make full-rebuild instance=dev|prod|test)
 	@test -n "$(instance_given)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
 	$(MAKE) build
 	$(MAKE) ci
 	$(MAKE) migrate-hash
-	$(MAKE) container-rebuild instance=$(instance)
+	$(MAKE) instance-rebuild instance=$(instance)
 	$(MAKE) cache-trim
 
-rebuild-dev: residency = host
-rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV instance (plane residency: host)
-	$(MAKE) full-rebuild instance=dev residency=$(residency)
+# instance= reaches instance-rebuild EXPLICITLY on the command line: that is how
+# the operator's choice survives into the sub-make, whose own guard tests
+# instance_given. Nothing here is ever exported globally, so rebuilding one
+# instance cannot change another's state.
+rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV instance
+	$(MAKE) full-rebuild instance=dev
 	$(MAKE) orch-launcher-dev
 
-rebuild-prod: residency = host
-rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance (plane residency: host; pass residency=container to keep it in its container)
-	$(MAKE) full-rebuild instance=prod residency=$(residency)
+rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance
+	$(MAKE) full-rebuild instance=prod
 	$(MAKE) orch-launcher-prod
 
 # rebuild-test mirrors the other two, minus the launcher: a throwaway instance
 # exists to be rebuilt and torn down repeatedly, and it needs no dedicated TUI
 # client (that is why there is deliberately no `make orch-launcher-test` below —
 # a throwaway is reached by running it, not by holding a TUI client pinned to it).
-# Teardown is `scripts/orchicon.sh uninstall test --yes`.
-rebuild-test: residency = host
-rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST instance (plane residency: host)
-	$(MAKE) full-rebuild instance=test residency=$(residency)
+# Teardown is `scripts/orchicon.sh uninstall test --yes`: `make instance-down`
+# merely stops it, this REMOVES the instance and its data — which is the whole
+# point of a throwaway instance.
+rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST instance
+	$(MAKE) full-rebuild instance=test
 
 # --- Dual orch launchers ----------------------------------------------------
 # Two orch clients on PATH: `orch` tracks bin/orch (dev vintage) and
@@ -977,7 +1045,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
