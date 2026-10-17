@@ -27,13 +27,38 @@ import (
 	"testing"
 )
 
-// withVolumeProbe stubs the engine probe so these tests never consult a real
-// daemon — otherwise they would pass or fail according to what the machine
-// running them happens to have installed.
+// withVolumeProbe stubs the engine probe AND the candidate engine set so these
+// tests never consult a real daemon — otherwise they would pass or fail according
+// to what the machine running them happens to have installed.
+//
+// The candidate set is stubbed too, and that is the point of the regression test
+// below: the probe's answer was always stubbed, but WHICH ENGINE was asked was
+// not, so the tests could not see that the guard asked the wrong one.
 func withVolumeProbe(t *testing.T, exists bool) {
 	t.Helper()
 	prev := postgresVolumeExists
 	postgresVolumeExists = func(string, string) bool { return exists }
+	t.Cleanup(func() { postgresVolumeExists = prev })
+	withEngineCandidates(t, "/usr/bin/docker")
+}
+
+// withEngineCandidates pins the engines the guard will ask. Zero arguments means
+// "no engine installed on this host", which is a real, healthy case that must not
+// be expressed by mutating PATH.
+func withEngineCandidates(t *testing.T, bins ...string) {
+	t.Helper()
+	prev := engineCandidateBins
+	engineCandidateBins = func() []string { return bins }
+	t.Cleanup(func() { engineCandidateBins = prev })
+}
+
+// withPerEngineProbe answers per engine binary. It is the only way to describe the
+// shape that actually bit us: the volume lives in ONE engine while the runtime
+// prefers the OTHER.
+func withPerEngineProbe(t *testing.T, fn func(bin string) bool) {
+	t.Helper()
+	prev := postgresVolumeExists
+	postgresVolumeExists = func(bin, _ string) bool { return fn(bin) }
 	t.Cleanup(func() { postgresVolumeExists = prev })
 }
 
@@ -98,6 +123,50 @@ func TestGuardRefusesFreshClusterWhenContainerEraVolumeExists(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("refusal message does not mention %q:\n%s", want, msg)
 		}
+	}
+}
+
+// THE REGRESSION THIS PINS — found hours after the guard shipped, on the
+// operator's own host, by asking it a question it could not answer: "the volumes
+// are in DOCKER, are you sure you are looking?".
+//
+// The guard resolved the RUNTIME's engine (Podman is the default, ADR-0014) and
+// asked only that engine about the volume. Both real instances keep their cluster
+// in DOCKER, so `podman volume inspect orchicon-prod_postgres-data` answered "no
+// such volume", the guard returned nil, and a host-residency rebuild would have
+// initdb'd an EMPTY database beside the 5.7 GB one — precisely the failure the
+// guard exists to prevent, one layer down and completely silent.
+//
+// The previous tests could not catch it: the probe's ANSWER was stubbed, but the
+// engine it was ASKED about was left to the machine's defaults.
+func TestGuardFindsTheVolumeInAnEngineOtherThanTheRuntimeEngine(t *testing.T) {
+	// The runtime's default (podman) is deliberately NOT pinned, because the defect
+	// was that the default was trusted.
+	t.Setenv("ORCHICON_RUNTIME_ENGINE", "")
+	t.Setenv("ORCHICON_PG_VOLUME", "")
+	t.Setenv("ORCHICON_INSTANCE", "prod")
+	t.Setenv(allowFreshPostgresEnv, "")
+
+	withEngineCandidates(t, "/usr/bin/podman", "/usr/bin/docker")
+	// Only DOCKER has it — the operator's actual shape.
+	withPerEngineProbe(t, func(bin string) bool { return bin == "/usr/bin/docker" })
+
+	var out bytes.Buffer
+	err := guardContainerEraPostgresCluster("/home/x/.local/share/orchicon-prod", false, &out)
+	if err == nil {
+		t.Fatal("guard went silent: it asked only the engine the RUNTIME prefers, and the volume is in the other one.\n" +
+			"An empty host dir would then be initdb'd beside the real cluster, which is the data loss this guard is for.")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "docker run") {
+		t.Errorf("remediation does not name the engine that HOLDS the volume:\n%s", msg)
+	}
+	if strings.Contains(msg, "podman run") {
+		t.Errorf("remediation names the runtime's engine, not the one holding the volume — running it would\n"+
+			"move no data and look like it worked:\n%s", msg)
+	}
+	if !strings.Contains(msg, "in docker") {
+		t.Errorf("refusal does not say which engine holds the volume:\n%s", msg)
 	}
 }
 
@@ -170,6 +239,9 @@ func TestGuardIsSilentWhenItHasNothingToSay(t *testing.T) {
 				t.Setenv("ORCHICON_RUNTIME_ENGINE", "none")
 				t.Setenv("ORCHICON_CONTAINER_BIN", "")
 				t.Setenv("PATH", "")
+				// An empty candidate set IS "no engine installed" now that the guard
+				// asks every engine rather than only the resolved one.
+				withEngineCandidates(t)
 			}
 
 			var out bytes.Buffer
