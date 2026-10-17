@@ -60,7 +60,7 @@ func newSweepPool(t *testing.T, listed ...string) (*daemonPool, *sweepHarness) {
 	h := &sweepHarness{listed: listed}
 	d := &Daemon{
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		dockerFn: h.docker,
+		engineFn: h.docker,
 	}
 	return newDaemonPool(d), h
 }
@@ -175,7 +175,7 @@ func TestSweepRetriesAfterAFailedListing(t *testing.T) {
 	var removals []string
 	d := &Daemon{
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		dockerFn: func(args ...string) (string, error) {
+		engineFn: func(args ...string) (string, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			if len(args) > 0 && args[0] == "ps" {

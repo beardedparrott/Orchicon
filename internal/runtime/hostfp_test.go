@@ -332,7 +332,7 @@ func TestPoolCheckoutReuseAndInvalidation(t *testing.T) {
 		HostHome:  home,
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ghTokenFn: func() string { return "ghp_abcdefgh123456789" },
-		dockerFn: func(args ...string) (string, error) {
+		engineFn: func(args ...string) (string, error) {
 			if len(args) >= 3 && args[0] == "inspect" && args[1] == "--format" && args[2] == "{{.State.Running}}" {
 				return "true", nil
 			}
