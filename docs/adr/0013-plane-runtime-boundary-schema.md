@@ -482,13 +482,15 @@ Engine chooses *which* argv.
 
 | Test (file:line) | Verdict | Why |
 |---|---|---|
-| `daemon_mounts_test.go:100` `TestStandardHostMountArgsConditionalOpencode` | **keep**, extend | argv flags (`-v`, `--tmpfs`, `-e`) are shared by podman; add engine cases |
-| `daemon_mounts_test.go:168` `…OpencodePrivateDataHome` | **keep** | `--tmpfs …uid=,gid=,mode=` is engine-neutral |
-| `daemon_mounts_test.go:194` `…NoHostHome` | **keep** | unchanged |
-| `daemon_mounts_test.go:204` `…GitStrategyGate` | **keep** | unchanged |
-| `daemon_mounts_test.go:274` `…ClaudeRWAndPath` | **keep** | unchanged |
+| `daemon_mounts_test.go:100` `TestStandardHostMountArgsConditionalOpencode` | **MUST CHANGE** | it asserts *exact* `-v <src>:<dst>:ro` strings through `argValue` (`:48-55` — equality, not substring), and D3.2 adds `,z` to every real bind on Linux, so every expected string gains it. "Extend" alone would leave the suite red |
+| `daemon_mounts_test.go:168` `…OpencodePrivateDataHome` | **MUST CHANGE** | `--tmpfs …uid=,gid=,mode=` is engine-neutral and both absences (`:173`/`:176`) survive `,z`, but `:183` asserts the exact `-v <auth.json>:…:ro` bind, which does not |
+| `daemon_mounts_test.go:194` `…NoHostHome` | **keep** | asserts `args == nil`; `,z` cannot turn absence into presence |
+| `daemon_mounts_test.go:204` `…GitStrategyGate` | **MUST CHANGE** | the negative assertion (`:209`) survives `,z`; the positive one via `opencodeAdapterMounts` (`:71`, asserted `:214`) does not |
+| `daemon_mounts_test.go:274` `…ClaudeRWAndPath` | **MUST CHANGE** | `claudeAdapterMounts` expectations are exact strings (`:264-265`), asserted for equality at `:287` |
 | `daemon_mounts_test.go:325` `TestClaudeCreatePreflightFailsActionably` | **keep** | pre-auth check, no engine surface |
 | `daemon_secrets_test.go:50` `TestCreateContainerInjectsSecretsAsEnv` | **keep** | `-e K=V` identical under podman |
+| `claude_mounts_test.go:103` `TestAdapterHostMountsReadWriteSplit` | **keep** | it matches with `strings.Contains` on the joined argv, so `…:ro,z` still contains `…:ro` — the counter-example that tells a `,z` breakage from a false alarm |
+| `pool_test.go:17/47/112` (`TestPoolEnvKey*`) | **keep** | these assert *relations* (same input ⇒ same key, changed input ⇒ different key), which a **constant** `engine=`/`shape=` term preserves; add cases for the two new terms rather than re-baselining keys |
 | `hostfp_test.go:28` `TestDaemonBinaryFingerprintInvalidatesPoolKey` | **MUST CHANGE** | the key gains `engine=` + `shape=` (§8 D7.1/D7.2); fixtures must assert the new terms |
 | `hostfp_test.go:87` `TestHostInputsFingerprintStabilityAndInvalidation` | **keep** | pure `hostfp.go`, no engine |
 | `hostfp_test.go:169` `…EmptyAndExclusions` | **keep** | unchanged |
@@ -507,7 +509,8 @@ Engine chooses *which* argv.
 | `lifecycle_union_test.go:212` `TestRunServeConfigProviderIsDeterministicForARun` | **keep** | unchanged |
 | `plane_reachability_test.go:36` `TestPlaneHTTPPort` | **keep** | unchanged |
 | `plane_reachability_test.go:59` `TestPlanePublicURLDerivation` | **MUST CHANGE** | add the podman case: `ORCHICON_HTTP_EXTRA_BIND` unset + no bridge bind ⇒ `http://host.docker.internal:<port>` (§3 D2.3/INV-2) |
-| `plane_url_test.go:27/50` | **keep** | override + non-empty assertions hold |
+| `plane_url_test.go:15` `TestPlanePublicURLResolution` | **keep** | the override and never-empty assertions (`:24-29`, `:49-52`) both hold; the container-mode bridge branch is case 2 of D2.3 and is unchanged |
+| `plane_url_test.go:57` `TestContainerIPAddressParsesHosts` | **keep** | pins `parseHostsIP` (`lifecycle.go:620`), which D2.1 leaves alone — it removes the *runtime* `containerIP` (`daemon.go:1135`), not the plane's own `containerIPAddress` (`lifecycle.go:605`) |
 | `images_test.go:13/34/55` (`TestRewriteDockerfileBase*`) | **keep** | pure text rewrite |
 | `images_test.go:66` `TestImageTagPattern`, `:80` `TestSlugPattern` | **keep** | unchanged |
 | `images_test.go:95` `TestAllowedImagesAlwaysIncludesBase` | **keep** | unchanged |
@@ -517,9 +520,11 @@ Engine chooses *which* argv.
 | *(new)* `daemon_transport_test.go` | **ADD** | `DefaultEndpoint` per-GOOS + scheme parsing + rejection of `tcp` (§2 D1.2/D1.3) |
 | *(new)* `daemon_createargs_test.go` | **ADD** | no named-volume mount may appear in the create argv (§6 hard rule) |
 
-**Summary of what changes:** exactly five existing tests (`hostfp_test.go:28`,
+**Summary of what changes:** ten existing test functions across five files —
+`daemon_mounts_test.go:100`/`:168`/`:204`/`:274` (the `,z` relabel changes their
+*exact* `-v` strings), `hostfp_test.go:28`,
 `hostfp_test.go:312`, `plane_reachability_test.go:59`,
-`install_host_test.go:146`+`:206`, `install_host_test.go:560`) plus three new ones. Every other boundary
+`install_host_test.go:146`/`:206`/`:560`) — plus three new ones. Every other boundary
 test is preserved as-is — because the schema deliberately preserves labels,
 the mount argv, and the remove-and-recreate reset, which is what those tests
 pin.
@@ -637,7 +642,8 @@ file, the insertion point, and the schema decision it implements.
 
 Every `file:line` in this ADR was re-read against the tree that carries it. The
 §10 test table was confirmed **exactly** right (all 30-odd `func Test…` line
-numbers match). The following citations had drifted and are corrected in place;
+numbers match, with the one exception recorded in §15 item 3). The following
+citations had drifted and are corrected in place;
 the list exists so a reviewer can tell a stale line from a contested claim:
 
 | Subject | Was | Now | What is actually at that line |
@@ -682,5 +688,43 @@ the deliverable, and the implementer works from §12.
 | 5 — image gate + mount restriction preserved with purpose | §4 D3.1 (mount-source restriction, purpose stated), §7 D6.1 (image gate, purpose stated), §7 D6.2 (format-string pin) |
 | 6 — pristine reset mechanism + blocking findings | §6 (mechanism + hard no-named-volumes rule + D5.2 retry wording), §9 BF-2/BF-3 |
 | 7 — host-input fingerprint restated | §8 (role + mandatory `engine=`/`shape=` terms) |
-| 8 — tests reviewed, changes enumerated before engine work | §10 (per-test verdicts, five must-change, three new) + §13 audit |
+| 8 — tests reviewed, changes enumerated before engine work | §10 (per-test verdicts, ten must-change functions, three new) + §13 audit + §15 review pass |
 | 9 — no engine code | §0 non-goal; verified on the branch (`docs/` only) — §13 scope check |
+
+---
+
+## 15. Review pass (PR gate) — corrections applied to §10
+
+§10 is the work list the engine task is held to, so its **MUST CHANGE** set was
+re-derived row by row from how each test *asserts*, not from its name. Four
+corrections; all of them make §10 stricter or more exact, none relaxes a
+guarantee.
+
+1. **The `,z` relabel is visible only to exact-match tests.** `argValue`
+   (`daemon_mounts_test.go:48-55`) compares `args[i+1] == value`, so D3.2's `,z`
+   on every real Linux bind turns four rows from "keep"/"keep, extend" into
+   **MUST CHANGE** (`:100`, `:168`, `:204`, `:274`). `claude_mounts_test.go:103`
+   is the counter-example that stays green — it uses `strings.Contains` over the
+   joined argv — and is now listed so an implementer can tell a real breakage
+   from a false alarm. Had these rows stayed "keep", the first engine commit
+   would have found them with a red suite rather than a work item.
+2. **`pool_test.go` is listed for the first time.** Its three `TestPoolEnvKey*`
+   tests assert *relations*, not golden keys, so a constant `engine=`/`shape=`
+   term keeps them green. Without the row, an implementer adding the §8 terms
+   and "fixing" keys would re-baseline the invariants they pin.
+3. **`plane_url_test.go` was cited by assertion line, not `func` line.** The row
+   named `:27`/`:50` (both inside `TestPlanePublicURLResolution`); it now names
+   the tests at their `func` lines (`:15`, `:57`) and states why
+   `TestContainerIPAddressParsesHosts` is untouched by D2.1: `containerIP`
+   (`daemon.go:1135`, the *runtime* container's bridge IP, deleted on the podman
+   path) is a different function from `containerIPAddress`
+   (`lifecycle.go:605`, the plane's own bridge IP, case 2 of D2.3, unchanged).
+4. **"Five must-change tests" was five *rows*.** One row
+   (`install_host_test.go:146` + `:206`) is two distinct functions, and the
+   `daemon_mounts_test.go` reclassification in item 1 adds four more, so the
+   count is stated as **ten test functions across five files** plus three new
+   ones — which is what §12 item 15 ("apply §10 exactly") now means.
+
+Verified on this branch: `go build ./...` clean, `go test ./internal/runtime/
+./cmd/orchicon/` green (the two packages every cited test lives in), and
+`git diff --stat develop...HEAD` still touches this file only — AC 9 holds.
