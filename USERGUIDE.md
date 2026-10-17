@@ -331,8 +331,8 @@ The `orchicon` binary is the PID-1 supervisor (`orchicon container`).
 git clone https://github.com/beardedparrott/Orchicon.git
 cd Orchicon
 make build                  # → bin/orchicon (headless control plane + PID-1 supervisor)
-make container-build        # build the single-container image
-scripts/container.sh up dev # start the dev instance (http://localhost:8080)
+make instance-build         # build bin/orchicon (the instance runs on the host: no image)
+make instance-up            # start the dev instance (http://localhost:8080)
 ```
 
 With the frontend in dev mode: `make fe-install` (first time) then `make fe-dev` —
@@ -973,9 +973,15 @@ Dockerfile override.
 
 **Note.** The stock images include a base image, a `:gui` variant with headless GUI
 libraries, an `:orchicon-dev` image with the full Orchicon toolchain, and a
-`:web-research` image.
+`:web-research` image. **No runtime image is downloaded for you.** The stock list
+is a set of specs, not downloads: a shipped image that is not present on this
+machine shows as **not downloaded** and is never built in the background. Open the
+row and press **Fetch** to download it (idempotent — nothing is downloaded if it is
+already present). A workflow run whose image is not downloaded fails fast with a
+message naming the image and that action — it does not wait on a multi-GB pull.
 
-**Actions.** Create, edit the spec, **build** (with live streamed logs), delete.
+**Actions.** Create, edit the spec, **Fetch** (download a published image, live log),
+**Deploy** (build the spec, live log), delete.
 
 ---
 
@@ -2305,8 +2311,10 @@ The `orchicon` binary runs the plane and its supporting services.
 
 | Script | Description |
 |---|---|
-| `scripts/container.sh` | Build / up / down / status / logs / ps / runtime-daemon / runtime-stop for the dev + prod container instances |
-| `scripts/orchicon.sh` | Start / stop / restart / status / logs / rebuild the **host-resident** plane (dev or prod), services container included |
+| `scripts/orchicon.sh` | Start / stop / restart / status / logs / rebuild the **host-resident** plane and its host services for any instance (dev, prod or test); delegates every lifecycle verb to the CLI's own control surface (`orchicon instance` when present, else `install` / `restart` / `serve` / `services`) |
+| `scripts/orchicon.sh uninstall <dev\|prod\|test> --yes` | **Remove ONE instance and its data** — plane, container, volume, host state dir (destructive, confirmed, prints what it deletes first; never touches a sibling) |
+| `scripts/lib/instances.sh` | The ONE shell home of the instance table (dev/test/prod columns with their ports and data dirs); `cmd/orchicon/install_ports.go`'s `instanceOrder` is the Go home, and `TestInstallPortDefaultsMatchShellInstanceTable` asserts the two agree |
+| `scripts/container.sh` | Build / up / down / status / logs / ps / runtime-daemon / runtime-stop for the dev + prod + test container instances (the container-residency shape; `scripts/orchicon.sh` is the day-to-day entry point and the documented teardown) |
 
 **The terminal client is a separate binary:** run `orch` for the TUI described in
 Part II.
@@ -2325,3 +2333,33 @@ Part II.
   and when.
 
 > **Orchicon orchestrates. Runtimes execute.**
+
+## Container engine (Podman) — detected, installed for you, verified
+
+Runtime containers need a container engine. `orchicon install` now **detects** one, **installs
+Podman for you** when there is none, brings up the **`podman machine`** on macOS and Windows,
+and **proves the engine works** by running a trivial container before it reports containers
+available. You never have to type a `podman` command.
+
+- Detection order: `podman`, then `docker` (checked on `PATH` and in the platform's usual
+  install locations). Podman is preferred, and it is the only engine Orchicon installs.
+  Docker is detected, never installed — Docker Desktop's licence is yours to accept, not ours.
+- Minimum Podman version: **4.0.0**. An older Podman is *reported* with its upgrade command
+  rather than half-used.
+- Installation always uses your platform's installer (`brew` on macOS, `winget` on Windows, the
+  distro package manager on Linux) so your package manager keeps it updated. The exact command
+  is printed before anything runs, and you are asked first. When the install cannot ask (no
+  terminal, or you decline) it prints the command and continues in **local mode** — a failed or
+  declined Podman install never breaks a working install.
+- Availability is shown in the UI where execution mode is chosen: *containers ready*, *being
+  provisioned*, or *unavailable* with the reason, and the same answer is available at
+  `GET /enginez`.
+
+Environment overrides:
+
+| Variable | Meaning |
+|---|---|
+| `ORCHICON_PROVISION_ENGINE` | `ask` (default), `1` (install without asking), `0` (never install). |
+| `ORCHICON_CONTAINER_ENGINE` | Pin the engine: `podman`, `docker`, or `none` (local mode). A pin is honoured strictly — a pinned engine that is missing or broken fails the install loudly instead of silently falling back to local mode. |
+| `ORCHICON_PODMAN_MIN_VERSION` | Accept an older Podman than the documented minimum. |
+| `ORCHICON_ENGINE_VERIFY_IMAGE` | The trivial image used to verify the engine (default `docker.io/library/alpine:3`) — point it at a local image on an air-gapped host. |

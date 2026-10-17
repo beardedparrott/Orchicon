@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
 // runtimeContainersEnv is the explicit override for whether runtime containers are in use. Unset means
@@ -23,13 +25,32 @@ const runtimeContainersEnv = "ORCHICON_RUNTIME_CONTAINERS"
 
 // ContainerEngineAvailable reports whether a container engine is INSTALLED, as a PATH probe.
 //
-// IT IS A LookPath AND NOT AN ENGINE CALL, on purpose: `docker version` needs a running daemon and can
-// fail for a dozen reasons that have nothing to do with whether the binary exists, and a machine with no
-// Docker must be able to answer "no" without an error. The daemon check happens later, in install.go, and
-// ONLY when this returns true — so a host with no engine never runs a doomed `docker version`.
+// IT IS A PATH/STAT PROBE AND NOT AN ENGINE CALL, on purpose: `docker version` needs a running daemon
+// and can fail for a dozen reasons that have nothing to do with whether the binary exists, and a machine
+// with no engine must be able to answer "no" without an error. The daemon check happens later, in the
+// installer, and ONLY when this returns true — so a host with no engine never runs a doomed `version`.
+//
+// IT DELEGATES TO internal/containerengine, which owns the search order (podman first, then docker, plus
+// the platform's conventional install locations). That package is the ONE truth for "is there an engine,
+// and which binary is it" — the plane's /enginez and the installer call in too — so a second probe here
+// would eventually disagree with them and describe an engine that is not there.
 func ContainerEngineAvailable() bool {
-	_, err := exec.LookPath("docker")
-	return err == nil
+	e, err := containerengine.Detect(containerengine.DefaultProbe())
+	return err == nil && e.Name != containerengine.EngineNone
+}
+
+// engineBinary is the engine binary to invoke for the few calls this package makes itself (the bridge
+// lookup).
+//
+// THE DEFAULT IS NOT THE LITERAL "docker". On the podman-only host this product now supports,
+// `docker network inspect bridge` is a command-not-found, so a hardcoded name here would make the bridge
+// unresolvable and the plane refuse to start on a host that HAS an engine. The search order comes from
+// internal/containerengine; "docker" remains the last resort, which is exactly what this path did before.
+func engineBinary() string {
+	if e, err := containerengine.Detect(containerengine.DefaultProbe()); err == nil && e.Bin != "" {
+		return e.Bin
+	}
+	return "docker"
 }
 
 // RuntimeContainersInUse reports whether this install should assume runtime containers. Order:
@@ -193,7 +214,7 @@ func BridgeIP() (string, error) {
 	if v := strings.TrimSpace(os.Getenv("ORCHICON_DOCKER_BRIDGE_IP")); v != "" {
 		return v, nil
 	}
-	if out, err := exec.Command("docker", "network", "inspect", "bridge",
+	if out, err := exec.Command(engineBinary(), "network", "inspect", "bridge",
 		"--format", "{{(index .IPAM.Config 0).Gateway}}").Output(); err == nil {
 		ip := strings.TrimSpace(string(out))
 		// The Go template prints "<no value>" for a nil gateway.

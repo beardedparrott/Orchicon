@@ -1,0 +1,27 @@
+# what the developer had to do INSTEAD to see the plane's activity
+# (evidence, not a pass): the tail of make run's stdout from step 1
+{"time":"2026-10-17T05:55:26.632473849Z","level":"INFO","msg":"telemetry query client configured","tempo":"http://localhost:3200","loki":"http://localhost:3100","vm":"http://localhost:8428"}
+{"time":"2026-10-17T05:55:26.632487645Z","level":"INFO","msg":"blob store ready","kind":"local"}
+{"time":"2026-10-17T05:55:26.632604014Z","level":"INFO","msg":"embedded OpenID Provider enabled","version":"v0.5.56","issuer":"(dynamic from request Host)","alg":"ES256","kid":"orchicon-op-v1"}
+{"time":"2026-10-17T05:55:26.632608612Z","level":"INFO","msg":"auth configured","issuer":"local","mode":"local"}
+{"time":"2026-10-17T05:55:26.633942929Z","level":"WARN","msg":"opencode binary not found — model/MCP discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)","error":"opencode binary not found on PATH or under $HOME (.opencode/bin/opencode, .local/bin/opencode, .npm-global/bin/opencode, .bun/bin/opencode) (install it as your user, never with sudo: curl -fsSL https://opencode.ai/install | bash; set ORCHICON_OPENCODE_BIN to point at an existing install; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev)"}
+{"time":"2026-10-17T05:55:26.63402838Z","level":"WARN","msg":"canned runtime image seed: daemon images unavailable","error":"Get \"http://runtime/v1/images\": dial unix /var/run/orchicon-runtime/runtime.sock: connect: no such file or directory"}
+{"time":"2026-10-17T05:55:26.63667388Z","level":"WARN","msg":"workflow runtime daemon not reachable — in-process execution","socket":"/var/run/orchicon-runtime/runtime.sock"}
+{"time":"2026-10-17T05:55:26.639105428Z","level":"INFO","msg":"starting orchicon control plane","version":"orchicon v0.5.56 (commit=5a23fc6a2 built=2026-10-17T05:55:24Z go=go1.26.4 linux/amd64)","http":"127.0.0.1:18080","extra_bind":""}
+{"time":"2026-10-17T05:55:26.639288021Z","level":"INFO","msg":"listener bind set","addrs":["127.0.0.1:18080"]}
+{"time":"2026-10-17T05:55:26.639312437Z","level":"INFO","msg":"http listener serving","addr":"127.0.0.1:18080"}
+{"time":"2026-10-17T05:55:26.63937267Z","level":"INFO","msg":"outbox relay started","batch_size":100,"interval":500000000}
+{"time":"2026-10-17T05:55:26.639385103Z","level":"INFO","msg":"reconciler manager started","reconcilers":7}
+{"time":"2026-10-17T05:55:26.639390754Z","level":"INFO","msg":"outbox retention prune enabled","retention_days":7,"batch":10000,"interval":"1h0m0s"}
+{"time":"2026-10-17T05:55:26.639992114Z","level":"INFO","msg":"webhook dispatcher started"}
+2026/10/17 05:55:37 exporter export timeout: rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp [::1]:4317: connect: connection refused"
+2026/10/17 05:55:41 traces export: exporter export timeout: rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp [::1]:4317: connect: connection refused"
+{"time":"2026-10-17T05:55:46.991122157Z","level":"INFO","msg":"outbox relay stopped"}
+{"time":"2026-10-17T05:55:46.99113464Z","level":"INFO","msg":"shutting down","timeout":15000000000}
+{"time":"2026-10-17T05:55:46.991794239Z","level":"INFO","msg":"reconciler manager stopped"}
+2026/10/17 05:55:46 failed to upload metrics: context canceled: rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:4317: connect: connection refused"
+make: *** [Makefile:273: run] Terminated
+{"time":"2026-10-17T05:55:56.99249033Z","level":"WARN","msg":"meter shutdown failed","error":"failed to upload metrics: exporter export timeout: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: dial tcp 127.0.0.1:4317: connect: connection refused\""}
+2026/10/17 05:55:57 exporter export timeout: rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:4317: connect: connection refused"
+{"time":"2026-10-17T05:56:07.624371192Z","level":"WARN","msg":"log exporter shutdown failed","error":"exporter export timeout: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: dial tcp [::1]:4317: connect: connection refused\""}
+{"time":"2026-10-17T05:56:07.6246145Z","level":"INFO","msg":"orchicon stopped"}

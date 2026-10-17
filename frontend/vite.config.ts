@@ -38,6 +38,16 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      // Operational status endpoints the SPA reads as plain JSON (they sit
+      // beside /healthz and /versionz on the control plane's mux, not under
+      // the Connect prefix). WITHOUT THIS RULE a dev-server fetch("/enginez")
+      // never reaches the plane: Vite answers it with the SPA's index.html —
+      // HTTP 200 and HTML, so the execution-mode availability badge reports
+      // "availability unknown" on a host where containers are perfectly fine.
+      "/enginez": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
       // Connect-ES + gRPC-Web share the same path prefix.
       "/orchicon.api.v1": {
         target: "http://localhost:8080",

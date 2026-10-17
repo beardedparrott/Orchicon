@@ -79,6 +79,10 @@ type AgentEvent struct {
 	// to publish the plane's /healthz URL so the run-start gate can verify
 	// the sandbox plane before dispatching. Base/gui images answer false.
 	PlaneEnabled bool `json:"plane_enabled,omitempty"`
+	// Skipped reports (pull) that the requested image was ALREADY present
+	// locally, so no download ran. It is how the fetch RPC stays idempotent
+	// without parsing the human-readable log line.
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 // DefaultAgentSocket is the in-container path of the supervisor's unix

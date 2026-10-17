@@ -50,6 +50,8 @@ var stockVariants = []stockVariant{
 		Desc: "Base image plus headless GUI libraries (Qt offscreen via PySide6/PyQt, tkinter, X11) for GUI toolchain work."},
 	{File: "deploy/runtime/Dockerfile.dev", Variant: "dev", Name: "Orchicon development image (:orchicon-dev)",
 		Desc: "Go, Node, buf, atlas, baked PostgreSQL 15 + nats-server: the supervisor boots a full disposable Orchicon control plane in the container at start (Postgres -> NATS -> orchicon serve), so workers get the orchicon_* MCP tools, localhost:5432 DB tests, and http://localhost:8080 — all isolated from the host plane."},
+	{File: "deploy/runtime/Dockerfile.web-research", Variant: "web-research", Name: "Runtime web-research image (:web-research)",
+		Desc: "Base image plus a headless browser research toolchain (Playwright + Chromium, extraction helpers) for work that has to read the web."},
 }
 
 // SeedCannedImages ensures one canned "stock" runtime image row exists per
@@ -115,6 +117,8 @@ func resolveVariant(ref, defaultRef string) (stockVariant, bool) {
 		suffix = lower[colon+1:]
 	}
 	switch {
+	case strings.HasSuffix(suffix, "web-research") || strings.HasPrefix(suffix, "web-research-") || strings.HasPrefix(suffix, "web-research_"):
+		return stockVariants[3], true
 	case strings.HasSuffix(suffix, "gui") || strings.HasPrefix(suffix, "gui-") || strings.HasPrefix(suffix, "gui_"):
 		return stockVariants[1], true
 	case strings.HasSuffix(suffix, "orchicon-dev") || strings.HasSuffix(suffix, "dev") || strings.HasPrefix(suffix, "dev-") || strings.HasPrefix(suffix, "dev_"):
@@ -187,6 +191,7 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 		return nil
 	}
 
+	rolledForward := false
 	if !current {
 		// Pristine row from an older seed generation: roll the seed forward —
 		// replace the override with the current template + marker. This is a
@@ -198,27 +203,36 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 		if err != nil {
 			return fmt.Errorf("roll forward canned image %s: %w", ref, err)
 		}
+		rolledForward = true
 	}
 
-	needsBuild := row.Status != "ready" || row.BuiltVersion != row.Version
-	if needsBuild && row.Status == "failed" {
-		// A previous auto-build failed — never auto-retry every boot; the
-		// user rebuilds via Deploy.
+	switch decideSeedAction(row, info, variant, pristine, current) {
+	case seedSkip:
+		// Nothing to reconcile. A roll-forward still has to be persisted, or
+		// the next boot would roll it forward again (and bump `version` a
+		// second time).
+		if rolledForward {
+			if err := ttx.Commit(ctx); err != nil {
+				return err
+			}
+		}
 		return nil
-	}
-	if !needsBuild {
-		return nil
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		return err
-	}
-
-	// The local docker image may already be current (container.sh built it
-	// before the plane booted, or a previous auto-build finished): record
-	// ready + built_version = version instead of rebuilding.
-	if stockImageCurrent(info, variant) {
+	case seedMarkReady:
+		if err := ttx.Commit(ctx); err != nil {
+			return err
+		}
 		markReady(ctx, svc.pool, row)
 		return nil
+	case seedMarkAbsent:
+		if err := ttx.Commit(ctx); err != nil {
+			return err
+		}
+		markAbsent(ctx, svc.pool, svc.log, row)
+		return nil
+	}
+
+	if err := ttx.Commit(ctx); err != nil {
+		return err
 	}
 	// Auto-build asynchronously so plane boot stays fast. The build core
 	// re-checks status under the row lock, so concurrent boots/Deploys are
@@ -233,6 +247,76 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 		}
 	}()
 	return nil
+}
+
+// seedAction is the canned-row reconciliation decision: what the seeder must
+// do with one stock row this boot.
+type seedAction int
+
+const (
+	// seedSkip leaves the row alone.
+	seedSkip seedAction = iota
+	// seedMarkReady records status=ready + built_version=version (the local
+	// image is already current).
+	seedMarkReady
+	// seedMarkAbsent records status=absent: the row is CORRECT, but its image
+	// is not downloaded locally and is NOT being built.
+	seedMarkAbsent
+	// seedBuild auto-builds the image asynchronously.
+	seedBuild
+)
+
+// RuntimeImageStatusAbsent is the runtime_images.status of a row whose spec is
+// correct but whose image is not present locally and is not being built.
+// Distinct from `draft` (never built) and `failed` (a build was attempted and
+// failed), and stored as free text — the status column has no CHECK
+// constraint, so this needs no migration.
+const RuntimeImageStatusAbsent = "absent"
+
+// decideSeedAction is the WHOLE canned-row reconciliation policy, as a pure
+// function: no DB, no engine, no goroutines. That is the seam AC 10/11 are
+// tested through.
+//
+// `info` is the daemon's report for the row's tag and `pristine`/`current`
+// come from seedState. `row` is the row as it stands AFTER any roll-forward
+// the caller applied.
+func decideSeedAction(row db.RuntimeImageRow, info runtime.ImageInfo, variant stockVariant, pristine, current bool) seedAction {
+	if row.Source != "stock" {
+		// A tenant-created row owns this tag — never touch it.
+		return seedSkip
+	}
+	if !pristine {
+		// User-diverged (edited the body or removed the marker) — never touch.
+		return seedSkip
+	}
+	if current && row.Status == "ready" && row.BuiltVersion == row.Version {
+		// Current seed, already built: reconcile in place.
+		return seedSkip
+	}
+	if row.Status == "failed" {
+		// A previous auto-build failed — never auto-retry every boot; the user
+		// rebuilds via Deploy. Kept ABOVE the absent case on purpose: a failed
+		// build must not be silently reclassified as "not downloaded".
+		return seedSkip
+	}
+	if info.Present && stockImageCurrent(info, variant) {
+		// The local image is already current (container.sh built it before the
+		// plane booted, or a previous auto-build finished).
+		return seedMarkReady
+	}
+	if !info.Present {
+		// THE TRAP, CLOSED. Nothing is downloaded for this tag, so there is
+		// nothing to reconcile: mark the row absent and DO NOT BUILD. Building
+		// here would compile Go, Node, PostgreSQL and Playwright on a first boot
+		// that deliberately pulled nothing — far slower and heavier than the
+		// pull this whole change exists to avoid, and it would happen silently
+		// in the background. The image is fetched at opt-in time instead.
+		return seedMarkAbsent
+	}
+	// Present but not current: a stale seed (roll-forward) or a locally-built
+	// image carrying no version label. Both keep the pre-change behaviour —
+	// auto-build — so only true ABSENCE changes.
+	return seedBuild
 }
 
 // seedState classifies a canned row's dockerfile_override against the shipped
@@ -265,6 +349,31 @@ func seedState(override string, currentContent []byte) (pristine, current bool) 
 		return false, false
 	}
 	return true, body == string(currentContent)
+}
+
+// markAbsent records a canned row as ABSENT: its spec is correct, but the
+// image is not present locally and no build was started for it. It mirrors
+// markReady exactly (same tenant tx, StatusOnly — no version bump) and
+// deliberately leaves built_version alone: absence is not a build outcome, and
+// keeping the last built version is what lets a later fetch/Deploy prove it
+// produced the version the row asked for.
+func markAbsent(ctx context.Context, pool *db.Pool, log *slog.Logger, row db.RuntimeImageRow) {
+	status := RuntimeImageStatusAbsent
+	ttx, err := pool.BeginTenantTx(ctx, cannedTenant)
+	if err != nil {
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if _, err := db.UpdateRuntimeImage(ctx, ttx.Tx, cannedTenant, row.ID, row.Version,
+		db.UpdateRuntimeImageFields{Status: &status, StatusOnly: true}); err != nil {
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return
+	}
+	if log != nil {
+		log.Info("canned runtime image not downloaded — awaiting an explicit fetch", "tag", row.Tag)
+	}
 }
 
 // markReady records a canned row as built for its current spec version
@@ -305,11 +414,16 @@ func sha12Of(file string) string {
 	return seedVersion(content)
 }
 
-// stockImageCurrent reports whether the local docker image `info` describes
-// already matches the runtime version container.sh / the release workflow
-// would build for this variant. Accepts both label formats: the release
-// workflow's (<version>, <version>-gui, <version>-dev) and container.sh's
-// content-hashed (<version>-<baseSha12>[-<variantSha12>]).
+// stockImageCurrent reports whether the local image `info` describes already
+// matches the runtime version container.sh / the release workflow would build
+// for this variant. Accepts both label formats: the release workflow's
+// (<version>, <version>-gui, <version>-dev) and container.sh's content-hashed
+// (<version>-<baseSha12>[-<variantSha12>]).
+//
+// An image with NO version label reports false — but that is NOT a verdict
+// that it must be built: "present without a version label" is a locally-built
+// image, not a missing one. Whether the image exists at all is
+// ImageInfo.Present, which the seeder's decideSeedAction consults first.
 func stockImageCurrent(info runtime.ImageInfo, variant stockVariant) bool {
 	if info.RuntimeVersion == "" {
 		return false
@@ -323,7 +437,7 @@ func stockImageCurrent(info runtime.ImageInfo, variant stockVariant) bool {
 	switch variant.Variant {
 	case "base":
 		return info.RuntimeVersion == app || info.RuntimeVersion == app+"-"+baseSha
-	case "gui", "dev":
+	case "gui", "dev", "web-research":
 		return info.RuntimeVersion == app+"-"+variant.Variant ||
 			info.RuntimeVersion == app+"-"+baseSha+"-"+mySha
 	}

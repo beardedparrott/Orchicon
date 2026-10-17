@@ -19,11 +19,11 @@ type fakeRun struct {
 }
 
 type fakeSeams struct {
-	home      string
-	drift     DriftState
-	healthy   bool
-	alive     func(instance string) bool
-	binary    string
+	home    string
+	drift   DriftState
+	healthy bool
+	alive   func(instance string) bool
+	binary  string
 	// runErr is what the re-exec seam returns: `serve --stop` exits 1 when there is nothing to stop, and a
 	// stop that FAILED must be distinguishable from one that had nothing to do.
 	runErr    error

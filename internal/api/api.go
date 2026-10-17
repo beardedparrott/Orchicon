@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
@@ -25,6 +26,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/blobstore"
 	"github.com/beardedparrott/orchicon/internal/category"
 	"github.com/beardedparrott/orchicon/internal/config"
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/execution"
@@ -192,6 +194,12 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"version":"` + version.Current().Tag + `"}`))
 	})
+
+	// /enginez reports whether RUNTIME CONTAINERS are available on this host, and why not when
+	// they are not (AC5). It is built by internal/containerengine.Inspect — the same package
+	// the installer decided with — so the UI cannot advertise an availability the install did
+	// not produce. Plain JSON next to /versionz: one operational status needs no proto change.
+	mux.Handle("/enginez", newEngineStatusCache(30*time.Second, containerengine.DefaultProbe()))
 
 	// Phase 9: out-of-band auth HTTP endpoints (OIDC code-flow + dev
 	// login + refresh + session — docs/07 §6.1).

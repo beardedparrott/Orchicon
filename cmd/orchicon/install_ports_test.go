@@ -11,25 +11,60 @@ import (
 	"testing"
 )
 
-// TestInstallPortDefaultsMatchContainerScript is the cross-language agreement
-// gate. The Go installer and scripts/container.sh each resolve the per-instance
-// port table, and they cannot share a constant — so the agreement has to be
-// ASSERTED. Two drifts matter, and this checks both:
+// TestInstallPortDefaultsMatchShellInstanceTable is the cross-language agreement
+// gate. The Go installer and scripts/lib/instances.sh each resolve the
+// per-instance port table, and they cannot share a constant — so the agreement
+// has to be ASSERTED. Two drifts matter, and this checks both:
 //
-//  1. the DEFAULTS, so `orchicon install` and `container.sh up` agree on which
-//     port an instance answers on when nobody overrides anything;
+//  1. the DEFAULTS, so `orchicon install` and `scripts/orchicon.sh start` agree
+//     on which port an instance answers on when nobody overrides anything;
 //  2. the OVERRIDE KNOB NAMES, because an operator setting one must move the
 //     port in BOTH launchers. That is the failure this test is really for: the
 //     Go side honouring ORCHICON_CONTROL_PORT while the bash side silently keeps
 //     8080 would leave the two binding different ports for one instance.
-func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
-	src, err := os.ReadFile("../../scripts/container.sh")
+func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
+	src, err := os.ReadFile("../../scripts/lib/instances.sh")
 	if err != nil {
-		t.Fatalf("read container.sh: %v", err)
+		t.Fatalf("read scripts/lib/instances.sh: %v", err)
 	}
 	script := string(src)
 
-	// 1. The per-instance defaults container.sh must still carry. The service
+	// 0. THE ENUMERATION ITSELF. Everything below asserts port VALUES; this
+	// asserts the SET OF INSTANCES the two sides define, in both directions.
+	//
+	// It is the part the old containment check could not do: "contains these
+	// literals" passes while one side grows an instance the other has never heard
+	// of, and then a `test` prompt offers a column the launcher refuses (or a
+	// launcher starts an instance `orchicon install` cannot address). The shell
+	// enumeration lives in ONE place per side — ORCHICON_INSTANCES here,
+	// instanceOrder in install_ports.go — and they cannot share a constant, so
+	// the agreement is asserted rather than assumed.
+	var shellInstances []string
+	for _, line := range strings.Split(script, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ORCHICON_INSTANCES=") {
+			v := strings.TrimPrefix(line, "ORCHICON_INSTANCES=")
+			v = strings.Trim(v, `"'`)
+			shellInstances = strings.Fields(v)
+			break
+		}
+	}
+	if len(shellInstances) == 0 {
+		t.Fatal("scripts/lib/instances.sh declares no ORCHICON_INSTANCES — the shell side of the instance set is gone")
+	}
+	if got, want := strings.Join(shellInstances, " "), strings.Join(instanceOrder, " "); got != want {
+		t.Fatalf("instance set drifted: scripts/lib/instances.sh has %q, install_ports.go instanceOrder has %q", got, want)
+	}
+	// Direction two: every Go column must have a REAL case arm in the shell table.
+	// Without this the scalar above could list an instance the table does not
+	// resolve, and every lookup for it would fall into the error arm at runtime.
+	for _, inst := range instanceOrder {
+		if !strings.Contains(script, "\n    "+inst+")") {
+			t.Errorf("install_ports.go defines the %q column but scripts/lib/instances.sh's instance_info has no case arm for it", inst)
+		}
+	}
+
+	// 1. The per-instance defaults the shell instance table must still carry. The service
 	// entries matter as much as the plane ones now: host residency PUBLISHES them,
 	// so a drift there means the two launchers bind different loopback ports.
 	for _, want := range []string{
@@ -73,11 +108,11 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 		"    test)",
 	} {
 		if !strings.Contains(script, want) {
-			t.Errorf("scripts/container.sh no longer contains %q — the per-instance port table drifted", want)
+			t.Errorf("scripts/lib/instances.sh no longer contains %q — the per-instance port table drifted", want)
 		}
 	}
 
-	// The container-side ports this table mirrors must match container.sh's
+	// The container-side ports this table mirrors must match instances.sh's
 	// SERVICE_PORTS composition: these are the in-container listeners a host
 	// publish maps ONTO, so a wrong pair sends a host port to the wrong service.
 	for _, want := range []string{
@@ -88,7 +123,7 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 		`-p 127.0.0.1:$VM_PORT:8428 -p 127.0.0.1:$GRAFANA_HOST_PORT:3000`,
 	} {
 		if !strings.Contains(script, want) {
-			t.Errorf("scripts/container.sh's SERVICE_PORTS no longer contains %q — the host→container mapping drifted", want)
+			t.Errorf("scripts/lib/instances.sh's SERVICE_PORTS no longer contains %q — the host→container mapping drifted", want)
 		}
 	}
 
@@ -121,11 +156,11 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 			continue
 		}
 		if p.Defaults["dev"] != w.dev || p.Defaults["prod"] != w.prod || p.Defaults["test"] != w.test {
-			t.Errorf("%s defaults = %d/%d/%d, want %d/%d/%d (container.sh's values)",
+			t.Errorf("%s defaults = %d/%d/%d, want %d/%d/%d (instances.sh's values)",
 				p.Env, p.Defaults["dev"], p.Defaults["prod"], p.Defaults["test"], w.dev, w.prod, w.test)
 		}
 		if p.ContainerPort != w.container {
-			t.Errorf("%s container port = %d, want %d (container.sh's -p pair)", p.Env, p.ContainerPort, w.container)
+			t.Errorf("%s container port = %d, want %d (instances.sh's -p pair)", p.Env, p.ContainerPort, w.container)
 		}
 		delete(wantDefaults, p.Env)
 	}
@@ -160,7 +195,7 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 		}
 	}
 
-	// 2. The override knobs must be applied in container.sh under exactly the
+	// 2. The override knobs must be applied in instances.sh under exactly the
 	// names the Go resolver uses, or setting one moves the port in only one
 	// launcher. Asserted as whole shell lines so a rename on either side fails.
 	for _, want := range []string{
@@ -168,14 +203,14 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 		`GRAFANA_HOST_PORT="${ORCHICON_GRAFANA_PORT:-$GRAFANA_HOST_PORT}"`,
 	} {
 		if !strings.Contains(script, want) {
-			t.Errorf("scripts/container.sh must apply %q so an override moves the port in both launchers", want)
+			t.Errorf("scripts/lib/instances.sh must apply %q so an override moves the port in both launchers", want)
 		}
 	}
 
 	// The publishes must be COMPOSED from those variables: a literal beside them
 	// is how an override silently leaves `up` on the old number.
 	if !strings.Contains(script, `PORTS="-p $PLANE_HTTP_PORT:8080 -p $GRAFANA_HOST_PORT:3000"`) {
-		t.Error("container.sh's PORTS must be composed from PLANE_HTTP_PORT/GRAFANA_HOST_PORT, not written as literals")
+		t.Error("instances.sh's PORTS must be composed from PLANE_HTTP_PORT/GRAFANA_HOST_PORT, not written as literals")
 	}
 
 	// ...and the Go table must agree with the defaults above.
@@ -186,13 +221,13 @@ func TestInstallPortDefaultsMatchContainerScript(t *testing.T) {
 	if grafana.Defaults["dev"] != 3002 || grafana.Defaults["prod"] != 3003 || grafana.Defaults["test"] != 3004 {
 		t.Errorf("grafana defaults = %v, want dev 3002 / prod 3003 / test 3004", grafana.Defaults)
 	}
-	// The host->container mapping must match container.sh's -p pairs
+	// The host->container mapping must match instances.sh's -p pairs
 	// (8080:8080 and 3002:3000), or the published port lands on the wrong
 	// listener.
 	if control.ContainerPort != 8080 || grafana.ContainerPort != 3000 {
 		t.Errorf("container ports = %d/%d, want 8080/3000", control.ContainerPort, grafana.ContainerPort)
 	}
-	// The Env names are the contract with container.sh, so pin them literally:
+	// The Env names are the contract with instances.sh, so pin them literally:
 	// the shell assertions above hardcode these exact strings.
 	if control.Env != "ORCHICON_CONTROL_PORT" || grafana.Env != "ORCHICON_GRAFANA_PORT" {
 		t.Errorf("env knobs = %q/%q, want ORCHICON_CONTROL_PORT/ORCHICON_GRAFANA_PORT", control.Env, grafana.Env)

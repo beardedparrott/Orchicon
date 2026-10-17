@@ -19,7 +19,11 @@ import (
 
 // generatedProcedures is the number of Connect procedures the generated clients declare. BUMPING IT IS THE
 // DELIBERATE ACT OF ADDING AN RPC; a lifecycle control must not be one of them.
-const generatedProcedures = 238
+//
+// 238 -> 239: develop added one procedure to RuntimeImageService (FetchRuntimeImage) while this
+// branch was open, and it is the deliberate act this pin demands — a runtime-image query, not a lifecycle
+// control. The name tripwire below re-checks that on every run, so a lifecycle RPC cannot ride in on a bump.
+const generatedProcedures = 239
 
 // lifecycleName matches a procedure or RPC that would put plane lifecycle control on the API.
 var lifecycleName = regexp.MustCompile(`(?i)(start|stop|restart|shutdown|lifecycle|status).*(plane|instance)|(plane|instance).*(start|stop|restart|shutdown|lifecycle)`)

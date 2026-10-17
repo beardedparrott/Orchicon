@@ -1510,17 +1510,39 @@ func (r *TaskReconciler) markFailedToStart(ctx context.Context, exec db.Executio
 }
 
 // permanentDispatchFailure reports whether a dispatcher Resolve error is a
-// PERMANENT routing failure — one no retry can fix: the adapter kind is
-// administratively disabled, or it is a declared-but-unregistered kind (e.g.
-// "claude", declared in internal/adapter/providers.go with no bridge
-// registered). Callers BLOCK the work item with the reason instead of
-// requeueing it into a silent ready→failed→ready loop (AC 3). A TRANSIENT
+// PERMANENT routing/configuration failure — one no retry can fix: the adapter
+// kind is administratively disabled, it is a declared-but-unregistered kind
+// (e.g. "claude", declared in internal/adapter/providers.go with no bridge
+// registered), or the run's runtime image is not downloaded on this host
+// (ErrRuntimeImageAbsent). Callers BLOCK the work item with the reason instead
+// of requeueing it into a silent ready→failed→ready loop (AC 3). A TRANSIENT
 // failure (adapter unreachable mid-dispatch) is not permanent and keeps the
 // requeue-with-backoff path. It is a named function rather than an inline
 // expression so the classification lives in ONE place and is directly
 // testable (the test must not re-implement the predicate).
 func permanentDispatchFailure(err error) bool {
-	return errors.Is(err, ErrAdapterDisabled) || errors.Is(err, ErrAdapterKindUnregistered)
+	return errors.Is(err, ErrAdapterDisabled) ||
+		errors.Is(err, ErrAdapterKindUnregistered) ||
+		errors.Is(err, ErrRuntimeImageAbsent)
+}
+
+// ErrRuntimeImageAbsent classifies a dispatch that cannot proceed because the
+// run's runtime image is NOT downloaded on this host. Runtime images are
+// fetched at opt-in time, never at install or mid-run (a multi-GB pull inside a
+// workflow run is indistinguishable from a hang, and the run-start serve gate
+// would time it out anyway), so a missing image is a CONFIGURATION error: the
+// item is blocked with the exact ref and the one action that fixes it, instead
+// of spinning ready → failed → ready. It becomes dispatchable as soon as the
+// image is present.
+var ErrRuntimeImageAbsent = errors.New("runtime image not downloaded")
+
+// runtimeImageAbsentError builds that classification error, naming the exact
+// ref and the single action that fixes it. One constructor keeps the wording
+// (and therefore the operator's fix) identical everywhere the condition is
+// detected.
+func runtimeImageAbsentError(ref string) error {
+	return fmt.Errorf("%w: %q — fetch it from Runtime Images (the Fetch action on that row) before dispatch; `podman pull %s` does the same thing from a shell. The item becomes dispatchable as soon as the image is present",
+		ErrRuntimeImageAbsent, ref, ref)
 }
 
 // markFailedToStartPermanent is markFailedToStart for a PERMANENT dispatch

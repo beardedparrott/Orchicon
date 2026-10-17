@@ -30,7 +30,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -112,10 +111,11 @@ type installPort struct {
 }
 
 // instanceOrder is the canonical set of instances this table defines, in the
-// order they are documented and reported. It must match the columns
-// scripts/container.sh's instance_info defines, because the two launchers have
-// to agree on which instances exist — TestInstallPortDefaultsMatchContainerScript
-// asserts that.
+// order they are documented and reported. It must match ORCHICON_INSTANCES in
+// scripts/lib/instances.sh, whose instance_info defines the shell side's columns,
+// because the two launchers have to agree on which instances exist — that is the
+// one place per side, and TestInstallPortDefaultsMatchShellInstanceTable asserts
+// the two define the SAME SET (both directions, not just containment).
 var instanceOrder = []string{"dev", "prod", "test"}
 
 // portDefaults builds one port's per-instance defaults. A helper so every row of
@@ -128,8 +128,8 @@ func portDefaults(dev, prod, test int) map[string]int {
 // installerPorts returns every port an instance can use, in prompt order.
 //
 // The `test` column exists so a throwaway instance can run beside dev and prod
-// without colliding with either — it is the third instance `container.sh` now
-// knows, and its ports mirror that table's.
+// without colliding with either — it is the third instance the shell side knows
+// (scripts/lib/instances.sh), and its ports mirror that table's.
 func installerPorts() []installPort {
 	return []installPort{
 		{Env: "ORCHICON_CONTROL_PORT", Label: "Control plane (web UI + API)", Defaults: portDefaults(8080, 8091, 8092),
@@ -311,7 +311,7 @@ func parseInstancePorts(raw []byte, specs []installPort) (map[string]int, bool) 
 // constraint container.sh's plane_status already has, since it too probes the
 // port it just resolved.
 func runningInstancePorts(name string, specs []installPort) (map[string]int, bool) {
-	out, err := exec.Command("docker", "inspect",
+	out, err := engineCommand("inspect",
 		"--format", "{{json .NetworkSettings.Ports}}", name).Output()
 	if err != nil {
 		return nil, false

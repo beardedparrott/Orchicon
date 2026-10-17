@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
 // TestResidencyForInstallDefaultsToHost pins the default shape. `host` is the
@@ -265,10 +267,15 @@ func TestInstallShapeWithoutAContainerEngine(t *testing.T) {
 		}
 		assertNoBridgeShape(t)
 	})
-	// Case 2: no engine on PATH and nothing pinned. The probe must answer without a daemon.
+	// Case 2: no engine anywhere and nothing pinned. The probe must answer without a daemon.
 	t.Run("no engine on PATH", func(t *testing.T) {
 		t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
 		t.Setenv("ORCHICON_DOCKER_BRIDGE_IP", "")
+		// An EMPTY PATH IS NO LONGER A NO-ENGINE HOST: the installer's detector
+		// (internal/containerengine) probes the platform's conventional locations after
+		// PATH, and a CI runner has /usr/bin/docker. The pin is what makes "no engine" a
+		// property of the fixture instead of a property of the machine running the test.
+		t.Setenv(containerengine.EnginePinEnv, string(containerengine.EngineNone))
 		t.Setenv("PATH", t.TempDir())
 		if containerEngineAvailable() {
 			t.Error("an empty PATH must not report a container engine")
@@ -574,20 +581,24 @@ func TestInstallHostHasNoDockerInvocation(t *testing.T) {
 			}
 		}
 	}
-	// The engine probe is a PATH LOOKUP, not an engine call — the one permitted naming of the binary.
+	// The engine probe DELEGATES to internal/containerengine, which owns the search order (podman
+	// first, then docker), so the installer and the plane's /enginez answer with the same rules. It
+	// is still a PATH/stat probe: containerengine.Detect runs no engine command (the version read is
+	// a separate, opt-in call).
 	//
-	// THE PROBE MOVED WITH THE CODE. The lifecycle layer now lives in internal/planecontrol (a `package main`
-	// cannot be imported, so the TUI and the desktop app could not reach it), and containerEngineAvailable
-	// moved with it. The property is unchanged, so the assertion follows it to its one home rather than
-	// pinning it to the file it used to be in.
+	// THE PROBE MOVED WITH THE CODE, and the assertion follows it to its one home. The lifecycle
+	// layer now lives in internal/planecontrol (a `package main` cannot be imported, so the TUI and
+	// the desktop app could not reach it), and containerEngineAvailable moved with it.
 	shared, err := os.ReadFile(filepath.Join("..", "..", "internal", "planecontrol", "env.go"))
 	if err != nil {
 		t.Fatalf("read internal/planecontrol/env.go: %v", err)
 	}
-	if !strings.Contains(string(shared), `exec.LookPath("docker")`) {
-		t.Errorf("the engine probe must be a LookPath (no engine call), in internal/planecontrol/env.go:\n%s", shared)
+	if !strings.Contains(string(shared), `containerengine.Detect(containerengine.DefaultProbe())`) {
+		t.Errorf("the engine probe must delegate to containerengine.Detect, in internal/planecontrol/env.go:\n%s", shared)
 	}
-	if strings.Contains(body, `exec.LookPath("docker")`) {
+	// ...and no second copy survives in the file it was moved OUT of. A probe left behind here would
+	// be the drift the delegation removes: two answers to "is there an engine".
+	if strings.Contains(body, `containerengine.Detect`) || strings.Contains(body, `exec.LookPath("docker")`) {
 		t.Errorf("install_host.go must not keep a second copy of the engine probe — it lives in " +
 			"internal/planecontrol/env.go")
 	}
@@ -954,6 +965,10 @@ func TestEnvWithoutStripsOnlyTheNamedKeys(t *testing.T) {
 // install's residency gate does not otherwise cover. Here PATH holds no docker, so a probe that stayed
 // unguarded could only ever shell a binary that is not there.
 func TestResolveInstallPortsNeedsNoEngine(t *testing.T) {
+	// "No engine" is PINNED, not inferred from an empty PATH: the detector also searches the
+	// conventional install locations, so a CI runner's /usr/bin/docker would otherwise make
+	// this fixture a host WITH an engine.
+	t.Setenv(containerengine.EnginePinEnv, string(containerengine.EngineNone))
 	t.Setenv("PATH", t.TempDir()) // no docker, no pg_isready — nothing to exec
 	t.Setenv("ORCHICON_STRICT_PORTS", "")
 	t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")

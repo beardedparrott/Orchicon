@@ -365,6 +365,132 @@ func (s *Service) DeleteRuntimeImage(ctx context.Context, req *connect.Request[a
 // already built (ready + built_version == version): no docker build ran.
 var errAlreadyUpToDate = errors.New("runtime image already up to date")
 
+// FetchRuntimeImage DOWNLOADS the row's published image (`podman pull` /
+// `docker pull`) and streams the pull output — the on-demand FETCH.
+//
+// It is deliberately NOT BuildRuntimeImage: Deploy BUILDS a spec from a
+// Dockerfile, Fetch DOWNLOADS an image someone else already built. Runtime
+// images are never pulled at install time (a project defaults to
+// execution_mode=local and needs no image), so this is how an image becomes
+// locally present when an operator opts into runtime containers.
+//
+// Idempotent, and it never downloads inside a workflow run: an image already
+// present locally short-circuits in the daemon with an immediate exit 0 and no
+// engine command, and the final message carries skipped=true. On success the
+// row is marked ready with built_version = version, so a subsequent Deploy
+// reports "up to date" instead of rebuilding an image that was just fetched.
+func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[apiv1.FetchRuntimeImageRequest], stream *connect.ServerStream[apiv1.FetchRuntimeImageResponse]) error {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return err
+	}
+	if s.rt == nil {
+		return connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("runtime daemon is not configured — cannot fetch a runtime image"))
+	}
+	// Read the row and release the tx BEFORE the pull: a multi-GB download
+	// must not hold a database transaction open.
+	readTx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	row, err := db.GetRuntimeImage(ctx, readTx.Tx, tenantID, req.Msg.GetId())
+	_ = readTx.Rollback(ctx)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return connect.NewError(connect.CodeNotFound, errors.New("runtime image not found"))
+		}
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if strings.TrimSpace(row.Tag) == "" {
+		return connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("runtime image has no tag to fetch"))
+	}
+
+	// Stream the pull. The daemon owns presence + idempotency; a fetch is a
+	// download, so there is no prune afterwards (nothing is orphaned).
+	exit, skipped, perr := s.rt.PullImage(ctx, row.Tag, func(ev runtime.AgentEvent) error {
+		if ev.Data == "" {
+			return nil
+		}
+		return stream.Send(&apiv1.FetchRuntimeImageResponse{Log: ev.Data})
+	})
+	failed := perr != nil || exit != 0
+
+	// Persist the outcome. StatusOnly: a fetch is not a spec edit, so
+	// `version` never bumps. On success the row is READY at its current
+	// version (that is what built_version records). On failure the row KEEPS
+	// its status — a failed download is a configuration/network error, not a
+	// build outcome, so it must not be recorded as `failed` (which the seeder
+	// treats as "a build was attempted").
+	final, uerr := s.recordFetchOutcome(ctx, tenantID, row, perr, exit)
+	if uerr != nil {
+		s.log.Warn("persist runtime image fetch outcome failed", "id", row.ID, "error", uerr)
+	}
+
+	failMsg := ""
+	if failed {
+		failMsg = "runtime image fetch failed"
+		if perr != nil {
+			failMsg = perr.Error()
+		}
+	}
+	if err := stream.Send(&apiv1.FetchRuntimeImageResponse{
+		Status:  imageStatusProto(final.Status),
+		Error:   failMsg,
+		Tag:     row.Tag,
+		Skipped: skipped,
+	}); err != nil {
+		return err
+	}
+	if failed {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("runtime image fetch failed for %s: %s", row.Tag, failMsg))
+	}
+	return nil
+}
+
+// recordFetchOutcome writes the row state a fetch leaves behind: ready at the
+// current spec version on success (clearing stale failure fields), untouched on
+// failure except for the error message. Returns the row as persisted.
+func (s *Service) recordFetchOutcome(ctx context.Context, tenantID string, row db.RuntimeImageRow, pullErr error, exit int) (db.RuntimeImageRow, error) {
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return row, err
+	}
+	defer ttx.Rollback(ctx)
+	fields := db.UpdateRuntimeImageFields{StatusOnly: true}
+	if pullErr != nil || exit != 0 {
+		msg := "runtime image fetch failed"
+		if pullErr != nil {
+			msg = pullErr.Error()
+		}
+		fields.Error = &msg
+	} else {
+		ready := "ready"
+		built := row.Version
+		empty := ""
+		fields.Status = &ready
+		fields.BuiltVersion = &built
+		fields.Error = &empty
+		fields.FailureReason = &empty
+		fields.FailedStep = &empty
+		fields.LogTail = &empty
+		fields.FailureCategory = &empty
+		if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.fetched", "runtime_image", row.ID,
+			nil, audit.Snapshot(map[string]any{"tag": row.Tag, "status": "ready"})); err != nil {
+			return row, err
+		}
+	}
+	final, err := db.UpdateRuntimeImage(ctx, ttx.Tx, tenantID, row.ID, row.Version, fields)
+	if err != nil {
+		return row, err
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return row, err
+	}
+	return final, nil
+}
+
 // BuildRuntimeImage delegates `docker build` to the runtime daemon and
 // streams log chunks until the build succeeds or fails.
 func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[apiv1.BuildRuntimeImageRequest], stream *connect.ServerStream[apiv1.BuildRuntimeImageResponse]) error {
@@ -984,6 +1110,12 @@ func imageStatusProto(status string) apiv1.RuntimeImageStatus {
 		return apiv1.RuntimeImageStatus_RUNTIME_IMAGE_STATUS_READY
 	case "failed":
 		return apiv1.RuntimeImageStatus_RUNTIME_IMAGE_STATUS_FAILED
+	case RuntimeImageStatusAbsent:
+		// The spec is correct but its image is not downloaded locally and no
+		// build is running — distinct from draft (never built) and failed (a
+		// build was attempted and failed). Without this case the seeder's new
+		// state would surface in the UI as UNSPECIFIED.
+		return apiv1.RuntimeImageStatus_RUNTIME_IMAGE_STATUS_ABSENT
 	}
 	return apiv1.RuntimeImageStatus_RUNTIME_IMAGE_STATUS_UNSPECIFIED
 }

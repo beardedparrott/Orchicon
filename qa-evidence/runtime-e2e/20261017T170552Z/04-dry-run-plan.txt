@@ -1,0 +1,21 @@
+runtime-e2e — planned session (dry run: nothing is executed)
+
+  marker     RUNTIME-E2E-20261017T170653Z-20369
+  instance   dev: pg 5432 nats 4222 control 8080
+  engine     podman (must be ABSENT at step 0, PROVISIONED by step 2)
+  evidence   qa-evidence/runtime-e2e/20261017T170653Z/
+
+  0  preflight       assert NO container engine; ports free; disk >= 10 GiB; frontend deps
+  1  local run       project execution_mode=local -> StartWorkflow -> COMPLETED
+                     zero engine invocations (there is no engine at all)      [AC1]
+  2  opt in          mode -> runtime; install rungs printed (detect/install/min/machine/VERIFY/ready)
+                     /enginez available+ready; ADVERSARIAL: broken verify image must NOT read ready [AC2]
+  3  container run   SAME workflow: a NEW container appears (engine ps diff), labelled,
+                     in-container hostname != host hostname                     [AC3]
+  4  pristine reset  write /tmp/RUNTIME-E2E-20261017T170653Z-20369 in run A; run B must not see it       [AC4]
+  5  warm reuse      unchanged env re-leases; git_strategy change forces fresh  [AC5]
+  6  image path      BuildRuntimeImage stream -> re-deploy "already up to date" -> run [AC6]
+  7  gate check      create naming docker.io/library/alpine:3.20 must be REJECTED     [AC7]
+  8  all-native      no container in LOCAL mode; runtime mode recorded, not reinterpreted [AC8]
+
+exit: 0 all PASS | 1 any FAIL (defect filed against the owner) | 2 run invalid (engine present / ports held)

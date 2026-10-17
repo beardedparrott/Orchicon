@@ -1,0 +1,33 @@
+
+[1;36m== step 0 — preflight — is this run a valid proof of the claim?[0m
+  [2mevidence: qa-evidence/runtime-e2e/20261017T170552Z/step-0.log[0m
+date:      2026-10-17T17:05:52Z
+host:      Linux 26fd589386f6 7.2.0-1-cachyos #1 SMP PREEMPT_DYNAMIC Thu, 20 Aug 2026 06:06:30 +0000 x86_64 GNU/Linux
+hostname:  26fd589386f6
+repo:      /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M55C4TG8BMKRR7TGCQ9C9T0F
+marker:    RUNTIME-E2E-20261017T170552Z-18920
+engines:   none found (GOOD — this is the claim being proven)
+wanted:    podman
+head:      2a0bc0d00f11ae7b3c12c0ab246414518de91e7f
+branch:    e2e-proof-local-run-with-no-engine-opt-in-same-workflow-in-a-container-bmkrr7tgcq9c9t0f
+dirty:
+   M scripts/runtime-e2e.sh
+   M scripts/tests/runtime-e2e-assertions/run.sh
+  ?? qa-evidence/runtime-e2e/20261017T170552Z/
+go:        go version go1.26.4 linux/amd64
+node/npm:  v22.23.2 / 10.9.8
+frontend:  node_modules MISSING (the Runtime Images page cannot be driven)
+ports:     dev pg=15432 nats=14222 control=18080
+held now (must be empty):
+disk:
+  Filesystem     1048576-blocks   Used Available Capacity Mounted on
+  /dev/nvme0n1p7         597952 395155    185645      69% /home/beardedparrott/projects/Orchicon
+  [32mPASS[0m no container engine is installed (docker/podman/nerdctl/docker-compose all absent)
+  [32mPASS[0m the tree is a git checkout
+  [32mPASS[0m the instance ports are free before the session starts
+  [32mPASS[0m at least 10 GiB free for engine + images + images-to-build (have 185645 MiB)
+  [33mSKIP[0m the frontend dependencies are installed (a human can create the image spec on the Runtime Images page) — node_modules is MISSING — the harness itself never drives the UI (step 6 takes --image-id), so the session stays valid; run `make fe-install` only if you mean to create the image spec by hand
+
+summary: qa-evidence/runtime-e2e/20261017T170552Z/02-preflight-free-ports/summary.md
+passes=4 failures=0 skips=1
+preflight only: this is a valid no-engine host. Re-run without --preflight-only for the session.
