@@ -137,3 +137,49 @@ func TestPlanePublicURLPodmanPerInstance(t *testing.T) {
 		t.Fatalf("dev and prod advertise the same plane URL %q — a run's workers would dial the other instance", dev)
 	}
 }
+
+// TestPlaneURLForRun pins the mint-path guard around the derivation.
+//
+// planeURLForRun is called BEFORE the mint transaction writes anything
+// (mintPlaneCredentialUncached), so a plane URL this instance cannot derive
+// must surface as an actionable error naming ORCHICON_PLANE_PUBLIC_URL —
+// never as an empty URL baked into a run's container env, and never after a
+// live role-scoped API key has already been committed.
+func TestPlaneURLForRun(t *testing.T) {
+	t.Run("undeliverable container-resident podman plane fails loudly", func(t *testing.T) {
+		clearPlaneURLEnvForEngine(t,
+			EnvRuntimeEngine, "podman",
+			"ORCHICON_CONTAINER_MODE", "1",
+			"ORCHICON_HTTP_ADDR", ":8092",
+		)
+		if ip := containerIPAddress(); ip != "" {
+			t.Skip("this plane's own address IS resolvable here (rootful podman / netavark): the underivable case cannot be exercised")
+		}
+		got, err := planeURLForRun()
+		if err == nil {
+			t.Fatalf("planeURLForRun() = %q, nil — a run must never be handed a plane URL this instance cannot derive", got)
+		}
+		if got != "" {
+			t.Fatalf("planeURLForRun() URL = %q alongside the error, want empty", got)
+		}
+		for _, want := range []string{"ORCHICON_PLANE_PUBLIC_URL", "podman"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q must name %q so the operator knows the fix", err.Error(), want)
+			}
+		}
+	})
+
+	t.Run("a derivable plane URL passes through unchanged", func(t *testing.T) {
+		clearPlaneURLEnvForEngine(t,
+			EnvRuntimeEngine, "podman",
+			"ORCHICON_HTTP_ADDR", "127.0.0.1:8091",
+		)
+		got, err := planeURLForRun()
+		if err != nil {
+			t.Fatalf("planeURLForRun() error = %v, want nil", err)
+		}
+		if want := "http://host.containers.internal:8091"; got != want {
+			t.Fatalf("planeURLForRun() = %q, want %q", got, want)
+		}
+	})
+}

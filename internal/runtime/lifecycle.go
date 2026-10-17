@@ -684,6 +684,29 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 	return env, nil
 }
 
+// planeURLForRun returns the plane URL this instance hands to a run's
+// credential, failing LOUDLY when it cannot be derived.
+//
+// planePublicURL returns "" for a CONTAINER-RESIDENT plane whose own bridge
+// address is not resolvable — rootless/native Podman (slirp4netns, pasta) and
+// the podman machine on macOS/Windows write no /etc/hosts entry, and the
+// historical 172.17.0.1 fallback is a Docker bridge address that does not
+// exist there. There is no derivable address in that topology, so the only
+// correct answer is an explicit ORCHICON_PLANE_PUBLIC_URL: emitting a guess
+// would surface later as every plane-channel MCP call timing out inside a
+// worker, far from the cause.
+//
+// It is called BEFORE the mint transaction opens (see
+// mintPlaneCredentialUncached), so an undeliverable plane URL cannot leave a
+// committed, role-scoped API key behind.
+func planeURLForRun() (string, error) {
+	u := planePublicURL()
+	if u == "" {
+		return "", fmt.Errorf("plane credential: this instance's plane URL is not derivable for a container-resident plane under %s (no bridge IP inside the container) — set ORCHICON_PLANE_PUBLIC_URL to the address this instance's workers can dial", engineKind())
+	}
+	return u, nil
+}
+
 // mintPlaneCredentialUncached performs the actual mint (see mintPlaneCredential,
 // its sole caller, for the memoization contract).
 func (l *Lifecycle) mintPlaneCredentialUncached(ctx context.Context, run db.WorkflowRunRow) (map[string]string, error) {
@@ -741,6 +764,16 @@ func (l *Lifecycle) mintPlaneCredentialUncached(ctx context.Context, run db.Work
 		}
 		return nil, fmt.Errorf("plane credential: get role: %w", err)
 	}
+	// Resolve the plane URL BEFORE anything is written. A container-resident
+	// plane under Podman cannot derive its own address (planePublicURL returns
+	// ""), and this is the last point where failing costs nothing: every step
+	// below creates a service identity and commits a live, role-scoped API
+	// key, so an error raised after the commit would leave an orphaned
+	// credential that nothing ever uses.
+	planeURL, err := planeURLForRun()
+	if err != nil {
+		return nil, err
+	}
 	// The API key's identity_id must reference a REAL identities row — the
 	// audit trail stamps every write with the caller's identity via the
 	// identities_actor_identity_fk, and a worker ID is not an identity. Stamp
@@ -771,10 +804,6 @@ func (l *Lifecycle) mintPlaneCredentialUncached(ctx context.Context, run db.Work
 		return nil, fmt.Errorf("plane credential: commit: %w", err)
 	}
 	l.log.Info("plane credential minted", "run", run.ID, "worker", worker.ID, "role", worker.RoleRef, "scopes", len(role.Entitlements))
-	planeURL := planePublicURL()
-	if planeURL == "" {
-		return nil, fmt.Errorf("plane credential: this instance's plane URL is not derivable for a container-resident plane under %s (no bridge IP inside the container) — set ORCHICON_PLANE_PUBLIC_URL to the address this instance's workers can dial", engineKind())
-	}
 	env := map[string]string{
 		"ORCHICON_PLANE_URL":           planeURL,
 		"ORCHICON_PLANE_TOKEN":         plaintext,
