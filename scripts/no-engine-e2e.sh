@@ -333,6 +333,45 @@ served_bundle_bytes() {
   return 0
 }
 
+# --- the BUILD's product: frontend/dist (what the next binary would embed) ---
+# Fetching the served bytes proves the SERVER has the change; reading the built
+# dist proves the BUILD had it. When the two disagree the defect bisects instead
+# of blurring: dist WITHOUT the marker is the mtime stamp check (Makefile:569-581),
+# served WITHOUT it is the embed/restart path (cmd/orchicon/serve_state.go).
+dist_js_paths() { find "${REPO_ROOT}/frontend/dist" -type f -name '*.js' 2>/dev/null | sort; }
+
+dist_bundle_bytes() {
+  local f any=0
+  for f in $(dist_js_paths); do any=1; cat "$f"; printf '\n'; done
+  [ "$any" = "1" ] || return 1
+  return 0
+}
+
+# dist_is_real — a built bundle, not the tracked .gitkeep placeholder. A
+# dist/index.html that exists but is EMPTY is the silent-stale-dist failure mode
+# already realised: the stamp check sees "dist newer than src", skips the build,
+# and the binary embeds no UI at all (serve_state.go's loud warning fires, and /
+# answers the API's 401 "missing credentials").
+dist_is_real() {
+  [ -s "${REPO_ROOT}/frontend/dist/index.html" ] && [ -n "$(dist_js_paths)" ]
+}
+
+# probe_served_index <inst> <out> — the independent "is the UI really served?"
+# evidence: the HTTP status of / plus the hashed assets the returned HTML names.
+# Recording the status is what makes a frontendless binary unmistakable instead
+# of looking like a mysterious empty fetch in step 4.
+probe_served_index() {
+  local inst="$1" out="$2" code
+  code="$(curl -s -o "${out}.body" -w '%{http_code}' --max-time 5 "$(api_base "$inst")/" 2>/dev/null || true)"
+  {
+    printf 'GET %s/ -> HTTP %s\n' "$(api_base "$inst")" "${code:-<no response>}"
+    printf 'hashed js the served HTML names: %s\n' "$(served_js_paths "$inst" | tr '\n' ' ')"
+    printf -- '--- first 400 bytes of the body ---\n'
+    head -c 400 "${out}.body" 2>/dev/null
+    printf '\n'
+  } >"$out"
+}
+
 start_plane() { # start_plane <inst> <log-file>
   local inst="$1" log="$2" pid
   CUR_PLANE_LOG="$log"
@@ -680,12 +719,44 @@ preflight() {
     skip "frontend deps installed (make fe-install)" "--preflight-only: mutating prerequisite deferred to a full run"
     return 0
   fi
-  if [ -d "${REPO_ROOT}/frontend/node_modules" ]; then
-    check "frontend deps present (frontend/node_modules)" 0
+  # A DIRECTORY IS NOT A TOOLCHAIN. A partial extraction — npm interrupted by a
+  # full disk, which is exactly what the budget above exists to prevent — leaves
+  # frontend/node_modules PRESENT with no .bin/ links and no @types, and the
+  # build then dies with "tsc: not found" (or, past the stamp check, ships the
+  # PREVIOUS dist). Check the executables the build actually runs, not the dir.
+  if [ -x "${REPO_ROOT}/frontend/node_modules/.bin/tsc" ] && [ -x "${REPO_ROOT}/frontend/node_modules/.bin/vite" ]; then
+    check "frontend build toolchain present (node_modules/.bin/{tsc,vite})" 0
   else
-    dim "frontend/node_modules missing — running make fe-install"
-    if tee_step run_make "$INSTANCE" fe-install; then check "make fe-install (no frontend deps in this checkout)" 0
-    else check "make fe-install (no frontend deps in this checkout)" 1 "Makefile:560"; fi
+    dim "frontend build toolchain incomplete — running make fe-install"
+    if tee_step run_make "$INSTANCE" fe-install; then check "make fe-install (no usable frontend toolchain in this checkout)" 0
+    else check "make fe-install (no usable frontend toolchain in this checkout)" 1 "Makefile:560"; fi
+    # `npm install` reconciles against the lockfile but does NOT repair a
+    # half-extracted tree (it reports success and leaves the holes), so a second
+    # missing executable is the HOST's problem and invalidates the run — never a
+    # FAIL against a sibling's code, and never a session that proves nothing.
+    if [ ! -x "${REPO_ROOT}/frontend/node_modules/.bin/tsc" ] || [ ! -x "${REPO_ROOT}/frontend/node_modules/.bin/vite" ]; then
+      ABORT_REASON="frontend/node_modules exists but is NOT a usable toolchain (no .bin/tsc or .bin/vite even after 'make fe-install'); 'npm install' does not repair a half-extracted tree. Run 'cd frontend && npm ci' with the npm cache on a volume that has room, then re-run. Nothing was executed: this is the host, not the session."
+      return 1
+    fi
+  fi
+
+  # A dist/index.html WITH NO BUNDLE is not a clean checkout. It is the silent
+  # stale-dist failure mode already realised (the stamp check sees "dist newer
+  # than src", skips the build, and the binary embeds no frontend). Repair it as
+  # SETUP through the documented escape hatch and record that it happened; step 4
+  # still recreates the mode adversarially, so nothing below is papered over.
+  if dist_is_real; then
+    check "the checkout starts from a real frontend bundle (dist/index.html + assets/*.js)" 0
+  elif [ ! -e "${REPO_ROOT}/frontend/dist/index.html" ]; then
+    check "the checkout starts clean (no frontend/dist — step 1's make build creates it)" 0
+  else
+    dim "frontend/dist/index.html exists but embeds NO bundle — repairing (setup) with make fe-build force-fe=1"
+    if tee_step run_make "$INSTANCE" fe-build force-fe=1; then check "an EMPTY frontend/dist was repaired before the session (setup: make fe-build force-fe=1)" 0
+    else check "an EMPTY frontend/dist was repaired before the session (setup: make fe-build force-fe=1)" 1 "Makefile:573-581"; fi
+    if ! dist_is_real; then
+      ABORT_REASON="frontend/dist/index.html exists but carries no bundle, and 'make fe-build force-fe=1' did not produce one (see $(step_file)). Fix the frontend build, then re-run."
+      return 1
+    fi
   fi
   return 0
 }
@@ -728,6 +799,17 @@ step1_cold_start() {
   owner="$(pid_owning_port "${PORT_CTRL[$INSTANCE]}" 2>/dev/null || true)"
   check "the plane's listening socket belongs to a real process (pid ${owner:-none})" "$([ -n "$owner" ] && echo 0 || echo 1)"
   [ -n "$owner" ] && printf 'plane pid %s: %s\n' "$owner" "$(cmdline_of "$owner")" >>"$log"
+
+  # The UI half of the cold start. The binary go:embeds frontend/dist, so a build
+  # that skipped `npm run build` compiles PERFECTLY and then serves the API where
+  # the UI should be; step 4's byte capture is worthless unless this is true
+  # FIRST, so it is asserted here, before anything is rebuilt.
+  probe_served_index "$INSTANCE" "${EVIDENCE}/01-served-index.txt"
+  if [ -n "$(served_js_paths "$INSTANCE")" ]; then
+    check "the plane SERVES the real UI (the served index names a hashed bundle)" 0
+  else
+    check "the plane SERVES the real UI (the served index names a hashed bundle)" 1 "cmd/orchicon/serve_state.go:124-141 (an empty embedded frontend/dist/index.html falls through to the API: 401 'missing credentials') + Makefile:569-581"
+  fi
 }
 
 # --- step 2: migrate + rls-check --------------------------------------------
@@ -823,10 +905,24 @@ step4_rebuild_live() {
   bundle="${EVIDENCE}/04-served-bundle.txt"
   local rc
 
+  # Fetchability is a GATE, not one assertion among many: "the marker is NOT in
+  # the bundle" is trivially true of a 0-byte capture, so a blind run reports the
+  # stale-dist control and the escape hatch as PASS while the plane serves no UI
+  # at all. When the baseline fetch fails, every assertion that reads bundle
+  # CONTENT is SKIPped — AC3 is then UNPROVEN, never green.
+  local bundle_ok=0
   served_bundle_bytes "$INSTANCE" >"$bundle" 2>/dev/null || rc=1
-  if [ "${rc:-0}" = "0" ] && [ -s "$bundle" ]; then check "the served bundle is fetchable (independent: HTTP GET of the asset)" 0
-  else check "the served bundle is fetchable (independent: HTTP GET of the asset)" 1 "internal/api (SPA serving)"; fi
-  check_absent "the marker is NOT in the served bundle before the edit (clean baseline)" "$bundle" "$MARKER"
+  if [ "${rc:-0}" = "0" ] && [ -s "$bundle" ]; then bundle_ok=1
+    check "the served bundle is fetchable (independent: HTTP GET of the served asset)" 0
+  else
+    check "the served bundle is fetchable (independent: HTTP GET of the served asset)" 1 "cmd/orchicon/serve_state.go:124-141 (no embedded dist -> / is the API, 401) — see 01-served-index.txt"
+  fi
+  dist_bundle_bytes >"${EVIDENCE}/04-dist-bundle.txt" 2>/dev/null || true
+  if [ "$bundle_ok" = "1" ]; then
+    check_absent "the marker is NOT in the served bundle before the edit (clean baseline)" "$bundle" "$MARKER"
+  else
+    skip "the marker is NOT in the served bundle before the edit (clean baseline)" "the served bundle is UNFETCHABLE — an absence in an empty capture proves nothing"
+  fi
 
   git -C "$REPO_ROOT" checkout -- "$MARKER_SRC" 2>/dev/null || true
   apply_marker_edit
@@ -840,8 +936,19 @@ step4_rebuild_live() {
     check "the plane restarts after the rebuild (the bundle is go:embed-ed)" 0
   else check "the plane restarts after the rebuild (the bundle is go:embed-ed)" 1 "Makefile:272-278"; fi
   served_bundle_bytes "$INSTANCE" >"${EVIDENCE}/04-served-bundle-after.txt" 2>/dev/null || true
-  check_contains "THE CHANGE IS LIVE: the SERVED bundle carries the new marker" \
-    "${EVIDENCE}/04-served-bundle-after.txt" "$MARKER" "Makefile:569-581"
+  dist_bundle_bytes >"${EVIDENCE}/04-dist-bundle-after.txt" 2>/dev/null || true
+  # Two independent places, so a miss bisects instead of blurring: the BUILT dist
+  # is the stamp check's product (Makefile:569-581), the SERVED bytes are the
+  # embed/restart's product. AC3 needs both, and the dist half is judged even
+  # when the server half cannot be fetched.
+  if [ "$bundle_ok" = "1" ]; then
+    check_contains "THE CHANGE IS LIVE: the SERVED bundle carries the new marker" \
+      "${EVIDENCE}/04-served-bundle-after.txt" "$MARKER" "Makefile:569-581"
+  else
+    skip "THE CHANGE IS LIVE: the SERVED bundle carries the new marker" "the served bundle was UNFETCHABLE at the baseline — AC3's served half is UNPROVEN, not passed (see 01-served-index.txt)"
+  fi
+  check_contains "the BUILT dist carries the new marker after make build (the build half of AC3)" \
+    "${EVIDENCE}/04-dist-bundle-after.txt" "$MARKER" "Makefile:569-581"
 
   # --- adversarial control: recreate the stale-dist failure mode -------------
   git -C "$REPO_ROOT" checkout -- "$MARKER_SRC" 2>/dev/null || true
@@ -855,16 +962,30 @@ EOF
   run_make "$INSTANCE" build >>"$log" 2>&1 || true
   restart_plane "$INSTANCE" "${EVIDENCE}/04-run-after-stale-control.log" >/dev/null 2>&1 || true
   served_bundle_bytes "$INSTANCE" >"${EVIDENCE}/04-served-bundle-stale-control.txt" 2>/dev/null || true
-  check_absent "STALE-DIST CONTROL: a dist newer than src does not ship the previous UI" \
-    "${EVIDENCE}/04-served-bundle-stale-control.txt" "$MARKER" "Makefile:574-581 then Makefile:655 (only container-rebuild forces force-fe=1)"
+  dist_bundle_bytes >"${EVIDENCE}/04-dist-bundle-stale-control.txt" 2>/dev/null || true
+  if [ "$bundle_ok" = "1" ]; then
+    check_absent "STALE-DIST CONTROL: a dist newer than src does not ship the previous UI (SERVED)" \
+      "${EVIDENCE}/04-served-bundle-stale-control.txt" "$MARKER" "Makefile:574-581 then Makefile:655 (only container-rebuild forces force-fe=1)"
+  else
+    skip "STALE-DIST CONTROL: a dist newer than src does not ship the previous UI (SERVED)" "the served bundle was UNFETCHABLE at the baseline — see 01-served-index.txt"
+  fi
+  check_absent "STALE-DIST CONTROL (BUILT): a dist newer than src does not keep the previous bundle" \
+    "${EVIDENCE}/04-dist-bundle-stale-control.txt" "$MARKER" "Makefile:574-581 (only container-rebuild forces force-fe=1)"
 
   # --- the documented escape hatch must actually work -----------------------
   if tee_step run_make "$INSTANCE" build force-fe=1; then check "make build force-fe=1 (the engine-free escape hatch) succeeds" 0
   else check "make build force-fe=1 (the engine-free escape hatch) succeeds" 1 "Makefile:573-581"; fi
   restart_plane "$INSTANCE" "${EVIDENCE}/04-run-after-force-fe.log" >/dev/null 2>&1 || true
   served_bundle_bytes "$INSTANCE" >"${EVIDENCE}/04-served-bundle-force-fe.txt" 2>/dev/null || true
-  check_absent "the escape hatch clears the marker from the SERVED bundle" \
-    "${EVIDENCE}/04-served-bundle-force-fe.txt" "$MARKER"
+  dist_bundle_bytes >"${EVIDENCE}/04-dist-bundle-force-fe.txt" 2>/dev/null || true
+  if [ "$bundle_ok" = "1" ]; then
+    check_absent "the escape hatch clears the marker from the SERVED bundle" \
+      "${EVIDENCE}/04-served-bundle-force-fe.txt" "$MARKER"
+  else
+    skip "the escape hatch clears the marker from the SERVED bundle" "the served bundle was UNFETCHABLE — an absence in an empty capture proves nothing"
+  fi
+  check_absent "the escape hatch clears the marker from the BUILT dist" \
+    "${EVIDENCE}/04-dist-bundle-force-fe.txt" "$MARKER"
   check "the working tree is restored (frontend/src is clean)" \
     "$(git -C "$REPO_ROOT" diff --quiet -- "$MARKER_SRC" && echo 0 || echo 1)"
 }
@@ -1111,7 +1232,7 @@ step10_blindspots() {
     printf '| 1 | `make build` / `make services` / `make run` | `01-healthz.txt`, `/proc` port ownership | %s |\n' "$(verdict_for 1)"
     printf '| 2 | `make migrate` (x2), `make rls-check` | `02-migrate*.log`, `02-rls.log` (no host psql) | %s |\n' "$(verdict_for 2)"
     printf '| 3 | `bin/orch --url http://127.0.0.1:%s` | `03-orch-tui.txt` PTY capture | %s |\n' "${PORT_CTRL[$INSTANCE]}" "$(verdict_for 3)"
-    printf '| 4 | `make build` + restart (the plane go:embeds dist) | `04-served-bundle*.txt` — the SERVED bytes | %s |\n' "$(verdict_for 4)"
+    printf '| 4 | `make build` + restart (the plane go:embeds dist) | `04-served-bundle*.txt` (SERVED bytes) + `04-dist-bundle*.txt` (BUILT bytes) + `01-served-index.txt` (HTTP status of /) | %s |\n' "$(verdict_for 4)"
     printf '| 5 | `scripts/orchicon.sh status %s` | `05-status-groundtruth.txt` (/healthz, /proc) | %s |\n' "$INSTANCE" "$(verdict_for 5)"
     printf '| 6 | `scripts/orchicon.sh logs %s` | `06-logs.txt` + `06-plane-log.txt` | %s |\n' "$INSTANCE" "$(verdict_for 6)"
     printf '| 7 | `make services/migrate instance=prod` | `07-*.log`, both `/healthz` | %s |\n' "$(verdict_for 7)"

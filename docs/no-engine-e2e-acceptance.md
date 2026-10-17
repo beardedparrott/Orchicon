@@ -282,3 +282,37 @@ and names the sibling file that owns it.
   defaults are exercised on a host with nothing else listening.
 - Step 3 records SKIP when no client token is resolvable. A SKIP is a gap in the proof, not
   a pass — mint a token (TUI `/connect`, or `ORCHICON_TOKEN`) and re-run.
+
+---
+
+## What the harness refuses to call a pass (iteration 2)
+
+Three rules were added after a run reported AC3 as verified on a plane that served no
+UI at all. They are the harness's own guarantee that a green line means something:
+
+1. **Fetchability gates content.** Step 4 captures the bytes a browser would receive.
+   If that capture fails, every assertion that reads bundle *content* is `SKIP`
+   ("AC3's served half is UNPROVEN"), never `PASS` — an absence in a 0-byte file
+   proves nothing.
+2. **Built bytes and served bytes are both recorded.** `04-dist-bundle*.txt` is what
+   `make build` produced, `04-served-bundle*.txt` is what the server returned. They
+   disagree only when the defect is in the stamp check (`Makefile:569-581`) or in the
+   embed/restart path — the two places the report needs to name.
+3. **A directory is not a toolchain.** Preflight requires
+   `frontend/node_modules/.bin/{tsc,vite}`; a half-extracted `node_modules` (what an
+   interrupted `npm install` leaves) is `RUN INVALID` with the fix `cd frontend &&
+   npm ci`, not a mid-build `tsc: not found`. A `frontend/dist/index.html` that exists
+   but carries no bundle — the stale-dist failure mode already realised — is repaired
+   as setup with `make fe-build force-fe=1` and recorded.
+
+### Known: `make run` does not mount the UI (defect D8)
+
+On the documented engine-free entry point, `GET /` answers **401
+`{"error":"missing credentials"}`** even with a correct bundle embedded: `make run`
+(`Makefile:272-278`) runs the binary's DEFAULT path (`cmd/orchicon/main.go:110-116`),
+which never wraps the handler with `withFrontend`; only the `serve` subcommand does
+(`cmd/orchicon/serve.go:386`). The evidence is `01-served-index.txt` (the HTTP status
+of `/` plus the assets the returned HTML names). To see the UI on an engine-free host
+until D8 is fixed, run `bin/orchicon serve` with the same `ORCHICON_*` environment
+`make run` exports — that path serves the bundle (verified: `GET /` -> 200 and the
+served asset carries a freshly built marker).

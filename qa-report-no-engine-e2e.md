@@ -259,3 +259,43 @@ earlier harness run (pid 22952, `PPid: 1`) kept **respawning** `postgres -p 1543
 so a later run's preflight found the ports held by its own predecessor (`HELD 15432 14222`). The
 harness correctly refused (`RUN INVALID`) instead of lying — that half of AC10 works — but the
 leftover supervisor must be reaped by hand before a re-run.
+
+---
+
+## Iteration 2 — H1 fixed; its real cause is a new defect, D8
+
+**H1 (blocking, harness) is fixed.** Step 4 no longer reports anything about bundle
+*content* unless the baseline fetch succeeded: fetchability is a gate, and the
+four marker assertions become `SKIP` ("AC3's served half is UNPROVEN") instead of
+vacuous PASSes on a 0-byte capture. Two further honesty fixes: the harness now
+captures the **built** bytes (`04-dist-bundle*.txt`) beside the **served** bytes so a
+miss bisects the build (`Makefile:569-581`) from the embed/restart, and preflight
+requires the binaries the build runs (`node_modules/.bin/{tsc,vite}`) rather than the
+`node_modules` directory, so a half-extracted tree is `RUN INVALID` naming
+`npm ci` instead of dying mid-build with `tsc: not found`.
+
+**The environment half of H1 is repaired**: `frontend/node_modules` was a partial
+extraction and `frontend/dist/index.html` was a 0-byte untracked file, so every build
+embedded an empty index; `npm ci` + `npm run build` now produce a real bundle
+(1640-byte index naming `/assets/index-D6pz2Smk.js`).
+
+**D8 (new, sibling-owned, blocking for AC3's documented path):** with a correct
+bundle embedded, `GET /` on the plane `make run` starts answers **HTTP 401
+`{"error":"missing credentials"}`**, because the default path in
+`cmd/orchicon/main.go:110-116` never wraps the handler with `withFrontend` — that
+wrap exists only on the `serve` subcommand (`cmd/orchicon/serve.go:386`). `make run`
+(Makefile:272-278) runs the default path, so the documented engine-free session
+serves the API where the UI should be. Independent evidence:
+`qa-evidence/no-engine-e2e/h1-fix/01-served-index.txt`.
+
+**AC3, corrected status:**
+* build half — PROVEN: after `make build force-fe=1` the built dist carries the change
+  (`04-dist-bundle-after.txt`), and the stale-dist control FAILS at the build level
+  (the previous bundle survives a dist-newer-than-src `make build` — D6, now proven
+  independently of serving);
+* serve half — PROVEN through `bin/orchicon serve` (GET / -> **200**, the served asset
+  carries the marker), i.e. the rebuild→embed→serve chain is live;
+* through the **documented** entry point (`make run`) — BLOCKED by D8.
+
+See `qa-evidence/no-engine-e2e/h1-fix/H1-and-D8.md` for the transcript and the
+results ledger (`results.tsv`, `defects.tsv`).
