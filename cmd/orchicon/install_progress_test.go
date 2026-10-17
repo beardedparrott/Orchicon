@@ -123,6 +123,10 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 // the environment has NO engine on PATH, so a re-probe answers the opposite. The summary must follow the
 // threaded decision (services in the instance container), never the re-probe (host processes of this user).
 func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
+	// The disagreement is pinned, not inferred: an empty PATH alone still leaves the engine the
+	// detector finds in a conventional location (a CI runner's /usr/bin/docker), and then the
+	// re-probe would agree with the install and prove nothing.
+	t.Setenv(containerengine.EnginePinEnv, string(containerengine.EngineNone))
 	t.Setenv("PATH", t.TempDir()) // no engine: a re-probe would answer "no containers"
 	if containerEngineAvailable() {
 		t.Fatal("the fixture needs an empty PATH to make the re-probe disagree")
