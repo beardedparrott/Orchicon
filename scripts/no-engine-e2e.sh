@@ -422,6 +422,35 @@ preflight() {
   fi
   check "the instance ports are free before the session starts" 0
 
+  # THE PORT TABLE PREFERS A RECORDED PORT. scripts/container.sh:_recorded_port
+  # reads <dataDir>/ports.json FIRST and only then falls back to
+  # ORCHICON_*_PORT, so on a host that ran `services up` once, --pg-port would
+  # move the harness's EXPECTATION while `make run` kept the recorded port:
+  # every port assertion would fail and blame nobody. That is a condition of the
+  # host, not a defect in the session, so it invalidates the run (exit 2) with
+  # the fix named rather than producing a misleading FAIL list.
+  local drift="" inst svc want got
+  for inst in "$INSTANCE" "$PROD_INSTANCE"; do
+    for svc in postgres nats control; do
+      case "$svc" in
+        postgres) want="${PORT_PG[$inst]}" ;;
+        nats) want="${PORT_NATS[$inst]}" ;;
+        control) want="${PORT_CTRL[$inst]}" ;;
+      esac
+      # Ask the table WITH this run's ORCHICON_*_PORT in force — that is what
+      # `make run` will pass down. A difference can only mean a recorded port won.
+      instance_env "$inst"
+      got="$("${ENVX[@]}" "$CONTAINER_SH" services-port "$inst" "$svc" 2>/dev/null || true)"
+      [ -n "$got" ] && [ "$got" != "$want" ] && drift="$drift ${inst}/${svc}(chose ${want}, table says ${got})"
+    done
+  done
+  if [ -n "$drift" ]; then
+    check "the port table resolves the ports this run chose${drift}" 1
+    ABORT_REASON="this host has RECORDED service ports that win over the port overrides (${drift# }); run 'make services-down instance=<inst>' (or remove \$HOME/.local/share/orchicon-<inst>/ports.json) and re-run, so the ports this run asserts are the ports the services actually bind."
+    return 1
+  fi
+  check "the port table resolves the ports this run chose" 0
+
   if [ "$PREFLIGHT_ONLY" = "1" ]; then
     skip "frontend deps installed (make fe-install)" "--preflight-only: mutating prerequisite deferred to a full run"
     return 0
@@ -496,10 +525,14 @@ step2_migrate() {
   # A host psql on PATH would silently mask it, so the shim run removes psql.
   local shim="${EVIDENCE}/.nopsql"
   mkdir -p "$shim"
-  local b
+  local b p
   for b in bash sh env awk sed grep cat curl dirname readlink mktemp rm mkdir tail head printf find sort uniq tr cut go make git; do
     p="$(command -v "$b" 2>/dev/null)" || true
-    [ -n "${p:-}" ] && [ ! -e "${shim}/${b}" ] && ln -s "$p" "${shim}/${b}" 2>/dev/null
+    # builtins (printf) resolve to a bare name, which would become a dangling
+    # symlink; only real files on disk are shimmed.
+    case "${p:-}" in
+      /*) [ ! -e "${shim}/${b}" ] && ln -s "$p" "${shim}/${b}" 2>/dev/null ;;
+    esac
   done
   : >"$log"
   if instance_env "$INSTANCE"; "${ENVX[@]}" PATH="$shim" bash "${REPO_ROOT}/scripts/check-rls.sh" \
@@ -534,7 +567,7 @@ step3_connect() {
   check_absent "the client did not fail to dial the plane" "$cap" "dial tcp"
   grep -qiE 'orchicon|work|runs|127\.0\.0\.1' "$cap" 2>/dev/null \
     && check "the rendered screen names the plane it reached" 0 \
-    || check "the rendered screen names the plane it reached" 1 "cmd/orch/main.go:110-142"
+    || check "the rendered screen names the plane it reached" 1 "cmd/orch/main.go:215-220"
 }
 
 # --- step 4: change and rebuild, verifiably live ----------------------------
@@ -549,6 +582,7 @@ if (typeof document !== "undefined") {
   document.documentElement.setAttribute("data-no-engine-e2e", "${MARKER}");
 }
 EOF
+  MARKER_EDITED=1
 }
 
 restart_plane() { # restart_plane <inst> <log>
@@ -597,7 +631,7 @@ EOF
   restart_plane "$INSTANCE" "${EVIDENCE}/04-run-after-stale-control.log" >/dev/null 2>&1 || true
   served_bundle_bytes "$INSTANCE" >"${EVIDENCE}/04-served-bundle-stale-control.txt" 2>/dev/null || true
   check_absent "STALE-DIST CONTROL: a dist newer than src does not ship the previous UI" \
-    "${EVIDENCE}/04-served-bundle-stale-control.txt" "$MARKER" "Makefile:574-581 then Makefile:656 (only container-rebuild forces force-fe=1)"
+    "${EVIDENCE}/04-served-bundle-stale-control.txt" "$MARKER" "Makefile:574-581 then Makefile:655 (only container-rebuild forces force-fe=1)"
 
   # --- the documented escape hatch must actually work -----------------------
   if tee_step run_make "$INSTANCE" build force-fe=1; then check "make build force-fe=1 (the engine-free escape hatch) succeeds" 0
@@ -659,7 +693,7 @@ step5_state() {
     check "status claimed no health while /healthz was unreachable (healthz=${code:-none})" 0
   fi
   grep -qE 'docker (ps|inspect|logs)' "$log" \
-    && check "the state report needs NO container command" 1 "scripts/orchicon.sh:127 + scripts/container.sh:1603" \
+    && check "the state report needs NO container command" 1 "scripts/orchicon.sh:97 (status verb) + scripts/container.sh:1603" \
     || check "the state report needs NO container command" 0
 }
 
@@ -674,12 +708,16 @@ step6_logs() {
   printf 'exit=%s\n' "$rc" >>"$log"
   tee -a "$log" <"$out" >/dev/null 2>&1 || true
 
-  if [ "$rc" = "127" ] || grep -qiE 'command not found|docker: not found' "$out"; then
-    check "scripts/orchicon.sh logs works with no container engine" 1 \
-      "scripts/orchicon.sh:127 (logs -> container.sh logs_instance -> 'docker logs -f')"
-  else
-    check "scripts/orchicon.sh logs works with no container engine" 0
-  fi
+  # ANY non-zero exit is a failure, not just 127: a `docker logs -f` that HANGS
+  # (timeout kills it, rc=124) prints no 'command not found' line, and treating
+  # that as a pass would hide exactly the blind spot this step exists to find.
+  case "$rc" in
+    0) check "scripts/orchicon.sh logs works with no container engine" 0 ;;
+    124) check "scripts/orchicon.sh logs works with no container engine (it HUNG: timeout 10 killed it)" 1 \
+           "scripts/orchicon.sh:101 (logs -> scripts/container.sh:1632 logs_instance -> 'docker logs -f')" ;;
+    *) check "scripts/orchicon.sh logs works with no container engine (exit ${rc})" 1 \
+           "scripts/orchicon.sh:101 (logs -> scripts/container.sh:1632 logs_instance -> 'docker logs -f')" ;;
+  esac
 
   plog="$(plane_log_path "$INSTANCE")"
   if [ -f "$plog" ]; then
@@ -922,6 +960,12 @@ write_summary() {
 
 teardown() {
   local inst
+  # An interrupted step 4 must not leave the acceptance marker in a tree the
+  # runbook calls a CLEAN checkout — restore it before any other exit path.
+  if [ "${MARKER_EDITED:-0}" = "1" ]; then
+    git -C "$REPO_ROOT" checkout -- "$MARKER_SRC" 2>/dev/null || true
+    say "teardown: restored ${MARKER_SRC} (the acceptance marker was still in the working tree)"
+  fi
   if [ "$KEEP" = "1" ] || [ "${TEARDOWN_DONE:-0}" = "1" ]; then
     [ "$KEEP" = "1" ] && say "(--keep: services and planes left running)"
     return 0

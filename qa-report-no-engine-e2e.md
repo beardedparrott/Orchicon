@@ -126,12 +126,12 @@ Predicted by the plan, confirm or refute each with this run's evidence:
 
 | # | Predicted defect | Confirmed? | Evidence |
 |---|---|---|---|
-| D1 | `scripts/orchicon.sh logs` needs an engine and shows the container's log, not the host plane's (`scripts/orchicon.sh:127`, `scripts/container.sh:logs_instance`, required source `scripts/container.sh:478`) | _TODO_ | `06-logs.txt` |
+| D1 | `scripts/orchicon.sh logs` needs an engine and shows the container's log, not the host plane's (`scripts/orchicon.sh:101`, `scripts/container.sh:1632 logs_instance`, required source `scripts/container.sh:478`) | _TODO_ | `06-logs.txt` |
 | D2 | `scripts/orchicon.sh status` false-reports "not created" with no engine and never reports the services half (`scripts/container.sh:1603-1630`) | _TODO_ | `05-status-script.txt` |
 | D3 | the host-plane launcher requires a docker bridge, so `scripts/orchicon.sh start` is not a valid cold start (`scripts/container.sh:bridge_ip`) | _TODO_ | runbook decision 1 |
 | D4 | `make clean-docker` is not engine-aware (`Makefile:413-416`) | _TODO_ | `step-8.log` |
 | D5 | `make run` is foreground and writes no plane log (`Makefile:272-278`) | _TODO_ | `06-plane-log.txt` (absent) |
-| D6 | only `container-rebuild` forces `force-fe=1`, so the stale-`dist` mode is still reachable on the engine-free rebuild path (`Makefile:569-581`) | _TODO_ | `04-served-bundle-stale-control.txt` |
+| D6 | only `container-rebuild` forces `force-fe=1`, so the stale-`dist` mode is still reachable on the engine-free rebuild path (`Makefile:573-581` fe-build, `Makefile:655`) | _TODO_ | `04-served-bundle-stale-control.txt` |
 
 ## 5. Not-blind evidence
 
