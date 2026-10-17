@@ -195,11 +195,28 @@ check_absent ".env.example does not carry ORCHICON_PLANE_PUBLIC_URL" \
   "ORCHICON_PLANE_PUBLIC_URL" "$(cat "${REPO_ROOT}/.env.example" 2>/dev/null || true)"
 
 # --- the code-side anchors these values depend on --------------------------- #
-if grep -qF '"--add-host", "host.docker.internal:host-gateway"' "${REPO_ROOT}/internal/runtime/daemon.go"; then
-  printf '  \033[32mPASS\033[0m  %-52s %s\n' "runtime containers get the host-gateway mapping" "daemon.go create args"
+# The create args come from the engine seam (internal/runtime/engine.go), not
+# from a literal in daemon.go: the alias a runtime container uses to reach a
+# HOST-resident plane is per engine (docker host.docker.internal, mapped by
+# --add-host host-gateway; podman host.containers.internal, which podman
+# injects itself). Both halves are asserted, because a missing mapping strands
+# every plane-channel worker inside its container and a podman-only
+# --add-host would fail container creation on older builds.
+ENGINE_GO="${REPO_ROOT}/internal/runtime/engine.go"
+if grep -qF 'hostGatewayArgs()' "${REPO_ROOT}/internal/runtime/daemon.go" &&
+  grep -qF ':host-gateway' "${ENGINE_GO}" 2>/dev/null; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "runtime containers get the host-gateway mapping" "daemon.go create args (engine seam)"
   PASSED=$((PASSED + 1))
 else
-  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "runtime containers get the host-gateway mapping" "missing from daemon.go create args"
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "runtime containers get the host-gateway mapping" "missing from daemon.go create args / engine.go"
+  FAILED=$((FAILED + 1))
+fi
+if grep -qF '"host.docker.internal"' "${ENGINE_GO}" 2>/dev/null &&
+  grep -qF '"host.containers.internal"' "${ENGINE_GO}" 2>/dev/null; then
+  printf '  \033[32mPASS\033[0m  %-52s %s\n' "the plane host alias is per engine" "docker + podman names declared in engine.go"
+  PASSED=$((PASSED + 1))
+else
+  printf '  \033[31mFAIL\033[0m  %-52s %s\n' "the plane host alias is per engine" "engine.go does not declare both host names"
   FAILED=$((FAILED + 1))
 fi
 # The property is "no write to the error channel", so match the WRITE, not the
