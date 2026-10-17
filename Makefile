@@ -552,6 +552,19 @@ install-path-test: ## Run the real installer against a locally-served artifact, 
 host-residency-test: ## CI gate: the instance launch shape (residency default, per-instance ports, plane binds)
 	bash scripts/tests/host-residency/run.sh
 
+# orchicon-cli-test is the gate for scripts/orchicon.sh — the command a developer
+# runs every day. It needs no container engine, no database and no running plane:
+# every delegation is asserted against stub binaries on PATH, so it runs anywhere
+# CI runs. It covers what the script alone can get wrong — a truncated `help` (the
+# usage block used to be a positional slice of the file's own header), a verb that
+# stops reaching the CLI's shared control surface, a `status` that reports health it
+# never verified, two instances that stop sharing nothing, a rebuild whose warning
+# about not running the tests goes missing, and any surviving reference to the
+# retired container launcher.
+.PHONY: orchicon-cli-test
+orchicon-cli-test: ## CI gate: scripts/orchicon.sh (verbs, help completeness, delegation, honest status)
+	bash scripts/tests/orchicon-cli/run.sh
+
 # local-services-test pins the INNER LOOP: that DB_URL is DERIVED per instance,
 # that the pure query verbs honour overrides, that `services` is a prerequisite
 # of `run` alone, and that the `test` isolation contract is unbroken. Offline —
@@ -986,7 +999,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
