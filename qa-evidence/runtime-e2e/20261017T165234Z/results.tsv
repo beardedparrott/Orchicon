@@ -1,0 +1,3 @@
+0	PASS	no container engine is installed (docker/podman/nerdctl/docker-compose all absent)	
+0	PASS	the tree is a git checkout	
+0	SKIP	the instance ports are free before the session starts	

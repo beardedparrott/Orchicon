@@ -614,6 +614,16 @@ local-services-test: ## CI gate: the local-services inner loop (derived DB_URL, 
 no-engine-e2e-assertions-test: ## CI gate: the no-engine acceptance harness never PASSes on an empty capture
 	bash scripts/tests/no-engine-e2e-assertions/run.sh
 
+# runtime-e2e-assertions-test pins the RUNTIME-CONTAINER acceptance harness's own
+# honesty. That procedure is ABSENCE-SHAPED ("no container was created", "the gate
+# rejected it", "the pooled container was reused"), and every one of those is
+# trivially true of a `podman ps` that failed to run — so an ungated assertion
+# would manufacture the very blindness the feature removes. Offline: it sources
+# the harness's functions and touches no engine, port or database.
+.PHONY: runtime-e2e-assertions-test
+runtime-e2e-assertions-test: ## CI gate: the runtime-container acceptance harness never PASSes on an empty capture
+	bash scripts/tests/runtime-e2e-assertions/run.sh
+
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
@@ -740,6 +750,31 @@ instance-rebuild: ## Stop this instance, rebuild the binaries, start it (usage: 
 	$(MAKE) instance-down instance=$(instance)
 	$(MAKE) instance-build force-fe=1
 	$(MAKE) instance-up instance=$(instance)
+
+# --- Plane lifecycle (ONE local mechanism, no API path) ----------------------
+# These are the PLANE-only half of instance-up/instance-down: they leave the
+# instance's host services exactly as they are, which is what a restart onto a
+# freshly built binary needs.
+#
+# EVERY PATH HERE IS THE SAME LOCAL MECHANISM the TUI, the desktop app and the
+# launcher call — `orchicon plane ...`, implemented once in
+# internal/planecontrol. There is no lifecycle RPC and this file composes none:
+# a browser cannot spawn a process, which is the only reason the API path ever
+# existed, and the browser is not a lifecycle surface. Anything that needs a
+# remote control is a separate decision, not a target here.
+.PHONY: plane-status plane-start plane-stop plane-restart
+plane-status: ## Show this instance's plane: PID, serving BINARY, drift, health
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
+	@$(BIN_DIR)/orchicon plane status $(instance)
+plane-start: ## Start this instance's plane only (idempotent; leaves its services alone)
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
+	@$(BIN_DIR)/orchicon plane start $(instance)
+plane-stop: ## Stop this instance's plane only (graceful, bounded, verified)
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — nothing to stop"; exit 1; }
+	@$(BIN_DIR)/orchicon plane stop $(instance)
+plane-restart: ## Restart this instance's plane so it re-reads its environment
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
+	@$(BIN_DIR)/orchicon plane restart $(instance)
 # --- Runtime image + daemon (podman; no instance lifecycle) ------------------
 # `runtime.sh` owns both: the version-gated build of the three stock runtime
 # images, and the host daemon's lifecycle. They used to live in container.sh.
@@ -789,6 +824,12 @@ container-logs:
 container-ps:
 	@echo "container-ps is now instance-ps"
 	@$(MAKE) instance-ps
+
+# --- Plane lifecycle — see "Instances (host-resident dev loop)" above --------
+# plane-status / plane-start / plane-stop / plane-restart are defined THERE, next to
+# instance-up/instance-down, because they are the plane-only half of that pair. They are
+# deliberately not repeated here: two recipes for one target is exactly the drift this
+# branch removed from the shell side, and `make` can only be right about one of them.
 
 # --- Full rebuild (one command) --------------------------------------------
 # A single command that runs everything needed before/for an instance rebuild:
@@ -1053,7 +1094,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate

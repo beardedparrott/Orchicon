@@ -1,0 +1,5 @@
+0	PASS	no container engine is installed (docker/podman/nerdctl/docker-compose all absent)	
+0	PASS	the tree is a git checkout	
+0	PASS	the instance ports are free before the session starts	
+0	PASS	at least 10 GiB free for engine + images + images-to-build (have 185645 MiB)	
+0	SKIP	the frontend dependencies are installed (a human can create the image spec on the Runtime Images page)	

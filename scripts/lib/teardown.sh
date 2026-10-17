@@ -41,40 +41,20 @@ plane_stop() {
     log_dim "host plane binary missing ($bin) — nothing to stop"
     return 0
   fi
-  local envargs=()
-  local kv
-  while IFS= read -r kv; do
-    [ -n "$kv" ] && envargs+=("$kv")
-  done < <(plane_env "$inst")
-  # THE STOP IS VERIFIED, AND ITS FAILURE IS PROPAGATED.
+  # ONE IMPLEMENTATION: `orchicon plane stop` — the graceful, BOUNDED, VERIFIED stop in
+  # internal/planecontrol, which is the SAME local mechanism the CLI, the TUI, the desktop app and
+  # scripts/container.sh call. There is no lifecycle RPC; nothing here composes one.
   #
-  # This used to run `serve --stop` and swallow ANY non-zero exit as "no detached host plane running". That
-  # conflated three different outcomes — nothing was running, the stop succeeded, and THE PROCESS REFUSED TO
-  # DIE — and the third one is the dangerous one. A surviving plane keeps the port, so the next start loses
-  # the race and the OLD binary keeps serving; every command in the chain still reports success, and the
-  # operator is left believing they are on new code. Their report: "I did that and the serve was still
-  # running and I had to do a kill -9 on the PIDs... I have run into this problem a few times now where I
-  # thought I was on the newest code but was still running a stale binary."
-  #
-  # `serve --stop` now waits, escalates to SIGKILL, and exits non-zero whenever a process survives. So its
-  # exit code is `down`'s exit code: nothing-running is a WARNING (it is a legitimate no-op), a survivor is
-  # an ERROR that must halt whatever asked for the stop.
-  local stop_rc=0
-  env -u ORCHICON_CONTAINER_MODE ${envargs[@]+"${envargs[@]}"} "$bin" serve --stop || stop_rc=$?
-  case "$stop_rc" in
-    0) : ;;
-    *)
-      # Distinguish "there was nothing to stop" from "a plane would not stop". `serve --status` answers from
-      # the SAME PID file the stop resolved, so a live process there means the stop genuinely failed.
-      if env -u ORCHICON_CONTAINER_MODE ${envargs[@]+"${envargs[@]}"} "$bin" serve --status >/dev/null 2>&1; then
-        log_err "$inst host plane is STILL RUNNING after serve --stop — refusing to report the instance as down."
-        log_err "  A surviving plane keeps the port, so the next start would lose the race and keep serving"
-        log_err "  the OLD binary. Check $inst's logs, stop it manually, then retry."
-        return 1
-      fi
-      log_dim "no detached host plane running for $inst"
-      ;;
-  esac
+  # The three outcomes this caller must tell apart — nothing was running, the stop succeeded, and THE
+  # PROCESS REFUSED TO DIE — are decided THERE, by the one owner of the PID file, because the third one is
+  # the dangerous one: a surviving plane keeps the port, so the next start loses the race and the OLD binary
+  # keeps serving while every command in the chain reports success. `plane stop` therefore treats
+  # nothing-running as a graceful no-op and exits NON-ZERO when a process survives, so its exit code is
+  # `down`'s exit code. The bash bodies that used to do this here (and in container.sh, where this function
+  # lived before) are DELETED rather than kept as a "fallback": a second copy is the drift the delegation
+  # exists to remove.
+  ORCHICON_INSTANCE="$inst" "$bin" plane stop
+  return $?
 }
 
 # stop_runtime_daemon removes every runtime container owned by ONE

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -79,7 +78,7 @@ func runRestart(args []string, log *slog.Logger) error {
 		}
 	} else {
 		fmt.Printf("instance %s is container-resident: restarting container %s\n", instance, name)
-		if out, err := exec.Command("docker", "restart", name).CombinedOutput(); err != nil {
+		if out, err := engineCommand("restart", name).CombinedOutput(); err != nil {
 			return fmt.Errorf("restart %s: %v: %s", name, err, strings.TrimSpace(string(out)))
 		}
 	}

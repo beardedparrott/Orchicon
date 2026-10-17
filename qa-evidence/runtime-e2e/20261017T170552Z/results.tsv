@@ -1,0 +1,9 @@
+assertion	verdict	evidence
+offline honesty gate (91 assertions)	PASS	00-offline-honesty-gate.log
+preflight exits 2 on a host with the instance ports held (validity contract)	PASS	01-preflight-ports-held.log
+preflight passes on a free-port engine-free host (positive path, not only the abort)	PASS	02-preflight-free-ports.log
+step 4 pristine-reset probe: pristine container -> 4 PASS, 0 defects	PASS	03-stub-engine-sim.log
+step 4 pristine-reset probe: leaked state -> defect row (the assertion discriminates)	PASS	03-stub-engine-sim.log
+step 8 absence needle: no new container -> no needle, 0 defects	PASS	03-stub-engine-sim.log
+step 8 absence needle: new container -> needle written + defect row	PASS	03-stub-engine-sim.log
+real session steps 1-8 on a provisioned engine host	UNPROVEN	(no container engine and no root in this runtime container)
