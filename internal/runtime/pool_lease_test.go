@@ -50,6 +50,12 @@ func newLeaseTestPool(t *testing.T) (*Daemon, *daemonPool, func(runID string) Cr
 			if len(args) >= 3 && args[0] == "inspect" && args[2] == "{{.State.Running}}" {
 				return "true", nil
 			}
+			// The removal primitive polls `inspect {{.Id}}` for the engine to
+			// release the name (d.removeContainer); "" = not present, so the poll
+			// costs one tick. Stated, not incidental.
+			if len(args) >= 3 && args[0] == "inspect" && args[2] == "{{.Id}}" {
+				return "", nil
+			}
 			return "", nil
 		},
 		createFn: func(name string, req CreateRequest) (*CreateResponse, error) {
