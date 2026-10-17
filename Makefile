@@ -622,7 +622,7 @@ docs-check: ## Validate every Mermaid diagram in the root docs with a real parse
 # --- Single container (deployment) -----------------------------------------
 # The single container is the only full-stack deployment (dev + prod as two
 # instances on offset ports). See scripts/container.sh.
-.PHONY: container-build container-rebuild container-up container-down container-status container-logs container-ps runtime-build runtime-daemon runtime-stop
+.PHONY: container-build container-rebuild container-up container-down container-status container-logs container-ps plane-status plane-start plane-stop plane-restart runtime-build runtime-daemon runtime-stop
 # Plane residency per rebuild: `host` (the container runs the SERVICES only and
 # the plane runs on the HOST — now the product's default shape; see
 # residency_for in scripts/container.sh, which resolves ${...:-host}) or
@@ -674,6 +674,19 @@ container-logs: ## Tail the dev container instance logs
 	scripts/container.sh logs dev
 container-ps: ## List orchicon container instances
 	scripts/container.sh ps
+
+# --- Plane lifecycle (one local mechanism) ---------------------------------
+# These invoke `orchicon plane` — the SAME local mechanism the TUI, the desktop app and
+# scripts/container.sh call, implemented once in internal/planecontrol. There is no lifecycle RPC:
+# every one of these surfaces runs on the same host as the plane and can spawn a process.
+plane-status: bin/orchicon ## Show the instance's plane: PID, serving BINARY, drift, health
+	$(BIN_DIR)/orchicon plane status $(instance)
+plane-start: bin/orchicon ## Start the instance's host plane (idempotent)
+	$(BIN_DIR)/orchicon plane start $(instance)
+plane-stop: bin/orchicon ## Stop the instance's host plane (graceful, bounded, verified)
+	$(BIN_DIR)/orchicon plane stop $(instance)
+plane-restart: bin/orchicon ## Restart the instance's host plane so it re-reads its environment
+	$(BIN_DIR)/orchicon plane restart $(instance)
 
 # --- Full rebuild (one command) --------------------------------------------
 # A single command that runs everything needed before/for an instance rebuild:

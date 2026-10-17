@@ -575,8 +575,21 @@ func TestInstallHostHasNoDockerInvocation(t *testing.T) {
 		}
 	}
 	// The engine probe is a PATH LOOKUP, not an engine call — the one permitted naming of the binary.
-	if !strings.Contains(body, `exec.LookPath("docker")`) {
-		t.Errorf("the engine probe must be a LookPath (no engine call):\n%s", body)
+	//
+	// THE PROBE MOVED WITH THE CODE. The lifecycle layer now lives in internal/planecontrol (a `package main`
+	// cannot be imported, so the TUI and the desktop app could not reach it), and containerEngineAvailable
+	// moved with it. The property is unchanged, so the assertion follows it to its one home rather than
+	// pinning it to the file it used to be in.
+	shared, err := os.ReadFile(filepath.Join("..", "..", "internal", "planecontrol", "env.go"))
+	if err != nil {
+		t.Fatalf("read internal/planecontrol/env.go: %v", err)
+	}
+	if !strings.Contains(string(shared), `exec.LookPath("docker")`) {
+		t.Errorf("the engine probe must be a LookPath (no engine call), in internal/planecontrol/env.go:\n%s", shared)
+	}
+	if strings.Contains(body, `exec.LookPath("docker")`) {
+		t.Errorf("install_host.go must not keep a second copy of the engine probe — it lives in " +
+			"internal/planecontrol/env.go")
 	}
 	// ...and the two symbols the item retires are gone from the whole package, not merely unused here.
 	files, err := filepath.Glob("*.go")

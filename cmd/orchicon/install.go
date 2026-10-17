@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -459,51 +458,6 @@ func writeResolvedPorts(instance string, ports map[string]int) {
 	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
 		fmt.Printf("warning: could not record the resolved ports: %v\n", err)
 	}
-}
-
-// readResolvedPorts reads back the ports an install recorded (writeResolvedPorts).
-//
-// THE RECORD IS THE POINT OF THE RECORD. A later command must be able to act on what was ACTUALLY
-// bound without re-resolving, because re-resolving ASKS QUESTIONS — resolveInstallPorts prompts on a
-// terminal when the spec is ambiguous — and a command that restarts existing work must never ask
-// anything. This is the reader the writer was added for; until now the file was read only by humans
-// and by a shell one-liner.
-func readResolvedPorts(instance string) (map[string]int, error) {
-	bin := filepath.Base(os.Args[0])
-	path, err := resolvedPortsFile(instance)
-	if err != nil {
-		return nil, fmt.Errorf("locate the port record for %s: %w", instance, err)
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			// No record: either the instance predates the record or was never installed. The remedy
-			// is stated rather than guessed — re-resolving here would prompt, which is the thing this
-			// must not do.
-			return nil, fmt.Errorf("no port record at %s — this instance predates it, or was never installed.\n"+
-				"  Re-run `%s install` once to record the ports it bound; it is idempotent and leaves a running instance alone.",
-				path, bin)
-		}
-		return nil, fmt.Errorf("read the port record %s: %w", path, err)
-	}
-	ports := make(map[string]int)
-	if err := json.Unmarshal(b, &ports); err != nil {
-		return nil, fmt.Errorf("parse the port record %s: %w", path, err)
-	}
-	if len(ports) == 0 {
-		return nil, fmt.Errorf("the port record at %s is empty — re-run `%s install` to rewrite it", path, bin)
-	}
-	return ports, nil
-}
-
-// hostDataDirFor is hostDataDir for callers that cannot fail usefully: it returns a best-effort path when
-// the home directory cannot be resolved, which happens only where the repair is moot.
-func hostDataDirFor(instance string) string {
-	d, err := hostDataDir(instance)
-	if err != nil {
-		return filepath.Join(os.TempDir(), "orchicon-"+instance)
-	}
-	return d
 }
 
 // defaultInstallDir returns the default launcher install directory

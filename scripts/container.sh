@@ -408,6 +408,12 @@ plane_start() {
     log_err "  build it first (make build) or set ORCHICON_HOST_BIN"
     return 1
   fi
+  # ONE IMPLEMENTATION: `orchicon plane start` (internal/planecontrol). This local mechanism is what the TUI,
+  # the desktop app and the CLI call — there is no lifecycle RPC, because every one of those surfaces runs on
+  # the same host as the plane. The bash body below is kept as the documented FALLBACK for a checkout with no
+  # built binary, so a fix to the lifecycle (the planeUnknown fail-safe, the bounded stop) lands in ONE place.
+  ORCHICON_INSTANCE="$inst" "$bin" plane start
+  return $?
   if curl -fs "http://localhost:$PLANE_HTTP_PORT/healthz" >/dev/null 2>&1; then
     # A PLANE THAT ANSWERS IS NOT NECESSARILY THE PLANE WE JUST BUILT.
     #
@@ -491,6 +497,10 @@ plane_stop() {
     log_dim "host plane binary missing ($bin) — nothing to stop"
     return 0
   fi
+  # ONE IMPLEMENTATION: `orchicon plane stop` — the graceful, BOUNDED, verified stop in
+  # internal/planecontrol. The bash body below is the documented fallback for a checkout with no binary.
+  ORCHICON_INSTANCE="$inst" "$bin" plane stop
+  return $?
   local envargs=()
   local kv
   while IFS= read -r kv; do
@@ -537,6 +547,10 @@ plane_status() {
     log_dim "host plane binary missing ($bin) — no host plane can be running"
     return 1
   fi
+  # ONE IMPLEMENTATION: `orchicon plane status` — instance, PID, the BINARY serving, drift and health.
+  # The bash body below is the documented fallback for a checkout with no binary.
+  ORCHICON_INSTANCE="$inst" "$bin" plane status
+  return $?
   local envargs=()
   local kv
   while IFS= read -r kv; do

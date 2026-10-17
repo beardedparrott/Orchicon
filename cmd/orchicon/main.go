@@ -75,6 +75,10 @@ func main() {
 			os.Exit(exitOnErr(runInstall(os.Args[2:], log)))
 		case "restart":
 			os.Exit(exitOnErr(runRestart(os.Args[2:], log)))
+		case "plane":
+			// THE shared local plane-control mechanism (internal/planecontrol): status | start | stop | restart.
+			// Local process invocation only — no lifecycle RPC exists, and none is added here.
+			os.Exit(exitOnErr(runPlane(os.Args[2:])))
 		case "services":
 			os.Exit(runServices(os.Args[2:]))
 		case "version", "--version", "-v":
@@ -285,6 +289,9 @@ func printHelp() {
 			"Restart the instance so its components re-read their environment.",
 			"Use this after installing an adapter CLI or changing PATH: a plane inherits its",
 			"environment when it STARTS, so `install` alone will not refresh it."}},
+		{cmd: bin + " plane", desc: []string{
+			"status | start | stop | restart one instance's plane (the same local mechanism the",
+			"TUI and the desktop app call; `scripts/orchicon.sh` delegates to it too)."}},
 		{cmd: bin + " services", desc: []string{
 			"Start/stop this instance's Postgres + NATS on the HOST (no container engine needed).",
 			"services up | down | status — the local backend `make run` and `make migrate` use.",
