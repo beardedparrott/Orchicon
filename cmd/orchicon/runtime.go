@@ -75,6 +75,12 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 	// install command (runtime.ResolveEngine's error) rather than surfacing later
 	// as a bare `exec: "podman": executable file not found in $PATH` on the first
 	// container create — or, worse, as a container that never becomes ready.
+	//
+	// This supersedes the earlier "resolve, don't assume `docker`" fix from the
+	// Podman-provisioning branch: the engine is still resolved rather than
+	// assumed, but the resolution now lives in internal/runtime (the seam the
+	// daemon and the scheduler share), so a missing engine is reported as the
+	// operator-facing install problem it is instead of a silent fallback.
 	eng, err := runtime.ResolveEngineFromEnv()
 	if err != nil {
 		return err

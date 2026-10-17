@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
 // These tests cover the two changes that make `orchicon install` legible while it
@@ -73,7 +75,7 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 		return captureStdout(t, func() {
 			printInstallInfo("dev", residencyContainer, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
 				"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
-				"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, false, healthy)
+				"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, false, healthy, containerengine.Status{})
 		})
 	}
 
@@ -121,6 +123,10 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 // the environment has NO engine on PATH, so a re-probe answers the opposite. The summary must follow the
 // threaded decision (services in the instance container), never the re-probe (host processes of this user).
 func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
+	// The disagreement is pinned, not inferred: an empty PATH alone still leaves the engine the
+	// detector finds in a conventional location (a CI runner's /usr/bin/docker), and then the
+	// re-probe would agree with the install and prove nothing.
+	t.Setenv(containerengine.EnginePinEnv, string(containerengine.EngineNone))
 	t.Setenv("PATH", t.TempDir()) // no engine: a re-probe would answer "no containers"
 	if containerEngineAvailable() {
 		t.Fatal("the fixture needs an empty PATH to make the re-probe disagree")
@@ -130,7 +136,7 @@ func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
 		// residencyHost with containersUsed=true: a host plane whose services run in the instance container.
 		printInstallInfo("dev", residencyHost, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
 			"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
-			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, true, true)
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, true, true, containerengine.Status{})
 	})
 	if !strings.Contains(out, "the services run in orchicon-cnt-dev") {
 		t.Errorf("the summary must report the install's decision (services in the container); got:\n%s", out)
@@ -158,7 +164,7 @@ func TestPrintInstallInfoIsHonestAboutTheNoEngineShape(t *testing.T) {
 	noEngine := captureStdout(t, func() {
 		printInstallInfo("test", residencyHost, "orchicon-cnt-test", "orchicon-cnt-test-data",
 			"/tmp/orchicon-runtime", "http://localhost:8092/healthz",
-			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, false, true)
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, false, true, containerengine.Status{})
 	})
 	if strings.Contains(noEngine, "short-lived container") {
 		t.Errorf("a no-engine install must NOT promise a per-workflow runtime container it cannot launch:\n%s", noEngine)
@@ -179,7 +185,7 @@ func TestPrintInstallInfoIsHonestAboutTheNoEngineShape(t *testing.T) {
 	withEngine := captureStdout(t, func() {
 		printInstallInfo("dev", residencyHost, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
 			"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
-			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, true, true)
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, true, true, containerengine.Status{})
 	})
 	if !strings.Contains(withEngine, "short-lived container") {
 		t.Errorf("an engine-backed install must still describe the runtime container carrier:\n%s", withEngine)

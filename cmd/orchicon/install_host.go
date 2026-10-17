@@ -27,6 +27,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
 // residencyRecordFile is the per-instance record of the plane's SHAPE, written next to the other install
@@ -103,9 +105,14 @@ const runtimeContainersEnv = "ORCHICON_RUNTIME_CONTAINERS"
 // fail for a dozen reasons that have nothing to do with whether the binary exists, and a machine with no
 // Docker must be able to answer "no" without an error. The daemon check happens later, in install.go, and
 // ONLY when this returns true — so a host with no engine never runs a doomed `docker version`.
+//
+// It DELEGATES to internal/containerengine, which owns the search order (podman first, then
+// docker, plus the platform's conventional install locations) so this installer and the
+// control plane's /enginez report the same engine under the same rules. Still a PATH/stat
+// probe and never an engine call — the reason above still holds.
 func containerEngineAvailable() bool {
-	_, err := exec.LookPath("docker")
-	return err == nil
+	e, err := containerengine.Detect(containerengine.DefaultProbe())
+	return err == nil && e.Name != containerengine.EngineNone
 }
 
 // runtimeContainersInUse reports whether this install should assume runtime containers. Order:

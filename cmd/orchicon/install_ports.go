@@ -30,7 +30,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -341,7 +340,7 @@ func parseInstancePorts(raw []byte, specs []installPort) (map[string]int, bool) 
 // constraint container.sh's plane_status already has, since it too probes the
 // port it just resolved.
 func runningInstancePorts(name string, specs []installPort) (map[string]int, bool) {
-	out, err := exec.Command("docker", "inspect",
+	out, err := engineCommand("inspect",
 		"--format", "{{json .NetworkSettings.Ports}}", name).Output()
 	if err != nil {
 		return nil, false

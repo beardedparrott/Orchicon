@@ -1,4 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { EngineAvailability } from "@/components/EngineAvailability";
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
@@ -226,6 +227,9 @@ function NewProjectPage() {
                   <option value="runtime">runtime — always-container (default)</option>
                   <option value="local">local — in-process (fenced)</option>
                 </select>
+                {/* Containers are what "runtime" MEANS — say whether they are available, and
+                    why not, right where the choice is made (AC5). */}
+                <EngineAvailability />
               </div>
             </div>
 
