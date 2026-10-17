@@ -1030,9 +1030,11 @@ The control plane runs as a **host process** by default, while the same instance
 **`orchicon install` resolves the same question, and it can PROMPT.** The one-command installer asks for
 residency before it pulls anything (a pull can take minutes, and no operator should be asked a question
 after waiting for it), then resolves every published port. `ORCHICON_PLANE_RESIDENCY` and
-`ORCHICON_INSTANCE` both apply. The installer and the launcher agree by construction — the port table is
-shared and a test asserts the two agree (`TestInstallPortDefaultsMatchContainerScript`), so an instance's
-ports do not depend on which entry point created it.
+`ORCHICON_INSTANCE` both apply. The installer and the launcher agree by construction — the port table has
+ONE home per side, `scripts/lib/instances.sh` (shell: `ORCHICON_INSTANCES` + `instance_info`) and
+`instanceOrder`/`installerPorts()` in `cmd/orchicon/install_ports.go` (Go), and the cross-language gate
+`TestInstallPortDefaultsMatchShellInstanceTable` asserts the two define the SAME SET of instances in both
+directions — so an instance's ports do not depend on which entry point created it.
 
 #### The inner loop with no container: `make services`
 
@@ -1122,6 +1124,18 @@ scripts/container.sh plane-start dev  # start it again — no container restart
 ```
 
 **Migration rule:** dev and prod migrate independently and coexist in different shapes; a rebuild of one instance must never alter the other's. `scripts/container.sh verify <inst>` is the check.
+
+**Teardown is an instance-scoped verb, and it is destructive-and-confirmed.** `scripts/orchicon.sh
+uninstall <dev|prod|test> --yes` (or `ORCHICON_CONFIRM_DESTROY=1`) removes ONE instance — its host plane,
+its container, its data volume, its host data dir and its labelled runtime containers — and nothing else:
+a dev teardown never reaches prod's or test's row of the instance table. It prints exactly what it will
+remove BEFORE asking, refuses without confirmation, clears the root-owned remainder through a helper
+container (a bare `rm -rf` fails on it and, under `set -e`, aborted the teardown AFTER the container and
+volume were gone — leaving the job half-done and the operator wrongly told it failed), and deliberately
+does NOT remove dev/prod's `PG_VOLUME`: that is a legacy compose volume predating the single-container
+layout and may hold data this instance never owned. The body lives in `scripts/lib/teardown.sh`, and it
+drives whichever engine `scripts/lib/engine.sh` resolves (docker or podman). `make rebuild-test`'s
+throwaway instance is torn down with exactly this command.
 
 **Measured footprint** (single container, this stack): full telemetry ≈ **384 MiB** resident; `ORCHICON_TELEMETRY=none` ≈ **96 MiB** — vs ~2.7 GB for the ClickHouse-era compose stack.
 

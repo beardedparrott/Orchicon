@@ -187,7 +187,7 @@ tasks are in the `Makefile` (`make help`).
 ```bash
 make container-build          # build bin/orchicon + the container image
 make container-up             # start the dev instance on :8080 (:3002 Grafana)
-# or: scripts/container.sh up dev
+# or: scripts/orchicon.sh start dev
 curl http://localhost:8080/healthz   # {"status":"ok"}
 ```
 

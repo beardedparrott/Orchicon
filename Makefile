@@ -194,6 +194,20 @@ BUF_BIN     = $(if $(wildcard $(BIN_DIR)/buf),$(BIN_DIR)/buf,buf)
 # this one was on the same filesystem an `rm` emptied. Prefer our own copies, then PATH.
 ATLAS_BIN   = $(if $(wildcard $(BIN_DIR)/atlas),$(BIN_DIR)/atlas,$(if $(wildcard $(DEV_TOOLS)/bin/atlas),$(DEV_TOOLS)/bin/atlas,atlas))
 
+# ENGINE is the container engine every hygiene/teardown recipe drives (docker or
+# podman). It resolves through scripts/lib/engine.sh — the ONE resolver the shell
+# libs also use — so `make clean-docker` and `scripts/orchicon.sh uninstall`
+# cannot disagree about which engine they are pruning with. The lib is SOURCED
+# (it defines a function, it is not an executable), so make dots it into one
+# POSIX shell and asks engine_cmd; `engine_available` is the same call. Recursive `=` on
+# purpose: it resolves per invocation, so a newly installed podman is picked up
+# without a fresh `make`. Empty when neither engine is installed, which
+# clean-docker treats as a LOUD SKIP (hygiene must not fail a build).
+# ORCHICON_ENGINE pins it (make ORCHICON_ENGINE=podman clean-docker, or the env var —
+# make does not put a command-line variable in $(shell)'s environment, so it is checked
+# as a make variable FIRST and the resolver second).
+ENGINE      = $(if $(ORCHICON_ENGINE),$(ORCHICON_ENGINE),$(shell . scripts/lib/engine.sh 2>/dev/null && engine_cmd))
+
 .PHONY: toolchain
 toolchain: ## Show the Go toolchain + env this Makefile will build with
 	@echo "GO       = $(GO)"
@@ -333,12 +347,13 @@ clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygien
 	@rm -f $(BIN_DIR)/orchicon
 	@rm -f $(BIN_DIR)/orch
 	@rm -f $(BIN_DIR)/atlas-ci
-	# Stale copies of the binary dropped into the container/runtime build
-	# contexts by older scripts. The runtime image no longer bakes the
-	# binary (the daemon bind-mounts its own executable), so a leftover
-	# deploy/runtime/orchicon would only bloat the build context -- remove
-	# both here so a heavy dev session never leaves them behind.
-	@rm -f deploy/container/orchicon deploy/runtime/orchicon
+	# Stale copies of the binary that older scripts dropped into the runtime
+	# build context. The runtime image no longer bakes the binary (the daemon
+	# bind-mounts its own executable), so a leftover deploy/runtime/orchicon
+	# would only bloat that context -- removed here so a heavy dev session never
+	# leaves one behind. deploy/container/ no longer exists (the single container
+	# is gone), so there is no second copy to sweep.
+	@rm -f deploy/runtime/orchicon deploy/runtime/orch
 
 # cache-trim bounds the Go build cache by SIZE, evicting the coldest entries first.
 #
@@ -390,7 +405,14 @@ cache-check: ## Show the Go build cache size against the trim cap
 	  echo "within cap"; \
 	fi
 
-# clean-docker reclaims disk from ORCHICON's own Docker build leftovers, and nothing else.
+# clean-docker reclaims disk from ORCHICON's own container-engine build leftovers, and nothing else.
+#
+# IT IS ENGINE-AWARE, NOT ENGINE-LOYAL. Every recipe line below drives $(ENGINE)
+# (docker or podman, resolved by scripts/lib/engine.sh) because this project now
+# runs on either. Podman's `container prune`/`image prune` are the same operations
+# with the same filters, so the scoping story is unchanged -- but it has to be
+# re-stated for podman, because the incident below is not a docker bug: it is a
+# property of HOST-WIDE prunes, and podman has them too.
 #
 # EVERY PRUNE HERE IS SCOPED TO WHAT THIS PROJECT OWNS, which the first version of this target was
 # not. It ran `docker container prune -f` and `docker volume prune -f` — both HOST-WIDE. On a machine
@@ -410,10 +432,18 @@ cache-check: ## Show the Go build cache size against the trim cap
 #   volumes     GONE, deliberately. There is no filter that makes this ours: we create no labelled
 #               volumes, so any predicate would be a guess about someone else's data. An operator who
 #               wants a host-wide volume prune can run it themselves, knowing what it does.
+#
+# PODMAN'S `volume prune` IS THE SAME HOST-WIDE OPERATION with the same absence of an ownership
+# filter, so the refusal applies to both engines and is not a docker-only scruple. Do not "fix" this
+# by adding a label filter to the volume prune: we do not label the volumes we create, so such a
+# filter would either match nothing (a lie that looks like a fix) or match someone else's volume by
+# accident. The one engine-level asymmetry worth knowing: podman also keeps build-cache and pod
+# namespaces, and pruning those is likewise host-wide -- so they are not pruned here either.
 .PHONY: clean-docker
-clean-docker: ## Prune Orchicon's dangling images and stopped containers (never volumes)
-	@docker image prune -f --filter "dangling=true"
-	@docker container prune -f --filter "label=orchicon-instance"
+clean-docker: ## Prune Orchicon's dangling images and stopped containers, never volumes (docker or podman)
+	@test -n "$(ENGINE)" || { echo "==> no container engine found (docker/podman) — nothing to prune"; exit 0; }
+	@$(ENGINE) image prune -f --filter "dangling=true"
+	@$(ENGINE) container prune -f --filter "label=orchicon-instance"
 
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check synth-data
@@ -732,7 +762,9 @@ rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD ins
 
 # rebuild-test mirrors the other two, minus the launcher: a throwaway instance
 # exists to be rebuilt and torn down repeatedly, and it needs no dedicated TUI
-# client. Teardown is `scripts/container.sh uninstall test --yes`.
+# client (that is why there is deliberately no `make orch-launcher-test` below —
+# a throwaway is reached by running it, not by holding a TUI client pinned to it).
+# Teardown is `scripts/orchicon.sh uninstall test --yes`.
 rebuild-test: residency = host
 rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST instance (plane residency: host)
 	$(MAKE) full-rebuild instance=test residency=$(residency)
@@ -747,6 +779,13 @@ rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST ins
 # prod have separate identity stores, so one config token cannot serve
 # both). Wrappers are generated only if absent (never overwritten) and
 # chmod 600.
+#
+# NO `test` LAUNCHER, DELIBERATELY. The dev/prod split exists because an operator
+# holds two LONG-LIVED instances at different vintages; the `test` instance is a
+# throwaway that exists to be rebuilt and torn down (see rebuild-test above), so
+# it needs no dedicated TUI client and gets no wrapper here. It is still a first
+# class instance everywhere else: it has its own port column, data dir and
+# database in scripts/lib/instances.sh, and `make rebuild-test` drives it.
 LAUNCHER_DIR ?= $(HOME)/.local/bin
 .PHONY: orch-launchers orch-launcher-dev orch-launcher-prod
 orch-launchers: ## Install/refresh the dual orch launchers into ~/.local/bin (orch + orch-prod + wrappers)
