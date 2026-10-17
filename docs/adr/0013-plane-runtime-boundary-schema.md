@@ -703,7 +703,7 @@ the deliverable, and the implementer works from §12.
 | 5 — image gate + mount restriction preserved with purpose | §4 D3.1 (mount-source restriction, purpose stated), §7 D6.1 (image gate, purpose stated), §7 D6.2 (format-string pin) |
 | 6 — pristine reset mechanism + blocking findings | §6 (mechanism + hard no-named-volumes rule + D5.2 retry wording), §9 BF-2/BF-3 |
 | 7 — host-input fingerprint restated | §8 (role + mandatory `engine=`/`shape=` terms) |
-| 8 — tests reviewed, changes enumerated before engine work | §10 (per-test verdicts, ten must-change functions, three new) + §13 audit + §15 review/QA passes |
+| 8 — tests reviewed, changes enumerated before engine work | §10 (per-test verdicts, twelve must-change functions, three new) + §13 audit + §15 review/QA passes |
 | 9 — no engine code | §0 non-goal; verified on the branch (`docs/` only) — §13 scope check |
 
 ---
