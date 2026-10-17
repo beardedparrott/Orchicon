@@ -1,0 +1,16 @@
+# what the developer had to do INSTEAD to see the plane's activity
+# (evidence, not a pass): the tail of make run's stdout from step 1
+ORCHICON_TELEMETRY=none go run -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitCommit=1a2a09392 -X github.com/beardedparrott/orchicon/internal/version.gitTag=v0.5.56 -X github.com/beardedparrott/orchicon/internal/version.buildDate=2026-10-17T05:31:21Z" ./cmd/orchicon services up dev
+host services for dev are already ready — leaving them running
+waiting for dev services (postgres 127.0.0.1:15432, nats monitor 127.0.0.1:8222) …
+dev services ready (postgres 127.0.0.1:15432, nats monitor 127.0.0.1:8222)
+services for dev are up. DSN: postgres://orchicon:orchicon@localhost:15432/orchicon?sslmode=disable
+==> building frontend bundle
+npm error code ENOSPC
+npm error syscall write
+npm error errno -28
+npm error nospc ENOSPC: no space left on device, write
+npm error nospc There appears to be insufficient space on your system to finish.
+npm error nospc Clear up some disk space and try again.
+npm error A complete log of this run can be found in: /home/beardedparrott/.npm/_logs/2026-10-17T05_31_23_169Z-debug-0.log
+make: *** [Makefile:575: fe-build] Error 228

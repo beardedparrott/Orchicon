@@ -1,0 +1,13 @@
+=== A. status (no engine on host) ===
+[1mOrchicon container instances[0m
+/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M544QJBKJ7BWX5HCMVRJHD4C/scripts/container.sh: line 1616: docker: command not found
+/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M544QJBKJ7BWX5HCMVRJHD4C/scripts/container.sh: line 1620: docker: command not found
+  dev: [31mnot created[0m [2mplane:host[0m
+[31m✗[0m cannot resolve the docker bridge address (docker network inspect bridge / docker0)
+[31m✗[0m pin it explicitly with ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip>; refusing to guess or bind 0.0.0.0
+[31m✗[0m dev: cannot resolve the docker bridge — the host plane would bind its loopback address ONLY,
+[31m✗[0m   and its run containers could not reach it. Pin the address and retry:
+[31m✗[0m   ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip> /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M544QJBKJ7BWX5HCMVRJHD4C/scripts/container.sh plane-start dev
+serve is not running
+[32m✓[0m dev host plane healthy at http://localhost:8080
+rc=0

@@ -1,147 +1,189 @@
 # QA report — no-container-engine developer session (acceptance)
 
-Status: **template — the QA step executes the run and fills every `_TODO_` below.**
+Status: **RUN PARTIALLY BLOCKED by the QA runtime's disk budget — defects D1/D2/D3/D4 observed
+live and filed; steps requiring a cold build could not execute.** Not a template any more: every
+statement below is copied from an evidence file in `qa-evidence/no-engine-e2e/`.
+
 Procedure: [`docs/no-engine-e2e-acceptance.md`](docs/no-engine-e2e-acceptance.md).
 Harness: [`scripts/no-engine-e2e.sh`](scripts/no-engine-e2e.sh).
 
-This report is the evidence half of the acceptance criteria. It is filled **from the
-harness's own evidence files only** (`results.tsv`, `defects.tsv`, the per-step logs and the
-independent captures), never from recollection and never from what a script claimed about
-itself. This feature **files** defects; it does not patch a sibling's code (AC11).
+Evidence directories for this QA pass:
+
+| dir | what it is |
+|---|---|
+| `qa-evidence/no-engine-e2e/20261017T053116Z/` | harness run #1 — **INVALID**: the cold build hit `ENOSPC`, so its FAILs are environment cascade, *not* defects |
+| `qa-evidence/no-engine-e2e/run2/` | harness run #2 (GOCACHE/GOTMPDIR relocated to `/tmp`) — same `ENOSPC` on `go build` |
+| `qa-evidence/no-engine-e2e/observed-no-engine/` | **the decisive evidence**: the no-engine defects reproduced directly, with no build in the way |
 
 ## 1. Verdict
 
-One line per acceptance criterion. `evidence` names the file under
-`qa-evidence/no-engine-e2e/<UTC>/` that proves it.
-
 | AC | Criterion | Verdict | Evidence |
 |---|---|---|---|
-| 1 | Every documented step works on a clean checkout with no container engine | _TODO_ | `00-preflight.log` (engine-absence), `step-1.log` … `step-9.log` |
-| 2 | `make run` works against locally-started services; `make migrate` / `make rls-check` work against them | _TODO_ | `step-1.log`, `01-healthz.txt`, `02-migrate.log`, `02-migrate-idempotent.log`, `02-rls.log` |
-| 3 | A code change is verifiably live after the documented rebuild path; the stale-`dist` mode does not occur | _TODO_ | `04-served-bundle-after.txt` (marker present), `04-served-bundle-stale-control.txt` (marker absent), `04-served-bundle-force-fe.txt` |
-| 4 | Status reports real state (instance, up/down, healthy) and never claims unverified health | _TODO_ | `05-status-script.txt` beside `05-status-groundtruth.txt` |
-| 5 | Logs are reachable through the documented command | _TODO_ | `06-logs.txt`, `06-plane-log.txt`, `06-workaround-run-log-tail.txt` |
-| 6 | Two instances coexist and are independently controllable | _TODO_ | `step-7.log`, `07-prod-run.log`, both `/healthz` codes in `step-7.log` |
-| 7 | Cleanup prunes only Orchicon's artifacts and is a safe no-op otherwise | _TODO_ | `step-8.log`, `08-share-before.txt`, `08-share-after.txt`, sentinel check |
-| 8 | Stopping leaves no orphaned service process | _TODO_ | `09-ports.txt`, `09-services-status.txt` |
-| 9 | At no point is a container command (or source reading) needed to know what is running | _TODO_ | `10-blindspots.md` |
-| 10 | Evidence is attached (commands, output, `/healthz`, process state, the live UI change) | _TODO_ | the whole evidence directory |
-| 11 | Any failure is filed as a defect against the owning sibling task, not patched here | _TODO_ | `defects.tsv` → issues (list the issue numbers) |
+| 1 | Every documented step works on a clean checkout with no container engine | **BLOCKED** — the QA container cannot build (2×2 GB tmpfs, see §2); not a verdict on the feature | `20261017T053116Z/step-1.log`, `run2/step-1.log` |
+| 2 | `make run` against locally-started services; `make migrate`/`make rls-check` against them | **PARTIAL** — `make services` proven engine-free; migrate/rls unreachable (no binaries) | `20261017T053116Z/step-1.log` (`dev services ready`), `/proc/net/tcp` check |
+| 3 | A code change is verifiably live after the rebuild path; stale-`dist` mode excluded | **UNPROVEN** — `make build` never succeeded here | `run2/step-1.log` (`ENOSPC`) |
+| 4 | Status reports real state and never claims unverified health | **FAIL (D2)** | `observed-no-engine/A-status.txt` |
+| 5 | Logs reachable through the documented command | **FAIL (D1)** | `observed-no-engine/B-logs.txt` (rc=127, `docker: command not found`) |
+| 6 | Two instances coexist, independently controllable | **UNPROVEN** — needs two planes | — |
+| 7 | Cleanup prunes only Orchicon's artifacts, safe no-op otherwise | **FAIL (D4)** | `observed-no-engine/C-clean-docker.txt` (rc=2 twice) |
+| 8 | Stopping leaves no orphaned service process | **UNPROVEN** — `services-down` needs a built binary | — |
+| 9 | No container command / no source reading needed to know what is running | **FAIL (D1+D2+D3)** — `status` prints two `docker: command not found` lines and `not created`; `logs` exits 127 | `observed-no-engine/` |
+| 10 | Evidence attached | **PARTIAL** — everything above is attached; steps 3-9 have no evidence | this report |
+| 11 | Failures filed against the owning sibling, never patched here | **MET** — D1/D2/D3/D4 filed in §4; no production file touched by this step | `git status` clean outside `qa-evidence/` |
 
-## 2. Environment
+## 2. Environment (why runs #1 and #2 are not evidence)
 
-- Run at: _TODO_ (UTC stamp; matches the evidence directory name)
-- Host / kernel: _TODO_ (from `00-preflight.log`)
-- HEAD sha and branch: _TODO_
-- **No container engine:** _TODO_ (paste the `command -v docker podman nerdctl docker-compose`
-  result from `00-preflight.log` — all four absent is the validity precondition)
-- Ports: `_TODO_` (the instance ports used, and whether overrides were needed because the
-  host already had something bound)
-- Skips: _TODO_ (list every `SKIP` from `results.tsv` with its reason — a SKIP is a gap in
-  the proof, not a pass)
+- Runs at `2026-10-17T05:31Z` and `2026-10-17T05:32Z`, host Linux `9ee83146c36a`
+  (7.2.0-1-cachyos), HEAD `1a2a09392`, branch
+  `e2e-proof-full-developer-session-with-no-container-engine-never-blind-j7bwx5hcmvrjhd4c`.
+- **No container engine — the validity precondition holds:**
+  `command -v docker podman nerdctl docker-compose` printed nothing, and
+  `20261017T053116Z/step-0.log` records
+  `engines: none found (GOOD — this is the claim being proven)`.
+- Ports: the in-container sandbox plane holds 5432/4222/8080, so both runs used the documented
+  overrides — run #1 dev `15432/14222/18080`, prod `15433/14223/18091`; run #2 dev
+  `25432/24222/28080`. Preflight passed its port assertions in both
+  (`the instance ports are free before the session starts` PASS).
+- **The blocker: the QA runtime has `2.0 GB` tmpfs on `$HOME` and `2.0 GB` tmpfs on `/tmp`,
+  and a cold Go+frontend build does not fit in 4 GB combined.** Verbatim:
+  - `make fe-install` → `npm error code ENOSPC … no space left on device, write` (`step-0.log`)
+  - `make build` → `compile: writing output: write $WORK/b657/_pkg_.a: no space left on device`
+    (`run2/step-1.log`)
+  - `make migrate` → `write /home/beardedparrott/.cache/go-build/d2/…: no space left on device`
+    (`20261017T053116Z/step-2.log`)
+  After `go clean -cache` (freed 1.3 GB) and relocating `GOCACHE`, `GOTMPDIR` and the npm cache
+  to `/tmp` (`run2`), the build still hits `ENOSPC`: `GOMODCACHE` is 686 MB and lives on `$HOME`,
+  and a cold `GOCACHE` for this repo alone reached 1.6 GB of `/tmp` before dying.
+  **Every FAIL inside `20261017T053116Z/` and `run2/` is this cascade** (no `bin/`, so no plane,
+  no `/healthz`, no migrate, no served bundle). They are *not* defects and must not be filed —
+  including the misleading `the served bundle is fetchable <- internal/api (SPA serving)`.
+- Skips: one — step 3 `SKIP no client token resolvable (~/.orchicon/config or ORCHICON_TOKEN)`.
+  `$HOME/.orchicon/` does not exist in this container, so the client half was never proven.
 
-## 3. Steps 1-10
+## 3. Steps 1-10 — what was actually observed
 
-For each step: the documented command, an excerpt of what it printed, the **independent**
-evidence that agreed (or disagreed) with it, and the verdict. Copy the excerpt from the
-evidence file; do not paraphrase it.
+### Step 1 — cold start (PARTIAL)
+`make build` **failed on `ENOSPC`**, so `bin/orchicon` and `bin/orch` were absent. But the
+engine-free half that needs no build worked, verbatim from `20261017T053116Z/step-1.log`:
 
-### Step 1 — cold start
-Command: `make build` → `make services` → `make run`
-Observed: _TODO_
-Independent: `GET /healthz` = _TODO_ (`01-healthz.txt`), port owner pid = _TODO_
-Verdict: _TODO_
+```
+starting the host services for dev (postgres, nats, telemetry as processes of this user) …
+dev services ready (postgres 127.0.0.1:15432, nats monitor 127.0.0.1:8222)
+services for dev are up. DSN: postgres://orchicon:orchicon@localhost:15432/orchicon?sslmode=disable
+```
 
-### Step 2 — migrate + rls-check
-Command: `make migrate` (twice), `make rls-check` (with `psql` masked)
-Observed: _TODO_
-Independent: the second migrate was a no-op = _TODO_; the gate printed `RLS gate OK` and not
-`RLS gate SKIPPED` = _TODO_
-Verdict: _TODO_
+Independent evidence (not the script's own report): the harness's `/proc/net/tcp` assertions
+`Postgres is LISTENing on 15432` and `NATS is LISTENing on 14222` both PASS, and the listener
+processes are `/usr/lib/postgresql/15/bin/postgres -D …/.local/share/orchicon-dev/postgres -p 15432`
+and `/usr/local/bin/nats-server -js -sd …/orchicon-dev/nats -p 14222`. **Postgres+NATS for an
+instance really do come up as this user's own processes with no container engine.** The plane,
+`/healthz` and the port owner are UNPROVEN here (they need `bin/orchicon`).
 
-### Step 3 — connect
-Command: `bin/orch --url http://127.0.0.1:_TODO_ --token …` under a PTY
-Observed (screen capture): _TODO_
-Independent: no `dial tcp` / `connection refused` in the capture = _TODO_
-Verdict: _TODO_
+### Step 2 — migrate + rls-check (UNPROVEN)
+Both `make migrate` runs and the shimmed `check-rls.sh` died on `ENOSPC` in the Go build cache
+(`step-2.log`). No `migrations applied OK`, no `RLS gate OK`, no `RLS gate SKIPPED` — the gate
+never got to run, so nothing is claimed either way.
 
-### Step 4 — change and rebuild, verifiably live
-Marker: _TODO_ (from `summary.md`)
-Observed: marker present in the **served** bundle after rebuild = _TODO_
-Adversarial stale-`dist` control: `frontend/dist/index.html` forced 1h into the future; the
-served bundle _TODO_ (correct = the marker is gone)
-Escape hatch: `make build force-fe=1` clears it = _TODO_
-Working tree restored = _TODO_
-Verdict: _TODO_ (AC3)
+### Step 3 — connect (SKIP)
+No `~/.orchicon/config` and no `ORCHICON_TOKEN` in this container → SKIP. A SKIP is a gap, not
+a pass; the client half of the session is unproven on this host.
 
-### Step 5 — state
-Command: `scripts/orchicon.sh status _TODO_inst`
-Observed: _TODO_ (paste `05-status-script.txt`)
-Independent: `05-status-groundtruth.txt` — `/healthz` code, listening ports, socket owners,
-`services status` output = _TODO_
-Verdict: _TODO_ (AC4)
+### Step 4 — change and rebuild (UNPROVEN)
+The harness edited `frontend/src/main.tsx`, and `make build` then failed with
+`npm error code ENOSPC` in `fe-build` (`Makefile:575`), so the served-bundle assertions had no
+plane to read. The marker was restored by teardown (`git status` shows no change to
+`frontend/src/main.tsx`). **AC3 and its stale-`dist` adversarial control are therefore NOT
+verified in this pass** — the run could not reach the point where they mean anything.
 
-### Step 6 — logs
-Command: `timeout 10 scripts/orchicon.sh logs _TODO_inst`
-Observed: _TODO_
-Independent: does the plane log file exist at `~/.local/share/orchicon-<inst>/serve/logs/orchicon.log`
-and does its tail show steps 1-4? _TODO_
-Verdict: _TODO_ (AC5)
+### Step 5 — state (FAIL, D2)
+`scripts/orchicon.sh status dev`, verbatim (`observed-no-engine/A-status.txt`, reproduced
+identically in `20261017T053116Z/05-status-script.txt`):
 
-### Step 7 — two instances
-Commands: prod alongside dev, `make migrate instance=prod`, then stop dev only
-Observed: _TODO_
-Independent: both `/healthz` codes, per-instance ports, distinct DSNs = _TODO_
-Verdict: _TODO_ (AC6)
+```
+Orchicon container instances
+…/scripts/container.sh: line 1616: docker: command not found
+…/scripts/container.sh: line 1620: docker: command not found
+  dev: not created  plane:host
+✗ cannot resolve the docker bridge address (docker network inspect bridge / docker0)
+✗ pin it explicitly with ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip>; refusing to guess or bind 0.0.0.0
+✗ dev: cannot resolve the docker bridge — the host plane would bind its loopback address ONLY,
+…   and its run containers could not reach it. Pin the address and retry:
+serve is not running
+✓ dev host plane healthy at http://localhost:8080
+```
 
-### Step 8 — hygiene
-Commands: `make clean-docker` twice, with a sentinel outside Orchicon's artifacts
-Observed: _TODO_ (exit codes, any prune message)
-Independent: `08-share-before.txt` vs `08-share-after.txt`; sentinel intact = _TODO_
-Verdict: _TODO_ (AC7)
+Three violations of AC4 in one output: (a) it makes a container-derived claim it cannot verify
+(`not created`) on a host with no engine; (b) it never mentions the **services** half, although
+dev Postgres and NATS were up and listening at that moment; (c) its last line claims
+`dev host plane healthy` two lines after `serve is not running` — and it answers on the default
+:8080, which in this container is a *different* plane (the QA sandbox), so the health verdict is
+not tied to the instance whose status is being printed. `exit 0` throughout.
 
-### Step 9 — stop
-Commands: stop both planes, `make services-down` for both instances
-Observed: _TODO_
-Independent: `09-ports.txt` — every instance port free, no orphaned postgres/nats = _TODO_;
-`services status` exit code = _TODO_
-Verdict: _TODO_ (AC8)
+### Step 6 — logs (FAIL, D1)
+`timeout 20 scripts/orchicon.sh logs dev` → **rc=127**, verbatim (`observed-no-engine/B-logs.txt`):
 
-### Step 10 — no blind spots
-Table: see `10-blindspots.md`.
-Any cell knowable only from source or a container command = _TODO_
-Verdict: _TODO_ (AC9)
+```
+…/scripts/container.sh: line 1635: docker: command not found
+```
 
-## 4. Defects
+No log content, no plane log path, nothing a developer could read. AC5 fails outright.
 
-One row per failure. Every row is **filed** (never fixed here) against the sibling task that
-owns the file. The owner `file:line` comes from `defects.tsv`; add the issue number once the
-DevOps step files it.
+### Step 7 — two instances (UNPROVEN)
+Needs two running planes; no plane could be started (`ENOSPC`).
+
+### Step 8 — hygiene (FAIL, D4)
+`make clean-docker` twice, with a sentinel at `~/.local/share/e2e-sentinel`
+(`observed-no-engine/C-clean-docker.txt`):
+
+```
+bash: line 1: docker: command not found
+make: *** [Makefile:415: clean-docker] Error 127
+rc=2
+… (second run identical)
+rc2=2
+/home/beardedparrott/.local/share/e2e-sentinel   # sentinel intact: nothing was pruned
+```
+
+It destroys nothing (the sentinel survives), but it is **not** a clean no-op: it fails twice with
+rc=2 and a bare `docker: command not found`, which is exactly what AC7 forbids. Owner:
+`Makefile:413-416` (the `docker` call is line 415).
+
+### Step 9 — stop (UNPROVEN)
+`make services-down` needs a built binary; not executed. Note for the DevOps step: the two runs
+left host services running on 15432/14222 and 25432/24222 (`/proc/net/tcp`), which is itself a
+live instance of the "next start is confusing" hazard AC8 targets — they are leftovers of the
+killed harness, not a defect, but they must be reaped before a re-run.
+
+### Step 10 — no blind spots (FAIL, D1+D2+D3)
+From the step-5/6/8 output above, the answer to "what is running, and why?" on this host is
+*not* obtainable from a documented command: `status` says `not created` and then `healthy`,
+`logs` exits 127, and the one path that would work (`scripts/orchicon.sh start`) refuses with
+`cannot resolve the docker bridge address … refusing to guess or bind 0.0.0.0`. The developer's
+only remaining route is a container command they do not have, or reading source. AC9 FAIL.
+
+## 4. Defects — confirmed and filed (never patched here, AC11)
 
 | # | Symptom the developer hits | Owning file / sibling | Evidence | Issue |
 |---|---|---|---|---|
-| _TODO_ | _TODO_ | _TODO_ | _TODO_ | _TODO_ |
+| D1 | `scripts/orchicon.sh logs <inst>` exits 127 with `docker: command not found` — no way to read the plane's log without an engine | `scripts/orchicon.sh:101` → `scripts/container.sh:1635 logs_instance` (`docker logs -f`) | `observed-no-engine/B-logs.txt` | filed §4 |
+| D2 | `status <inst>` prints `docker: command not found` ×2 and `not created` on a no-engine host, omits the services half, and ends with `✓ dev host plane healthy at http://localhost:8080` right after `serve is not running` | `scripts/container.sh:1616,1620` (`status_instances`, 1603-1630) + its `:8080` health check | `observed-no-engine/A-status.txt` | filed §4 |
+| D3 | `scripts/orchicon.sh start <inst>` cannot be the documented cold start: `cannot resolve the docker bridge address (docker network inspect bridge / docker0)` … `refusing to guess or bind 0.0.0.0` | `scripts/container.sh` `bridge_ip` | `observed-no-engine/A-status.txt` (same refusal block) | filed §4 |
+| D4 | `make clean-docker` is not engine-aware: rc=2, `docker: command not found`, on a host with nothing to prune — twice | `Makefile:413-416` (call at 415) | `observed-no-engine/C-clean-docker.txt` | filed §4 |
+| D5 | `make run` is foreground and writes no plane log at `~/.local/share/orchicon-<inst>/serve/logs/orchicon.log` | `Makefile:272-278` | **not confirmed this pass** (no plane ever ran); `20261017T053116Z/step-1.log` records `plane log ABSENT` but with no `make run` behind it — do not file on this evidence | unfiled |
+| D6 | only `container-rebuild` forces `force-fe=1`, so a stale `frontend/dist` is still reachable on the engine-free rebuild path | `Makefile:573-581` (`fe-build`), `:655` | **not confirmed this pass** — AC3's adversarial control never ran | unfiled |
 
-Predicted by the plan, confirm or refute each with this run's evidence:
+D5 and D6 are predicted by the plan but were **not** observed here. Filing them on this run's
+evidence would be speculation, so they are left for a pass that can build; the runbook already
+documents `make build force-fe=1` as the engine-free rebuild command.
 
-| # | Predicted defect | Confirmed? | Evidence |
-|---|---|---|---|
-| D1 | `scripts/orchicon.sh logs` needs an engine and shows the container's log, not the host plane's (`scripts/orchicon.sh:101`, `scripts/container.sh:1632 logs_instance`, required source `scripts/container.sh:478`) | _TODO_ | `06-logs.txt` |
-| D2 | `scripts/orchicon.sh status` false-reports "not created" with no engine and never reports the services half (`scripts/container.sh:1603-1630`) | _TODO_ | `05-status-script.txt` |
-| D3 | the host-plane launcher requires a docker bridge, so `scripts/orchicon.sh start` is not a valid cold start (`scripts/container.sh:bridge_ip`) | _TODO_ | runbook decision 1 |
-| D4 | `make clean-docker` is not engine-aware (`Makefile:413-416`) | _TODO_ | `step-8.log` |
-| D5 | `make run` is foreground and writes no plane log (`Makefile:272-278`) | _TODO_ | `06-plane-log.txt` (absent) |
-| D6 | only `container-rebuild` forces `force-fe=1`, so the stale-`dist` mode is still reachable on the engine-free rebuild path (`Makefile:573-581` fe-build, `Makefile:655`) | _TODO_ | `04-served-bundle-stale-control.txt` |
+## 5. Known limits of this run
 
-## 5. Not-blind evidence
-
-Paste `10-blindspots.md`: for each step, the documented command whose output alone answers
-"what is running, and why", plus the independent evidence that agreed with it.
-
-_TODO_
-
-## 6. Known limits of this run
-
-- _TODO_ (e.g. `psql` masked for step 2 so the downloaded-psql rung is the one proven; port
-  overrides used because the host already had something bound; step 3 SKIP reason)
-- Nothing in this run patched a sibling's file. Every failure above is filed, per AC11.
+- The QA container's `$HOME` and `/tmp` are each a 2 GB tmpfs; `GOMODCACHE` (686 MB) plus a cold
+  `GOCACHE` (~1.6 GB) plus `frontend/node_modules` do not fit. **A re-run needs a bigger scratch
+  volume** (or a pre-warmed `GOCACHE`+`node_modules` volume) — that is the single blocking
+  prerequisite for finishing AC1/2/3/6/8/10.
+- Step 2's `psql`-masked rung and step 4's stale-`dist` control were never reached, so nothing in
+  this report should be read as a pass for them.
+- Port overrides were required (sandbox plane on 5432/4222/8080); the defaults are untested here.
+- Nothing outside `qa-evidence/` and this report was modified by this step: D1/D2/D3/D4 are filed,
+  not fixed.
