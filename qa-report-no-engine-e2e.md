@@ -299,3 +299,58 @@ serves the API where the UI should be. Independent evidence:
 
 See `qa-evidence/no-engine-e2e/h1-fix/H1-and-D8.md` for the transcript and the
 results ledger (`results.tsv`, `defects.tsv`).
+
+---
+
+## Iteration 2 — QA re-verification: harness honesty confirmed, D9 filed
+
+Evidence: `qa-evidence/no-engine-e2e/qa3-iter2/` (report, `gate.log`, my
+`mutation-probe.sh` + its output, `served-equals-built.md5`, the D8 transcript).
+
+**The H1 class is closed — verified three independent ways.** (1) The offline gate
+`make no-engine-e2e-assertions-test` → 34 passed, 0 failed. (2) My OWN probe sourced
+the harness and drove `gated_absent`/`gated_contains` directly: an empty capture is
+`SKIP` for both directions, a non-empty capture is judged (`PASS` when genuinely
+absent/present, `FAIL` with an owner when not) — so the gate is real, not just the
+repo's test of it. My first probe run printed `PROBE BROKEN`; that was a fixture bug
+in the probe (single-quoted heredoc left the needle literal), fixed and re-run — a
+probe that can only say OK would be the very failure mode under test. (3) The real
+run's ledger shows the four served-content assertions `SKIP` on the 0-byte captures
+while the built-dist assertion is still judged.
+
+**AC3, re-proven by QA without a build.** One binary, two entry points, on
+QA-owned loopback ports: the default path (`make run`'s path) answers `GET /` →
+**401 `{"error":"missing credentials"}`**; `orchicon serve` answers **200** naming
+`/assets/index-9azVquGO.js`, whose served bytes are **md5-identical** to
+`frontend/dist/assets/index-9azVquGO.js` (the build's product) and to the hash in
+`frontend/dist/index.html`. So the rebuild→embed→serve chain is live and the served
+bytes cannot be stale; the *documented* entry point is blocked by **D8**. AC3's served
+half through the documented path stays UNPROVEN, exactly as the harness reports.
+
+**Standing defects re-observed live this iteration** (no build needed): D1 `logs`
+`rc=127`; D2 `status` "not created" + docker-error leaks + no services half; D4
+`clean-docker` `rc=2`; D5 no plane log dir at `$HOME/.local/share/orchicon-dev/serve/`;
+D3's bridge refusal visible in the same `status` output; D6 from the run ledger; D8 as
+above. D7 unchanged (`02-rls.log`).
+
+**D9 (new, sibling-owned — `scripts/container.sh` status health line).** The
+`status dev` transcript is self-contradictory:
+
+```
+✗ dev: cannot resolve the docker bridge — the host plane would bind its loopback address ONLY,
+serve is not running
+✓ dev host plane healthy at http://localhost:8080
+```
+
+while no dev plane exists at all (`$HOME/.local/share/orchicon-dev/serve/logs/` absent,
+nothing of dev's listening). In this runtime container `127.0.0.1:8080` is held by the
+container's own sandbox plane, whose `/healthz` is 200 — so `status` attributes a
+FOREIGN process's health to the dev instance. That is AC4 ("never claims health it has
+not verified") failing in the opposite direction from the original "not created" claim:
+it verifies *a* port, not *this instance's* plane. Any harness re-run must keep the
+`--control-port` overrides or step 5 is measured against someone else's plane.
+
+**Verdict.** Harness honesty: fixed, verified. Feature acceptance under the documented
+no-engine session: still fails on D1, D2, D4, D5, D6, D7, D8 (+D9), all filed against
+their owning file:line and none patched here (AC11). No production code, Makefile or
+harness change was made by this step.
