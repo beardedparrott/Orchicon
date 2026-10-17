@@ -465,10 +465,25 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 	return out, rows.Err()
 }
 
-// ListRunningExecutions returns executions in a non-terminal, started
-// state (running/healthy/dispatching) — the set the execution-liveness
-// reaper checks after a control-plane restart to find executions whose
-// process is gone (docs/03 §6 liveness).
+// ListRunningExecutions returns the executions the execution-liveness reaper
+// must examine: every non-terminal execution that still HOLDS A DISPATCH SLOT
+// (docs/03 §6 liveness).
+//
+// IT USES activeExecutionStatuses, NOT AN ENUMERATION, and that is the whole
+// point. The old list spelled out ('running','healthy','dispatching') — the
+// states an execution is USUALLY in — while the dispatch-limit guard counts
+// activeExecutionStatuses, which ALSO includes 'unhealthy', 'stalled' and
+// 'terminating'. So an execution that left the running set the moment a
+// liveness probe failed it became INVISIBLE TO THE REAPER while still counting
+// against the cap: nothing could ever release its slot. Observed in the field:
+// ten such executions, the oldest from 2026-09-06, pinned a project at its
+// 10/10 max-concurrent-runs cap, so every later dispatch was deferred forever
+// and the epic's run sat "waiting for dispatch" with no execution anywhere.
+//
+// The invariant is: ANYTHING THAT CAN HOLD A SLOT MUST BE REAP-CHECKABLE.
+// Listing decides only ELIGIBILITY TO BE CHECKED; liveness is decided
+// separately by the reaper's `active` probe, so a genuinely-live execution in
+// one of these states is skipped rather than reaped.
 func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]ExecutionRow, error) {
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
@@ -480,7 +495,7 @@ func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]E
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
 		LEFT JOIN workflows w ON w.id = wr.workflow_id
 		LEFT JOIN workers wkr ON wkr.id = we.worker_id AND wkr.tenant_id = we.tenant_id
-		WHERE we.tenant_id = $1 AND we.status IN ('running', 'healthy', 'dispatching')
+		WHERE we.tenant_id = $1 AND we.status IN ` + activeExecutionStatuses + `
 		ORDER BY we.created_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
 	if err != nil {

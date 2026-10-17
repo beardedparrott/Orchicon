@@ -4481,7 +4481,21 @@ func (r *WorkflowReconciler) recoveryDispatchReady(ctx context.Context, tx pgx.T
 		// A summarize_restart recovering step with no dead-execution
 		// identity must never fall back to a cold dispatch. Hold — the
 		// identity is written in the SAME transaction that flips the step
-		// recovering, so this is transient in-pass state only.
+		// recovering, so this is normally transient in-pass state.
+		//
+		// "NORMALLY" is the load-bearing word. It is NOT transient when the
+		// step flipped recovering off a dispatch that produced no execution
+		// at all — there is then no identity to write, ever, and this hold
+		// becomes a SILENT, PERMANENT wedge: the run stays "running", the UI
+		// says "waiting for dispatch", and nothing logs, because the reconciler
+		// simply re-evaluates and holds on every pass. Bind it with the same
+		// stalled-recovering valve the missing-row case below already uses, so
+		// an un-resumable step fails LOUD and the run terminalizes with a Retry
+		// button instead of hanging without explanation.
+		stalled, holdErr := r.holdRecoveringStep(run, sr, "no dead-execution identity — a summarize_restart recovery can never be resolved")
+		if stalled {
+			return false, holdErr
+		}
 		return false, nil
 	}
 
@@ -4781,19 +4795,55 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 	// link means the dispatch never produced an execution — WAIT rather
 	// than fall back to another execution for the same work item.
 	if sr.WorkerExecutionID == "" {
-		// Two cases:
+		// A task step with NO execution link has not FAILED — nothing was
+		// ever attempted. Three cases reach here, and only one is a problem:
 		//   (a) dispatchStep just set this step running (first dispatch
 		//       or a recovering-step re-dispatch); the inline
 		//       DispatchTask links the replacement execution moments
 		//       after the reconcile transaction commits. Wait a short
 		//       grace for the link instead of guessing.
-		//   (b) the dispatch was lost (inline dispatch failed, adapter
-		//       down) and no execution ever materialized. After the
-		//       grace, fall through to the recovery block so the step
-		//       is retried rather than wedged forever as "running".
-		if sr.StartedAt != nil && time.Since(*sr.StartedAt) < dispatchLinkGrace {
+		//   (b) the dispatch was DEFERRED — for capacity (the project or
+		//       worker max-concurrent-runs gate) or on runtime readiness.
+		//       Both are legitimate waits, and both gates' own contract is
+		//       that the step "stays ready and the next scan pass
+		//       re-evaluates it". The capacity gates stamp `_dispatch_wait`,
+		//       which is what makes this case distinguishable at all.
+		//   (c) the dispatch was genuinely lost (inline dispatch failed,
+		//       adapter down) — no note, no execution, and none coming.
+		//
+		// NO EXECUTION MEANS NO RECOVERY. Recovery is keyed to the FAILED
+		// EXECUTION (TriggerOnFailure → get execution, summarize_restart
+		// builds its seed from it), so falling through to the recovery block
+		// here asks the engine to recover an execution that does not exist:
+		// it fails "recovery trigger: get execution: db: not found", the step
+		// is flipped `recovering`, and recoveryDispatchReady then holds it
+		// FOREVER waiting for a recovery that can never materialize. The run
+		// sits "running" with no current step and the UI reads "waiting for
+		// dispatch" — observed on run 01M53DXZSF5G2T2Z592F7G5ETE, whose
+		// project sat at its 10/10 cap so EVERY step dispatch was deferred.
+		//
+		// So hand the step back to `ready` instead: the dispatch section
+		// re-attempts it on the next pass, and a deferred step then resumes
+		// the moment a slot frees (which is exactly what the gate promises),
+		// while a genuinely lost dispatch is retried rather than wedged.
+		if !(sr.StartedAt != nil && time.Since(*sr.StartedAt) < dispatchLinkGrace) {
+			reason := "no execution was created for the step — re-dispatching"
+			if note, ok := dispatchWaitReason(sr.Result); ok {
+				reason = note
+			}
+			ready := domain.StepRunReady
+			updated, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status: &ready,
+			})
+			if err != nil {
+				return false, false, fmt.Errorf("return undelivered step to ready: %w", err)
+			}
+			runByID[sr.StepID] = updated
+			r.log.Info("task step has no execution — returning it to ready to re-dispatch",
+				"run", run.ID, "step", sr.StepID, "reason", reason)
 			return false, false, nil
 		}
+		return false, false, nil
 	} else {
 		exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID)
 		if err != nil {

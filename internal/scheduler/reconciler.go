@@ -750,6 +750,24 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 			if active >= limit {
 				r.log.Info("dispatch deferred: project at max concurrent runs",
 					"task", task.ID, "project", task.ProjectID, "active", active, "limit", limit)
+				// Stamp the deferral onto the step run, exactly as the
+				// per-worker gate below does. Without the note a project-cap
+				// deferral is INDISTINGUISHABLE from a lost dispatch: the
+				// WorkflowReconciler polls the step run, waits
+				// dispatchLinkGrace for an execution link that is never
+				// coming, and then routes a perfectly healthy waiting step
+				// into the execution-keyed recovery engine — which has no
+				// execution to recover (field wedge: run
+				// 01M53DXZSF5G2T2Z592F7G5ETE sat "running" with no current
+				// step, "recovering" forever).
+				if stepRun != nil {
+					if err := writeDispatchWaitNoteForProject(ctx, ttx.Tx, tenantID, *stepRun, active, limit); err != nil {
+						r.log.Warn("write dispatch wait note", "step_run", stepRun.ID, "error", err)
+					}
+					if err := ttx.Commit(ctx); err != nil {
+						return fmt.Errorf("commit dispatch wait note: %w", err)
+					}
+				}
 				return nil
 			}
 		}
@@ -3163,17 +3181,56 @@ func stripDispatchWait(raw []byte) ([]byte, bool) {
 	return updated, true
 }
 
+// dispatchWaitReason returns the recorded deferral note from a step run's
+// result, if the TaskReconciler deferred its dispatch for capacity (the
+// project or worker max-concurrent-runs gate). Its presence is the signal the
+// WorkflowReconciler uses to tell a LEGITIMATE WAIT apart from a lost
+// dispatch: a step run carrying the note is waiting for a slot, not failing.
+func dispatchWaitReason(raw []byte) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return "", false
+	}
+	note, ok := m["_dispatch_wait"].(string)
+	if !ok || note == "" {
+		return "", false
+	}
+	return note, true
+}
+
 // writeDispatchWaitNote records why a step run's dispatch was deferred by
 // the per-worker concurrency gate, so the run-view UI can attribute the
 // generic "waiting for dispatch…" placeholder to a saturated worker
 // instead of leaving it undiagnostic.
 func writeDispatchWaitNote(ctx context.Context, tx pgx.Tx, tenantID string, stepRun db.WorkflowStepRunRow, workerID string, active, limit int) error {
+	return writeDispatchWait(ctx, tx, tenantID, stepRun,
+		fmt.Sprintf("worker capacity %d/%d — waiting for a slot", active, limit), workerID)
+}
+
+// writeDispatchWaitNoteForProject is writeDispatchWaitNote's counterpart for
+// the PROJECT max-concurrent-runs gate. Both gates are the SAME kind of
+// outcome — the dispatch is healthy but there is no slot — so both must leave
+// the same evidence. Only the worker gate used to, and the asymmetry is what
+// let a project-cap deferral be misread downstream as a failed dispatch.
+func writeDispatchWaitNoteForProject(ctx context.Context, tx pgx.Tx, tenantID string, stepRun db.WorkflowStepRunRow, active, limit int) error {
+	return writeDispatchWait(ctx, tx, tenantID, stepRun,
+		fmt.Sprintf("project capacity %d/%d — waiting for a slot", active, limit), "")
+}
+
+// writeDispatchWait stamps the deferral note (and, for the worker gate, the
+// saturated worker) onto a step run's result. The caller commits.
+func writeDispatchWait(ctx context.Context, tx pgx.Tx, tenantID string, stepRun db.WorkflowStepRunRow, note, workerID string) error {
 	m := map[string]any{}
 	if len(stepRun.Result) > 0 {
 		_ = json.Unmarshal(stepRun.Result, &m)
 	}
-	m["_dispatch_wait"] = fmt.Sprintf("worker capacity %d/%d — waiting for a slot", active, limit)
-	m["_dispatch_wait_worker"] = workerID
+	m["_dispatch_wait"] = note
+	if workerID != "" {
+		m["_dispatch_wait_worker"] = workerID
+	}
 	updated, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("marshal dispatch wait note: %w", err)
