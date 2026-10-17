@@ -347,13 +347,16 @@ clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygien
 	@rm -f $(BIN_DIR)/orchicon
 	@rm -f $(BIN_DIR)/orch
 	@rm -f $(BIN_DIR)/atlas-ci
-	# Stale copies of the binary that older scripts dropped into the runtime
-	# build context. The runtime image no longer bakes the binary (the daemon
-	# bind-mounts its own executable), so a leftover deploy/runtime/orchicon
-	# would only bloat that context -- removed here so a heavy dev session never
-	# leaves one behind. deploy/container/ no longer exists (the single container
-	# is gone), so there is no second copy to sweep.
-	@rm -f deploy/runtime/orchicon deploy/runtime/orch
+	# Stale copies of the binary that the hand-build recipe drops into a build
+	# context (`cp bin/orchicon deploy/<context>/` — ARCHITECTURE.md's "build
+	# the image by hand" steps). The runtime image no longer bakes the binary
+	# (the daemon bind-mounts its own executable), so a leftover copy would only
+	# bloat that context -- removed here so a heavy dev session never leaves one
+	# behind. BOTH contexts are swept because both still exist and both accept a
+	# copy; the line is a no-op for whichever one goes away first. Only
+	# `orchicon` is ever copied in -- the TUI client (bin/orch) is not -- so
+	# there is no second name to sweep.
+	@rm -f deploy/runtime/orchicon deploy/container/orchicon
 
 # cache-trim bounds the Go build cache by SIZE, evicting the coldest entries first.
 #
@@ -773,12 +776,18 @@ rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST ins
 # Two orch clients on PATH: `orch` tracks bin/orch (dev vintage) and
 # `orch-prod` is a snapshot COPY of bin/orch refreshed only by the prod
 # path — so a prod-vintage client survives later `rebuild-dev` runs (the
-# operator holds prod back when dev has breaking changes). Wrapper scripts
-# orch-dev / orch-prod preset ORCHICON_URL per instance and carry a clearly
-# marked ORCHICON_TOKEN line for the user to fill per instance (dev and
-# prod have separate identity stores, so one config token cannot serve
-# both). Wrappers are generated only if absent (never overwritten) and
-# chmod 600.
+# operator holds prod back when dev has breaking changes).
+#
+# THERE IS ONE WRAPPER, `orch-dev`, and only one. It presets ORCHICON_URL for
+# the dev instance and carries a clearly marked ORCHICON_TOKEN line for the user
+# to fill (dev and prod have separate identity stores, so one config token
+# cannot serve both). There cannot be an `orch-prod` WRAPPER: that path is
+# occupied by the snapshot COPY of the binary above, so a generate-if-absent
+# wrapper for it could never be written -- the copy always creates the file
+# first, so the block that used to sit in orch-launcher-prod reported "already
+# exists" and never ran once. Prod is selected through `orch-prod` itself plus
+# the ~/.orchicon/config profile that names the instance. The dev wrapper is
+# generated only if absent (never overwritten) and chmod 600.
 #
 # NO `test` LAUNCHER, DELIBERATELY. The dev/prod split exists because an operator
 # holds two LONG-LIVED instances at different vintages; the `test` instance is a
@@ -788,7 +797,7 @@ rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST ins
 # database in scripts/lib/instances.sh, and `make rebuild-test` drives it.
 LAUNCHER_DIR ?= $(HOME)/.local/bin
 .PHONY: orch-launchers orch-launcher-dev orch-launcher-prod
-orch-launchers: ## Install/refresh the dual orch launchers into ~/.local/bin (orch + orch-prod + wrappers)
+orch-launchers: ## Install/refresh the dual orch launchers into ~/.local/bin (orch + orch-prod + the orch-dev wrapper)
 	@test -f $(BIN_DIR)/orch || { echo "ERROR: $(BIN_DIR)/orch not found — run 'make build' first"; exit 1; }
 	@mkdir -p $(LAUNCHER_DIR)
 	# orch: dev-tracked symlink to bin/orch (refreshed on every dev rebuild).
@@ -833,8 +842,8 @@ orch-launcher-dev: ## Refresh the dev orch launcher after a dev rebuild
 		echo "==> $(LAUNCHER_DIR)/orch-dev already exists — leaving untouched"; \
 	fi
 
-# orch-launcher-prod refreshes the prod snapshot (orch-prod copy + wrapper)
-# after a prod rebuild. The dev launcher is left untouched, so a prod-vintage
+# orch-launcher-prod refreshes the prod snapshot (the orch-prod copy) after a
+# prod rebuild. The dev launcher is left untouched, so a prod-vintage
 # client survives later rebuild-dev runs.
 orch-launcher-prod: ## Refresh the prod orch launcher snapshot after a prod rebuild
 	@test -f $(BIN_DIR)/orch || { echo "ERROR: $(BIN_DIR)/orch not found — run 'make build' first"; exit 1; }
@@ -842,13 +851,9 @@ orch-launcher-prod: ## Refresh the prod orch launcher snapshot after a prod rebu
 	@cp -f "$(BIN_DIR)/orch" "$(LAUNCHER_DIR)/orch-prod"
 	@chmod +x "$(LAUNCHER_DIR)/orch-prod"
 	@echo "==> orch-prod launcher refreshed: $(LAUNCHER_DIR)/orch-prod (snapshot copy, prod vintage)"
-	@if [ ! -f "$(LAUNCHER_DIR)/orch-prod" ]; then \
-		printf '#!/bin/sh\n# orch-prod: prod instance launcher (generated by make orch-launchers).\n# Fill in the token for the PROD instance below (dev and prod have separate\n# identity stores, so each instance needs its own token).\nexport ORCHICON_URL=http://localhost:8091\nexport ORCHICON_TOKEN=\nexec "$(LAUNCHER_DIR)/orch-prod" "$$@"\n' > "$(LAUNCHER_DIR)/orch-prod"; \
-		chmod 600 "$(LAUNCHER_DIR)/orch-prod"; \
-		echo "==> generated $(LAUNCHER_DIR)/orch-prod (fill in ORCHICON_TOKEN)"; \
-	else \
-		echo "==> $(LAUNCHER_DIR)/orch-prod already exists — leaving untouched"; \
-	fi
+	# No wrapper is generated here on purpose -- see the section header: the
+	# snapshot copy above IS $(LAUNCHER_DIR)/orch-prod, so a generate-if-absent
+	# wrapper for the same path could never be written.
 
 # --- Install ---------------------------------------------------------------
 #
