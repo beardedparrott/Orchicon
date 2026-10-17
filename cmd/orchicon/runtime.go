@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -70,9 +71,18 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		}
 	}
 
+	// THE ENGINE IS RESOLVED ONCE, HERE. Every image operation (build, inspect
+	// gate, rmi, pull, prune) goes through DockerBin, so this single decision
+	// repoints the whole image path: podman when ORCHICON_CONTAINER_BIN names it
+	// or it is on PATH, docker otherwise. A host with neither still boots — the
+	// image path then fails with an actionable "engine not found" instead of the
+	// daemon refusing to start.
+	eng := runtime.DetectEngine(env("ORCHICON_CONTAINER_BIN", ""), exec.LookPath)
+	log.Info("runtime engine", "engine", eng.Name, "bin", eng.Bin)
+
 	d := &runtime.Daemon{
 		SocketPath:    socketPath,
-		DockerBin:     "docker",
+		DockerBin:     eng.Bin,
 		Image:         env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest"),
 		Images:        runtimeImagesAllowlist(env("ORCHICON_RUNTIME_IMAGES", "")),
 		UserID:        hostUID,
