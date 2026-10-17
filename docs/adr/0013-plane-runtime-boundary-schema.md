@@ -78,7 +78,7 @@ path had to be a stable host path under `/tmp`.
 
 | Linux | macOS | Windows |
 |---|---|---|
-| `unix://$XDG_RUNTIME_DIR/orchicon-runtime/<instance>.sock`, mode `0600` | `unix://$TMPDIR/orchicon-runtime-<instance>.sock`, mode `0600` | `npipe:////./pipe/orchicon-runtime-<instance>`, DACL = owning user SID |
+| `unix://$XDG_RUNTIME_DIR/orchicon-runtime/<instance>.sock`, mode `0600` (unset/empty ⇒ D1.6) | `unix://$TMPDIR/orchicon-runtime-<instance>.sock`, mode `0600` | `npipe:////./pipe/orchicon-runtime-<instance>`, DACL = owning user SID |
 
 **Decisions, with rationale:**
 
@@ -115,6 +115,16 @@ path had to be a stable host path under `/tmp`.
   must specify.** On Linux a *containerized* plane keeps working by
   bind-mounting the socket (unchanged). On macOS and Windows the plane
   **must be host-resident**; see finding **BF-1**.
+- **D1.6 — `$XDG_RUNTIME_DIR` has exactly one defined fallback.** When it is
+  unset or empty — login-less servers, CI containers, SSH without
+  `pam_systemd`, which is most of the places this daemon actually runs — Linux
+  uses `<os.TempDir()>/orchicon-runtime/<instance>.sock`: today's default
+  directory (`cmd/orchicon/runtime.go:36`) with D1.4's per-instance name and
+  `0600` mode. A single fallback, never a search path, and it is computed by
+  the one function (`transport.DefaultEndpoint`) that `planeEnv` also calls, so
+  an unset variable cannot yield two different endpoints. The clause exists
+  because the `$XDG_RUNTIME_DIR` form with an unset variable is a *relative*
+  path — an undefined answer, which AC 3 forbids.
 
 ---
 
@@ -209,7 +219,7 @@ Two ingress channels, both Docker-supplied:
 | Allowed-root check | `withinAllowedRoots` **and** `src` under a shared root (always true) | `withinAllowedRoots` **and** `src` under `$HOME`, `$TMPDIR`/`/private`, `/var/folders` (the `podman machine` shares `$HOME` and `/private`/`/tmp` only) | `withinAllowedRoots` **and** `src` under `%USERPROFILE%` (the WSL2 mount of `C:`) |
 | Credentials by file | read-only binds, unchanged | same | same |
 | Credentials by env | `-e K=V`, unchanged (podman accepts `-e`) | same | same |
-| Binary ingress | `-v <stable copy>:/usr/local/bin/orchicon:ro`, unchanged (`runtime.go:copySelf`) | **must be under a shared root** — the stable copy moves from `<tmp>/orchicon-runtime/` to the same dir as the socket, which is inside `$TMPDIR` (shared) | stable copy next to the pipe is not mountable → copy into the instance data dir (shared) |
+| Binary ingress | `-v <stable copy>:/usr/local/bin/orchicon:ro` — same shape, and `copySelf` already derives the copy from `filepath.Dir(socketPath)` (`cmd/orchicon/runtime.go:61`), so it moves *with* the socket dir (D1.4) to `$XDG_RUNTIME_DIR/orchicon-runtime/orchicon`, **not** today's `<tmp>/orchicon-runtime/` | **must be under a shared root** — the stable copy moves from `<tmp>/orchicon-runtime/` to the same dir as the socket, which is inside `$TMPDIR` (shared) | stable copy next to the pipe is not mountable → copy into the instance data dir (shared) |
 | Userns / ownership | `--userns=keep-id` + `--user <uid>:<gid>`; `--tmpfs …uid=,gid=` unchanged | same | same |
 
 **Decisions:**
@@ -490,6 +500,10 @@ Engine chooses *which* argv.
 | `daemon_mounts_test.go:325` `TestClaudeCreatePreflightFailsActionably` | **keep** | pre-auth check, no engine surface |
 | `daemon_secrets_test.go:50` `TestCreateContainerInjectsSecretsAsEnv` | **keep** | `-e K=V` identical under podman |
 | `claude_mounts_test.go:103` `TestAdapterHostMountsReadWriteSplit` | **keep** | it matches with `strings.Contains` on the joined argv, so `…:ro,z` still contains `…:ro` — the counter-example that tells a `,z` breakage from a false alarm |
+| `bootprofile_test.go:132` `TestAdapterHostMountsConditional` | **MUST CHANGE** | `adapterHostMounts` (`bootprofile.go:376`) is where the bind suffix is built (`:406-408`, `mode := ":ro"` / `":rw"`), so D3.2's engine `MountOption` lands *there* — and this test compares the whole arg slice with `reflect.DeepEqual` (`:158`) against exact `-v src:src:ro` pairs, so the suffix gaining `,z` fails it |
+| `bootprofile_test.go:318` `TestAdapterHostMountsClaudeRW` | **MUST CHANGE** | same helper, two assertions break: `reflect.DeepEqual` (`:326`) on the four exact `:rw`/`:ro` strings, and the `strings.HasSuffix(a, ":rw")` count (`:332`) which reads 0 once a claude RW mount is spelled `:rw,z` — the count is the assertion that fails first |
+| `bootprofile_test.go:179` `TestAdapterHostMountsFileShapeGate`, `:369` `TestClaudeLauncherSymlinkTargetMounted` | **keep** | `:186` is a *negative* equality check (a directory at the CLI path must not mount), which `,z` cannot turn red; `:369` extracts the src before the first `:` (`:381-388`), which the mode suffix does not move. Recorded for the engine task: `:186` staying green is also why it cannot fail the gate it pins, so add a positive shape case rather than trusting it |
+| `adapter_credentials_test.go:85` `TestStandardHostMountArgsCarryAdapterCredentials` | **keep** | asserts `-e KEY=VALUE` only (`envValue` at `:92`, the native-only absence loop at `:97-101`); it carries no bind strings |
 | `pool_test.go:17/47/112` (`TestPoolEnvKey*`) | **keep** | these assert *relations* (same input ⇒ same key, changed input ⇒ different key), which a **constant** `engine=`/`shape=` term preserves; add cases for the two new terms rather than re-baselining keys |
 | `hostfp_test.go:28` `TestDaemonBinaryFingerprintInvalidatesPoolKey` | **MUST CHANGE** | the key gains `engine=` + `shape=` (§8 D7.1/D7.2); fixtures must assert the new terms |
 | `hostfp_test.go:87` `TestHostInputsFingerprintStabilityAndInvalidation` | **keep** | pure `hostfp.go`, no engine |
@@ -515,16 +529,17 @@ Engine chooses *which* argv.
 | `images_test.go:66` `TestImageTagPattern`, `:80` `TestSlugPattern` | **keep** | unchanged |
 | `images_test.go:95` `TestAllowedImagesAlwaysIncludesBase` | **keep** | unchanged |
 | *(new)* `images_test.go` `TestImageLabelFormatPerEngine` | **ADD** | pins `.Config.Labels` (docker) vs `.Labels` (podman) — §7 D6.2 |
-| `install_host_test.go:146` `TestPlaneEnvIsPerInstanceAndComplete`, `:206` `TestPlaneBindAndShape` | **MUST CHANGE** | the bind/url pair must be empty (bind) and `host.docker.internal:<control>` (url) under the podman engine. The emitting gate is `if bind != ""` (`install_host.go:207`), which must become `if url != ""` or the podman URL is never written |
+| `install_host_test.go:146` `TestPlaneEnvIsPerInstanceAndComplete`, `:206` `TestPlaneBindAndShape` | **MUST CHANGE** | the bind/url pair must be empty (bind) and `host.docker.internal:<control>` (url) under the podman engine. The emitting gate is `if bind != ""` (`install_host.go:207`), which must become `if url != ""` or the podman URL is never written. The same function also pins the literal socket value at `:184` (`ORCHICON_RUNTIME_SOCKET=/tmp/orchicon-runtime/runtime.sock`), which D1.3's schemed endpoint rewrites to `unix://…` — a second expectation in this function, not a second function |
 | `install_host_test.go:560` `TestInstallHostHasNoDockerInvocation` | **MUST CHANGE** | `containerEngineAvailable` (`install_host.go:106`) probes `exec.LookPath("docker")` only; the test's banned-callee list rejects the literal `"podman"` and pins that exact LookPath, so a podman-aware probe reads as a violation until the test is told podman is an engine *probe*, never an engine *call* |
 | *(new)* `daemon_transport_test.go` | **ADD** | `DefaultEndpoint` per-GOOS + scheme parsing + rejection of `tcp` (§2 D1.2/D1.3) |
 | *(new)* `daemon_createargs_test.go` | **ADD** | no named-volume mount may appear in the create argv (§6 hard rule) |
 
-**Summary of what changes:** ten existing test functions across five files —
+**Summary of what changes:** twelve existing test functions across six files —
 `daemon_mounts_test.go:100`/`:168`/`:204`/`:274` (the `,z` relabel changes their
-*exact* `-v` strings), `hostfp_test.go:28`,
+*exact* `-v` strings), `bootprofile_test.go:132`/`:318` (same reason one layer
+lower: the suffix is built in `adapterHostMounts`), `hostfp_test.go:28`,
 `hostfp_test.go:312`, `plane_reachability_test.go:59`,
-`install_host_test.go:146`/`:206`/`:560`) — plus three new ones. Every other boundary
+`install_host_test.go:146`/`:206`/`:560` — plus three new ones. Every other boundary
 test is preserved as-is — because the schema deliberately preserves labels,
 the mount argv, and the remove-and-recreate reset, which is what those tests
 pin.
@@ -629,7 +644,7 @@ file, the insertion point, and the schema decision it implements.
 14. **`cmd/orchicon/runtime.go`** — engine selection + daemon struct wiring
     (`:75` `DockerBin` → `Engine`; `:77` `Images`), socket default per §2, `copySelf`
     destination inside a shared root (D3.4).
-15. **Tests** — apply §10 exactly: modify the five listed files, add the three
+15. **Tests** — apply §10 exactly: modify the six listed files, add the three
     new ones. Do not regenerate golden pool keys wholesale.
 16. **Findings BF-1…BF-4** — BF-2 and BF-3 must be proven on each target
     platform (a manual create/exec/mount/rm script is sufficient) *before* the
@@ -642,7 +657,7 @@ file, the insertion point, and the schema decision it implements.
 
 Every `file:line` in this ADR was re-read against the tree that carries it. The
 §10 test table was confirmed **exactly** right (all 30-odd `func Test…` line
-numbers match, with the one exception recorded in §15 item 3). The following
+numbers match, with the two exceptions recorded in §15 items 3 and 5). The following
 citations had drifted and are corrected in place;
 the list exists so a reviewer can tell a stale line from a contested claim:
 
@@ -688,7 +703,7 @@ the deliverable, and the implementer works from §12.
 | 5 — image gate + mount restriction preserved with purpose | §4 D3.1 (mount-source restriction, purpose stated), §7 D6.1 (image gate, purpose stated), §7 D6.2 (format-string pin) |
 | 6 — pristine reset mechanism + blocking findings | §6 (mechanism + hard no-named-volumes rule + D5.2 retry wording), §9 BF-2/BF-3 |
 | 7 — host-input fingerprint restated | §8 (role + mandatory `engine=`/`shape=` terms) |
-| 8 — tests reviewed, changes enumerated before engine work | §10 (per-test verdicts, ten must-change functions, three new) + §13 audit + §15 review pass |
+| 8 — tests reviewed, changes enumerated before engine work | §10 (per-test verdicts, ten must-change functions, three new) + §13 audit + §15 review/QA passes |
 | 9 — no engine code | §0 non-goal; verified on the branch (`docs/` only) — §13 scope check |
 
 ---
@@ -696,7 +711,7 @@ the deliverable, and the implementer works from §12.
 ## 15. Review pass (PR gate) — corrections applied to §10
 
 §10 is the work list the engine task is held to, so its **MUST CHANGE** set was
-re-derived row by row from how each test *asserts*, not from its name. Four
+re-derived row by row from how each test *asserts*, not from its name. Five
 corrections; all of them make §10 stricter or more exact, none relaxes a
 guarantee.
 
@@ -721,10 +736,38 @@ guarantee.
    (`lifecycle.go:605`, the plane's own bridge IP, case 2 of D2.3, unchanged).
 4. **"Five must-change tests" was five *rows*.** One row
    (`install_host_test.go:146` + `:206`) is two distinct functions, and the
-   `daemon_mounts_test.go` reclassification in item 1 adds four more, so the
-   count is stated as **ten test functions across five files** plus three new
+   `daemon_mounts_test.go` reclassification in item 1 adds four more, and item 5
+   adds two, so the count is stated as **twelve test functions across six files**
+   plus three new
    ones — which is what §12 item 15 ("apply §10 exactly") now means.
 
-Verified on this branch: `go build ./...` clean, `go test ./internal/runtime/
-./cmd/orchicon/` green (the two packages every cited test lives in), and
-`git diff --stat develop...HEAD` still touches this file only — AC 9 holds.
+5. **`bootprofile_test.go` was missing from §10 entirely (QA pass).** It is the
+   layer *under* `daemon_mounts_test.go`: the bind mode string is built inside
+   `adapterHostMounts` (`bootprofile.go:376`, `mode := ":ro"` / `":rw"` at
+   `:406-408`), so D3.2's `,z` lands there first and two of its functions assert
+   the exact strings. They would have gone red on the first engine commit
+   (`:132` via `reflect.DeepEqual` at `:158`; `:318` via `reflect.DeepEqual` at
+   `:326` plus the `HasSuffix(":rw")` count at `:332`). Both are now MUST
+   CHANGE; the two neighbouring functions that survive are listed with why, and
+   `adapter_credentials_test.go:85` is recorded as `-e`-only so nobody has to
+   re-derive that. **Second fix, AC 3:** §2's Linux endpoint said
+   `$XDG_RUNTIME_DIR/orchicon-runtime/<instance>.sock` and nothing resolved the
+   unset case — that form with the variable empty is a *relative* path, i.e. an
+   undefined answer, which AC 3 forbids. **D1.6** now fixes the single fallback
+   (`<os.TempDir()>/orchicon-runtime/`, today's directory, per-instance name and
+   `0600`). Relatedly, §4's Linux binary-ingress cell no longer reads
+   "unchanged": `copySelf` derives the stable copy from `filepath.Dir(socketPath)`
+   (`cmd/orchicon/runtime.go:61`), so it moves *with* the socket dir.
+
+**QA verification (workflow step 4; no engine code touched).** All 96 distinct
+`file:line` citations in this ADR were resolved programmatically against the
+files they name: every one lands on the symbol, function, or assertion claimed,
+none is out of range, and the slash groups (`pool_test.go:17/47/112`,
+`images_test.go:13/34/55`, `pool_lease_test.go:90/152/178/209`) are all real
+`func Test…` lines. §10's completeness was re-derived the other way round —
+enumerate every site that builds a bind suffix (`daemon.go:659`, `:798`, `:810`,
+`:818`, `:821`; `bootprofile.go:406-408`) and then every test file that asserts
+one — which is exactly how item 5 surfaced. On this branch `go build ./...`
+is clean and `go test ./internal/runtime/ ./cmd/orchicon/` is green (the two
+packages every cited test lives in), and `git diff --stat develop...HEAD` still
+touches this file only — AC 9 holds.
