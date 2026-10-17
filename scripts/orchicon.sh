@@ -236,15 +236,28 @@ start_host() {
 # a dead database is exactly the state that makes a status check lie. Both calls
 # are the CLI's; the verification at the end is ours, because a stop that has not
 # been checked is only a claim.
+#
+# BOTH HALVES ARE VERIFIED, and neither exit code is taken at face value:
+#   `serve --stop` exits non-zero BOTH when nothing was running AND when a signal
+#   did not land, so the message is chosen by the PID-file state, never by the
+#   code — otherwise a plane that is still up gets reported as "nothing was
+#   running".
+#   `services down` exits non-zero ONLY when the ports did not come free, which is
+#   a real failure; swallowing it and printing the success line would be exactly
+#   the unverified claim this script exists to prevent.
 stop_host() {
-  local inst="$1" rc=0
+  local inst="$1" rc=0 svc_rc=0
   ORCHICON_SERVE_STATE_DIR="$SERVE_STATE_DIR" "$BIN" serve --stop || rc=$?
-  if [ "$rc" -ne 0 ]; then
+  if [ "$rc" -ne 0 ] && ! plane_status_out >/dev/null 2>&1; then
     echo "  plane: nothing was running (no live PID file in $SERVE_STATE_DIR)"
   fi
-  ORCHICON_INSTANCE="$inst" "$BIN" services down "$inst" || true
+  ORCHICON_INSTANCE="$inst" "$BIN" services down "$inst" || svc_rc=$?
   if plane_status_out >/dev/null 2>&1; then
     echo "✗ orchicon $inst: the plane is STILL running after stop — refusing to report success" >&2
+    return 1
+  fi
+  if [ "$svc_rc" -ne 0 ]; then
+    echo "✗ orchicon $inst: the plane stopped but its host services did NOT (a process still holds postgres/nats — see the error above)" >&2
     return 1
   fi
   echo "✓ orchicon $inst stopped (plane and its host services)"

@@ -118,6 +118,14 @@ case "${1:-}" in
         if [ "$(cat "$STUB_PLANE_STATE" 2>/dev/null)" = up ]; then echo "serve is running (PID 4242)"; exit 0; fi
         echo "serve is not running"; exit 1 ;;
       --stop)
+        if [ "${STUB_PLANE_STOP_RC:-0}" != 0 ]; then
+          # A stop that FAILED with the plane still up. It must never be
+          # reported as "nothing was running": the exit code alone cannot tell
+          # the two apart, so the script has to ask the PID file.
+          printf 'up' >"$STUB_PLANE_STATE"
+          echo "stub: the signal did not land" >&2
+          exit "$STUB_PLANE_STOP_RC"
+        fi
         if [ "$(cat "$STUB_PLANE_STATE" 2>/dev/null)" = up ]; then
           printf 'down' >"$STUB_PLANE_STATE"; echo "serve stopped"; exit 0
         fi
@@ -132,7 +140,14 @@ case "${1:-}" in
         fi
         echo "services for ${3:-dev}: down (nothing answering postgres 127.0.0.1:5432 or nats 127.0.0.1:4222)"
         exit 1 ;;
-      down) echo "services for ${3:-dev} are stopped; postgres and nats are free"; exit 0 ;;
+      down)
+        # The real verb exits non-zero ONLY when the ports did not come free,
+        # so this is a genuine failure and not a "was not running" signal.
+        if [ "${STUB_SERVICES_DOWN_RC:-0}" != 0 ]; then
+          echo "stub: postgres did not release :5432" >&2
+          exit "$STUB_SERVICES_DOWN_RC"
+        fi
+        echo "services for ${3:-dev} are stopped; postgres and nats are free"; exit 0 ;;
     esac ;;
 esac
 exit 0
@@ -268,6 +283,28 @@ assert_not_contains "$call_log" "orchicon-dev/serve" "stopping prod never touche
 : >"$CALLS"
 run "$SCRIPT" restart dev >/dev/null
 assert_contains "$(cat "$CALLS")" "serve_state=$HOME/.local/share/orchicon-dev/serve" "restart scopes the plane to DEV's state dir"
+
+# ── 5b. stop reports only what it verified ────────────────────────────────
+# `stop` claims "plane and its host services" in one line, so BOTH halves have to
+# be checked before it prints. A services stop that failed while the success line
+# still printed is the exact unverified claim this script exists to prevent; so is
+# calling a plane that is still up "nothing was running".
+echo "-- stop is honest about both halves"
+plane_up; services_up
+out="$(STUB_SERVICES_DOWN_RC=1 run "$SCRIPT" stop dev)"; rc=$?
+assert_rc "$rc" 1 "stop exits 1 when the services did not stop"
+assert_not_contains "$out" "✓ orchicon dev stopped" "a failed services stop is never reported as success"
+assert_contains "$out" "host services did NOT" "stop names the half that failed"
+plane_up; services_up
+out="$(STUB_PLANE_STOP_RC=1 run "$SCRIPT" stop dev)"; rc=$?
+assert_rc "$rc" 1 "stop exits 1 when a live plane refuses to stop"
+assert_not_contains "$out" "nothing was running" "a plane that is still up is never called 'nothing was running'"
+assert_contains "$out" "STILL running" "stop says plainly that the plane is still up"
+plane_down; services_down
+out="$(run "$SCRIPT" stop dev)"; rc=$?
+assert_rc "$rc" 0 "stop on a stopped instance exits 0"
+assert_contains "$out" "nothing was running" "stopping an idle instance says nothing was running"
+assert_contains "$out" "✓ orchicon dev stopped" "a fully verified stop reports success"
 
 # ── 6. status tells the truth, and only the truth (AC5) ────────────────────
 echo "-- status"
