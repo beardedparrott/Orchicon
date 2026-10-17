@@ -614,6 +614,16 @@ local-services-test: ## CI gate: the local-services inner loop (derived DB_URL, 
 no-engine-e2e-assertions-test: ## CI gate: the no-engine acceptance harness never PASSes on an empty capture
 	bash scripts/tests/no-engine-e2e-assertions/run.sh
 
+# runtime-e2e-assertions-test pins the RUNTIME-CONTAINER acceptance harness's own
+# honesty. That procedure is ABSENCE-SHAPED ("no container was created", "the gate
+# rejected it", "the pooled container was reused"), and every one of those is
+# trivially true of a `podman ps` that failed to run — so an ungated assertion
+# would manufacture the very blindness the feature removes. Offline: it sources
+# the harness's functions and touches no engine, port or database.
+.PHONY: runtime-e2e-assertions-test
+runtime-e2e-assertions-test: ## CI gate: the runtime-container acceptance harness never PASSes on an empty capture
+	bash scripts/tests/runtime-e2e-assertions/run.sh
+
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
@@ -1053,7 +1063,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate

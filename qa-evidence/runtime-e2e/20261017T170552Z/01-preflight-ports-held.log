@@ -1,0 +1,34 @@
+
+[1;36m== step 0 — preflight — is this run a valid proof of the claim?[0m
+  [2mevidence: qa-evidence/runtime-e2e/20261017T170552Z/step-0.log[0m
+date:      2026-10-17T17:05:52Z
+host:      Linux 26fd589386f6 7.2.0-1-cachyos #1 SMP PREEMPT_DYNAMIC Thu, 20 Aug 2026 06:06:30 +0000 x86_64 GNU/Linux
+hostname:  26fd589386f6
+repo:      /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M55C4TG8BMKRR7TGCQ9C9T0F
+marker:    RUNTIME-E2E-20261017T170552Z-18794
+engines:   none found (GOOD — this is the claim being proven)
+wanted:    podman
+head:      2a0bc0d00f11ae7b3c12c0ab246414518de91e7f
+branch:    e2e-proof-local-run-with-no-engine-opt-in-same-workflow-in-a-container-bmkrr7tgcq9c9t0f
+dirty:
+   M scripts/runtime-e2e.sh
+   M scripts/tests/runtime-e2e-assertions/run.sh
+go:        go version go1.26.4 linux/amd64
+node/npm:  v22.23.2 / 10.9.8
+frontend:  node_modules MISSING (the Runtime Images page cannot be driven)
+ports:     dev pg=5432 nats=4222 control=8080
+held now (must be empty):
+  5432 HELD
+  4222 HELD
+  8080 HELD
+disk:
+  Filesystem     1048576-blocks   Used Available Capacity Mounted on
+  /dev/nvme0n1p7         597952 395155    185645      69% /home/beardedparrott/projects/Orchicon
+  [32mPASS[0m no container engine is installed (docker/podman/nerdctl/docker-compose all absent)
+  [32mPASS[0m the tree is a git checkout
+  [33mSKIP[0m the instance ports are free before the session starts — held by another process: 5432 4222 8080 
+
+summary: qa-evidence/runtime-e2e/20261017T170552Z/01-preflight-ports-held/summary.md
+passes=2 failures=0 skips=1
+
+RUN INVALID: port(s) 5432 4222 8080 are already held, so this run cannot prove that the instance's OWN plane is what it drove. Free them, or shift the run with --pg-port/--nats-port/--control-port.

@@ -27,6 +27,12 @@ Evidence lands in `qa-evidence/no-engine-e2e/<UTC>/` (`results.tsv`, `defects.ts
 assertion failed (each failure names the `file:line` that owns it), `2` the run is not a
 valid proof (an engine is installed, or a port we need is already held) — nothing ran.
 
+The complementary claim — the **same** workflow running inside a container *after*
+the project opts in, starting from a host with no engine at all — has its own
+runbook: [`runtime-e2e-acceptance.md`](runtime-e2e-acceptance.md) (harness
+`scripts/runtime-e2e.sh`). Read that one when the question is "where did the work
+actually run", this one when the question is "what is running and why".
+
 ---
 
 ## Before you start: the validity precondition (step 0)
