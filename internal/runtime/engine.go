@@ -385,3 +385,26 @@ func nameInUse(out string, tokens []string) bool {
 	}
 	return false
 }
+
+// IsAbsentOutput reports whether an engine command's output means "that image
+// is not here". This wording is one of the few places the engines differ in a
+// way the image path cares about:
+//
+//   - docker rmi: "Error: No such image: foo:latest"
+//   - podman rmi: "Error: foo:latest: image not known"
+//   - inspect of a missing ref: the same two families of wording
+//
+// Matching is case-insensitive and deliberately narrow: it exists ONLY to turn
+// a failed removal into the idempotent "already gone" result (DELETE
+// /v1/images on an image that is already absent), never to accept any other
+// failure. Anything unrecognised stays a real error, so a genuine rmi failure
+// cannot be swallowed.
+func (e Engine) IsAbsentOutput(out string) bool {
+	l := strings.ToLower(out)
+	for _, s := range []string{"no such image", "image not known", "no such object"} {
+		if strings.Contains(l, s) {
+			return true
+		}
+	}
+	return false
+}

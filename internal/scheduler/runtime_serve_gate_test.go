@@ -41,6 +41,11 @@ func (stubLifecycle) EnsureServing(context.Context, db.WorkflowRunRow, bool) err
 }
 func (stubLifecycle) ReapForRun(context.Context, string) error { return nil }
 
+// ImagePresent reports the image PRESENT: these unit tests exercise the serve
+// gate and image resolution, not the missing-image fail-fast (see
+// image_absent_failover_test.go for that path).
+func (stubLifecycle) ImagePresent(context.Context, string) (bool, error) { return true, nil }
+
 // TestImageForRun pins always-container stamping: imageForRun ALWAYS
 // returns the resolved image (serve or not); empty resolves to base. The
 // no-serve sentinel is never a freshly persisted image — it survives only

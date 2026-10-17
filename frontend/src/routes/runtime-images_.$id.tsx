@@ -1,10 +1,11 @@
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { ArrowLeft, Hammer, Trash2, Save, XCircle } from "lucide-react";
+import { ArrowLeft, Download, Hammer, Trash2, Save, XCircle } from "lucide-react";
 
 import {
   useGetRuntimeImage,
   useBuildRuntimeImage,
+  useFetchRuntimeImage,
   useCancelRuntimeImageBuild,
   useResetRuntimeImage,
   useUpdateRuntimeImage,
@@ -53,6 +54,7 @@ function RuntimeImageDetailPage() {
   const navigate = useNavigate();
   const { data: img, isLoading, error } = useGetRuntimeImage(id);
   const buildImage = useBuildRuntimeImage();
+  const fetchImage = useFetchRuntimeImage();
   const updateImage = useUpdateRuntimeImage();
   const deleteImage = useDeleteRuntimeImage();
   const cancelBuild = useCancelRuntimeImageBuild();
@@ -154,6 +156,23 @@ function RuntimeImageDetailPage() {
     }
   };
 
+  const handleFetch = async () => {
+    if (!img) return;
+    setBuildLog("");
+    setBuildError("");
+    try {
+      const res = await fetchImage.mutateAsync({
+        id: img.id,
+        onLog: (chunk) => setBuildLog((prev) => prev + chunk),
+      });
+      if (res.skipped) {
+        setBuildLog((prev) => prev || "This image is already downloaded — nothing to fetch.");
+      }
+    } catch (e) {
+      setBuildError(String(e));
+    }
+  };
+
   const handleDelete = async () => {
     if (!img) return;
     if (!window.confirm("Delete this runtime image and its local Docker image?")) return;
@@ -200,6 +219,21 @@ function RuntimeImageDetailPage() {
                 <Hammer aria-hidden="true" className="mr-1 h-4 w-4" />
                 {deploying ? "Building…" : "Deploy"}
               </Button>
+              {/* FETCH, distinct from Deploy: it DOWNLOADS the published image
+                  instead of building it from this spec. Offered whenever the
+                  image is not ready locally (the seeder leaves such a row in
+                  "not downloaded" and never auto-builds it). */}
+              {img.status !== 3 && img.status !== 2 && (
+                <Button
+                  variant="outline"
+                  onClick={handleFetch}
+                  disabled={fetchImage.isPending || !img.tag}
+                  title="Download the published image for this tag (idempotent — nothing is downloaded if it is already present)"
+                >
+                  <Download aria-hidden="true" className="mr-1 h-4 w-4" />
+                  {fetchImage.isPending ? "Fetching…" : "Fetch"}
+                </Button>
+              )}
               {img.status === 2 && (
                 <>
                   <Button variant="outline" onClick={() => cancelBuild.mutate({ id: img.id, version: img.version })} disabled={cancelBuild.isPending}>
@@ -219,6 +253,13 @@ function RuntimeImageDetailPage() {
         </div>
       </div>
 
+      {img.status === 5 && (
+        <div role="status" className="rounded-xl border border-slate-500/30 bg-slate-50 p-3 text-sm text-slate-900 dark:bg-slate-950/20 dark:text-slate-100">
+          This image is <strong>not downloaded</strong>. Its spec is correct — nothing is wrong with it — but the image is not present locally,
+          so no workflow run can use it yet. Press <strong>Fetch</strong> to download the published image (Deploy instead <em>builds</em> it from
+          the Dockerfile, which is much slower).
+        </div>
+      )}
       {img.status === 4 && (img.failureReason || img.error) && (
         <RuntimeImageFailureAlert reason={img.failureReason || img.error} failedStep={img.failedStep} logTail={img.logTail} buildLog={img.buildLog} category={img.failureCategory} />
       )}
@@ -371,6 +412,11 @@ function statusLabel(status: RuntimeImageProto["status"]): string {
     case 2: return "building";
     case 3: return "ready";
     case 4: return "failed";
+    // 5 = ABSENT: the spec is correct but the image is not downloaded locally
+    // and nothing is building. Fetch it (the Fetch action) — Deploy BUILDS from
+    // the Dockerfile instead, which is the heavy path this state exists to
+    // avoid on a machine that never pulled a runtime image.
+    case 5: return "not downloaded";
     default: return "unknown";
   }
 }

@@ -665,6 +665,111 @@ export class BuildRuntimeImageResponse extends Message<BuildRuntimeImageResponse
 }
 
 /**
+ * @generated from message orchicon.api.v1.FetchRuntimeImageRequest
+ */
+export class FetchRuntimeImageRequest extends Message<FetchRuntimeImageRequest> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<FetchRuntimeImageRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.FetchRuntimeImageRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): FetchRuntimeImageRequest {
+    return new FetchRuntimeImageRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): FetchRuntimeImageRequest {
+    return new FetchRuntimeImageRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): FetchRuntimeImageRequest {
+    return new FetchRuntimeImageRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: FetchRuntimeImageRequest | PlainMessage<FetchRuntimeImageRequest> | undefined, b: FetchRuntimeImageRequest | PlainMessage<FetchRuntimeImageRequest> | undefined): boolean {
+    return proto3.util.equals(FetchRuntimeImageRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.FetchRuntimeImageResponse
+ */
+export class FetchRuntimeImageResponse extends Message<FetchRuntimeImageResponse> {
+  /**
+   * Chunk of pull output, one per message (same relay as a build log).
+   *
+   * @generated from field: string log = 1;
+   */
+  log = "";
+
+  /**
+   * Set on the final message: the image's new status + any error.
+   *
+   * @generated from field: orchicon.api.v1.RuntimeImageStatus status = 2;
+   */
+  status = RuntimeImageStatus.UNSPECIFIED;
+
+  /**
+   * @generated from field: string error = 3;
+   */
+  error = "";
+
+  /**
+   * @generated from field: string tag = 4;
+   */
+  tag = "";
+
+  /**
+   * Set on the final message when the fetch was SKIPPED because the image is
+   * already present locally: nothing was downloaded.
+   *
+   * @generated from field: bool skipped = 5;
+   */
+  skipped = false;
+
+  constructor(data?: PartialMessage<FetchRuntimeImageResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.FetchRuntimeImageResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "log", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "status", kind: "enum", T: proto3.getEnumType(RuntimeImageStatus) },
+    { no: 3, name: "error", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "tag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "skipped", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): FetchRuntimeImageResponse {
+    return new FetchRuntimeImageResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): FetchRuntimeImageResponse {
+    return new FetchRuntimeImageResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): FetchRuntimeImageResponse {
+    return new FetchRuntimeImageResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: FetchRuntimeImageResponse | PlainMessage<FetchRuntimeImageResponse> | undefined, b: FetchRuntimeImageResponse | PlainMessage<FetchRuntimeImageResponse> | undefined): boolean {
+    return proto3.util.equals(FetchRuntimeImageResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.ListAvailableRuntimeImagesRequest
  */
 export class ListAvailableRuntimeImagesRequest extends Message<ListAvailableRuntimeImagesRequest> {

@@ -36,6 +36,10 @@ const STATUS_LABELS: Record<number, string> = {
   2: "building",
   3: "ready",
   4: "failed",
+  // ABSENT: the row is correct but its image is NOT downloaded locally and no
+  // build is running. Never auto-built (that would be far heavier than the
+  // fetch it replaces) — open the row and press Fetch.
+  5: "not downloaded",
 };
 
 const STATUS_STYLES: Record<number, string> = {
@@ -43,6 +47,7 @@ const STATUS_STYLES: Record<number, string> = {
   2: "bg-blue-100 text-blue-800",
   3: "bg-green-600 text-white",
   4: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
+  5: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200",
 };
 
 function StatusBadge({ status }: { status: number }) {

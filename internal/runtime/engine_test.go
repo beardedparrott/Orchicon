@@ -281,3 +281,32 @@ func TestResolveEngineFromEnvHonoursTheProjectWideVariable(t *testing.T) {
 		t.Error("an unknown project-wide engine name must be an error")
 	}
 }
+
+// TestIsAbsentOutputBothEngines is the wording table behind the idempotent
+// DELETE /v1/images (AC 5): docker says "No such image", podman says "image not
+// known", and BOTH must read as the already-gone result rather than a 500.
+// Any other failure text stays an error, so the matcher cannot swallow a real
+// removal failure.
+func TestIsAbsentOutputBothEngines(t *testing.T) {
+	for _, eng := range []Engine{{Name: "podman"}, {Name: "docker"}} {
+		for _, out := range []string{
+			"Error: No such image: orchicon-runtime-custom:latest",
+			"Error: No such image: orchicon-runtime-custom:latest: image not known",
+			"Error: orchicon-runtime:base: image not known",
+			"Error: no such object: abc123",
+		} {
+			if !eng.IsAbsentOutput(out) {
+				t.Errorf("%s: IsAbsentOutput(%q) = false, want true", eng.name(), out)
+			}
+		}
+		for _, out := range []string{
+			"Error: image is in use by a container",
+			"Error: permission denied",
+			"",
+		} {
+			if eng.IsAbsentOutput(out) {
+				t.Errorf("%s: IsAbsentOutput(%q) = true, want false", eng.name(), out)
+			}
+		}
+	}
+}

@@ -973,9 +973,15 @@ Dockerfile override.
 
 **Note.** The stock images include a base image, a `:gui` variant with headless GUI
 libraries, an `:orchicon-dev` image with the full Orchicon toolchain, and a
-`:web-research` image.
+`:web-research` image. **No runtime image is downloaded for you.** The stock list
+is a set of specs, not downloads: a shipped image that is not present on this
+machine shows as **not downloaded** and is never built in the background. Open the
+row and press **Fetch** to download it (idempotent — nothing is downloaded if it is
+already present). A workflow run whose image is not downloaded fails fast with a
+message naming the image and that action — it does not wait on a multi-GB pull.
 
-**Actions.** Create, edit the spec, **build** (with live streamed logs), delete.
+**Actions.** Create, edit the spec, **Fetch** (download a published image, live log),
+**Deploy** (build the spec, live log), delete.
 
 ---
 
