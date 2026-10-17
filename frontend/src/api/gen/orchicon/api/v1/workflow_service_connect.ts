@@ -17,7 +17,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowRunRequest, DeleteWorkflowRunResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, ForceProgressWorkflowRunRequest, ForceProgressWorkflowRunResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, RetryFailedWorkflowRunRequest, RetryFailedWorkflowRunResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowRequest, UpdateWorkflowResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
+import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowRunRequest, DeleteWorkflowRunResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, ForceProgressWorkflowRunRequest, ForceProgressWorkflowRunResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunDiagnosisRequest, GetWorkflowRunDiagnosisResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, RetryFailedWorkflowRunRequest, RetryFailedWorkflowRunResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowRequest, UpdateWorkflowResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -225,6 +225,34 @@ export const WorkflowService = {
       name: "RetryStepRun",
       I: RetryStepRunRequest,
       O: RetryStepRunResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetWorkflowRunDiagnosis answers "why is this run not moving?" in the
+     * terms the reconcilers themselves use, so a stuck run stops being a
+     * guessing game.
+     *
+     * WHY THIS EXISTS. A run's blockage is usually RUN-EXTERNAL. Field
+     * incident: run 01M53DXZSF5G2T2Z592F7G5ETE sat "running" with an empty
+     * current step and no execution anywhere while the UI read "waiting for
+     * dispatch". The cause was the PROJECT's max-concurrent-runs cap, fully
+     * occupied by ten unreaped `unhealthy` executions — a fact no part of the
+     * run view could see, because the run view only ever loads the run's OWN
+     * step runs and executions. The per-step `_dispatch_wait` note said
+     * "waiting for a slot" and nothing said whose slot, or that ten dead
+     * executions were holding them all.
+     *
+     * The diagnosis therefore reports the run's own blocked steps AND the
+     * project-level dispatch state, plus the executions holding slots that
+     * the liveness probe considers dead — the ones the operator can clear
+     * with ReleaseStuckExecutions. Read-only: it classifies, it never acts.
+     *
+     * @generated from rpc orchicon.api.v1.WorkflowService.GetWorkflowRunDiagnosis
+     */
+    getWorkflowRunDiagnosis: {
+      name: "GetWorkflowRunDiagnosis",
+      I: GetWorkflowRunDiagnosisRequest,
+      O: GetWorkflowRunDiagnosisResponse,
       kind: MethodKind.Unary,
     },
     /**

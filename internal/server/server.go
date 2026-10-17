@@ -529,6 +529,12 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	adapterKind := func(ctx context.Context, execID string) (string, error) {
 		return resolveAdapterKind(ctx, pool, cfg.DeploymentTenantID, execID)
 	}
+	// execReaper is captured by the ReleaseStuckExecutions closure below and
+	// assigned once the reaper exists: it is built AFTER this literal, once the
+	// runtime daemon has been dialled and the TaskReconciler exists. Capturing
+	// the variable (not the Server) is what keeps the dep honest — it reports
+	// "not wired" until there is genuinely a reaper to run.
+	var execReaper *scheduler.ExecutionReaper
 	deps := api.Dependencies{
 		Pool:              pool,
 		Log:               log,
@@ -599,6 +605,22 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 				return fmt.Errorf("adapter kind %q does not support live-session abort", kind)
 			}
 			return aborter.AbortExecution(ctx, execID, reason)
+		},
+		// ReleaseStuckExecutions backs the run view's "release stuck
+		// executions": it runs the liveness reaper NOW, scoped to one project,
+		// so a project pinned at its dispatch cap (by executions that are dead
+		// but unreaped) can be freed without waiting for the next tick.
+		//
+		// LAZY ON PURPOSE. The reaper is constructed further down, after the
+		// runtime daemon is dialled and the TaskReconciler exists — so this
+		// dereferences s.reaper at CALL time, not at Deps-build time. The nil
+		// check is the honest one: a plane with no daemon and no headless
+		// reaper must say "not available" rather than silently no-op.
+		ReleaseStuckExecutions: func(ctx context.Context, projectID string) ([]string, int, error) {
+			if execReaper == nil {
+				return nil, 0, errors.New("execution reaper is not wired on this plane")
+			}
+			return execReaper.ReapProject(ctx, projectID)
 		},
 		HostServe:  askServe,
 		SecretsKEK: secretsKEK,
@@ -866,6 +888,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			// model_ref → dispatcher) and type-asserts the LivenessReporter
 			// capability; a bridge without it reports inactive (fail-closed).
 			s.reaper = scheduler.NewExecutionReaper(pool, activeProbe(dispatcher, pool, log), taskRec.FailLostExecution, log)
+			execReaper = s.reaper
 			log.Info("workflow runtime daemon connected", "socket", cfg.RuntimeSocket)
 		} else {
 			log.Warn("workflow runtime daemon not reachable — in-process execution", "socket", cfg.RuntimeSocket)
@@ -875,6 +898,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	if s.reaper == nil {
 		s.reaper = scheduler.NewExecutionReaper(pool, activeProbe(dispatcher, pool, log), taskRec.FailLostExecution, log)
 	}
+	execReaper = s.reaper
 	workflowRec := scheduler.NewWorkflowReconciler(pool, log, policyEngine, taskRec, recoveryEngine, runtimeLifecycle)
 	// Bounded in-pass fan-out for the post-commit inline dispatch: parallel
 	// branch step runs dispatch concurrently (ORCHICON_DISPATCH_CONCURRENCY,

@@ -144,6 +144,15 @@ type Dependencies struct {
 	// "terminated but still active" token burn). Nil when the session
 	// transport is unavailable.
 	AbortExecution func(ctx context.Context, execID, reason string) error
+	// ReleaseStuckExecutions runs the execution-liveness reaper NOW, scoped to
+	// one project, and returns the ids it released along with how many
+	// slot-holding executions it examined. Backs the run view's "release stuck
+	// executions" action: a project pinned at its dispatch cap by unreaped
+	// executions cannot dispatch anything, so waiting for the next reaper tick
+	// stalls every run in it. Nil when no reaper is wired (headless without a
+	// runtime daemon) → the RPC reports Unimplemented rather than pretending
+	// to have cleared something.
+	ReleaseStuckExecutions func(ctx context.Context, projectID string) (releasedIDs []string, examined int, err error)
 	// HostServe is the always-on host opencode serve. Ask Orchicon
 	// conversation turns run as persistent sessions on it (first message
 	// CreateSession, follow-ups prompt_async on the same session). Nil when
@@ -309,6 +318,9 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	}
 	if deps.AbortExecution != nil {
 		execSvc.SetAbortExecution(deps.AbortExecution)
+	}
+	if deps.ReleaseStuckExecutions != nil {
+		execSvc.SetReleaseStuckExecutions(deps.ReleaseStuckExecutions)
 	}
 
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(execSvc, interceptorOpt))

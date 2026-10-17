@@ -19,7 +19,9 @@ import type { WorkflowRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { WorkflowStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { WorkflowRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
-import type { CreateWorkflowRequest, CreateWorkflowVersionRequest } from "@/api/gen/orchicon/api/v1/workflow_service_pb";
+import type { CreateWorkflowRequest, CreateWorkflowVersionRequest,
+  RunDiagnosis,
+} from "@/api/gen/orchicon/api/v1/workflow_service_pb";
 import type { UpdateWorkflowRequest, UpdateWorkflowVersionRequest } from "@/api/gen/orchicon/api/v1/workflow_service_pb";
 import type { PartialMessage } from "@bufbuild/protobuf";
 
@@ -43,6 +45,7 @@ export const workflowKeys = {
     pageSize?: number;
   }) => [...workflowKeys.all, "runs-list", opts] as const,
   run: (id: string) => [...workflowKeys.all, "run", id] as const,
+  runDiagnosis: (runId: string) => [...workflowKeys.all, "run-diagnosis", runId] as const,
   stepRuns: (runId: string) => [...workflowKeys.all, "step-runs", runId] as const,
 };
 
@@ -440,5 +443,27 @@ export function useGetWorkflowEditLock(workflowId: string) {
     enabled: !!workflowId,
     // Poll every 10s so other users' lock releases are detected.
     refetchInterval: 10_000,
+  });
+}
+
+// useGetWorkflowRunDiagnosis answers "why is this run not moving?".
+//
+// It exists because a run's blockage is usually RUN-EXTERNAL: the project's
+// dispatch cap, held by unreaped executions, stops every run in the project —
+// and the run view, which loads only this run's step runs and executions, could
+// never see it. The card that renders this is how "waiting for dispatch" stops
+// being a dead end.
+//
+// Polled while the run is live, because a blockage clears on its own the moment
+// a slot frees; `enabled` keeps it off for terminal runs, which cannot block.
+export function useGetWorkflowRunDiagnosis(runId: string, opts?: { pollMs?: number }) {
+  return useQuery({
+    queryKey: workflowKeys.runDiagnosis(runId),
+    queryFn: async () => {
+      const res = await workflowClient.getWorkflowRunDiagnosis({ runId });
+      return res.diagnosis as RunDiagnosis | undefined;
+    },
+    enabled: !!runId,
+    refetchInterval: opts?.pollMs ?? 10000,
   });
 }

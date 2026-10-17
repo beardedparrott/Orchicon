@@ -677,3 +677,111 @@ func GetLatestExecutionForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID 
 	}
 	return e, nil
 }
+
+// stuckExecutionStatuses is the SQL form of the slot-holding statuses the
+// liveness layer has ALREADY marked not-well: 'unhealthy' and 'stalled' are
+// recorded liveness-probe verdicts, and 'terminating' is an execution on its
+// way out that never finished leaving. An execution in one of these holds a
+// dispatch slot while being known bad — exactly the set that pinned a project
+// at its cap in the field (ten rows, the oldest three weeks old, none reaped,
+// so every later dispatch was deferred forever).
+//
+// DELIBERATELY EXCLUDES 'running'/'healthy'/'dispatching'. Those hold slots
+// too, but they may be perfectly alive, and NOTHING here may treat them as
+// dead: only the reaper's own liveness probe decides that. This set is a
+// reporting and candidate set, never a kill list.
+const stuckExecutionStatuses = "('unhealthy','stalled','terminating')"
+
+// ListStuckExecutionsForProject returns the project's slot-holding executions
+// that carry a status the liveness layer has already marked not-well
+// (stuckExecutionStatuses), oldest first.
+//
+// This is the DIAGNOSTIC view — "here is what is holding your project's slots
+// and is known bad" — for the run-view blockage card. It is NOT the reaper's
+// input: the reaper lists every slot holder (ListRunningExecutions) and lets
+// its liveness probe decide, which is the only thing entitled to. Keeping the
+// two apart is what lets the card be specific without ever authorising a kill.
+func ListStuckExecutionsForProject(ctx context.Context, tx pgx.Tx, tenantID, projectID string) ([]ExecutionRow, error) {
+	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
+		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
+		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
+		we.workflow_run_id, we.workflow_step_id, '', COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
+		we.created_at, we.updated_at
+		FROM worker_executions we
+		LEFT JOIN workers wkr ON wkr.id = we.worker_id AND wkr.tenant_id = we.tenant_id
+		WHERE we.tenant_id = $1 AND we.project_id = $2
+		  AND we.status IN ` + stuckExecutionStatuses + `
+		ORDER BY we.created_at ASC`
+	rows, err := tx.Query(ctx, q, tenantID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list stuck executions for project: %w", err)
+	}
+	defer rows.Close()
+	var out []ExecutionRow
+	for rows.Next() {
+		var e ExecutionRow
+		if err := rows.Scan(
+			&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
+			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
+			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
+			&e.CheckpointRef, &e.RecoveryID,
+			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
+			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
+			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
+			&e.Version,
+			&e.CreatedAt, &e.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan stuck execution: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ListRunningExecutionsForProject is ListRunningExecutions scoped to one
+// project — every execution holding a dispatch slot for that project, which is
+// the candidate set an operator-invoked release examines.
+//
+// It is the SAME activeExecutionStatuses set the cap counts and the same one
+// ListRunningExecutions uses: the reaper must be able to examine exactly the
+// executions that can hold a slot, or it cannot release the ones that hold one.
+func ListRunningExecutionsForProject(ctx context.Context, tx pgx.Tx, tenantID, projectID string) ([]ExecutionRow, error) {
+	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
+		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
+		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
+		we.created_at, we.updated_at
+		FROM worker_executions we
+		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
+		LEFT JOIN workflows w ON w.id = wr.workflow_id
+		LEFT JOIN workers wkr ON wkr.id = we.worker_id AND wkr.tenant_id = we.tenant_id
+		WHERE we.tenant_id = $1 AND we.project_id = $2
+		  AND we.status IN ` + activeExecutionStatuses + `
+		ORDER BY we.created_at ASC`
+	rows, err := tx.Query(ctx, q, tenantID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list running executions for project: %w", err)
+	}
+	defer rows.Close()
+	var out []ExecutionRow
+	for rows.Next() {
+		var e ExecutionRow
+		if err := rows.Scan(
+			&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
+			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
+			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
+			&e.CheckpointRef, &e.RecoveryID,
+			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
+			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
+			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
+			&e.Version,
+			&e.CreatedAt, &e.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan execution: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}

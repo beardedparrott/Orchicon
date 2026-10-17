@@ -14,7 +14,7 @@ import ReactFlow, {
   type Node,
 } from "reactflow";
 import type { WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
-import { StepKind, StepRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
+import { StepKind, StepRunStatus, WorkflowRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 
 import { useApproveStep } from "@/api/approvals";
 import {
@@ -52,6 +52,7 @@ import {
   type RunView,
 } from "@/components/workflow-runs/headsUp";
 import { HeadsUpGrid } from "@/components/workflow-runs/HeadsUpGrid";
+import { RunBlockageCard } from "@/components/workflow-runs/RunBlockageCard";
 import {
   ExecStatusBadge,
   StepStatusPill,
@@ -462,6 +463,14 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           <span className="text-xs text-muted-foreground">elapsed</span>
         </div>
       )}
+
+      {/* The run blockage card renders in BOTH views (it sits above the view
+          switch on purpose). A stuck run is not a per-view concern: the cause
+          is usually run-EXTERNAL — the project's dispatch cap, held by
+          unreaped executions — and an operator who switched to the graph tab
+          would otherwise lose the one panel that explains it. It renders
+          nothing for a run that is not blocked. */}
+      <RunBlockageCard runId={runId} enabled={run.status === WorkflowRunStatus.RUNNING} />
 
       {view === "tile" ? (
         <>

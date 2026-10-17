@@ -94,6 +94,26 @@ service WorkflowService {
   // reconciler picks it up on the next cycle.
   rpc RetryStepRun(RetryStepRunRequest) returns (RetryStepRunResponse);
 
+  // GetWorkflowRunDiagnosis answers "why is this run not moving?" in the
+  // terms the reconcilers themselves use, so a stuck run stops being a
+  // guessing game.
+  //
+  // WHY THIS EXISTS. A run's blockage is usually RUN-EXTERNAL. Field
+  // incident: run 01M53DXZSF5G2T2Z592F7G5ETE sat "running" with an empty
+  // current step and no execution anywhere while the UI read "waiting for
+  // dispatch". The cause was the PROJECT's max-concurrent-runs cap, fully
+  // occupied by ten unreaped `unhealthy` executions — a fact no part of the
+  // run view could see, because the run view only ever loads the run's OWN
+  // step runs and executions. The per-step `_dispatch_wait` note said
+  // "waiting for a slot" and nothing said whose slot, or that ten dead
+  // executions were holding them all.
+  //
+  // The diagnosis therefore reports the run's own blocked steps AND the
+  // project-level dispatch state, plus the executions holding slots that
+  // the liveness probe considers dead — the ones the operator can clear
+  // with ReleaseStuckExecutions. Read-only: it classifies, it never acts.
+  rpc GetWorkflowRunDiagnosis(GetWorkflowRunDiagnosisRequest) returns (GetWorkflowRunDiagnosisResponse);
+
   // ForceProgressWorkflowRun advances a stuck running WorkflowRun past its
   // current in-flight step run(s) regardless of their previous status.
   //
@@ -353,6 +373,78 @@ message RetryFailedWorkflowRunResponse {
   WorkflowRun run = 1;
   // The step run ids reset back to pending for re-dispatch.
   repeated string reset_step_run_ids = 2;
+}
+
+// RunDiagnosis explains why a workflow run is, or is not, progressing.
+//
+// It is a REPORT, never a decision: it classifies from recorded state so the
+// operator can see the cause. The only thing that ever clears an execution is
+// the liveness reaper, invoked deliberately via ReleaseStuckExecutions.
+message RunDiagnosis {
+  // blocked is true when the run is running but has work it cannot advance.
+  bool blocked = 1;
+
+  // blockage_kind is a stable, machine-readable classification. Empty when
+  // the run is not blocked. One of:
+  //
+  //   ""                       not blocked
+  //   "project_at_capacity"    the project's dispatch cap is fully occupied
+  //   "dispatch_deferred"      a step is waiting for a dispatch slot
+  //   "recovering_unresumable" a step is held in a recovery that cannot resolve
+  //   "awaiting_approval"      a human approval step is pending
+  //   "stalled_unexplained"    running, no active step, cause not identified
+  string blockage_kind = 2;
+
+  // detail is a human sentence naming the cause, for display.
+  string detail = 3;
+
+  // project_id of the run's project (empty for an unbound run).
+  string project_id = 4;
+
+  // active_executions and dispatch_limit are the count the dispatch gate
+  // compares and the SAME effective limit it enforces (the per-project value
+  // floored by the tenant's) — not the raw project column, so the card cannot
+  // disagree with the gate that is actually holding the run.
+  int32 active_executions = 5;
+  int32 dispatch_limit = 6;
+  bool at_capacity = 7;
+
+  // blocked_step_ids are the run's step runs currently waiting on something.
+  repeated string blocked_step_ids = 8;
+
+  // stuck_executions hold a dispatch slot while carrying a status the liveness
+  // layer has ALREADY marked not-well — 'unhealthy', 'stalled' or
+  // 'terminating' — and are past the reap grace. These are the executions
+  // ReleaseStuckExecutions can free. An execution merely 'running' or
+  // 'dispatching' is NOT listed: it may be perfectly alive, and only the
+  // reaper's own liveness probe may decide otherwise.
+  repeated StuckExecution stuck_executions = 9;
+
+  // clearable is true when at least one slot can be freed — i.e. there is
+  // something for ReleaseStuckExecutions to do.
+  bool clearable = 10;
+}
+
+// StuckExecution is one slot-holding execution the operator may clear.
+message StuckExecution {
+  string id = 1;
+  string worker_name = 2;
+  string status = 3;
+  string health_state = 4;
+  // started_at_unix is 0 when the execution never recorded a start.
+  int64 started_at_unix = 5;
+  // age_seconds is measured from started_at; 0 when there is no start time.
+  int64 age_seconds = 6;
+  // run_id is the workflow run that owns it ("" for a standalone execution).
+  string run_id = 7;
+}
+
+message GetWorkflowRunDiagnosisRequest {
+  string run_id = 1;
+}
+
+message GetWorkflowRunDiagnosisResponse {
+  RunDiagnosis diagnosis = 1;
 }
 
 message DeleteWorkflowRunRequest {
