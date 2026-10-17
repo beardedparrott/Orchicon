@@ -1057,6 +1057,20 @@ func contextMounts(ctxFiles []byte, projectDir string) []MountSpec {
 	return out
 }
 
+// ImagePresent reports whether a runtime image exists LOCALLY on the daemon's
+// host — the presence probe the reconciler's dispatch fail-fast uses.
+//
+// It inspects any ref (not just the daemon's allowlisted stock images), so a
+// tenant-built custom image is reported correctly. A nil client is headless
+// `orchicon serve`: presence is unknowable, which is an ERROR, not "absent" —
+// the caller must not turn an unwired plane into a configuration failure.
+func (l *Lifecycle) ImagePresent(ctx context.Context, ref string) (bool, error) {
+	if l == nil || l.client == nil {
+		return false, errors.New("runtime lifecycle: no runtime daemon configured")
+	}
+	return l.client.ImagePresent(ctx, ref)
+}
+
 // ReapForRun removes the runtime container for a run that reached a
 // terminal state (completed/failed/aborted). Idempotent.
 func (l *Lifecycle) ReapForRun(ctx context.Context, runID string) error {

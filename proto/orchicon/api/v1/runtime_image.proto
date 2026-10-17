@@ -24,6 +24,13 @@ enum RuntimeImageStatus {
   RUNTIME_IMAGE_STATUS_BUILDING = 2; // a build is in flight
   RUNTIME_IMAGE_STATUS_READY = 3;    // last build succeeded, tag usable
   RUNTIME_IMAGE_STATUS_FAILED = 4;   // last build failed (build_log has why)
+  // ABSENT: the spec is CORRECT but its image is not present locally and no
+  // build is running. Distinct from DRAFT (a custom spec never built) and
+  // from FAILED (a build was attempted and failed): an absent row is never
+  // auto-built, because building is far heavier than fetching. It becomes
+  // READY through BuildRuntimeImage (build a spec) or FetchRuntimeImage
+  // (download the published image) — both are explicit operator actions.
+  RUNTIME_IMAGE_STATUS_ABSENT = 5;
 }
 
 // RuntimeImage is a buildable container image spec + its latest build

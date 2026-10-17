@@ -58,6 +58,18 @@ export enum RuntimeImageStatus {
    * @generated from enum value: RUNTIME_IMAGE_STATUS_FAILED = 4;
    */
   FAILED = 4,
+
+  /**
+   * ABSENT: the spec is CORRECT but its image is not present locally and no
+   * build is running. Distinct from DRAFT (a custom spec never built) and
+   * from FAILED (a build was attempted and failed): an absent row is never
+   * auto-built, because building is far heavier than fetching. It becomes
+   * READY through BuildRuntimeImage (build a spec) or FetchRuntimeImage
+   * (download the published image) — both are explicit operator actions.
+   *
+   * @generated from enum value: RUNTIME_IMAGE_STATUS_ABSENT = 5;
+   */
+  ABSENT = 5,
 }
 // Retrieve enum metadata with: proto3.getEnumType(RuntimeImageStatus)
 proto3.util.setEnumType(RuntimeImageStatus, "orchicon.api.v1.RuntimeImageStatus", [
@@ -66,6 +78,7 @@ proto3.util.setEnumType(RuntimeImageStatus, "orchicon.api.v1.RuntimeImageStatus"
   { no: 2, name: "RUNTIME_IMAGE_STATUS_BUILDING" },
   { no: 3, name: "RUNTIME_IMAGE_STATUS_READY" },
   { no: 4, name: "RUNTIME_IMAGE_STATUS_FAILED" },
+  { no: 5, name: "RUNTIME_IMAGE_STATUS_ABSENT" },
 ]);
 
 /**

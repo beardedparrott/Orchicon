@@ -170,23 +170,23 @@ func (c *Client) BuildImage(ctx context.Context, req BuildRequest, fn func(Agent
 //
 // A dropped stream is reported as StreamDroppedError, exactly like a build:
 // "we lost the log" must stay distinguishable from "the pull failed".
-func (c *Client) PullImage(ctx context.Context, ref string, fn func(AgentEvent) error) (int, error) {
+func (c *Client) PullImage(ctx context.Context, ref string, fn func(AgentEvent) error) (exit int, skipped bool, err error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://runtime"+"/v1/images/pull?ref="+url.QueryEscape(ref), nil)
 	if err != nil {
-		return 1, err
+		return 1, false, err
 	}
 	resp, err := c.hc.Do(httpReq)
 	if err != nil {
-		return 1, err
+		return 1, false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 1, fmt.Errorf("runtime image pull: %w", readError(resp.Body))
+		return 1, false, fmt.Errorf("runtime image pull: %w", readError(resp.Body))
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	exit := 1
+	exit = 1
 	sawExit := false
 	for sc.Scan() {
 		var ev AgentEvent
@@ -194,26 +194,27 @@ func (c *Client) PullImage(ctx context.Context, ref string, fn func(AgentEvent) 
 			continue
 		}
 		if fn != nil {
-			if err := fn(ev); err != nil {
-				return 1, err
+			if ferr := fn(ev); ferr != nil {
+				return 1, skipped, ferr
 			}
 		}
 		if ev.Event == "exit" {
 			sawExit = true
 			exit = ev.ExitCode
+			skipped = ev.Skipped
 			if ev.Error != "" {
-				return exit, fmt.Errorf("runtime image pull: %s", ev.Error)
+				return exit, skipped, fmt.Errorf("runtime image pull: %s", ev.Error)
 			}
 			break
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return 1, &StreamDroppedError{Err: err}
+		return 1, skipped, &StreamDroppedError{Err: err}
 	}
 	if !sawExit {
-		return 1, &StreamDroppedError{Err: fmt.Errorf("stream ended without exit event")}
+		return 1, skipped, &StreamDroppedError{Err: fmt.Errorf("stream ended without exit event")}
 	}
-	return exit, nil
+	return exit, skipped, nil
 }
 
 // ImagePresent reports whether a runtime image exists LOCALLY on the daemon's

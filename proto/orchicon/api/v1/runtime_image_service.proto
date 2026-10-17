@@ -34,6 +34,14 @@ service RuntimeImageService {
   // chunks until the image is ready or the build fails.
   rpc BuildRuntimeImage(BuildRuntimeImageRequest) returns (stream BuildRuntimeImageResponse);
 
+  // FetchRuntimeImage downloads (podman/docker pull) the row's published
+  // image, streaming the pull output. This is the on-demand FETCH and it is
+  // DISTINCT from BuildRuntimeImage, which BUILDS a spec from a Dockerfile.
+  // Images are never pulled at install time: the fetch happens when an
+  // operator opts into runtime containers. Idempotent — an image already
+  // present locally is reported skipped with no download.
+  rpc FetchRuntimeImage(FetchRuntimeImageRequest) returns (stream FetchRuntimeImageResponse);
+
   // CancelRuntimeImageBuild cancels an in-flight build (building -> failed).
   rpc CancelRuntimeImageBuild(CancelRuntimeImageBuildRequest) returns (CancelRuntimeImageBuildResponse);
 
@@ -133,6 +141,22 @@ message BuildRuntimeImageResponse {
   string failed_step = 7;
   string log_tail = 8;
   string failure_category = 9;
+}
+
+message FetchRuntimeImageRequest {
+  string id = 1;
+}
+
+message FetchRuntimeImageResponse {
+  // Chunk of pull output, one per message (same relay as a build log).
+  string log = 1;
+  // Set on the final message: the image's new status + any error.
+  RuntimeImageStatus status = 2;
+  string error = 3;
+  string tag = 4;
+  // Set on the final message when the fetch was SKIPPED because the image is
+  // already present locally: nothing was downloaded.
+  bool skipped = 5;
 }
 
 message ListAvailableRuntimeImagesRequest {

@@ -125,6 +125,13 @@ type RuntimeLifecycle interface {
 	// from EnsureForRun is enough). The reconciler must not dispatch an
 	// execution for a serve-needing run until this returns nil.
 	EnsureServing(ctx context.Context, run db.WorkflowRunRow, needsServe bool) error
+	// ImagePresent reports whether a runtime image exists LOCALLY on the
+	// daemon host. The reconciler checks it BEFORE creating a container so a
+	// missing image is a fast, permanent CONFIGURATION failure (fetch it)
+	// rather than a container-create error — and, critically, BEFORE the
+	// base-image fallback, which would otherwise mask the real fault by
+	// silently running the step on a different image.
+	ImagePresent(ctx context.Context, ref string) (bool, error)
 	ReapForRun(ctx context.Context, runID string) error
 }
 
@@ -1775,6 +1782,25 @@ func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, ten
 	}
 	try := cur
 	try.RuntimeImage = img
+	// FAIL FAST on a missing image, BEFORE any container-create attempt and
+	// BEFORE the base-image fallback below. Runtime images are fetched at
+	// opt-in time, never mid-run: a multi-GB pull inside a workflow run is
+	// indistinguishable from a hang (and the serve gate would time it out).
+	// Falling back to the base image here would silently run the step on an
+	// image the operator did not choose, and would report the problem as an
+	// opaque container-create failure. A presence-probe ERROR is NOT treated
+	// as absence — that is a daemon problem, and the retry path below owns it.
+	if reason, absent := r.runtimeImageAbsentReason(ctx, img); absent {
+		r.log.Error("workflow runtime image is not downloaded — failing the run at start (no base fallback): fetch the image, then re-dispatch",
+			"run", cur.ID, "image", img)
+		if ferr := r.failRunAtStart(ctx, ftx.Tx, tenantID, cur, reason); ferr != nil {
+			return ferr
+		}
+		if cerr := ftx.Commit(ctx); cerr != nil {
+			return fmt.Errorf("commit fail-at-start (missing runtime image): %w", cerr)
+		}
+		return nil
+	}
 	// The arm site already attempted EnsureForRun once (in autocommit);
 	// entry here means that attempt failed. Retry the resolved tag once
 	// (transient daemon/pool miss), then fall back to the base image.
@@ -1817,6 +1843,27 @@ func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, ten
 		return fmt.Errorf("commit fail-at-start: %w", cerr)
 	}
 	return nil
+}
+
+// runtimeImageAbsentReason reports the fail-fast reason when the run's runtime
+// image is NOT present locally, and whether the caller must stop and fail the
+// run at start.
+//
+// The probe result is deliberately TRI-STATE: present → false (carry on to
+// EnsureForRun), absent → true, and probe ERROR → false as well. A probe error
+// means the daemon is unreachable/angry, which is the transient path the
+// existing retry-then-failover code already handles with a real diagnostic;
+// turning it into "image not downloaded" would blame the operator for an
+// infrastructure fault and block the run permanently on a lie.
+func (r *WorkflowReconciler) runtimeImageAbsentReason(ctx context.Context, img string) (string, bool) {
+	if !r.runtimeEnabled() {
+		return "", false
+	}
+	present, err := r.runtime.ImagePresent(ctx, img)
+	if err != nil || present {
+		return "", false
+	}
+	return runtimeImageAbsentError(img).Error(), true
 }
 
 // startEnsureServing kicks off the ASYNC runtime-serve readiness probe for

@@ -384,7 +384,7 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		enc := json.NewEncoder(w)
 		_ = enc.Encode(AgentEvent{Stream: "stdout", Data: ref + " is already present locally — nothing to fetch"})
-		_ = enc.Encode(AgentEvent{Event: "exit", ExitCode: 0})
+		_ = enc.Encode(AgentEvent{Event: "exit", ExitCode: 0, Skipped: true})
 		return
 	}
 	cmd := exec.Command(d.DockerBin, "pull", ref)
