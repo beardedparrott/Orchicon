@@ -867,14 +867,16 @@ Set under **Settings → Defaults → Execution budget** (per-worker `budget_ove
 
 ### Local Development Loop
 
-The fastest local development cycle — stop the dev instance, rebuild the binary + image, start it again:
+The fastest local development cycle — stop the dev instance, rebuild the binary, start it again. The instance is a **host** process: no image is built and no container is created (only the workflow runtime images come from a container engine, and those are `make runtime-build`).
 
 ```bash
-make container-rebuild instance=dev     # stop dev container → build bin/orchicon + image → start dev container
-make container-rebuild instance=prod    # same for the prod instance
+make instance-rebuild instance=dev      # stop dev instance → build bin/orchicon → start dev instance
+make instance-rebuild instance=prod     # same for the prod instance
 ```
 
-`container-rebuild` **always forces a fresh frontend build** (`force-fe=1`), so a rebuilt instance is guaranteed to reflect the current source — the `fe-build` stamp check that normally skips an unchanged frontend is bypassed. This avoids the trap where a stale `frontend/dist` silently ships the previous UI after a rebuild (the repeated "my frontend fix went invisible" failure): the one-command rebuild is a trustworthy "rebuild dev / rebuild prod and test recent changes" flow.
+The old names still work — `make container-rebuild` prints what it became and delegates to `instance-rebuild`.
+
+`instance-rebuild` **always forces a fresh frontend build** (`force-fe=1`), so a rebuilt instance is guaranteed to reflect the current source — the `fe-build` stamp check that normally skips an unchanged frontend is bypassed. This avoids the trap where a stale `frontend/dist` silently ships the previous UI after a rebuild (the repeated "my frontend fix went invisible" failure): the one-command rebuild is a trustworthy "rebuild dev / rebuild prod and test recent changes" flow.
 
 Or run the individual steps:
 
@@ -1025,14 +1027,16 @@ The control plane runs as a **host process** by default, while the same instance
 | `ORCHICON_CONTAINER_SERVICES_ONLY` | set by the launcher *into the container* | unset | `1` ⇒ `cmd/orchicon/container.go` skips the plane child |
 | `ORCHICON_SERVE_STATE_DIR` | host plane env | `.dev` | per-instance PID/log root for `serve --detach`/`--stop`, so two host planes never share one PID file |
 
-**Host is the default through both entry points that rebuild an instance, and the two differ deliberately.** `scripts/container.sh up|down|rebuild <inst>` resolves `${ORCHICON_PLANE_RESIDENCY:-host}`; `make rebuild-dev` / `make rebuild-prod` pin `residency=host` as a target-specific override; `make container-rebuild <inst>` keeps the Makefile's own `residency = container` variable. So `scripts/orchicon.sh start dev` and `make rebuild-dev` both give a host plane with no setting at all. The rollback is one word — `make rebuild-prod residency=container` puts prod's plane back inside its container — and each instance's shape is independent, so one can migrate while the other does not.
+**Host is the ONLY shape, so the Makefile no longer carries a residency variable at all.** The launcher and `make instance-rebuild` / `make rebuild-dev` / `make rebuild-prod` all produce a plane on the host with no setting; there is nothing left to contradict. That variable is worth remembering, though: it existed because ONE entry point (`make container-rebuild`) shipped its own default while every other path took the launcher's, so a single target silently produced a different shape from a fresh install and from `make rebuild-dev`. A per-target default that disagrees with the product default is not an option, it is a divergence with a friendly name — **if a future knob makes one path differ from the rest, the path is the bug**. The comment above the Makefile's instance section keeps that lesson.
 
 **`orchicon install` resolves the same question, and it can PROMPT.** The one-command installer asks for
 residency before it pulls anything (a pull can take minutes, and no operator should be asked a question
 after waiting for it), then resolves every published port. `ORCHICON_PLANE_RESIDENCY` and
-`ORCHICON_INSTANCE` both apply. The installer and the launcher agree by construction — the port table is
-shared and a test asserts the two agree (`TestInstallPortDefaultsMatchContainerScript`), so an instance's
-ports do not depend on which entry point created it.
+`ORCHICON_INSTANCE` both apply. The installer and the launcher agree by construction — the port table has
+ONE home per side, `scripts/lib/instances.sh` (shell: `ORCHICON_INSTANCES` + `instance_info`) and
+`instanceOrder`/`installerPorts()` in `cmd/orchicon/install_ports.go` (Go), and the cross-language gate
+`TestInstallPortDefaultsMatchShellInstanceTable` asserts the two define the SAME SET of instances in both
+directions — so an instance's ports do not depend on which entry point created it.
 
 #### The inner loop with no container: `make services`
 
@@ -1125,6 +1129,18 @@ scripts/container.sh plane-start dev  # start it again — no container restart
 
 **Migration rule:** dev and prod migrate independently and coexist in different shapes; a rebuild of one instance must never alter the other's. `scripts/container.sh verify <inst>` is the check.
 
+**Teardown is an instance-scoped verb, and it is destructive-and-confirmed.** `scripts/orchicon.sh
+uninstall <dev|prod|test> --yes` (or `ORCHICON_CONFIRM_DESTROY=1`) removes ONE instance — its host plane,
+its container, its data volume, its host data dir and its labelled runtime containers — and nothing else:
+a dev teardown never reaches prod's or test's row of the instance table. It prints exactly what it will
+remove BEFORE asking, refuses without confirmation, clears the root-owned remainder through a helper
+container (a bare `rm -rf` fails on it and, under `set -e`, aborted the teardown AFTER the container and
+volume were gone — leaving the job half-done and the operator wrongly told it failed), and deliberately
+does NOT remove dev/prod's `PG_VOLUME`: that is a legacy compose volume predating the single-container
+layout and may hold data this instance never owned. The body lives in `scripts/lib/teardown.sh`, and it
+drives whichever engine `scripts/lib/engine.sh` resolves (docker or podman). `make rebuild-test`'s
+throwaway instance is torn down with exactly this command.
+
 **Measured footprint** (single container, this stack): full telemetry ≈ **384 MiB** resident; `ORCHICON_TELEMETRY=none` ≈ **96 MiB** — vs ~2.7 GB for the ClickHouse-era compose stack.
 
 Dual-instance (dev + prod) is two containers with offset published ports (`-p 8080:8080 -p 3002:3000` and `-p 8091:8080 -p 3003:3000`), separate data volumes. An instance may instead be **host-resident** (its container runs the services only, its plane runs on the host) — see §Host residency above; the two instances may be in different shapes at the same time.
@@ -1139,7 +1155,7 @@ Worker executions run inside **one short-lived container per active workflow run
 
 **Components:**
 
-- **`orchicon runtime-daemon`** (host process): the only process with access to the Docker socket. Serves a narrow HTTP API over a unix socket (default `/tmp/orchicon-runtime/runtime.sock`, bind-mounted as a **directory** into the supervisor container at `/var/run/orchicon-runtime`): lease/release warm runtime containers (`POST`/`DELETE /v1/runtimes`), build/remove runtime images (`/v1/images`). Every request is validated — image allowlist (the base + `ORCHICON_RUNTIME_IMAGES` stock images + any locally-present image carrying the inherited `org.orchicon.runtime-base` label), mount sources restricted to the projects root — so the control plane can never create an arbitrary container. The daemon owns the **warm pool** (§below): leases are daemon-resident, the pool is reset wholesale at daemon start (which also reaps plane-down leaks), and clean containers are idle-reaped. Started by `scripts/container.sh up`; manage with `scripts/container.sh runtime-daemon` / `runtime-stop`. **Freshness-gated**: `container.sh up` (and therefore every `make container-rebuild` / `make rebuild-dev` / `rebuild-prod`) byte-compares the daemon's stable binary copy (the file bind-mounted into every runtime container) against `bin/orchicon` and restarts a stale daemon — a rebuild thus picks up new runtime-side code (MCP toolset, supervisor) without a manual daemon restart; the restart also reaps every pooled container from the pre-rebuild binary.
+- **`orchicon runtime-daemon`** (host process): the only process with access to the Docker socket. Serves a narrow HTTP API over a unix socket (default `/tmp/orchicon-runtime/runtime.sock`, bind-mounted as a **directory** into the supervisor container at `/var/run/orchicon-runtime`): lease/release warm runtime containers (`POST`/`DELETE /v1/runtimes`), build/remove runtime images (`/v1/images`). Every request is validated — image allowlist (the base + `ORCHICON_RUNTIME_IMAGES` stock images + any locally-present image carrying the inherited `org.orchicon.runtime-base` label), mount sources restricted to the projects root — so the control plane can never create an arbitrary container. The daemon owns the **warm pool** (§below): leases are daemon-resident, the pool is reset wholesale at daemon start (which also reaps plane-down leaks), and clean containers are idle-reaped. Started by `make instance-up`; manage with `make runtime-daemon` / `make runtime-stop` (or `scripts/runtime.sh daemon-start|daemon-stop|daemon-status`). **Freshness-gated**: `scripts/runtime.sh daemon-start` (and therefore every `make runtime-daemon` / `make rebuild-dev` / `rebuild-prod`) byte-compares the daemon's stable binary copy (the file bind-mounted into every runtime container) against `bin/orchicon` and restarts a stale daemon — a rebuild thus picks up new runtime-side code (MCP toolset, supervisor) without a manual daemon restart; the restart also reaps every pooled container from the pre-rebuild binary.
 - **`orchicon runtime-supervisor`** (PID 1 inside each runtime container): listens on a unix socket (`/tmp/orchicon-agent.sock`) and answers the daemon's two requests — a `ping` (container readiness) and the `serve` handshake. Hosts the container's **opencode serve** (detached child, `Cmd:"serve"`, 0.0.0.0:4096, guard + **stable** XDG data dir `/tmp/orchicon-serve-data` so sessions survive restarts), answers idempotent serve handshakes (owning the serve password, liveness-gated — a wedged serve is restarted, not reported as up), and runs a **serve watchdog** that polls `/global/health` and restarts the serve in place (same port + password) when it stops answering. On images that bake the pieces (currently `:orchicon-dev`) it also boots the **sandbox plane** (§Sandbox plane below) in the background. Builds the execution-guard shim in-container so workers run under the same `rm`/`sudo`/`dd`/`mkfs` path-scoped safety guard as the in-process path. (The one-shot exec/stream/reconnect machinery was removed with the transport it served.)
 - **`orchicon runtime-client`** (in-container): forwards a request from the daemon (via `docker exec`) to the supervisor socket and relays the answer back, so the daemon never needs shell-level access to the container.
 
@@ -1176,7 +1192,7 @@ Worker executions run inside **one short-lived container per active workflow run
 
   **No-DB-route invariant preserved:** the sandbox plane's DSN is container-local trust auth — it never learns the host plane's DSN, and the MCP sidecar is pointed at the sandbox DSN. The plane dies with the container (pool reset recreates pristine).
 
-**Build:** `make container-build` also builds `orchicon-runtime:local` (plus `orchicon-runtime:local-gui` and `orchicon-runtime:orchicon-dev`) — **version-gated, not unconditional**. Each stock runtime image is tagged with an `org.orchicon.runtime.version` label derived from the app version + the SHA-256 of its Dockerfile (`<version>-<sha12>`; the `:gui`/`:dev` versions embed the base's version so a base change cascades to them). On every `container-build` the script inspects the existing image's label and **skips the build when it matches** — the base image no longer bakes the orchicon binary (the daemon mounts its own at container-create time), so its content is a pure function of the Dockerfiles and a normal dev rebuild (binary changed, Dockerfiles unchanged) skips all three. The script also skips any image carrying `org.orchicon.runtime.spec-version` (a daemon-built image from an edited+redeployed canned row) — container.sh never clobbers a tenant-owned build. Touch a Dockerfile (or bump the app version) and the affected variants rebuild. Escape hatch: `FORCE_RUNTIME=1 make container-build` (or `ORCHICON_FORCE_RUNTIME_REBUILD=1 scripts/container.sh build`) rebuilds regardless. The release workflow ships the runtime image to GHCR (`ghcr.io/beardedparrott/orchicon-runtime:<version>` + `:latest`, plus the `:gui` and `:dev` variants) — the one-command install pulls it, and the runtime daemon defaults to that image (`ORCHICON_RUNTIME_IMAGE` overrides; local dev pins the locally-built tag). `ORCHICON_RUNTIME_IMAGES` adds extra allowlisted stock images (base always included). **Model note:** executions dispatch with the worker's pinned `model_ref`; verification workers should pin a free model (e.g. `opencode/deepseek-v4-flash-free`).
+**Build:** `make runtime-build` (scripts/runtime.sh, `${ORCHICON_ENGINE:-podman}`) builds `orchicon-runtime:local` (plus `orchicon-runtime:local-gui` and `orchicon-runtime:orchicon-dev`) — **version-gated, not unconditional**. Each stock runtime image is tagged with an `org.orchicon.runtime.version` label derived from the app version + the SHA-256 of its Dockerfile (`<version>-<sha12>`; the `:gui`/`:dev` versions embed the base's version so a base change cascades to them). On every `runtime-build` the script inspects the existing image's label and **skips the build when it matches** — the base image no longer bakes the orchicon binary (the daemon mounts its own at container-create time), so its content is a pure function of the Dockerfiles and a normal dev rebuild (binary changed, Dockerfiles unchanged) skips all three. The script also skips any image carrying `org.orchicon.runtime.spec-version` (a daemon-built image from an edited+redeployed canned row) — runtime.sh never clobbers a tenant-owned build. Touch a Dockerfile (or bump the app version) and the affected variants rebuild. Escape hatch: `FORCE_RUNTIME=1 make runtime-build` (or `ORCHICON_FORCE_RUNTIME_REBUILD=1 scripts/runtime.sh build`) rebuilds regardless. The release workflow ships the runtime image to GHCR (`ghcr.io/beardedparrott/orchicon-runtime:<version>` + `:latest`, plus the `:gui` and `:dev` variants) — the one-command install pulls it, and the runtime daemon defaults to that image (`ORCHICON_RUNTIME_IMAGE` overrides; local dev pins the locally-built tag). `ORCHICON_RUNTIME_IMAGES` adds extra allowlisted stock images (base always included). **Model note:** executions dispatch with the worker's pinned `model_ref`; verification workers should pin a free model (e.g. `opencode/deepseek-v4-flash-free`).
 
 ### Native (orchicon-kind) session engine
 
@@ -1256,14 +1272,20 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `migrate-diff` | Generate new migration from `db/schema.hcl` |
 | `migrate-hash` | Recompute Atlas migration directory hash |
 | `rls-check` | Verify every `tenant_id` table has RLS policy |
-| **Container** | |
-| `container-build` | Build `bin/orchicon` + the container image |
-| `container-rebuild` | Stop an instance, rebuild the image (frontend always forced), start it (usage: `make container-rebuild instance=dev\|prod`) |
-| `container-up` | Start the dev single-container instance |
-| `container-down` | Stop the dev single-container instance |
-| `container-status` | Show single-container instance status |
-| `container-logs` | Tail the dev container instance logs |
-| `container-ps` | List orchicon container instances |
+| **Instance** (host-resident; no image, no instance container) | |
+| `instance-build` | Build `bin/orchicon` + `bin/orch` (binaries only — there is no image) |
+| `instance-up` | Start this instance on the host (services + plane; `instance=dev` default) |
+| `instance-down` | Stop this instance (plane and the services it started) |
+| `instance-restart` | Restart this instance without rebuilding anything |
+| `instance-status` | Show whether this instance's plane and services are up and healthy |
+| `instance-logs` | Tail this instance's plane log |
+| `instance-ps` | List the ORCHICON instances on this host and their state |
+| `instance-rebuild` | Stop this instance, rebuild the binaries (frontend always forced), start it (usage: `make instance-rebuild instance=dev\|prod\|test`) |
+| **Runtime** (podman; `scripts/runtime.sh`) | |
+| `runtime-build` | Build the stock workflow runtime images, version-gated (skipped when unchanged) |
+| `runtime-daemon` | Start the host-side workflow runtime daemon (restarted when its binary is stale) |
+| `runtime-stop` | Stop the runtime daemon |
+| `runtime-status` | Show whether the runtime daemon answers, and on which socket |
 | **Frontend** | |
 | `fe-install` | Install frontend dependencies |
 | `fe-dev` | Start Vite dev server |
@@ -1285,6 +1307,8 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `cross-compile` | Compile both shipped binaries for every release platform (linux/darwin/windows × amd64/arm64, `CGO_ENABLED=0`). Catches platform-specific breaks — see *Continuous integration* below. Builds into a **throwaway `GOCACHE`**: its six-platform output is worthless to a dev host and would otherwise be unreclaimable, so it must never land in the shared cache (see *The Go build cache*) |
 | `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **install-ps1-test** → **install-path-test** → **host-residency-test** → **cache-trim-test** → **disk-report-test** → **cross-compile**. This is exactly what the `go-ci` workflow job runs. The four `*-test` harnesses in the middle are the SHELL gates — they guard the installers, the launch shape and the host diagnostics, none of which Go tests can reach |
 | `ci` | `ci-go` + `fe-lint` + `fe-test` — the full gate |
+
+The deprecated `container-*` names are real targets that still work: each prints what it became and delegates (`container-up` → `instance-up`, `container-build` → `instance-build`, `container-rebuild` → `instance-rebuild`, …). They carry no `##` comment on purpose, so `make help` lists only the canonical names.
 
 ### Code Generation
 
@@ -1523,7 +1547,7 @@ that tag before anything else.
 Before marking any change complete:
 
 1. **`make ci` passes** — buf lint, codegen, go vet/test, RLS gate
-2. **Container instance starts healthy** — `make container-build && scripts/container.sh up dev`, then `scripts/container.sh status` shows the dev instance `running (healthy)`; `curl http://localhost:8080/healthz` returns `{"status":"ok"}`
+2. **Instance starts healthy** — `make instance-build && make instance-up instance=dev`, then `make instance-status` shows the dev instance running and healthy; `curl http://localhost:8080/healthz` returns `{"status":"ok"}`
 3. **Migrations apply cleanly** — on a fresh container data volume (`ORCHICON_PG_VOLUME=fresh`); `make rls-check` passes
 4. **Control plane boots** — `make build && make run`, then `curl http://localhost:8080/healthz` returns `{"status":"ok"}` in <2s
 5. **Frontend renders** — `make fe-dev`, then `curl http://localhost:5173/` returns HTTP 200
@@ -1741,7 +1765,7 @@ The three values are **asserted** by `TestRetentionPreserved` (`cmd/orchicon/con
 | Symptom | Likely Cause | Fix |
 |---|---|---|
 | Instance stays `unhealthy` | Corrupt/stale state | `scripts/container.sh down dev && scripts/container.sh up dev`, or start fresh with `ORCHICON_PG_VOLUME=fresh` |
-| Grafana datasources missing | Embedded configs stale | Re-build the image so `deploy/configs/grafana-provisioning/` is re-embedded (`make container-build`) |
+| Grafana datasources missing | Embedded configs stale | Re-build the binary so `deploy/configs/grafana-provisioning/` is re-embedded (`make instance-build`) |
 | Control plane won't connect to DB | Postgres not healthy yet | Wait for the PID-1 supervisor to bring postgres up; check `scripts/container.sh logs dev` and `ORCHICON_POSTGRES_DSN` |
 | Postgres data-corruption guard blocks start | Compose-era postgres still owns the volume | Stop the old compose-era postgres container first, or use `ORCHICON_PG_VOLUME=fresh` |
 

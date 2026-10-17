@@ -276,13 +276,50 @@ binary_paths() {
   printf '%s\n%s\n' "$INSTALL_DIR/orchicon" "$INSTALL_DIR/orch"
 }
 
+# file_holders <path> prints the pids of the processes holding <path> — executing it, or with it open.
+#
+# PORTABILITY IS THE POINT, and it is the lesson scripts/install-local.sh learned for the same step:
+# `fuser` is Linux-only (psmisc) and ABSENT ON macOS BY DEFAULT, and it is missing from minimal Linux
+# images too. The old single-tool check returned "nobody holds it" when the TOOL was missing — which is
+# exactly how a live binary gets removed out from under a running plane, the failure this exists to
+# prevent. So the order is fuser -> lsof (macOS + most Linux) -> /proc (Linux with neither), and a
+# missing tool now means "ask the next one", never "nobody".
+file_holders() {
+  local bin="$1" target fd link pid
+  [ -e "$bin" ] || return 0
+  if command -v fuser >/dev/null 2>&1; then
+    fuser "$bin" 2>/dev/null || true
+    return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -t -- "$bin" 2>/dev/null || true
+    return 0
+  fi
+  [ -d /proc ] || return 0
+  target="$(readlink -f "$bin" 2>/dev/null || printf '%s' "$bin")"
+  for pid in /proc/[0-9]*; do
+    pid="${pid#/proc/}"
+    if [ "$pid" = "$$" ]; then continue; fi
+    if [ "$(readlink "/proc/$pid/exe" 2>/dev/null || true)" = "$target" ]; then
+      printf '%s\n' "$pid"
+      continue
+    fi
+    for fd in "/proc/$pid/fd/"*; do
+      link="$(readlink "$fd" 2>/dev/null || true)"
+      if [ -n "$link" ] && [ "$link" = "$target" ]; then
+        printf '%s\n' "$pid"
+        break
+      fi
+    done
+  done
+}
+
 # binary_users <bin> prints "pid:instance" for every process holding it. The instance field is EMPTY for
 # a process that carries none, which is the case for the shared runtime daemon.
 binary_users() {
   local bin="$1" pid inst
-  command -v fuser >/dev/null 2>&1 || return 0
   [ -e "$bin" ] || return 0
-  for pid in $(fuser "$bin" 2>/dev/null); do
+  for pid in $(file_holders "$bin"); do
     inst="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^ORCHICON_INSTANCE=//p' | head -1)"
     printf '%s:%s\n' "$pid" "$inst"
   done
@@ -388,12 +425,14 @@ check_cmd() {
 #
 # The job is narrower than "stop Orchicon": it is "release THIS file". An old
 # process holding the binary's mmap is what makes the mv/rm fail with "Text file
-# busy". `fuser` targets the FILE, so a plane running from any other path is
-# unreachable by CONSTRUCTION rather than by naming convention — this is the same
-# technique scripts/install-local.sh already uses for exactly this step.
+# busy". The check targets the FILE (file_holders), so a plane running from any
+# other path is unreachable by CONSTRUCTION rather than by naming convention —
+# this is the same technique scripts/install-local.sh already uses for exactly
+# this step.
 #
-# When fuser is unavailable it declines to act and says so, rather than falling
-# back to a name match: killing the wrong process is worse than a warning.
+# It never degrades to a name match: killing the wrong process is worse than a
+# warning. Where not even a file-level check is possible (no fuser, no lsof, no
+# /proc) it declines to act and says so.
 stop_installed_plane() {
   local bin="$INSTALL_DIR/orchicon"
   [ -f "$bin" ] || return 0
