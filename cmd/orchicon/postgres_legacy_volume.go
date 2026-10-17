@@ -103,6 +103,58 @@ var postgresVolumeExists = func(engineBin, name string) bool {
 	}
 }
 
+// engineCandidateBins lists the engine binaries whose volume stores could hold a
+// CONTAINER-ERA volume for this instance, most likely first.
+//
+// IT MUST NOT BE THE RUNTIME'S ENGINE ALONE, and that is not hypothetical. The
+// runtime prefers Podman (rootless, ADR-0014) while every container-era instance
+// in the field was created by Docker — so a guard that probed only the resolved
+// runtime engine was blind on exactly the hosts it exists to protect. On this
+// operator's machine `podman volume inspect orchicon-prod_postgres-data` answers
+// "no such volume" while Docker holds the 5.7 GB cluster the guard is about, so
+// the guard stayed silent and a rebuild would have initdb'd an empty database
+// beside it: the failure it was written to prevent, one layer down.
+//
+// WHERE A VOLUME LIVES IS A HISTORICAL FACT about the instance, not a consequence
+// of which engine the runtime now prefers, so every installed engine is asked.
+//
+// A var, so a test pins the candidate set instead of depending on what the
+// machine running it happens to have installed.
+var engineCandidateBins = func() []string {
+	var bins []string
+	seen := map[string]bool{}
+	add := func(bin string) {
+		if bin == "" || seen[bin] {
+			return
+		}
+		seen[bin] = true
+		bins = append(bins, bin)
+	}
+	// The runtime's choice first: when the volume IS there, one probe answers.
+	if e, err := runtime.ResolveEngineFromEnv(); err == nil {
+		add(e.Bin)
+	}
+	for _, name := range []string{"docker", "podman"} {
+		if p, err := exec.LookPath(name); err == nil {
+			add(p)
+		}
+	}
+	return bins
+}
+
+// findContainerEraVolume locates the container-era volume in ANY installed engine
+// and reports WHICH engine binary holds it. The engine is returned because the
+// remediation printed on refusal has to name it — telling an operator to run
+// `docker run` against a Podman volume moves no data and looks like it worked.
+func findContainerEraVolume(volume string) (engineBin string, found bool) {
+	for _, bin := range engineCandidateBins() {
+		if postgresVolumeExists(bin, volume) {
+			return bin, true
+		}
+	}
+	return "", false
+}
+
 // guardContainerEraPostgresCluster decides whether this host-residency boot may
 // touch <dataDir>/postgres at all, given a container-era volume for the same
 // instance.
@@ -120,14 +172,15 @@ func guardContainerEraPostgresCluster(hostDataDir string, hostClusterInitialized
 		return nil // nothing this instance could have left behind
 	}
 	// No engine, no evidence. A host with no docker/podman cannot have a volume,
-	// and must never be blocked by one.
-	engine, err := runtime.ResolveEngineFromEnv()
-	if err != nil || engine.Bin == "" {
+	// and must never be blocked by one — findContainerEraVolume returns not-found
+	// for an empty candidate set.
+	engineBin, found := findContainerEraVolume(volume)
+	if !found {
 		return nil
 	}
-	if !postgresVolumeExists(engine.Bin, volume) {
-		return nil
-	}
+	// The engine that ACTUALLY holds the cluster, by its CLI name, because every
+	// remediation below is a command the operator will run against that engine.
+	engine := filepath.Base(engineBin)
 
 	hostCluster := filepath.Join(hostDataDir, "postgres")
 
@@ -136,10 +189,10 @@ func guardContainerEraPostgresCluster(hostDataDir string, hostClusterInitialized
 		// the volume as a backup, which is the safest thing they could have done.
 		// But the plane is now running on the host cluster and the other copy is
 		// invisible from inside it, so say which one is live.
-		fmt.Fprintf(out, "note: %s also has a container-era postgres volume (%s).\n"+
+		fmt.Fprintf(out, "note: %s also has a container-era postgres volume (%s, in %s).\n"+
 			"      this plane is running on the HOST cluster %s — the volume is not being read.\n"+
 			"      if the volume holds newer data than the host cluster, stop and migrate it before continuing.\n",
-			instance, volume, hostCluster)
+			instance, volume, engine, hostCluster)
 		return nil
 	}
 
@@ -151,13 +204,13 @@ func guardContainerEraPostgresCluster(hostDataDir string, hostClusterInitialized
 		return nil
 	}
 	return fmt.Errorf(
-		"refusing to initialise a NEW postgres cluster: instance %q has a container-era postgres volume (%s) "+
+		"refusing to initialise a NEW postgres cluster: instance %q has a container-era postgres volume (%s, in %s) "+
 			"and %s does not exist.\n"+
 			"  Starting here would create an EMPTY database while the real one stays in %s — the plane would come up "+
 			"looking healthy with no data in it.\n"+
 			"  Either migrate the volume first:\n"+
-			"      docker run --rm -v %s:/src alpine tar cf - -C /src . | tar xf - -C %s\n"+
+			"      %s run --rm -v %s:/src alpine tar cf - -C /src . | tar xf - -C %s\n"+
 			"  or, if that volume is genuinely empty and you want a fresh instance, say so explicitly:\n"+
 			"      %s=1\n",
-		instance, volume, hostCluster, volume, volume, hostCluster, allowFreshPostgresEnv)
+		instance, volume, engine, hostCluster, volume, engine, volume, hostCluster, allowFreshPostgresEnv)
 }

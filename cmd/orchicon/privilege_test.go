@@ -192,6 +192,14 @@ func TestInitPostgresRefusesForeignOwnedDirBeforeInitdb(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: no directory is unwritable, so the refusal is unreachable")
 	}
+	// HERMETIC ABOUT THE CONTAINER-ERA VOLUME, because this test is about the
+	// WRITABILITY guard. On a host that still has a legacy postgres volume (the
+	// operator's own machine has two), the container-era guard refuses first and
+	// this assertion would fail for a reason that has nothing to do with what it
+	// pins — a test that only passes on a host with no history. Saying "no engine
+	// is installed here" removes the volume from the picture without touching the
+	// probe this test is actually exercising.
+	withEngineCandidates(t)
 	s := &supervisor{log: testLogger(), dataDir: t.TempDir(), residency: residencyHost}
 	dir := filepath.Join(s.dataDir, "postgres")
 	if err := os.MkdirAll(dir, 0o500); err != nil { // unwritable, and NO PG_VERSION
