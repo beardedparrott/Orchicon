@@ -61,6 +61,20 @@ Two more conditions decide whether a run is meaningful:
                            --prod-pg-port 15433 --prod-nats-port 14223 --prod-control-port 18091
   ```
 
+- **Disk budget.** A cold build needs room on three volumes, and each one fails
+  differently when it is too small: `npm error code ENOSPC` inside the checkout, `write
+  $WORK/b657/_pkg_.a: no space left on device` from the Go toolchain (which names a *temp
+  path*, never the host), and a half-populated module cache. Step 0 measures all three
+  (`00-build-budget.log`) so an undersized host says so instead of failing minutes later
+  and blaming nobody. If a volume is short the run is **invalid** (exit 2), not a FAIL,
+  and the message names the knob.
+
+  Two pieces are safe to move and are moved for you, with the move recorded:
+  `GOCACHE` is disposable (go rebuilds it) and `TMPDIR`/`GOTMPDIR` only hold the build's
+  `$WORK`. When `$HOME` or `/tmp` is a small tmpfs they are relocated onto the checkout's
+  volume, *inside the git dir*, so `git status` still shows a clean checkout. The **module
+  cache never moves** — a module download mid-session would change what the run proves.
+
 - **Frontend deps.** A fresh worktree has no `frontend/node_modules`; `make build` needs
   `make fe-install` once (network on first use).
 

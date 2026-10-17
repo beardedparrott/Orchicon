@@ -187,3 +187,16 @@ documents `make build force-fe=1` as the engine-free rebuild command.
 - Port overrides were required (sandbox plane on 5432/4222/8080); the defaults are untested here.
 - Nothing outside `qa-evidence/` and this report was modified by this step: D1/D2/D3/D4 are filed,
   not fixed.
+
+### Harness delta after this run (SSE)
+
+That blocker was itself a blind spot in the harness: it walked into an `ENOSPC` three minutes
+in and reported a wall of FAILs that blamed no one. Step 0 now **measures** the cold-build
+disk budget on all three volumes (`00-build-budget.log`), relocates the two movable pieces
+(`GOCACHE`, `TMPDIR`/`GOTMPDIR` — into the git dir, so the checkout stays clean) when a volume
+is short, and otherwise stops with `RUN INVALID` naming the fix. Measured on this same
+container-class host: `checkout 174890 MB free / need 4500`, cache volume `360 MB / need 0`
+(after relocation), `tmp 174890 MB / need 0` (after relocation) → step 0 now exits **0** here,
+where this run exited `2`. What that does *not* prove is the rest of the session — re-run it;
+`GOMODCACHE` 686 MB still has to live somewhere, and no result in this report may be read as a
+pass for steps it never reached.

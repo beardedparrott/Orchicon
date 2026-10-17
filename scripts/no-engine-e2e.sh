@@ -373,6 +373,116 @@ ports_free_list() { # ports_free_list <port...> — print the ones that are held
   return 0
 }
 
+# --- build budget (MEASURED before anything runs) ---------------------------
+# A cold build needs room on THREE volumes, and each one fails differently when
+# it is too small: `npm error code ENOSPC` inside the checkout, "write
+# $WORK/b657/_pkg_.a: no space left on device" from the Go toolchain (which names
+# a TEMP DIR, never the host), and a half-populated module cache. All three land
+# minutes into the session and blame nobody, which is precisely the blindness this
+# harness exists to remove — so the budget is measured up front, written to
+# evidence, and a shortfall that cannot be fixed here INVALIDATES the run (exit 2)
+# with the knob that fixes it.
+REPO_NEED_MB=1500      # node_modules + frontend/dist + bin/ + evidence
+CACHE_NEED_MB=2200     # cold GOMODCACHE + GOCACHE
+CACHE_WARM_NEED_MB=900 # both caches already populated: incremental writes only
+TMP_NEED_MB=800        # go build $WORK + the link step (TMPDIR, NOT the checkout)
+
+free_mb() { df -Pm "$1" 2>/dev/null | awk 'NR==2 {print $4}'; }
+
+build_budget() {
+  local gomodcache gocache warm repo_free cache_free tmpdir tmp_free need_cache budget_log reloc gitdir
+  warm=1
+  gomodcache="$(go env GOMODCACHE 2>/dev/null || true)"
+  gocache="$(go env GOCACHE 2>/dev/null || true)"
+  [ -n "$gomodcache" ] || gomodcache="$HOME/go/pkg/mod"
+  [ -n "$gocache" ] || gocache="$HOME/.cache/go-build"
+  if ! { [ -d "$gomodcache" ] && [ -n "$(ls -A "$gomodcache" 2>/dev/null | head -1)" ]; }; then warm=0; fi
+  if ! { [ -d "$gocache" ] && [ -n "$(ls -A "$gocache" 2>/dev/null | head -1)" ]; }; then warm=0; fi
+  need_cache="$CACHE_NEED_MB"
+  [ "$warm" = "1" ] && need_cache="$CACHE_WARM_NEED_MB"
+
+  repo_free="$(free_mb "$REPO_ROOT")"; repo_free="${repo_free:-0}"
+  cache_free="$(free_mb "$HOME")"; cache_free="${cache_free:-0}"
+  tmpdir="${TMPDIR:-/tmp}"
+  tmp_free="$(free_mb "$tmpdir")"; tmp_free="${tmp_free:-0}"
+  reloc=""
+  gocache_reloc=""
+
+  # Demand PER VOLUME, so a relocation MOVES the demand instead of pretending the
+  # host grew.
+  need_repo="$REPO_NEED_MB"
+  need_home="$need_cache"
+  need_tmp="$TMP_NEED_MB"
+  gitdir="$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+
+  # A cold go build cache is ~2 GB and $HOME is a small mount on many dev and CI
+  # hosts. The build cache is DISPOSABLE (go rebuilds it), so moving it changes
+  # nothing about what the session proves. The MODULE cache never moves: pulling
+  # modules over the network mid-session would change the claim.
+  if [ "$cache_free" -lt "$need_home" ] && [ -n "$gitdir" ] \
+     && [ "$repo_free" -ge $((need_repo + CACHE_NEED_MB)) ] \
+     && mkdir -p "${gitdir}/no-engine-e2e-gocache" 2>/dev/null; then
+    export GOCACHE="${gitdir}/no-engine-e2e-gocache"
+    gocache="$GOCACHE"
+    gocache_reloc="$GOCACHE"
+    warm=0   # the relocated cache starts EMPTY: the full build-cache budget applies
+    need_repo=$((need_repo + CACHE_NEED_MB))
+    need_home=0
+  fi
+
+  # The Go toolchain writes $WORK and the link step's temporaries to TMPDIR. On a
+  # host whose /tmp is a small tmpfs that is the FIRST thing to blow up, and its
+  # error names a temp path rather than the host — so relocate TMPDIR onto the
+  # cache volume when that volume can take it, and record the move as evidence.
+  # Two targets, best first: the cache volume (one place for all build state),
+  # then scratch INSIDE the git dir — same volume as the checkout but never part
+  # of the working tree, so `git status` stays clean and provenance is unchanged.
+  if [ "$tmp_free" -lt "$need_tmp" ]; then
+    if [ "$cache_free" -ge $((need_home + need_tmp)) ]; then
+      reloc="$HOME/.cache/no-engine-e2e/tmp"
+      need_home=$((need_home + need_tmp))
+    elif [ -n "$gitdir" ] && [ "$repo_free" -ge $((need_repo + need_tmp)) ]; then
+      reloc="${gitdir}/no-engine-e2e-tmp"
+      need_repo=$((need_repo + need_tmp))
+    fi
+    if [ -n "$reloc" ] && mkdir -p "$reloc" 2>/dev/null; then
+      export TMPDIR="$reloc" GOTMPDIR="$reloc"
+      tmpdir="$reloc"
+      tmp_free="$(free_mb "$tmpdir")"; tmp_free="${tmp_free:-0}"
+      need_tmp=0
+    else
+      reloc=""
+    fi
+  fi
+
+  budget_log="${EVIDENCE}/00-build-budget.log"
+  {
+    echo "measured:        $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "go module cache: $gomodcache"
+    echo "go build cache:  $gocache"
+    echo "caches warm:     $warm (1 = module + build cache populated; 0 = build cache cold)"
+    echo "checkout volume: $REPO_ROOT -> ${repo_free} MB free, need >= ${need_repo}"
+    echo "cache volume:    $HOME -> ${cache_free} MB free, need >= ${need_home} (module cache + build cache)"
+    echo "TMPDIR:          $tmpdir -> ${tmp_free} MB free, need >= ${need_tmp} (go build \$WORK + link)"
+    [ -n "$gocache_reloc" ] && echo "GOCACHE relocated to $gocache_reloc (host $HOME cannot hold a cold build cache; disposable, so the session still proves the same thing)"
+    [ -n "$gocache_reloc" ] && echo "leave-behind:    $gocache_reloc (build cache, outside the working tree — safe to delete after the run)"
+    [ -n "$reloc" ] && echo "TMPDIR relocated to $reloc (host /tmp too small for a Go build; this is the ONLY thing changed, and it is recorded here)"
+    [ -n "$reloc" ] && echo "leave-behind:    $reloc (build scratch, outside the working tree — safe to delete after the run)"
+    echo "this is a MEASUREMENT, not a promise: a warm-cache run needs less and the"
+    echo "numbers move as the build writes. A shortfall is a HOST condition, not a"
+    echo "defect in the session being proven — hence exit 2 (invalid run), not FAIL."
+  } >"$budget_log" 2>&1
+  sed 's/^/  /' "$budget_log" >>"${EVIDENCE}/00-preflight.log"
+
+  if [ "$repo_free" -lt "$need_repo" ] || [ "$cache_free" -lt "$need_home" ] || [ "$tmp_free" -lt "$need_tmp" ]; then
+    check "the host has the disk budget for a cold build (checkout ${repo_free}MB/${need_repo}, cache volume ${cache_free}MB/${need_home}, tmp ${tmp_free}MB/${need_tmp})" 1
+    ABORT_REASON="this host cannot finish a cold build, so the session cannot be proven here: checkout volume ${repo_free} MB free (needs >= ${need_repo}), cache volume $HOME ${cache_free} MB (needs >= ${need_home}), TMPDIR ${tmpdir} ${tmp_free} MB (needs >= ${need_tmp}). Nothing was executed — this is NOT a defect in the session. Enlarge the volume, or point the build state at one with room: export GOCACHE=/big/go-build TMPDIR=/big/tmp (see ${budget_log})."
+    return 1
+  fi
+  check "the host has the disk budget for a cold build (checkout ${repo_free}MB, cache volume ${cache_free}MB, tmp ${tmp_free}MB)" 0
+  return 0
+}
+
 preflight() {
   begin_step 0 "preflight — is this run a valid proof of the claim?"
 
@@ -450,6 +560,11 @@ preflight() {
     return 1
   fi
   check "the port table resolves the ports this run chose" 0
+
+  # A host without the disk budget cannot produce a proof at all, and the ENOSPC
+  # it would hit mid-build names a temp path instead of the host. Measured, not
+  # assumed — and INVALID (exit 2), never a FAIL against a sibling's code.
+  build_budget || return 1
 
   if [ "$PREFLIGHT_ONLY" = "1" ]; then
     skip "frontend deps installed (make fe-install)" "--preflight-only: mutating prerequisite deferred to a full run"
@@ -986,7 +1101,8 @@ no-engine-e2e — planned session (dry run: nothing is executed)
   second       ${PROD_INSTANCE}: pg ${PORT_PG[$PROD_INSTANCE]} nats ${PORT_NATS[$PROD_INSTANCE]} control ${PORT_CTRL[$PROD_INSTANCE]}
   evidence     qa-evidence/no-engine-e2e/${UTC_STAMP}/
 
-  0  preflight            assert NO container engine; snapshot host, ports, process table
+  0  preflight            assert NO container engine; measure the cold-build disk budget
+                          (checkout / caches / TMPDIR); snapshot host, ports, process table
   1  cold start           make build -> make services -> make run (background) -> GET /healthz
   2  migrate + rls        make migrate (x2, second a no-op) -> make rls-check with NO host psql
   3  connect              PTY capture of bin/orch --url <plane> --token <resolved>
@@ -1000,7 +1116,7 @@ no-engine-e2e — planned session (dry run: nothing is executed)
   9  stop                 both planes + services-down -> every port free, no orphan
  10  no blind spots       emit 10-blindspots.md from the recorded evidence
 
-exit: 0 all PASS | 1 any FAIL | 2 run invalid (engine present / ports held)
+exit: 0 all PASS | 1 any FAIL | 2 run invalid (engine present / ports held / no disk budget)
 EOF
 }
 
