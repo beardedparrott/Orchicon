@@ -87,12 +87,25 @@ cs() {
       "$CONTAINER_SH" "$@" ) 2>&1
 }
 
-make_n() { ( cd "$REPO_ROOT" && make -n "$@" ) 2>&1 | strip_banners; }
-make_do() { ( cd "$REPO_ROOT" && make "$@" ) 2>&1 | strip_banners; }
+# scrub_ambient <cmd...> — run a command with the knobs that would MASK the derivation
+# cleared. The same discipline `cs` applies to container.sh, applied to make: CI exports
+# DB_URL (the postgres service it starts for the migrate/rls-check steps), and `DB_URL ?=`
+# then takes the ENVIRONMENT over the derivation — so an unscrubbed harness would grade the
+# CI job's DSN instead of the Makefile's per-instance one. The port overrides legitimately
+# move a derived port, and `instance` must only ever arrive as the command-line word these
+# assertions pass, never from an exported environment variable.
+scrub_ambient() {
+  env -u DB_URL -u instance -u ORCHICON_INSTANCE \
+      -u ORCHICON_POSTGRES_PORT -u ORCHICON_NATS_PORT -u ORCHICON_NATS_MONITOR_PORT \
+      "$@"
+}
+
+make_n() { ( cd "$REPO_ROOT" && scrub_ambient make -n "$@" ) 2>&1 | strip_banners; }
+make_do() { ( cd "$REPO_ROOT" && scrub_ambient make "$@" ) 2>&1 | strip_banners; }
 # make_rc prints "refused" when make exits non-zero and "ran" when it succeeds, so an
 # ASSERTION CAN BE ABOUT THE EXIT STATUS rather than about printed text. make_do cannot
 # be used for that: it pipes through strip_banners, so $? is the pipe's, not make's.
-make_rc() { ( cd "$REPO_ROOT" && make "$@" ) >/dev/null 2>&1; if [ $? -ne 0 ]; then echo refused; else echo ran; fi; }
+make_rc() { ( cd "$REPO_ROOT" && scrub_ambient make "$@" ) >/dev/null 2>&1; if [ $? -ne 0 ]; then echo refused; else echo ran; fi; }
 
 echo "container.sh under test: ${CONTAINER_SH}"
 echo "Makefile under test:     ${MAKEFILE}"
