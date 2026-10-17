@@ -47,6 +47,13 @@ type ImageInfo struct {
 	Ref            string `json:"ref"`
 	RuntimeVersion string `json:"runtime_version,omitempty"`
 	SpecVersion    string `json:"spec_version,omitempty"`
+	// Present reports whether the image exists LOCALLY. It is reported
+	// explicitly (from the inspect's error) rather than inferred from an
+	// empty label: an image built locally without the version label is
+	// present-but-unlabelled, and conflating that with "not downloaded" is
+	// exactly the ambiguity that made the stock seeder auto-build images
+	// nobody asked for. A missing image is NOT an error here.
+	Present bool `json:"present"`
 }
 
 // BuildRequest is the body of POST /v1/images/build. `Base` must resolve
@@ -104,7 +111,7 @@ func (d *Daemon) imageAllowed(name string) bool {
 			return true
 		}
 	}
-	out, err := d.docker("image", "inspect", "--format", `{{index .Config.Labels "`+baseImageLabel+`"}}`, name)
+	out, err := d.docker("image", "inspect", "--format", labelTemplate(baseImageLabel), name)
 	if err != nil {
 		return false
 	}
@@ -116,11 +123,51 @@ func (d *Daemon) imageAllowed(name string) bool {
 // for the label to exist — allowedImages only lists the base + configured
 // variants, which container.sh / the release workflow build or pull first.
 func (d *Daemon) imageLabel(name, label string) string {
-	out, err := d.docker("image", "inspect", "--format", `{{index .Config.Labels "`+label+`"}}`, name)
+	out, err := d.docker("image", "inspect", "--format", labelTemplate(label), name)
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(out)
+}
+
+// labelTemplate is the inspect format string for ONE config label. Both
+// engines implement the same Go template over .Config.Labels, and a label set
+// in a parent image is inherited into the child's config, so the same format
+// string works verbatim under Podman and Docker. Routing every label read
+// through this one helper means a format change happens once, and a test can
+// assert it stays engine-portable.
+func labelTemplate(label string) string {
+	return `{{index .Config.Labels "` + label + `"}}`
+}
+
+// imageReport is the single inspect behind presence + both version labels.
+//
+// Present comes from the inspect ERROR (a missing image makes inspect fail),
+// the labels from one template. A missing image must report Present=false
+// with empty labels and NO error: the stock seeder depends on that to tell
+// "not downloaded" apart from "needs a rebuild".
+func (d *Daemon) imageReport(ref string) ImageInfo {
+	info := ImageInfo{Ref: ref}
+	format := `{{index .Config.Labels "org.orchicon.runtime.version"}}|{{index .Config.Labels "org.orchicon.runtime.spec-version"}}`
+	out, err := d.docker("image", "inspect", "--format", format, ref)
+	if err != nil {
+		return info
+	}
+	info.Present = true
+	parts := strings.SplitN(out, "|", 2)
+	info.RuntimeVersion = strings.TrimSpace(parts[0])
+	if len(parts) == 2 {
+		info.SpecVersion = strings.TrimSpace(parts[1])
+	}
+	return info
+}
+
+// engine is the resolved container engine for the image path. DockerBin is
+// the single binary every operation uses, so deriving the engine from it
+// keeps one source of truth (and lets tests construct a Daemon with only
+// DockerBin set).
+func (d *Daemon) engine() Engine {
+	return Engine{Bin: d.DockerBin, Name: EngineName(d.DockerBin)}
 }
 
 // handleImages implements the image routes:
@@ -134,11 +181,7 @@ func (d *Daemon) handleImages(w http.ResponseWriter, r *http.Request) {
 		imgs := d.allowedImages()
 		infos := make([]ImageInfo, 0, len(imgs))
 		for _, ref := range imgs {
-			infos = append(infos, ImageInfo{
-				Ref:            ref,
-				RuntimeVersion: d.imageLabel(ref, "org.orchicon.runtime.version"),
-				SpecVersion:    d.imageLabel(ref, "org.orchicon.runtime.spec-version"),
-			})
+			infos = append(infos, d.imageReport(ref))
 		}
 		writeJSON(w, http.StatusOK, ImageList{Default: d.Image, Images: imgs, Infos: infos})
 	case http.MethodPost:
@@ -160,7 +203,7 @@ func (d *Daemon) handleImages(w http.ResponseWriter, r *http.Request) {
 		}
 		out, err := d.docker("rmi", "-f", ref)
 		if err != nil {
-			if strings.Contains(out, "No such image") {
+			if d.engine().IsAbsentOutput(out) {
 				writeJSON(w, http.StatusOK, map[string]string{"status": "gone"})
 				return
 			}
@@ -215,41 +258,71 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 
 	cmd := exec.Command(d.DockerBin, "build", "-t", req.Tag, ctxDir)
 	cmd.Dir = ctxDir
+	code, started := d.streamCommand(w, r, req.Tag, "build", cmd)
+	if !started || code != 0 {
+		return
+	}
+	// Rebuilding a tag orphans the previous image (which is still
+	// referenced by nothing but its now-overwritten tag). Prune the
+	// dangling orphans so repeated custom-image builds don't pile up
+	// tens of GB of unreferenced layers. Only untagged images are
+	// removed; running containers pin their image by ID. Podman accepts
+	// the same flags, so the prune is engine-independent.
+	if out, perr := d.docker("image", "prune", "-f", "--filter", "dangling=true"); perr == nil {
+		_ = out
+	}
+}
+
+// streamCommand runs one engine command, relaying its stdout/stderr as
+// AgentEvent {stream,data} NDJSON until it exits, then a final AgentEvent
+// {event:"exit", exit_code}. It is shared by `build` and `pull` so the log
+// relay, the cancel registration and the exit framing have exactly ONE
+// implementation for both engines and both verbs.
+//
+// `key` is the active-builds key (the image ref). DELETE
+// /v1/images/build?tag=<key> therefore cancels whatever that ref is doing —
+// a build or a pull — with no extra endpoint, and GET on the same route is
+// the probe. `verb` names the operation in operator-facing errors.
+//
+// Returns the exit code and whether the command actually started (false
+// means an error response was already written).
+func (d *Daemon) streamCommand(w http.ResponseWriter, r *http.Request, key, verb string, cmd *exec.Cmd) (code int, started bool) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
-		return
+		return 1, false
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
-		return
+		return 1, false
 	}
+	// Own process group: Podman (like Docker) runs the real builder as a
+	// child of the CLI, so cancelling must signal the tree, not the CLI.
+	setProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
-		httpError(w, http.StatusInternalServerError, "docker build: "+err.Error())
-		return
+		httpError(w, http.StatusInternalServerError, d.engine().Name+" "+verb+": "+err.Error())
+		return 1, false
 	}
-	// Register active build for cancel probe.
+	// Register the in-flight command for the cancel probe.
 	d.buildMu.Lock()
 	if d.activeBuilds == nil {
 		d.activeBuilds = make(map[string]*exec.Cmd)
 	}
-	d.activeBuilds[req.Tag] = cmd
+	d.activeBuilds[key] = cmd
 	d.buildMu.Unlock()
 	defer func() {
 		d.buildMu.Lock()
-		delete(d.activeBuilds, req.Tag)
+		delete(d.activeBuilds, key)
 		d.buildMu.Unlock()
 	}()
 	go func() {
 		<-r.Context().Done()
-		// Give docker build a moment to finish and flush exit event before killing.
+		// Give the engine a moment to finish and flush the exit event before killing.
 		timer := time.NewTimer(5 * time.Second)
 		select {
 		case <-timer.C:
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
+			_ = killGroup(cmd)
 		}
 	}()
 
@@ -269,32 +342,53 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 	go relay("stdout", stdout)
 	go relay("stderr", stderr)
 
-	err = cmd.Wait()
-	code := 0
+	werr := cmd.Wait()
+	code = 0
 	if cmd.ProcessState != nil {
 		code = cmd.ProcessState.ExitCode()
 	}
-	if err != nil {
+	if werr != nil {
 		code = 1
 	}
 	ev := AgentEvent{Event: "exit", ExitCode: code}
-	if err != nil {
-		ev.Error = err.Error()
+	if werr != nil {
+		ev.Error = werr.Error()
 	}
 	_ = enc.Encode(ev)
 	if flusher != nil {
 		flusher.Flush()
 	}
-	if code == 0 {
-		// Rebuilding a tag orphans the previous image (which is still
-		// referenced by nothing but its now-overwritten tag). Prune the
-		// dangling orphans so repeated custom-image builds don't pile up
-		// tens of GB of unreferenced layers. Only untagged images are
-		// removed; running containers pin their image by ID.
-		if out, perr := d.docker("image", "prune", "-f", "--filter", "dangling=true"); perr == nil {
-			_ = out
-		}
+	return code, true
+}
+
+// handlePull implements POST /v1/images/pull?ref=... — the on-demand FETCH
+// for a runtime image that is not downloaded yet.
+//
+// Fetch is distinct from Deploy: Deploy BUILDS a spec from a Dockerfile,
+// Fetch DOWNLOADS a published image. Both stream through the same relay, and
+// both are idempotent — an image that is already present short-circuits with
+// an immediate exit 0 and no engine command at all.
+//
+// There is no prune after a pull: nothing is orphaned by downloading.
+func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
 	}
+	ref := r.URL.Query().Get("ref")
+	if ref == "" || !imageTagPattern.MatchString(ref) {
+		httpError(w, http.StatusBadRequest, "bad image ref")
+		return
+	}
+	if info := d.imageReport(ref); info.Present {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		enc := json.NewEncoder(w)
+		_ = enc.Encode(AgentEvent{Stream: "stdout", Data: ref + " is already present locally — nothing to fetch"})
+		_ = enc.Encode(AgentEvent{Event: "exit", ExitCode: 0})
+		return
+	}
+	cmd := exec.Command(d.DockerBin, "pull", ref)
+	d.streamCommand(w, r, ref, "pull", cmd)
 }
 
 // rewriteDockerfileBase strips any FROM lines from the user's Dockerfile
@@ -334,7 +428,7 @@ func (d *Daemon) handleBuildCancel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+			_ = killGroup(cmd)
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 	default:
@@ -352,7 +446,7 @@ func (d *Daemon) handleImageInspect(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "bad image ref")
 		return
 	}
-	out, err := d.docker("image", "inspect", "--format", `{{index .Config.Labels "org.orchicon.runtime.spec-version"}}`, ref)
+	out, err := d.docker("image", "inspect", "--format", labelTemplate("org.orchicon.runtime.spec-version"), ref)
 	if err != nil {
 		writeJSON(w, http.StatusOK, ImageInspect{Exists: false})
 		return

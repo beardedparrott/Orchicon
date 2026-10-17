@@ -162,6 +162,72 @@ func (c *Client) BuildImage(ctx context.Context, req BuildRequest, fn func(Agent
 	return exit, nil
 }
 
+// PullImage streams `podman pull`/`docker pull` for one runtime image — the
+// on-demand FETCH, distinct from BuildImage (which BUILDS a spec from a
+// Dockerfile). Log chunks arrive via fn; the final event carries the exit
+// code. Returns the exit code (0 = success; an already-present image exits 0
+// without downloading anything, so a fetch is idempotent).
+//
+// A dropped stream is reported as StreamDroppedError, exactly like a build:
+// "we lost the log" must stay distinguishable from "the pull failed".
+func (c *Client) PullImage(ctx context.Context, ref string, fn func(AgentEvent) error) (int, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://runtime"+"/v1/images/pull?ref="+url.QueryEscape(ref), nil)
+	if err != nil {
+		return 1, err
+	}
+	resp, err := c.hc.Do(httpReq)
+	if err != nil {
+		return 1, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1, fmt.Errorf("runtime image pull: %w", readError(resp.Body))
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	exit := 1
+	sawExit := false
+	for sc.Scan() {
+		var ev AgentEvent
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue
+		}
+		if fn != nil {
+			if err := fn(ev); err != nil {
+				return 1, err
+			}
+		}
+		if ev.Event == "exit" {
+			sawExit = true
+			exit = ev.ExitCode
+			if ev.Error != "" {
+				return exit, fmt.Errorf("runtime image pull: %s", ev.Error)
+			}
+			break
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return 1, &StreamDroppedError{Err: err}
+	}
+	if !sawExit {
+		return 1, &StreamDroppedError{Err: fmt.Errorf("stream ended without exit event")}
+	}
+	return exit, nil
+}
+
+// ImagePresent reports whether a runtime image exists LOCALLY on the daemon's
+// host. Dispatch uses it to fail fast with an actionable message instead of
+// starting a container that cannot be created (and instead of downloading
+// multiple GB inside a workflow run).
+func (c *Client) ImagePresent(ctx context.Context, ref string) (bool, error) {
+	in, err := c.InspectImage(ctx, ref)
+	if err != nil {
+		return false, err
+	}
+	return in.Exists, nil
+}
+
 // RemoveImage removes a locally-built runtime image (docker rmi, best-effort).
 func (c *Client) CancelBuild(ctx context.Context, tag string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, "http://runtime"+"/v1/images/build?tag="+url.QueryEscape(tag), nil)

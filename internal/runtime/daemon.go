@@ -176,6 +176,7 @@ func (d *Daemon) handler() http.Handler {
 	mux.HandleFunc("/v1/images", d.handleImages)
 	mux.HandleFunc("/v1/images/inspect", d.handleImageInspect)
 	mux.HandleFunc("/v1/images/build", d.handleBuildCancel)
+	mux.HandleFunc("/v1/images/pull", d.handlePull)
 	return mux
 }
 
