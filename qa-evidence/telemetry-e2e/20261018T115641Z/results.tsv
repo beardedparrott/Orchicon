@@ -1,0 +1,6 @@
+0	BLOCKED	the Playwright browser harness is installed	(invalid host)
+1	PASS	no grafana binary on PATH (command -v grafana grafana-server grafana-cli)	
+1	PASS	the process search works on this host (a control pattern matched before any empty result is believed)	
+1	PASS	no grafana process is running (pgrep -af grafana / the /proc scan, proven by the control above)	
+1	PASS	no grafana config / provisioning file ships in the repo (deploy/**)	
+1	PASS	no grafana container image is present (podman/docker images | grep -i grafana)	
