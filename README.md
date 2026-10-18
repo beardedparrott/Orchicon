@@ -354,11 +354,84 @@ make test
 Note the dev plane publishes on **5432** and production runs as a host process on **5433**. They are one
 port apart and both are "localhost" — which is exactly how the incident above was able to happen.
 
+### Build and test speed
+
+Measured on a developer host (warm CPU, warm `GOCACHE`). Run `time make <target>` after a change to
+re-measure — these are the numbers the choices below were made from, not guesses.
+
+| Step | Time | Note |
+|---|---|---|
+| `go build ./...` (99 packages) | **5.4 s** | warm |
+| `go vet ./...` | **3.8 s** | warm |
+| `go test ./...` | **28 s** | `-count=1`, DB tests included |
+| `make gen-check` | **3.0 s** | |
+| `make install-ps1-test` | **27 s** | pwsh harness |
+| `make install-path-test` | **23 s** | real installer against a real artifact |
+| **`make cross-compile`** | **139 s** | 6 platforms, cold Go cache **every run** |
+
+**The Go test suite is not the slow part.** Cross-compile alone was ~60% of the Go gate, and it was cold on
+every single run — see below.
+
+#### `cross-compile`: the one big lever
+
+The target keeps its build cache in a **throwaway** directory (`mktemp` + `trap … EXIT`), deliberately: it
+writes ~1.1 GB per platform, and letting that into `GOCACHE` was an unbounded-growth problem. The cost is that
+every run recompiles from scratch.
+
+`CROSS_CACHE_DIR` makes that cache persistent while keeping it outside `GOCACHE` (so the isolation the
+throwaway rule protects is preserved):
+
+```bash
+make cross-compile CROSS_CACHE_DIR=.cross-compile/cache   # first run: ~133 s (populates)
+make cross-compile CROSS_CACHE_DIR=.cross-compile/cache   # later runs: ~13 s
+make cross-cache-clean                                    # remove it
+```
+
+**139 s → 12.7 s, a 10.5× saving on repeat runs.** It is opt-in because the cache is 6.8 GB and a default
+that size is a surprise; set it in your shell if you run the gate often:
+
+```bash
+export CROSS_CACHE_DIR="$PWD/.cross-compile/cache"
+```
+
+Caching a Go build cache across runs is safe: entries are content-keyed, so a restored entry can only be a
+*miss*, never a wrong answer.
+
+#### For a fast inner loop, skip the platform compile
+
+`cross-compile` catches *platform-specific* build breaks — it does not change when you are editing logic and
+running one package. The quick path:
+
+```bash
+go test ./internal/db/          # one package
+make test                       # whole suite (DB tests skip unless ORCHICON_TEST_DSN is set)
+make ci-go-base                 # the gate WITHOUT cross-compile
+make ci-go                      # the complete gate, cross-compile included
+```
+
+`make test` reuses Go's test-result cache, so a repeat run with no changes is nearly instant. That caching is
+why a local "it's fast" can disagree with a fresh CI run — use `go test -count=1 ./...` when you want the
+honest number.
+
+#### In CI
+
+`cross-compile` used to run **serially at the end of `go-ci`**, which is the worst place for the slowest
+target. It is now its **own job, in parallel** with `go-ci` (`make ci-go-base` in that job). It carries **no
+cache** on the runner: the 6.8 GB cache costs more to upload and download than the ~130 s it would save, so
+the runner pays the cold cost and the win comes from the parallelism.
+
 ### CI gate
 
 ```bash
 make ci          # buf lint + codegen + go vet/test + RLS gate
 ```
+
+> **Note on DB-backed tests in CI.** CI sets `DB_URL` but **not** `ORCHICON_TEST_DSN`, so the ~130 test files
+> that need a live database **skip there** — locally, with `ORCHICON_TEST_DSN` set, they run. Measured cost of
+> running them against a migrated local database: **~0 s of the 28 s suite**, so enabling them in CI
+> (`ORCHICON_TEST_DSN=$DB_URL`, after the migration step) would close that coverage gap almost for free.
+> It is not enabled here because it changes what gates a merge, and connection-pool pressure on a CI Postgres
+> service is worth watching on the first runs rather than assumed.
 
 The RLS gate (see ARCHITECTURE.md §Key Architecture Invariants) fails if any `tenant_id`-bearing table
 lacks the `tenant_isolation` policy.
