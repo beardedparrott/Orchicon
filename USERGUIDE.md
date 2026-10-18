@@ -329,6 +329,25 @@ orchicon stop --instance=prod
 `ORCHICON_INSTANCE` is the fallback when neither is given, so an existing script that exports it keeps
 working. Naming two instances at once is refused rather than guessed.
 
+#### Where plane control lives
+
+Three places, and they all call **one** shared mechanism (`internal/planecontrol`) — there is no second
+implementation of "how do we stop a plane, and what do we do when we cannot identify it":
+
+| surface | how it reaches the plane | available today |
+|---|---|---|
+| **CLI** | `orchicon start`, `stop`, `restart`, `plane start/stop/restart/status` | yes — the admin path, and the equivalent of every other surface |
+| **TUI** | `orch`, off the plane channel, so it can control a plane that is not serving it | when your build includes it; the verbs above are the fallback |
+| **desktop app** | its offline state's start/stop action | when your build includes it; the verbs above are the fallback |
+
+Where control does **not** live: **the web app has no lifecycle control and gains none.** A browser cannot
+spawn a process, and a lifecycle RPC to the plane would have to reply before killing the server answering
+it. So a plane stopped underneath an open tab shows the SPA's ordinary **connection-failure** state — a
+failed request, an error toast, a retry that fails — and that is intentional, not a missing button.
+
+To watch the cycle end to end — including the fail-safe and the two-instance isolation — run
+`scripts/plane-control-e2e.sh`; the procedure it implements is `docs/plane-control-e2e-acceptance.md`.
+
 > **There is no boot-time autostart.** After a machine reboot, run `orchicon start`. Orchicon installs
 > no systemd unit and no launchd job, so nothing starts the plane for you.
 
@@ -2377,7 +2396,7 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon start [instance]` | Start an **installed** instance: its services (Postgres + NATS), then its plane. Idempotent, and it never installs. This is the command to run after a reboot (there is no autostart) |
 | `orchicon stop [instance]` | Stop an instance: its plane, then its services. **Idempotent** — running it on a stopped instance is a successful no-op |
 | `orchicon restart [instance]` | Restart this instance so its components re-read their environment. Use it after installing an adapter CLI or changing `PATH` — see *Installing an adapter CLI* |
-| `orchicon plane <status\|start\|stop\|restart> [instance]` | The **plane only** — leaves the services running. The same mechanism the TUI's `/plane`, `/plane-start`, `/plane-stop` and `/plane-restart` call (both surfaces invoke `internal/planecontrol`; there is no lifecycle RPC) |
+| `orchicon plane <status\|start\|stop\|restart> [instance]` | The **plane only** — leaves the services running. The same mechanism the TUI and the desktop app call — the TUI's `/plane`, `/plane-start`, `/plane-stop` and `/plane-restart` invoke the same `internal/planecontrol` paths (there is no lifecycle RPC). `plane status` is the surface that reports the **instance, the serving binary and drift** (a plane running a superseded binary) |
 | `orchicon services <up\|down\|status> [instance]` | The **services only** — this instance's Postgres + NATS on the host. `up` is idempotent; `down` verifies the ports came free, and stops this instance's **own** container from an older install if that is what still holds them. `down --force` also terminates this instance's leftover processes — never one it does not own |
 | `orchicon serve` | Run the control plane with the embedded frontend (headless, migrations on boot) |
 | `orchicon serve --detach` / `--status` / `--stop` | Manage a **background** `serve` process. `--status` reports the same thing as `orchicon plane status` — the instance, its residency, the plane PID, the serving binary and whether it has been superseded, plus health — through the same code path, and exits `0` only when the PID file names a live process. **There is no `serve --start`**: `orchicon start` starts (or restarts) the instance, and `orchicon plane start` starts the plane alone |
@@ -2394,7 +2413,10 @@ The `orchicon` binary runs the plane and its supporting services.
 **Every lifecycle verb takes the instance the same way** — a positional (`orchicon stop prod`), a flag
 (`orchicon stop --instance prod`), or `ORCHICON_INSTANCE` as the fallback. Naming two at once is refused
 rather than guessed, and an unknown flag is an error rather than being silently ignored. The default is
-`dev`.
+`dev`. The same instance forms work on `plane <verb>`, so `orchicon plane restart --instance prod` means
+one thing. `services down --force` reaches **only this instance's own** leftovers — a process this
+instance does not own is reported by pid and executable, never killed, because it may be a database you
+care about.
 
 **Scripts:**
 

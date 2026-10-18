@@ -1,0 +1,2 @@
+  pair: A=dev B=prod
+  (invalid host: both instances must be installed to prove isolation; 'dev' installed=no, 'prod' installed=no)
