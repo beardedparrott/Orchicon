@@ -369,15 +369,27 @@ else
 fi
 
 # THE RESOLVED BIN DIR MUST REACH THE INSTANCE. A host-side resolution is only
-# useful if the services container can SEE it: a build downloaded under the
-# instance's host state dir is not on the container's PATH, so without this mount
-# the container's supervisor would resolve for itself and download a second copy
-# (or fail). Source-level, because it is about which docker arg is constructed.
+# THE RESOLVED BINARIES ARE NEVER RE-DOWNLOADED, and the mount that used to guarantee it is gone.
+#
+# The bind mount existed because the SERVICES used to run in a container: a binary downloaded under the
+# instance's host state dir is not on a container's filesystem, so without the mount the supervisor would
+# resolve (and download) a second copy. The services are now HOST processes of the invoking user, so there
+# is no container to mount into and nothing to make visible — the processes exec the resolved ABSOLUTE
+# paths directly, which this suite asserts separately ("every service proc execs the RESOLVED path").
+#
+# So the property is now: install still RESOLVES the binaries (it must not hand a name to PATH), and it
+# still points the host services at the instance's own state dir. Asserted as a source-level pin because it
+# is about which arguments are constructed.
 INSTALL_GO_SRC="$(cat "${REPO_ROOT}/cmd/orchicon/install.go")"
-if grep -qF 'infraBinDirName)+":"+binDir("/var/lib/orchicon")' <<<"${INSTALL_GO_SRC}"; then
-  ok "the resolved bin dir is mounted into the instance (a DOWNLOADED binary is visible to its procs)"
+if grep -qF 'startHostServices(instance, ports, hostDataDirFor(instance), os.Stdout)' <<<"${INSTALL_GO_SRC}"; then
+  ok "the host services are started against the instance's own state dir"
 else
-  bad "the resolved bin dir is not mounted — a DOWNLOADED binary would be invisible to the instance's procs"
+  bad "the host services are not started from the instance's state dir — a DOWNLOADED binary would be invisible to them"
+fi
+if grep -qF 'binDir("/var/lib/orchicon")' <<<"${INSTALL_GO_SRC}"; then
+  bad "install.go still constructs a container MOUNT for the infra binaries — the instance no longer runs in a container"
+else
+  ok "no container mount is constructed for the infra binaries (the instance is host processes)"
 fi
 
 # Documentation of the minimum version, because it is a support promise.

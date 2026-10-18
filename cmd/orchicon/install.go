@@ -50,7 +50,6 @@ func runInstall(args []string, log *slog.Logger) error {
 		return err
 	}
 	imageTag := env("ORCHICON_IMAGE_TAG", "latest")
-	containerImage := env("ORCHICON_CONTAINER_IMAGE", "ghcr.io/beardedparrott/orchicon:"+imageTag)
 	runtimeImage := env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:"+imageTag)
 
 	name := "orchicon-cnt-" + instance
@@ -105,14 +104,19 @@ func runInstall(args []string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// A CONTAINER-RESIDENT PLANE NEEDS A CONTAINER. With no engine there is nowhere to put one, so the install
-	// takes the HOST shape rather than failing over a knob: the services become host processes and the plane
-	// becomes a host process, which is the one coherent shape available here. It is LOUD, because the operator
-	// asked for something else — and never fatal, because an install must not be refused over a setting.
-	if !containersUsed && residency == residencyContainer {
-		fmt.Printf("warning: ORCHICON_PLANE_RESIDENCY=%s was requested, but this host has no container engine — installing the %s shape instead\n", residencyContainer, residencyHost)
-		residency = residencyHost
+	// THE PLANE AND ITS SERVICES ALWAYS RUN ON THE HOST. A container is now used for exactly ONE thing:
+	// a workflow's runtime container. It is no longer a carrier for the instance.
+	//
+	// This is a REFUSAL rather than a silent override, because silently installing the host shape for
+	// someone who asked for a container would leave them reading a summary that describes something they
+	// did not choose. The container shape is retired; saying so once, loudly, is the honest answer.
+	if residency == residencyContainer {
+		return fmt.Errorf("ORCHICON_PLANE_RESIDENCY=%s is no longer supported: the plane and its services now\n"+
+			"  always run on the HOST. Containers are used only for a workflow's runtime container.\n"+
+			"  Unset ORCHICON_PLANE_RESIDENCY (or set it to %s) and re-run.",
+			residencyContainer, residencyHost)
 	}
+	residency = residencyHost
 	// 1.6a. THE PRIVILEGE GUARD COMES BEFORE ANYTHING ELSE THAT COSTS ANYTHING.
 	// Postgres refuses to run under an Administrators token on Windows, and an
 	// elevated `orchicon install` would otherwise spend the image pull, write the
@@ -166,7 +170,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	// operator must see it start before being asked nothing else. Second, the host
 	// path needs NO ROOT: the build lands under the instance's own state dir, which
 	// the operator already owns, so this works on a machine where `sudo` is not
-	// available. (ensureInstallContainer then mounts that dir into the instance, so
+	// available. (The services container used to mount that dir; the instance is host
 	// the services container runs the SAME binaries rather than downloading a second
 	// copy of them.)
 	//
@@ -183,46 +187,15 @@ func runInstall(args []string, log *slog.Logger) error {
 			infra.Source, infra.PostgresVersion, infra.Postgres, infra.NatsVersion, infra.NatsServer)
 	}
 
-	// 2. Ensure the published images are present (skip the pull when the tag is
-	// already local — idempotent re-runs and local dev images).
+	// 2. RUNTIME IMAGES ONLY. The instance no longer has an image: the plane and its services are host
+	// processes. What remains is the per-workflow runtime container's image, and that is fetched ON DEMAND
+	// (the Runtime Images page, or the moment a project opts into runtime containers) — never required by
+	// an install. A project starts in execution_mode=local, so a user who never opts in needs no image at
+	// all, and pulling multi-GB layers up front made every install pay for a feature it might not use.
 	//
-	// IMAGES BELONG TO THE CONTAINER SHAPE, so with no engine there is nothing to pull and nothing to run them
-	// in. Skipping the pull is not an optimisation — it is the only correct behaviour: pulling four images onto
-	// a host that cannot execute them is minutes of work for a guest that never runs.
+	// With no engine there is nothing to pull and nothing to run it in, so the step is skipped rather
+	// than failed: absence of an engine is a supported mode, not a broken host.
 	if containersUsed {
-		// REQUIRED images: the instance image and the workflow runtime base. Without
-		// these the install cannot produce a working instance, so a failure is fatal.
-		installPhase("pulling the plane image — this is the slow part")
-		// THE INSTANCE IMAGE: if the exact version's image cannot be fetched, fall back to the floating ref rather
-		// than failing an install that could otherwise succeed — a version pinned before container images were
-		// published has no tag of its own, and refusing to install it would be a regression. The fallback is
-		// LOUD, because "continuing on a different image than you asked for" must never be silent.
-		if err := ensureImage(containerImage); err != nil {
-			const fallback = "ghcr.io/beardedparrott/orchicon:latest"
-			if containerImage == fallback {
-				// Nothing to fall back to, so the failure is the install's failure.
-				return err
-			}
-			// A VERSION WITH NO CONTAINER IMAGE OF ITS OWN must not fail an install that could succeed: the
-			// engine falls back to the floating ref, which always exists. It is LOUD, because "you are running a
-			// different image than you asked for" is exactly the kind of thing that must never be silent.
-			//
-			// This is why the image is passed as ORCHICON_CONTAINER_IMAGE rather than by moving IMAGE_TAG: the
-			// tag also picks the runtime base and its variants, and only the instance image should ever move.
-			fmt.Printf("warning: %v\n", err)
-			fmt.Printf("  falling back to %s — this install will run THAT image, not the %s one\n", fallback, containerImage)
-			if ferr := ensureImage(fallback); ferr != nil {
-				return ferr
-			}
-			containerImage = fallback
-		}
-		// RUNTIME IMAGES ARE NOT PULLED HERE. They are fetched ON DEMAND — at opt-in time (the
-		// Runtime Images page, or the moment a project is switched to runtime containers), never
-		// during install and never inside a workflow run. A project starts in execution_mode=local,
-		// so a user who never opts into containers needs no runtime image at all; pulling four
-		// multi-GB images up front made every install pay for a feature it might not use.
-		//
-		// The plane image above is a different thing: it IS the instance, so it stays required.
 		installPhase("runtime images (optional)")
 		installChoices, cerr := resolveInstallRuntimeImages(os.Stdout, os.Stdin, imageTag)
 		if cerr != nil {
@@ -231,7 +204,7 @@ func runInstall(args []string, log *slog.Logger) error {
 		ensureInstallRuntimeImages(installChoices, os.Stdout)
 	} else {
 		installPhase("skipping the image pull — no container engine")
-		fmt.Println("orchicon: the published images are only used by container shapes, and there is nothing on this host to run them in")
+		fmt.Println("orchicon: runtime images are only needed for per-workflow runtime containers, and there is nothing on this host to run them in")
 	}
 
 	// 3. Ensure the host-side runtime daemon is running (the container
@@ -267,30 +240,27 @@ func runInstall(args []string, log *slog.Logger) error {
 		}
 	}
 
-	// 4b. BRING THE SERVICES UP, in whichever carrier this host can offer. With a container engine the
-	// services run in the instance container; with none they are started as HOST processes of the invoking
-	// user (startHostServices re-execs this binary as `container` with host service residency).
-	if containersUsed {
-		installPhase("creating the instance container")
-		if err := ensureInstallContainer(instance, residency, name, dataVolume, socketDir, containerImage, ports); err != nil {
-			return err
-		}
-	} else {
-		installPhase("starting the host services")
-		if err := startHostServices(instance, ports, hostDataDirFor(instance), os.Stdout); err != nil {
-			return err
-		}
+	// 4b. BRING THE SERVICES UP — ALWAYS AS HOST PROCESSES.
+	//
+	// This used to branch on whether a container engine was present, which made the INSTANCE SHAPE depend on
+	// an unrelated fact. Worse, it defeated a migration: an operator who had moved postgres to the host got a
+	// brand-new empty cluster inside a container volume, with their real data sitting untouched beside it —
+	// and, under podman's passt forwarding, a pg_hba rule naming the network GATEWAY while the connection
+	// arrives from the host's own address, so the plane could not even connect. Host services are now the one
+	// shape, and an engine no longer decides where the instance's database lives.
+	installPhase("starting the host services")
+	if err := startHostServices(instance, ports, hostDataDirFor(instance), os.Stdout); err != nil {
+		return err
 	}
 
-	// 4c. HOST RESIDENCY: the services are up, so wait for them and then start the plane on THIS host. Waiting
-	// first keeps the plane's migrations from racing a half-started postgres.
-	if residency == residencyHost {
+	// 4c. The services are up, so wait for them and then start the plane on THIS host. Waiting first keeps the
+	// plane's migrations from racing a half-started postgres.
+	{
 		waitServicesReady(instance, ports, os.Stdout)
 		if err := startHostPlane(instance, ports, hostDir, filepath.Join(socketDir, "runtime.sock"), os.Stdout); err != nil {
 			return err
 		}
-		// THE HOST SHAPE IS RECORDED HERE, on the same success path ensureInstallContainer records on the
-		// container path — and it has to be recorded on BOTH, because the record is the ONLY thing
+		// THE HOST SHAPE IS RECORDED HERE. It is the ONLY shape now, and the record is still the thing
 		// `orchicon restart` (and every other plane-lifecycle surface that reuses startHostPlane/stopHostPlane)
 		// has to decide which carrier to bounce.
 		//
@@ -345,14 +315,8 @@ func runInstall(args []string, log *slog.Logger) error {
 		}
 		fmt.Println("attempting one repair: restarting the instance's services and plane …")
 
-		// SERVICES FIRST — the plane talks to its Postgres and NATS, in whichever carrier this host uses.
-		if containersUsed {
-			if out, err := engineCommand("restart", name).CombinedOutput(); err != nil {
-				fmt.Printf("  could not restart %s: %v: %s\n", name, err, strings.TrimSpace(string(out)))
-			} else if waitServicesReady(instance, ports, os.Stdout) {
-				fmt.Printf("  %s services are ready after the restart\n", name)
-			}
-		} else {
+		// SERVICES FIRST — the plane talks to its Postgres and NATS.
+		{
 			// HOST SERVICES are stopped and started rather than restarted in place: there is no engine to ask
 			// for a bounce, and a supervisor that is already up holds the ports the new one needs.
 			if err := stopHostServices(instance, os.Stdout); err != nil {
@@ -398,16 +362,8 @@ func runInstall(args []string, log *slog.Logger) error {
 		// path, so it is removed from the install's ADVICE too: the host plane writes to the instance state
 		// dir, and the services write to services.log when they are host processes.
 		fmt.Println("  the instance itself is up. find out why the plane is not:")
-		if residency == residencyHost {
-			fmt.Printf("    %s\n", filepath.Join(hostDataDirFor(instance), "serve", "logs", "orchicon.log"))
-			if containersUsed {
-				fmt.Printf("    docker logs --tail 50 %s   (the services container)\n", name)
-			} else {
-				fmt.Printf("    %s   (the host services)\n", filepath.Join(hostDataDirFor(instance), "services.log"))
-			}
-		} else {
-			fmt.Printf("    docker logs --tail 50 %s\n", name)
-		}
+		fmt.Printf("    %s\n", filepath.Join(hostDataDirFor(instance), "serve", "logs", "orchicon.log"))
+		fmt.Printf("    %s   (the host services)\n", filepath.Join(hostDataDirFor(instance), "services.log"))
 		fmt.Println("  then re-run `orchicon install` — it is idempotent")
 	}
 
@@ -624,146 +580,6 @@ func socketHealthy(socketPath string) bool {
 	return resp.StatusCode == 200 && out["status"] == "ok"
 }
 
-// ensureInstallContainer creates (or reuses) the single-container
-// instance with the same scoped mounts as scripts/container.sh: opencode
-// config/data read-only, git identity read-only, and the runtime daemon
-// socket directory. Project dirs are added later via the UI (the plane
-// writes /var/lib/orchicon/project-mounts; re-running `orchicon install`
-// or using scripts/container.sh sync-mounts applies them).
-func ensureInstallContainer(instance, residency, name, dataVolume, socketDir, image string, ports map[string]int) error {
-	running, _ := containerRunning(name)
-	if running {
-		// A running instance is only "already done" when its SHAPE matches. The
-		// residency is recorded by the install that created the instance and cannot be
-		// changed on a live container, so an instance of the wrong shape has to be
-		// RECREATED — the same thing scripts/container.sh does on a residency
-		// mismatch. An UNREADABLE record is treated as matching: recreating a live
-		// instance because its shape could not be read is worse than leaving a
-		// wrong-shaped one for the operator to see.
-		existing, known := recordedResidency(instance)
-		// RUNNING IS NOT THE SAME AS CURRENT. A container keeps the image it was CREATED from, so an
-		// install that pulls a new one and then leaves the old container alone has installed nothing —
-		// reported from a real install: "said it was complete but no auth works and the previous dev
-		// container has been up for two hours". That is this branch doing nothing.
-		//
-		// So the running container must MATCH THE TARGET IMAGE, not merely exist. The image is compared
-		// by ID, not by tag: a tag like `:latest` can be repointed at a new build, which is exactly how a
-		// stale container hides.
-		//
-		// RECREATING PRESERVES THE DATA VOLUME — `docker rm -f` does not touch named volumes, and this
-		// container mounts the instance's volume by name. It is an upgrade, not a reset: an install is a
-		// deliberate act, so replacing the container is within what the operator asked for, and NOTHING
-		// here removes data.
-		if !known || existing == residency {
-			if containerImageCurrent(name, image) {
-				fmt.Printf("instance %q already running on the current image (%s)\n", name, image)
-				recordResidency(instance, residency)
-				return nil
-			}
-			fmt.Printf("instance %q is running an OLDER image — recreating it on %s (the data volume is preserved)\n", name, image)
-		} else {
-			fmt.Printf("instance %q was created for %s residency but this install wants %s — recreating\n", name, existing, residency)
-		}
-	}
-	// A stopped/partial container with the same name blocks recreation.
-	if exists, _ := containerExists(name); exists {
-		fmt.Printf("removing existing %s …\n", name)
-		if out, err := engineCommand("rm", "-f", name).CombinedOutput(); err != nil {
-			return fmt.Errorf("remove existing %s: %v: %s", name, err, strings.TrimSpace(string(out)))
-		}
-	}
-
-	home, _ := os.UserHomeDir()
-	hostUID := os.Getuid()
-	hostGID := os.Getgid()
-	// The Grafana public URL is the PLANE origin (Grafana is proxied same-origin
-	// under /grafana), so it tracks the control port. The publishes themselves are
-	// built by publishArgs below, from the resolved set for THIS shape.
-	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
-
-	args := []string{"run", "-d", "--name", name,
-		"--label", "orchicon-instance=" + instance,
-		"--log-driver", "json-file", "--log-opt", "max-size=100m", "--log-opt", "max-file=7",
-		"-v", dataVolume + ":/var/lib/orchicon",
-		"-e", "ORCHICON_GRAFANA_PUBLIC_URL=http://localhost:" + controlPort + "/grafana",
-		"-e", fmt.Sprintf("ORCHICON_HOST_UID=%d", hostUID),
-		"-e", fmt.Sprintf("ORCHICON_HOST_GID=%d", hostGID),
-		"-e", "ORCHICON_HOST_HOME=" + home,
-		"-e", "ORCHICON_INSTANCE=" + instance,
-	}
-	// THE INFRASTRUCTURE BINARIES ARE MOUNTED, NOT RE-DOWNLOADED. `orchicon install`
-	// resolved them into the instance's host state dir (step 1.7) precisely so the
-	// operator needs no root; this nested bind makes that resolution visible to the
-	// services container at the path it already looks in, so its supervisor finds a
-	// COMPLETE postgres/nats-server and downloads nothing itself. The nested mount
-	// sits on top of the data volume, so it is authoritative for that one subdir and
-	// the rest of the volume is untouched.
-	//
-	// A MOUNTED-AND-PRESENT BIN DIR IS THE HEALTHY CASE, but it is not the only one:
-	// the supervisor still resolves and records for itself on boot, which is what
-	// covers a hand-run `docker run` and an instance created before this step
-	// existed. Both paths go through the same resolver, so AC "one record, no
-	// re-derivation" holds either way.
-	if st, statErr := os.Stat(filepath.Join(hostDataDirFor(instance), infraBinDirName)); statErr == nil && st.IsDir() {
-		args = append(args, "-v", filepath.Join(hostDataDirFor(instance), infraBinDirName)+":"+binDir("/var/lib/orchicon"))
-	}
-	// The residency is CREATE-time state: the supervisor reads this flag to decide
-	// whether to boot the plane inside this container or leave it to the host.
-	//
-	// NOTE: there is deliberately NO healthcheck override here any more. The image's
-	// own probe is correct for this shape — the plane runs INSIDE the container — and
-	// the services-only override the installer used to append existed for a
-	// host-resident container built by an engine, which the no-engine path no longer
-	// builds at all. See the commit message: the deletion is reasoned, not forgotten.
-	if residency == residencyHost {
-		args = append(args, "-e", "ORCHICON_CONTAINER_SERVICES_ONLY=1")
-	}
-	// Publishes come from the RESOLVED set for THIS shape: an override moves the
-	// port, and the shape decides which ports are exposed at all — a host-resident
-	// instance publishes the services so its host plane can reach them over
-	// loopback, and does NOT publish the plane port it owns itself.
-	args = append(args, publishArgs(residency, ports, activeInstallPorts(residency))...)
-	// Scoped host-home mounts (not the whole $HOME).
-	if st, err := os.Stat(filepath.Join(home, ".config/opencode")); err == nil && st.IsDir() {
-		args = append(args, "-v", filepath.Join(home, ".config/opencode")+":"+filepath.Join(home, ".config/opencode")+":ro")
-	}
-	if st, err := os.Stat(filepath.Join(home, ".local/share/opencode")); err == nil && st.IsDir() {
-		args = append(args, "-v", filepath.Join(home, ".local/share/opencode")+":"+filepath.Join(home, ".local/share/opencode")+":ro")
-	}
-	if st, err := os.Stat(filepath.Join(home, ".opencode", "bin", "opencode")); err == nil && !st.IsDir() {
-		args = append(args, "-v", filepath.Join(home, ".opencode")+":"+filepath.Join(home, ".opencode")+":ro")
-	}
-	for _, f := range []string{".gitconfig", ".git-credentials"} {
-		if st, err := os.Stat(filepath.Join(home, f)); err == nil && !st.IsDir() {
-			args = append(args, "-v", filepath.Join(home, f)+":"+filepath.Join(home, f)+":ro")
-		}
-	}
-	// GitHub CLI auth + state (read-only) so in-process PR/merge workers
-	// and the host opencode serve can run `gh` authenticated.
-	if st, err := os.Stat(filepath.Join(home, ".config", "gh")); err == nil && st.IsDir() {
-		args = append(args, "-v", filepath.Join(home, ".config", "gh")+":"+filepath.Join(home, ".config", "gh")+":ro")
-	}
-	if st, err := os.Stat(filepath.Join(home, ".local", "share", "gh")); err == nil && st.IsDir() {
-		args = append(args, "-v", filepath.Join(home, ".local", "share", "gh")+":"+filepath.Join(home, ".local", "share", "gh")+":ro")
-	}
-	// Runtime daemon socket directory (directory mount survives daemon
-	// restarts).
-	args = append(args, "-v", socketDir+":/var/run/orchicon-runtime", image)
-
-	fmt.Printf("starting %s …\n", name)
-	if out, err := engineCommand(args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("start %s: %v: %s", name, err, strings.TrimSpace(string(out)))
-	}
-	// THE SHAPE IS RECORDED NOW THAT THE INSTANCE EXISTS. This is the record restart.go and the next install
-	// read instead of asking an engine, so it is written on the SUCCESS path only — an instance that failed to
-	// start has no shape to remember.
-	recordResidency(instance, residency)
-	fmt.Printf("%s started\n", name)
-	return nil
-}
-
-// dirOnPath reports whether dir is on the current PATH (mirrors the
-// install.sh PATH hint check).
 func dirOnPath(dir string) bool {
 	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
 		if p == dir {
@@ -916,7 +732,7 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 	// the install actually acted on (a PATH that changes mid-run, a probe that answers differently) — so the
 	// summary could describe a carrier the install never created. The install decides this ONCE; the summary
 	// reports THAT decision.
-	hostServices := residency == residencyHost && !containersUsed
+	hostServices := true
 	// Read back the ports this install actually bound: re-deriving them from the
 	// instance name would print a URL pointing at a port we never bound.
 	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])

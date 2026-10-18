@@ -844,9 +844,12 @@ func TestNoEngineInstallAdviceNamesAHostLog(t *testing.T) {
 	if !strings.Contains(arm, "services.log") {
 		t.Errorf("the no-engine advice must name the host services log; got:\n%s", arm)
 	}
-	// `docker logs` must survive for the container shape only — guarded by the shape, never printed bare.
-	if !strings.Contains(arm, "if residency == residencyHost") {
-		t.Errorf("`docker logs` must be shape-guarded, not printed on every host; got:\n%s", arm)
+	// THE CONTAINER SHAPE IS RETIRED, so the advice must not name one AT ALL. It used to be shape-guarded
+	// (`docker logs` behind `if residency == residencyHost`); with the instance always host, any mention of
+	// a container here is a command that cannot work. Asserted as an ABSENCE: that is the shape of the
+	// defect this test exists for (advice naming a carrier the install never created).
+	if strings.Contains(arm, "docker logs") {
+		t.Errorf("the advice still names a services CONTAINER, which no longer exists — the instance is host processes; got:\n%s", arm)
 	}
 }
 

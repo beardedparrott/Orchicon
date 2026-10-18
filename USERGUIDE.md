@@ -295,20 +295,17 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 
 ### Which shape you get
 
-**Everything runs on your host, as your own user's processes — no container.** That is the default
-and the supported shape: the plane, Postgres and NATS all run locally, which is what lets the plane
-reach your project directories and your git identity directly, and what makes `orchicon stop` and
-`orchicon start` mean something you can reason about.
+**Everything runs on your host, as your own user's processes.** The plane, Postgres and NATS are all
+local processes of the account that installed Orchicon. That is what lets the plane reach your project
+directories and your git identity directly, and it is the only supported shape — there is no
+container-resident instance any more, and `ORCHICON_PLANE_RESIDENCY=container` is now **refused** rather
+than silently ignored.
 
-A **container engine is only needed for runtime containers** — the disposable per-step containers some
-workflows use. With no engine at all, Orchicon installs and runs perfectly well; those workflows report
-that runtime containers are unavailable. Run `orchicon install` once and it detects an engine, offers to
-install Podman when there is none, and verifies the engine actually works before reporting containers
-available.
-
-The **whole stack can also run inside one container** instead — set `ORCHICON_PLANE_RESIDENCY=container`
-on `orchicon install` and nothing else changes. That shape is per-instance and reversible; see
-ARCHITECTURE → *Host residency*, and *Run the container directly* below.
+**A container engine is used for exactly one thing: a workflow's runtime container** — the disposable
+container a run's worker steps execute in. It is not a carrier for the instance, so its absence is a
+supported mode: with no engine Orchicon installs and runs normally, and projects that have not opted into
+runtime containers are unaffected. `orchicon install` detects an engine, offers to install Podman when
+there is none, and verifies the engine works before reporting runtime containers available.
 
 ### Starting, stopping and restarting
 
@@ -364,20 +361,24 @@ install. Left unset, a port already in use raises a prompt on your terminal offe
 port. The remaining service ports (Postgres, NATS, OTLP, Tempo, Loki, VictoriaMetrics) follow the same
 pattern with their own per-instance defaults — the full table is in ARCHITECTURE → *Host residency*.
 
-### Run the container directly
+### Running the whole stack in a container — retired
 
-This is the **optional** all-in-one shape, not what `orchicon install` produces. The whole
-stack — Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana and the control plane — can run in
-one container:
+This used to be documented as an alternative shape. It is **no longer supported as a way to run an
+instance**: the plane and its services always run on the host, and a container is now only a workflow's
+runtime container. There is no per-instance container, no instance image to pull, and no docker volume
+holding an instance's database.
+
+If you are upgrading from a version that did this, your cluster is most likely still in a docker volume.
+Orchicon refuses to start on an empty host data dir while such a volume exists, so nothing is silently
+replaced — migrate it once, then continue:
 
 ```bash
-docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon
+docker run --rm -v orchicon_postgres-data:/src alpine tar cf - -C /src . | tar xf - -C \
+  ~/.local/share/orchicon-dev/postgres
 ```
 
-The `orchicon` binary is the PID-1 supervisor (`orchicon container`). Two things to know before
-you rely on it: the stack and its data live inside that container and its volume (not in
-`~/.local/share/orchicon-<instance>`), and `orchicon stop` / `orchicon start` act on an
-**installed** instance — for a container you started by hand, use `docker stop` / `docker start`.
+(The `orchicon container` verb still exists and is still used — internally, as the supervisor that host
+services re-exec — but it is not a supported way to run an instance.)
 
 ### Build from source
 
@@ -2358,8 +2359,8 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon services <up\|down\|status> [instance]` | The **services only** — this instance's Postgres + NATS on the host. `up` is idempotent; `down` verifies the ports came free |
 | `orchicon serve` | Run the control plane with the embedded frontend (headless, migrations on boot) |
 | `orchicon serve --detach` / `--status` / `--stop` | Manage a background `serve` instance (PID file) |
-| `orchicon container` | Run the whole stack as PID 1 (the optional single-container image) |
-| `orchicon runtime-daemon` | Host process owning the container engine; spawns per-workflow runtime containers |
+| `orchicon container` | **Internal.** The supervisor the host services re-exec as; not a supported way to run an instance |
+| `orchicon runtime-daemon` | Host process owning the container engine; spawns **per-workflow runtime containers** — the only thing a container is used for |
 | `orchicon runtime-supervisor` | Runtime container PID 1 |
 | `orchicon runtime-client` | Forwards dispatches into the runtime container |
 | `orchicon mcp` | Start the MCP stdio server (exposes the Ask Orchicon tool registry) |

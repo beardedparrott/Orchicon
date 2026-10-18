@@ -124,9 +124,8 @@ func TestTheInstallerNeverTreatsAPresentTagAsCurrent(t *testing.T) {
 			t.Errorf("install.go is missing %q — the replace-or-refresh path is what keeps an instance upgradeable", want)
 		}
 	}
-	// And the fallback must never be silent: an install that runs a different image than the one asked for
-	// has to say so.
-	if !strings.Contains(src, "falling back to") {
-		t.Error("the image fallback is not announced; running a different image than the operator asked for must never be silent")
-	}
+	// THE PLANE-IMAGE FALLBACK IS GONE WITH THE PLANE IMAGE. The instance is host processes now, so there is
+	// no instance image to fall back to, and asserting a fallback message would pin a code path that no
+	// longer exists. The absence pins above still hold: the runtime-image fetches that remain go through
+	// ensureImage, so a present tag is still never treated as current.
 }

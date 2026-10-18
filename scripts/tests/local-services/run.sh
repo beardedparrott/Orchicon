@@ -81,9 +81,21 @@ strip_banners() {
 }
 
 # cs <verb args...> — run scripts/container.sh with the override knobs cleared.
+#
+# AND WITH AN EMPTY HOME, because these assertions are about the DERIVATION, not about the operator's
+# instance. `services-port`/`db-url` apply the RECORD-FIRST rule: an instance whose install wrote
+# ports.json answers with those ports, so on a developer's machine — where dev very often has a record —
+# the derived-table assertions were grading that record instead. This harness was green on a fresh CI
+# runner and red on the operator's host for exactly that reason:
+#
+#   FAIL  services-port honours ORCHICON_POSTGRES_PORT   want [6543] got [5432]
+#
+# (dev had a ports.json by then, and the record outranks the override.) The record-first rule has its own
+# isolated block below, with its own HOME — that is where it belongs.
+CS_HOME="$(mktemp -d)"
 cs() {
   ( cd "$REPO_ROOT" && \
-    env -u ORCHICON_POSTGRES_PORT -u ORCHICON_NATS_PORT -u ORCHICON_NATS_MONITOR_PORT \
+    env -u ORCHICON_POSTGRES_PORT -u ORCHICON_NATS_PORT -u ORCHICON_NATS_MONITOR_PORT HOME="$CS_HOME" \
       "$CONTAINER_SH" "$@" ) 2>&1
 }
 
@@ -123,7 +135,7 @@ check "services-port dev nats-mon"  "8222" "$(cs services-port dev nats-mon)"
 
 # THE OVERRIDE RUNG: same knobs the installer honours, at instance_info's one
 # choke point — so the derived DSN cannot disagree with the bound port.
-OVR="$(cd "$REPO_ROOT" && ORCHICON_POSTGRES_PORT=6543 "$CONTAINER_SH" services-port dev postgres 2>&1)"
+OVR="$(cd "$REPO_ROOT" && HOME="$CS_HOME" ORCHICON_POSTGRES_PORT=6543 "$CONTAINER_SH" services-port dev postgres 2>&1)"
 check "services-port honours ORCHICON_POSTGRES_PORT" "6543" "$OVR"
 
 # THE SHELL HALF MUST MIRROR THE GO HALF'S RECORD-FIRST RULE. `orchicon services

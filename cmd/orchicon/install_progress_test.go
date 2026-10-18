@@ -119,9 +119,9 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 // that can disagree with the one the install acted on — so the summary could describe a carrier the install
 // never created.
 //
-// The disagreement is made OBSERVABLE by construction: the install's decision is "containers ARE used" while
-// the environment has NO engine on PATH, so a re-probe answers the opposite. The summary must follow the
-// threaded decision (services in the instance container), never the re-probe (host processes of this user).
+// The disagreement is made OBSERVABLE by construction: the install's thread says host services while the
+// environment has NO engine on PATH, so a re-probe would say something else. The summary must describe the
+// host shape the install produced, never a re-probe.
 func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
 	// The disagreement is pinned, not inferred: an empty PATH alone still leaves the engine the
 	// detector finds in a conventional location (a CI runner's /usr/bin/docker), and then the
@@ -138,11 +138,14 @@ func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
 			"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
 			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, true, true, containerengine.Status{})
 	})
-	if !strings.Contains(out, "the services run in orchicon-cnt-dev") {
-		t.Errorf("the summary must report the install's decision (services in the container); got:\n%s", out)
+	// SERVICES ARE ALWAYS HOST NOW. The single-decision property is unchanged and still worth pinning: the
+	// summary must describe the shape the install PRODUCED (host services, host data dir), whatever a fresh
+	// engine probe would say. It must never claim a container.
+	if strings.Contains(out, "the services run in orchicon-cnt-dev") {
+		t.Errorf("the summary claims a services container, which the install no longer creates; got:\n%s", out)
 	}
-	if strings.Contains(out, "HOST processes") {
-		t.Errorf("the summary must NOT re-probe the engine and contradict the install: got:\n%s", out)
+	if !strings.Contains(out, "host data dir") {
+		t.Errorf("the summary must report the host data dir for a host-services instance; got:\n%s", out)
 	}
 }
 
