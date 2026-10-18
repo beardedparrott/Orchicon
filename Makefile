@@ -654,6 +654,25 @@ fe-lint: ## Lint the frontend
 fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live under test:snapshots/test:a11y/test:scope)
 	cd frontend && npm test
 
+# fe-typecheck is the ONLY thing that typechecks the frontend, and it exists because
+# nothing did. `fe-lint` is eslint (it has no type information) and `fe-test` is vitest
+# (transpile-only: types are erased), so a reference to a member that does not exist
+# lints clean and tests clean. The only other place `tsc -b` ran was `npm run build`,
+# which no gate invoked — so a type error could only ever be discovered by whoever next
+# ran `make build`, i.e. the first developer to try a rebuild.
+#
+# THAT IS EXACTLY WHAT HAPPENED. #736 shipped two calls to
+# RuntimeImageStatus.RUNTIME_IMAGE_STATUS_ABSENT — the generated TS member is `ABSENT`,
+# because protoc-gen-es strips the enum-name prefix — onto develop. Every one of the
+# seven CI checks stayed green while `make build` (and therefore `make rebuild-dev`) was
+# broken for everyone, on a clean checkout.
+#
+# IT IS SEPARATE FROM fe-build ON PURPOSE: both tsconfigs are noEmit and the build info
+# goes to node_modules/.tmp, so this emits no bundle, does not touch frontend/dist, and
+# leaves the working tree clean — which is what makes it safe to put in the gate.
+fe-typecheck: ## CI gate: typecheck the frontend (tsc -b) — the only gate that can see a type error
+	cd frontend && npm run typecheck
+
 site-check: ## Assert the landing page's nav and version-stamp invariants
 	@# The landing page is served from a CDN and rendered by a browser, so a CSS or
 	@# markup defect in it has no other detector. This reads the committed page as
@@ -1095,7 +1114,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
 ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
-ci: ci-go fe-lint fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
+ci: ci-go fe-lint fe-typecheck fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
 tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)

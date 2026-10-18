@@ -112,6 +112,16 @@ jobs:
       - name: Lint frontend
         run: make fe-lint
 
+      # THE ONLY TYPE GATE. eslint is not a typechecker and vitest transpiles
+      # without checking types, so nothing above can see a type error; the only
+      # other place `tsc -b` ran was `npm run build`, which this workflow never
+      # invokes. That gap is how #736 shipped two calls to a non-existent enum
+      # member (RuntimeImageStatus.RUNTIME_IMAGE_STATUS_ABSENT — the generated TS
+      # member is `ABSENT`) onto develop, where they broke `make build` for every
+      # developer while every check here stayed green.
+      - name: Typecheck frontend
+        run: make fe-typecheck
+
       - name: Test frontend (vitest)
         run: make fe-test
 

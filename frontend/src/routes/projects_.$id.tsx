@@ -595,7 +595,7 @@ function ProjectDetailPage() {
                 Current: {draftDefaultImage || `inherit (${defaultImageHint})`} · {draftExecutionMode}
               </p>
             )}
-            {selectedImageRow?.status === RuntimeImageStatus.RUNTIME_IMAGE_STATUS_ABSENT && (
+            {selectedImageRow?.status === RuntimeImageStatus.ABSENT && (
               <div
                 role="status"
                 className="rounded-xl border border-amber-500/40 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-100"
