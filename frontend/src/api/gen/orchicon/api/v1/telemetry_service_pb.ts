@@ -22,6 +22,35 @@ import { LogRecord, MetricPoint, MetricSeries, TelemetryQuery, Trace } from "./t
 import { UsageEvent } from "./ai_gateway_pb.js";
 
 /**
+ * TelemetryReportGroupBy selects the dimension a telemetry report is
+ * aggregated on.
+ *
+ * @generated from enum orchicon.api.v1.TelemetryReportGroupBy
+ */
+export enum TelemetryReportGroupBy {
+  /**
+   * @generated from enum value: TELEMETRY_REPORT_GROUP_BY_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: TELEMETRY_REPORT_GROUP_BY_PROJECT = 1;
+   */
+  PROJECT = 1,
+
+  /**
+   * @generated from enum value: TELEMETRY_REPORT_GROUP_BY_WORKFLOW = 2;
+   */
+  WORKFLOW = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(TelemetryReportGroupBy)
+proto3.util.setEnumType(TelemetryReportGroupBy, "orchicon.api.v1.TelemetryReportGroupBy", [
+  { no: 0, name: "TELEMETRY_REPORT_GROUP_BY_UNSPECIFIED" },
+  { no: 1, name: "TELEMETRY_REPORT_GROUP_BY_PROJECT" },
+  { no: 2, name: "TELEMETRY_REPORT_GROUP_BY_WORKFLOW" },
+]);
+
+/**
  * @generated from message orchicon.api.v1.QueryTracesRequest
  */
 export class QueryTracesRequest extends Message<QueryTracesRequest> {
@@ -79,6 +108,14 @@ export class QueryTracesResponse extends Message<QueryTracesResponse> {
    */
   degraded = false;
 
+  /**
+   * degraded_reason names the backend that is down plus the cause, so the
+   * UI can show WHICH store failed instead of a silently empty chart.
+   *
+   * @generated from field: string degraded_reason = 4;
+   */
+  degradedReason = "";
+
   constructor(data?: PartialMessage<QueryTracesResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -90,6 +127,7 @@ export class QueryTracesResponse extends Message<QueryTracesResponse> {
     { no: 1, name: "traces", kind: "message", T: Trace, repeated: true },
     { no: 2, name: "next_page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "degraded", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 4, name: "degraded_reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): QueryTracesResponse {
@@ -168,6 +206,13 @@ export class QueryMetricsResponse extends Message<QueryMetricsResponse> {
    */
   degraded = false;
 
+  /**
+   * names the backend that is down + cause
+   *
+   * @generated from field: string degraded_reason = 3;
+   */
+  degradedReason = "";
+
   constructor(data?: PartialMessage<QueryMetricsResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -178,6 +223,7 @@ export class QueryMetricsResponse extends Message<QueryMetricsResponse> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "series", kind: "message", T: MetricSeries, repeated: true },
     { no: 2, name: "degraded", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 3, name: "degraded_reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): QueryMetricsResponse {
@@ -213,6 +259,13 @@ export class QueryLogsRequest extends Message<QueryLogsRequest> {
    */
   severity = "";
 
+  /**
+   * free-text log search (LogQL line filter)
+   *
+   * @generated from field: string search = 3;
+   */
+  search = "";
+
   constructor(data?: PartialMessage<QueryLogsRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -223,6 +276,7 @@ export class QueryLogsRequest extends Message<QueryLogsRequest> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "query", kind: "message", T: TelemetryQuery },
     { no: 2, name: "severity", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "search", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): QueryLogsRequest {
@@ -261,6 +315,13 @@ export class QueryLogsResponse extends Message<QueryLogsResponse> {
    */
   degraded = false;
 
+  /**
+   * names the backend that is down + cause
+   *
+   * @generated from field: string degraded_reason = 4;
+   */
+  degradedReason = "";
+
   constructor(data?: PartialMessage<QueryLogsResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -272,6 +333,7 @@ export class QueryLogsResponse extends Message<QueryLogsResponse> {
     { no: 1, name: "logs", kind: "message", T: LogRecord, repeated: true },
     { no: 2, name: "next_page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 3, name: "degraded", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 4, name: "degraded_reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): QueryLogsResponse {
@@ -602,6 +664,327 @@ export class DashboardSummary extends Message<DashboardSummary> {
 
   static equals(a: DashboardSummary | PlainMessage<DashboardSummary> | undefined, b: DashboardSummary | PlainMessage<DashboardSummary> | undefined): boolean {
     return proto3.util.equals(DashboardSummary, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetTelemetryReportRequest
+ */
+export class GetTelemetryReportRequest extends Message<GetTelemetryReportRequest> {
+  /**
+   * injected from request context; client value ignored
+   *
+   * @generated from field: string tenant_id = 1;
+   */
+  tenantId = "";
+
+  /**
+   * optional scope
+   *
+   * @generated from field: string project_id = 2;
+   */
+  projectId = "";
+
+  /**
+   * optional scope
+   *
+   * @generated from field: string execution_id = 3;
+   */
+  executionId = "";
+
+  /**
+   * optional scope
+   *
+   * @generated from field: string work_item_id = 4;
+   */
+  workItemId = "";
+
+  /**
+   * @generated from field: orchicon.api.v1.TelemetryReportGroupBy group_by = 5;
+   */
+  groupBy = TelemetryReportGroupBy.UNSPECIFIED;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp start = 6;
+   */
+  start?: Timestamp;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp end = 7;
+   */
+  end?: Timestamp;
+
+  constructor(data?: PartialMessage<GetTelemetryReportRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetTelemetryReportRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "tenant_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "execution_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "group_by", kind: "enum", T: proto3.getEnumType(TelemetryReportGroupBy) },
+    { no: 6, name: "start", kind: "message", T: Timestamp },
+    { no: 7, name: "end", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetTelemetryReportRequest {
+    return new GetTelemetryReportRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetTelemetryReportRequest {
+    return new GetTelemetryReportRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetTelemetryReportRequest {
+    return new GetTelemetryReportRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetTelemetryReportRequest | PlainMessage<GetTelemetryReportRequest> | undefined, b: GetTelemetryReportRequest | PlainMessage<GetTelemetryReportRequest> | undefined): boolean {
+    return proto3.util.equals(GetTelemetryReportRequest, a, b);
+  }
+}
+
+/**
+ * TelemetryReportRow is one aggregated group (a project or a workflow)
+ * over the report window.
+ *
+ * @generated from message orchicon.api.v1.TelemetryReportRow
+ */
+export class TelemetryReportRow extends Message<TelemetryReportRow> {
+  /**
+   * project id, or workflow id
+   *
+   * @generated from field: string group_key = 1;
+   */
+  groupKey = "";
+
+  /**
+   * display name, resolved server-side
+   *
+   * @generated from field: string group_name = 2;
+   */
+  groupName = "";
+
+  /**
+   * @generated from field: int64 total_tokens = 3;
+   */
+  totalTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 prompt_tokens = 4;
+   */
+  promptTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 cache_read_tokens = 5;
+   */
+  cacheReadTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: double cost_usd = 6;
+   */
+  costUsd = 0;
+
+  /**
+   * @generated from field: int32 executions = 7;
+   */
+  executions = 0;
+
+  /**
+   * @generated from field: int32 runs = 8;
+   */
+  runs = 0;
+
+  /**
+   * @generated from field: int32 failed_runs = 9;
+   */
+  failedRuns = 0;
+
+  /**
+   * @generated from field: int64 duration_ms_total = 10;
+   */
+  durationMsTotal = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 duration_ms_avg = 11;
+   */
+  durationMsAvg = protoInt64.zero;
+
+  constructor(data?: PartialMessage<TelemetryReportRow>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.TelemetryReportRow";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "group_key", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "group_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "total_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 4, name: "prompt_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 5, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 6, name: "cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 7, name: "executions", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 8, name: "runs", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 9, name: "failed_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 10, name: "duration_ms_total", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 11, name: "duration_ms_avg", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TelemetryReportRow {
+    return new TelemetryReportRow().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TelemetryReportRow {
+    return new TelemetryReportRow().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TelemetryReportRow {
+    return new TelemetryReportRow().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: TelemetryReportRow | PlainMessage<TelemetryReportRow> | undefined, b: TelemetryReportRow | PlainMessage<TelemetryReportRow> | undefined): boolean {
+    return proto3.util.equals(TelemetryReportRow, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.TelemetryReportTotals
+ */
+export class TelemetryReportTotals extends Message<TelemetryReportTotals> {
+  /**
+   * @generated from field: int64 total_tokens = 1;
+   */
+  totalTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: double cost_usd = 2;
+   */
+  costUsd = 0;
+
+  /**
+   * @generated from field: int32 executions = 3;
+   */
+  executions = 0;
+
+  /**
+   * @generated from field: int32 runs = 4;
+   */
+  runs = 0;
+
+  /**
+   * @generated from field: int32 failed_runs = 5;
+   */
+  failedRuns = 0;
+
+  /**
+   * @generated from field: int64 duration_ms_total = 6;
+   */
+  durationMsTotal = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 duration_ms_avg = 7;
+   */
+  durationMsAvg = protoInt64.zero;
+
+  /**
+   * failed_runs / runs, 0 when runs == 0
+   *
+   * @generated from field: double failure_rate = 8;
+   */
+  failureRate = 0;
+
+  constructor(data?: PartialMessage<TelemetryReportTotals>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.TelemetryReportTotals";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "total_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 2, name: "cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 3, name: "executions", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 4, name: "runs", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 5, name: "failed_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 6, name: "duration_ms_total", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 7, name: "duration_ms_avg", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 8, name: "failure_rate", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TelemetryReportTotals {
+    return new TelemetryReportTotals().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TelemetryReportTotals {
+    return new TelemetryReportTotals().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TelemetryReportTotals {
+    return new TelemetryReportTotals().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: TelemetryReportTotals | PlainMessage<TelemetryReportTotals> | undefined, b: TelemetryReportTotals | PlainMessage<TelemetryReportTotals> | undefined): boolean {
+    return proto3.util.equals(TelemetryReportTotals, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetTelemetryReportResponse
+ */
+export class GetTelemetryReportResponse extends Message<GetTelemetryReportResponse> {
+  /**
+   * @generated from field: repeated orchicon.api.v1.TelemetryReportRow rows = 1;
+   */
+  rows: TelemetryReportRow[] = [];
+
+  /**
+   * @generated from field: orchicon.api.v1.TelemetryReportTotals totals = 2;
+   */
+  totals?: TelemetryReportTotals;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp window_start = 3;
+   */
+  windowStart?: Timestamp;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp window_end = 4;
+   */
+  windowEnd?: Timestamp;
+
+  constructor(data?: PartialMessage<GetTelemetryReportResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetTelemetryReportResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "rows", kind: "message", T: TelemetryReportRow, repeated: true },
+    { no: 2, name: "totals", kind: "message", T: TelemetryReportTotals },
+    { no: 3, name: "window_start", kind: "message", T: Timestamp },
+    { no: 4, name: "window_end", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetTelemetryReportResponse {
+    return new GetTelemetryReportResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetTelemetryReportResponse {
+    return new GetTelemetryReportResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetTelemetryReportResponse {
+    return new GetTelemetryReportResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetTelemetryReportResponse | PlainMessage<GetTelemetryReportResponse> | undefined, b: GetTelemetryReportResponse | PlainMessage<GetTelemetryReportResponse> | undefined): boolean {
+    return proto3.util.equals(GetTelemetryReportResponse, a, b);
   }
 }
 

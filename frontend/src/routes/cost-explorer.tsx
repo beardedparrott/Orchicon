@@ -471,7 +471,7 @@ function UsageRecordsTable({
         <CardTitle>Recent usage records</CardTitle>
         <CardDescription>
           Postgres source-of-truth rows (docs/08 §5.2). Mirrored to VictoriaMetrics as OTel metrics
-          for the telemetry explorer views.
+          for the graphs on the Telemetry page.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">

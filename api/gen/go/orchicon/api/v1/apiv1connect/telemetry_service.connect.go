@@ -61,6 +61,9 @@ const (
 	// TelemetryServiceGetDashboardProcedure is the fully-qualified name of the TelemetryService's
 	// GetDashboard RPC.
 	TelemetryServiceGetDashboardProcedure = "/orchicon.api.v1.TelemetryService/GetDashboard"
+	// TelemetryServiceGetTelemetryReportProcedure is the fully-qualified name of the TelemetryService's
+	// GetTelemetryReport RPC.
+	TelemetryServiceGetTelemetryReportProcedure = "/orchicon.api.v1.TelemetryService/GetTelemetryReport"
 )
 
 // TelemetryServiceClient is a client for the orchicon.api.v1.TelemetryService service.
@@ -85,6 +88,12 @@ type TelemetryServiceClient interface {
 	// (cost, executions, recovery) — raw exploration uses the Telemetry
 	// page panes.
 	GetDashboard(context.Context, *connect.Request[v1.GetDashboardRequest]) (*connect.Response[v1.GetDashboardResponse], error)
+	// GetTelemetryReport returns a summarised window over the Orchicon
+	// domain model: token usage, cost, duration and failure rate per project
+	// or per workflow. Backed by Postgres (usage_records,
+	// worker_executions, workflow_runs) — the source of truth — so it keeps
+	// working when a telemetry store is down.
+	GetTelemetryReport(context.Context, *connect.Request[v1.GetTelemetryReportRequest]) (*connect.Response[v1.GetTelemetryReportResponse], error)
 }
 
 // NewTelemetryServiceClient constructs a client for the orchicon.api.v1.TelemetryService service.
@@ -128,16 +137,23 @@ func NewTelemetryServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(telemetryServiceMethods.ByName("GetDashboard")),
 			connect.WithClientOptions(opts...),
 		),
+		getTelemetryReport: connect.NewClient[v1.GetTelemetryReportRequest, v1.GetTelemetryReportResponse](
+			httpClient,
+			baseURL+TelemetryServiceGetTelemetryReportProcedure,
+			connect.WithSchema(telemetryServiceMethods.ByName("GetTelemetryReport")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // telemetryServiceClient implements TelemetryServiceClient.
 type telemetryServiceClient struct {
-	queryTraces     *connect.Client[v1.QueryTracesRequest, v1.QueryTracesResponse]
-	queryMetrics    *connect.Client[v1.QueryMetricsRequest, v1.QueryMetricsResponse]
-	queryLogs       *connect.Client[v1.QueryLogsRequest, v1.QueryLogsResponse]
-	streamTelemetry *connect.Client[v1.StreamTelemetryRequest, v1.StreamTelemetryResponse]
-	getDashboard    *connect.Client[v1.GetDashboardRequest, v1.GetDashboardResponse]
+	queryTraces        *connect.Client[v1.QueryTracesRequest, v1.QueryTracesResponse]
+	queryMetrics       *connect.Client[v1.QueryMetricsRequest, v1.QueryMetricsResponse]
+	queryLogs          *connect.Client[v1.QueryLogsRequest, v1.QueryLogsResponse]
+	streamTelemetry    *connect.Client[v1.StreamTelemetryRequest, v1.StreamTelemetryResponse]
+	getDashboard       *connect.Client[v1.GetDashboardRequest, v1.GetDashboardResponse]
+	getTelemetryReport *connect.Client[v1.GetTelemetryReportRequest, v1.GetTelemetryReportResponse]
 }
 
 // QueryTraces calls orchicon.api.v1.TelemetryService.QueryTraces.
@@ -165,6 +181,11 @@ func (c *telemetryServiceClient) GetDashboard(ctx context.Context, req *connect.
 	return c.getDashboard.CallUnary(ctx, req)
 }
 
+// GetTelemetryReport calls orchicon.api.v1.TelemetryService.GetTelemetryReport.
+func (c *telemetryServiceClient) GetTelemetryReport(ctx context.Context, req *connect.Request[v1.GetTelemetryReportRequest]) (*connect.Response[v1.GetTelemetryReportResponse], error) {
+	return c.getTelemetryReport.CallUnary(ctx, req)
+}
+
 // TelemetryServiceHandler is an implementation of the orchicon.api.v1.TelemetryService service.
 type TelemetryServiceHandler interface {
 	// QueryTraces returns traces matching the tenant-scoped query. Proxies
@@ -187,6 +208,12 @@ type TelemetryServiceHandler interface {
 	// (cost, executions, recovery) — raw exploration uses the Telemetry
 	// page panes.
 	GetDashboard(context.Context, *connect.Request[v1.GetDashboardRequest]) (*connect.Response[v1.GetDashboardResponse], error)
+	// GetTelemetryReport returns a summarised window over the Orchicon
+	// domain model: token usage, cost, duration and failure rate per project
+	// or per workflow. Backed by Postgres (usage_records,
+	// worker_executions, workflow_runs) — the source of truth — so it keeps
+	// working when a telemetry store is down.
+	GetTelemetryReport(context.Context, *connect.Request[v1.GetTelemetryReportRequest]) (*connect.Response[v1.GetTelemetryReportResponse], error)
 }
 
 // NewTelemetryServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -226,6 +253,12 @@ func NewTelemetryServiceHandler(svc TelemetryServiceHandler, opts ...connect.Han
 		connect.WithSchema(telemetryServiceMethods.ByName("GetDashboard")),
 		connect.WithHandlerOptions(opts...),
 	)
+	telemetryServiceGetTelemetryReportHandler := connect.NewUnaryHandler(
+		TelemetryServiceGetTelemetryReportProcedure,
+		svc.GetTelemetryReport,
+		connect.WithSchema(telemetryServiceMethods.ByName("GetTelemetryReport")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.TelemetryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case TelemetryServiceQueryTracesProcedure:
@@ -238,6 +271,8 @@ func NewTelemetryServiceHandler(svc TelemetryServiceHandler, opts ...connect.Han
 			telemetryServiceStreamTelemetryHandler.ServeHTTP(w, r)
 		case TelemetryServiceGetDashboardProcedure:
 			telemetryServiceGetDashboardHandler.ServeHTTP(w, r)
+		case TelemetryServiceGetTelemetryReportProcedure:
+			telemetryServiceGetTelemetryReportHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -265,4 +300,8 @@ func (UnimplementedTelemetryServiceHandler) StreamTelemetry(context.Context, *co
 
 func (UnimplementedTelemetryServiceHandler) GetDashboard(context.Context, *connect.Request[v1.GetDashboardRequest]) (*connect.Response[v1.GetDashboardResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.TelemetryService.GetDashboard is not implemented"))
+}
+
+func (UnimplementedTelemetryServiceHandler) GetTelemetryReport(context.Context, *connect.Request[v1.GetTelemetryReportRequest]) (*connect.Response[v1.GetTelemetryReportResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.TelemetryService.GetTelemetryReport is not implemented"))
 }

@@ -111,4 +111,5 @@ message TelemetryQuery {
   google.protobuf.Timestamp end = 8;     // time window end
   int32 limit = 9;            // max results (bounded at the handler)
   string page_token = 10;    // opaque pagination cursor
+  string work_item_id = 11;  // optional scope (joins via attributes)
 }

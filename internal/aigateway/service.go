@@ -344,7 +344,7 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 	start, end := tsToTime(req.Msg.Start), tsToTime(req.Msg.End)
 
 	// Top level: cost grouped by workflow (all runs aggregated).
-	aggregates, err := db.GetWorkflowAggregateCosts(ctx, ttx.Tx, tenantID, start, end)
+	aggregates, err := db.GetWorkflowAggregateCosts(ctx, ttx.Tx, tenantID, "", "", "", start, end)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

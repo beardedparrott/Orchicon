@@ -104,14 +104,58 @@ const authInterceptor: Interceptor = (next) => async (req) => {
   }
 };
 
-export const connectTransport = createConnectTransport({
-  baseUrl:
-    typeof window !== "undefined"
-      ? window.location.origin
-      : "http://localhost:8080",
-  interceptors: [authInterceptor],
-  credentials: "include",
-});
+// Telemetry attribution hints (native Telemetry page, D5).
+//
+// Only the HTTP middleware span producer exists today, so a Tempo identity
+// filter can only match a span that already carries
+// orchicon.project_id / work_item_id / execution_id. The page sets the ids it
+// is viewing here and this interceptor attaches them to telemetry RPCs only —
+// attribution hints, never a scope widening (the tenant still comes from the
+// request context on the server).
+export interface TelemetryAttribution {
+  projectId?: string;
+  workItemId?: string;
+  executionId?: string;
+}
+
+let telemetryAttribution: TelemetryAttribution = {};
+
+/** setTelemetryAttribution records the ids the Telemetry page is viewing. */
+export function setTelemetryAttribution(next: TelemetryAttribution): void {
+  telemetryAttribution = next;
+}
+
+const telemetryAttributionInterceptor: Interceptor = (next) => async (req) => {
+  if (telemetryAttribution.projectId) {
+    req.header.set("x-orchicon-project-id", telemetryAttribution.projectId);
+  }
+  if (telemetryAttribution.workItemId) {
+    req.header.set("x-orchicon-work-item-id", telemetryAttribution.workItemId);
+  }
+  if (telemetryAttribution.executionId) {
+    req.header.set("x-orchicon-execution-id", telemetryAttribution.executionId);
+  }
+  return next(req);
+};
+
+function transportOptions(interceptors: Interceptor[]) {
+  return {
+    baseUrl:
+      typeof window !== "undefined"
+        ? window.location.origin
+        : "http://localhost:8080",
+    interceptors,
+    credentials: "include" as const,
+  };
+}
+
+export const connectTransport = createConnectTransport(transportOptions([authInterceptor]));
+
+// The telemetry client gets its own transport so the attribution hints are
+// attached to telemetry RPCs only (auth is shared).
+const telemetryTransport = createConnectTransport(
+  transportOptions([telemetryAttributionInterceptor, authInterceptor]),
+);
 
 export const projectClient = createClient(ProjectService, connectTransport);
 export const workerClient = createClient(WorkerService, connectTransport);
@@ -121,7 +165,7 @@ export const executionClient = createClient(ExecutionService, connectTransport);
 export const workflowClient = createClient(WorkflowService, connectTransport);
 export const policyClient = createClient(PolicyService, connectTransport);
 export const recoveryClient = createClient(RecoveryService, connectTransport);
-export const telemetryClient = createClient(TelemetryService, connectTransport);
+export const telemetryClient = createClient(TelemetryService, telemetryTransport);
 export const aiGatewayClient = createClient(AIGatewayService, connectTransport);
 export const approvalClient = createClient(ApprovalService, connectTransport);
 export const authClient = createClient(AuthService, connectTransport);
