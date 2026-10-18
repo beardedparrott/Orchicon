@@ -43,6 +43,13 @@ service TelemetryService {
   // (cost, executions, recovery) — raw exploration uses the embedded
   // Grafana UI.
   rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse);
+
+  // GetTelemetryReport returns a summarised window over the Orchicon
+  // domain model: token usage, cost, duration and failure rate per project
+  // or per workflow. Backed by Postgres (usage_records,
+  // worker_executions, workflow_runs) — the source of truth — so it keeps
+  // working when a telemetry store is down.
+  rpc GetTelemetryReport(GetTelemetryReportRequest) returns (GetTelemetryReportResponse);
 }
 
 message QueryTracesRequest {
@@ -52,6 +59,9 @@ message QueryTracesResponse {
   repeated Trace traces = 1;
   string next_page_token = 2;
   bool degraded = 3; // true when the telemetry backend is unreachable
+  // degraded_reason names the backend that is down plus the cause, so the
+  // UI can show WHICH store failed instead of a silently empty chart.
+  string degraded_reason = 4;
 }
 
 message QueryMetricsRequest {
@@ -61,16 +71,19 @@ message QueryMetricsRequest {
 message QueryMetricsResponse {
   repeated MetricSeries series = 1;
   bool degraded = 2;
+  string degraded_reason = 3; // names the backend that is down + cause
 }
 
 message QueryLogsRequest {
   TelemetryQuery query = 1;
   string severity = 2; // optional severity filter
+  string search = 3;   // free-text log search (LogQL line filter)
 }
 message QueryLogsResponse {
   repeated LogRecord logs = 1;
   string next_page_token = 2;
   bool degraded = 3;
+  string degraded_reason = 4; // names the backend that is down + cause
 }
 
 message StreamTelemetryRequest {
@@ -114,4 +127,56 @@ message DashboardSummary {
   double avg_dispatch_latency_ms = 6;
   google.protobuf.Timestamp window_start = 7;
   google.protobuf.Timestamp window_end = 8;
+}
+
+// TelemetryReportGroupBy selects the dimension a telemetry report is
+// aggregated on.
+enum TelemetryReportGroupBy {
+  TELEMETRY_REPORT_GROUP_BY_UNSPECIFIED = 0;
+  TELEMETRY_REPORT_GROUP_BY_PROJECT = 1;
+  TELEMETRY_REPORT_GROUP_BY_WORKFLOW = 2;
+}
+
+message GetTelemetryReportRequest {
+  string tenant_id = 1;   // injected from request context; client value ignored
+  string project_id = 2;  // optional scope
+  string execution_id = 3; // optional scope
+  string work_item_id = 4; // optional scope
+  TelemetryReportGroupBy group_by = 5;
+  google.protobuf.Timestamp start = 6;
+  google.protobuf.Timestamp end = 7;
+}
+
+// TelemetryReportRow is one aggregated group (a project or a workflow)
+// over the report window.
+message TelemetryReportRow {
+  string group_key = 1;         // project id, or workflow id
+  string group_name = 2;        // display name, resolved server-side
+  int64 total_tokens = 3;
+  int64 prompt_tokens = 4;
+  int64 cache_read_tokens = 5;
+  double cost_usd = 6;
+  int32 executions = 7;
+  int32 runs = 8;
+  int32 failed_runs = 9;
+  int64 duration_ms_total = 10;
+  int64 duration_ms_avg = 11;
+}
+
+message TelemetryReportTotals {
+  int64 total_tokens = 1;
+  double cost_usd = 2;
+  int32 executions = 3;
+  int32 runs = 4;
+  int32 failed_runs = 5;
+  int64 duration_ms_total = 6;
+  int64 duration_ms_avg = 7;
+  double failure_rate = 8; // failed_runs / runs, 0 when runs == 0
+}
+
+message GetTelemetryReportResponse {
+  repeated TelemetryReportRow rows = 1;
+  TelemetryReportTotals totals = 2;
+  google.protobuf.Timestamp window_start = 3;
+  google.protobuf.Timestamp window_end = 4;
 }

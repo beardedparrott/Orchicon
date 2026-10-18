@@ -590,6 +590,13 @@ export class TelemetryQuery extends Message<TelemetryQuery> {
    */
   pageToken = "";
 
+  /**
+   * optional scope (joins via attributes)
+   *
+   * @generated from field: string work_item_id = 11;
+   */
+  workItemId = "";
+
   constructor(data?: PartialMessage<TelemetryQuery>) {
     super();
     proto3.util.initPartial(data, this);
@@ -608,6 +615,7 @@ export class TelemetryQuery extends Message<TelemetryQuery> {
     { no: 8, name: "end", kind: "message", T: Timestamp },
     { no: 9, name: "limit", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 10, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 11, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TelemetryQuery {

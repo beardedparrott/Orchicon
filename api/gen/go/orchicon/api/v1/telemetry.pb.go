@@ -640,6 +640,7 @@ type TelemetryQuery struct {
 	End           *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=end,proto3" json:"end,omitempty"`                                          // time window end
 	Limit         int32                  `protobuf:"varint,9,opt,name=limit,proto3" json:"limit,omitempty"`                                     // max results (bounded at the handler)
 	PageToken     string                 `protobuf:"bytes,10,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`            // opaque pagination cursor
+	WorkItemId    string                 `protobuf:"bytes,11,opt,name=work_item_id,json=workItemId,proto3" json:"work_item_id,omitempty"`       // optional scope (joins via attributes)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -744,6 +745,13 @@ func (x *TelemetryQuery) GetPageToken() string {
 	return ""
 }
 
+func (x *TelemetryQuery) GetWorkItemId() string {
+	if x != nil {
+		return x.WorkItemId
+	}
+	return ""
+}
+
 var File_orchicon_api_v1_telemetry_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_telemetry_proto_rawDesc = "" +
@@ -825,7 +833,7 @@ const file_orchicon_api_v1_telemetry_proto_rawDesc = "" +
 	"attributes\x1a=\n" +
 	"\x0fAttributesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe0\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x82\x03\n" +
 	"\x0eTelemetryQuery\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
@@ -839,7 +847,9 @@ const file_orchicon_api_v1_telemetry_proto_rawDesc = "" +
 	"\x05limit\x18\t \x01(\x05R\x05limit\x12\x1d\n" +
 	"\n" +
 	"page_token\x18\n" +
-	" \x01(\tR\tpageToken*\x89\x01\n" +
+	" \x01(\tR\tpageToken\x12 \n" +
+	"\fwork_item_id\x18\v \x01(\tR\n" +
+	"workItemId*\x89\x01\n" +
 	"\x0fTelemetrySignal\x12 \n" +
 	"\x1cTELEMETRY_SIGNAL_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17TELEMETRY_SIGNAL_TRACES\x10\x01\x12\x1c\n" +

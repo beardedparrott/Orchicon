@@ -1,9 +1,19 @@
 import { createRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useGetUsage, useListProviders } from "@/api/aigateway";
-import { useGetDashboard, useQueryLogs, useQueryMetrics, useQueryTraces } from "@/api/telemetry";
-import { GRAFANA_UI_URL } from "@/api/clients";
+import { setTelemetryAttribution } from "@/api/clients";
+import { useListProjects } from "@/api/projects";
+import { useGetDashboard, type TelemetryFilters as TelemetryFilterSet } from "@/api/telemetry";
+import { LogsPanel, MetricsGraphPanel, TracesPanel } from "@/components/telemetry/graphs";
+import { ReportsPanel } from "@/components/telemetry/reports-panel";
+import { StatCard, fmtInt } from "@/components/telemetry/states";
+import {
+  DEFAULT_TELEMETRY_FILTERS,
+  TelemetryFilters,
+  windowFor,
+  type TelemetryFilterValue,
+} from "@/components/telemetry/telemetry-filters";
 import {
   Card,
   CardContent,
@@ -20,35 +30,125 @@ export const Route = createRoute({
   component: TelemetryPage,
 });
 
-type Tab = "overview" | "traces" | "metrics" | "logs" | "credits";
+type Tab = "overview" | "reports" | "traces" | "metrics" | "logs" | "credits";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
+  { id: "reports", label: "Reports" },
+  { id: "traces", label: "Traces" },
+  { id: "metrics", label: "Metrics" },
+  { id: "logs", label: "Logs" },
   { id: "credits", label: "Credits" },
-  { id: "traces", label: "Traces (Grafana)" },
-  { id: "metrics", label: "Metrics (Grafana)" },
-  { id: "logs", label: "Logs (Grafana)" },
 ];
 
 function TelemetryPage() {
   const [tab, setTab] = useState<Tab>("overview");
+  const [filters, setFilters] = useState<TelemetryFilterValue>(DEFAULT_TELEMETRY_FILTERS);
+  const { data: projects } = useListProjects();
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  // The resolved window + identity scope every panel queries with.
+  const window = useMemo(
+    () => windowFor(filters),
+    // Recomputed only when the filter inputs change, not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filters.range, filters.customStart, filters.customEnd],
+  );
+
+  const query: TelemetryFilterSet = useMemo(
+    () => ({
+      projectId: filters.projectId || undefined,
+      executionId: filters.executionId || undefined,
+      workItemId: filters.workItemId || undefined,
+      search: filters.search || undefined,
+      severity: filters.severity || undefined,
+      start: window.start,
+      end: window.end,
+    }),
+    [filters, window],
+  );
+
+  // Attribution hints for the trace identity filters (see clients.ts).
+  useEffect(() => {
+    setTelemetryAttribution({
+      projectId: query.projectId,
+      workItemId: query.workItemId,
+      executionId: query.executionId,
+    });
+  }, [query.projectId, query.workItemId, query.executionId]);
+
+  // Roving-tabindex keyboard model for the tab strip (AC 7): Left/Right move
+  // between tabs, Home/End jump to the ends, focus follows selection.
+  const onTabKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      const idx = TABS.findIndex((t) => t.id === tab);
+      let next = idx;
+      switch (e.key) {
+        case "ArrowRight":
+          next = (idx + 1) % TABS.length;
+          break;
+        case "ArrowLeft":
+          next = (idx - 1 + TABS.length) % TABS.length;
+          break;
+        case "Home":
+          next = 0;
+          break;
+        case "End":
+          next = TABS.length - 1;
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+      const target = TABS[next];
+      setTab(target.id);
+      tabRefs.current[target.id]?.focus();
+    },
+    [tab],
+  );
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Telemetry</h1>
         <p className="text-sm text-muted-foreground">
-          Native OTEL telemetry — traces, metrics, and logs without leaving the Orchicon shell.
-          For token and cost breakdown, see{" "}
-          <Link to="/cost-explorer" className="text-primary hover:underline">Cost Explorer</Link>.
+          Native OTEL telemetry — graphs, reports and search over traces, metrics and logs, served
+          by Orchicon itself. For token and cost breakdown, see{" "}
+          <Link to="/cost-explorer" className="text-primary hover:underline">
+            Cost Explorer
+          </Link>
+          .
         </p>
       </div>
-      <div className="flex flex-wrap gap-2 border-b border-white/10 pb-px">
+
+      <TelemetryFilters
+        value={filters}
+        onChange={setFilters}
+        projects={projects}
+        disableIdentity={tab === "metrics"}
+      />
+
+      <div
+        role="tablist"
+        aria-label="Telemetry sections"
+        onKeyDown={onTabKeyDown}
+        className="flex flex-wrap gap-2 border-b border-white/10 pb-px"
+      >
         {TABS.map((t) => (
           <button
             key={t.id}
+            ref={(el) => {
+              tabRefs.current[t.id] = el;
+            }}
+            role="tab"
+            type="button"
+            id={`telemetry-tab-${t.id}`}
+            aria-selected={tab === t.id}
+            aria-controls={`telemetry-panel-${t.id}`}
+            tabIndex={tab === t.id ? 0 : -1}
             onClick={() => setTab(t.id)}
             className={cn(
-              "rounded-t-md px-3 py-2 text-sm font-medium transition-colors",
+              "rounded-t-md px-3 py-2 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring",
               tab === t.id
                 ? "border-b-2 border-primary text-foreground"
                 : "text-muted-foreground hover:text-foreground",
@@ -58,21 +158,31 @@ function TelemetryPage() {
           </button>
         ))}
       </div>
-      {tab === "overview" && <OverviewPanel />}
-      {tab === "credits" && <CreditsPanel />}
-      {tab === "traces" && <TracesPanel />}
-      {tab === "metrics" && <MetricsPanel />}
-      {tab === "logs" && <LogsPanel />}
+
+      <div
+        role="tabpanel"
+        id={`telemetry-panel-${tab}`}
+        aria-labelledby={`telemetry-tab-${tab}`}
+        tabIndex={0}
+        className="focus-visible:outline-none"
+      >
+        {tab === "overview" && <OverviewPanel query={query} />}
+        {tab === "reports" && <ReportsPanel filters={query} />}
+        {tab === "traces" && <TracesPanel filters={query} />}
+        {tab === "metrics" && <MetricsGraphPanel filters={query} />}
+        {tab === "logs" && <LogsPanel filters={query} />}
+        {tab === "credits" && <CreditsPanel />}
+      </div>
     </div>
   );
 }
 
-function OverviewPanel() {
-  const { data, isLoading } = useGetDashboard();
+function OverviewPanel({ query }: { query: TelemetryFilterSet }) {
+  const { data, isLoading } = useGetDashboard({ projectId: query.projectId });
   const { data: providers } = useListProviders();
   const summary = data?.summary;
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="Total tokens"
@@ -132,141 +242,6 @@ function OverviewPanel() {
   );
 }
 
-function TracesPanel() {
-  const { data, isLoading } = useQueryTraces();
-  const degraded = data?.degraded ?? false;
-  return (
-    <div className="space-y-6">
-      <GrafanaEmbed title="Trace Explorer" degraded={degraded} />
-      <Card className="glass-panel">
-        <CardHeader>
-          <CardTitle>Recent traces</CardTitle>
-          <CardDescription>
-            Projected from Tempo, scoped to the current tenant (docs/08 §5.1). Open the embedded
-            Grafana UI for full drill-down.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="max-h-[200px] overflow-y-auto">
-          {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-          {data?.traces && data.traces.length === 0 && !data.degraded && (
-            <p className="text-sm text-muted-foreground">No traces yet.</p>
-          )}
-          {data?.traces && data.traces.length > 0 && (
-            <div className="divide-y divide-white/10 rounded-2xl glass-panel overflow-hidden">
-              {data.traces.map((t) => (
-                <div key={t.traceId} className="flex items-center justify-between px-3 py-2">
-                  <div>
-                    <div className="font-mono text-xs text-muted-foreground">
-                      {t.traceId?.slice(0, 16)}…
-                    </div>
-                    <div className="text-sm font-medium">{t.rootSpanName || "—"}</div>
-                  </div>
-                  <div className="text-right text-sm">
-                    <div>{fmtInt(t.durationUs ?? 0)} µs</div>
-                    <div className="text-xs text-muted-foreground">{t.spanCount ?? 0} spans</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function LogsPanel() {
-  const { data, isLoading } = useQueryLogs();
-  const degraded = data?.degraded ?? false;
-  return (
-    <div className="space-y-6">
-      <GrafanaEmbed title="Log Explorer" degraded={degraded} />
-      <Card className="glass-panel">
-        <CardHeader>
-          <CardTitle>Recent logs</CardTitle>
-          <CardDescription>
-            Structured OTel log records carrying trace_id + correlation_id (docs/08 §5.3).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="max-h-[200px] overflow-y-auto">
-          {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-          {data?.logs && data.logs.length === 0 && !data.degraded && (
-            <p className="text-sm text-muted-foreground">No logs yet.</p>
-          )}
-          {data?.logs && data.logs.length > 0 && (
-            <div className="space-y-2">
-              {data.logs.map((l, i) => (
-                <div key={i} className="rounded-md border px-3 py-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-xs text-muted-foreground">
-                      {l.severity || "INFO"}
-                    </span>
-                    <span className="font-mono text-xs text-muted-foreground">
-                      {l.traceId?.slice(0, 12)}…
-                    </span>
-                  </div>
-                  <p className="mt-1">{l.body || "—"}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function MetricsPanel() {
-  const { data, isLoading } = useQueryMetrics({
-    metricNames: ["orchicon_tokens_consumed", "orchicon_cost_usd", "orchicon_outbox_lag"],
-  });
-  const degraded = data?.degraded ?? false;
-  const series = data?.series ?? [];
-  return (
-    <div className="space-y-6">
-      <GrafanaEmbed title="Metrics Explorer" degraded={degraded} />
-      <Card className="glass-panel">
-        <CardHeader>
-          <CardTitle>Metric values</CardTitle>
-          <CardDescription>Latest samples from VictoriaMetrics.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-          {!isLoading && series.length === 0 && !degraded && (
-            <p className="text-sm text-muted-foreground">
-              No metric data yet. Run an execution to populate metrics.
-            </p>
-          )}
-          {series.length > 0 && (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 max-h-[200px] overflow-y-auto">
-              {series.map((s) => {
-                const pts = s.points ?? [];
-                const latest = pts[0];
-                const name = s.metricName || "unknown";
-                const display =
-                  name === "orchicon_tokens_consumed"
-                    ? `${fmtInt(latest?.value ?? 0)} tokens`
-                    : name === "orchicon_cost_usd"
-                      ? `$${(latest?.value ?? 0).toFixed(4)}`
-                      : name === "orchicon_outbox_lag"
-                        ? `${fmtInt(latest?.value ?? 0)} lag`
-                        : String(latest?.value ?? 0);
-                return (
-                  <div key={name} className="rounded-md border p-3">
-                    <div className="text-xs text-muted-foreground">{name}</div>
-                    <div className="mt-1 text-lg font-semibold">{display}</div>
-                    <div className="mt-0.5 text-[10px] text-muted-foreground">{pts.length} samples</div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
 function CreditsPanel() {
   // fetchAll: lifetime totals must cover EVERY record. The GetUsage RPC is
   // cursor-paginated (a full page returns next_page_token), so a single
@@ -282,7 +257,12 @@ function CreditsPanel() {
   const { byProvider, grandTotal } = useMemo(() => {
     const byProvider = new Map<
       string,
-      { totalCost: number; totalTokens: number; count: number; models: Map<string, { cost: number; tokens: number; count: number }> }
+      {
+        totalCost: number;
+        totalTokens: number;
+        count: number;
+        models: Map<string, { cost: number; tokens: number; count: number }>;
+      }
     >();
     const grandTotal = { cost: 0, tokens: 0, count: 0 };
     if (usageRecords) {
@@ -315,16 +295,20 @@ function CreditsPanel() {
     return { byProvider, grandTotal };
   }, [usageRecords]);
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="grid gap-4 md:grid-cols-3">
-        <StatCard label="Total spent (USD)" value={`$${grandTotal.cost.toFixed(4)}`} loading={isLoading} />
+        <StatCard
+          label="Total spent (USD)"
+          value={`$${grandTotal.cost.toFixed(4)}`}
+          loading={isLoading}
+        />
         <StatCard label="Total tokens" value={fmtInt(grandTotal.tokens)} loading={isLoading} />
         <StatCard label="Usage records" value={fmtInt(grandTotal.count)} loading={isLoading} />
       </div>
       {byProvider.size === 0 && !isLoading && (
         <Card className="glass-panel">
           <CardContent className="py-6">
-            <p className="text-sm text-muted-foreground text-center">
+            <p className="text-center text-sm text-muted-foreground">
               No usage records yet. Run an execution to populate credit telemetry.
             </p>
           </CardContent>
@@ -361,57 +345,4 @@ function CreditsPanel() {
         })}
     </div>
   );
-}
-
-function GrafanaEmbed({ title, degraded }: { title: string; degraded?: boolean }) {
-  const src = `${GRAFANA_UI_URL}${grafanaDashboardPath()}`;
-  return (
-    <Card className="glass-panel">
-      <CardHeader>
-        <CardTitle>{title} — embedded Grafana</CardTitle>
-        <CardDescription>
-          Same visual language, inside the Orchicon shell (docs/10 §11). The Grafana UI is proxied
-          same-origin.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {degraded ? (
-          <div className="flex h-[160px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
-            Telemetry backend is starting up — check back in a moment. The dev stack starts
-            automatically with `orchicon start` / `orchicon dev start`.
-          </div>
-        ) : (
-          <iframe
-            src={src}
-            title={title}
-            className="h-[640px] w-full rounded-md border"
-            sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-          />
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function grafanaDashboardPath(): string {
-  return `/d/orchicon-dashboard/orchicon?kiosk&from=now-1h&to=now`;
-}
-
-function StatCard({ label, value, loading }: { label: string; value: string; loading?: boolean }) {
-  return (
-    <Card className="glass-panel">
-      <CardHeader className="pb-0">
-        <CardDescription className="text-xs">{label}</CardDescription>
-      </CardHeader>
-      <CardContent className="pb-3 pt-1">
-        <div className="text-xl font-semibold">{loading ? "…" : value}</div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function fmtInt(n: number | bigint | undefined): string {
-  if (n === undefined || n === null) return "0";
-  const v = typeof n === "bigint" ? Number(n) : n;
-  return v.toLocaleString();
 }

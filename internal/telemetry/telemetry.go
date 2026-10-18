@@ -263,12 +263,20 @@ func Middleware(next http.Handler) http.Handler {
 		if route == "" {
 			route = "/"
 		}
+		// Attribution hints (D5): the SPA sends the project / work-item /
+		// execution ids it is viewing, so the span can carry them as
+		// orchicon.{project,work_item,execution}_id. The middleware is the
+		// ONLY span producer today, so this is the only place those
+		// attributes are written — Tempo tag filters read them.
+		ctx = WithAttribution(ctx, r.Header.Get(hintProjectID), r.Header.Get(hintWorkItemID), r.Header.Get(hintExecutionID))
+		spanAttrs := []attribute.KeyValue{
+			attribute.String("http.method", r.Method),
+			attribute.String("http.route", route),
+			attribute.String(CorrelationIDKey, correlationID),
+		}
+		spanAttrs = append(spanAttrs, attributionAttrsFromContext(ctx)...)
 		ctx, span := Tracer().Start(ctx, "api."+route,
-			trace.WithAttributes(
-				attribute.String("http.method", r.Method),
-				attribute.String("http.route", route),
-				attribute.String(CorrelationIDKey, correlationID),
-			),
+			trace.WithAttributes(spanAttrs...),
 		)
 		defer span.End()
 

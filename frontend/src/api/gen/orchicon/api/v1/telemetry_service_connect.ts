@@ -16,7 +16,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { GetDashboardRequest, GetDashboardResponse, QueryLogsRequest, QueryLogsResponse, QueryMetricsRequest, QueryMetricsResponse, QueryTracesRequest, QueryTracesResponse, StreamTelemetryRequest, StreamTelemetryResponse } from "./telemetry_service_pb.js";
+import { GetDashboardRequest, GetDashboardResponse, GetTelemetryReportRequest, GetTelemetryReportResponse, QueryLogsRequest, QueryLogsResponse, QueryMetricsRequest, QueryMetricsResponse, QueryTracesRequest, QueryTracesResponse, StreamTelemetryRequest, StreamTelemetryResponse } from "./telemetry_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -88,6 +88,21 @@ export const TelemetryService = {
       name: "GetDashboard",
       I: GetDashboardRequest,
       O: GetDashboardResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetTelemetryReport returns a summarised window over the Orchicon
+     * domain model: token usage, cost, duration and failure rate per project
+     * or per workflow. Backed by Postgres (usage_records,
+     * worker_executions, workflow_runs) — the source of truth — so it keeps
+     * working when a telemetry store is down.
+     *
+     * @generated from rpc orchicon.api.v1.TelemetryService.GetTelemetryReport
+     */
+    getTelemetryReport: {
+      name: "GetTelemetryReport",
+      I: GetTelemetryReportRequest,
+      O: GetTelemetryReportResponse,
       kind: MethodKind.Unary,
     },
   }
