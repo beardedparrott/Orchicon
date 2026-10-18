@@ -1,5 +1,6 @@
 import { Link, createRoute, useNavigate } from "@tanstack/react-router";
 import { EngineAvailability } from "@/components/EngineAvailability";
+import { LocalModeDisclosure } from "@/components/LocalModeDisclosure";
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { ArrowLeft, ArrowUp, Folder } from "lucide-react";
@@ -533,8 +534,10 @@ function ProjectDetailPage() {
             <CardDescription>
               Default container image copied onto work items at create time
               when they pass no runtime_image. Empty = inherit base
-              ({defaultImageHint}). Mode runtime runs inside the container;
-              local allows in-process with an honest prompt + DSN fence.
+              ({defaultImageHint}). Mode runtime runs inside the container; local
+              runs as a host process with your own filesystem access and is not
+              contained (the note under the mode control spells out what that
+              means).
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -568,12 +571,15 @@ function ProjectDetailPage() {
                   onChange={(e) => setDraftExecutionMode(e.target.value as "runtime" | "local")}
                   className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
-                  <option value="local">local — in-process (default)</option>
+                  <option value="local">local — host process, not contained (default)</option>
                   <option value="runtime">runtime — always-container (opt-in)</option>
                 </select>
                 {/* Containers are what "runtime" MEANS — say whether they are available, and
                     why not, right where the choice is made (AC5). */}
                 <EngineAvailability />
+                {/* Keyed off the DRAFT mode, so the consequence of choosing local is visible
+                    BEFORE "Save runtime defaults" commits it. */}
+                {draftExecutionMode === "local" && <LocalModeDisclosure />}
               </div>
             </div>
             {editing ? (

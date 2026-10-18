@@ -22,7 +22,7 @@ describe("projects/new execution-mode default is local", () => {
   });
 
   it("local is the option labelled default, runtime the opt-in", () => {
-    expect(src).toMatch(/<option value="local">local — in-process \(default\)<\/option>/);
+    expect(src).toMatch(/<option value="local">local — host process, not contained \(default\)<\/option>/);
     expect(src).toMatch(/<option value="runtime">runtime — always-container \(opt-in\)<\/option>/);
     expect(src).not.toMatch(/runtime — always-container \(default\)/);
   });
@@ -41,7 +41,7 @@ describe("projects/$id pre-fetch execution-mode state is local", () => {
   });
 
   it("the detail select labels local the default, runtime the opt-in", () => {
-    expect(src).toMatch(/<option value="local">local — in-process \(default\)<\/option>/);
+    expect(src).toMatch(/<option value="local">local — host process, not contained \(default\)<\/option>/);
     expect(src).toMatch(/<option value="runtime">runtime — always-container \(opt-in\)<\/option>/);
     expect(src).not.toMatch(/runtime — always-container \(default\)/);
   });

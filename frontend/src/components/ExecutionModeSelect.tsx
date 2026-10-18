@@ -98,7 +98,7 @@ export function ExecutionModeSelect({
           {inherited ? `Inherit from project (${inherited})` : "Inherit from project"}
         </option>
         <option value="runtime">runtime — always-container</option>
-        <option value="local">local — in-process (fenced)</option>
+        <option value="local">local — host process, not contained</option>
       </select>
       <p className="text-xs text-muted-foreground leading-relaxed">
         {effective ? (
@@ -114,8 +114,8 @@ export function ExecutionModeSelect({
             : ""
           : " Overrides the project for this item only."}{" "}
         <span className="font-medium">runtime</span> provisions a container per run;{" "}
-        <span className="font-medium">local</span> runs in-process with the honest prompt and a
-        hard DSN fence.
+        <span className="font-medium">local</span> runs as a host process with your own filesystem
+        access and is <span className="font-medium">not contained</span>.
       </p>
     </div>
   );

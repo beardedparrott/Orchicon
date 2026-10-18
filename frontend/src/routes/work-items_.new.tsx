@@ -6,10 +6,11 @@ import { z } from "zod";
 
 import { useCreateWorkItem } from "@/api/workItems";
 import { useListWorkItems } from "@/api/workItems";
-import { useListProjects } from "@/api/projects";
+import { protoToExecutionMode, useListProjects } from "@/api/projects";
 import { FileBrowser } from "@/components/FileBrowser";
 import { SecretsPicker } from "@/components/SecretsPicker";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
+import { LocalModeDisclosure } from "@/components/LocalModeDisclosure";
 import {
   ExecutionModeSelect,
   executionModeToProto,
@@ -293,6 +294,15 @@ function NewWorkItemPage() {
                 workflow. Defaults to the base image.
               </p>
             </div>
+
+            {/* The item resolves local either by inheriting a local project or by an explicit
+                override, and both are a CHOICE made on this form — so the disclosure fires for
+                either, HERE, not only on the project page. */}
+            {(executionMode === "local" ||
+              (executionMode === "inherit" &&
+                protoToExecutionMode(selectedProject?.executionMode) === "local")) && (
+              <LocalModeDisclosure />
+            )}
 
             {selectedProject?.projectDir ? (
               <FileBrowser
