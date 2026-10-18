@@ -2,7 +2,7 @@
 # install-local.sh — Build the Orchicon binary from local source and install it.
 #
 # The binary is the control plane. The SERVICES it needs (Postgres, NATS,
-# telemetry, Grafana) are host processes of the invoking user, and
+# telemetry) are host processes of the invoking user, and
 # `scripts/orchicon.sh` starts both halves for one instance; see the guidance
 # printed at the end.
 #

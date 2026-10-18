@@ -105,7 +105,6 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/orchicon.api.v1") ||
 			strings.HasPrefix(path, "/auth/") ||
-			strings.HasPrefix(path, "/grafana") ||
 			path == "/healthz" || path == "/versionz" ||
 			// Embedded OpenID Provider exact paths (internal/auth/op) —
 			// without passthrough the SPA fallback below would swallow

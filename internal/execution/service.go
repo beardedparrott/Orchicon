@@ -1370,9 +1370,10 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 		wiTitle = wi.Title
 		wiContext = wi.Description
 		wiContextWindow = wi.ContextWindow
-		if proj, perr := db.GetProject(ctx, ttx.Tx, tenantID, wi.ProjectID); perr == nil && proj.ExecutionMode == db.ExecutionModeLocal {
-			executionMode = db.ExecutionModeLocal
-		}
+		// The follow-up turn's honest prompt must agree with where the ORIGINAL
+		// run executed, so it uses the SAME resolver as dispatch (item override
+		// -> project -> tenant default) — never a second, project-only copy.
+		executionMode = db.EffectiveExecutionMode(ctx, ttx.Tx, tenantID, wi.ExecutionMode, wi.ProjectID)
 	}
 	context, sessionID, serveURL, servePassword, recordedAdapterKind := renderSessionContext(parts)
 	systemPrompt := composeFollowUpPrompt(version, runtimeImage, executionMode)

@@ -9,15 +9,12 @@ package planecontrol
 // environment built from it. No global is written.
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 )
 
 // The plane's SHAPE, as the installer records it. See RecordedResidency.
@@ -194,15 +191,18 @@ func ReadPorts(instance string) (map[string]int, error) {
 // So the state is read from /proc where it is available, and only an R or S or D or T process counts as
 // running. Any other state (Z for zombie, X for dead) is not a live process. Where /proc is not readable
 // (a non-Linux host, a locked-down procfs) the signal probe stands alone, which is the previous behaviour.
+//
+// NOTHING POSIX-ONLY LIVES HERE: the two primitives this rests on — the liveness probe and the state read —
+// are the unexported seams processAlive/procStateChar, implemented in hostproc_unix.go and
+// hostproc_windows.go. That split exists because BOTH of them used to be inline POSIX code in this untagged
+// file: `syscall.Kill(pid, 0)` and a `/proc/<pid>/stat` read. They compile everywhere and behave differently
+// on Windows — `(*os.Process).Signal` returns EWINDOWS for anything but Kill, so the probe was ALWAYS false
+// there — which is worse than a build break, because nothing announces it. See hostproc_windows.go.
 func PidAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
+	if !processAlive(pid) {
 		return false
 	}
-	if proc.Signal(syscall.Signal(0)) != nil {
-		return false
-	}
-	if state, ok := ProcStateChar(pid); ok {
+	if state, ok := procStateChar(pid); ok {
 		switch state {
 		case 'R', 'S', 'D', 'T', 't', 'W':
 			return true
@@ -214,17 +214,8 @@ func PidAlive(pid int) bool {
 	return true
 }
 
-// ProcStateChar reads the process state character from /proc/<pid>/stat, whose format is
-// `pid (comm) state ...` — and `comm` may itself contain spaces and parentheses, so the state is the first
-// field AFTER THE LAST ')' rather than a fixed offset.
-func ProcStateChar(pid int) (byte, bool) {
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0, false
-	}
-	i := bytes.LastIndexByte(b, ')')
-	if i < 0 || i+2 >= len(b) {
-		return 0, false
-	}
-	return b[i+2], true
-}
+// ProcStateChar reads the process state character — 'R', 'S', 'Z' and so on — where the platform has one.
+// The POSIX implementation parses /proc/<pid>/stat; Windows reports no state at all, because it has no
+// zombie state in the POSIX sense (see hostproc_windows.go). ok=false means "this platform cannot say",
+// NOT "the process is dead" — PidAlive's signal probe is what decides liveness.
+func ProcStateChar(pid int) (byte, bool) { return procStateChar(pid) }

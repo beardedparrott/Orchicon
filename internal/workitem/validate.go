@@ -1014,3 +1014,62 @@ func ValidateSecretIDs(ids []string) error {
 	}
 	return nil
 }
+
+// executionModeFromProto maps the wire enum onto the stored override:
+// EXECUTION_MODE_UNSPECIFIED means "inherit from the project" and is therefore
+// nil (the ONLY inherit representation — never ""), while RUNTIME/LOCAL become
+// the concrete strings the DB CHECK constraint accepts.
+func executionModeFromProto(m apiv1.ExecutionMode) *string {
+	var v string
+	switch m {
+	case apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME:
+		v = db.ExecutionModeRuntime
+	case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
+		v = db.ExecutionModeLocal
+	default:
+		return nil
+	}
+	return &v
+}
+
+// executionModeToProto maps a stored override back to the wire enum. nil
+// (inherit) reports ok=false so the caller can leave the optional field unset
+// rather than sending a sentinel value — "unset" and "runtime" are different
+// statements on the wire, exactly as NULL and 'runtime' are in the row.
+func executionModeToProto(m *string) (apiv1.ExecutionMode, bool) {
+	if m == nil {
+		return apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED, false
+	}
+	switch strings.TrimSpace(*m) {
+	case db.ExecutionModeRuntime:
+		return apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME, true
+	case db.ExecutionModeLocal:
+		return apiv1.ExecutionMode_EXECUTION_MODE_LOCAL, true
+	default:
+		return apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED, false
+	}
+}
+
+// ValidateExecutionMode normalizes and validates a caller-supplied execution
+// mode string ("" = inherit, "runtime", "local"). It is EXPORTED because the
+// askorchicon work-item tools accept the field as a plain string and must
+// validate it exactly like the Connect API does — one rule, one implementation.
+func ValidateExecutionMode(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	switch v {
+	case "", db.ExecutionModeRuntime, db.ExecutionModeLocal:
+		return v, nil
+	default:
+		return "", fmt.Errorf("execution_mode must be runtime or local")
+	}
+}
+
+// executionModeEnumFor maps a RESOLVED mode string (never empty — see
+// db.EffectiveExecutionMode) onto the wire enum for the read-only
+// effective_execution_mode field.
+func executionModeEnumFor(mode string) apiv1.ExecutionMode {
+	if strings.TrimSpace(mode) == db.ExecutionModeLocal {
+		return apiv1.ExecutionMode_EXECUTION_MODE_LOCAL
+	}
+	return apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME
+}

@@ -9,6 +9,12 @@ package main
 //	orchicon services: dev did not release postgres :5432 and nats :4222
 //	  — an orphaned process still holds the port (find it with `ss -ltnp` / `lsof -i :5432` ...)
 //
+// THE IDENTIFICATION ITSELF IS PLATFORM-DEPENDENT and lives behind a build tag: reclaim_proc_unix.go reads
+// /proc to name a holder, and reclaim_proc_windows.go CANNOT (no /proc), so it identifies nothing and every
+// message routes through portHolderHint() — which names a PowerShell/Task Manager recipe there rather than a
+// command that does not exist. The BOUNDARY below is unchanged on both: an unidentified holder is REPORTED,
+// never killed.
+//
 // That message was printed while `orchicon-cnt-dev` — an instance container THIS PRODUCT created, named by
 // OUR convention — was up and publishing both ports. Nothing in the teardown would stop it, because the
 // container-era instance shape was retired and the teardown only knows about HOST services. So a host that
@@ -30,7 +36,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -112,38 +117,6 @@ func engineCommandOn(engineBin string, args ...string) error {
 // lookPathEngine resolves an engine binary by name.
 func lookPathEngine(name string) (string, error) { return exec.LookPath(name) }
 
-// ourInstanceProcesses lists pids that are VERIFIABLY this instance's: the executable is one of our binaries
-// AND the process carries the instance's name in its environment or argv.
-//
-// Both conditions matter. Our binary alone would match a DIFFERENT instance's plane — killing it would take
-// down a sibling (dev while you meant test); the instance name alone would match nothing useful.
-func ourInstanceProcesses(instance string) []int {
-	self := os.Getpid()
-	var pids []int
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil
-	}
-	tag := "ORCHICON_INSTANCE=" + instance
-	for _, e := range entries {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil || pid == self {
-			continue
-		}
-		dir := filepath.Join("/proc", e.Name())
-		exe, err := os.Readlink(filepath.Join(dir, "exe"))
-		if err != nil || !isOurBinary(exe) {
-			continue
-		}
-		environ, _ := os.ReadFile(filepath.Join(dir, "environ"))
-		args, _ := os.ReadFile(filepath.Join(dir, "cmdline"))
-		if strings.Contains(string(environ), tag) || strings.Contains(string(args), instance) {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
-}
-
 // isOurBinary reports whether an executable path is an orchicon binary (the plane, a supervisor, or the TUI
 // client). Used only to decide whether a process is plausibly ours before the instance name confirms it.
 func isOurBinary(exe string) bool {
@@ -176,74 +149,6 @@ type portHolder struct {
 	exe string
 }
 
-// portHolders names the processes listening on the given ports, so a refusal can say WHO instead of telling
-// the operator to go run `ss` themselves. It reads /proc directly rather than shelling out to ss/lsof:
-// neither is guaranteed present, and the failure path of a teardown must not depend on an optional tool.
-//
-// BEST-EFFORT AND HONEST ABOUT IT: an unreadable /proc (another user's process, a hardened kernel) yields
-// nothing rather than a guess, and the caller's message still stands on its own.
-func portHolders(ports ...int) []portHolder {
-	want := map[string]bool{}
-	for _, p := range ports {
-		if p > 0 {
-			// /proc/net/tcp lists LOCAL_ADDRESS:PORT as 4 hex digits of the port, upper-case.
-			want[fmt.Sprintf(":%04X", p)] = true
-		}
-	}
-	if len(want) == 0 {
-		return nil
-	}
-	inodes := map[string]bool{}
-	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(b), "\n")[1:] {
-			fields := strings.Fields(line)
-			if len(fields) < 10 || !want[fields[1][strings.LastIndex(fields[1], ":")+1:]] {
-				continue
-			}
-			if fields[3] != "0A" { // 0A = TCP_LISTEN
-				continue
-			}
-			inodes["socket:["+fields[9]+"]"] = true
-		}
-	}
-	if len(inodes) == 0 {
-		return nil
-	}
-	var out []portHolder
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil
-	}
-	for _, e := range entries {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		fdDir := filepath.Join("/proc", e.Name(), "fd")
-		fds, err := os.ReadDir(fdDir)
-		if err != nil {
-			continue
-		}
-		for _, fd := range fds {
-			target, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
-			if err != nil || !inodes[target] {
-				continue
-			}
-			exe, _ := os.Readlink(filepath.Join("/proc", e.Name(), "exe"))
-			if exe == "" {
-				exe = "unknown (not readable by this user)"
-			}
-			out = append(out, portHolder{pid: pid, exe: exe})
-			break
-		}
-	}
-	return out
-}
-
 // portHeldByThisInstance reports whether a port is held by something belonging to THIS instance: its own
 // plane/supervisor process, or its own container-era container.
 //
@@ -266,15 +171,6 @@ func portHeldByThisInstance(port int, instance string) bool {
 		}
 	}
 	return false
-}
-
-// processBelongsTo confirms a pid carries this instance's name, so our binary serving a SIBLING instance is
-// never mistaken for ours.
-func processBelongsTo(pid int, instance string) bool {
-	dir := filepath.Join("/proc", strconv.Itoa(pid))
-	environ, _ := os.ReadFile(filepath.Join(dir, "environ"))
-	return strings.Contains(string(environ), "ORCHICON_INSTANCE="+instance+"\x00") ||
-		strings.HasSuffix(string(environ), "ORCHICON_INSTANCE="+instance)
 }
 
 // containerPublishesPort reports whether a container publishes a host port.

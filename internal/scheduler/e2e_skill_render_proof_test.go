@@ -45,6 +45,7 @@ func e2eSkillSetup(t *testing.T, slug string) (r *WorkflowReconciler, ctx contex
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "E2E Skills " + slug,
 		Slug: slug + "-" + strings.ToLower(db.NewID()), Status: "active",
 		Goals: []byte("[]"), ProjectDir: root,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)

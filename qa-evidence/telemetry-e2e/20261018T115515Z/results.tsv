@@ -1,0 +1,15 @@
+0	BLOCKED	telemetry.tsx no longer renders <GrafanaEmbed>	origin/build-the-native-telemetry-page-graphs-reports-search-lookup-filter-yhxnxf4c6m9b9023:frontend/src/routes/telemetry.tsx
+0	BLOCKED	telemetry.tsx no longer imports GRAFANA_UI_URL	origin/remove-grafana-from-the-plane-proxy-iframe-config-proc-port-2qnyk4c19p8csyj5:frontend/src/routes/telemetry.tsx
+0	BLOCKED	native telemetry component graphs.tsx exists	origin/build-the-native-telemetry-page-graphs-reports-search-lookup-filter-yhxnxf4c6m9b9023:frontend/src/components/telemetry/graphs.tsx
+0	BLOCKED	native telemetry component reports-panel.tsx exists	origin/build-the-native-telemetry-page-graphs-reports-search-lookup-filter-yhxnxf4c6m9b9023:frontend/src/components/telemetry/reports-panel.tsx
+0	BLOCKED	native telemetry component states.tsx exists	origin/build-the-native-telemetry-page-graphs-reports-search-lookup-filter-yhxnxf4c6m9b9023:frontend/src/components/telemetry/states.tsx
+0	BLOCKED	native telemetry component telemetry-filters.tsx exists	origin/build-the-native-telemetry-page-graphs-reports-search-lookup-filter-yhxnxf4c6m9b9023:frontend/src/components/telemetry/telemetry-filters.tsx
+0	BLOCKED	the GetTelemetryReport RPC exists (the Reports tab's data path)	origin/build-the-native-telemetry-page-graphs-reports-search-lookup-filter-yhxnxf4c6m9b9023:proto/orchicon/api/v1/telemetry_service.proto
+0	BLOCKED	the responses carry degraded_reason (the state must NAME the backend)	origin/build-the-native-telemetry-page-graphs-reports-search-lookup-filter-yhxnxf4c6m9b9023:proto/orchicon/api/v1/telemetry_service.proto
+0	BLOCKED	the sibling surfaces are all present	origin/build-the-native-telemetry-page-graphs-reports-search-lookup-filter-yhxnxf4c6m9b9023
+0	BLOCKED	the Playwright browser harness is installed	(invalid host)
+1	PASS	no grafana binary on PATH (command -v grafana grafana-server grafana-cli)	
+1	PASS	the process search works on this host (a control pattern matched before any empty result is believed)	
+1	PASS	no grafana process is running (pgrep -af grafana / the /proc scan, proven by the control above)	
+1	FAIL	no grafana config / provisioning file ships in the repo (deploy/**)	origin/remove-grafana-from-the-plane-proxy-iframe-config-proc-port-2qnyk4c19p8csyj5:deploy/configs/grafana.ini
+1	PASS	no grafana container image is present (podman/docker images | grep -i grafana)	
