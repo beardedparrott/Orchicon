@@ -183,9 +183,12 @@ func ServingPlaneAlive(instance string) bool {
 // TerminateProcess runs no shutdown hook, so the plane never flushes or stops its children, and its own
 // children are NOT reaped (the sweep that would collect them is inert here — see serve_reap_windows.go).
 //
-// Its only caller is reclaim's forceKillOurLeftovers, which is unreachable on Windows because reclaim
-// identifies no processes there (reclaim_proc_windows.go). It is implemented so the function is TOTAL, not
-// because a caller relies on it. It refuses this process's own PID.
+// IT IS LOAD-BEARING, NOT VESTIGIAL: cmd/orchicon's sendForceStop is this function on Windows, and that is
+// the whole stop path for `serve --stop` and the supervisor's shutdown escalation (signals_windows.go) — so
+// every Windows stop is a force stop with the consequences above. `orchicon install` and reclaim's
+// force-kill arm reach it through cmd/orchicon's terminateProcess; reclaim itself identifies no process on
+// this platform (reclaim_proc_windows.go), so that arm is unreachable HERE and the two paths above are the
+// live ones. It refuses this process's own PID.
 func TerminateProcess(pid int) error {
 	if pid <= 0 {
 		return fmt.Errorf("refusing to terminate pid %d", pid)
