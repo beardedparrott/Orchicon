@@ -936,11 +936,9 @@ function WorkItemDetailPage() {
                 <ExecutionModeSelect
                   id="edit-execution-mode"
                   value={editExecutionMode}
-                  inherited={
-                    executionModeValueOf(
-                      projects?.find((p) => p.id === editProjectId),
-                    ) ?? "runtime"
-                  }
+                  inherited={executionModeValueOf(
+                    projects?.find((p) => p.id === editProjectId),
+                  )}
                   onChange={setEditExecutionMode}
                 />
               ) : (
@@ -950,11 +948,17 @@ function WorkItemDetailPage() {
                   );
                   const effective = effectiveExecutionModeOf(item, projectMode);
                   const own = executionModeValueOf(item);
+                  // Attribution is only as specific as the data we hold: with
+                  // no override the mode came from somewhere above the item —
+                  // the project when its row is loaded, otherwise the
+                  // server-resolved effective mode (project or tenant default,
+                  // indistinguishable here). Never claim "tenant default" for a
+                  // mode the project supplied.
                   const source = own
                     ? "this item"
                     : projectMode
                       ? "inherited from project"
-                      : "tenant default";
+                      : "inherited";
                   return `${effective} (${source})`;
                 })()
               )}

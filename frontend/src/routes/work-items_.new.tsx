@@ -281,7 +281,7 @@ function NewWorkItemPage() {
 
             <ExecutionModeSelect
               value={executionMode}
-              inherited={executionModeValueOf(selectedProject) ?? "runtime"}
+              inherited={executionModeValueOf(selectedProject)}
               onChange={setExecutionMode}
             />
 

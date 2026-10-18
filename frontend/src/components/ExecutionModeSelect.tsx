@@ -71,14 +71,19 @@ export function ExecutionModeSelect({
   id = "execution-mode",
 }: {
   value: ExecutionModeChoice;
-  /** The project's mode — shown inside the inherit option so it is never a guess. */
-  inherited: ExecutionModeValue;
+  /**
+   * The project's mode — shown inside the inherit option so it is never a
+   * guess. UNDEFINED when there is no project to inherit from YET (the create
+   * form before a project is picked, or while the projects list loads): the
+   * control then states no mode at all instead of inventing "runtime", which
+   * is a claim it cannot make and reads as a wrong answer on a local project.
+   */
+  inherited?: ExecutionModeValue;
   onChange: (v: ExecutionModeChoice) => void;
   disabled?: boolean;
   id?: string;
 }) {
-  const effective =
-    value === "inherit" ? inherited : value;
+  const effective = value === "inherit" ? inherited : value;
   return (
     <div className="space-y-2">
       <Label htmlFor={id}>Execution mode</Label>
@@ -89,14 +94,24 @@ export function ExecutionModeSelect({
         onChange={(e) => onChange(e.target.value as ExecutionModeChoice)}
         className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
       >
-        <option value="inherit">Inherit from project ({inherited})</option>
+        <option value="inherit">
+          {inherited ? `Inherit from project (${inherited})` : "Inherit from project"}
+        </option>
         <option value="runtime">runtime — always-container</option>
         <option value="local">local — in-process (fenced)</option>
       </select>
       <p className="text-xs text-muted-foreground leading-relaxed">
-        This item runs in <span className="font-medium">{effective}</span> mode.
+        {effective ? (
+          <>
+            This item runs in <span className="font-medium">{effective}</span> mode.
+          </>
+        ) : (
+          <>Select a project to see which mode this item inherits.</>
+        )}
         {value === "inherit"
-          ? " Inherited from the project; changing the project changes this item."
+          ? inherited
+            ? " Inherited from the project; changing the project changes this item."
+            : ""
           : " Overrides the project for this item only."}{" "}
         <span className="font-medium">runtime</span> provisions a container per run;{" "}
         <span className="font-medium">local</span> runs in-process with the honest prompt and a
