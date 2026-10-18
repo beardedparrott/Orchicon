@@ -1,0 +1,19 @@
+0	PASS	A0.1 the binary under test builds and runs (/tmp/orchicon/plane-control-e2e/install/orchicon version)	
+0	BLOCKED	A0.2 instance 'dev' is installed (data dir + ports.json)	(invalid host)
+0	BLOCKED	A0.3 instance 'dev' has a non-empty port record	(invalid host)
+0	BLOCKED	A0.4 no port of 'dev' is held before the run starts	(invalid host)
+0	BLOCKED	A0.5 a TUI lifecycle surface exists (internal/tui or cmd/orch calls internal/planecontrol)	TUI task
+0	BLOCKED	A0.6 a Wails desktop app exists	Wails desktop app task
+0	PASS	A0.7 no container engine is required by this procedure	
+1	BLOCKED	A1 TUI stop (AC1) on 'dev'	(invalid host)
+2	BLOCKED	A2 desktop-app start (AC2) on 'dev'	(invalid host)
+3	BLOCKED	A3 the reverse direction: desktop STOP then TUI START (AC3)	(invalid host)
+4	BLOCKED	A4 the CLI lifecycle verbs on 'dev' (AC4)	(invalid host)
+5	BLOCKED	A5 drift is reported after the binary is replaced under a live plane (AC5)	(invalid host)
+6	BLOCKED	A6 an unidentifiable plane is left alone on restart, and a foreign port holder is reported not killed (AC6)	(invalid host)
+7	BLOCKED	A7 stopping 'dev' leaves 'prod' running and answering (AC7)	(invalid host)
+8	BLOCKED	A8 a plane started from a shell carrying the OTHER instance's environment still writes its own log and PID file (AC8)	(invalid host)
+9	PASS	A9.1 the Connect surface did not grow: no lifecycle RPC exists (surface-size and proto tripwires)	
+9	PASS	A9.2 control: the search actually reaches frontend/src (a known-present symbol matches)	
+9	PASS	A9.2 the web app has NO lifecycle UI and NO new notice (no lifecycle-shaped identifier or call in frontend/src)	
+9	SKIP	A9.3 a plane stopped underneath an open tab shows the SPA's EXISTING connection-failure state	
