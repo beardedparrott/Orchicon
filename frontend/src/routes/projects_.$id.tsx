@@ -568,8 +568,8 @@ function ProjectDetailPage() {
                   onChange={(e) => setDraftExecutionMode(e.target.value as "runtime" | "local")}
                   className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
-                  <option value="runtime">runtime — always-container (default)</option>
-                  <option value="local">local — in-process (fenced)</option>
+                  <option value="local">local — in-process (default)</option>
+                  <option value="runtime">runtime — always-container (opt-in)</option>
                 </select>
                 {/* Containers are what "runtime" MEANS — say whether they are available, and
                     why not, right where the choice is made (AC5). */}
@@ -789,9 +789,12 @@ function statusLabel(status: number): string {
   return labels[status] ?? "unknown";
 }
 
+// executionModeLabel renders the project's mode for the header. It DELEGATES to
+// protoToExecutionMode so the UI has ONE mapping: an unreadable/absent value is
+// local (the server and column default), never a second copy of the old
+// runtime fallback that would disagree with the select below.
 function executionModeLabel(mode: number | undefined): string {
-  if (mode === 2) return "local";
-  return "runtime";
+  return protoToExecutionMode(mode);
 }
 
 // effectiveLimit mirrors the server's min(tenant, project) formula where 0
