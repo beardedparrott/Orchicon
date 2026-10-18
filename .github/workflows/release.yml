@@ -198,7 +198,14 @@ jobs:
         run: |
           set -euo pipefail
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+      # THE Wails CLI RESOLVES ITS PROJECT FROM THE WORKING DIRECTORY: `wails build` loads
+      # `./wails.json` (wails/v2/internal/project.Load uses os.Getwd and has no project-dir
+      # flag), and the project file lives in cmd/orchicon-desktop, not the repo root. Run
+      # from the root and the step dies on a missing wails.json — which is why the working
+      # directory is explicit rather than inherited. Asserted by
+      # TestDesktopBuildRunsInTheWailsProjectDirectory.
       - name: Build the desktop app
+        working-directory: cmd/orchicon-desktop
         run: |
           set -euo pipefail
           wails build -tags desktop,production,webkit2_41 -clean

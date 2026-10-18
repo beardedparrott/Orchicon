@@ -516,3 +516,42 @@ func TestDesktopNotInCrossPlatforms(t *testing.T) {
 		}
 	}
 }
+
+// TestDesktopBuildRunsInTheWailsProjectDirectory — the Wails CLI has NO project-dir
+// flag: `wails build` loads ./wails.json from its WORKING DIRECTORY
+// (wails/v2/internal/project.Load -> os.Getwd). wails.json lives in
+// cmd/orchicon-desktop, so a job that runs the CLI from the repo root dies on a
+// missing project file and the desktop artifact is never produced — the failure
+// this assertion exists to prevent.
+func TestDesktopBuildRunsInTheWailsProjectDirectory(t *testing.T) {
+	const projectDir = "cmd/orchicon-desktop"
+	b, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	for _, job := range jobsIn(string(b)) {
+		if job.name != "desktop" {
+			continue
+		}
+		if !strings.Contains(job.body, "wails build") {
+			t.Fatal("the desktop job no longer runs `wails build` — the app is packaged by the CLI")
+		}
+		if !strings.Contains(job.body, "working-directory: "+projectDir) &&
+			!strings.Contains(job.body, "cd "+projectDir) {
+			t.Fatalf("the desktop job does not run `wails build` from %s. The Wails CLI resolves its project "+
+				"from the working directory (os.Getwd + ./wails.json) and has no project-dir flag, so from the "+
+				"repo root the step fails with a missing wails.json", projectDir)
+		}
+		// The directory the job names must actually hold the Wails project file.
+		if _, err := os.Stat(filepath.Join("../../", projectDir, "wails.json")); err != nil {
+			t.Fatalf("%s/wails.json: %v — the working directory this job names has no Wails project file", projectDir, err)
+		}
+		// And the artifact it publishes must be where the CLI writes it: BuildDir
+		// defaults to `build` INSIDE the project directory.
+		if !strings.Contains(job.body, projectDir+"/build/bin/") {
+			t.Errorf("the desktop job does not publish %s/build/bin/ — that is where `wails build` puts the binary", projectDir)
+		}
+		return
+	}
+	t.Fatal("no desktop job found")
+}
