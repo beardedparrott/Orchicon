@@ -41,6 +41,18 @@ func installPhase(msg string) {
 // creating a duplicate.
 func runInstall(args []string, log *slog.Logger) error {
 	instance := env("ORCHICON_INSTANCE", "dev")
+	// AN INSTANCE ON THE COMMAND LINE, because the environment variable was the ONLY way to choose
+	// one here while `plane` and `services` took a positional. `orchicon install prod` is what an
+	// operator reaches for, and it used to install dev instead — silently, since the argument was
+	// ignored outright.
+	if given, err := instanceArg(args, "install"); err != nil {
+		return err
+	} else if given != "" {
+		instance = given
+	}
+	if err := validInstanceName(instance); err != nil {
+		return err
+	}
 	imageTag := env("ORCHICON_IMAGE_TAG", "latest")
 	containerImage := env("ORCHICON_CONTAINER_IMAGE", "ghcr.io/beardedparrott/orchicon:"+imageTag)
 	runtimeImage := env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:"+imageTag)

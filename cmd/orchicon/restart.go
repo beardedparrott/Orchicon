@@ -36,6 +36,13 @@ import (
 func runRestart(args []string, log *slog.Logger) error {
 	bin := filepath.Base(os.Args[0])
 	instance := env("ORCHICON_INSTANCE", "dev")
+	// THE SAME INSTANCE ARGUMENT every other instance-addressed verb takes. `orchicon restart prod`
+	// used to restart DEV: the argument was ignored, and nothing said so.
+	if given, err := instanceArg(args, "restart"); err != nil {
+		return err
+	} else if given != "" {
+		instance = given
+	}
 	name := "orchicon-cnt-" + instance
 	socketDir := env("ORCHICON_RUNTIME_SOCKET_DIR", filepath.Join(os.TempDir(), "orchicon-runtime"))
 
@@ -47,9 +54,8 @@ func runRestart(args []string, log *slog.Logger) error {
 	//
 	// The name still guards a PATH (it forms the instance state dir), so a name that could climb
 	// out of that directory is refused — the check validateInstance was incidentally providing.
-	if strings.ContainsAny(instance, "/\\") || strings.Contains(instance, "..") {
-		return fmt.Errorf("invalid instance name %q: it forms the instance state directory name, so it "+
-			"may not contain a path separator or \"..\"", instance)
+	if err := validInstanceName(instance); err != nil {
+		return err
 	}
 
 	residency, ok := recordedResidency(instance)

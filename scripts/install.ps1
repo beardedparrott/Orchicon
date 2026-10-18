@@ -11,8 +11,10 @@
 #   2. Confirms Docker is available inside the distro (Docker Desktop's
 #      WSL2 integration, or Docker Engine installed in the distro).
 #   3. Downloads the LINUX release binary and installs it inside WSL.
-#   4. Runs `orchicon install` inside WSL: pull the published images,
-#      start the runtime daemon, launch the single-container instance.
+#   4. Runs `orchicon install` inside WSL: start the local services
+#      (Postgres + NATS as your own processes), start the runtime daemon,
+#      bring up the control plane. Images are pulled only when Docker is
+#      present, and are needed only for runtime containers.
 #   5. Prints the URLs to open from Windows (localhost forwarding).
 #
 # The runtime layer (runtime daemon, unix socket, container mounts) is
