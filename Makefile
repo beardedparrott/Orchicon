@@ -642,6 +642,22 @@ runtime-e2e-assertions-test: ## CI gate: the runtime-container acceptance harnes
 plane-control-e2e-assertions-test: ## CI gate: the plane-control acceptance harness never PASSes on a refused/empty probe
 	bash scripts/tests/plane-control-e2e-assertions/run.sh
 
+# published-archive-e2e-assertions-test pins the PUBLISHED-ARCHIVE acceptance harness's
+# own honesty. Its verdicts are IDENTITY- and ABSENCE-shaped: "this artifact IS the
+# version under test", "no engine was invoked", "the install asked nothing" — every one
+# of them trivially true of a probe that failed to run. Offline: it sources the harness,
+# runs the engine shims for real, and measures a fixture tree with the footprint tool.
+# No release is downloaded, no plane starts, no port is bound, no database is touched.
+.PHONY: published-archive-e2e-assertions-test
+published-archive-e2e-assertions-test: ## CI gate: the published-archive acceptance harness never PASSes on an empty/unverified probe
+	bash scripts/tests/published-archive-e2e-assertions/run.sh
+
+# The MEASUREMENT the epic's "under 1 GB" claim is checked with — measured, not derived
+# (scripts/disk-report.sh answers a different question: btrfs snapshot-pinned bytes).
+.PHONY: published-archive-e2e-footprint
+published-archive-e2e-footprint: ## Measure an install's footprint (binaries + host services + instance data, excl. projects/runtime images)
+	bash scripts/e2e/footprint.sh $(if $(INSTANCE),--instance $(INSTANCE),) $(FOOTPRINT_ARGS)
+
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
@@ -1138,7 +1154,7 @@ cross-compile: ## Compile the shipped binaries for every release platform plus w
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-typecheck fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
