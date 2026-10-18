@@ -295,6 +295,61 @@ func TestReleaseDownloadsDesktopArtifactsOptional(t *testing.T) {
 	}
 }
 
+// TestReleaseUploadsEachDesktopAssetOnce — the release must never hand `gh release create`
+// the same ASSET NAME twice.
+//
+// WHY THIS IS NOT HYPOTHETICAL, and why it is the AC6 failure in its least obvious form: the
+// release job's FIRST `download-artifact` carries no `pattern`, so it already pulls EVERY
+// artifact of the run — the CLI archives AND the three `orchicon-desktop-*` ones — into
+// `artifacts/`. The optional desktop download below then puts the same files in
+// `desktop-artifacts/`, so a naive `find artifacts desktop-artifacts` yields each desktop
+// package twice. `gh release create` names an asset after its BASENAME, and the second upload
+// of one name fails the whole release with HTTP 422 "already_exists" — with all three desktop
+// builds GREEN, i.e. in the happy path. Packaging must not break the release, so the asset
+// list has to be deduplicated.
+func TestReleaseUploadsEachDesktopAssetOnce(t *testing.T) {
+	var release *job
+	jobs := jobsIn(mustRead(t, releaseWorkflowPath))
+	for i := range jobs {
+		if jobs[i].name == "release" {
+			release = &jobs[i]
+		}
+	}
+	if release == nil {
+		t.Fatal("release.yml has no `release:` job — did it get renamed?")
+	}
+	start := strings.Index(release.body, "ASSETS=$(")
+	if start < 0 {
+		t.Fatal("the release job no longer builds an ASSETS= list — this guard cannot see what gets uploaded")
+	}
+	rest := release.body[start:]
+	end := strings.Index(rest, `if [ -z "$ASSETS" ]`)
+	if end < 0 {
+		t.Fatal("could not find the end of the ASSETS= assignment (the `if [ -z \"$ASSETS\" ]` guard)")
+	}
+	assets := rest[:end]
+
+	// The premise: BOTH download directories are searched, and every desktop package format
+	// (plus the CLI tarballs) is matched. A format dropped here ships nothing and says nothing.
+	for _, want := range []string{"artifacts", "desktop-artifacts", "*.tar.gz", "*.zip", "*.deb",
+		"*.AppImage", "*_installer.exe"} {
+		if !strings.Contains(assets, want) {
+			t.Errorf("the release ASSETS list does not mention %q — that artifact would be built and "+
+				"then silently left in the run instead of published (AC4)", want)
+		}
+	}
+
+	// And the property: one entry per basename. The awk is the whole fix — without it the
+	// desktop packages are uploaded twice and `gh release create` fails the release.
+	if !strings.Contains(assets, "seen[$NF]++") {
+		t.Error("the release ASSETS list is NOT deduplicated by basename. The first download has no " +
+			"pattern, so it already contains the orchicon-desktop-* artifacts; the optional desktop " +
+			"download repeats them, and `gh release create` fails with HTTP 422 already_exists when one " +
+			"asset name is passed twice. With all three desktop builds green, that breaks the release " +
+			"that AC6 says they must never break. Pipe the find through `awk -F/ '!seen[$NF]++'`.")
+	}
+}
+
 // TestDesktopWebviewDependencyDeclared pins the two halves of AC3, because either half alone
 // is worthless: a .deb that declares the dependency but an app that fails opaquely when it is
 // missing is half a fix, and a launcher that explains the problem but a package that pulls in

@@ -525,9 +525,20 @@ jobs:
           # BOTH SETS FROM ONE RELEASE (AC6): the CLI archives and the desktop packages.
           # desktop-artifacts/ may not exist at all (a desktop job failed or was cancelled),
           # so the find tolerates its absence rather than failing the release.
+          #
+          # AND EACH ASSET IS UPLOADED EXACTLY ONCE, keyed by BASENAME. The first download
+          # above carries no pattern, so it already brings EVERY artifact of the run into
+          # artifacts/ — the CLI archives and the three orchicon-desktop-* ones. The optional
+          # download below therefore repeats the desktop packages into desktop-artifacts/,
+          # and `gh release create` names an asset after its basename: handing it one name
+          # twice fails the whole release with HTTP 422 "already_exists". That failure would
+          # land in the HAPPY path, with all three desktop builds green — the mirror image of
+          # AC6, where packaging must never break the CLI release, so it must not break the
+          # release at all. The awk keeps the first path seen per basename.
           ASSETS=$(find artifacts desktop-artifacts -type f \
                      \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' \
-                        -o -name '*.AppImage' -o -name '*_installer.exe' \) 2>/dev/null | sort || true)
+                        -o -name '*.AppImage' -o -name '*_installer.exe' \) 2>/dev/null \
+                   | awk -F/ '!seen[$NF]++' | sort || true)
           if [ -z "$ASSETS" ]; then
             echo "::error::No release assets found under artifacts/"
             exit 1
