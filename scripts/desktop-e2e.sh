@@ -515,13 +515,25 @@ ocr_assert() { # ocr_assert <png-name> <desc> <needle> <owner>
   gated_contains "$2" "$text" "$4" "OCR produced no text" "$3"
 }
 
+# A non-Linux tier is proven by a HUMAN evidence sheet, never by this host's Linux
+# checks. Two consequences are pinned by the offline gate: asking for the same
+# sheet twice must not write eight copies (one per step), and a REFUSED step 0
+# must still hand the operator the sheet — a human sent to a Windows 10 machine
+# empty-handed is the same failure as a manufactured PASS.
+MANUAL_SHEETS_DONE=""
 manual_sheet() { # manual_sheet <os>
-  local os="$1" out="${EVIDENCE}/${CURRENT_STEP}-manual-${os}.md"
+  local os="$1"
+  local out=""
+  case " ${MANUAL_SHEETS_DONE} " in
+    *" ${os} "*) return 0 ;;
+  esac
+  MANUAL_SHEETS_DONE="${MANUAL_SHEETS_DONE} ${os}"
+  out="${EVIDENCE}/${CURRENT_STEP}-manual-${os}.md"
   {
     printf '# Manual evidence sheet — %s\n\n' "$os"
     printf 'This harness cannot install or drive a %s machine from here. Every step below is\n' "$os"
     printf 'recorded SKIP until a human attaches the screenshots. Do NOT mark them PASS.\n\n'
-    printf 'Run, on a clean %s machine with NO plane running:\n\n' "$os"
+    printf 'Run, on a clean %s machine with NO plane running:\n\n' "$(case "$os" in windows) printf 'Windows 10';; macos) printf 'macOS';; *) printf '%s' "$os";; esac)"
     case "$os" in
       windows)
         printf '1. Install the packaged app from the `.exe` (WebView2 Evergreen bootstrapper path —\n   `deploy/desktop/windows/README-WINDOWS.txt`). On a Windows 10 host with WebView2\n   ABSENT, capture the dialog: a blank window is a FAIL, a precise instruction is a PASS.\n'
@@ -596,7 +608,7 @@ step2_offline_state() {
   begin_step 2 "with NO plane running, the offline state names the URL it tried (AC2)"
   if [ "$PLATFORM" != "linux" ]; then manual_sheet "$PLATFORM"; return 0; fi
   if ! gui_ready; then
-    skip "the offline state appears and names the URL" "the GUI prerequisites are absent (xvfb-run/xdotool/import)" "frontend/src/routes/manage-server.tsx:250-254"
+    skip "the offline state appears and names the URL" "the GUI prerequisites are absent (Xvfb/xdotool/import)" "frontend/src/routes/manage-server.tsx:250-254"
     return 0
   fi
 
@@ -1070,7 +1082,15 @@ main() {
   if [ "$DRY_RUN" = 1 ]; then print_plan; write_notes_template; exit 0; fi
 
   step0_preflight
-  if [ -n "$ABORT_REASON" ]; then write_notes_template; write_summary; say ""; say "RUN INVALID: ${ABORT_REASON}"; finish 2; fi
+  if [ -n "$ABORT_REASON" ]; then
+    # A refused host still owes the operator the MANUAL sheet for the tier they
+    # asked about: step 0's checks are Linux's, and letting its refusal swallow
+    # the Windows/macOS sheet would leave those platforms with no evidence at all.
+    case "$PLATFORM" in
+      windows|macos) CURRENT_STEP=8; manual_sheet "$PLATFORM" ;;
+    esac
+    write_notes_template; write_summary; say ""; say "RUN INVALID: ${ABORT_REASON}"; finish 2
+  fi
   if [ "$PREFLIGHT_ONLY" = 1 ]; then
     say ""; say "preflight only: ${PASSES} passed, ${FAILS} failed, ${SKIPS} skipped"
     # A FAILED validity assertion is not a clean preflight: exit 1, never 0.

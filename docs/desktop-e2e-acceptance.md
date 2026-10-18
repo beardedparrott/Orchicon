@@ -25,6 +25,11 @@ scripts/desktop-e2e.sh --deb ./orchicon_desktop_0.9.0_linux_amd64.deb   # the wh
 scripts/desktop-e2e.sh --platform windows   # emits the manual Windows 10 evidence sheet
 ```
 
+The manual sheets are emitted **even when step 0 refuses the host**: steps 0–1's checks
+are Linux's, and a Windows/macOS operator necessarily runs this on another host — so a
+refusal must not swallow the sheet they came for. The tier is still recorded `SKIP`
+(one row, one sheet per platform), never a pass.
+
 Evidence lands in `qa-evidence/desktop-e2e/<UTC>/` (`results.tsv`, `defects.tsv`,
 `summary.md`, `NOTES.md`, one log per step). Exit codes: `0` every assertion passed,
 `1` at least one assertion failed (**each failure names the `file:line` that owns
