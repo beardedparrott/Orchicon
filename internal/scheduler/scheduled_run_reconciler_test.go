@@ -93,6 +93,7 @@ func TestScheduledRunFiresSequenceParentAndBoundItem(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "sched-run",
 		Slug: "sched-run-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)

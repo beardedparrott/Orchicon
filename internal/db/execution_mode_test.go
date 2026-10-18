@@ -31,15 +31,18 @@ func TestEffectiveExecutionModeValue(t *testing.T) {
 	}
 }
 
-// TestDefaultExecutionModeIsRuntime documents the current tenant default. When
-// the local-default task flips DefaultExecutionMode this assertion is the ONE
-// place that must change with it.
-func TestDefaultExecutionModeIsRuntime(t *testing.T) {
-	if DefaultExecutionMode != ExecutionModeRuntime {
-		t.Fatalf("DefaultExecutionMode = %q, want %q", DefaultExecutionMode, ExecutionModeRuntime)
+// TestDefaultExecutionModeIsTheLastLeg pins the tenant default and that it is
+// what an execution with neither an item nor a readable project resolves to.
+//
+// The local-default decision flipped this constant to local; this assertion is
+// the ONE place in the resolver's own tests that moved with it, and it stays in
+// lockstep with db.DefaultExecutionMode rather than restating the literal.
+func TestDefaultExecutionModeIsTheLastLeg(t *testing.T) {
+	if DefaultExecutionMode != ExecutionModeLocal {
+		t.Fatalf("DefaultExecutionMode = %q, want %q (containers are opt-in)", DefaultExecutionMode, ExecutionModeLocal)
 	}
-	if got := effectiveExecutionModeValue("", ""); got != ExecutionModeRuntime {
-		t.Fatalf("no item, no project: got %q, want runtime (a read failure must never degrade to local)", got)
+	if got := effectiveExecutionModeValue("", ""); got != DefaultExecutionMode {
+		t.Fatalf("no item, no project: got %q, want the tenant default %q", got, DefaultExecutionMode)
 	}
 }
 

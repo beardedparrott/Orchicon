@@ -50,7 +50,7 @@ const createProjectSchema = z.object({
   goals: z.array(goalFieldSchema).default([]),
   gitStrategy: z.enum(["local", "pr", "none"]).default("local"),
   defaultRuntimeImage: z.string().optional().default(""),
-  executionMode: z.enum(["runtime", "local"]).default("runtime"),
+  executionMode: z.enum(["runtime", "local"]).default("local"),
   maxConcurrentRuns: z.coerce.number().int().min(0).optional().default(0),
 });
 
@@ -76,7 +76,7 @@ function NewProjectPage() {
     formState: { errors, isSubmitting },
   } = useForm({
     resolver: zodResolver(createProjectSchema),
-    defaultValues: { name: "", slug: "", goals: [{ key: "", value: "" }], gitStrategy: "local" as GitStrategy, defaultRuntimeImage: "", executionMode: "runtime" as const, maxConcurrentRuns: 0 },
+    defaultValues: { name: "", slug: "", goals: [{ key: "", value: "" }], gitStrategy: "local" as GitStrategy, defaultRuntimeImage: "", executionMode: "local" as const, maxConcurrentRuns: 0 },
   });
 
   const { fields, append, remove } = useFieldArray({
@@ -220,12 +220,12 @@ function NewProjectPage() {
                 <Label htmlFor="executionMode">Execution mode</Label>
                 <select
                   id="executionMode"
-                  value={executionMode ?? "runtime"}
+                  value={executionMode ?? "local"}
                   onChange={(e) => setValue("executionMode", e.target.value as "runtime" | "local")}
                   className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
-                  <option value="runtime">runtime — always-container (default)</option>
-                  <option value="local">local — in-process (fenced)</option>
+                  <option value="local">local — in-process (default)</option>
+                  <option value="runtime">runtime — always-container (opt-in)</option>
                 </select>
                 {/* Containers are what "runtime" MEANS — say whether they are available, and
                     why not, right where the choice is made (AC5). */}

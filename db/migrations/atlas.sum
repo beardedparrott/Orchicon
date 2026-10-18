@@ -1,4 +1,4 @@
-h1:khcIYLVGoNRmXOy52y8s1Ks+6qbWshbUrzm8XKQwg7M=
+h1:isIFbA5gtLShB5hLP+RnOTyb8SqR01Gm5AkIFvwoVfg=
 20260712192105_initial_schema.sql h1:Nmt8ON+bI6fpWFAB1ofgseoxZ2Yr19rlBSuSpWYESJU=
 20260712192105_initial_schema_down.sql h1:RDSZVdJtR8DJx9HvT6WrBdEOEoJpM/46JutUdlPs5wU=
 20260712223028_add_outbox.sql h1:+idZYfVIjOHjGIluT5JM5M0dMF6L1+VmeHeGy66DLEI=
@@ -179,5 +179,7 @@ h1:khcIYLVGoNRmXOy52y8s1Ks+6qbWshbUrzm8XKQwg7M=
 20260929000000_mcp_server_ownership_down.sql h1:8CXgXU8wXCTbkhtm/8jae3RUlkkiySOTT37X+Ivc0vg=
 20260929000001_skill_files.sql h1:Ys2ZOjZdgu0hltQTNRIEjqU9MydnMwag2OCOxVUv6gM=
 20260929000001_skill_files_down.sql h1:ozDLYdd4VA3ccmbyocZx/O+3TdOSwxnMguGvOcg5Ths=
-20260930000000_work_item_execution_mode.sql h1:YM6MYaU+irGjknHP/QOBINAlYXl4Xtr06b1om53m6y4=
-20260930000000_work_item_execution_mode_down.sql h1:HLL9rgo2uMBWRCqT2EIYLfiY1ISDLFszRtS/HmezAyY=
+20260930000000_execution_mode_default_local.sql h1:u0O/VuaPFWCx+R4c9/FT6+LuCNuG5cRW6mOmf7GBAGw=
+20260930000000_execution_mode_default_local_down.sql h1:M/LIY3PJ4/mT95X+Q+74n/80gFT/UCk9mSXglkHjGfs=
+20261001000000_work_item_execution_mode.sql h1:V5aO0Ilv1RT/Bn6Ez7dnmlvfC7ytRd4fi+9qcWJGH5E=
+20261001000000_work_item_execution_mode_down.sql h1:hdRUM4ilc3wr277OwV9ixXYt+OMAs5ivopBypA6uLpg=

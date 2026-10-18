@@ -45,6 +45,7 @@ func newOnTextEnv(t *testing.T) (*TaskReconciler, *db.Pool, string) {
 	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "OnText", Slug: slug,
 		Status: domain.ProjectActive, Goals: []byte("[]"), ProjectDir: "/tmp/orchicon/" + slug,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)

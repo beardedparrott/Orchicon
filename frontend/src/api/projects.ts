@@ -119,9 +119,13 @@ export function executionModeToProto(v: string | number | undefined): ExecutionM
   return undefined;
 }
 
+// protoToExecutionMode maps a proto ExecutionMode to the UI string. The two
+// real values map through; anything unreadable/absent falls back to local —
+// the server and column default.
 export function protoToExecutionMode(v: number | string | undefined): "runtime" | "local" {
   if (v === 2 || v === "local" || v === "LOCAL") return "local";
-  return "runtime";
+  if (v === 1 || v === "runtime" || v === "RUNTIME") return "runtime";
+  return "local";
 }
 
 // useActivateProject transitions a drafting project to active status.

@@ -2,7 +2,7 @@
 --
 -- NULL is the ONLY "inherit from the project" representation: an empty string
 -- would be a third state no reader could tell from a typo. Note the asymmetry
--- with projects.execution_mode, which is NOT NULL DEFAULT 'runtime' — a project
+-- with projects.execution_mode, which is NOT NULL DEFAULT 'local' — a project
 -- is the ROOT of the chain (nothing above it but the tenant default), while a
 -- work item sits under a project it can inherit from.
 --

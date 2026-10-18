@@ -60,9 +60,10 @@ func TestIsLiveDSN(t *testing.T) {
 }
 
 // TestProjectExecutionModeDefaults pins the mode helper's fail-open
-// contract: empty project or read failure degrades to runtime, and an ITEM
-// override is honoured — including a local item inside a runtime project
-// (the fence must follow the item, not the project).
+// contract: empty project or read failure degrades to the TENANT DEFAULT
+// (db.DefaultExecutionMode), and an ITEM override is honoured — including a
+// local item inside a runtime project (the fence must follow the item, not the
+// project).
 func TestProjectExecutionModeDefaults(t *testing.T) {
 	// scratchPool applies the migrations, so this test is self-sufficient on a
 	// fresh disposable database (it writes real projects/items below).
@@ -78,7 +79,8 @@ func TestProjectExecutionModeDefaults(t *testing.T) {
 	prj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
 		ID: "prj_fence_item", TenantID: approvalTestTenant,
 		Name: "fence item", Slug: "fence-item", Status: "active", Goals: []byte("[]"),
-		ProjectDir: t.TempDir(),
+		ProjectDir:    t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create fence project: %v", err)
@@ -102,13 +104,13 @@ func TestProjectExecutionModeDefaults(t *testing.T) {
 	// NOT FOUND probes LAST: a failed read inside the tenant tx leaves the
 	// transaction unusable for further writes, and these only assert the
 	// fail-open contract anyway.
-	if got := executionModeFor(ctx, ttx.Tx, approvalTestTenant, "", ""); got != db.ExecutionModeRuntime {
-		t.Errorf("empty project mode = %q, want runtime", got)
+	if got := executionModeFor(ctx, ttx.Tx, approvalTestTenant, "", ""); got != db.DefaultExecutionMode {
+		t.Errorf("empty project mode = %q, want the tenant default %q", got, db.DefaultExecutionMode)
 	}
-	if got := executionModeFor(ctx, ttx.Tx, approvalTestTenant, "", "prj_does_not_exist"); got != db.ExecutionModeRuntime {
-		t.Errorf("missing project mode = %q, want runtime", got)
+	if got := executionModeFor(ctx, ttx.Tx, approvalTestTenant, "", "prj_does_not_exist"); got != db.DefaultExecutionMode {
+		t.Errorf("missing project mode = %q, want the tenant default %q", got, db.DefaultExecutionMode)
 	}
-	if got := executionModeFor(ctx, ttx.Tx, approvalTestTenant, "wi_does_not_exist", ""); got != db.ExecutionModeRuntime {
-		t.Errorf("missing item mode = %q, want runtime", got)
+	if got := executionModeFor(ctx, ttx.Tx, approvalTestTenant, "wi_does_not_exist", ""); got != db.DefaultExecutionMode {
+		t.Errorf("missing item mode = %q, want the tenant default %q", got, db.DefaultExecutionMode)
 	}
 }

@@ -495,6 +495,14 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	if cmd, ok := m.pasteKey(msg); ok {
 		return m, cmd
 	}
+	// PLANE STATE AND LIFECYCLE RESULTS land here, in the one message funnel, so a probe or a verb can
+	// never be handled twice (or by a screen that does not own the plane).
+	if pm, ok := msg.(planeStateMsg); ok {
+		return m, m.applyPlaneState(pm.info)
+	}
+	if om, ok := msg.(planeOpMsg); ok {
+		return m, m.applyPlaneOp(om)
+	}
 	if wm, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width, m.height = wm.Width, wm.Height
 		m.footer.Width = wm.Width
@@ -506,6 +514,13 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		m.ensureLoaded(m.active)
 		m.EnsureSubscriptions(m.active)
 		m.refreshComposerHint()
+		// FIRST LAYOUT IS WHERE THE PLANE IS PROBED: the shell is about to start painting live data,
+		// and the operator's first question on an empty screen is "is the plane even up". Once, not on
+		// every resize.
+		if !m.planeProbed {
+			m.planeProbed = true
+			return m, m.planeProbeCmd()
+		}
 		return m, nil
 	}
 	// THE LAUNCH CHECK'S RESULT lands here, and it may arrive BEFORE the prompt is up

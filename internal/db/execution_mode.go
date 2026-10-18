@@ -16,7 +16,7 @@ import (
 // level as one named constant means the local-default task flips the platform
 // default in exactly one place, and every caller of EffectiveExecutionMode
 // follows automatically.
-const DefaultExecutionMode = ExecutionModeRuntime
+const DefaultExecutionMode = ExecutionModeLocal
 
 // EffectiveExecutionMode resolves where a work item's executions actually run:
 //
@@ -29,10 +29,14 @@ const DefaultExecutionMode = ExecutionModeRuntime
 // whether a run is `runtime` or `local`.
 //
 // itemMode nil means "inherit" (the column is nullable by design and NULL is the
-// only inherit representation). A project row that cannot be read degrades to
-// runtime, never to local: a read failure must never turn a runtime item into
-// in-process host exec. The mode is total — it always returns "runtime" or
-// "local", so there is no "found" flag to thread through callers.
+// only inherit representation). A project row that cannot be read — or an
+// execution with no project at all — falls through to the TENANT DEFAULT, which
+// is local (in-process) since the local-default decision; containers are the
+// opt-in. That degradation is bounded by the local-mode DSN fence in
+// internal/scheduler, which refuses a live plane DSN and fails closed, so a
+// read failure cannot silently reach the live database from in-process. The
+// mode is total — it always returns "runtime" or "local", so there is no
+// "found" flag to thread through callers.
 func EffectiveExecutionMode(ctx context.Context, tx pgx.Tx, tenantID string, itemMode *string, projectID string) string {
 	item := ""
 	if itemMode != nil {
@@ -50,7 +54,7 @@ func EffectiveExecutionMode(ctx context.Context, tx pgx.Tx, tenantID string, ite
 // effectiveExecutionModeValue is the pure precedence decision behind
 // EffectiveExecutionMode: an explicit ITEM mode wins over the project, an
 // explicit project mode wins over the tenant default, and anything unreadable
-// or empty falls through to DefaultExecutionMode (runtime). An item "local"
+// or empty falls through to DefaultExecutionMode (local). An item "local"
 // inside a "runtime" project stays local — that is the opt-out the lifecycle
 // invariant depends on — and an item "runtime" inside a "local" project stays
 // runtime, i.e. the item-level opt-IN provisions a container.
@@ -65,8 +69,17 @@ func effectiveExecutionModeValue(itemMode, projectMode string) string {
 	case ExecutionModeRuntime:
 		return ExecutionModeRuntime
 	}
-	if strings.TrimSpace(projectMode) == ExecutionModeLocal {
+	// The PROJECT leg returns whatever the project says — BOTH values, not just
+	// local. Falling through to DefaultExecutionMode for an explicit project
+	// "runtime" would silently turn a container project into host execution the
+	// moment the tenant default is local (which it is), i.e. the third leg would
+	// swallow the second. Only an absent/unrecognised project mode (an
+	// unreadable or missing project row) reaches the tenant default.
+	switch strings.TrimSpace(projectMode) {
+	case ExecutionModeLocal:
 		return ExecutionModeLocal
+	case ExecutionModeRuntime:
+		return ExecutionModeRuntime
 	}
 	return DefaultExecutionMode
 }

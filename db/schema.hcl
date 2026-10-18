@@ -202,8 +202,8 @@ table "projects" {
   column "execution_mode" {
     type = text
     null = false
-    default = "runtime"
-    comment = "runtime = always-container; local = in-process allowed with honest prompt + DSN fence"
+    default = "local"
+    comment = "local = in-process (default); runtime = always-container (opt-in)"
   }
   column "skill_files" {
     type = jsonb
