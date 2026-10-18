@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/planecontrol"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
@@ -178,15 +179,24 @@ func TestPlaneDownMessageNamesTheRemedy(t *testing.T) {
 		t.Errorf("footer not wired to the probed state: state=%v wired=%v", m.footer.PlaneState, m.footer.PlaneWired)
 	}
 
-	// ONE notice per transition into down: a periodic probe must not spam the strip.
+	// A REPEATED PROBE DOES NOT DUPLICATE THE LINE — it re-asserts the same one.
 	m.applyPlaneState(info)
 	if n := strings.Count(m.dock.Err, "is down"); n != 1 {
 		t.Errorf("the down notice repeated on a repeated probe (%d times): %q", n, m.dock.Err)
 	}
-	// A drifted probe clears the re-arm guard so a LATER down is reported again.
-	m.applyPlaneState(planeInfo{State: planeStateDrifted, Instance: "dev"})
-	if m.planeDownNotified {
-		t.Error("the down-notified guard must re-arm when the plane is no longer down")
+	// AND THE STRIP SELF-HEALS: every slash command clears it (dispatchSlash), so a strip that came
+	// back empty while the plane is STILL down must carry the remedy again on the next probe. Without
+	// this, `/plane` reported "plane down" in the footer and nothing at all on the strip.
+	m.dock.SetError("")
+	m.applyPlaneState(info)
+	if !strings.Contains(m.dock.Err, "/plane-start") {
+		t.Errorf("the remedy did not return after the strip was cleared: %q", m.dock.Err)
+	}
+	// A DRIFTED probe replaces the remedy (restart, not start) rather than leaving the down one.
+	m.applyPlaneState(planeInfo{State: planeStateDrifted, Instance: "dev",
+		Status: planecontrol.Status{HealthURL: "http://localhost:18080/healthz"}})
+	if strings.Contains(m.dock.Err, "/plane-start") {
+		t.Errorf("a drifted plane kept the down remedy on the strip: %q", m.dock.Err)
 	}
 }
 
@@ -331,5 +341,86 @@ func TestPlaneCommandDispatch(t *testing.T) {
 	}
 	if !strings.Contains(m.dock.Err, "refused") || !strings.Contains(m.dock.Err, "local instance") {
 		t.Errorf("the refusal must be loud and explained: %q", m.dock.Err)
+	}
+}
+
+// THE STATE INDICATOR MUST NOT GO STALE (acceptance criteria 2 and 3).
+//
+// The first-layout probe answers "was there a plane when the shell started". A plane stopped from
+// another surface (the CLI, the desktop app) left the chip saying "plane up" and the strip with only
+// "connection refused" — the two failures this feature exists to remove. The rolling refresh tick is
+// where a failed connection becomes a re-probe.
+func TestPlaneReprobeWhenConnectionDrops(t *testing.T) {
+	tempPlaneHome(t)
+	m := newDockTestApp()
+	m.planeProbed = true
+
+	// CONNECTED: nothing is armed — a healthy plane is not polled by a state indicator.
+	if cmd := m.planeReprobeCmd(); cmd != nil {
+		t.Fatal("a connected shell must not re-probe the plane on every tick")
+	}
+	// A FAILED STREAM IS THE EVIDENCE: the tick arms a probe.
+	m.reg.ReportStatusForTest("plane-gate", string(stream.StatusError))
+	if cmd := m.planeReprobeCmd(); cmd == nil {
+		t.Fatal("a disconnected shell must re-probe the plane")
+	}
+	// THROTTLED: one probe per cooldown, not one per tick.
+	if cmd := m.planeReprobeCmd(); cmd != nil {
+		t.Error("the re-probe must be throttled — a down plane must not be probed every tick")
+	}
+	// RECONNECTING CLEARS THE COOLDOWN, so the NEXT outage probes immediately.
+	m.planeReprobeAt = time.Now()
+	m.reg.ReportStatusForTest("plane-gate", string(stream.StatusOpen))
+	if cmd := m.planeReprobeCmd(); cmd != nil {
+		t.Fatal("a connected shell must not probe")
+	}
+	if !m.planeReprobeAt.IsZero() {
+		t.Error("a healthy connection must reset the cooldown, or the next outage waits for it")
+	}
+	// NO SHELL LAYOUT YET: the first-layout probe owns the first probe.
+	m.planeProbed = false
+	m.reg.ReportStatusForTest("plane-gate", string(stream.StatusError))
+	if cmd := m.planeReprobeCmd(); cmd != nil {
+		t.Error("before the first layout the reprobe must arm nothing")
+	}
+}
+
+// A PLANE THAT COMES BACK CLEARS THE DOWN MESSAGE — but only the text this surface wrote.
+func TestPlaneRecoveryClearsTheDownMessage(t *testing.T) {
+	m := newDockTestApp()
+	down := planeInfo{State: planeStateDown, Instance: "dev"}
+	up := planeInfo{State: planeStateUp, Instance: "dev"}
+
+	m.applyPlaneState(down)
+	if m.dock.Err == "" {
+		t.Fatal("the down state must put the remedy on the strip")
+	}
+	m.applyPlaneState(up)
+	if m.dock.Err != "" {
+		t.Errorf("a plane that came back left the down message on the strip: %q", m.dock.Err)
+	}
+
+	// SOMEONE ELSE'S ERROR IS NOT OURS TO CLEAR.
+	m.applyPlaneState(down)
+	m.dock.SetError("some other failure")
+	m.applyPlaneState(up)
+	if m.dock.Err != "some other failure" {
+		t.Errorf("recovery must not clear an unrelated error: %q", m.dock.Err)
+	}
+}
+
+// A MISTYPED VERB IS REPORTED, NOT SILENTLY TURNED INTO A PROBE (acceptance criterion 1's "not a
+// silent no-op"), and "status" is accepted because `orchicon plane status` is.
+func TestPlaneUnknownVerbReported(t *testing.T) {
+	m := newDockTestApp()
+
+	if cmd := m.planeCommand("strat"); cmd != nil {
+		t.Error("a mistyped verb must not arm a probe — it must report")
+	}
+	if !strings.Contains(m.dock.Err, "not a plane verb") || !strings.Contains(m.dock.Err, "strat") {
+		t.Errorf("a mistyped verb must be named in the strip: %q", m.dock.Err)
+	}
+	if cmd := m.planeCommand("status"); cmd == nil {
+		t.Error("/plane status must probe, matching `orchicon plane status`")
 	}
 }

@@ -82,9 +82,13 @@ func (m *App) handleRefreshTick(msg refreshTickMsg) (*App, tea.Cmd) {
 		return m, refreshCmd(m.refreshGen) // adopt the live generation: exactly one chain survives
 	}
 	cmd := m.refreshActiveView()
+	// A FAILED STREAM IS THE SHELL'S EVIDENCE THAT THE PLANE MAY HAVE GONE — re-probe it, so the plane
+	// chip and the remedy stop describing a plane that is no longer there (planeReprobeCmd throttles,
+	// and a connected shell arms nothing).
+	probe := m.planeReprobeCmd()
 	// Re-arm unconditionally, even when the refresh did nothing: a skipped tick must not end the
 	// window, or one open form would stop every screen refreshing for the rest of the session.
-	return m, tea.Batch(cmd, refreshCmd(m.refreshGen))
+	return m, tea.Batch(cmd, probe, refreshCmd(m.refreshGen))
 }
 
 // refreshActiveView asks the active screen to re-read what is on screen. It is the tick's whole

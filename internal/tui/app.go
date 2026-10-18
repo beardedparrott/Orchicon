@@ -161,11 +161,14 @@ type App struct {
 	plane planeInfo
 	// planeProbed says the first-layout probe has been armed, so a resize storm does not re-probe.
 	planeProbed bool
-	// planeDownNotified gates the "plane is down" dock notice to ONE per transition into down.
-	planeDownNotified bool
-	help              helpModel
-	routes            []KeyRoute
-	quitting          bool
+	// planeDownErrText is the EXACT strip text applyPlaneState wrote for a down plane, so leaving the
+	// down state clears that message and never one somebody else wrote.
+	planeDownErrText string
+	// planeReprobeAt is when the last disconnect-driven re-probe was armed — planeReprobeCmd's cooldown.
+	planeReprobeAt time.Time
+	help           helpModel
+	routes         []KeyRoute
+	quitting       bool
 	// launchDir is the directory the process was launched from — a FACT ABOUT THE
 	// PROCESS (os.Getwd), set by tui.WithLaunchDir and empty in tests and embedders.
 	//

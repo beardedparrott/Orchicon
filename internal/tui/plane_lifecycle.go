@@ -32,6 +32,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -329,6 +330,35 @@ func (s planeState) word() string {
 // planeStateMsg carries a completed probe back to the tea loop.
 type planeStateMsg struct{ info planeInfo }
 
+// planeReprobeCooldown bounds how often a DISCONNECTED shell re-probes the plane. A CONNECTED shell
+// never re-probes on this path: StatusOf dials /healthz, and a state indicator must not poll a plane
+// that is answering.
+const planeReprobeCooldown = 15 * time.Second
+
+// planeReprobeCmd re-probes the plane AFTER the connection to it has failed.
+//
+// THE FIRST-LAYOUT PROBE IS NOT ENOUGH ON ITS OWN. It answers "was there a plane when the shell
+// started", so a plane stopped from another surface (the CLI, the desktop app) left the footer chip
+// saying "plane up" and the stream error strip with no remedy — the stale-and-silent state this
+// surface exists to remove (acceptance criteria 2 and 3). The rolling refresh tick calls this: a
+// failed stream is the shell's own evidence that the plane may be gone, and the probe turns that
+// evidence into a state, a chip and a remedy. Down stays quiet (applyPlaneState reports it once per
+// transition) and a plane that comes back clears the strip.
+func (m *App) planeReprobeCmd() tea.Cmd {
+	if !m.planeProbed {
+		return nil // no shell layout yet: the first-layout probe is still the one to arm
+	}
+	if m.streamStatus() == openStatus {
+		m.planeReprobeAt = time.Time{}
+		return nil
+	}
+	if !m.planeReprobeAt.IsZero() && time.Since(m.planeReprobeAt) < planeReprobeCooldown {
+		return nil
+	}
+	m.planeReprobeAt = time.Now()
+	return m.planeProbeCmd()
+}
+
 // planeOpMsg carries a completed lifecycle verb back to the tea loop — SUCCESS OR FAILURE, with the
 // verb's output, so a stop that refuses is reported rather than looking like a no-op.
 type planeOpMsg struct {
@@ -417,9 +447,14 @@ func (m *App) planeCommand(verb string) tea.Cmd {
 		}
 		m.dock.SetNotice("plane " + verb + " (instance " + inst + ") …")
 		return m.planeOpCmd(verb)
+	case "", "status":
+		m.dock.SetNotice("probing the plane …")
+		return m.planeProbeCmd()
 	}
-	m.dock.SetNotice("probing the plane …")
-	return m.planeProbeCmd()
+	// A MISTYPED VERB IS REPORTED, NOT SWALLOWED. "/plane strat" silently probing the plane reads as
+	// "the command worked" — the class of silent no-op acceptance criterion 1 is about.
+	m.dock.SetError("plane " + verb + " is not a plane verb — usage: /plane [start | stop | restart]")
+	return nil
 }
 
 // refreshPlaneLabel pushes the probed state onto the footer chip.
@@ -440,15 +475,32 @@ func (m *App) applyPlaneState(info planeInfo) tea.Cmd {
 	// the remedy, and ordering this after it would render a stale state.
 	m.refreshPlaneLabel()
 	if info.State == planeStateDown {
-		if !m.planeDownNotified {
-			m.planeDownNotified = true
-			// The remedy line already names the instance, the fact and the fix — prefixing it again would
-			// only cost characters in a one-row strip.
-			m.dock.SetError(planeRemedy(info))
+		// THE STRIP CARRIES THE REMEDY FOR AS LONG AS THE PLANE IS DOWN — it is STATE, not a one-shot
+		// notice. A once-only gate was wrong twice over: every slash command clears the strip
+		// (dispatchSlash), so `/plane` reported "plane down" in the footer and NOTHING on the strip; and
+		// the same happened after any unrelated message took the strip over. Re-asserting is idempotent,
+		// and it never fights another writer — text this function did not write is left alone.
+		remedy := planeRemedy(info)
+		// THREE CASES ASSERT IT, one does not:
+		//   - the strip is EMPTY (a slash command just cleared it)          → assert
+		//   - the strip carries OUR text (a repeat probe)                    → assert, idempotent
+		//   - this is a TRANSITION into down (no text asserted yet)          → assert, and it outranks
+		//     whatever was on the strip: a down plane is why nothing loads
+		//   - the strip carries SOMEONE ELSE'S error on a repeat probe       → leave it alone
+		if m.planeDownErrText != remedy || m.dock.Err == "" || m.dock.Err == m.planeDownErrText {
+			m.dock.SetError(remedy)
 		}
-	} else {
-		m.planeDownNotified = false
+		m.planeDownErrText = remedy
+		return nil
 	}
+	// LEAVING "down" CLEARS THE STRIP THIS FUNCTION WROTE. A plane that came back — started from the
+	// desktop app, the CLI, or another TUI — must not leave "the plane … is down" sitting under a footer
+	// that says up: the operator would be told to fix something already fixed. It clears ONLY the exact
+	// text it wrote; any other error on the strip belongs to someone else and is left alone.
+	if m.planeDownErrText != "" && m.dock.Err == m.planeDownErrText {
+		m.dock.SetError("")
+	}
+	m.planeDownErrText = ""
 	return nil
 }
 
