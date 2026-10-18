@@ -76,8 +76,11 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 > `orchicon install` no longer requires it. A plane whose model refs need no adapter never probes for the binary, never starts a serve, and never mounts it into a container — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```powershell
-# Windows (PowerShell) — runs the stack inside WSL2
+# Windows (PowerShell) — NATIVE: installs orchicon.exe + orch.exe, no WSL2 or Docker required
 irm https://orchicon.dev/install.ps1 | iex
+
+# ...and only if you also want a workflow's runtime CONTAINER (this provisions the WSL2 substrate):
+& ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Containers
 ```
 
 ### Single container (Docker)

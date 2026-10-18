@@ -1,33 +1,39 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Offline harness for scripts/install.ps1's wsl.exe handling.
+# Offline harness for scripts/install.ps1 — the NATIVE Windows installer.
 #
-# WHY THIS EXISTS: the Windows installer talks to wsl.exe, and wsl.exe's
-# captured output encoding is the source of two bugs that cost a release to
-# find — a distro name arriving with NUL bytes between its characters (which
-# then truncates at the first NUL when handed back to `wsl -d <name>`, and is
-# misreported as a missing Docker), and `$VARS` in a script argument being
-# expanded by the distro's default shell before the target bash sees them
-# (`tar (child): : Cannot open`). Neither is visible without Windows, so this
-# harness makes them visible without Windows: it runs the installer's OWN
-# functions (AST-extracted, the installer is never executed) against a wsl.exe
-# double.
+# WHAT THE INSTALLER IS NOW: it downloads orchicon_<ver>_windows_amd64.zip, installs
+# orchicon.exe + orch.exe, and runs `orchicon install` as a NATIVE Windows process.
+# WSL2 is provisioned only when the operator opts into containers, and the
+# three-cause Docker Desktop diagnosis is gone (the engine is provisioned by the
+# installer binary itself). So this suite no longer pins "everything reaches the
+# distro": it pins that the NATIVE artifact is installed, that a plain install
+# never invokes wsl, that the setup is told when a human is present and when not,
+# and that the ports printed are the ones RECORDED rather than a constant.
 #
-# WHAT IS REAL HERE: the installer's functions, the file on disk, PowerShell's
-# decoding of captured native output, the argv/marshal difference between
-# `wsl -e` and `wsl --`, and $LASTEXITCODE propagation.
-# WHAT IS EMULATED: wsl.exe itself. The double reproduces the DOCUMENTED
-# behaviours the installer depends on — UTF-16LE on a redirected stream,
-# WSL_UTF8=1 switching it to UTF-8, `--` re-parsing the command text through
-# the distro's default shell, and a localized failure for an unknown distro.
-# It is not a byte-exact wsl.exe clone; it is a contract, and the contract is
-# what the installer is written against.
+# WHY IT STILL EXISTS AT ALL: the Windows installer is invisible without Windows,
+# and the two bugs that cost a release to find live in wsl.exe's captured output
+# encoding — a distro name arriving with NUL bytes between its characters (which
+# truncates at the first NUL when handed back to `wsl -d <name>`), and `$VARS` in
+# a script argument being expanded by the distro's default shell before the
+# target bash sees them. The container opt-in still carries a script into a
+# distro, so those assertions still have a subject.
 #
-# REQUIRES: pwsh (PowerShell 7+) and iconv.
+# WHAT IS REAL HERE: the installer's functions and file, PowerShell's decoding of
+# captured native output, the argv/marshal difference between `wsl -e` and
+# `wsl --`, $LASTEXITCODE propagation, a REAL zip extracted by Expand-Archive, and
+# a real child process running the whole install path.
+# WHAT IS EMULATED: wsl.exe (UTF-16LE on a redirected stream, WSL_UTF8=1 switching
+# it to UTF-8, `--` re-parsing the command text, a localized failure for an
+# unknown distro) and the orchicon.exe inside the release archive (it reports a
+# version, records the environment it was handed, and writes the ports record the
+# real binary writes — it never does real work).
 #
-#   scripts/tests/install-ps1-wsl-encoding/run.sh [installer.ps1]
-#   scripts/tests/install-ps1-wsl-encoding/run.sh --baseline <other.ps1>
-#   scripts/tests/install-ps1-wsl-encoding/run.sh --no-selfcheck
+# REQUIRES: pwsh (PowerShell 7+), iconv, python3 (to build the archive double).
+#
+#   scripts/tests/install-ps1-native/run.sh [installer.ps1]
+#   scripts/tests/install-ps1-native/run.sh --baseline <other.ps1>
+#   scripts/tests/install-ps1-native/run.sh --no-selfcheck
 #
 # Exits 0 only when every assertion passes, so it can be used as a check.
 #
@@ -56,7 +62,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --baseline) BASELINE="${2:?--baseline needs a path}"; shift 2;;
     --no-selfcheck) SELFCHECK=0; shift;;
-    -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0;;
+    -h|--help) sed -n '2,50p' "${BASH_SOURCE[0]}"; exit 0;;
     *) INSTALLER="$1"; shift;;
   esac
 done
@@ -119,6 +125,10 @@ mkdir -p "${STUB}/bin"
 cat > "${STUB}/wsl.src" <<'WSL_DOUBLE'
 #!/usr/bin/env bash
 set -u
+# EVERY INVOCATION IS RECORDED when asked. "Did a plain install touch WSL?" is otherwise an
+# inference from PATH games; with a call log it is a fact, and the assertion that a clean Windows
+# box needs no WSL becomes behavioural instead of textual.
+if [ -n "${EMU_CALL_LOG:-}" ]; then printf 'wsl %s\n' "$*" >> "$EMU_CALL_LOG"; fi
 KNOWN="Ubuntu"
 LOCALIZED_NO_SUCH="没有名为 '%s' 的发行版。"
 
@@ -196,6 +206,11 @@ if [ -n "$execmode" ]; then
   # travels as an exported function (a child bash imports it from the env).
   docker() { case "$*" in *--format*) echo "29.8.0";; *) echo "Docker version 29.8.0";; esac; }
   export -f docker
+  # PODMAN IS THE ENGINE THE INSTALL PROVISIONS FIRST (install_engine.go), so it needs the same
+  # stand-in — and the same deny-list below. Without it a `podman machine start` reaching this
+  # double would resolve the REAL podman off PATH and start a real VM.
+  podman() { case "$*" in *--version*) echo "podman version 5.2.0";; *) echo "podman $*";; esac; }
+  export -f podman
   cmd=("${@:$skip}")
   # RECORD WHAT THE GUEST WAS HANDED, when asked. The install scripts are multi-line bash with double
   # quotes in them, and a caller that mangles them (Windows PowerShell 5.1 quoting an inline native
@@ -263,6 +278,11 @@ if [ -n "$execmode" ]; then
       *"docker volume"*|*"docker network"*|*"docker exec"*|*"docker cp"*|*"docker build"*|\
       *"docker tag"*|*"docker push"*|*"docker compose"*|*"docker kill"*|*"docker restart"*)
         deny="it MUTATES the Docker engine — and the stand-in below would report success without doing it";;
+      *"podman run"*|*"podman create"*|*"podman start"*|*"podman stop"*|*"podman rm"*|*"podman pull"*|\
+      *"podman volume"*|*"podman network"*|*"podman exec"*|*"podman cp"*|*"podman build"*|\
+      *"podman tag"*|*"podman push"*|*"podman compose"*|*"podman kill"*|*"podman restart"*|\
+      *"podman machine init"*|*"podman machine start"*|*"podman machine stop"*|*"podman machine rm"*)
+        deny="it MUTATES the container engine (podman) — and the stand-in below would report success without doing it";;
     esac
   fi
   if [ -n "$deny" ]; then
@@ -290,6 +310,57 @@ exit 0
 WSL_DOUBLE
 # install(1), not cp+chmod: it writes the file and its mode in one step.
 install -m 0755 "${STUB}/wsl.src" "${STUB}/bin/wsl"
+
+# --- release-archive double -------------------------------------------------
+# The install path extracts a REAL zip (Expand-Archive) and then RUNS what it extracted, so the
+# fixture is a real archive in the shape the release workflow produces: a top-level
+# orchicon_<ver>_windows_amd64/ directory holding orchicon.exe and orch.exe. The .exe double does no
+# real work: it reports a version, records the environment the wrapper handed it (that is how the
+# interactive/unattended distinction is observed rather than grepped), and writes the ports record
+# the real binary writes.
+FIXTURE="${STUB}/fixture"
+mkdir -p "${FIXTURE}/build/orchicon_0.0.0_windows_amd64"
+cat > "${FIXTURE}/build/orchicon_0.0.0_windows_amd64/orchicon.exe" <<'ORCHICON_EXE'
+#!/usr/bin/env bash
+set -u
+CMD="${1:-}"
+if [ -n "${EMU_ORCHICON_ENV_LOG:-}" ]; then
+  {
+    printf 'cmd=%s\n' "$CMD"
+    printf 'INSTALL_INTERACTIVE=%s\n' "${ORCHICON_INSTALL_INTERACTIVE-<unset>}"
+    printf 'ASSUME_YES=%s\n' "${ORCHICON_ASSUME_YES-<unset>}"
+    printf 'INSTANCE=%s\n' "${ORCHICON_INSTANCE-<unset>}"
+    printf 'SERVE_STATE_DIR=%s\n' "${ORCHICON_SERVE_STATE_DIR-<unset>}"
+  } >> "${EMU_ORCHICON_ENV_LOG}"
+fi
+case "$CMD" in
+  version) echo "Orchicon v0.0.0 (double)"; exit 0;;
+  stop) exit 0;;
+  install)
+    echo "orchicon install (double): acquiring the host service binaries…"
+    inst="${ORCHICON_INSTANCE:-dev}"
+    dir="$HOME/.local/share/orchicon-${inst}"
+    mkdir -p "$dir"
+    printf '%s\n' "${EMU_PORTS_JSON:-{\"ORCHICON_CONTROL_PORT\":9097}}" > "$dir/ports.json"
+    echo "orchicon install (double): done"
+    exit "${EMU_ORCHICON_INSTALL_RC:-0}";;
+esac
+exit 0
+ORCHICON_EXE
+install -m 0755 "${FIXTURE}/build/orchicon_0.0.0_windows_amd64/orchicon.exe" "${FIXTURE}/build/orchicon_0.0.0_windows_amd64/orch.exe"
+python3 - "${FIXTURE}" <<'FIXTURE_ZIP'
+import os, sys, zipfile
+root = sys.argv[1]
+src = os.path.join(root, "build")
+out = os.path.join(root, "release", "orchicon_0.0.0_windows_amd64.zip")
+os.makedirs(os.path.dirname(out), exist_ok=True)
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for dirpath, _dirnames, filenames in os.walk(src):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            z.write(full, os.path.relpath(full, src))
+FIXTURE_ZIP
+test -f "${FIXTURE}/release/orchicon_0.0.0_windows_amd64.zip" || { echo "run.sh: fixture archive was not built" >&2; exit 2; }
 
 echo "installer under test : ${INSTALLER}"
 [ -n "${BASELINE}" ] && echo "baseline (must FAIL)  : ${BASELINE}"
