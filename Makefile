@@ -542,21 +542,27 @@ disk-report-test: ## CI gate: assert disk-report's subtraction, its bounds, and 
 # it) and its long or interactive steps must STREAM rather than capture (a captured step
 # is indistinguishable from a hang, and a captured PROMPT blocks for ever).
 #
-# It needs pwsh + iconv and no Windows at all: a wsl.exe double carries the contract, and
-# the failure paths are run inside a child pwsh. PWSH=/path/to/pwsh overrides the lookup.
+# It needs pwsh + iconv + python3 and no Windows at all: a wsl.exe double and a release-archive
+# double carry the contract, and the WHOLE install path runs inside a child pwsh. That archive
+# double's orchicon.exe is behind a deny-list that now covers podman as well as docker — a real
+# install started from a test mutates the operator's machine AND is indistinguishable from a hang,
+# so it must be impossible rather than unlikely. New assertions: a plain install never invokes wsl
+# (WSL2 is provisioned only for -Containers), the setup is told when a human is present
+# (ORCHICON_INSTALL_INTERACTIVE=1) and when not (-Yes), and the ports printed are the RECORDED ones
+# rather than a constant. PWSH=/path/to/pwsh overrides the lookup.
 # This is pwsh 7, NOT Windows PowerShell 5.1 — the 5.1-only behaviours it must avoid (the
 # `2>&1` ErrorRecord trap) are documented in the installer's source instead.
 .PHONY: install-ps1-test
-install-ps1-test: ## CI gate: the Windows installer never closes the session, and streams
+install-ps1-test: ## CI gate: the Windows installer is native, never closes the session, and streams
 	PWSH="$${PWSH:-$$(command -v pwsh || ls -d .dev/tools/pwsh/*/pwsh 2>/dev/null | head -1)}" \
-		bash scripts/tests/install-ps1-wsl-encoding/run.sh
+		bash scripts/tests/install-ps1-native/run.sh
 
 # install-path-test RUNS THE REAL INSTALLER against a real artifact: scripts/tests/install-path
 # packages a build in the release's exact asset shape, serves it over HTTP, and runs scripts/install.sh
 # against it end to end. It needs no network, no Docker and no release — which is the point, because the
 # install path was previously exercised only by a user, and a broken installer reached two published
-# releases that way. It covers the POSIX installer; install.ps1's WSL path needs a Windows runner (its
-# offline behaviour is covered by install-ps1-test).
+# releases that way. It covers the POSIX installer; install.ps1's NATIVE path is covered offline by
+# install-ps1-test (a real zip, a real child process); only the container opt-in needs a Windows runner.
 install-path-test: ## Run the real installer against a locally-served artifact, and the uninstall verbs against redirected state and stubbed engines
 	bash scripts/tests/install-path/run.sh
 	bash scripts/tests/install-path/uninstall.sh

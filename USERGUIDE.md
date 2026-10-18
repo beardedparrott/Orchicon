@@ -99,7 +99,7 @@ dispatches, and **fails for every workflow run**.
 | Official installer → `~/.opencode/bin` | ✅ | ✅ | ✅ **use this** |
 | `npm`/`bun` global **in your home** (`~/.npm-global/bin`, `~/.bun/bin`, an `nvm` prefix under `~/.nvm`) | ✅ | ✅ | ❌ |
 | `sudo npm i -g` → `/usr/local/bin` | ✅ | ⚠️ if the plane's `PATH` reaches it | ❌ |
-| A Windows install (`opencode.exe`) | ⚠️ through WSL interop | ❌ | ❌ |
+| A native Windows install (`opencode.exe` on `PATH`) | ✅ | ✅ | ❌ |
 
 Orchicon resolves the binary in this order: `ORCHICON_OPENCODE_BIN`, then `PATH`,
 then `~/.opencode/bin`, `~/.local/bin`, `~/.npm-global/bin`, `~/.bun/bin`. **Only
@@ -124,12 +124,14 @@ The plane warns about exactly this at startup:
 opencode resolves to a path the runtime containers cannot see — workflow-run executions will not find it
 ```
 
-**On Windows, install it inside WSL.** The whole stack runs in a WSL2 distro (see
-[One-line install (Windows PowerShell)](#one-line-install-windows-powershell--via-wsl2)),
-so the CLI has to be in that same distro. A Windows `opencode.exe` is reachable
-from a WSL shell through interop, which makes it look installed — it is not usable
-by the plane or its containers. Inside the distro, run the command above as your
-own user.
+**On Windows, install it where the plane runs.** With the native installer that is
+Windows itself (see
+[One-line install (Windows PowerShell)](#one-line-install-windows-powershell--native)):
+the plane is a Windows process of your user, so install the CLI as your own user and
+put it on your `PATH` — a Windows `opencode.exe` is the right thing to install. If you
+opted into runtime containers (`-Containers`), a workflow that runs *in* a container
+still needs the CLI inside the Linux substrate, where the `~/.opencode/bin` rule above
+applies as written.
 
 **If you install it while the plane is already running**, note that the discovery
 of OpenCode's models and MCP servers happens **at plane startup**. A plane that
@@ -175,44 +177,50 @@ with each variant's size, defaulting to **none** — a project starts in `local`
 needs no image, and one is fetched on demand later if a project opts into runtime
 containers. Pass `--no-setup` to install only the binary (headless / CI).
 
-### One-line install (Windows PowerShell — via WSL2)
+### One-line install (Windows PowerShell — native)
 
 ```powershell
 irm https://orchicon.dev/install.ps1 | iex
 ```
 
-Orchicon's runtime layer (the runtime daemon, its unix socket, and the container
-mounts) is **POSIX-only** — there is no native Windows port. On Windows the whole
-stack therefore runs inside **WSL2**, and the installer orchestrates it:
+Orchicon's plane and its services (Postgres, NATS) run as **native Windows host
+processes** of the user who installs them, so the installer needs **no WSL2 and no
+Docker Desktop**. What it does:
 
-1. **WSL2 provisioning** — the script detects WSL and a Linux distro, ensures WSL2
-   is the default version, and prints exact next steps if WSL or a distro is
-   missing (Windows 10 21H2+ / Windows 11: run `wsl --install` in an admin shell
-   and reboot).
-2. **Container engine check inside WSL — informational.** It reports whether
-   `docker version` works inside the distro, and it no longer stops the install when it
-   does not: the plane and its services are **host processes** (PostgreSQL and NATS
-   from host binaries, acquired by `orchicon install`), so a distro with no container
-   engine is a **supported** configuration. An engine is only needed for a workflow's
-   runtime container, and only if you opt in. When an engine is present but unusable it
-   still says **which** of the three causes applies — no docker CLI in the distro at
-   all, a CLI with no daemon running, or Docker Desktop running with the WSL
-   integration off for this distro — and quotes what the distro itself reported.
-3. **Linux binary** — it downloads the **Linux** release asset
-   (`orchicon_<ver>_linux_<arch>.tar.gz`, arch mapped from the Windows processor)
-     and installs it inside the distro (default `~/.local/bin`). There is no Windows
-     binary to download: releases publish linux and darwin only.
-4. **One-command setup** — it runs `orchicon install` inside WSL: acquire the
-   infrastructure binaries, start the runtime daemon, start this instance's Postgres
-   and NATS, start the plane, wait for health, and offer the optional runtime images
-   (default: none). This is the slow part (minutes on a first
-   install), so
-   every step is named as it starts and the output is **streamed live** rather than
-   replayed at the end. It also asks about the host ports — press ENTER to accept
-   each default.
-5. **Connection info** — WSL2 forwards `localhost`, so it prints the
-   Windows-visible URL: `http://localhost:8080` (control plane). If the URL does not answer, check Windows
-   Defender Firewall or add a `netsh interface portproxy` port forward.
+1. **Refuses an elevated shell, before it downloads anything.** Postgres refuses to run as
+   Administrator, so an elevated install would fail part-way through with an error about
+   `initdb` rather than about the shell it was started from; the installer says so up front
+   and tells you to open a normal PowerShell. Nothing is downloaded and nothing is changed.
+2. **Installs the native binaries** — it downloads `orchicon_<version>_windows_amd64.zip`
+   and places `orchicon.exe` and `orch.exe` in `%LOCALAPPDATA%\Programs\Orchicon`, then
+   adds that directory to your **user** `PATH` (once — a re-run does not append again). No
+   administrator rights are needed.
+3. **Runs `orchicon install`** natively: acquires the host service binaries (Postgres,
+   NATS — the slow part on a first install), starts the host-side runtime daemon, starts
+   this instance's Postgres and NATS, starts the plane, and offers the optional **runtime
+   images** as a multi-select that defaults to **none**. It also asks about the host ports —
+   press ENTER to accept each default. Every step streams live rather than being replayed at
+   the end, so a working install never looks hung.
+4. **Prints the URL it recorded.** The port comes from the record the install wrote
+   (`%USERPROFILE%\.local\share\orchicon-<instance>\ports.json`), never from a constant, so
+   the number printed is the one that is actually bound.
+
+**WSL2 is needed only for containers.** Pass `-Containers` (or set
+`ORCHICON_INSTALL_CONTAINERS=1`) and the installer provisions and verifies the WSL2
+substrate a workflow's *runtime container* runs in — using the same detection and
+provisioning logic the WSL-first installer had. A plain install never runs `wsl` and works
+on a machine that has none. The container engine itself is provisioned and diagnosed by
+`orchicon install` (podman first, then docker — see the container-engine ADR); this script
+no longer probes for a Docker Desktop install, and the three-cause "no CLI / no daemon / no
+WSL integration" report is gone with the requirement it described.
+
+**Ports are record-first.** The port questions are asked once per instance. A *second*
+install for the same instance reuses the recorded ports and asks nothing. A genuine
+collision — the port held by another instance, or by a foreign process — is reported
+naming the other instance or the owning pid and executable, rather than silently shifting a
+port. Defaults are per instance (dev `8080`, test `8092`, prod `8091` for the control
+plane; each has its own service ports too), and every one of them is answerable at the
+prompt.
 
 **The installer never closes your PowerShell window.** Whatever goes wrong it prints
 what failed and the next steps, then returns to the prompt with your session intact —
@@ -224,47 +232,47 @@ prints the exact command that resumes it — a re-run is idempotent.
 
 **Prerequisites:**
 
-- **Windows 10 21H2+ / Windows 11**. First-time WSL users run `wsl --install`
-  from an elevated PowerShell and reboot; the installer guides through this if it
-  is not yet set up.
-- **Docker Desktop** with the **WSL integration** enabled for your distro
-  (Settings → Resources → WSL Integration), or Docker Engine running inside the
-  distro.
-- *(optional)* an adapter CLI such as OpenCode, installed **inside WSL** as your
-  own user — see [Adapter CLIs go in WSL](#installing-an-adapter-cli) and the note
-  below on the Windows/WSL boundary.
+- **Windows 10 21H2+ / Windows 11.** Nothing else for a native install: no WSL2 distro and
+  no Docker Desktop. (`-Containers` additionally needs WSL2 with a Linux distro; the
+  installer guides through `wsl --install` from an elevated shell plus a reboot if it is
+  missing.)
+- *(optional)* an adapter CLI such as OpenCode, installed **on the Windows side** as your
+  own user and present on `PATH` — see [Installing an adapter CLI](#installing-an-adapter-cli).
+- The **desktop app** additionally wants the WebView2 runtime, which ships with Windows 11
+  and current Windows 10; it is not required by the installer or the plane.
 
-**Adapter CLIs go in WSL.** If you use the OpenCode or Claude adapter, install that
-CLI **inside the distro** with the commands in
-[Installing an adapter CLI](#installing-an-adapter-cli) — not on the Windows side.
-WSL reaches Windows executables through interop, so a Windows `opencode.exe`
-appears to run in a WSL shell, but neither the plane nor its runtime containers
-can use it. The same `sudo` rule applies: install as your own user, because only
-your home directory is mounted into the containers the work runs in.
+**Adapter CLIs run where the plane runs.** With a native install that is Windows: install
+the CLI as your own user (not as an administrator) and make sure it is on `PATH`. The plane
+starts it as its own child process, so a Windows `opencode.exe` is the right thing to
+install — there is no distro in the picture unless you opted into containers, and even then
+the CLI is the plane's child rather than a container process.
 
-**Project directories are WSL paths.** The UI's `project_dir` is a host path.
-Inside WSL2 a Windows project `C:\Users\you\projects\Foo` is mounted by Docker
-Desktop at `/mnt/c/Users/you/projects/Foo` — enter that **WSL path** in the
-project form. There is no Windows↔WSL path translation layer; the UI accepts
-whatever path the plane's filesystem (WSL) can resolve.
+**Project directories are host paths.** The UI's `project_dir` is a path the plane's
+filesystem can resolve — on a native Windows install that is a normal Windows path such as
+`C:\Users\you\projects\Foo`. A project that opts into a runtime container mounts that path
+into a Linux substrate, where Windows drives appear under `/mnt/c/...`; there is no
+Windows↔WSL path translation layer, so enter a path that filesystem can resolve when the
+work runs in a container.
 
-**Options** (PowerShell form of the Linux flags): `-Version`, `-InstallDir` (a
-**WSL** path, default `~/.local/bin`), `-NoSetup`, `-Uninstall` (stops the
-container instances and removes the binary; the WSL distro is left intact),
-`-Clean`, `-ForceClean`, `-DryRun`.
+**Options** (PowerShell form): `-Version`, `-Instance dev|test|prod`, `-InstallDir`,
+`-Containers`, `-NoSetup`, `-Yes`, `-Uninstall`, `-RemoveBinary`, `-Purge`, `-Clean`,
+`-ForceClean`, `-DryRun`, `-Help`.
 
-  > **Windows is covered by an offline harness, not by a full install.** A harness
-  > (`scripts/tests/install-ps1-wsl-encoding/`, run in CI as the `windows-installer` job)
-  > exercises the installer's own functions against a `wsl.exe` double and runs its failure
-  > paths inside a child PowerShell.
-  >
-  > What it CANNOT see is a Windows PowerShell 5.1 quoting fault — and one shipped: scripts
-  > were handed to `wsl.exe` as inline arguments, 5.1 stripped every embedded double quote
-  > before bash saw them, and the install died on a mangled script while the same scripts
-  > worked on Linux. The transport is now **base64** (an alphabet containing no quote, so
-  > there is nothing to strip) and the harness asserts both the round trip and the absence of
-  > the hazard. A real end-to-end run still needs a Windows machine; the happy path after
-  > Docker is confirmed is the identical Linux code path exercised on Linux hosts.
+  > **Windows is covered by an offline harness, not by a full install.** The harness
+  > (`scripts/tests/install-ps1-native/`, run in CI as the `windows-installer` job) runs the
+  > real install path against a release-shaped zip, a `wsl.exe` double and a
+  > version-reporting `orchicon.exe` double, and runs the failure paths inside a child
+  > PowerShell. It pins exactly what a Windows-only regression hides in: the archive is
+  > extracted **recursively** (the release wraps a directory), a plain install never invokes
+  > `wsl`, `-Containers` still provisions the substrate, the interactive setup is the **only**
+  > invocation that claims a human is present, the printed ports come from the record rather
+  > than a constant, and an elevated shell is refused with the Postgres message. Its
+  > `wsl.exe`/`podman` doubles refuse every mutating engine verb, so a guest that reaches an
+  > install path cannot install anything for real while the suite reports "all assertions
+  > passed". Scripts are still carried into the distro as **base64** rather than as inline
+  > arguments, because PowerShell 5.1 stripped every embedded double quote before bash saw
+  > them and no test on a Linux host could see it. What the harness cannot see is a
+  > Windows-only console fault; a real end-to-end run still needs a Windows machine.
 
 ### Install options
 
@@ -297,8 +305,8 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 
 | Path | Contents |
 |---|---|
-| `<install-dir>/orchicon` | The `orchicon` binary (control plane + embedded frontend + migrations + container configs). On Windows this lives **inside the WSL2 distro** (`~/.local/bin/orchicon`). |
-| `~/.local/share/orchicon/` | Runtime state, PID files, logs (`.dev/`), blob store (`data/`). On Windows, under the WSL distro's home. |
+| `<install-dir>/orchicon` | The `orchicon` binary (control plane + embedded frontend + migrations + container configs). On Windows the native binaries are `orchicon.exe` + `orch.exe` in `%LOCALAPPDATA%\Programs\Orchicon`. |
+| `~/.local/share/orchicon/` | Runtime state, PID files, logs (`.dev/`), blob store (`data/`). On Windows, under your user profile: `%USERPROFILE%\.local\share\orchicon-<instance>\`. |
 
 ### Which shape you get
 
@@ -937,8 +945,9 @@ value wins when both are set.
 1. **Create** — *Projects → New Project*. Give it a name, a slug, and optionally
    goals (markdown).
 2. **Set the directory** — `project_dir` is where workers operate, and it is the
-   boundary they are held to. On Windows/WSL2 this must be the **WSL path** (see
-   §1).
+   boundary they are held to. On a native Windows install it is a normal Windows path
+   (`C:\Users\you\projects\Foo`); if the work runs in a runtime container, it must be
+   a path that container's Linux substrate resolves (`/mnt/c/...`). See §1.
 3. **Add context files** — files or directories injected into the prompt. A
    directory is listed and read in full by the worker.
 4. **Edit** — open the project's detail page to change the title, goals, directory
@@ -1602,8 +1611,10 @@ configuration:
   workers still reference the provider.
 - **Ollama** — carries a `num_ctx` default alongside the base URL.
 
-**A note on Windows.** The entire runtime layer — daemon, unix socket, container
-mounts — is Linux/POSIX-only. On Windows everything runs inside WSL2 (see §1).
+**A note on Windows.** The plane, its host services and the runtime daemon run
+**natively** on Windows, as host processes of your own user (see §1). What is still
+Linux-only is the *runtime container* layer: a workflow that runs in a container needs
+the WSL2 substrate, which the installer provisions when you opt in with `-Containers`.
 
 ### 11.4 Admin
 

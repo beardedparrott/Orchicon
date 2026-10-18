@@ -24,8 +24,8 @@
 # install path stops being something only a user exercises.
 #
 # SCOPE, stated rather than implied: this covers the POSIX installer (install.sh — Linux and macOS).
-# install.ps1's Windows path needs WSL2 and cannot be exercised here; its offline behaviour is covered
-# by scripts/tests/install-ps1-wsl-encoding, and a real end-to-end run needs a Windows runner.
+# install.ps1's Windows path needs Windows and cannot be exercised here; its offline behaviour is
+# covered by scripts/tests/install-ps1-native, and a real end-to-end run needs a Windows runner.
 #
 #   scripts/tests/install-path/run.sh [--keep]
 #
