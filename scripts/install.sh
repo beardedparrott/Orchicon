@@ -98,9 +98,11 @@ Orchicon installer
 Usage: install.sh [options]
 
 Options:
-  --version <tag>      Install a specific version (e.g. v0.2.0). Default: latest.
-  --install-dir <dir>  Installation directory (default: ~/.local/bin).
-  --instance <name>    Which instance to act on: dev (default), test, or prod. Each has
+  --version <tag>, -v  Install a specific version (e.g. v0.2.0). Default: latest.
+  --install-dir <dir>, -d
+                       Installation directory (default: ~/.local/bin).
+  --instance <name>, -i
+                       Which instance to act on: dev (default), test, or prod. Each has
                        its own plane, ports, host services and host state, so
                        `--instance test` cannot disturb dev or prod. Applies to install AND
                        to --clean/--force-clean/--uninstall.
@@ -119,7 +121,7 @@ Options:
     --clean              Stop THIS instance's plane and host services, remove the old Orchicon
                          binary, then install the latest version — one-shot upgrade. Data is
                          preserved (database, blob store, runtime state).
-    --force-clean, --nuke
+    --force-clean, --nuke, -f
                          Wipe and start fresh for THIS instance: stop it, destroy its data
                          directory (database, NATS, Tempo, Loki, VictoriaMetrics, Grafana),
                          remove blob store data and runtime state, then install the latest
@@ -129,6 +131,15 @@ Options:
                         runtime daemon, or the plane (default: full
                         one-command setup runs `orchicon install`).
   -h, --help           Show this help.
+
+Runtime images:
+  The setup step OFFERS the optional runtime images and pulls only what you choose:
+  runtime base ~1 GB, GUI +150 MB, dev +1.5-2.5 GB. It is a multi-select that defaults
+  to NONE — pressing ENTER pulls no image, and that is a complete install: the plane
+  runs, and a project in local mode needs no image at all. A piped install can still
+  answer it (the prompt reads /dev/tty), --yes selects all of them, and a
+  non-interactive run with no answer selects none. A missing image can be fetched later
+  from the Runtime Images page.
 EOF
       exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -744,12 +755,22 @@ main() {
   trap "rm -rf '${tmpdir}'" EXIT
   local archive="$tmpdir/$asset"
 
-  info "downloading ${D}${url}${X}"
-  curl -fsSL -o "$archive" "$url" || die "download failed"
-
-  # Extract
-  info "extracting…"
-  tar -xzf "$archive" -C "$tmpdir"
+  # A DRY RUN DOES NOT DOWNLOAD. It used to: the archive was fetched and unpacked before any of the
+  # DRY_RUN guards below were reached, so `--dry-run --version v9.9.9` made a network request and then
+  # died with "download failed" — a report of what WOULD happen that could not be produced for a version
+  # that would not install, and a network side effect in a flag whose whole contract is "change nothing".
+  # Found by running it. The fetch and the unpack are the two steps skipped here; everything after them
+  # is already guarded.
+  if [ "$DRY_RUN" = true ]; then
+    info "would download ${D}${url}${X}"
+    info "would extract it and install ${B}${INSTALL_DIR}/orchicon${X}"
+  else
+    info "downloading ${D}${url}${X}"
+    curl -fsSL -o "$archive" "$url" || die "download failed"
+    # Extract
+    info "extracting…"
+    tar -xzf "$archive" -C "$tmpdir"
+  fi
 
   # Create install dir
   if [ "$DRY_RUN" = false ]; then
@@ -818,14 +839,20 @@ main() {
     fi
   fi
 
-  # PATH hint
+  # PATH hint — ONLY WHEN SOMETHING WAS INSTALLED. A dry run reported "Orchicon was installed to …" for a
+  # binary it never wrote, which is the class of lie ok_dry exists to prevent: the operator acts on it.
   case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
-      echo ""
-      warn "Orchicon was installed to ${INSTALL_DIR} which is not on your PATH."
-      echo -e "  Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-      echo -e "  ${D}export PATH=\"\$PATH:${INSTALL_DIR}\"${X}"
+      if [ "$DRY_RUN" = true ]; then
+        echo ""
+        info "(a real install would add ${INSTALL_DIR} to your PATH if it is not already on it)"
+      else
+        echo ""
+        warn "Orchicon was installed to ${INSTALL_DIR} which is not on your PATH."
+        echo -e "  Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
+        echo -e "  ${D}export PATH=\"\$PATH:${INSTALL_DIR}\"${X}"
+      fi
       ;;
   esac
 
@@ -865,8 +892,15 @@ main() {
     fi
   else
     echo ""
-    echo -e "${B}Installed. Next step:${X}"
-    echo -e "  ${D}orchicon install    Start the host services, the runtime daemon and this instance (Postgres and NATS from host binaries; no container engine needed)${X}"
+    # A DRY RUN THAT SAYS "Installed" IS THE SAME LIE AS A DRY RUN THAT SAYS "plane stopped": it names a
+    # state the machine is not in. Same rule as ok_dry.
+    if [ "$DRY_RUN" = true ]; then
+      echo -e "${B}Dry run — nothing was installed, nothing was started.${X}"
+      echo -e "  ${D}A real install would finish by starting the host services, the runtime daemon and this instance (Postgres and NATS from host binaries; no container engine needed)${X}"
+    else
+      echo -e "${B}Installed. Next step:${X}"
+      echo -e "  ${D}orchicon install    Start the host services, the runtime daemon and this instance (Postgres and NATS from host binaries; no container engine needed)${X}"
+    fi
   fi
 
   echo ""
