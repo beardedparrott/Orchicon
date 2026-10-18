@@ -57,7 +57,9 @@ func TestParseRuntimeImageSelection(t *testing.T) {
 // nothing (a non-interactive install, EOF) downloads NOTHING.
 func TestInstallOffersEveryRuntimeImageAndDeclinesByDefault(t *testing.T) {
 	choices := installRuntimeImageChoices("latest")
-	want := []string{"base", "gui", "dev", "web-research"}
+	// web-research is deliberately ABSENT: its tag is not published (see the comment on
+	// installRuntimeImageChoices), so offering it promised a download that could only fail.
+	want := []string{"base", "gui", "dev"}
 	if len(choices) != len(want) {
 		t.Fatalf("install offers %d runtime images, want %d", len(choices), len(want))
 	}

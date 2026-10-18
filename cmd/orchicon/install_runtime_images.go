@@ -23,12 +23,22 @@ type runtimeImageChoice struct {
 
 // installRuntimeImageChoices lists the runtime images an install can offer,
 // base first (every other variant derives FROM it).
+//
+// EVERY ENTRY HERE MUST EXIST IN THE REGISTRY. A variant is offered by TAG, so an entry whose tag the release
+// pipeline never publishes is a pull that can only fail — and it failed loudly on every single install:
+//
+//	pull ghcr.io/beardedparrott/orchicon-runtime:web-research: manifest unknown
+//	(web-research is optional — continuing; it can be fetched later from the Runtime Images page)
+//
+// release.yml publishes base, gui-<ver>/gui and dev-<ver>/dev and NOTHING else, and `scripts/runtime.sh build`
+// builds exactly those three locally. "web-research" was offered anyway (and "fetched later" could never
+// work either, because the tag does not exist). Removed rather than warned about: a warning on every install
+// trains operators to ignore warnings, and this one named a failure that was never actionable.
 func installRuntimeImageChoices(imageTag string) []runtimeImageChoice {
 	return []runtimeImageChoice{
 		{Variant: "base", Ref: "ghcr.io/beardedparrott/orchicon-runtime:" + imageTag, Label: "runtime base", SizeBytes: 1_000_000_000},
 		{Variant: "gui", Ref: runtimeVariantRef("gui", imageTag), Label: "runtime GUI (+150 MB)", SizeBytes: 150_000_000},
 		{Variant: "dev", Ref: runtimeVariantRef("dev", imageTag), Label: "runtime dev (+1.5-2.5 GB)", SizeBytes: 2_000_000_000},
-		{Variant: "web-research", Ref: runtimeVariantRef("web-research", imageTag), Label: "runtime web-research (+300 MB)", SizeBytes: 300_000_000},
 	}
 }
 
