@@ -18,6 +18,7 @@ package tui
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -117,5 +118,87 @@ func TestPTYPlaneStateCommand(t *testing.T) {
 	// The process is still alive: no lifecycle command knocked the shell over.
 	if s.cmd.ProcessState != nil && s.cmd.ProcessState.Exited() {
 		t.Fatalf("orch exited during the plane command surface test")
+	}
+}
+
+// startOrchPtyPlaneGatePath is startOrchPtyPlaneGate with a PATH that puts a FAKE `orchicon` first, so the
+// lifecycle verbs can be driven end to end without a real plane binary anywhere in reach.
+func startOrchPtyPlaneGatePath(t *testing.T, bin, planeURL, home, shimDir string) *ptySession {
+	t.Helper()
+	// PATH IS REPLACED, NOT PREPENDED: os/exec keeps the LAST value of a duplicated key, so a prepended
+	// copy would be discarded in favour of the inherited PATH and the fake `orchicon` would be invisible.
+	pinned := map[string]bool{"ORCHICON_URL": true, "ORCHICON_TOKEN": true, "ORCHICON_INSTANCE": true,
+		"HOME": true, "PATH": true, "TERM": true}
+	env := []string{
+		"ORCHICON_URL=" + planeURL,
+		"ORCHICON_TOKEN=oc_pty_seed",
+		"ORCHICON_INSTANCE=" + planeGateInstance,
+		"HOME=" + home,
+		"PATH=" + shimDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"TERM=xterm-256color",
+	}
+	for _, kv := range os.Environ() {
+		if i := strings.IndexByte(kv, '='); i > 0 && pinned[kv[:i]] {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd := exec.Command(bin)
+	cmd.Env = env
+	tty, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 240, Rows: 40})
+	if err != nil {
+		t.Fatalf("pty start: %v", err)
+	}
+	s := &ptySession{cmd: cmd, tty: tty}
+	go s.readLoop()
+	return s
+}
+
+// TestPTYPlaneStopReachesTheMechanism is acceptance criterion 1's SUCCESS half, driven from real keystrokes.
+//
+// The gate above deliberately never types a lifecycle verb, so "the verb runs and reports" had no pty-level
+// evidence at all. This one types `/plane-stop` against a FAKE `orchicon` shim on PATH: it records its argv
+// and exits 0, so nothing on this machine can be signalled — the only process the verb can reach is the shim
+// — and `serve --stop` for an instance with no PID file is a successful no-op anyway.
+//
+// It asserts the two things a unit test cannot: the command is reachable from the composer, and the verb
+// actually reaches the SHARED MECHANISM, which re-execs `orchicon` (not `orch` — the bug that made every
+// verb fail: `orch serve --stop` is not a subcommand, so the shell launched a second TUI instead).
+func TestPTYPlaneStopReachesTheMechanism(t *testing.T) {
+	skipInteractivePTY(t)
+	if testing.Short() {
+		t.Skip("real-pty: skipped in -short")
+	}
+	bin := orchBinPath(t)
+	plane := connectPlaneFixture(t)
+	home := t.TempDir()
+	writeOrchConfig(t, home, plane.URL)
+
+	shimDir := t.TempDir()
+	argvLog := filepath.Join(shimDir, "argv.log")
+	shim := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + argvLog + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "orchicon"), []byte(shim), 0o755); err != nil {
+		t.Fatalf("write the fake orchicon shim: %v", err)
+	}
+
+	s := startOrchPtyPlaneGatePath(t, bin, plane.URL, home, shimDir)
+	defer s.close()
+	if out := s.readFor(3 * time.Second); !strings.Contains(out, "❯") {
+		t.Fatalf("shell never painted the composer (%d bytes):\n%s", len(out), tailOf(out, 3000))
+	}
+
+	_, _ = s.tty.WriteString("/plane-stop\r")
+	out := s.readFor(5 * time.Second)
+	// THE SUCCESS MARKER, not merely the "plane stop (instance …) …" progress notice planeCommand sets
+	// before the verb runs — that one would pass even if the mechanism were never invoked.
+	if !strings.Contains(out, "✓ plane stop") {
+		t.Fatalf("/plane-stop reported nothing on screen (a silent no-op):\n%s", tailOf(out, 4000))
+	}
+	body, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatalf("/plane-stop never reached the shared mechanism — the fake orchicon was not run: %v", err)
+	}
+	if !strings.Contains(string(body), "serve --stop") {
+		t.Errorf("the mechanism was invoked with %q, want `serve --stop`", strings.TrimSpace(string(body)))
 	}
 }

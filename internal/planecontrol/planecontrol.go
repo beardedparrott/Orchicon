@@ -129,13 +129,61 @@ var (
 	now          = time.Now
 )
 
-// runSelf re-execs THIS binary with args and env — the mechanism by which `serve --detach` and `serve --stop`
-// are performed. Re-exec is what makes a curl-installed host sufficient: the installed `orchicon` is the one
-// binary needed, with no sibling script or build.
-func runSelf(args []string, env []string, out io.Writer) error {
+// planeBinaryName is the name of the binary that SERVES the plane (`serve --detach` / `serve --stop`).
+const planeBinaryName = "orchicon"
+
+// planeBinary is the binary this package re-execs to run the plane (and the binary a live plane is compared
+// against for drift). It is a seam so the resolution below is assertable without spawning processes.
+var planeBinary = resolvePlaneBinary
+
+// resolvePlaneBinary answers "which binary runs the plane?" — which is NOT always "the binary that called
+// this package".
+//
+// THIS IS THE THIN-CLIENT CASE, AND IT IS THE NORMAL ONE FOR TWO OF THE THREE SURFACES. `orch` (the TUI) is
+// a REMOTE CLIENT by design (cmd/orch's package doc: "a client of the plane, exactly like the web GUI",
+// zero control-plane code), and the desktop app is the same shape. Re-execing SELF from either of them asks
+// a thin client to serve: `orch serve --detach` is not a subcommand, so the shell ignores the arguments and
+// launches a second TUI, the health wait then times out, and `serve --stop` never reaches the plane at all —
+// every lifecycle verb fails with a misleading "the host plane did not answer" message.
+//
+// So: the plane binary is THIS one only when this IS `orchicon` (the CLI/admin path, and the installer), and
+// otherwise it is the INSTALLED `orchicon` — from PATH first (the installer puts it in ~/.local/bin), then
+// ~/.local/bin by absolute path for a GUI/TUI launched with a login shell's PATH missing.
+//
+// AN UNRESOLVABLE PLANE BINARY IS AN ERROR, NOT A FALLBACK TO SELF: re-execing the caller would repeat the
+// bug this function exists to fix, and the message names the remedy instead.
+func resolvePlaneBinary() (string, error) {
 	self, err := executable()
 	if err != nil {
-		return fmt.Errorf("locate this binary to run `%s`: %w", strings.Join(args, " "), err)
+		return "", fmt.Errorf("locate this binary to run the plane: %w", err)
+	}
+	if strings.TrimSuffix(filepath.Base(self), ".exe") == planeBinaryName {
+		return self, nil // the CLI/installer IS the plane binary: no resolution, no surprise
+	}
+	if found, err := exec.LookPath(planeBinaryName); err == nil {
+		return found, nil
+	}
+	if home, err := userHomeDir(); err == nil {
+		candidate := filepath.Join(home, ".local", "bin", planeBinaryName)
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("cannot run the plane from %s: this is the %s client, which does not serve — "+
+		"install `%s` (it lands in ~/.local/bin) and put it on PATH, then retry",
+		self, filepath.Base(self), planeBinaryName)
+}
+
+// runSelf re-execs the PLANE binary (never merely "this" binary — see resolvePlaneBinary) with args and env —
+// the mechanism by which `serve --detach` and `serve --stop` are performed. Re-exec is what makes a
+// curl-installed host sufficient: the installed `orchicon` is the one binary needed, with no sibling script
+// or build.
+func runSelf(args []string, env []string, out io.Writer) error {
+	self, err := planeBinary()
+	if err != nil {
+		// NOT WRAPPED: the resolution error already says what is wrong AND what to do about it, and a
+		// "run `serve --detach`: …" prefix in front of it only buries the remedy in the dock strip.
+		return err
 	}
 	cmd := exec.Command(self, args...)
 	cmd.Env = env

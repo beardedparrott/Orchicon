@@ -53,9 +53,16 @@ Every TUI work item's acceptance criteria MUST carry this line:
 A **lifecycle command** (`/plane`, `/plane-start`, `/plane-stop`, `/plane-restart`) MUST be reachable
 from real keystrokes under this gate (`internal/tui/orch_pty_plane_test.go`): a verb that blocks the
 message loop, or a command registered but unreachable, is invisible to a unit test that calls the
-handler directly. The gate types `/plane` only — a test suite must never signal a real process on an
-operator's machine — and pins `ORCHICON_INSTANCE` to a nonexistent instance so even an accidental
-lifecycle call finds nothing to act on.
+handler directly. `TestPTYPlaneStateCommand` types `/plane` and pins `ORCHICON_INSTANCE` to a
+nonexistent instance, so even an accidental lifecycle call finds nothing to act on; that test never
+signals a real process.
+
+`TestPTYPlaneStopReachesTheMechanism` is the one lifecycle verb the gate does drive, and it does so
+against a **fake `orchicon` on PATH** that only records its argv and exits 0: nothing on the operator's
+machine can be reached, and an instance with no PID file makes `serve --stop` a successful no-op anyway.
+It asserts the two things no unit test can — the verb is reachable from the composer, and it reaches
+the shared mechanism (which must re-exec `orchicon`, not `orch`: `orch serve --stop` is not a
+subcommand and launches a second TUI). Never point a lifecycle gate at a real instance.
 
 New interactive behavior (mouse handlers, focus rules, overlays) MUST add
 or extend a `TestPTY*` test in `internal/tui` that injects the real events

@@ -10,6 +10,11 @@ package tui
 // standard library and nothing else (an imports test asserts it), so this file adds NO api/client/http
 // dependency to the TUI — the "no API dependency" requirement holds by construction.
 //
+// AND THE MECHANISM RUNS THE PLANE BINARY, NOT THIS ONE. `orch` is a remote client that cannot serve, so
+// planecontrol re-execs the INSTALLED `orchicon` (`resolvePlaneBinary`) instead of itself — without that,
+// `serve --detach` was handed to `orch`, which ignores arguments it does not recognise and launches a
+// second TUI, so every verb here failed. Do not "simplify" these verbs to re-exec this binary.
+//
 // THREE THINGS THIS FILE EXISTS TO GET RIGHT:
 //
 //  1. DRIFTED IS NOT DOWN. A plane serving a superseded binary IS answering. Reporting it as "down"
@@ -502,6 +507,28 @@ func (m *App) applyPlaneState(info planeInfo) tea.Cmd {
 	}
 	m.planeDownErrText = ""
 	return nil
+}
+
+// assertPlaneRemedy RE-ASSERTS the down remedy on the strip WITHOUT probing.
+//
+// THE PROBE IS NOT ENOUGH ON ITS OWN, because the strip is SHARED WRITABLE STATE: a connected shell never
+// re-probes (planeReprobeCmd arms nothing while the stream is up), and half a dozen other writers clear the
+// strip for reasons that have nothing to do with the plane — connecting, reconnecting ("✓ connected to …"),
+// pasting, `/find`, choosing an ask model, sending a chat line. A probe that lands before one of those whose
+// clears the remedy, so the footer said "plane down" over a strip with no remedy at all — acceptance
+// criterion 3 failing, intermittently, by ordering.
+//
+// So the remedy is re-asserted from the RENDER LOOP'S TICK, not only from a probe: it costs one string
+// comparison, dials nothing, and heals any clear. It still never overwrites another writer's error.
+func (m *App) assertPlaneRemedy() {
+	if m.plane.State != planeStateDown {
+		return
+	}
+	remedy := planeRemedy(m.plane)
+	m.planeDownErrText = remedy
+	if m.dock.Err == "" || m.dock.Err == remedy {
+		m.dock.SetError(remedy)
+	}
 }
 
 // applyPlaneOp reports a completed verb. SUCCESS AND FAILURE BOTH REACH THE OPERATOR — a lifecycle

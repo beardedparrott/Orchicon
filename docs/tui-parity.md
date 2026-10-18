@@ -340,6 +340,10 @@ desktop app call. There is no lifecycle RPC and the TUI adds none: the verbs nev
 API, which is why they work when the plane is down (the TUI is a separate binary that does not
 depend on the plane serving it).
 
+The verbs re-exec the **installed `orchicon`** — the plane binary — never `orch` itself: the TUI is a
+thin remote client, so re-execing itself would launch a second TUI and never reach the plane. The
+resolution lives in `internal/planecontrol` (`resolvePlaneBinary`), so the desktop app inherits it.
+
 Which instance: `ORCHICON_INSTANCE` if set, otherwise the local instance whose recorded
 `ORCHICON_CONTROL_PORT` is the port this shell is connected to. A plane that cannot be positively
 identified is reported **not local** and the verbs refuse — they never fall back to a guessed

@@ -1762,6 +1762,9 @@ press — there is no modifier to remember):
   swap it. When the plane is down, the error strip names the
   remedy (the start command and the plane log at
   `<data dir>/serve/logs/orchicon.log`) instead of only reporting a refused connection.
+  The verbs re-exec the **installed `orchicon`** (`~/.local/bin/orchicon`, or the one on
+  `PATH`) to run the plane — `orch` itself is a thin remote client and cannot serve. If
+  `orchicon` is not installed, `/plane-start` says so instead of failing with a timeout.
 - **Chat dock** — the composer at the bottom. It is **focused at launch**, so you
   can type immediately.
 - **Right rail** — the Ask conversations list, toggled with `ctrl+r` (open by

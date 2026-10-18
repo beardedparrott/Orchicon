@@ -424,3 +424,39 @@ func TestPlaneUnknownVerbReported(t *testing.T) {
 		t.Error("/plane status must probe, matching `orchicon plane status`")
 	}
 }
+
+// THE REMEDY SURVIVES A STRIP CLEAR BETWEEN PROBES (acceptance criterion 3).
+//
+// The strip is shared writable state: connecting, reconnecting, pasting, /find, an ask-model switch and a
+// chat send all clear it. A shell with a HEALTHY CONNECTION never re-probes (planeReprobeCmd arms nothing
+// while the stream is up), so the only thing that can restore the remedy is the refresh tick — without it the
+// footer said "plane down" over an empty strip, and TestPTYPlaneStateCommand phase 1 failed on ordering.
+func TestPlaneDownRemedySurvivesAStripClearBetweenProbes(t *testing.T) {
+	m := newDockTestApp()
+	m.applyPlaneState(planeInfo{State: planeStateDown, Instance: "dev", Detail: "no plane PID file for instance dev"})
+	if !strings.Contains(m.dock.Err, "/plane-start") {
+		t.Fatalf("the down state must put the remedy on the strip: %q", m.dock.Err)
+	}
+
+	// ANOTHER WRITER CLEARS IT — and no probe follows, because the connection is healthy.
+	m.dock.SetError("")
+	m.assertPlaneRemedy()
+	if !strings.Contains(m.dock.Err, "/plane-start") || !strings.Contains(m.dock.Err, "orchicon.log") {
+		t.Errorf("the tick must re-assert the remedy after the strip was cleared: %q", m.dock.Err)
+	}
+
+	// SOMEONE ELSE'S ERROR IS STILL NOT OURS TO STOMP.
+	m.dock.SetError("stream: permission denied")
+	m.assertPlaneRemedy()
+	if m.dock.Err != "stream: permission denied" {
+		t.Errorf("the tick must not overwrite another writer's error: %q", m.dock.Err)
+	}
+
+	// AND A PLANE THAT CAME BACK HAS NO REMEDY TO RE-ASSERT.
+	m.applyPlaneState(planeInfo{State: planeStateUp, Instance: "dev", Status: planecontrol.Status{PID: 42, Alive: true, Healthy: true}})
+	m.dock.SetError("")
+	m.assertPlaneRemedy()
+	if m.dock.Err != "" {
+		t.Errorf("an up plane must not re-assert a down remedy: %q", m.dock.Err)
+	}
+}

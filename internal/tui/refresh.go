@@ -81,6 +81,11 @@ func (m *App) handleRefreshTick(msg refreshTickMsg) (*App, tea.Cmd) {
 	if msg.gen != m.refreshGen {
 		return m, refreshCmd(m.refreshGen) // adopt the live generation: exactly one chain survives
 	}
+	// THE DOWN REMEDY IS RE-ASSERTED EVERY TICK, not only on a probe: the strip is shared writable state and
+	// any writer that clears it (connect, reconnect, paste, /find, an ask-model switch) would leave a footer
+	// saying "plane down" over an empty strip until the next probe — which a CONNECTED shell never arms.
+	// See assertPlaneRemedy.
+	m.assertPlaneRemedy()
 	cmd := m.refreshActiveView()
 	// A FAILED STREAM IS THE SHELL'S EVIDENCE THAT THE PLANE MAY HAVE GONE — re-probe it, so the plane
 	// chip and the remedy stop describing a plane that is no longer there (planeReprobeCmd throttles,
