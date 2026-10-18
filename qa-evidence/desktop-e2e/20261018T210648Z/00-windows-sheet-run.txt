@@ -1,0 +1,12 @@
+
+[1;36m== step 0 — the validity precondition (nothing proven if any of this fails)[0m
+  [2mevidence: /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M58CK5RRRMC1KYKNHHEKDK6S/qa-evidence/desktop-e2e/20261018T210648Z/tier-windows/step-0.log[0m
+  [32mPASS[0m the harness passes its own offline honesty gate
+  [32mPASS[0m no plane answers on http://127.0.0.1:18099/healthz (the premise of the claim)
+  [31mFAIL[0m RUN INVALID: no artifact given, nothing installed, and no packaging sources in this tree — pass --deb/--appimage/--portable-zip
+  [33mSKIP[0m the windows tier was proven on a real windows machine — this harness cannot install or drive windows from here — see qa-evidence/desktop-e2e/20261018T210648Z/tier-windows/8-manual-windows.md
+
+RUN INVALID: no artifact given, nothing installed, and no packaging sources in this tree — pass --deb/--appimage/--portable-zip
+
+evidence: /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M58CK5RRRMC1KYKNHHEKDK6S/qa-evidence/desktop-e2e/20261018T210648Z/tier-windows
+defects:  0

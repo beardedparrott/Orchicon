@@ -270,6 +270,32 @@ expect "the generated NOTES.md names the session-owned display limit" "yes" \
 expect "the generated NOTES.md still states the OCR limit" "yes" \
   "$(grep -qF 'tesseract' "${CHILD}/notes/NOTES.md" 2>/dev/null && echo yes || echo no)"
 
+# --- rule 9: a refused host still hands over the MANUAL sheet -------------
+# Steps 0-1's checks are LINUX's. A Windows/macOS operator runs this harness on
+# some other host, where step 0 will refuse (no .deb in the tree, a plane already
+# answering). If that refusal swallowed the sheet, `--platform windows` - the one
+# documented command for the Windows tier - would produce no evidence at all.
+spin "rule 9: a refused host still hands the operator the manual sheet"
+rc="$(run_harness "${CHILD}/win" --control-port 59999 --platform windows)"
+expect "--platform windows on a refused host exits 2 (not a fake proof)" 2 "$rc"
+expect "the Windows 10 sheet EXISTS even though step 0 refused" "yes" \
+  "$(ls "${CHILD}/win"/*-manual-windows.md >/dev/null 2>&1 && echo yes || echo no)"
+expect "the refused Windows tier is a SKIP row, never a PASS" "SKIP" \
+  "$(awk -F'\t' '$2 ~ /windows tier/{print $3}' "${CHILD}/win/results.tsv" | tail -1)"
+expect "the refusal never renders as a PASS verdict" "no" \
+  "$(grep -qF 'Verdict: PASS' "${CHILD}/win/summary.md" && echo yes || echo no)"
+rc="$(run_harness "${CHILD}/mac" --control-port 59999 --platform macos)"
+expect "--platform macos emits its sheet on a refused host too" "yes" \
+  "$(ls "${CHILD}/mac"/*-manual-macos.md >/dev/null 2>&1 && echo yes || echo no)"
+# one claim, one sheet: eight steps must not leave eight copies of it
+EVIDENCE="${CHILD}/dedupe"; mkdir -p "$EVIDENCE"; CURRENT_STEP=8; SKIPS=0
+: >"${EVIDENCE}/results.tsv"
+manual_sheet windows >/dev/null 2>&1; manual_sheet windows >/dev/null 2>&1
+expect "asking for the same sheet twice writes ONE file" "1" \
+  "$(ls "${EVIDENCE}"/*-manual-windows.md 2>/dev/null | wc -l | tr -d ' ')"
+expect "and records the SKIP once, not once per step" "1" \
+  "$(grep -c 'windows tier' "${EVIDENCE}/results.tsv" 2>/dev/null | tr -d ' ')"
+
 # --- result ---------------------------------------------------------------
 echo
 if [ "$FAILED" -eq 0 ]; then
