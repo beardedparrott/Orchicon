@@ -492,7 +492,7 @@ Orchicon/
     ├── CODEOWNERS               # @beardedparrott owns everything
     └── workflows/
         ├── auto-release.yml     # Auto-bumps version when release-labeled PR merges
-        └── release.yml          # Builds binaries for 4 platforms, creates GitHub Release
+        └── release.yml          # Builds binaries for 5 platforms, creates GitHub Release
 ```
 
 ### Where to Find Key Things
@@ -1345,8 +1345,9 @@ all-or-nothing, and throws away the hot entries with the cold.
 by every `full-rebuild`) builds both shipped binaries for every release platform. The per-platform
 package archives are ~130 MB each, and all of them landed in the shared cache: measured while the
 matrix still carried SIX platforms, **31.6 GB, 44% of it, was non-native** — artifacts nothing on an
-amd64 dev host ever links. (The matrix is four platforms now; Windows was dropped because no Windows
-artifact ships. The mechanism and the fix below are unchanged.) It is now built into a **throwaway
+amd64 dev host ever links. (The gate is six platforms and the SHIP list is five — `windows/amd64` ships
+as `orchicon_<version>_windows_amd64.zip`, `windows/arm64` is compile-only; see `cross-compile` below.
+The mechanism and the fix below are unchanged.) It is now built into a **throwaway
 `GOCACHE`**, removed by an `EXIT` trap. Measured: the shared cache is
 **byte-identical** across a full `make cross-compile`, at a cost of ~2m16s of CPU per gate run
 (one platform cold-compiles in ~21s / ~1.1 GB from a clean cache).
@@ -1535,6 +1536,7 @@ the failure arrived *after* the version existed.
 amount of running them on one platform would have found it. `make cross-compile` compiles the exact
 release matrix — linux/darwin/windows on amd64 and arm64, `CGO_ENABLED=0`, both binaries — and it is
 part of `make ci-go`, so the gate and the release cannot disagree about which platforms must build.
+(the release ships five of those six — see *GitHub Releases*)
 
 **`release.yml` guards itself: only tags reachable from `main` are released.** A develop version-bump
 tag is skipped with a warning, so the per-merge tagging in `develop-bump.yml` can never publish a
@@ -1603,8 +1605,13 @@ therefore kept out of it.
 ### GitHub Releases (Binary Distribution)
 
 1. Tag push matching `v*.*.*` triggers `release.yml`
-2. Builds binaries for 4 platforms: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64
-   (no Windows target: the stack runs inside WSL2 there, so the Linux binary is what an install uses)
+2. Builds binaries for 5 platforms: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64,
+   windows/amd64 (packaged as `orchicon_<version>_windows_amd64.zip` holding `orchicon.exe` and
+   `orch.exe`)
+   (Windows ships because the plane and the host services are HOST processes there, so `install` and
+   `serve` run a native `orchicon.exe`; WSL2 is left with only the runtime containers. `windows/arm64`
+   is compile-gated by `make cross-compile` but not published: Windows on ARM runs the amd64 zip under
+   emulation.)
 3. Creates a GitHub Release with platform-specific archives
 4. The install scripts download from the latest release
 

@@ -1023,11 +1023,12 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
 # Windows, so no amount of running them would have caught it. Compiling for the shipped platforms is
 # the only check that does.
 #
-# Output goes to a temp directory: this is a COMPILE check, not a build, and dropping four pairs of
+# Output goes to a temp directory: this is a COMPILE check, not a build, and dropping six pairs of
 # binaries into the repo root would leave them behind.
 #
 # THE CACHE GOES THE SAME WAY AS THE BINARIES — and its absence is why the dev cache reached 71 GB.
-# This gate compiles FOUR platforms, and each platform's package archives are ~130 MB, so ONE
+# This gate compiles SIX platforms (the five that ship plus windows/arm64), and each platform's
+# package archives are ~130 MB, so ONE
 # `make ci-go` (and therefore one `make rebuild-dev`) wrote TENS OF GB into the shared dev GOCACHE.
 # Those artifacts are worthless to the dev loop — nothing on an amd64 dev host ever links a
 # windows/arm64 archive — but they are not free: they are what filled the disk.
@@ -1038,17 +1039,23 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
 # THE SOURCE; `make cache-trim` bounds whatever is left.
 #
 # The cost is measured, not assumed: a COLD cross-compile of the two shipped binaries for one
-  # platform takes ~21s and writes ~1.1 GB, so all four from a clean cache is a couple of minutes of
-  # CPU — paid once per gate run, in exchange for a shared cache that no longer carries foreign bytes.
-  #
-  # WINDOWS IS HERE, and it is the point of the difference between this list and the release matrix.
-  # This list is the COMPILE GATE, not the ship list: Postgres now runs as a HOST process on Windows
-  # (cmd/orchicon/privilege_windows.go, hostproc_windows.go), so a windows/amd64 build break is a
-  # release-blocking failure for that host even though no Windows artifact is published. It is not a
-  # hypothetical: cmd/orchicon/install_host.go called syscall.Kill from an UNTAGGED file, and
-  # windows/amd64 and windows/arm64 failed to build for it while this gate stayed green — because
-  # Windows was not in this list. release.yml's matrix is a SEPARATE decision (what SHIPS) and is
-  # deliberately left alone; the gate and the matrix now differ on purpose.
+# platform takes ~21s and writes ~1.1 GB, so all six from a clean cache is a couple of minutes of
+# CPU — paid once per gate run, in exchange for a shared cache that no longer carries foreign bytes.
+#
+# WINDOWS IS IN BOTH LISTS NOW, and the one remaining difference is stated rather than implied.
+# windows/amd64 SHIPS (release.yml builds orchicon_<version>_windows_amd64.zip): the plane and the
+# host services are HOST processes on Windows (cmd/orchicon/privilege_windows.go,
+# hostproc_windows.go), so `orchicon install`/`serve` there run a NATIVE orchicon.exe and WSL2 is
+# left with only the runtime CONTAINERS — which need a Linux kernel. windows/arm64 does NOT ship
+# (Windows on ARM runs the amd64 zip under emulation, so a second artifact would be published for
+# nobody) but it stays in THIS list on purpose: a compile break there must fail here, before a
+# release, not on a user's machine after one. Gate = six platforms, ship list = five; the gap is
+# exactly arm64 Windows.
+#
+# WHY THE GATE IS NOT OPTIONAL: cmd/orchicon/install_host.go once called syscall.Kill from an
+# UNTAGGED file, so windows/amd64 and windows/arm64 could not compile while every gate stayed green
+# — because Windows was not in this list. `go build`, `go vet` and `go test` on linux/amd64 all pass
+# for code that cannot build for Windows.
   CROSS_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
 # CROSS_TMP is where cross-compile keeps its throwaway cache and output. It is under the repo rather
@@ -1058,7 +1065,7 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
 # directory is gitignored and removed by the trap, so nothing is left behind.
 CROSS_TMP := $(CURDIR)/.cross-compile
 .PHONY: cross-compile
-cross-compile: ## Compile the shipped binaries for every release platform (catches platform-specific breaks)
+cross-compile: ## Compile the shipped binaries for every release platform plus windows/arm64 (compile-only; catches platform-specific breaks)
 	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
 	@set -e; mkdir -p $(CROSS_TMP); xcache="$$(mktemp -d $(CROSS_TMP)/cache.XXXXXX)"; tmp="$$(mktemp -d $(CROSS_TMP)/out.XXXXXX)"; \
 	trap 'rm -rf "$$tmp" "$$xcache"' EXIT; \
