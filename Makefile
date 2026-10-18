@@ -296,7 +296,28 @@ run: services fetch-tags fe-build ## Run the control plane from source (starts t
 	ORCHICON_NATS_URL="nats://localhost:$$(scripts/instance-ports.sh services-port $(instance) nats)" \
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
-test: ## Run Go tests
+test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Testing)
+	@# A TEST MUST NEVER RUN AGAINST PRODUCTION, AND THIS WARNS BEFORE THE SUITES DO.
+	@#
+	@# THE INCIDENT. A `go test ./...` run from a shell with a live prod plane in it wrote ~125 test
+	@# projects into the deployment tenant and created 281 throwaway test tenants in a live instance —
+	@# because ORCHICON_TEST_DSN was pointed at the same prod DSN the plane was using. The suites create
+	@# real rows by design; nothing distinguished "a database" from "THIS database".
+	@#
+	@# The ENFORCEMENT is in the code (db.Open refuses a test binary opening the plane's own database —
+	@# internal/db/testguard.go), because a warning in a build log is missed and a failing test is not.
+	@# This is the EARLY, LOUD version: it prints before the suites run, so the operator can stop rather
+	@# than read it after the damage.
+	@#
+	@# It only warns — it cannot refuse — because make cannot know which database a DSN names: a mismatch
+	@# between the two variables here is a real signal, but the same DSN pointing at a legitimately restored
+	@# scratch clone is a deliberate act. Naming it plainly is the useful half.
+	@if [ -n "$$ORCHICON_TEST_DSN" ] && [ -n "$$ORCHICON_POSTGRES_DSN" ] && [ "$$ORCHICON_TEST_DSN" = "$$ORCHICON_POSTGRES_DSN" ]; then \
+		printf '\n*** ORCHICON_TEST_DSN IS THE SAME AS ORCHICON_POSTGRES_DSN ***\n'; \
+		printf 'Tests that open that database will write TEST DATA into the instance the plane is USING.\n'; \
+		printf 'db.Open will refuse it unless ORCHICON_TEST_ALLOW_PROD=1. Point it at the DEV instance\n'; \
+		printf '(the services container on 5432), not at the plane on 5433. See README, section Testing.\n\n'; \
+	fi
 	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
 	@# A TEST MUST NEVER TOUCH THE DEVELOPER'S REAL CONFIG.
 	@#

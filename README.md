@@ -284,6 +284,72 @@ Generated code is committed (see ARCHITECTURE.md §Code Generation).
 | `site/` | Static landing page (`orchicon.dev`) |
 | `scripts/` | Installers, CI gates, dev controller |
 
+### Testing — ALWAYS THE DEV INSTANCE, NEVER PROD
+
+**This is a hard rule, not a preference.** Tests that open a database CREATE REAL ROWS. The DB-backed
+suites (~130 files reading `ORCHICON_TEST_DSN`) create projects, work items, workers and executions by
+design, and they clean up only their own tenants.
+
+#### The rule
+
+> **Point `ORCHICON_TEST_DSN` at the DEV instance's database. Never at prod.**
+>
+> If you are in a shell that is running or has exported a PROD plane, do not run `go test` in it against
+> a remote DSN. Check before you run:
+
+```bash
+echo "instance=$ORCHICON_INSTANCE  plane=$ORCHICON_POSTGRES_DSN  tests=$ORCHICON_TEST_DSN"
+```
+
+#### Why this is written down
+
+It was learned the expensive way. A full `go test ./...` was run from a shell that had a live prod plane
+in it — the launcher had exported that plane's `ORCHICON_INSTANCE=prod` and `ORCHICON_POSTGRES_DSN` — and
+`ORCHICON_TEST_DSN` was set to *that same prod database* so the suites could run. They ran. Result: **~125
+test projects in the deployment tenant and 281 throwaway test tenants in a live instance**, plus a
+saturated plane whose in-flight executions failed with `execution lost: control plane restarted or runtime
+container gone`.
+
+The mistake was one variable assignment. It was *possible* because nothing in the code distinguished "a
+database" from "THIS database", and every existing guard is about isolation **between tests**, not
+protection **from the live one**.
+
+#### The guard (in the code, so it cannot be forgotten)
+
+`db.Open` now **refuses to open a production database from a test binary**. Every database handle in the
+tree goes through it. You will get a failing test that names the variable to change, rather than silent
+writes to production:
+
+```
+db: REFUSING to open a production database from a test binary — the DSN being opened IS the ambient
+ORCHICON_POSTGRES_DSN — the database the running plane uses.
+  opening: postgres://orchicon:***@localhost:5433/orchicon?sslmode=disable
+  ORCHICON_INSTANCE="prod"  ORCHICON_POSTGRES_DSN="postgres://orchicon:***@..."
+  Point ORCHICON_TEST_DSN at the DEV instance's database instead ...
+```
+
+It fires only for a **test binary** (a running server is never refused — the plane opening its own
+production database is the product), and only when the DSN being opened is the ambient plane's own
+database, or the shell is prod-labelled and the target is not a loopback test database.
+
+`ORCHICON_TEST_ALLOW_PROD=1` is the deliberate opt-out, for a scratch clone that happens to be
+prod-labelled. **Reaching production is a decision with a name, never an accident of which shell you
+happened to be in.**
+
+#### Which DSN to use
+
+DB-backed tests **skip** when `ORCHICON_TEST_DSN` is unset, so the default `make test` is safe by
+omission. To actually exercise them, use the DEV instance's database:
+
+```bash
+# the dev instance (services container on 5432) — the correct target for tests
+export ORCHICON_TEST_DSN="postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"
+make test
+```
+
+Note the dev plane publishes on **5432** and production runs as a host process on **5433**. They are one
+port apart and both are "localhost" — which is exactly how the incident above was able to happen.
+
 ### CI gate
 
 ```bash
