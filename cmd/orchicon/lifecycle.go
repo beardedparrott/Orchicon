@@ -296,6 +296,10 @@ func runStop(args []string) error {
 		if err := stopHostServices(instance, os.Stdout); err != nil {
 			return err
 		}
+		// A CONTAINER-ERA INSTANCE CONTAINER STILL OWNS THESE PORTS. It was created by an older install of
+		// this product under this instance's name, so stopping it is part of stopping the instance — and
+		// leaving it running is what makes the NEXT start fail to bind with nothing pointing at the cause.
+		stopInstanceContainer(instance, os.Stdout)
 	}
 
 	fmt.Printf("✓ %s is stopped\n", instance)

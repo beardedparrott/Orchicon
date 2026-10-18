@@ -975,6 +975,15 @@ func TestResolveInstallPortsNeedsNoEngine(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // no docker, no pg_isready — nothing to exec
 	t.Setenv("ORCHICON_STRICT_PORTS", "")
 	t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
+	// AND NO INSTANCE OF THE OPERATOR'S MAY BE VISIBLE. Rung 0 reads back the ports of an instance that is
+	// already RUNNING, which on a host-resident install means the instance's own record and pid file — not a
+	// container. So this test used to pass only while dev happened to be stopped: the moment the developer
+	// started dev (which is most of the time), the resolver legitimately reported "instance dev is already
+	// running" and the assertion below fired, for a reason that has nothing to do with what it pins.
+	//
+	// An isolated HOME removes every instance from view without weakening the claim: PORT RESOLUTION MUST NOT
+	// NEED A CONTAINER ENGINE.
+	t.Setenv("HOME", t.TempDir())
 
 	if containerEngineAvailable() {
 		t.Fatal("an empty PATH must not report a container engine")
@@ -988,7 +997,7 @@ func TestResolveInstallPortsNeedsNoEngine(t *testing.T) {
 		t.Errorf("the control port must resolve without an engine; got %d", ports["ORCHICON_CONTROL_PORT"])
 	}
 	if strings.Contains(out.String(), "already running") {
-		t.Errorf("no engine means no running container to read ports back from:\n%s", out.String())
+		t.Errorf("with no instance and no engine, nothing can be \"already running\":\n%s", out.String())
 	}
 }
 

@@ -44,7 +44,19 @@ func runServices(args []string) int {
 		verb = args[0]
 		rest = args[1:]
 	}
-	instance, err := parseInstanceTarget(rest, env("ORCHICON_INSTANCE", "dev"))
+	// --force is consumed HERE, before the instance parser, because the parser refuses unknown flags by
+	// design (an ignored flag on a lifecycle verb is how the wrong instance gets changed). Taking it out
+	// first keeps that guarantee and still lets `services down --force prod` mean one thing.
+	force := false
+	kept := make([]string, 0, len(rest))
+	for _, a := range rest {
+		if a == "--force" || a == "-force" {
+			force = true
+			continue
+		}
+		kept = append(kept, a)
+	}
+	instance, err := parseInstanceTarget(kept, env("ORCHICON_INSTANCE", "dev"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "orchicon services: %v\n", err)
 		return 1
@@ -54,7 +66,7 @@ func runServices(args []string) int {
 	case "up":
 		return servicesUp(instance)
 	case "down":
-		return servicesDown(instance)
+		return servicesDown(instance, force)
 	case "status":
 		return servicesStatus(instance)
 	default:
@@ -160,7 +172,7 @@ func servicesUp(instance string) int {
 // and the real cause (a process the pid file no longer knew about) is invisible.
 // So a stop is only successful when the ports are actually free, and when they
 // are not, the port is NAMED.
-func servicesDown(instance string) int {
+func servicesDown(instance string, force bool) int {
 	ports, err := servicesPortsFor(instance)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "orchicon services: %v\n", err)
@@ -193,6 +205,28 @@ func servicesDown(instance string) int {
 			return 0
 		}
 		if time.Now().After(deadline) {
+			// BEFORE FAILING, TAKE BACK WHAT IS OURS. The deadline above only proves that the HOST services
+			// are gone; it says nothing about a container-era instance container, which this product created
+			// and which publishes the same ports. That container is why a host that ever ran the old shape
+			// could never rebuild: the teardown reported "an orphaned process still holds the port" and left
+			// the operator to find a container nothing in the codebase would stop.
+			reclaimed := stopInstanceContainer(instance, os.Stdout)
+			if force {
+				// --force additionally terminates leftover processes OF THIS INSTANCE that the graceful stop
+				// missed. It is still bounded by identity: a pid is only touched when its executable is one of
+				// our binaries AND it carries this instance's name. An unrelated postgres on :5432 is reported
+				// below, never killed — see cmd/orchicon/reclaim.go for why that boundary is not negotiable.
+				if killed := forceKillOurLeftovers(instance, os.Stdout); len(killed) > 0 {
+					reclaimed = true
+				}
+			}
+			if reclaimed {
+				// Re-verify rather than assume: the point of this whole block is that a stop is a CLAIM, and
+				// only the ports coming free settles it.
+				deadline = time.Now().Add(20 * time.Second)
+				continue
+			}
+
 			var held []string
 			if !pgFree {
 				held = append(held, fmt.Sprintf("postgres :%d", pg))
@@ -200,9 +234,13 @@ func servicesDown(instance string) int {
 			if !natsFree {
 				held = append(held, fmt.Sprintf("nats :%d", nats))
 			}
-			fmt.Fprintf(os.Stderr, "orchicon services: %s did not release %s — an orphaned process still holds the port "+
-				"(find it with `ss -ltnp` / `lsof -i :%d` and stop it before starting again)\n",
-				instance, strings.Join(held, " and "), pg)
+			fmt.Fprintf(os.Stderr, "orchicon services: %s did not release %s — and the holder is NOT this instance's\n",
+				instance, strings.Join(held, " and "))
+			for _, pid := range portHolders(pg, nats) {
+				fmt.Fprintf(os.Stderr, "    pid %d  %s\n", pid.pid, pid.exe)
+			}
+			fmt.Fprintf(os.Stderr, "  nothing was killed: a process this instance does not own may be a database you care about.\n"+
+				"  Stop it yourself, or re-run with --force to let Orchicon stop only its OWN leftovers.\n")
 			return 1
 		}
 		time.Sleep(250 * time.Millisecond)
