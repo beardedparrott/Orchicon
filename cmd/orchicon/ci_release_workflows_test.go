@@ -434,8 +434,8 @@ func TestEveryWorkflowPipelineUsesPipefailAtLeastWhereItMatters(t *testing.T) {
 // A DOWNLOADED BINARY THAT CANNOT RUN IS NOT A RELEASE, AND THE VERIFICATION STORY MUST NOT DEPEND ON
 // WHICH INSTALLER THE USER RAN.
 //
-// There is no code-signing certificate behind this project, so there is no signed macOS binary and no
-// Windows .exe at all (Windows runs the stack inside WSL2). What replaces them is a PRECISE instruction
+// There is no code-signing certificate behind this project, so there is no signed macOS binary and the
+// Windows .exe an install places is unsigned. What replaces them is a PRECISE instruction
 // plus a checksum the download can be held to — and both must be in place on every platform, in both
 // installers, with the same words. These three assertions are that, as tests rather than as intentions.
 // ---------------------------------------------------------------------------
@@ -490,13 +490,14 @@ func TestInstallersPrintTheSameVerificationGuidance(t *testing.T) {
 	}
 	// AND IT MUST ACTUALLY SAY THE THINGS. An identical block that had been emptied would satisfy the
 	// comparison above and tell the user nothing, so the substance is asserted too: the exact macOS
-	// command, the fact that it does not disable Gatekeeper, and the Windows dead-end that does not exist.
+	// command, the fact that it does not disable Gatekeeper, and the Windows SmartScreen route out.
 	body := strings.Join(sh, "\n")
 	for _, want := range []string{
 		"xattr -d com.apple.quarantine",
 		"It does not disable Gatekeeper",
 		"curl sets no quarantine bit",
-		"There is no Orchicon .exe",
+		"Run anyway",
+		"Windows protected your PC",
 		"Unblock-File -LiteralPath",
 		"SHA256SUMS",
 	} {
