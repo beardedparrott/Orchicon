@@ -584,6 +584,22 @@ try {
     # Start the transcript FIRST, so everything below is in it. Skipped for a dry
     # run, which changes nothing and does not need a log file.
     if (-not $DryRun) { Start-InstallLog }
+
+    # --- SmartScreen / "saved from the internet" notice --------------------------
+    # A SAVED .ps1 CARRIES A MARK-OF-THE-WEB STREAM, and that stream is what makes PowerShell (and
+    # SmartScreen) treat the file as untrusted. The documented invocation writes no file at all —
+    # `irm https://orchicon.dev/install.ps1 | iex` — so it never gains the mark; this is for the operator
+    # who right-clicked "Save link as". The remedy is ONE command against ONE file, never a security
+    # setting to lower, and it is the same instruction the guidance block at the end prints.
+    if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) {
+        $zone = Get-Item -LiteralPath $PSCommandPath -Stream Zone.Identifier -ErrorAction SilentlyContinue
+        if ($zone) {
+            Write-Warn "this script was saved from the internet — it carries a Zone.Identifier mark"
+            Write-Warn "  PowerShell may refuse to run it, and SmartScreen may warn about it. Clear the mark on THIS file:"
+            Write-Warn "    Unblock-File -LiteralPath '$PSCommandPath'"
+            Write-Warn "  (or use the documented 'irm https://orchicon.dev/install.ps1 | iex', which writes no file at all)"
+        }
+    }
     # --- Defaults ---------------------------------------------------------------
     # The binary now installs INSIDE WSL, so the install dir is a WSL path.
     if (-not $InstallDir) {
@@ -938,6 +954,37 @@ INSTALL_DIR="__INSTALL_DIR__"
 ARCHIVE="__ARCHIVE__"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# --- VERIFY THE ARCHIVE BEFORE EXTRACTING IT --------------------------------------
+# THE SAME POLICY install.sh APPLIES, expressed in the distro so the two can never disagree:
+#   * no SHA256SUMS for this version (or no curl/sha256sum here) → say so and continue — older
+#     releases predate the file, and a missing tool is not evidence of a corrupt download;
+#   * a hash MISMATCH → exit non-zero BEFORE anything is extracted or installed.
+ASSET="__ASSET__"
+SUMS_URL="__SUMS_URL__"
+SUMS="$(mktemp)"
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl is not available in this distro — skipping checksum verification"
+elif ! curl -fsSL -o "$SUMS" "$SUMS_URL" 2>/dev/null; then
+  echo "no SHA256SUMS published for this version — skipping checksum verification"
+else
+  EXPECTED="$(awk -v a="$ASSET" '$2 == a || $2 == "./" a { print $1; exit }' "$SUMS")"
+  if [ -z "$EXPECTED" ]; then
+    echo "SHA256SUMS does not list $ASSET — skipping checksum verification"
+  elif ! command -v sha256sum >/dev/null 2>&1; then
+    echo "sha256sum is not available in this distro — skipping checksum verification"
+  else
+    ACTUAL="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+    if [ "$ACTUAL" != "$EXPECTED" ]; then
+      echo "checksum mismatch for $ASSET" >&2
+      echo "  expected $EXPECTED" >&2
+      echo "  got      $ACTUAL" >&2
+      echo "The download is corrupt or is not the archive this release published. NOTHING WAS INSTALLED." >&2
+      exit 1
+    fi
+    echo "checksum verified against the published SHA256SUMS"
+  fi
+fi
+rm -f "$SUMS"
 tar -xzf "$ARCHIVE" -C "$TMP"
 BIN="$(find "$TMP" -type f -name orchicon -perm -u+x 2>/dev/null | head -1)"
 if [ -z "$BIN" ]; then
@@ -959,7 +1006,7 @@ fi
 "$INSTALL_DIR/orchicon" version
 rm -rf "$TMP"
 '@
-    $installScript = $installScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__ARCHIVE__', $wslArchive)
+    $installScript = $installScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__ARCHIVE__', $wslArchive).Replace('__ASSET__', $asset).Replace('__SUMS_URL__', "$baseUrl/$Version/SHA256SUMS")
 
     Write-Info "extracting and installing inside WSL (output streams below)…"
     # STREAMED, not captured: a truncated download or a distro without room fails here,
@@ -987,6 +1034,31 @@ INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
     } else {
         Write-Warn "binary installed but could not verify — run 'orchicon version' inside WSL to check"
     }
+
+    # VERIFICATION GUIDANCE — BYTE-IDENTICAL to the block scripts/install.sh prints, deliberately: the
+    # verification story must not depend on which installer the operator ran.
+    # TestInstallersPrintTheSameVerificationGuidance compares the two blocks verbatim, so a change here
+    # without the matching change there fails the build.
+    Write-Host ""
+    Write-Host @'
+# >>> verification-guidance
+Verifying a manual download:
+  orchicon version                  # must print the version you installed
+  releases publish SHA256SUMS       # both installers check it; to check by hand:
+                                    #   shasum -a 256 <asset>.tar.gz    (macOS)
+                                    #   sha256sum <asset>.tar.gz        (Linux)
+                                    #   Get-FileHash <asset>.tar.gz     (Windows PowerShell)
+                                    # compare the result with SHA256SUMS on the release page
+If macOS blocked the binary after a BROWSER download, clear the quarantine bit on that ONE file:
+  xattr -d com.apple.quarantine /path/to/orchicon
+  This removes the mark from one file. It does not disable Gatekeeper, and it is NOT needed when
+  you install with the curl one-liner (curl sets no quarantine bit).
+There is no Orchicon .exe: on Windows the stack runs inside WSL2, so SmartScreen has no Orchicon
+binary to warn about. If PowerShell blocked the SAVED install.ps1 script, unblock that one file:
+  Unblock-File -LiteralPath .\install.ps1
+  (or use the documented 'irm https://orchicon.dev/install.ps1 | iex', which writes no file at all)
+# <<< verification-guidance
+'@
 
     # --- PATH hint (inside WSL) -------------------------------------------------
     $pathScript = @'

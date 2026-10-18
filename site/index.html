@@ -868,6 +868,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
       <div class="panel" role="tabpanel" id="p-unix" aria-labelledby="t-unix">
         <pre><span class="p">$ </span><span id="c-unix">curl -fsSL https://orchicon.dev/install | bash</span></pre>
         <button class="copy" data-copy="c-unix">Copy</button>
+        <p class="intro" style="margin-top:14px;font-size:14px">macOS: nothing to unblock — <code>curl</code> sets no quarantine bit, so this install runs without a Gatekeeper prompt. Only a <strong>browser</strong> download is marked; clear it on that one file with <code>xattr -d com.apple.quarantine /path/to/orchicon</code>. That does not disable Gatekeeper. Every release publishes <code>SHA256SUMS</code> and both installers verify the download against it.</p>
       </div>
       <div class="panel" role="tabpanel" id="p-win" aria-labelledby="t-win" hidden>
         <pre><span class="p">PS&gt; </span><span id="c-win">irm https://orchicon.dev/install.ps1 | iex</span></pre>

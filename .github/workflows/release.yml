@@ -10,6 +10,20 @@
 # these release assets. When a phase adds new runtime components that
 # need to ship in the binary, update the build step here and verify the
 # install scripts still work end-to-end (AGENTS.md §Install Scripts).
+#
+# Every release also publishes a SHA256SUMS file covering the archives, and
+# BOTH installers verify the download against it before extracting — so a
+# truncated or substituted archive fails the install instead of being
+# installed. Generating the file is only half of it: the upload manifest is
+# the `find` in the Create GitHub Release step, and TestReleasePublishesChecksums
+# pins both halves.
+#
+# The macOS artifacts are signed and notarised ONLY when a Developer ID
+# certificate exists. The `sign-macos` job below is that dormant path, and its
+# header states the cost and the secret/variable names it needs. Until it is
+# enabled the release ships unsigned archives, and the installers' guidance
+# block is the supported story (the curl one-liner is Gatekeeper-clean; a
+# browser download needs one `xattr` command).
 
 name: Release
 
@@ -146,6 +160,107 @@ jobs:
           name: orchicon-${{ matrix.os }}-${{ matrix.arch }}
           path: orchicon_*
 
+  # SIGNED + NOTARISED macOS ARTIFACTS — DORMANT UNTIL A CERTIFICATE EXISTS.
+  #
+  # WHY A JOB ON A macOS RUNNER RATHER THAN A FLAG ON `build`: `codesign` and `notarytool` are macOS-only,
+  # and the `build` matrix cross-compiles darwin/amd64 and darwin/arm64 on ubuntu-latest — a binary produced
+  # there CANNOT be code-signed. The `build` matrix is deliberately NOT given a macOS runner either: it also
+  # builds the frontend and packages every platform, so duplicating it would double the release time to
+  # sign two artifacts. Signing is therefore its own job, over the darwin artifacts `build` already made.
+  #
+  # PREREQUISITES — the cost of turning this on, stated here rather than in a wiki.
+  #   * an Apple Developer Program membership, USD 99/yr. A "Developer ID Application" certificate cannot be
+  #     issued without one, so this is the standing prerequisite rather than an optional extra; and
+  #   * the certificate exported as a .p12  → secret    MACOS_CERT_P12_BASE64
+  #   * that .p12's password                 → secret    MACOS_CERT_P12_PASSWORD
+  #   * an app-specific password for the Apple ID used to notarise → secret MACOS_NOTARY_PASSWORD
+  #   * repository VARIABLES (not secrets — none of them is sensitive)
+  #       MACOS_SIGNING_ENABLED  = "true" to enable this job (anything else skips it)
+  #       MACOS_SIGNING_IDENTITY = "Developer ID Application: Your Name (TEAMID)"
+  #       MACOS_NOTARY_APPLE_ID  = the Apple ID that submits the notarisation
+  #       MACOS_NOTARY_TEAM_ID   = the 10-character team id
+  #
+  # WHILE IT IS OFF the release ships unsigned archives, and the installers' guidance block is the support
+  # story: the documented curl one-liner is Gatekeeper-clean because curl sets no quarantine bit, and a
+  # BROWSER download needs the single-file `xattr -d com.apple.quarantine` command.
+  #
+  # TestMacOSSigningJobRunsOnAMacOSRunner pins the runner, so this job cannot silently become a cross-compile
+  # on ubuntu-latest — which would report success while signing nothing.
+  sign-macos:
+    needs: [guard, build]
+    if: needs.guard.outputs.proceed == 'true' && vars.MACOS_SIGNING_ENABLED == 'true'
+    name: Sign + notarise macOS
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: orchicon-darwin-*
+          path: unsigned
+
+      - name: Import the Developer ID certificate
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
+        run: |
+          set -eo pipefail
+          KEYCHAIN="$RUNNER_TEMP/orchicon-signing.keychain-db"
+          printf '%s' "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12" || \
+            printf '%s' "$CERT_P12_BASE64" | base64 -D > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_P12_PASSWORD" -T /usr/bin/codesign
+          # WITHOUT THE PARTITION LIST codesign blocks on a keychain prompt and the job hangs on a
+          # headless runner instead of failing.
+          security set-key-partition-list -S apple-tool:,apple: -k "" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+      - name: Sign, notarise and repackage
+        env:
+          IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ vars.MACOS_NOTARY_APPLE_ID }}
+          TEAM_ID: ${{ vars.MACOS_NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -eo pipefail
+          cd unsigned
+          for artifact in orchicon-darwin-*; do
+            archive="$(find "$artifact" -maxdepth 1 -name '*.tar.gz' | head -1)"
+            if [ -z "$archive" ]; then
+              echo "::error::$artifact contains no .tar.gz"
+              exit 1
+            fi
+            dir="$(basename "$archive" .tar.gz)"
+            tar -xzf "$archive"
+            for binary in "$dir/orchicon" "$dir/orch"; do
+              [ -f "$binary" ] || continue
+              codesign --force --options runtime --timestamp --sign "$IDENTITY" "$binary"
+              codesign --verify --strict --verbose=2 "$binary"
+            done
+            # NOTARISE A .pkg, NOT THE TARBALL. A notarisation ticket is stapled to a bundle or an installer
+            # package — never to a bare Mach-O CLI — so the artifact that can carry a stapled ticket has to be
+            # one Gatekeeper inspects, which is the .pkg built here.
+            pkg="${dir}.pkg"
+            pkgbuild --root "$dir" --identifier "dev.orchicon.cli" --version "${ORCHICON_VERSION#v}" "$pkg"
+            xcrun notarytool submit "$pkg" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" \
+              --password "$NOTARY_PASSWORD" --wait
+            xcrun stapler staple "$pkg"
+            xcrun stapler validate "$pkg"
+            # Re-create the tarball around the SIGNED binaries: this is the archive the installer downloads.
+            rm -f "$archive"
+            tar -czf "$archive" "$dir"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchicon-darwin-signed
+          path: |
+            unsigned/**/*.tar.gz
+            unsigned/**/*.pkg
+
   # Build + push the single-container image to GHCR. The image embeds the
   # frontend and ships every runtime (postgres, nats, tempo, loki, vm,
   # collector, grafana, opencode) with the orchicon binary as PID-1
@@ -232,8 +347,13 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build, guard]
-    if: needs.guard.outputs.proceed == 'true'
+    needs: [build, guard, sign-macos]
+    # `sign-macos` IS IN `needs` so the signed archives are the ones downloaded — but it is SKIPPED while
+    # signing is off, and a skipped dependency skips its dependents. Hence the explicit `skipped` arm: the
+    # release must go ahead on an unsigned build, which is the normal case today.
+    if: |
+      needs.guard.outputs.proceed == 'true' &&
+      (needs.sign-macos.result == 'success' || needs.sign-macos.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -245,6 +365,25 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      # THE CHECKSUMS THE INSTALLERS VERIFY. `merge-multiple: true` above flattens every artifact into
+      # artifacts/, so this is a flat directory and the sums are written flat beside the archives.
+      #
+      # GENERATING THIS FILE IS ONLY HALF THE JOB: the upload manifest is the `find` in the next step, so a
+      # checksum file that is generated here and not listed there is published to nobody. Both halves are
+      # asserted by TestReleasePublishesChecksums.
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          set -eo pipefail
+          shopt -s nullglob
+          files=( *.tar.gz *.pkg )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no archives under artifacts/ to checksum"
+            exit 1
+          fi
+          sha256sum "${files[@]}" > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Create GitHub Release
         env:
@@ -281,7 +420,9 @@ jobs:
           # We use `gh release create` directly (not softprops/action-gh-
           # release) for the same reasons as before: explicit retry behavior
           # and clearer errors than the action wrapper under load.
-          ASSETS=$(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+          # SHA256SUMS IS IN THIS LIST ON PURPOSE — this find IS the upload manifest, so an asset that is
+          # not named here is silently not published, however carefully it was produced.
+          ASSETS=$(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' -o -name 'SHA256SUMS' \) | sort)
           if [ -z "$ASSETS" ]; then
             echo "::error::No release assets found under artifacts/"
             exit 1

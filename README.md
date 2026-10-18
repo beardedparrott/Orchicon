@@ -63,6 +63,14 @@ curl -fsSL https://orchicon.dev/install | bash
 
 The installer downloads the binary, then runs `orchicon install` to set up everything: pull the published images, start the runtime daemon, launch the single-container instance, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
 
+> **macOS: no Gatekeeper override needed.** `curl` sets no quarantine bit, so a binary installed by the command above runs without a "cannot be opened because the developer cannot be verified" prompt. Orchicon's macOS binaries are **not** code-signed or notarised (a Developer ID costs USD 99/yr — see the `sign-macos` job in `.github/workflows/release.yml`), so one case does need one command: if you downloaded the `.tar.gz` in a **browser** rather than with the one-liner, macOS marked the archive, and the extracted binary inherits the mark. Clear it on that one file — this does not disable Gatekeeper:
+>
+> ```bash
+> xattr -d com.apple.quarantine /path/to/orchicon
+> ```
+>
+> Every release also publishes `SHA256SUMS`; both installers verify the download against it and refuse a mismatch before anything is installed. To check a manual download by hand: `shasum -a 256 orchicon_<version>_darwin_<arch>.tar.gz` and compare it with that file. See [USERGUIDE.md §1 — macOS: Gatekeeper and verification](USERGUIDE.md#macos-gatekeeper-and-verification).
+
 > **Adapters are optional — the native engine needs nothing installed.** Orchicon ships its own runtime engine and runs sessions inside the control plane, so a fresh install is complete on its own: no adapter CLI, no binary probe, no serve. Install an external adapter (OpenCode, and future ones like Claude Code / Codex) only if you want to run work on that runtime. Orchicon **never bundles or ships** an adapter CLI — your own host install is bind-mounted into the containers at runtime, which keeps the product redistributable regardless of an adapter's licence (Claude Code's terms prohibit bundling).
 >
 > To use OpenCode as a runtime, **install it as your own user — never with `sudo`**:
@@ -100,6 +108,8 @@ Orchicon's runtime layer (runtime daemon, unix socket, container mounts) is POSI
 
 The installer never closes your PowerShell window: a failure prints what failed and the next steps, then returns to the prompt with your session intact. The long steps (image pull, stack setup) stream their output as they run, the setup step asks about host ports (ENTER accepts each default), and the full log lands in `%TEMP%`. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation).
 
+> **Windows: there is no `.exe`, so SmartScreen has no Orchicon binary to warn about.** The stack runs inside WSL2 and the installer installs the **Linux** binary there. The one thing Windows does mark is a **saved** `install.ps1`: if you right-clicked "Save link as" instead of using `irm … | iex`, PowerShell may refuse to run it and SmartScreen may warn — clear the mark on that one file with `Unblock-File -LiteralPath .\install.ps1`. The documented `irm https://orchicon.dev/install.ps1 | iex` writes no file at all and trips nothing.
+
 Prerequisites:
 - **Windows 10 21H2+ / Windows 11**, with WSL2 and a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
 - **Docker Desktop** with WSL2 integration enabled for your distro (or Docker Engine installed inside it).
@@ -113,6 +123,7 @@ Project directories are entered in the UI as their **WSL path** — a Windows pr
 | `--version <tag>` | Install a specific version (e.g. `v0.4.5`). Default: latest. |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). On Windows this is a **WSL path** (the binary installs inside the distro). |
 | `--no-setup` | Install the binary only — do not pull images / start the runtime daemon / launch the container. |
+| `--no-verify` | Skip the `SHA256SUMS` check on the downloaded archive. The check is what proves the archive is the one the release published; only skip it against a mirror you control. |
 | `--uninstall` | Remove Orchicon from the install directory. |
 | `--dry-run` | Print what would happen without making changes. |
 | `--clean` | Stop dev containers, remove old binary, then install latest. All user data preserved. |
