@@ -1,6 +1,6 @@
 # Desktop packaging
 
-Everything needed to turn the Wails shell in `desktop/` into installable artifacts
+Everything needed to turn the Wails shell in `cmd/orchicon-desktop/` into installable artifacts
 for the three platforms. The runtime webview detection logic lives in
 `internal/desktoppreflight/`.
 
@@ -42,7 +42,7 @@ signing failure cannot stop the CLI binaries from publishing.
 ```sh
 make desktop-deps            # pinned wails CLI + the apt hint for Linux
 make desktop-preflight-test  # the webview detection tests (no webview needed)
-make desktop-build           # for this host, into desktop/build/bin/
+make desktop-build           # the shell binary for this host, into bin/
 make desktop-package-linux   # .deb + .AppImage, into dist/desktop/ (Linux only)
 ```
 

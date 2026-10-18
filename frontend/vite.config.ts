@@ -83,17 +83,6 @@ export default defineConfig({
         target: "http://localhost:8080",
         changeOrigin: true,
       },
-      // Grafana UI proxy (docs/10 §11): seamless embedding — the Grafana
-      // iframe is served same-origin under /grafana so it shares the
-      // Orchicon shell's auth + visual language, not a separate tool.
-      // Grafana runs with serve_from_sub_path so it generates every asset
-      // and API URL under /grafana itself; proxy through the Go control
-      // plane so the /grafana reverse proxy strips the prefix and forwards
-      // (docs/10 §11).
-      "/grafana": {
-        target: "http://localhost:8080",
-        changeOrigin: true,
-      },
     },
   },
 });

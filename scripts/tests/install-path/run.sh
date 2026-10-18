@@ -24,8 +24,8 @@
 # install path stops being something only a user exercises.
 #
 # SCOPE, stated rather than implied: this covers the POSIX installer (install.sh — Linux and macOS).
-# install.ps1's Windows path needs WSL2 and cannot be exercised here; its offline behaviour is covered
-# by scripts/tests/install-ps1-wsl-encoding, and a real end-to-end run needs a Windows runner.
+# install.ps1's Windows path needs Windows and cannot be exercised here; its offline behaviour is
+# covered by scripts/tests/install-ps1-native, and a real end-to-end run needs a Windows runner.
 #
 #   scripts/tests/install-path/run.sh [--keep]
 #
@@ -38,7 +38,6 @@ REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
 INSTALLER="${REPO_ROOT}/scripts/install.sh"
 
 KEEP=0
-[ "${1:-}" = "--keep" ] && KEEP=1
 
 PASS=0
 FAIL=0
@@ -46,6 +45,27 @@ say()  { printf '%s\n' "$*"; }
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$*"; PASS=$((PASS + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; FAIL=$((FAIL + 1)); }
 check(){ if [ "$2" = "1" ]; then ok "$1"; else bad "$1"; fi; }
+
+# WHICH INSTALLER PATH THIS EXERCISES. `--os darwin` runs the SAME real install.sh a macOS user would:
+# a cross-compiled darwin/arm64 artifact served in the release's asset shape, and a `uname` shim on PATH
+# that reports Darwin/arm64 so the installer takes its macOS branch. That is how the macOS side — the
+# quarantine check, the guidance block, the checksum verdict — is TESTED on an ubuntu runner, with no Mac
+# and no code-signing certificate in sight. It is also why the harness must not shortcut around
+# install.sh: the point is that the shipped script is the thing under test.
+TARGET_OS="linux"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --keep)  KEEP=1; shift ;;
+    --os)    TARGET_OS="${2:-}"; shift 2 ;;
+    --os=*)  TARGET_OS="${1#--os=}"; shift ;;
+    -h|--help) say "usage: run.sh [--keep] [--os linux|darwin]"; exit 0 ;;
+    *)       say "unknown option: $1"; exit 2 ;;
+  esac
+done
+case "${TARGET_OS}" in
+  linux|darwin) ;;
+  *) say "unknown --os: ${TARGET_OS} (known: linux, darwin)"; exit 2 ;;
+esac
 
 WORK="$(mktemp -d)"
 cleanup() {
@@ -59,26 +79,34 @@ trap cleanup EXIT
 # installed binary, so a wrong or defaulted version is caught rather than assumed.
 VERSION="v0.0.0-installpath"
 VERSION_NUM="${VERSION#v}"
-ARCH="$(uname -m)"; case "${ARCH}" in x86_64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; esac
-ASSET="orchicon_${VERSION_NUM}_linux_${ARCH}"
-ASSET_DIR="orchicon_${VERSION_NUM}_linux_${ARCH}"
+HOST_ARCH="$(uname -m)"
+case "${HOST_ARCH}" in x86_64) HOST_ARCH=amd64 ;; aarch64|arm64) HOST_ARCH=arm64 ;; esac
+BUILD_GOOS="linux"
+BUILD_GOARCH="${HOST_ARCH}"
+# darwin/arm64 specifically: it is what an Apple-silicon user downloads, and it is the most common macOS
+# asset, so that is the one worth pinning.
+if [ "${TARGET_OS}" = "darwin" ]; then BUILD_GOOS="darwin"; BUILD_GOARCH="arm64"; fi
+ASSET="orchicon_${VERSION_NUM}_${TARGET_OS}_${BUILD_GOARCH}"
+ASSET_DIR="${ASSET}"
 
 say "install-path test"
 say "  installer : ${INSTALLER}"
-say "  asset     : ${ASSET}.tar.gz  (linux/${ARCH})"
+say "  asset     : ${ASSET}.tar.gz  (${TARGET_OS}/${BUILD_GOARCH})"
 say
 
 # --- 1. build + package the artifact exactly as the release does -------------------
 say "[1] building and packaging the artifact"
 STAGE="${WORK}/stage"
 mkdir -p "${STAGE}"
-if ! ( cd "${REPO_ROOT}" && go build -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${VERSION}" \
+if ! ( cd "${REPO_ROOT}" && GOOS="${BUILD_GOOS}" GOARCH="${BUILD_GOARCH}" CGO_ENABLED=0 \
+        go build -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${VERSION}" \
         -o "${STAGE}/orchicon" ./cmd/orchicon ) 2>"${WORK}/build.log"; then
   bad "the control-plane binary builds"
   sed 's/^/      /' "${WORK}/build.log" | tail -12
   exit 1
 fi
-( cd "${REPO_ROOT}" && go build -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${VERSION}" \
+( cd "${REPO_ROOT}" && GOOS="${BUILD_GOOS}" GOARCH="${BUILD_GOARCH}" CGO_ENABLED=0 \
+    go build -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${VERSION}" \
     -o "${STAGE}/orch" ./cmd/orch ) 2>>"${WORK}/build.log" || true
 ok "the binaries build"
 
@@ -88,6 +116,10 @@ mkdir -p "${PKG}/${ASSET_DIR}"
 cp "${STAGE}/orchicon" "${PKG}/${ASSET_DIR}/"
 [ -f "${STAGE}/orch" ] && cp "${STAGE}/orch" "${PKG}/${ASSET_DIR}/"
 ( cd "${PKG}" && tar -czf "${ASSET}.tar.gz" "${ASSET_DIR}" )
+# THE RELEASE PUBLISHES SHA256SUMS WITH THE ARCHIVES, so the harness serves one too — without it the
+# installer would (correctly) report that nothing was published and skip verification, and the verified
+# path would never be exercised by anything.
+( cd "${PKG}" && sha256sum "${ASSET}.tar.gz" > SHA256SUMS )
 SIZE="$(wc -c < "${PKG}/${ASSET}.tar.gz")"
 check "the artifact is packaged in the release's shape (${SIZE} bytes)" \
   "$([ "${SIZE}" -gt 1000000 ] && echo 1 || echo 0)"
@@ -120,6 +152,27 @@ else
   exit 1
 fi
 
+# --- 2b. a `uname` shim, so the macOS branch is reachable from here ----------------
+# install.sh asks `uname -s` and `uname -m` about the host and nothing else, so a two-line shim on PATH is
+# enough to drive its Darwin branch. This is what makes `--os darwin` a test of the SHIPPED script rather
+# than of a copy of it.
+if [ "${TARGET_OS}" = "darwin" ]; then
+  SHIM="${WORK}/shim"
+  mkdir -p "${SHIM}"
+  cat > "${SHIM}/uname" <<'SH'
+#!/bin/sh
+case "$1" in
+  -s) echo Darwin ;;
+  -m) echo arm64 ;;
+  *)  /usr/bin/uname "$@" ;;
+esac
+SH
+  chmod +x "${SHIM}/uname"
+  export PATH="${SHIM}:${PATH}"
+  check "a uname shim reports Darwin/arm64 (the installer's macOS branch is reachable)" \
+    "$([ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] && echo 1 || echo 0)"
+fi
+
 # --- 3. run the REAL installer against it ------------------------------------------
 say ""
 say "[3] running the real installer against it"
@@ -146,6 +199,75 @@ else
   grep -i 'download' "${LOG}" | sed 's/^/      /' | head -3
 fi
 
+# --- 3b. the download is VERIFIED against the published SHA256SUMS -----------------
+# THIS IS THE WHOLE POINT OF THE CHECKSUM. A download nobody verifies is a download that can be truncated
+# or replaced in transit, and the installer would print a tick either way.
+say ""
+say "[3b] the download is verified against SHA256SUMS"
+if grep -q "checksum verified against the published SHA256SUMS" "${LOG}"; then
+  ok "the served SHA256SUMS was fetched and the archive matched it"
+else
+  bad "the archive was verified against SHA256SUMS"
+  grep -iE 'sha256sum|checksum' "${LOG}" | sed 's/^/      /' | head -3
+fi
+
+# And a MISMATCH must abort BEFORE the binary is installed. A corruption that installs anyway is the one
+# outcome the check exists to prevent, so the refusal is asserted rather than assumed — and it is asserted
+# on the state of the install directory, not on the exit code alone.
+SUMS="${PKG}/SHA256SUMS"
+cp "${SUMS}" "${SUMS}.good"
+printf '%s  %s\n' "$(printf '0%.0s' $(seq 1 64))" "${ASSET}.tar.gz" > "${SUMS}"
+DEST_BAD="${WORK}/bin-corrupt"
+set +e
+ORCHICON_INSTALL_BASE_URL="${BASE}" bash "${INSTALLER}" \
+  --version "${VERSION}" --install-dir "${DEST_BAD}" --instance test --no-setup >"${WORK}/install-bad.log" 2>&1
+RC_BAD=$?
+set -e
+cp "${SUMS}.good" "${SUMS}"
+if [ "${RC_BAD}" -ne 0 ]; then
+  ok "a corrupt SHA256SUMS makes the installer exit non-zero (rc=${RC_BAD})"
+else
+  bad "a corrupt SHA256SUMS makes the installer exit non-zero — it installed a mismatched archive"
+fi
+if [ ! -e "${DEST_BAD}/orchicon" ]; then
+  ok "and nothing was installed from the mismatched archive"
+else
+  bad "nothing was installed from the mismatched archive — the check runs after the move"
+fi
+if grep -q "checksum mismatch" "${WORK}/install-bad.log"; then
+  ok "the refusal names the cause (checksum mismatch, with both hashes)"
+else
+  bad "the refusal names the cause"
+  tail -4 "${WORK}/install-bad.log" | sed 's/^/      /'
+fi
+
+# --- 3c. the verification guidance, printed verbatim -------------------------------
+# THE INSTRUCTION IS THE DELIVERABLE here: with no code-signing certificate, "what do I do when macOS
+# blocks this" is answered by these lines and nothing else. They are compared against the block in the
+# installer's own source, so a line that stops being PRINTED is caught even though it is still present in
+# the file.
+say ""
+say "[3c] the verification guidance is printed, verbatim"
+GUIDE_MISSING=0
+while IFS= read -r line; do
+  grep -qF -- "${line}" "${LOG}" || { GUIDE_MISSING=1; echo "      missing from the output: ${line}"; }
+done < <(sed -n '/^# >>> verification-guidance$/,/^# <<< verification-guidance$/p' "${INSTALLER}")
+check "every line of install.sh's guidance block reaches the user" \
+  "$([ "${GUIDE_MISSING}" -eq 0 ] && echo 1 || echo 0)"
+if grep -q "xattr -d com.apple.quarantine" "${LOG}"; then
+  ok "it names the exact macOS quarantine command"
+else
+  bad "it names the exact macOS quarantine command"
+fi
+
+# NO IMAGE PULL AND NO DOCKER, observed rather than asserted in the source: a --no-setup install must not
+# mention a registry ref or a container engine in anything it prints, because it no longer needs either.
+if grep -qiE 'ghcr\.io|docker' "${LOG}"; then
+  bad "--no-setup still mentions an image ref or Docker: $(grep -iE 'ghcr\.io|docker' "${LOG}" | head -2 | tr '\n' ' ')"
+else
+  ok "the install names no registry ref and no Docker"
+fi
+
 # --- 4. the installed thing must work, and be the artifact we served ---------------
 say ""
 say "[4] the installed binary"
@@ -155,11 +277,22 @@ else
   bad "orchicon was installed to the requested directory"
   ls -la "${DEST}" 2>/dev/null | sed 's/^/      /' | head -5
 fi
-GOT="$("${DEST}/orchicon" version 2>/dev/null | head -1 || true)"
-case "${GOT}" in
-  *"${VERSION}"*) ok "it runs and reports the version it was built as (${VERSION})" ;;
-  *) bad "it runs and reports ${VERSION} — got \"${GOT}\"" ;;
-esac
+if [ "${TARGET_OS}" = "linux" ]; then
+  GOT="$("${DEST}/orchicon" version 2>/dev/null | head -1 || true)"
+  case "${GOT}" in
+    *"${VERSION}"*) ok "it runs and reports the version it was built as (${VERSION})" ;;
+    *) bad "it runs and reports ${VERSION} — got \"${GOT}\"" ;;
+  esac
+else
+  # A darwin binary cannot be EXECUTED here, so the artifact is identified by its Mach-O header instead —
+  # still an assertion that what was installed is the cross-compiled artifact and not a truncated or
+  # substituted file.
+  MAGIC="$(od -An -tx1 -N4 "${DEST}/orchicon" 2>/dev/null | tr -d ' \n')"
+  case "${MAGIC}" in
+    cffaedfe|feedfacf) ok "the installed file is a 64-bit Mach-O binary (magic ${MAGIC})" ;;
+    *) bad "the installed file is a Mach-O binary — magic was \"${MAGIC}\"" ;;
+  esac
+fi
 # The companion client rides the same archive; its absence is a packaging regression, not a spec.
 if [ -x "${DEST}/orch" ]; then
   ok "the orch companion client was installed alongside it"
@@ -204,11 +337,24 @@ else
 fi
 
 # And the instance must actually scope the acting: a dry-run force-clean for `test` may name ONLY test.
-OUT="$(bash "${INSTALLER}" --force-clean --instance test --dry-run 2>&1 || true)"
-if grep -q "orchicon-cnt-test" <<<"${OUT}" && ! grep -qE "orchicon-cnt-(dev|prod)" <<<"${OUT}"; then
-  ok "--instance test scopes the acting to the test container alone"
+# THE SCOPE IS ASSERTED ON THE INSTANCE NAME the verbs derive their state dir and stop command from — the
+# container names this used to grep for are gone with the container. A scratch install dir and a scratch
+# XDG_DATA_HOME hold one binary and one state dir per instance, so the dry run has something to report.
+SCOPE_BIN="${WORK}/scope-bin"
+SCOPE_XDG="${WORK}/scope-xdg"
+mkdir -p "${SCOPE_BIN}" "${SCOPE_XDG}/orchicon-test/serve" "${SCOPE_XDG}/orchicon-dev/serve"
+printf '#!/bin/sh\nexit 0\n' > "${SCOPE_BIN}/orchicon"; chmod +x "${SCOPE_BIN}/orchicon"
+OUT="$(XDG_DATA_HOME="${SCOPE_XDG}" bash "${INSTALLER}" --force-clean --instance test --dry-run \
+  --install-dir "${SCOPE_BIN}" 2>&1 || true)"
+if grep -q "ORCHICON_INSTANCE=test" <<<"${OUT}" && ! grep -qE "ORCHICON_INSTANCE=(dev|prod)" <<<"${OUT}"; then
+  ok "--instance test scopes the stopping to the test instance alone"
 else
-  bad "--instance test scopes the acting (named: $(grep -o 'orchicon-cnt-[a-z]*' <<<"${OUT}" | sort -u | tr '\n' ' '))"
+  bad "--instance test scopes the acting (named: $(grep -o 'ORCHICON_INSTANCE=[a-z]*' <<<"${OUT}" | sort -u | tr '\n' ' '))"
+fi
+if grep -q "orchicon-test" <<<"${OUT}" && ! grep -qE "orchicon-(dev|prod)" <<<"${OUT}"; then
+  ok "and the only state dir it names is test's"
+else
+  bad "another instance's state dir is named (named: $(grep -oE 'orchicon-(dev|test|prod)' <<<"${OUT}" | sort -u | tr '\n' ' '))"
 fi
 
 # --- 6. INSTALL ASKS WHICH INSTANCE (detached, so the no-terminal path is the one exercised)
@@ -276,30 +422,70 @@ for f in $mode_suspects; do
   fi
 done
 
-# --- 8. THE STACK MUST COME FROM THE VERSION BEING INSTALLED -----------------
-# Without this the instance ran whatever `:latest` the host already had, so a canary install put a canary
-# BINARY over the last RELEASED image — and a host that already held `:latest` could never be brought
-# forward. Asserted at the source because the assertion is about WHICH REF IS NAMED, and no amount of
-# running the installer against a local artifact can observe that.
+# --- 8. NO IMAGE PULL, AND THE RUNTIME IMAGES ARE AN OPT-IN CHOICE ---------------
+# The previous premise of this section — "the stack must come from the version being installed" — is GONE
+# with the instance image: the plane and its services are host processes now, so there is no image ref to
+# name. The assertion is REPLACED, not deleted, with what took its place: the installer names and pulls
+# nothing, and the only place a runtime image can be chosen is `orchicon install`'s own opt-in prompt, which
+# shows each variant's size and defaults to none.
 say ""
-say "[8] the install names the version's container image"
+say "[8] the installer names no image, and offers the runtime images instead"
 
 INSTALLER_SRC="$(cat "${INSTALLER}")"
-if grep -q 'ORCHICON_CONTAINER_IMAGE="\$image_ref"' <<<"${INSTALLER_SRC}"; then
-  ok "the setup step passes ORCHICON_CONTAINER_IMAGE"
+if [ "$(grep -ci docker <<<"${INSTALLER_SRC}")" = "0" ]; then
+  ok "the installer mentions no container engine at all (no Docker check, no docker command)"
 else
-  bad "the setup step does not name the container image — the stack would come from whatever :latest the host has"
+  bad "the installer still mentions Docker: $(grep -in docker <<<"${INSTALLER_SRC}" | head -3 | tr '\n' ' ')"
 fi
-if grep -q 'image_ref="ghcr.io/' <<<"${INSTALLER_SRC}"; then
-  ok "and the ref is derived from the version, not hardcoded"
+if [ "$(grep -c 'ORCHICON_CONTAINER_IMAGE' <<<"${INSTALLER_SRC}")" = "0" ] && [ "$(grep -c 'image_ref=' <<<"${INSTALLER_SRC}")" = "0" ]; then
+  ok "it sets no container image ref (the instance image no longer exists)"
 else
-  bad "the image ref is not derived from the version"
+  bad "the installer still sets a container image ref"
 fi
-# ghcr requires a lowercase repository name, and GITHUB_REPO is "Orchicon".
-if grep -q 'tr "\[:upper:\]" "\[:lower:\]"' <<<"${INSTALLER_SRC}"; then
-  ok "and it is lowercased (ghcr rejects uppercase)"
+if grep -qF 'if "$bin" install; then' <<<"${INSTALLER_SRC}"; then
+  ok "and the setup step runs a plain \`orchicon install\`, inventing no environment for it"
 else
-  bad "the image ref is not lowercased — ghcr would reject 'Orchicon'"
+  bad "the setup step does not run a plain \`orchicon install\`"
+fi
+
+IMAGES_SRC="$(cat "${REPO_ROOT}/cmd/orchicon/install_runtime_images.go")"
+for variant in base gui dev; do
+  if grep -q "Variant: \"${variant}\"" <<<"${IMAGES_SRC}"; then
+    ok "the runtime-image prompt offers '${variant}'"
+  else
+    bad "the runtime-image prompt does not offer '${variant}'"
+  fi
+done
+if grep -q 'humanSize(c.SizeBytes)' <<<"${IMAGES_SRC}"; then
+  ok "and it shows each variant's size (they differ by an order of magnitude)"
+else
+  bad "the prompt does not show the sizes"
+fi
+if grep -qF 'Download any runtime images now? [none]' <<<"${IMAGES_SRC}"; then
+  ok "and declining is the documented default — an install with no image is complete"
+else
+  bad "the prompt does not default to none"
+fi
+
+INSTALL_GO_SRC_IMAGES="$(cat "${REPO_ROOT}/cmd/orchicon/install.go")"
+if grep -q 'answerIn = tty' <<<"${INSTALL_GO_SRC_IMAGES}" \
+   && ! grep -q 'resolveInstallRuntimeImagesFor(instance, os.Stdout, os.Stdin' <<<"${INSTALL_GO_SRC_IMAGES}"; then
+  ok "and it reads the answer from the TERMINAL, so a piped install can still ask"
+else
+  bad "the runtime-image prompt reads stdin — under \`curl | bash\` that is the script, already at EOF"
+fi
+if grep -q 'ORCHICON_ASSUME_YES' <<<"${INSTALLER_SRC}" && grep -q 'ORCHICON_ASSUME_YES' <<<"${IMAGES_SRC}"; then
+  ok "and --yes reaches that prompt, so a non-interactive --yes answers it"
+else
+  bad "--yes does not reach the runtime-image prompt"
+fi
+# A FRESH INSTALL WITH NOTHING SELECTED FETCHES NOTHING, by construction: the fetch is only reached with a
+# non-empty selection. (The live half of this is in the uninstall/engine harness.)
+if grep -q 'if len(installChoices) == 0' <<<"${INSTALL_GO_SRC_IMAGES}" \
+   && grep -q 'ensureInstallRuntimeImages(installChoices' <<<"${INSTALL_GO_SRC_IMAGES}"; then
+  ok "nothing is fetched unless something was chosen"
+else
+  bad "the install fetches outside the chosen selection"
 fi
 
 # --- 9. THE INFRASTRUCTURE BINARIES HAVE ONE RESOLVER, AND IT RECORDS --------------

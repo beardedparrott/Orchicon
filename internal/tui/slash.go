@@ -273,6 +273,49 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 
+	// PLANE LIFECYCLE (plane_lifecycle.go). THE TUI IS ONE OF THE TWO USER-FACING CONTROL SURFACES
+	// (with the desktop app; the web app carries none by design) — so for a terminal-first operator
+	// this is the ONLY place a plane they just stopped can be started again.
+	//
+	// These call internal/planecontrol DIRECTLY: there is no lifecycle RPC to call, and the same Go
+	// package is what `orchicon plane start|stop|restart` and the desktop app invoke.
+	//
+	// FOUR commands, not one with verbs: SlashCommand.Run does not receive the invoked name, so an
+	// alias could not tell which verb was asked for — and four names are four entries the drift test
+	// can assert against every surface that enumerates commands.
+	add(SlashCommand{
+		Name: "/plane", Usage: "/plane [start | stop | restart]",
+		Desc: "plane state for the connected local instance; a verb runs the same plane control the CLI and desktop app call (not the plane's API)",
+		Run: func(m *App, args []string) tea.Cmd {
+			verb := ""
+			if len(args) > 0 {
+				verb = strings.ToLower(strings.TrimSpace(args[0]))
+			}
+			return m.planeCommand(verb)
+		},
+	})
+	add(SlashCommand{
+		Name: "/plane-start", Usage: "/plane-start",
+		Desc: "start the connected instance's plane (internal/planecontrol, not the API)",
+		Run: func(m *App, _ []string) tea.Cmd {
+			return m.planeCommand("start")
+		},
+	})
+	add(SlashCommand{
+		Name: "/plane-stop", Usage: "/plane-stop",
+		Desc: "stop the connected instance's plane (graceful, idempotent)",
+		Run: func(m *App, _ []string) tea.Cmd {
+			return m.planeCommand("stop")
+		},
+	})
+	add(SlashCommand{
+		Name: "/plane-restart", Usage: "/plane-restart",
+		Desc: "restart the plane so it runs the installed binary (also the remedy for drift)",
+		Run: func(m *App, _ []string) tea.Cmd {
+			return m.planeCommand("restart")
+		},
+	})
+
 	// New chat / conversation management / ask-model + mode (parity with the
 	// GUI's Ask Orchicon surface). All writes go through the chat controller
 	// (the shell's single Ask write path).

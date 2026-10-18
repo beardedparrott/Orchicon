@@ -8,7 +8,7 @@
 # CARRIES libwebkit2gtk, so no system package decision is involved.
 #
 # Inputs (produced by `wails build` in the same job):
-#   desktop/build/bin/orchicon-desktop   the app binary
+#   cmd/orchicon-desktop/build/bin/orchicon-desktop   the app binary
 #   desktop/build/appicon.png            the icon
 # Output:
 #   dist/desktop/orchicon_desktop_<ver>_linux_amd64.AppImage
@@ -26,8 +26,8 @@ VERSION="${VERSION#v}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 OUT="${ROOT}/dist/desktop"
 APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
-BIN="${ROOT}/desktop/build/bin/orchicon-desktop"
-ICON="${ROOT}/desktop/build/appicon.png"
+BIN="${ROOT}/cmd/orchicon-desktop/build/bin/orchicon-desktop"
+ICON="${ROOT}/cmd/orchicon-desktop/build/appicon.png"
 
 [ -x "$BIN" ] || { echo "error: $BIN not found — run \`wails build\` first" >&2; exit 1; }
 mkdir -p "$OUT"

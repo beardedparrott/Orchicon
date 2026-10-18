@@ -1,5 +1,6 @@
 import { Link, createRoute, useNavigate } from "@tanstack/react-router";
 import { EngineAvailability } from "@/components/EngineAvailability";
+import { LocalModeDisclosure } from "@/components/LocalModeDisclosure";
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { ArrowLeft, ArrowUp, Folder } from "lucide-react";
@@ -69,7 +70,7 @@ function ProjectDetailPage() {
   const [savingGitStrategy, setSavingGitStrategy] = useState(false);
   const [savingMaxRuns, setSavingMaxRuns] = useState(false);
   const [draftDefaultImage, setDraftDefaultImage] = useState("");
-  const [draftExecutionMode, setDraftExecutionMode] = useState<"runtime" | "local">("runtime");
+  const [draftExecutionMode, setDraftExecutionMode] = useState<"runtime" | "local">("local");
   const [savingRuntime, setSavingRuntime] = useState(false);
   // The project's skill-file selection is edited through the SAME FileBrowser
   // as context files, but reported back here (onChange) so a skills save does
@@ -533,8 +534,10 @@ function ProjectDetailPage() {
             <CardDescription>
               Default container image copied onto work items at create time
               when they pass no runtime_image. Empty = inherit base
-              ({defaultImageHint}). Mode runtime runs inside the container;
-              local allows in-process with an honest prompt + DSN fence.
+              ({defaultImageHint}). Mode runtime runs inside the container; local
+              runs as a host process with your own filesystem access and is not
+              contained (the note under the mode control spells out what that
+              means).
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -568,12 +571,15 @@ function ProjectDetailPage() {
                   onChange={(e) => setDraftExecutionMode(e.target.value as "runtime" | "local")}
                   className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
-                  <option value="runtime">runtime — always-container (default)</option>
-                  <option value="local">local — in-process (fenced)</option>
+                  <option value="local">local — host process, not contained (default)</option>
+                  <option value="runtime">runtime — always-container (opt-in)</option>
                 </select>
                 {/* Containers are what "runtime" MEANS — say whether they are available, and
                     why not, right where the choice is made (AC5). */}
                 <EngineAvailability />
+                {/* Keyed off the DRAFT mode, so the consequence of choosing local is visible
+                    BEFORE "Save runtime defaults" commits it. */}
+                {draftExecutionMode === "local" && <LocalModeDisclosure />}
               </div>
             </div>
             {editing ? (
@@ -789,9 +795,12 @@ function statusLabel(status: number): string {
   return labels[status] ?? "unknown";
 }
 
+// executionModeLabel renders the project's mode for the header. It DELEGATES to
+// protoToExecutionMode so the UI has ONE mapping: an unreadable/absent value is
+// local (the server and column default), never a second copy of the old
+// runtime fallback that would disagree with the select below.
 function executionModeLabel(mode: number | undefined): string {
-  if (mode === 2) return "local";
-  return "runtime";
+  return protoToExecutionMode(mode);
 }
 
 // effectiveLimit mirrors the server's min(tenant, project) formula where 0

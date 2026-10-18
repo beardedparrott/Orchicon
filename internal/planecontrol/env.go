@@ -127,9 +127,6 @@ func PlaneEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket 
 		fmt.Sprintf("ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:%d/orchicon?sslmode=disable", ports["ORCHICON_POSTGRES_PORT"]),
 		fmt.Sprintf("ORCHICON_NATS_URL=nats://localhost:%d", ports["ORCHICON_NATS_PORT"]),
 		fmt.Sprintf("ORCHICON_OTEL_ENDPOINT=localhost:%d", ports["ORCHICON_OTLP_GRPC_PORT"]),
-		// Grafana is proxied same-origin under /grafana, so the plane reaches it
-		// on the Grafana publish's host port.
-		fmt.Sprintf("ORCHICON_GRAFANA_URL=http://localhost:%d", ports["ORCHICON_GRAFANA_PORT"]),
 		fmt.Sprintf("ORCHICON_TEMPO_URL=http://localhost:%d", ports["ORCHICON_TEMPO_PORT"]),
 		fmt.Sprintf("ORCHICON_LOKI_URL=http://localhost:%d", ports["ORCHICON_LOKI_PORT"]),
 		fmt.Sprintf("ORCHICON_VM_URL=http://localhost:%d", ports["ORCHICON_VM_PORT"]),
@@ -182,16 +179,43 @@ func EnvWithout(env []string, keys ...string) []string {
 	return out
 }
 
-// Healthy reports whether a URL answers 200 within the timeout.
-func Healthy(url string, timeout time.Duration) bool {
+// Health is the probe's FULL answer: did anything answer, and with what status.
+//
+// Healthy collapses that to one bool, which is all a lifecycle verb needs — it
+// either proceeds or does not. A CONNECTION STATE surface needs more, because
+// "nothing answers at the configured URL" (offline: start the plane) and
+// "something answers and is not well" (plane-error: a different problem with a
+// different remedy) are NOT the same finding, and reporting an unhealthy plane as
+// absent sends the operator to the wrong fix.
+type Health struct {
+	// Reachable is true when a TCP connection was made and an HTTP response came back.
+	Reachable bool
+	// StatusCode is the HTTP status, 0 when nothing answered.
+	StatusCode int
+	// Err is the transport error, nil when a response came back.
+	Err error
+}
+
+// Healthy reports whether the plane is reachable AND answers 200.
+func (h Health) Healthy() bool { return h.Reachable && h.StatusCode == 200 }
+
+// Probe is the ONE health probe. Healthy delegating to it is what keeps the two
+// answers from ever disagreeing (a second copy of "what counts as healthy" is how
+// a screen says connected while a start says failed).
+func Probe(url string, timeout time.Duration) Health {
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(url)
 	if err != nil {
-		return false
+		return Health{Reachable: false, Err: err}
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode == 200
+	return Health{Reachable: true, StatusCode: resp.StatusCode}
+}
+
+// Healthy reports whether a URL answers 200 within the timeout.
+func Healthy(url string, timeout time.Duration) bool {
+	return Probe(url, timeout).Healthy()
 }
 
 // BridgeIP resolves the docker bridge address — the address a runtime container

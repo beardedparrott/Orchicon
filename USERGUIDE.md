@@ -99,7 +99,7 @@ dispatches, and **fails for every workflow run**.
 | Official installer → `~/.opencode/bin` | ✅ | ✅ | ✅ **use this** |
 | `npm`/`bun` global **in your home** (`~/.npm-global/bin`, `~/.bun/bin`, an `nvm` prefix under `~/.nvm`) | ✅ | ✅ | ❌ |
 | `sudo npm i -g` → `/usr/local/bin` | ✅ | ⚠️ if the plane's `PATH` reaches it | ❌ |
-| A Windows install (`opencode.exe`) | ⚠️ through WSL interop | ❌ | ❌ |
+| A native Windows install (`opencode.exe` on `PATH`) | ✅ | ✅ | ❌ |
 
 Orchicon resolves the binary in this order: `ORCHICON_OPENCODE_BIN`, then `PATH`,
 then `~/.opencode/bin`, `~/.local/bin`, `~/.npm-global/bin`, `~/.bun/bin`. **Only
@@ -124,12 +124,14 @@ The plane warns about exactly this at startup:
 opencode resolves to a path the runtime containers cannot see — workflow-run executions will not find it
 ```
 
-**On Windows, install it inside WSL.** The whole stack runs in a WSL2 distro (see
-[One-line install (Windows PowerShell)](#one-line-install-windows-powershell--via-wsl2)),
-so the CLI has to be in that same distro. A Windows `opencode.exe` is reachable
-from a WSL shell through interop, which makes it look installed — it is not usable
-by the plane or its containers. Inside the distro, run the command above as your
-own user.
+**On Windows, install it where the plane runs.** With the native installer that is
+Windows itself (see
+[One-line install (Windows PowerShell)](#one-line-install-windows-powershell--native)):
+the plane is a Windows process of your user, so install the CLI as your own user and
+put it on your `PATH` — a Windows `opencode.exe` is the right thing to install. If you
+opted into runtime containers (`-Containers`), a workflow that runs *in* a container
+still needs the CLI inside the Linux substrate, where the `~/.opencode/bin` rule above
+applies as written.
 
 **If you install it while the plane is already running**, note that the discovery
 of OpenCode's models and MCP servers happens **at plane startup**. A plane that
@@ -165,47 +167,60 @@ host once so the CLI carries your own login.
 curl -fsSL https://orchicon.dev/install | bash
 ```
 
-The installer downloads the binary, then runs `orchicon install` to set up
-**everything**: pull the published images
-(`ghcr.io/beardedparrott/orchicon` + `orchicon-runtime`), start the host-side
-runtime daemon, start this instance's **own** Postgres and NATS on your host, start
-the plane, and print how to connect / start / stop. Pass `--no-setup` to install only
-the binary (headless / CI).
+The installer downloads the binary and then runs `orchicon install`, which sets up
+**everything on the host** — no Docker and no Postgres required: it resolves the
+infrastructure binaries (PostgreSQL and NATS are downloaded for this instance, or a
+compatible host install is used), starts the host-side runtime daemon, starts this
+instance's **own** Postgres and NATS, starts the plane, and prints how to connect /
+start / stop. It also offers the optional **runtime images** as a multi-select choice
+with each variant's size, defaulting to **none** — a project starts in `local` mode and
+needs no image, and one is fetched on demand later if a project opts into runtime
+containers. Pass `--no-setup` to install only the binary (headless / CI).
 
-### One-line install (Windows PowerShell — via WSL2)
+### One-line install (Windows PowerShell — native)
 
 ```powershell
 irm https://orchicon.dev/install.ps1 | iex
 ```
 
-Orchicon's runtime layer (the runtime daemon, its unix socket, and the container
-mounts) is **POSIX-only** — there is no native Windows port. On Windows the whole
-stack therefore runs inside **WSL2**, and the installer orchestrates it:
+Orchicon's plane and its services (Postgres, NATS) run as **native Windows host
+processes** of the user who installs them, so the installer needs **no WSL2 and no
+Docker Desktop**. What it does:
 
-1. **WSL2 provisioning** — the script detects WSL and a Linux distro, ensures WSL2
-   is the default version, and prints exact next steps if WSL or a distro is
-   missing (Windows 10 21H2+ / Windows 11: run `wsl --install` in an admin shell
-   and reboot).
-2. **Docker check inside WSL** — confirms `docker version` works inside the distro
-   (Docker Desktop with WSL2 integration, or Docker Engine installed in the distro).
-   When it does not, it says **which** of the three causes you have — no docker CLI in
-   the distro at all, a CLI with no daemon running, or Docker Desktop running with the
-   WSL integration off for this distro — and quotes what the distro itself reported.
-3. **Linux binary** — it downloads the **Linux** release asset
-   (`orchicon_<ver>_linux_<arch>.tar.gz`, arch mapped from the Windows processor)
-     and installs it inside the distro (default `~/.local/bin`). There is no Windows
-     binary to download: releases publish linux and darwin only.
-4. **One-command setup** — it runs `orchicon install` inside WSL: pull the
-   published images, start the runtime daemon, start this instance's Postgres and
-   NATS, start the plane, wait for health. This is the slow part (minutes on a first
-   install), so
-   every step is named as it starts and the output is **streamed live** rather than
-   replayed at the end. It also asks about the host ports — press ENTER to accept
-   each default.
-5. **Connection info** — WSL2 forwards `localhost`, so it prints the
-   Windows-visible URLs: `http://localhost:8080` (control plane) and
-   `http://localhost:3002` (Grafana). If the URLs do not answer, check Windows
-   Defender Firewall or add a `netsh interface portproxy` port forward.
+1. **Refuses an elevated shell, before it downloads anything.** Postgres refuses to run as
+   Administrator, so an elevated install would fail part-way through with an error about
+   `initdb` rather than about the shell it was started from; the installer says so up front
+   and tells you to open a normal PowerShell. Nothing is downloaded and nothing is changed.
+2. **Installs the native binaries** — it downloads `orchicon_<version>_windows_amd64.zip`
+   and places `orchicon.exe` and `orch.exe` in `%LOCALAPPDATA%\Programs\Orchicon`, then
+   adds that directory to your **user** `PATH` (once — a re-run does not append again). No
+   administrator rights are needed.
+3. **Runs `orchicon install`** natively: acquires the host service binaries (Postgres,
+   NATS — the slow part on a first install), starts the host-side runtime daemon, starts
+   this instance's Postgres and NATS, starts the plane, and offers the optional **runtime
+   images** as a multi-select that defaults to **none**. It also asks about the host ports —
+   press ENTER to accept each default. Every step streams live rather than being replayed at
+   the end, so a working install never looks hung.
+4. **Prints the URL it recorded.** The port comes from the record the install wrote
+   (`%USERPROFILE%\.local\share\orchicon-<instance>\ports.json`), never from a constant, so
+   the number printed is the one that is actually bound.
+
+**WSL2 is needed only for containers.** Pass `-Containers` (or set
+`ORCHICON_INSTALL_CONTAINERS=1`) and the installer provisions and verifies the WSL2
+substrate a workflow's *runtime container* runs in — using the same detection and
+provisioning logic the WSL-first installer had. A plain install never runs `wsl` and works
+on a machine that has none. The container engine itself is provisioned and diagnosed by
+`orchicon install` (podman first, then docker — see the container-engine ADR); this script
+no longer probes for a Docker Desktop install, and the three-cause "no CLI / no daemon / no
+WSL integration" report is gone with the requirement it described.
+
+**Ports are record-first.** The port questions are asked once per instance. A *second*
+install for the same instance reuses the recorded ports and asks nothing. A genuine
+collision — the port held by another instance, or by a foreign process — is reported
+naming the other instance or the owning pid and executable, rather than silently shifting a
+port. Defaults are per instance (dev `8080`, test `8092`, prod `8091` for the control
+plane; each has its own service ports too), and every one of them is answerable at the
+prompt.
 
 **The installer never closes your PowerShell window.** Whatever goes wrong it prints
 what failed and the next steps, then returns to the prompt with your session intact —
@@ -217,47 +232,86 @@ prints the exact command that resumes it — a re-run is idempotent.
 
 **Prerequisites:**
 
-- **Windows 10 21H2+ / Windows 11**. First-time WSL users run `wsl --install`
-  from an elevated PowerShell and reboot; the installer guides through this if it
-  is not yet set up.
-- **Docker Desktop** with the **WSL integration** enabled for your distro
-  (Settings → Resources → WSL Integration), or Docker Engine running inside the
-  distro.
-- *(optional)* an adapter CLI such as OpenCode, installed **inside WSL** as your
-  own user — see [Adapter CLIs go in WSL](#installing-an-adapter-cli) and the note
-  below on the Windows/WSL boundary.
+- **Windows 10 21H2+ / Windows 11.** Nothing else for a native install: no WSL2 distro and
+  no Docker Desktop. (`-Containers` additionally needs WSL2 with a Linux distro; the
+  installer guides through `wsl --install` from an elevated shell plus a reboot if it is
+  missing.)
+- *(optional)* an adapter CLI such as OpenCode, installed **on the Windows side** as your
+  own user and present on `PATH` — see [Installing an adapter CLI](#installing-an-adapter-cli).
+- The **desktop app** additionally wants the WebView2 runtime, which ships with Windows 11
+  and current Windows 10; it is not required by the installer or the plane.
 
-**Adapter CLIs go in WSL.** If you use the OpenCode or Claude adapter, install that
-CLI **inside the distro** with the commands in
-[Installing an adapter CLI](#installing-an-adapter-cli) — not on the Windows side.
-WSL reaches Windows executables through interop, so a Windows `opencode.exe`
-appears to run in a WSL shell, but neither the plane nor its runtime containers
-can use it. The same `sudo` rule applies: install as your own user, because only
-your home directory is mounted into the containers the work runs in.
+**Adapter CLIs run where the plane runs.** With a native install that is Windows: install
+the CLI as your own user (not as an administrator) and make sure it is on `PATH`. The plane
+starts it as its own child process, so a Windows `opencode.exe` is the right thing to
+install — there is no distro in the picture unless you opted into containers, and even then
+the CLI is the plane's child rather than a container process.
 
-**Project directories are WSL paths.** The UI's `project_dir` is a host path.
-Inside WSL2 a Windows project `C:\Users\you\projects\Foo` is mounted by Docker
-Desktop at `/mnt/c/Users/you/projects/Foo` — enter that **WSL path** in the
-project form. There is no Windows↔WSL path translation layer; the UI accepts
-whatever path the plane's filesystem (WSL) can resolve.
+**Project directories are host paths.** The UI's `project_dir` is a path the plane's
+filesystem can resolve — on a native Windows install that is a normal Windows path such as
+`C:\Users\you\projects\Foo`. A project that opts into a runtime container mounts that path
+into a Linux substrate, where Windows drives appear under `/mnt/c/...`; there is no
+Windows↔WSL path translation layer, so enter a path that filesystem can resolve when the
+work runs in a container.
 
-**Options** (PowerShell form of the Linux flags): `-Version`, `-InstallDir` (a
-**WSL** path, default `~/.local/bin`), `-NoSetup`, `-Uninstall` (stops the
-container instances and removes the binary; the WSL distro is left intact),
-`-Clean`, `-ForceClean`, `-DryRun`.
+**Options** (PowerShell form): `-Version`, `-Instance dev|test|prod`, `-InstallDir`,
+`-Containers`, `-NoSetup`, `-Yes`, `-Uninstall`, `-RemoveBinary`, `-Purge`, `-Clean`,
+`-ForceClean`, `-DryRun`, `-Help`.
 
-  > **Windows is covered by an offline harness, not by a full install.** A harness
-  > (`scripts/tests/install-ps1-wsl-encoding/`, run in CI as the `windows-installer` job)
-  > exercises the installer's own functions against a `wsl.exe` double and runs its failure
-  > paths inside a child PowerShell.
-  >
-  > What it CANNOT see is a Windows PowerShell 5.1 quoting fault — and one shipped: scripts
-  > were handed to `wsl.exe` as inline arguments, 5.1 stripped every embedded double quote
-  > before bash saw them, and the install died on a mangled script while the same scripts
-  > worked on Linux. The transport is now **base64** (an alphabet containing no quote, so
-  > there is nothing to strip) and the harness asserts both the round trip and the absence of
-  > the hazard. A real end-to-end run still needs a Windows machine; the happy path after
-  > Docker is confirmed is the identical Linux code path exercised on Linux hosts.
+  > **Windows is covered by an offline harness, not by a full install.** The harness
+  > (`scripts/tests/install-ps1-native/`, run in CI as the `windows-installer` job) runs the
+  > real install path against a release-shaped zip, a `wsl.exe` double and a
+  > version-reporting `orchicon.exe` double, and runs the failure paths inside a child
+  > PowerShell. It pins exactly what a Windows-only regression hides in: the archive is
+  > extracted **recursively** (the release wraps a directory), a plain install never invokes
+  > `wsl`, `-Containers` still provisions the substrate, the interactive setup is the **only**
+  > invocation that claims a human is present, the printed ports come from the record rather
+  > than a constant, and an elevated shell is refused with the Postgres message. Its
+  > `wsl.exe`/`podman` doubles refuse every mutating engine verb, so a guest that reaches an
+  > install path cannot install anything for real while the suite reports "all assertions
+  > passed". Scripts are still carried into the distro as **base64** rather than as inline
+  > arguments, because PowerShell 5.1 stripped every embedded double quote before bash saw
+  > them and no test on a Linux host could see it. What the harness cannot see is a
+  > Windows-only console fault; a real end-to-end run still needs a Windows machine.
+
+### macOS: Gatekeeper and verification
+
+The macOS binaries are **not** code-signed or notarised. That is a deliberate decision rather
+than an oversight: a Developer ID certificate costs USD 99/yr, and the install path that we
+document is already Gatekeeper-clean because **`curl` sets no quarantine bit** — only a browser
+download does. Signed artifacts are a job away (`sign-macos` in
+`.github/workflows/release.yml`, dormant until `MACOS_SIGNING_ENABLED` is `true` and a
+certificate exists); until then, these are the exact instructions.
+
+**Installed with the one-liner?** Nothing to do — no quarantine bit, no prompt. If macOS still
+refuses to run it, the binary was replaced or moved from a browser download; go to the case
+below.
+
+**Downloaded the archive in a browser?** The archive carries the quarantine mark and the
+extracted binary inherits it, so Gatekeeper blocks it. Clear the mark on that one file:
+
+```bash
+xattr -d com.apple.quarantine /path/to/orchicon
+```
+
+This removes the mark from one file. It does **not** disable Gatekeeper, and it is not a
+security setting to lower — every other unsigned binary on the machine stays blocked.
+
+**Verify what you downloaded.** Every release publishes `SHA256SUMS` beside the archives, and
+both installers check it before extracting; a mismatch aborts the install, prints both hashes
+and installs nothing. To check by hand:
+
+```bash
+shasum -a 256 orchicon_<version>_darwin_<arch>.tar.gz   # `sha256sum` does not exist on macOS
+```
+
+and compare with the `SHA256SUMS` asset on the release page.
+
+**Homebrew (planned, not available).** There is no tap today. A formula that lags a release is
+worse than the exact command above — it installs a stale binary and the version in `orchicon
+version` no longer matches the docs — so the tap lands when there is a release process to update
+it automatically. It is the intended future channel on macOS, precisely because it sidesteps
+quarantine entirely.
 
 ### Install options
 
@@ -290,8 +344,8 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 
 | Path | Contents |
 |---|---|
-| `<install-dir>/orchicon` | The `orchicon` binary (control plane + embedded frontend + migrations + container configs). On Windows this lives **inside the WSL2 distro** (`~/.local/bin/orchicon`). |
-| `~/.local/share/orchicon/` | Runtime state, PID files, logs (`.dev/`), blob store (`data/`). On Windows, under the WSL distro's home. |
+| `<install-dir>/orchicon` | The `orchicon` binary (control plane + embedded frontend + migrations + container configs). On Windows the native binaries are `orchicon.exe` + `orch.exe` in `%LOCALAPPDATA%\Programs\Orchicon`. |
+| `~/.local/share/orchicon/` | Runtime state, PID files, logs (`.dev/`), blob store (`data/`). On Windows, under your user profile: `%USERPROFILE%\.local\share\orchicon-<instance>\`. |
 
 ### Which shape you get
 
@@ -329,6 +383,25 @@ orchicon stop --instance=prod
 `ORCHICON_INSTANCE` is the fallback when neither is given, so an existing script that exports it keeps
 working. Naming two instances at once is refused rather than guessed.
 
+#### Where plane control lives
+
+Three places, and they all call **one** shared mechanism (`internal/planecontrol`) — there is no second
+implementation of "how do we stop a plane, and what do we do when we cannot identify it":
+
+| surface | how it reaches the plane | available today |
+|---|---|---|
+| **CLI** | `orchicon start`, `stop`, `restart`, `plane start/stop/restart/status` | yes — the admin path, and the equivalent of every other surface |
+| **TUI** | `orch`, off the plane channel, so it can control a plane that is not serving it | when your build includes it; the verbs above are the fallback |
+| **desktop app** | its offline state's start/stop action | when your build includes it; the verbs above are the fallback |
+
+Where control does **not** live: **the web app has no lifecycle control and gains none.** A browser cannot
+spawn a process, and a lifecycle RPC to the plane would have to reply before killing the server answering
+it. So a plane stopped underneath an open tab shows the SPA's ordinary **connection-failure** state — a
+failed request, an error toast, a retry that fails — and that is intentional, not a missing button.
+
+To watch the cycle end to end — including the fail-safe and the two-instance isolation — run
+`scripts/plane-control-e2e.sh`; the procedure it implements is `docs/plane-control-e2e-acceptance.md`.
+
 > **There is no boot-time autostart.** After a machine reboot, run `orchicon start`. Orchicon installs
 > no systemd unit and no launchd job, so nothing starts the plane for you.
 
@@ -365,7 +438,9 @@ An install resolves every published port for its instance, and **three instance 
 | Port | dev | prod | test |
 |---|---|---|---|
 | Web UI + API (`ORCHICON_CONTROL_PORT`) | 8080 | 8091 | 8092 |
-| Grafana (`ORCHICON_GRAFANA_PORT`) | 3002 | 3003 | 3004 |
+| ~~Grafana (`ORCHICON_GRAFANA_PORT`)~~ | ~~3002~~ | ~~3003~~ | ~~3004~~ |
+
+3002/3003/3004 are **retired and reserved** — they were Grafana's, and no service reuses them.
 
 **Setting the variable pins the port and skips the prompt** — the non-interactive path for a scripted
 install. Left unset, a port already in use raises a prompt on your terminal offering the next free one;
@@ -415,6 +490,19 @@ when the plane boots (embedded runner).
 orchicon version
 curl http://localhost:8080/healthz   # {"status":"ok"}
 ```
+
+Both installers also verify the **download** before installing anything: they fetch
+`SHA256SUMS` from the release and compare it with the archive, and a mismatch aborts the
+install with both hashes printed (nothing is written). To check a manual download yourself:
+
+```bash
+shasum -a 256 orchicon_<version>_darwin_arm64.tar.gz   # macOS
+sha256sum orchicon_<version>_linux_amd64.tar.gz       # Linux
+Get-FileHash .\orchicon_<version>_linux_amd64.tar.gz  # Windows PowerShell
+```
+
+and compare the hash with the `SHA256SUMS` asset on the release page. `--no-verify` skips
+the check (only for a mirror you control).
 
 ---
 
@@ -853,10 +941,9 @@ Workers, Recovery, or Cost Explorer.
 
 **Where:** top bar → **Overview** → **Telemetry**
 
-**Purpose.** Traces, metrics and logs, and the entry point to the embedded Grafana
-stack.
+**Purpose.** Traces, metrics and logs, read directly from the telemetry backends.
 
-**What it shows.** A trace list with span detail, plus the live telemetry
+**What it shows.** A trace list with span detail, the log and metric explorers, plus the live telemetry
 subscription (footnote status, refresh on event, automatic reconnect).
 
 **How to use it.**
@@ -866,10 +953,12 @@ subscription (footnote status, refresh on event, automatic reconnect).
    where the error originated.
 3. Use the `trace_id` shown on an audit event or execution to correlate the same
    work across surfaces.
-4. For raw exploration, the **embedded Grafana UI** is available at `/grafana`
-   (Tempo for traces, Loki for logs, VictoriaMetrics for metrics).
+4. For raw exploration, use the **Traces / Metrics / Logs** tabs — they read Tempo, VictoriaMetrics and Loki
+   directly through the plane's authenticated API. (The embedded Grafana UI and its `/grafana` proxy were
+   removed: a browser iframe cannot send an Authorization header, and the old workaround mounted the proxy
+   outside the auth middleware. Nothing is mounted outside `ResolveAuth` now.)
 
-**Actions.** Read-only, plus the Grafana jump-off.
+**Actions.** Read-only.
 
 ### 6.3 Cost Explorer
 
@@ -917,13 +1006,21 @@ that are injected into every worker prompt.
 
 **The fields, and why you'd set them.**
 
+> **Local mode is not contained.** `runtime` runs each execution in a short-lived, root-free
+> container — that is a real isolation boundary. `local` runs the worker as a **host process with
+> your own filesystem access**: it can read and write anything you can. The layers that remain —
+> opencode's permission deny rules, the OS execution guard that shims dangerous binaries, and the
+> worker prompt's Safety rules — are **defense-in-depth, not containment**, and a determined worker
+> escapes them (an absolute-path `/bin/rm`, or a binary it writes and runs itself). If isolation
+> matters, keep `runtime`.
+
 | Field | What it is | Why you'd set it |
 |---|---|---|
 | **Name** / **Slug** | The display name, and an optional short slug used in URLs and references | Set the slug once if you will refer to the project by name in scripts or URLs |
 | **Project directory** | The directory workers operate in — and the boundary they are held to | Always set it. It is also the only directory guaranteed to be mounted into the containers where workers run, so everything a worker may touch must live under it |
 | **Git strategy** | How a run handles branches and pull requests — see below | Choose the outcome you want: a pushed branch, a reviewed PR, or nothing pushed at all |
 | **Default runtime image** | The container image work items use unless they set their own. Empty = the base image | Set it when your projects need extra tooling (a language runtime, a browser, a CLI) so you are not setting it per work item |
-| **Execution mode** | `runtime` — always run in a container (default), or `local` — run in-process on the host | Keep `runtime` for isolation. Use `local` when a task genuinely needs the host's own environment, accepting that it is no longer contained |
+| **Execution mode** | `runtime` — always run in a container (default), or `local` — run in-process on the host | Keep `runtime` for isolation: it is the only real boundary. `local` runs as a host process with your own filesystem access — the permission rules and execution guard are defense-in-depth and can be escaped (an absolute-path `/bin/rm`, a binary the worker writes itself), so choose `local` only when a task genuinely needs the host's own environment |
 | **Max concurrent runs** | Caps how many executions may run at once. `0` = no additional restriction | Set it when a project would otherwise saturate the machine or race itself; the effective limit is `min(tenant, project)` |
 | **Goals** | Free-form markdown describing what the project is for | Worth writing: goals are injected into worker prompts, so they steer every task in the project |
 | **Context files** | Files or directories injected into every worker prompt, on top of the work item's own | Point them at the conventions, specs or reference material a worker should always have |
@@ -947,8 +1044,9 @@ value wins when both are set.
 1. **Create** — *Projects → New Project*. Give it a name, a slug, and optionally
    goals (markdown).
 2. **Set the directory** — `project_dir` is where workers operate, and it is the
-   boundary they are held to. On Windows/WSL2 this must be the **WSL path** (see
-   §1).
+   boundary they are held to. On a native Windows install it is a normal Windows path
+   (`C:\Users\you\projects\Foo`); if the work runs in a runtime container, it must be
+   a path that container's Linux substrate resolves (`/mnt/c/...`). See §1.
 3. **Add context files** — files or directories injected into the prompt. A
    directory is listed and read in full by the worker.
 4. **Edit** — open the project's detail page to change the title, goals, directory
@@ -1612,8 +1710,10 @@ configuration:
   workers still reference the provider.
 - **Ollama** — carries a `num_ctx` default alongside the base URL.
 
-**A note on Windows.** The entire runtime layer — daemon, unix socket, container
-mounts — is Linux/POSIX-only. On Windows everything runs inside WSL2 (see §1).
+**A note on Windows.** The plane, its host services and the runtime daemon run
+**natively** on Windows, as host processes of your own user (see §1). What is still
+Linux-only is the *runtime container* layer: a workflow that runs in a container needs
+the WSL2 substrate, which the installer provisions when you opt in with `-Containers`.
 
 ### 11.4 Admin
 
@@ -1647,7 +1747,7 @@ deleted, and is the tenant-admin bypass.
 - **Events** — the actor-based record of **who did what**: the action
   (`work_item.created`, `worker.published`, `auth.login`, …), the actor and auth
   method, the polymorphic target, before/after snapshots for updates, and the OTel
-  `trace_id` for cross-correlation with Grafana traces. A filter bar scopes by
+  `trace_id` for cross-correlation with Tempo traces. A filter bar scopes by
   action, actor, target type, target id and time window.
 - **Decisions** — the Rego policy-decision trail.
 
@@ -1802,6 +1902,16 @@ press — there is no modifier to remember):
 
 - **Content pane** — the focused screen, split into a **list** of sources and a
   **detail** pane.
+- **Plane state** — the footer carries a plane chip beside the connection state:
+  `plane up (dev)`, `plane down`, `plane drifted`, or `plane remote` (this shell is
+  talking to a plane that is not on this host, so the lifecycle commands refuse).
+  **Drifted** means the plane is answering but running a superseded binary — restart it to
+  swap it. When the plane is down, the error strip names the
+  remedy (the start command and the plane log at
+  `<data dir>/serve/logs/orchicon.log`) instead of only reporting a refused connection.
+  The verbs re-exec the **installed `orchicon`** (`~/.local/bin/orchicon`, or the one on
+  `PATH`) to run the plane — `orch` itself is a thin remote client and cannot serve. If
+  `orchicon` is not installed, `/plane-start` says so instead of failing with a timeout.
 - **Chat dock** — the composer at the bottom. It is **focused at launch**, so you
   can type immediately.
 - **Right rail** — the Ask conversations list, toggled with `ctrl+r` (open by
@@ -2410,14 +2520,14 @@ The `orchicon` binary runs the plane and its supporting services.
 
 | Command | Description |
 |---|---|
-| `orchicon install [--instance <name>]` | One-command **setup**: pull images, start the runtime daemon, start this instance's Postgres + NATS, start the plane, print connection info. **Idempotent** — re-running converges an existing instance and upgrades a superseded plane. It deliberately does **not** restart a plane that is already healthy on the installed binary |
+| `orchicon install [--instance <name>]` | One-command **setup**: acquire the infrastructure binaries (PostgreSQL + NATS — no Docker and no host Postgres needed), start the runtime daemon, start this instance's Postgres + NATS, start the plane, print connection info. Also offers the optional **runtime images** as a multi-select with each variant's size, defaulting to none — nothing is pulled that was not chosen. **Idempotent** — re-running converges an existing instance and upgrades a superseded plane. It deliberately does **not** restart a plane that is already healthy on the installed binary |
 | `orchicon start [instance]` | Start an **installed** instance: its services (Postgres + NATS), then its plane. Idempotent, and it never installs. This is the command to run after a reboot (there is no autostart) |
 | `orchicon stop [instance]` | Stop an instance: its plane, then its services. **Idempotent** — running it on a stopped instance is a successful no-op |
 | `orchicon restart [instance]` | Restart this instance so its components re-read their environment. Use it after installing an adapter CLI or changing `PATH` — see *Installing an adapter CLI* |
-| `orchicon plane <status\|start\|stop\|restart> [instance]` | The **plane only** — leaves the services running. The mechanism the TUI and the desktop app call |
+| `orchicon plane <status\|start\|stop\|restart> [instance]` | The **plane only** — leaves the services running. The same mechanism the TUI and the desktop app call — the TUI's `/plane`, `/plane-start`, `/plane-stop` and `/plane-restart` invoke the same `internal/planecontrol` paths (there is no lifecycle RPC). `plane status` is the surface that reports the **instance, the serving binary and drift** (a plane running a superseded binary) |
 | `orchicon services <up\|down\|status> [instance]` | The **services only** — this instance's Postgres + NATS on the host. `up` is idempotent; `down` verifies the ports came free, and stops this instance's **own** container from an older install if that is what still holds them. `down --force` also terminates this instance's leftover processes — never one it does not own |
 | `orchicon serve` | Run the control plane with the embedded frontend (headless, migrations on boot) |
-| `orchicon serve --detach` / `--status` / `--stop` | Manage a background `serve` instance (PID file) |
+| `orchicon serve --detach` / `--status` / `--stop` | Manage a **background** `serve` process. `--status` reports the same thing as `orchicon plane status` — the instance, its residency, the plane PID, the serving binary and whether it has been superseded, plus health — through the same code path, and exits `0` only when the PID file names a live process. **There is no `serve --start`**: `orchicon start` starts (or restarts) the instance, and `orchicon plane start` starts the plane alone |
 | `orchicon container` | **Internal.** The supervisor the host services re-exec as; not a supported way to run an instance |
 | `orchicon runtime-daemon` | Host process owning the container engine; spawns **per-workflow runtime containers** — the only thing a container is used for |
 | `orchicon runtime-supervisor` | Runtime container PID 1 |
@@ -2428,10 +2538,29 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon run-context <runID>` | Print a workflow run's `.orchicon` archive (per-step files plus run summary/status) for context-by-reference. Flags: `--grep <pattern>`, `--steps`/`--summary`, `--limit N` |
 | `orchicon version` | Print the installed version |
 
+### Where plane control lives: the desktop app's **Manage Server** page
+
+The desktop app has a **Manage Server** page under the **Control** nav group. Start, stop and restart
+the plane from there, with the connection state always visible: `connecting`, `connected`, `offline`
+(nothing answers at the configured URL — the page shows that URL, the instance and its port) or
+`plane-error` (something answers and is unhealthy, or is running a superseded binary — a different
+problem from an absent plane, with a different fix). The selected instance is shown on the page and
+named in every confirmation; when more than one instance is running you pick one, and an unrecognised
+control port asks which instance rather than guessing. On failure the page names this instance's log
+path. Every action is disabled while it runs, and a start is reported as *started* only after the
+plane answers `/healthz`.
+
+It is the same mechanism as `orchicon plane` (`internal/planecontrol`): there is deliberately **no
+lifecycle RPC**, and the **web app has no Manage Server entry, no lifecycle control and no notice
+about one** — by decision, not by omission.
+
 **Every lifecycle verb takes the instance the same way** — a positional (`orchicon stop prod`), a flag
 (`orchicon stop --instance prod`), or `ORCHICON_INSTANCE` as the fallback. Naming two at once is refused
 rather than guessed, and an unknown flag is an error rather than being silently ignored. The default is
-`dev`.
+`dev`. The same instance forms work on `plane <verb>`, so `orchicon plane restart --instance prod` means
+one thing. `services down --force` reaches **only this instance's own** leftovers — a process this
+instance does not own is reported by pid and executable, never killed, because it may be a database you
+care about.
 
 **Scripts:**
 

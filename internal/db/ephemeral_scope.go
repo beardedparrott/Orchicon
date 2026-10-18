@@ -8,6 +8,12 @@ package db
 // console." Quick Work creates a worker, a workflow and a work item per job
 // and removes them when the job ends; while they exist they must be invisible
 // to humans. This file is the read half of that guarantee.
+//
+// The CREATION half carries one more rule that belongs with these: an ephemeral
+// work item gets a CONCRETE execution_mode at create (EphemeralExecutionMode,
+// stamped in CreateWorkItem), never NULL/inherit — nobody can see the item to
+// fix it, so "which mode does it actually run in" must be answerable from the
+// row itself. See internal/db/execution_mode.go.
 
 // ephemeralPredicate returns the SQL predicate for an ephemeral scope,
 // unqualified — for queries over a single table with no alias.

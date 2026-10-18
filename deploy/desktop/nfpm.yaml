@@ -39,7 +39,7 @@ contents:
     dst: /usr/bin/orchicon-desktop
     file_info:
       mode: 0755
-  - src: desktop/build/bin/orchicon-desktop
+  - src: cmd/orchicon-desktop/build/bin/orchicon-desktop
     dst: /usr/lib/orchicon/orchicon-desktop
     file_info:
       mode: 0755
@@ -47,7 +47,7 @@ contents:
     dst: /usr/share/applications/orchicon-desktop.desktop
     file_info:
       mode: 0644
-  - src: desktop/build/appicon.png
+  - src: cmd/orchicon-desktop/build/appicon.png
     dst: /usr/share/icons/hicolor/512x512/apps/orchicon-desktop.png
     file_info:
       mode: 0644

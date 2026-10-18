@@ -10,12 +10,11 @@ import (
 
 // The true-colour advertisement, and the one place it goes missing.
 //
-// WHY THIS IS HERE AND NOT IN A WINDOWS LAUNCHER. There is no native Windows orch
-// binary to set it in — release.yml ships linux/darwin only, deliberately, because
-// the runtime layer is POSIX-only — so `orch` on Windows IS the Linux binary,
-// running inside the WSL2 distro that scripts/install.ps1 installs into. And a
-// Windows-side environment variable would not reliably cross that boundary anyway:
-// WSL relays a specific set of variables and requires WSLENV to relay more.
+// WHY THIS IS HERE AND NOT IN A WINDOWS LAUNCHER. `orch` on Windows is a NATIVE binary now —
+// release.yml ships windows/amd64 as a zip of orchicon.exe/orch.exe — but the `.exe` has no launcher of
+// its own to set the environment in, and a user who runs it inside the WSL2 distro (where the runtime
+// containers live) would not see a Windows-side variable anyway: WSL relays a specific set of variables
+// and requires WSLENV to relay more.
 //
 // SO THE FIX IS IN-PROCESS, and it SUPPLIES AN ADVERTISEMENT rather than forcing a
 // profile. That distinction is the whole reason this is safe where the removed

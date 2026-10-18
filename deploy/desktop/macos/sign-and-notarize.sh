@@ -14,7 +14,10 @@
 #   MACOS_NOTARY_APPLE_ID the Apple ID used for notarytool
 #   MACOS_NOTARY_TEAM_ID  the team ID
 #   MACOS_NOTARY_PASSWORD an app-specific password (NOT the Apple ID password)
-#   APP_PATH              path to the .app (default: desktop/build/bin/Orchicon.app)
+#   APP_PATH              path to the .app (default: the first *.app in
+#                         cmd/orchicon-desktop/build/bin, which is where wails build
+#                         writes the bundle: BuildDir defaults to `build` INSIDE the
+#                         project directory)
 #   ORCHICON_VERSION      version tag; names the output zip
 # Output:
 #   dist/desktop/orchicon_desktop_<ver>_darwin_universal.zip (stapled)
@@ -28,7 +31,11 @@ set -euo pipefail
 : "${MACOS_NOTARY_PASSWORD:?MACOS_NOTARY_PASSWORD is required for notarisation}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-APP_PATH="${APP_PATH:-$ROOT/desktop/build/bin/Orchicon.app}"
+APP_PATH="${APP_PATH:-}"
+if [ -z "$APP_PATH" ]; then
+  APP_PATH="$(find "$ROOT/cmd/orchicon-desktop/build/bin" -maxdepth 1 -name '*.app' -type d 2>/dev/null | head -1)"
+  APP_PATH="${APP_PATH:-$ROOT/cmd/orchicon-desktop/build/bin/Orchicon.app}"
+fi
 VERSION="${ORCHICON_VERSION:-0.0.0-dev}"
 VERSION="${VERSION#v}"
 OUT="${ROOT}/dist/desktop"

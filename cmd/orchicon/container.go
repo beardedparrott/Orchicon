@@ -1,6 +1,6 @@
 // Command orchicon container runs the entire Orchicon stack inside a single
-// container as PID 1: Postgres, NATS, the Grafana telemetry plane (Tempo,
-// Loki, VictoriaMetrics, OTel collector, Grafana — optional via
+// container as PID 1: Postgres, NATS, the telemetry plane (Tempo,
+// Loki, VictoriaMetrics, OTel collector — optional via
 // ORCHICON_TELEMETRY), and the Orchicon control plane itself.
 //
 // It is a minimal process supervisor, not an init system:
@@ -12,8 +12,7 @@
 //   - reaps children (Go's os/exec does this on Wait)
 //
 // The control plane's /healthz is the container's aggregate readiness
-// signal; published ports are the control plane (:8080) and Grafana
-// (:3000 → host :3002 by default in docker run).
+// signal; the published port is the control plane (:8080).
 //
 // SERVICES-ONLY MODE: with ORCHICON_CONTAINER_SERVICES_ONLY=1 the supervisor
 // starts postgres, nats and the telemetry plane and SKIPS the control-plane
@@ -25,7 +24,7 @@
 // Data lives under ORCHICON_DATA_DIR (default /var/lib/orchicon). Config
 // files are written there from the embedded ServiceConfigsFS, with @DATA_DIR@
 // and the resolved @…_PORT@ placeholders substituted, so
-// Tempo/Loki/Grafana/collector find their config without any repo mounts.
+// Tempo/Loki/collector find their config without any repo mounts.
 package main
 
 import (
@@ -45,7 +44,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	assets "github.com/beardedparrott/orchicon"
@@ -69,7 +67,9 @@ const (
 // runContainer is the `orchicon container` entrypoint. It runs until
 // SIGTERM/SIGINT.
 func runContainer(args []string) int {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	// THE STOP SIGNALS ARE PLATFORM-DEPENDENT: SIGTERM+SIGINT on Unix, os.Interrupt on Windows, where
+	// SIGTERM compiles and is never delivered. See signals_unix.go / signals_windows.go.
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -84,8 +84,10 @@ func runContainer(args []string) int {
 	// plane is a host process of its own, exactly the shape services-only mode
 	// already describes. The child is skipped by the SAME branch.
 	servicesOnly := servicesOnlyFromEnv() || residency == residencyHost
+	// privilege_drop, NOT "setpriv": on a platform with no setpriv binary (Windows) there is no drop to
+	// claim, and a log line that says otherwise sends the reader looking for a mechanism that cannot run.
 	log.Info("service residency resolved", "residency", residency,
-		"setpriv", residency != residencyHost, "data_dir", dataDir, "env", serviceResidencyEnv)
+		"privilege_drop", residency != residencyHost && setprivSupported, "data_dir", dataDir, "env", serviceResidencyEnv)
 
 	sup := &supervisor{
 		log:          log,
@@ -121,7 +123,7 @@ func runContainer(args []string) int {
 	// (the control plane's OTel dial is non-blocking and degrades).
 	switch telemetryMode {
 	case "embedded":
-		for _, p := range []*managedProc{sup.tempoProc(), sup.lokiProc(), sup.vmProc(), sup.collectorProc(), sup.grafanaProc()} {
+		for _, p := range []*managedProc{sup.tempoProc(), sup.lokiProc(), sup.vmProc(), sup.collectorProc()} {
 			if err := sup.start(ctx, p); err != nil {
 				log.Error("failed to start", "component", p.name, "error", err)
 			}
@@ -353,7 +355,7 @@ func (s *supervisor) prepareContainerOwnership() error {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return fmt.Errorf("create %s: %w", dir, err)
 			}
-			if err := os.Chown(dir, s.hostUID, s.hostGID); err != nil {
+			if err := chownPath(dir, s.hostUID, s.hostGID); err != nil {
 				return fmt.Errorf("chown %s: %w", dir, err)
 			}
 		}
@@ -362,10 +364,10 @@ func (s *supervisor) prepareContainerOwnership() error {
 		s.ghToken = gitCredentialsToken(filepath.Join(s.hostHome, ".git-credentials"))
 		// The data-dir root + the dirs the control plane (running as the
 		// host user) writes to: backups, blob store, and the project-mounts
-		// manifest. Infra subdirs (postgres→70, nats/tempo/loki/vm/grafana
+		// manifest. Infra subdirs (postgres→70, nats/tempo/loki/vm
 		// →root) keep their own ownership — the supervisor (root) creates
 		// them, and 0755 on the parent lets each child reach its own dir.
-		if err := os.Chown(s.dataDir, s.hostUID, s.hostGID); err != nil {
+		if err := chownPath(s.dataDir, s.hostUID, s.hostGID); err != nil {
 			return fmt.Errorf("chown data dir: %w", err)
 		}
 		for _, sub := range []string{"backups", "blobs", "secrets"} {
@@ -373,7 +375,7 @@ func (s *supervisor) prepareContainerOwnership() error {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return fmt.Errorf("create %s: %w", dir, err)
 			}
-			if err := os.Chown(dir, s.hostUID, s.hostGID); err != nil {
+			if err := chownPath(dir, s.hostUID, s.hostGID); err != nil {
 				return fmt.Errorf("chown %s: %w", dir, err)
 			}
 		}
@@ -387,8 +389,8 @@ func (s *supervisor) prepareContainerOwnership() error {
 // fails immediately instead of shipping a literal "@…@" to a child that then
 // refuses to parse its config.
 //
-// THE PORTS ARE HERE AND NOT IN ARGV because that is where tempo/loki/grafana/
-// the collector keep them: their listen ports live in the config file. Templating
+// THE PORTS ARE HERE AND NOT IN ARGV because that is where tempo/loki/the
+// collector keep them: their listen ports live in the config file. Templating
 // the config from the same servicePorts the readiness probe reads is what makes
 // them movable on a host without breaking the gate — the earlier code could only
 // probe the config's hardcoded port.
@@ -401,7 +403,6 @@ func (s *supervisor) configTokens() map[string]string {
 		"@TEMPO_OTLP_HTTP_PORT@":     strconv.Itoa(p.tempoOTLPHTTP),
 		"@LOKI_HTTP_PORT@":           strconv.Itoa(p.loki),
 		"@VM_HTTP_PORT@":             strconv.Itoa(p.vm),
-		"@GRAFANA_HTTP_PORT@":        strconv.Itoa(p.grafana),
 		"@COLLECTOR_OTLP_GRPC_PORT@": strconv.Itoa(p.collectorOTLPGRPC),
 		"@COLLECTOR_OTLP_HTTP_PORT@": strconv.Itoa(p.collectorOTLPHTTP),
 		"@COLLECTOR_HEALTH_PORT@":    strconv.Itoa(p.collectorHealth),
@@ -497,7 +498,7 @@ func (s *supervisor) initPostgres() error {
 	// Host residency runs as the invoking user, so the dir is already theirs —
 	// there is nothing to hand over (and chown is impossible without root).
 	if !s.isHost() {
-		if err := os.Chown(dataDir, uid, gid); err != nil {
+		if err := chownPath(dataDir, uid, gid); err != nil {
 			return fmt.Errorf("chown postgres data dir: %w", err)
 		}
 	} else if err := hostDataDirWritable(dataDir); err != nil {
@@ -627,9 +628,11 @@ func bridgeGatewayIP() string {
 	return gw.String()
 }
 
-// procNetRoutePath is a constant so the parser below is testable on a fixture.
-const procNetRoutePath = "/proc/net/route"
-
+// procNetRoutePath is a constant so the parser below is testable on a fixture. IT IS PER-OS
+// (platform_paths_unix.go / _windows.go): Windows has no /proc, so its value is "" and the read below fails
+// soft into bridgeGatewayIP's conventional base+1 fallback. The PARSER stays untagged because it is pure Go
+// over a path — only the path was ever POSIX.
+//
 // defaultRouteGateway parses a /proc/net/route body for the IPv4 default
 // route's gateway (Destination 00000000; the gateway is little-endian hex).
 func defaultRouteGateway(path string) string {
@@ -915,8 +918,13 @@ func (s *supervisor) reapRestart(ctx context.Context) {
 	}
 }
 
-// shutdown sends SIGTERM to every child, waits up to shutdownTimeout, then
-// SIGKILLs stragglers.
+// shutdown asks every child to stop, waits up to shutdownTimeout, then forces the stragglers.
+//
+// THE MECHANISM IS PLATFORM-DEPENDENT and lives in signals_unix.go / signals_windows.go: SIGTERM then
+// SIGKILL on Unix; on Windows there is no SIGTERM, so the graceful attempt is a Ctrl-Break to the child's
+// process group (which frequently cannot be delivered) and the force stop is TerminateProcess — no shutdown
+// hook runs. That difference is NAMED in the warning below rather than left for the operator to infer from a
+// child that never got a chance to flush.
 func (s *supervisor) shutdown(ctx context.Context) {
 	s.mu.Lock()
 	states := make([]*procState, 0, len(s.children))
@@ -928,7 +936,7 @@ func (s *supervisor) shutdown(ctx context.Context) {
 	s.log.Info("shutting down", "children", len(states))
 	for _, st := range states {
 		if st.cmd.Process != nil {
-			_ = st.cmd.Process.Signal(syscall.SIGTERM)
+			_ = sendGracefulStop(st.cmd.Process)
 		}
 	}
 
@@ -943,11 +951,16 @@ func (s *supervisor) shutdown(ctx context.Context) {
 		case <-time.After(remaining):
 		}
 	}
-	// Force-kill anything still alive after the grace period.
+	// Force-kill anything still alive after the grace period, and say WHICH. On a platform with no SIGTERM
+	// this is the normal path rather than an exceptional one, so the warning names the mechanism the child
+	// never received instead of blaming the child.
 	for _, st := range states {
-		if st.cmd.Process != nil {
-			_ = st.cmd.Process.Kill()
+		if st.cmd.Process == nil || !pidAlive(st.cmd.Process.Pid) {
+			continue
 		}
+		s.log.Warn("child did not exit within the grace period — forcing it",
+			"service", st.proc.name, "grace", shutdownTimeout.String(), "graceful_stop", gracefulStopLabel())
+		_ = sendForceStop(st.cmd.Process)
 	}
 }
 
@@ -1142,26 +1155,6 @@ func (s *supervisor) collectorProc() *managedProc {
 	}
 }
 
-func (s *supervisor) grafanaProc() *managedProc {
-	rootURL := env("ORCHICON_GRAFANA_PUBLIC_URL", "http://localhost:8080/grafana")
-	return &managedProc{
-		name:    "grafana",
-		command: "/usr/share/grafana/bin/grafana",
-		args:    []string{"server", "--homepath=/usr/share/grafana", "--config=" + filepath.Join(s.configDir, "grafana.ini")},
-		env: []string{
-			"GF_SERVER_ROOT_URL=" + rootURL,
-			"GF_SERVER_SERVE_FROM_SUB_PATH=true",
-			"GF_SECURITY_ALLOW_EMBEDDING=true",
-			"GF_AUTH_ANONYMOUS_ENABLED=true",
-			"GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer",
-			"GF_AUTH_BASIC_ENABLED=false",
-			"GF_AUTH_DISABLE_LOGIN_FORM=true",
-		},
-		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.grafana) + "/api/health"),
-		restart: true,
-	}
-}
-
 // planeProc re-executes this binary as `orchicon serve`, with the
 // container-local defaults applied for any env var the user did not set.
 // When ORCHICON_HOST_* is set the plane runs via setpriv as the HOST user
@@ -1233,7 +1226,6 @@ func containerChildEnv() []string {
 		"ORCHICON_POSTGRES_DSN":  "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable",
 		"ORCHICON_NATS_URL":      "nats://localhost:4222",
 		"ORCHICON_OTEL_ENDPOINT": "localhost:4317",
-		"ORCHICON_GRAFANA_URL":   "http://localhost:3000",
 		"ORCHICON_TEMPO_URL":     "http://localhost:3200",
 		"ORCHICON_LOKI_URL":      "http://localhost:3100",
 		"ORCHICON_VM_URL":        "http://localhost:8428",

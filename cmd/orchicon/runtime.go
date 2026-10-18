@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/runtime"
@@ -106,7 +105,8 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		Log:           log,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// Platform-dependent stop signals: SIGINT+SIGTERM on Unix, os.Interrupt on Windows (signals_*.go).
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 	if err := d.ListenAndServe(ctx); err != nil {
 		return err
