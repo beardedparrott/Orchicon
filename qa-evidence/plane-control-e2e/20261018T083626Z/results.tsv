@@ -13,7 +13,7 @@
 6	BLOCKED	A6 an unidentifiable plane is left alone on restart, and a foreign port holder is reported not killed (AC6)	(invalid host)
 7	BLOCKED	A7 stopping 'dev' leaves 'prod' running and answering (AC7)	(invalid host)
 8	BLOCKED	A8 a plane started from a shell carrying the OTHER instance's environment still writes its own log and PID file (AC8)	(invalid host)
-9	PASS	A9.1 the Connect surface did not grow: no lifecycle RPC exists (surface-size and proto tripwires)	
+9	PASS	A9.1 the Connect surface did not grow: no lifecycle RPC exists (both tripwires RAN and passed)	
 9	PASS	A9.2 control: the search actually reaches frontend/src (a known-present symbol matches)	
 9	PASS	A9.2 the web app has NO lifecycle UI and NO new notice (no lifecycle-shaped identifier or call in frontend/src)	
 9	SKIP	A9.3 a plane stopped underneath an open tab shows the SPA's EXISTING connection-failure state	

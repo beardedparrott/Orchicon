@@ -227,6 +227,15 @@ Re-run the harness **unchanged** when the TUI task and the Wails task land. The 
 `PLANE_E2E_DESKTOP_STOP_KEYS` — single variables by design, so a binding change is one export, not a
 rewrite.
 
+A **missing export** is not a product defect: if a surface exists but the keystrokes or the launch
+command were never configured, A0.5b/A0.6 fail against **this item** ("harness configuration") and the
+run is still exit 2, because a TUI nobody drove proves nothing. That distinction is deliberate — AC12
+says a failure names the task that *owns* it, and a missing export is ours.
+
+The desktop app is launched through one helper (`launch_desktop`) that closes the previous window
+before the next step, so A2's start action and A3's stop action are never decided by a stale window
+from the step before it.
+
 ## 8. Filing a defect (AC12)
 
 A failure here is **never** patched by this work item. It is filed against the sibling that owns the

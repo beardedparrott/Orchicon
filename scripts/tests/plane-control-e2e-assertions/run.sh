@@ -89,7 +89,7 @@ for fn in record check skip blocked_surface invalid_host step_begin \
 done
 for fn in step0_preflight step1_tui_stop step2_desktop_start step3_reverse step4_cli \
           step5_drift step6_failsafe step7_two_instances step8_env_leak step9_webapp \
-          render_summary print_plan parse_args main; do
+          render_summary print_plan parse_args main launch_desktop close_desktop drive_tui; do
   expect "the harness defines ${fn}() (one function per step / AC)" "function" "$(type -t "$fn" 2>/dev/null)"
 done
 
@@ -280,6 +280,34 @@ expect "the webapp step runs a CONTROL string before trusting an empty grep" yes
   "$([ "$(body_of step9_webapp | grep -c 'useToastStore')" -ge 1 ] && echo yes || echo no)"
 expect "…and the control really is checked BEFORE the empty result is believed" "control_first" \
   "$(awk '/useToastStore/{c=NR} /lifecycle_pattern=/{l=NR} END{print (c && l && c<l) ? "control_first" : "WRONG_ORDER"}' <<<"$(body_of step9_webapp)")"
+
+spin "the harness keeps its own evidence, and its steps can be re-run"
+# The held-port report is the ONE thing that tells a user WHICH port a stop left behind. It travels
+# through HELD_PORTS, which a subshell throws away — so the probe must run in the harness's own shell.
+expect "ports_all_free runs in THIS shell at every site (A0.4, A1.5, A4.3c, A7.3b)" 4 \
+  "$(grep -cF 'ports_all_free "' "$HARNESS" || true)"
+expect "…and none of them wraps it in \$(...) — which would eat the report" 0 \
+  "$(grep -cF '$(ports_all_free ' "$HARNESS" || true)"
+# `go test -run` with a pattern that matches nothing exits 0, so a renamed tripwire would hollow
+# A9.1 out silently. Both PASS lines are demanded by name.
+expect "A9.1 demands BOTH '--- PASS:' lines, so an empty -run cannot read as a pass" 2 \
+  "$(grep -cF -- '--- PASS: Test' "$HARNESS" || true)"
+# Step 7 leaves the OTHER instance running on purpose; "it has no plane pid" would FAIL on every
+# valid host, against product code that is behaving. The claim is that its PID is UNCHANGED.
+expect "the env-leak step compares the other instance's plane PID instead of demanding it has none" yes \
+  "$([ "$(body_of step8_env_leak | grep -c 'b_plane_pid_before')" -ge 2 ] && echo yes || echo no)"
+expect "both desktop steps launch the app through the ONE helper" 2 \
+  "$(grep -cF 'launch_desktop "' "$HARNESS" || true)"
+expect "…and only that helper runs the app command, so the previous window is always closed" 1 \
+  "$(grep -cF 'bash -c "$DESKTOP_CMD"' "$HARNESS" || true)"
+# A missing keystroke export is THIS procedure's configuration gap; filing it against the TUI or the
+# Wails task would break AC12 (a defect names the task that OWNS the failure).
+expect "a missing keystroke/launch export is filed against this item, never against a sibling surface" yes \
+  "$([ "$(body_of step0_preflight | grep -cF 'this item (harness configuration')" -ge 2 ] && echo yes || echo no)"
+expect "…A0.5b names it for the TUI keystrokes" yes \
+  "$([ "$(body_of step0_preflight | grep -cF 'harness configuration — export both')" -ge 1 ] && echo yes || echo no)"
+expect "…and A0.6 names it for a missing launch command (not the Wails task)" yes \
+  "$([ "$(body_of step0_preflight | grep -cF 'PLANE_E2E_DESKTOP_CMD)')" -ge 1 ] && echo yes || echo no)"
 
 spin "the A9.2 tripwire: tight enough for the SPA, loose enough to catch a control"
 TRIPWIRE='planecontrol|plane-control|StartPlane|StopPlane|RestartPlane|/plane/(start|stop|restart)|planeLifecycle'

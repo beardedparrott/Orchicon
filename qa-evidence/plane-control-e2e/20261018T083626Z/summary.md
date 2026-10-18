@@ -1,4 +1,4 @@
-# Plane control across TUI / desktop app / CLI — harness run 20261018T083230Z
+# Plane control across TUI / desktop app / CLI — harness run 20261018T083626Z
 
 - instance: `dev` (data dir `/home/beardedparrott/.local/share/orchicon-dev`, ports `none recorded`)
 - two-instance pair: `dev` + `prod`

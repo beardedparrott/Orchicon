@@ -77,6 +77,7 @@ INSTALL_DIR="${E2E_ROOT}/install"
 BIN=""                     # the binary UNDER TEST, installed into INSTALL_DIR (never the worktree's build)
 BIN_PATH=""                # where the installed copy lives, so drift can be made by replacing THIS path
 BIN_ORCH=""                 # the TUI binary
+DESKTOP_PID=""              # the packaged desktop app this step launched (closed before the next one)
 
 TUI_STOP_KEYS="${PLANE_E2E_TUI_STOP_KEYS:-}"
 TUI_START_KEYS="${PLANE_E2E_TUI_START_KEYS:-}"
@@ -407,10 +408,15 @@ step0_preflight() {
   # A0.5 — the TUI lifecycle surface. ABSENT today: BLOCKED + defect, never a pass.
   if surface_present_tui; then
     HAVE_TUI=1
-    if [ -n "$TUI_STOP_KEYS" ]; then
-      check "A0.5 a TUI lifecycle surface exists and a stop keystroke is configured" 0
+    check "A0.5 a TUI lifecycle surface exists (internal/tui or cmd/orch calls internal/planecontrol)" 0
+    # THE KEYSTROKES ARE THIS PROCEDURE'S CONFIGURATION, not the TUI's behaviour. A missing
+    # export must not be filed as a defect against the TUI task: AC12 says a failure names the
+    # task that OWNS it, and "nobody exported the binding" is ours.
+    if [ -n "$TUI_STOP_KEYS" ] && [ -n "$TUI_START_KEYS" ]; then
+      check "A0.5b both TUI keystroke sequences are configured (stop and start)" 0
     else
-      check "A0.5 a TUI lifecycle surface exists and a stop keystroke is configured" 1 "TUI task"
+      check "A0.5b both TUI keystroke sequences are configured (PLANE_E2E_TUI_STOP_KEYS / PLANE_E2E_TUI_START_KEYS)" 1 \
+        "this item (harness configuration — export both, then re-run)"
     fi
   else
     blocked_surface "A0.5 a TUI lifecycle surface exists (internal/tui or cmd/orch calls internal/planecontrol)" "TUI task" "grep 'internal/planecontrol' over internal/tui and cmd/orch matches nothing; cmd/orch/main.go:3 says the TUI carries zero control-plane"
@@ -423,7 +429,9 @@ step0_preflight() {
         HAVE_DESKTOP=1
         check "A0.6 a Wails desktop app exists, a display is available and its launch command is set" 0
       else
-        check "A0.6 a Wails desktop app exists, a display is available and its launch command is set" 1 "Wails desktop app task"
+        # Same rule as A0.5b: no launch command is OUR configuration gap, not the app's bug.
+        check "A0.6 a Wails desktop app exists, a display is available and its launch command is set" 1 \
+          "this item (harness configuration — export PLANE_E2E_DESKTOP_CMD)"
       fi
     else
       blocked_surface "A0.6 the desktop app can be driven on this host" "Wails desktop app task" "a Wails app needs a display; neither DISPLAY nor WAYLAND_DISPLAY is set in this session"
@@ -462,6 +470,43 @@ drive_tui() { # drive_tui <keys> — feed keys through `script` so the TUI sees 
   return 0
 }
 
+# close_desktop — close the packaged app THIS step launched. Two steps launch it, and a
+# second window onto the same instance would decide the next step's assertion by itself.
+close_desktop() {
+  [ -n "$DESKTOP_PID" ] || return 0
+  local pid="$DESKTOP_PID"; DESKTOP_PID=""
+  # `script` (when keys are replayed) wraps the app, so TERM the group first and the pid after;
+  # both are this harness's own children and both failures are ignorable.
+  kill -TERM -- "-$pid" 2>/dev/null || true
+  kill -TERM "$pid" 2>/dev/null || true
+  note "closed the desktop app (pid $pid)"
+  return 0
+}
+
+# launch_desktop <keys> <what> — launch the packaged app for one step, replays its keystrokes
+# when any are configured, and SAYS SO when it cannot: a GUI action the harness cannot perform
+# itself is owed by a human with a screenshot, never silently skipped.
+launch_desktop() {
+  local keys="$1" what="$2"
+  close_desktop
+  if [ -z "$DESKTOP_CMD" ]; then
+    note "no PLANE_E2E_DESKTOP_CMD: nothing to launch"
+    return 1
+  fi
+  note "launching the packaged desktop app for ${what}: $DESKTOP_CMD"
+  if [ -n "$keys" ] && command -v script >/dev/null 2>&1; then
+    { sleep 4; printf '%s' "$keys"; sleep 8; } \
+      | script -qfec "$DESKTOP_CMD" /dev/null >>"$STEP_LOG" 2>&1 &
+    note "replayed the keystrokes for ${what}: $(printf '%q' "$keys")"
+  else
+    bash -c "$DESKTOP_CMD" >>"$STEP_LOG" 2>&1 &
+    note "no keystrokes configured for ${what}: the action must be clicked by hand, and the screenshot attached"
+  fi
+  DESKTOP_PID=$!
+  sleep 8
+  return 0
+}
+
 # wait_down <port> [tries] — a stop is confirmed by the socket, with a bounded wait.
 wait_down() {
   local port="$1" tries="${2:-20}" i=0
@@ -495,12 +540,20 @@ step1_tui_stop() {
   check "A1.1 baseline: '$INSTANCE' plane answers /healthz (pid ${pid:-none})" \
     "$([ "$(health_code "$cp")" = 200 ] && echo 0 || echo 1)" "install task"
 
-  if [ "$HAVE_TUI" != 1 ] || [ -z "$TUI_STOP_KEYS" ]; then
+  if [ "$HAVE_TUI" != 1 ]; then
     blocked_surface "A1.2 the TUI can be driven through a real pty to issue STOP" "TUI task" \
       "there is no TUI lifecycle surface to drive, so no keystroke sequence exists (internal/tui, cmd/orch/main.go:3)"
     blocked_surface "A1.3 plane is DOWN after the TUI stop: /healthz REFUSED (curl exit 7, empty body)" "TUI task" "depends on A1.2"
     blocked_surface "A1.4 the PID file is gone or names a dead PID" "TUI task" "depends on A1.2"
     blocked_surface "A1.5 every recorded port of '$INSTANCE' is free after the TUI stop" "TUI task" "depends on A1.2"
+    return
+  fi
+  if [ -z "$TUI_STOP_KEYS" ]; then
+    # The surface EXISTS and we cannot drive it: that is this procedure's configuration gap and
+    # it must not be filed against the TUI (AC12). Still not a valid proof, so still exit 2.
+    blocked_surface "A1.2 the TUI STOP action can be issued through a real pty" \
+      "this item (harness configuration — export PLANE_E2E_TUI_STOP_KEYS, then re-run)" \
+      "a TUI lifecycle surface exists but no stop keystrokes were configured"
     return
   fi
 
@@ -511,8 +564,13 @@ step1_tui_stop() {
     "$(wait_down "$cp" && echo 0 || echo 1)" "TUI task"
   check "A1.4 the PID file is gone or names a dead PID" \
     "$(pid_of "$INSTANCE" >/dev/null 2>&1 && echo 1 || echo 0)" "TUI task"
+  # THE PROBE RUNS IN THIS SHELL, not inside $(...): ports_all_free reports WHICH port is held
+  # through HELD_PORTS, and a subshell would throw that report away — a FAIL that cannot name the
+  # port still holding the instance is the evidence this step exists to produce.
+  local ports_free_after=0
+  ports_all_free "$INSTANCE" || ports_free_after=1
   check "A1.5 every recorded port of '$INSTANCE' is free after the TUI stop${HELD_PORTS:+ (still held: $HELD_PORTS)}" \
-    "$(ports_all_free "$INSTANCE" && echo 0 || echo 1)" "stop-reclaims-leftovers task"
+    "$ports_free_after" "stop-reclaims-leftovers task"
   DIRTY=1
 }
 
@@ -533,11 +591,7 @@ step2_desktop_start() {
   fi
 
   note "launching: $DESKTOP_CMD"
-  bash -c "$DESKTOP_CMD" >>"$STEP_LOG" 2>&1 &
-  sleep 8
-  if [ -n "$DESKTOP_START_KEYS" ]; then
-    note "(the app is driven with the offline-state start keys: $DESKTOP_START_KEYS)"
-  fi
+  launch_desktop "$DESKTOP_START_KEYS" "the offline-state START action"
   check "A2.2 '$INSTANCE' /healthz returns 200 after the desktop app's start (independent probe)" \
     "$(wait_up "$cp" && echo 0 || echo 1)" "Wails desktop app task"
   note "UI-load evidence (a screenshot) must be attached as 02-desktop-start.png; a headless host cannot produce it"
@@ -559,11 +613,16 @@ step3_reverse() {
     blocked_surface "A3.2 TUI START brings it back: /healthz 200 with a new PID" "TUI task" "needs both surfaces"
     return
   fi
+  if [ -z "$TUI_START_KEYS" ]; then
+    blocked_surface "A3.2 TUI START brings the plane back after the desktop app stopped it" \
+      "this item (harness configuration — export PLANE_E2E_TUI_START_KEYS, then re-run)" \
+      "a TUI lifecycle surface exists but no start keystrokes were configured, so A3 would FAIL on a plane nobody could bring back"
+    return
+  fi
 
   local pid_before; pid_before="$(pid_of "$INSTANCE")"
-  note "the plane under test was started by: ${STARTED_BY:-unknown}; pid=${pid_before:-none}"
-  bash -c "$DESKTOP_CMD" >>"$STEP_LOG" 2>&1 &
-  sleep 8
+  note "the plane under test was started by step 2's desktop-app start (or step 1's TUI start); pid=${pid_before:-none}"
+  launch_desktop "$DESKTOP_STOP_KEYS" "the offline-state STOP action"
   check "A3.1 the desktop app's stop takes the SAME PID down (one shared state dir)" \
     "$(wait_down "$cp" && ! kill -0 "${pid_before:-0}" 2>/dev/null && echo 0 || echo 1)" "Wails desktop app task"
   drive_tui "$TUI_START_KEYS"
@@ -609,8 +668,10 @@ step4_cli() {
   check "A4.3 orchicon stop $INSTANCE exits 0" "$([ "$rc" = 0 ] && echo 0 || echo 1)" "CLI verbs task"
   check "A4.3b '$INSTANCE' /healthz is REFUSED after the stop (curl exit 7, empty body)" \
     "$(wait_down "$cp" && echo 0 || echo 1)" "CLI verbs task"
+  local ports_free_after=0
+  ports_all_free "$INSTANCE" || ports_free_after=1
   check "A4.3c every recorded port of '$INSTANCE' is FREE after the stop${HELD_PORTS:+ (still held: $HELD_PORTS)}" \
-    "$(ports_all_free "$INSTANCE" && echo 0 || echo 1)" "stop-reclaims-leftovers task"
+    "$ports_free_after" "stop-reclaims-leftovers task"
 
   c_run "$BIN" stop "$INSTANCE" >/dev/null; rc=$?
   check "A4.4 stop is idempotent: a second orchicon stop exits 0" "$([ "$rc" = 0 ] && echo 0 || echo 1)" "CLI verbs task"
@@ -815,8 +876,10 @@ step7_two_instances() {
   c_run "$BIN" stop "$a" >/dev/null || true
   check "A7.3 '$a' is DOWN after stopping '$a': /healthz refused" \
     "$(wait_down "$cpa" && echo 0 || echo 1)" "CLI verbs task"
+  local ports_free_after=0
+  ports_all_free "$a" || ports_free_after=1
   check "A7.3b every recorded port of '$a' is FREE after stopping '$a'${HELD_PORTS:+ (still held: $HELD_PORTS)}" \
-    "$(ports_all_free "$a" && echo 0 || echo 1)" "stop-reclaims-leftovers task"
+    "$ports_free_after" "stop-reclaims-leftovers task"
 
   check "A7.4 '$b' is untouched: /healthz still 200 and its ports are still held" \
     "$([ "$(health_code "$cpb")" = 200 ] && [ -n "$(ports_listening_now "$b")" ] && echo 0 || echo 1)" "CLI verbs task"
@@ -889,13 +952,27 @@ step8_env_leak() {
   check "A8.4b '$b''s PID file was not written by '$a''s start (before: $b_pid_before, after: $b_pid_after)" \
     "$([ "$b_pid_before" = "$b_pid_after" ] && echo 0 || echo 1)" "internal/planecontrol/planecontrol.go:<instanceEnvKeys>"
 
-  local la lb
+  local la lb b_plane_pid_before
+  # '$b' IS STILL RUNNING HERE — step 7 leaves it up on purpose, to prove dev's stop left prod
+  # serving. So "b has NO plane pid" is the wrong assertion: it would FAIL on every valid host,
+  # against product code that is behaving correctly. The claim is that b's plane is the SAME
+  # process it had before the poisoned start — '$a''s start neither restarted b nor wrote b's
+  # PID file (A8.4b already checks the file itself).
+  b_plane_pid_before="$(pid_of "$b")"
   la="$(plane_status_line "$a")"; lb="$(plane_status_line "$b")"
   printf 'plane status %s -> %s\nplane status %s -> %s\n' "$a" "$la" "$b" "$lb" >>"$STEP_LOG"
   local st=0
-  case "$la" in *"plane pid "*) ;; *) st=1 ;; esac
-  case "$lb" in *"plane pid "*) st=1 ;; esac   # '$b' must NOT have gained a plane
-  check "A8.5 plane status reports each instance's OWN process ('$a' has one, '$b' did not gain one)" "$st" \
+  if [ -z "$a_pid" ]; then
+    st=1
+  else
+    case "$la" in *"plane pid ${a_pid}"*) ;; *) st=1 ;; esac
+  fi
+  if [ -n "$b_plane_pid_before" ]; then
+    case "$lb" in *"plane pid ${b_plane_pid_before}"*) ;; *) st=1 ;; esac
+  else
+    case "$lb" in *"plane pid "*) st=1 ;; esac
+  fi
+  check "A8.5 plane status reports each instance's OWN process ('$a' -> ${a_pid:-none}, '$b' unchanged at ${b_plane_pid_before:-none})" "$st" \
     "internal/planecontrol/planecontrol.go:<instanceEnvKeys>"
 
   c_run "$BIN" serve --status >/dev/null || true
@@ -907,9 +984,17 @@ step8_env_leak() {
 step9_webapp() {
   step_begin 9 webapp
 
-  c_run go -C "$REPO_ROOT" test ./internal/api -run 'TestAPISurfaceDidNotGrow|TestProtoDeclaresNoLifecycleService' -count=1 >/dev/null
-  check "A9.1 the Connect surface did not grow: no lifecycle RPC exists (surface-size and proto tripwires)" \
-    "$?" "internal/api/lifecycle_surface_test.go:<TestAPISurfaceDidNotGrow>"
+  # AN ABSENCE-PROOF, NOT GREEN-IF-QUIET: `go test -run` whose pattern matches nothing exits 0,
+  # so a renamed tripwire would silently hollow this assertion out. Demanding both `--- PASS:`
+  # lines makes an empty run a FAIL by construction.
+  local api_out api_rc api_pass=0
+  api_out="$(c_run go -C "$REPO_ROOT" test ./internal/api -run 'TestAPISurfaceDidNotGrow|TestProtoDeclaresNoLifecycleService' -count=1 -v)"; api_rc=$?
+  printf '%s\n' "$api_out" >>"$STEP_LOG"
+  [ "$api_rc" = 0 ] || api_pass=1
+  case "$api_out" in *"--- PASS: TestAPISurfaceDidNotGrow"*) ;; *) api_pass=1 ;; esac
+  case "$api_out" in *"--- PASS: TestProtoDeclaresNoLifecycleService"*) ;; *) api_pass=1 ;; esac
+  check "A9.1 the Connect surface did not grow: no lifecycle RPC exists (both tripwires RAN and passed)" \
+    "$api_pass" "internal/api/lifecycle_surface_test.go:<TestAPISurfaceDidNotGrow>"
 
   # A9.2 — an EMPTY grep is not a PASS unless the pattern can match something. The
   # CONTROL string must hit first; only then does an empty lifecycle result mean "none".
@@ -1042,6 +1127,8 @@ render_summary() {
 }
 
 teardown() {
+  # A packaged desktop app left open would decide the next step's assertions by itself.
+  close_desktop 2>/dev/null || true
   # An aborted run must not leave an instance without its PID file: that state is exactly
   # what the next `plane status` would misread as "nothing running".
   if [ -n "$PID_FILE_BAK" ] && [ -f "$PID_FILE_BAK" ]; then
