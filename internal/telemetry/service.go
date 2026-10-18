@@ -18,7 +18,7 @@ import (
 
 // Service implements the TelemetryService Connect handler
 // (apiv1connect.TelemetryServiceHandler). It proxies tenant-scoped
-// queries to the Grafana telemetry stack (Tempo/Loki/VictoriaMetrics,
+// queries to the telemetry backends (Tempo/Loki/VictoriaMetrics,
 // docs/07 §3.9, docs/08 §5) so users explore traces/metrics/logs without
 // leaving the Orchicon shell. The tenant_id filter is injected from the
 // request context so a client cannot read another tenant's telemetry
@@ -180,7 +180,7 @@ func (s *Service) StreamTelemetry(ctx context.Context, req *connect.Request[apiv
 
 // GetDashboard returns an Orchicon-specific telemetry dashboard: a
 // curated roll-up built custom on the Orchicon domain model (cost,
-// executions) — raw exploration uses the embedded Grafana UI
+// executions) — raw exploration uses the Telemetry page
 // (docs/10 §11). Reads Postgres (usage_records — source of truth).
 func (s *Service) GetDashboard(ctx context.Context, req *connect.Request[apiv1.GetDashboardRequest]) (*connect.Response[apiv1.GetDashboardResponse], error) {
 	tenantID, err := requireTenant(ctx)

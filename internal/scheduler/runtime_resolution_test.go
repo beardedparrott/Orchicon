@@ -55,8 +55,9 @@ func TestProjectRuntimeDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	if p.ExecutionMode != db.ExecutionModeRuntime {
-		t.Errorf("new project mode = %q, want runtime", p.ExecutionMode)
+	// Local is the DEFAULT at every entry point; containers are opt-in.
+	if p.ExecutionMode != db.ExecutionModeLocal {
+		t.Errorf("new project mode = %q, want local (the default)", p.ExecutionMode)
 	}
 	if p.DefaultRuntimeImage != nil {
 		t.Errorf("new project default image = %q, want NULL", *p.DefaultRuntimeImage)
@@ -96,6 +97,7 @@ func TestWorkItemAutofill(t *testing.T) {
 		Name: "rt autofill", Slug: "rt-autofill", Status: "active", Goals: []byte("[]"),
 		ProjectDir:          t.TempDir(),
 		DefaultRuntimeImage: strptr("orchicon-runtime:orchicon-dev"),
+		ExecutionMode:       db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -155,6 +157,7 @@ func TestResolutionChain(t *testing.T) {
 		Name: "rt resolve", Slug: "rt-resolve", Status: "active", Goals: []byte("[]"),
 		ProjectDir:          t.TempDir(),
 		DefaultRuntimeImage: strptr("orchicon-runtime:orchicon-dev"),
+		ExecutionMode:       db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)

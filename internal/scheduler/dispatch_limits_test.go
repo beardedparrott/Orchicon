@@ -206,7 +206,8 @@ func TestWorktreeInPlaceSerialization(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "In-Place Serialize Project", Slug: "inplace-" + strings.ToLower(db.NewID()),
 		Status: domain.ProjectActive, Goals: []byte("[]"),
-		ProjectDir: plain,
+		ProjectDir:    plain,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create non-repo project: %v", err)

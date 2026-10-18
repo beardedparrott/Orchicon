@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// QueryClient queries tenant-scoped telemetry from the Grafana stack:
-// Tempo (traces), Loki (logs), VictoriaMetrics (metrics). It talks to the
-// backends' native HTTP APIs directly — Grafana itself is only the UI.
+// QueryClient queries tenant-scoped telemetry from the telemetry backends:
+// Tempo (traces), Loki (logs), VictoriaMetrics (metrics). It talks to each
+// backend's native HTTP API directly — there is no UI-fronting hop.
 //
 // If a backend is unreachable, the corresponding query method returns a
 // Degraded=true response rather than an error, so the UI degrades
@@ -232,7 +232,7 @@ func (c *QueryClient) QueryTraces(ctx context.Context, tenantID string, f TraceF
 // so a total/deterministic read must re-aggregate across classes. We wrap the
 // selector in sum(...) to collapse them back into a single total series, which
 // preserves the pre-split total semantics while the per-class breakdown stays
-// available to Grafana via sum by (token_class). This is the only safe form
+// available per token_class via sum by (token_class). This is the only safe form
 // for consumers that read a single latest point (the telemetry "Metric values"
 // panel) — otherwise they would report one arbitrary bucket instead of the
 // total.

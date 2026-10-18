@@ -154,7 +154,8 @@ func TestSkippedRefusedWhenDirty(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Dirty Gate Project", Slug: "dirty-gate-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"),
-		ProjectDir: plain,
+		ProjectDir:    plain,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)

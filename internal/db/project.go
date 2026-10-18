@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -63,21 +64,44 @@ type ProjectRow struct {
 	// updating the default never retro-mutates existing items.
 	DefaultRuntimeImage *string
 
-	// ExecutionMode controls where native executions run: "runtime"
-	// (default) = always-container, "local" = in-process allowed with an
-	// honest prompt block + a hard DSN fence.
+	// ExecutionMode controls where native executions run: "local"
+	// (default) = in-process allowed with an honest prompt block + a hard
+	// DSN fence, "runtime" (opt-in) = always-container.
 	ExecutionMode string
 }
 
-// Execution modes for ProjectRow.ExecutionMode (always-container runtime):
-//   - ExecutionModeRuntime (default): executions run inside the run's
+// Execution modes for ProjectRow.ExecutionMode:
+//   - ExecutionModeLocal (default): in-process execution allowed; the prompt
+//     renders an honest local block and the dispatcher enforces the DSN fence.
+//   - ExecutionModeRuntime (opt-in): executions run inside the run's
 //     container; runtime mode fails LOUD without a daemon.
-//   - ExecutionModeLocal: in-process execution allowed; the prompt renders
-//     an honest local block and the dispatcher enforces the DSN fence.
 const (
 	ExecutionModeRuntime = "runtime"
 	ExecutionModeLocal   = "local"
 )
+
+// ExecutionModeInvalidMsg is the ONE message for a rejected mode. It names
+// both accepted values, so widening the enum means changing this string in
+// the same edit.
+const ExecutionModeInvalidMsg = "execution_mode must be runtime or local"
+
+// ParseExecutionMode maps a stored/wire mode string to a validated mode.
+//
+// An empty (unset) value yields `unset`, which the caller decides: creation
+// passes DefaultExecutionMode (an absent mode means "the default"), while an
+// update passes "" so an absent field still means "leave it unchanged".
+// Any non-empty value that is not runtime or local is an error carrying
+// ExecutionModeInvalidMsg — rejected at the boundary, never silently coerced.
+func ParseExecutionMode(raw, unset string) (string, error) {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "":
+		return unset, nil
+	case ExecutionModeRuntime, ExecutionModeLocal:
+		return v, nil
+	}
+	return "", errors.New(ExecutionModeInvalidMsg)
+}
 
 // BaseRuntimeImage is the fallback image of the resolve chain
 // (explicit work-item image -> project default -> base). It is never
@@ -114,11 +138,13 @@ func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, er
 		row.GitStrategy = "local"
 	}
 	p.GitStrategy = row.GitStrategy
-	if row.ExecutionMode == "" {
-		row.ExecutionMode = ExecutionModeRuntime
+	mode, err := ParseExecutionMode(row.ExecutionMode, DefaultExecutionMode)
+	if err != nil {
+		return ProjectRow{}, fmt.Errorf("db: create project: %w", err)
 	}
+	row.ExecutionMode = mode
 	p.ExecutionMode = row.ExecutionMode
-	err := tx.QueryRow(ctx, q,
+	err = tx.QueryRow(ctx, q,
 		p.ID, p.TenantID, p.Name, p.Slug, p.Status, p.Goals, p.ProjectDir, p.MaxConcurrentRuns, p.GitStrategy, p.DefaultRuntimeImage, p.ExecutionMode,
 	).Scan(
 		&row.ID, &row.TenantID, &row.Name, &row.Slug, &row.Status, &row.Goals,

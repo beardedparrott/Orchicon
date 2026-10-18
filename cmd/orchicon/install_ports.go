@@ -127,6 +127,13 @@ func portDefaults(dev, prod, test int) map[string]int {
 
 // installerPorts returns every port an instance can use, in prompt order.
 //
+// RETIRED PORTS — 3002, 3003 AND 3004 ARE RESERVED, NOT FREE. They were the dev/prod/test
+// columns of the removed Grafana row (3002/3003/3004 → container 3000). They are deliberately
+// NOT handed to a new service: operator firewall rules, notes and older installs reference them
+// as Grafana's, so reusing one silently would point a stale rule (or a stale bookmark) at a
+// different component. Claiming one is a DELIBERATE act: add the row here, update the port
+// tables in ARCHITECTURE.md/USERGUIDE.md and scripts/lib/instances.sh in the same change.
+//
 // The `test` column exists so a throwaway instance can run beside dev and prod
 // without colliding with either — it is the third instance the shell side knows
 // (scripts/lib/instances.sh), and its ports mirror that table's.
@@ -134,8 +141,6 @@ func installerPorts() []installPort {
 	return []installPort{
 		{Env: "ORCHICON_CONTROL_PORT", Label: "Control plane (web UI + API)", Defaults: portDefaults(8080, 8091, 8092),
 			ContainerPort: 8080, ContainerBind: bindAny, HostBind: bindNone, HostPlaneBinds: true, Prompt: true},
-		{Env: "ORCHICON_GRAFANA_PORT", Label: "Grafana (dashboards)", Defaults: portDefaults(3002, 3003, 3004),
-			ContainerPort: 3000, ContainerBind: bindAny, HostBind: bindLoopback, Prompt: true},
 		{Env: "ORCHICON_POSTGRES_PORT", Label: "PostgreSQL", Defaults: portDefaults(5432, 5433, 5434),
 			ContainerPort: 5432, ContainerBind: bindNone, HostBind: bindLoopback, Prompt: true},
 		{Env: "ORCHICON_NATS_PORT", Label: "NATS (event bus)", Defaults: portDefaults(4222, 4223, 4224),

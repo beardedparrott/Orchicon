@@ -86,3 +86,30 @@ func TestProtoDeclaresNoLifecycleService(t *testing.T) {
 		}
 	}
 }
+
+// TestAPIHasNoOuterMux is the SOURCE-LEVEL half of the auth-surface tripwire (AC4/AC5). TestAPISurfaceDidNotGrow
+// above pins the shape of the Connect surface, but it cannot see net/http muxes — and an outer mux is exactly
+// the shape the removed /grafana bypass took: a second ServeMux built ahead of the guarded catch-all, serving
+// a subtree with no ResolveAuth in front of it. Since the lifecycle work adds no route, internal/api's surface
+// must be SMALLER OR EQUAL after every change, and these three assertions make a widening fail here rather
+// than pass review.
+func TestAPIHasNoOuterMux(t *testing.T) {
+	src, err := os.ReadFile("api.go")
+	if err != nil {
+		t.Fatalf("read api.go: %v", err)
+	}
+	s := string(src)
+
+	if strings.Contains(s, "http.NewServeMux") {
+		t.Error("internal/api/api.go builds a net/http ServeMux — an outer mux is the /grafana auth bypass's " +
+			"shape; every route must be registered on the caller's mux and wrapped once by ResolveAuth")
+	}
+	if outerRoute := regexp.MustCompile(`root\.Handle\(`); outerRoute.MatchString(s) {
+		t.Error("internal/api/api.go registers a handler on a root mux (root.Handle…) — that mount would sit " +
+			"OUTSIDE ResolveAuth")
+	}
+	if n := strings.Count(s, "middleware.ResolveAuth("); n != 1 {
+		t.Errorf("api.go wraps with ResolveAuth %d times, want exactly 1 — more than one means an unguarded "+
+			"branch returned early; zero means nothing is guarded", n)
+	}
+}

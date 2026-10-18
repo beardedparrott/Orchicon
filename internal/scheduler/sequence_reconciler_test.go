@@ -70,6 +70,7 @@ func newSequenceTestEnv(t *testing.T) *sequenceTestEnv {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "seq-env",
 		Slug: "seq-env-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
