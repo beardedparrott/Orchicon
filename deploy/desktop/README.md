@@ -42,9 +42,23 @@ signing failure cannot stop the CLI binaries from publishing.
 ```sh
 make desktop-deps            # pinned wails CLI + the apt hint for Linux
 make desktop-preflight-test  # the webview detection tests (no webview needed)
-make desktop-build           # for this host, into dist/desktop/
-make desktop-package-linux   # .deb + .AppImage (Linux only)
+make desktop-build           # for this host, into desktop/build/bin/
+make desktop-package-linux   # .deb + .AppImage, into dist/desktop/ (Linux only)
 ```
+
+## Release secrets the macOS job needs
+
+`desktop-macos` runs `deploy/desktop/macos/sign-and-notarize.sh`, which fails the job
+rather than shipping an unsigned `.app`. Set these repository secrets before the first
+release that includes the desktop artifacts:
+
+| Secret | What it is |
+|---|---|
+| `MACOS_CERT_P12` | base64 of the Developer ID Application `.p12` |
+| `MACOS_CERT_PASSWORD` | that certificate's password |
+| `MACOS_NOTARY_APPLE_ID` | the Apple ID used for `notarytool` |
+| `MACOS_NOTARY_TEAM_ID` | its Apple team ID |
+| `MACOS_NOTARY_PASSWORD` | an app-specific password (not the Apple ID password) |
 
 None of the desktop targets are part of `make ci` on purpose: `ci` is the Go +
 frontend gate and must stay runnable on a plain runner. The detection *logic* is
