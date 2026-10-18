@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# fixture: a `ldconfig` whose cache has NO webkit soname — the Linux host that
+# must be told WebKitGTK is missing rather than shown a blank window.
+exit 0
