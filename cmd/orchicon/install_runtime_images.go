@@ -123,6 +123,13 @@ func humanSize(n int64) string {
 const runtimeImagesAnsweredFile = "runtime-images-answered"
 
 func resolveInstallRuntimeImagesFor(instance string, promptOut io.Writer, answerIn io.Reader, imageTag string, forcePrompt bool) ([]runtimeImageChoice, error) {
+	// NOBODY TO ASK. A redirected/backgrounded install must not block on a question — the same rule the port
+	// prompt follows (install_ports.go promptTerminal), and for the same reason: the read would either hang
+	// or consume input that belongs to whatever is driving us.
+	if !installIsInteractive() {
+		fmt.Fprintln(promptOut, "  runtime images: not asking (non-interactive install) — fetch one later from the Runtime Images page if a run needs it")
+		return nil, nil
+	}
 	if !forcePrompt {
 		if p, err := runtimeImagesAnsweredPath(instance); err == nil {
 			if b, rerr := os.ReadFile(p); rerr == nil {
