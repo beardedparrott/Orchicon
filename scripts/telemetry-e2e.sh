@@ -964,7 +964,7 @@ render_summary() {
     echo
     echo "- \`01-grafana-absent.log\` + \`01-grafana-absent-route.log\` — the absence probes, including the"
     echo "  control pattern that had to match before an empty \`pgrep\` was allowed to mean \"none\"."
-    echo "- \`02-stack-up.log\` — \`orchicon services up\` plus the \`/proc/<pid>/exe\` residency probe per backend."
+    echo "- \`02-stack-up.log\` — \`ORCHICON_TELEMETRY=embedded orchicon start\` plus the \`/proc/<pid>/exe\` residency probe per backend."
     echo "- \`03-*.json\` — the run as the plane's own API reported it (project, work item, workflow, run, poll)."
     echo "- \`04-stores/*.json\` — Tempo, Loki and VictoriaMetrics queried DIRECTLY, plus the plane's own"
     echo "  QueryTraces/GetTelemetryReport answers for the same window."
