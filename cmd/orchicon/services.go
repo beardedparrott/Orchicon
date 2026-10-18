@@ -35,7 +35,8 @@ import (
 // command never starts a database as a side effect.
 //
 // INSTANCE comes from the first positional after the verb, else ORCHICON_INSTANCE,
-// else dev — the same resolution every other subcommand and the launcher use.
+// else dev — through parseInstanceTarget, the same resolution every other subcommand
+// uses, so `--instance <name>` works on this verb too.
 func runServices(args []string) int {
 	verb := "status"
 	rest := args
@@ -43,12 +44,10 @@ func runServices(args []string) int {
 		verb = args[0]
 		rest = args[1:]
 	}
-	instance := strings.TrimSpace(os.Getenv("ORCHICON_INSTANCE"))
-	if instance == "" {
-		instance = "dev"
-	}
-	if len(rest) > 0 && strings.TrimSpace(rest[0]) != "" {
-		instance = strings.TrimSpace(rest[0])
+	instance, err := parseInstanceTarget(rest, env("ORCHICON_INSTANCE", "dev"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orchicon services: %v\n", err)
+		return 1
 	}
 
 	switch verb {

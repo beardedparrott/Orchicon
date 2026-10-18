@@ -35,7 +35,17 @@ import (
 // resident instance never restarts a container, and a host with no engine never runs a docker command at all.
 func runRestart(args []string, log *slog.Logger) error {
 	bin := filepath.Base(os.Args[0])
-	instance := env("ORCHICON_INSTANCE", "dev")
+
+	// THE INSTANCE IS NAMED THE SAME WAY HERE AS ON EVERY OTHER LIFECYCLE VERB, and it is
+	// parsed from the ARGUMENTS as well as the environment. It used to come from
+	// ORCHICON_INSTANCE alone — `args` was accepted and never read — so `orchicon restart
+	// --instance prod` restarted DEV while USERGUIDE.md documented the flag as working. A
+	// restart is exactly the verb where acting on the wrong instance is invisible: both
+	// come back healthy, and the one you meant to refresh kept its old environment.
+	instance, err := parseInstanceTarget(args, env("ORCHICON_INSTANCE", "dev"))
+	if err != nil {
+		return err
+	}
 	name := "orchicon-cnt-" + instance
 	socketDir := env("ORCHICON_RUNTIME_SOCKET_DIR", filepath.Join(os.TempDir(), "orchicon-runtime"))
 
@@ -43,28 +53,19 @@ func runRestart(args []string, log *slog.Logger) error {
 	// dev, prod, test)"), and a restart needs no port defaults — it reads the ports that were
 	// actually bound, from the record. Running it here rejected any instance outside the table,
 	// including a legitimate one with pinned ports, and answered a question about ports that a
-	// restart never asks.
-	//
-	// The name still guards a PATH (it forms the instance state dir), so a name that could climb
-	// out of that directory is refused — the check validateInstance was incidentally providing.
-	if strings.ContainsAny(instance, "/\\") || strings.Contains(instance, "..") {
-		return fmt.Errorf("invalid instance name %q: it forms the instance state directory name, so it "+
-			"may not contain a path separator or \"..\"", instance)
-	}
+	// restart never asks. parseInstanceTarget above applies the PATH guard that matters instead.
 
 	residency, ok := recordedResidency(instance)
 	if !ok {
 		return fmt.Errorf("no install record for instance %q — nothing is installed for it.\n"+
-			"  Install it first:  %s install\n"+
-			"  Another instance:  ORCHICON_INSTANCE=<name> %s restart", instance, bin, bin)
+			"  Install it first:  %s install --instance %s\n"+
+			"  Another instance:  %s restart <name>", instance, bin, instance, bin)
 	}
 
 	ports, err := readResolvedPorts(instance)
 	if err != nil {
 		return err
 	}
-	healthURL := fmt.Sprintf("http://localhost:%d/healthz", ports["ORCHICON_CONTROL_PORT"])
-
 	if residency == residencyHost {
 		// THE PLANE IS ON THIS HOST, so restarting the services container does not touch it. Saying so
 		// out loud, because that mismatch is exactly what made this hard to diagnose: the container was
@@ -84,16 +85,14 @@ func runRestart(args []string, log *slog.Logger) error {
 	}
 
 	// REPORT WHETHER IT CAME BACK. A restart that silently did not take effect is the same class of
-	// failure this command exists to remove, so it is not reported as success here.
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
-		if httpHealthy(healthURL, 2*time.Second) {
-			fmt.Printf("✓ %s is serving %s\n", instance, healthURL)
-			fmt.Printf("  It re-read its environment on this restart, so a PATH change — a newly installed adapter CLI, for instance — has taken effect.\n")
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
+	// failure this command exists to remove, so it is not reported as success here. The wait itself is
+	// shared with `start` (awaitHealthy) — one poll loop, two different claims.
+	if url, up := awaitHealthy(instance, ports, 60*time.Second); up {
+		fmt.Printf("✓ %s is serving %s\n", instance, url)
+		fmt.Printf("  It re-read its environment on this restart, so a PATH change — a newly installed adapter CLI, for instance — has taken effect.\n")
+		return nil
+	} else {
+		return fmt.Errorf("%s did not answer %s within 60s — it was restarted but is not serving.\n"+
+			"  See `%s install` for the full setup output, and the plane's log in the instance state dir.", instance, url, bin)
 	}
-	return fmt.Errorf("%s did not answer %s within 60s — it was restarted but is not serving.\n"+
-		"  See `%s install` for the full setup output, and the plane's log in the instance state dir.", instance, healthURL, bin)
 }

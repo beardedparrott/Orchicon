@@ -73,6 +73,12 @@ func main() {
 			os.Exit(exitOnErr(runRuntimeClient(os.Args[2:], log)))
 		case "install":
 			os.Exit(exitOnErr(runInstall(os.Args[2:], log)))
+		case "start":
+			// The one-verb lifeline: services then plane, composed from the primitives below.
+			os.Exit(exitOnErr(runStart(os.Args[2:], log)))
+		case "stop":
+			// The mirror of start: plane then services. Both halves are idempotent.
+			os.Exit(exitOnErr(runStop(os.Args[2:])))
 		case "restart":
 			os.Exit(exitOnErr(runRestart(os.Args[2:], log)))
 		case "plane":
@@ -289,6 +295,12 @@ func printHelp() {
 			"Restart the instance so its components re-read their environment.",
 			"Use this after installing an adapter CLI or changing PATH: a plane inherits its",
 			"environment when it STARTS, so `install` alone will not refresh it."}},
+		{cmd: bin + " start [instance]", desc: []string{
+			"Start an INSTALLED instance: its services (Postgres + NATS), then its plane.",
+			"Idempotent, and it never installs — use `install` for a machine with nothing on it."}},
+		{cmd: bin + " stop [instance]", desc: []string{
+			"Stop an instance: its plane, then its services. Idempotent, so running it on a",
+			"stopped instance is a successful no-op."}},
 		{cmd: bin + " plane", desc: []string{
 			"status | start | stop | restart one instance's plane (the same local mechanism the",
 			"TUI and the desktop app call; `scripts/orchicon.sh` delegates to it too)."}},
@@ -320,7 +332,7 @@ func printHelp() {
 		// reach them; hiding them would recreate exactly the gap this help had (a command that exists
 		// and runs, absent from the list). The heading is what says "not for hand use".
 		{section: "Internal (started by the installer and the daemon; not for hand use):"},
-		{cmd: bin + " runtime-daemon", desc: []string{"Run the runtime daemon (owns the Docker socket)"}},
+		{cmd: bin + " runtime-daemon", desc: []string{"Run the runtime daemon (owns the container engine)"}},
 		{cmd: bin + " runtime-supervisor", desc: []string{"Run a workflow container's supervisor"}},
 		{cmd: bin + " runtime-client", desc: []string{"Talk to the runtime daemon over its socket"}},
 	}
@@ -346,7 +358,9 @@ func printHelp() {
 		}
 	}
 
-	fmt.Fprintf(&b, "\nAlmost every command reads ORCHICON_INSTANCE to choose the instance (default: dev).\n")
+	fmt.Fprintf(&b, "\nAlmost every command acts on ONE instance (default: dev). Name it as a positional\n"+
+		"(orchicon stop prod) or with --instance (orchicon stop --instance prod); ORCHICON_INSTANCE\n"+
+		"is the fallback when neither is given.\n")
 	fmt.Fprintf(&b, "\nThe binary embeds the single-container runtime configs, migrations, and the frontend\n"+
 		"bundle. Run the full stack with `docker run` (see ARCHITECTURE.md §Single-Container\n"+
 		"Deployment) or `%s container` as the container's PID-1 supervisor.\n", bin)

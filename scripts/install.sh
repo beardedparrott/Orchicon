@@ -874,7 +874,7 @@ main() {
   else
     echo ""
     echo -e "${B}Installed. Next step:${X}"
-    echo -e "  ${D}orchicon install    Pull images, start the runtime daemon + container${X}"
+    echo -e "  ${D}orchicon install    Pull images, start the runtime daemon, start this instance (Postgres, NATS and the plane)${X}"
   fi
 
   echo ""

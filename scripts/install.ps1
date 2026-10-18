@@ -1011,7 +1011,7 @@ esac
     if ($NoSetup) {
         Write-Host ""
         Write-Host "Installed. Next step (inside WSL):" -ForegroundColor White
-        Write-Host "  orchicon install    Pull images, start the runtime daemon + container" -ForegroundColor DarkGray
+        Write-Host "  orchicon install    Pull images, start the runtime daemon, start this instance (Postgres, NATS and the plane)" -ForegroundColor DarkGray
     } else {
         Write-Host ""
         Write-Host "Setting up the full stack inside WSL (one-command install)…" -ForegroundColor White

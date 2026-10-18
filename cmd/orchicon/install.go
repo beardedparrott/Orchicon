@@ -40,7 +40,15 @@ func installPhase(msg string) {
 // is idempotent: re-running reports the existing instance instead of
 // creating a duplicate.
 func runInstall(args []string, log *slog.Logger) error {
-	instance := env("ORCHICON_INSTANCE", "dev")
+	// THE ARGUMENTS ARE PARSED, AND THAT IS A FIX RATHER THAN A TIDY-UP. `install` used to
+	// accept `args` and never read a byte of them, so `orchicon install --instance prod`
+	// installed (or REPAIRED) `dev` while the operator believed they had chosen prod. The
+	// installer's own `--instance` flag worked, which made the binary's silence worse: the
+	// flag existed one layer up and did nothing here.
+	instance, err := parseInstanceTarget(args, env("ORCHICON_INSTANCE", "dev"))
+	if err != nil {
+		return err
+	}
 	imageTag := env("ORCHICON_IMAGE_TAG", "latest")
 	containerImage := env("ORCHICON_CONTAINER_IMAGE", "ghcr.io/beardedparrott/orchicon:"+imageTag)
 	runtimeImage := env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:"+imageTag)

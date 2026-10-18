@@ -14,25 +14,23 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/planecontrol"
 )
 
 func runPlane(args []string) error {
-	instance := env("ORCHICON_INSTANCE", "dev")
 	if len(args) == 0 {
-		return fmt.Errorf("plane needs a verb: status | start | stop | restart (instance is optional, default %q)", instance)
+		return fmt.Errorf("plane needs a verb: status | start | stop | restart (instance is optional, default %q)",
+			env("ORCHICON_INSTANCE", "dev"))
 	}
 	verb := args[0]
-	if len(args) > 1 {
-		instance = args[1]
-	}
-	// The instance name forms a DIRECTORY NAME, so a name that could climb out of the instance state dir is
-	// refused here rather than turning into a path (the same guard `orchicon restart` applies).
-	if strings.ContainsAny(instance, "/\\") || strings.Contains(instance, "..") {
-		return fmt.Errorf("invalid instance name %q: it forms the instance state directory name, so it "+
-			"may not contain a path separator or \"..\"", instance)
+	// THE INSTANCE COMES FROM THE SHARED PARSER, so `plane start prod` and
+	// `plane start --instance prod` both work and an unknown flag is refused rather than
+	// read as an instance name. It also applies the path guard, which used to live here as
+	// its own copy.
+	instance, err := parseInstanceTarget(args[1:], env("ORCHICON_INSTANCE", "dev"))
+	if err != nil {
+		return err
 	}
 
 	opts := planecontrol.Defaults(instance, os.Stdout)
