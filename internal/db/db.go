@@ -23,6 +23,12 @@ type Pool struct {
 
 // Open creates a pool against the given DSN with sane defaults.
 func Open(ctx context.Context, dsn string) (*Pool, error) {
+	// A TEST BINARY MAY NEVER OPEN THE PRODUCTION DATABASE. This is the one chokepoint every database handle in
+	// the tree passes through, which is why the guard lives here rather than in a helper a test could skip — see
+	// testguard.go for the incident that put it here, and for how to opt out.
+	if err := guardAgainstProdDSN(dsn); err != nil {
+		return nil, err
+	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: parse dsn: %w", err)
