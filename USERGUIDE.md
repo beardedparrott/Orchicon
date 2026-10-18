@@ -64,8 +64,10 @@ environment variables, troubleshooting), see [`ARCHITECTURE.md`](./ARCHITECTURE.
 
 - **Go** 1.26+ (for building from source)
 - **Node.js** 22+ (for frontend development)
-- **Docker** (for the single-container deployment; the headless `orchicon serve`
-  binary needs no external services)
+- **Docker or Podman — OPTIONAL.** A container engine is needed only to run a
+  workflow's work *inside a container*, and for the legacy single-container
+  deployment. With no engine at all, Orchicon runs Postgres and NATS as host
+  processes of your own user — the **no-engine** shape is supported and tested.
 - **curl** + **tar** (for one-liner install)
 - **buf** and **atlas** (install via `make tools`)
 - *(optional)* an adapter CLI — only if you want to dispatch work to an external
@@ -164,10 +166,21 @@ curl -fsSL https://orchicon.dev/install | bash
 ```
 
 The installer downloads the binary, then runs `orchicon install` to set up
-**everything**: pull the published images
-(`ghcr.io/beardedparrott/orchicon` + `orchicon-runtime`), start the host-side
-runtime daemon, launch the single-container instance, and print how to connect /
-start / stop. Pass `--no-setup` to install only the binary (headless / CI).
+**everything**: start the local services (Postgres + NATS) as your own processes,
+start the host-side runtime daemon, bring up the control plane, and print how to
+connect. When a container engine is present it also pulls the published images
+(`ghcr.io/beardedparrott/orchicon` + `orchicon-runtime`); with no engine it installs
+the host-services shape and pulls nothing. Pass `--no-setup` to install only the
+binary (headless / CI).
+
+After that, day to day, it is **one verb each way** — you never need to know that
+"the plane" and "its services" are two things:
+
+```bash
+orchicon start          # services, runtime daemon, plane
+orchicon stop           # plane, then services
+orchicon start prod     # ...or another instance: dev is the default
+```
 
 ### One-line install (Windows PowerShell — via WSL2)
 
@@ -192,9 +205,9 @@ stack therefore runs inside **WSL2**, and the installer orchestrates it:
    (`orchicon_<ver>_linux_<arch>.tar.gz`, arch mapped from the Windows processor)
      and installs it inside the distro (default `~/.local/bin`). There is no Windows
      binary to download: releases publish linux and darwin only.
-4. **One-command setup** — it runs `orchicon install` inside WSL: pull the
-   published images, start the runtime daemon, launch the single-container
-   instance, wait for health. This is the slow part (minutes on a first install), so
+4. **One-command setup** — it runs `orchicon install` inside WSL: start the local
+   services, start the runtime daemon, bring up the control plane, wait for health.
+   This is the slow part (minutes on a first install), so
    every step is named as it starts and the output is **streamed live** rather than
    replayed at the end. It also asks about the host ports — press ENTER to accept
    each default.
@@ -262,9 +275,9 @@ container instances and removes the binary; the WSL distro is left intact),
 | `--version <tag>` | Install a specific version (e.g. `v0.4.0`). Default: latest. |
 | `ORCHICON_INSTALL_BASE_URL` | **Environment.** Where release assets are fetched from. Defaults to the published GitHub release. Set it to install from a mirror, or to point an install at a pre-release channel. It is also what makes the install path testable: `scripts/tests/install-path` serves a locally-built artifact and runs this very installer against it (`make install-path-test`). |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). |
-| `--instance <name>` | Which instance to act on: `dev` (default), `test`, or `prod`. Each has its own container, ports, data volume and host state. **`install` asks, and so does every destructive verb — `--uninstall`, `--purge`, `--remove-binary`, `--clean` and `--force-clean`** — with `dev` as the fallback for an install, and no fallback for the destructive verbs (an empty answer refuses there, so a stray Enter cannot select a stack to destroy). Passing `--instance` skips the question on every one. Also settable as `ORCHICON_INSTANCE`. |
-| `--uninstall` | Stop everything **this instance** runs — its plane and its container. The executables are removed **only when no other instance still needs them**, because one install directory serves every instance. **Data preserved** (and it says where). Asks which instance unless `--instance` is given. |
-| `--purge` | The same, and also destroy this instance's data — its Docker volume and host state directory. Irreversible. |
+| `--instance <name>` | Which instance to act on: `dev` (default), `test`, or `prod`. Each has its own data directory, ports, local services and (when a container engine is present) its own container. **`install` asks, and so does every destructive verb — `--uninstall`, `--purge`, `--remove-binary`, `--clean` and `--force-clean`** — with `dev` as the fallback for an install, and no fallback for the destructive verbs (an empty answer refuses there, so a stray Enter cannot select a stack to destroy). Passing `--instance` skips the question on every one. Also settable as `ORCHICON_INSTANCE`. |
+| `--uninstall` | Stop everything **this instance** runs — its plane, its local services, and its container if it has one. The executables are removed **only when no other instance still needs them**, because one install directory serves every instance. **Data preserved** (and it says where). Asks which instance unless `--instance` is given. |
+| `--purge` | The same, and also destroy this instance's data — its host state directory, and its Docker volume if one exists. Irreversible. |
 | `--remove-binary` | Remove just the `orchicon` and `orch` executables. Every container, volume and instance's state is left alone. If something is running off them it **asks** before stopping it, and declining changes nothing. |
 | `--yes` | Answer the prompts affirmatively, for non-interactive use. |
 
@@ -291,12 +304,20 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 
 ### Which shape you get
 
-**The plane runs on your host by default**, while the services it needs — Postgres, NATS and the
-telemetry plane — run in the instance's container. That is the supported shape, and it is what lets
-the plane reach your project directories and your user's git identity directly. The whole stack
-**can** also run inside the container instead: set `ORCHICON_PLANE_RESIDENCY=container` (on the
-installer, or the launcher's `up`/`down`/`rebuild`) and nothing else changes. Both shapes are
-per-instance and independently reversible — see ARCHITECTURE → *Host residency*.
+**Everything runs on your host, as your own user.** `orchicon install` starts Postgres and NATS as
+processes of the invoking user, then brings up the control plane beside them. No container is
+created, and **no container engine is required** — that is the default shape, and it is what lets the
+plane reach your project directories and your git identity directly.
+
+A container engine is used for one thing: running a workflow's work **inside a container** (a
+*runtime container*, one per workflow run). That is per-project opt-in, so an install with no engine
+is complete — it simply cannot opt a project into runtime containers.
+
+There is also a legacy **single-container** shape, where the whole stack — services and plane — runs
+in one container. Set `ORCHICON_PLANE_RESIDENCY=container` (on the installer, or the launcher's
+`up`/`down`/`rebuild`) to ask for it; `orchicon start`/`stop` handle that shape too, by starting and
+stopping its container. Both shapes are per-instance and independently reversible — see
+ARCHITECTURE → *Host residency*.
 
 ### Ports and instances
 
@@ -314,10 +335,12 @@ install. Left unset, a port already in use raises a prompt on your terminal offe
 port. The remaining service ports (Postgres, NATS, OTLP, Tempo, Loki, VictoriaMetrics) follow the same
 pattern with their own per-instance defaults — the full table is in ARCHITECTURE → *Host residency*.
 
-### Run the container directly
+### Run the single container directly (optional shape)
 
 The whole stack — Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana and the
-control plane — can run in one container:
+control plane — can also run in ONE container. This is the legacy shape, useful
+when you want the product as a single self-contained image; the default install
+puts the services on your host instead:
 
 ```bash
 docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon
@@ -337,7 +360,8 @@ make instance-up            # start the dev instance (http://localhost:8080)
 
 With the frontend in dev mode: `make fe-install` (first time) then `make fe-dev` —
 the Vite dev server on `:5173` proxies the API to `:8080`. Migrations run
-automatically on container boot (embedded runner).
+automatically on plane boot (embedded runner). Once built, the binary's own verbs
+(`bin/orchicon start|stop|restart`) drive the instance without `make` at all.
 
 ### Verify the installation
 
@@ -350,8 +374,9 @@ curl http://localhost:8080/healthz   # {"status":"ok"}
 
 ### Instances, and removing one cleanly
 
-`dev`, `test` and `prod` are three **instances** of the same product on one host: separate container,
-separate ports, separate data volume, separate host state.
+`dev`, `test` and `prod` are three **instances** of the same product on one host: separate data
+directory (`~/.local/share/orchicon-<instance>`), separate ports, separate local services — and, when
+a container engine is present, a separate container each.
 
 > **Every verb that changes something asks which instance** unless `--instance` is given. `install` asks
 > with `dev` as the fallback; every destructive verb — `--uninstall`, `--purge`, `--remove-binary`, `--clean`
@@ -2296,9 +2321,13 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon serve` | Run the control plane with the embedded frontend (headless, migrations on boot) |
 | `orchicon serve --detach` / `--stop` | Manage a background `serve` instance (PID file; logs in `.dev/logs/`) |
 | `orchicon container` | Run the whole stack as PID 1 (the single-container image) |
-| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info. **Idempotent** — re-running converges an existing instance and upgrades a superseded plane. It deliberately does **not** restart a plane that is already healthy on the installed binary |
-| `orchicon restart` | Restart this instance so its components re-read their environment (`--instance <dev\|test\|prod>` to choose which). Use it after installing an adapter CLI or changing `PATH` — see below |
-| `orchicon runtime-daemon` | Host process owning the Docker socket; spawns per-workflow runtime containers |
+| `orchicon install [instance]` | One-command setup: resolve the shape, start the local services (Postgres + NATS), start the runtime daemon, bring up the plane, print connection info. Pulls images too when a container engine is present; with no engine it installs the host-services shape. **Idempotent** — re-running converges an existing instance and upgrades a superseded plane. It deliberately does **not** restart a plane that is already healthy on the installed binary |
+| `orchicon start [instance]` | Start this instance: runtime daemon → local services → plane. **One verb for the whole instance** — what you want after a reboot |
+| `orchicon stop [instance]` | Stop this instance: plane → local services. The reverse order of `start`, so a plane is never left running over a dead database. Safe to run twice |
+| `orchicon restart [instance]` | Restart this instance so its components re-read their environment. Use it after installing an adapter CLI or changing `PATH` — see below |
+| `orchicon plane status\|start\|stop\|restart [instance]` | Drive **one half**: this instance's plane only, leaving its services untouched. This is also the mechanism the TUI, the desktop app and `scripts/orchicon.sh` call |
+| `orchicon services up\|down\|status [instance]` | Drive the **other half**: this instance's Postgres + NATS on the host, needing no container engine. `up` is idempotent; `down` verifies the ports actually came free |
+| `orchicon runtime-daemon` | Host process owning the container-engine socket (podman by default, docker via `ORCHICON_RUNTIME_ENGINE`); spawns per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 |
 | `orchicon runtime-client` | Forwards dispatches into the runtime container |
 | `orchicon mcp` | Start the MCP stdio server (exposes the Ask Orchicon tool registry) |
@@ -2306,6 +2335,12 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon backfill-pr` | Idempotently backfill real PR URLs onto already-completed git-backed runs |
 | `orchicon run-context <runID>` | Print a workflow run's `.orchicon` archive (per-step files plus run summary/status) for context-by-reference. Flags: `--grep <pattern>`, `--steps`/`--summary`, `--limit N` |
 | `orchicon version` | Print the installed version |
+
+**`[instance]` is an optional positional argument** — `dev` when omitted, else `prod` or `test` — and
+every instance-addressed verb above also honours `ORCHICON_INSTANCE`. One spelling throughout: a verb
+never accepts `--instance <name>` as a flag, because the argument names a directory and guessing which
+one you meant is how the wrong stack gets driven. `orchicon install prod` and `orchicon stop prod`
+mean what they say.
 
 **Scripts:**
 

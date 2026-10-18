@@ -73,6 +73,13 @@ func main() {
 			os.Exit(exitOnErr(runRuntimeClient(os.Args[2:], log)))
 		case "install":
 			os.Exit(exitOnErr(runInstall(os.Args[2:], log)))
+		case "start":
+			// THE whole instance in one verb: services, runtime daemon, plane. An operator should not
+			// need to know that "the plane" and "its services" are two things to start it.
+			os.Exit(runStart(os.Args[2:]))
+		case "stop":
+			// The same, backwards, and in the safe order: plane first, then services.
+			os.Exit(runStop(os.Args[2:]))
 		case "restart":
 			os.Exit(exitOnErr(runRestart(os.Args[2:], log)))
 		case "plane":
@@ -280,15 +287,27 @@ func printHelp() {
 
 	rows := []row{
 		{section: "Setting up and driving an instance:"},
-		{cmd: bin + " install", desc: []string{
-			"Set up this machine: pull the images, create the instance, start the plane.",
+		{cmd: bin + " install [instance]", desc: []string{
+			"Set up this machine: resolve the shape, start the local services, bring up the plane.",
+			"Pull images too when a container engine is present; a host with none installs the",
+			"host-services shape and needs no engine at all.",
 			"IDEMPOTENT — re-running converges an existing instance and upgrades a superseded",
 			"plane. It does NOT restart a plane that is already healthy on the installed binary,",
 			"which is why it is not the way to pick up an environment change."}},
-		{cmd: bin + " restart", desc: []string{
+		{cmd: bin + " start [instance]", desc: []string{
+			"Start this instance: its runtime daemon, then Postgres + NATS on the host, then the",
+			"plane. ONE verb for the whole instance — the components are an implementation detail",
+			"you should not have to know to bring your install back up (after a reboot, say).",
+			"Takes an optional instance name, else ORCHICON_INSTANCE, else dev."}},
+		{cmd: bin + " stop [instance]", desc: []string{
+			"Stop this instance: the plane first, then Postgres + NATS.",
+			"The reverse order of start, deliberately: a plane left running over a dead database is",
+			"what makes a status check lie. Safe to run twice. Takes the same optional instance."}},
+		{cmd: bin + " restart [instance]", desc: []string{
 			"Restart the instance so its components re-read their environment.",
 			"Use this after installing an adapter CLI or changing PATH: a plane inherits its",
-			"environment when it STARTS, so `install` alone will not refresh it."}},
+			"environment when it STARTS, so `install` alone will not refresh it.",
+			"Takes an optional instance name, like start and stop."}},
 		{cmd: bin + " plane", desc: []string{
 			"status | start | stop | restart one instance's plane (the same local mechanism the",
 			"TUI and the desktop app call; `scripts/orchicon.sh` delegates to it too)."}},

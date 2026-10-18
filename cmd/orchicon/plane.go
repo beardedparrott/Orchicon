@@ -14,7 +14,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/planecontrol"
 )
@@ -29,10 +28,10 @@ func runPlane(args []string) error {
 		instance = args[1]
 	}
 	// The instance name forms a DIRECTORY NAME, so a name that could climb out of the instance state dir is
-	// refused here rather than turning into a path (the same guard `orchicon restart` applies).
-	if strings.ContainsAny(instance, "/\\") || strings.Contains(instance, "..") {
-		return fmt.Errorf("invalid instance name %q: it forms the instance state directory name, so it "+
-			"may not contain a path separator or \"..\"", instance)
+	// refused here rather than turning into a path — ONE guard, shared with `restart`/`start`/`stop`, so the
+	// rule cannot be relaxed in one verb and forgotten in another.
+	if err := validInstanceName(instance); err != nil {
+		return err
 	}
 
 	opts := planecontrol.Defaults(instance, os.Stdout)
