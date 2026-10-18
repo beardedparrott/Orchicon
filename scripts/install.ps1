@@ -446,8 +446,14 @@ function Ensure-Wsl {
 # The report that prompted this: "if you don't have docker desktop setup, it just
 # closes the powershell session" — a crash that hid its own cause twice over, in the
 # halt (now fixed: see HALT SEMANTICS) and in a list that named no cause at all.
+#
+# IT IS INFORMATIONAL NOW, NOT A REQUIREMENT. Orchicon's plane and services run as HOST processes of the
+# invoking user (Postgres and NATS from host binaries, acquired by `orchicon install`), so a distro with no
+# container engine is a SUPPORTED configuration — containers are only used for a workflow's runtime
+# container, and only if the operator opts in. So this probe names the state the machine is in and returns;
+# it never stops an install for a machine that can install perfectly well without an engine.
 function Ensure-WslDocker {
-    Write-Info "checking Docker inside $script:Distro…"
+    Write-Info "checking for a container engine inside $script:Distro (optional)…"
     $daemon = (Invoke-WslBash "docker version --format '{{.Server.Version}}' 2>/dev/null" | Out-String).Trim()
     if ($LASTEXITCODE -eq 0 -and $daemon) {
         Write-Ok "Docker is available inside WSL (server $daemon)"
@@ -462,11 +468,13 @@ function Ensure-WslDocker {
     $detail = (Invoke-WslBash "docker version 2>&1 | tail -4" | Out-String).Trim()
     $desktop = Test-DockerDesktopRunning
 
-    Write-Err "Docker is not usable inside '$script:Distro'."
+    Write-Warn "no usable container engine inside '$script:Distro' — OPTIONAL, and this install does not need one."
     Write-Host ""
     if ($cliMissing) {
         Write-Host "Cause: this WSL distro has no docker CLI at all." -ForegroundColor Yellow
-        Write-Host "  1. Install Docker Desktop: https://www.docker.com/products/docker-desktop/"
+        Write-Host "  Nothing to fix for Orchicon itself: the plane and its services are host processes."
+        Write-Host "  ONLY if a workflow's runtime container is wanted later:" -ForegroundColor DarkGray
+        Write-Host "  1. Docker Desktop (optional): https://www.docker.com/products/docker-desktop/"
         Write-Host "  2. In Docker Desktop → Settings → Resources → WSL Integration, enable the"
         Write-Host "     integration for '$script:Distro' — that is what puts the CLI on the"
         Write-Host "     distro's PATH. (Or install Docker Engine inside the distro itself.)"
@@ -491,7 +499,9 @@ function Ensure-WslDocker {
     Write-Host ""
     Write-Host "Check it by hand inside the distro:" -ForegroundColor DarkGray
     Write-Host "  wsl -d $script:Distro -e docker version" -ForegroundColor DarkGray
-    Stop-Install
+    Write-Host ""
+    Write-Warn "continuing — a host-binary install needs no container engine."
+    return
 }
 
 # Test-DockerDesktopRunning reports whether Docker Desktop looks alive ON THE
@@ -1011,7 +1021,7 @@ esac
     if ($NoSetup) {
         Write-Host ""
         Write-Host "Installed. Next step (inside WSL):" -ForegroundColor White
-        Write-Host "  orchicon install    Pull images, start the runtime daemon, start this instance (Postgres, NATS and the plane)" -ForegroundColor DarkGray
+        Write-Host "  orchicon install    Start the host services, the runtime daemon and this instance (Postgres and NATS from host binaries)" -ForegroundColor DarkGray
     } else {
         Write-Host ""
         Write-Host "Setting up the full stack inside WSL (one-command install)…" -ForegroundColor White
@@ -1042,18 +1052,18 @@ fi
 # output through a pipe, which the installer reads as "nobody is watching" and would therefore answer for
 # itself. ORCHICON_INSTALL_INTERACTIVE says a person is here, so the prompt is offered (routed to /dev/tty by
 # the installer, which is the only way it is visible through a captured stream).
-ORCHICON_INSTALL_INTERACTIVE=1 ORCHICON_INSTANCE="__INSTANCE__" ORCHICON_CONTAINER_IMAGE="__IMAGE_REF__" "$INSTALL_DIR/orchicon" install
+ORCHICON_INSTALL_INTERACTIVE=1 ORCHICON_INSTANCE="__INSTANCE__" __ASSUME_YES__"$INSTALL_DIR/orchicon" install
 '@
-        # THE CONTAINER IMAGE FOLLOWS THE VERSION BEING INSTALLED, so an install of X runs X — the same rule
-        # the shell installer applies. Without it the stack came from whatever `:latest` the host already had:
-        # a canary install put a canary BINARY over the last RELEASED image, and a host that already held
-        # `:latest` could never be brought forward, because the installer skipped the pull.
+        # NO CONTAINER IMAGE IS NAMED, because there is no instance image any more: the plane and its services
+        # are host processes, and their binaries are acquired by `orchicon install` itself. What remains is the
+        # per-workflow runtime container's image, which that command offers as an opt-in choice (default none)
+        # and fetches only when one is chosen — or later, on demand, from the Runtime Images page.
         #
-        # ONLY THIS IMAGE IS NAMED. The runtime base and its variants keep the default tag, because a version
-        # has one instance image and the runtime engine is not versioned with it — naming a tag here would
-        # send those refs looking for `orchicon-runtime:<version>`, which nothing publishes.
-        $imageRepo = "ghcr.io/" + ($GitHubOwner.ToLower()) + "/" + ($GitHubRepo.ToLower())
-        $setupScript = $setupScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__INSTANCE__', $script:Instance).Replace('__IMAGE_REF__', "${imageRepo}:$Version")
+        # -Yes IS FORWARDED AS ORCHICON_ASSUME_YES, the same env channel the shell installer uses, because
+        # this wrapper runs `orchicon install` with no flags: without it a non-interactive -Yes run would sit
+        # at the runtime-image prompt with nothing to answer it.
+        $assumeYes = if ($Yes) { 'ORCHICON_ASSUME_YES=1 ' } else { '' }
+        $setupScript = $setupScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__INSTANCE__', $script:Instance).Replace('__ASSUME_YES__', $assumeYes)
         # LIVE, not captured. This is THE step that takes minutes and asks questions:
         # capturing it is what made a working install look hung, and an invisible port
         # prompt look like a dead terminal. See Invoke-WslBashLive.
