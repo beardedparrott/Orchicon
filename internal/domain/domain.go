@@ -53,8 +53,8 @@ type Project struct {
 	// image tag (nil = inherit tenant/base). Copied onto work items at
 	// create time when the caller passes no runtime_image.
 	DefaultRuntimeImage *string
-	// ExecutionMode is "runtime" (always-container, default) or "local"
-	// (in-process allowed with honest prompt + DSN fence).
+	// ExecutionMode is "local" (in-process allowed, the default, with an
+	// honest prompt + DSN fence) or "runtime" (always-container, opt-in).
 	ExecutionMode string
 }
 

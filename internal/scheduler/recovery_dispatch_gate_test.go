@@ -83,7 +83,8 @@ func newRecoveryGateTestEnv(t *testing.T, strategy string) *recoveryGateTestEnv 
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Recovery Gate Test", Slug: slug,
 		Status: "active", Goals: []byte("[]"),
-		ProjectDir: "/tmp/orchicon/" + slug,
+		ProjectDir:    "/tmp/orchicon/" + slug,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
