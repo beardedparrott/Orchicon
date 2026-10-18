@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -114,5 +115,42 @@ func TestInstallImageRefsStillAgreeWithReleaseWorkflow(t *testing.T) {
 		if !strings.Contains(wf, "ghcr.io/beardedparrott/orchicon-runtime:"+variant+"-${ORCHICON_VERSION}") {
 			t.Errorf("release.yml no longer publishes the %s variant tag", variant)
 		}
+	}
+}
+
+// TestAssumeYesAnswersTheRuntimeImagePrompt is AC 19 for the affirmative half: `--yes` reaches this prompt
+// through ORCHICON_ASSUME_YES (scripts/install.sh exports it, because the setup step runs `orchicon install`
+// with no flags), answers ALL of them, prints the total size BEFORE anything is fetched, and never overrides
+// an answer the instance already recorded.
+func TestAssumeYesAnswersTheRuntimeImagePrompt(t *testing.T) {
+	t.Setenv("ORCHICON_ASSUME_YES", "1")
+	var shown strings.Builder
+	got, answered := assumeYesRuntimeImages(&shown, "latest")
+	if !answered || len(got) != len(installRuntimeImageChoices("latest")) {
+		t.Fatalf("--yes answered %v (answered=%v), want every choice", got, answered)
+	}
+	if !strings.Contains(shown.String(), "~") || !strings.Contains(shown.String(), "--yes") {
+		t.Errorf("the affirmative answer did not name the total size before fetching:\n%s", shown.String())
+	}
+
+	// Unset: no opinion, and no output claiming one.
+	t.Setenv("ORCHICON_ASSUME_YES", "")
+	var quiet strings.Builder
+	if _, answered := assumeYesRuntimeImages(&quiet, "latest"); answered {
+		t.Errorf("an unset ORCHICON_ASSUME_YES answered the prompt: %q", quiet.String())
+	}
+
+	// A RECORDED ANSWER WINS: --yes must not turn every rebuild of a declined instance into a multi-GB
+	// download, because the record (not the flag) is what this instance last chose.
+	t.Setenv("ORCHICON_ASSUME_YES", "1")
+	t.Setenv("ORCHICON_INSTALL_INTERACTIVE", "1")
+	t.Setenv("HOME", t.TempDir())
+	recordRuntimeImagesAnswer("dev", "none")
+	got, err := resolveInstallRuntimeImagesFor("dev", io.Discard, strings.NewReader("all"), "latest", false)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("--yes overrode the recorded \"none\": got %d image(s), want none", len(got))
 	}
 }

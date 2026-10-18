@@ -398,9 +398,15 @@ Say "[13] -Instance scoping"
 
 $scoped = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
   -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -Instance test -DryRun"
-Check "-Instance test names ONLY the test container" `
-  (($scoped -match 'orchicon-cnt-test') -and ($scoped -notmatch 'orchicon-cnt-prod') -and ($scoped -notmatch 'orchicon-cnt-dev')) `
-  "an unscoped cleanup would touch dev and prod too"
+Check "-Instance test scopes the teardown to the TEST instance only" `
+  (($scoped -match 'ORCHICON_INSTANCE=test') -and ($scoped -notmatch 'ORCHICON_INSTANCE=dev') -and ($scoped -notmatch 'ORCHICON_INSTANCE=prod')) `
+  ("an unscoped cleanup would take dev and prod down too; got: " + (($scoped -split "`n" | Where-Object { $_ -match 'ORCHICON_INSTANCE|instance' }) -join ' / '))
+# THE CONTAINER-NAME ASSERTION THIS REPLACES LOST ITS PREMISE WITH THE INSTANCE IMAGE: there is no
+# `orchicon-cnt-<instance>` to scope to any more, because the plane is a host process of the invoking user.
+# What must not come back is a plan that names one — that is a step at teardown time that cannot run.
+Check "and it names no container, because a host-resident plane has none" `
+  (-not ($scoped -match 'orchicon-cnt')) `
+  ("a container name in the plan is a step that cannot run; got: " + (($scoped -split "`n" | Where-Object { $_ -match 'cnt' }) -join ' / '))
 
 # NOT `dev` ANY MORE, and that is deliberate: the verb ASKS for the instance, and with no terminal it
 # refuses rather than picking one. Inferring `dev` was how an operator could clean the wrong stack.
@@ -411,12 +417,13 @@ Check "with no flag, no environment and no terminal it REFUSES" `
   ("got: " + (($def -split "`n" | Where-Object { $_ -match 'instance|orchicon-cnt' }) -join ' / '))
 $explicit = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
   -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -Instance dev -DryRun"
-Check "and -Instance dev is still honoured without any prompt" ($explicit -match 'orchicon-cnt-dev')`
-  ("got: " + (($explicit -split "`n" | Where-Object { $_ -match 'orchicon-cnt' }) -join ' / '))
+Check "and -Instance dev is still honoured without any prompt" ($explicit -match 'ORCHICON_INSTANCE=dev') `
+  ("got: " + (($explicit -split "`n" | Where-Object { $_ -match 'ORCHICON_INSTANCE|instance' }) -join ' / '))
 
 $fromEnv = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = "test"; ORCHICON_INSTALL_LOG = "off" } `
   -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -DryRun"
-Check "the environment is still honoured when no flag is given" ($fromEnv -match 'orchicon-cnt-test')
+Check "the environment is still honoured when no flag is given" ($fromEnv -match 'ORCHICON_INSTANCE=test') `
+  ("got: " + (($fromEnv -split "`n" | Where-Object { $_ -match 'ORCHICON_INSTANCE|instance' }) -join ' / '))
 
 $bad = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
   -Command "& ([scriptblock]::Create((Get-Content -Raw '$quoted'))) -Uninstall -Instance production -DryRun; '$marker'"
@@ -445,18 +452,6 @@ Say ""
 Say "[14] uninstall stops what it says it stops"
 
 $ps1Src = Get-Content -Raw $Installer
-Check "the uninstall script passes the instance's state dir to serve --stop" `
-  ($ps1Src -match 'ORCHICON_SERVE_STATE_DIR=\"\$STATE_DIR\" \"\$BIN\" serve --stop') `
-  "a bare serve --stop misses the host-resident plane and leaves a web server running with no binary"
-Check "and it derives that state dir from the INSTANCE, not a fixed path" `
-  ($ps1Src -match 'orchicon-\$\{INSTANCE\}/serve') `
-  "the state dir is per instance; a fixed one would stop the wrong plane"
-Check "it REMOVES the container rather than only stopping it" `
-  ($ps1Src -match 'docker rm -f \"\$CONTAINER\"') `
-  "docker stop left the services stack running after an uninstall"
-Check "data is preserved unless -Purge is given" `
-  ($ps1Src -match 'Re-run with -Purge to remove both' -and $ps1Src -match '\$PURGE\" = \"1\"') `
-  "destroying a database is not something an uninstall may infer from 'remove the software'"
 # SCOPED TO THE UNINSTALL SCRIPT: there is a second `rm -f "$BIN"` in the remove-binary script, and an
 # unscoped IndexOf was comparing against that one instead — an assertion about the wrong text.
 # `$uninstallScript` MUST BE ESCAPED: unescaped it interpolates to empty in this scope (the harness never
@@ -465,8 +460,28 @@ Check "data is preserved unless -Purge is given" `
 $a1 = $ps1Src.IndexOf("`$uninstallScript = @'")
 $a2 = $ps1Src.IndexOf("'@", $a1)
 $uninstallOnly = $ps1Src.Substring($a1, $a2 - $a1)
+# COMMENT LINES ARE STRIPPED BEFORE EVERY "it does NOT do this" CHECK: the generated script explains in
+# comments which commands it used to run and why they are gone (`docker rm -f $CONTAINER`, `serve --stop`),
+# and a check for "it does not do this" that fires on its own explanation is a check about prose.
+$uninstallCode = (($uninstallOnly -split "`n") | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+
+Check "the uninstall script stops the plane AND this instance's host services" `
+  ($uninstallOnly -match 'ORCHICON_INSTANCE=\"\$INSTANCE\" \"\$BIN\" stop') `
+  "a bare serve --stop missed the host-resident plane and left Postgres and NATS listening for a plane that no longer exists"
+Check "and it is bound to the CHOSEN instance, not a fixed one" `
+  (($uninstallOnly -match 'INSTANCE=\"__INSTANCE__\"') -and $ps1Src.Contains("Replace('__INSTANCE__', " + '$' + "script:Instance)")) `
+  "the instance is templated into the script; a fixed 'dev' would stop the wrong plane"
+Check "and it never falls back to serve --stop, pkill or fuser" `
+  (-not ($uninstallCode -match 'serve --stop|pkill|fuser')) `
+  "an instance-scoped command with a machine-wide effect is how a -Uninstall took dev and prod's planes down"
+Check "and it removes no container, because the instance image is gone" `
+  (-not ($uninstallCode -match 'docker (rm|stop|volume|run)')) `
+  "docker stop/rm named a container this install never creates; the summary then claimed a removal that could not happen"
+Check "data is preserved unless -Purge is given" `
+  ($ps1Src -match 'Re-run with -Purge to remove it' -and $ps1Src -match '\$PURGE\" = \"1\"') `
+  "destroying a database is not something an uninstall may infer from 'remove the software'"
 Check "the binary is removed LAST, after the plane that runs from it is stopped" `
-  ($uninstallOnly.IndexOf('ORCHICON_SERVE_STATE_DIR="$STATE_DIR"') -lt $uninstallOnly.IndexOf('rm -f "$BIN"')) `
+  ($uninstallOnly.IndexOf('ORCHICON_INSTANCE="$INSTANCE" "$BIN" stop') -lt $uninstallOnly.IndexOf('rm -f "$BIN"')) `
   "deleting the executable first is what produced the broken server"
 
 $purgeHelp = Invoke-ChildInstaller -Env @{ ORCHICON_INSTANCE = ""; ORCHICON_INSTALL_LOG = "off" } `
@@ -507,7 +522,7 @@ Check "and gates the removal itself on DRYRUN" `
 Check "-Help documents -RemoveBinary" ($ps1 -match '-RemoveBinary')
 Check "-Help documents -Purge" ($ps1 -match '-Purge')
 Check "the uninstall summary distinguishes preserved from destroyed data" `
-  (($ps1 -match 'DATA PRESERVED') -and ($ps1 -match 'volume and host state removed')) `
+  (($ps1 -match 'DATA PRESERVED') -and ($ps1 -match 'host state destroyed')) `
   "an uninstall must not be ambiguous about whether the database survived"
 
 # --- 16. THE CONNECTION INFO READS THE BOUND PORTS, IT DOES NOT GUESS --------
@@ -590,28 +605,25 @@ Check "and an empty answer refuses without a fallback" `
   ($code -match 'no instance chosen - pass -Instance') `
   "the refusal is what makes Enter safe for the destructive verbs"
 
-# --- 18. THE WINDOWS SETUP NAMES THE VERSION'S IMAGE --------------------------
-# The same rule as the shell installer's, and the same failure it prevents: with binaries only, a canary
-# install put a canary BINARY over the last RELEASED image, so a test of "does re-installing converge the
-# container?" had nothing newer to converge to.
+# --- 18. THE WINDOWS SETUP PULLS NO IMAGE OF ITS OWN --------------------------
+# THIS SECTION ASSERTED THE OPPOSITE UNTIL THE INSTANCE IMAGE WAS DELETED, and the assertions were the
+# premise: the setup passed ORCHICON_CONTAINER_IMAGE, built a ghcr ref from the version and substituted an
+# __IMAGE_REF__ placeholder. All three are now steps that cannot run — the plane is a host process of the
+# invoking user — so they are REPLACED BY THEIR INVERSES rather than deleted: nothing may reintroduce a
+# container ref into a wrapper whose install no longer creates a container at all.
 Say ""
-Say "[18] the Windows setup names the version's image"
+Say "[18] the Windows setup pulls no image of its own"
 
 $ps1c = Get-Content -Raw $Installer
-Check "the setup script passes ORCHICON_CONTAINER_IMAGE" `
-  ($ps1c -match 'ORCHICON_CONTAINER_IMAGE="__IMAGE_REF__"') `
-  "without it the stack comes from whatever :latest the host already has"
-Check "and the ref is built from the version, lowercased for ghcr" `
-  (($ps1c -match '\$imageRepo = "ghcr.io/"') -and ($ps1c -match '\.ToLower\(\)')) `
-  "ghcr rejects an uppercase repository name, and GITHUB_REPO is 'Orchicon'"
-Check "the placeholder is substituted, not shipped literally" `
-  ($ps1c -match "\.Replace\('__IMAGE_REF__'") `
-  "a literal __IMAGE_REF__ would be an invalid image ref at install time"
-# The RUNTIME images must NOT move with the version: nothing publishes orchicon-runtime:<version>, so
-# tagging them would make an install fail on a ref that does not exist.
-Check "the runtime images are left on their default tag" `
-  (-not ($ps1c -match 'ORCHICON_RUNTIME_IMAGE="__')) `
-  "only the instance image is versioned; the runtime engine is not"
+Check "the setup script passes no instance image ref" `
+  (-not ($ps1c -match 'ORCHICON_CONTAINER_IMAGE')) `
+  "the instance image is gone; a ref here names a container the install never creates"
+Check "and it carries no ghcr ref and no unfilled placeholder" `
+  ((-not ($ps1c -match 'ghcr\.io/')) -and (-not ($ps1c -match '__IMAGE_REF__'))) `
+  "a leftover registry ref or placeholder is a pull waiting to fail against a ref that does not exist"
+Check "and it pre-pulls no runtime image either" `
+  (-not ($ps1c -match 'ORCHICON_RUNTIME_IMAGE')) `
+  "runtime images are on demand: the install PROMPTS for them and pulls only what was chosen"
 
 # --- 19. EVERY DESTRUCTIVE FLAG IS INSTANCE-BOUND ---------------------------
 # The operator: "EVERY option should be instance bound and operate as such." -Clean and -ForceClean were the

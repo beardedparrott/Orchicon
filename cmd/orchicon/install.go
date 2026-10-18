@@ -201,7 +201,16 @@ func runInstall(args []string, log *slog.Logger) error {
 		// every rebuild, so re-asking made a rebuild an interactive command — and reboots/CI/scripts have no
 		// one to answer. ORCHICON_RUNTIME_IMAGES_ASK=1 forces the question back for a deliberate change.
 		forceAsk := strings.TrimSpace(os.Getenv("ORCHICON_RUNTIME_IMAGES_ASK")) != ""
-		installChoices, cerr := resolveInstallRuntimeImagesFor(instance, os.Stdout, os.Stdin, imageTag, forceAsk)
+		// THE ANSWER IS READ FROM THE TERMINAL, NOT FROM STDIN. Under `curl … | bash` (and this script's own
+		// `curl … | bash -s -- …`) STDIN IS THE INSTALLER SCRIPT, already at EOF — so a prompt reading stdin
+		// would render and then answer "none" by itself, without ever having asked. It is the same defect the
+		// port prompt documents in install_ports.go promptTerminal, and the same fix: the tty opened above
+		// when there is one, stdin only when there is genuinely nothing else.
+		answerIn := io.Reader(os.Stdin)
+		if tty != nil {
+			answerIn = tty
+		}
+		installChoices, cerr := resolveInstallRuntimeImagesFor(instance, promptOut, answerIn, imageTag, forceAsk)
 		if cerr != nil {
 			fmt.Printf("warning: %v\n", cerr)
 		}

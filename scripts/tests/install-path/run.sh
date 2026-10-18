@@ -146,6 +146,14 @@ else
   grep -i 'download' "${LOG}" | sed 's/^/      /' | head -3
 fi
 
+# NO IMAGE PULL AND NO DOCKER, observed rather than asserted in the source: a --no-setup install must not
+# mention a registry ref or a container engine in anything it prints, because it no longer needs either.
+if grep -qiE 'ghcr\.io|docker' "${LOG}"; then
+  bad "--no-setup still mentions an image ref or Docker: $(grep -iE 'ghcr\.io|docker' "${LOG}" | head -2 | tr '\n' ' ')"
+else
+  ok "the install names no registry ref and no Docker"
+fi
+
 # --- 4. the installed thing must work, and be the artifact we served ---------------
 say ""
 say "[4] the installed binary"
@@ -204,11 +212,24 @@ else
 fi
 
 # And the instance must actually scope the acting: a dry-run force-clean for `test` may name ONLY test.
-OUT="$(bash "${INSTALLER}" --force-clean --instance test --dry-run 2>&1 || true)"
-if grep -q "orchicon-cnt-test" <<<"${OUT}" && ! grep -qE "orchicon-cnt-(dev|prod)" <<<"${OUT}"; then
-  ok "--instance test scopes the acting to the test container alone"
+# THE SCOPE IS ASSERTED ON THE INSTANCE NAME the verbs derive their state dir and stop command from — the
+# container names this used to grep for are gone with the container. A scratch install dir and a scratch
+# XDG_DATA_HOME hold one binary and one state dir per instance, so the dry run has something to report.
+SCOPE_BIN="${WORK}/scope-bin"
+SCOPE_XDG="${WORK}/scope-xdg"
+mkdir -p "${SCOPE_BIN}" "${SCOPE_XDG}/orchicon-test/serve" "${SCOPE_XDG}/orchicon-dev/serve"
+printf '#!/bin/sh\nexit 0\n' > "${SCOPE_BIN}/orchicon"; chmod +x "${SCOPE_BIN}/orchicon"
+OUT="$(XDG_DATA_HOME="${SCOPE_XDG}" bash "${INSTALLER}" --force-clean --instance test --dry-run \
+  --install-dir "${SCOPE_BIN}" 2>&1 || true)"
+if grep -q "ORCHICON_INSTANCE=test" <<<"${OUT}" && ! grep -qE "ORCHICON_INSTANCE=(dev|prod)" <<<"${OUT}"; then
+  ok "--instance test scopes the stopping to the test instance alone"
 else
-  bad "--instance test scopes the acting (named: $(grep -o 'orchicon-cnt-[a-z]*' <<<"${OUT}" | sort -u | tr '\n' ' '))"
+  bad "--instance test scopes the acting (named: $(grep -o 'ORCHICON_INSTANCE=[a-z]*' <<<"${OUT}" | sort -u | tr '\n' ' '))"
+fi
+if grep -q "orchicon-test" <<<"${OUT}" && ! grep -qE "orchicon-(dev|prod)" <<<"${OUT}"; then
+  ok "and the only state dir it names is test's"
+else
+  bad "another instance's state dir is named (named: $(grep -oE 'orchicon-(dev|test|prod)' <<<"${OUT}" | sort -u | tr '\n' ' '))"
 fi
 
 # --- 6. INSTALL ASKS WHICH INSTANCE (detached, so the no-terminal path is the one exercised)
@@ -276,30 +297,70 @@ for f in $mode_suspects; do
   fi
 done
 
-# --- 8. THE STACK MUST COME FROM THE VERSION BEING INSTALLED -----------------
-# Without this the instance ran whatever `:latest` the host already had, so a canary install put a canary
-# BINARY over the last RELEASED image — and a host that already held `:latest` could never be brought
-# forward. Asserted at the source because the assertion is about WHICH REF IS NAMED, and no amount of
-# running the installer against a local artifact can observe that.
+# --- 8. NO IMAGE PULL, AND THE RUNTIME IMAGES ARE AN OPT-IN CHOICE ---------------
+# The previous premise of this section — "the stack must come from the version being installed" — is GONE
+# with the instance image: the plane and its services are host processes now, so there is no image ref to
+# name. The assertion is REPLACED, not deleted, with what took its place: the installer names and pulls
+# nothing, and the only place a runtime image can be chosen is `orchicon install`'s own opt-in prompt, which
+# shows each variant's size and defaults to none.
 say ""
-say "[8] the install names the version's container image"
+say "[8] the installer names no image, and offers the runtime images instead"
 
 INSTALLER_SRC="$(cat "${INSTALLER}")"
-if grep -q 'ORCHICON_CONTAINER_IMAGE="\$image_ref"' <<<"${INSTALLER_SRC}"; then
-  ok "the setup step passes ORCHICON_CONTAINER_IMAGE"
+if [ "$(grep -ci docker <<<"${INSTALLER_SRC}")" = "0" ]; then
+  ok "the installer mentions no container engine at all (no Docker check, no docker command)"
 else
-  bad "the setup step does not name the container image — the stack would come from whatever :latest the host has"
+  bad "the installer still mentions Docker: $(grep -in docker <<<"${INSTALLER_SRC}" | head -3 | tr '\n' ' ')"
 fi
-if grep -q 'image_ref="ghcr.io/' <<<"${INSTALLER_SRC}"; then
-  ok "and the ref is derived from the version, not hardcoded"
+if [ "$(grep -c 'ORCHICON_CONTAINER_IMAGE' <<<"${INSTALLER_SRC}")" = "0" ] && [ "$(grep -c 'image_ref=' <<<"${INSTALLER_SRC}")" = "0" ]; then
+  ok "it sets no container image ref (the instance image no longer exists)"
 else
-  bad "the image ref is not derived from the version"
+  bad "the installer still sets a container image ref"
 fi
-# ghcr requires a lowercase repository name, and GITHUB_REPO is "Orchicon".
-if grep -q 'tr "\[:upper:\]" "\[:lower:\]"' <<<"${INSTALLER_SRC}"; then
-  ok "and it is lowercased (ghcr rejects uppercase)"
+if grep -qF 'if "$bin" install; then' <<<"${INSTALLER_SRC}"; then
+  ok "and the setup step runs a plain \`orchicon install\`, inventing no environment for it"
 else
-  bad "the image ref is not lowercased — ghcr would reject 'Orchicon'"
+  bad "the setup step does not run a plain \`orchicon install\`"
+fi
+
+IMAGES_SRC="$(cat "${REPO_ROOT}/cmd/orchicon/install_runtime_images.go")"
+for variant in base gui dev; do
+  if grep -q "Variant: \"${variant}\"" <<<"${IMAGES_SRC}"; then
+    ok "the runtime-image prompt offers '${variant}'"
+  else
+    bad "the runtime-image prompt does not offer '${variant}'"
+  fi
+done
+if grep -q 'humanSize(c.SizeBytes)' <<<"${IMAGES_SRC}"; then
+  ok "and it shows each variant's size (they differ by an order of magnitude)"
+else
+  bad "the prompt does not show the sizes"
+fi
+if grep -qF 'Download any runtime images now? [none]' <<<"${IMAGES_SRC}"; then
+  ok "and declining is the documented default — an install with no image is complete"
+else
+  bad "the prompt does not default to none"
+fi
+
+INSTALL_GO_SRC_IMAGES="$(cat "${REPO_ROOT}/cmd/orchicon/install.go")"
+if grep -q 'answerIn = tty' <<<"${INSTALL_GO_SRC_IMAGES}" \
+   && ! grep -q 'resolveInstallRuntimeImagesFor(instance, os.Stdout, os.Stdin' <<<"${INSTALL_GO_SRC_IMAGES}"; then
+  ok "and it reads the answer from the TERMINAL, so a piped install can still ask"
+else
+  bad "the runtime-image prompt reads stdin — under \`curl | bash\` that is the script, already at EOF"
+fi
+if grep -q 'ORCHICON_ASSUME_YES' <<<"${INSTALLER_SRC}" && grep -q 'ORCHICON_ASSUME_YES' <<<"${IMAGES_SRC}"; then
+  ok "and --yes reaches that prompt, so a non-interactive --yes answers it"
+else
+  bad "--yes does not reach the runtime-image prompt"
+fi
+# A FRESH INSTALL WITH NOTHING SELECTED FETCHES NOTHING, by construction: the fetch is only reached with a
+# non-empty selection. (The live half of this is in the uninstall/engine harness.)
+if grep -q 'if len(installChoices) == 0' <<<"${INSTALL_GO_SRC_IMAGES}" \
+   && grep -q 'ensureInstallRuntimeImages(installChoices' <<<"${INSTALL_GO_SRC_IMAGES}"; then
+  ok "nothing is fetched unless something was chosen"
+else
+  bad "the install fetches outside the chosen selection"
 fi
 
 # --- 9. THE INFRASTRUCTURE BINARIES HAVE ONE RESOLVER, AND IT RECORDS --------------

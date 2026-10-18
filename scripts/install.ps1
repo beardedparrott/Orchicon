@@ -8,11 +8,16 @@
 #
 # What this script does:
 #   1. Provisions / detects WSL2 and a Linux distro.
-#   2. Confirms Docker is available inside the distro (Docker Desktop's
-#      WSL2 integration, or Docker Engine installed in the distro).
+#   2. Looks for a container engine inside the distro — INFORMATIONAL ONLY.
+#      The plane and its services are host processes of the invoking user, so
+#      an install needs no Docker and never stops for a missing one; the probe
+#      only names the state the machine is in (criterion: a machine with no
+#      Docker and no Postgres still installs).
 #   3. Downloads the LINUX release binary and installs it inside WSL.
-#   4. Runs `orchicon install` inside WSL: pull the published images,
-#      start the runtime daemon, launch the single-container instance.
+#   4. Runs `orchicon install` inside WSL: acquires the host service binaries
+#      (Postgres, NATS), starts the runtime daemon and launches THIS instance's
+#      plane. It OFFERS the optional runtime images (multi-select, default none,
+#      each with its size) and pulls only what was chosen — nothing by default.
 #   5. Prints the URLs to open from Windows (localhost forwarding).
 #
 # The runtime layer (runtime daemon, unix socket, container mounts) is
@@ -37,8 +42,9 @@
 # unwinds to the runner at the bottom of this file (see HALT SEMANTICS), which
 # prints what failed, prints the next steps, and returns to the prompt.
 #
-# PROGRESS — THE LONG AND INTERACTIVE STEPS STREAM. `orchicon install` pulls
-# images for minutes and asks about the host ports, so its output is streamed to
+# PROGRESS — THE LONG AND INTERACTIVE STEPS STREAM. `orchicon install` acquires
+# host binaries (minutes on a first install) and asks about the host ports and the
+# optional runtime images, so its output is streamed to
 # the console as it is produced rather than captured and replayed at the end. A
 # captured install is indistinguishable from a hung one, and a captured PROMPT is
 # a permanent hang: the question is buffered while the process blocks on the
@@ -94,34 +100,41 @@ Options:
                       a default port. Both launchers honour the same names.
   -Version <tag>      Install a specific version (e.g. v0.1.173). Default: latest.
   -Instance <name>    Which instance to act on: dev (default), test, or prod. Each has its
-                      own container, ports, data volume and host state, so -Instance test
+                      own plane, ports, host services and host state, so -Instance test
                       cannot disturb dev or prod. Applies to install AND to
                       -Clean/-ForceClean/-Uninstall.
   -InstallDir <dir>   WSL install directory for the binary (default: ~/.local/bin).
-  -NoSetup            Install the binary only — do NOT pull images, start the
-                      runtime daemon, or launch the container.
-  -Uninstall          Stop everything THIS instance runs - its plane and its container - and
-                      remove the Orchicon binary. DATA IS PRESERVED (the Docker volume and the
-                      instance's host state), and the summary says where each is.
-  -Purge              With -Uninstall: ALSO destroy the data - the instance's Docker volume and
-                      host state directory. Irreversible. Without -Uninstall this does nothing.
-  -RemoveBinary       Remove just the orchicon and orch executables. Every container, volume and
-                      instance's state is left alone. If something is running off them it asks
-                      before stopping it, and declining changes nothing.
-  -Yes                Answer the prompts affirmatively, for non-interactive use.
-  -Clean              Stop the container instances, remove the old binary, then
-                      install the latest version — one-shot upgrade. All user
-                      data is preserved (Docker volumes, BlobStore files,
-                      runtime state).
-  -ForceClean         Wipe everything and start fresh: stop the stack, destroy
-                      the instance data volumes, remove local state, then install
-                      the latest version. WARNING: all data is lost.
+  -NoSetup            Install the binary only — do NOT start the host services, the
+                      runtime daemon, or the plane.
+  -Uninstall          Stop everything THIS instance runs - its plane and its host services
+                      (Postgres, NATS) - and remove the Orchicon binary. DATA IS PRESERVED (the
+                      instance's host state: database, blob store, runtime state), and the
+                      summary says where it is.
+  -Purge              With -Uninstall: ALSO destroy that data - the instance's host state
+                      directory (database, blob store, runtime state). Irreversible. Without
+                      -Uninstall this does nothing.
+  -RemoveBinary       Remove just the orchicon and orch executables. Every instance's state
+                      is left alone. If something is running off them it asks before
+                      stopping it, and declining changes nothing.
+  -Yes                Answer the prompts affirmatively, for non-interactive use. That
+                      includes the optional runtime images (it answers: all of them).
+  -Clean              Stop this instance's plane and host services, remove the old
+                      binary, then install the latest version — one-shot upgrade. All
+                      user data is preserved (database, BlobStore files, runtime state).
+  -ForceClean         Wipe everything for THIS instance and start fresh: stop it, destroy
+                      its data directory (database, BlobStore files, runtime state),
+                      remove local state, then install the latest version. WARNING: all
+                      data for this instance is lost.
   -DryRun             Print what would happen without making changes.
   -Help               Show this help.
 
+The setup step also OFFERS the optional runtime images (runtime base ~1 GB, GUI +150 MB,
+  dev +1.5-2.5 GB). It is a multi-select that defaults to NONE: pressing ENTER pulls no image,
+  and that is a complete install - the plane runs and a project in local mode needs none.
+
 This installer NEVER closes your PowerShell window: whatever goes wrong it prints
 what failed and the next steps, then returns to the prompt with your session
-intact. The long steps (image pull, stack setup) stream their output as they run,
+intact. The long steps (binary acquisition, stack setup) stream their output as they run,
 and the setup step may ask about host ports — press ENTER to accept each default.
 A full log of the run is written to %TEMP% (path printed when the run starts).
 "@
@@ -304,9 +317,9 @@ function Invoke-WslBash {
 # one that reports itself. Invoke-WslBash captures, which is right for a step whose
 # output we PARSE and wrong for a step that takes minutes or asks a question:
 #
-#   * Capture makes a WORKING install indistinguishable from a hung one. Pulling
-#     the published images is hundreds of megabytes and many minutes, and none of
-#     that progress reached the operator — the window sat on one line.
+#   * Capture makes a WORKING install indistinguishable from a hung one. Acquiring
+#     the host service binaries (Postgres, NATS) is minutes on a first install, and
+#     none of that progress reached the operator — the window sat on one line.
 #   * Capture makes a PROMPT a permanent hang. `orchicon install` asks about the
 #     host ports (an empty line accepts the default) and reads the CONTROLLING
 #     TERMINAL while writing the question to stdout. Captured, the question is
@@ -446,8 +459,14 @@ function Ensure-Wsl {
 # The report that prompted this: "if you don't have docker desktop setup, it just
 # closes the powershell session" — a crash that hid its own cause twice over, in the
 # halt (now fixed: see HALT SEMANTICS) and in a list that named no cause at all.
+#
+# IT IS INFORMATIONAL NOW, NOT A REQUIREMENT. Orchicon's plane and services run as HOST processes of the
+# invoking user (Postgres and NATS from host binaries, acquired by `orchicon install`), so a distro with no
+# container engine is a SUPPORTED configuration — containers are only used for a workflow's runtime
+# container, and only if the operator opts in. So this probe names the state the machine is in and returns;
+# it never stops an install for a machine that can install perfectly well without an engine.
 function Ensure-WslDocker {
-    Write-Info "checking Docker inside $script:Distro…"
+    Write-Info "checking for a container engine inside $script:Distro (optional)…"
     $daemon = (Invoke-WslBash "docker version --format '{{.Server.Version}}' 2>/dev/null" | Out-String).Trim()
     if ($LASTEXITCODE -eq 0 -and $daemon) {
         Write-Ok "Docker is available inside WSL (server $daemon)"
@@ -462,11 +481,13 @@ function Ensure-WslDocker {
     $detail = (Invoke-WslBash "docker version 2>&1 | tail -4" | Out-String).Trim()
     $desktop = Test-DockerDesktopRunning
 
-    Write-Err "Docker is not usable inside '$script:Distro'."
+    Write-Warn "no usable container engine inside '$script:Distro' — OPTIONAL, and this install does not need one."
     Write-Host ""
     if ($cliMissing) {
         Write-Host "Cause: this WSL distro has no docker CLI at all." -ForegroundColor Yellow
-        Write-Host "  1. Install Docker Desktop: https://www.docker.com/products/docker-desktop/"
+        Write-Host "  Nothing to fix for Orchicon itself: the plane and its services are host processes."
+        Write-Host "  ONLY if a workflow's runtime container is wanted later:" -ForegroundColor DarkGray
+        Write-Host "  1. Docker Desktop (optional): https://www.docker.com/products/docker-desktop/"
         Write-Host "  2. In Docker Desktop → Settings → Resources → WSL Integration, enable the"
         Write-Host "     integration for '$script:Distro' — that is what puts the CLI on the"
         Write-Host "     distro's PATH. (Or install Docker Engine inside the distro itself.)"
@@ -491,7 +512,9 @@ function Ensure-WslDocker {
     Write-Host ""
     Write-Host "Check it by hand inside the distro:" -ForegroundColor DarkGray
     Write-Host "  wsl -d $script:Distro -e docker version" -ForegroundColor DarkGray
-    Stop-Install
+    Write-Host ""
+    Write-Warn "continuing — a host-binary install needs no container engine."
+    return
 }
 
 # Test-DockerDesktopRunning reports whether Docker Desktop looks alive ON THE
@@ -677,7 +700,6 @@ BIN="__INSTALL_DIR__"
 BIN="${BIN/#\~/$HOME}/orchicon"
 ORCH="__INSTALL_DIR__"
 ORCH="${ORCH/#\~/$HOME}/orch"
-CONTAINER="__CONTAINER__"
 
 # ASK BEFORE TAKING ANYTHING DOWN. Removing a binary that a plane runs from is what produces a server
 # that answers and cannot work, so consent decides and declining changes nothing.
@@ -685,8 +707,9 @@ HOLDER=$(fuser "$BIN" 2>/dev/null | tr -s ' ')
 if [ -n "$HOLDER" ]; then
   echo "a process is running off $BIN (pids: $HOLDER)"
   if [ "$CONSENT" = "1" ]; then
-    ORCHICON_SERVE_STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/orchicon-__INSTANCE__/serve" "$BIN" serve --stop >/dev/null 2>&1 || true
-    [ "$DRYRUN" = "1" ] || docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    # `orchicon stop` scoped to ONE instance: it takes down that instance's plane AND its host
+    # services, and touches no other instance's processes. Nothing is matched by process name.
+    ORCHICON_INSTANCE="__INSTANCE__" "$BIN" stop >/dev/null 2>&1 || true
   else
     echo "nothing stopped, nothing removed"
     exit 0
@@ -702,14 +725,14 @@ else
 fi
 true
 '@
-        $removeBinaryScript = $removeBinaryScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__INSTANCE__', $script:Instance)
+        $removeBinaryScript = $removeBinaryScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__INSTANCE__', $script:Instance)
         $removeBinaryScript = $removeBinaryScript.Replace('CONSENT="1"', $(if ($Yes) { 'CONSENT="1"' } else { 'CONSENT=""' }))
         $removeBinaryScript = $removeBinaryScript.Replace('DRYRUN="1"', $(if ($DryRun) { 'DRYRUN="1"' } else { 'DRYRUN=""' }))
         if ($DryRun) {
-            Write-Info "would run in WSL: stop the $script:Instance plane/container if the binaries are in use, then remove orchicon and orch"
+            Write-Info "would run in WSL: stop the $script:Instance plane and host services if the binaries are in use, then remove orchicon and orch"
         } else {
             Invoke-WslBash $removeBinaryScript
-            Write-Ok "binaries removed for '$script:Instance' - containers, volumes and instance state untouched"
+            Write-Ok "binaries removed - every instance's state is untouched"
         }
         return
     }
@@ -725,51 +748,47 @@ $uninstallScript = @'
 set +e
 BIN="__INSTALL_DIR__"
 BIN="${BIN/#\~/$HOME}/orchicon"
-CONTAINER="__CONTAINER__"
-VOLUME="__VOLUME__"
 INSTANCE="__INSTANCE__"
 
-# THE PLANE IS STOPPED THROUGH ITS OWN STATE DIRECTORY, and this is the bug the operator hit: a bare
-# `serve --stop` resolves its PID file from ORCHICON_SERVE_STATE_DIR, so it looked in the CWD-relative
-# default, MISSED the host-resident plane, reported success, and then deleted the binary - leaving a web
-# server that answers and cannot work. The shell installer has passed the state dir since it learned the
-# same lesson; this is that fix.
-STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/orchicon-${INSTANCE}/serve"
+# THE PLANE **AND THIS INSTANCE'S HOST SERVICES**, through `orchicon stop`, scoped by ORCHICON_INSTANCE
+# - the same call the shell installer makes, for the same measured reason. A bare `serve --stop`
+# resolved its PID file somewhere else, MISSED the host-resident plane, reported success and deleted
+# the binary (leaving a web server that answers and cannot work); even when it hit, it took only the
+# web server down and left this instance's Postgres and NATS listening for a plane that no longer
+# exists. `orchicon stop` stops the plane and THEN the instance's host services.
 if [ -x "$BIN" ]; then
-  ORCHICON_SERVE_STATE_DIR="$STATE_DIR" "$BIN" serve --stop >/dev/null 2>&1 ||
+  ORCHICON_INSTANCE="$INSTANCE" "$BIN" stop >/dev/null 2>&1 ||
     echo "note: no running plane found for instance '${INSTANCE}'"
 fi
 
-# THE CONTAINER, which the old uninstall only STOPPED (leaving it behind) - or, when the binary was
-# already gone, never touched at all.
-docker rm -f "$CONTAINER" >/dev/null 2>&1 && echo "removed container $CONTAINER"
+# NO CONTAINER, AND NO DOCKER. The instance image is gone and the plane is a host process, so the old
+# `docker rm -f $CONTAINER` named something that cannot exist - and on a machine without Docker it was
+# a command that could only fail silently while the summary still claimed a container was removed.
 
 if [ "$PURGE" = "1" ]; then
-  docker volume rm "$VOLUME" >/dev/null 2>&1 && echo "removed volume $VOLUME"
   rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/orchicon-${INSTANCE}" && echo "removed host state for instance '${INSTANCE}'"
 else
   echo ""
   echo "  Data preserved:"
-  echo "    instance volume:  $VOLUME"
   echo "    instance state:   ${XDG_DATA_HOME:-$HOME/.local/share}/orchicon-${INSTANCE}"
-  echo "  Re-run with -Purge to remove both (irreversible)."
+  echo "    (the ${INSTANCE} database, blob store and runtime state)"
+  echo "  Re-run with -Purge to remove it (irreversible)."
 fi
 
 if [ -f "$BIN" ]; then rm -f "$BIN" && echo "removed $BIN"; else echo "orchicon not found in $BIN - nothing to remove"; fi
 true
 '@
-        $uninstallScript = $uninstallScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName).Replace('__INSTANCE__', $script:Instance)
+        $uninstallScript = $uninstallScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__INSTANCE__', $script:Instance)
           $uninstallScript = $uninstallScript.Replace('PURGE="1"', $(if ($Purge) { 'PURGE="1"' } else { 'PURGE=""' }))
         if ($DryRun) {
               Write-Info "would run inside WSL:"
-              Write-Host "  stop the ${script:Instance} plane (via its own state dir) and remove its container"
-              Write-Host "  wsl -d $script:Distro -e bash -lc 'docker rm -f $script:ContainerName'"
-              if ($Purge) { Write-Host "  wsl -d $script:Distro -e bash -lc 'docker volume rm $script:VolumeName'" }
+              Write-Host "  stop the ${script:Instance} plane and its host services (ORCHICON_INSTANCE=${script:Instance} orchicon stop)"
+              if ($Purge) { Write-Host "  destroy the ${script:Instance} host state dir (database, blob store, runtime state)" }
               Write-Host "  wsl -d $script:Distro -e bash -lc 'rm -f $bin'"
         } else {
             Invoke-WslBash $uninstallScript
-              if ($Purge) { Write-Ok "Orchicon uninstalled for '$script:Instance' — binary, container, volume and host state removed" }
-              else { Write-Ok "Orchicon uninstalled for '$script:Instance' — binary and container removed; DATA PRESERVED (re-run with -Purge to destroy it)" }
+              if ($Purge) { Write-Ok "Orchicon uninstalled for '$script:Instance' — plane and host services stopped, host state destroyed (database included), binary removed" }
+              else { Write-Ok "Orchicon uninstalled for '$script:Instance' — plane and host services stopped, binary removed; DATA PRESERVED (re-run with -Purge to destroy it)" }
         }
         # `return`, not `exit`: this path SUCCEEDS, and it used to close the window on
         # the way out (see HALT SEMANTICS).
@@ -789,15 +808,19 @@ true
 set +e
 BIN="__INSTALL_DIR__"
 BIN="${BIN/#\~/$HOME}/orchicon"
-if [ -x "$BIN" ]; then "$BIN" serve --stop >/dev/null 2>&1; fi
-pkill -9 -x orchicon 2>/dev/null
-docker rm -f __CONTAINER__ >/dev/null 2>&1
+# THIS INSTANCE ONLY, AND NEVER BY PROCESS NAME. This read `"$BIN" serve --stop` followed by
+# `pkill -9 -x orchicon`. The bare serve --stop resolves its PID file from the cwd-relative default,
+# so it MISSED the host-resident plane; the pkill then matched EVERY orchicon process on the machine -
+# dev, prod and the shared runtime daemon - and SIGKILLed them, leaving their work items mid-flight.
+# `orchicon stop` is instance-scoped through the environment and takes the plane down first, then this
+# instance's own host services (Postgres, NATS). There is no container to remove any more.
+if [ -x "$BIN" ]; then ORCHICON_INSTANCE=__INSTANCE__ "$BIN" stop >/dev/null 2>&1 || true; fi
 rm -f "$BIN"
 true
 '@
-        $cleanScript = $cleanScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName)
+        $cleanScript = $cleanScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName).Replace('__INSTANCE__', $script:Instance)
         if ($DryRun) {
-            Write-Info "would run inside WSL: stop the container instances, remove the old binary (data preserved)"
+            Write-Info "would run inside WSL: stop this instance's plane and host services, remove the old binary (data preserved)"
         } else {
             Invoke-WslBash $cleanScript
             Write-Ok "Infrastructure cleaned — all user data preserved"
@@ -820,22 +843,25 @@ true
 set +e
 BIN="__INSTALL_DIR__"
 BIN="${BIN/#\~/$HOME}/orchicon"
-if [ -x "$BIN" ]; then "$BIN" serve --stop >/dev/null 2>&1; fi
-pkill -9 -x orchicon 2>/dev/null
-docker rm -f __CONTAINER__ >/dev/null 2>&1
-docker volume rm __VOLUME__ >/dev/null 2>&1
-# ANCHORED TO THE STATE DIRECTORY, NEVER A RELATIVE NAME. This read
-# `cd "$HOME"; rm -rf data .dev bin .local/share/orchicon`, which deleted
-# `$HOME/bin`, `$HOME/data` and `$HOME/.dev` — directories Orchicon does not own,
-# and `~/bin` in particular is where people keep their own binaries. The `.local`
-# entry was ALSO relative, so it never touched the real state dir at $HOME/.local.
-rm -rf "$HOME/.local/share/orchicon"
+# SAME RULE AS -Clean, and for the same incident: this instance only, plane then its host services,
+# NEVER a process-name match (`pkill -9 -x orchicon` took dev, prod and the shared runtime daemon down
+# from an instance-scoped command).
+if [ -x "$BIN" ]; then ORCHICON_INSTANCE=__INSTANCE__ "$BIN" stop >/dev/null 2>&1 || true; fi
+# ANCHORED TO THE STATE DIRECTORY, NEVER A RELATIVE NAME — AND TO THIS INSTANCE'S OWN DIRECTORY.
+# This read `cd "$HOME"; rm -rf data .dev bin .local/share/orchicon`, which deleted
+# `$HOME/bin`, `$HOME/data` and `$HOME/.dev` — directories Orchicon does not own, and `~/bin` in
+# particular is where people keep their own binaries. The `.local` entry was ALSO relative, so it never
+# touched the real state dir. It then named `$HOME/.local/share/orchicon`, which is NOT the per-instance
+# `orchicon-<instance>` the install writes and reads back — so -ForceClean reported "all data wiped"
+# while the instance's database, blob store and runtime state survived. The shell installer's
+# force-clean destroys the per-instance dir, and this must agree with it.
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/orchicon-__INSTANCE__"
 rm -f "$BIN"
 true
 '@
-        $forceCleanScript = $forceCleanScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName)
+        $forceCleanScript = $forceCleanScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName).Replace('__INSTANCE__', $script:Instance)
         if ($DryRun) {
-            Write-Info "would run inside WSL: stop the stack, destroy instance data volumes, remove local state (ALL DATA LOST)"
+            Write-Info "would run inside WSL: stop this instance's plane and host services, destroy its data directory, remove local state (ALL DATA FOR THIS INSTANCE LOST)"
         } else {
             Invoke-WslBash $forceCleanScript
             Write-Ok "All data wiped — ready for a fresh start"
@@ -901,8 +927,8 @@ true
         Write-Host "  1. download $asset (linux/$arch)"
         Write-Host "  2. extract + install to $InstallDir/orchicon inside WSL"
         if (-not $NoSetup) {
-            Write-Host "  3. run 'orchicon install' inside WSL (pull images, start daemon, launch container)"
-            Write-Host "  4. open the control plane on the port the installer prints"
+            Write-Host "  3. run 'orchicon install' inside WSL (acquire host binaries, start daemon, launch this instance's plane; no image is pulled unless one is chosen)"
+            Write-Host "  4. open the control plane on the ports the installer prints"
             Write-Host "     (dev defaults: 8080 / 3002; prod: 8091 / 3003)"
         }
         Write-Ok "dry-run complete — no changes made"
@@ -1008,18 +1034,21 @@ esac
     if ($NoSetup) {
         Write-Host ""
         Write-Host "Installed. Next step (inside WSL):" -ForegroundColor White
-        Write-Host "  orchicon install    Pull images, start the runtime daemon, start this instance (Postgres, NATS and the plane)" -ForegroundColor DarkGray
+        Write-Host "  orchicon install    Start the host services, the runtime daemon and this instance (Postgres and NATS from host binaries)" -ForegroundColor DarkGray
     } else {
         Write-Host ""
         Write-Host "Setting up the full stack inside WSL (one-command install)…" -ForegroundColor White
-        # SAY WHAT IS ABOUT TO HAPPEN, INCLUDING THE QUESTION. `orchicon install` pulls
-        # the published images (minutes, hundreds of megabytes on a first install) and
-        # asks about the host ports. Both facts are load-bearing: without the first, a
-        # working pull is indistinguishable from a hang; without the second, an operator
-        # staring at a still screen never learns that the installer is waiting for them.
-        Write-Host "  · pulling the published images — the slow part (minutes on a first install)" -ForegroundColor DarkGray
-        Write-Host "  · starting the runtime daemon, then launching the instance" -ForegroundColor DarkGray
+        # SAY WHAT IS ABOUT TO HAPPEN, INCLUDING THE QUESTIONS. `orchicon install` acquires the
+        # host service binaries (Postgres, NATS — minutes on a first install) and asks about the
+        # host ports AND the optional runtime images. Both facts are load-bearing: without the
+        # first, a working download is indistinguishable from a hang; without the second, an
+        # operator staring at a still screen never learns that the installer is waiting for them.
+        # NOTHING IS PULLED BY DEFAULT: the images are an opt-in question that answers "none".
+        Write-Host "  · acquiring the host service binaries (Postgres, NATS) — the slow part on a first install" -ForegroundColor DarkGray
+        Write-Host "  · starting the runtime daemon, then launching this instance's plane" -ForegroundColor DarkGray
         Write-Host "  · it asks about host ports: press ENTER to accept each default" -ForegroundColor DarkGray
+        Write-Host "  · it offers the optional runtime images (base ~1 GB, GUI +150 MB, dev +1.5-2.5 GB):" -ForegroundColor DarkGray
+        Write-Host "    press ENTER for none — a complete install pulls no image at all" -ForegroundColor DarkGray
         Write-Host "  Its output is shown live below." -ForegroundColor DarkGray
         Write-Host ""
         $setupScript = @'
@@ -1039,18 +1068,18 @@ fi
 # output through a pipe, which the installer reads as "nobody is watching" and would therefore answer for
 # itself. ORCHICON_INSTALL_INTERACTIVE says a person is here, so the prompt is offered (routed to /dev/tty by
 # the installer, which is the only way it is visible through a captured stream).
-ORCHICON_INSTALL_INTERACTIVE=1 ORCHICON_INSTANCE="__INSTANCE__" ORCHICON_CONTAINER_IMAGE="__IMAGE_REF__" "$INSTALL_DIR/orchicon" install
+ORCHICON_INSTALL_INTERACTIVE=1 ORCHICON_INSTANCE="__INSTANCE__" __ASSUME_YES__"$INSTALL_DIR/orchicon" install
 '@
-        # THE CONTAINER IMAGE FOLLOWS THE VERSION BEING INSTALLED, so an install of X runs X — the same rule
-        # the shell installer applies. Without it the stack came from whatever `:latest` the host already had:
-        # a canary install put a canary BINARY over the last RELEASED image, and a host that already held
-        # `:latest` could never be brought forward, because the installer skipped the pull.
+        # NO CONTAINER IMAGE IS NAMED, because there is no instance image any more: the plane and its services
+        # are host processes, and their binaries are acquired by `orchicon install` itself. What remains is the
+        # per-workflow runtime container's image, which that command offers as an opt-in choice (default none)
+        # and fetches only when one is chosen — or later, on demand, from the Runtime Images page.
         #
-        # ONLY THIS IMAGE IS NAMED. The runtime base and its variants keep the default tag, because a version
-        # has one instance image and the runtime engine is not versioned with it — naming a tag here would
-        # send those refs looking for `orchicon-runtime:<version>`, which nothing publishes.
-        $imageRepo = "ghcr.io/" + ($GitHubOwner.ToLower()) + "/" + ($GitHubRepo.ToLower())
-        $setupScript = $setupScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__INSTANCE__', $script:Instance).Replace('__IMAGE_REF__', "${imageRepo}:$Version")
+        # -Yes IS FORWARDED AS ORCHICON_ASSUME_YES, the same env channel the shell installer uses, because
+        # this wrapper runs `orchicon install` with no flags: without it a non-interactive -Yes run would sit
+        # at the runtime-image prompt with nothing to answer it.
+        $assumeYes = if ($Yes) { 'ORCHICON_ASSUME_YES=1 ' } else { '' }
+        $setupScript = $setupScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__INSTANCE__', $script:Instance).Replace('__ASSUME_YES__', $assumeYes)
         # LIVE, not captured. This is THE step that takes minutes and asks questions:
         # capturing it is what made a working install look hung, and an invisible port
         # prompt look like a dead terminal. See Invoke-WslBashLive.
@@ -1070,7 +1099,7 @@ ORCHICON_INSTALL_INTERACTIVE=1 ORCHICON_INSTANCE="__INSTANCE__" ORCHICON_CONTAIN
             Write-Host "    wsl -d $script:Distro -e bash -lc '$InstallDir/orchicon install'" -ForegroundColor Cyan
             Write-Host "  Where the reason will be:"
             Write-Host "    · the output above — the failing step prints its own reason"
-            Write-Host "    · docker logs --tail 50 orchicon-cnt-$instance   (the stack's services)"
+            Write-Host "    · this instance's host services (postgres, nats) print their own reason above"
             Write-Host "    · the runtime daemon log: /tmp/orchicon-runtime/runtime-daemon.log in the distro"
             # A non-zero outcome for a wrapper: the binary is in place, the stack is not.
             $script:ExitCode = 1
