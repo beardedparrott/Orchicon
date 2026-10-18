@@ -609,11 +609,16 @@ if [ "${BUILD_GOARCH}" = "amd64" ]; then
   set -e
   check "install.sh --desktop exits 0 (got ${DRC})" "$([ "${DRC}" -eq 0 ] && echo 1 || echo 0)"
   [ "${DRC}" -ne 0 ] && sed 's/^/      /' "${DLOG}" | tail -12
-  if grep -q "${BASE}/${VERSION}/${DESKTOP_ASSET}" "${DLOG}"; then
+  # THE PROOF OF PROVENANCE IS THE SERVER'S OWN ACCESS LOG, not install.sh's chatter: the installer
+  # reports progress as "downloading the desktop app…" and only names the URL when something goes
+  # wrong, so grepping its output for the URL asserts a string the success path never prints. The
+  # served-release request for the published asset name is the contract, and the server logs it.
+  if grep -q "GET /${VERSION}/${DESKTOP_ASSET}" "${WORK}/srv.log" 2>/dev/null; then
     ok "it downloaded the desktop app from the served release (the published asset name is the contract)"
   else
     bad "it downloaded the desktop app from the served release"
     grep -i 'desktop' "${DLOG}" | sed 's/^/      /' | head -4
+    grep "GET /${VERSION}" "${WORK}/srv.log" 2>/dev/null | sed 's/^/      /' | head -4
   fi
   if [ -x "${DDEST}/orchicon-desktop" ]; then
     ok "the desktop app landed in the install dir, executable (no sudo, no /usr/local)"
@@ -643,10 +648,14 @@ if grep -q 'spctl -a -t exec' <<<"${INSTALLER_FOR_DESKTOP}"; then
 else
   bad "install.sh does not assert Gatekeeper acceptance — a blocked .app would look installed and then not start"
 fi
-if grep -v '^\s*#' <<<"${INSTALLER_FOR_DESKTOP}" | grep -q 'xattr -d'; then
-  bad "install.sh STRIPS the quarantine flag — that hides a bad release instead of reporting it"
+# THE FLAG MUST NOT BE STRIPPED FROM THE RELEASED DESKTOP BUNDLE — that is what hides a bad release.
+# The CLI BINARY is a different matter and is deliberately de-quarantined: the documented curl one-liner
+# sets no quarantine bit in the first place, and install.sh says so by that line. So the assertion is
+# about the app, not about the existence of the word xattr.
+if grep -v '^\s*#' <<<"${INSTALLER_FOR_DESKTOP}" | grep 'xattr -d' | grep -qi 'orchicon-desktop\|\.app\b'; then
+  bad "install.sh STRIPS the quarantine flag from the desktop app — that hides a bad release instead of reporting it"
 else
-  ok "install.sh never strips the quarantine flag (comment-only mentions do not count)"
+  ok "install.sh never strips the quarantine flag from the desktop app (comment-only mentions do not count)"
 fi
 
 say ""
