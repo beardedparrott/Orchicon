@@ -435,6 +435,238 @@ jobs:
           docker push "ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}"
           docker push ghcr.io/beardedparrott/orchicon-runtime:dev
 
+  # ---------------------------------------------------------------------------
+  # DESKTOP PACKAGING — macOS .app, Windows WebView2, Linux WebKitGTK.
+  #
+  # THREE SINGLE-OS JOBS, DELIBERATELY NOT A MATRIX. Two independent reasons:
+  #
+  #   1. Each platform needs a DIFFERENT RUNNER, because each platform's webview
+  #      story is different: libwebkit2gtk must be compiled against on Linux, the
+  #      .app must be codesigned and notarised on macOS (no other runner can),
+  #      and the NSIS installer plus its WebView2 bootstrapper needs Windows.
+  #   2. The matrix scanner in cmd/orchicon/ci_release_workflows_test.go reads
+  #      EVERY `- os:` line in this file as a CLI platform. A desktop matrix would
+  #      be reported as a canary/release drift that does not exist.
+  #
+  # NONE OF THESE IS IN `release:`'s needs:, and that is AC6: a webkit or signing
+  # failure can stop the desktop artifacts, but it must never stop the CLI
+  # binaries from publishing. The desktop artifacts join the release through an
+  # optional (continue-on-error) download in the `release:` job below.
+  #
+  # The Wails PROJECT lives at cmd/orchicon-desktop (wails.json + main.go), which is where
+  # the shell item put it: the CLI resolves its project from the working directory
+  # (os.Getwd + ./wails.json, no project-dir flag), so every job below cd's there first.
+  #
+  # The pinned Wails CLI version matches the Makefile's WAILS_VERSION (v2.17.0, the version
+  # go.mod requires) so a local build and a release build use the same framework.
+  # ---------------------------------------------------------------------------
+  desktop-linux:
+    name: Desktop — Linux (.deb + AppImage)
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
+    # ubuntu-22.04, NOT ubuntu-latest: the .deb must link libwebkit2gtk-4.0, which
+    # Ubuntu 24.04 dropped. Building on 24.04 would produce a package that only
+    # runs on the newest distros. Users on those get the AppImage instead.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the webview build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev pkg-config
+
+      - name: Build frontend
+        run: |
+          set -euo pipefail
+          cd frontend && npm ci && npm run build
+
+      - name: Install the pinned Wails CLI
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build the desktop app
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd cmd/orchicon-desktop
+          wails build -clean -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION}"
+
+      # The .deb is where AC3's DECLARATION lives (deploy/desktop/nfpm.yaml:
+      # depends on libwebkit2gtk-4.0-37), and its /usr/bin entry point is the
+      # launcher that DETECTS a missing webview before the loader does.
+      - name: Package the .deb
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${ORCHICON_VERSION#v}"
+          mkdir -p dist/desktop
+          ORCHICON_VERSION="$VERSION" go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.0 \
+            package -f deploy/desktop/nfpm.yaml -p deb \
+            -t "dist/desktop/orchicon_desktop_${VERSION}_linux_amd64.deb"
+          ls -l dist/desktop
+
+      - name: Package the AppImage
+        run: |
+          set -euo pipefail
+          bash deploy/desktop/appimage/build.sh
+          ls -l dist/desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchicon-desktop-linux
+          path: dist/desktop/*
+          if-no-files-found: error
+
+  desktop-macos:
+    name: Desktop — macOS (.app, signed + notarised)
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build frontend
+        run: |
+          set -euo pipefail
+          cd frontend && npm ci && npm run build
+
+      - name: Install the pinned Wails CLI
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # universal = one .app for both Apple Silicon and Intel, which is why the
+      # artifact is named ..._darwin_universal.zip rather than per-arch.
+      - name: Build the .app
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd cmd/orchicon-desktop
+          wails build -clean -platform darwin/universal -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION}"
+
+      # Sign → notarise (--wait) → staple → assert with spctl. The script reads
+      # every secret from the environment and fails on a missing one: shipping an
+      # unsigned .app is exactly the Gatekeeper block AC1 forbids.
+      - name: Sign, notarise and staple the .app
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bash deploy/desktop/macos/sign-and-notarize.sh
+          ls -l dist/desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchicon-desktop-darwin
+          path: dist/desktop/*.zip
+          if-no-files-found: error
+
+  desktop-windows:
+    name: Desktop — Windows (NSIS installer + portable zip)
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd frontend && npm ci && npm run build
+
+      - name: Install the pinned Wails CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # `-webview2 download` embeds the WebView2 Evergreen bootstrapper in the NSIS
+      # installer, which is what makes a Windows 10 machine provision itself on
+      # first run instead of opening a blank window (AC2). `-nsis` is the
+      # installer itself.
+      - name: Build the app + NSIS installer
+        shell: bash
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd cmd/orchicon-desktop
+          wails build -clean -platform windows/amd64 -webview2 download -nsis \
+            -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION}"
+
+      # The portable zip does NOT carry the bootstrapper (an unzip cannot run an
+      # installer), so it ships README-WINDOWS.txt naming the Evergreen URL
+      # instead — the app itself also detects the missing runtime and puts that
+      # URL in a native dialog rather than failing to a blank window.
+      - name: Name the artifacts
+        shell: pwsh
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = $env:ORCHICON_VERSION.TrimStart('v')
+          $bins = Get-ChildItem -Path cmd/orchicon-desktop/build/bin -Filter *.exe -File
+          $installer = $null
+          $app = $null
+          foreach ($f in $bins) {
+            if ($f.Name -match 'installer') { $installer = $f } elseif ($null -eq $app) { $app = $f }
+          }
+          if ($null -eq $installer) { throw "no NSIS installer found in desktop/build/bin — wails build -nsis did not produce one" }
+          if ($null -eq $app) { throw "no desktop executable found in desktop/build/bin" }
+          $null = New-Item -ItemType Directory -Force -Path dist/desktop
+          Copy-Item $installer.FullName "dist/desktop/orchicon_desktop_${v}_windows_amd64_installer.exe"
+          $stage = "stage/orchicon_desktop_${v}_windows_amd64"
+          $null = New-Item -ItemType Directory -Force -Path $stage
+          Copy-Item $app.FullName "$stage/orchicon-desktop.exe"
+          Copy-Item deploy/desktop/windows/README-WINDOWS.txt "$stage/README-WINDOWS.txt"
+          Compress-Archive -Path $stage -DestinationPath "dist/desktop/orchicon_desktop_${v}_windows_amd64.zip"
+          Get-ChildItem dist/desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchicon-desktop-windows
+          path: dist/desktop/*
+          if-no-files-found: error
+
   release:
     name: Create Release
     needs: [build, guard, sign-macos]
@@ -456,6 +688,18 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # OPTIONAL, and it must stay optional (AC6). continue-on-error means a failed or
+      # absent desktop build leaves the CLI release exactly as it was: the `find` below
+      # simply sees no desktop files. The alternative — a `needs:` dependency — would let
+      # a webkit or notarisation failure SKIP the whole release, taking the CLI binaries
+      # with it.
+      - name: Download desktop artifacts (optional — never blocks the CLI release)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 'orchicon-desktop-*'
+          path: desktop-artifacts
+          merge-multiple: true
       # THE SIGNED MACOS ARCHIVES, DOWNLOADED SECOND AND ON PURPOSE.
       #
       # The step above merges EVERY artifact into one flat directory, so the signed archives carry the same
@@ -526,9 +770,22 @@ jobs:
           # We use `gh release create` directly (not softprops/action-gh-
           # release) for the same reasons as before: explicit retry behavior
           # and clearer errors than the action wrapper under load.
-          # SHA256SUMS IS IN THIS LIST ON PURPOSE — this find IS the upload manifest, so an asset that is
+          # BOTH SETS FROM ONE RELEASE (AC6): the CLI archives (and their SHA256SUMS) AND the
+          # desktop packages. desktop-artifacts/ may not exist at all (a desktop job failed or was
+          # cancelled), so the find tolerates its absence rather than failing the release.
+          #
+          # AND EACH ASSET IS UPLOADED EXACTLY ONCE, keyed by BASENAME. The first download above
+          # carries no pattern, so it already brings EVERY artifact of the run into artifacts/ —
+          # the CLI archives and the three orchicon-desktop-* ones. The optional download above
+          # therefore repeats the desktop packages into desktop-artifacts/, and `gh release create`
+          # names an asset after its basename: handing it one name twice fails the whole release
+          # with HTTP 422 "already_exists", in the HAPPY path with all three desktop builds green.
+          # The awk keeps the first path seen per basename.
+          #
+          # SHA256SUMS IS IN THIS LIST ON PURPOSE — this find IS the upload manifest, so an asset
           # not named here is silently not published, however carefully it was produced.
-          ASSETS=$(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' -o -name 'SHA256SUMS' \) | sort)
+          ASSETS=$(find artifacts desktop-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*_installer.exe' -o -name 'SHA256SUMS' \) 2>/dev/null \
+                   | awk -F/ '!seen[$NF]++' | sort || true)
           if [ -z "$ASSETS" ]; then
             echo "::error::No release assets found under artifacts/"
             exit 1

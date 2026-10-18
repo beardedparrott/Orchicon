@@ -35,6 +35,13 @@
 # provisioning logic below is unchanged; only its caller is now conditional. A
 # plain install never runs `wsl` and works on a machine that has none.
 #
+# -Desktop IS THE ONE THING THIS SCRIPT INSTALLS THAT IS NOT A HOST BINARY OF THE
+# STACK, and it is worth being precise about it: the Orchicon desktop app IS a
+# native Windows binary (a Wails/WebView2 shell), so it cannot be installed by the
+# same copy-into-InstallDir step the CLI binaries use. With -Desktop this script
+# downloads the WINDOWS desktop installer and runs it; the app then talks to the
+# plane on the same host over loopback, exactly as the browser UI does.
+#
 # Options:
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.2.0
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "D:\tools\Orchicon"
@@ -84,6 +91,7 @@ param(
     [switch]$Yes,
     [switch]$Purge,
     [switch]$Help,
+    [switch]$Desktop,
     [string]$Instance = ""
 )
 
@@ -127,6 +135,15 @@ Options:
                       provisions the engine itself (podman first, then docker).
   -NoSetup            Install the binary only — do NOT start the host services, the
                       runtime daemon, or the plane.
+  -Desktop            ALSO install the desktop app (a GUI client for this plane).
+                      The app is a native Windows binary, so this is the one step that
+                      runs an installer rather than copying files. That installer
+                      carries the WebView2 Evergreen bootstrapper, so a Windows 10
+                      machine provisions the runtime during setup instead of opening
+                      a blank window (Windows 11 has it already). Fully optional —
+                      the app is a client, and the web UI at the same URL does
+                      everything it does. Without it, the install prints where to get
+                      the app.
   -Uninstall          Stop everything THIS instance runs - its plane and its host services
                       (Postgres, NATS) - and remove the Orchicon binaries. DATA IS PRESERVED
                       (the instance's host state: database, blob store, runtime state), and
@@ -661,6 +678,91 @@ exit 0
     Write-Ok "containers: WSL2 substrate ready on '$script:Distro'"
 }
 
+# --- Desktop app (Windows side) ---------------------------------------------
+#
+# THE ONE THING THIS SCRIPT INSTALLS THAT IS NOT A HOST BINARY OF THE STACK: the
+# desktop app is a native Windows binary by design (a Wails shell around WebView2), so
+# it is installed by its own installer rather than by the copy-into-InstallDir step the
+# CLI binaries use. It talks to this instance's plane on the same host over loopback,
+# which is exactly what the connection info above advertises.
+#
+# WEBVIEW2 IS THE REASON THE INSTALLER EXISTS RATHER THAN A ZIP. `wails build -nsis
+# -webview2 download` embeds the Evergreen bootstrapper in the NSIS installer, so a
+# Windows 10 machine provisions the runtime during setup instead of opening a blank
+# window. That is why this runs the installer instead of copying files.
+function Install-DesktopApp {
+    $ver = $Version
+    if (-not $ver -or $ver -eq "latest") {
+        try {
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$GitHubOwner/$GitHubRepo/releases/latest" `
+                -Headers @{ "User-Agent" = "orchicon-install" }
+            $ver = $release.tag_name
+        } catch { $ver = "" }
+    }
+    if (-not $ver) {
+        Write-Warn "could not determine the release version — skipping the desktop app"
+        Write-Warn "  download it from https://github.com/$GitHubOwner/$GitHubRepo/releases"
+        return
+    }
+
+    $stem = "orchicon_desktop_$($ver -replace '^v','')_windows_amd64"
+    $url = "https://github.com/$GitHubOwner/$GitHubRepo/releases/download/$ver/${stem}_installer.exe"
+    $out = Join-Path ([System.IO.Path]::GetTempPath()) "$stem-installer.exe"
+
+    Write-Info "downloading the desktop app installer…"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+    } catch {
+        Write-Warn "the desktop installer for $ver is not downloadable ($($_.Exception.Message))"
+        Write-Warn "  get it here: https://github.com/$GitHubOwner/$GitHubRepo/releases/tag/$ver"
+        return
+    }
+
+    Write-Info "running the desktop installer (silent)…"
+    try {
+        $proc = Start-Process -FilePath $out -ArgumentList "/S" -Wait -PassThru
+        if ($proc.ExitCode -ne 0) {
+            Write-Warn "the desktop installer exited $($proc.ExitCode) — the stack install is unaffected"
+            return
+        }
+        Write-Ok "desktop app installed (Start menu, 'Orchicon')"
+        Write-Info "it needs WebView2: preinstalled on Windows 11, provisioned by the installer on Windows 10"
+        Write-Info "it is a client — open it with this plane running, or it starts one for you"
+    } catch {
+        Write-Warn "could not run the desktop installer: $($_.Exception.Message)"
+        Write-Warn "  run it by hand from https://github.com/$GitHubOwner/$GitHubRepo/releases/tag/$ver"
+        return
+    } finally {
+        Remove-Item -Path $out -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Uninstall-DesktopApp removes the app the installer above put on this host. It looks in
+# the locations the Wails NSIS template uses, least-privileged first, and says so plainly
+# when there is nothing there — a portable unzip is uninstalled by deleting the folder.
+function Uninstall-DesktopApp {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Orchicon\uninstall.exe"),
+        (Join-Path $env:ProgramFiles "Orchicon\uninstall.exe")
+    )
+    if (${env:ProgramFiles(x86)}) { $candidates += (Join-Path ${env:ProgramFiles(x86)} "Orchicon\uninstall.exe") }
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) {
+            if ($DryRun) { Write-Info "would run the desktop app uninstaller: $c"; return }
+            try {
+                Start-Process -FilePath $c -ArgumentList "/S" -Wait
+                Write-Ok "desktop app removed"
+            } catch {
+                Write-Warn "could not run the desktop uninstaller ($($_.Exception.Message))"
+                Write-Warn "  remove it from Settings > Apps > Installed apps"
+            }
+            return
+        }
+    }
+    Write-Info "no installed desktop app found (a portable unzip is removed by deleting its folder)"
+}
+
 # --- RUN THE INSTALLER ------------------------------------------------------
 # THE RUNNER, and the only place that decides what the operator sees after a stop.
 # The body below sits in a try/catch for three reasons, in order of importance:
@@ -862,6 +964,10 @@ function Ask-Instance {
         } else {
             Write-Host "  note: no running plane found for instance '$($script:Instance)'" -ForegroundColor DarkGray
         }
+        # THE APP LIVES OUTSIDE InstallDir, so the binary loop below cannot see it: an
+        # uninstall that left a working window behind (pointed at a stopped plane) is a
+        # bug report.
+        Uninstall-DesktopApp
         # DATA IS PRESERVED UNLESS -Purge, and the summary says which happened: an
         # uninstall must not be ambiguous about whether the database survived.
         if ($Purge) {
@@ -1284,6 +1390,16 @@ Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running t
             # A non-zero outcome for a wrapper: the binaries are in place, the stack is not.
             $script:ExitCode = 1
         }
+    }
+
+    # THE DESKTOP APP, opt-in. Without -Desktop this is one line naming where to get it,
+    # so the user is not left to find it.
+    if ($Desktop) {
+        Install-DesktopApp
+    } else {
+        Write-Host ""
+        Write-Host "  Desktop app (optional): re-run with -Desktop, or download it from" -ForegroundColor DarkGray
+        Write-Host "    https://github.com/$GitHubOwner/$GitHubRepo/releases/latest" -ForegroundColor DarkGray
     }
 
     Write-Host ""

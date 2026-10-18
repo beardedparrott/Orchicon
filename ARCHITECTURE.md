@@ -1642,6 +1642,37 @@ therefore kept out of it.
 3. Creates a GitHub Release with platform-specific archives
 4. The install scripts download from the latest release
 
+### Desktop App Packaging (macOS .app, Windows WebView2, Linux WebKitGTK)
+
+The desktop app is a **Wails shell** (`cmd/orchicon-desktop/`) around the same frontend the browser
+gets, and it is a *client*: it talks to a plane over loopback and starts one if none is
+running. Packaging it is a separate concern from building it, and it lives in three places:
+
+- **`internal/desktoppreflight/`** — the webview check, run before `wails.Run` so a missing
+  runtime produces a sentence instead of a blank window. It is a plain Go package with every
+  OS capability injected through `Probe`, so `Evaluate(goos, probe)` is unit-tested on any
+  runner. Linux is the exception that proves the rule: WebKitGTK is a **dynamic-link**
+  dependency, so the loader fails before `main()` — the real Linux check is a POSIX-sh
+  launcher (`deploy/desktop/linux/orchicon-desktop`, installed at `/usr/bin/orchicon-desktop`,
+  exec'ing the binary from `/usr/lib/orchicon/`) and the AppImage's `AppRun`.
+- **`deploy/desktop/`** — the packaging descriptors: `nfpm.yaml` (the `.deb`, whose
+  `depends:` is where the WebKitGTK requirement is *declared*), `appimage/` (bundles webkit
+  for distros that dropped 4.0), `macos/` (`entitlements.plist` plus
+  `sign-and-notarize.sh`: codesign → `notarytool submit --wait` → `stapler staple` →
+  `spctl -a` **assertion**, so an unsigned or unstapled `.app` fails the job), and
+  `windows/README-WINDOWS.txt` for the portable zip.
+- **`.github/workflows/release.yml`** — three single-OS desktop jobs (`desktop-linux` on
+  `ubuntu-22.04`, `desktop-macos` on `macos-14`, `desktop-windows` on `windows-latest`).
+  They are single-OS rather than a matrix on purpose: each platform needs a different runner
+  (notarisation cannot happen on Linux), and the release matrix scanner in
+  `cmd/orchicon/ci_release_workflows_test.go` reads every `- os:` line as a CLI platform.
+  None of them is in `release:`'s `needs:` — desktop artifacts join the release through an
+  optional `pattern: 'orchicon-desktop-*'` download with `continue-on-error: true`, so a
+  webkit or notarisation failure can never stop the CLI binaries from publishing.
+
+Runner strategy and the local `make desktop-*` targets are documented in
+`deploy/desktop/README.md`; the user-facing side is in USERGUIDE §3.
+
 ### Release Workflow
 
 1. Create a PR with the `release` label

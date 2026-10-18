@@ -586,6 +586,68 @@ else
 fi
 
 say ""
+say "[10] the desktop app (--desktop)"
+
+# THE DESKTOP APP IS OPT-IN, SO BOTH HALVES NEED PROVING: with --desktop the app must actually land where
+# this script already writes, and WITHOUT it the user must be told where to get it rather than left to
+# find it. The asset is served from the same fake release as the CLI archive, so the URL shape the
+# installer builds is exercised for real (no network, no real release).
+if [ "${ARCH}" = "amd64" ]; then
+  DESKTOP_ASSET="orchicon_desktop_${VERSION_NUM}_linux_${ARCH}.AppImage"
+  # A stand-in the installer only has to download, chmod and place: the real artifact is a Wails build.
+  printf '#!/bin/sh\necho fake-appimage\n' > "${PKG}/${VERSION}/${DESKTOP_ASSET}"
+  chmod +x "${PKG}/${VERSION}/${DESKTOP_ASSET}"
+
+  DDEST="${WORK}/bin-desktop"
+  DLOG="${WORK}/install-desktop.log"
+  set +e
+  ORCHICON_INSTALL_BASE_URL="${BASE}" bash "${INSTALLER}" \
+    --version "${VERSION}" --install-dir "${DDEST}" --instance test --no-setup --desktop >"${DLOG}" 2>&1
+  DRC=$?
+  set -e
+  check "install.sh --desktop exits 0 (got ${DRC})" "$([ "${DRC}" -eq 0 ] && echo 1 || echo 0)"
+  [ "${DRC}" -ne 0 ] && sed 's/^/      /' "${DLOG}" | tail -12
+  if grep -q "${BASE}/${VERSION}/${DESKTOP_ASSET}" "${DLOG}"; then
+    ok "it downloaded the desktop app from the served release (the published asset name is the contract)"
+  else
+    bad "it downloaded the desktop app from the served release"
+    grep -i 'desktop' "${DLOG}" | sed 's/^/      /' | head -4
+  fi
+  if [ -x "${DDEST}/orchicon-desktop" ]; then
+    ok "the desktop app landed in the install dir, executable (no sudo, no /usr/local)"
+  else
+    bad "the desktop app landed in the install dir, executable"
+    ls -la "${DDEST}" 2>/dev/null | sed 's/^/      /' | head -5
+  fi
+else
+  say "  SKIP  linux/${ARCH}: the desktop AppImage is amd64-only (documented; install.sh says so)"
+fi
+
+# WITHOUT the flag the install must NAME where the app comes from — that line is AC5.
+NLOG="${WORK}/install-nodesktop.log"
+ORCHICON_INSTALL_BASE_URL="${BASE}" bash "${INSTALLER}" \
+  --version "${VERSION}" --install-dir "${WORK}/bin-nodesktop" --instance test --no-setup >"${NLOG}" 2>&1 || true
+if grep -q 'Desktop app (optional)' "${NLOG}"; then
+  ok "without --desktop it still says how to get the app (nobody is left to find it)"
+else
+  bad "without --desktop it names where to get the app"
+fi
+
+# AND THE QUARANTINE RULE, at the source: a released .app that Gatekeeper rejects is a release bug, so the
+# installer ASSERTS with spctl and reports it — it never strips the flag to make the warning go away.
+INSTALLER_FOR_DESKTOP="$(cat "${INSTALLER}")"
+if grep -q 'spctl -a -t exec' <<<"${INSTALLER_FOR_DESKTOP}"; then
+  ok "install.sh asserts Gatekeeper acceptance with spctl"
+else
+  bad "install.sh does not assert Gatekeeper acceptance — a blocked .app would look installed and then not start"
+fi
+if grep -v '^\s*#' <<<"${INSTALLER_FOR_DESKTOP}" | grep -q 'xattr -d'; then
+  bad "install.sh STRIPS the quarantine flag — that hides a bad release instead of reporting it"
+else
+  ok "install.sh never strips the quarantine flag (comment-only mentions do not count)"
+fi
+
+say ""
 if [ "${FAIL}" -eq 0 ]; then
   say "RESULT: all ${PASS} assertion(s) passed"
   exit 0

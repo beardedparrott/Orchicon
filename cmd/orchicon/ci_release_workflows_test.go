@@ -167,6 +167,340 @@ func TestCanaryAssetsUseTheStableName(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// DESKTOP PACKAGING (macOS .app, Windows WebView2, Linux WebKitGTK).
+//
+// The three desktop jobs are asserted here for the same reason the canary matrix is: a
+// packaging step that is not checked is a packaging step that rots silently until a release
+// produces an artifact nobody can install. Each assertion below names the acceptance
+// criterion it protects.
+// ---------------------------------------------------------------------------
+
+const releaseWorkflowPath = "../../.github/workflows/release.yml"
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}
+
+// TestReleaseMatrixIsStillCliOnly pins the decision that the desktop builds are SEPARATE
+// single-OS jobs rather than matrix entries.
+//
+// This is not style. matrixPlatforms scans EVERY `- os:` line in the file, so a desktop
+// matrix would be read as a CLI platform and TestCanaryMatchesReleaseMatrix would fail with
+// a message about the canary — pointing at the wrong file. The clean separation is also what
+// keeps the CLI release independent of the desktop builds (AC6).
+func TestReleaseMatrixIsStillCliOnly(t *testing.T) {
+	got := matrixPlatforms(t, releaseWorkflowPath)
+	// windows/amd64 IS a CLI platform now: the plane and its host services run as native host
+	// processes, so a released orchicon.exe is what a Windows user installs. What this guard is
+	// about is unchanged — no DESKTOP entry here, because the app is CGO + a native webview.
+	want := [][2]string{{"linux", "amd64"}, {"linux", "arm64"}, {"darwin", "amd64"}, {"darwin", "arm64"}, {"windows", "amd64"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the release build matrix is no longer the CLI-only set:\n  got:  %v\n  want: %v\n"+
+			"Desktop builds belong in their own single-OS jobs (they are not CLI platforms and "+
+			"a matrix would break TestCanaryMatchesReleaseMatrix).", got, want)
+	}
+}
+
+// TestReleasePublishesDesktopArtifacts asserts AC1 (macOS signed + notarised + stapled),
+// AC2 (Windows installer carries the WebView2 Evergreen bootstrapper), AC3 (Linux declares
+// WebKitGTK) and AC4 (a desktop artifact per platform, from the right runner).
+func TestReleasePublishesDesktopArtifacts(t *testing.T) {
+	src := mustRead(t, releaseWorkflowPath)
+	var mac, win, linux = -1, -1, -1
+	jobs := jobsIn(src)
+	for i, j := range jobs {
+		if !strings.Contains(j.body, "wails build") {
+			continue
+		}
+		switch {
+		case strings.Contains(j.body, "runs-on: macos-"):
+			mac = i
+		case strings.Contains(j.body, "runs-on: windows-"):
+			win = i
+		case strings.Contains(j.body, "runs-on: ubuntu-"):
+			linux = i
+		}
+	}
+	for _, c := range []struct {
+		idx  int
+		what string
+	}{
+		{mac, "a desktop job on a macOS runner (`runs-on: macos-…`) does not exist — a signed, " +
+			"notarised .app CANNOT be produced on ubuntu-latest (AC1)"},
+		{win, "a desktop job on a Windows runner (`runs-on: windows-…`) does not exist — the NSIS " +
+			"installer and its WebView2 bootstrapper need Windows (AC2)"},
+		{linux, "a desktop job on an Ubuntu runner (`runs-on: ubuntu-…`) does not exist (AC3)"},
+	} {
+		if c.idx < 0 {
+			t.Fatal(c.what)
+		}
+	}
+
+	// AC1: the job builds a UNIVERSAL .app and runs the sign → notarise → staple →
+	// assert chain. The chain itself is asserted against the SCRIPT it calls, not
+	// against this file: a substring check on the workflow would be satisfied by a
+	// comment mentioning `spctl`, which is exactly the kind of vacuous pass these
+	// guards exist to avoid.
+	macBody := jobs[mac].body
+	for _, want := range []string{"-platform darwin/universal", "deploy/desktop/macos/sign-and-notarize.sh"} {
+		if !strings.Contains(macBody, want) {
+			t.Errorf("the macOS desktop job does not contain %q — without the full sign → notarise → "+
+				"staple chain Gatekeeper blocks the .app on a clean Mac (AC1)", want)
+		}
+	}
+	notarize := mustRead(t, "../../deploy/desktop/macos/sign-and-notarize.sh")
+	for _, want := range []string{
+		"codesign",              // signs with the Developer ID identity
+		"notarytool submit",     // notarisation, with --wait so a rejection fails the job
+		"stapler staple",        // the ticket travels in the bundle, so first launch works offline
+		"spctl -a -vvv",         // the assertion: fails the job if Gatekeeper would still block it
+		"entitlements.plist",    // the JIT entitlements WKWebView/JavaScriptCore need under hardened runtime
+		": \"${MACOS_CERT_P12:", // a missing secret must fail, not ship an unsigned app
+	} {
+		if !strings.Contains(notarize, want) {
+			t.Errorf("deploy/desktop/macos/sign-and-notarize.sh does not contain %q — without it the .app "+
+				"is either unsigned (Gatekeeper blocks it) or notarised-but-unstapled (first launch fails "+
+				"when Apple is unreachable) (AC1)", want)
+		}
+	}
+
+	// AC2: the installer carries the bootstrapper; the flag is the whole provisioning story.
+	winBody := jobs[win].body
+	for _, want := range []string{"-webview2 download", "-nsis"} {
+		if !strings.Contains(winBody, want) {
+			t.Errorf("the Windows desktop job does not pass %q — a Windows 10 user would get a blank "+
+				"window instead of a provisioned WebView2 runtime (AC2)", want)
+		}
+	}
+
+	// AC3: the .deb declares the webview, and something produces both Linux artifacts.
+	linuxBody := jobs[linux].body
+	for _, want := range []string{"libwebkit2gtk", "nfpm", ".deb", "AppImage"} {
+		if !strings.Contains(linuxBody, want) {
+			t.Errorf("the Linux desktop job does not mention %q — the .deb must declare the WebKitGTK "+
+				"dependency and the AppImage is the escape hatch for distros that dropped it (AC3)", want)
+		}
+	}
+
+	// THE EMBED TRAP, again: the desktop app embeds the same frontend, so a job that builds
+	// the app before the frontend ships a window with no UI in it.
+	for _, i := range []int{mac, win, linux} {
+		frontend := strings.Index(jobs[i].body, "npm run build")
+		app := strings.Index(jobs[i].body, "wails build")
+		if frontend < 0 {
+			t.Errorf("desktop job %q never builds the frontend — the app embeds frontend/dist, and "+
+				"`//go:embed all:frontend/dist` matches the tracked .gitkeep happily, so this would "+
+				"compile and ship an app with no UI", jobs[i].name)
+			continue
+		}
+		if frontend > app {
+			t.Errorf("desktop job %q builds the app BEFORE the frontend — the embed cannot see it", jobs[i].name)
+		}
+	}
+}
+
+// TestReleaseDownloadsDesktopArtifactsOptional asserts AC6: desktop packaging can never
+// block the CLI release.
+//
+// The release job takes BOTH its inputs and its `ASSETS` list from one download-artifact +
+// `find artifacts` pair, so a desktop artifact can only join the release by a SECOND, optional
+// download — and only if the `needs:` list does not mention a desktop job, because a failed
+// dependency skips the job entirely rather than running it without those artifacts.
+func TestReleaseDownloadsDesktopArtifactsOptional(t *testing.T) {
+	src := mustRead(t, releaseWorkflowPath)
+	if !strings.Contains(src, "pattern: 'orchicon-desktop-*'") {
+		t.Error("release.yml never downloads the desktop artifacts (no `pattern: 'orchicon-desktop-*'`) — " +
+			"the packages would be built and then left in the run, never published (AC4)")
+	}
+	for _, name := range []string{"orchicon-desktop-linux", "orchicon-desktop-darwin", "orchicon-desktop-windows"} {
+		if !strings.Contains(src, "name: "+name) {
+			t.Errorf("release.yml does not upload an artifact named %q — the download pattern and the "+
+				"upload names are one contract", name)
+		}
+	}
+
+	var release *job
+	jobs := jobsIn(src)
+	for i := range jobs {
+		if jobs[i].name == "release" {
+			release = &jobs[i]
+		}
+	}
+	if release == nil {
+		t.Fatal("release.yml has no `release:` job — did it get renamed?")
+	}
+	var needs string
+	for _, l := range strings.Split(release.body, "\n") {
+		if t := strings.TrimSpace(l); strings.HasPrefix(t, "needs:") {
+			needs = t
+			break
+		}
+	}
+	if needs == "" {
+		t.Fatal("the release job has no needs: line")
+	}
+	for _, desktop := range []string{"desktop-linux", "desktop-macos", "desktop-windows"} {
+		if strings.Contains(needs, desktop) {
+			t.Errorf("the release job needs %q (%q): a failed desktop build would then SKIP the whole "+
+				"release, so a webkit or signing problem could stop the CLI binaries from shipping (AC6)",
+				desktop, needs)
+		}
+	}
+	for _, want := range []string{"build", "guard"} {
+		if !strings.Contains(needs, want) {
+			t.Errorf("the release job's needs: line lost %q (%q)", want, needs)
+		}
+	}
+	if !strings.Contains(release.body, "continue-on-error: true") {
+		t.Error("the release job downloads desktop artifacts WITHOUT `continue-on-error: true` — any " +
+			"desktop build failure would then fail the release job and take the CLI artifacts with it (AC6)")
+	}
+}
+
+// TestReleaseUploadsEachDesktopAssetOnce — the release must never hand `gh release create`
+// the same ASSET NAME twice.
+//
+// WHY THIS IS NOT HYPOTHETICAL, and why it is the AC6 failure in its least obvious form: the
+// release job's FIRST `download-artifact` carries no `pattern`, so it already pulls EVERY
+// artifact of the run — the CLI archives AND the three `orchicon-desktop-*` ones — into
+// `artifacts/`. The optional desktop download below then puts the same files in
+// `desktop-artifacts/`, so a naive `find artifacts desktop-artifacts` yields each desktop
+// package twice. `gh release create` names an asset after its BASENAME, and the second upload
+// of one name fails the whole release with HTTP 422 "already_exists" — with all three desktop
+// builds GREEN, i.e. in the happy path. Packaging must not break the release, so the asset
+// list has to be deduplicated.
+func TestReleaseUploadsEachDesktopAssetOnce(t *testing.T) {
+	var release *job
+	jobs := jobsIn(mustRead(t, releaseWorkflowPath))
+	for i := range jobs {
+		if jobs[i].name == "release" {
+			release = &jobs[i]
+		}
+	}
+	if release == nil {
+		t.Fatal("release.yml has no `release:` job — did it get renamed?")
+	}
+	start := strings.Index(release.body, "ASSETS=$(")
+	if start < 0 {
+		t.Fatal("the release job no longer builds an ASSETS= list — this guard cannot see what gets uploaded")
+	}
+	rest := release.body[start:]
+	end := strings.Index(rest, `if [ -z "$ASSETS" ]`)
+	if end < 0 {
+		t.Fatal("could not find the end of the ASSETS= assignment (the `if [ -z \"$ASSETS\" ]` guard)")
+	}
+	assets := rest[:end]
+
+	// The premise: BOTH download directories are searched, and every desktop package format
+	// (plus the CLI tarballs) is matched. A format dropped here ships nothing and says nothing.
+	for _, want := range []string{"artifacts", "desktop-artifacts", "*.tar.gz", "*.zip", "*.deb",
+		"*.AppImage", "*_installer.exe"} {
+		if !strings.Contains(assets, want) {
+			t.Errorf("the release ASSETS list does not mention %q — that artifact would be built and "+
+				"then silently left in the run instead of published (AC4)", want)
+		}
+	}
+
+	// And the property: one entry per basename. The awk is the whole fix — without it the
+	// desktop packages are uploaded twice and `gh release create` fails the release.
+	if !strings.Contains(assets, "seen[$NF]++") {
+		t.Error("the release ASSETS list is NOT deduplicated by basename. The first download has no " +
+			"pattern, so it already contains the orchicon-desktop-* artifacts; the optional desktop " +
+			"download repeats them, and `gh release create` fails with HTTP 422 already_exists when one " +
+			"asset name is passed twice. With all three desktop builds green, that breaks the release " +
+			"that AC6 says they must never break. Pipe the find through `awk -F/ '!seen[$NF]++'`.")
+	}
+}
+
+// TestDesktopWebviewDependencyDeclared pins the two halves of AC3, because either half alone
+// is worthless: a .deb that declares the dependency but an app that fails opaquely when it is
+// missing is half a fix, and a launcher that explains the problem but a package that pulls in
+// nothing is the other half.
+func TestDesktopWebviewDependencyDeclared(t *testing.T) {
+	nfpm := mustRead(t, "../../deploy/desktop/nfpm.yaml")
+	if !strings.Contains(nfpm, "libwebkit2gtk-4.0-37") {
+		t.Error("deploy/desktop/nfpm.yaml does not declare libwebkit2gtk-4.0-37 — the .deb would " +
+			"install a binary that cannot start (AC3)")
+	}
+	if !strings.Contains(nfpm, "/usr/bin/orchicon-desktop") {
+		t.Error("deploy/desktop/nfpm.yaml does not install the launcher at /usr/bin/orchicon-desktop — " +
+			"without it the WebKitGTK check cannot run before the dynamic loader does (AC3)")
+	}
+
+	launcher := mustRead(t, "../../deploy/desktop/linux/orchicon-desktop")
+	for _, want := range []string{"ldconfig", "libwebkit2gtk-4.0.so.37", "sudo apt install libwebkit2gtk-4.0-37"} {
+		if !strings.Contains(launcher, want) {
+			t.Errorf("deploy/desktop/linux/orchicon-desktop does not contain %q — the launcher must DETECT "+
+				"the missing webview and name the command that fixes it, or the user gets an opaque "+
+				"loader error (or nothing at all from a menu launch) (AC3)", want)
+		}
+	}
+
+	apprun := mustRead(t, "../../deploy/desktop/appimage/AppRun")
+	if !strings.Contains(apprun, "webkit") || !strings.Contains(apprun, "ldconfig") {
+		t.Error("deploy/desktop/appimage/AppRun no longer checks for a webview — an AppImage built " +
+			"without its bundled libraries must say so, not fail with a loader error (AC3)")
+	}
+}
+
+// TestDesktopSigningChainIsInTheScript — the sign → notarise → staple → assert chain must live in the
+// SCRIPT the macOS job runs, and the job must actually RUN it.
+//
+// The distinction is the whole point: a substring check against release.yml would be satisfied by a YAML
+// COMMENT that mentions `spctl` while the job shipped an unsigned .app. So this reads
+// deploy/desktop/macos/sign-and-notarize.sh for the chain, and release.yml only for the invocation itself
+// (a `bash deploy/desktop/macos/…` line, which is a run: command, not prose).
+func TestDesktopSigningChainIsInTheScript(t *testing.T) {
+	script := mustRead(t, "../../deploy/desktop/macos/sign-and-notarize.sh")
+
+	// ORDER MATTERS: signing must precede submission, and the staple must precede the assertion — a
+	// notarised-but-unstapled app fails on the user's first launch whenever Apple is unreachable.
+	order := []string{"codesign --force", "notarytool submit", "stapler staple", "spctl -a -vvv"}
+	prev := -1
+	for _, want := range order {
+		i := strings.Index(script, want)
+		if i < 0 {
+			t.Fatalf("deploy/desktop/macos/sign-and-notarize.sh does not contain %q — the .app would reach "+
+				"users unsigned or unstapled, and Gatekeeper blocks it on a clean Mac (AC1)", want)
+		}
+		if i < prev {
+			t.Errorf("%q appears BEFORE the preceding step in sign-and-notarize.sh — the chain must be "+
+				"sign → notarise → staple → assert, in that order (AC1)", want)
+		}
+		prev = i
+	}
+
+	// A missing secret must FAIL the job. Shipping an unsigned .app because CI had no certificate is
+	// precisely the failure AC1 describes, and it would be silent.
+	for _, secret := range []string{"MACOS_CERT_P12", "MACOS_CERT_PASSWORD", "MACOS_NOTARY_APPLE_ID",
+		"MACOS_NOTARY_TEAM_ID", "MACOS_NOTARY_PASSWORD"} {
+		if !strings.Contains(script, ": \"${"+secret+":?") {
+			t.Errorf("sign-and-notarize.sh does not guard ${%s} with `: \"${…:?}\"` — an unset secret would "+
+				"not fail the job, so it would ship an unsigned .app (AC1)", secret)
+		}
+	}
+
+	// And the workflow must RUN it. `bash deploy/desktop/macos/sign-and-notarize.sh` inside a run: block is
+	// an invocation; the string on its own could be a comment, which is why the script is read above.
+	src := mustRead(t, releaseWorkflowPath)
+	invoked := false
+	for _, j := range jobsIn(src) {
+		if strings.Contains(j.body, "runs-on: macos-") && strings.Contains(j.body, "bash deploy/desktop/macos/sign-and-notarize.sh") {
+			invoked = true
+		}
+	}
+	if !invoked {
+		t.Error("no macOS job RUNS `bash deploy/desktop/macos/sign-and-notarize.sh` — the signing chain " +
+			"exists but nothing calls it, so the published .app is unsigned (AC1)")
+	}
+}
+
 // TestCanaryPublishesAnImageThatIsNotLatest — the canary must ship a CONTAINER IMAGE, and must never touch
 // the floating release tag.
 //
