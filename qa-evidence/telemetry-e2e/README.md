@@ -43,12 +43,12 @@ Environment: `ORCHICON_E2E_USER` / `ORCHICON_E2E_PASSWORD` (local-login for the 
 | `01-grafana-absent.log` | **AC1:** no `grafana` binary on `PATH`, no grafana process (behind a CONTROL pattern that had to match first, so an empty result means "none" and not "the search is broken"), no grafana config under `deploy/`, no grafana container image. |
 | `01-grafana-absent-route.log` | **AC1:** the plane's `/grafana` route answers **404** while `/healthz` answers 200 — the proxy/iframe really is gone, not merely unreferenced. |
 | `09-grafana-absent-final.log` | **AC1 re-checked at the end:** a grafana that appeared mid-run voids the claim. |
-| `02-stack-up.log` | the telemetry stack runs as **host processes**: Tempo `:3200`, Loki `:3100`, VictoriaMetrics `:8428`, otelcol `:4317`, each proven by the pid that owns the listening socket and by `/proc/<pid>/exe`. A containerised backend is not host-resident and fails this step. |
+| `02-stack-up.log` | the telemetry stack runs as **host processes**: `orchicon start` (NOT `services up`, which deliberately runs with `ORCHICON_TELEMETRY=none`) plus Tempo `:3200`, Loki `:3100`, VictoriaMetrics `:8428`, otelcol `:4317`, each proven by the pid that owns the listening socket and by `/proc/<pid>/exe`. The store ports come from the INSTANCE's own `ports.json`, so `--instance prod` probes prod's ports. A containerised backend is not host-resident and fails this step. |
 | `03-*.json`, `03-run-driver.out` | **AC2:** the run is real — a LOCAL-mode project, a work item, a workflow published and started through the plane's own Connect API, and the poll that shows it reached a terminal state. Not a seeded row. |
 | `04-stores/*.json` | **AC2/AC3 (anti-fixture):** Tempo, Loki and VictoriaMetrics queried **directly**, bypassing Orchicon, plus the plane's own `QueryTraces`/`GetTelemetryReport` answers for the same window. The ids the browser leg asserts on come from here. |
 | `05-playwright.out`, `browser-results.tsv`, `05-*.png`, `05-network.log` | **AC3:** Overview → Metrics (a real, non-zero sample count and latest value) → Logs (a search for the run's own id returns the run's lines) → Traces (the run's execution) → Reports (the window summary), with the page's actual requests and responses captured beside the screenshots. |
 | `06-filtered.png`, `06-empty.png`, `browser-results.tsv` step 6 | **AC4:** selecting the run's project NARROWS the result set (and never increases it), a project with no data shows the empty state, and a window that excludes the run shows the **empty** state with the pre-filter counts GONE — stale content fails this step. |
-| `08-degraded.png`, `08-recovered.png`, `browser-results.tsv` step 7 | **AC5:** stopping the Loki process produces the `role="status"` degraded state that **names loki**, and restarting it clears that state **in the same page instance**. The harness greps the spec for `reload(` before running it, so "no reload masked the recovery" is a measured fact. |
+| `08-degraded.png`, `08-recovered.png`, `browser-results.tsv` step 7 | **AC5:** stopping Loki produces the `role="status"` degraded state that **names loki**, and bringing it back clears that state **in the same page instance**. The outage is a `SIGSTOP` and the recovery a `SIGCONT` on the SAME pid: the host-services supervisor restarts a crashed child within ~2s (`cmd/orchicon/container.go:reapRestart`), so a SIGKILL would make the outage shorter than the page's own poll and the assertion a race. The harness greps the spec for `reload(` before running it, so "no reload masked the recovery" is a measured fact. |
 | `results.tsv` | `step · PASS/FAIL/BLOCKED/SKIP · observation · evidence-file` for every assertion. |
 | `defects.tsv` | `step · assertion · owning sibling path:line` — this harness patches nothing (AC7); it accuses the task that owns the fix. |
 | `summary.md` | the verdict, the per-step table, and the honest sentence: proven, or NOT proven and why. |
@@ -70,7 +70,12 @@ directory contains a README and not a fabricated run.
 cd frontend
 E2E_EVIDENCE=<dir> E2E_PLANE_URL=http://127.0.0.1:<plane-port> \
 E2E_PROJECT_ID=… E2E_RUN_ID=… E2E_EXECUTION_ID=… E2E_TRACE_ID=… \
-E2E_LOKI_PID=… E2E_LOKI_RESTART_CMD='<bin> services up --instance dev' \
-  npx playwright test tests/telemetry-e2e.spec.ts --config playwright.config.ts \
+E2E_LOKI_PID=… E2E_LOKI_RESTART_CMD='<bin> stop --instance dev && ORCHICON_TELEMETRY=embedded <bin> start --instance dev' \
+  npx playwright test tests/telemetry-e2e.spec.ts --config playwright.telemetry-e2e.config.ts \
     --project=dark-desktop --workers=1
 ```
+
+That config exists because the page under test is **the plane's own origin** (`cmd/orchicon/serve_state.go`
+serves the SPA, and `/auth/local-login` sets its cookie on that same origin). The shared
+`playwright.config.ts` would load the SPA from the vite dev server on `:5173`, whose proxy targets a
+hard-coded `:8080` — a different plane, with a session cookie the page cannot even send.

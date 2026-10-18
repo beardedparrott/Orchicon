@@ -202,12 +202,19 @@ test("T5: the page renders real graphs, real logs, the run's traces and a report
     const text = (await summary.innerText()).replace(/\s+/g, " ");
     const samples = Number(/([\d,]+)\s+samples/.exec(text)?.[1].replace(/,/g, "") ?? "0");
     if (!(samples > 0)) throw new Error(`no samples in the window: "${text}"`);
-    // "Latest <n> <unit>" is the series' own last value — it must be a real number, not a stub 0.
-    const latest = page.getByText(/Latest\s+[\d,]+/).first();
-    await expect(latest).toBeVisible();
-    const latestText = (await latest.innerText()).replace(/\s+/g, " ");
-    const value = Number(/Latest\s+([\d,]+)/.exec(latestText)?.[1].replace(/,/g, "") ?? "0");
-    if (!(value > 0)) throw new Error(`the graph's latest value is not real: "${latestText}"`);
+    // "Latest <n> <unit>" is each series' own last value. AT LEAST ONE must be a real, non-zero
+    // number: a single named metric can legitimately be 0 in a window (errors on a good run), so
+    // pinning this to `.first()` would fail on a perfectly real graph.
+    const latest = page.getByText(/Latest\s+[\d,]+/);
+    const count = await latest.count();
+    if (count === 0) throw new Error("no series reported a latest value — the chart read nothing");
+    let value = 0;
+    for (let i = 0; i < count; i += 1) {
+      const latestText = (await latest.nth(i).innerText()).replace(/\s+/g, " ");
+      const v = Number(/Latest\s+([\d,]+)/.exec(latestText)?.[1].replace(/,/g, "") ?? "0");
+      if (v > value) value = v;
+    }
+    if (!(value > 0)) throw new Error(`no series has a real, non-zero latest value across ${count} series`);
     await shot(page, "05-metrics.png");
     return `${text}; latest ${value}${VM_METRIC ? ` (store said ${VM_METRIC}=${VM_VALUE})` : ""}`;
   });
@@ -331,12 +338,35 @@ test("T6: the project filter narrows, and an excluding time range shows the empt
 // ---------------------------------------------------------------------------
 // T7 — degraded proof: the state NAMES the backend, and recovery needs no reload
 // ---------------------------------------------------------------------------
+/**
+ * HOW THE OUTAGE IS PRODUCED. The host-services supervisor RESTARTS a crashed child with a 1…32 s
+ * backoff (cmd/orchicon/container.go:reapRestart, `restart: true` for every telemetry component), so
+ * a SIGTERM/SIGKILL takes Loki down for about TWO SECONDS — shorter than the page's own poll — and the
+ * degraded state would be a race rather than an observation. SIGSTOP holds the SAME process down for
+ * as long as the assertion needs (its socket still accepts, its queries time out, the query client
+ * reports the store as degraded naming loki), and SIGCONT brings it back: a real outage and a real
+ * recovery, no second process, no reload.
+ */
+function lokiSignal(signal: "STOP" | "CONT"): void {
+  execFileSync("kill", [`-${signal}`, LOKI_PID], { stdio: "ignore" });
+}
+
+/** lokiResume un-freezes Loki, and falls back to restarting the whole stack if the pid is gone. */
+function lokiResume(): void {
+  try {
+    lokiSignal("CONT");
+  } catch {
+    if (!LOKI_RESTART_CMD) throw new Error("Loki's pid is gone and no restart command was supplied");
+    execFileSync(process.env.SHELL || "bash", ["-c", LOKI_RESTART_CMD], { stdio: "ignore", timeout: 180_000 });
+  }
+}
+
 test("T7: stopping Loki produces a state that NAMES loki, and it recovers without a reload", async ({ page }) => {
   test.slow();
-  if (!LOKI_PID || !LOKI_RESTART_CMD) {
+  if (!LOKI_PID) {
     // A skipped degraded proof is recorded as SKIP so the harness can tell it apart from a pass —
     // and the run's summary then says the AC5 clause was NOT observed rather than quietly green.
-    record(7, "SKIP", "degraded proof needs E2E_LOKI_PID and E2E_LOKI_RESTART_CMD from the harness");
+    record(7, "SKIP", "degraded proof needs E2E_LOKI_PID from the harness");
     test.skip();
   }
 
@@ -350,7 +380,7 @@ test("T7: stopping Loki produces a state that NAMES loki, and it recovers withou
 
   try {
     await step(7, "stopping the Loki process produces the degraded state that NAMES loki", "frontend/src/components/telemetry/states.tsx:149", async () => {
-      execFileSync("kill", ["-TERM", LOKI_PID], { stdio: "ignore" });
+      lokiSignal("STOP");
       // telemetry.ts refetchInterval keeps polling while degraded, so this appears in the SAME page.
       const status = panel.getByRole("status");
       await expect(status).toBeVisible({ timeout: 90_000 });
@@ -361,7 +391,7 @@ test("T7: stopping Loki produces a state that NAMES loki, and it recovers withou
     });
 
     await step(7, "restarting Loki recovers the SAME page instance — no reload was used", "frontend/src/api/telemetry.ts", async () => {
-      execFileSync(process.env.SHELL || "bash", ["-c", LOKI_RESTART_CMD], { stdio: "ignore", timeout: 180_000 });
+      lokiResume();
       // NO page.reload() anywhere in this file (the harness asserts that before it runs us). The
       // degraded region must clear on its own, from the page's own polling.
       await expect(panel.getByRole("status")).toHaveCount(0, { timeout: 180_000 });
@@ -369,10 +399,10 @@ test("T7: stopping Loki produces a state that NAMES loki, and it recovers withou
       return "the degraded region cleared in the same page instance, with no reload";
     });
   } finally {
-    // A failed assertion must not leave the host without Loki: the next steps (and the user's own
+    // A failed assertion must not leave the host with a FROZEN Loki: the next steps (and the user's own
     // machine) expect the stack it started.
     try {
-      execFileSync(process.env.SHELL || "bash", ["-c", LOKI_RESTART_CMD], { stdio: "ignore", timeout: 180_000 });
+      lokiResume();
     } catch {
       /* the harness's teardown reports a stack that will not come back */
     }
