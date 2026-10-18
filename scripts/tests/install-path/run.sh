@@ -597,8 +597,8 @@ say "[10] the desktop app (--desktop)"
 if [ "${BUILD_GOARCH}" = "amd64" ]; then
   DESKTOP_ASSET="orchicon_desktop_${VERSION_NUM}_linux_${BUILD_GOARCH}.AppImage"
   # A stand-in the installer only has to download, chmod and place: the real artifact is a Wails build.
-  printf '#!/bin/sh\necho fake-appimage\n' > "${PKG}/${VERSION}/${DESKTOP_ASSET}"
-  chmod +x "${PKG}/${VERSION}/${DESKTOP_ASSET}"
+  printf '#!/bin/sh\necho fake-appimage\n' > "${PKG}/${DESKTOP_ASSET}"
+  chmod +x "${PKG}/${DESKTOP_ASSET}"
 
   DDEST="${WORK}/bin-desktop"
   DLOG="${WORK}/install-desktop.log"
