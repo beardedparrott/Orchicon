@@ -80,16 +80,6 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 irm https://orchicon.dev/install.ps1 | iex
 ```
 
-### Single container (Docker)
-
-The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, control plane) runs in one container:
-
-```bash
-docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon
-```
-
-The `orchicon` binary is the plane, its service supervisor and the CLI (`orchicon serve`, `orchicon host-services`). See [ARCHITECTURE.md §One shape](ARCHITECTURE.md) for the lifecycle, env vars and data-preservation notes.
-
 ### Windows (WSL2)
 
 ```powershell

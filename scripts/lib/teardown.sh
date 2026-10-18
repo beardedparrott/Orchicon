@@ -142,8 +142,7 @@ uninstall_instance() {
 
   echo ""
   echo -e "${C_BOLD}Uninstall instance: $inst${C_RESET}"
-  echo -e "  ${C_DIM}plane (host process)${C_RESET}     $inst"
-  echo -e "  ${C_DIM}container${C_RESET}                $NAME"
+  echo -e "  ${C_DIM}plane (host process)${C_RESET}     $inst — stopped"
   echo -e "  ${C_DIM}volume — DELETED${C_RESET}         $VOLUME"
   echo -e "  ${C_DIM}host data dir — DELETED${C_RESET}  $HOST_DATA_DIR"
   echo -e "  ${C_DIM}runtime containers${C_RESET}       label=orchicon.instance=$inst"
@@ -161,12 +160,9 @@ uninstall_instance() {
   #    it cannot reach a sibling's plane.
   plane_stop "$inst"
 
-  # 2. Remove the container (and with it the publishes).
-  if "$(engine_cmd)" ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
-    "$(engine_cmd)" rm -f "$NAME" >/dev/null && log_ok "removed container $NAME"
-  else
-    log_dim "container $NAME not present"
-  fi
+  # 2. (There is no plane container to remove: the plane is a host process and
+  #    plane_stop above already ended it. The single-container shape that named
+  #    one is retired, so an engine call here would only ever log "not present".)
 
   # 3. Reap this instance's runtime containers (instance-scoped; see
   #    stop_runtime_daemon). Without this they would outlive the instance that

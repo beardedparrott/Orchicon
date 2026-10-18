@@ -90,7 +90,7 @@ The frontend is a TypeScript/React SPA with a visual React Flow workflow editor,
 | Object Storage | Local filesystem or S3 | Blob store abstraction |
 | Policy Engine | OPA v1 (Rego) | Governance policy evaluation |
 | Runtime Adapter | **Built-in native engine (default)**, plus external adapters (OpenCode, …) | Sessions run inside the control plane by default, so **no adapter CLI is required**. External adapters are pluggable over gRPC and mounted from the operator's host install when a run asks for one — never bundled |
-| Deployment | Single container (`deploy/container/`) | `orchicon container` PID-1 supervisor runs the whole stack in one image (GHCR `ghcr.io/beardedparrott/orchicon`); `scripts/orchicon.sh` manages dev (`orchicon-cnt-dev`, :8080/:3002) and prod (`orchicon-cnt-prod`, :8091/:3003) instances |
+| Deployment | Host processes (`orchicon install`) | One shape: the plane (`orchicon serve`) and its services (postgres, nats, tempo, loki, VictoriaMetrics, the OTel collector) are HOST processes the supervisor owns; a container exists only as a per-project **workflow runtime container** |
 
 ---
 
@@ -327,15 +327,16 @@ Orchicon/
 ├── ARCHITECTURE.md              # ← This file: architecture, development, deployment, ops
 ├── USERGUIDE.md                 # Operator's guide: install + every screen in the GUI and TUI
 ├── LICENSE                      # Custom license (non-commercial)
-├── Makefile                     # All targets: build, test, gen, container-*, ci
+├── Makefile                     # All targets: build, test, gen, instance-*, ci
 ├── opencode.jsonc               # Opencode tool configuration
 ├── README.md                    # Project introduction & quick start
 ├── wrangler.toml                # Cloudflare Pages project config
 │
 ├── cmd/
 │   └── orchicon/                # Go binary entry point
-│       ├── main.go              # Subcommand dispatch (serve, container, runtime-*, db, version, etc.)
-│       ├── container.go         # `orchicon container` PID-1 supervisor
+│       ├── main.go              # Subcommand dispatch (serve, host-services, runtime-*, db, version, etc.)
+│       ├── host_services.go     # Host services supervisor (postgres, nats, telemetry backends)
+│       ├── install_host.go      # `orchicon install`: the host plane + its host services
 │       ├── serve.go             # `orchicon serve` headless control plane
 │       ├── serve_state.go       # Detached serve state (PID file, logs)
 │       ├── runtime.go           # `runtime-daemon` / `runtime-supervisor` / `runtime-client`
@@ -518,7 +519,7 @@ Orchicon/
 | **Outbox relay** | `internal/outbox/relay.go` |
 | **Telemetry setup** (OTel) | `internal/telemetry/telemetry.go` |
 | **Config** (env vars) | `internal/config/config.go` |
-| **Single container** (PID-1 supervisor) | `cmd/orchicon/container.go` + `deploy/container/` |
+| **Host services** (supervisor ownership) | `cmd/orchicon/host_services.go` + `cmd/orchicon/install_host.go` |
 | **Frontend entry point** | `frontend/index.html` + `frontend/src/main.tsx` |
 | **User guide** (install + every GUI/TUI screen) | `USERGUIDE.md` |
 | **Frontend API clients** | `frontend/src/api/clients.ts` |
@@ -527,7 +528,7 @@ Orchicon/
 | **Landing page** | `site/index.html` |
 | **Install scripts** | `scripts/install.sh` (Linux/macOS), `scripts/install.ps1` (Windows → provisions WSL2, installs the Linux binary inside the distro) |
 | **Container instance controller** | `scripts/orchicon.sh` |
-| **Host plane controller** | `scripts/orchicon.sh` |
+| **Instance ports** (per-instance port table) | `scripts/lib/instances.sh` + `scripts/instance-ports.sh` |
 | **CI/CD workflows** | `.github/workflows/` |
 | **Operator's working notes** | `AGENTS.md`, `UPDATES.md`, `worker.md`, `developer.md`, `CLOUDFLARE_SETUP.md` — the maintainer's own files. **Gitignored and not in the repository**: they describe how this project is built rather than what it does, and nothing in the build, the tests or the runtime reads them from disk. (References to an "AGENTS.md" elsewhere in these docs are the per-worker *prompt field* — a database-backed section of the composed worker prompt — which is a different thing.) |
 
@@ -928,8 +929,8 @@ come from the host: **detected if present, otherwise downloaded on first run**
   so a download is chmod'ed 0755 on unix.
 - Pinned versions: **PostgreSQL 16.4**, **NATS server 2.10.29**, **Tempo 2.7.1**,
   **Loki 3.4.2**, **VictoriaMetrics 1.111.0**, **otelcol-contrib 0.119.0** — the
-  same versions `deploy/container/Dockerfile` pins, since the same binaries run in
-  either shape. Overridable per §Environment Variables (`ORCHICON_INFRA_URL_<NAME>`
+  binaries the supervisor runs are the same ones a runtime image would carry,
+  with one resolved version per instance. Overridable per §Environment Variables (`ORCHICON_INFRA_URL_<NAME>`
   / `ORCHICON_INFRA_SHA256_<NAME>`).
 - The telemetry children's listen ports live in their **config files**, which are
   templated from the same resolved port table the readiness probes read
@@ -1678,11 +1679,11 @@ containers (`scripts/orchicon.sh` and `orchicon install`).
 
 ## Container Image Hygiene
 
-Repeated local builds of the four tagged images (`orchicon:local`,
-`orchicon-runtime:local`, `:local-gui`, `:orchicon-dev`) and custom
+Repeated local builds of the three tagged runtime images
+(`orchicon-runtime:local`, `:local-gui`, `:orchicon-dev`) and custom
 runtime-image builds orphan the previous image as a dangling layer.
-Both `scripts/orchicon.sh build` and the runtime daemon's image-build
-path prune dangling images after each build. To reclaim space from
+`scripts/runtime.sh build` and the runtime daemon's image-build path
+prune dangling images after each build. To reclaim space from
 pre-existing orphans or the Go build cache:
 
 ```bash
@@ -1694,9 +1695,8 @@ make cache-check                                    # report the current Go buil
 `make clean` only touches the Go build cache and `bin/`; it never
 touches the database, container images, or runtime data.
 `make clean-docker` prunes dangling images, stopped containers, and
-volumes referenced by no container — the live instance containers
-(dev/prod), their data volumes, and the Postgres volumes that preserve
-instance data are always kept.
+volumes referenced by no container — the live instances' volumes and the
+Postgres volumes that preserve instance data are always kept.
 
 ### Telemetry data retention
 
@@ -1707,9 +1707,9 @@ volume cannot grow unbounded:
 |---|---|---|
 | Loki (logs) | 14 days | `retention_period: 336h` + compactor (`retention_enabled`, `delete_request_store: filesystem`) in `deploy/configs/loki.yaml` |
 | Tempo (traces) | 14 days | `compactor.compaction.block_retention: 336h` in `deploy/configs/tempo.yaml` |
-| VictoriaMetrics (metrics) | 30 days | `-retentionPeriod=720h` flag in `cmd/orchicon/container.go` |
+| VictoriaMetrics (metrics) | 30 days | `-retentionPeriod=720h` flag in `cmd/orchicon/host_services.go` |
 
-The three values are **asserted** by `TestRetentionPreserved` (`cmd/orchicon/container_services_test.go`), not merely documented: a silently lost retention setting is invisible until the disk fills, which is the opposite of what it is for.
+The three values are **asserted** by `TestRetentionPreserved` (`cmd/orchicon/host_services_test.go`), not merely documented: a silently lost retention setting is invisible until the disk fills, which is the opposite of what it is for.
 
 ---
 

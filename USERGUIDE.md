@@ -390,8 +390,8 @@ docker run --rm -v orchicon_postgres-data:/src alpine tar cf - -C /src . | tar x
   ~/.local/share/orchicon-dev/postgres
 ```
 
-(The `orchicon container` verb still exists and is still used — internally, as the supervisor that host
-services re-exec — but it is not a supported way to run an instance.)
+(The `orchicon container` verb is gone: the supervisor that owns the host services is internal to
+`orchicon install`/`start`/`services`, and there is no supported way to run an instance in a container.)
 
 ### Build from source
 
