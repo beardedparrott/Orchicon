@@ -305,6 +305,14 @@ run "$SCRIPT" status prod >/dev/null 2>&1
 assert_contains "$(awk '/argv=serve --status/{f=1} f&&/^inst=/{print;exit}' "$CALLS")" "inst=prod" \
   "status passes the requested instance to serve --status"
 
+# THE SAME HOLE IN `stop`, WHERE IT ACTS INSTEAD OF ONLY REPORTING. `serve --stop` resolves its PID file
+# through the same instance-preferring `serveStateDir`, so without the instance on THAT call an ambient
+# ORCHICON_INSTANCE=prod made `stop dev` stop PROD's plane while dev's kept running.
+: >"$CALLS"
+run ORCHICON_INSTANCE=prod "$SCRIPT" stop dev >/dev/null 2>&1
+assert_contains "$(awk '/argv=serve --stop/{f=1} f&&/^inst=/{print;exit}' "$CALLS")" "inst=dev" \
+  "stop acts on the instance it was given, even when the shell exports another one"
+
 # ── 5b. stop reports only what it verified ────────────────────────────────
 # `stop` claims "plane and its host services" in one line, so BOTH halves have to
 # be checked before it prints. A services stop that failed while the success line

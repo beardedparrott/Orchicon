@@ -354,7 +354,12 @@ start_host() {
 #   the unverified claim this script exists to prevent.
 stop_host() {
   local inst="$1" rc=0 svc_rc=0
-  ORCHICON_SERVE_STATE_DIR="$SERVE_STATE_DIR" "$BIN" serve --stop || rc=$?
+  # THE INSTANCE, NOT ONLY THE STATE DIR — and here it is not cosmetic. `serveStateDir` prefers
+  # ORCHICON_INSTANCE over ORCHICON_SERVE_STATE_DIR, so from a shell carrying ORCHICON_INSTANCE=prod this
+  # stopped PROD's plane on `stop dev`: the same ambient-instance collision plane_status_out fixes above,
+  # except this one ACTS instead of merely reporting. Both are passed, so a binary older than the
+  # instance-derivation reads the state dir exactly as before and both name the SAME instance.
+  ORCHICON_INSTANCE="$inst" ORCHICON_SERVE_STATE_DIR="$SERVE_STATE_DIR" "$BIN" serve --stop || rc=$?
   if [ "$rc" -ne 0 ] && ! plane_status_out "$inst" >/dev/null 2>&1; then
     echo "  plane: nothing was running (no live PID file in $SERVE_STATE_DIR)"
   fi

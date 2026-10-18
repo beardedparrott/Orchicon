@@ -91,6 +91,11 @@ func TestServeStatusOutputMatchesPlaneStatus(t *testing.T) {
 	var rc int
 	out := captureStdout(t, func() { rc = serveStatus() })
 
+	// THE OTHER SPELLING, DRIVEN THROUGH ITS REAL COMMAND ARM. Comparing against StatusOf twice would only
+	// prove the library agrees with itself; going through runPlane is what pins that the two COMMANDS an
+	// operator types cannot disagree.
+	assertPlaneStatusAgrees(t, instance, out)
+
 	want, err := planecontrol.StatusOf(planecontrol.Defaults(instance, io.Discard))
 	if err != nil {
 		t.Fatalf("planecontrol.StatusOf: %v", err)
@@ -124,8 +129,26 @@ func TestServeStatusOutputMatchesPlaneStatus(t *testing.T) {
 	if got := strings.TrimSpace(out); got != stopped.String() {
 		t.Errorf("with nothing running the two surfaces still have to agree.\n  serve --status: %s\n  plane status:   %s", got, stopped.String())
 	}
+	// …and the same equality through `orchicon plane status` itself, in the not-running arm too.
+	assertPlaneStatusAgrees(t, instance, out)
 	if rc != 1 {
 		t.Errorf("no live PID file must exit 1, got %d", rc)
+	}
+}
+
+// assertPlaneStatusAgrees drives `orchicon plane status <instance>` and requires it to print exactly what
+// `serve --status` printed for the same instance: one surface, two spellings, no room to disagree.
+func assertPlaneStatusAgrees(t *testing.T, instance, serveOut string) {
+	t.Helper()
+	planeOut := captureStdout(t, func() {
+		if err := runPlane([]string{"status", instance}); err != nil {
+			t.Fatalf("plane status %s: %v", instance, err)
+		}
+	})
+	if got, want := strings.TrimSpace(planeOut), strings.TrimSpace(serveOut); got != want {
+		t.Errorf("`serve --status` and `plane status %s` print different things — they are supposed to be ONE\n"+
+			"surface: two status answers that can disagree is the defect this delegation removed.\n"+
+			"  serve --status:        %s\n  plane status %s: %s", instance, want, instance, got)
 	}
 }
 
