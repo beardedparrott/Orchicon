@@ -1,0 +1,39 @@
+#!/bin/sh
+# ============================================================================
+# AppRun - the entry point of the Orchicon AppImage.
+#
+# The AppImage exists for distros that dropped WebKitGTK 4.0 (Ubuntu 24.04+,
+# Fedora 40+): it BUNDLES libwebkit2gtk so the system package is irrelevant.
+# The check below therefore normally finds the bundled copy; it is kept because
+# an AppImage built without the bundled libraries (a broken build) should say so
+# in words rather than fail with a loader error.
+# ============================================================================
+set -eu
+
+APPDIR="$(dirname "$(readlink -f "$0")")"
+BUNDLED="$APPDIR/usr/lib/orchicon"
+
+webkit_present() {
+  if [ -e "$BUNDLED/libwebkit2gtk-4.0.so.37" ] || [ -e "$BUNDLED/libwebkit2gtk-4.1.so.37" ]; then
+    return 0
+  fi
+  command -v ldconfig >/dev/null 2>&1 || return 0
+  ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.[01]\.so\.37'
+}
+
+if ! webkit_present; then
+  cat >&2 <<'MSG'
+Orchicon needs WebKitGTK, and this AppImage does not carry a bundled copy.
+  missing: libwebkit2gtk-4.0.so.37 (or libwebkit2gtk-4.1.so.37)
+  fix:     sudo apt install libwebkit2gtk-4.0-37
+           (Fedora: sudo dnf install webkit2gtk4.0   Arch: sudo pacman -S webkit2gtk)
+  This AppImage was built without its bundled libraries — please report it.
+MSG
+  exit 1
+fi
+
+# The bundled webkit and its JSC dependency take precedence over the system's.
+LD_LIBRARY_PATH="$BUNDLED${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH
+
+exec "$BUNDLED/orchicon-desktop" "$@"

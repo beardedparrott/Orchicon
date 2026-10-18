@@ -106,6 +106,45 @@ Prerequisites:
 
 Project directories are entered in the UI as their **WSL path** — a Windows project `C:\Users\you\projects\Foo` is `/mnt/c/Users/you/projects/Foo` inside WSL. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
 
+### Desktop app (optional)
+
+The desktop app is a **client**. It does not replace the plane: it talks to a running
+Orchicon instance over loopback (`http://127.0.0.1:8080` by default), and if none is
+running it starts one for you — which takes a few seconds on first launch. The **CLI is
+still the canonical entry point** (`orchicon install`, `orchicon start`,
+`orchicon status`), but once the app is installed you do not need it to use Orchicon. The
+app is optional: everything the app does, the web UI at the same URL does too.
+
+```bash
+# Linux / macOS — install it alongside the CLI
+curl -fsSL https://orchicon.dev/install | bash -s -- --desktop
+```
+
+```powershell
+# Windows — the same, from PowerShell
+irm https://orchicon.dev/install.ps1 | iex   # with -Desktop, see USERGUIDE
+```
+
+Or download the package for your platform from
+[GitHub Releases](https://github.com/beardedparrott/Orchicon/releases): a `.deb` and an
+`.AppImage` for Linux, a signed **and notarised** `.app` for macOS, and an NSIS installer
+(or portable zip) for Windows. Each platform's gap, stated plainly:
+
+- **macOS** — the `.app` is signed, notarised and **stapled**, so Gatekeeper opens it with
+  no bypass, online or off. If you see "cannot be opened", the copy you have is a local
+  `make` build rather than the release artifact.
+- **Windows 11** — WebView2 ships with the OS, so it installs and launches with no extra
+  step. **Windows 10** may not have it: the installer provisions it during setup, and the
+  portable zip shows a dialog naming the WebView2 Evergreen bootstrapper
+  (<https://go.microsoft.com/fwlink/p/?LinkId=2124703>) rather than opening a blank window.
+- **Linux** — the `.deb` declares `libwebkit2gtk-4.0-37`. If it is somehow missing,
+  `orchicon-desktop` prints the missing library and the one command that installs it. On a
+  distro that dropped WebKitGTK 4.0 (Ubuntu 24.04+), use the AppImage, which bundles it.
+
+The installer never uses `sudo` and never writes to `/Applications` or `/usr`: on Linux the
+AppImage lands in the install directory, on macOS the `.app` goes to `~/Applications`. The
+full walkthrough is in [USERGUIDE.md §3 — The two clients](USERGUIDE.md#3-the-two-clients).
+
 ### Options
 
 | Flag | Description |
@@ -113,6 +152,7 @@ Project directories are entered in the UI as their **WSL path** — a Windows pr
 | `--version <tag>` | Install a specific version (e.g. `v0.4.5`). Default: latest. |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). On Windows this is a **WSL path** (the binary installs inside the distro). |
 | `--no-setup` | Install the binary only — do not pull images / start the runtime daemon / launch the container. |
+| `--desktop` | Also install the desktop app (a GUI client for the same plane). Linux: the AppImage; macOS: the signed `.app` into `~/Applications`. Never uses `sudo`. Without it, the install prints where to get the app. |
 | `--uninstall` | Remove Orchicon from the install directory. |
 | `--dry-run` | Print what would happen without making changes. |
 | `--clean` | Stop dev containers, remove old binary, then install latest. All user data preserved. |

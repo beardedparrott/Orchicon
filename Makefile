@@ -1004,6 +1004,71 @@ install-dry-run: ## Dry-run the install script for the dev instance (no changes 
 install-uninstall: ## Uninstall the dev instance via the install script (data preserved; pass instance=test|prod to change)
 	scripts/install.sh --uninstall --instance $(if $(instance),$(instance),dev)
 
+# --- Desktop app (Wails shell) ---------------------------------------------
+#
+# PACKAGING, NOT PART OF `ci`, and that is deliberate: `ci` is the Go + frontend
+# gate and must stay runnable on a plain runner, while a Wails build needs a
+# per-host webview toolchain (WebKitGTK dev libs, Xcode, the Windows SDK). The
+# part that NEEDS testing everywhere — the webview detection — is ordinary Go in
+# internal/desktoppreflight and rides the normal `./...` gate.
+#
+# Every target below is a no-op-with-a-message until the Wails shell lands in
+# desktop/ (a separate work item): desktop-check is the prerequisite that says so
+# instead of failing with "No such file or directory".
+WAILS_VERSION  := v2.10.1
+NFPM_VERSION   := v2.41.0
+WAILS          ?= $(shell command -v wails 2>/dev/null || echo $(HOME)/go/bin/wails)
+DESKTOP_DIST   := dist/desktop
+DESKTOP_VERSION := $(patsubst v%,%,$(VERSION))
+# The Wails output paths are the contract the .deb/zip/AppImage steps rely on.
+DESKTOP_BIN    := desktop/build/bin/orchicon-desktop
+
+.PHONY: desktop-check desktop-deps desktop-preflight-test desktop-linux-deps-check \
+        desktop-build desktop-build-linux desktop-package-linux \
+        desktop-build-macos desktop-sign-macos desktop-build-windows
+
+desktop-check: ## Report whether the Wails shell (desktop/) is in this tree
+	@test -d desktop || { echo "error: desktop/ is not in this tree — the Wails shell work item has not landed, so there is nothing to package yet"; exit 1; }
+
+desktop-deps: ## Install the pinned Wails CLI (prints the per-OS webview build deps)
+	$(GO) install github.com/wailsapp/wails/v2/cmd/wails@$(WAILS_VERSION)
+	@echo ""
+	@echo "wails $(WAILS_VERSION) installed to $$(go env GOPATH)/bin"
+	@echo "Linux build deps:   sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev pkg-config"
+	@echo "macOS build deps:   xcode-select --install"
+	@echo "Windows build deps: the WebView2 runtime (the -webview2 download flag bundles it at package time)"
+
+desktop-preflight-test: ## Run the webview detection tests (no webview needed)
+	$(GO) test ./internal/desktoppreflight/...
+
+desktop-linux-deps-check: ## Report whether this host can build/run the desktop app
+	@printf 'webkit:  %s\n' "$$(ldconfig -p 2>/dev/null | grep -c 'libwebkit2gtk-4\.[01]\.so\.37' || true) matching soname(s)"
+	@command -v wails >/dev/null 2>&1 && echo "wails:   $$(wails version 2>/dev/null | head -1)" || echo "wails:   not installed (run: make desktop-deps)"
+	@test -d desktop && echo "shell:   desktop/ present" || echo "shell:   desktop/ MISSING — the Wails shell work item has not landed"
+
+desktop-build: desktop-check ## Build the desktop app for this host into desktop/build/bin
+	cd desktop && $(WAILS) build -clean -ldflags '$(LDFLAGS)'
+
+desktop-build-linux: desktop-check ## Build the Linux desktop binary (needs libwebkit2gtk-4.0-dev)
+	cd desktop && $(WAILS) build -clean -platform linux/amd64 -ldflags '$(LDFLAGS)'
+
+desktop-package-linux: desktop-build-linux ## Produce the .deb (nfpm) + the AppImage
+	mkdir -p $(DESKTOP_DIST)
+	ORCHICON_VERSION=$(DESKTOP_VERSION) $(GO) run github.com/goreleaser/nfpm/v2/cmd/nfpm@$(NFPM_VERSION) \
+		package -f deploy/desktop/nfpm.yaml -p deb \
+		-t "$(DESKTOP_DIST)/orchicon_desktop_$(DESKTOP_VERSION)_linux_amd64.deb"
+	ORCHICON_VERSION=$(DESKTOP_VERSION) bash deploy/desktop/appimage/build.sh
+	@ls -l $(DESKTOP_DIST)
+
+desktop-build-macos: desktop-check ## Build the universal macOS .app (macOS host only)
+	cd desktop && $(WAILS) build -clean -platform darwin/universal -ldflags '$(LDFLAGS)'
+
+desktop-sign-macos: ## Sign + notarise + staple the .app, then assert Gatekeeper accepts it
+	bash deploy/desktop/macos/sign-and-notarize.sh
+
+desktop-build-windows: desktop-check ## Build the NSIS installer + portable exe (Windows host only)
+	cd desktop && $(WAILS) build -clean -platform windows/amd64 -webview2 download -nsis -ldflags '$(LDFLAGS)'
+
 # --- CI --------------------------------------------------------------------
 # The CI gate, split the same way .github/workflows/ci.yml splits it:
 # ci-go is the Go control-plane gate (no full Node install — `gen` pulls

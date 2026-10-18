@@ -17,7 +17,14 @@
 #
 # The runtime layer (runtime daemon, unix socket, container mounts) is
 # POSIX-only; on Windows it runs inside WSL2 — there is no native Windows
-# port, so this installer never downloads the Windows release binary.
+# port, so this installer never downloads the Windows *CLI* release binary.
+#
+# -Desktop IS THE ONE EXCEPTION, and it is worth being precise about it: the
+# Orchicon desktop app IS a Windows binary (a Wails/WebView2 shell), and it talks
+# to the plane inside the distro over WSL2's localhost forwarding. So with
+# -Desktop this script downloads the WINDOWS desktop installer and runs it on the
+# host, which is the only thing here that installs outside the distro. The stack
+# still lives in WSL2; nothing about that changed.
 #
 # Options:
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.2.0
@@ -63,6 +70,7 @@ param(
     [switch]$Yes,
     [switch]$Purge,
     [switch]$Help,
+    [switch]$Desktop,
     [string]$Instance = ""
 )
 
@@ -100,6 +108,14 @@ Options:
   -InstallDir <dir>   WSL install directory for the binary (default: ~/.local/bin).
   -NoSetup            Install the binary only — do NOT pull images, start the
                       runtime daemon, or launch the container.
+  -Desktop            ALSO install the desktop app. This is the ONE step that acts on
+                      the WINDOWS side rather than inside the distro: the app is a
+                      Windows binary that talks to the plane over WSL2's localhost
+                      forwarding. The installer provisions the WebView2 runtime
+                      (preinstalled on Windows 11; a Windows 10 machine gets it during
+                      setup), so a blank window is not a possible outcome. Fully
+                      optional — the app is a client, and the web UI at the same URL
+                      does everything it does.
   -Uninstall          Stop everything THIS instance runs - its plane and its container - and
                       remove the Orchicon binary. DATA IS PRESERVED (the Docker volume and the
                       instance's host state), and the summary says where each is.
@@ -564,6 +580,91 @@ function Write-ConnectionInfo {
     Write-Host "  listenaddress=127.0.0.1 connectport=$ctrl connectaddress=<WSL-IP>" -ForegroundColor DarkGray
 }
 
+# --- Desktop app (Windows side) ---------------------------------------------
+#
+# THE ONLY THING THIS SCRIPT INSTALLS OUTSIDE THE DISTRO, and the header's "never
+# downloads the Windows binary" promise is about the CLI: the desktop app is a native
+# Windows binary by design (a Wails shell around WebView2), and it reaches the plane
+# inside WSL2 through localhost forwarding, which is exactly what the connection info
+# above advertises.
+#
+# WEBVIEW2 IS THE REASON THE INSTALLER EXISTS RATHER THAN A ZIP. `wails build -nsis
+# -webview2 download` embeds the Evergreen bootstrapper in the NSIS installer, so a
+# Windows 10 machine provisions the runtime during setup instead of opening a blank
+# window. That is why this runs the installer instead of copying files.
+function Install-DesktopApp {
+    $ver = $Version
+    if (-not $ver -or $ver -eq "latest") {
+        try {
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$GitHubOwner/$GitHubRepo/releases/latest" `
+                -Headers @{ "User-Agent" = "orchicon-install" }
+            $ver = $release.tag_name
+        } catch { $ver = "" }
+    }
+    if (-not $ver) {
+        Write-Warn "could not determine the release version — skipping the desktop app"
+        Write-Warn "  download it from https://github.com/$GitHubOwner/$GitHubRepo/releases"
+        return
+    }
+
+    $stem = "orchicon_desktop_$($ver -replace '^v','')_windows_amd64"
+    $url = "https://github.com/$GitHubOwner/$GitHubRepo/releases/download/$ver/${stem}_installer.exe"
+    $out = Join-Path ([System.IO.Path]::GetTempPath()) "$stem-installer.exe"
+
+    Write-Info "downloading the desktop app installer…"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+    } catch {
+        Write-Warn "the desktop installer for $ver is not downloadable ($($_.Exception.Message))"
+        Write-Warn "  get it here: https://github.com/$GitHubOwner/$GitHubRepo/releases/tag/$ver"
+        return
+    }
+
+    Write-Info "running the desktop installer (silent)…"
+    try {
+        $proc = Start-Process -FilePath $out -ArgumentList "/S" -Wait -PassThru
+        if ($proc.ExitCode -ne 0) {
+            Write-Warn "the desktop installer exited $($proc.ExitCode) — the stack install is unaffected"
+            return
+        }
+        Write-Ok "desktop app installed (Start menu, 'Orchicon')"
+        Write-Info "it needs WebView2: preinstalled on Windows 11, provisioned by the installer on Windows 10"
+        Write-Info "it is a client — open it with this plane running, or it starts one for you"
+    } catch {
+        Write-Warn "could not run the desktop installer: $($_.Exception.Message)"
+        Write-Warn "  run it by hand from https://github.com/$GitHubOwner/$GitHubRepo/releases/tag/$ver"
+        return
+    } finally {
+        Remove-Item -Path $out -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Uninstall-DesktopApp removes the app the installer above put on this host. It looks in
+# the locations the Wails NSIS template uses, least-privileged first, and says so plainly
+# when there is nothing there — a portable unzip is uninstalled by deleting the folder.
+function Uninstall-DesktopApp {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Orchicon\uninstall.exe"),
+        (Join-Path $env:ProgramFiles "Orchicon\uninstall.exe")
+    )
+    if (${env:ProgramFiles(x86)}) { $candidates += (Join-Path ${env:ProgramFiles(x86)} "Orchicon\uninstall.exe") }
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) {
+            if ($DryRun) { Write-Info "would run the desktop app uninstaller: $c"; return }
+            try {
+                Start-Process -FilePath $c -ArgumentList "/S" -Wait
+                Write-Ok "desktop app removed"
+            } catch {
+                Write-Warn "could not run the desktop uninstaller ($($_.Exception.Message))"
+                Write-Warn "  remove it from Settings > Apps > Installed apps"
+            }
+            return
+        }
+    }
+    Write-Info "no installed desktop app found (a portable unzip is removed by deleting its folder)"
+}
+
 # --- RUN THE INSTALLER ------------------------------------------------------
 # THE RUNNER, and the only place that decides what the operator sees after a stop.
 # The body below sits in a try/catch for three reasons, in order of importance:
@@ -771,6 +872,9 @@ true
               Write-Host "  wsl -d $script:Distro -e bash -lc 'rm -f $bin'"
         } else {
             Invoke-WslBash $uninstallScript
+            # The app lives on the WINDOWS side, so the WSL half cannot remove it: an uninstall
+            # that left a working window behind (pointed at a stopped plane) is a bug report.
+            Uninstall-DesktopApp
               if ($Purge) { Write-Ok "Orchicon uninstalled for '$script:Instance' — binary, container, volume and host state removed" }
               else { Write-Ok "Orchicon uninstalled for '$script:Instance' — binary and container removed; DATA PRESERVED (re-run with -Purge to destroy it)" }
         }
@@ -1078,6 +1182,16 @@ ORCHICON_INSTALL_INTERACTIVE=1 ORCHICON_INSTANCE="__INSTANCE__" ORCHICON_CONTAIN
             # A non-zero outcome for a wrapper: the binary is in place, the stack is not.
             $script:ExitCode = 1
         }
+    }
+
+    # THE DESKTOP APP, opt-in. Without -Desktop this is one line naming where to get it,
+    # so the user is not left to find it.
+    if ($Desktop) {
+        Install-DesktopApp
+    } else {
+        Write-Host ""
+        Write-Host "  Desktop app (optional): re-run with -Desktop, or download it from" -ForegroundColor DarkGray
+        Write-Host "    https://github.com/$GitHubOwner/$GitHubRepo/releases/latest" -ForegroundColor DarkGray
     }
 
     Write-Host ""
