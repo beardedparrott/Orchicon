@@ -52,8 +52,8 @@ func main() {
 		switch os.Args[1] {
 		case "serve":
 			os.Exit(runServe(os.Args[2:]))
-		case "container":
-			os.Exit(runContainer(os.Args[2:]))
+		case "host-services":
+			os.Exit(runHostServices(os.Args[2:]))
 		case "mcp":
 			os.Exit(runMCP(context.Background(), os.Args[2:], log))
 		case "db":
@@ -322,7 +322,6 @@ func printHelp() {
 			"Report the same thing as `plane status`: the instance, its residency, the plane PID, the",
 			"serving binary and whether it has been superseded, plus health. One surface, two spellings."}},
 		{cmd: bin + " serve --stop", desc: []string{"Stop a detached server"}},
-		{cmd: bin + " container", desc: []string{"Run the whole stack as PID 1 inside the single-container image"}},
 
 		{section: "Operating an instance:"},
 		{cmd: bin + " db", desc: []string{"Database snapshots: backup | list | restore | prune"}},
@@ -339,6 +338,7 @@ func printHelp() {
 		{section: "Internal (started by the installer and the daemon; not for hand use):"},
 		{cmd: bin + " runtime-daemon", desc: []string{"Run the runtime daemon (owns the container engine)"}},
 		{cmd: bin + " runtime-supervisor", desc: []string{"Run a workflow container's supervisor"}},
+		{cmd: bin + " host-services", desc: []string{"Supervise this instance's Postgres, NATS and telemetry as host processes", "(started by install/start; there is no container to run them in)"}},
 		{cmd: bin + " runtime-client", desc: []string{"Talk to the runtime daemon over its socket"}},
 	}
 
@@ -366,9 +366,10 @@ func printHelp() {
 	fmt.Fprintf(&b, "\nAlmost every command acts on ONE instance (default: dev). Name it as a positional\n"+
 		"(orchicon stop prod) or with --instance (orchicon stop --instance prod); ORCHICON_INSTANCE\n"+
 		"is the fallback when neither is given.\n")
-	fmt.Fprintf(&b, "\nThe binary embeds the single-container runtime configs, migrations, and the frontend\n"+
-		"bundle. Run the full stack with `docker run` (see ARCHITECTURE.md §Single-Container\n"+
-		"Deployment) or `%s container` as the container's PID-1 supervisor.\n", bin)
+	fmt.Fprintf(&b, "\nThe binary embeds the service configs, migrations, and the frontend bundle, and it IS\n"+
+		"the whole product: `%s install` puts the plane and its services on this host as\n"+
+		"ordinary processes. There is no image to run and no engine to install; the only\n"+
+		"container Orchicon uses is a workflow's runtime container, opt-in per project.\n", bin)
 
 	fmt.Print(b.String())
 }

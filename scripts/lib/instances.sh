@@ -28,7 +28,6 @@ instance_info() {
   local inst="$1"
   case "$inst" in
     dev)
-      NAME="orchicon-cnt-dev"
       VOLUME="orchicon-cnt-dev-data"
       PG_VOLUME="${ORCHICON_PG_VOLUME:-orchicon_postgres-data}"
       COMPOSE_PG="orchicon-postgres"
@@ -51,7 +50,6 @@ instance_info() {
       HOST_DATA_DIR="$HOME/.local/share/orchicon-dev"
       ;;
     prod)
-      NAME="orchicon-cnt-prod"
       VOLUME="orchicon-cnt-prod-data"
       PG_VOLUME="${ORCHICON_PG_VOLUME:-orchicon-prod_postgres-data}"
       COMPOSE_PG="orchicon-prod-postgres"
@@ -70,7 +68,6 @@ instance_info() {
       HOST_DATA_DIR="$HOME/.local/share/orchicon-prod"
       ;;
     test)
-      NAME="orchicon-cnt-test"
       VOLUME="orchicon-cnt-test-data"
       # NOT dev/prod's legacy compose volume. They reuse orchicon_postgres-data /
       # orchicon-prod_postgres-data, which may hold real tenant data; "fresh"
@@ -178,9 +175,7 @@ plane_env() {
   # every 30s on every single boot: "bridge listener bind failed —
   # runtime-container workers cannot reach the plane". Loopback keeps host
   # clients working (orch, the GUI) and leaves the bridge address free for the
-  # listener that exists to serve runtime containers. A CONTAINER-resident
-  # plane is untouched: it keeps `:8080` (cmd/orchicon/container.go's
-  # containerChildEnv) and takes no extra bind to collide with.
+  # listener that exists to serve runtime containers.
   echo "ORCHICON_HTTP_ADDR=127.0.0.1:$PLANE_HTTP_PORT"
   # HOST-RESIDENT LISTENERS, PER INSTANCE: the plane must answer on the
   # loopback address above (host clients: orch, the GUI) AND on the docker
@@ -202,16 +197,6 @@ plane_env() {
     log_err "  ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip> $0 plane-start $inst"
   fi
   echo "ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:$PG_PORT/orchicon?sslmode=disable"
-  # THE CONTAINER THAT CARRIES POSTGRES, named for the plane. Backup/restore shell
-  # out to pg_dump/psql, and a HOST-resident plane has no such binaries on the
-  # host — the host has docker, not postgresql-client. Without this the plane
-  # execs a missing binary and every backup fails with
-  # `exec: "pg_dump": executable file not found in $PATH`. Naming the container
-  # lets internal/backup run the tools INSIDE it, at the exact server version,
-  # against the loopback port this DSN publishes. (internal/backup also discovers
-  # this container on its own, verified against the port mapping, so a hand-typed
-  # `orchicon db backup` works too — this is the explicit half.)
-  echo "ORCHICON_PG_CONTAINER=$NAME"
   echo "ORCHICON_NATS_URL=nats://localhost:$NATS_PORT"
   echo "ORCHICON_OTEL_ENDPOINT=localhost:$OTLP_GRPC_PORT"
   echo "ORCHICON_TEMPO_URL=http://localhost:$TEMPO_PORT"

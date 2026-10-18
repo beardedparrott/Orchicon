@@ -105,7 +105,7 @@ NPX         := npx
 
 # THE INSTANCE THIS CHECKOUT'S DATABASE TARGETS. One word picks it:
 # `make migrate instance=prod` uses prod's 5433, the default dev uses 5432. DB_URL
-# is DERIVED from it through scripts/container.sh db-url — the same per-instance
+# is DERIVED from it through scripts/instance-ports.sh db-url — the same per-instance
 # port table the launcher and `orchicon install` use — so the DSN and the bound
 # port cannot drift and two instances on one host never collide (AC4).
 #
@@ -118,13 +118,13 @@ NPX         := npx
 # db_url_required refuses with the reason. Export DB_URL yourself to target a database
 # this table does not describe.
 instance    ?= dev
-DB_URL      ?= $(shell scripts/container.sh db-url $(instance) 2>/dev/null)
+DB_URL      ?= $(shell scripts/instance-ports.sh db-url $(instance) 2>/dev/null)
 
 # THE REFUSAL THAT REPLACES THE FALLBACK. Every target that OPENS $(DB_URL) runs this
 # first, so "I do not know which instance you mean" is an error naming the instance and
 # the remedy instead of a silent dev default. One definition, so the message cannot
 # drift between migrate and rls-check.
-db_url_required = @test -n "$(DB_URL)" || { echo "cannot resolve DB_URL for instance '$(instance)': scripts/container.sh db-url refused it." >&2; echo "  Use instance=<dev|prod|test> (the per-instance port table), or set DB_URL explicitly." >&2; exit 1; }
+db_url_required = @test -n "$(DB_URL)" || { echo "cannot resolve DB_URL for instance '$(instance)': scripts/instance-ports.sh db-url refused it." >&2; echo "  Use instance=<dev|prod|test> (the per-instance port table), or set DB_URL explicitly." >&2; exit 1; }
 
 # ...BUT THE DEFAULT MUST NOT SILENCE THE TARGETS THAT REQUIRE A CHOICE.
 #
@@ -278,22 +278,22 @@ build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into
 
 # run STARTS THIS INSTANCE'S LOCAL SERVICES FIRST (the `services` prerequisite),
 # so it works on a host with no container engine and no Postgres installed:
-# startHostServices re-execs this binary as `container` with host service
-# residency, which downloads the pinned Postgres + NATS on first use
-# (cmd/orchicon/binaries.go). The plane's OWN env is then pointed at the instance
+# startHostServices re-execs this binary as `host-services`, which downloads the pinned
+# Postgres + NATS on first use (cmd/orchicon/binaries.go). The plane's OWN env is then
+# pointed at the instance
 # the services bound — the plane's config defaults are dev's 5432/4222
 # (internal/config/config.go), so without these exports `instance=prod` would
 # reach dev's database. ORCHICON_HTTP_ADDR is exported for the SAME reason, one
 # layer up: the config default is a WILDCARD `:8080` (dev's port) on EVERY
 # interface, so `instance=prod` would take dev's 8080 — the collision AC4
 # forbids — and expose the plane on the LAN. The launcher binds this instance's
-# own loopback port (scripts/container.sh plane_env), and so does this.
+# own loopback port (scripts/lib/instances.sh's plane_env), and so does this.
 run: services fetch-tags fe-build ## Run the control plane from source (starts this instance's local services first)
 	ORCHICON_INSTANCE=$(instance) \
 	ORCHICON_DATA_DIR="$${ORCHICON_DATA_DIR:-$$HOME/.local/share/orchicon-$(instance)}" \
-	ORCHICON_HTTP_ADDR="127.0.0.1:$$(scripts/container.sh services-port $(instance) control)" \
+	ORCHICON_HTTP_ADDR="127.0.0.1:$$(scripts/instance-ports.sh services-port $(instance) control)" \
 	ORCHICON_POSTGRES_DSN="$(DB_URL)" \
-	ORCHICON_NATS_URL="nats://localhost:$$(scripts/container.sh services-port $(instance) nats)" \
+	ORCHICON_NATS_URL="nats://localhost:$$(scripts/instance-ports.sh services-port $(instance) nats)" \
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
 test: ## Run Go tests
@@ -310,7 +310,7 @@ test: ## Run Go tests
 	@# exported into each test binary so there is no per-package opt-in to forget.
 	@#
 	@# A TEST MUST ALSO NEVER INHERIT THE OPERATOR'S LIVE PLANE. The same reasoning, one layer up: a
-	@# shell that launched a host plane carries that plane's configuration (scripts/container.sh
+	@# shell that launched a host plane carries that plane's configuration (scripts/lib/instances.sh's plane_env
 	@# exports ORCHICON_SERVE_STATE_DIR, ORCHICON_GUARD_POLICY, ...), and a test that EXECS a
 	@# subprocess hands the whole ambient environment to it. Four packages failed on the operator's
 	@# machine and none in CI for exactly that reason — cmd/orchicon (the serve state paths resolved
@@ -352,16 +352,15 @@ clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygien
 	@rm -f $(BIN_DIR)/orchicon
 	@rm -f $(BIN_DIR)/orch
 	@rm -f $(BIN_DIR)/atlas-ci
-	# Stale copies of the binary that the hand-build recipe drops into a build
-	# context (`cp bin/orchicon deploy/<context>/` — ARCHITECTURE.md's "build
-	# the image by hand" steps). The runtime image no longer bakes the binary
-	# (the daemon bind-mounts its own executable), so a leftover copy would only
-	# bloat that context -- removed here so a heavy dev session never leaves one
-	# behind. BOTH contexts are swept because both still exist and both accept a
-	# copy; the line is a no-op for whichever one goes away first. Only
-	# `orchicon` is ever copied in -- the TUI client (bin/orch) is not -- so
-	# there is no second name to sweep.
-	@rm -f deploy/runtime/orchicon deploy/container/orchicon
+	@# Stale copies of the binary that the hand-build recipe drops into a build
+	@# context (`cp bin/orchicon deploy/<context>/` -- ARCHITECTURE.md's "build
+	@# the image by hand" steps). ONE context is left (`deploy/runtime/`), and its
+	@# Dockerfile does not bake the binary (the daemon bind-mounts its own
+	@# executable), so a leftover copy would only bloat that context -- removed
+	@# here so a heavy dev session never leaves one behind. Only `orchicon` is
+	@# ever copied in -- the TUI client (bin/orch) is not -- so there is no second
+	@# name to sweep.
+	@rm -f deploy/runtime/orchicon
 
 # cache-trim bounds the Go build cache by SIZE, evicting the coldest entries first.
 #
@@ -568,18 +567,20 @@ install-path-test: ## Run the real installer against a locally-served artifact, 
 	bash scripts/tests/install-path/run.sh --os darwin
 	bash scripts/tests/install-path/uninstall.sh
 
-# host-residency-test guards the LAUNCH SHAPE of an instance: which of the two residencies a plain
-# `up` produces, that each instance's ports and plane URL are its own (a shared value points one
-# instance's workers at another's database), and that the host plane's two listeners cannot collide.
+# host-residency-test guards the LAUNCH SHAPE of an instance: the plane and its services ARE host
+# processes (there is no container shape to choose), each instance's ports and plane URL are its own
+# (a shared value points one instance's workers at another's database), and the host plane's two
+# listeners cannot collide.
 #
-# IT GUARDS TWO IMPLEMENTATIONS. The bash half drives container.sh's own functions (the launcher a dev
-# checkout uses); the GO half drives `go test ./cmd/orchicon` against install_host.go (the binary a
-# curl-installed host has — container.sh is NOT in the release archive). The two must agree, and the Go half
-# is the one that matters for an installed host, so it is asserted rather than assumed.
+# IT GUARDS TWO HALVES AND NO LONGER A SECOND IMPLEMENTATION. The shell half drives the per-instance
+# table (scripts/lib/instances.sh: instance_info, plane_env, bridge_bind_env) with the bridge PINNED
+# (ORCHICON_DOCKER_BRIDGE_IP) rather than discovered, and asserts the ONE-SHAPE rule: scripts/container.sh
+# is gone, and no shell or Makefile path can select a container residency any more. The GO half drives
+# `go test ./cmd/orchicon` against install_host.go -- the implementation that actually ships, since a
+# curl-installed host has no .sh launcher behind the binary.
 #
-# IT IS DOCKER-FREE, which is why it belongs in this gate rather than behind a container job: the bash half
-# resolves shapes through container.sh's own functions with a stubbed log and no engine, the bridge is PINNED
-# (ORCHICON_DOCKER_BRIDGE_IP) rather than discovered, and the Go half asserts the no-engine shape explicitly.
+# IT IS ENGINE-FREE, which is why it belongs in this gate rather than behind a container job: nothing in
+# it starts a container, and the Go half asserts the no-engine shape explicitly.
 #
 # IT IS ALSO THE HARNESS THAT WOULD HAVE CAUGHT 5cc8039c'S FALLOUT. That commit deliberately changed
 # the default residency and did not update this harness, which then failed for weeks — unnoticed,
@@ -890,38 +891,17 @@ runtime-stop: ## Stop the host-side workflow runtime daemon
 runtime-status: ## Show whether the runtime daemon is answering, and its socket
 	@$(RUNTIME_SH) daemon-status
 
-# --- Deprecated names (kept because muscle memory is the asset) --------------
-# These have NO `## ` comment on purpose: `make help` is generated from those, and
-# eight deprecated rows would bury the real list. Each alias says what it became
-# when you run it, so the rename is discoverable from the command itself rather
-# than from a doc you have to think to open.
+# --- Retired names ----------------------------------------------------------
+# The container-era aliases (container-build/-up/-down/-rebuild/-status/-logs/-ps) were
+# REMOVED by the single-container-deletion work item: they printed "this is now
+# instance-<verb>" while the container they were named for no longer exists, which made a
+# retired shape look supported. Use the instance-* targets above, or `scripts/orchicon.sh`
+# and `orchicon plane start|stop|status` for the plane itself.
 #
-# THE ALIAS MUST NOT DEFEAT THE DESTRUCTIVE GUARD. `$(MAKE) instance-rebuild
-# instance=$(instance)` would put the dev DEFAULT on the sub-make's command line,
-# where instance_given sees origin=command line and the refusal disappears. So the
-# alias forwards instance= only when the operator named one.
-.PHONY: container-build container-up container-down container-rebuild container-status container-logs container-ps
-container-build:
-	@echo "container-build is now instance-build (binaries only — there is no image to build)"
-	@$(MAKE) instance-build
-container-up:
-	@echo "container-up is now instance-up (the instance is a HOST process, not a container)"
-	@$(MAKE) instance-up instance=$(instance)
-container-down:
-	@echo "container-down is now instance-down"
-	@$(MAKE) instance-down instance=$(instance)
-container-rebuild:
-	@echo "container-rebuild is now instance-rebuild (no image build; the plane runs on the host)"
-	@$(MAKE) instance-rebuild $(if $(instance_given),instance=$(instance))
-container-status:
-	@echo "container-status is now instance-status"
-	@$(MAKE) instance-status instance=$(instance)
-container-logs:
-	@echo "container-logs is now instance-logs"
-	@$(MAKE) instance-logs instance=$(instance)
-container-ps:
-	@echo "container-ps is now instance-ps"
-	@$(MAKE) instance-ps
+# THE POLICY THAT OUTLIVED THEM: an alias must never defeat a destructive guard, and the
+# per-instance shape is not a per-target choice. If a rename is ever needed again, add the
+# alias with a `## ` comment only if it stays discoverable — and never let a per-target
+# default disagree with the product default.
 
 # --- Plane lifecycle — see "Instances (host-resident dev loop)" above --------
 # plane-status / plane-start / plane-stop / plane-restart are defined THERE, next to

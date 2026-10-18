@@ -83,7 +83,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/.." && pwd)"
-CONTAINER_SH="${REPO_ROOT}/scripts/container.sh"
+PORTS_SH="${REPO_ROOT}/scripts/instance-ports.sh"
 ORCHICON_SH="${REPO_ROOT}/scripts/orchicon.sh"
 BIN="${REPO_ROOT}/bin"
 
@@ -283,12 +283,12 @@ kill_tree() {
 declare -A PORT_PG=() PORT_NATS=() PORT_CTRL=()
 
 resolve_ports() {
-  PORT_PG[$INSTANCE]="${PG_OVERRIDE:-$("$CONTAINER_SH" services-port "$INSTANCE" postgres 2>/dev/null || echo 5432)}"
-  PORT_NATS[$INSTANCE]="${NATS_OVERRIDE:-$("$CONTAINER_SH" services-port "$INSTANCE" nats 2>/dev/null || echo 4222)}"
-  PORT_CTRL[$INSTANCE]="${CTRL_OVERRIDE:-$("$CONTAINER_SH" services-port "$INSTANCE" control 2>/dev/null || echo 8080)}"
-  PORT_PG[$PROD_INSTANCE]="${PROD_PG_OVERRIDE:-$("$CONTAINER_SH" services-port "$PROD_INSTANCE" postgres 2>/dev/null || echo 5433)}"
-  PORT_NATS[$PROD_INSTANCE]="${PROD_NATS_OVERRIDE:-$("$CONTAINER_SH" services-port "$PROD_INSTANCE" nats 2>/dev/null || echo 4223)}"
-  PORT_CTRL[$PROD_INSTANCE]="${PROD_CTRL_OVERRIDE:-$("$CONTAINER_SH" services-port "$PROD_INSTANCE" control 2>/dev/null || echo 8091)}"
+  PORT_PG[$INSTANCE]="${PG_OVERRIDE:-$("$PORTS_SH" services-port "$INSTANCE" postgres 2>/dev/null || echo 5432)}"
+  PORT_NATS[$INSTANCE]="${NATS_OVERRIDE:-$("$PORTS_SH" services-port "$INSTANCE" nats 2>/dev/null || echo 4222)}"
+  PORT_CTRL[$INSTANCE]="${CTRL_OVERRIDE:-$("$PORTS_SH" services-port "$INSTANCE" control 2>/dev/null || echo 8080)}"
+  PORT_PG[$PROD_INSTANCE]="${PROD_PG_OVERRIDE:-$("$PORTS_SH" services-port "$PROD_INSTANCE" postgres 2>/dev/null || echo 5433)}"
+  PORT_NATS[$PROD_INSTANCE]="${PROD_NATS_OVERRIDE:-$("$PORTS_SH" services-port "$PROD_INSTANCE" nats 2>/dev/null || echo 4223)}"
+  PORT_CTRL[$PROD_INSTANCE]="${PROD_CTRL_OVERRIDE:-$("$PORTS_SH" services-port "$PROD_INSTANCE" control 2>/dev/null || echo 8091)}"
 }
 
 # instance_env <inst> -> fills ENVX with the environment every child gets, so
@@ -718,7 +718,7 @@ preflight() {
       # Ask the table WITH this run's ORCHICON_*_PORT in force — that is what
       # `make run` will pass down. A difference can only mean a recorded port won.
       instance_env "$inst"
-      got="$("${ENVX[@]}" "$CONTAINER_SH" services-port "$inst" "$svc" 2>/dev/null || true)"
+      got="$("${ENVX[@]}" "$PORTS_SH" services-port "$inst" "$svc" 2>/dev/null || true)"
       [ -n "$got" ] && [ "$got" != "$want" ] && drift="$drift ${inst}/${svc}(chose ${want}, table says ${got})"
     done
   done
@@ -862,7 +862,7 @@ step2_migrate() {
   done
   : >"$log"
   if instance_env "$INSTANCE"; "${ENVX[@]}" PATH="$shim" bash "${REPO_ROOT}/scripts/check-rls.sh" \
-       "$("$CONTAINER_SH" db-url "$INSTANCE" 2>/dev/null)" >"$log" 2>&1; then
+       "$("$PORTS_SH" db-url "$INSTANCE" 2>/dev/null)" >"$log" 2>&1; then
     check "make rls-check passes with NO host psql (the downloaded-psql rung)" 0
   else
     check "make rls-check passes with NO host psql (the downloaded-psql rung)" 1 "scripts/check-rls.sh:49-78"
@@ -872,7 +872,7 @@ step2_migrate() {
   check_absent "the RLS gate did not silently skip" "$log" "RLS gate SKIPPED"
   instance_env "$INSTANCE"
   "${ENVX[@]}" ORCHICON_INSTANCE="$INSTANCE" bash "${REPO_ROOT}/scripts/check-rls.sh" \
-    "$("$CONTAINER_SH" db-url "$INSTANCE" 2>/dev/null)" >"${EVIDENCE}/02-rls-unshimmed.log" 2>&1 || true
+    "$("$PORTS_SH" db-url "$INSTANCE" 2>/dev/null)" >"${EVIDENCE}/02-rls-unshimmed.log" 2>&1 || true
   dim "unshimmed run recorded as qa-evidence/.../02-rls-unshimmed.log (must also say 'RLS gate OK')"
 }
 
@@ -1139,8 +1139,8 @@ step7_two_instances() {
   else check "make migrate instance=prod applies to PROD's database" 1 "Makefile:431-433"; fi
   cp "$log" "${EVIDENCE}/07-prod-migrate.log"
   local devdsn proddsn
-  devdsn="$("$CONTAINER_SH" db-url "$INSTANCE" 2>/dev/null)"
-  proddsn="$("$CONTAINER_SH" db-url "$PROD_INSTANCE" 2>/dev/null)"
+  devdsn="$("$PORTS_SH" db-url "$INSTANCE" 2>/dev/null)"
+  proddsn="$("$PORTS_SH" db-url "$PROD_INSTANCE" 2>/dev/null)"
   check "the two instances' DSNs differ (no shared database)" "$([ "$devdsn" != "$proddsn" ] && echo 0 || echo 1)"
   printf 'dev DSN:  %s\nprod DSN: %s\n' "$devdsn" "$proddsn" >>"$log"
   check "dev's plane is untouched by prod's migrate" "$([ "$(healthz_code "$INSTANCE")" = "200" ] && echo 0 || echo 1)"

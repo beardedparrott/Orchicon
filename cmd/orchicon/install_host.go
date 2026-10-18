@@ -258,11 +258,10 @@ var hostServicesPortEnvs = []string{
 
 // startHostServices starts the instance's SERVICES as HOST PROCESSES, detached, and records the PID.
 //
-// WHY A RE-EXEC AS `container`: container.go's supervisor ALREADY implements exactly this — runContainer
-// resolves the service residency, and with ORCHICON_SERVICE_RESIDENCY=host it runs postgres, nats and the
-// telemetry children as processes of the invoking user with NO control-plane child and no container engine
-// (container.go: `servicesOnly := servicesOnlyFromEnv() || residency == residencyHost`). Writing a second
-// supervisor here would be a second implementation of the same thing, so this re-execs this binary.
+// WHY A RE-EXEC AS `host-services`: host_services.go's supervisor ALREADY implements exactly this —
+// runHostServices runs postgres, nats and the telemetry children as processes of the invoking user, with NO
+// control-plane child and no container engine. Writing a second supervisor here would be a second
+// implementation of the same thing, so this re-execs this binary.
 //
 // IT IS IDEMPOTENT: already-ready services are left alone, which is what keeps a re-run a convergence rather
 // than a second stack racing the first for the same ports.
@@ -277,11 +276,9 @@ func startHostServices(instance string, ports map[string]int, hostDataDir string
 	}
 	// ORCHICON_CONTAINER_MODE is stripped for the same reason startHostPlane strips it: a stray export in a
 	// shell profile must never flip a host process into container semantics.
-	env := envWithout(os.Environ(), "ORCHICON_CONTAINER_MODE", servicesOnlyEnv)
+	env := envWithout(os.Environ(), "ORCHICON_CONTAINER_MODE")
 	env = append(env,
 		"ORCHICON_INSTANCE="+instance,
-		// THE ONE KNOB THAT DECIDES THE CARRIER: host services run as this user's processes.
-		"ORCHICON_SERVICE_RESIDENCY="+residencyHost,
 		"ORCHICON_DATA_DIR="+hostDataDir,
 	)
 	for _, k := range hostServicesPortEnvs {
@@ -297,7 +294,7 @@ func startHostServices(instance string, ports map[string]int, hostDataDir string
 		return fmt.Errorf("create the host-services state dir %s: %w", filepath.Dir(pidFile), err)
 	}
 	fmt.Fprintf(out, "starting the host services for %s (postgres, nats, telemetry as processes of this user) …\n", instance)
-	pid, err := startDetachedDaemonEnv(self, []string{"container"}, env, filepath.Join(hostDataDir, "services.log"))
+	pid, err := startDetachedDaemonEnv(self, []string{"host-services"}, env, filepath.Join(hostDataDir, "services.log"))
 	if err != nil {
 		return fmt.Errorf("start the host services for %s: %w", instance, err)
 	}

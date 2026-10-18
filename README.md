@@ -25,7 +25,7 @@ The documentation lives at the project root:
 ## Technology Stack
 
 - **Control plane**: Go (single binary, k8s-style reconcilers)
-- **Single container**: `orchicon container` runs the whole stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics, control plane) as PID 1 — see [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md)
+- **One shape**: the plane and its services (Postgres, NATS, Tempo/Loki/VictoriaMetrics) are host processes of your user, one set per instance — see [ARCHITECTURE.md §One shape](ARCHITECTURE.md)
 - **API**: Protobuf + Connect (gRPC + REST + streaming from one schema)
 - **Database**: PostgreSQL 16 with RLS + transactional outbox
 - **Event bus**: NATS JetStream
@@ -61,7 +61,7 @@ Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchic
 curl -fsSL https://orchicon.dev/install | bash
 ```
 
-The installer downloads the binary, then runs `orchicon install` to set up everything: pull the published images, start the runtime daemon, launch the single-container instance, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
+The installer downloads the binary, then runs `orchicon install` to set up everything: start the instance's services and plane on this host, register the runtime daemon, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
 
 > **macOS: no Gatekeeper override needed.** `curl` sets no quarantine bit, so a binary installed by the command above runs without a "cannot be opened because the developer cannot be verified" prompt. Orchicon's macOS binaries are **not** code-signed or notarised (a Developer ID costs USD 99/yr — see the `sign-macos` job in `.github/workflows/release.yml`), so one case does need one command: if you downloaded the `.tar.gz` in a **browser** rather than with the one-liner, macOS marked the archive, and the extracted binary inherits the mark. Clear it on that one file — this does not disable Gatekeeper:
 >
@@ -90,16 +90,6 @@ irm https://orchicon.dev/install.ps1 | iex
 # ...and only if you also want a workflow's runtime CONTAINER (this provisions the WSL2 substrate):
 & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Containers
 ```
-
-### Single container (Docker)
-
-The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics, control plane) runs in one container:
-
-```bash
-docker run --rm -p 8080:8080 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon
-```
-
-The `orchicon` binary is the PID-1 supervisor (`orchicon container`). See [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md) for the lifecycle script, env vars, and data-preservation notes.
 
 ### Windows
 
@@ -189,8 +179,7 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 ```
 
 After installation, verify with `orchicon version`. The full stack runs
-as a single container — see [Single container](#single-container-docker)
-and [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md).
+on this host — see [ARCHITECTURE.md §One shape](ARCHITECTURE.md).
 
 > **Note:** Pre-built binaries are published to [GitHub
 > Releases](https://github.com/beardedparrott/Orchicon/releases). If no
@@ -209,7 +198,6 @@ and [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md).
 |---|---|
 | `orchicon serve` | Run the control plane with embedded frontend (headless) |
 | `orchicon serve --detach` / `--stop` | Fork/stop a background server |
-| `orchicon container` | Run the whole stack as PID 1 (container image) |
 | `orchicon install` | One-command setup: acquire the infrastructure binaries (Postgres, NATS), start the runtime daemon, start this instance's services and plane, print connection info. Offers the optional runtime images (default: none) |
 | `orchicon runtime-daemon` | Host process owning the Docker socket; owns the warm pool of per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 (hosts the container's adapter serve, when the run needs one) |
@@ -292,7 +280,6 @@ Generated code is committed (see ARCHITECTURE.md §Code Generation).
 | `proto/` | Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`) |
 | `api/gen/` | Generated Go code |
 | `db/` | Atlas declarative schema + versioned migrations |
-| `deploy/container/` | Single-container image (Dockerfile + embedded runtime configs) |
 | `frontend/` | Vite + React + Connect-ES + TanStack Router + shadcn/ui |
 | `site/` | Static landing page (`orchicon.dev`) |
 | `scripts/` | Installers, CI gates, dev controller |

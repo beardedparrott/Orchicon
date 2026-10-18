@@ -105,8 +105,6 @@ design-notes/
 # at deploy time — source of truth is scripts/install.{sh,ps1}).
 site/install
 site/install.ps1
-deploy/container/orchicon
-deploy/container/orch
 deploy/runtime/orchicon
 deploy/runtime/orch
 # The TUI client binary (built by `make build` / `go build ./cmd/orch`);

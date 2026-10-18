@@ -17,8 +17,8 @@ import (
 // ships, which is the failure mode that makes a test worthless rather than loud.
 //
 // So the agreement is asserted here instead of left to care, the same way TestRuntimeVariantRefMatches
-// ReleaseWorkflow pins the installer's image refs against release.yml and TestInstallPortDefaultsMatch
-// ContainerScript pins the port table against scripts/container.sh.
+// ReleaseWorkflow pins the installer's image refs against release.yml and
+// TestInstallPortDefaultsMatchShellInstanceTable pins the port table against the shell table.
 
 // matrixPlatforms reads the `- os: <x>` / `arch: <y>` pairs out of a workflow's build matrix, in order.
 // Deliberately a line scanner rather than a YAML parse: the property is "the same platforms, listed the
@@ -501,38 +501,50 @@ func TestDesktopSigningChainIsInTheScript(t *testing.T) {
 	}
 }
 
-// TestCanaryPublishesAnImageThatIsNotLatest — the canary must ship a CONTAINER IMAGE, and must never touch
-// the floating release tag.
+// TestNoWorkflowPublishesASingleContainerImage — the retired single-container deployment must not come
+// back as a published artifact.
 //
-// WHY IT NEEDS ONE AT ALL: with binaries only, `-Version canary` installed a canary BINARY into a stack
-// running the last RELEASED image, so a test of "does re-installing converge the container?" had nothing
-// newer to converge to — which is exactly how the operator's Windows test came back inconclusive.
-//
-// AND WHY NOT :latest: that tag is the published release's, and repointing it at develop would change what
-// every existing install pulls on its next start. The canary is additive or it is a liability.
-func TestCanaryPublishesAnImageThatIsNotLatest(t *testing.T) {
-	b, err := os.ReadFile("../../.github/workflows/canary.yml")
-	if err != nil {
-		t.Fatalf("read canary.yml: %v", err)
-	}
-	src := string(b)
-
-	for _, want := range []string{
-		// The image is built from the same Dockerfile and pushed under a canary-only tag.
-		"deploy/container/Dockerfile",
-		"ghcr.io/beardedparrott/orchicon:canary",
-		"docker push ghcr.io/beardedparrott/orchicon:canary",
-		// Pushing to GHCR needs the scope; without it the job 403s and the canary silently ships binaries
-		// with no image.
-		"packages: write",
-	} {
-		if !strings.Contains(src, want) {
-			t.Errorf("canary.yml no longer %q — a canary without its own image cannot exercise the container half of an install", want)
+// WHY THIS IS AN ABSENCE ASSERTION: every release used to build and push
+// ghcr.io/beardedparrott/orchicon:<version> and :latest, a single-container image of the whole stack with
+// the binary as PID 1 — while the product installs host processes and no longer runs that image at all. The
+// mismatch was user-visible: the registry advertised a shape the installer refuses. The image job, its
+// build context (deploy/container/) and the launcher that drove it are deleted, so the assertion is that
+// they stay deleted — and that the per-workflow RUNTIME image, which does still exist, keeps being built.
+func TestNoWorkflowPublishesASingleContainerImage(t *testing.T) {
+	for _, path := range []string{"../../.github/workflows/release.yml", "../../.github/workflows/canary.yml"} {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		src := string(b)
+		for _, banned := range []string{
+			"deploy/container",
+			"ghcr.io/beardedparrott/orchicon:",
+		} {
+			if strings.Contains(src, banned) {
+				t.Errorf("%s still references %q — the single-container image is retired: a container exists only as a workflow's runtime container", path, banned)
+			}
+		}
+		// NEVER the floating single-container tag.
+		if strings.Contains(src, "orchicon:latest") {
+			t.Error("a workflow references orchicon:latest — that was the retired instance image's floating tag")
 		}
 	}
-	// NEVER the floating release tag.
-	if strings.Contains(src, "orchicon:latest") {
-		t.Error("canary.yml references orchicon:latest — that tag belongs to the published release, and pointing it at develop would change what every existing install pulls")
+
+	// ...and the runtime image is still built and pushed, which is the half that must NOT have been removed.
+	b, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	src := string(b)
+	for _, want := range []string{
+		"runtime-image:",
+		"deploy/runtime/Dockerfile",
+		"ghcr.io/beardedparrott/orchicon-runtime:latest",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("release.yml no longer builds the per-workflow runtime base image (%q missing) — that image still exists and must still ship", want)
+		}
 	}
 }
 

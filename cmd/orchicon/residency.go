@@ -1,29 +1,18 @@
 package main
 
-// Service residency: WHERE THE SERVICES RUN.
+// Service shape: WHERE THE SERVICES RUN.
 //
-// THERE ARE TWO ORTHOGONAL AXES, and conflating them is the bug this file
-// exists to prevent:
+// THERE IS EXACTLY ONE SHAPE. The plane and its services are HOST PROCESSES,
+// always: postgres, nats and the telemetry children are direct processes of the
+// invoking user, launched without a container engine, without setpriv and
+// without a chown. A container exists for exactly ONE purpose — a workflow's
+// runtime container, opt-in per project — and never as a carrier for an
+// instance.
 //
-//	plane residency (ORCHICON_PLANE_RESIDENCY, install-time, default "host")
-//	    WHERE THE CONTROL PLANE RUNS. "host" (the shape shipped today) means
-//	    the plane is a host process of its own while the SERVICES STAY IN THE
-//	    CONTAINER — the container runs with ORCHICON_CONTAINER_SERVICES_ONLY=1.
-//	    It is NOT a signal that the supervisor should stop using a container.
-//
-//	service residency (ORCHICON_SERVICE_RESIDENCY, this file)
-//	    WHERE THE SERVICES RUN. "host" = postgres, nats and the telemetry
-//	    children are direct processes of the invoking user, launched without a
-//	    container engine, without setpriv and without a chown. "container" (the
-//	    default, and the zero value of supervisor.residency) = today's
-//	    behaviour, byte for byte.
-//
-// A NEW VARIABLE RATHER THAN REUSING THE OLD ONE: ORCHICON_PLANE_RESIDENCY=host
-// is the default shape, so reading it here would make every existing
-// host-plane install silently host-resident for its services too — postgres
-// would try to run as the invoking user against /var/lib/orchicon with no
-// container to hold it. Container residency stays the zero value, so every
-// existing call site and test keeps today's behaviour.
+// THAT IS A SEPARATE AXIS FROM plane residency (ORCHICON_PLANE_RESIDENCY), which
+// says WHERE THE PLANE runs. That knob still names "container" so `orchicon
+// install` can REFUSE it by name (install.go) rather than silently
+// reinterpreting it; it can no longer select anything.
 
 import (
 	"os"
@@ -31,15 +20,11 @@ import (
 	"strconv"
 )
 
-// serviceResidencyEnv selects where the supervised services run.
-const serviceResidencyEnv = "ORCHICON_SERVICE_RESIDENCY"
-
 // servicePorts is the single place a supervised service's port is decided, so
 // the child's BIND argument and its READINESS probe cannot drift: both read the
-// same field. In container residency these are today's literals; in host
-// residency the operator's ORCHICON_*_PORT knobs override them (the same names
-// install_ports.go and scripts/container.sh already honour, so a host-resident
-// install needs no second vocabulary).
+// same field. The operator's ORCHICON_*_PORT knobs override the defaults (the
+// same names install_ports.go honours, so an install needs no second
+// vocabulary).
 type servicePorts struct {
 	postgres    int
 	nats        int
@@ -54,13 +39,13 @@ type servicePorts struct {
 	// SAME field here, so a knob that moves one moves the other — the config is
 	// templated from this table (see writeConfigs).
 	//
-	// TEMPO'S OTLP RECEIVERS ARE OFFSET FROM THE COLLECTOR'S ON PURPOSE
-	// (deploy/container/Dockerfile header comment): the two used to share one
-	// network namespace, so 14317/14318 keep the collector's own 4317/4318
-	// free. On a host they no longer share a namespace, but the collector's
-	// config points at the current ports — changing the offset is a coordinated
-	// edit across tempo.yaml, otel-collector.yaml and the readiness probes, not
-	// a cleanup. TestCollectorPointsAtTempoOffset pins it.
+	// TEMPO'S OTLP RECEIVERS ARE OFFSET FROM THE COLLECTOR'S ON PURPOSE: the two
+	// used to share one network namespace in the retired single-container image,
+	// so 14317/14318 keep the collector's own 4317/4318 free. They no longer
+	// share a namespace, but the collector's config points at the current ports —
+	// changing the offset is a coordinated edit across tempo.yaml,
+	// otel-collector.yaml and the readiness probes, not a cleanup.
+	// TestCollectorPointsAtTempoOffset pins it.
 	tempoOTLPGRPC     int
 	tempoOTLPHTTP     int
 	collectorOTLPGRPC int
@@ -68,61 +53,13 @@ type servicePorts struct {
 	collectorHealth   int
 }
 
-// serviceResidencyFromEnv resolves the service residency.
-//
-// ANYTHING OTHER THAN "host" IS CONTAINER — including empty, whitespace and
-// typos. The supervisor runs the product's services and must never refuse to
-// boot over a knob; container residency is both the default and the safe
-// interpretation of an unrecognised value.
-func serviceResidencyFromEnv() string {
-	if os.Getenv(serviceResidencyEnv) == residencyHost {
-		return residencyHost
-	}
-	return residencyContainer
-}
-
-// isHost reports whether the supervisor should run the services as host
-// processes. The zero value of supervisor.residency is "", which is container
-// residency — that is what makes acceptance criterion 4 (no container-resident
-// regression) mechanical rather than a review exercise.
-func (s *supervisor) isHost() bool {
-	return s.residency == residencyHost
-}
-
-// asUser builds a child command, dropping privileges to uid/gid only where that
-// is meaningful: container residency running as a NON-ROOT user (setpriv is how
-// the container hands a child to the operator's uid so files it creates in
-// mounted dirs are theirs). Everywhere else — host residency, or container
-// residency already at uid 0 — the command is launched verbatim.
-//
-// IT IS THE ONE LAUNCH SEAM. Host residency NEVER emits setpriv, and that is
-// asserted by the test suite. NEITHER DOES A PLATFORM WITHOUT THE BINARY: `setprivSupported` is a
-// compile-time constant (setpriv_unix.go / setpriv_windows.go), checked BEFORE the residency branch so a
-// Windows supervisor can never emit `setpriv --reuid=70` into a command line that has no such program —
-// and so the absence of the drop is a stated property rather than a silently dropped argv.
-func (s *supervisor) asUser(uid, gid int, command string, args []string) (string, []string) {
-	if !setprivSupported {
-		return command, args
-	}
-	if !s.isHost() && uid != 0 {
-		argv := []string{
-			"--reuid=" + strconv.Itoa(uid),
-			"--regid=" + strconv.Itoa(gid),
-			"--clear-groups",
-			command,
-		}
-		return "setpriv", append(argv, args...)
-	}
-	return command, args
-}
-
-// servicePortDefaults are the in-container literals, unchanged from before this
-// change — the container residency must bind and probe exactly what it does
-// today. The telemetry children's entries are the ports their EMBEDDED CONFIG
-// files declare (tempo.yaml http_listen_port, loki.yaml http_listen_port);
-// they are recorded here as the single source for that
-// child's readiness probe, and TestServiceProbesMatchTheirBind pins them to the
-// configs so the two cannot drift.
+// servicePortDefaults are the literals every install binds and probes when the
+// operator sets no knob. The telemetry children's entries are the ports their
+// EMBEDDED CONFIG files declare (tempo.yaml http_listen_port, loki.yaml
+// http_listen_port); they are recorded here as the single
+// source for that child's readiness probe, and
+// TestServiceProbesMatchEmbeddedConfigPorts pins them to the configs so the two
+// cannot drift.
 func servicePortDefaults() servicePorts {
 	return servicePorts{
 		postgres:          5432,
@@ -139,31 +76,19 @@ func servicePortDefaults() servicePorts {
 	}
 }
 
-// servicePortsFor returns the ports a residency binds and probes.
+// servicePortsFromEnv returns the ports a supervisor binds and probes:
+// servicePortDefaults, overridden by the operator's knobs.
 //
-// Container residency ignores the operator's port knobs entirely: the
-// container's ports are its own private namespace, and the host-side mapping is
-// done by -p in the launcher. Host residency honours them, because there the
-// supervisor's ports ARE host ports and two instances on one host must not
-// collide.
+// The supervisor's ports ARE host ports, so two instances on one host must not
+// collide — that is what makes every port here overridable.
 //
-// EVERY PORT IN THIS TABLE IS OVERRIDABLE IN HOST RESIDENCY, INCLUDING THE ONES
-// THAT LIVE IN AN EMBEDDED CONFIG — because those configs are now TEMPLATED from
-// this same table. The earlier limitation ("honouring a knob for a child whose
-// listen port lives in an embedded config would move only that child's readiness
-// PROBE") no longer exists: writeConfigs substitutes these fields into tempo.yaml,
-// loki.yaml and otel-collector.yaml, so the child BINDS the knob's
-// port and the gate PROBES the same number. In CONTAINER residency nothing is
-// overridable — the container's ports are its own private namespace and the host
-// mapping is done by -p in the launcher.
-//
-// The env names match install_ports.go / scripts/container.sh, so a host-resident
-// install needs no second vocabulary.
-func servicePortsFor(residency string) servicePorts {
+// EVERY PORT IN THIS TABLE IS OVERRIDABLE, INCLUDING THE ONES THAT LIVE IN AN
+// EMBEDDED CONFIG — because those configs are TEMPLATED from this same table.
+// writeConfigs substitutes these fields into tempo.yaml, loki.yaml and
+// otel-collector.yaml, so the child BINDS the knob's port and the gate
+// PROBES the same number.
+func servicePortsFromEnv() servicePorts {
 	p := servicePortDefaults()
-	if residency != residencyHost {
-		return p
-	}
 	overrides := []struct {
 		env string
 		set *int
@@ -190,16 +115,10 @@ func servicePortsFor(residency string) servicePorts {
 	return p
 }
 
-// defaultDataDirFor is where a residency keeps its state when ORCHICON_DATA_DIR
-// is not set. Container residency keeps the image's /var/lib/orchicon; host
-// residency lives under the INVOKING USER's own home, because running as that
-// user is the whole point of host residency.
-func defaultDataDirFor(residency string) string {
-	if residency != residencyHost {
-		// PER-OS (platform_paths_unix.go / _windows.go): `/var/lib/orchicon` is the container contract on
-		// Unix and an unreachable drive-root path on Windows.
-		return platformContainerDataDir()
-	}
+// defaultDataDirFor is where an instance keeps its state when ORCHICON_DATA_DIR
+// is not set: under the INVOKING USER's own home, because the services run as
+// that user — which is the whole shape.
+func defaultDataDirFor() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return filepath.Join(".orchicon")

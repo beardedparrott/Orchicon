@@ -528,11 +528,13 @@ else
 fi
 
 # The CONSUMERS must read the record, not a bare name. A service proc that still
-CONTAINER_SRC="$(cat "${REPO_ROOT}/cmd/orchicon/container.go")"
-if grep -q 's.resolved().Postgres' <<<"${CONTAINER_SRC}" \
-   && grep -q 's.resolved().Initdb' <<<"${CONTAINER_SRC}" \
-   && grep -q 's.resolved().Createdb' <<<"${CONTAINER_SRC}" \
-   && grep -q 's.resolved().NatsServer' <<<"${CONTAINER_SRC}"; then
+# execs a bare name would miss a DOWNLOADED binary. The consumers live in the HOST
+# services supervisor (the container PID-1 supervisor and its file are gone).
+SUPERVISOR_SRC="$(cat "${REPO_ROOT}/cmd/orchicon/host_services.go")"
+if grep -q 's.resolved().Postgres' <<<"${SUPERVISOR_SRC}" \
+   && grep -q 's.resolved().Initdb' <<<"${SUPERVISOR_SRC}" \
+   && grep -q 's.resolved().Createdb' <<<"${SUPERVISOR_SRC}" \
+   && grep -q 's.resolved().NatsServer' <<<"${SUPERVISOR_SRC}"; then
   ok "every service proc execs the RESOLVED path"
 else
   bad "a service proc does not use the resolved path — a DOWNLOADED binary would be invisible to it"
@@ -543,7 +545,7 @@ fi
 # check.
 bare=""
 for literal in '"initdb", "-D"' '"postgres", "-D"' 'exec.CommandContext(ctx, "createdb"' 'command: "nats-server"'; do
-  if grep -qF "${literal}" <<<"${CONTAINER_SRC}"; then
+  if grep -qF "${literal}" <<<"${SUPERVISOR_SRC}"; then
     bare="${bare}
   ${literal}"
   fi
@@ -592,11 +594,11 @@ say "[10] the desktop app (--desktop)"
 # this script already writes, and WITHOUT it the user must be told where to get it rather than left to
 # find it. The asset is served from the same fake release as the CLI archive, so the URL shape the
 # installer builds is exercised for real (no network, no real release).
-if [ "${ARCH}" = "amd64" ]; then
-  DESKTOP_ASSET="orchicon_desktop_${VERSION_NUM}_linux_${ARCH}.AppImage"
+if [ "${BUILD_GOARCH}" = "amd64" ]; then
+  DESKTOP_ASSET="orchicon_desktop_${VERSION_NUM}_linux_${BUILD_GOARCH}.AppImage"
   # A stand-in the installer only has to download, chmod and place: the real artifact is a Wails build.
-  printf '#!/bin/sh\necho fake-appimage\n' > "${PKG}/${VERSION}/${DESKTOP_ASSET}"
-  chmod +x "${PKG}/${VERSION}/${DESKTOP_ASSET}"
+  printf '#!/bin/sh\necho fake-appimage\n' > "${PKG}/${DESKTOP_ASSET}"
+  chmod +x "${PKG}/${DESKTOP_ASSET}"
 
   DDEST="${WORK}/bin-desktop"
   DLOG="${WORK}/install-desktop.log"
@@ -607,11 +609,16 @@ if [ "${ARCH}" = "amd64" ]; then
   set -e
   check "install.sh --desktop exits 0 (got ${DRC})" "$([ "${DRC}" -eq 0 ] && echo 1 || echo 0)"
   [ "${DRC}" -ne 0 ] && sed 's/^/      /' "${DLOG}" | tail -12
-  if grep -q "${BASE}/${VERSION}/${DESKTOP_ASSET}" "${DLOG}"; then
+  # THE PROOF OF PROVENANCE IS THE SERVER'S OWN ACCESS LOG, not install.sh's chatter: the installer
+  # reports progress as "downloading the desktop app…" and only names the URL when something goes
+  # wrong, so grepping its output for the URL asserts a string the success path never prints. The
+  # served-release request for the published asset name is the contract, and the server logs it.
+  if grep -q "GET /${VERSION}/${DESKTOP_ASSET}" "${WORK}/srv.log" 2>/dev/null; then
     ok "it downloaded the desktop app from the served release (the published asset name is the contract)"
   else
     bad "it downloaded the desktop app from the served release"
     grep -i 'desktop' "${DLOG}" | sed 's/^/      /' | head -4
+    grep "GET /${VERSION}" "${WORK}/srv.log" 2>/dev/null | sed 's/^/      /' | head -4
   fi
   if [ -x "${DDEST}/orchicon-desktop" ]; then
     ok "the desktop app landed in the install dir, executable (no sudo, no /usr/local)"
@@ -620,7 +627,7 @@ if [ "${ARCH}" = "amd64" ]; then
     ls -la "${DDEST}" 2>/dev/null | sed 's/^/      /' | head -5
   fi
 else
-  say "  SKIP  linux/${ARCH}: the desktop AppImage is amd64-only (documented; install.sh says so)"
+  say "  SKIP  linux/${BUILD_GOARCH}: the desktop AppImage is amd64-only (documented; install.sh says so)"
 fi
 
 # WITHOUT the flag the install must NAME where the app comes from — that line is AC5.
@@ -641,10 +648,14 @@ if grep -q 'spctl -a -t exec' <<<"${INSTALLER_FOR_DESKTOP}"; then
 else
   bad "install.sh does not assert Gatekeeper acceptance — a blocked .app would look installed and then not start"
 fi
-if grep -v '^\s*#' <<<"${INSTALLER_FOR_DESKTOP}" | grep -q 'xattr -d'; then
-  bad "install.sh STRIPS the quarantine flag — that hides a bad release instead of reporting it"
+# THE FLAG MUST NOT BE STRIPPED FROM THE RELEASED DESKTOP BUNDLE — that is what hides a bad release.
+# The CLI BINARY is a different matter and is deliberately de-quarantined: the documented curl one-liner
+# sets no quarantine bit in the first place, and install.sh says so by that line. So the assertion is
+# about the app, not about the existence of the word xattr.
+if grep -v '^\s*#' <<<"${INSTALLER_FOR_DESKTOP}" | grep 'xattr -d' | grep -qi 'orchicon-desktop\|\.app\b'; then
+  bad "install.sh STRIPS the quarantine flag from the desktop app — that hides a bad release instead of reporting it"
 else
-  ok "install.sh never strips the quarantine flag (comment-only mentions do not count)"
+  ok "install.sh never strips the quarantine flag from the desktop app (comment-only mentions do not count)"
 fi
 
 say ""

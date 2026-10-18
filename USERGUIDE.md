@@ -460,12 +460,13 @@ Orchicon refuses to start on an empty host data dir while such a volume exists, 
 replaced — migrate it once, then continue:
 
 ```bash
-docker run --rm -v orchicon_postgres-data:/src alpine tar cf - -C /src . | tar xf - -C \
+# one-time, engine-neutral: podman below, `docker` works identically
+podman run --rm -v orchicon_postgres-data:/src alpine tar cf - -C /src . | tar xf - -C \
   ~/.local/share/orchicon-dev/postgres
 ```
 
-(The `orchicon container` verb still exists and is still used — internally, as the supervisor that host
-services re-exec — but it is not a supported way to run an instance.)
+(The `orchicon container` verb is gone: the supervisor that owns the host services is internal to
+`orchicon install`/`start`/`services`, and there is no supported way to run an instance in a container.)
 
 ### Build from source
 
@@ -2569,7 +2570,7 @@ care about.
 | `scripts/orchicon.sh` | Start / stop / restart / status / logs / rebuild the **host-resident** plane and its host services for any instance (dev, prod or test); delegates every lifecycle verb to the CLI's own control surface (`orchicon instance` when present, else `install` / `restart` / `serve` / `services`) |
 | `scripts/orchicon.sh uninstall <dev\|prod\|test> --yes` | **Remove ONE instance and its data** — plane, container, volume, host state dir (destructive, confirmed, prints what it deletes first; never touches a sibling) |
 | `scripts/lib/instances.sh` | The ONE shell home of the instance table (dev/test/prod columns with their ports and data dirs); `cmd/orchicon/install_ports.go`'s `instanceOrder` is the Go home, and `TestInstallPortDefaultsMatchShellInstanceTable` asserts the two agree |
-| `scripts/container.sh` | Build / up / down / status / logs / ps / runtime-daemon / runtime-stop for the dev + prod + test container instances (the container-residency shape; `scripts/orchicon.sh` is the day-to-day entry point and the documented teardown) |
+| `scripts/orchicon.sh` | Build / up / down / status / logs / ps / runtime-daemon / runtime-stop for the dev + prod + test container instances (the container-residency shape; `scripts/orchicon.sh` is the day-to-day entry point and the documented teardown) |
 
 **The terminal client is a separate binary:** run `orch` for the TUI described in
 Part II.

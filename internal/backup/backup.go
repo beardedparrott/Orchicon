@@ -68,12 +68,10 @@ func expandDir(dir string) (string, error) {
 
 // Create dumps the database named by dsn to a timestamped .sql file.
 //
-// The pg_dump it runs is resolved per RESIDENCY (see pgclient.go): a local
-// binary when this process can reach Postgres directly (a container-resident
-// plane, or a host install with its own server), and `docker exec` into the
-// instance's services container when the plane runs on the HOST and Postgres
-// lives in that container — which is the default shape, and the case that made
-// every backup fail with `exec: "pg_dump": executable file not found in $PATH`.
+// The pg_dump it runs is resolved by pgclient.go: the instance's own resolved
+// PostgreSQL distribution first, then whatever is on PATH. There is one shape —
+// the plane and its services are host processes — so there is no engine CLI in
+// this path at all.
 func Create(ctx context.Context, dsn, dir string) (*Info, error) {
 	dir, err := expandDir(dir)
 	if err != nil {
@@ -91,11 +89,7 @@ func Create(ctx context.Context, dsn, dir string) (*Info, error) {
 	}
 	defer f.Close()
 
-	client, err := resolvePGClient(dsn)
-	if err != nil {
-		os.Remove(path)
-		return nil, err
-	}
+	client := resolvePGClient(dsn)
 	// --clean --if-exists emit DROP TABLE IF EXISTS before each CREATE,
 	// so the dump can be restored on top of a live (non-empty) database.
 	cmd, err := client.command(ctx, pgToolDump,
@@ -146,10 +140,7 @@ func Restore(ctx context.Context, dsn, path string) error {
 	// came from. -v ON_ERROR_STOP=1 makes psql exit non-zero on the first SQL
 	// error; --single-transaction rolls back the whole restore if anything fails,
 	// so a bad backup cannot leave the database half-restored.
-	client, err := resolvePGClient(dsn)
-	if err != nil {
-		return err
-	}
+	client := resolvePGClient(dsn)
 	cmd, err := client.command(ctx, pgToolRestore,
 		"-d", client.dsn,
 		"-v", "ON_ERROR_STOP=1",

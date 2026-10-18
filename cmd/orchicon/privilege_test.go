@@ -24,34 +24,26 @@ func useElevated(t *testing.T, v bool) {
 	t.Cleanup(func() { elevated = old })
 }
 
-// TestEnsureHostPostgresPrivileges is the criterion-2 table over residency x elevation.
+// TestEnsureHostPostgresPrivileges is the elevation table. There is ONE service
+// shape now (host processes of the invoking user), so residency is no longer an
+// axis: an elevated shell is the one state that must refuse.
 func TestEnsureHostPostgresPrivileges(t *testing.T) {
 	cases := []struct {
-		name      string
-		residency string
-		elevated  bool
-		wantErr   bool
+		name     string
+		elevated bool
+		wantErr  bool
 	}{
-		// HOST + ELEVATED IS THE ONE STATE THAT MUST REFUSE. Postgres itself will not
-		// run under an Administrators token, so starting the services anyway means an
+		// ELEVATED IS THE ONE STATE THAT MUST REFUSE. Postgres itself will not run
+		// under an Administrators token, so starting the services anyway means an
 		// install that reports success and then cannot start the database.
-		{name: "host-elevated", residency: residencyHost, elevated: true, wantErr: true},
-		// HOST, normal shell: the supported shape, and it must not be disturbed.
-		{name: "host-normal", residency: residencyHost, elevated: false, wantErr: false},
-		// CONTAINER + ELEVATED MUST PASS. Container residency runs postgres as uid 70
-		// via setpriv inside the container, where the invoking shell's elevation is
-		// irrelevant — refusing here would break every existing install on a Windows
-		// host that happens to use an elevated shell for docker.
-		{name: "container-elevated", residency: residencyContainer, elevated: true, wantErr: false},
-		{name: "container-normal", residency: residencyContainer, elevated: false, wantErr: false},
-		// The zero value of supervisor.residency is container residency, and anything
-		// unrecognised is treated as container — so "" must not refuse either.
-		{name: "empty-residency-elevated", residency: "", elevated: true, wantErr: false},
+		{name: "elevated", elevated: true, wantErr: true},
+		// A normal shell: the supported shape, and it must not be disturbed.
+		{name: "normal", elevated: false, wantErr: false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			useElevated(t, c.elevated)
-			err := ensureHostPostgresPrivileges(c.residency)
+			err := ensureHostPostgresPrivileges()
 			if c.wantErr && err == nil {
 				t.Fatal("an elevated host-residency shell must be refused")
 			}
@@ -102,21 +94,19 @@ func TestInvokingIDsAreThisProcessesIDs(t *testing.T) {
 	}
 }
 
-// HOST RESIDENCY NEVER YIELDS A NEGATIVE UID.
+// THE POSTGRES IDENTITY NEVER YIELDS A NEGATIVE UID.
 //
-// The bug this pins: os.Getuid()/os.Getgid() return -1 on Windows, and postgresUIDGID
-// returned them verbatim in host residency. It was harmless only because asUser returns
-// the command verbatim in host residency — a lie in the code waiting for the next
-// reader. The seam returns 0 there instead, and this asserts the shape from the Unix
-// side (the Windows side is the same property, checked by the compiler).
+// The bug this pins: os.Getuid()/os.Getgid() return -1 on Windows. The seam returns 0
+// there instead, and this asserts the shape from the Unix side (the Windows side is the
+// same property, checked by the compiler).
 func TestPostgresUIDGIDNeverUsesTheWindowsSentinel(t *testing.T) {
-	host := &supervisor{residency: residencyHost}
+	host := &supervisor{}
 	uid, gid := host.postgresUIDGID()
 	if uid < 0 || gid < 0 {
 		t.Fatalf("host residency produced a negative uid/gid (%d,%d) — the Windows sentinel", uid, gid)
 	}
 	if uid != invokingUID() || gid != invokingGID() {
-		t.Errorf("host residency must use the invoking-identity seam: got (%d,%d), want (%d,%d)",
+		t.Errorf("the identity must come from the invoking-identity seam: got (%d,%d), want (%d,%d)",
 			uid, gid, invokingUID(), invokingGID())
 	}
 }
@@ -129,9 +119,9 @@ func TestUnixSocketsSupportedMatchesTheSocketDir(t *testing.T) {
 	if !unixSocketsSupported {
 		t.Skip("windows-only property; the compiler checks it there")
 	}
-	host := &supervisor{log: testLogger(), dataDir: t.TempDir(), residency: residencyHost, infra: testInfra()}
+	host := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra()}
 	if got := host.postgresSocketDir(); got != host.dataDir {
-		t.Fatalf("unixSocketsSupported is true, so host residency must name a socket dir: got %q", got)
+		t.Fatalf("unixSocketsSupported is true, so a socket dir must be named: got %q", got)
 	}
 }
 
@@ -200,7 +190,7 @@ func TestInitPostgresRefusesForeignOwnedDirBeforeInitdb(t *testing.T) {
 	// is installed here" removes the volume from the picture without touching the
 	// probe this test is actually exercising.
 	withEngineCandidates(t)
-	s := &supervisor{log: testLogger(), dataDir: t.TempDir(), residency: residencyHost}
+	s := &supervisor{log: testLogger(), dataDir: t.TempDir()}
 	dir := filepath.Join(s.dataDir, "postgres")
 	if err := os.MkdirAll(dir, 0o500); err != nil { // unwritable, and NO PG_VERSION
 		t.Fatal(err)
