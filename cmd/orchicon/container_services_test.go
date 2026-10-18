@@ -521,11 +521,15 @@ func TestServiceSetParityBothResidencies(t *testing.T) {
 // defaultDataDirFor: container residency keeps the image path; host residency
 // lives under the invoking user's own home.
 func TestDefaultDataDirFor(t *testing.T) {
-	if got := defaultDataDirFor(residencyContainer); got != "/var/lib/orchicon" {
-		t.Errorf("container: got %q, want /var/lib/orchicon", got)
+	// THE EXPECTED VALUE IS PER-OS (platform_paths_unix.go / _windows.go): /var/lib/orchicon is the container
+	// contract on Unix and an unreachable drive-root path on Windows, so the assertion follows the platform
+	// rather than hardcoding one half of the pair.
+	want := platformContainerDataDir()
+	if got := defaultDataDirFor(residencyContainer); got != want {
+		t.Errorf("container: got %q, want %q", got, want)
 	}
-	if got := defaultDataDirFor(""); got != "/var/lib/orchicon" {
-		t.Errorf("zero value: got %q, want /var/lib/orchicon", got)
+	if got := defaultDataDirFor(""); got != want {
+		t.Errorf("zero value: got %q, want %q", got, want)
 	}
 	host := defaultDataDirFor(residencyHost)
 	if !strings.Contains(host, "orchicon") {

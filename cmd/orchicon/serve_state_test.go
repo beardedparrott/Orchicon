@@ -53,6 +53,20 @@ func TestServeStateDir(t *testing.T) {
 		if !strings.Contains(got, "orchicon-dev") {
 			t.Errorf("serveStateDir() = %q, want the dev instance's own state dir", got)
 		}
+		// AND THE FILES, NOT JUST THE DIRECTORY — this is the Windows-detach regression guard, and the bug it
+		// pins was about FILES. `serve --detach` writes the PID file and the child opens the log file, so if
+		// either path were resolved from the ambient override while the state dir was not, one instance's
+		// plane would still write a SIBLING's log or PID file. The Windows detach path calls the same
+		// serveDetach, so this is the assertion that keeps that true on a platform where the collision is
+		// harder to notice.
+		for name, path := range map[string]string{"pid": servePIDFile(), "log": serveLogFile()} {
+			if strings.Contains(path, "orchicon-prod") {
+				t.Errorf("serve %s file = %q — it follows the ambient override for ANOTHER instance", name, path)
+			}
+			if !strings.HasPrefix(path, got) {
+				t.Errorf("serve %s file = %q, which is not under this instance's state dir %q", name, path, got)
+			}
+		}
 	})
 	t.Run("override wins", func(t *testing.T) {
 		unsetInstance(t)

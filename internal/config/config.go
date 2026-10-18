@@ -197,7 +197,7 @@ type Config struct {
 	SecretsKEK string
 
 	// DataDir is the control plane's state directory (ORCHICON_DATA_DIR,
-	// default /var/lib/orchicon). When no ORCHICON_SECRETS_KEK override is
+	// default /var/lib/orchicon on Unix, %LOCALAPPDATA%\\orchicon on Windows — see defaults_*.go). When no ORCHICON_SECRETS_KEK override is
 	// set, the per-instance KEK is load-or-created under it on first boot.
 	DataDir string
 
@@ -216,7 +216,10 @@ func Default() Config {
 	// One value drives both the state dir and the policy default: the policy
 	// lives IN the state dir unless the operator points it elsewhere, and a
 	// second env read could silently disagree.
-	dataDir := env("ORCHICON_DATA_DIR", "/var/lib/orchicon")
+	// BOTH PATHS BELOW ARE PER-OS: their defaults come from defaults_unix.go / defaults_windows.go, because
+	// `/var/lib/orchicon` and `/var/run/...` are not paths a Windows user can reach. Nothing else in Default()
+	// hardcodes a POSIX absolute — every other default is a relative path or an address.
+	dataDir := env("ORCHICON_DATA_DIR", defaultDataDir())
 	return Config{
 		HTTPAddr:           env("ORCHICON_HTTP_ADDR", ":8080"),
 		ExtraBind:          env("ORCHICON_HTTP_EXTRA_BIND", ""),
@@ -231,7 +234,7 @@ func Default() Config {
 		VMURL:              env("ORCHICON_VM_URL", "http://localhost:8428"),
 		BlobStoreDir:       env("ORCHICON_BLOB_DIR", "./data/blobs"),
 		MigrateOnBoot:      envBool("ORCHICON_MIGRATE_ON_BOOT", true),
-		RuntimeSocket:      env("ORCHICON_RUNTIME_SOCKET", "/var/run/orchicon-runtime/runtime.sock"),
+		RuntimeSocket:      env("ORCHICON_RUNTIME_SOCKET", defaultRuntimeSocket()),
 		DeploymentTenantID: env("ORCHICON_DEPLOYMENT_TENANT_ID", "tnt_dev"),
 		Instance:           env("ORCHICON_INSTANCE", "dev"),
 		Mode:               DeploymentMode(env("ORCHICON_MODE", "local")),

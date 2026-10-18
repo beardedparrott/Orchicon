@@ -236,8 +236,15 @@ func servicesDown(instance string, force bool) int {
 			}
 			fmt.Fprintf(os.Stderr, "orchicon services: %s did not release %s — and the holder is NOT this instance's\n",
 				instance, strings.Join(held, " and "))
-			for _, pid := range portHolders(pg, nats) {
+			holders := portHolders(pg, nats)
+			for _, pid := range holders {
 				fmt.Fprintf(os.Stderr, "    pid %d  %s\n", pid.pid, pid.exe)
+			}
+			if len(holders) == 0 {
+				// NOTHING COULD BE IDENTIFIED — which is the NORMAL answer on Windows (no /proc), so the
+				// operator is pointed at a tool that exists on THEIR platform rather than at `ss`/`lsof`.
+				// See reclaim_proc_windows.go.
+				fmt.Fprintf(os.Stderr, "  find the holder with %s\n", portHolderHint(pg))
 			}
 			fmt.Fprintf(os.Stderr, "  nothing was killed: a process this instance does not own may be a database you care about.\n"+
 				"  Stop it yourself, or re-run with --force to let Orchicon stop only its OWN leftovers.\n")
