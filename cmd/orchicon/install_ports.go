@@ -605,7 +605,36 @@ func resolveInstallPorts(instance, residency string, out io.Writer, tty *os.File
 		return live, nil
 	}
 
+	// THE RECORD COMES FIRST, AND IT IS NOT CONDITIONAL ON THE INSTANCE BEING UP.
+	//
+	// A rebuild stops the instance and then installs it again, so by the time ports are resolved NOTHING
+	// of this instance is running — which is exactly when the record matters most and exactly when it was
+	// ignored. Without this, the install re-derived the table, probed, and reported its own instance's
+	// ports as conflicts, offering "the next free" one:
+	//
+	//	PostgreSQL: 5432 in use — use 5433?   (this instance is the thing that was using 5432)
+	//
+	// An operator who accepts that has MOVED their instance's database port on a rebuild, and `rebuild-dev`
+	// stops being repeatable. A recorded port is this instance's own until something else proves otherwise.
+	//
+	// SO THE RULE IS BY OWNERSHIP, NOT BY AVAILABILITY:
+	//   free                      -> keep the recorded port
+	//   held by THIS instance     -> keep it (rebuild/upgrade in place, silently)
+	//   held by ANOTHER instance   -> genuine collision -> resolve a new one, naming the owner
+	//   held by anything else      -> genuine collision -> resolve a new one, naming the pid
+	recorded, _ := readResolvedPorts(instance)
 	pinned := map[string]int{}
+	for _, p := range specs {
+		if v, ok := recorded[p.Env]; ok && v > 0 {
+			if free := portFree(v); free || portHeldByThisInstance(v, instance) {
+				pinned[p.Env] = v
+				continue
+			}
+			if owner := portOwnerLabel(v, instance); owner != "" {
+				fmt.Fprintf(out, "%s: %d is held by %s\n", p.Label, v, owner)
+			}
+		}
+	}
 	for _, p := range specs {
 		v := strings.TrimSpace(os.Getenv(p.Env))
 		if v == "" {

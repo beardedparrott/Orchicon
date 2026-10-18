@@ -52,11 +52,36 @@ func opRedirectURIs(cfg config.AuthConfig) []string {
 		return uris
 	}
 	uris := []string{cfg.RedirectURL}
-	if cfg.OPIssuer != "" {
-		plane := strings.TrimSuffix(cfg.OPIssuer, "/") + "/auth/callback"
-		if plane != cfg.RedirectURL {
-			uris = append(uris, plane)
+	// THE PLANE'S OWN ORIGIN, ALWAYS. It used to be added only when OPIssuer was pinned, so a local
+	// install (dynamic issuer) registered the Vite dev-server callback and NOTHING ELSE — and the
+	// browser's login was rejected with "The requested redirect_uri is missing in the client
+	// configuration" before any credential was checked. The plane serves the SPA at its own port, so
+	// that origin is a first-class callback, not a consequence of pinning the issuer.
+	add := func(u string) {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			return
 		}
+		for _, have := range uris {
+			if have == u {
+				return
+			}
+		}
+		uris = append(uris, u)
+	}
+	if cfg.PlaneURL != "" {
+		base := strings.TrimSuffix(cfg.PlaneURL, "/")
+		add(base + "/auth/callback")
+		// localhost and 127.0.0.1 are DIFFERENT origins to a browser, and an operator may reach the
+		// plane by either. Register both spellings of the same port.
+		if strings.Contains(base, "://localhost:") {
+			add(strings.Replace(base, "://localhost:", "://127.0.0.1:", 1) + "/auth/callback")
+		} else if strings.Contains(base, "://127.0.0.1:") {
+			add(strings.Replace(base, "://127.0.0.1:", "://localhost:", 1) + "/auth/callback")
+		}
+	}
+	if cfg.OPIssuer != "" {
+		add(strings.TrimSuffix(cfg.OPIssuer, "/") + "/auth/callback")
 	}
 	return uris
 }

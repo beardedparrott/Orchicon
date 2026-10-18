@@ -421,7 +421,27 @@ func serveDetach() int {
 	}
 
 	cmd := exec.Command(os.Args[0], "serve")
-	cmd.Env = append(os.Environ(), serveEnvDetached+"=1", serveEnvLogFile+"="+serveLogFile())
+	// THE INSTANCE'S OWN STATE DIR IS PINNED, NOT INHERITED, and both log destinations are passed
+	// explicitly.
+	//
+	// OBSERVED: a dev plane (ORCHICON_INSTANCE=dev, serving :8080) had fd 1 and fd 2 open on
+	// ~/.local/share/orchicon-prod/serve/logs/orchicon.log. Its own log had not been written to for hours,
+	// so the failure being debugged was invisible while a SIBLING instance's log filled up — two instances'
+	// diagnostics colliding, which is exactly the confusion the per-instance state dir exists to prevent.
+	//
+	// Inheriting the ambient environment means whichever shell started the plane decides where its output
+	// lands. Pinning both variables to the values THIS process resolved removes the ambient variable from
+	// the decision entirely.
+	// ALL THREE ARE PER-PROCESS AND NONE MAY BE INHERITED. `envWithout` clears them, then this process
+	// states them explicitly — including ORCHICON_SERVE_DETACHED, which must be 1 for the child (it is the
+	// marker that stops the child re-forking) but must come from US rather than from whatever the caller's
+	// shell happened to carry.
+	cmd.Env = append(envWithout(os.Environ(), serveStateDirEnv, serveEnvLogFile, serveEnvDetached,
+		"ORCHICON_INSTANCE"),
+		"ORCHICON_INSTANCE="+instanceForServe(),
+		serveStateDirEnv+"="+serveStateDir(),
+		serveEnvLogFile+"="+serveLogFile(),
+		serveEnvDetached+"=1")
 	cmd.Stdin = nil // /dev/null — the child must not inherit the caller's stdin
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -608,4 +628,13 @@ func loggingFromEnv(cfg config.Config, logPath string) logging.Config {
 		c.BaseName = base
 	}
 	return c
+}
+
+// instanceForServe names the instance this plane belongs to, for the child's environment. The state dir is
+// derived from it, so it must be explicit rather than inherited.
+func instanceForServe() string {
+	if inst := strings.TrimSpace(os.Getenv("ORCHICON_INSTANCE")); inst != "" {
+		return inst
+	}
+	return "dev"
 }

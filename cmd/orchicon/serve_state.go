@@ -19,6 +19,20 @@ import (
 
 // serveStateDir returns the detached serve's state root.
 func serveStateDir() string {
+	// THE INSTANCE DECIDES, NOT THE SHELL. The state dir is always <instance data dir>/serve, so when an
+	// instance is named there is nothing to read from the environment and nothing for an ambient value to
+	// get wrong.
+	//
+	// THIS IS THE FIX FOR A REAL CROSS-INSTANCE COLLISION. `plane start dev` run from a shell that carried
+	// a PROD ORCHICON_SERVE_STATE_DIR produced a dev plane whose stdout was
+	// ~/.local/share/orchicon-prod/serve/logs/orchicon.log: dev's own log stopped being written, so the
+	// failure under investigation was invisible while a sibling instance's log filled up. Stripping the
+	// variable at the spawn site was not enough — `getenv` returns the FIRST match, so any path that reads
+	// it before the override lands still sees the ambient value. Deriving it from the instance removes the
+	// question.
+	if inst := strings.TrimSpace(os.Getenv("ORCHICON_INSTANCE")); inst != "" {
+		return hostDataDirFor(inst) + "/serve"
+	}
 	if d := os.Getenv(serveStateDirEnv); d != "" {
 		return d
 	}
