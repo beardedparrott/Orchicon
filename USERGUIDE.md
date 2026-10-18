@@ -2491,6 +2491,22 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon run-context <runID>` | Print a workflow run's `.orchicon` archive (per-step files plus run summary/status) for context-by-reference. Flags: `--grep <pattern>`, `--steps`/`--summary`, `--limit N` |
 | `orchicon version` | Print the installed version |
 
+### Where plane control lives: the desktop app's **Manage Server** page
+
+The desktop app has a **Manage Server** page under the **Control** nav group. Start, stop and restart
+the plane from there, with the connection state always visible: `connecting`, `connected`, `offline`
+(nothing answers at the configured URL — the page shows that URL, the instance and its port) or
+`plane-error` (something answers and is unhealthy, or is running a superseded binary — a different
+problem from an absent plane, with a different fix). The selected instance is shown on the page and
+named in every confirmation; when more than one instance is running you pick one, and an unrecognised
+control port asks which instance rather than guessing. On failure the page names this instance's log
+path. Every action is disabled while it runs, and a start is reported as *started* only after the
+plane answers `/healthz`.
+
+It is the same mechanism as `orchicon plane` (`internal/planecontrol`): there is deliberately **no
+lifecycle RPC**, and the **web app has no Manage Server entry, no lifecycle control and no notice
+about one** — by decision, not by omission.
+
 **Every lifecycle verb takes the instance the same way** — a positional (`orchicon stop prod`), a flag
 (`orchicon stop --instance prod`), or `ORCHICON_INSTANCE` as the fallback. Naming two at once is refused
 rather than guessed, and an unknown flag is an error rather than being silently ignored. The default is

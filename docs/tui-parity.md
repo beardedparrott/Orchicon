@@ -90,6 +90,7 @@ whole areas to "use the web GUI".
 | `/adapters` | Adapters | **exists** (read + local toggle) | Control | `Adapters` source + detail (`ListAdapters` + the capability manifest). Enable/disable is a client-side dispatch filter: the public `RuntimeAdapterService` is read-only (adapters self-register over the sidecar gRPC contract), so there is no adapter write RPC to call. |
 | `/settings` | Settings | **exists** (read-write) | Control | `Settings` source + detail (every field: models, stall knobs, reaper, budgets, backup/log, session TTLs). `e` opens the typed form and saves through `UpdateSettings`; the two model fields open the three-tier picker (see **Model picker** below) and are validated against the pinned grammar before submit. |
 | `/admin` | Admin | **exists** (admin-gated) | Control | `Admin` source: the admin surface inventory plus an EXPLICIT live permission state (probed via an admin-gated read) — a credential without the admin scope sees "permission required", never a silent empty pane. |
+| `/manage-server` | Manage Server | **n/a (desktop-only)** | — | **Desktop shell only.** Plane control and connection state, reached through `internal/planecontrol` — the same mechanism the CLI and the TUI drive (no lifecycle RPC exists). The connection states are `connecting` / `connected` / `offline` / `plane-error`, the last kept distinct from `offline` because a plane that answers is not necessarily the plane we want. **ABSENT from the web nav by decision:** the browser gets no entry, no disabled entry and no notice — a direct hit redirects to `/dashboard`. This is the SECOND structural client divergence (see *Slash commands in the GUI (deliberate difference)*); for an operator the TUI surface for this is `orchicon plane …`, not a pane. |
 | `/usage` | Usage | **exists** | Overview (Usage Records) | Raw usage-records table + per-record detail (`AIGatewayService.GetUsage`). |
 
 ## This run closed (real screens replacing GUI-mirror stubs)
@@ -265,6 +266,15 @@ Two things this deliberately does NOT do:
 - It never assigns a model to a WORK ITEM. `WorkItem` has no model field at all
   (`proto/orchicon/api/v1/work_item.proto`): a work item's model comes from the worker it is
   assigned to (`assigned_worker_ref`).
+
+## Manage Server is desktop-only (deliberate difference)
+
+The GUI's `Control` group carries a **Manage Server** entry that is **desktop-only and absent from the
+web nav** entirely — not hidden, not disabled, not explained. It hosts local server operations only a
+Wails app can perform (plane start/stop/restart through `internal/planecontrol`, plus the four
+connection states), none of which a browser could execute. The nav item carries a `desktopOnly` flag
+and a browser redirects `/manage-server` to `/dashboard`, so the divergence is structural rather than
+a conditional inside a page. This is the second such divergence, alongside the slash palette below.
 
 ## Slash commands in the GUI (deliberate difference)
 

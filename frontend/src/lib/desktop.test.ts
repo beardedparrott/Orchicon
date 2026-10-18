@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { desktopInfo, desktopInstance, isDesktop } from "./desktop";
+import {
+  DESKTOP_GLOBAL,
+  desktopInfo,
+  desktopInstance,
+  isDesktop,
+  planeControl,
+  portOf,
+  redirectTarget,
+} from "./desktop";
 
 /**
  * THE DESKTOP FLAG IS INJECTED BY THE SHELL AND MUST BE UNFORGEABLE FROM THE
@@ -13,7 +21,7 @@ import { desktopInfo, desktopInstance, isDesktop } from "./desktop";
  * `Object.defineProperty(window, ...)` writes to, and exercises exactly the
  * descriptor it ships.
  */
-const KEY = "__ORCHICON_DESKTOP__";
+const KEY = DESKTOP_GLOBAL;
 const g = globalThis as unknown as Record<string, unknown>;
 
 function setGlobal(value: unknown) {
@@ -26,6 +34,7 @@ afterEach(() => {
   // in module (strict) scope.
   const descriptor = Object.getOwnPropertyDescriptor(g, KEY);
   if (descriptor?.configurable) delete g[KEY];
+  delete g.go;
 });
 
 describe("desktop signal", () => {
@@ -60,6 +69,14 @@ describe("desktop signal", () => {
     expect(desktopInfo()).toBeNull();
   });
 
+  it("does not treat the shell's 'unknown' instance as a decision", () => {
+    // internal/desktop/info.go BuildInfo writes "unknown" when the control port
+    // maps to no known instance. The Manage Server page must ASK there, never
+    // start a plane under a name nobody resolved.
+    setGlobal({ desktop: true, planeURL: "http://127.0.0.1:9999", instance: "unknown" });
+    expect(desktopInstance()).toBeNull();
+  });
+
   it("cannot be turned on from the page", () => {
     // A frozen, non-configurable, non-writable property is what the shell ships.
     // Re-defining it must throw, and the value must not change.
@@ -79,5 +96,47 @@ describe("desktop signal", () => {
       Object.defineProperty(g, KEY, { value: { desktop: true, planeURL: "http://evil", instance: "prod" } });
     }).toThrow();
     expect(desktopInstance()).toBe("dev");
+  });
+});
+
+describe("redirectTarget", () => {
+  // AC1: in a BROWSER a direct hit to /manage-server goes to /dashboard — absence,
+  // not an explanation.
+  it("redirects /manage-server to /dashboard in a browser", () => {
+    expect(redirectTarget("/manage-server", false)).toBe("/dashboard");
+    expect(redirectTarget("/manage-server/", false)).toBe("/dashboard");
+  });
+
+  it("leaves the route alone in the desktop shell", () => {
+    expect(redirectTarget("/manage-server", true)).toBeNull();
+  });
+
+  it("never redirects any other route", () => {
+    for (const path of ["/dashboard", "/settings", "/", "/manage-servers"]) {
+      expect(redirectTarget(path, false)).toBeNull();
+      expect(redirectTarget(path, true)).toBeNull();
+    }
+  });
+});
+
+describe("portOf", () => {
+  it("reads the control port out of the configured plane URL", () => {
+    expect(portOf("http://localhost:8080")).toBe(8080);
+    expect(portOf("http://localhost:8091")).toBe(8091);
+    expect(portOf("https://127.0.0.1:8092/some/path")).toBe(8092);
+  });
+
+  it("returns 0 rather than guessing when there is no port", () => {
+    expect(portOf("http://localhost")).toBe(0);
+    expect(portOf("")).toBe(0);
+  });
+});
+
+describe("the plane control binding", () => {
+  it("is absent in a browser, and the bound service when the shell provides it", () => {
+    expect(planeControl()).toBeNull();
+    const svc = { Status: () => Promise.resolve() };
+    g.go = { planebind: { Service: svc } };
+    expect(planeControl()).toBe(svc);
   });
 });

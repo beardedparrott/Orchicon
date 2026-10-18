@@ -1,9 +1,10 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { getBreadcrumbs } from "@/lib/nav-config";
+import { isDesktop } from "@/lib/desktop";
 type BreadcrumbsProps = { detail?: { label: string; to?: string } | null; };
 export function Breadcrumbs({ detail }: BreadcrumbsProps) {
   const path = useRouterState({ select: (s) => s.location.pathname });
-  const crumbs = getBreadcrumbs(path);
+  const crumbs = getBreadcrumbs(path, isDesktop());
   if (crumbs.length === 0 && !detail) return null;
   const all = detail ? [...crumbs, detail] : crumbs;
   return (

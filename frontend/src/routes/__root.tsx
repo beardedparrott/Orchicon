@@ -16,6 +16,19 @@ function RootComponent() {
     return <ForcePasswordGate />;
   }
   if (PUBLIC_PATHS.has(path)) {
+    // MANAGE SERVER keeps the normal shell whenever a session exists: it lives in the
+    // Control nav, so it must look like every other page. With NO session (a fresh
+    // desktop install, plane not started) there is nothing to authenticate against and
+    // AppShell would bounce to /login — so the page renders bare. That exception is
+    // stated here rather than buried in the page, and it widens nothing: the route is
+    // desktop-only and redirects in a browser before this component runs.
+    if (path === "/manage-server" && session.authenticated) {
+      return (
+        <AppShell>
+          <Outlet />
+        </AppShell>
+      );
+    }
     return <Outlet />;
   }
   return (

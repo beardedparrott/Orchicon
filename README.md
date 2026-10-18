@@ -212,6 +212,10 @@ Frontend development against a running instance: `make fe-install` (first
 time) then `make fe-dev` — the Vite dev server on :5173 proxies the API to
 :8080. Migrations run automatically on container boot (embedded runner).
 
+Plane start/stop lives in the desktop app's **Manage Server** page (Control nav, desktop shell only)
+and in `orchicon plane <status|start|stop|restart> [instance]`. The web app has no lifecycle control by
+design: a browser cannot spawn a process, so no lifecycle RPC exists.
+
 ### Authentication
 
 The control plane authenticates every RPC. In local mode

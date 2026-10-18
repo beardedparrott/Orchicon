@@ -33,6 +33,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/controlport"
 	"github.com/beardedparrott/orchicon/internal/desktop"
+	"github.com/beardedparrott/orchicon/internal/planebind"
 )
 
 func main() {
@@ -90,6 +91,12 @@ func main() {
 				http.Redirect(w, r, shell.OriginURL()+r.URL.RequestURI(), http.StatusTemporaryRedirect)
 			}),
 		},
+		// THE PLANE CONTROL BINDING. Manage Server's start/stop/restart reach
+		// internal/planecontrol through this bound service — LOCAL invocation, never
+		// the plane's API (there is no lifecycle RPC, and internal/api must not gain
+		// one). Without this line the page renders actions it cannot perform, which
+		// is why internal/planebind's wiring test is red on a shell that omits it.
+		Bind: []interface{}{&planebind.Service{}},
 		// APPEARANCE: the window FRAME follows the OS; the CONTENT follows the
 		// SPA's own theme store (default dark "Teal Depths"). The shell sets no
 		// colour and mutates no class, so there is exactly one theme authority.
