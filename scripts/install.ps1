@@ -1038,7 +1038,11 @@ if command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ];
   echo "  runtime when a model ref asks for it." >&2
   echo "" >&2
 fi
-ORCHICON_INSTANCE="__INSTANCE__" ORCHICON_CONTAINER_IMAGE="__IMAGE_REF__" "$INSTALL_DIR/orchicon" install
+# A HUMAN IS AT THIS CONSOLE, so the port questions are legitimate — but this wrapper STREAMS the setup's
+# output through a pipe, which the installer reads as "nobody is watching" and would therefore answer for
+# itself. ORCHICON_INSTALL_INTERACTIVE says a person is here, so the prompt is offered (routed to /dev/tty by
+# the installer, which is the only way it is visible through a captured stream).
+ORCHICON_INSTALL_INTERACTIVE=1 ORCHICON_INSTANCE="__INSTANCE__" ORCHICON_CONTAINER_IMAGE="__IMAGE_REF__" "$INSTALL_DIR/orchicon" install
 '@
         # THE CONTAINER IMAGE FOLLOWS THE VERSION BEING INSTALLED, so an install of X runs X — the same rule
         # the shell installer applies. Without it the stack came from whatever `:latest` the host already had:

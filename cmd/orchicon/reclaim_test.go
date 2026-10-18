@@ -116,6 +116,11 @@ func TestPortHoldersFindsNothingForAFreePort(t *testing.T) {
 func TestRuntimeImagesAnswerIsRecordedNotReasked(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// A HUMAN IS PRESENT, stated rather than assumed. This test is about the RECORD, so it must reach the
+	// prompt at all — and the install now refuses to prompt when its stdout is not a terminal (a test's
+	// stdout is a pipe), which is the fix in interactive_gate_test.go. Declaring interactivity is the same
+	// thing install.ps1 does for the Windows wrapper.
+	t.Setenv("ORCHICON_INSTALL_INTERACTIVE", "1")
 	dir := filepath.Join(home, ".local", "share", "orchicon-dev")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)

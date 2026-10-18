@@ -373,6 +373,25 @@ func runningHostInstancePorts(instance string, specs []installPort, out io.Write
 // stdin (see the file comment). The bool reports whether the caller owns the
 // file and must close it: os.Stdin is borrowed, /dev/tty is ours.
 func promptTerminal() (*os.File, bool) {
+	// A TERMINAL WE CAN OPEN IS NOT THE SAME AS A HUMAN WATCHING US.
+	//
+	// This used to open /dev/tty unconditionally, which is the controlling terminal of the PROCESS — and for
+	// an install started by anything that is not the operator (a build, a script, CI, a backgrounded
+	// `make instance-rebuild`) that is the operator's OWN terminal, sitting there running the `orch` TUI.
+	// The install then wrote its port banners into that screen and blocked on a read nobody would answer:
+	//
+	//	the words were spaced out and it pushed the UI up          (operator, second occurrence)
+	//
+	// Two failures in one: the TUI was corrupted, and the install hung forever — which also means the
+	// command that started it never returned.
+	//
+	// SO INTERACTIVITY IS DECIDED BY OUR OWN STDOUT. If the stream this process writes is not a terminal,
+	// nothing is watching it, so there is nobody to ask: take the record/defaults and say which ports were
+	// used (planInstallPorts already prints them when the reader is nil). A wrapper that knows a human IS
+	// present can say so with ORCHICON_INSTALL_INTERACTIVE=1.
+	if !installIsInteractive() {
+		return nil, false
+	}
 	if f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
 		return f, true
 	}
@@ -383,6 +402,21 @@ func promptTerminal() (*os.File, bool) {
 		return os.Stdin, false
 	}
 	return nil, false
+}
+
+// installIsInteractive reports whether this install may ask questions at all.
+//
+// STDIN IS NOT THE TEST: `curl … | bash` makes stdin the SCRIPT, which is why the prompt reads /dev/tty in
+// the first place. The test is whether the stream we WRITE is a terminal — that is the one a human is
+// looking at. Redirected to a log or a pipe (a build, CI, a backgrounded rebuild) means nobody is.
+func installIsInteractive() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ORCHICON_INSTALL_INTERACTIVE"))) {
+	case "1", "true", "yes":
+		return true
+	case "0", "false", "no":
+		return false
+	}
+	return isCharDevice(os.Stdout)
 }
 
 // isCharDevice reports whether f is a terminal-like character device. Uses the
