@@ -30,7 +30,13 @@ func startDetachedDaemonEnv(self string, args, env []string, logPath string) (in
 	if env != nil {
 		cmd.Env = env
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
+	// DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: the daemon must not inherit this console (otherwise a
+	// Ctrl-C in the installer kills the runtime daemon it just started), and it needs its own process group
+	// as a Ctrl-Break target. CREATE_NEW_PROCESS_GROUP alone was neither — it kept the console and only added
+	// the target. See procattr_windows.go, which is the same pair for the plane's own detach.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | detachedProcess,
+	}
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}

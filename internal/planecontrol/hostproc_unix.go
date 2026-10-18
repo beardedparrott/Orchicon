@@ -20,6 +20,7 @@ package planecontrol
 // `package main` cannot be imported, so a lifecycle layer left there was callable by exactly one caller.
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -28,6 +29,32 @@ import (
 	"strings"
 	"syscall"
 )
+
+// processAlive is the POSIX liveness probe: signal 0 succeeds while the PID exists. It is a SEAM because
+// the same call is impossible on Windows (`syscall.Kill` does not exist, and `(*os.Process).Signal` refuses
+// every signal but Kill), where the equivalent is a process handle plus its exit code.
+func processAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
+// procStateChar reads the process state character from /proc/<pid>/stat, whose format is
+// `pid (comm) state ...` — and `comm` may itself contain spaces and parentheses, so the state is the first
+// field AFTER THE LAST ')' rather than a fixed offset.
+func procStateChar(pid int) (byte, bool) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	i := bytes.LastIndexByte(b, ')')
+	if i < 0 || i+2 >= len(b) {
+		return 0, false
+	}
+	return b[i+2], true
+}
 
 // procExe resolves /proc/<pid>/exe — the APEX of what a running process executes. It is what makes "is the
 // serving plane the binary in hand" answerable at all, and it is a seam so Status's binary reporting is

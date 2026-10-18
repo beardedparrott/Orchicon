@@ -671,6 +671,12 @@ func resolveInstallPorts(instance, residency string, out io.Writer, tty *os.File
 			}
 			if owner := portOwnerLabel(v, instance); owner != "" {
 				fmt.Fprintf(out, "%s: %d is held by %s\n", p.Label, v, owner)
+			} else {
+				// THE HOLDER COULD NOT BE IDENTIFIED, which is the NORMAL answer on a platform with no /proc
+				// (see reclaim_proc_windows.go). Saying nothing left the operator with a port conflict and no
+				// next step, so the message names a tool that exists on THEIR platform instead of `ss`.
+				fmt.Fprintf(out, "%s: %d is held by a process this tool cannot identify — find it with %s\n",
+					p.Label, v, portHolderHint(v))
 			}
 		}
 	}

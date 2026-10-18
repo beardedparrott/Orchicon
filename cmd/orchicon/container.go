@@ -44,7 +44,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	assets "github.com/beardedparrott/orchicon"
@@ -68,7 +67,9 @@ const (
 // runContainer is the `orchicon container` entrypoint. It runs until
 // SIGTERM/SIGINT.
 func runContainer(args []string) int {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	// THE STOP SIGNALS ARE PLATFORM-DEPENDENT: SIGTERM+SIGINT on Unix, os.Interrupt on Windows, where
+	// SIGTERM compiles and is never delivered. See signals_unix.go / signals_windows.go.
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -83,8 +84,10 @@ func runContainer(args []string) int {
 	// plane is a host process of its own, exactly the shape services-only mode
 	// already describes. The child is skipped by the SAME branch.
 	servicesOnly := servicesOnlyFromEnv() || residency == residencyHost
+	// privilege_drop, NOT "setpriv": on a platform with no setpriv binary (Windows) there is no drop to
+	// claim, and a log line that says otherwise sends the reader looking for a mechanism that cannot run.
 	log.Info("service residency resolved", "residency", residency,
-		"setpriv", residency != residencyHost, "data_dir", dataDir, "env", serviceResidencyEnv)
+		"privilege_drop", residency != residencyHost && setprivSupported, "data_dir", dataDir, "env", serviceResidencyEnv)
 
 	sup := &supervisor{
 		log:          log,
@@ -352,7 +355,7 @@ func (s *supervisor) prepareContainerOwnership() error {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return fmt.Errorf("create %s: %w", dir, err)
 			}
-			if err := os.Chown(dir, s.hostUID, s.hostGID); err != nil {
+			if err := chownPath(dir, s.hostUID, s.hostGID); err != nil {
 				return fmt.Errorf("chown %s: %w", dir, err)
 			}
 		}
@@ -364,7 +367,7 @@ func (s *supervisor) prepareContainerOwnership() error {
 		// manifest. Infra subdirs (postgres→70, nats/tempo/loki/vm
 		// →root) keep their own ownership — the supervisor (root) creates
 		// them, and 0755 on the parent lets each child reach its own dir.
-		if err := os.Chown(s.dataDir, s.hostUID, s.hostGID); err != nil {
+		if err := chownPath(s.dataDir, s.hostUID, s.hostGID); err != nil {
 			return fmt.Errorf("chown data dir: %w", err)
 		}
 		for _, sub := range []string{"backups", "blobs", "secrets"} {
@@ -372,7 +375,7 @@ func (s *supervisor) prepareContainerOwnership() error {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return fmt.Errorf("create %s: %w", dir, err)
 			}
-			if err := os.Chown(dir, s.hostUID, s.hostGID); err != nil {
+			if err := chownPath(dir, s.hostUID, s.hostGID); err != nil {
 				return fmt.Errorf("chown %s: %w", dir, err)
 			}
 		}
@@ -495,7 +498,7 @@ func (s *supervisor) initPostgres() error {
 	// Host residency runs as the invoking user, so the dir is already theirs —
 	// there is nothing to hand over (and chown is impossible without root).
 	if !s.isHost() {
-		if err := os.Chown(dataDir, uid, gid); err != nil {
+		if err := chownPath(dataDir, uid, gid); err != nil {
 			return fmt.Errorf("chown postgres data dir: %w", err)
 		}
 	} else if err := hostDataDirWritable(dataDir); err != nil {
@@ -625,9 +628,11 @@ func bridgeGatewayIP() string {
 	return gw.String()
 }
 
-// procNetRoutePath is a constant so the parser below is testable on a fixture.
-const procNetRoutePath = "/proc/net/route"
-
+// procNetRoutePath is a constant so the parser below is testable on a fixture. IT IS PER-OS
+// (platform_paths_unix.go / _windows.go): Windows has no /proc, so its value is "" and the read below fails
+// soft into bridgeGatewayIP's conventional base+1 fallback. The PARSER stays untagged because it is pure Go
+// over a path — only the path was ever POSIX.
+//
 // defaultRouteGateway parses a /proc/net/route body for the IPv4 default
 // route's gateway (Destination 00000000; the gateway is little-endian hex).
 func defaultRouteGateway(path string) string {
@@ -913,8 +918,13 @@ func (s *supervisor) reapRestart(ctx context.Context) {
 	}
 }
 
-// shutdown sends SIGTERM to every child, waits up to shutdownTimeout, then
-// SIGKILLs stragglers.
+// shutdown asks every child to stop, waits up to shutdownTimeout, then forces the stragglers.
+//
+// THE MECHANISM IS PLATFORM-DEPENDENT and lives in signals_unix.go / signals_windows.go: SIGTERM then
+// SIGKILL on Unix; on Windows there is no SIGTERM, so the graceful attempt is a Ctrl-Break to the child's
+// process group (which frequently cannot be delivered) and the force stop is TerminateProcess — no shutdown
+// hook runs. That difference is NAMED in the warning below rather than left for the operator to infer from a
+// child that never got a chance to flush.
 func (s *supervisor) shutdown(ctx context.Context) {
 	s.mu.Lock()
 	states := make([]*procState, 0, len(s.children))
@@ -926,7 +936,7 @@ func (s *supervisor) shutdown(ctx context.Context) {
 	s.log.Info("shutting down", "children", len(states))
 	for _, st := range states {
 		if st.cmd.Process != nil {
-			_ = st.cmd.Process.Signal(syscall.SIGTERM)
+			_ = sendGracefulStop(st.cmd.Process)
 		}
 	}
 
@@ -941,11 +951,16 @@ func (s *supervisor) shutdown(ctx context.Context) {
 		case <-time.After(remaining):
 		}
 	}
-	// Force-kill anything still alive after the grace period.
+	// Force-kill anything still alive after the grace period, and say WHICH. On a platform with no SIGTERM
+	// this is the normal path rather than an exceptional one, so the warning names the mechanism the child
+	// never received instead of blaming the child.
 	for _, st := range states {
-		if st.cmd.Process != nil {
-			_ = st.cmd.Process.Kill()
+		if st.cmd.Process == nil || !pidAlive(st.cmd.Process.Pid) {
+			continue
 		}
+		s.log.Warn("child did not exit within the grace period — forcing it",
+			"service", st.proc.name, "grace", shutdownTimeout.String(), "graceful_stop", gracefulStopLabel())
+		_ = sendForceStop(st.cmd.Process)
 	}
 }
 

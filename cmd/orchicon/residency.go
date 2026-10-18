@@ -96,8 +96,14 @@ func (s *supervisor) isHost() bool {
 // residency already at uid 0 — the command is launched verbatim.
 //
 // IT IS THE ONE LAUNCH SEAM. Host residency NEVER emits setpriv, and that is
-// asserted by the test suite.
+// asserted by the test suite. NEITHER DOES A PLATFORM WITHOUT THE BINARY: `setprivSupported` is a
+// compile-time constant (setpriv_unix.go / setpriv_windows.go), checked BEFORE the residency branch so a
+// Windows supervisor can never emit `setpriv --reuid=70` into a command line that has no such program —
+// and so the absence of the drop is a stated property rather than a silently dropped argv.
 func (s *supervisor) asUser(uid, gid int, command string, args []string) (string, []string) {
+	if !setprivSupported {
+		return command, args
+	}
 	if !s.isHost() && uid != 0 {
 		argv := []string{
 			"--reuid=" + strconv.Itoa(uid),
@@ -190,7 +196,9 @@ func servicePortsFor(residency string) servicePorts {
 // user is the whole point of host residency.
 func defaultDataDirFor(residency string) string {
 	if residency != residencyHost {
-		return "/var/lib/orchicon"
+		// PER-OS (platform_paths_unix.go / _windows.go): `/var/lib/orchicon` is the container contract on
+		// Unix and an unreachable drive-root path on Windows.
+		return platformContainerDataDir()
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
