@@ -2,6 +2,7 @@ import { Outlet, createRootRoute, useRouterState, Link } from "@tanstack/react-r
 import { PUBLIC_PATHS, requireAuth } from "@/auth/route-guard";
 import { useSessionStore } from "@/auth/session";
 import { AppShell } from "@/components/app-shell";
+import { VersionMismatchBanner } from "@/components/version-mismatch-banner";
 import { ForcePasswordGate } from "@/components/force-password-gate";
 export const Route = createRootRoute({
   beforeLoad: requireAuth,
@@ -19,6 +20,10 @@ function RootComponent() {
   }
   return (
     <AppShell>
+      {/* Mounted ABOVE the outlet so no route can hide it: a desktop window whose
+          embedded UI and plane disagree must say so on every page, not just on
+          the one route that remembered to render it. Renders nothing in a browser. */}
+      <VersionMismatchBanner />
       <Outlet />
     </AppShell>
   );

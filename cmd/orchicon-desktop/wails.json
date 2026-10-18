@@ -1,0 +1,10 @@
+{
+  "name": "orchicon-desktop",
+  "outputfilename": "orchicon-desktop",
+  "frontend:dir": "../../frontend",
+  "frontend:install": "",
+  "frontend:build": "",
+  "author": {
+    "name": "Orchicon"
+  }
+}
