@@ -51,7 +51,7 @@ func hostDataDirWritable(dataDir string) error {
 
 // defaultDataDirHint is the platform's default data dir, for the error's
 // "use a dir you own instead" remedy.
-func defaultDataDirHint() string { return defaultDataDirFor(residencyHost) }
+func defaultDataDirHint() string { return defaultDataDirFor() }
 
 // chownHint is the platform-appropriate way to hand a directory to the invoking
 // account. Windows has no chown; its equivalent is taking ownership through
@@ -90,19 +90,18 @@ var elevated = runningElevated
 // start the database, with nothing naming the actual cause. So the check runs
 // BEFORE anything is created, and it names both the cause and the remedy.
 //
-// IT IS SCOPE-LIMITED to host residency. Container residency runs the services
-// inside the container as uid 70 via setpriv, where Windows elevation on the
-// invoking shell is irrelevant (and unreachable — there is no Windows container
-// services residency), so the guard must not fire there. That is also what keeps
-// every existing install's behaviour byte-for-byte unchanged.
+// IT RUNS UNCONDITIONALLY, because there is only one service shape now: host
+// processes of the invoking user. (The retired container residency ran the
+// services as uid 70 inside a container, where the invoking shell's elevation was
+// irrelevant; that branch is gone with the single-container deployment.)
 //
 // WHEN IT FIRES the fix is genuinely actionable and local: the operator opens a
 // NORMAL terminal. The second half of the message matters as much as the first —
 // an elevated shell would also leave the data dir owned by the elevating account,
 // so even a hand-run initdb would produce a data dir the operator's own account
 // could not read afterwards.
-func ensureHostPostgresPrivileges(residency string) error {
-	if residency != residencyHost || !elevated() {
+func ensureHostPostgresPrivileges() error {
+	if !elevated() {
 		return nil
 	}
 	return errors.New(

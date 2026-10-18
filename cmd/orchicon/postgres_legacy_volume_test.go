@@ -260,7 +260,7 @@ func TestGuardIsSilentWhenItHasNothingToSay(t *testing.T) {
 // A source-level pin on PLACEMENT. The helper existing is not the fix: it has to
 // run BEFORE initdb, or the empty database is created anyway.
 func TestGuardRunsBeforeInitdb(t *testing.T) {
-	raw := readContainerGo(t)
+	raw := readSupervisorGo(t)
 	src := string(raw)
 
 	fn := strings.Index(src, "func (s *supervisor) initPostgres() error {")
@@ -286,32 +286,34 @@ func TestGuardRunsBeforeInitdb(t *testing.T) {
 	}
 }
 
-// And a pin that it is HOST-ONLY: a container-resident supervisor keeps its
-// cluster in the volume BY DESIGN, so guarding it there would refuse every normal
-// container boot.
-func TestGuardIsHostResidencyOnly(t *testing.T) {
-	src := string(readContainerGo(t))
+// And a pin that NOTHING can route around it: there is one service shape, so the
+// guard must not be gated on anything a caller could switch off. (The retired
+// container-resident supervisor kept its cluster in a volume by design and skipped
+// the guard; that shape no longer exists.)
+func TestGuardIsUnconditional(t *testing.T) {
+	src := string(readSupervisorGo(t))
 	fn := strings.Index(src, "func (s *supervisor) initPostgres() error {")
 	body := src[fn:]
 	if end := strings.Index(body[1:], "\nfunc "); end > 0 {
 		body = body[:end+1]
 	}
-	guardIdx := strings.Index(body, "guardContainerEraPostgresCluster(")
-	hostIdx := strings.Index(body, "s.isHost()")
-	if hostIdx < 0 || hostIdx > guardIdx {
-		t.Fatal("the container-era cluster guard is not gated on s.isHost() — a container-resident\n" +
-			"supervisor keeps its cluster in the volume by design and must never be refused")
+	if strings.Contains(body, "isHost()") {
+		t.Fatal("initPostgres still branches on a residency selector — there is exactly one service shape")
+	}
+	if !strings.Contains(body, "guardContainerEraPostgresCluster(") {
+		t.Fatal("initPostgres no longer calls the container-era cluster guard")
 	}
 }
 
-// readContainerGo reads container.go from this package's directory. The placement
-// assertions above are source-level on purpose: a guard that exists but runs AFTER
-// initdb leaves the defect fully intact, and no behavioural test can see ordering.
-func readContainerGo(t *testing.T) []byte {
+// readSupervisorGo reads host_services.go from this package's directory. The
+// placement assertions above are source-level on purpose: a guard that exists but
+// runs AFTER initdb leaves the defect fully intact, and no behavioural test can see
+// ordering.
+func readSupervisorGo(t *testing.T) []byte {
 	t.Helper()
-	b, err := os.ReadFile("container.go")
+	b, err := os.ReadFile("host_services.go")
 	if err != nil {
-		t.Fatalf("read container.go: %v", err)
+		t.Fatalf("read host_services.go: %v", err)
 	}
 	return b
 }

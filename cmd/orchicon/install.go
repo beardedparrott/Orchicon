@@ -123,7 +123,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	// dirs, resolve the binaries and report success — and then be unable to start the
 	// database. Failing here names the cause and the remedy while nothing has been
 	// created yet. It is a no-op on Linux and macOS (privilege.go).
-	if err := ensureHostPostgresPrivileges(residency); err != nil {
+	if err := ensureHostPostgresPrivileges(); err != nil {
 		return err
 	}
 	tty, ttyOwned := promptTerminal()
