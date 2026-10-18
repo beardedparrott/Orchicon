@@ -19,6 +19,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -199,4 +200,49 @@ func functionBody(t *testing.T, file, signature string) string {
 		body = body[:end+1]
 	}
 	return body
+}
+
+// THE LEGACY-INSTANCE CASE, which the first version of these verbs got wrong on the
+// operator's OWN host. `ports.json` and the residency record are written only by the
+// installer that shipped with #729/#730; both instances on this machine were installed
+// before that, have neither, and yet their planes run and serve. Keying "is it
+// installed?" on the record made `orchicon stop dev` report "nothing is installed for
+// it" — a successful no-op that stopped nothing, which is the exact failure mode these
+// verbs exist to remove.
+//
+// So the evidence is the DATA DIRECTORY, tested here on both sides: absent means nothing
+// to stop, present means stop it, and neither case consults a record.
+func TestInstanceExistsUsesTheDataDirectoryNotTheInstallRecord(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Nothing installed: no data dir, and in particular no record either.
+	if instanceExists("prod") {
+		t.Fatal("instanceExists(prod) = true before any data directory exists")
+	}
+	if _, ok := recordedResidency("prod"); ok {
+		t.Fatal("this test's premise is that there is no residency record")
+	}
+
+	// A data dir alone — no ports.json, no residency record. This is exactly what a
+	// pre-#729 install looks like on disk.
+	dir := filepath.Join(home, ".local", "share", "orchicon-prod")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !instanceExists("prod") {
+		t.Fatal("instanceExists(prod) = false with a data directory present — a legacy install\n" +
+			"would be told there is nothing to stop while its plane is running")
+	}
+	// Still no record, which is the point: the answer did not depend on one.
+	if _, ok := recordedResidency("prod"); ok {
+		t.Fatal("something wrote a residency record; this test no longer proves the point")
+	}
+
+	// And the residency default for a record-free instance is HOST, never container —
+	// guessing "container" would run an engine command against a container these verbs
+	// do not own.
+	if got := instanceResidency("prod"); got != residencyHost {
+		t.Errorf("instanceResidency(prod) with no record = %q, want %q", got, residencyHost)
+	}
 }
