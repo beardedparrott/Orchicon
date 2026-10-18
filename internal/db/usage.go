@@ -356,7 +356,14 @@ type WorkflowWorkerCostRow struct {
 // runs). Uses worker_executions.workflow_run_id (immutable, set at creation
 // time) when available, falling back to work_items.workflow_run_id (mutable,
 // latest-run value) for old executions where the column was not populated.
-func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, start, end time.Time) ([]WorkflowAggregateRow, error) {
+//
+// projectID / workItemID / executionID scope the aggregate; empty means "no
+// scope on that column". They exist so the Telemetry report's workflow
+// grouping applies the SAME filters to cost that it applies to
+// duration/failure — before this the project filter narrowed only the
+// duration half, so one report row mixed tenant-wide spend with
+// project-scoped run times.
+func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID, projectID, workItemID, executionID string, start, end time.Time) ([]WorkflowAggregateRow, error) {
 	const q = `SELECT
 		w.id AS workflow_id,
 		w.name AS workflow_name,
@@ -377,9 +384,12 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 		WHERE ur.tenant_id = $1
 		  AND ($2::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $2::timestamptz)
 		  AND ($3::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at <  $3::timestamptz)
+		  AND ($4 = '' OR ur.project_id = $4)
+		  AND ($5 = '' OR ur.task_id = $5)
+		  AND ($6 = '' OR ur.execution_id = $6)
 		GROUP BY w.id, w.name
 		ORDER BY total_cost DESC`
-	rows, err := tx.Query(ctx, q, tenantID, start, end)
+	rows, err := tx.Query(ctx, q, tenantID, start, end, projectID, workItemID, executionID)
 	if err != nil {
 		return nil, fmt.Errorf("db: workflow aggregate costs: %w", err)
 	}

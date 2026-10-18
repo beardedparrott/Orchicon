@@ -95,7 +95,12 @@ func GetProjectDurationStats(ctx context.Context, tx pgx.Tx, tenantID, projectID
 // optional window. A run is failed when it is terminal and not
 // 'completed' — workflow_runs.status lives in
 // {'pending','running','completed','failed','aborted'} (internal/db/workflow.go).
-func GetWorkflowDurationStats(ctx context.Context, tx pgx.Tx, tenantID, projectID string, start, end time.Time) ([]DurationStats, error) {
+//
+// projectID / workItemID / executionID scope the aggregate the same way
+// GetWorkflowAggregateCosts does, so both halves of a workflow report row
+// answer to the same filters. executionID matches the run through its
+// worker_executions, since a workflow run has no execution column of its own.
+func GetWorkflowDurationStats(ctx context.Context, tx pgx.Tx, tenantID, projectID, workItemID, executionID string, start, end time.Time) ([]DurationStats, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("db: workflow duration stats: tenant_id required")
 	}
@@ -108,11 +113,14 @@ func GetWorkflowDurationStats(ctx context.Context, tx pgx.Tx, tenantID, projectI
 		JOIN workflows w ON w.id = wr.workflow_id
 		WHERE wr.tenant_id = $1
 		  AND ($2 = '' OR wr.project_id = $2)
+		  AND ($5 = '' OR wr.work_item_id = $5)
+		  AND ($6 = '' OR EXISTS (SELECT 1 FROM worker_executions we
+			WHERE we.workflow_run_id = wr.id AND we.id = $6))
 		  AND wr.started_at IS NOT NULL
 		  AND ($3::timestamptz <= 'epoch'::timestamptz OR wr.started_at >= $3::timestamptz)
 		  AND ($4::timestamptz <= 'epoch'::timestamptz OR wr.started_at <  $4::timestamptz)
 		GROUP BY w.id, w.name`
-	rows, err := tx.Query(ctx, q, tenantID, projectID, start, end)
+	rows, err := tx.Query(ctx, q, tenantID, projectID, start, end, workItemID, executionID)
 	if err != nil {
 		return nil, fmt.Errorf("db: workflow duration stats: %w", err)
 	}

@@ -285,7 +285,10 @@ func (s *Service) GetTelemetryReport(ctx context.Context, req *connect.Request[a
 
 	switch req.Msg.GetGroupBy() {
 	case apiv1.TelemetryReportGroupBy_TELEMETRY_REPORT_GROUP_BY_WORKFLOW:
-		costs, err := db.GetWorkflowAggregateCosts(ctx, ttx.Tx, tenantID, start, end)
+		// Cost and duration are scoped identically: a workflow row that
+		// answered the project filter with project-scoped run times but
+		// tenant-wide spend would be quietly wrong.
+		costs, err := db.GetWorkflowAggregateCosts(ctx, ttx.Tx, tenantID, projectID, workItemID, executionID, start, end)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
@@ -297,7 +300,7 @@ func (s *Service) GetTelemetryReport(ctx context.Context, req *connect.Request[a
 			r.CostUsd += c.TotalCostUSD
 			r.Executions += c.ExecutionCount
 		}
-		stats, err := db.GetWorkflowDurationStats(ctx, ttx.Tx, tenantID, projectID, start, end)
+		stats, err := db.GetWorkflowDurationStats(ctx, ttx.Tx, tenantID, projectID, workItemID, executionID, start, end)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
