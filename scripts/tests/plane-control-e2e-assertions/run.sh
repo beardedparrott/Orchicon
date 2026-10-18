@@ -294,6 +294,8 @@ expect "A9.1 demands BOTH '--- PASS:' lines, so an empty -run cannot read as a p
   "$(grep -cF -- '--- PASS: Test' "$HARNESS" || true)"
 # Step 7 leaves the OTHER instance running on purpose; "it has no plane pid" would FAIL on every
 # valid host, against product code that is behaving. The claim is that its PID is UNCHANGED.
+expect "a start that never came up cannot make the following stop a PASS (A4.1b gates A4.3b/A4.3c)" yes \
+  "$([ "$(body_of step4_cli | grep -c 'up_proven')" -ge 4 ] && echo yes || echo no)"
 expect "the env-leak step compares the other instance's plane PID instead of demanding it has none" yes \
   "$([ "$(body_of step8_env_leak | grep -c 'b_plane_pid_before')" -ge 2 ] && echo yes || echo no)"
 expect "both desktop steps launch the app through the ONE helper" 2 \

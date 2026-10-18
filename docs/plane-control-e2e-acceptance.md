@@ -220,6 +220,16 @@ NN-<slug>.log                 every command, its exit code, and its verbatim out
 09-webapp-console.txt         (manual) the tab's console/network evidence
 ```
 
+**AC9's observation half, recorded once by hand.** A browser *does* exist in the dev runtime container
+(Playwright + headless Chromium), so `qa-evidence/plane-control-e2e/qa-final/` carries the observation:
+`09-webapp-healthy.png` (the SPA loaded against a live plane) and `09-webapp-offline.png` +
+`09-webapp-console.txt` (the same tab once the plane stops answering — every `fetch`/`xhr` refused, which
+is what a stopped plane looks like to a browser: `POST /auth/refresh net::ERR_CONNECTION_REFUSED`,
+`GET /auth/config net::ERR_CONNECTION_REFUSED`, and the SPA's **existing** `TypeError: Failed to fetch`
+presentation). The plane's requests were refused by the browser rather than by killing the shared sandbox
+plane that later steps use; the user-visible result is the same connection-failure state, and **no new UI,
+notice or control appeared**.
+
 ## 7. Re-running it
 
 Re-run the harness **unchanged** when the TUI task and the Wails task land. The only knobs are

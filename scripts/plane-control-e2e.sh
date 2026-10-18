@@ -650,8 +650,14 @@ step4_cli() {
   out="$(c_run "$BIN" start "$INSTANCE")"; rc=$?
   note "orchicon start $INSTANCE -> exit $rc"
   check "A4.1 orchicon start $INSTANCE exits 0" "$([ "$rc" = 0 ] && echo 0 || echo 1)" "CLI verbs task"
+  # Whether the plane ACTUALLY came up decides whether the stop assertions below may be
+  # believed: "the connection was refused after the stop" and "every port is free" are both
+  # trivially true of a plane that never started, so a start that failed must not turn them
+  # into PASSes (the same vacuity the two-instance step had).
+  local up_proven=1
+  wait_up "$cp" && up_proven=0
   check "A4.1b '$INSTANCE' /healthz returns 200 after orchicon start (independent probe)" \
-    "$(wait_up "$cp" && echo 0 || echo 1)" "CLI verbs task"
+    "$up_proven" "CLI verbs task"
   DIRTY=1
 
   out="$(plane_status_line "$INSTANCE")"
@@ -666,12 +672,22 @@ step4_cli() {
   out="$(c_run "$BIN" stop "$INSTANCE")"; rc=$?
   note "orchicon stop $INSTANCE -> exit $rc"
   check "A4.3 orchicon stop $INSTANCE exits 0" "$([ "$rc" = 0 ] && echo 0 || echo 1)" "CLI verbs task"
-  check "A4.3b '$INSTANCE' /healthz is REFUSED after the stop (curl exit 7, empty body)" \
-    "$(wait_down "$cp" && echo 0 || echo 1)" "CLI verbs task"
-  local ports_free_after=0
-  ports_all_free "$INSTANCE" || ports_free_after=1
-  check "A4.3c every recorded port of '$INSTANCE' is FREE after the stop${HELD_PORTS:+ (still held: $HELD_PORTS)}" \
-    "$ports_free_after" "stop-reclaims-leftovers task"
+  if [ "$up_proven" = 0 ]; then
+    check "A4.3b '$INSTANCE' /healthz is REFUSED after the stop (curl exit 7, empty body)" \
+      "$(wait_down "$cp" && echo 0 || echo 1)" "CLI verbs task"
+  else
+    skip "A4.3b '$INSTANCE' /healthz is REFUSED after the stop" \
+      "the plane never answered after 'orchicon start' (A4.1b), so a refusal after the stop proves nothing"
+  fi
+  if [ "$up_proven" = 0 ]; then
+    local ports_free_after=0
+    ports_all_free "$INSTANCE" || ports_free_after=1
+    check "A4.3c every recorded port of '$INSTANCE' is FREE after the stop${HELD_PORTS:+ (still held: $HELD_PORTS)}" \
+      "$ports_free_after" "stop-reclaims-leftovers task"
+  else
+    skip "A4.3c every recorded port of '$INSTANCE' is FREE after the stop" \
+      "no plane was ever up (A4.1b), so 'the ports are free' is a statement about an empty host"
+  fi
 
   c_run "$BIN" stop "$INSTANCE" >/dev/null; rc=$?
   check "A4.4 stop is idempotent: a second orchicon stop exits 0" "$([ "$rc" = 0 ] && echo 0 || echo 1)" "CLI verbs task"
