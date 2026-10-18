@@ -332,7 +332,7 @@ func printHelp() {
 		// reach them; hiding them would recreate exactly the gap this help had (a command that exists
 		// and runs, absent from the list). The heading is what says "not for hand use".
 		{section: "Internal (started by the installer and the daemon; not for hand use):"},
-		{cmd: bin + " runtime-daemon", desc: []string{"Run the runtime daemon (owns the Docker socket)"}},
+		{cmd: bin + " runtime-daemon", desc: []string{"Run the runtime daemon (owns the container engine)"}},
 		{cmd: bin + " runtime-supervisor", desc: []string{"Run a workflow container's supervisor"}},
 		{cmd: bin + " runtime-client", desc: []string{"Talk to the runtime daemon over its socket"}},
 	}
@@ -358,7 +358,9 @@ func printHelp() {
 		}
 	}
 
-	fmt.Fprintf(&b, "\nAlmost every command reads ORCHICON_INSTANCE to choose the instance (default: dev).\n")
+	fmt.Fprintf(&b, "\nAlmost every command acts on ONE instance (default: dev). Name it as a positional\n"+
+		"(orchicon stop prod) or with --instance (orchicon stop --instance prod); ORCHICON_INSTANCE\n"+
+		"is the fallback when neither is given.\n")
 	fmt.Fprintf(&b, "\nThe binary embeds the single-container runtime configs, migrations, and the frontend\n"+
 		"bundle. Run the full stack with `docker run` (see ARCHITECTURE.md §Single-Container\n"+
 		"Deployment) or `%s container` as the container's PID-1 supervisor.\n", bin)
