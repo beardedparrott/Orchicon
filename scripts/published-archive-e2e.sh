@@ -119,6 +119,8 @@ EXTRACT_DIR=""
 ORCHICON_BIN=""
 ORCH_BIN=""
 INSTALL_LOG=""
+FOOTPRINT_TOTAL=""
+FOOTPRINT_MEASURED_AT=""
 PORTS_BEFORE=""
 
 # The OWNERS a defect can name (AC10). Spelled as constants so an assertion can check that every
@@ -434,6 +436,43 @@ tui_render_marker() {
 	return 1
 }
 
+# --- process / pty / timeout portability -------------------------------------
+# process_alive <pid> — portable liveness. `/proc` does not exist on macOS or Windows, so an
+# assertion built on it PASSED VACUOUSLY there: "the pid is gone" was true only because the
+# whole filesystem it looked at was absent. kill -0 is the portable probe (POSIX, and MSYS).
+process_alive() {
+	local pid="$1"
+	case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+	kill -0 "$pid" 2>/dev/null && return 0
+	[ -d "/proc/${pid}" ] && return 0
+	return 1
+}
+
+# pty_script <command> — run one command under a REAL pty, in the flavour of `script` this host
+# actually has. util-linux spells it `script -qec CMD /dev/null`; BSD and macOS spell it
+# `script -q /dev/null CMD` and have neither -c nor -e. A hardcoded `-qec` therefore produced an
+# error text instead of a TUI on every Mac, so the TUI step could never pass on darwin (AC4).
+pty_script() {
+	local cmd="$1" os
+	[ -n "$cmd" ] || return 1
+	os="$(uname -s 2>/dev/null || echo Linux)"
+	case "$os" in
+		Darwin|*BSD*) script -q /dev/null "$cmd" ;;
+		*) script -qec "$cmd" /dev/null ;;
+	esac
+}
+
+# run_with_timeout <seconds> <cmd...> — `timeout` is GNU/coreutils, and macOS ships neither it nor
+# gtimeout until coreutils is installed by hand. A missing `timeout` turned the TUI step into
+# "timeout: command not found" inside the capture, i.e. a rendering failure that was really a
+# missing tool. Without either binary the command still runs: the key feed above quits the TUI.
+run_with_timeout() {
+	local secs="$1"; shift
+	if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; return $?; fi
+	if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return $?; fi
+	"$@"
+}
+
 # --- filesystem helpers ------------------------------------------------------
 sha256_of() { # sha256_of <file> — GNU or BSD, whichever this platform has
 	local f="$1"
@@ -485,16 +524,24 @@ step0_preflight() {
 	done
 	check "A0.4 every engine/WSL name on PATH is BOOBY-TRAPPED (docker, podman, wsl, docker.exe…)" \
 		"$fail"
-	: >"$(shim_log_path "$SHIM_DIR")"
 
 	# A0.5 — and no REAL engine is installed. Probed through the shims, so a host whose engine
 	# answers (because it is on another path) cannot be mistaken for one where nothing exists.
-	if engine_runs_here "$SHIM_DIR"; then
+	# The probe runs ONCE and its answer is reused: probing twice logged `docker info` twice.
+	local engine_answers=0
+	engine_runs_here "$SHIM_DIR" && engine_answers=1
+	if [ "$engine_answers" = "1" ]; then
 		invalid_host "A0.5 a container engine ANSWERS on this host — it is not a clean machine" \
 			"the claim is about machines with no Docker/Podman; run this on one"
 	fi
-	check "A0.5 no container engine answers (clean machine)" \
-		"$(engine_runs_here "$SHIM_DIR" && echo 1 || echo 0)"
+	check "A0.5 no container engine answers (clean machine)" "$engine_answers"
+
+	# THE PREFLIGHT'S OWN PROBES ARE NOT EVIDENCE ABOUT THE INSTALL PATH, so the invocation log is
+	# truncated HERE — after A0.4 deliberately invoked every shim and after A0.5 asked `docker info`,
+	# and before the first step that acts on the product. Truncating before A0.5 (the shape this had)
+	# left the preflight's own probe in the log and made step 10's "nothing was invoked" assertion
+	# FAIL on a spotless machine — a false defect filed against the installer.
+	: >"$(shim_log_path "$SHIM_DIR")"
 
 	# A0.6 — nothing named orchicon is already installed, or the run would test a previous install.
 	if command -v orchicon >/dev/null 2>&1; then
@@ -693,7 +740,7 @@ step5_lifecycle_verbs() {
 		"$([ "$rc7" = "7" ] && [ -z "$out" ] && echo 0 || echo 1)" "$OWNER_PLANE"
 	if [ -n "$before_pid" ]; then
 		check "A5.2b the SAME process is gone (pid ${before_pid})" \
-			"$([ -d "/proc/${before_pid}" ] && echo 1 || echo 0)" "$OWNER_PLANE"
+			"$(process_alive "$before_pid" && echo 1 || echo 0)" "$OWNER_PLANE"
 	fi
 
 	# STOP IS IDEMPOTENT (C2).
@@ -766,11 +813,16 @@ step7_windows_elevated() {
 	# A UAC-elevated child, waited on, whose transcript is redirected to a file. If elevation is
 	# declined or unavailable the step is a SKIP with the reason — never a PASS, because nothing
 	# about the elevated path was exercised.
+	# THE CHILD WRITES ITS OWN TRANSCRIPT. `Start-Process -Verb RunAs` cannot redirect an ELEVATED
+	# process's output, so the previous shape here left an EMPTY capture on every Windows run and
+	# step 7 could only ever SKIP — the AC3 evidence was unobtainable. A `*>` redirect inside the
+	# elevated child is what actually captures the message.
 	"$ps" -NoProfile -NonInteractive -Command "
 		try {
+			\$child = \"& '${script//\//\\}' *> '${cap//\//\\}'; exit \\\$LASTEXITCODE\"
 			\$p = Start-Process -FilePath 'powershell' -Verb RunAs -Wait -PassThru -ArgumentList @(
-				'-NoProfile','-ExecutionPolicy','Bypass','-File','${script//\//\\}'
-			) -RedirectStandardOutput '${cap//\//\\}' -RedirectStandardError '${cap//\//\\}.err'
+				'-NoProfile','-ExecutionPolicy','Bypass','-Command', \$child
+			)
 			exit \$p.ExitCode
 		} catch { exit 97 }" >/dev/null 2>&1
 	local rc=$?
@@ -882,8 +934,9 @@ step9_tui() {
 		blocked_surface "A9.2 the TUI renders in a pty" "$OWNER_TUI" "no \`script\` on this host to allocate a pty"
 		return 0
 	fi
-	( sleep 6; printf '%s' "$keys" ) | \
-		TERM="${TERM:-xterm-256color}" timeout 25 script -qec "\"$ORCH_BIN\"" /dev/null >"$cap" 2>&1 || true
+	TERM="${TERM:-xterm-256color}"
+	export TERM
+	( sleep 6; printf '%s' "$keys" ) | run_with_timeout 25 pty_script "$ORCH_BIN" >"$cap" 2>&1 || true
 	cp "$cap" "${EVIDENCE}/9-tui-screenshot.txt" 2>/dev/null || true
 
 	if capture_is_empty "$cap"; then
@@ -953,6 +1006,10 @@ step11_footprint() {
 	total="$(awk -F= '$1=="total_bytes"{print $2}' "$raw")"
 	measured="$(awk -F= '$1=="measured_at"{print $2}' "$raw")"
 	claim="$(awk -F= '$1=="claim_bytes"{print $2}' "$raw")"
+	# Kept for the closing RESULT line, which used to report the FINDINGS count as if it were the
+	# footprint — the one number this procedure exists to produce was the one it never printed.
+	FOOTPRINT_TOTAL="${total:-unknown}"
+	FOOTPRINT_MEASURED_AT="${measured:-unknown}"
 
 	check "A11.1 the footprint was MEASURED (not derived): total ${total:-none} bytes at ${measured:-unknown}" \
 		"$([ -n "$total" ] && [ -n "$measured" ] && echo 0 || echo 1)" "$OWNER_FOOTPRINT"
@@ -983,7 +1040,7 @@ pid_in_file() { # pid_in_file <file> — the recorded pid, only when that proces
 	[ -s "$f" ] || return 1
 	pid="$(tr -dc '0-9' <"$f" 2>/dev/null)"
 	[ -n "$pid" ] || return 1
-	[ -d "/proc/${pid}" ] || { kill -0 "$pid" 2>/dev/null || return 1; }
+	process_alive "$pid" || return 1
 	printf '%s' "$pid"
 }
 
@@ -1149,6 +1206,10 @@ main() {
 	parse_args "$@"
 	if [ "$DRY_RUN" = "1" ]; then print_plan; exit 0; fi
 
+	# THE PLATFORM IS RESOLVED BEFORE ANYTHING READS IT. step 0 resolves it again (harmlessly), but
+	# the install-dir default below depends on it: resolving it afterwards gave Windows the LINUX
+	# install dir (~/.local/bin), so the run installed and then measured the wrong tree.
+	PLATFORM_GOOS="$(platform_from_uname "$PLATFORM")"
 	INSTALL_DIR="${INSTALL_DIR_DEFAULT:-${ORCHICON_INSTALL_DIR:-${HOME}/.local/bin}}"
 	[ "$PLATFORM_GOOS" = "windows" ] && [ -n "${LOCALAPPDATA:-}" ] && \
 		INSTALL_DIR="${INSTALL_DIR_DEFAULT:-${LOCALAPPDATA}/Programs/Orchicon}"
@@ -1197,8 +1258,9 @@ main() {
 		exit 1
 	fi
 	say "RESULT: the published ${VERSION} archive installs and runs on ${PLATFORM_GOOS}/${PLATFORM_ARCH} with no"
-	say "        container engine and no WSL, produces a healthy host-resident plane, a working TUI,"
-	say "        and a footprint of ${FINDINGS} finding(s) recorded above."
+	say "        container engine and no WSL, and produces a healthy host-resident plane."
+	say "        MEASURED footprint: ${FOOTPRINT_TOTAL} bytes at ${FOOTPRINT_MEASURED_AT} (claim ${CLAIM_BYTES})."
+	say "        findings: ${FINDINGS}   skips: ${SKIPS} — a skip proves nothing (see the step verdicts)."
 	exit 0
 }
 

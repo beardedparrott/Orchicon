@@ -154,7 +154,7 @@ Run in **Windows PowerShell 5.1 or 7**, **not** elevated (see step 7). The asset
 
 ```powershell
 # in WSL-free, Docker-free PowerShell
-bash scripts/published-archive-e2e.sh --version vX.Y.Z --platform windows --instance dev --skip-tui:$false
+bash scripts/published-archive-e2e.sh --version vX.Y.Z --platform windows --instance dev
 ```
 
 If you are driving the steps by hand, they are the same shape:

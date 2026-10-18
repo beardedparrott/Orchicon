@@ -387,6 +387,11 @@ expect "check(FAIL) still counts a failure and files a defect" "1 1" \
 spin "C2: the harness drives start/stop/restart/plane status, and NEVER \`serve\`"
 body_of() { sed -n "/^$1() {/,/^}/p" "$HARNESS"; }
 count_of() { grep -cF -- "$1" "$HARNESS" 2>/dev/null || true; }
+# has_text <literal> — reads its input to the END before deciding, so a MATCH can never be turned
+# into a failure by SIGPIPE. `grep -q` exits at the first match, the producer then dies of SIGPIPE,
+# and `set -o pipefail` reports THAT as the pipeline's status: the moment step 0 grew past a pipe
+# buffer, "the harness plants the engine shims" started FAILing on a harness that still planted them.
+has_text() { grep -c -- "$1" >/dev/null 2>&1; }   # BRE, exactly as the grep -q it replaces
 expect "the harness never INVOKES \`serve\` as a command (C2: those verbs do not exist)" 0 \
 	"$(grep -nE '"\$ORCHICON_BIN" serve|orchicon serve' "$HARNESS" | grep -v '^[0-9]*:#' | wc -l | tr -d ' ')"
 for verb in 'stop "$INSTANCE"' 'start "$INSTANCE"' 'restart "$INSTANCE"' 'plane status "$INSTANCE"'; do
@@ -404,17 +409,26 @@ expect "C3: both install runs are CAPTURED through e_run, not c_run" "yes" \
 # --- AC5 STRUCTURAL: the engine PATH is poisoned before anything runs -----
 spin "AC5: the shims are planted in preflight, before any install"
 expect "step 0 plants the engine shims" "yes" \
-	"$(body_of step0_preflight | grep -q 'make_shims' && echo yes || echo no)"
+	"$(body_of step0_preflight | has_text 'make_shims' && echo yes || echo no)"
 expect "step 0 puts the shims FIRST on PATH" "yes" \
-	"$(body_of step0_preflight | grep -q 'export PATH="\${SHIM_DIR}:\$PATH"' && echo yes || echo no)"
+	"$(body_of step0_preflight | has_text 'export PATH="\${SHIM_DIR}:\$PATH"' && echo yes || echo no)"
 expect "step 0 verifies every shim actually fails" "yes" \
-	"$(body_of step0_preflight | grep -q 'PATH="\${SHIM_DIR}:\$PATH" "\$i"' && echo yes || echo no)"
+	"$(body_of step0_preflight | has_text 'PATH="\${SHIM_DIR}:\$PATH" "\$i"' && echo yes || echo no)"
 expect "step 10 reads the shim invocation log and demands it EMPTY" "yes" \
-	"$(body_of step10_no_engine | grep -q 'shim_invocations' && echo yes || echo no)"
+	"$(body_of step10_no_engine | has_text 'shim_invocations' && echo yes || echo no)"
 expect "step 10 checks the install-path OUTPUT as well as the invocations" "yes" \
-	"$(body_of step10_no_engine | grep -q 'engine_reference_in' && echo yes || echo no)"
+	"$(body_of step10_no_engine | has_text 'engine_reference_in' && echo yes || echo no)"
 expect "step 10 asserts WSL is not needed for a local-mode install (AC3)" "yes" \
-	"$(body_of step10_no_engine | grep -q 'wsl_reference_in' && echo yes || echo no)"
+	"$(body_of step10_no_engine | has_text 'wsl_reference_in' && echo yes || echo no)"
+
+# The preflight's OWN probes must happen BEFORE the invocation log is truncated. Truncating first
+# left the harness's own `docker info` in the log, so step 10's "nothing invoked an engine" FAILED on
+# a spotless machine — a defect filed against the installer for something the harness did itself.
+s0_body="$(body_of step0_preflight)"
+s0_trunc="$(printf '%s\n' "$s0_body" | grep -n 'shim_log_path' | head -1 | cut -d: -f1)"
+s0_probe="$(printf '%s\n' "$s0_body" | grep -n 'engine_runs_here' | head -1 | cut -d: -f1)"
+expect "step 0 truncates the shim log AFTER its own engine probe (else step 10 blames the installer)" "after" \
+	"$([ -n "$s0_trunc" ] && [ -n "$s0_probe" ] && [ "$s0_trunc" -gt "$s0_probe" ] && echo after || echo before)"
 
 # --- the TUI step can never pass on an empty capture ----------------------
 spin "AC4: the TUI step is gated, not a raw grep"
@@ -422,16 +436,16 @@ step9="$(body_of step9_tui)"
 expect "step 9 gates its capture assertions" "yes" \
 	"$([ "$(printf '%s\n' "$step9" | grep -c 'gated_')" -ge 3 ] && echo yes || echo no)"
 expect "step 9 never trusts an empty pty capture" "yes" \
-	"$(printf '%s\n' "$step9" | grep -q 'capture_is_empty "\$cap"' && echo yes || echo no)"
+	"$(printf '%s\n' "$step9" | has_text 'capture_is_empty "\$cap"' && echo yes || echo no)"
 expect "step 9 TAKES a screenshot artifact for the evidence (AC9)" "yes" \
-	"$(printf '%s\n' "$step9" | grep -q '9-tui-screenshot' && echo yes || echo no)"
+	"$(printf '%s\n' "$step9" | has_text '9-tui-screenshot' && echo yes || echo no)"
 
 # --- C1 STRUCTURAL: the artifact identity is checked, not assumed ---------
 spin "C1: the version gate is wired into the run"
 expect "step 0 refuses an unnamed version" "yes" \
-	"$(body_of step0_preflight | grep -q 'version_is_explicit' && echo yes || echo no)"
+	"$(body_of step0_preflight | has_text 'version_is_explicit' && echo yes || echo no)"
 expect "step 2 runs the BINARY and compares it to the tag" "yes" \
-	"$(body_of step2_extract_and_identify | grep -q '\-\-version' && echo yes || echo no)"
+	"$(body_of step2_extract_and_identify | has_text '\-\-version' && echo yes || echo no)"
 expect "the plan names every one of the 12 steps (a --dry-run that hides a step lies)" 12 \
 	"$(grep -cE '^step [0-9]+ ' "$HARNESS")"
 expect "the C1 merge-date gate is a single named constant" "yes" \
@@ -478,9 +492,9 @@ expect "the runbook files DEF-2 (the installer still names Docker)" "yes" \
 spin "the gate is discoverable and runs in CI"
 HELP="$(cd "$REPO_ROOT" && make help 2>/dev/null || true)"
 expect "make help lists published-archive-e2e-assertions-test" "yes" \
-	"$(printf '%s\n' "$HELP" | grep -q 'published-archive-e2e-assertions-test' && echo yes || echo no)"
+	"$(printf '%s\n' "$HELP" | has_text 'published-archive-e2e-assertions-test' && echo yes || echo no)"
 expect "make help lists the footprint measurer" "yes" \
-	"$(printf '%s\n' "$HELP" | grep -q 'published-archive-e2e-footprint' && echo yes || echo no)"
+	"$(printf '%s\n' "$HELP" | has_text 'published-archive-e2e-footprint' && echo yes || echo no)"
 expect "make ci-go runs this gate" "yes" \
 	"$(grep -qE '^ci-go:.*published-archive-e2e-assertions-test' "${REPO_ROOT}/Makefile" && echo yes || echo no)"
 expect "the windows zip is still published (the harness assumes it exists)" "yes" \
