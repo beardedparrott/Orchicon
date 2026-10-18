@@ -324,6 +324,7 @@ func newBranchDispatchEnv(t *testing.T) *branchDispatchEnv {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Concurrent Dispatch Project", Slug: "concurrent-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"), ProjectDir: env.repo,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -744,6 +745,7 @@ func TestD4FailedBranchDoesNotSmearRunningSibling(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "D4 Project", Slug: "d4-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"), ProjectDir: nonRepoDir(t),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)

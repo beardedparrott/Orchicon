@@ -3,14 +3,14 @@
 # Build:   make build        # produce bin/orchicon (frontend embedded)
 #          cp bin/orchicon deploy/container/
 #          docker build -f deploy/container/Dockerfile -t orchicon:local deploy/container
-# Run:     docker run --rm -p 8080:8080 -p 3002:3000 \
+# Run:     docker run --rm -p 8080:8080 \
 #            -v orchicon-data:/var/lib/orchicon orchicon:local
 #
 # Multi-stage: copy runtime binaries from the official images onto a
 # Postgres Debian base (glibc) so every process coexists in one network
 # namespace. The orchicon binary is the PID-1 supervisor
 # (`orchicon container`, cmd/orchicon/container.go): it writes the
-# embedded Tempo/Loki/collector/Grafana configs into /var/lib/orchicon,
+# embedded Tempo/Loki/collector configs into /var/lib/orchicon,
 # spawns postgres → nats → telemetry → control plane with readiness
 # gates, and restarts crashed children.
 #
@@ -22,7 +22,6 @@ FROM grafana/tempo:2.7.1 AS tempo
 FROM grafana/loki:3.4.2 AS loki
 FROM victoriametrics/victoria-metrics:v1.111.0 AS vm
 FROM otel/opentelemetry-collector-contrib:0.119.0 AS collector
-FROM grafana/grafana:11.5.2 AS grafana
 
 FROM postgres:16 AS runtime
 
@@ -53,8 +52,6 @@ COPY --from=tempo /tempo /usr/local/bin/tempo
 COPY --from=loki /usr/bin/loki /usr/local/bin/loki
 COPY --from=vm /victoria-metrics-prod /usr/local/bin/victoria-metrics-prod
 COPY --from=collector /otelcol-contrib /usr/local/bin/otelcol-contrib
-COPY --from=grafana /usr/share/grafana /usr/share/grafana
-COPY --from=grafana /etc/grafana /etc/grafana
 
 # Runtime CLI adapters (opencode today; Claude Code / Codex later) are
 # deliberately NOT baked into this image. The operator installs them on the
@@ -73,7 +70,10 @@ ENV ORCHICON_CONTAINER_MODE=1
 # volume, not the ephemeral root home. Overridable via docker run -e.
 ENV ORCHICON_DATA_DIR=/var/lib/orchicon
 VOLUME ["/var/lib/orchicon"]
-EXPOSE 8080 3000
+# 8080 is the control plane. There is no second published port: the Grafana UI that
+# used to be exposed on 3000 (published as 3002/3003/3004) is gone, and those host
+# ports are retired and reserved (cmd/orchicon/install_ports.go).
+EXPOSE 8080
 # Aggregate readiness: /healthz is served by the control plane, which only
 # becomes ready after postgres + nats (and is the container's real signal).
 HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=20 \

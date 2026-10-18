@@ -120,7 +120,7 @@ Options:
                          preserved (Docker volume, BlobStore files, runtime state).
     --force-clean, --nuke
                          Wipe and start fresh for THIS instance: stop it, destroy its Docker
-                         volume (database, NATS, Tempo, Loki, VictoriaMetrics, Grafana), remove
+                         volume (database, NATS, Tempo, Loki, VictoriaMetrics), remove
                          blob store data and runtime state, then install the latest version.
                          WARNING: all data for THIS instance is lost.
    --dry-run            Print what would happen without making changes.
@@ -592,7 +592,7 @@ do_remove_binary() {
 # --- Force-clean then install -----------------------------------------------
 #
 # Wipe everything and start fresh: stop the dev stack, destroy Docker
-# volumes (database, NATS, Tempo, Loki, VictoriaMetrics, Grafana),
+# volumes (database, NATS, Tempo, Loki, VictoriaMetrics),
 # runtime state, then install the latest version.
 #
 do_force_clean() {
@@ -616,7 +616,7 @@ do_force_clean() {
   stop_installed_plane
 
   # 2. Remove the single-container instances and their data volumes
-  # (postgres, nats, tempo, loki, victoriametrics, grafana live under
+  # (postgres, nats, tempo, loki, victoriametrics live under
   # /var/lib/orchicon in the instance volumes).
   if command -v docker >/dev/null 2>&1; then
       info "removing the ${INSTANCE} instance and its data volume…"

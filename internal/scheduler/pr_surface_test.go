@@ -148,9 +148,10 @@ func seedPRStepFixture(t *testing.T, markerOutput string) (*db.Pool, *WorkflowRe
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "PR Surface Test", Slug: slug,
 		Status: domain.ProjectActive, Goals: []byte("[]"),
-		ProjectDir:  "/tmp/orchicon/" + slug,
-		RepoSlug:    strPtr("beardedparrott/Orchicon"),
-		GitStrategy: "pr",
+		ProjectDir:    "/tmp/orchicon/" + slug,
+		RepoSlug:      strPtr("beardedparrott/Orchicon"),
+		GitStrategy:   "pr",
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)

@@ -86,7 +86,8 @@ func newApprovalTestEnv(t *testing.T) *approvalTestEnv {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Approval Test", Slug: slug,
 		Status: "active", Goals: []byte("[]"),
-		ProjectDir: "/tmp/orchicon/" + slug,
+		ProjectDir:    "/tmp/orchicon/" + slug,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -365,6 +366,7 @@ func TestApprovalDispatchFailsWithoutTicket(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "One Shot", Slug: "one-shot-" + db.NewID()[:8],
 		Status: "active", Goals: []byte("[]"),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)

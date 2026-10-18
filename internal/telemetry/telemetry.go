@@ -1,8 +1,8 @@
 // Package telemetry sets up the OpenTelemetry pipeline: tracer,
-// meter, log exporter, and OTLP gRPC exporter (→ Grafana stack
-// via the OTel collector in deploy/compose). Per docs/08 §5,
-// telemetry flows from the producer to the OTel collector to Grafana
-// — it does not flow through NATS.
+// meter, log exporter, and OTLP gRPC exporter (→ the telemetry
+// backends via the OTel collector in deploy/compose). Per docs/08 §5,
+// telemetry flows from the producer to the OTel collector to the
+// backends — it does not flow through NATS.
 //
 // The pipeline is best-effort: if the collector is unreachable,
 // telemetry is dropped with bounded in-process buffering and control
@@ -89,7 +89,7 @@ func Setup(ctx context.Context, cfg config.Config, log *slog.Logger) (*Shutdowne
 	// id from the request context into both the log resource and
 	// the per-record attribute set. For now, mark every
 	// control-plane log with orchicon.tenant_id=tnt_dev so the
-	// Grafana-stack tenant filter (docs/08 §5.1) does not
+	// telemetry-backend tenant filter (docs/08 §5.1) does not
 	// drop our own bootstrap / reconciliation / recovery records
 	// when the operator opens the Telemetry logs tab.
 	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
@@ -263,12 +263,20 @@ func Middleware(next http.Handler) http.Handler {
 		if route == "" {
 			route = "/"
 		}
+		// Attribution hints (D5): the SPA sends the project / work-item /
+		// execution ids it is viewing, so the span can carry them as
+		// orchicon.{project,work_item,execution}_id. The middleware is the
+		// ONLY span producer today, so this is the only place those
+		// attributes are written — Tempo tag filters read them.
+		ctx = WithAttribution(ctx, r.Header.Get(hintProjectID), r.Header.Get(hintWorkItemID), r.Header.Get(hintExecutionID))
+		spanAttrs := []attribute.KeyValue{
+			attribute.String("http.method", r.Method),
+			attribute.String("http.route", route),
+			attribute.String(CorrelationIDKey, correlationID),
+		}
+		spanAttrs = append(spanAttrs, attributionAttrsFromContext(ctx)...)
 		ctx, span := Tracer().Start(ctx, "api."+route,
-			trace.WithAttributes(
-				attribute.String("http.method", r.Method),
-				attribute.String("http.route", route),
-				attribute.String(CorrelationIDKey, correlationID),
-			),
+			trace.WithAttributes(spanAttrs...),
 		)
 		defer span.End()
 

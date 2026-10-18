@@ -42,7 +42,11 @@ func procExe(pid int) (string, error) { return os.Readlink(fmt.Sprintf("/proc/%d
 // the same version. `/proc/<pid>/exe` shows the APEX of the running process, and a replaced path reports
 // `(deleted)` — the exact fingerprint of "the installer overwrote the binary under a live plane".
 func Drift(instance string, out io.Writer) DriftState {
-	self, err := executable()
+	// THE PLANE BINARY, NOT MERELY THIS ONE: a thin client (`orch`, the desktop app) is not the binary that
+	// serves the plane, so comparing the live process against SELF would report every healthy plane as
+	// "serving from a different path" and collapse drift to Unknown from the TUI forever. See
+	// resolvePlaneBinary.
+	self, err := planeBinary()
 	if err != nil {
 		return Unknown
 	}
