@@ -60,6 +60,8 @@ func main() {
 			os.Exit(runDB(os.Args[2:], log))
 		case "backfill-pr":
 			os.Exit(runBackfillPR(os.Args[2:], log))
+		case "prune-executions":
+			os.Exit(runPruneExecutions(os.Args[2:], log))
 		case "claude-hook":
 			os.Exit(runClaudeHook(os.Stdin, os.Stdout))
 		case "run-context":
