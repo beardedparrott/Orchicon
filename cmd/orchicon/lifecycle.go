@@ -221,6 +221,15 @@ func runStart(args []string, log *slog.Logger) error {
 		}
 		if err := startHostPlane(instance, ports, hostDataDirFor(instance),
 			filepath.Join(socketDir(), "runtime.sock"), os.Stdout); err != nil {
+			// SAY WHAT IS STILL RUNNING. The services came up and are now unsupervised by a
+			// plane that failed, and that is a state the operator has to be told about —
+			// particularly because it holds the instance's ports, so the NEXT start fails
+			// with a bind error that names nothing. Observed for real: a start on an
+			// instance whose plane cannot come up leaves postgres and NATS running.
+			fmt.Fprintf(os.Stderr, "note: the services for %s are still running (postgres :%d, nats :%d).\n"+
+				"      stop them with:  %s services down %s\n",
+				instance, ports["ORCHICON_POSTGRES_PORT"], ports["ORCHICON_NATS_PORT"],
+				filepath.Base(os.Args[0]), instance)
 			return err
 		}
 	}
