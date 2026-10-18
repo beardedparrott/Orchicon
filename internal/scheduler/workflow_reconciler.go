@@ -149,6 +149,24 @@ func (r *WorkflowReconciler) runtimeEnabled() bool {
 	return rv.Kind() != reflect.Ptr || !rv.IsNil()
 }
 
+// shouldEnsureRunFor is THE arm-site container gate ("should this run's
+// container be provisioned?"). It is extracted from the arm path so the
+// acceptance property is assertable directly:
+//
+//   - a run/execution whose EFFECTIVE execution_mode resolves to local NEVER
+//     provisions a container, whatever its project says — an item-level opt-out
+//     inside a runtime project keeps the lifecycle invariant at
+//     internal/runtime/lifecycle.go ("local mode ... never reaches here");
+//   - a runtime-resolving run provisions one whenever a daemon is wired, so an
+//     item-level opt-IN inside a local project really does run in a container.
+//
+// runtimeEnabled() is false only for headless `orchicon serve` (no daemon
+// socket), where there is nothing to provision — the LOUD failure then comes
+// from runtime.Lifecycle.EnsureForRun itself rather than being masked here.
+func (r *WorkflowReconciler) shouldEnsureRunFor(runLocalMode bool) bool {
+	return !runLocalMode && r.runtimeEnabled()
+}
+
 // runNeedsServe reports whether any worker step of the run resolves to a
 // serve-dependent adapter kind (opencode today). The run's steps are the
 // DAG the run will dispatch; a step's worker version resolves the same way
@@ -622,12 +640,15 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// notifier fires post-commit (mirrors the sequence/workflow notifiers).
 	var armed bool
 	needsServe := r.runNeedsServe(ctx, ttx.Tx, tenantID, run, steps)
-	// runLocalMode is the project execution_mode gate: local-mode runs
-	// skip ALL container paths (no EnsureForRun, no gate, no probe) and
-	// dispatch in-process with the honest prompt + DSN fence. Runtime is
-	// the default (preserves current opencode behavior); any read failure
-	// degrades to runtime (fail-open toward the container, never toward
-	// silent host exec).
+	// runLocalMode is the EFFECTIVE execution_mode gate (work-item override
+	// -> project -> tenant default, resolved in db.EffectiveExecutionMode):
+	// local-mode runs skip ALL container paths (no EnsureForRun, no gate,
+	// no probe) and dispatch in-process with the honest prompt + DSN fence.
+	// Runtime is the default (preserves current opencode behavior); any
+	// read failure degrades to runtime (fail-open toward the container,
+	// never toward silent host exec). Because it is item-aware, an item
+	// that overrides to local inside a runtime project still never reaches
+	// EnsureForRun.
 	runLocalMode := runExecutionMode(ctx, ttx.Tx, tenantID, run) == db.ExecutionModeLocal
 	// resolvedImage is the run's effective image for this pass (the armed
 	// value, or "" for runs armed before always-container — re-resolved
@@ -685,7 +706,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		// stay in the pass tx: on ensure failure the event write rolls
 		// back with the tx and failRunAtStart commits the terminal state
 		// in its own tx.
-		if !runLocalMode && r.runtimeEnabled() {
+		if r.shouldEnsureRunFor(runLocalMode) {
 			try := run
 			try.RuntimeImage = resolvedImage
 			if cerr := r.runtime.EnsureForRun(ctx, try); cerr != nil {
@@ -3647,24 +3668,23 @@ func anyDirectCompleted(history []histEntryType) bool {
 	return false
 }
 
-// runExecutionMode returns the run's project execution_mode (runtime|local)
-// for arm routing. Best-effort: an empty project or a read failure degrades to
-// runtime (fail toward the container, never toward a silent host exec).
+// runExecutionMode returns the run's EFFECTIVE execution_mode (runtime|local)
+// for arm routing, resolved by db.EffectiveExecutionMode: the run's work ITEM
+// override -> its PROJECT -> db.DefaultExecutionMode. Best-effort: an
+// unreadable item or project degrades to runtime (fail-open toward the
+// container, never toward silent host exec).
 //
-// Like projectExecutionMode this is resolved per dispatch, so a mode change
-// applies to subsequent runs while an in-flight run keeps its transport.
+// This single boolean (runLocalMode in the arm path) decides whether
+// EnsureForRun is ever called, so it is what preserves the lifecycle
+// invariant for an item-level opt-out — see internal/runtime/lifecycle.go.
 func runExecutionMode(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow) string {
-	if strings.TrimSpace(run.ProjectID) == "" {
-		return db.ExecutionModeRuntime
+	var itemMode *string
+	if strings.TrimSpace(run.WorkItemID) != "" {
+		if w, err := db.GetWorkItem(ctx, tx, tenantID, run.WorkItemID); err == nil {
+			itemMode = w.ExecutionMode
+		}
 	}
-	p, err := db.GetProject(ctx, tx, tenantID, run.ProjectID)
-	if err != nil {
-		return db.ExecutionModeRuntime
-	}
-	if p.ExecutionMode == db.ExecutionModeLocal {
-		return db.ExecutionModeLocal
-	}
-	return db.ExecutionModeRuntime
+	return db.EffectiveExecutionMode(ctx, tx, tenantID, itemMode, run.ProjectID)
 }
 
 // agentPromptFor is the RUN-LEVEL part of a worker's prompt: the stable prefix
@@ -3699,21 +3719,13 @@ func runEffectiveImage(ctx context.Context, tx pgx.Tx, tenantID string, wi db.Wo
 	return db.BaseRuntimeImage
 }
 
-// projectExecutionModeForPrompt returns the work item's project
-// execution_mode for prompt branching (runtime vs local honest block).
-// Best-effort: read failures degrade to runtime.
+// projectExecutionModeForPrompt returns the work item's EFFECTIVE execution
+// mode for prompt branching (the runtime vs local honest block). Resolved by
+// db.EffectiveExecutionMode — the item's own override wins over its project —
+// so the prompt a worker reads always agrees with where the run actually
+// executes. Best-effort: read failures degrade to runtime.
 func projectExecutionModeForPrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow) string {
-	if strings.TrimSpace(wi.ProjectID) == "" {
-		return db.ExecutionModeRuntime
-	}
-	p, err := db.GetProject(ctx, tx, tenantID, wi.ProjectID)
-	if err != nil {
-		return db.ExecutionModeRuntime
-	}
-	if p.ExecutionMode == db.ExecutionModeLocal {
-		return db.ExecutionModeLocal
-	}
-	return db.ExecutionModeRuntime
+	return db.EffectiveExecutionMode(ctx, tx, tenantID, wi.ExecutionMode, wi.ProjectID)
 }
 
 func runtimeEnvironmentBlock(image string) string {

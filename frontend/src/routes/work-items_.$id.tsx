@@ -22,6 +22,14 @@ import { FileBrowser } from "@/components/FileBrowser";
 import { Markdown } from "@/components/markdown";
 import { SecretsPicker } from "@/components/SecretsPicker";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
+import {
+  ExecutionModeSelect,
+  effectiveExecutionModeOf,
+  executionModeChoiceOf,
+  executionModeToProto,
+  executionModeValueOf,
+  type ExecutionModeChoice,
+} from "@/components/ExecutionModeSelect";
 import { formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
@@ -82,6 +90,8 @@ function WorkItemDetailPage() {
   const [editProjectId, setEditProjectId] = useState("");
   const [editWorkflowId, setEditWorkflowId] = useState("");
   const [editRuntimeImage, setEditRuntimeImage] = useState("");
+  // The item's own override ("inherit" = NULL = use the project's mode).
+  const [editExecutionMode, setEditExecutionMode] = useState<ExecutionModeChoice>("inherit");
   const [editScheduledStartAt, setEditScheduledStartAt] = useState("");
   const [editAutoStartWorkflow, setEditAutoStartWorkflow] = useState(false);
   const [editParentId, setEditParentId] = useState("");
@@ -302,6 +312,7 @@ function WorkItemDetailPage() {
                 setEditProjectId(item.projectId);
                 setEditWorkflowId(item.workflowId ?? "");
                 setEditRuntimeImage(item.runtimeImage ?? "");
+                setEditExecutionMode(executionModeChoiceOf(item));
                 setEditParentId(item.parentId ?? "");
                 setEditScheduledStartAt(
                   item.scheduledStartAt
@@ -371,6 +382,11 @@ function WorkItemDetailPage() {
                       projectId: editProjectId,
                       workflowId: editWorkflowId,
                       runtimeImage: editRuntimeImage || undefined,
+                      // VALUE OR EXPLICIT CLEAR, never silently dropped: execution_mode is
+                      // optional on the wire, so `undefined` means UNCHANGED and "inherit"
+                      // could never be restored. Same discipline as clearScheduledStartAt above.
+                      executionMode: executionModeToProto(editExecutionMode),
+                      clearExecutionMode: editExecutionMode === "inherit",
                       // THE SCHEDULE IS SENT AS A VALUE OR AN EXPLICIT CLEAR, never silently
                       // dropped. scheduledStartAt is optional, so `undefined` means UNCHANGED —
                       // which is how the form could never remove a schedule: it seeded the input
@@ -907,6 +923,44 @@ function WorkItemDetailPage() {
                 />
               ) : (
                 item.runtimeImage || "default (base image)"
+              )}
+            </CardTitle>
+          </CardHeader>
+        </Card>
+        {/* Execution mode — the answer to "where will this run?", on the item. */}
+        <Card>
+          <CardHeader>
+            <CardDescription>Execution mode</CardDescription>
+            <CardTitle className="break-words text-base [overflow-wrap:anywhere]">
+              {editing ? (
+                <ExecutionModeSelect
+                  id="edit-execution-mode"
+                  value={editExecutionMode}
+                  inherited={executionModeValueOf(
+                    projects?.find((p) => p.id === editProjectId),
+                  )}
+                  onChange={setEditExecutionMode}
+                />
+              ) : (
+                (() => {
+                  const projectMode = executionModeValueOf(
+                    projects?.find((p) => p.id === item.projectId),
+                  );
+                  const effective = effectiveExecutionModeOf(item, projectMode);
+                  const own = executionModeValueOf(item);
+                  // Attribution is only as specific as the data we hold: with
+                  // no override the mode came from somewhere above the item —
+                  // the project when its row is loaded, otherwise the
+                  // server-resolved effective mode (project or tenant default,
+                  // indistinguishable here). Never claim "tenant default" for a
+                  // mode the project supplied.
+                  const source = own
+                    ? "this item"
+                    : projectMode
+                      ? "inherited from project"
+                      : "inherited";
+                  return `${effective} (${source})`;
+                })()
               )}
             </CardTitle>
           </CardHeader>

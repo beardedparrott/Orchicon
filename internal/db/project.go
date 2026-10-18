@@ -80,14 +80,6 @@ const (
 	ExecutionModeLocal   = "local"
 )
 
-// DefaultExecutionMode is what a project lands in when the caller sends no
-// mode: local (in-process, fenced). Containers are opt-in (runtime).
-//
-// This is the ONE default every project-creation entry point must use — the
-// Ask Orchicon tools, the Connect API (web UI + TUI) and the db layer itself —
-// so a project created without the field never lands in an undefined mode.
-const DefaultExecutionMode = ExecutionModeLocal
-
 // ExecutionModeInvalidMsg is the ONE message for a rejected mode. It names
 // both accepted values, so widening the enum means changing this string in
 // the same edit.

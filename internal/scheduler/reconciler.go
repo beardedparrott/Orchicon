@@ -287,27 +287,24 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.R
 	return reconciler.Result{}
 }
 
-// projectExecutionMode returns the project's execution_mode (runtime|local).
-// An unreadable/empty mode degrades to runtime: a read failure must fail
-// toward the container, never toward a silent host exec. Only an explicitly
-// stored 'local' places a worker in-process.
+// executionModeFor returns the EFFECTIVE execution_mode for a work item's
+// executions ("runtime" | "local"), resolved in exactly one place:
+// db.EffectiveExecutionMode — ITEM override -> PROJECT execution_mode ->
+// db.DefaultExecutionMode (tenant default). Do NOT re-derive the precedence
+// here; see internal/db/execution_mode.go for why it is centralized.
 //
-// The mode is resolved PER DISPATCH (per execution/step), so changing a
-// project's mode takes effect for subsequent runs; an execution already
-// spawned keeps the transport it was started with (container proc vs local
-// proc) and is not torn down by a mode change.
-func projectExecutionMode(ctx context.Context, tx pgx.Tx, tenantID, projectID string) string {
-	if strings.TrimSpace(projectID) == "" {
-		return db.ExecutionModeRuntime
+// workItemID may be empty when the caller genuinely has no item (a bare
+// project dispatch); the project leg then decides. An unreadable item or
+// project degrades to runtime (fail-open toward the container, never toward
+// silent host exec).
+func executionModeFor(ctx context.Context, tx pgx.Tx, tenantID, workItemID, projectID string) string {
+	var itemMode *string
+	if strings.TrimSpace(workItemID) != "" {
+		if w, err := db.GetWorkItem(ctx, tx, tenantID, workItemID); err == nil {
+			itemMode = w.ExecutionMode
+		}
 	}
-	p, err := db.GetProject(ctx, tx, tenantID, projectID)
-	if err != nil {
-		return db.ExecutionModeRuntime
-	}
-	if p.ExecutionMode == db.ExecutionModeLocal {
-		return db.ExecutionModeLocal
-	}
-	return db.ExecutionModeRuntime
+	return db.EffectiveExecutionMode(ctx, tx, tenantID, itemMode, projectID)
 }
 
 // liveDSNHosts are the loopback/bridge addresses that reach the LIVE plane
@@ -685,12 +682,14 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 	}
 
 	// Local-mode DSN fence: in-process executions must never touch the
-	// LIVE plane. When the task's project is in local execution_mode, a
-	// live ORCHICON_TEST_DSN fails the execution CLOSED (blocked, not
-	// warned) — DB-backed tests require a disposable DSN.
-	if task.ProjectID != "" {
+	// LIVE plane. When the task's EFFECTIVE execution mode is local — the
+	// item override, else the project — a live ORCHICON_TEST_DSN fails the
+	// execution CLOSED (blocked, not warned) — DB-backed tests require a
+	// disposable DSN. The fence follows the ITEM, not just the project: a
+	// local item inside a runtime project still runs in-process.
+	if task.ProjectID != "" || task.ID != "" {
 		if mtx, merr := r.pool.BeginTenantTx(context.Background(), tenantID); merr == nil {
-			mode := projectExecutionMode(context.Background(), mtx.Tx, tenantID, task.ProjectID)
+			mode := executionModeFor(context.Background(), mtx.Tx, tenantID, task.ID, task.ProjectID)
 			_ = mtx.Rollback(context.Background())
 			if mode == db.ExecutionModeLocal {
 				if dsn := strings.TrimSpace(os.Getenv("ORCHICON_TEST_DSN")); dsn != "" && isLiveDSN(dsn) {
@@ -1073,13 +1072,13 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	runtimeImage := ""
 	worktreePath := ""
 	worktreeStatus := ""
-	// executionMode is the run's project execution_mode (runtime|local)
-	// threaded to the adapters so a LOCAL-mode run never routes bash into
-	// (or creates) a container — the reconciler skipped EnsureForRun for
-	// it, so the lease does not exist and a container would be silently
-	// recreated on the opencode path. Best-effort: read failures default
-	// to runtime (fail-open toward the container, matching the mode
-	// helper).
+	// executionMode is the run's EFFECTIVE execution_mode (runtime|local),
+	// resolved from the work item override, else the project — threaded to
+	// the adapters so a LOCAL-mode run never routes bash into (or creates)
+	// a container: the reconciler skipped EnsureForRun for it, so the lease
+	// does not exist and a container would be silently recreated on the
+	// opencode path. Best-effort: an unreadable item or project defaults to
+	// runtime (fail-open toward the container).
 	executionMode := db.ExecutionModeRuntime
 	if task.WorkflowRunID != "" {
 		if rtx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
@@ -1094,7 +1093,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				// buildCompositePrompt at dispatch. This runtimeImage is
 				// only the adapter's container self-heal tag.
 			}
-			executionMode = projectExecutionMode(context.Background(), rtx.Tx, exec.TenantID, exec.ProjectID)
+			executionMode = executionModeFor(context.Background(), rtx.Tx, exec.TenantID, exec.TaskID, exec.ProjectID)
 			// D2: a parallel-branch child execution runs in the STEP RUN's
 			// OWN branch worktree — its cwd must be the branch worktree,
 			// not the run worktree. Resolve via the step run LINKED to this
