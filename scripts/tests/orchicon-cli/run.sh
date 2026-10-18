@@ -374,6 +374,28 @@ out="$(env -u ORCHICON_INSTANCE_CTL ORCHICON_BIN="$WORK/minbin/orchicon" HOME="$
 assert_contains "$out" "UNVERIFIED" "with no curl, status says health is UNVERIFIED"
 assert_not_contains "$out" "UP and healthy" "with no curl, status never claims health"
 
+# THE PLANE REPORT IS TWO LINES NOW, AND BOTH BELONG TO THE ROW. `serve --status` reports the shared
+# planecontrol.Status, which adds a second line when the PID-file process is not this binary — the
+# "plane runs from X, not Y — leaving it" drift warning. It used to be a one-liner, so echoing it raw
+# dropped that line at column 0, where it read as top-level output from the script instead of part of
+# the plane row. (The stub above still answers the frozen one-liner; this one answers like the real
+# binary, which is what the alignment has to survive.)
+mkdir -p "$WORK/twoline"
+printf '#!%s\ncase "$1" in\n  instance) exit 3 ;;\n  serve) printf "  (plane runs from /old/bin/orchicon, not /new/bin/orchicon — leaving it)\\ninstance dev: plane pid 4242 running /new/bin/orchicon — data dir %s\\n"; exit 0 ;;\n  services) echo "services for dev: up (postgres 127.0.0.1:5432)"; exit 0 ;;\nesac\nexit 1\n' \
+  "$BASH_ABS" "$HOME/.local/share/orchicon-dev" >"$WORK/twoline/orchicon"
+mkexec "$WORK/twoline/orchicon"
+out="$(env -u ORCHICON_INSTANCE_CTL ORCHICON_BIN="$WORK/twoline/orchicon" HOME="$HOME" \
+        PATH="$STUB:$PATH" /bin/bash "$SCRIPT" status dev 2>&1)"
+assert_contains "$out" "  plane       (plane runs from /old/bin/orchicon" \
+  "status keeps the report's first line on the plane row"
+assert_contains "$out" "            instance dev: plane pid 4242" \
+  "status aligns the report's second line under the plane row"
+if printf '%s\n' "$out" | grep -q '^instance dev: plane pid 4242'; then
+  bad "the plane report's second line landed flush-left, where it reads as top-level output"
+else
+  ok "the plane report's second line never lands flush-left"
+fi
+
 # ── 7. logs (the plane's own log, per instance) ────────────────────────────
 echo "-- logs"
 mkdir -p "$HOME/.local/share/orchicon-dev/serve/logs"

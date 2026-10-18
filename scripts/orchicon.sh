@@ -386,7 +386,16 @@ status_host() {
 
   echo "orchicon $inst — plane $PLANE_URL, data $DATA_DIR"
   if [ "$plane_state" = running ]; then
-    echo "  plane     $plane_out"
+    # MORE THAN ONE LINE NOW, AND THE SECOND ONE BELONGS TO THE ROW. `serve --status` reports the
+    # SHARED status surface (planecontrol.Status), which prints a second line when the PID-file
+    # process is not this binary — "plane runs from X, not Y — leaving it", the drift warning that
+    # is the whole point of the shared surface. It used to be a one-liner, so echoing "$plane_out"
+    # raw dropped that line flush-left, where it read as top-level output from the script rather
+    # than part of the plane row. First line on the row, continuations aligned under it.
+    printf '  plane     %s\n' "${plane_out%%$'\n'*}"
+    if [ "$plane_out" != "${plane_out%%$'\n'*}" ]; then
+      printf '%s\n' "$plane_out" | sed -e '1d' -e 's/^/            /'
+    fi
   else
     echo "  plane     not running (no live PID file in $SERVE_STATE_DIR)"
   fi
