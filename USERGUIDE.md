@@ -274,6 +274,45 @@ work runs in a container.
   > them and no test on a Linux host could see it. What the harness cannot see is a
   > Windows-only console fault; a real end-to-end run still needs a Windows machine.
 
+### macOS: Gatekeeper and verification
+
+The macOS binaries are **not** code-signed or notarised. That is a deliberate decision rather
+than an oversight: a Developer ID certificate costs USD 99/yr, and the install path that we
+document is already Gatekeeper-clean because **`curl` sets no quarantine bit** — only a browser
+download does. Signed artifacts are a job away (`sign-macos` in
+`.github/workflows/release.yml`, dormant until `MACOS_SIGNING_ENABLED` is `true` and a
+certificate exists); until then, these are the exact instructions.
+
+**Installed with the one-liner?** Nothing to do — no quarantine bit, no prompt. If macOS still
+refuses to run it, the binary was replaced or moved from a browser download; go to the case
+below.
+
+**Downloaded the archive in a browser?** The archive carries the quarantine mark and the
+extracted binary inherits it, so Gatekeeper blocks it. Clear the mark on that one file:
+
+```bash
+xattr -d com.apple.quarantine /path/to/orchicon
+```
+
+This removes the mark from one file. It does **not** disable Gatekeeper, and it is not a
+security setting to lower — every other unsigned binary on the machine stays blocked.
+
+**Verify what you downloaded.** Every release publishes `SHA256SUMS` beside the archives, and
+both installers check it before extracting; a mismatch aborts the install, prints both hashes
+and installs nothing. To check by hand:
+
+```bash
+shasum -a 256 orchicon_<version>_darwin_<arch>.tar.gz   # `sha256sum` does not exist on macOS
+```
+
+and compare with the `SHA256SUMS` asset on the release page.
+
+**Homebrew (planned, not available).** There is no tap today. A formula that lags a release is
+worse than the exact command above — it installs a stale binary and the version in `orchicon
+version` no longer matches the docs — so the tap lands when there is a release process to update
+it automatically. It is the intended future channel on macOS, precisely because it sidesteps
+quarantine entirely.
+
 ### Install options
 
 | Flag | Description |
@@ -451,6 +490,19 @@ when the plane boots (embedded runner).
 orchicon version
 curl http://localhost:8080/healthz   # {"status":"ok"}
 ```
+
+Both installers also verify the **download** before installing anything: they fetch
+`SHA256SUMS` from the release and compare it with the archive, and a mismatch aborts the
+install with both hashes printed (nothing is written). To check a manual download yourself:
+
+```bash
+shasum -a 256 orchicon_<version>_darwin_arm64.tar.gz   # macOS
+sha256sum orchicon_<version>_linux_amd64.tar.gz       # Linux
+Get-FileHash .\orchicon_<version>_linux_amd64.tar.gz  # Windows PowerShell
+```
+
+and compare the hash with the `SHA256SUMS` asset on the release page. `--no-verify` skips
+the check (only for a mirror you control).
 
 ---
 

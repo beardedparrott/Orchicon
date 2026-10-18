@@ -63,6 +63,14 @@ curl -fsSL https://orchicon.dev/install | bash
 
 The installer downloads the binary, then runs `orchicon install` to set up everything: pull the published images, start the runtime daemon, launch the single-container instance, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
 
+> **macOS: no Gatekeeper override needed.** `curl` sets no quarantine bit, so a binary installed by the command above runs without a "cannot be opened because the developer cannot be verified" prompt. Orchicon's macOS binaries are **not** code-signed or notarised (a Developer ID costs USD 99/yr — see the `sign-macos` job in `.github/workflows/release.yml`), so one case does need one command: if you downloaded the `.tar.gz` in a **browser** rather than with the one-liner, macOS marked the archive, and the extracted binary inherits the mark. Clear it on that one file — this does not disable Gatekeeper:
+>
+> ```bash
+> xattr -d com.apple.quarantine /path/to/orchicon
+> ```
+>
+> Every release also publishes `SHA256SUMS`; both installers verify the download against it and refuse a mismatch before anything is installed. To check a manual download by hand: `shasum -a 256 orchicon_<version>_darwin_<arch>.tar.gz` and compare it with that file. See [USERGUIDE.md §1 — macOS: Gatekeeper and verification](USERGUIDE.md#macos-gatekeeper-and-verification).
+
 > **Adapters are optional — the native engine needs nothing installed.** Orchicon ships its own runtime engine and runs sessions inside the control plane, so a fresh install is complete on its own: no adapter CLI, no binary probe, no serve. Install an external adapter (OpenCode, and future ones like Claude Code / Codex) only if you want to run work on that runtime. Orchicon **never bundles or ships** an adapter CLI — your own host install is bind-mounted into the containers at runtime, which keeps the product redistributable regardless of an adapter's licence (Claude Code's terms prohibit bundling).
 >
 > To use OpenCode as a runtime, **install it as your own user — never with `sudo`**:
@@ -93,29 +101,32 @@ docker run --rm -p 8080:8080 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedp
 
 The `orchicon` binary is the PID-1 supervisor (`orchicon container`). See [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md) for the lifecycle script, env vars, and data-preservation notes.
 
-### Windows (WSL2)
+### Windows
 
 ```powershell
 irm https://orchicon.dev/install.ps1 | iex
 ```
 
-Orchicon's runtime layer (runtime daemon, unix socket, container mounts) is POSIX-only, so on Windows the **whole stack runs inside WSL2**. The installer provisions/detects WSL2, installs the **Linux** binary inside the distro, and runs the one-command setup there. WSL2 forwards `localhost`, so the UIs open from Windows at the same URLs as on Linux: `http://localhost:8080` (control plane).
+Orchicon runs on Windows as **native processes of the user who installs it**: `install.ps1` places `orchicon.exe` and `orch.exe` in `%LOCALAPPDATA%\Programs\Orchicon`, adds that directory to your **user** `PATH`, and runs the one-command setup there. **WSL2 is needed only for a workflow's runtime container**, which the installer provisions when you ask for it (`-Containers`); a plain install never runs `wsl` and works on a machine that has none.
 
 The installer never closes your PowerShell window: a failure prints what failed and the next steps, then returns to the prompt with your session intact. The long steps (binary acquisition, stack setup) stream their output as they run, the setup step asks about host ports (ENTER accepts each default), and the full log lands in `%TEMP%`. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation).
 
-Prerequisites:
-- **Windows 10 21H2+ / Windows 11**, with WSL2 and a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
-- A **container engine is optional**: the plane and its services run as host processes, so nothing needs Docker. Docker Desktop with WSL2 integration (or Docker Engine inside the distro) is only used for a workflow's *runtime container*, and only if you opt in.
+> **Windows SmartScreen.** The installer downloads `orchicon.exe` itself, so the binary it installs carries no mark-of-the-web and runs without a prompt. If you instead downloaded the **zip in a browser**, Windows marks that archive and SmartScreen warns *"Windows protected your PC"* the first time you run the extracted `orchicon.exe`: click **More info → Run anyway**, or clear the mark on the archive **before extracting it** with `Unblock-File -LiteralPath .\orchicon_<version>_windows_amd64.zip`. Neither step changes a Windows security setting — every other unsigned download on the machine stays blocked. A **saved** `install.ps1` (right-click → "Save link as") can be marked the same way: `Unblock-File -LiteralPath .\install.ps1`. The documented `irm https://orchicon.dev/install.ps1 | iex` writes no file at all and trips nothing.
 
-Project directories are entered in the UI as their **WSL path** — a Windows project `C:\Users\you\projects\Foo` is `/mnt/c/Users/you/projects/Foo` inside WSL. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
+Prerequisites:
+- **Windows 10 21H2+ / Windows 11.** A native install needs no WSL2 distro and no Docker Desktop. `-Containers` additionally needs WSL2 with a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
+- A **container engine is optional**: the plane and its services run as host processes, so nothing needs Docker. An engine is only used for a workflow's *runtime container*, and only if you opt in.
+
+Project directories are entered in the UI as **host paths** — with a native install that stays the Windows path (`C:\Users\you\projects\Foo`), not a `/mnt/c/…` translation. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
 
 ### Options
 
 | Flag | Description |
 |---|---|
 | `--version <tag>` | Install a specific version (e.g. `v0.4.5`). Default: latest. |
-| `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). On Windows this is a **WSL path** (the binary installs inside the distro). |
+| `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). The PowerShell installer's `-InstallDir` defaults to `%LOCALAPPDATA%\Programs\Orchicon` and needs no administrator rights. |
 | `--no-setup` | Install the binary only — do not start the host services, the runtime daemon or the plane. |
+| `--no-verify` | Skip the `SHA256SUMS` check on the downloaded archive. The check is what proves the archive is the one the release published; only skip it against a mirror you control. |
 | `--uninstall` | Remove Orchicon from the install directory. |
 | `--dry-run` | Print what would happen without making changes. |
 | `--clean` | Stop this instance's plane and host services, remove old binary, then install latest. All user data preserved. |

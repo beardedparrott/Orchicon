@@ -40,6 +40,7 @@
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "D:\tools\Orchicon"
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Containers
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -NoSetup
+#   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -NoVerify
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Uninstall
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Clean
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -ForceClean
@@ -78,6 +79,7 @@ param(
     [switch]$ForceClean,
     [switch]$DryRun,
     [switch]$NoSetup,
+    [switch]$NoVerify,
     [switch]$RemoveBinary,
     [switch]$Yes,
     [switch]$Purge,
@@ -680,6 +682,29 @@ try {
     # run, which changes nothing and does not need a log file.
     if (-not $DryRun) { Start-InstallLog }
 
+    # --- SmartScreen / "saved from the internet" notice --------------------------
+    # A SAVED .ps1 CARRIES A MARK-OF-THE-WEB STREAM, and that stream is what makes PowerShell (and
+    # SmartScreen) treat the file as untrusted. The documented invocation writes no file at all —
+    # `irm https://orchicon.dev/install.ps1 | iex` — so it never gains the mark; this is for the operator
+    # who right-clicked "Save link as". The remedy is ONE command against ONE file, never a security
+    # setting to lower, and it is the same instruction the guidance block at the end prints.
+    if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) {
+        # IN A try/catch, AND `-ErrorAction Stop` INSIDE IT. `-Stream` is a Windows-only FileSystem
+        # parameter: on Linux/macOS it is not a parameter at all, and `-ErrorAction SilentlyContinue`
+        # does NOT swallow a parameter-binding failure — it would surface as a terminating error and
+        # take this install into the catch block, on a platform where a zone mark cannot exist. The
+        # catch makes "cannot ask" mean "not marked", which is the truth on every non-Windows host and
+        # on a Windows file carrying no alternate stream.
+        $zone = $null
+        try { $zone = Get-Item -LiteralPath $PSCommandPath -Stream Zone.Identifier -ErrorAction Stop } catch { }
+        if ($zone) {
+            Write-Warn "this script was saved from the internet — it carries a Zone.Identifier mark"
+            Write-Warn "  PowerShell may refuse to run it, and SmartScreen may warn about it. Clear the mark on THIS file:"
+            Write-Warn "    Unblock-File -LiteralPath '$PSCommandPath'"
+            Write-Warn "  (or use the documented 'irm https://orchicon.dev/install.ps1 | iex', which writes no file at all)"
+        }
+    }
+
     # --- Elevated pre-flight ----------------------------------------------------
     # FIRST, before a byte is downloaded or a process is started: Postgres refuses
     # to run as Administrator, and the failure that produces arrives minutes later
@@ -693,7 +718,6 @@ try {
     # never runs. (An elevated shell is the one people habitually use to remove software.)
     $startsStack = -not ($Uninstall -or $RemoveBinary -or $DryRun -or $NoSetup)
     if ($startsStack) { Assert-NotElevated }
-
     # --- Defaults ---------------------------------------------------------------
     # THE NATIVE INSTALL DIR: %LOCALAPPDATA%\Programs\Orchicon is per-user, needs no
     # administrator rights, and is where Windows puts per-user applications. (The
@@ -1041,6 +1065,52 @@ function Ask-Instance {
         }
     }
 
+    # --- VERIFY THE ARCHIVE, THEN EXTRACT IT --------------------------------------
+    # THE SAME POLICY install.sh APPLIES, expressed natively so the two cannot disagree about what a
+    # verified install means:
+    #   * no SHA256SUMS for this version (or the file cannot be fetched) → say so and continue — older
+    #     releases predate the file, and an unreachable sums file is not evidence of a corrupt download;
+    #   * a hash MISMATCH → halt BEFORE anything is extracted or installed, with both hashes printed.
+    if ($NoVerify) {
+        Write-Info "skipping the SHA256SUMS check (-NoVerify)"
+    } else {
+        $sumsText = $null
+        try {
+            $sumsResp = Invoke-WebRequest -Uri "$baseUrl/$Version/SHA256SUMS" -UseBasicParsing
+            # PS 5.1 hands back a byte[] for some content types and a string for others; both are the file.
+            $sumsText = if ($sumsResp.Content -is [byte[]]) {
+                [System.Text.Encoding]::UTF8.GetString($sumsResp.Content)
+            } else { [string]$sumsResp.Content }
+        } catch {
+            Write-Info "no SHA256SUMS published for $Version — skipping checksum verification"
+        }
+        if ($sumsText) {
+            $expected = ""
+            foreach ($line in ($sumsText -split "`r?`n")) {
+                # Format: "<sha256>  <asset-name>"; a leading ./ is tolerated the way the shell installer does.
+                $f = $line.Trim() -split '\s+'
+                if ($f.Count -ge 2) {
+                    $name = $f[1] -replace '^\./', ''
+                    if ($name -eq $asset) { $expected = $f[0].ToLower(); break }
+                }
+            }
+            if (-not $expected) {
+                Write-Info "SHA256SUMS does not list $asset — skipping checksum verification"
+            } else {
+                $actual = ""
+                try { $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLower() } catch { $actual = "" }
+                if (-not $actual) {
+                    Write-Info "could not hash the archive — skipping checksum verification"
+                } elseif ($actual -ne $expected) {
+                    Remove-Item -Path $tmpdir -Recurse -Force -ErrorAction SilentlyContinue
+                    Stop-Install "checksum mismatch for ${asset}: expected $expected, got $actual. The download is corrupt or is not the archive this release published. NOTHING WAS INSTALLED."
+                } else {
+                    Write-Ok "checksum verified against the published SHA256SUMS"
+                }
+            }
+        }
+    }
+
     # --- Extract and install the NATIVE binaries --------------------------------
     Write-Info "extracting and installing into $InstallDir…"
     $extractDir = Join-Path $tmpdir "extract"
@@ -1092,6 +1162,32 @@ function Ask-Instance {
     } else {
         Write-Warn "binary installed but could not verify — run '$exe version' to check"
     }
+
+    # VERIFICATION GUIDANCE — BYTE-IDENTICAL to the block scripts/install.sh prints, deliberately: the
+    # verification story must not depend on which installer the operator ran.
+    # TestInstallersPrintTheSameVerificationGuidance compares the two blocks verbatim, so a change here
+    # without the matching change there fails the build.
+    Write-Host ""
+    Write-Host @'
+# >>> verification-guidance
+Verifying a manual download:
+  orchicon version                  # must print the version you installed
+  releases publish SHA256SUMS       # both installers check it; to check by hand:
+                                    #   shasum -a 256 <asset>.tar.gz    (macOS)
+                                    #   sha256sum <asset>.tar.gz        (Linux)
+                                    #   Get-FileHash <asset>.zip        (Windows PowerShell)
+                                    # compare the result with SHA256SUMS on the release page
+If macOS blocked the binary after a BROWSER download, clear the quarantine bit on that ONE file:
+  xattr -d com.apple.quarantine /path/to/orchicon
+  This removes the mark from one file. It does not disable Gatekeeper, and it is NOT needed when
+  you install with the curl one-liner (curl sets no quarantine bit).
+Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running this installer:
+  Unblock-File -LiteralPath .\orchicon_<version>_windows_amd64.zip   # BEFORE extracting it
+  If orchicon.exe still trips "Windows protected your PC", choose More info, then Run anyway.
+  This clears the mark on one archive; it does not change a Windows security setting, and it is NOT
+  needed when you install with the irm one-liner, which downloads the archive itself.
+# <<< verification-guidance
+'@
 
     # --- PATH hint ---------------------------------------------------------------
     Write-PathHint

@@ -565,6 +565,7 @@ install-ps1-test: ## CI gate: the Windows installer is native, never closes the 
 # install-ps1-test (a real zip, a real child process); only the container opt-in needs a Windows runner.
 install-path-test: ## Run the real installer against a locally-served artifact, and the uninstall verbs against redirected state and stubbed engines
 	bash scripts/tests/install-path/run.sh
+	bash scripts/tests/install-path/run.sh --os darwin
 	bash scripts/tests/install-path/uninstall.sh
 
 # host-residency-test guards the LAUNCH SHAPE of an instance: which of the two residencies a plain

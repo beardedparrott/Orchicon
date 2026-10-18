@@ -52,6 +52,7 @@ FORCE_CLEAN=false
 DRY_RUN=false
 SETUP=true
 INSTALL_ORCH=true  # orch = the thin remote TUI client (skippable via --no-orch)
+VERIFY_CHECKSUM=true  # verify the download against the release's SHA256SUMS (disable with --no-verify)
 
 # --- Colors -----------------------------------------------------------------
 if [ -t 1 ]; then
@@ -87,6 +88,7 @@ while [ $# -gt 0 ]; do
     --dry-run)         DRY_RUN=true; shift ;;
     --no-setup)        SETUP=false; shift ;;
     --no-orch)         INSTALL_ORCH=false; shift ;;
+    --no-verify)       VERIFY_CHECKSUM=false; shift ;;
     --help|-h)
       # QUOTED DELIMITER: this is a usage TEXT, so nothing in it may be expanded or EXECUTED. It was
       # `<<EOF`, and the backticked phrases in it were therefore COMMAND SUBSTITUTIONS — so
@@ -130,6 +132,9 @@ Options:
    --no-setup           Install the binary only — do NOT start the host services, the
                         runtime daemon, or the plane (default: full
                         one-command setup runs `orchicon install`).
+  --no-verify          Skip the SHA256SUMS check on the downloaded archive. The
+                       check is what proves the archive is the one the release
+                       published; only skip it against a mirror you control.
   -h, --help           Show this help.
 
 Runtime images:
@@ -423,6 +428,69 @@ detect_arch() {
     aarch64|arm64) echo "arm64" ;;
     *)              die "unsupported architecture: $arch" ;;
   esac
+}
+
+# --- Checksum verification ---------------------------------------------------
+# sha256_of prints the SHA-256 of a file, or fails when no hashing tool exists.
+#
+# `sha256sum` DOES NOT EXIST ON macOS by default; `shasum -a 256` does. Returning non-zero rather
+# than dying is what keeps a host with neither tool from failing an install that is otherwise fine —
+# absence of the tool is not evidence that the download is bad.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+# verify_checksum <asset-name> <downloaded-file>
+#
+# THE POLICY, and it is the same policy install.ps1 applies inside WSL:
+#   * no SHA256SUMS published for this version (or no hashing tool here) → WARN and continue, because
+#     older releases predate the file and a host without sha256sum is not a corrupt download;
+#   * a hash MISMATCH → die. A mismatch means the archive is not the one the release published, and
+#     installing from it is exactly the failure this check exists to prevent. It runs BEFORE extraction
+#     and before anything is moved into place, so a refused download leaves the machine untouched.
+verify_checksum() {
+  local asset="$1" file="$2" dir="${3:-${TMPDIR:-/tmp}}"
+  if [ "$VERIFY_CHECKSUM" != true ]; then
+    info "skipping the SHA256SUMS check (--no-verify)"
+    return 0
+  fi
+  # Written into the install's own temp dir rather than a file of its own: main() already traps that
+  # directory for removal, so the checksum file has exactly the archive's lifetime and no cleanup path
+  # of its own to get wrong.
+  local sums_file="${dir}/SHA256SUMS"
+  if ! curl -fsSL -o "$sums_file" "${ASSET_BASE_URL}/${VERSION}/SHA256SUMS" 2>/dev/null; then
+    info "no SHA256SUMS published for ${VERSION} — skipping checksum verification"
+    return 0
+  fi
+  local expected
+  # The published format is `<hash>  <asset>`; accept the `./asset` spelling too rather than failing a
+  # correct download over a path prefix.
+  expected="$(awk -v a="$asset" '$2 == a || $2 == "./" a { print $1; exit }' "$sums_file")"
+  if [ -z "$expected" ]; then
+    warn "SHA256SUMS for ${VERSION} does not list ${asset} — skipping checksum verification"
+    return 0
+  fi
+  local actual
+  if ! actual="$(sha256_of "$file")"; then
+    warn "neither sha256sum nor shasum is available — skipping checksum verification"
+    return 0
+  fi
+  if [ "$actual" != "$expected" ]; then
+    die "checksum mismatch for ${asset}
+  expected ${expected}
+  got      ${actual}
+  The download is corrupt or is not the archive this release published. NOTHING WAS INSTALLED.
+  Re-run this installer; if it happens again, download ${asset} by hand and compare it with
+  'shasum -a 256 ${asset}' (macOS) or 'sha256sum ${asset}' (Linux) against the SHA256SUMS file on
+  the release page."
+  fi
+  ok "checksum verified against the published SHA256SUMS"
 }
 
 check_cmd() {
@@ -759,14 +827,17 @@ main() {
   # DRY_RUN guards below were reached, so `--dry-run --version v9.9.9` made a network request and then
   # died with "download failed" — a report of what WOULD happen that could not be produced for a version
   # that would not install, and a network side effect in a flag whose whole contract is "change nothing".
-  # Found by running it. The fetch and the unpack are the two steps skipped here; everything after them
-  # is already guarded.
+  # Found by running it.
   if [ "$DRY_RUN" = true ]; then
     info "would download ${D}${url}${X}"
     info "would extract it and install ${B}${INSTALL_DIR}/orchicon${X}"
   else
     info "downloading ${D}${url}${X}"
     curl -fsSL -o "$archive" "$url" || die "download failed"
+    # VERIFY THE ARCHIVE, THEN EXTRACT IT — INSIDE this branch, so the check and the dry-run contract
+    # both hold. This ordering is the whole point: a mismatched download must be refused before
+    # anything is unpacked, because at this moment nothing on the machine has changed.
+    verify_checksum "$asset" "$archive" "$tmpdir"
     # Extract
     info "extracting…"
     tar -xzf "$archive" -C "$tmpdir"
@@ -790,6 +861,17 @@ main() {
     [ -n "$extracted_binary" ] || die "could not find orchicon binary in archive"
     mv "$extracted_binary" "$bin"
     chmod +x "$bin"
+
+    # macOS: CLEAR THE QUARANTINE BIT IF THIS FILE CARRIES ONE.
+    #
+    # curl sets no quarantine bit, so the documented one-liner install never trips Gatekeeper — this is
+    # for the case where the archive came from a BROWSER download (or a mirrored tree) and macOS marked it.
+    # It removes the mark from THIS ONE FILE; it does not disable Gatekeeper. A no-op on Linux.
+    if [ "$os" = darwin ] && command -v xattr >/dev/null 2>&1 \
+       && xattr -p com.apple.quarantine "$bin" >/dev/null 2>&1; then
+      xattr -d com.apple.quarantine "$bin" 2>/dev/null || true
+      ok "cleared the macOS quarantine bit on ${bin}"
+    fi
   fi
 
   # Companion install: orch (the thin remote TUI client) rides in the
@@ -838,6 +920,32 @@ main() {
       echo -e "  ${D}or open System Settings → Privacy & Security and choose \"Open Anyway\" for orchicon.${X}"
     fi
   fi
+
+  # VERIFICATION GUIDANCE — printed on EVERY platform and in both installers, byte-identical, because
+  # the verification story must not depend on which installer the user ran. The markers are part of the
+  # printed block and are also the extraction anchors TestInstallersPrintTheSameVerificationGuidance
+  # uses to compare this text with the same block in scripts/install.ps1.
+  echo ""
+  cat <<'GUIDANCE'
+# >>> verification-guidance
+Verifying a manual download:
+  orchicon version                  # must print the version you installed
+  releases publish SHA256SUMS       # both installers check it; to check by hand:
+                                    #   shasum -a 256 <asset>.tar.gz    (macOS)
+                                    #   sha256sum <asset>.tar.gz        (Linux)
+                                    #   Get-FileHash <asset>.zip        (Windows PowerShell)
+                                    # compare the result with SHA256SUMS on the release page
+If macOS blocked the binary after a BROWSER download, clear the quarantine bit on that ONE file:
+  xattr -d com.apple.quarantine /path/to/orchicon
+  This removes the mark from one file. It does not disable Gatekeeper, and it is NOT needed when
+  you install with the curl one-liner (curl sets no quarantine bit).
+Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running this installer:
+  Unblock-File -LiteralPath .\orchicon_<version>_windows_amd64.zip   # BEFORE extracting it
+  If orchicon.exe still trips "Windows protected your PC", choose More info, then Run anyway.
+  This clears the mark on one archive; it does not change a Windows security setting, and it is NOT
+  needed when you install with the irm one-liner, which downloads the archive itself.
+# <<< verification-guidance
+GUIDANCE
 
   # PATH hint — ONLY WHEN SOMETHING WAS INSTALLED. A dry run reported "Orchicon was installed to …" for a
   # binary it never wrote, which is the class of lie ok_dry exists to prevent: the operator acts on it.
