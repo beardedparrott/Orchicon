@@ -53,9 +53,9 @@
 #                        for the self-contained shape.
 #
 # Instance layout:
-#   dev:  orchicon-cnt-dev   ports 8080:8080, 3002:3000   (plane + Grafana)
-#   prod: orchicon-cnt-prod  ports 8091:8080, 3003:3000
-#   test: orchicon-cnt-test  ports 8092:8080, 3004:3000   — a throwaway instance
+#   dev:  orchicon-cnt-dev   ports 8080:8080            (plane)
+#   prod: orchicon-cnt-prod  ports 8091:8080
+#   test: orchicon-cnt-test  ports 8092:8080            — a throwaway instance
 #         for installer/upgrade trials. It gets its own `fresh` Postgres rather
 #         than the legacy compose volumes dev/prod reuse, so a test can never
 #         touch real data.
@@ -67,7 +67,8 @@
 #   OTLP gRPC / HTTP   4317  4319  4321  /  4318 4320 4322
 #   tempo / loki       3200  3201  3202  /  3100 3101 3102
 #   victoriametrics    8428  8429  8430
-#   grafana            3002  3003  3004  (→ container 3000)
+#   3002/3003/3004 are RETIRED (formerly Grafana's) and RESERVED — no row
+#   claims them until a deliberate edit adds one here and in install_ports.go.
 #   plane HTTP         8080  8091  8092
 # No value here may be GLOBAL: a shared port or URL would silently point one
 # instance's workers/plane at the other. Every column must stay disjoint — and a
@@ -139,7 +140,6 @@ print_shape() {
   else
     echo "plane_public_url=(resolved at run time: the plane container's own bridge IP)"
   fi
-  echo "grafana_url=$GRAFANA_URL"
   echo "host_data_dir=$HOST_DATA_DIR"
   echo "service_ports=$SERVICE_PORTS"
   if [ "$residency" = "host" ]; then
@@ -1022,7 +1022,6 @@ up_instance() {
     $DNS_ARGS \
     ${PUBLISH_PORTS} \
     ${HEALTH_ARGS[@]+"${HEALTH_ARGS[@]}"} \
-    -e ORCHICON_GRAFANA_PUBLIC_URL="$GRAFANA_URL" \
     -e "ORCHICON_HOST_UID=$(id -u)" \
     -e "ORCHICON_HOST_GID=$(id -g)" \
     -e "ORCHICON_HOST_HOME=$HOME" \
@@ -1037,7 +1036,6 @@ up_instance() {
     plane_start "$inst"
   fi
   echo -e "  Control plane:  ${C_DIM}http://localhost:${PLANE_HTTP_PORT}${C_RESET}"
-  echo -e "  Grafana:        ${C_DIM}${GRAFANA_URL}${C_RESET}"
   echo -e "  Postgres data:  ${C_DIM}$PG_VOLUME${C_RESET}"
   if [ "$SERVICES_ONLY" = "1" ]; then
     echo ""
@@ -1168,8 +1166,7 @@ services_port() {
     nats) key=ORCHICON_NATS_PORT; def="$NATS_PORT" ;;
     nats-mon|nats-monitor) key=ORCHICON_NATS_MONITOR_PORT; def="$NATS_MON_PORT" ;;
     control|plane) key=ORCHICON_CONTROL_PORT; def="$PLANE_HTTP_PORT" ;;
-    grafana) key=ORCHICON_GRAFANA_PORT; def="$GRAFANA_HOST_PORT" ;;
-    *) echo "unknown service: $svc (use postgres|nats|nats-mon|control|grafana)" >&2; return 1 ;;
+    *) echo "unknown service: $svc (use postgres|nats|nats-mon|control)" >&2; return 1 ;;
   esac
   local rec
   rec="$(_recorded_port "$inst" "$key")"
@@ -1291,7 +1288,7 @@ case "${1:-}" in
     docker ps -a --filter label=orchicon.workflow --format 'table {{.Names}}\t{{.Status}}'
     ;;
   *)
-    echo "Usage: $0 {build|rebuild [dev|prod|test]|sync-mounts [dev|prod|test]|up [dev|prod|test]|down [dev|prod|test]|status [dev|prod|test]|logs [dev|prod|test]|plane-bind [dev|prod|test]|shape [dev|prod|test]|verify [dev|prod|test]|plane-start|plane-stop|plane-status [dev|prod|test]|services-port [dev|prod|test] [postgres|nats|nats-mon|control|grafana]|db-url [dev|prod|test]|pg-psql [dev|prod|test]|ps|runtime-daemon|runtime-stop}"
+    echo "Usage: $0 {build|rebuild [dev|prod|test]|sync-mounts [dev|prod|test]|up [dev|prod|test]|down [dev|prod|test]|status [dev|prod|test]|logs [dev|prod|test]|plane-bind [dev|prod|test]|shape [dev|prod|test]|verify [dev|prod|test]|plane-start|plane-stop|plane-status [dev|prod|test]|services-port [dev|prod|test] [postgres|nats|nats-mon|control]|db-url [dev|prod|test]|pg-psql [dev|prod|test]|ps|runtime-daemon|runtime-stop}"
     echo "  services-port/db-url/pg-psql: pure per-instance queries (a service's host port, the derived"
     echo "    Postgres DSN, the resolved psql path) — what the Makefile and check-rls.sh derive from."
     echo "  ORCHICON_PLANE_RESIDENCY=host|container  (default host) picks the shape per invocation;"

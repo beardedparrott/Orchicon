@@ -497,12 +497,12 @@ func TestServicePortsForHostReadsEnv(t *testing.T) {
 // The SAME ordered service set is built in both residencies (acceptance
 // criterion 1, "same service set"), pinned without booting anything.
 func TestServiceSetParityBothResidencies(t *testing.T) {
-	want := []string{"postgres", "nats", "tempo", "loki", "victoriametrics", "otel-collector", "grafana"}
+	want := []string{"postgres", "nats", "tempo", "loki", "victoriametrics", "otel-collector"}
 	for _, residency := range []string{residencyHost, residencyContainer} {
 		t.Run(residency, func(t *testing.T) {
 			s := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(),
 				residency: residency, ports: servicePortsFor(residency)}
-			procs := []*managedProc{s.postgresProc(), s.natsProc(), s.tempoProc(), s.lokiProc(), s.vmProc(), s.collectorProc(), s.grafanaProc()}
+			procs := []*managedProc{s.postgresProc(), s.natsProc(), s.tempoProc(), s.lokiProc(), s.vmProc(), s.collectorProc()}
 			if len(procs) != len(want) {
 				t.Fatalf("service count = %d, want %d", len(procs), len(want))
 			}
@@ -596,7 +596,7 @@ func TestContainerResidencyArgvUnchanged(t *testing.T) {
 		t.Errorf("container victoriametrics argv drifted:\n got %s\nwant %s", got, wantVM)
 	}
 
-	for _, p := range []*managedProc{s.tempoProc(), s.lokiProc(), s.collectorProc(), s.grafanaProc()} {
+	for _, p := range []*managedProc{s.tempoProc(), s.lokiProc(), s.collectorProc()} {
 		switch p.name {
 		case "tempo":
 			if got := strings.Join(p.args, " "); got != "-config.file="+filepath.Join(s.configDir, "tempo.yaml") {
@@ -609,10 +609,6 @@ func TestContainerResidencyArgvUnchanged(t *testing.T) {
 		case "otel-collector":
 			if got := strings.Join(p.args, " "); got != "--config="+filepath.Join(s.configDir, "otel-collector.yaml") {
 				t.Errorf("container otel argv drifted: %s", got)
-			}
-		case "grafana":
-			if got := strings.Join(p.args, " "); got != "server --homepath=/usr/share/grafana --config="+filepath.Join(s.configDir, "grafana.ini") {
-				t.Errorf("container grafana argv drifted: %s", got)
 			}
 		}
 	}
@@ -730,7 +726,7 @@ func embeddedConfigPort(t *testing.T, path, key string, nth int, ports servicePo
 }
 
 // The telemetry children's listen ports live in an EMBEDDED CONFIG (tempo.yaml,
-// loki.yaml, grafana.ini, otel-collector.yaml), NOT in argv. The probe port is
+// loki.yaml, otel-collector.yaml), NOT in argv. The probe port is
 // therefore only correct because it COPIES the config — so parse the shipped
 // configs (resolving the @TOKEN@s) and pin each field to them, in both
 // residencies. A knob that moved one of these fields without moving the config
@@ -745,7 +741,6 @@ func TestServiceProbesMatchEmbeddedConfigPorts(t *testing.T) {
 	}{
 		{"tempo", "deploy/configs/tempo.yaml", "http_listen_port", "ORCHICON_TEMPO_PORT", 0, func(p servicePorts) int { return p.tempo }},
 		{"loki", "deploy/configs/loki.yaml", "http_listen_port", "ORCHICON_LOKI_PORT", 0, func(p servicePorts) int { return p.loki }},
-		{"grafana", "deploy/configs/grafana.ini", "http_port", "ORCHICON_GRAFANA_PORT", 0, func(p servicePorts) int { return p.grafana }},
 		{"tempo-otlp-grpc", "deploy/configs/tempo.yaml", `endpoint: "0.0.0.0:`, "ORCHICON_TEMPO_OTLP_GRPC_PORT", 0, func(p servicePorts) int { return p.tempoOTLPGRPC }},
 		{"tempo-otlp-http", "deploy/configs/tempo.yaml", `endpoint: "0.0.0.0:`, "ORCHICON_TEMPO_OTLP_HTTP_PORT", 1, func(p servicePorts) int { return p.tempoOTLPHTTP }},
 		{"collector-otlp-grpc", "deploy/configs/otel-collector.yaml", "endpoint: 0.0.0.0:", "ORCHICON_OTLP_GRPC_PORT", 0, func(p servicePorts) int { return p.collectorOTLPGRPC }},

@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// QueryClient queries tenant-scoped telemetry from the Grafana stack:
-// Tempo (traces), Loki (logs), VictoriaMetrics (metrics). It talks to the
-// backends' native HTTP APIs directly — Grafana itself is only the UI.
+// QueryClient queries tenant-scoped telemetry from the telemetry backends:
+// Tempo (traces), Loki (logs), VictoriaMetrics (metrics). It talks to each
+// backend's native HTTP API directly — there is no UI-fronting hop.
 //
 // If a backend is unreachable, the corresponding query method returns a
 // Degraded=true response rather than an error, so the UI degrades
@@ -49,6 +49,9 @@ type TraceResult struct {
 	Traces   []TraceSummary
 	NextPage string
 	Degraded bool
+	// Reason explains a degraded result: which backend is down and why.
+	// Empty when Degraded is false.
+	Reason string
 }
 
 type TraceSummary struct {
@@ -66,6 +69,7 @@ type TraceSummary struct {
 type MetricResult struct {
 	Series   []MetricSeriesPoint
 	Degraded bool
+	Reason   string
 }
 
 type MetricSeriesPoint struct {
@@ -82,6 +86,7 @@ type MetricPoint struct {
 type LogResult struct {
 	Logs     []LogEntry
 	Degraded bool
+	Reason   string
 }
 
 type LogEntry struct {
@@ -98,6 +103,7 @@ type LogEntry struct {
 type TraceFilter struct {
 	ProjectID     string
 	ExecutionID   string
+	WorkItemID    string
 	TraceID       string
 	CorrelationID string
 	Service       string
@@ -106,16 +112,23 @@ type TraceFilter struct {
 }
 
 type MetricFilter struct {
-	Names      []string
-	ProjectID  string
+	Names     []string
+	ProjectID string
+	// WorkItemID is accepted for symmetry but ignored: VictoriaMetrics
+	// carries no work-item/execution label (resource_to_telemetry_conversion
+	// only emits resource attributes), so metrics are tenant+project scoped.
+	WorkItemID string
 	Start, End time.Time
 }
 
 type LogFilter struct {
-	ProjectID  string
-	Severity   string
-	Start, End time.Time
-	Limit      int
+	ProjectID   string
+	ExecutionID string
+	WorkItemID  string
+	Severity    string
+	Search      string
+	Start, End  time.Time
+	Limit       int
 }
 
 // ----- QueryTraces (Tempo /api/search) -----
@@ -126,7 +139,7 @@ type LogFilter struct {
 // tenant, so orchicon.tenant_id is not present on every trace (docs/10 §8).
 func (c *QueryClient) QueryTraces(ctx context.Context, tenantID string, f TraceFilter) (TraceResult, error) {
 	if c.tempoURL == "" {
-		return TraceResult{Degraded: true}, nil
+		return TraceResult{Degraded: true, Reason: degradeReason("tempo", c.tempoURL, nil)}, nil
 	}
 
 	end := f.End
@@ -154,6 +167,9 @@ func (c *QueryClient) QueryTraces(ctx context.Context, tenantID string, f TraceF
 	if f.ExecutionID != "" {
 		tags["orchicon.execution_id"] = f.ExecutionID
 	}
+	if f.WorkItemID != "" {
+		tags["orchicon.work_item_id"] = f.WorkItemID
+	}
 	if f.TraceID != "" {
 		tags["traceID"] = f.TraceID
 	}
@@ -167,7 +183,7 @@ func (c *QueryClient) QueryTraces(ctx context.Context, tenantID string, f TraceF
 
 	body, status, err := c.get(ctx, c.tempoURL+"/api/search?"+q.Encode())
 	if err != nil || status >= 400 {
-		return TraceResult{Degraded: true}, nil
+		return TraceResult{Degraded: true, Reason: degradeReason("tempo", c.tempoURL, httpErr(err, status))}, nil
 	}
 
 	var resp struct {
@@ -183,7 +199,7 @@ func (c *QueryClient) QueryTraces(ctx context.Context, tenantID string, f TraceF
 		} `json:"traces"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return TraceResult{Degraded: true}, nil
+		return TraceResult{Degraded: true, Reason: degradeReason("tempo", c.tempoURL, err)}, nil
 	}
 
 	out := TraceResult{}
@@ -216,7 +232,7 @@ func (c *QueryClient) QueryTraces(ctx context.Context, tenantID string, f TraceF
 // so a total/deterministic read must re-aggregate across classes. We wrap the
 // selector in sum(...) to collapse them back into a single total series, which
 // preserves the pre-split total semantics while the per-class breakdown stays
-// available to Grafana via sum by (token_class). This is the only safe form
+// available per token_class via sum by (token_class). This is the only safe form
 // for consumers that read a single latest point (the telemetry "Metric values"
 // panel) — otherwise they would report one arbitrary bucket instead of the
 // total.
@@ -231,7 +247,7 @@ var tokenClassSplitMetrics = map[string]bool{
 // a label matcher on orchicon_tenant_id. Points are returned newest-first.
 func (c *QueryClient) QueryMetrics(ctx context.Context, tenantID string, f MetricFilter) (MetricResult, error) {
 	if c.vmURL == "" {
-		return MetricResult{Degraded: true}, nil
+		return MetricResult{Degraded: true, Reason: degradeReason("victoriametrics", c.vmURL, nil)}, nil
 	}
 
 	end := f.End
@@ -268,6 +284,9 @@ func (c *QueryClient) QueryMetrics(ctx context.Context, tenantID string, f Metri
 		body, status, err := c.get(ctx, c.vmURL+"/api/v1/query_range?"+q.Encode())
 		if err != nil || status >= 400 {
 			out.Degraded = true
+			if out.Reason == "" {
+				out.Reason = degradeReason("victoriametrics", c.vmURL, httpErr(err, status))
+			}
 			continue
 		}
 
@@ -282,6 +301,9 @@ func (c *QueryClient) QueryMetrics(ctx context.Context, tenantID string, f Metri
 		}
 		if err := json.Unmarshal(body, &resp); err != nil {
 			out.Degraded = true
+			if out.Reason == "" {
+				out.Reason = degradeReason("victoriametrics", c.vmURL, err)
+			}
 			continue
 		}
 
@@ -328,7 +350,7 @@ func (c *QueryClient) QueryMetrics(ctx context.Context, tenantID string, f Metri
 // (docs/08 §5.3).
 func (c *QueryClient) QueryLogs(ctx context.Context, tenantID string, f LogFilter) (LogResult, error) {
 	if c.lokiURL == "" {
-		return LogResult{Degraded: true}, nil
+		return LogResult{Degraded: true, Reason: degradeReason("loki", c.lokiURL, nil)}, nil
 	}
 
 	end := f.End
@@ -344,10 +366,7 @@ func (c *QueryClient) QueryLogs(ctx context.Context, tenantID string, f LogFilte
 		limit = 100
 	}
 
-	selector := fmt.Sprintf(`{orchicon_tenant_id=%q}`, tenantID)
-	if sev := severityNumber(f.Severity); sev != "" {
-		selector = fmt.Sprintf(`{orchicon_tenant_id=%q,severity_number=%q}`, tenantID, sev)
-	}
+	selector := logSelector(tenantID, f)
 
 	q := url.Values{}
 	q.Set("query", selector)
@@ -358,7 +377,7 @@ func (c *QueryClient) QueryLogs(ctx context.Context, tenantID string, f LogFilte
 
 	body, status, err := c.get(ctx, c.lokiURL+"/loki/api/v1/query_range?"+q.Encode())
 	if err != nil || status >= 400 {
-		return LogResult{Degraded: true}, nil
+		return LogResult{Degraded: true, Reason: degradeReason("loki", c.lokiURL, httpErr(err, status))}, nil
 	}
 
 	var resp struct {
@@ -371,7 +390,7 @@ func (c *QueryClient) QueryLogs(ctx context.Context, tenantID string, f LogFilte
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return LogResult{Degraded: true}, nil
+		return LogResult{Degraded: true, Reason: degradeReason("loki", c.lokiURL, err)}, nil
 	}
 
 	out := LogResult{}
@@ -408,6 +427,65 @@ func (c *QueryClient) QueryLogs(ctx context.Context, tenantID string, f LogFilte
 		}
 	}
 	return out, nil
+}
+
+// degradeReason renders the operator-facing explanation of a degraded
+// (unreachable or unusable) backend query. It always names the backend so
+// the UI can say WHICH store is down instead of drawing a silently empty
+// chart (native telemetry page AC 5).
+func degradeReason(backend, endpoint string, err error) string {
+	if endpoint == "" {
+		return backend + " is not configured (no endpoint)"
+	}
+	if err != nil {
+		return fmt.Sprintf("%s is unreachable at %s: %v", backend, endpoint, err)
+	}
+	return fmt.Sprintf("%s at %s returned an unusable response", backend, endpoint)
+}
+
+// httpErr normalises the (err, statusCode) pair from QueryClient.get into a
+// single error for degradeReason: a transport error wins, otherwise a >=400
+// status becomes an HTTP error, otherwise nil.
+func httpErr(err error, status int) error {
+	if err != nil {
+		return err
+	}
+	if status >= 400 {
+		return fmt.Errorf("HTTP %d", status)
+	}
+	return nil
+}
+
+// logSelector builds the LogQL stream selector plus structured-metadata and
+// line filters for a log query. Tenant + severity are stream labels (set by
+// the collector's OTLP → Loki mapping, see otel-collector.yaml);
+// project_id / execution_id / task_id are record attributes surfaced as
+// structured metadata and applied as label filters after the selector;
+// free-text search becomes a line filter.
+//
+// The project filter used to be populated by the service and then silently
+// dropped here — it is now part of the selector.
+func logSelector(tenantID string, f LogFilter) string {
+	sel := fmt.Sprintf(`{orchicon_tenant_id=%q`, tenantID)
+	if sev := severityNumber(f.Severity); sev != "" {
+		sel += fmt.Sprintf(`,severity_number=%q`, sev)
+	}
+	sel += "}"
+	for _, kv := range [][2]string{
+		{"project_id", f.ProjectID},
+		{"execution_id", f.ExecutionID},
+		{"task_id", f.WorkItemID},
+	} {
+		if kv[1] != "" {
+			// strconv.Quote escapes `"` and `\` so a filter value can never
+			// break out of the LogQL string literal.
+			sel += fmt.Sprintf(" | %s=%s", kv[0], strconv.Quote(kv[1]))
+		}
+	}
+	if s := strings.TrimSpace(f.Search); s != "" {
+		sel += " |= " + strconv.Quote(s)
+	}
+	return sel
 }
 
 // severityNumber maps an OTel severity text (as passed by the frontend:

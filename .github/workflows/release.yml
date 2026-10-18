@@ -157,7 +157,7 @@ jobs:
 
   # Build + push the single-container image to GHCR. The image embeds the
   # frontend and ships every runtime (postgres, nats, tempo, loki, vm,
-  # collector, grafana, opencode) with the orchicon binary as PID-1
+  # collector, opencode) with the orchicon binary as PID-1
   # supervisor (`orchicon container`). Tagged with the version + latest.
   container:
     needs: guard

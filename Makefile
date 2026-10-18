@@ -624,6 +624,17 @@ no-engine-e2e-assertions-test: ## CI gate: the no-engine acceptance harness neve
 runtime-e2e-assertions-test: ## CI gate: the runtime-container acceptance harness never PASSes on an empty capture
 	bash scripts/tests/runtime-e2e-assertions/run.sh
 
+# plane-control-e2e-assertions-test pins the PLANE-CONTROL acceptance harness's own
+# honesty. Its verdicts are absence-shaped too: "the connection was REFUSED", "every
+# port is free", "the plane was left alone", "the status does not say drifted" — all
+# trivially true of a probe that failed to run, and all of them the difference between
+# a Stop that worked and a Stop nobody verified. Offline: it sources the harness and
+# drives it against a throwaway python3 HTTP fixture and the real /proc socket table,
+# so it touches no Orchicon plane, instance, port or database.
+.PHONY: plane-control-e2e-assertions-test
+plane-control-e2e-assertions-test: ## CI gate: the plane-control acceptance harness never PASSes on a refused/empty probe
+	bash scripts/tests/plane-control-e2e-assertions/run.sh
+
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
@@ -1120,7 +1131,7 @@ cross-compile: ## Compile the shipped binaries for every release platform plus w
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-typecheck fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate

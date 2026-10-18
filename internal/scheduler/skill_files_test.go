@@ -37,6 +37,7 @@ func skillFileTestSetup(t *testing.T, slug string) (*WorkflowReconciler, context
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "Skills " + slug,
 		Slug: slug + "-" + strings.ToLower(db.NewID()), Status: "active",
 		Goals: []byte("[]"), ProjectDir: root,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)

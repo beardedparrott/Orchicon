@@ -474,7 +474,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
       <p class="harness"><b>Prefer a classic harness?</b> Orchicon works like any other one too. Open Ask Orchicon in Iteration mode and pair with it directly in your repo, from the browser or the terminal. Add workflows, budgets and schedules only when you need them.</p>
     </div>
     <div class="hero-side">
-      <p>One command installs the whole stack: control plane, web app, terminal client, Postgres, NATS and a Grafana telemetry plane.</p>
+      <p>One command installs the whole stack: control plane, web app, terminal client, Postgres, NATS and a Tempo/Loki/VictoriaMetrics telemetry plane.</p>
       <div class="hero-actions">
         <a class="btn btn-primary" href="#install">Install Orchicon</a>
         <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon/blob/main/USERGUIDE.md">User Guide</a>
@@ -640,7 +640,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
           <tr><th scope="row">Cost</th><td class="alone">You find out on the invoice.</td><td class="with">Hard ceilings on tokens, dollars, wall-clock time and tool calls, rolled up by tenant, project, task and execution.</td></tr>
           <tr><th scope="row">Safety</th><td class="alone">The prompt asks it nicely not to.</td><td class="with">Disallowed tools are withheld and refused at execution. Every dispatch passes a Rego policy with a full decision trace.</td></tr>
           <tr><th scope="row">Isolation</th><td class="alone">Runs in your working copy.</td><td class="with">Each run gets its own container and git worktree, reset to pristine afterwards. Nothing leaks between runs.</td></tr>
-          <tr><th scope="row">Visibility</th><td class="alone">Terminal scrollback.</td><td class="with">Traces, logs and metrics in Grafana, an audit trail of every action, and a searchable history of every run.</td></tr>
+          <tr><th scope="row">Visibility</th><td class="alone">Terminal scrollback.</td><td class="with">Traces, logs and metrics in the built-in telemetry explorer, an audit trail of every action, and a searchable history of every run.</td></tr>
         </tbody>
       </table>
     </div>
@@ -1134,7 +1134,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
   var notes = {
     "t-unix":"Requires <code>curl</code>, <code>tar</code> and Docker.",
     "t-win":"Runs the whole stack inside WSL2. Needs Windows 10 21H2+ or Windows 11 and Docker Desktop with WSL integration.",
-    "t-docker":"Web app on port 8080, Grafana on 3002. Your data lives in the <code>orchicon-data</code> volume."
+    "t-docker":"Web app on port 8080. Your data lives in the <code>orchicon-data</code> volume."
   };
   // SCOPED TO THIS TABLIST, and the scoping IS the fix.
   //

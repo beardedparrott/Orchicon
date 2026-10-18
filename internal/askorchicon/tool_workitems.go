@@ -176,6 +176,12 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		// meant to be HARD-DELETED via hard_delete_work_item when the job
 		// ends. Top-level only — see the guard below.
 		Ephemeral bool `json:"ephemeral"`
+		// ExecutionMode overrides the project's mode for THIS item's
+		// executions: "runtime" | "local". Empty = inherit from the project
+		// (NEVER silently omitted-but-forced: an omitted field means inherit,
+		// which is a real, documented choice, and the field is always
+		// validated so a typo cannot become a silent third state).
+		ExecutionMode string `json:"execution_mode"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -282,6 +288,18 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	// so empty stays empty and the WorkflowReconciler resolves base at run
 	// start (functionally identical to the API's eager stamping).
 	runtimeImage := strings.TrimSpace(params.RuntimeImage)
+	// Work-item execution_mode override (item -> project -> tenant default,
+	// resolved in db.EffectiveExecutionMode). Validated by the SAME exported
+	// rule the Connect API uses, so the tool and the service cannot drift; an
+	// empty value means inherit and leaves the row NULL.
+	executionMode, err := workitem.ValidateExecutionMode(params.ExecutionMode)
+	if err != nil {
+		return nil, err
+	}
+	var executionModePtr *string
+	if executionMode != "" {
+		executionModePtr = &executionMode
+	}
 	row := db.WorkItemRow{
 		ID:                 db.NewID(),
 		TenantID:           tenantID,
@@ -301,6 +319,7 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		RuntimeImage:       runtimeImage,
 		ContextFiles:       contextFiles,
 		Ephemeral:          params.Ephemeral,
+		ExecutionMode:      executionModePtr,
 	}
 	if workflowID == "" {
 		row.WorkflowID = nil
@@ -370,12 +389,17 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		// ClearScheduledStartAt removes the schedule WITHOUT starting the item — the answer to
 		// "there is no way to clear a schedule". Distinct from AutoStartWorkflow, which clears as a
 		// side effect of FIRING.
-		ClearScheduledStartAt *bool     `json:"clear_scheduled_start_at"`
-		AutoStartWorkflow     *bool     `json:"auto_start_workflow"`
-		WorkflowRunID         *string   `json:"workflow_run_id"`
-		RuntimeImage          *string   `json:"runtime_image"`
-		Kind                  *string   `json:"kind"`
-		ContextFiles          *[]string `json:"context_files"`
+		ClearScheduledStartAt *bool   `json:"clear_scheduled_start_at"`
+		AutoStartWorkflow     *bool   `json:"auto_start_workflow"`
+		WorkflowRunID         *string `json:"workflow_run_id"`
+		RuntimeImage          *string `json:"runtime_image"`
+		// ExecutionMode sets this item's override ("runtime" | "local").
+		// Omit to leave it UNCHANGED; ClearExecutionMode returns it to
+		// "inherit from the project" (the field-mask rule the Connect API uses).
+		ExecutionMode      *string   `json:"execution_mode"`
+		ClearExecutionMode *bool     `json:"clear_execution_mode"`
+		Kind               *string   `json:"kind"`
+		ContextFiles       *[]string `json:"context_files"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -504,6 +528,23 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if params.RuntimeImage != nil {
 		v := strings.TrimSpace(*params.RuntimeImage)
 		update.RuntimeImage = &v
+	}
+	// CLEAR WINS over a simultaneously supplied value (same rule as the
+	// Connect UpdateWorkItem handler).
+	if params.ClearExecutionMode != nil && *params.ClearExecutionMode {
+		update.ClearExecutionMode = true
+	} else if params.ExecutionMode != nil {
+		v, err := workitem.ValidateExecutionMode(*params.ExecutionMode)
+		if err != nil {
+			return nil, err
+		}
+		if v == "" {
+			// Explicit empty string means "back to inherit" — an empty string is
+			// never a third stored state.
+			update.ClearExecutionMode = true
+		} else {
+			update.ExecutionMode = &v
+		}
 	}
 	if params.ContextFiles != nil {
 		if err := contextfiles.Validate(*params.ContextFiles); err != nil {

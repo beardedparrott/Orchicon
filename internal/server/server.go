@@ -125,11 +125,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		log.Warn("secrets KEK unavailable (secrets store disabled)", "error", kekErr)
 	}
 
-	// OTel telemetry pipeline (tracer + meter + OTLP exporter → Grafana stack).
-	// If the collector is unreachable, telemetry is dropped with bounded
-	// in-process buffering; control flow is not blocked (docs/08 §8). The
-	// runtime-container sandbox plane sets ORCHICON_TELEMETRY=none (no
-	// Grafana stack in the sandbox) — the pipeline is skipped entirely.
+	// OTel telemetry pipeline (tracer + meter + OTLP exporter → the telemetry
+	// backends). If the collector is unreachable, telemetry is dropped with
+	// bounded in-process buffering; control flow is not blocked (docs/08 §8).
+	// The runtime-container sandbox plane sets ORCHICON_TELEMETRY=none (no
+	// telemetry stack in the sandbox) — the pipeline is skipped entirely.
 	var otelShutdown *telemetry.Shutdowner
 	var err error
 	if cfg.Telemetry != "none" {
@@ -542,7 +542,6 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		PolicyEngine:      policyEngine,
 		RecoveryEngine:    recoveryEngine,
 		TelemetryQuery:    telemetryQuery,
-		GrafanaURL:        cfg.GrafanaURL,
 		AuthHandler:       authHandler,
 		WebhookDispatcher: webhookDisp,
 		Mode:              cfg.Mode,

@@ -110,15 +110,13 @@ type Config struct {
 	OTelEndpoint string
 	// Telemetry selects the OTel pipeline mode. "none" skips telemetry
 	// entirely (no exporters, no OTLP dial) — used by the runtime-container
-	// sandbox plane, which has no Grafana stack. Empty/"embedded"/"remote"
+	// sandbox plane, which has no telemetry stack. Empty/"embedded"/"remote"
 	// keep the default pipeline (the same env the single-container
 	// supervisor reads for the embedded stack decision).
 	Telemetry string
-	// Grafana stack backends (docs/08 §5). GrafanaURL is the Grafana UI
-	// root (proxied same-origin under /grafana); TempoURL/LokiURL/VMURL
-	// are the query endpoints the control plane reads tenant-scoped
-	// telemetry from.
-	GrafanaURL    string
+	// Telemetry backends (docs/08 §5): the query endpoints the control
+	// plane reads tenant-scoped telemetry from. There is no UI-fronting
+	// component here any more — the panes read these directly.
 	TempoURL      string
 	LokiURL       string
 	VMURL         string
@@ -225,7 +223,6 @@ func Default() Config {
 		NATSURL:            env("ORCHICON_NATS_URL", "nats://localhost:4222"),
 		OTelEndpoint:       env("ORCHICON_OTEL_ENDPOINT", "localhost:4317"),
 		Telemetry:          env("ORCHICON_TELEMETRY", ""),
-		GrafanaURL:         env("ORCHICON_GRAFANA_URL", "http://localhost:3002"),
 		TempoURL:           env("ORCHICON_TEMPO_URL", "http://localhost:3200"),
 		LokiURL:            env("ORCHICON_LOKI_URL", "http://localhost:3100"),
 		VMURL:              env("ORCHICON_VM_URL", "http://localhost:8428"),
