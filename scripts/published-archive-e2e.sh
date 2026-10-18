@@ -189,8 +189,24 @@ blocked_surface() { # blocked_surface <desc> <owner> <why> — a MISSING SURFACE
 
 invalid_host() { # invalid_host <desc> <why> — cannot execute HERE; accuses no product code
 	BLOCKED=$((BLOCKED + 1)); INVALID=1
+	# The REASON is carried to the closing RESULT line. Without it, every invalid host (an engine
+	# that answers, a previous orchicon on PATH) reported "a required surface is absent" — the
+	# message for a MISSING PRODUCT SURFACE, which is a different verdict against a different party.
+	[ -n "$ABORT_REASON" ] || ABORT_REASON="$2"
 	record BLOCKED "$1" "(invalid host)"; blk2 "$1 — invalid host: $2"
 	printf '  (invalid host: %s)\n' "$2" >>"$STEP_LOG"
+}
+
+host_check() { # host_check <desc> <ok:0|1> — a CLEAN-MACHINE precondition, not a product assertion.
+	# On failure the site's invalid_host() has ALREADY recorded the BLOCKED verdict and its reason,
+	# so this adds no second row — and above all files NO defect. A dirty host is not a defect
+	# against a sibling task (AC10), and an OWNERLESS row in defects.tsv is a defect attributed to
+	# nobody, which the summary renders as a product failure with a blank owner.
+	if [ "$2" = "0" ]; then
+		PASSES=$((PASSES + 1)); record PASS "$1"; ok2 "$1"
+		return 0
+	fi
+	return 1
 }
 
 note() { printf '  %s\n' "$*" >>"$STEP_LOG"; }
@@ -516,14 +532,23 @@ step0_preflight() {
 
 	# A0.4 — NO CONTAINER ENGINE and NO WSL. A host that answers is not a clean machine: the whole
 	# claim is about machines like that, so the run must not proceed on one.
-	make_shims "$SHIM_DIR" || invalid_host "A0.4 the engine shims could not be planted" "mkdir/write failed under ${SHIM_DIR}"
 	export PATH="${SHIM_DIR}:$PATH"
 	local i fail=0
-	for i in $(engine_shim_names); do
-		PATH="${SHIM_DIR}:$PATH" "$i" >/dev/null 2>&1 && fail=1
-	done
-	check "A0.4 every engine/WSL name on PATH is BOOBY-TRAPPED (docker, podman, wsl, docker.exe…)" \
-		"$fail"
+	if ! make_shims "$SHIM_DIR" 2>/dev/null || [ ! -x "${SHIM_DIR}/docker" ]; then
+		# NO PROBE WITHOUT A TRAP. If the shims could not be planted, every name below resolves to
+		# "command not found" (exit 127), which is not a failure — so the loop would PASS and claim
+		# Docker was booby-trapped on a PATH where nothing was planted. That is a vacuous PASS on
+		# the one assertion AC5 rests on, so it is an invalid host instead.
+		invalid_host "A0.4 the engine/WSL names could not be booby-trapped on PATH" \
+			"make_shims failed under ${SHIM_DIR} — nothing was planted, so absence of an invocation proves nothing"
+		host_check "A0.4 every engine/WSL name on PATH is BOOBY-TRAPPED (docker, podman, wsl, docker.exe…)" 1
+	else
+		for i in $(engine_shim_names); do
+			PATH="${SHIM_DIR}:$PATH" "$i" >/dev/null 2>&1 && fail=1
+		done
+		host_check "A0.4 every engine/WSL name on PATH is BOOBY-TRAPPED (docker, podman, wsl, docker.exe…)" \
+			"$fail"
+	fi
 
 	# A0.5 — and no REAL engine is installed. Probed through the shims, so a host whose engine
 	# answers (because it is on another path) cannot be mistaken for one where nothing exists.
@@ -534,7 +559,7 @@ step0_preflight() {
 		invalid_host "A0.5 a container engine ANSWERS on this host — it is not a clean machine" \
 			"the claim is about machines with no Docker/Podman; run this on one"
 	fi
-	check "A0.5 no container engine answers (clean machine)" "$engine_answers"
+	host_check "A0.5 no container engine answers (clean machine)" "$engine_answers"
 
 	# THE PREFLIGHT'S OWN PROBES ARE NOT EVIDENCE ABOUT THE INSTALL PATH, so the invocation log is
 	# truncated HERE — after A0.4 deliberately invoked every shim and after A0.5 asked `docker info`,
@@ -546,9 +571,9 @@ step0_preflight() {
 	# A0.6 — nothing named orchicon is already installed, or the run would test a previous install.
 	if command -v orchicon >/dev/null 2>&1; then
 		invalid_host "A0.6 a previous orchicon is on PATH — this is not a clean machine" \
-			"$(command -v orchicon)"
+			"a previous orchicon is already installed at $(command -v orchicon) — run this on a machine that has none"
 	fi
-	check "A0.6 no previous orchicon on PATH (clean machine)" \
+	host_check "A0.6 no previous orchicon on PATH (clean machine)" \
 		"$(command -v orchicon >/dev/null 2>&1 && echo 1 || echo 0)"
 
 	# A0.7 — the tools the procedure needs to download and verify a published artifact.
@@ -1176,6 +1201,18 @@ teardown() {
 		say "teardown: --keep, leaving instance ${INSTANCE} running"
 		return 0
 	fi
+	# THE DEFAULT IS TO LEAVE NOTHING RUNNING. `--keep` is documented as the opt-in to the opposite,
+	# so a run that silently left its plane up both contradicted its own help text and leaked a
+	# port pair into the next run's measurements. Stopped through the ARCHIVE's binary, on the
+	# instance every other command acted on (C2).
+	local bin="${INSTALL_DIR}/orchicon"
+	[ -x "$bin" ] || bin="${ORCHICON_BIN:-}"
+	if [ -n "$bin" ] && [ -x "$bin" ]; then
+		"$bin" stop "$INSTANCE" >/dev/null 2>&1 || true
+		say "teardown: stopped instance ${INSTANCE} (pass --keep to leave it running)"
+	elif [ "${CURRENT_STEP:-0}" != "0" ]; then
+		say "teardown: no installed binary to stop instance ${INSTANCE} with — nothing was started"
+	fi
 	return 0
 }
 
@@ -1183,11 +1220,24 @@ teardown() {
 parse_args() {
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
-			--version|-v) VERSION="$2"; shift 2 ;;
-			--platform) PLATFORM="$2"; shift 2 ;;
-			--instance|-i) INSTANCE="$2"; shift 2 ;;
-			--evidence-dir) EVIDENCE="$2"; shift 2 ;;
-			--install-dir) INSTALL_DIR_DEFAULT="$2"; shift 2 ;;
+			--version|-v|--platform|--instance|-i|--evidence-dir|--install-dir)
+				# A VALUE-TAKING FLAG WITH NO VALUE is a usage error (exit 2), exactly like an unknown
+				# flag. Under `set -u` it used to die with `$2: unbound variable` and exit 1 — which
+				# the exit-code contract reserves for "an assertion FAILED", i.e. a typo read as a
+				# failed acceptance run.
+				if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+					printf 'published-archive-e2e.sh: %s requires a value\n' "$1" >&2
+					printf 'try: scripts/published-archive-e2e.sh --version vX.Y.Z [options]  (or --help)\n' >&2
+					exit 2
+				fi
+				case "$1" in
+					--version|-v) VERSION="$2" ;;
+					--platform) PLATFORM="$2" ;;
+					--instance|-i) INSTANCE="$2" ;;
+					--evidence-dir) EVIDENCE="$2" ;;
+					--install-dir) INSTALL_DIR_DEFAULT="$2" ;;
+				esac
+				shift 2 ;;
 			--keep) KEEP=1; shift ;;
 			--skip-tui) SKIP_TUI=1; shift ;;
 			--dry-run) DRY_RUN=1; shift ;;
@@ -1237,6 +1287,16 @@ main() {
 
 	step1_download
 	step2_extract_and_identify
+	if [ -z "$ORCHICON_BIN" ] || [ ! -x "$ORCHICON_BIN" ]; then
+		# Without an artifact there is nothing to install, and every remaining step would invoke
+		# an EMPTY command and file its shell "not found" against the installer and the plane.
+		# The missing artifact is already filed against the release matrix in step 1/2.
+		[ -n "$ABORT_REASON" ] || ABORT_REASON="no orchicon binary was obtained from ${ARCHIVE:-the published archive} — steps 3-11 would test nothing"
+		render_summary
+		say ""
+		say "RESULT: NOT A VALID PROOF — ${ABORT_REASON}"
+		exit 2
+	fi
 	step3_install
 	step4_plane_health
 	step5_lifecycle_verbs

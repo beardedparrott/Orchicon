@@ -453,6 +453,47 @@ expect "the C1 merge-date gate is a single named constant" "yes" \
 expect "an unknown flag is a usage error (exit 2), never a silent run" 2 \
 	"$(bash "$HARNESS" --bogus-flag >/dev/null 2>&1; echo $?)"
 
+# --- the LAUNCH CONTRACT: a usage error is exit 2, a dirty host is not a defect
+spin "the arguments and the host verdicts keep their contract"
+# A VALUE-TAKING FLAG WITH NO VALUE used to die inside `set -u` with `$2: unbound variable` and
+# exit 1 — the code the contract reserves for "an assertion FAILED", so a typo read as a failed
+# acceptance run, with no usage line to explain it.
+expect "--version with no value is a usage error (exit 2)" 2 \
+	"$(bash "$HARNESS" --version >/dev/null 2>&1; echo $?)"
+expect "--instance with no value is a usage error (exit 2)" 2 \
+	"$(bash "$HARNESS" --version v9.9.9 --instance >/dev/null 2>&1; echo $?)"
+expect "--evidence-dir with no value is a usage error (exit 2)" 2 \
+	"$(bash "$HARNESS" --version v9.9.9 --evidence-dir >/dev/null 2>&1; echo $?)"
+# NB: `has_text` is defined further down this file, so this section greps directly.
+expect "…and it says what is missing instead of echoing a bash stack trace" "1" \
+	"$(bash "$HARNESS" --version 2>&1 | grep -c -- 'requires a value' | tr -d ' ')"
+expect "a clean-host precondition (A0.4/A0.5/A0.6) is asserted by host_check, never by an ownerless check(FAIL)" "4" \
+	"$(body_of step0_preflight | grep -c 'host_check "A0\.' | tr -d ' ')"
+
+# A DIRTY HOST MUST NOT FILE A DEFECT AGAINST A NAMED SIBLING, and must not be reported as a
+# MISSING PRODUCT SURFACE. Both were live: the paired check(FAIL) wrote an OWNERLESS defects.tsv
+# row, and the closing RESULT said "a required surface is absent" for a machine that merely had
+# Docker or a previous orchicon on it.
+HOSTPROBE="$WORK/hostprobe"
+mkdir -p "$HOSTPROBE" || true
+expect "an invalid host carries its REASON to the closing RESULT line" \
+	"a container engine ANSWERS on this host" \
+	"$(. "$HARNESS" >/dev/null 2>&1; EVIDENCE="$HOSTPROBE"; STEP_LOG="$HOSTPROBE/step.log"; : >"$STEP_LOG"; : >"$EVIDENCE/results.tsv"; : >"$EVIDENCE/defects.tsv"; invalid_host "A0.5 probe" "a container engine ANSWERS on this host" >/dev/null 2>&1; printf '%s' "$ABORT_REASON")"
+expect "a FAILED clean-host precondition files NO defect and counts as BLOCKED, not FAILED" \
+	"fails=0 defects=0 blocked=1 invalid=1" \
+	"$(. "$HARNESS" >/dev/null 2>&1; EVIDENCE="$HOSTPROBE"; STEP_LOG="$HOSTPROBE/step.log"; : >"$STEP_LOG"; : >"$EVIDENCE/results.tsv"; : >"$EVIDENCE/defects.tsv"; invalid_host "A0.5 probe" "probe reason" >/dev/null 2>&1; host_check "A0.5 probe" 1 >/dev/null 2>&1; printf 'fails=%s defects=%s blocked=%s invalid=%s' "$FAILS" "$(wc -l <"$EVIDENCE/defects.tsv" | tr -d ' ')" "$BLOCKED" "$INVALID")"
+
+# THE DEFAULT TEARDOWN MUST STOP WHAT IT STARTED. `--keep` is documented as the opt-in to the
+# opposite, and the default was a no-op — a run silently left its plane (and a port pair) up.
+STUBBIN="$WORK/stubbin"
+mkdir -p "$STUBBIN" || true
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s/stop-argv"\n' "$WORK" >"$STUBBIN/orchicon" 2>/dev/null || true
+chmod +x "$STUBBIN/orchicon" 2>/dev/null || true
+expect "the default teardown STOPS the instance it acted on" "stop dev" \
+	"$(. "$HARNESS" >/dev/null 2>&1; say() { :; }; INSTALL_DIR="$STUBBIN"; INSTANCE=dev; KEEP=0; teardown >/dev/null 2>&1; cat "$WORK/stop-argv" 2>/dev/null | tail -1)"
+expect "--keep is still the opt-in to leaving it running (no stop is issued)" "0" \
+	"$(. "$HARNESS" >/dev/null 2>&1; say() { :; }; INSTALL_DIR="$STUBBIN"; INSTANCE=dev; KEEP=1; : >"$WORK/stop-argv"; teardown >/dev/null 2>&1; wc -l <"$WORK/stop-argv" | tr -d ' ')"
+
 # --- AC10 STRUCTURAL: nothing is patched here, every defect names an owner -
 spin "AC10: the harness files defects, it does not fix product code"
 expect "every check(FAIL) site the harness owns passes an owner or is explicitly ownerless-invalid" "yes" \
