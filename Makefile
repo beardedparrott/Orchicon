@@ -673,6 +673,39 @@ fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live und
 fe-typecheck: ## CI gate: typecheck the frontend (tsc -b) — the only gate that can see a type error
 	cd frontend && npm run typecheck
 
+# --- Desktop app -----------------------------------------------------------
+# THE DESKTOP APP IS NOT PART OF CROSS_PLATFORMS. It is CGO + a native webview
+# (WebKitGTK/WKWebView/WebView2), so it cannot go in the CGO_ENABLED=0
+# cross-compile loop — that loop would fail, and folding it in would break
+# `make cross-compile` for everyone. Each OS builds its own binary on its own
+# runner in .github/workflows/release.yml.
+.PHONY: desktop-deps desktop-build desktop-test desktop-test-live
+desktop-deps: ## Print the host prerequisites for building the desktop app (wails CLI + webkit2gtk)
+	@echo "desktop app prerequisites:"
+	@echo "  Go toolchain (go.mod's version), Node 22+, CGO enabled"
+	@echo "  Linux:   libgtk-3-dev libwebkit2gtk-4.1-dev   (apt-get install ...)"
+	@echo "  macOS:   Xcode command line tools (WKWebView is part of the OS)"
+	@echo "  Windows: WebView2 runtime + gcc (either 32/64-bit match, per Wails docs)"
+	@echo "  wails CLI: go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0"
+
+# desktop-build builds the app for THIS OS only. The frontend build comes FIRST
+# because `//go:embed all:frontend/dist` matches the tracked .gitkeep when the
+# bundle has not been built: a misordered build compiles perfectly and opens an
+# empty window.
+desktop-build: fe-build ## Build the desktop app for THIS OS (CGO on; NOT part of cross-compile)
+	CGO_ENABLED=1 go build -tags desktop,production -o bin/orchicon-desktop ./cmd/orchicon-desktop
+
+desktop-test: ## CI gate: the desktop shell's guards (no webview needed)
+	go build ./internal/desktop/ ./internal/controlport/
+	go test ./internal/desktop/... ./internal/controlport/...
+	go vet ./internal/desktop/... ./internal/controlport/...
+
+# desktop-test-live is the TRANSPORT PROOF: unary + server-streaming RPCs through
+# the shell's own origin against a real plane. Skips loudly when the plane URL is
+# unset, so a unit run reports "not configured" rather than a false green.
+desktop-test-live: ## Transport proof through the shell origin against a REAL plane (set ORCHICON_DESKTOP_PLANE_URL)
+	go test -tags desktop_e2e ./internal/desktop/ -run 'TestLive' -v
+
 site-check: ## Assert the landing page's nav and version-stamp invariants
 	@# The landing page is served from a CDN and rendered by a browser, so a CSS or
 	@# markup defect in it has no other detector. This reads the committed page as

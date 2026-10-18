@@ -238,3 +238,30 @@ jobs:
             echo "::error::the harness passed an installer whose halt closes the operator's session"
             exit 1
           fi
+
+  # THE DESKTOP SHELL IS A SEPARATE JOB ON PURPOSE. `go-ci` is CGO_ENABLED=0-shaped and runs the
+  # plane's whole gate; the shell needs libgtk-3-dev + libwebkit2gtk-4.1-dev, so folding it in would
+  # push a large apt install into every Go run and couple the desktop build to the plane's gate.
+  #
+  # It also does NOT run `wails build`: the Wails CLI is a packaging tool, and every line of the shell
+  # that can be wrong is plain Go in internal/desktop — which is why it can be asserted here at all.
+  desktop-shell:
+    name: desktop shell (build + guards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install webview build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Build the shell and run its guards
+        run: make desktop-test
+      # The guards do not compile the Wails entry point (it is behind the `desktop`
+      # build tag so ordinary Go builds stay CGO-free). This does, which is the only
+      # thing that catches a signature drift in the thin main.go.
+      - name: Compile the Wails entry point
+        run: go build -tags desktop -o /tmp/orchicon-desktop ./cmd/orchicon-desktop

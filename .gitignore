@@ -123,3 +123,7 @@ deploy/runtime/orch
 
 # cross-compile throwaway cache/output (see Makefile CROSS_TMP)
 .cross-compile/
+
+# desktop app build output (wails emits into cmd/orchicon-desktop/build/)
+bin/orchicon-desktop*
+cmd/orchicon-desktop/build/

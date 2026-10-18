@@ -364,3 +364,148 @@ func TestEveryWorkflowPipelineUsesPipefailAtLeastWhereItMatters(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// THE DESKTOP APP — a job that is like no other in these workflows.
+//
+// It is CGO + a native webview per OS, so it is not a cross-compile, and it has
+// two traps specific to it:
+//
+//  1. `matrixPlatforms` above pairs an `os:` line with a following `arch:` line
+//     and `t.Fatalf`s when a workflow it reads has no such pairs. The desktop
+//     matrix is `os:`-ONLY, so it must NOT be routed through that scanner — a
+//     separate scanner reads it.
+//  2. `TestEveryJobThatBuildsTheBinaryBuildsTheFrontendFirst` matches
+//     "./cmd/orchicon" as a SUBSTRING, which also matches
+//     "./cmd/orchicon-desktop". That test skips jobs with no `go build`, and
+//     the desktop job builds with `wails build` — so the ordering rule needs its
+//     own assertion here rather than riding on that skip.
+
+// desktopMatrixOSes reads the desktop job's runner list.
+func desktopMatrixOSes(t *testing.T, path string) []string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	for _, job := range jobsIn(string(b)) {
+		if job.name != "desktop" {
+			continue
+		}
+		for _, line := range strings.Split(job.body, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, "os:") || !strings.Contains(trimmed, "[") {
+				continue
+			}
+			list := trimmed[strings.Index(trimmed, "[")+1:]
+			list = strings.TrimSuffix(strings.TrimSpace(list), "]")
+			var out []string
+			for _, part := range strings.Split(list, ",") {
+				if p := strings.TrimSpace(part); p != "" {
+					out = append(out, p)
+				}
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+// TestReleaseBuildsDesktopAppPerOS — the app ships from the release, or it does
+// not ship at all.
+func TestReleaseBuildsDesktopAppPerOS(t *testing.T) {
+	b, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	var found *job
+	jobs := jobsIn(string(b))
+	for i := range jobs {
+		if jobs[i].name == "desktop" {
+			found = &jobs[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("release.yml has no `desktop` job — the desktop app would never be built for a release")
+	}
+	for _, want := range []string{"actions/upload-artifact", "wails build", "libwebkit2gtk-4.1-dev"} {
+		if !strings.Contains(found.body, want) {
+			t.Errorf("the desktop job does not mention %q", want)
+		}
+	}
+}
+
+// TestDesktopMatrixCoversLinuxMacOSWindows — AC1's build matrix. Three operating
+// systems, each on its own runner, because the webview is a per-OS native
+// library.
+func TestDesktopMatrixCoversLinuxMacOSWindows(t *testing.T) {
+	got := desktopMatrixOSes(t, "../../.github/workflows/release.yml")
+	want := []string{"ubuntu-latest", "macos-latest", "windows-latest"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the desktop matrix runs on %v, want %v — the app must build on Linux, macOS and Windows", got, want)
+	}
+}
+
+// TestDesktopJobBuildsFrontendBeforeBinary — the silent-embed trap, asserted for
+// the job that `TestEveryJobThatBuildsTheBinaryBuildsTheFrontendFirst` cannot see
+// (it has no `go build`, so that scanner skips it).
+func TestDesktopJobBuildsFrontendBeforeBinary(t *testing.T) {
+	b, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	for _, job := range jobsIn(string(b)) {
+		if job.name != "desktop" {
+			continue
+		}
+		frontend := strings.Index(job.body, "npm run build")
+		binary := strings.Index(job.body, "wails build")
+		if frontend < 0 {
+			t.Fatal("the desktop job never builds the frontend — go:embed would match frontend/dist/.gitkeep " +
+				"and the app would open an empty window")
+		}
+		if binary >= 0 && frontend > binary {
+			t.Fatal("the desktop job builds the app BEFORE the frontend, so the embed cannot see the bundle")
+		}
+		return
+	}
+	t.Fatal("no desktop job found")
+}
+
+// TestDesktopNotInCrossPlatforms — the brief's explicit constraint: the desktop
+// app is NOT a CGO_ENABLED=0 cross-compile and must not be folded into the loop
+// that is.
+func TestDesktopNotInCrossPlatforms(t *testing.T) {
+	b, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	src := string(b)
+	i := strings.Index(src, "CROSS_PLATFORMS")
+	if i < 0 {
+		t.Fatal("Makefile has no CROSS_PLATFORMS")
+	}
+	// A make list continues across lines ending in a backslash; stop at the first
+	// line that does not, so the scan cannot wander into the desktop targets.
+	lines := strings.Split(src[i:], "\n")
+	var listBuf strings.Builder
+	for _, line := range lines {
+		listBuf.WriteString(line)
+		listBuf.WriteString("\n")
+		if !strings.HasSuffix(strings.TrimSpace(line), "\\") {
+			break
+		}
+	}
+	list := listBuf.String()
+	if strings.Contains(list, "desktop") {
+		t.Fatalf("CROSS_PLATFORMS mentions the desktop app:\n%s\nIt is CGO + a native webview and cannot be "+
+			"produced by the CGO_ENABLED=0 cross-compile loop — it builds per OS in release.yml instead", list)
+	}
+	// And the per-OS targets must exist, or the release job has nothing to call.
+	for _, want := range []string{"desktop-build:", "desktop-test:", "desktop-test-live:"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("Makefile has no %q target", want)
+		}
+	}
+}
