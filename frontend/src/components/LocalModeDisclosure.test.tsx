@@ -49,7 +49,9 @@ describe("LocalModeDisclosure", () => {
   });
 
   it("is legible in every theme — design tokens, no hardcoded colour values", () => {
-    expect(html).toContain("text-amber-700 dark:text-amber-300");
+    // amber-800, not amber-700: the lighter shade measured 4.23:1 on the light-gruvbox backdrop
+    // (below the 4.5:1 AA floor for 12px semibold text); amber-800 clears every light theme.
+    expect(html).toContain("text-amber-800 dark:text-amber-300");
     expect(html).toContain("text-muted-foreground");
     // A hex/rgb literal would break the dark theme; tokens only.
     expect(html).not.toMatch(/#[0-9a-fA-F]{3,8}/);

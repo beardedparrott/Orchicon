@@ -15,6 +15,10 @@ import { cn } from "@/lib/utils";
  * one real boundary. Do not soften it into a generic "sandboxed" banner: a permanent reassuring
  * banner trains operators to ignore the one moment it matters.
  *
+ * The title uses amber-800 (not amber-700): at this 12px semibold size the lighter shade falls to
+ * 4.23:1 on the light-gruvbox backdrop, under the 4.5:1 AA floor, while amber-800 clears it in
+ * every light theme. `dark:text-amber-300` is already far above the floor on every dark theme.
+ *
  * The copy lives here once, so the three surfaces that render it (project create, project
  * edit, work-item form) cannot drift apart. Static text only — nothing focusable, no state, no
  * fetch — which is what makes it keyboard- and screen-reader-safe by construction.
@@ -32,7 +36,7 @@ export function LocalModeDisclosure({ className }: { className?: string }) {
     >
       <p
         id="local-mode-disclosure-title"
-        className="font-semibold text-amber-700 dark:text-amber-300"
+        className="font-semibold text-amber-800 dark:text-amber-300"
       >
         Local mode is not contained.
       </p>
