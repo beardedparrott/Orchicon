@@ -116,3 +116,53 @@ func TestTheHelpNamesInstallAndRestart(t *testing.T) {
 			"who needs an environment refresh is pointed at `restart` instead")
 	}
 }
+
+// TestTheHelpSaysServeStatusIsTheSameSurface pins the claim the row now makes: `serve --status` is not a
+// second, weaker status surface — it reports what `orchicon plane status` reports, one surface with two
+// spellings. And `serve --start` must have NO row: a documented row would invite the command that must
+// not exist, and `start` is the verb (its row says so).
+func TestTheHelpSaysServeStatusIsTheSameSurface(t *testing.T) {
+	bin := filepath.Base(os.Args[0])
+	out := captureStdout(t, func() { printHelp() })
+
+	lines := strings.Split(out, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), bin+" serve --status") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("--help has no row for `serve --status`")
+	}
+	// The row and its continuation lines: everything until the next row (a line that begins with the
+	// binary's own name) or a blank line.
+	row := []string{lines[start]}
+	for _, line := range lines[start+1:] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, bin+" ") {
+			break
+		}
+		row = append(row, line)
+	}
+	joined := strings.Join(row, " ")
+
+	if !strings.Contains(joined, "plane status") {
+		t.Errorf("the `serve --status` row must say it reports the same thing as `plane status`, or an "+
+			"operator will assume the old PID-only answer:\n%s", joined)
+	}
+	if strings.Contains(joined, "Report whether a detached server is running") {
+		t.Errorf("the old PID-only wording is back; `serve --status` reports the instance, the serving "+
+			"binary, drift and health through planecontrol.StatusOf:\n%s", joined)
+	}
+	if helpDocuments(out, bin, "serve --start") {
+		t.Errorf("--help must NOT document `serve --start`: it does not exist, and `orchicon start` is the " +
+			"verb. A row for it would invite exactly the command the CLI refuses.")
+	}
+	// …but the reader who expects it is told where to go, which is what AC1 asks for.
+	if !strings.Contains(out, "serve --start") {
+		t.Errorf("--help never mentions `serve --start`; a reader who expects that flag is left with no " +
+			"pointer to `orchicon start`")
+	}
+}

@@ -1127,6 +1127,23 @@ scripts/container.sh plane-stop dev   # stop the HOST plane; the services contai
 scripts/container.sh plane-start dev  # start it again — no container restart
 ```
 
+**Instance lifecycle verbs** (the CLI's own surface; `scripts/orchicon.sh` delegates to these):
+
+```bash
+orchicon start   [instance]   # services, then the plane — after a reboot, this is the one
+orchicon stop    [instance]   # plane, then services; idempotent
+orchicon restart [instance]   # re-read the environment (PATH, a newly installed adapter CLI)
+orchicon plane   status|start|stop|restart [instance]   # the plane only
+orchicon services up|down|status [instance]             # postgres + NATS only
+orchicon plane status <instance>   # instance, residency, PID, serving binary, drift, health
+```
+
+There is **no `serve --start`**: `serve` runs a plane in the foreground and manages the *detached* one
+(`--detach` / `--stop` / `--status`); starting an instance is `orchicon start`. `serve --status` reports
+exactly what `orchicon plane status` reports — the same `planecontrol.StatusOf` call, so the two cannot
+disagree — and keeps its machine-read exit code (`0` only when the PID file names a live process), which
+is what `scripts/orchicon.sh` relies on.
+
 **Migration rule:** dev and prod migrate independently and coexist in different shapes; a rebuild of one instance must never alter the other's. `scripts/container.sh verify <inst>` is the check.
 
 **Teardown is an instance-scoped verb, and it is destructive-and-confirmed.** `scripts/orchicon.sh

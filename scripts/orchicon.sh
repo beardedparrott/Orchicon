@@ -318,8 +318,14 @@ ctl_run() {
 #
 # plane_status_out captures `serve --status`; its EXIT CODE is the machine-read
 # answer (0 = the PID file names a live process), the text is for the operator.
+#
+# IT TAKES THE INSTANCE, AND THAT IS THE FIX RATHER THAN BELT-AND-BRACES. `serveStateDir`
+# (cmd/orchicon/serve_state.go) PREFERS ORCHICON_INSTANCE over ORCHICON_SERVE_STATE_DIR, so a shell that
+# happened to carry ORCHICON_INSTANCE=prod made `orchicon.sh status dev` report PROD's plane and
+# `stop_host`'s post-stop verification check the wrong instance. BOTH are passed: an older binary reads
+# only the state dir, this one prefers the instance, and both name the SAME instance either way.
 plane_status_out() {
-  ORCHICON_SERVE_STATE_DIR="$SERVE_STATE_DIR" "$BIN" serve --status 2>&1
+  ORCHICON_INSTANCE="$1" ORCHICON_SERVE_STATE_DIR="$SERVE_STATE_DIR" "$BIN" serve --status 2>&1
 }
 
 services_status_out() {
@@ -349,11 +355,11 @@ start_host() {
 stop_host() {
   local inst="$1" rc=0 svc_rc=0
   ORCHICON_SERVE_STATE_DIR="$SERVE_STATE_DIR" "$BIN" serve --stop || rc=$?
-  if [ "$rc" -ne 0 ] && ! plane_status_out >/dev/null 2>&1; then
+  if [ "$rc" -ne 0 ] && ! plane_status_out "$inst" >/dev/null 2>&1; then
     echo "  plane: nothing was running (no live PID file in $SERVE_STATE_DIR)"
   fi
   ORCHICON_INSTANCE="$inst" "$BIN" services down "$inst" || svc_rc=$?
-  if plane_status_out >/dev/null 2>&1; then
+  if plane_status_out "$inst" >/dev/null 2>&1; then
     echo "✗ orchicon $inst: the plane is STILL running after stop — refusing to report success" >&2
     return 1
   fi
@@ -367,7 +373,7 @@ stop_host() {
 status_host() {
   local inst="$1" plane_out="" plane_state="stopped" svc_out="" svc_line="" rc=0
 
-  if plane_out="$(plane_status_out)"; then
+  if plane_out="$(plane_status_out "$inst")"; then
     plane_state="running"
   fi
   svc_out="$(services_status_out "$inst")" || rc=$?

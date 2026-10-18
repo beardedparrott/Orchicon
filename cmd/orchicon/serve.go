@@ -23,6 +23,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/migrate"
 	"github.com/beardedparrott/orchicon/internal/opencode"
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
+	"github.com/beardedparrott/orchicon/internal/planecontrol"
 	"github.com/beardedparrott/orchicon/internal/server"
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -269,6 +270,17 @@ func runServe(args []string) int {
 			return serveStop()
 		case "--status":
 			return serveStatus()
+		case "--start", "-start":
+			// THERE IS NO `serve --start`. Without this arm an unrecognised flag falls through to
+			// serveForeground() below and silently runs a BLOCKING foreground plane — the opposite of
+			// starting an instance, and the caller appears to hang. The verb that starts an instance is
+			// `orchicon start` (services then plane) or `orchicon plane start` (the plane alone).
+			// Exit 2 is a usage error, distinct from 1 = "not running", so no script's rc reading moves.
+			bin := filepath.Base(os.Args[0])
+			fmt.Fprintf(os.Stderr, "✗ `serve --start` does not exist — start an instance with:\n"+
+				"    %s start [instance]        # services, then the plane\n"+
+				"    %s plane start [instance]  # the plane only\n", bin, bin)
+			return 2
 		}
 	}
 	return serveForeground()
@@ -579,13 +591,26 @@ func procRunningPID(pid int) (string, bool) {
 	return strconv.Itoa(pid), pidAlive(pid)
 }
 
-// serveStatus prints whether a detached serve is running.
+// serveStatus reports the instance's plane through the SHARED status surface — the same call
+// `orchicon plane status` makes — so the two spellings cannot disagree about the instance, the PID,
+// the serving binary, drift or health. A second implementation is exactly the defect being removed
+// here: two status surfaces that agree only by discipline.
+//
+// THE EXIT CODE IS A CONTRACT AND MUST NOT CHANGE. `scripts/orchicon.sh` (plane_status_out, and the
+// post-stop verification in stop_host) machine-reads it: 0 means the PID file names a LIVE process.
+// StatusOf never fails for want of a port record or a PID file — those are states, not errors — so it
+// returns Status{PID: 0} when nothing runs, which is why PID > 0 is the whole of the success
+// condition. A richer exit scheme would break the script's own "is it running?" reading.
 func serveStatus() int {
-	if pid, running := procRunning(servePIDFile()); running {
-		fmt.Printf("serve is running (PID %s)\n", pid)
+	st, err := planecontrol.StatusOf(planecontrol.Defaults(instanceForServe(), os.Stdout))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println(st.String())
+	if st.PID > 0 {
 		return 0
 	}
-	fmt.Println("serve is not running")
 	return 1
 }
 

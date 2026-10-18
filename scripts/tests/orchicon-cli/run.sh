@@ -115,6 +115,13 @@ case "${1:-}" in
   serve)
     case "${2:-}" in
       --status)
+        # THIS TEXT IS FROZEN AGAINST THE REAL BINARY, ON PURPOSE. `orchicon serve --status` now
+        # prints planecontrol.Status.String() — instance, residency, PID, serving binary, drift,
+        # health — and this stub still answers the pre-wrapper one-liner. What this harness asserts
+        # is the SCRIPT's delegation and its own exit-code handling; the exit code below (0 = a live
+        # PID file) is the real contract and it is unchanged. Do NOT "fix" this by making the stub
+        # call the real binary: the harness deliberately does not, and a stub that tracked the
+        # binary's prose would pin wording instead of delegation.
         if [ "$(cat "$STUB_PLANE_STATE" 2>/dev/null)" = up ]; then echo "serve is running (PID 4242)"; exit 0; fi
         echo "serve is not running"; exit 1 ;;
       --stop)
@@ -283,6 +290,20 @@ assert_not_contains "$call_log" "orchicon-dev/serve" "stopping prod never touche
 : >"$CALLS"
 run "$SCRIPT" restart dev >/dev/null
 assert_contains "$(cat "$CALLS")" "serve_state=$HOME/.local/share/orchicon-dev/serve" "restart scopes the plane to DEV's state dir"
+
+# AN AMBIENT ORCHICON_INSTANCE MUST NOT DECIDE WHICH INSTANCE IS ASKED ABOUT. `serveStateDir`
+# PREFERS ORCHICON_INSTANCE over ORCHICON_SERVE_STATE_DIR (cmd/orchicon/serve_state.go), so without
+# the instance on the call, `status dev` run from a shell carrying ORCHICON_INSTANCE=prod reported
+# PROD's plane — and stop_host's post-stop verification checked the wrong instance. The assignment is
+# pushed through `run` AFTER its `env -u`, which is what makes it ambient rather than stripped.
+: >"$CALLS"
+run ORCHICON_INSTANCE=prod "$SCRIPT" status dev >/dev/null 2>&1
+assert_contains "$(awk '/argv=serve --status/{f=1} f&&/^inst=/{print;exit}' "$CALLS")" "inst=dev" \
+  "status asks about the instance it was given, even when the shell exports another one"
+: >"$CALLS"
+run "$SCRIPT" status prod >/dev/null 2>&1
+assert_contains "$(awk '/argv=serve --status/{f=1} f&&/^inst=/{print;exit}' "$CALLS")" "inst=prod" \
+  "status passes the requested instance to serve --status"
 
 # ── 5b. stop reports only what it verified ────────────────────────────────
 # `stop` claims "plane and its host services" in one line, so BOTH halves have to
