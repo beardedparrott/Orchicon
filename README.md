@@ -21,6 +21,10 @@ The documentation lives at the project root:
   architecture, project structure, the data model, the Ask Orchicon permission
   model, operator setup, development, deployment, environment variables and
   troubleshooting.
+- **[`docs/troubleshooting-missing-pr-links.md`](./docs/troubleshooting-missing-pr-links.md)** —
+  why a work item can read `succeeded` with no branch or `PR merged` link
+  (deleted runs strip provenance; `local` git strategy never produced a PR;
+  a lost mirror write), and how to classify one item from the others.
 
 ## Technology Stack
 
