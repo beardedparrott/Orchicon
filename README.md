@@ -102,7 +102,11 @@ The installer never closes your PowerShell window: a failure prints what failed 
 
 Prerequisites:
 - **Windows 10 21H2+ / Windows 11**, with WSL2 and a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
-- **Docker Desktop** with WSL2 integration enabled for your distro (or Docker Engine installed inside it).
+- **No container engine is required for the plane.** The plane and its services
+  (Postgres, NATS, telemetry) are **host processes** of your WSL user — there is no
+  instance image to pull and no Docker Desktop to install. An engine (**podman**, or
+  Docker if you already run it) is needed only for a **workflow's** runtime
+  container, and it is detected, never installed.
 
 Project directories are entered in the UI as their **WSL path** — a Windows project `C:\Users\you\projects\Foo` is `/mnt/c/Users/you/projects/Foo` inside WSL. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
 

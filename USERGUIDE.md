@@ -186,11 +186,12 @@ stack therefore runs inside **WSL2**, and the installer orchestrates it:
    is the default version, and prints exact next steps if WSL or a distro is
    missing (Windows 10 21H2+ / Windows 11: run `wsl --install` in an admin shell
    and reboot).
-2. **Docker check inside WSL** — confirms `docker version` works inside the distro
-   (Docker Desktop with WSL2 integration, or Docker Engine installed in the distro).
-   When it does not, it says **which** of the three causes you have — no docker CLI in
-   the distro at all, a CLI with no daemon running, or Docker Desktop running with the
-   WSL integration off for this distro — and quotes what the distro itself reported.
+2. **Engine check inside WSL (runtime containers only)** — Orchicon needs a container
+   engine **only for a workflow's runtime container**. The plane and its services
+   (Postgres, NATS, telemetry) are **host processes of your WSL user**, so a machine
+   with no engine still installs and runs the product. **Docker Desktop is neither
+   required nor installed for you** — the engine is detected (podman, or Docker if you
+   already run it), and a missing one is reported with the distro's own output quoted.
 3. **Linux binary** — it downloads the **Linux** release asset
    (`orchicon_<ver>_linux_<arch>.tar.gz`, arch mapped from the Windows processor)
      and installs it inside the distro (default `~/.local/bin`). There is no Windows
@@ -220,9 +221,9 @@ prints the exact command that resumes it — a re-run is idempotent.
 - **Windows 10 21H2+ / Windows 11**. First-time WSL users run `wsl --install`
   from an elevated PowerShell and reboot; the installer guides through this if it
   is not yet set up.
-- **Docker Desktop** with the **WSL integration** enabled for your distro
-  (Settings → Resources → WSL Integration), or Docker Engine running inside the
-  distro.
+- *(only for workflow runtime containers)* a container engine inside the distro —
+  **podman** works and Docker is detected too. **Docker Desktop is not required**:
+  the plane and its services are host processes, so the install itself needs none.
 - *(optional)* an adapter CLI such as OpenCode, installed **inside WSL** as your
   own user — see [Adapter CLIs go in WSL](#installing-an-adapter-cli) and the note
   below on the Windows/WSL boundary.
