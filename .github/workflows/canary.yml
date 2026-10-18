@@ -47,10 +47,10 @@ on:
 
 permissions:
   contents: write
-  # The container job pushes ghcr.io/beardedparrott/orchicon:canary. Without this the push 403s and the
-  # canary would ship binaries with no matching image — which is what made the earlier Windows test
-  # inconclusive: the installer had nothing newer to pull, so the container could not be exercised.
-  packages: write
+  # NO `packages: write`: this workflow publishes BINARIES only. The single-container
+  # image (and the job that pushed it) is retired — there is no instance image to
+  # keep in step with a canary, and the per-workflow runtime base image is built and
+  # pushed by release.yml alone.
 
 # One at a time, newest wins: a canary is a moving pointer at develop's tip, so an older run finishing
 # later would overwrite it with older code.
@@ -121,51 +121,6 @@ jobs:
           name: canary-${{ matrix.os }}-${{ matrix.arch }}
           path: orchicon_*.tar.gz
           if-no-files-found: error
-
-  # THE CONTAINER IMAGE, because the binaries alone cannot exercise the container half of an install. The
-  # canary previously published binaries only, so `-Version canary` installed a canary BINARY into a stack
-  # running the last RELEASED image — and a test of "does re-installing converge the container?" had nothing
-  # newer to converge TO.
-  #
-  # TAGGED :canary, NEVER :latest. `:latest` is the published release's floating tag, and pointing it at
-  # develop would change what every existing install pulls.
-  container:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Build frontend
-        run: cd frontend && npm ci && npm run build
-
-      # The same build and image shape as release.yml's container job, with the version replaced by the
-      # literal `canary` — a canary image built differently from a release one would test a different stack
-      # than the one that ships.
-      - name: Build the image
-        run: |
-          set -euo pipefail
-          LDFLAGS="-X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(git rev-parse --short HEAD) \
-                   -X github.com/beardedparrott/orchicon/internal/version.gitTag=canary \
-                   -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          go build -ldflags "$LDFLAGS" -o ./orchicon ./cmd/orchicon
-          go build -ldflags "$LDFLAGS" -o ./orch ./cmd/orch
-          cp ./orchicon deploy/container/orchicon
-          cp ./orch deploy/container/orch
-          docker build -f deploy/container/Dockerfile -t ghcr.io/beardedparrott/orchicon:canary deploy/container
-
-      - name: Push the image
-        run: |
-          set -eo pipefail
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push ghcr.io/beardedparrott/orchicon:canary
 
   publish:
     needs: build

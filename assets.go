@@ -37,18 +37,11 @@ const FrontendDir = "frontend/dist"
 // ServiceConfigsFS embeds the SUPERVISED SERVICES' runtime configs
 // (deploy/configs/) — Tempo/Loki/OTel-collector/Grafana configs with
 // @DATA_DIR@ and @…_PORT@ placeholders, plus the Grafana provisioning. The
-// `orchicon container` supervisor (cmd/orchicon/container.go) writes these
-// into the instance data dir, substituting the data dir and the resolved port
-// table, and spawns each process against them. The configs are NOT
-// container-specific: the same supervisor runs the services as HOST processes
-// under ORCHICON_SERVICE_RESIDENCY=host, so the dir is named for what it
-// holds rather than for the shape that used to be the only one.
-//
-// NOTE: this embeds ONLY deploy/configs. Do NOT embed deploy/container/ as a
-// whole — container.sh copies bin/orchicon there for the docker build, and
-// go:embed would recursively embed the previous binary, doubling the binary on
-// every rebuild (75MB -> ... -> 1.9GB). Embedding deploy/configs is safe on
-// its own: nothing is ever copied into it at build time.
+// `orchicon host-services` supervisor (cmd/orchicon/host_services.go) writes
+// these into the instance data dir, substituting the data dir and the resolved
+// port table, and spawns each process against them. The services are HOST
+// processes of the invoking user — there is no container shape and no
+// single-container image left — so the dir is named for what it holds.
 //
 //go:embed all:deploy/configs
 var ServiceConfigsFS embed.FS
@@ -57,8 +50,8 @@ var ServiceConfigsFS embed.FS
 // (deploy/runtime/Dockerfile + variants). The Runtime Images page serves
 // these read-only so users can see how a shipped image is built and copy
 // the pattern for a custom image. Only the specific Dockerfiles are
-// embedded (NOT the whole deploy/runtime dir — container.sh copies
-// bin/orchicon there for the docker build, and go:embed would recursively
+// embedded (NOT the whole deploy/runtime dir — the build copies bin/orchicon
+// there for the runtime-image docker build, and go:embed would recursively
 // embed the binary, doubling the size on every rebuild).
 //
 //go:embed deploy/runtime/Dockerfile deploy/runtime/Dockerfile.gui deploy/runtime/Dockerfile.dev deploy/runtime/Dockerfile.web-research
