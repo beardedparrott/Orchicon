@@ -353,6 +353,12 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		runtimeImage = s.runtimeImageFn(ctx)
 	}
 	row.RuntimeImage = runtimeImage
+	// Work-item execution_mode override: an unspecified request value means
+	// INHERIT and stays nil (never stamped from the project) so the resolution
+	// chain at dispatch — item -> project -> tenant default, implemented once in
+	// db.EffectiveExecutionMode — keeps the project as a live input rather than
+	// a create-time snapshot.
+	row.ExecutionMode = executionModeFromProto(msg.ExecutionMode)
 	if workflowID == "" {
 		row.WorkflowID = nil
 	}
@@ -417,6 +423,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		}
 	}
 	proto := rowToProto(created)
+	fillEffectiveMode(ctx, ttx.Tx, tenantID, proto, created)
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -461,6 +468,7 @@ func (s *Service) GetWorkItem(ctx context.Context, req *connect.Request[apiv1.Ge
 		return nil, mapDBError(err)
 	}
 	proto := rowToProto(w)
+	fillEffectiveMode(ctx, ttx.Tx, tenantID, proto, w)
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -723,6 +731,7 @@ func (s *Service) PromoteIdea(ctx context.Context, req *connect.Request[apiv1.Pr
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.promoted: %w", err))
 	}
 	proto := rowToProto(updated)
+	fillEffectiveMode(ctx, ttx.Tx, tenantID, proto, updated)
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -783,6 +792,7 @@ func (s *Service) DismissIdea(ctx context.Context, req *connect.Request[apiv1.Di
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.dismissed: %w", err))
 	}
 	proto := rowToProto(updated)
+	fillEffectiveMode(ctx, ttx.Tx, tenantID, proto, updated)
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -936,6 +946,18 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	if msg.WorkflowRunId != nil {
 		v := *msg.WorkflowRunId
 		fields.WorkflowRunID = &v
+	}
+	if msg.ClearExecutionMode {
+		// CLEAR WINS over a simultaneously supplied execution_mode: the explicit
+		// removal of the override is the more specific intent, and applying both
+		// would be contradictory (same rule as clear_scheduled_start_at).
+		fields.ClearExecutionMode = true
+	} else if msg.ExecutionMode != nil {
+		v := executionModeFromProto(*msg.ExecutionMode)
+		if v == nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_mode must be runtime or local"))
+		}
+		fields.ExecutionMode = v
 	}
 	if msg.RuntimeImage != nil {
 		v := strings.TrimSpace(*msg.RuntimeImage)
@@ -1324,6 +1346,7 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		}
 	}
 	proto := rowToProto(updated)
+	fillEffectiveMode(ctx, ttx.Tx, tenantID, proto, updated)
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -1461,6 +1484,7 @@ func (s *Service) DeleteWorkItem(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.deleted: %w", err))
 	}
 	proto := rowToProto(updated)
+	fillEffectiveMode(ctx, ttx.Tx, tenantID, proto, updated)
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -1725,6 +1749,7 @@ func (s *Service) AssignWorker(ctx context.Context, req *connect.Request[apiv1.A
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.worker_assigned: %w", err))
 	}
 	proto := rowToProto(updated)
+	fillEffectiveMode(ctx, ttx.Tx, tenantID, proto, updated)
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -1782,6 +1807,7 @@ func (s *Service) UnassignWorker(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.worker_unassigned: %w", err))
 	}
 	proto := rowToProto(updated)
+	fillEffectiveMode(ctx, ttx.Tx, tenantID, proto, updated)
 	if err := attachDependsOn(ctx, ttx.Tx, tenantID, proto); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -2948,6 +2974,21 @@ func kindForDepth(depth int) string {
 	}
 }
 
+// fillEffectiveMode populates the read-only effective_execution_mode — the
+// answer to "where will this item actually run?" — by calling the ONE resolver
+// (db.EffectiveExecutionMode: item -> project -> tenant default).
+//
+// Called on SINGLE-ITEM reads only (Get/Create/Update). ListWorkItems leaves the
+// field unset on purpose: resolving it per row would add an N+1 project read to
+// the hot list path, and the client can derive it from the item's override plus
+// the project it already has.
+func fillEffectiveMode(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkItem, w db.WorkItemRow) {
+	if p == nil {
+		return
+	}
+	p.EffectiveExecutionMode = executionModeEnumFor(db.EffectiveExecutionMode(ctx, tx, tenantID, w.ExecutionMode, w.ProjectID))
+}
+
 func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	p := &apiv1.WorkItem{
 		Id:                 w.ID,
@@ -2988,6 +3029,11 @@ func rowToProto(w db.WorkItemRow) *apiv1.WorkItem {
 	}
 	av := w.AutoStartWorkflow
 	p.AutoStartWorkflow = &av
+	// The OVERRIDE only — nil (inherit) leaves the optional field unset so the
+	// client can tell "inherit" from "explicitly runtime".
+	if m, ok := executionModeToProto(w.ExecutionMode); ok {
+		p.ExecutionMode = &m
+	}
 	p.RuntimeImage = w.RuntimeImage
 	if w.SortOrder != nil {
 		p.SortOrder = *w.SortOrder

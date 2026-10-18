@@ -85,12 +85,21 @@ jobs:
           - os: darwin
             arch: arm64
             archive: tar.gz
-          # NO WINDOWS TARGETS, deliberately — nothing consumes them. On Windows the whole stack
-          # runs inside WSL2 (the runtime layer is POSIX-only; see ARCHITECTURE.md's platform note)
-          # and scripts/install.ps1 installs the LINUX binary into the distro, so a Windows zip was
-          # ~60 MB built, uploaded and published for nobody — and it is the first thing a Windows user
-          # is *not* supposed to download. The `EXT=".exe"` branches below are kept inert so that
-          # re-adding a target is a one-line change rather than a rediscovery of what it needs.
+          - os: windows
+            arch: amd64
+            archive: zip
+          # WINDOWS SHIPS NOW, and the exclusion that used to sit here is dead. It read "nothing
+          # consumes a Windows artifact — the stack runs in WSL2 there, and the installer installs the
+          # Linux binary into the distro", which stopped being true when the plane and the host
+          # services became HOST processes: on Windows `orchicon install` / `orchicon serve` run a
+          # NATIVE orchicon.exe, and WSL2 is left with only the runtime CONTAINERS, which need a Linux
+          # kernel. The `.exe` branches below (build + package) stopped being inert the moment this
+          # entry landed.
+          #
+          # windows/arm64 is deliberately NOT here: Windows on ARM runs the amd64 zip under emulation,
+          # so a second ~60 MB artifact would be published for nobody. It IS compiled by `make
+          # cross-compile` (Makefile CROSS_PLATFORMS), so an arm64 break fails the gate instead of
+          # shipping. TestReleaseWorkflowPackagesTheWindowsZip asserts this wiring.
     steps:
       - uses: actions/checkout@v4
 
@@ -148,7 +157,7 @@ jobs:
 
   # Build + push the single-container image to GHCR. The image embeds the
   # frontend and ships every runtime (postgres, nats, tempo, loki, vm,
-  # collector, grafana, opencode) with the orchicon binary as PID-1
+  # collector, opencode) with the orchicon binary as PID-1
   # supervisor (`orchicon container`). Tagged with the version + latest.
   container:
     needs: guard

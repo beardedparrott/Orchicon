@@ -63,6 +63,13 @@ type WorkItemRow struct {
 	// workflow run (empty = base image). Stamped by the backend at
 	// create/update so the value always carries forward to the run.
 	RuntimeImage string
+	// ExecutionMode overrides the project's execution_mode for THIS
+	// item's executions ("runtime" | "local"). nil = inherit from the
+	// project — the column is nullable by design and NULL is the ONLY
+	// inherit representation (never ""). Resolved exclusively by
+	// db.EffectiveExecutionMode (item -> project -> tenant default);
+	// nothing else may re-derive it.
+	ExecutionMode *string
 	// ContextFiles is a JSON array of absolute file/directory paths
 	// provided as worker context, mirroring projects.context_files
 	// (internal/contextfiles). Read-only input, never mutated by the
@@ -142,6 +149,17 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	// New items always start recurrence-enabled: nothing in the create path
 	// represents "create already-paused" — pause is a later UpdateWorkItem.
 	w.RecurringEnabled = true
+	// Ephemeral (Ask Orchicon Quick Work) items get a CONCRETE mode at
+	// create instead of inheriting: see db.EphemeralExecutionMode for why
+	// the decision is local and why it is stamped rather than left NULL.
+	// An explicit caller value still wins — the stamp only fills a nil.
+	// Because it lives HERE, every creation path (Connect CreateWorkItem,
+	// the askorchicon MCP tool, the workflow reconciler's item clones)
+	// inherits it with no per-caller code.
+	if w.Ephemeral && w.ExecutionMode == nil {
+		m := EphemeralExecutionMode()
+		w.ExecutionMode = &m
+	}
 	// Always-container runtime: an empty runtime_image inherits the
 	// project's default_runtime_image (future creates inherit; explicit
 	// per-item values win; updating the project default never
@@ -158,10 +176,10 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		 acceptance_criteria, status, assigned_worker_ref, workflow_id,
 		 workflow_run_id, workflow_step_id,
 		 priority, budgets, context_window, results, prompt_context,
-		 scheduled_start_at, auto_start_workflow, runtime_image, context_files,
+		 scheduled_start_at, auto_start_workflow, runtime_image, execution_mode, context_files,
 		 recurring_schedule, next_run_at, recurring_enabled, spawned_by_work_item_id, spawned_by_run_id, secret_ids,
 		 ephemeral)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
 		RETURNING ` + WorkItemSelectCols
 	row := w
 	err := tx.QueryRow(ctx, q,
@@ -169,7 +187,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		w.AcceptanceCriteria, w.Status, w.AssignedWorkerRef, w.WorkflowID,
 		w.WorkflowRunID, w.WorkflowStepID,
 		w.Priority, w.Budgets, w.ContextWindow, w.Results, w.PromptContext,
-		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ContextFiles,
+		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ExecutionMode, w.ContextFiles,
 		w.RecurringSchedule, w.NextRunAt, w.RecurringEnabled,
 		w.SpawnedByWorkItemID, w.SpawnedByRunID, w.SecretIDs,
 		w.Ephemeral,
@@ -188,7 +206,7 @@ const WorkItemSelectCols = `id, tenant_id, project_id, parent_id, kind, title, d
 	acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 	workflow_run_id, workflow_step_id,
 	priority, budgets, context_window, sort_order, results, prompt_context,
-	scheduled_start_at, auto_start_workflow, runtime_image, context_files,
+	scheduled_start_at, auto_start_workflow, runtime_image, execution_mode, context_files,
 	recurring_schedule, next_run_at, recurring_enabled,
 	archived_at, archived_from_status, ephemeral,
 	sequence_attempts, sequence_last_attempt_at, sequence_consecutive_scan_errors, sequence_last_progress_at,
@@ -205,7 +223,7 @@ func WorkItemScanPtrs(w *WorkItemRow) []any {
 		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
 		&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
 		&w.PromptContext,
-		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
+		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ExecutionMode, &w.ContextFiles,
 		&w.RecurringSchedule, &w.NextRunAt, &w.RecurringEnabled,
 		&w.ArchivedAt, &w.ArchivedFromStatus, &w.Ephemeral,
 		&w.SequenceAttempts, &w.SequenceLastAttemptAt, &w.SequenceConsecutiveScanErrors, &w.SequenceLastProgressAt,
@@ -610,6 +628,16 @@ type UpdateWorkItemFields struct {
 	// to the base image. Stamped at create/update so the value carries
 	// forward to the workflow run.
 	RuntimeImage *string
+	// ExecutionMode sets the item-level override ("runtime" | "local").
+	// nil = unchanged (field-mask semantics); a non-nil pointer sets the
+	// override. Use ClearExecutionMode to return to inherit.
+	ExecutionMode *string
+	// ClearExecutionMode, when true, sets execution_mode = NULL, i.e. the
+	// item inherits its project's mode again. CLEAR WINS over a
+	// simultaneously supplied ExecutionMode (same rule as
+	// ClearScheduledStartAt: applying both is contradictory, and the
+	// removal is the more specific intent).
+	ClearExecutionMode bool
 	// ClearAssignedWorkerRef, when true, sets assigned_worker_ref = NULL.
 	// Used when switching a work item to a non-schedulable kind
 	// (epic/feature), where a worker binding is meaningless.
@@ -766,6 +794,13 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	if f.RuntimeImage != nil {
 		q += fmt.Sprintf(`, runtime_image = $%d`, setIdx)
 		args = append(args, *f.RuntimeImage)
+		setIdx++
+	}
+	if f.ClearExecutionMode {
+		q += `, execution_mode = NULL`
+	} else if f.ExecutionMode != nil {
+		q += fmt.Sprintf(`, execution_mode = $%d`, setIdx)
+		args = append(args, *f.ExecutionMode)
 		setIdx++
 	}
 	if f.ContextFiles != nil {

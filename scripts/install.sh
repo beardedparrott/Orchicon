@@ -123,7 +123,7 @@ Options:
                          preserved (database, blob store, runtime state).
     --force-clean, --nuke, -f
                          Wipe and start fresh for THIS instance: stop it, destroy its data
-                         directory (database, NATS, Tempo, Loki, VictoriaMetrics, Grafana),
+                         directory (database, NATS, Tempo, Loki, VictoriaMetrics),
                          remove blob store data and runtime state, then install the latest
                          version. WARNING: all data for THIS instance is lost.
    --dry-run            Print what would happen without making changes.
@@ -601,7 +601,7 @@ do_remove_binary() {
 # --- Force-clean then install -----------------------------------------------
 #
 # Wipe everything and start fresh: stop this instance's plane and host services, destroy
-# its data directory (database, NATS, Tempo, Loki, VictoriaMetrics, Grafana, blob store,
+# its data directory (database, NATS, Tempo, Loki, VictoriaMetrics, blob store,
 # runtime state), then install the latest version.
 #
 do_force_clean() {
@@ -711,7 +711,7 @@ do_clean() {
   echo ""
   echo -e "${B}Data preserved:${X}"
   echo -e "  ${D}• Postgres database and NATS JetStream messages (host services)${X}"
-  echo -e "  ${D}• Telemetry stack (Tempo, Loki, VictoriaMetrics, Grafana)${X}"
+  echo -e "  ${D}• Telemetry stack (Tempo, Loki, VictoriaMetrics)${X}"
   echo -e "  ${D}• BlobStore files${X}"
   echo -e "  ${D}• Runtime state${X}"
   echo -e "  ${D}  all under $(inst_state_dir)${X}"

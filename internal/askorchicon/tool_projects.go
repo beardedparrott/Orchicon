@@ -3,6 +3,7 @@ package askorchicon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -96,9 +97,17 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		return nil, err
 	}
 	defer ttx.Rollback(ctx)
-	var goalsJSON []byte
+	// goals is NOT NULL: an omitted goals arg must store an empty JSON array,
+	// not NULL (a create with no goals is legal and was failing at the insert).
+	goalsJSON := []byte("[]")
 	if params.Goals != "" {
 		goalsJSON = []byte(fmt.Sprintf(`"%s"`, params.Goals))
+	}
+	// Omitted mode means the default (local); a bogus value is rejected here
+	// instead of being silently coerced.
+	executionMode, err := db.ParseExecutionMode(params.ExecutionMode, db.DefaultExecutionMode)
+	if err != nil {
+		return nil, err
 	}
 	project, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
 		ID:         db.NewID(),
@@ -114,12 +123,7 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 			}
 			return nil
 		}(),
-		ExecutionMode: func() string {
-			if params.ExecutionMode == db.ExecutionModeLocal {
-				return db.ExecutionModeLocal
-			}
-			return db.ExecutionModeRuntime
-		}(),
+		ExecutionMode: executionMode,
 	})
 	if err != nil {
 		return nil, err
@@ -176,16 +180,18 @@ func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		update.DefaultRuntimeImage = &v
 	}
 	if params.ExecutionMode != nil {
-		switch *params.ExecutionMode {
-		case db.ExecutionModeLocal:
-			m := db.ExecutionModeLocal
-			update.ExecutionMode = &m
-		case db.ExecutionModeRuntime:
-			m := db.ExecutionModeRuntime
-			update.ExecutionMode = &m
-		default:
-			return nil, fmt.Errorf("execution_mode must be runtime or local")
+		// Route through the SAME parser as create: a raw switch here rejected
+		// spellings create accepts (" Runtime "), so the two paths disagreed
+		// about what a valid mode is. An absent/blank value is not a mode —
+		// reject it rather than handing "" to the column's CHECK constraint.
+		m, err := db.ParseExecutionMode(*params.ExecutionMode, "")
+		if err != nil {
+			return nil, err
 		}
+		if m == "" {
+			return nil, errors.New(db.ExecutionModeInvalidMsg)
+		}
+		update.ExecutionMode = &m
 	}
 	project, err := db.UpdateProject(ctx, ttx.Tx, tenantID, params.ID, current.Version, update)
 	if err != nil {

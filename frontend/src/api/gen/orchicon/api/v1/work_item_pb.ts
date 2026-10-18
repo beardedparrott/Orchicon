@@ -11,6 +11,7 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
+import { ExecutionMode } from "./project_pb.js";
 
 /**
  * WorkItemKind enumerates the work hierarchy kinds (docs/02_Domain_Model.md
@@ -553,6 +554,32 @@ export class WorkItem extends Message<WorkItem> {
    */
   secretIds: string[] = [];
 
+  /**
+   * execution_mode overrides the PROJECT's execution mode for THIS item's
+   * executions. Absent (unset) = inherit from the project; present with an
+   * explicit value = override. "absent" and "runtime" are therefore different
+   * statements, which is why the field is optional rather than a plain enum
+   * with an UNSPECIFIED sentinel: the row itself distinguishes NULL (inherit)
+   * from a stored value, and the wire must too.
+   *
+   * Resolution order, implemented ONCE in db.EffectiveExecutionMode:
+   *   item -> project -> tenant default (db.DefaultExecutionMode).
+   *
+   * @generated from field: optional orchicon.api.v1.ExecutionMode execution_mode = 40;
+   */
+  executionMode?: ExecutionMode;
+
+  /**
+   * effective_execution_mode is the RESOLVED mode - never unset - i.e. what
+   * dispatch will actually do for this item. Populated on single-item reads
+   * (Get/Create/Update); ListWorkItems leaves it unspecified and the client
+   * derives it from the item override plus its project, so the hot list path
+   * takes no per-row project read.
+   *
+   * @generated from field: orchicon.api.v1.ExecutionMode effective_execution_mode = 41;
+   */
+  effectiveExecutionMode = ExecutionMode.UNSPECIFIED;
+
   constructor(data?: PartialMessage<WorkItem>) {
     super();
     proto3.util.initPartial(data, this);
@@ -599,6 +626,8 @@ export class WorkItem extends Message<WorkItem> {
     { no: 37, name: "recurring_enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 38, name: "spawned_by_title", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 39, name: "secret_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 40, name: "execution_mode", kind: "enum", T: proto3.getEnumType(ExecutionMode), opt: true },
+    { no: 41, name: "effective_execution_mode", kind: "enum", T: proto3.getEnumType(ExecutionMode) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkItem {

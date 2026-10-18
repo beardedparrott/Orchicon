@@ -48,7 +48,6 @@ instance_info() {
       TEMPO_PORT=3200
       LOKI_PORT=3100
       VM_PORT=8428
-      GRAFANA_HOST_PORT=3002
       HOST_DATA_DIR="$HOME/.local/share/orchicon-dev"
       ;;
     prod)
@@ -68,7 +67,6 @@ instance_info() {
       TEMPO_PORT=3201
       LOKI_PORT=3101
       VM_PORT=8429
-      GRAFANA_HOST_PORT=3003
       HOST_DATA_DIR="$HOME/.local/share/orchicon-prod"
       ;;
     test)
@@ -90,7 +88,6 @@ instance_info() {
       TEMPO_PORT=3202
       LOKI_PORT=3102
       VM_PORT=8430
-      GRAFANA_HOST_PORT=3004
       HOST_DATA_DIR="$HOME/.local/share/orchicon-test"
       ;;
     *)
@@ -113,7 +110,6 @@ instance_info() {
   # bridge bind and advertised URL (bridge_bind_env), and every /healthz probe —
   # so no consumer can retain a stale literal.
   PLANE_HTTP_PORT="${ORCHICON_CONTROL_PORT:-$PLANE_HTTP_PORT}"
-  GRAFANA_HOST_PORT="${ORCHICON_GRAFANA_PORT:-$GRAFANA_HOST_PORT}"
   PG_PORT="${ORCHICON_POSTGRES_PORT:-$PG_PORT}"
   NATS_PORT="${ORCHICON_NATS_PORT:-$NATS_PORT}"
   NATS_MON_PORT="${ORCHICON_NATS_MONITOR_PORT:-$NATS_MON_PORT}"
@@ -125,11 +121,9 @@ instance_info() {
 
   # COMPOSED from the (possibly overridden) ports above, not written as literals
   # beside them: a literal is how an override silently leaves the publish on the
-  # old number. Grafana's URL is the PLANE origin (it is proxied same-origin
-  # under /grafana), which is why it tracks PLANE_HTTP_PORT and not the Grafana
-  # publish.
-  PORTS="-p $PLANE_HTTP_PORT:8080 -p $GRAFANA_HOST_PORT:3000"
-  GRAFANA_URL="http://localhost:$PLANE_HTTP_PORT/grafana"
+  # old number. 3002/3003/3004 are RETIRED (they were Grafana's published port)
+  # and are RESERVED — no row claims them.
+  PORTS="-p $PLANE_HTTP_PORT:8080"
 
   # Host-residency publishes (services-only mode). EVERY port is bound to
   # 127.0.0.1 EXPLICITLY: postgres and nats are a database and an internal
@@ -139,14 +133,14 @@ instance_info() {
   SERVICE_PORTS="$SERVICE_PORTS -p 127.0.0.1:$NATS_PORT:4222 -p 127.0.0.1:$NATS_MON_PORT:8222"
   SERVICE_PORTS="$SERVICE_PORTS -p 127.0.0.1:$OTLP_GRPC_PORT:4317 -p 127.0.0.1:$OTLP_HTTP_PORT:4318"
   SERVICE_PORTS="$SERVICE_PORTS -p 127.0.0.1:$TEMPO_PORT:3200 -p 127.0.0.1:$LOKI_PORT:3100"
-  SERVICE_PORTS="$SERVICE_PORTS -p 127.0.0.1:$VM_PORT:8428 -p 127.0.0.1:$GRAFANA_HOST_PORT:3000"
+  SERVICE_PORTS="$SERVICE_PORTS -p 127.0.0.1:$VM_PORT:8428"
 }
 
 # residency_for prints the plane residency for THIS invocation: host or
 # container.
 #
 # DEFAULT IS HOST. The plane runs on the HOST as its own `orchicon serve`
-# process, with the services (Postgres/NATS/telemetry/Grafana) in the one
+# process, with the services (Postgres/NATS/telemetry) in the one
 # container and the plane reaching them over loopback. That is the supported
 # shape — a user is a host user — so `container.sh up dev` gives a host plane
 # with no extra ceremony. `container` is kept as the self-contained shape (the
@@ -220,7 +214,6 @@ plane_env() {
   echo "ORCHICON_PG_CONTAINER=$NAME"
   echo "ORCHICON_NATS_URL=nats://localhost:$NATS_PORT"
   echo "ORCHICON_OTEL_ENDPOINT=localhost:$OTLP_GRPC_PORT"
-  echo "ORCHICON_GRAFANA_URL=http://localhost:$GRAFANA_HOST_PORT"
   echo "ORCHICON_TEMPO_URL=http://localhost:$TEMPO_PORT"
   echo "ORCHICON_LOKI_URL=http://localhost:$LOKI_PORT"
   echo "ORCHICON_VM_URL=http://localhost:$VM_PORT"

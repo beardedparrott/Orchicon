@@ -133,3 +133,8 @@ func TestServeStopKeepsStateWhenItCannotConfirm(t *testing.T) {
 		t.Error("serveStop() = 0 for an unparseable PID file — it cannot have stopped anything")
 	}
 }
+
+// THE ESCALATION LADDER IS NOW SEAM-DRIVEN, so a reader looking for where SIGTERM/SIGKILL went should look at
+// signals_unix.go / signals_windows.go (sendGracefulStop, sendForceStop, gracefulStopFailureIsFatal). This file
+// keeps testing the LADDER: bounded wait, escalate, verify, and keep the PID file on a survivor. The Windows
+// half differs by design — no SIGTERM, usually no deliverable graceful stop — and signals_windows.go states it.

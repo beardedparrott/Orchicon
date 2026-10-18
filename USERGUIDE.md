@@ -211,8 +211,7 @@ stack therefore runs inside **WSL2**, and the installer orchestrates it:
    replayed at the end. It also asks about the host ports — press ENTER to accept
    each default.
 5. **Connection info** — WSL2 forwards `localhost`, so it prints the
-   Windows-visible URLs: `http://localhost:8080` (control plane) and
-   `http://localhost:3002` (Grafana). If the URLs do not answer, check Windows
+   Windows-visible URL: `http://localhost:8080` (control plane). If the URL does not answer, check Windows
    Defender Firewall or add a `netsh interface portproxy` port forward.
 
 **The installer never closes your PowerShell window.** Whatever goes wrong it prints
@@ -337,6 +336,25 @@ orchicon stop --instance=prod
 `ORCHICON_INSTANCE` is the fallback when neither is given, so an existing script that exports it keeps
 working. Naming two instances at once is refused rather than guessed.
 
+#### Where plane control lives
+
+Three places, and they all call **one** shared mechanism (`internal/planecontrol`) — there is no second
+implementation of "how do we stop a plane, and what do we do when we cannot identify it":
+
+| surface | how it reaches the plane | available today |
+|---|---|---|
+| **CLI** | `orchicon start`, `stop`, `restart`, `plane start/stop/restart/status` | yes — the admin path, and the equivalent of every other surface |
+| **TUI** | `orch`, off the plane channel, so it can control a plane that is not serving it | when your build includes it; the verbs above are the fallback |
+| **desktop app** | its offline state's start/stop action | when your build includes it; the verbs above are the fallback |
+
+Where control does **not** live: **the web app has no lifecycle control and gains none.** A browser cannot
+spawn a process, and a lifecycle RPC to the plane would have to reply before killing the server answering
+it. So a plane stopped underneath an open tab shows the SPA's ordinary **connection-failure** state — a
+failed request, an error toast, a retry that fails — and that is intentional, not a missing button.
+
+To watch the cycle end to end — including the fail-safe and the two-instance isolation — run
+`scripts/plane-control-e2e.sh`; the procedure it implements is `docs/plane-control-e2e-acceptance.md`.
+
 > **There is no boot-time autostart.** After a machine reboot, run `orchicon start`. Orchicon installs
 > no systemd unit and no launchd job, so nothing starts the plane for you.
 
@@ -373,7 +391,9 @@ An install resolves every published port for its instance, and **three instance 
 | Port | dev | prod | test |
 |---|---|---|---|
 | Web UI + API (`ORCHICON_CONTROL_PORT`) | 8080 | 8091 | 8092 |
-| Grafana (`ORCHICON_GRAFANA_PORT`) | 3002 | 3003 | 3004 |
+| ~~Grafana (`ORCHICON_GRAFANA_PORT`)~~ | ~~3002~~ | ~~3003~~ | ~~3004~~ |
+
+3002/3003/3004 are **retired and reserved** — they were Grafana's, and no service reuses them.
 
 **Setting the variable pins the port and skips the prompt** — the non-interactive path for a scripted
 install. Left unset, a port already in use raises a prompt on your terminal offering the next free one;
@@ -814,10 +834,9 @@ Workers, Recovery, or Cost Explorer.
 
 **Where:** top bar → **Overview** → **Telemetry**
 
-**Purpose.** Traces, metrics and logs, and the entry point to the embedded Grafana
-stack.
+**Purpose.** Traces, metrics and logs, read directly from the telemetry backends.
 
-**What it shows.** A trace list with span detail, plus the live telemetry
+**What it shows.** A trace list with span detail, the log and metric explorers, plus the live telemetry
 subscription (footnote status, refresh on event, automatic reconnect).
 
 **How to use it.**
@@ -827,10 +846,12 @@ subscription (footnote status, refresh on event, automatic reconnect).
    where the error originated.
 3. Use the `trace_id` shown on an audit event or execution to correlate the same
    work across surfaces.
-4. For raw exploration, the **embedded Grafana UI** is available at `/grafana`
-   (Tempo for traces, Loki for logs, VictoriaMetrics for metrics).
+4. For raw exploration, use the **Traces / Metrics / Logs** tabs — they read Tempo, VictoriaMetrics and Loki
+   directly through the plane's authenticated API. (The embedded Grafana UI and its `/grafana` proxy were
+   removed: a browser iframe cannot send an Authorization header, and the old workaround mounted the proxy
+   outside the auth middleware. Nothing is mounted outside `ResolveAuth` now.)
 
-**Actions.** Read-only, plus the Grafana jump-off.
+**Actions.** Read-only.
 
 ### 6.3 Cost Explorer
 
@@ -878,13 +899,21 @@ that are injected into every worker prompt.
 
 **The fields, and why you'd set them.**
 
+> **Local mode is not contained.** `runtime` runs each execution in a short-lived, root-free
+> container — that is a real isolation boundary. `local` runs the worker as a **host process with
+> your own filesystem access**: it can read and write anything you can. The layers that remain —
+> opencode's permission deny rules, the OS execution guard that shims dangerous binaries, and the
+> worker prompt's Safety rules — are **defense-in-depth, not containment**, and a determined worker
+> escapes them (an absolute-path `/bin/rm`, or a binary it writes and runs itself). If isolation
+> matters, keep `runtime`.
+
 | Field | What it is | Why you'd set it |
 |---|---|---|
 | **Name** / **Slug** | The display name, and an optional short slug used in URLs and references | Set the slug once if you will refer to the project by name in scripts or URLs |
 | **Project directory** | The directory workers operate in — and the boundary they are held to | Always set it. It is also the only directory guaranteed to be mounted into the containers where workers run, so everything a worker may touch must live under it |
 | **Git strategy** | How a run handles branches and pull requests — see below | Choose the outcome you want: a pushed branch, a reviewed PR, or nothing pushed at all |
 | **Default runtime image** | The container image work items use unless they set their own. Empty = the base image | Set it when your projects need extra tooling (a language runtime, a browser, a CLI) so you are not setting it per work item |
-| **Execution mode** | `runtime` — always run in a container (default), or `local` — run in-process on the host | Keep `runtime` for isolation. Use `local` when a task genuinely needs the host's own environment, accepting that it is no longer contained |
+| **Execution mode** | `runtime` — always run in a container (default), or `local` — run in-process on the host | Keep `runtime` for isolation: it is the only real boundary. `local` runs as a host process with your own filesystem access — the permission rules and execution guard are defense-in-depth and can be escaped (an absolute-path `/bin/rm`, a binary the worker writes itself), so choose `local` only when a task genuinely needs the host's own environment |
 | **Max concurrent runs** | Caps how many executions may run at once. `0` = no additional restriction | Set it when a project would otherwise saturate the machine or race itself; the effective limit is `min(tenant, project)` |
 | **Goals** | Free-form markdown describing what the project is for | Worth writing: goals are injected into worker prompts, so they steer every task in the project |
 | **Context files** | Files or directories injected into every worker prompt, on top of the work item's own | Point them at the conventions, specs or reference material a worker should always have |
@@ -1608,7 +1637,7 @@ deleted, and is the tenant-admin bypass.
 - **Events** — the actor-based record of **who did what**: the action
   (`work_item.created`, `worker.published`, `auth.login`, …), the actor and auth
   method, the polymorphic target, before/after snapshots for updates, and the OTel
-  `trace_id` for cross-correlation with Grafana traces. A filter bar scopes by
+  `trace_id` for cross-correlation with Tempo traces. A filter bar scopes by
   action, actor, target type, target id and time window.
 - **Decisions** — the Rego policy-decision trail.
 
@@ -1763,6 +1792,16 @@ press — there is no modifier to remember):
 
 - **Content pane** — the focused screen, split into a **list** of sources and a
   **detail** pane.
+- **Plane state** — the footer carries a plane chip beside the connection state:
+  `plane up (dev)`, `plane down`, `plane drifted`, or `plane remote` (this shell is
+  talking to a plane that is not on this host, so the lifecycle commands refuse).
+  **Drifted** means the plane is answering but running a superseded binary — restart it to
+  swap it. When the plane is down, the error strip names the
+  remedy (the start command and the plane log at
+  `<data dir>/serve/logs/orchicon.log`) instead of only reporting a refused connection.
+  The verbs re-exec the **installed `orchicon`** (`~/.local/bin/orchicon`, or the one on
+  `PATH`) to run the plane — `orch` itself is a thin remote client and cannot serve. If
+  `orchicon` is not installed, `/plane-start` says so instead of failing with a timeout.
 - **Chat dock** — the composer at the bottom. It is **focused at launch**, so you
   can type immediately.
 - **Right rail** — the Ask conversations list, toggled with `ctrl+r` (open by
@@ -2375,10 +2414,10 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon start [instance]` | Start an **installed** instance: its services (Postgres + NATS), then its plane. Idempotent, and it never installs. This is the command to run after a reboot (there is no autostart) |
 | `orchicon stop [instance]` | Stop an instance: its plane, then its services. **Idempotent** — running it on a stopped instance is a successful no-op |
 | `orchicon restart [instance]` | Restart this instance so its components re-read their environment. Use it after installing an adapter CLI or changing `PATH` — see *Installing an adapter CLI* |
-| `orchicon plane <status\|start\|stop\|restart> [instance]` | The **plane only** — leaves the services running. The mechanism the TUI and the desktop app call |
+| `orchicon plane <status\|start\|stop\|restart> [instance]` | The **plane only** — leaves the services running. The same mechanism the TUI and the desktop app call — the TUI's `/plane`, `/plane-start`, `/plane-stop` and `/plane-restart` invoke the same `internal/planecontrol` paths (there is no lifecycle RPC). `plane status` is the surface that reports the **instance, the serving binary and drift** (a plane running a superseded binary) |
 | `orchicon services <up\|down\|status> [instance]` | The **services only** — this instance's Postgres + NATS on the host. `up` is idempotent; `down` verifies the ports came free, and stops this instance's **own** container from an older install if that is what still holds them. `down --force` also terminates this instance's leftover processes — never one it does not own |
 | `orchicon serve` | Run the control plane with the embedded frontend (headless, migrations on boot) |
-| `orchicon serve --detach` / `--status` / `--stop` | Manage a background `serve` instance (PID file) |
+| `orchicon serve --detach` / `--status` / `--stop` | Manage a **background** `serve` process. `--status` reports the same thing as `orchicon plane status` — the instance, its residency, the plane PID, the serving binary and whether it has been superseded, plus health — through the same code path, and exits `0` only when the PID file names a live process. **There is no `serve --start`**: `orchicon start` starts (or restarts) the instance, and `orchicon plane start` starts the plane alone |
 | `orchicon container` | **Internal.** The supervisor the host services re-exec as; not a supported way to run an instance |
 | `orchicon runtime-daemon` | Host process owning the container engine; spawns **per-workflow runtime containers** — the only thing a container is used for |
 | `orchicon runtime-supervisor` | Runtime container PID 1 |
@@ -2392,7 +2431,10 @@ The `orchicon` binary runs the plane and its supporting services.
 **Every lifecycle verb takes the instance the same way** — a positional (`orchicon stop prod`), a flag
 (`orchicon stop --instance prod`), or `ORCHICON_INSTANCE` as the fallback. Naming two at once is refused
 rather than guessed, and an unknown flag is an error rather than being silently ignored. The default is
-`dev`.
+`dev`. The same instance forms work on `plane <verb>`, so `orchicon plane restart --instance prod` means
+one thing. `services down --force` reaches **only this instance's own** leftovers — a process this
+instance does not own is reported by pid and executable, never killed, because it may be a database you
+care about.
 
 **Scripts:**
 

@@ -103,8 +103,9 @@ func isInsideWorkTree(ctx context.Context, projectDir string) bool {
 // host-side daemon through runtime.Client. A nil client (no daemon socket
 // — headless `orchicon serve`) makes EnsureServing/ReapForRun/Adopt no-ops
 // and makes EnsureForRun return a LOUD error: silent in-process degrade in
-// runtime mode is gone (local execution_mode is the explicit opt-out, and
-// the reconciler never calls EnsureForRun for it).
+// runtime mode is gone (local execution_mode on the project **or on the
+// work item itself** is the explicit opt-out, and the reconciler never calls
+// EnsureForRun for an execution whose EFFECTIVE mode resolves to local).
 type Lifecycle struct {
 	client *Client
 	pool   *db.Pool
@@ -963,12 +964,14 @@ func (l *Lifecycle) ServeDependent(kind string) bool {
 // adapter kind — native sessions exec inside it (same mount/toolchain
 // path as opencode). The needsServe split lives in EnsureServing (the
 // readiness PROBE), not here. A nil client (headless `orchicon serve`
-// without Docker) is a LOUD error — the reconciler calls this only in
-// runtime mode; local mode is the explicit opt-out and never reaches here,
-// so silent host-exec degrade is impossible.
+// without Docker) is a LOUD error — the reconciler calls this only for an
+// execution whose EFFECTIVE execution mode resolves to runtime; local mode —
+// whether it comes from the project OR from a work-item override — is the
+// explicit opt-out and never reaches here, so silent host-exec degrade is
+// impossible.
 func (l *Lifecycle) EnsureForRun(ctx context.Context, run db.WorkflowRunRow) error {
 	if l.client == nil {
-		return fmt.Errorf("runtime daemon not reachable — project is in runtime mode and no container can be created: switch the project to local execution_mode or start the runtime daemon")
+		return fmt.Errorf("runtime daemon not reachable — this run resolves to runtime mode and no container can be created: switch the project (or this work item's execution_mode) to local, or start the runtime daemon")
 	}
 	if !l.client.Ready(ctx) {
 		return fmt.Errorf("runtime daemon not reachable")

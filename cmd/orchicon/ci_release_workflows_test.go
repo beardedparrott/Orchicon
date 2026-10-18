@@ -64,15 +64,80 @@ func TestCanaryMatchesReleaseMatrix(t *testing.T) {
 			"A canary that builds something other than what ships tests a different install path than the "+
 			"one users get.", release, canary)
 	}
-	// WINDOWS IS OUT OF BOTH, and that is the decision this guards: nothing consumes a Windows artifact
-	// (the stack runs in WSL2 there, and the installer installs the Linux binary into the distro), so a
-	// platform reappearing in one file without the other is the drift worth catching.
+	// WINDOWS IS IN BOTH, and the exclusion that used to live here is dead. It read "nothing consumes a
+	// Windows artifact (the stack runs in WSL2 there, and the installer installs the Linux binary into the
+	// distro)" — which stopped being true when the plane became a HOST process: on Windows `orchicon
+	// install` and `orchicon serve` run a NATIVE orchicon.exe, and WSL2 is left with only the runtime
+	// CONTAINERS, which need a Linux kernel. So the release publishes
+	// orchicon_<version>_windows_amd64.zip, and a release that stopped building it would silently take
+	// Windows support away from a platform the plane now serves.
+	//
+	// windows/arm64 is deliberately ABSENT from the release matrix: Windows on ARM runs the amd64 zip under
+	// emulation, so a second artifact would be published for nobody. It is still in `make cross-compile`'s
+	// CROSS_PLATFORMS, so an arm64 break fails the gate rather than a release — that difference between the
+	// SHIP list and the COMPILE list is the decision asserted here.
+	wantWindows := [2]string{"windows", "amd64"}
+	gotWindows := false
 	for _, p := range release {
-		if p[0] == "windows" {
-			t.Errorf("release.yml builds %v again — Windows artifacts are deliberately not shipped; if that "+
-				"decision has been reversed, update canary.yml and the docs in the same change", p)
+		if p == wantWindows {
+			gotWindows = true
+		}
+		if p[0] == "windows" && p != wantWindows {
+			t.Errorf("release.yml builds %v — only windows/amd64 ships; windows/arm64 is compiled by "+
+				"`make cross-compile` but not published (Windows on ARM runs the amd64 zip under emulation)", p)
 		}
 	}
+	if !gotWindows {
+		t.Errorf("release.yml no longer builds %v — Windows is a SHIPPED platform (the plane runs "+
+			"natively there; WSL2 is only for runtime containers). If that decision has been reversed, "+
+			"update canary.yml, Makefile's CROSS_PLATFORMS and ARCHITECTURE.md in the same change", wantWindows)
+	}
+}
+
+// TestReleaseWorkflowPackagesTheWindowsZip — a matrix entry alone does NOT produce the file AC2 promises.
+// The target, the `.exe` suffix and the zip branch are three separate wirings in release.yml (and two in
+// canary.yml), each of which can rot on its own: a `windows` matrix entry whose build step loses its
+// `.exe` branch packages a binary Windows cannot run, and one whose archive selector is `tar.gz` publishes
+// an archive the documented install command does not fetch. Asserted by string because the alternative is
+// a release run — the point is to fail before one.
+func TestReleaseWorkflowPackagesTheWindowsZip(t *testing.T) {
+	release := readWorkflow(t, "../../.github/workflows/release.yml")
+	canary := readWorkflow(t, "../../.github/workflows/canary.yml")
+
+	// TWICE: the build step names the binaries and the package step copies them again. One without the
+	// other is a broken asset, not a partially-complete one.
+	if n := strings.Count(release, `[ "${{ matrix.os }}" = "windows" ] && EXT=".exe"`); n != 2 {
+		t.Errorf("release.yml release:119-141: found %d `EXT=\".exe\"` branches, want 2 (build + package) — "+
+			"a matrix entry without them builds a binary named `orchicon` for Windows", n)
+	}
+	for _, want := range []struct{ what, sub string }{
+		{"release.yml:76-87 the matrix target", "- os: windows"},
+		{"release.yml:76-87 the archive selector (zip, not tar.gz)", "archive: zip"},
+		{"release.yml:132 the published asset name", `ASSET="orchicon_${VERSION_NUM}_${{ matrix.os }}_${{ matrix.arch }}"`},
+		{"release.yml:141 the zip packaging branch", `zip -r "${ASSET}.zip" "$ASSET"`},
+		{"canary.yml the same matrix target", "- os: windows"},
+		{"canary.yml the zip packaging branch", `zip -r "${ASSET}.zip" "$ASSET"`},
+		{"canary.yml the artifact upload glob", "orchicon_*.zip"},
+		{"canary.yml the prerelease publish glob", "dist/*.zip"},
+	} {
+		src := release
+		if strings.HasPrefix(want.what, "canary.yml") {
+			src = canary
+		}
+		if !strings.Contains(src, want.sub) {
+			t.Errorf("%s is missing %q — the Windows zip would be built but never published, or published "+
+				"under a name the install command does not resolve", want.what, want.sub)
+		}
+	}
+}
+
+func readWorkflow(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
 }
 
 // THE STABLE ASSET NAME IS A CONTRACT WITH THE DOCUMENTED COMMAND, not a style choice: the canary's whole

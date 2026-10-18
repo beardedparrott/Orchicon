@@ -89,13 +89,13 @@ Orchicon's runtime layer is POSIX-only; on Windows the whole stack runs
 inside a WSL2 Linux distro. This script provisions/detects WSL2, installs
 the Linux binary inside the distro, and runs the one-command setup there.
 WSL2 forwards localhost, so the UIs open from Windows at the same URLs as
-on Linux. The control plane and Grafana default to http://localhost:8080 and
-http://localhost:3002 (8091/3003 for prod); the installer prints the ports it
-actually bound, which can differ when a default was already in use.
+on Linux. The control plane defaults to http://localhost:8080 (8091 for prod);
+the installer prints the port it actually bound, which can differ when a
+default was already in use.
 
 Options:
-  Env: ORCHICON_CONTROL_PORT / ORCHICON_GRAFANA_PORT
-                      Host ports for the control plane and Grafana. Set inside
+  Env: ORCHICON_CONTROL_PORT
+                      Host port for the control plane. Set inside
                       WSL before installing when another product already holds
                       a default port. Both launchers honour the same names.
   -Version <tag>      Install a specific version (e.g. v0.1.173). Default: latest.
@@ -545,7 +545,7 @@ function Get-InstanceName {
 #
 # This used to compute the URLs from the per-instance defaults plus the environment, and that is a guess:
 # `orchicon install` PROMPTS for the host ports, and a prompt is exactly the thing a wrapper cannot
-# predict. Reported from a real Windows install — the operator answered 3001 for Grafana, the installer
+# predict. Reported from a real Windows install — the operator answered 3001 for a published port, the
 # printed 3001, and this block then printed 3002, so the two halves of one run disagreed and the second
 # URL was one this install never bound. (The same class of defect the port table was introduced to fix.)
 #
@@ -569,17 +569,14 @@ function Write-ConnectionInfo {
     # the record is what was actually bound, the default covers an install from before the record existed,
     # and the environment covers an operator who pinned a port without going through the prompt.
     $resolved = Get-ResolvedPorts
-    if ($instance -eq "prod") { $ctrl = 8091; $graf = 3003 } else { $ctrl = 8080; $graf = 3002 }
+    if ($instance -eq "prod") { $ctrl = 8091 } else { $ctrl = 8080 }
     if ($env:ORCHICON_CONTROL_PORT) { $ctrl = $env:ORCHICON_CONTROL_PORT }
-    if ($env:ORCHICON_GRAFANA_PORT) { $graf = $env:ORCHICON_GRAFANA_PORT }
     if ($resolved) {
         if ($resolved.ORCHICON_CONTROL_PORT) { $ctrl = $resolved.ORCHICON_CONTROL_PORT }
-        if ($resolved.ORCHICON_GRAFANA_PORT) { $graf = $resolved.ORCHICON_GRAFANA_PORT }
     }
     Write-Host ""
     Write-Host "Open from Windows (WSL2 forwards localhost):" -ForegroundColor White
     Write-Host "  Control plane: http://localhost:$ctrl" -ForegroundColor Cyan
-    Write-Host "  Grafana:       http://localhost:$graf" -ForegroundColor Cyan
     Write-Host "  (if a default port was already in use, 'orchicon install' suggested the next" -ForegroundColor DarkGray
     Write-Host "   free one — its own output lists the ports it actually bound)" -ForegroundColor DarkGray
     Write-Host "  Note: if the URLs do not answer, check Windows Defender Firewall,"
@@ -931,7 +928,7 @@ true
         Write-Host "  2. extract + install to $InstallDir/orchicon inside WSL"
         if (-not $NoSetup) {
             Write-Host "  3. run 'orchicon install' inside WSL (acquire host binaries, start daemon, launch this instance's plane; no image is pulled unless one is chosen)"
-            Write-Host "  4. open the control plane / Grafana on the ports the installer prints"
+            Write-Host "  4. open the control plane on the ports the installer prints"
             Write-Host "     (dev defaults: 8080 / 3002; prod: 8091 / 3003)"
         }
         Write-Ok "dry-run complete — no changes made"
@@ -1102,7 +1099,7 @@ ORCHICON_INSTALL_INTERACTIVE=1 ORCHICON_INSTANCE="__INSTANCE__" __ASSUME_YES__"$
             Write-Host "    wsl -d $script:Distro -e bash -lc '$InstallDir/orchicon install'" -ForegroundColor Cyan
             Write-Host "  Where the reason will be:"
             Write-Host "    · the output above — the failing step prints its own reason"
-            Write-Host "    · docker logs --tail 50 orchicon-cnt-$instance   (the stack's services)"
+            Write-Host "    · this instance's host services (postgres, nats) print their own reason above"
             Write-Host "    · the runtime daemon log: /tmp/orchicon-runtime/runtime-daemon.log in the distro"
             # A non-zero outcome for a wrapper: the binary is in place, the stack is not.
             $script:ExitCode = 1
