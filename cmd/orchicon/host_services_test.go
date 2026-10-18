@@ -129,9 +129,9 @@ func TestServicePortsFromEnvReadsKnobs(t *testing.T) {
 // The ordered service set is pinned without booting anything: postgres and nats
 // first, then the telemetry fleet, each with a readiness probe.
 func TestServiceSet(t *testing.T) {
-	want := []string{"postgres", "nats", "tempo", "loki", "victoriametrics", "otel-collector", "grafana"}
+	want := []string{"postgres", "nats", "tempo", "loki", "victoriametrics", "otel-collector"}
 	s := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(), ports: servicePortsFromEnv()}
-	procs := []*managedProc{s.postgresProc(), s.natsProc(), s.tempoProc(), s.lokiProc(), s.vmProc(), s.collectorProc(), s.grafanaProc()}
+	procs := []*managedProc{s.postgresProc(), s.natsProc(), s.tempoProc(), s.lokiProc(), s.vmProc(), s.collectorProc()}
 	if len(procs) != len(want) {
 		t.Fatalf("service count = %d, want %d", len(procs), len(want))
 	}
@@ -279,7 +279,7 @@ func embeddedConfigPort(t *testing.T, path, key string, nth int, ports servicePo
 }
 
 // The telemetry children's listen ports live in an EMBEDDED CONFIG (tempo.yaml,
-// loki.yaml, grafana.ini, otel-collector.yaml), NOT in argv. The probe port is
+// loki.yaml, otel-collector.yaml), NOT in argv. The probe port is
 // therefore only correct because it COPIES the config — so parse the shipped
 // configs (resolving the @TOKEN@s) and pin each field to them, in both
 // residencies. A knob that moved one of these fields without moving the config
@@ -294,7 +294,6 @@ func TestServiceProbesMatchEmbeddedConfigPorts(t *testing.T) {
 	}{
 		{"tempo", "deploy/configs/tempo.yaml", "http_listen_port", "ORCHICON_TEMPO_PORT", 0, func(p servicePorts) int { return p.tempo }},
 		{"loki", "deploy/configs/loki.yaml", "http_listen_port", "ORCHICON_LOKI_PORT", 0, func(p servicePorts) int { return p.loki }},
-		{"grafana", "deploy/configs/grafana.ini", "http_port", "ORCHICON_GRAFANA_PORT", 0, func(p servicePorts) int { return p.grafana }},
 		{"tempo-otlp-grpc", "deploy/configs/tempo.yaml", `endpoint: "0.0.0.0:`, "ORCHICON_TEMPO_OTLP_GRPC_PORT", 0, func(p servicePorts) int { return p.tempoOTLPGRPC }},
 		{"tempo-otlp-http", "deploy/configs/tempo.yaml", `endpoint: "0.0.0.0:`, "ORCHICON_TEMPO_OTLP_HTTP_PORT", 1, func(p servicePorts) int { return p.tempoOTLPHTTP }},
 		{"collector-otlp-grpc", "deploy/configs/otel-collector.yaml", "endpoint: 0.0.0.0:", "ORCHICON_OTLP_GRPC_PORT", 0, func(p servicePorts) int { return p.collectorOTLPGRPC }},

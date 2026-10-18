@@ -205,15 +205,16 @@ func runStart(args []string, log *slog.Logger) error {
 		return err
 	}
 
-	if residency := instanceResidency(instance); residency == residencyContainer {
-		// A container-resident instance keeps the whole stack in its container, so the
-		// container IS the start. Say which shape won, so "start" is never a command whose
-		// effect the operator has to infer.
-		name := "orchicon-cnt-" + instance
-		fmt.Printf("instance %s is container-resident: starting container %s\n", instance, name)
-		if out, err := engineCommand("start", name).CombinedOutput(); err != nil {
-			return fmt.Errorf("start %s: %v: %s", name, err, strings.TrimSpace(string(out)))
-		}
+	if residency := instanceResidency(instance); residency != residencyHost {
+		// A RECORDED CONTAINER RESIDENCY IS A RETIRED SHAPE, not a shape to act on. There is one shape now —
+		// the plane and its services are host processes, always — and `install` refuses to create anything
+		// else. The only way to hold this value is an instance installed BEFORE the switch, and starting a
+		// single PID-1 container for it would resurrect the very deployment this product retired. So it is
+		// refused in the same words `install` uses, naming the one command that produces a working instance.
+		return fmt.Errorf("instance %q was installed with the retired CONTAINER residency (%s).\n"+
+			"  The plane and its services now always run on the HOST, as host processes. Re-install it:\n"+
+			"    %s install --instance %s",
+			instance, residency, filepath.Base(os.Args[0]), instance)
 	} else {
 		fmt.Printf("instance %s is host-resident: starting its services, then the plane\n", instance)
 		if err := startHostServices(instance, ports, hostDataDirFor(instance), os.Stdout); err != nil {
@@ -282,12 +283,14 @@ func runStop(args []string) error {
 		return nil
 	}
 
-	if residency := instanceResidency(instance); residency == residencyContainer {
-		name := "orchicon-cnt-" + instance
-		fmt.Printf("instance %s is container-resident: stopping container %s\n", instance, name)
-		if out, err := engineCommand("stop", name).CombinedOutput(); err != nil {
-			return fmt.Errorf("stop %s: %v: %s", name, err, strings.TrimSpace(string(out)))
-		}
+	if residency := instanceResidency(instance); residency != residencyHost {
+		// A RECORDED CONTAINER RESIDENCY IS A RETIRED SHAPE. There is no instance container to supervise any
+		// more, so "stop" does the one useful thing left for such an instance: reclaim this instance's ports
+		// from the container-era container if this host still has one, and say plainly that the shape is gone
+		// rather than pretending to stop a container the product no longer runs.
+		fmt.Printf("instance %s was installed with the retired CONTAINER residency (%s): removing any container-era container\n",
+			instance, residency)
+		stopInstanceContainer(instance, os.Stdout)
 	} else {
 		fmt.Printf("instance %s is host-resident: stopping the plane, then its services\n", instance)
 		if err := stopHostPlane(instance, os.Stdout); err != nil {

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Orchicon
+GenericName=AI workflow orchestrator
+Comment=Orchestrate AI workflows against a local Orchicon plane
+Exec=orchicon-desktop
+TryExec=orchicon-desktop
+Icon=orchicon-desktop
+Terminal=false
+Categories=Development;
+Keywords=ai;workflow;orchestration;agents;
+StartupNotify=true

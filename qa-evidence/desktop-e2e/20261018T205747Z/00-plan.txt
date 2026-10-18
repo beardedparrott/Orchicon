@@ -1,0 +1,17 @@
+PLAN (nothing executed)
+  evidence dir: /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M58CK5RRRMC1KYKNHHEKDK6S/qa-evidence/desktop-e2e/20261018T205747Z
+  platform:     linux   instance: dev   control port: 8080
+  artifact:     <none — will look for an installed package> (auto)
+
+  step 0  validity precondition: the offline honesty gate, NO plane answering,
+          a packaged (not dev) binary, the GUI prerequisites, the sources
+  step 1  install the .deb; dpkg -L both packaged paths; sha256sum the binary
+  step 2  launch with no plane; proxy /healthz 502 names the URL; shell log line; screenshot
+  step 3  click Start (--click-map start=X,Y); /healthz 200, /versionz, listening PID
+  step 4  __ORCHICON_DESKTOP__ in the shell's index and absent from the plane's; forced mismatch
+  step 5  WriteTimeout 0 + FlushInterval -1; Go live test; plane feed and window frames grow
+  step 6  ListProjects / ListWorkItems counts vs the rendered views (empty is SKIP)
+  step 7  click Stop: /healthz fails and the PID is gone; click Start: /healthz answers
+  step 8  Linux launcher names WebKitGTK when absent; Windows preflight names the remedy
+
+  exit 0 all passed · 1 a step failed (defect filed against its owner) · 2 not a valid proof

@@ -147,7 +147,7 @@ func runInstall(args []string, log *slog.Logger) error {
 		return err
 	}
 	// WRITE THE PORTS DOWN, because the operator can CHANGE them and a wrapper that re-prints them has
-	// nothing to read. This is the bug it fixes, seen on Windows: the operator answered 3001 for Grafana,
+	// nothing to read. This is the bug it fixes, seen on Windows: the operator answered 3001 for a port,
 	// this installer printed 3001, and then scripts/install.ps1 — which re-prints the URLs after the setup
 	// step — printed a hardcoded 3002, because the resolved values existed only as output on a stream it
 	// had already consumed. It is the same class of defect the port table itself was introduced to fix
@@ -201,7 +201,16 @@ func runInstall(args []string, log *slog.Logger) error {
 		// every rebuild, so re-asking made a rebuild an interactive command — and reboots/CI/scripts have no
 		// one to answer. ORCHICON_RUNTIME_IMAGES_ASK=1 forces the question back for a deliberate change.
 		forceAsk := strings.TrimSpace(os.Getenv("ORCHICON_RUNTIME_IMAGES_ASK")) != ""
-		installChoices, cerr := resolveInstallRuntimeImagesFor(instance, os.Stdout, os.Stdin, imageTag, forceAsk)
+		// THE ANSWER IS READ FROM THE TERMINAL, NOT FROM STDIN. Under `curl … | bash` (and this script's own
+		// `curl … | bash -s -- …`) STDIN IS THE INSTALLER SCRIPT, already at EOF — so a prompt reading stdin
+		// would render and then answer "none" by itself, without ever having asked. It is the same defect the
+		// port prompt documents in install_ports.go promptTerminal, and the same fix: the tty opened above
+		// when there is one, stdin only when there is genuinely nothing else.
+		answerIn := io.Reader(os.Stdin)
+		if tty != nil {
+			answerIn = tty
+		}
+		installChoices, cerr := resolveInstallRuntimeImagesFor(instance, promptOut, answerIn, imageTag, forceAsk)
 		if cerr != nil {
 			fmt.Printf("warning: %v\n", cerr)
 		}
@@ -747,7 +756,6 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 	// Read back the ports this install actually bound: re-deriving them from the
 	// instance name would print a URL pointing at a port we never bound.
 	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
-	grafanaPort := fmt.Sprintf("%d", ports["ORCHICON_GRAFANA_PORT"])
 	fmt.Println()
 	if healthy {
 		fmt.Println("┌─────────────────────────────────────────────────────────────┐")
@@ -784,7 +792,6 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 		fmt.Println("  Plane residency: container — the whole stack runs in the container.")
 	}
 	fmt.Printf("  Control plane:  http://localhost:%s\n", controlPort)
-	fmt.Printf("  Grafana:        http://localhost:%s\n", grafanaPort)
 	fmt.Printf("  Health check:   curl %s\n", healthURL)
 	fmt.Println()
 	// The manage-the-instance block names the commands that actually apply to this shape: a container shape is

@@ -20,7 +20,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	assets "github.com/beardedparrott/orchicon"
@@ -110,7 +109,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// Platform-dependent stop signals: SIGINT+SIGTERM on Unix, os.Interrupt on Windows (signals_*.go).
+	ctx, cancel := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer cancel()
 
 	srv, err := server.New(cfg, log, nil)
@@ -297,7 +297,8 @@ func printHelp() {
 			"environment when it STARTS, so `install` alone will not refresh it."}},
 		{cmd: bin + " start [instance]", desc: []string{
 			"Start an INSTALLED instance: its services (Postgres + NATS), then its plane.",
-			"Idempotent, and it never installs — use `install` for a machine with nothing on it."}},
+			"Idempotent, and it never installs — use `install` for a machine with nothing on it.",
+			"This is the verb for `serve --start`, which does NOT exist."}},
 		{cmd: bin + " stop [instance]", desc: []string{
 			"Stop an instance: its plane, then its services. Idempotent, so running it on a",
 			"stopped instance is a successful no-op."}},
@@ -317,7 +318,9 @@ func printHelp() {
 		{cmd: bin, desc: []string{"Run the control plane (API + relay + reconcilers)"}},
 		{cmd: bin + " serve", desc: []string{"Run the control plane with embedded frontend (headless)"}},
 		{cmd: bin + " serve --detach", desc: []string{"Fork the server into the background (PID file + /healthz)"}},
-		{cmd: bin + " serve --status", desc: []string{"Report whether a detached server is running"}},
+		{cmd: bin + " serve --status", desc: []string{
+			"Report the same thing as `plane status`: the instance, its residency, the plane PID, the",
+			"serving binary and whether it has been superseded, plus health. One surface, two spellings."}},
 		{cmd: bin + " serve --stop", desc: []string{"Stop a detached server"}},
 
 		{section: "Operating an instance:"},

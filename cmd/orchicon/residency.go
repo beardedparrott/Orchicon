@@ -32,7 +32,6 @@ type servicePorts struct {
 	tempo       int
 	loki        int
 	vm          int
-	grafana     int
 
 	// The telemetry children's port fields below are NOT in argv: each lives in
 	// an embedded config (tempo.yaml, loki.yaml, otel-collector.yaml) that
@@ -57,7 +56,7 @@ type servicePorts struct {
 // servicePortDefaults are the literals every install binds and probes when the
 // operator sets no knob. The telemetry children's entries are the ports their
 // EMBEDDED CONFIG files declare (tempo.yaml http_listen_port, loki.yaml
-// http_listen_port, grafana.ini http_port); they are recorded here as the single
+// http_listen_port); they are recorded here as the single
 // source for that child's readiness probe, and
 // TestServiceProbesMatchEmbeddedConfigPorts pins them to the configs so the two
 // cannot drift.
@@ -69,7 +68,6 @@ func servicePortDefaults() servicePorts {
 		tempo:             3200,
 		loki:              3100,
 		vm:                8428,
-		grafana:           3000,
 		tempoOTLPGRPC:     14317,
 		tempoOTLPHTTP:     14318,
 		collectorOTLPGRPC: 4317,
@@ -86,8 +84,8 @@ func servicePortDefaults() servicePorts {
 //
 // EVERY PORT IN THIS TABLE IS OVERRIDABLE, INCLUDING THE ONES THAT LIVE IN AN
 // EMBEDDED CONFIG — because those configs are TEMPLATED from this same table.
-// writeConfigs substitutes these fields into tempo.yaml, loki.yaml, grafana.ini
-// and otel-collector.yaml, so the child BINDS the knob's port and the gate
+// writeConfigs substitutes these fields into tempo.yaml, loki.yaml and
+// otel-collector.yaml, so the child BINDS the knob's port and the gate
 // PROBES the same number.
 func servicePortsFromEnv() servicePorts {
 	p := servicePortDefaults()
@@ -101,7 +99,6 @@ func servicePortsFromEnv() servicePorts {
 		{"ORCHICON_VM_PORT", &p.vm},
 		{"ORCHICON_TEMPO_PORT", &p.tempo},
 		{"ORCHICON_LOKI_PORT", &p.loki},
-		{"ORCHICON_GRAFANA_PORT", &p.grafana},
 		{"ORCHICON_OTLP_GRPC_PORT", &p.collectorOTLPGRPC},
 		{"ORCHICON_OTLP_HTTP_PORT", &p.collectorOTLPHTTP},
 		{"ORCHICON_TEMPO_OTLP_GRPC_PORT", &p.tempoOTLPGRPC},

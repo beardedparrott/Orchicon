@@ -110,15 +110,13 @@ type Config struct {
 	OTelEndpoint string
 	// Telemetry selects the OTel pipeline mode. "none" skips telemetry
 	// entirely (no exporters, no OTLP dial) — used by the runtime-container
-	// sandbox plane, which has no Grafana stack. Empty/"embedded"/"remote"
+	// sandbox plane, which has no telemetry stack. Empty/"embedded"/"remote"
 	// keep the default pipeline (the same env the single-container
 	// supervisor reads for the embedded stack decision).
 	Telemetry string
-	// Grafana stack backends (docs/08 §5). GrafanaURL is the Grafana UI
-	// root (proxied same-origin under /grafana); TempoURL/LokiURL/VMURL
-	// are the query endpoints the control plane reads tenant-scoped
-	// telemetry from.
-	GrafanaURL    string
+	// Telemetry backends (docs/08 §5): the query endpoints the control
+	// plane reads tenant-scoped telemetry from. There is no UI-fronting
+	// component here any more — the panes read these directly.
 	TempoURL      string
 	LokiURL       string
 	VMURL         string
@@ -197,7 +195,7 @@ type Config struct {
 	SecretsKEK string
 
 	// DataDir is the control plane's state directory (ORCHICON_DATA_DIR,
-	// default /var/lib/orchicon). When no ORCHICON_SECRETS_KEK override is
+	// default /var/lib/orchicon on Unix, %LOCALAPPDATA%\\orchicon on Windows — see defaults_*.go). When no ORCHICON_SECRETS_KEK override is
 	// set, the per-instance KEK is load-or-created under it on first boot.
 	DataDir string
 
@@ -216,7 +214,10 @@ func Default() Config {
 	// One value drives both the state dir and the policy default: the policy
 	// lives IN the state dir unless the operator points it elsewhere, and a
 	// second env read could silently disagree.
-	dataDir := env("ORCHICON_DATA_DIR", "/var/lib/orchicon")
+	// BOTH PATHS BELOW ARE PER-OS: their defaults come from defaults_unix.go / defaults_windows.go, because
+	// `/var/lib/orchicon` and `/var/run/...` are not paths a Windows user can reach. Nothing else in Default()
+	// hardcodes a POSIX absolute — every other default is a relative path or an address.
+	dataDir := env("ORCHICON_DATA_DIR", defaultDataDir())
 	return Config{
 		HTTPAddr:           env("ORCHICON_HTTP_ADDR", ":8080"),
 		ExtraBind:          env("ORCHICON_HTTP_EXTRA_BIND", ""),
@@ -225,13 +226,12 @@ func Default() Config {
 		NATSURL:            env("ORCHICON_NATS_URL", "nats://localhost:4222"),
 		OTelEndpoint:       env("ORCHICON_OTEL_ENDPOINT", "localhost:4317"),
 		Telemetry:          env("ORCHICON_TELEMETRY", ""),
-		GrafanaURL:         env("ORCHICON_GRAFANA_URL", "http://localhost:3002"),
 		TempoURL:           env("ORCHICON_TEMPO_URL", "http://localhost:3200"),
 		LokiURL:            env("ORCHICON_LOKI_URL", "http://localhost:3100"),
 		VMURL:              env("ORCHICON_VM_URL", "http://localhost:8428"),
 		BlobStoreDir:       env("ORCHICON_BLOB_DIR", "./data/blobs"),
 		MigrateOnBoot:      envBool("ORCHICON_MIGRATE_ON_BOOT", true),
-		RuntimeSocket:      env("ORCHICON_RUNTIME_SOCKET", "/var/run/orchicon-runtime/runtime.sock"),
+		RuntimeSocket:      env("ORCHICON_RUNTIME_SOCKET", defaultRuntimeSocket()),
 		DeploymentTenantID: env("ORCHICON_DEPLOYMENT_TENANT_ID", "tnt_dev"),
 		Instance:           env("ORCHICON_INSTANCE", "dev"),
 		Mode:               DeploymentMode(env("ORCHICON_MODE", "local")),

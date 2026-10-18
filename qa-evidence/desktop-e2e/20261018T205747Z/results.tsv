@@ -1,0 +1,3 @@
+step	assertion	status	evidence	owner
+0	the harness passes its own offline honesty gate	PASS	scripts/tests/desktop-e2e-assertions/run.sh	
+0	the run is a valid proof of this claim	SKIP		

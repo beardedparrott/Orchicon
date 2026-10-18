@@ -1,0 +1,5 @@
+step	assertion	status	evidence	owner
+0	the harness passes its own offline honesty gate	PASS	scripts/tests/desktop-e2e-assertions/run.sh	
+0	no plane answers on http://127.0.0.1:18099/healthz (the premise of the claim)	PASS	http://127.0.0.1:18099/healthz	
+0	the run is a valid proof of this claim	SKIP		
+8	the macos tier was proven on a real macos machine	SKIP		deploy/desktop/

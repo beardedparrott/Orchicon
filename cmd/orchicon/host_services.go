@@ -1,6 +1,6 @@
 // Command orchicon host-services supervises ONE instance's infrastructure
-// processes AS HOST PROCESSES: Postgres, NATS and the Grafana telemetry plane
-// (Tempo, Loki, VictoriaMetrics, OTel collector, Grafana — optional via
+// processes AS HOST PROCESSES: Postgres, NATS and the telemetry plane
+// (Tempo, Loki, VictoriaMetrics, OTel collector — optional via
 // ORCHICON_TELEMETRY).
 //
 // IT IS NOT A CONTAINER, and there is no container path left in it. The plane
@@ -24,7 +24,7 @@
 // Data lives under ORCHICON_DATA_DIR (default ~/.local/share/orchicon). Config
 // files are written there from the embedded ServiceConfigsFS, with @DATA_DIR@
 // and the resolved @..._PORT@ placeholders substituted, so
-// Tempo/Loki/Grafana/collector find their config without any repo mounts.
+// Tempo/Loki/collector find their config without any repo mounts.
 package main
 
 import (
@@ -44,7 +44,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	assets "github.com/beardedparrott/orchicon"
@@ -61,7 +60,9 @@ const (
 // runHostServices is the `orchicon host-services` entrypoint. It runs until
 // SIGTERM/SIGINT.
 func runHostServices(args []string) int {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	// THE STOP SIGNALS ARE PLATFORM-DEPENDENT: SIGTERM+SIGINT on Unix, os.Interrupt on Windows, where
+	// SIGTERM compiles and is never delivered. See signals_unix.go / signals_windows.go.
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -99,7 +100,7 @@ func runHostServices(args []string) int {
 	// (the plane's OTel dial is non-blocking and degrades).
 	switch telemetryMode {
 	case "embedded":
-		for _, p := range []*managedProc{sup.tempoProc(), sup.lokiProc(), sup.vmProc(), sup.collectorProc(), sup.grafanaProc()} {
+		for _, p := range []*managedProc{sup.tempoProc(), sup.lokiProc(), sup.vmProc(), sup.collectorProc()} {
 			if err := sup.start(ctx, p); err != nil {
 				log.Error("failed to start", "component", p.name, "error", err)
 			}
@@ -255,8 +256,8 @@ func (s *supervisor) acquiredArtifacts() []string {
 // fails immediately instead of shipping a literal "@…@" to a child that then
 // refuses to parse its config.
 //
-// THE PORTS ARE HERE AND NOT IN ARGV because that is where tempo/loki/grafana/
-// the collector keep them: their listen ports live in the config file. Templating
+// THE PORTS ARE HERE AND NOT IN ARGV because that is where tempo/loki/the
+// collector keep them: their listen ports live in the config file. Templating
 // the config from the same servicePorts the readiness probe reads is what makes
 // them movable on a host without breaking the gate — the earlier code could only
 // probe the config's hardcoded port.
@@ -269,7 +270,6 @@ func (s *supervisor) configTokens() map[string]string {
 		"@TEMPO_OTLP_HTTP_PORT@":     strconv.Itoa(p.tempoOTLPHTTP),
 		"@LOKI_HTTP_PORT@":           strconv.Itoa(p.loki),
 		"@VM_HTTP_PORT@":             strconv.Itoa(p.vm),
-		"@GRAFANA_HTTP_PORT@":        strconv.Itoa(p.grafana),
 		"@COLLECTOR_OTLP_GRPC_PORT@": strconv.Itoa(p.collectorOTLPGRPC),
 		"@COLLECTOR_OTLP_HTTP_PORT@": strconv.Itoa(p.collectorOTLPHTTP),
 		"@COLLECTOR_HEALTH_PORT@":    strconv.Itoa(p.collectorHealth),
@@ -580,7 +580,7 @@ func (s *supervisor) shutdown(ctx context.Context) {
 	s.log.Info("shutting down", "children", len(states))
 	for _, st := range states {
 		if st.cmd.Process != nil {
-			_ = st.cmd.Process.Signal(syscall.SIGTERM)
+			_ = sendGracefulStop(st.cmd.Process)
 		}
 	}
 
@@ -759,26 +759,6 @@ func (s *supervisor) collectorProc() *managedProc {
 		ready: func(ctx context.Context) bool {
 			return tcpReady(ctx, "localhost:"+strconv.Itoa(s.ports.collectorHealth))
 		},
-		restart: true,
-	}
-}
-
-func (s *supervisor) grafanaProc() *managedProc {
-	rootURL := env("ORCHICON_GRAFANA_PUBLIC_URL", "http://localhost:8080/grafana")
-	return &managedProc{
-		name:    "grafana",
-		command: "/usr/share/grafana/bin/grafana",
-		args:    []string{"server", "--homepath=/usr/share/grafana", "--config=" + filepath.Join(s.configDir, "grafana.ini")},
-		env: []string{
-			"GF_SERVER_ROOT_URL=" + rootURL,
-			"GF_SERVER_SERVE_FROM_SUB_PATH=true",
-			"GF_SECURITY_ALLOW_EMBEDDING=true",
-			"GF_AUTH_ANONYMOUS_ENABLED=true",
-			"GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer",
-			"GF_AUTH_BASIC_ENABLED=false",
-			"GF_AUTH_DISABLE_LOGIN_FORM=true",
-		},
-		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.grafana) + "/api/health"),
 		restart: true,
 	}
 }

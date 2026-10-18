@@ -1,0 +1,53 @@
+appname: orchicon-desktop
+# ============================================================================
+# THIS FILE IS WHERE THE AC3 *DECLARATION* LIVES.
+#
+# The .deb must declare its WebKitGTK dependency so that `apt install ./x.deb`
+# either installs the webview or refuses before installing a binary that cannot
+# start. The DETECTION (the message a user sees when it is somehow missing) is in
+# deploy/desktop/linux/orchicon-desktop, and cmd/orchicon/ci_release_workflows_test.go
+# asserts both halves so neither can be dropped silently.
+#
+# libwebkit2gtk-4.0-37 is the Ubuntu <= 23.10 / Debian 12 soname. Distros that
+# dropped the 4.0 series (Ubuntu 24.04+) get the AppImage, which bundles it — see
+# deploy/desktop/appimage/ and the USERGUIDE.
+# ============================================================================
+name: orchicon-desktop
+arch: amd64
+platform: linux
+owner: beardedparrott
+homepage: https://orchicon.dev
+version: ${ORCHICON_VERSION}
+license: Apache-2.0
+section: devel
+priority: optional
+maintainer: Orchicon <noreply@orchicon.dev>
+description: |
+  Orchicon desktop app.
+  A desktop client for an Orchicon plane. The app talks to a Plane running on
+  this machine over loopback (http://127.0.0.1:8080 by default) and starts one
+  for you if none is running. The command line remains the canonical entry
+  point; the app is optional.
+vendor: Orchicon
+depends:
+  - libwebkit2gtk-4.0-37
+  - libgtk-3-0
+contents:
+  # The launcher first: it is what /usr/bin/orchicon-desktop resolves to, and the
+  # only place the WebKitGTK check can run before the dynamic loader does.
+  - src: deploy/desktop/linux/orchicon-desktop
+    dst: /usr/bin/orchicon-desktop
+    file_info:
+      mode: 0755
+  - src: cmd/orchicon-desktop/build/bin/orchicon-desktop
+    dst: /usr/lib/orchicon/orchicon-desktop
+    file_info:
+      mode: 0755
+  - src: deploy/desktop/linux/orchicon-desktop.desktop
+    dst: /usr/share/applications/orchicon-desktop.desktop
+    file_info:
+      mode: 0644
+  - src: cmd/orchicon-desktop/build/appicon.png
+    dst: /usr/share/icons/hicolor/512x512/apps/orchicon-desktop.png
+    file_info:
+      mode: 0644

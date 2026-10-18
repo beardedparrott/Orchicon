@@ -25,11 +25,11 @@ The documentation lives at the project root:
 ## Technology Stack
 
 - **Control plane**: Go (single binary, k8s-style reconcilers)
-- **One shape**: the plane and its services (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana) are host processes of your user, one set per instance — see [ARCHITECTURE.md §One shape](ARCHITECTURE.md)
+- **One shape**: the plane and its services (Postgres, NATS, Tempo/Loki/VictoriaMetrics) are host processes of your user, one set per instance — see [ARCHITECTURE.md §One shape](ARCHITECTURE.md)
 - **API**: Protobuf + Connect (gRPC + REST + streaming from one schema)
 - **Database**: PostgreSQL 16 with RLS + transactional outbox
 - **Event bus**: NATS JetStream
-- **Telemetry**: OpenTelemetry → Grafana stack (Tempo + Loki + VictoriaMetrics) — fully separated infra
+- **Telemetry**: OpenTelemetry → the telemetry backends (Tempo + Loki + VictoriaMetrics), read by the native Telemetry panes — fully separated infra
 - **Policy**: Rego (Open Policy Agent)
 - **Runtime adapters**: pluggable gRPC sidecars — a **built-in native engine runs by default and needs nothing installed**, plus external adapters such as OpenCode. Adapters are optional and never bundled.
 - **Frontend**: TypeScript + React + Vite + Connect-ES
@@ -63,6 +63,14 @@ curl -fsSL https://orchicon.dev/install | bash
 
 The installer downloads the binary, then runs `orchicon install` to set up everything: start the instance's services and plane on this host, register the runtime daemon, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
 
+> **macOS: no Gatekeeper override needed.** `curl` sets no quarantine bit, so a binary installed by the command above runs without a "cannot be opened because the developer cannot be verified" prompt. Orchicon's macOS binaries are **not** code-signed or notarised (a Developer ID costs USD 99/yr — see the `sign-macos` job in `.github/workflows/release.yml`), so one case does need one command: if you downloaded the `.tar.gz` in a **browser** rather than with the one-liner, macOS marked the archive, and the extracted binary inherits the mark. Clear it on that one file — this does not disable Gatekeeper:
+>
+> ```bash
+> xattr -d com.apple.quarantine /path/to/orchicon
+> ```
+>
+> Every release also publishes `SHA256SUMS`; both installers verify the download against it and refuse a mismatch before anything is installed. To check a manual download by hand: `shasum -a 256 orchicon_<version>_darwin_<arch>.tar.gz` and compare it with that file. See [USERGUIDE.md §1 — macOS: Gatekeeper and verification](USERGUIDE.md#macos-gatekeeper-and-verification).
+
 > **Adapters are optional — the native engine needs nothing installed.** Orchicon ships its own runtime engine and runs sessions inside the control plane, so a fresh install is complete on its own: no adapter CLI, no binary probe, no serve. Install an external adapter (OpenCode, and future ones like Claude Code / Codex) only if you want to run work on that runtime. Orchicon **never bundles or ships** an adapter CLI — your own host install is bind-mounted into the containers at runtime, which keeps the product redistributable regardless of an adapter's licence (Claude Code's terms prohibit bundling).
 >
 > To use OpenCode as a runtime, **install it as your own user — never with `sudo`**:
@@ -76,29 +84,69 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 > `orchicon install` no longer requires it. A plane whose model refs need no adapter never probes for the binary, never starts a serve, and never mounts it into a container — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```powershell
-# Windows (PowerShell) — runs the stack inside WSL2
+# Windows (PowerShell) — NATIVE: installs orchicon.exe + orch.exe, no WSL2 or Docker required
 irm https://orchicon.dev/install.ps1 | iex
+
+# ...and only if you also want a workflow's runtime CONTAINER (this provisions the WSL2 substrate):
+& ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Containers
 ```
 
-### Windows (WSL2)
+### Windows
 
 ```powershell
 irm https://orchicon.dev/install.ps1 | iex
 ```
 
-Orchicon's runtime layer (runtime daemon, unix socket, container mounts) is POSIX-only, so on Windows the **whole stack runs inside WSL2**. The installer provisions/detects WSL2, installs the **Linux** binary inside the distro, and runs the one-command setup there. WSL2 forwards `localhost`, so the UIs open from Windows at the same URLs as on Linux: `http://localhost:8080` (control plane) and `http://localhost:3002` (Grafana).
+Orchicon runs on Windows as **native processes of the user who installs it**: `install.ps1` places `orchicon.exe` and `orch.exe` in `%LOCALAPPDATA%\Programs\Orchicon`, adds that directory to your **user** `PATH`, and runs the one-command setup there. **WSL2 is needed only for a workflow's runtime container**, which the installer provisions when you ask for it (`-Containers`); a plain install never runs `wsl` and works on a machine that has none.
 
-The installer never closes your PowerShell window: a failure prints what failed and the next steps, then returns to the prompt with your session intact. The long steps (image pull, stack setup) stream their output as they run, the setup step asks about host ports (ENTER accepts each default), and the full log lands in `%TEMP%`. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation).
+The installer never closes your PowerShell window: a failure prints what failed and the next steps, then returns to the prompt with your session intact. The long steps (binary acquisition, stack setup) stream their output as they run, the setup step asks about host ports (ENTER accepts each default), and the full log lands in `%TEMP%`. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation).
+
+> **Windows SmartScreen.** The installer downloads `orchicon.exe` itself, so the binary it installs carries no mark-of-the-web and runs without a prompt. If you instead downloaded the **zip in a browser**, Windows marks that archive and SmartScreen warns *"Windows protected your PC"* the first time you run the extracted `orchicon.exe`: click **More info → Run anyway**, or clear the mark on the archive **before extracting it** with `Unblock-File -LiteralPath .\orchicon_<version>_windows_amd64.zip`. Neither step changes a Windows security setting — every other unsigned download on the machine stays blocked. A **saved** `install.ps1` (right-click → "Save link as") can be marked the same way: `Unblock-File -LiteralPath .\install.ps1`. The documented `irm https://orchicon.dev/install.ps1 | iex` writes no file at all and trips nothing.
 
 Prerequisites:
-- **Windows 10 21H2+ / Windows 11**, with WSL2 and a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
-- **No container engine is required for the plane.** The plane and its services
-  (Postgres, NATS, telemetry) are **host processes** of your WSL user — there is no
-  instance image to pull and no Docker Desktop to install. An engine (**podman**, or
-  Docker if you already run it) is needed only for a **workflow's** runtime
-  container, and it is detected, never installed.
+- **Windows 10 21H2+ / Windows 11.** A native install needs no WSL2 distro and no Docker Desktop. `-Containers` additionally needs WSL2 with a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
+- A **container engine is optional**: the plane and its services run as host processes, so nothing needs Docker. An engine is only used for a workflow's *runtime container*, and only if you opt in.
 
-Project directories are entered in the UI as their **WSL path** — a Windows project `C:\Users\you\projects\Foo` is `/mnt/c/Users/you/projects/Foo` inside WSL. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
+Project directories are entered in the UI as **host paths** — with a native install that stays the Windows path (`C:\Users\you\projects\Foo`), not a `/mnt/c/…` translation. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
+
+### Desktop app (optional)
+
+The desktop app is a **client**. It does not replace the plane: it talks to a running
+Orchicon instance over loopback (`http://127.0.0.1:8080` by default), and if none is
+running it starts one for you — which takes a few seconds on first launch. The **CLI is
+still the canonical entry point** (`orchicon install`, `orchicon start`,
+`orchicon status`), but once the app is installed you do not need it to use Orchicon. The
+app is optional: everything the app does, the web UI at the same URL does too.
+
+```bash
+# Linux / macOS — install it alongside the CLI
+curl -fsSL https://orchicon.dev/install | bash -s -- --desktop
+```
+
+```powershell
+# Windows — the same, from PowerShell
+irm https://orchicon.dev/install.ps1 | iex   # with -Desktop, see USERGUIDE
+```
+
+Or download the package for your platform from
+[GitHub Releases](https://github.com/beardedparrott/Orchicon/releases): a `.deb` and an
+`.AppImage` for Linux, a signed **and notarised** `.app` for macOS, and an NSIS installer
+(or portable zip) for Windows. Each platform's gap, stated plainly:
+
+- **macOS** — the `.app` is signed, notarised and **stapled**, so Gatekeeper opens it with
+  no bypass, online or off. If you see "cannot be opened", the copy you have is a local
+  `make` build rather than the release artifact.
+- **Windows 11** — WebView2 ships with the OS, so it installs and launches with no extra
+  step. **Windows 10** may not have it: the installer provisions it during setup, and the
+  portable zip shows a dialog naming the WebView2 Evergreen bootstrapper
+  (<https://go.microsoft.com/fwlink/p/?LinkId=2124703>) rather than opening a blank window.
+- **Linux** — the `.deb` declares `libwebkit2gtk-4.0-37`. If it is somehow missing,
+  `orchicon-desktop` prints the missing library and the one command that installs it. On a
+  distro that dropped WebKitGTK 4.0 (Ubuntu 24.04+), use the AppImage, which bundles it.
+
+The installer never uses `sudo` and never writes to `/Applications` or `/usr`: on Linux the
+AppImage lands in the install directory, on macOS the `.app` goes to `~/Applications`. The
+full walkthrough is in [USERGUIDE.md §3 — The two clients](USERGUIDE.md#3-the-two-clients).
 
 ### Options
 
@@ -107,10 +155,14 @@ Project directories are entered in the UI as their **WSL path** — a Windows pr
 | `--version <tag>` | Install a specific version (e.g. `v0.4.5`). Default: latest. |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). On Windows this is a **WSL path** (the binary installs inside the distro). |
 | `--no-setup` | Install the binary only — do not pull images / start the runtime daemon / launch the container. |
+| `--desktop` | Also install the desktop app (a GUI client for the same plane). Linux: the AppImage; macOS: the signed `.app` into `~/Applications`. Never uses `sudo`. Without it, the install prints where to get the app. |
+| `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). The PowerShell installer's `-InstallDir` defaults to `%LOCALAPPDATA%\Programs\Orchicon` and needs no administrator rights. |
+| `--no-setup` | Install the binary only — do not start the host services, the runtime daemon or the plane. |
+| `--no-verify` | Skip the `SHA256SUMS` check on the downloaded archive. The check is what proves the archive is the one the release published; only skip it against a mirror you control. |
 | `--uninstall` | Remove Orchicon from the install directory. |
 | `--dry-run` | Print what would happen without making changes. |
-| `--clean` | Stop dev containers, remove old binary, then install latest. All user data preserved. |
-| `--force-clean` / `--nuke` | Wipe everything: destroy Docker volumes, remove blob store data and runtime state, then install latest. **All data lost.** |
+| `--clean` | Stop this instance's plane and host services, remove old binary, then install latest. All user data preserved. |
+| `--force-clean` / `--nuke` | Wipe everything for this instance: destroy its data directory (database, blob store, runtime state), then install latest. **All data lost.** |
 
 ```bash
 # Install a specific version
@@ -146,8 +198,7 @@ on this host — see [ARCHITECTURE.md §One shape](ARCHITECTURE.md).
 |---|---|
 | `orchicon serve` | Run the control plane with embedded frontend (headless) |
 | `orchicon serve --detach` / `--stop` | Fork/stop a background server |
-| `orchicon container` | Run the whole stack as PID 1 (container image) |
-| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info |
+| `orchicon install` | One-command setup: acquire the infrastructure binaries (Postgres, NATS), start the runtime daemon, start this instance's services and plane, print connection info. Offers the optional runtime images (default: none) |
 | `orchicon runtime-daemon` | Host process owning the Docker socket; owns the warm pool of per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 (hosts the container's adapter serve, when the run needs one) |
 | `orchicon runtime-client` | Forwards daemon requests (serve handshake / ping) into the runtime container |
@@ -190,6 +241,10 @@ curl http://localhost:8080/healthz   # {"status":"ok"}
 Frontend development against a running instance: `make fe-install` (first
 time) then `make fe-dev` — the Vite dev server on :5173 proxies the API to
 :8080. Migrations run automatically on container boot (embedded runner).
+
+Plane start/stop lives in the desktop app's **Manage Server** page (Control nav, desktop shell only)
+and in `orchicon plane <status|start|stop|restart> [instance]`. The web app has no lifecycle control by
+design: a browser cannot spawn a process, so no lifecycle RPC exists.
 
 ### Authentication
 

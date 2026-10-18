@@ -90,6 +90,7 @@ whole areas to "use the web GUI".
 | `/adapters` | Adapters | **exists** (read + local toggle) | Control | `Adapters` source + detail (`ListAdapters` + the capability manifest). Enable/disable is a client-side dispatch filter: the public `RuntimeAdapterService` is read-only (adapters self-register over the sidecar gRPC contract), so there is no adapter write RPC to call. |
 | `/settings` | Settings | **exists** (read-write) | Control | `Settings` source + detail (every field: models, stall knobs, reaper, budgets, backup/log, session TTLs). `e` opens the typed form and saves through `UpdateSettings`; the two model fields open the three-tier picker (see **Model picker** below) and are validated against the pinned grammar before submit. |
 | `/admin` | Admin | **exists** (admin-gated) | Control | `Admin` source: the admin surface inventory plus an EXPLICIT live permission state (probed via an admin-gated read) — a credential without the admin scope sees "permission required", never a silent empty pane. |
+| `/manage-server` | Manage Server | **n/a (desktop-only)** | — | **Desktop shell only.** Plane control and connection state, reached through `internal/planecontrol` — the same mechanism the CLI and the TUI drive (no lifecycle RPC exists). The connection states are `connecting` / `connected` / `offline` / `plane-error`, the last kept distinct from `offline` because a plane that answers is not necessarily the plane we want. **ABSENT from the web nav by decision:** the browser gets no entry, no disabled entry and no notice — a direct hit redirects to `/dashboard`. This is the SECOND structural client divergence (see *Slash commands in the GUI (deliberate difference)*); for an operator the TUI surface for this is `orchicon plane …`, not a pane. |
 | `/usage` | Usage | **exists** | Overview (Usage Records) | Raw usage-records table + per-record detail (`AIGatewayService.GetUsage`). |
 
 ## This run closed (real screens replacing GUI-mirror stubs)
@@ -266,6 +267,15 @@ Two things this deliberately does NOT do:
   (`proto/orchicon/api/v1/work_item.proto`): a work item's model comes from the worker it is
   assigned to (`assigned_worker_ref`).
 
+## Manage Server is desktop-only (deliberate difference)
+
+The GUI's `Control` group carries a **Manage Server** entry that is **desktop-only and absent from the
+web nav** entirely — not hidden, not disabled, not explained. It hosts local server operations only a
+Wails app can perform (plane start/stop/restart through `internal/planecontrol`, plus the four
+connection states), none of which a browser could execute. The nav item carries a `desktopOnly` flag
+and a browser redirects `/manage-server` to `/dashboard`, so the divergence is structural rather than
+a conditional inside a page. This is the second such divergence, alongside the slash palette below.
+
 ## Slash commands in the GUI (deliberate difference)
 
 The GUI has **no slash palette**, and that is a decision rather than a gap. The TUI is
@@ -312,6 +322,45 @@ a message is, and silently eating the operator's text would lose it.
 One genuine parity gap remains, recorded rather than hidden: **`/context`** (viewing and
 pinning the injected context preamble) has no GUI surface at all. That is a missing feature,
 not a missing control.
+
+## Plane lifecycle control (deliberate divergence, NOT a parity gap)
+
+The TUI can **start, stop and restart the plane** it talks to, and shows the plane's state in the
+footer (`plane up` / `plane down` / `plane drifted` / `plane remote`), and the error strip names
+the remedy.
+
+**The web app has NO lifecycle control, and that is by design — not an outstanding parity item.**
+A browser cannot spawn a process, and the one RPC that ever existed for it had to answer BEFORE
+killing the server answering it (`internal/planecontrol`'s package doc records the decision). The
+web app is therefore out of scope for plane control, permanently.
+
+That makes the TUI one of only **two** user-facing control surfaces, alongside the desktop app. This
+matters for a terminal-first operator: for them the TUI is the ONLY place a plane they just stopped
+can be started again, so these commands are load-bearing rather than a convenience.
+
+| TUI command | Desktop app | Web app |
+|---|---|---|
+| `/plane` — show the state, name the remedy | plane status indicator | none (no lifecycle control) |
+| `/plane-start` | "Start plane" | **none, by design** |
+| `/plane-stop` | "Stop plane" | **none, by design** |
+| `/plane-restart` (also the remedy for drift) | "Restart plane" | **none, by design** |
+
+All four call `internal/planecontrol` DIRECTLY — the same Go package `orchicon plane <verb>` and the
+desktop app call. There is no lifecycle RPC and the TUI adds none: the verbs never touch the plane's
+API, which is why they work when the plane is down (the TUI is a separate binary that does not
+depend on the plane serving it).
+
+The verbs re-exec the **installed `orchicon`** — the plane binary — never `orch` itself: the TUI is a
+thin remote client, so re-execing itself would launch a second TUI and never reach the plane. The
+resolution lives in `internal/planecontrol` (`resolvePlaneBinary`), so the desktop app inherits it.
+
+Which instance: `ORCHICON_INSTANCE` if set, otherwise the local instance whose recorded
+`ORCHICON_CONTROL_PORT` is the port this shell is connected to. A plane that cannot be positively
+identified is reported **not local** and the verbs refuse — they never fall back to a guessed
+instance.
+
+**Do not re-file the web app's absence as a parity gap.** It is the one row in this document where
+the GUI will never catch up, and the reason is a browser's capabilities, not unbuilt work.
 
 ## Recomputed child work items
 

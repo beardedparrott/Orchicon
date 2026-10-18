@@ -318,8 +318,14 @@ ctl_run() {
 #
 # plane_status_out captures `serve --status`; its EXIT CODE is the machine-read
 # answer (0 = the PID file names a live process), the text is for the operator.
+#
+# IT TAKES THE INSTANCE, AND THAT IS THE FIX RATHER THAN BELT-AND-BRACES. `serveStateDir`
+# (cmd/orchicon/serve_state.go) PREFERS ORCHICON_INSTANCE over ORCHICON_SERVE_STATE_DIR, so a shell that
+# happened to carry ORCHICON_INSTANCE=prod made `orchicon.sh status dev` report PROD's plane and
+# `stop_host`'s post-stop verification check the wrong instance. BOTH are passed: an older binary reads
+# only the state dir, this one prefers the instance, and both name the SAME instance either way.
 plane_status_out() {
-  ORCHICON_SERVE_STATE_DIR="$SERVE_STATE_DIR" "$BIN" serve --status 2>&1
+  ORCHICON_INSTANCE="$1" ORCHICON_SERVE_STATE_DIR="$SERVE_STATE_DIR" "$BIN" serve --status 2>&1
 }
 
 services_status_out() {
@@ -348,12 +354,17 @@ start_host() {
 #   the unverified claim this script exists to prevent.
 stop_host() {
   local inst="$1" rc=0 svc_rc=0
-  ORCHICON_SERVE_STATE_DIR="$SERVE_STATE_DIR" "$BIN" serve --stop || rc=$?
-  if [ "$rc" -ne 0 ] && ! plane_status_out >/dev/null 2>&1; then
+  # THE INSTANCE, NOT ONLY THE STATE DIR — and here it is not cosmetic. `serveStateDir` prefers
+  # ORCHICON_INSTANCE over ORCHICON_SERVE_STATE_DIR, so from a shell carrying ORCHICON_INSTANCE=prod this
+  # stopped PROD's plane on `stop dev`: the same ambient-instance collision plane_status_out fixes above,
+  # except this one ACTS instead of merely reporting. Both are passed, so a binary older than the
+  # instance-derivation reads the state dir exactly as before and both name the SAME instance.
+  ORCHICON_INSTANCE="$inst" ORCHICON_SERVE_STATE_DIR="$SERVE_STATE_DIR" "$BIN" serve --stop || rc=$?
+  if [ "$rc" -ne 0 ] && ! plane_status_out "$inst" >/dev/null 2>&1; then
     echo "  plane: nothing was running (no live PID file in $SERVE_STATE_DIR)"
   fi
   ORCHICON_INSTANCE="$inst" "$BIN" services down "$inst" || svc_rc=$?
-  if plane_status_out >/dev/null 2>&1; then
+  if plane_status_out "$inst" >/dev/null 2>&1; then
     echo "✗ orchicon $inst: the plane is STILL running after stop — refusing to report success" >&2
     return 1
   fi
@@ -367,7 +378,7 @@ stop_host() {
 status_host() {
   local inst="$1" plane_out="" plane_state="stopped" svc_out="" svc_line="" rc=0
 
-  if plane_out="$(plane_status_out)"; then
+  if plane_out="$(plane_status_out "$inst")"; then
     plane_state="running"
   fi
   svc_out="$(services_status_out "$inst")" || rc=$?
@@ -375,7 +386,16 @@ status_host() {
 
   echo "orchicon $inst — plane $PLANE_URL, data $DATA_DIR"
   if [ "$plane_state" = running ]; then
-    echo "  plane     $plane_out"
+    # MORE THAN ONE LINE NOW, AND THE SECOND ONE BELONGS TO THE ROW. `serve --status` reports the
+    # SHARED status surface (planecontrol.Status), which prints a second line when the PID-file
+    # process is not this binary — "plane runs from X, not Y — leaving it", the drift warning that
+    # is the whole point of the shared surface. It used to be a one-liner, so echoing "$plane_out"
+    # raw dropped that line flush-left, where it read as top-level output from the script rather
+    # than part of the plane row. First line on the row, continuations aligned under it.
+    printf '  plane     %s\n' "${plane_out%%$'\n'*}"
+    if [ "$plane_out" != "${plane_out%%$'\n'*}" ]; then
+      printf '%s\n' "$plane_out" | sed -e '1d' -e 's/^/            /'
+    fi
   else
     echo "  plane     not running (no live PID file in $SERVE_STATE_DIR)"
   fi

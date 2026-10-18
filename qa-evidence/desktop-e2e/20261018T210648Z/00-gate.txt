@@ -1,0 +1,149 @@
+
+  -- the harness is a library when sourced --
+  [32mPASS[0m  sourcing scripts/desktop-e2e.sh never executes the session   0
+  [32mPASS[0m  the harness defines record() after sourcing                  function
+  [32mPASS[0m  the harness defines defect() after sourcing                  function
+  [32mPASS[0m  the harness defines check() after sourcing                   function
+  [32mPASS[0m  the harness defines skip() after sourcing                    function
+  [32mPASS[0m  the harness defines check_absent() after sourcing            function
+  [32mPASS[0m  the harness defines check_contains() after sourcing          function
+  [32mPASS[0m  the harness defines gated_absent() after sourcing            function
+  [32mPASS[0m  the harness defines gated_contains() after sourcing          function
+  [32mPASS[0m  the harness defines step_file() after sourcing               function
+  [32mPASS[0m  the harness defines step_log() after sourcing                function
+  [32mPASS[0m  the harness defines begin_step() after sourcing              function
+  [32mPASS[0m  the harness defines tee_step() after sourcing                function
+  [32mPASS[0m  the harness defines need_cmd() after sourcing                function
+  [32mPASS[0m  the harness defines need_file() after sourcing               function
+  [32mPASS[0m  the harness defines src_contains() after sourcing            function
+  [32mPASS[0m  the harness defines plane_answers() after sourcing           function
+  [32mPASS[0m  the harness defines plane_get() after sourcing               function
+  [32mPASS[0m  the harness defines listen_pid() after sourcing              function
+  [32mPASS[0m  the harness defines is_dev_build() after sourcing            function
+  [32mPASS[0m  the harness defines installed_binary() after sourcing        function
+  [32mPASS[0m  the harness defines shot_assert() after sourcing             function
+  [32mPASS[0m  the harness defines ocr_assert() after sourcing              function
+  [32mPASS[0m  the harness defines manual_sheet() after sourcing            function
+  [32mPASS[0m  the harness defines ctrl_port() after sourcing               function
+  [32mPASS[0m  the harness defines control_url() after sourcing             function
+  [32mPASS[0m  the harness defines abort_run() after sourcing               function
+  [32mPASS[0m  the harness defines step0_preflight() (one function per step) function
+  [32mPASS[0m  the harness defines step1_install() (one function per step)  function
+  [32mPASS[0m  the harness defines step2_offline_state() (one function per step) function
+  [32mPASS[0m  the harness defines step3_start_from_app() (one function per step) function
+  [32mPASS[0m  the harness defines step4_embedded_ui() (one function per step) function
+  [32mPASS[0m  the harness defines step5_streaming() (one function per step) function
+  [32mPASS[0m  the harness defines step6_unary_views() (one function per step) function
+  [32mPASS[0m  the harness defines step7_control_both_ways() (one function per step) function
+  [32mPASS[0m  the harness defines step8_platform_variants() (one function per step) function
+  [32mPASS[0m  the harness defines print_plan() (one function per step)     function
+  [32mPASS[0m  the harness defines parse_args() (one function per step)     function
+  [32mPASS[0m  the harness defines main() (one function per step)           function
+
+  -- rule 1: an empty capture proves nothing --
+  [32mPASS[0m  gated_contains on an EMPTY capture counts no PASS            0
+  [32mPASS[0m  gated_contains on an EMPTY capture counts no FAIL            0
+  [32mPASS[0m  gated_contains on an EMPTY capture counts one SKIP           1
+  [32mPASS[0m  the SKIP reason lands in the step log                        yes
+  [32mPASS[0m  the results.tsv row is SKIP, not PASS                        SKIP
+  [32mPASS[0m  gated_absent on an EMPTY capture counts no PASS              0
+  [32mPASS[0m  gated_absent on an EMPTY capture counts one SKIP             1
+  [32mPASS[0m  a MISSING capture is SKIP too (unwritten == empty)           1
+  [32mPASS[0m  a MISSING capture produces no PASS                           0
+
+  -- rule 2: a capture with bytes still decides, and a FAIL names its owner --
+  [32mPASS[0m  gated_contains PASSes when the needle is present             1
+  [32mPASS[0m  and records no defect for a PASS                             0
+  [32mPASS[0m  gated_absent PASSes when the needle is absent                1
+  [32mPASS[0m  gated_contains FAILs when the needle is missing              1
+  [32mPASS[0m  the FAIL row carries the owner file:line                     internal/desktop/proxy.go:74-79
+  [32mPASS[0m  the FAIL writes a defect row naming the owning task          yes
+  [32mPASS[0m  the defect row has an id and a summary                       4
+
+  -- rule 3: no step reads a capture without a gate --
+  [32mPASS[0m  step1_install contains no raw check_contains                 no
+  [32mPASS[0m  step1_install contains no raw check_absent                   no
+  [32mPASS[0m  step2_offline_state contains no raw check_contains           no
+  [32mPASS[0m  step2_offline_state contains no raw check_absent             no
+  [32mPASS[0m  step3_start_from_app contains no raw check_contains          no
+  [32mPASS[0m  step3_start_from_app contains no raw check_absent            no
+  [32mPASS[0m  step4_embedded_ui contains no raw check_contains             no
+  [32mPASS[0m  step4_embedded_ui contains no raw check_absent               no
+  [32mPASS[0m  step5_streaming contains no raw check_contains               no
+  [32mPASS[0m  step5_streaming contains no raw check_absent                 no
+  [32mPASS[0m  step6_unary_views contains no raw check_contains             no
+  [32mPASS[0m  step6_unary_views contains no raw check_absent               no
+  [32mPASS[0m  step7_control_both_ways contains no raw check_contains       no
+  [32mPASS[0m  step7_control_both_ways contains no raw check_absent         no
+  [32mPASS[0m  step8_platform_variants contains no raw check_contains       no
+  [32mPASS[0m  step8_platform_variants contains no raw check_absent         no
+  [32mPASS[0m  step2 gates every captured body through gated_contains       yes
+  [32mPASS[0m  step5 gates the static streaming invariants through src_contains yes
+  [32mPASS[0m  no step function calls a FAIL without an owner argument      0
+
+  -- rule 4: every step carries an INDEPENDENT probe --
+  [32mPASS[0m  step1 proves the package from dpkg -L / sha256sum            yes
+  [32mPASS[0m  step1 records the installed binary fingerprint               yes
+  [32mPASS[0m  step2 proves the URL from the proxy's own 502 body           yes
+  [32mPASS[0m  step2 reads the shell's own log line                         yes
+  [32mPASS[0m  step3 probes /healthz independently of the app               yes
+  [32mPASS[0m  step3 probes /versionz independently                         yes
+  [32mPASS[0m  step3 resolves the listening PID independently               yes
+  [32mPASS[0m  step4 needs the injected desktop marker                      yes
+  [32mPASS[0m  step4 FORCES a version mismatch instead of hoping for one    yes
+  [32mPASS[0m  step5 samples the plane's own event feed                     yes
+  [32mPASS[0m  step5 compares three window frames (a frozen view must FAIL) yes
+  [32mPASS[0m  step6 compares against the plane's own counts                yes
+  [32mPASS[0m  step7 verifies the plane is DOWN with curl, not the app's word yes
+  [32mPASS[0m  step7 verifies the PID is gone                               yes
+  [32mPASS[0m  step8 captures the Linux launcher message                    yes
+
+  -- rule 5: a run that cannot be a proof exits 2 --
+  [32mPASS[0m  a host with no package and no artifact REFUSES (exit 2)      2
+  [32mPASS[0m  the refusal is recorded as a SKIP row, never a PASS          SKIP
+  [32mPASS[0m  the refusal explains itself in summary.md                    yes
+  [32mPASS[0m  a machine with a plane ALREADY answering REFUSES (exit 2)    2
+  [32mPASS[0m  the refusal names the plane that answered                    yes
+  [32mPASS[0m  a WAILS DEV BUILD is refused (exit 2)                        2
+  [32mPASS[0m  the refusal names the dev build                              yes
+
+  -- rule 6: no scratch outside the evidence directory --
+  [32mPASS[0m  the harness never uses mktemp                                0
+  [32mPASS[0m  the harness never writes to /tmp                             0
+  [32mPASS[0m  the harness has no sudo call (it is run with the rights it needs) 0
+  [32mPASS[0m  the manual-sheet sheets land in the evidence dir             yes
+
+  -- rule 7: usage, exit contract, and a plan that executes nothing --
+  [32mPASS[0m  --help exits 0                                               0
+  [32mPASS[0m  --help documents the exit-2 (not a valid proof) contract     yes
+  [32mPASS[0m  --help documents that a dev build is inadmissible            yes
+  [32mPASS[0m  --dry-run exits 0                                            0
+  [32mPASS[0m  --dry-run prints the plan and touches no step                yes
+  [32mPASS[0m  --dry-run writes no results row                              0
+  [32mPASS[0m  an unknown option exits 2                                    2
+  [32mPASS[0m  --platform windows produces the manual sheet, not a fake PASS yes
+  [32mPASS[0m  a SKIP is counted separately in summary.md                   yes
+
+  -- rule 8: the display, the exit code and the generated sheets --
+  [32mPASS[0m  the session OWNS its X display instead of shooting a guessed one no
+  [32mPASS[0m  the app and every screenshot share ONE display               yes
+  [32mPASS[0m  gui_shot refuses to shoot a display it does not have         yes
+  [32mPASS[0m  gui_kill tears down the Xvfb the session started             yes
+  [32mPASS[0m  step 0 requires the X server it will also screenshot         yes
+  [32mPASS[0m  step 4 re-derives the shell origin after the mismatch relaunch yes
+  [32mPASS[0m  a FAILED step 0 is never reported as a clean preflight       2
+  [32mPASS[0m  --dry-run exits 0 with an explicit evidence dir              0
+  [32mPASS[0m  the generated NOTES.md has no literal backslash-n            0
+  [32mPASS[0m  the generated NOTES.md names the session-owned display limit yes
+  [32mPASS[0m  the generated NOTES.md still states the OCR limit            yes
+
+  -- rule 9: a refused host still hands the operator the manual sheet --
+  [32mPASS[0m  --platform windows on a refused host exits 2 (not a fake proof) 2
+  [32mPASS[0m  the Windows 10 sheet EXISTS even though step 0 refused       yes
+  [32mPASS[0m  the refused Windows tier is a SKIP row, never a PASS         SKIP
+  [32mPASS[0m  the refusal never renders as a PASS verdict                  no
+  [32mPASS[0m  --platform macos emits its sheet on a refused host too       yes
+  [32mPASS[0m  asking for the same sheet twice writes ONE file              1
+  [32mPASS[0m  and records the SKIP once, not once per step                 1
+
+[32m127 assertions passed, 0 failed[0m

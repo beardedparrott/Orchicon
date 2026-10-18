@@ -115,6 +115,13 @@ case "${1:-}" in
   serve)
     case "${2:-}" in
       --status)
+        # THIS TEXT IS FROZEN AGAINST THE REAL BINARY, ON PURPOSE. `orchicon serve --status` now
+        # prints planecontrol.Status.String() — instance, residency, PID, serving binary, drift,
+        # health — and this stub still answers the pre-wrapper one-liner. What this harness asserts
+        # is the SCRIPT's delegation and its own exit-code handling; the exit code below (0 = a live
+        # PID file) is the real contract and it is unchanged. Do NOT "fix" this by making the stub
+        # call the real binary: the harness deliberately does not, and a stub that tracked the
+        # binary's prose would pin wording instead of delegation.
         if [ "$(cat "$STUB_PLANE_STATE" 2>/dev/null)" = up ]; then echo "serve is running (PID 4242)"; exit 0; fi
         echo "serve is not running"; exit 1 ;;
       --stop)
@@ -284,6 +291,28 @@ assert_not_contains "$call_log" "orchicon-dev/serve" "stopping prod never touche
 run "$SCRIPT" restart dev >/dev/null
 assert_contains "$(cat "$CALLS")" "serve_state=$HOME/.local/share/orchicon-dev/serve" "restart scopes the plane to DEV's state dir"
 
+# AN AMBIENT ORCHICON_INSTANCE MUST NOT DECIDE WHICH INSTANCE IS ASKED ABOUT. `serveStateDir`
+# PREFERS ORCHICON_INSTANCE over ORCHICON_SERVE_STATE_DIR (cmd/orchicon/serve_state.go), so without
+# the instance on the call, `status dev` run from a shell carrying ORCHICON_INSTANCE=prod reported
+# PROD's plane — and stop_host's post-stop verification checked the wrong instance. The assignment is
+# pushed through `run` AFTER its `env -u`, which is what makes it ambient rather than stripped.
+: >"$CALLS"
+run ORCHICON_INSTANCE=prod "$SCRIPT" status dev >/dev/null 2>&1
+assert_contains "$(awk '/argv=serve --status/{f=1} f&&/^inst=/{print;exit}' "$CALLS")" "inst=dev" \
+  "status asks about the instance it was given, even when the shell exports another one"
+: >"$CALLS"
+run "$SCRIPT" status prod >/dev/null 2>&1
+assert_contains "$(awk '/argv=serve --status/{f=1} f&&/^inst=/{print;exit}' "$CALLS")" "inst=prod" \
+  "status passes the requested instance to serve --status"
+
+# THE SAME HOLE IN `stop`, WHERE IT ACTS INSTEAD OF ONLY REPORTING. `serve --stop` resolves its PID file
+# through the same instance-preferring `serveStateDir`, so without the instance on THAT call an ambient
+# ORCHICON_INSTANCE=prod made `stop dev` stop PROD's plane while dev's kept running.
+: >"$CALLS"
+run ORCHICON_INSTANCE=prod "$SCRIPT" stop dev >/dev/null 2>&1
+assert_contains "$(awk '/argv=serve --stop/{f=1} f&&/^inst=/{print;exit}' "$CALLS")" "inst=dev" \
+  "stop acts on the instance it was given, even when the shell exports another one"
+
 # ── 5b. stop reports only what it verified ────────────────────────────────
 # `stop` claims "plane and its host services" in one line, so BOTH halves have to
 # be checked before it prints. A services stop that failed while the success line
@@ -344,6 +373,28 @@ out="$(env -u ORCHICON_INSTANCE_CTL ORCHICON_BIN="$WORK/minbin/orchicon" HOME="$
         PATH="$WORK/minbin" /bin/bash "$SCRIPT" status dev 2>&1)"
 assert_contains "$out" "UNVERIFIED" "with no curl, status says health is UNVERIFIED"
 assert_not_contains "$out" "UP and healthy" "with no curl, status never claims health"
+
+# THE PLANE REPORT IS TWO LINES NOW, AND BOTH BELONG TO THE ROW. `serve --status` reports the shared
+# planecontrol.Status, which adds a second line when the PID-file process is not this binary — the
+# "plane runs from X, not Y — leaving it" drift warning. It used to be a one-liner, so echoing it raw
+# dropped that line at column 0, where it read as top-level output from the script instead of part of
+# the plane row. (The stub above still answers the frozen one-liner; this one answers like the real
+# binary, which is what the alignment has to survive.)
+mkdir -p "$WORK/twoline"
+printf '#!%s\ncase "$1" in\n  instance) exit 3 ;;\n  serve) printf "  (plane runs from /old/bin/orchicon, not /new/bin/orchicon — leaving it)\\ninstance dev: plane pid 4242 running /new/bin/orchicon — data dir %s\\n"; exit 0 ;;\n  services) echo "services for dev: up (postgres 127.0.0.1:5432)"; exit 0 ;;\nesac\nexit 1\n' \
+  "$BASH_ABS" "$HOME/.local/share/orchicon-dev" >"$WORK/twoline/orchicon"
+mkexec "$WORK/twoline/orchicon"
+out="$(env -u ORCHICON_INSTANCE_CTL ORCHICON_BIN="$WORK/twoline/orchicon" HOME="$HOME" \
+        PATH="$STUB:$PATH" /bin/bash "$SCRIPT" status dev 2>&1)"
+assert_contains "$out" "  plane       (plane runs from /old/bin/orchicon" \
+  "status keeps the report's first line on the plane row"
+assert_contains "$out" "            instance dev: plane pid 4242" \
+  "status aligns the report's second line under the plane row"
+if printf '%s\n' "$out" | grep -q '^instance dev: plane pid 4242'; then
+  bad "the plane report's second line landed flush-left, where it reads as top-level output"
+else
+  ok "the plane report's second line never lands flush-left"
+fi
 
 # ── 7. logs (the plane's own log, per instance) ────────────────────────────
 echo "-- logs"

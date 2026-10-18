@@ -141,6 +141,10 @@ shape() {
     echo "plane_http_port=$PLANE_HTTP_PORT"
     echo "host_data_dir=$HOST_DATA_DIR"
     echo "service_ports=$SERVICE_PORTS"
+    # The published set IS the service set now: there is no container wrapping the
+    # services, so what the table reports and what in-engine runtime containers can
+    # reach are one list. Asserted to stay one list rather than two that drift.
+    echo "publish_ports=$SERVICE_PORTS"
     bridge_bind_env "$inst" | sed -n 's/^ORCHICON_PLANE_PUBLIC_URL=/plane_public_url=/p'
     plane_env "$inst" | sed 's/^/plane_env:/'
   ) 2>&1
@@ -214,11 +218,18 @@ check_contains "dev isolates the detached-serve PID file" \
 # Every service bind must be loopback-bound, and nothing may be published on
 # 0.0.0.0 (Postgres/NATS are an internal database and bus).
 SVC="$(field "$HOST_DEV" service_ports)"
-check "dev service-bind count (9 services)" "9" "$(printf '%s' "$SVC" | grep -o '127\.0\.0\.1:' | wc -l | tr -d ' ')"
-check_lacks "dev binds nothing on a wildcard address" "0.0.0.0:" "$SVC"
-for port in 5432 4222 8222 4317 4318 3200 3100 8428 3002; do
-  check_contains "dev binds dev port $port on loopback" "127.0.0.1:$port:" "$SVC"
+check "host dev publish count (8 services)" "8" "$(printf '%s' "$SVC" | grep -o '127\.0\.0\.1:' | wc -l | tr -d ' ')"
+check_lacks "host dev publishes nothing on a wildcard address" "0.0.0.0:" "$SVC"
+for port in 5432 4222 8222 4317 4318 3200 3100 8428; do
+  check_contains "host dev publishes dev port $port on loopback" "127.0.0.1:$port:" "$SVC"
 done
+# 3002/3003/3004 were Grafana's published port. Grafana is gone and those ports are RETIRED and
+# RESERVED (cmd/orchicon/install_ports.go), so publishing one again — here or in scripts/lib/
+# instances.sh — would hand a retired port to a new component without anyone deciding to.
+for port in 3002 3003 3004; do
+  check_lacks "host dev does not publish the retired port $port" "127.0.0.1:$port:" "$SVC"
+done
+check "host dev publishes the same set it reports" "$SVC" "$(field "$HOST_DEV" publish_ports)"
 
 # --- (iii) HOST SHAPE: prod — and NO value shared with dev ---------------
 HOST_PROD="$(shape prod)"

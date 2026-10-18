@@ -12,7 +12,7 @@
 # So this is that table's query surface and nothing else — no engine, no docker, no
 # side effects, three pure verbs.
 #
-#   scripts/instance-ports.sh services-port <inst> <postgres|nats|nats-mon|control|grafana>
+#   scripts/instance-ports.sh services-port <inst> <postgres|nats|nats-mon|control>
 #   scripts/instance-ports.sh db-url <inst>
 #   scripts/instance-ports.sh pg-psql <inst>
 set -euo pipefail
@@ -64,8 +64,7 @@ services_port() {
     nats) key=ORCHICON_NATS_PORT; def="$NATS_PORT" ;;
     nats-mon|nats-monitor) key=ORCHICON_NATS_MONITOR_PORT; def="$NATS_MON_PORT" ;;
     control|plane) key=ORCHICON_CONTROL_PORT; def="$PLANE_HTTP_PORT" ;;
-    grafana) key=ORCHICON_GRAFANA_PORT; def="$GRAFANA_HOST_PORT" ;;
-    *) echo "unknown service: $svc (use postgres|nats|nats-mon|control|grafana)" >&2; return 1 ;;
+    *) echo "unknown service: $svc (use postgres|nats|nats-mon|control)" >&2; return 1 ;;
   esac
   local rec
   rec="$(_recorded_port "$inst" "$key")"
@@ -107,7 +106,7 @@ usage() {
 usage: scripts/instance-ports.sh <verb> [instance]
 
 verbs:
-  services-port <inst> <postgres|nats|nats-mon|control|grafana>
+  services-port <inst> <postgres|nats|nats-mon|control>
                                    ONE service's PORT for an instance
   db-url <inst>                    the instance's Postgres DSN
   pg-psql <inst>                   the psql binary the instance's install recorded

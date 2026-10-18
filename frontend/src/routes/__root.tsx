@@ -2,6 +2,7 @@ import { Outlet, createRootRoute, useRouterState, Link } from "@tanstack/react-r
 import { PUBLIC_PATHS, requireAuth } from "@/auth/route-guard";
 import { useSessionStore } from "@/auth/session";
 import { AppShell } from "@/components/app-shell";
+import { VersionMismatchBanner } from "@/components/version-mismatch-banner";
 import { ForcePasswordGate } from "@/components/force-password-gate";
 export const Route = createRootRoute({
   beforeLoad: requireAuth,
@@ -15,10 +16,27 @@ function RootComponent() {
     return <ForcePasswordGate />;
   }
   if (PUBLIC_PATHS.has(path)) {
+    // MANAGE SERVER keeps the normal shell whenever a session exists: it lives in the
+    // Control nav, so it must look like every other page. With NO session (a fresh
+    // desktop install, plane not started) there is nothing to authenticate against and
+    // AppShell would bounce to /login — so the page renders bare. That exception is
+    // stated here rather than buried in the page, and it widens nothing: the route is
+    // desktop-only and redirects in a browser before this component runs.
+    if (path === "/manage-server" && session.authenticated) {
+      return (
+        <AppShell>
+          <Outlet />
+        </AppShell>
+      );
+    }
     return <Outlet />;
   }
   return (
     <AppShell>
+      {/* Mounted ABOVE the outlet so no route can hide it: a desktop window whose
+          embedded UI and plane disagree must say so on every page, not just on
+          the one route that remembered to render it. Renders nothing in a browser. */}
+      <VersionMismatchBanner />
       <Outlet />
     </AppShell>
   );

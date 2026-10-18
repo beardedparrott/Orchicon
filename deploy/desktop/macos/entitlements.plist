@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the Orchicon .app.
+
+  THE JIT ENTITLEMENTS ARE NOT OPTIONAL. The app is a Wails shell around
+  JavaScriptCore, which JITs the frontend bundle; under the hardened runtime
+  (required for notarisation) macOS kills a process that maps executable memory
+  without these two, and the symptom is the app dying instantly on launch with
+  no dialog — the exact failure the packaging exists to prevent.
+
+  NO SANDBOX ENTITLEMENT, deliberately: the app talks to the Orchicon plane over
+  loopback (http://127.0.0.1:8080) and starts the plane as a child process. An
+  App Sandbox would need a family of exceptions for both, and the app is
+  distributed outside the App Store, where the sandbox is not required.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+</dict>
+</plist>
