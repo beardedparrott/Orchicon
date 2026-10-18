@@ -70,6 +70,40 @@ func (d DriftState) String() string {
 	}
 }
 
+// instanceEnvKeys are the variables that decide WHICH INSTANCE a lifecycle command acts on, and they are
+// STRIPPED from the ambient environment before this package sets its own.
+//
+// Because getenv returns the FIRST match, appending a value to a slice that already carries a different one
+// does NOT override it — the ambient value wins. That is how a dev plane came up writing its logs into a
+// PROD log file: the shell that started it carried ORCHICON_SERVE_STATE_DIR for prod, EnvWithout stripped
+// only ORCHICON_CONTAINER_MODE, and PlaneEnv's correct value sat second in the slice, unread. Two instances'
+// diagnostics collided, and the failure being debugged was invisible while a sibling's log filled up.
+//
+// A lifecycle command that has DECIDED which instance it drives must not let the caller's shell disagree.
+var instanceEnvKeys = []string{
+	"ORCHICON_CONTAINER_MODE",
+	ServeStateDirEnv,
+	"ORCHICON_INSTANCE",
+	"ORCHICON_DATA_DIR",
+	"ORCHICON_BLOB_DIR",
+	"ORCHICON_POSTGRES_DSN",
+	"ORCHICON_NATS_URL",
+	// THE PLANE'S OWN BOOT MARKERS. These are per-PROCESS, set by `serve --detach` for the child it
+	// forks, and must never be inherited by a NEW plane:
+	//
+	//   ORCHICON_SERVE_DETACHED=1  makes `serve --detach` fall straight through to running the server in
+	//                              the foreground — so any lifecycle command launched from a shell that
+	//                              inherited it becomes a foreground plane with no PID file.
+	//   ORCHICON_SERVE_LOG_FILE    points the rotating writer at ANOTHER instance's log.
+	//
+	// OBSERVED IN THIS ENVIRONMENT: a session spawned by the prod plane carried all three of
+	// ORCHICON_SERVE_DETACHED / _STATE_DIR / _LOG_FILE for prod. Every dev plane started from that shell
+	// wrote into prod's log and never wrote its PID file, which is why "the dev log stopped hours ago"
+	// and the actual failure was invisible.
+	"ORCHICON_SERVE_DETACHED",
+	"ORCHICON_SERVE_LOG_FILE",
+}
+
 // Bounded, so a slow shutdown is REPORTED rather than waited on forever.
 const (
 	startHealthTimeout = 60 * time.Second
@@ -301,7 +335,7 @@ func Start(opts Options) error {
 	if err != nil {
 		return fmt.Errorf("refusing to start the host plane: %w", err)
 	}
-	cmdEnv := append(EnvWithout(os.Environ(), "ORCHICON_CONTAINER_MODE"), env...)
+	cmdEnv := append(EnvWithout(os.Environ(), instanceEnvKeys...), env...)
 	if err := runCommand([]string{"serve", "--detach"}, cmdEnv, o.Out); err != nil {
 		return fmt.Errorf("start the host plane for %s: %w", o.Instance, err)
 	}
@@ -330,7 +364,7 @@ func Start(opts Options) error {
 // into an error.
 func Stop(opts Options) error {
 	o := opts.normalized()
-	cmdEnv := append(EnvWithout(os.Environ(), "ORCHICON_CONTAINER_MODE"),
+	cmdEnv := append(EnvWithout(os.Environ(), instanceEnvKeys...),
 		ServeStateDirEnv+"="+filepath.Join(o.HostDataDir, "serve"))
 	if err := runCommand([]string{"serve", "--stop"}, cmdEnv, o.Out); err != nil {
 		// TELL "NOTHING TO STOP" APART FROM "IT WOULD NOT STOP". The PID file this layer reads is the SAME

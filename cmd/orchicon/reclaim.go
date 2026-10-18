@@ -243,3 +243,68 @@ func portHolders(ports ...int) []portHolder {
 	}
 	return out
 }
+
+// portHeldByThisInstance reports whether a port is held by something belonging to THIS instance: its own
+// plane/supervisor process, or its own container-era container.
+//
+// It answers "may I keep my recorded port?" and nothing else — a false answer only costs a re-resolve, so it
+// errs toward false whenever the holder cannot be identified.
+func portHeldByThisInstance(port int, instance string) bool {
+	name := instanceContainerName(instance)
+	for _, bin := range instanceEngines() {
+		if containerRunningOn(bin, name) {
+			// The container publishes this instance's ports; confirm it is actually the one holding THIS
+			// port rather than assuming, because a stopped/partial container still answers inspect.
+			if containerPublishesPort(bin, name, port) {
+				return true
+			}
+		}
+	}
+	for _, h := range portHolders(port) {
+		if isOurBinary(h.exe) && processBelongsTo(h.pid, instance) {
+			return true
+		}
+	}
+	return false
+}
+
+// processBelongsTo confirms a pid carries this instance's name, so our binary serving a SIBLING instance is
+// never mistaken for ours.
+func processBelongsTo(pid int, instance string) bool {
+	dir := filepath.Join("/proc", strconv.Itoa(pid))
+	environ, _ := os.ReadFile(filepath.Join(dir, "environ"))
+	return strings.Contains(string(environ), "ORCHICON_INSTANCE="+instance+"\x00") ||
+		strings.HasSuffix(string(environ), "ORCHICON_INSTANCE="+instance)
+}
+
+// containerPublishesPort reports whether a container publishes a host port.
+func containerPublishesPort(engineBin, name string, port int) bool {
+	out, err := exec.Command(engineBin, "inspect", "-f",
+		"{{range $p, $b := .NetworkSettings.Ports}}{{(index $b 0).HostPort}} {{end}}", name).CombinedOutput()
+	if err != nil {
+		return false
+	}
+	for _, f := range strings.Fields(string(out)) {
+		if f == strconv.Itoa(port) {
+			return true
+		}
+	}
+	return false
+}
+
+// portOwnerLabel describes who holds a port, for the message that names a genuine conflict. Empty when the
+// holder is this instance (nothing to report) or cannot be identified.
+func portOwnerLabel(port int, instance string) string {
+	for _, h := range portHolders(port) {
+		if isOurBinary(h.exe) {
+			if processBelongsTo(h.pid, instance) {
+				return "" // ours; not a conflict
+			}
+			return fmt.Sprintf("another Orchicon instance (pid %d, %s) — pick a different port or stop it",
+				h.pid, h.exe)
+		}
+		return fmt.Sprintf("pid %d (%s), which Orchicon did not start — pick a different port",
+			h.pid, h.exe)
+	}
+	return ""
+}

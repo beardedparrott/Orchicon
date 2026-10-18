@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -63,6 +64,22 @@ type AuthConfig struct {
 	// OPIssuer pins the OP issuer URL (ORCHICON_OP_ISSUER). Empty derives
 	// the issuer from the request Host on every request.
 	OPIssuer string
+	// PlaneURL is this plane's own origin (scheme://host:port), derived from
+	// HTTPAddr. The embedded OP ALWAYS registers it as a redirect URI.
+	//
+	// WHY IT IS NOT OPTIONAL. The default RedirectURL is the Vite dev server
+	// (http://localhost:5173/auth/callback), which is right for `make fe-dev` and wrong for every
+	// other way of reaching the UI. The plane's own origin was only registered when OPIssuer was
+	// PINNED, and a local install leaves it unpinned — so on a plain install the OP accepted a
+	// callback on a port nothing was serving:
+	//
+	//	GET /authorize?client_id=orchicon&redirect_uri=http://localhost:8080/auth/callback
+	//	400  The requested redirect_uri is missing in the client configuration
+	//
+	// i.e. login was impossible in the browser, before any password was checked, on the product's
+	// default dev-server-less shape. The plane serves the SPA at its own port; that origin must be a
+	// valid callback always.
+	PlaneURL string
 }
 
 // BlobStoreConfig selects the object-storage backend (docs/01 §2).
@@ -229,6 +246,7 @@ func Default() Config {
 			EmbeddedOP:     envBool("ORCHICON_OP_ENABLED", true),
 			OPRedirectURIs: env("ORCHICON_OP_REDIRECT_URIS", ""),
 			OPIssuer:       env("ORCHICON_OP_ISSUER", ""),
+			PlaneURL:       planeOriginFrom(env("ORCHICON_HTTP_ADDR", ":8080")),
 		},
 		BlobStore: BlobStoreConfig{
 			Kind:       env("ORCHICON_BLOB_STORE", "local"),
@@ -383,4 +401,28 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: s3 BlobStore requires ORCHICON_S3_BUCKET")
 	}
 	return nil
+}
+
+// planeOriginFrom turns the plane's HTTP bind address into an origin the OP can register as a
+// redirect URI: ":8080" -> "http://localhost:8080", "127.0.0.1:8091" -> "http://127.0.0.1:8091".
+//
+// A WILDCARD OR EMPTY HOST BECOMES "localhost": the bind may be ":8080" (all interfaces), and a
+// redirect URI must be an absolute origin a BROWSER will navigate to — "http://:8080" is not one.
+// When the operator reaches the UI by IP, ORCHICON_OP_REDIRECT_URIS supplies that origin explicitly.
+func planeOriginFrom(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	if port == "" {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
