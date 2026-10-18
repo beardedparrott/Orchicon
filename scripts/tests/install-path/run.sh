@@ -528,11 +528,13 @@ else
 fi
 
 # The CONSUMERS must read the record, not a bare name. A service proc that still
-CONTAINER_SRC="$(cat "${REPO_ROOT}/cmd/orchicon/container.go")"
-if grep -q 's.resolved().Postgres' <<<"${CONTAINER_SRC}" \
-   && grep -q 's.resolved().Initdb' <<<"${CONTAINER_SRC}" \
-   && grep -q 's.resolved().Createdb' <<<"${CONTAINER_SRC}" \
-   && grep -q 's.resolved().NatsServer' <<<"${CONTAINER_SRC}"; then
+# execs a bare name would miss a DOWNLOADED binary. The consumers live in the HOST
+# services supervisor (the container PID-1 supervisor and its file are gone).
+SUPERVISOR_SRC="$(cat "${REPO_ROOT}/cmd/orchicon/host_services.go")"
+if grep -q 's.resolved().Postgres' <<<"${SUPERVISOR_SRC}" \
+   && grep -q 's.resolved().Initdb' <<<"${SUPERVISOR_SRC}" \
+   && grep -q 's.resolved().Createdb' <<<"${SUPERVISOR_SRC}" \
+   && grep -q 's.resolved().NatsServer' <<<"${SUPERVISOR_SRC}"; then
   ok "every service proc execs the RESOLVED path"
 else
   bad "a service proc does not use the resolved path — a DOWNLOADED binary would be invisible to it"
@@ -543,7 +545,7 @@ fi
 # check.
 bare=""
 for literal in '"initdb", "-D"' '"postgres", "-D"' 'exec.CommandContext(ctx, "createdb"' 'command: "nats-server"'; do
-  if grep -qF "${literal}" <<<"${CONTAINER_SRC}"; then
+  if grep -qF "${literal}" <<<"${SUPERVISOR_SRC}"; then
     bare="${bare}
   ${literal}"
   fi
