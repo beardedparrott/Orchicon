@@ -320,8 +320,43 @@ for planted in 'const StartPlane = () => window.api.PlaneStart()' 'await client.
   expect "the tripwire DOES catch a planted control: ${planted}" 1 \
     "$(printf '%s\n' "$planted" | grep -ciE "$TRIPWIRE" || true)"
 done
-expect "the SPA has no lifecycle control today (tripwire over frontend/src)" 0 \
-  "$(grep -rIniE "$TRIPWIRE" "${REPO_ROOT}/frontend/src" --include='*.ts' --include='*.tsx' 2>/dev/null | grep -v '/api/gen/' | wc -l)"
+# THE INVARIANT WAS SUPERSEDED, AND THIS ASSERTION USED TO SAY SO THE WRONG WAY.
+#
+# It used to demand ZERO matches — "the SPA has no lifecycle control today" — which was true when the SPA
+# could only WATCH a plane, never control one. The Manage Server work deliberately changed that: the SPA now
+# HAS plane control, gated to the desktop app. So the tripwire started firing on correct code, and go-ci went
+# red on every PR from that point (13 matches, "want [0] got [13]").
+#
+# The fix is NOT to weaken the tripwire — it is to assert what is now TRUE, and the new invariant is STRONGER
+# than the old one. Absence was easy to check and easy to satisfy by accident (a rename would have passed it);
+# what actually matters is that control exists ONLY behind the desktop gate:
+#
+#   1. every plane-control symbol lives in the two desktop-gated modules, and
+#   2. those modules reach the plane's lifecycle ONLY through the ONE desktop signal (DESKTOP_GLOBAL,
+#      installed by the shell as non-writable and frozen, so page script cannot turn it on), and
+#   3. the route that hosts the controls REDIRECTS a browser away rather than rendering them.
+#
+# (3) is the one that would catch a regression the old absence check never could: a page that renders plane
+# controls to a browser is the leak the brief forbids, and it would pass "no matches in the modules" while
+# being exactly the defect. See frontend/src/lib/desktop.ts's own note on the three surfaces that read it.
+CONTROL_ALLOWED='^(frontend/src/lib/desktop\.ts|frontend/src/lib/desktop\.test\.ts|frontend/src/lib/manage-server\.ts|frontend/src/routes/manage-server\.tsx)$'
+expect "every plane-control symbol is confined to the desktop-gated modules" 0 \
+  "$(grep -rIlE "$TRIPWIRE" "${REPO_ROOT}/frontend/src" --include='*.ts' --include='*.tsx' 2>/dev/null \
+     | grep -v '/api/gen/' | sed "s#^${REPO_ROOT}/##" | grep -vE "$CONTROL_ALLOWED" | wc -l)"
+expect "the control module reads the ONE desktop signal, never a second detection" yes \
+  "$([ "$(grep -cF 'DESKTOP_GLOBAL' "${REPO_ROOT}/frontend/src/lib/desktop.ts" 2>/dev/null)" -ge 1 ] && echo yes || echo no)"
+# COMMENTS ARE STRIPPED BEFORE THIS CHECK, and it is not tidiness. The rule this asserts is stated IN A
+# COMMENT in desktop.ts ("A second detection (window.runtime, user-agent sniffing, location.protocol) is a
+# bug"), so a raw grep matches the sentence that forbids the thing and fails on the file that gets it RIGHT.
+# The repo has been bitten by exactly this before (cmd/orchicon/ci_release_workflows_test.go: "a detector
+# tripped by its own documentation"), and the answer there was the same: look at CODE, not prose.
+expect "…and it does NOT sniff a second signal (user-agent / window.runtime / protocol)" 0 \
+  "$(sed -e 's://.*::' "${REPO_ROOT}/frontend/src/lib/desktop.ts" 2>/dev/null \
+     | grep -cE 'navigator\.userAgent|window\.runtime|location\.protocol ===' || true)"
+expect "the hosting route REDIRECTS a browser instead of rendering the controls" yes \
+  "$([ "$(grep -cF 'redirectTarget(' "${REPO_ROOT}/frontend/src/routes/manage-server.tsx" 2>/dev/null)" -ge 1 ] && echo yes || echo no)"
+expect "…and the redirect is driven by isDesktop(), not by a local guess" yes \
+  "$([ "$(grep -cF 'isDesktop()' "${REPO_ROOT}/frontend/src/routes/manage-server.tsx" 2>/dev/null)" -ge 1 ] && echo yes || echo no)"
 expect "the tripwire is not vacuous: its control symbol is present in frontend/src" yes \
   "$([ "$(grep -rIl 'useToastStore' "${REPO_ROOT}/frontend/src" --include='*.ts' --include='*.tsx' 2>/dev/null | wc -l)" -ge 1 ] && echo yes || echo no)"
 
