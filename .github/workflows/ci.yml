@@ -210,6 +210,14 @@ jobs:
       - name: Install the real installer against a local artifact
         run: bash scripts/tests/install-path/run.sh
 
+      # THE macOS BRANCH, ON THE SAME RUNNER. `--os darwin` serves a cross-compiled darwin/arm64 artifact
+      # behind a `uname` shim, so the script a macOS user actually runs is the thing under test — its
+      # checksum verdict, its quarantine check and the guidance it prints — with no Mac and no certificate
+      # in the picture. Without this step that mode is dead code, and the macOS story would again be
+      # verified only by running it by hand.
+      - name: The macOS branch of the same installer
+        run: bash scripts/tests/install-path/run.sh --os darwin
+
       # The uninstall verbs DELETE things, so their harness stubs `docker` and keeps XDG_DATA_HOME and
       # --install-dir in scratch directories: every container, volume and binary operation is recorded and
       # none is performed. The assertions are then about the log — the only safe place to observe a

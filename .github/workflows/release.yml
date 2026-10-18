@@ -254,12 +254,26 @@ jobs:
             tar -czf "$archive" "$dir"
           done
 
+      # STAGED FLAT INTO signed/, AND THAT IS LOAD-BEARING. `download-artifact` rebuilds an artifact's
+      # directory tree from these paths, and the release job merges every artifact into ONE flat directory
+      # and writes SHA256SUMS there from a non-recursive glob. A nested upload therefore leaves the release
+      # holding two files of the same name: the UNSIGNED archive from `build` at the top level, and the
+      # signed one in a subdirectory. The checksums, the `gh release` asset list and the installers would
+      # then all resolve to the unsigned copy while this job reports success — a signing pipeline that
+      # signs nothing, which is exactly the failure TestReleaseInstallsTheSignedMacOSArchivesOverTheUnsignedOnes
+      # exists to prevent. `signed/*` keeps the signed archives at the artifact ROOT, where they belong.
+      - name: Stage the signed archives
+        run: |
+          set -eo pipefail
+          mkdir -p signed
+          find unsigned -mindepth 2 -maxdepth 2 -type f \( -name '*.tar.gz' -o -name '*.pkg' \) \
+            -exec mv {} signed/ \;
+          ls -l signed
+
       - uses: actions/upload-artifact@v4
         with:
           name: orchicon-darwin-signed
-          path: |
-            unsigned/**/*.tar.gz
-            unsigned/**/*.pkg
+          path: signed/*
 
   # Build + push the single-container image to GHCR. The image embeds the
   # frontend and ships every runtime (postgres, nats, tempo, loki, vm,
@@ -365,6 +379,22 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      # THE SIGNED MACOS ARCHIVES, DOWNLOADED SECOND AND ON PURPOSE.
+      #
+      # The step above merges EVERY artifact into one flat directory, so the signed archives carry the same
+      # file names as the unsigned ones `build` uploaded and the order in which artifacts are merged is not
+      # specified. Downloading this artifact afterwards makes the signed files the ones on disk — by
+      # construction rather than by luck — so the SHA256SUMS generated below, the published assets and every
+      # installed binary are the signed ones. `if:` scopes it to a run where signing actually happened; when
+      # the sign job is skipped (the normal case today) there is no such artifact and nothing to download.
+      - name: Download the signed macOS archives last, so they are the ones that stay
+        if: needs.sign-macos.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+          pattern: orchicon-darwin-signed
 
       # THE CHECKSUMS THE INSTALLERS VERIFY. `merge-multiple: true` above flattens every artifact into
       # artifacts/, so this is a flat directory and the sums are written flat beside the archives.

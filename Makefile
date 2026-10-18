@@ -559,6 +559,7 @@ install-ps1-test: ## CI gate: the Windows installer never closes the session, an
 # offline behaviour is covered by install-ps1-test).
 install-path-test: ## Run the real installer against a locally-served artifact, and the uninstall verbs against a stubbed docker
 	bash scripts/tests/install-path/run.sh
+	bash scripts/tests/install-path/run.sh --os darwin
 	bash scripts/tests/install-path/uninstall.sh
 
 # host-residency-test guards the LAUNCH SHAPE of an instance: which of the two residencies a plain

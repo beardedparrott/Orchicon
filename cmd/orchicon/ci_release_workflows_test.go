@@ -532,3 +532,72 @@ func TestMacOSSigningJobRunsOnAMacOSRunner(t *testing.T) {
 		}
 	}
 }
+
+// TestReleaseInstallsTheSignedMacOSArchivesOverTheUnsignedOnes pins the half of ACM-2 that stays broken
+// even once a signing job exists: the signed archives must be the ones the release PUBLISHES.
+//
+// The release job merges every artifact into ONE flat directory and writes SHA256SUMS there from a
+// non-recursive glob. Two regressions therefore pass every other test while shipping an unsigned binary
+// called signed:
+//
+//   - an upload path with `**` in it, so the signed archives land in a SUBDIRECTORY next to the unsigned
+//     archives of the same name — the glob, the checksums and `gh release` all resolve to the flat
+//     unsigned copy; and
+//   - a release job that never downloads the signed artifact explicitly, leaving which copy survives the
+//     merge to the (unspecified) artifact order.
+//
+// So both are asserted. Comments are stripped first: the explanation above names the very patterns the
+// check looks for, and a detector tripped by its own documentation is worse than none.
+func TestReleaseInstallsTheSignedMacOSArchivesOverTheUnsignedOnes(t *testing.T) {
+	b, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	jobs := jobsIn(string(b))
+	code := func(j job) string {
+		var out []string
+		for _, line := range strings.Split(j.body, "\n") {
+			out = append(out, stripComment(line))
+		}
+		return strings.Join(out, "\n")
+	}
+	var signing, release *job
+	for i := range jobs {
+		switch jobs[i].name {
+		case "sign-macos":
+			signing = &jobs[i]
+		case "release":
+			release = &jobs[i]
+		}
+	}
+	if signing == nil {
+		t.Fatal("release.yml has no `sign-macos` job")
+	}
+	if release == nil {
+		t.Fatal("release.yml has no `release` job — did it get renamed?")
+	}
+
+	signingCode := code(*signing)
+	if strings.Contains(signingCode, "**/") {
+		t.Errorf("the sign-macos upload uses a recursive path:\n%s\nAn artifact uploaded with `**` keeps "+
+			"its subdirectories, so the signed archives land beside the unsigned ones instead of replacing "+
+			"them and every published checksum still describes the UNSIGNED download.", signingCode)
+	}
+	if !strings.Contains(signingCode, "path: signed/*") {
+		t.Errorf("the sign-macos job no longer stages its signed archives flat (`path: signed/*`), which is "+
+			"what makes them replace the unsigned ones at the artifact root:\n%s", signingCode)
+	}
+
+	releaseCode := code(*release)
+	if !strings.Contains(releaseCode, "sign-macos") {
+		t.Error("the release job does not depend on sign-macos, so the signed archives may not exist yet " +
+			"when it collects them — a release that races the job that signs its artifacts publishes the " +
+			"unsigned build")
+	}
+	if !strings.Contains(releaseCode, "pattern: orchicon-darwin-signed") {
+		t.Error("the release job never downloads `orchicon-darwin-signed` explicitly. The artifacts are " +
+			"merged flat, so the signed and unsigned macOS archives have the SAME file names and the merge " +
+			"order is unspecified: without this download the unsigned copy can be the one published, " +
+			"checksums and all, while the run reports success")
+	}
+}
