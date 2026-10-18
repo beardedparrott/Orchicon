@@ -10,7 +10,8 @@
 #
 # Sourced by scripts/orchicon.sh (the documented entry point:
 # `scripts/orchicon.sh uninstall <dev|prod|test> --yes`) and by
-# scripts/container.sh (its legacy `uninstall` verb delegates here).
+# the launcher (`scripts/install.sh --uninstall`), which is the only entry point left now
+# that scripts/container.sh and its legacy `uninstall` verb are deleted.
 
 # The instance table, the log helpers and residency_for come from instances.sh.
 # Sourced here (guarded) so this file is usable on its own without double-sourcing
