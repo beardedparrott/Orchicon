@@ -18,11 +18,13 @@ import {
   type StatusDTO,
 } from "@/lib/desktop";
 import {
+  currentStatus,
   describeAction,
   nextView,
   pickerOffered,
   resolveChoice,
   stateLabel,
+  statusReadFailure,
   type View,
 } from "@/lib/manage-server";
 
@@ -95,6 +97,12 @@ function PlaneSection() {
   const info = desktopInfo();
   const toast = useToast();
   const [status, setStatus] = useState<StatusDTO | null>(null);
+  // WHICH instance `status` describes. Without this a status read for the previous
+  // instance would be shown beside the newly selected one's name and port.
+  const [statusFor, setStatusFor] = useState<string | null>(null);
+  // A status READ that failed. Shown, never swallowed: "connecting" forever with no
+  // failure reported is the same dishonesty as an unverified success.
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [resolution, setResolution] = useState<ResolutionDTO | null>(null);
   const [manual, setManual] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -127,11 +135,18 @@ function PlaneSection() {
 
   const refresh = async (): Promise<StatusDTO | null> => {
     if (!plane || !instance) return null;
+    const want = instance;
     try {
-      const next = await plane.Status(instance);
+      const next = await plane.Status(want);
       setStatus(next);
+      setStatusFor(want);
+      setStatusError(null);
       return next;
-    } catch {
+    } catch (err) {
+      // Make no claim about a plane whose status could not be read, and SAY so.
+      setStatus(null);
+      setStatusFor(null);
+      setStatusError(statusReadFailure(want, err));
       return null;
     }
   };
@@ -156,10 +171,13 @@ function PlaneSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plane, instance]);
 
-  // Derive what the screen shows whenever status or the in-flight flag changes.
+  // What the screen may show: a status read for THIS instance, nothing else.
+  const current = currentStatus(instance, statusFor, status);
+
+  // Derive what the screen shows whenever the trusted status or the in-flight flag changes.
   useEffect(() => {
-    setView((prev) => nextView(prev, status, pending));
-  }, [status, pending]);
+    setView((prev) => nextView(prev, current, pending));
+  }, [current, pending]);
 
   // Focus moves to the primary action when the OFFLINE state APPEARS — once, on the
   // transition, never on a poll tick.
@@ -189,8 +207,8 @@ function PlaneSection() {
     }
   };
 
-  const portText = status?.ControlPort ? `port ${status.ControlPort}` : choice.running[0]?.ControlPort ? `port ${choice.running[0].ControlPort}` : "port unknown";
-  const triedUrl = status?.URL ?? info?.planeUrl ?? "";
+  const portText = current?.ControlPort ? `port ${current.ControlPort}` : choice.running[0]?.ControlPort ? `port ${choice.running[0].ControlPort}` : "port unknown";
+  const triedUrl = current?.URL ?? info?.planeUrl ?? "";
 
   return (
     <div className="space-y-4">
@@ -202,23 +220,30 @@ function PlaneSection() {
         </Badge>
         <span className="font-medium">{instance ?? "no instance selected"}</span>
         <span className="text-muted-foreground">{portText}</span>
-        {status?.Residency ? <span className="text-muted-foreground">· {status.Residency}-resident</span> : null}
+        {current?.Residency ? <span className="text-muted-foreground">· {current.Residency}-resident</span> : null}
       </div>
 
-      <p className="text-sm text-muted-foreground" data-testid="plane-detail">
-        {view.detail}
-      </p>
+      {statusError ? (
+        // A REAL failure, named: a read that failed must never look like progress.
+        <p className="text-sm text-destructive" role="alert" data-testid="plane-status-error">
+          {statusError}
+        </p>
+      ) : (
+        <p className="text-sm text-muted-foreground" data-testid="plane-detail">
+          {view.detail}
+        </p>
+      )}
 
-      {view.state === "connected" && status ? (
+      {view.state === "connected" && current ? (
         <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <dt>Health URL</dt>
-          <dd className="font-mono">{status.URL}</dd>
+          <dd className="font-mono">{current.URL}</dd>
           <dt>PID</dt>
-          <dd className="font-mono">{status.PID || "—"}</dd>
+          <dd className="font-mono">{current.PID || "—"}</dd>
           <dt>Binary</dt>
-          <dd className="truncate font-mono">{status.Binary || "unidentified"}</dd>
+          <dd className="truncate font-mono">{current.Binary || "unidentified"}</dd>
           <dt>Drift</dt>
-          <dd>{status.Drift}</dd>
+          <dd>{current.Drift}</dd>
         </dl>
       ) : null}
 

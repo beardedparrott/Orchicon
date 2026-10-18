@@ -119,3 +119,30 @@ export function resolveChoice(
   }
   return { instance: null, ask: true, running: resolution.Running };
 }
+
+/**
+ * currentStatus is the status the page may TRUST: only one that was read for the
+ * instance currently selected. A DTO read for a different instance is stale by
+ * definition, and showing it beside the newly selected instance's name and port would
+ * claim a state nobody observed for that plane.
+ */
+export function currentStatus(
+  selected: string | null,
+  statusFor: string | null,
+  status: StatusDTO | null,
+): StatusDTO | null {
+  if (!status || !selected || statusFor !== selected) return null;
+  return status;
+}
+
+/**
+ * statusReadFailure is the honest sentence for a status read that failed.
+ *
+ * The page must SAY a read failed rather than sit on "connecting" forever: a silent
+ * spin over an unread status is the same dishonesty as a success that was never
+ * verified, and it is exactly what "report a real failure rather than spinning" forbids.
+ */
+export function statusReadFailure(instance: string, err: unknown): string {
+  const why = err instanceof Error ? err.message : String(err);
+  return `${instance}: could not read the plane's status — ${why}`;
+}

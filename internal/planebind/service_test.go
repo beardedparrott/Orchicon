@@ -201,6 +201,12 @@ func TestActionOutcomesAreWordedFromPlanecontrolsOwnReporting(t *testing.T) {
 		{"unidentifiable plane left alone", "start", "host plane already serving http://localhost:8080/healthz (could not identify the process; leaving it)\n", nil, "left-alone-unidentified", true, false},
 		{"stop of a stopped plane", "stop", "serve is not running\n", nil, "already-stopped", true, false},
 		{"stopped", "stop", "", nil, "stopped", true, false},
+		// Stop is restart's FIRST HALF, so a restart of a stopped plane emits Stop's
+		// no-op wording and then starts it. Reading "not running" action-blind would
+		// report "already stopped" over a plane that is now serving.
+		{"restart of a stopped plane still started it", "restart", "serve is not running\nhost plane ready: http://localhost:8080/healthz\n", nil, "started", true, false},
+		{"restart after a verified start", "restart", "host plane ready: http://localhost:8080/healthz\n", nil, "started", true, false},
+		{"restart that never became ready", "restart", "", errors.New("the host plane did not answer http://localhost:8080/healthz within 60s"), "failed", false, true},
 		{"start failed", "start", "", errors.New("the host plane did not answer http://localhost:8080/healthz within 60s"), "failed", false, true},
 	}
 

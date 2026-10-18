@@ -228,21 +228,30 @@ func actionDTO(instanceName, action, output string, err error) ActionDTO {
 		return dto
 	}
 	dto.OK = true
-	switch {
-	case strings.Contains(output, "leaving it"):
-		// planecontrol's fail-safe: an unidentifiable plane is LEFT ALONE.
-		dto.Outcome = "left-alone-unidentified"
-	case strings.Contains(output, "already serving"):
-		dto.Outcome = "already-running"
-	case strings.Contains(output, "not running"):
-		dto.Outcome = "already-stopped"
-	default:
-		switch action {
-		case "stop":
-			dto.Outcome = "stopped"
+	// THE WORDING IS SCOPED TO THE ACTION, because planecontrol's phrases are not
+	// unique across verbs. "serve is not running" is Stop's idempotent no-op — but a
+	// RESTART of a stopped plane prints it too (Stop is restart's first half) and then
+	// starts the plane, so reading it action-blind would report "already stopped" over
+	// a plane that is now serving.
+	switch action {
+	case "start":
+		switch {
+		case strings.Contains(output, "leaving it"):
+			// planecontrol's fail-safe: an unidentifiable plane is LEFT ALONE.
+			dto.Outcome = "left-alone-unidentified"
+		case strings.Contains(output, "already serving"):
+			dto.Outcome = "already-running"
 		default:
 			dto.Outcome = "started"
 		}
+	case "stop":
+		if strings.Contains(output, "not running") {
+			dto.Outcome = "already-stopped"
+		} else {
+			dto.Outcome = "stopped"
+		}
+	default: // restart: Stop + Start, and Start only returns nil once /healthz answered
+		dto.Outcome = "started"
 	}
 	return dto
 }

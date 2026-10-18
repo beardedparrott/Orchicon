@@ -2,12 +2,14 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ActionDTO, ResolutionDTO, StatusDTO } from "./desktop";
 import {
+  currentStatus,
   describeAction,
   needsInstance,
   nextView,
   pickerOffered,
   resolveChoice,
   stateLabel,
+  statusReadFailure,
 } from "./manage-server";
 
 // manage-server.test.ts — AC5/AC6/AC7/AC9/AC10/AC12's pure half.
@@ -173,5 +175,39 @@ describe("the page's structure and its forbidden copy", () => {
 
   it("polls the plane only while the window is visible", () => {
     expect(src).toContain('document.visibilityState === "hidden"');
+  });
+});
+
+describe("a status is only trusted for the instance it was read from", () => {
+  const devStatus = status({ Instance: "dev", State: "connected", Healthy: true });
+
+  it("shows the status of the selected instance", () => {
+    expect(currentStatus("dev", "dev", devStatus)).toBe(devStatus);
+  });
+
+  it("refuses a status read for another instance", () => {
+    // Switching the picker must not leave prod's green badge under dev's name/port.
+    expect(currentStatus("prod", "dev", devStatus)).toBeNull();
+    expect(currentStatus(null, "dev", devStatus)).toBeNull();
+    expect(currentStatus("dev", null, devStatus)).toBeNull();
+    expect(currentStatus("dev", "dev", null)).toBeNull();
+  });
+
+  it("reports a failed READ rather than spinning on 'connecting' forever", () => {
+    const msg = statusReadFailure("dev", new Error("unknown instance \"nope\""));
+    expect(msg).toContain("dev");
+    expect(msg).toContain("could not read");
+    expect(msg).toContain('unknown instance "nope"');
+    expect(statusReadFailure("dev", "boom")).toContain("boom");
+  });
+});
+
+describe("the page never swallows a failed read", () => {
+  const src = readFileSync(new URL("../routes/manage-server.tsx", import.meta.url), "utf8");
+
+  it("surfaces the read failure in an alert and drops the untrusted status", () => {
+    expect(src).toContain("statusReadFailure(");
+    expect(src).toContain('data-testid="plane-status-error"');
+    expect(src).toContain("currentStatus(instance, statusFor, status)");
   });
 });
