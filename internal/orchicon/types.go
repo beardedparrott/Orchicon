@@ -140,6 +140,25 @@ type Content struct {
 
 	// ToolResult is set on tool-role messages returning a result.
 	ToolResult *ContentToolResult
+
+	// Reasoning is the assistant's THINKING for the message it belongs to, carried so it can be REPLAYED
+	// to providers that require it back.
+	//
+	// THIS FIELD EXISTS BECAUSE ITS ABSENCE BROKE TURNS. The adapter has always CAPTURED reasoning — it is
+	// streamed as ReasoningDelta and kept for display (chatturn.go's `reasoning` builder) — but it had no
+	// way into a Message, and buildOpenAIRequest stated the consequence as though it were a design choice:
+	// "Assistant reasoning is never replayed (no reasoning storage)".
+	//
+	// For DeepSeek's thinking mode that is not a choice, it is a protocol violation. The provider REJECTS a
+	// follow-up request whose assistant messages omit the reasoning that accompanied their tool calls:
+	//
+	//	400 invalid_request_error: The `reasoning_content` in the thinking mode must be passed back to the API.
+	//
+	// The failure is self-inflicted and reproducible on the second round of any tool-using turn, which is
+	// why it appeared as intermittent provider flakiness rather than as a bug in this code. Reasoning is
+	// therefore stored on the message that produced it and replayed by the serialiser when the provider
+	// wants it (Quirks.ReplayReasoning).
+	Reasoning *string
 }
 
 // ContentToolUse is an assistant-requested tool invocation in history.

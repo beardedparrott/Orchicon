@@ -30,6 +30,17 @@ type Quirks struct {
 	// SupportsToolCalls gates the tools parameter entirely.
 	SupportsToolCalls bool
 
+	// ReplayReasoning sends an assistant message's captured reasoning back as `reasoning_content`, and is
+	// REQUIRED by DeepSeek's thinking mode: the provider rejects a request whose assistant messages omit the
+	// reasoning that accompanied their tool calls, with
+	//
+	//	400 invalid_request_error: The `reasoning_content` in the thinking mode must be passed back to the API.
+	//
+	// It is a QUIRK rather than a universal because the field is not part of the OpenAI chat schema — sending
+	// it to a provider that does not expect it risks a different 400 (an unknown field), which would trade one
+	// broken turn for another. Providers that do not ask for it simply do not get it.
+	ReplayReasoning bool
+
 	// SupportsReasoningEffort gates the reasoning_effort param.
 	SupportsReasoningEffort bool
 

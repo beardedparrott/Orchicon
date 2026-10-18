@@ -39,9 +39,9 @@ func TestDrainOneRoundSurfacesFinishUsage(t *testing.T) {
 		ReasoningTokens:  7,
 		CostUSD:          0.42,
 	}}
-	var reply, reasoning strings.Builder
+	var reply, reasoning, roundReasoning strings.Builder
 
-	done, calls, usage, aborted := b.drainOneRound(context.Background(), bus, stream, &reply, &reasoning)
+	done, calls, usage, aborted := b.drainOneRound(context.Background(), bus, stream, &reply, &reasoning, &roundReasoning)
 	if !done {
 		t.Fatal("drainOneRound must report a Finish")
 	}

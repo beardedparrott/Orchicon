@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // OpenAICompatClient is the native Chat Completions wire client (D4): SSE
@@ -37,6 +36,9 @@ type OpenAICompatClient struct {
 
 	HTTP  *http.Client
 	Retry RetryPolicy
+	// Logf, when set, reports repair and retry decisions. Nil = silent (tests, and any caller that has no
+	// logger to hand).
+	Logf func(format string, args ...any)
 
 	// ModelsFn supplies ListModels (registry wires the sourcing service).
 	ModelsFn func(ctx context.Context) ([]ModelInfo, error)
@@ -82,6 +84,10 @@ type oaMsg struct {
 	ToolCalls  []oaToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string       `json:"tool_call_id,omitempty"`
 	Name       string       `json:"name,omitempty"`
+	// ReasoningContent is DeepSeek's thinking-mode field. It is emitted ONLY when the provider's quirks ask
+	// for it (ReplayReasoning), because it is not part of the OpenAI chat schema and a provider that does not
+	// expect it may reject the unknown field — trading one broken turn for another.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type oaRequest struct {
@@ -110,6 +116,25 @@ type oaToolDef struct {
 }
 
 // buildOpenAIRequest shapes the compat request per quirks (D4).
+// repairAttempts bounds how many times a request may be repaired and resent. Two is enough for the known
+// shapes (a reasoning replay, then a message-order cleanup) and small enough that a provider returning a
+// different repairable error each time cannot spin.
+const repairAttempts = 2
+
+// buildOpenAIRequestWithReplay is buildOpenAIRequest with the reasoning replay forced on.
+//
+// It exists because the replay is normally a PROVIDER PROFILE decision (Quirks.ReplayReasoning) — a static
+// fact about the endpoint — but the provider can also TELL us it wants it, in a 400, and that is better
+// evidence than the profile's guess for this request. The override is per-request rather than mutating the
+// shared profile: the profile is the registry's, and one provider's rejection must not rewrite it for every
+// later caller.
+func buildOpenAIRequestWithReplay(req TurnRequest, q Quirks, forceReplay bool) oaRequest {
+	if forceReplay {
+		q.ReplayReasoning = true
+	}
+	return buildOpenAIRequest(req, q)
+}
+
 func buildOpenAIRequest(req TurnRequest, q Quirks) oaRequest {
 	or := oaRequest{
 		Model: req.Model, Stream: true,
@@ -142,8 +167,14 @@ func buildOpenAIRequest(req TurnRequest, q Quirks) oaRequest {
 		}
 	}
 
-	// Messages: system handling (developer role / merge-into-user), then
-	// history. Assistant reasoning is never replayed (no reasoning storage).
+	// Messages: system handling (developer role / merge-into-user), then history.
+	//
+	// ASSISTANT REASONING IS REPLAYED WHEN THE PROVIDER REQUIRES IT. This used to read "Assistant reasoning is
+	// never replayed (no reasoning storage)", which was true and was the bug: DeepSeek's thinking mode rejects
+	// a follow-up whose assistant messages omit the reasoning that accompanied their tool calls —
+	// "The `reasoning_content` in the thinking mode must be passed back to the API" — so the second round of
+	// any tool-using turn failed. It is sent only under q.ReplayReasoning (see Quirks), so providers that do
+	// not ask for the field never see it.
 	sysRole := "system"
 	if q.SupportsDeveloperRole {
 		sysRole = "developer"
@@ -175,6 +206,11 @@ func buildOpenAIRequest(req TurnRequest, q Quirks) oaRequest {
 					tc.Function.Name = c.ToolUse.Name
 					tc.Function.Arguments = c.ToolUse.ArgsJSON
 					om.ToolCalls = append(om.ToolCalls, tc)
+				}
+				// The message's reasoning rides whichever content block carried it. Attached AFTER the text
+				// and tool calls are collected, because it belongs to the MESSAGE, not to one block.
+				if q.ReplayReasoning && c.Reasoning != nil && *c.Reasoning != "" {
+					om.ReasoningContent = *c.Reasoning
 				}
 			}
 			if text.Len() > 0 {
@@ -262,39 +298,59 @@ func (c *OpenAICompatClient) StreamTurn(ctx context.Context, req TurnRequest) (T
 		}
 		return rc.StreamTurn(ctx, req)
 	}
-	body, err := json.Marshal(buildOpenAIRequest(req, c.Quirks))
-	if err != nil {
-		return nil, fmt.Errorf("%s: marshal request: %w", c.label(), err)
-	}
+	// The body is marshalled INSIDE the send loop below, not here: a repair mutates the request, so the bytes
+	// must be re-derived per attempt or a repaired request would be sent with the stale body.
+	var err error
 	httpc := c.HTTP
 	if httpc == nil {
 		httpc = http.DefaultClient
 	}
 	url := strings.TrimRight(c.BaseURL, "/") + "/" + c.wirePath()
 
-	var resp *http.Response
-	err = doWithRetries(ctx, c.Retry, func(attempt int) (bool, error, time.Duration) {
-		r, err2 := postJSON(ctx, httpc, url, c.requestHeaders(req.SessionID), body)
-		if err2 != nil {
-			return isConnectionErr(err2), err2, 0
-		}
-		if r.StatusCode >= 200 && r.StatusCode < 300 {
-			resp = r
-			return false, nil, 0
-		}
-		b, _ := io.ReadAll(io.LimitReader(r.Body, 8192))
-		_ = r.Body.Close()
-		e := httpStatusError(r.StatusCode, r.Status, b)
-		if retryableStatus(r.StatusCode) {
-			ra, _ := RetryAfter(r.Header.Get("Retry-After"), time.Now())
-			return true, e, ra
-		}
-		return false, e, 0
-	})
+	// THE SEND LOOP HANDLES TWO KINDS OF FAILURE, and the distinction is the point:
+	//
+	//   TRANSIENT (429/5xx/a reset connection) → retry the SAME request later.
+	//   REPAIRABLE (a request-shape 400 the provider explained) → REWRITE the request and send it again NOW.
+	//
+	// It is the SHARED loop (requestrepair.go, sendWithRepair) rather than a copy, because this shape appears in
+	// five clients and resilience added to one of them is the asymmetry that leaves the other four dying.
+	quirkReplayReasoning := false
+	resp, serr := sendWithRepair(ctx, c.Retry, c.Logf,
+		func(ctx context.Context, b []byte) (*http.Response, error) {
+			return postJSON(ctx, httpc, url, c.requestHeaders(req.SessionID), b)
+		},
+		func() ([]byte, error) {
+			return json.Marshal(buildOpenAIRequestWithReplay(req, c.Quirks, quirkReplayReasoning))
+		},
+		&req,
+		func(kind RepairKind) bool {
+			switch kind {
+			case RepairReasoningContent:
+				// The provider demands reasoning back. If the request HAS reasoning to replay, turn the replay
+				// on for this and every later attempt: the provider has just told us it wants it, which is
+				// better evidence than the profile's static guess.
+				if repairRequest(RepairReasoningContent, &req) {
+					quirkReplayReasoning = true
+					return true
+				}
+				return false
+			default:
+				return repairRequest(kind, &req)
+			}
+		})
+	err = serr
 	if err != nil {
 		return nil, err
 	}
 	return newOpenAIStream(resp.Body), nil
+}
+
+// logf reports a repair/retry decision. A no-op unless the client was given a logger: the adapter's other
+// paths log through slog, and this one must not force a logger into every test that builds a client.
+func (c *OpenAICompatClient) logf(format string, args ...any) {
+	if c.Logf != nil {
+		c.Logf(format, args...)
+	}
 }
 
 func (c *OpenAICompatClient) label() string {
