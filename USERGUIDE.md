@@ -2370,7 +2370,7 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon plane <status\|start\|stop\|restart> [instance]` | The **plane only** — leaves the services running. The mechanism the TUI and the desktop app call |
 | `orchicon services <up\|down\|status> [instance]` | The **services only** — this instance's Postgres + NATS on the host. `up` is idempotent; `down` verifies the ports came free, and stops this instance's **own** container from an older install if that is what still holds them. `down --force` also terminates this instance's leftover processes — never one it does not own |
 | `orchicon serve` | Run the control plane with the embedded frontend (headless, migrations on boot) |
-| `orchicon serve --detach` / `--status` / `--stop` | Manage a background `serve` instance (PID file) |
+| `orchicon serve --detach` / `--status` / `--stop` | Manage a **background** `serve` process. `--status` reports the same thing as `orchicon plane status` — the instance, its residency, the plane PID, the serving binary and whether it has been superseded, plus health — through the same code path, and exits `0` only when the PID file names a live process. **There is no `serve --start`**: `orchicon start` starts (or restarts) the instance, and `orchicon plane start` starts the plane alone |
 | `orchicon container` | **Internal.** The supervisor the host services re-exec as; not a supported way to run an instance |
 | `orchicon runtime-daemon` | Host process owning the container engine; spawns **per-workflow runtime containers** — the only thing a container is used for |
 | `orchicon runtime-supervisor` | Runtime container PID 1 |
