@@ -242,6 +242,34 @@ expect "--platform windows produces the manual sheet, not a fake PASS" "yes" \
 expect "a SKIP is counted separately in summary.md" "yes" \
   "$(grep -qF 'A SKIP is UNPROVEN' "${CHILD}/plain/summary.md" && echo yes || echo no)"
 
+# --- rule 8: the session's own machinery is honest about ITSELF ------------
+spin "rule 8: the display, the exit code and the generated sheets"
+HARNESS_SRC="$(cat "$HARNESS")"
+expect "the session OWNS its X display instead of shooting a guessed one" "no" \
+  "$(has "$HARNESS_SRC" 'DISPLAY:-:99')"
+expect "the app and every screenshot share ONE display" "yes" \
+  "$(has "$(body_of gui_launch)" 'gui_display')"
+expect "gui_shot refuses to shoot a display it does not have" "yes" \
+  "$(has "$(body_of gui_shot)" 'no session display')"
+expect "gui_kill tears down the Xvfb the session started" "yes" \
+  "$(has "$(body_of gui_kill)" 'XVFB_PID')"
+expect "step 0 requires the X server it will also screenshot" "yes" \
+  "$(has "$(body_of step0_preflight)" 'need_cmd Xvfb')"
+expect "step 4 re-derives the shell origin after the mismatch relaunch" "yes" \
+  "$(has "$(body_of step4_embedded_ui)" 'wait_shell_origin "$(step_log)"')"
+# main must exit 1 for a FAILED step 0 in BOTH exits: --preflight-only and the
+# whole session. One occurrence is the old "preflight always exits 0" hole.
+expect "a FAILED step 0 is never reported as a clean preflight" "2" \
+  "$(ins "$(body_of main)" 'finish 1')"
+rc=0; bash "$HARNESS" --dry-run --evidence-dir "${CHILD}/notes" >/dev/null 2>&1 || rc=$?
+expect "--dry-run exits 0 with an explicit evidence dir" 0 "$rc"
+expect "the generated NOTES.md has no literal backslash-n" "0" \
+  "$(ins "$(cat "${CHILD}/notes/NOTES.md" 2>/dev/null)" '\\n')"
+expect "the generated NOTES.md names the session-owned display limit" "yes" \
+  "$(grep -qF 'owns ONE Xvfb display' "${CHILD}/notes/NOTES.md" 2>/dev/null && echo yes || echo no)"
+expect "the generated NOTES.md still states the OCR limit" "yes" \
+  "$(grep -qF 'tesseract' "${CHILD}/notes/NOTES.md" 2>/dev/null && echo yes || echo no)"
+
 # --- result ---------------------------------------------------------------
 echo
 if [ "$FAILED" -eq 0 ]; then

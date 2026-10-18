@@ -279,18 +279,51 @@ click_point() { # click_point <start|stop>
   return 1
 }
 
-gui_ready() { has_cmd xvfb-run && has_cmd xdotool && has_cmd import; }
+# A webview is a window on an X server this harness must OWN. `xvfb-run -a` picks
+# its own server number and exports DISPLAY only to the child IT launches, so a
+# screenshot taken from this shell could not know which server the app is on — it
+# would shoot a guess (`:99`) and silently evidence nothing, or evidence the wrong
+# screen. `xvfb-run` also needs `xauth`, which minimal hosts do not have. So the
+# session starts one Xvfb, exports ITS display to everything it launches, and
+# takes it down on exit — the app and every screenshot share one display.
+XVFB_PID=""
+XVFB_DISPLAY=""
+
+# free_display <first> — first display number whose Xvfb actually STAYS UP (a
+# number already in use makes Xvfb exit immediately, which is the probe).
+free_display() {
+  local n="$1" i=0 pid
+  while [ "$i" -lt 20 ]; do
+    Xvfb ":$n" -screen 0 1440x900x24 >/dev/null 2>&1 &
+    pid=$!
+    sleep 0.5
+    if kill -0 "$pid" 2>/dev/null; then printf '%s %s' "$n" "$pid"; return 0; fi
+    n=$((n + 1)); i=$((i + 1))
+  done
+  return 1
+}
+
+gui_display() { # gui_display — DISPLAY must be a display this session owns
+  [ -n "${DISPLAY:-}" ] && return 0
+  [ -n "$XVFB_DISPLAY" ] && { export DISPLAY="$XVFB_DISPLAY"; return 0; }
+  has_cmd Xvfb || return 1
+  local got
+  got="$(free_display "${XVFB_FIRST_DISPLAY:-99}")" || return 1
+  XVFB_DISPLAY=":${got% *}"
+  XVFB_PID="${got#* }"
+  export DISPLAY="$XVFB_DISPLAY"
+  printf 'session display: %s (xvfb pid %s)\n' "$XVFB_DISPLAY" "$XVFB_PID" >>"$(step_log)"
+}
+
+gui_ready() { { [ -n "${DISPLAY:-}" ] || has_cmd Xvfb; } && has_cmd xdotool && has_cmd import; }
 
 GUI_PID=""
-gui_launch() { # gui_launch <binary> [args...]
+gui_launch() { # gui_launch <binary> [args...] — 1 when no display could be had
   local bin="$1"; shift
   local log
   log="$(step_log)"
-  if [ -n "${DISPLAY:-}" ]; then
-    "$bin" "$@" >>"$log" 2>&1 &
-  else
-    xvfb-run -a -s '-screen 0 1440x900x24' "$bin" "$@" >>"$log" 2>&1 &
-  fi
+  gui_display || return 1
+  "$bin" "$@" >>"$log" 2>&1 &
   GUI_PID=$!
   sleep "${GUI_SETTLE_SECS:-8}"
 }
@@ -298,7 +331,10 @@ gui_launch() { # gui_launch <binary> [args...]
 gui_shot() { # gui_shot <name>
   local out="${EVIDENCE}/$1.png"
   if ! has_cmd import; then printf 'no import; screenshot %s not taken\n' "$1" >>"$(step_log)"; return 1; fi
-  DISPLAY="${DISPLAY:-:99}" import -window root "$out" >>"$(step_log)" 2>&1
+  if [ -z "${DISPLAY:-}" ]; then
+    printf 'no session display; screenshot %s not taken\n' "$1" >>"$(step_log)"; return 1
+  fi
+  import -window root "$out" >>"$(step_log)" 2>&1
 }
 
 gui_click() { # gui_click <x,y>
@@ -307,9 +343,14 @@ gui_click() { # gui_click <x,y>
 }
 
 gui_kill() {
-  [ -n "$GUI_PID" ] || return 0
-  kill "$GUI_PID" 2>/dev/null || true
-  GUI_PID=""
+  if [ -n "$GUI_PID" ]; then kill "$GUI_PID" 2>/dev/null || true; GUI_PID=""; fi
+  # The X server we started dies with the session; the DISPLAY it exported must go
+  # too, or the next gui_display would hand out a dead display and shoot nothing.
+  if [ -n "$XVFB_PID" ]; then
+    kill "$XVFB_PID" 2>/dev/null || true
+    XVFB_PID=""; XVFB_DISPLAY=""; unset DISPLAY
+  fi
+  return 0
 }
 
 # --- shell origin -----------------------------------------------------------
@@ -403,11 +444,11 @@ step0_preflight() {
 
   # 0d. GUI automation for the Linux automated tier. Absent is exit 2, never a PASS.
   if [ "$PLATFORM" = "linux" ]; then
-    need_cmd xvfb-run "the Linux automated tier needs a headless display"
+    if [ -z "${DISPLAY:-}" ]; then
+      need_cmd Xvfb "the Linux automated tier needs a display of its own (xvfb-run needs xauth, which minimal hosts lack)"
+    fi
     need_cmd xdotool "the Linux automated tier needs to click the offline action"
     need_cmd import "evidence screenshots are required (AC9)"
-    local missing=""
-    if [ -z "${DISPLAY:-}" ] && ! has_cmd xvfb-run; then missing="xvfb-run "; fi
     if [ -n "$NEED_MISSING" ]; then
       abort_run "the Linux GUI tier cannot run on this host: missing ${NEED_MISSING} — the webview cannot be driven, so no step below could be proven"
       return 0
@@ -565,7 +606,12 @@ step2_offline_state() {
     return 0
   fi
 
-  gui_launch "$bin"
+  if ! gui_launch "$bin"; then
+    skip "the offline state appears and names the URL" \
+      "no X display could be started (Xvfb absent) — nothing to observe" \
+      "frontend/src/routes/manage-server.tsx:250-254"
+    return 0
+  fi
   if ! wait_shell_origin "$log" 20; then
     check "the shell logged its SPA origin and the plane URL it will use" 1 \
       "internal/desktop/shell.go:150" "$(step_log)"
@@ -667,13 +713,25 @@ step4_embedded_ui() {
   if [ -n "${ORCHICON_DESKTOP_E2E_OTHER_PLANE:-}" ]; then
     local bin; bin="$(installed_binary || true)"
     gui_kill
-    gui_launch "$bin" --plane "${ORCHICON_DESKTOP_E2E_OTHER_PLANE}"
-    curl -sS --max-time 10 -o "${EVIDENCE}/04-mismatch-index.html" "${SHELL_ORIGIN}/" 2>>"$(step_log)" || true
-    gated_contains "a forced version mismatch sets versionMismatch:true" \
-      "${EVIDENCE}/04-mismatch-index.html" '"versionMismatch":true' \
-      "the shell served nothing after the relaunch" "internal/desktop/info.go:76-84"
-    shot_assert "04-version-mismatch-banner" "the version-mismatch banner was captured" \
-      "frontend/src/components/version-mismatch-banner.tsx:14-26"
+    # The relaunch gets a NEW origin; reading the pre-relaunch SHELL_ORIGIN would
+    # probe a socket the old process already released.
+    if ! gui_launch "$bin" --plane "${ORCHICON_DESKTOP_E2E_OTHER_PLANE}"; then
+      skip "a forced version mismatch sets versionMismatch:true" \
+        "no X display could be started (Xvfb absent) — the app could not be relaunched" \
+        "internal/desktop/info.go:76-84"
+    elif ! wait_shell_origin "$(step_log)" 20; then
+      skip "a forced version mismatch sets versionMismatch:true" \
+        "the relaunched shell never logged a new SPA origin — the mismatch could not be read" \
+        "internal/desktop/info.go:76-84"
+    else
+      printf 'relaunched shell origin: %s\n' "$SHELL_ORIGIN" >>"$(step_log)"
+      curl -sS --max-time 10 -o "${EVIDENCE}/04-mismatch-index.html" "${SHELL_ORIGIN}/" 2>>"$(step_log)" || true
+      gated_contains "a forced version mismatch sets versionMismatch:true" \
+        "${EVIDENCE}/04-mismatch-index.html" '"versionMismatch":true' \
+        "the shell served nothing after the relaunch" "internal/desktop/info.go:76-84"
+      shot_assert "04-version-mismatch-banner" "the version-mismatch banner was captured" \
+        "frontend/src/components/version-mismatch-banner.tsx:14-26"
+    fi
   else
     skip "a forced version mismatch sets versionMismatch:true" \
       "no ORCHICON_DESKTOP_E2E_OTHER_PLANE was given — a run that only ever sees matching tags proves nothing here" \
@@ -928,7 +986,8 @@ write_notes_template() {
     printf 'Produced by `scripts/desktop-e2e.sh` at %s on `%s`.\n\n' "$UTC_STAMP" "$(uname -sr 2>/dev/null || echo unknown)"
     printf 'Read `summary.md` for the verdict and `results.tsv` for every row. A SKIP is\nUNPROVEN: most claims in this item are absence-shaped and are trivially true of a\ncapture that failed to run, which is why `make desktop-e2e-assertions-test` pins the\nrule that an empty capture can never produce a PASS.\n\n'
     printf '## Known limits of a harness run from inside this repo\n\n'
-    printf -- '- macOS and Windows tiers are manual evidence sheets; they are SKIP here.\\n'
+    printf -- '- macOS and Windows tiers are manual evidence sheets; they are SKIP here.\n'
+    printf -- '- The session starts and owns ONE Xvfb display, so the app and every screenshot\n  share it (`xvfb-run -a` would hide the display number from this shell).\n'
     printf -- '- A webview exposes no DOM to the automation this repo has, so clicks are driven\n  by `--click-map` coordinates; without one the click assertions are SKIP.\n'
     printf -- '- Rendered-text assertions need an OCR engine (`tesseract`); without one the\n  screenshot is evidence for a human, not a machine verdict.\n'
   } >"${EVIDENCE}/NOTES.md"
@@ -1013,7 +1072,10 @@ main() {
   step0_preflight
   if [ -n "$ABORT_REASON" ]; then write_notes_template; write_summary; say ""; say "RUN INVALID: ${ABORT_REASON}"; finish 2; fi
   if [ "$PREFLIGHT_ONLY" = 1 ]; then
-    say ""; say "preflight only: ${PASSES} passed, ${FAILS} failed, ${SKIPS} skipped"; finish 0
+    say ""; say "preflight only: ${PASSES} passed, ${FAILS} failed, ${SKIPS} skipped"
+    # A FAILED validity assertion is not a clean preflight: exit 1, never 0.
+    if [ "$FAILS" -gt 0 ]; then finish 1; fi
+    finish 0
   fi
 
   step1_install

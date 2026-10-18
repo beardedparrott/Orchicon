@@ -79,11 +79,17 @@ ls -l /usr/lib/orchicon/orchicon-desktop
 # the webview the package declares
 ldconfig -p | grep -E 'libwebkit2gtk-4\.[01]\.so\.37'   # Linux/WebKitGTK tier
 # the GUI automation the Linux automated tier needs
-command -v xvfb-run xdotool import                       # absence ⇒ exit 2, never a PASS
+command -v Xvfb xdotool import                            # absence ⇒ exit 2, never a PASS
 ```
 
 The control port comes from the shared table (`internal/controlport`), never a
 hardcoded 8080 in the app; the harness honours `--control-port`.
+
+`Xvfb` is the display the harness **starts and owns** for the whole session: the app
+is launched onto it and every screenshot is taken from it, so a capture can never
+evidence a different screen. `xvfb-run -a` is deliberately not used — it picks its own
+server number and exports `DISPLAY` only to the child it launches, which would leave
+the harness shooting a guessed display, and it needs `xauth`, which minimal hosts lack.
 
 ---
 
