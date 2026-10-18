@@ -592,7 +592,14 @@ try {
     # who right-clicked "Save link as". The remedy is ONE command against ONE file, never a security
     # setting to lower, and it is the same instruction the guidance block at the end prints.
     if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) {
-        $zone = Get-Item -LiteralPath $PSCommandPath -Stream Zone.Identifier -ErrorAction SilentlyContinue
+        # IN A try/catch, AND `-ErrorAction Stop` INSIDE IT. `-Stream` is a Windows-only FileSystem
+        # parameter: on Linux/macOS it is not a parameter at all, and `-ErrorAction SilentlyContinue`
+        # does NOT swallow a parameter-binding failure — it would surface as a terminating error and
+        # take this install into the catch block, on a platform where a zone mark cannot exist. The
+        # catch makes "cannot ask" mean "not marked", which is the truth on every non-Windows host and
+        # on a Windows file carrying no alternate stream.
+        $zone = $null
+        try { $zone = Get-Item -LiteralPath $PSCommandPath -Stream Zone.Identifier -ErrorAction Stop } catch { }
         if ($zone) {
             Write-Warn "this script was saved from the internet — it carries a Zone.Identifier mark"
             Write-Warn "  PowerShell may refuse to run it, and SmartScreen may warn about it. Clear the mark on THIS file:"
