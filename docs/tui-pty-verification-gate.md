@@ -50,6 +50,13 @@ Every TUI work item's acceptance criteria MUST carry this line:
 > tab and on a rail, theme switch. Rendered-string assertions alone are
 > insufficient.
 
+A **lifecycle command** (`/plane`, `/plane-start`, `/plane-stop`, `/plane-restart`) MUST be reachable
+from real keystrokes under this gate (`internal/tui/orch_pty_plane_test.go`): a verb that blocks the
+message loop, or a command registered but unreachable, is invisible to a unit test that calls the
+handler directly. The gate types `/plane` only — a test suite must never signal a real process on an
+operator's machine — and pins `ORCHICON_INSTANCE` to a nonexistent instance so even an accidental
+lifecycle call finds nothing to act on.
+
 New interactive behavior (mouse handlers, focus rules, overlays) MUST add
 or extend a `TestPTY*` test in `internal/tui` that injects the real events
 (keys, SGR mouse sequences) into the RUNNING program and asserts the

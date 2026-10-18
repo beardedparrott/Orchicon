@@ -1755,6 +1755,13 @@ press — there is no modifier to remember):
 
 - **Content pane** — the focused screen, split into a **list** of sources and a
   **detail** pane.
+- **Plane state** — the footer carries a plane chip beside the connection state:
+  `plane up (dev)`, `plane down`, `plane drifted`, or `plane remote` (this shell is
+  talking to a plane that is not on this host, so the lifecycle commands refuse).
+  **Drifted** means the plane is answering but running a superseded binary — restart it to
+  swap it. When the plane is down, the error strip names the
+  remedy (the start command and the plane log at
+  `<data dir>/serve/logs/orchicon.log`) instead of only reporting a refused connection.
 - **Chat dock** — the composer at the bottom. It is **focused at launch**, so you
   can type immediately.
 - **Right rail** — the Ask conversations list, toggled with `ctrl+r` (open by
@@ -2367,7 +2374,7 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon start [instance]` | Start an **installed** instance: its services (Postgres + NATS), then its plane. Idempotent, and it never installs. This is the command to run after a reboot (there is no autostart) |
 | `orchicon stop [instance]` | Stop an instance: its plane, then its services. **Idempotent** — running it on a stopped instance is a successful no-op |
 | `orchicon restart [instance]` | Restart this instance so its components re-read their environment. Use it after installing an adapter CLI or changing `PATH` — see *Installing an adapter CLI* |
-| `orchicon plane <status\|start\|stop\|restart> [instance]` | The **plane only** — leaves the services running. The mechanism the TUI and the desktop app call |
+| `orchicon plane <status\|start\|stop\|restart> [instance]` | The **plane only** — leaves the services running. The same mechanism the TUI's `/plane`, `/plane-start`, `/plane-stop` and `/plane-restart` call (both surfaces invoke `internal/planecontrol`; there is no lifecycle RPC) |
 | `orchicon services <up\|down\|status> [instance]` | The **services only** — this instance's Postgres + NATS on the host. `up` is idempotent; `down` verifies the ports came free, and stops this instance's **own** container from an older install if that is what still holds them. `down --force` also terminates this instance's leftover processes — never one it does not own |
 | `orchicon serve` | Run the control plane with the embedded frontend (headless, migrations on boot) |
 | `orchicon serve --detach` / `--status` / `--stop` | Manage a background `serve` instance (PID file) |

@@ -548,7 +548,13 @@ Both clients drive the **same** server, the same conversations, and the same con
 | | |
 |---|---|
 | **GUI** | the `/ask-orchicon` route; composer with the model chip, the stat strip, a **Fullsend** dropdown, and the mode dropdown |
-| **TUI** | `bin/orch`, `F1 · Ask Orchicon`; composer with the mode pill and the `FULLSEND` badge, slash commands (`/fullsend`, `/mode`, `/grants`, `/permissions`) |
+| **TUI** | `bin/orch`, `F1 · Ask Orchicon`; composer with the mode pill and the `FULLSEND` badge, slash commands (`/fullsend`, `/mode`, `/grants`, `/permissions`, `/plane`, `/plane-start`, `/plane-stop`, `/plane-restart`) |
+
+The TUI is also a **plane lifecycle control surface** (`/plane`, `/plane-start`, `/plane-stop`,
+`/plane-restart` plus a footer state chip: up / down / drifted / not local). It calls
+`internal/planecontrol` **directly** — no API, no lifecycle RPC — which is what lets it START a plane
+that is not serving, since `orch` is a separate binary. The web app carries no lifecycle control by
+design (a browser cannot spawn a process); see `docs/tui-parity.md`.
 
 A conversation is per-project, carries its own model, and is reachable from either client. Consent
 state is server-side, so a decision made in one client settles the card in the other — including a
