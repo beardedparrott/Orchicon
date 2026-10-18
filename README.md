@@ -98,11 +98,11 @@ irm https://orchicon.dev/install.ps1 | iex
 
 Orchicon's runtime layer (runtime daemon, unix socket, container mounts) is POSIX-only, so on Windows the **whole stack runs inside WSL2**. The installer provisions/detects WSL2, installs the **Linux** binary inside the distro, and runs the one-command setup there. WSL2 forwards `localhost`, so the UIs open from Windows at the same URLs as on Linux: `http://localhost:8080` (control plane) and `http://localhost:3002` (Grafana).
 
-The installer never closes your PowerShell window: a failure prints what failed and the next steps, then returns to the prompt with your session intact. The long steps (image pull, stack setup) stream their output as they run, the setup step asks about host ports (ENTER accepts each default), and the full log lands in `%TEMP%`. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation).
+The installer never closes your PowerShell window: a failure prints what failed and the next steps, then returns to the prompt with your session intact. The long steps (binary acquisition, stack setup) stream their output as they run, the setup step asks about host ports (ENTER accepts each default), and the full log lands in `%TEMP%`. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation).
 
 Prerequisites:
 - **Windows 10 21H2+ / Windows 11**, with WSL2 and a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
-- **Docker Desktop** with WSL2 integration enabled for your distro (or Docker Engine installed inside it).
+- A **container engine is optional**: the plane and its services run as host processes, so nothing needs Docker. Docker Desktop with WSL2 integration (or Docker Engine inside the distro) is only used for a workflow's *runtime container*, and only if you opt in.
 
 Project directories are entered in the UI as their **WSL path** — a Windows project `C:\Users\you\projects\Foo` is `/mnt/c/Users/you/projects/Foo` inside WSL. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
 
@@ -112,11 +112,11 @@ Project directories are entered in the UI as their **WSL path** — a Windows pr
 |---|---|
 | `--version <tag>` | Install a specific version (e.g. `v0.4.5`). Default: latest. |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). On Windows this is a **WSL path** (the binary installs inside the distro). |
-| `--no-setup` | Install the binary only — do not pull images / start the runtime daemon / launch the container. |
+| `--no-setup` | Install the binary only — do not start the host services, the runtime daemon or the plane. |
 | `--uninstall` | Remove Orchicon from the install directory. |
 | `--dry-run` | Print what would happen without making changes. |
-| `--clean` | Stop dev containers, remove old binary, then install latest. All user data preserved. |
-| `--force-clean` / `--nuke` | Wipe everything: destroy Docker volumes, remove blob store data and runtime state, then install latest. **All data lost.** |
+| `--clean` | Stop this instance's plane and host services, remove old binary, then install latest. All user data preserved. |
+| `--force-clean` / `--nuke` | Wipe everything for this instance: destroy its data directory (database, blob store, runtime state), then install latest. **All data lost.** |
 
 ```bash
 # Install a specific version
@@ -154,7 +154,7 @@ and [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md).
 | `orchicon serve` | Run the control plane with embedded frontend (headless) |
 | `orchicon serve --detach` / `--stop` | Fork/stop a background server |
 | `orchicon container` | Run the whole stack as PID 1 (container image) |
-| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info |
+| `orchicon install` | One-command setup: acquire the infrastructure binaries (Postgres, NATS), start the runtime daemon, start this instance's services and plane, print connection info. Offers the optional runtime images (default: none) |
 | `orchicon runtime-daemon` | Host process owning the Docker socket; owns the warm pool of per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 (hosts the container's adapter serve, when the run needs one) |
 | `orchicon runtime-client` | Forwards daemon requests (serve handshake / ping) into the runtime container |

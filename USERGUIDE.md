@@ -165,12 +165,15 @@ host once so the CLI carries your own login.
 curl -fsSL https://orchicon.dev/install | bash
 ```
 
-The installer downloads the binary, then runs `orchicon install` to set up
-**everything**: pull the published images
-(`ghcr.io/beardedparrott/orchicon` + `orchicon-runtime`), start the host-side
-runtime daemon, start this instance's **own** Postgres and NATS on your host, start
-the plane, and print how to connect / start / stop. Pass `--no-setup` to install only
-the binary (headless / CI).
+The installer downloads the binary and then runs `orchicon install`, which sets up
+**everything on the host** — no Docker and no Postgres required: it resolves the
+infrastructure binaries (PostgreSQL and NATS are downloaded for this instance, or a
+compatible host install is used), starts the host-side runtime daemon, starts this
+instance's **own** Postgres and NATS, starts the plane, and prints how to connect /
+start / stop. It also offers the optional **runtime images** as a multi-select choice
+with each variant's size, defaulting to **none** — a project starts in `local` mode and
+needs no image, and one is fetched on demand later if a project opts into runtime
+containers. Pass `--no-setup` to install only the binary (headless / CI).
 
 ### One-line install (Windows PowerShell — via WSL2)
 
@@ -186,18 +189,23 @@ stack therefore runs inside **WSL2**, and the installer orchestrates it:
    is the default version, and prints exact next steps if WSL or a distro is
    missing (Windows 10 21H2+ / Windows 11: run `wsl --install` in an admin shell
    and reboot).
-2. **Docker check inside WSL** — confirms `docker version` works inside the distro
-   (Docker Desktop with WSL2 integration, or Docker Engine installed in the distro).
-   When it does not, it says **which** of the three causes you have — no docker CLI in
-   the distro at all, a CLI with no daemon running, or Docker Desktop running with the
-   WSL integration off for this distro — and quotes what the distro itself reported.
+2. **Container engine check inside WSL — informational.** It reports whether
+   `docker version` works inside the distro, and it no longer stops the install when it
+   does not: the plane and its services are **host processes** (PostgreSQL and NATS
+   from host binaries, acquired by `orchicon install`), so a distro with no container
+   engine is a **supported** configuration. An engine is only needed for a workflow's
+   runtime container, and only if you opt in. When an engine is present but unusable it
+   still says **which** of the three causes applies — no docker CLI in the distro at
+   all, a CLI with no daemon running, or Docker Desktop running with the WSL
+   integration off for this distro — and quotes what the distro itself reported.
 3. **Linux binary** — it downloads the **Linux** release asset
    (`orchicon_<ver>_linux_<arch>.tar.gz`, arch mapped from the Windows processor)
      and installs it inside the distro (default `~/.local/bin`). There is no Windows
      binary to download: releases publish linux and darwin only.
-4. **One-command setup** — it runs `orchicon install` inside WSL: pull the
-   published images, start the runtime daemon, start this instance's Postgres and
-   NATS, start the plane, wait for health. This is the slow part (minutes on a first
+4. **One-command setup** — it runs `orchicon install` inside WSL: acquire the
+   infrastructure binaries, start the runtime daemon, start this instance's Postgres
+   and NATS, start the plane, wait for health, and offer the optional runtime images
+   (default: none). This is the slow part (minutes on a first
    install), so
    every step is named as it starts and the output is **streamed live** rather than
    replayed at the end. It also asks about the host ports — press ENTER to accept
@@ -2363,7 +2371,7 @@ The `orchicon` binary runs the plane and its supporting services.
 
 | Command | Description |
 |---|---|
-| `orchicon install [--instance <name>]` | One-command **setup**: pull images, start the runtime daemon, start this instance's Postgres + NATS, start the plane, print connection info. **Idempotent** — re-running converges an existing instance and upgrades a superseded plane. It deliberately does **not** restart a plane that is already healthy on the installed binary |
+| `orchicon install [--instance <name>]` | One-command **setup**: acquire the infrastructure binaries (PostgreSQL + NATS — no Docker and no host Postgres needed), start the runtime daemon, start this instance's Postgres + NATS, start the plane, print connection info. Also offers the optional **runtime images** as a multi-select with each variant's size, defaulting to none — nothing is pulled that was not chosen. **Idempotent** — re-running converges an existing instance and upgrades a superseded plane. It deliberately does **not** restart a plane that is already healthy on the installed binary |
 | `orchicon start [instance]` | Start an **installed** instance: its services (Postgres + NATS), then its plane. Idempotent, and it never installs. This is the command to run after a reboot (there is no autostart) |
 | `orchicon stop [instance]` | Stop an instance: its plane, then its services. **Idempotent** — running it on a stopped instance is a successful no-op |
 | `orchicon restart [instance]` | Restart this instance so its components re-read their environment. Use it after installing an adapter CLI or changing `PATH` — see *Installing an adapter CLI* |

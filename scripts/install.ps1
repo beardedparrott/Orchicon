@@ -94,34 +94,35 @@ Options:
                       a default port. Both launchers honour the same names.
   -Version <tag>      Install a specific version (e.g. v0.1.173). Default: latest.
   -Instance <name>    Which instance to act on: dev (default), test, or prod. Each has its
-                      own container, ports, data volume and host state, so -Instance test
+                      own plane, ports, host services and host state, so -Instance test
                       cannot disturb dev or prod. Applies to install AND to
                       -Clean/-ForceClean/-Uninstall.
   -InstallDir <dir>   WSL install directory for the binary (default: ~/.local/bin).
-  -NoSetup            Install the binary only — do NOT pull images, start the
-                      runtime daemon, or launch the container.
+  -NoSetup            Install the binary only — do NOT start the host services, the
+                      runtime daemon, or the plane.
   -Uninstall          Stop everything THIS instance runs - its plane and its container - and
                       remove the Orchicon binary. DATA IS PRESERVED (the Docker volume and the
                       instance's host state), and the summary says where each is.
   -Purge              With -Uninstall: ALSO destroy the data - the instance's Docker volume and
                       host state directory. Irreversible. Without -Uninstall this does nothing.
-  -RemoveBinary       Remove just the orchicon and orch executables. Every container, volume and
-                      instance's state is left alone. If something is running off them it asks
-                      before stopping it, and declining changes nothing.
-  -Yes                Answer the prompts affirmatively, for non-interactive use.
-  -Clean              Stop the container instances, remove the old binary, then
-                      install the latest version — one-shot upgrade. All user
-                      data is preserved (Docker volumes, BlobStore files,
-                      runtime state).
-  -ForceClean         Wipe everything and start fresh: stop the stack, destroy
-                      the instance data volumes, remove local state, then install
-                      the latest version. WARNING: all data is lost.
+  -RemoveBinary       Remove just the orchicon and orch executables. Every instance's state
+                      is left alone. If something is running off them it asks before
+                      stopping it, and declining changes nothing.
+  -Yes                Answer the prompts affirmatively, for non-interactive use. That
+                      includes the optional runtime images (it answers: all of them).
+  -Clean              Stop this instance's plane and host services, remove the old
+                      binary, then install the latest version — one-shot upgrade. All
+                      user data is preserved (database, BlobStore files, runtime state).
+  -ForceClean         Wipe everything for THIS instance and start fresh: stop it, destroy
+                      its data directory (database, BlobStore files, runtime state),
+                      remove local state, then install the latest version. WARNING: all
+                      data for this instance is lost.
   -DryRun             Print what would happen without making changes.
   -Help               Show this help.
 
 This installer NEVER closes your PowerShell window: whatever goes wrong it prints
 what failed and the next steps, then returns to the prompt with your session
-intact. The long steps (image pull, stack setup) stream their output as they run,
+intact. The long steps (binary acquisition, stack setup) stream their output as they run,
 and the setup step may ask about host ports — press ENTER to accept each default.
 A full log of the run is written to %TEMP% (path printed when the run starts).
 "@
@@ -802,15 +803,19 @@ true
 set +e
 BIN="__INSTALL_DIR__"
 BIN="${BIN/#\~/$HOME}/orchicon"
-if [ -x "$BIN" ]; then "$BIN" serve --stop >/dev/null 2>&1; fi
-pkill -9 -x orchicon 2>/dev/null
-docker rm -f __CONTAINER__ >/dev/null 2>&1
+# THIS INSTANCE ONLY, AND NEVER BY PROCESS NAME. This read `"$BIN" serve --stop` followed by
+# `pkill -9 -x orchicon`. The bare serve --stop resolves its PID file from the cwd-relative default,
+# so it MISSED the host-resident plane; the pkill then matched EVERY orchicon process on the machine -
+# dev, prod and the shared runtime daemon - and SIGKILLed them, leaving their work items mid-flight.
+# `orchicon stop` is instance-scoped through the environment and takes the plane down first, then this
+# instance's own host services (Postgres, NATS). There is no container to remove any more.
+if [ -x "$BIN" ]; then ORCHICON_INSTANCE=__INSTANCE__ "$BIN" stop >/dev/null 2>&1 || true; fi
 rm -f "$BIN"
 true
 '@
-        $cleanScript = $cleanScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName)
+        $cleanScript = $cleanScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName).Replace('__INSTANCE__', $script:Instance)
         if ($DryRun) {
-            Write-Info "would run inside WSL: stop the container instances, remove the old binary (data preserved)"
+            Write-Info "would run inside WSL: stop this instance's plane and host services, remove the old binary (data preserved)"
         } else {
             Invoke-WslBash $cleanScript
             Write-Ok "Infrastructure cleaned — all user data preserved"
@@ -833,22 +838,25 @@ true
 set +e
 BIN="__INSTALL_DIR__"
 BIN="${BIN/#\~/$HOME}/orchicon"
-if [ -x "$BIN" ]; then "$BIN" serve --stop >/dev/null 2>&1; fi
-pkill -9 -x orchicon 2>/dev/null
-docker rm -f __CONTAINER__ >/dev/null 2>&1
-docker volume rm __VOLUME__ >/dev/null 2>&1
-# ANCHORED TO THE STATE DIRECTORY, NEVER A RELATIVE NAME. This read
-# `cd "$HOME"; rm -rf data .dev bin .local/share/orchicon`, which deleted
-# `$HOME/bin`, `$HOME/data` and `$HOME/.dev` — directories Orchicon does not own,
-# and `~/bin` in particular is where people keep their own binaries. The `.local`
-# entry was ALSO relative, so it never touched the real state dir at $HOME/.local.
-rm -rf "$HOME/.local/share/orchicon"
+# SAME RULE AS -Clean, and for the same incident: this instance only, plane then its host services,
+# NEVER a process-name match (`pkill -9 -x orchicon` took dev, prod and the shared runtime daemon down
+# from an instance-scoped command).
+if [ -x "$BIN" ]; then ORCHICON_INSTANCE=__INSTANCE__ "$BIN" stop >/dev/null 2>&1 || true; fi
+# ANCHORED TO THE STATE DIRECTORY, NEVER A RELATIVE NAME — AND TO THIS INSTANCE'S OWN DIRECTORY.
+# This read `cd "$HOME"; rm -rf data .dev bin .local/share/orchicon`, which deleted
+# `$HOME/bin`, `$HOME/data` and `$HOME/.dev` — directories Orchicon does not own, and `~/bin` in
+# particular is where people keep their own binaries. The `.local` entry was ALSO relative, so it never
+# touched the real state dir. It then named `$HOME/.local/share/orchicon`, which is NOT the per-instance
+# `orchicon-<instance>` the install writes and reads back — so -ForceClean reported "all data wiped"
+# while the instance's database, blob store and runtime state survived. The shell installer's
+# force-clean destroys the per-instance dir, and this must agree with it.
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/orchicon-__INSTANCE__"
 rm -f "$BIN"
 true
 '@
-        $forceCleanScript = $forceCleanScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName)
+        $forceCleanScript = $forceCleanScript.Replace('__INSTALL_DIR__', $InstallDir).Replace('__CONTAINER__', $script:ContainerName).Replace('__VOLUME__', $script:VolumeName).Replace('__INSTANCE__', $script:Instance)
         if ($DryRun) {
-            Write-Info "would run inside WSL: stop the stack, destroy instance data volumes, remove local state (ALL DATA LOST)"
+            Write-Info "would run inside WSL: stop this instance's plane and host services, destroy its data directory, remove local state (ALL DATA FOR THIS INSTANCE LOST)"
         } else {
             Invoke-WslBash $forceCleanScript
             Write-Ok "All data wiped — ready for a fresh start"
