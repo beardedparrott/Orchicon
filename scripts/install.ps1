@@ -558,7 +558,14 @@ function Write-ConnectionInfo {
         # NO NUMBERS AT ALL. Printing a default here is the bug this replaces: it
         # would be a port this install may never have bound.
         Write-Host "Orchicon is installed, but this instance has no port record yet." -ForegroundColor White
-        Write-Host "  Ask it what it bound:  & \"$InstallDir\\orchicon.exe\" status" -ForegroundColor Cyan
+        # BUILT BY CONCATENATION, NOT WITH \" ESCAPES: PowerShell has no backslash escape, so
+        # `\"$InstallDir\\orchicon.exe\"` inside a double-quoted string ENDS the string at the
+        # first quote and prints `& \ <dir>\\orchicon.exe\ text` (measured). The command this
+        # prints is the one an operator copies, so it has to be the command that works.
+        # `if ($InstallDir)` because this function is also called from the offline suite, where
+        # the install dir is not resolved: with no dir the honest command is the one on PATH.
+        $exeCmd = if ($InstallDir) { Join-Path $InstallDir 'orchicon.exe' } else { 'orchicon.exe' }
+        Write-Host ('  Ask it what it bound:  & "' + $exeCmd + '" status') -ForegroundColor Cyan
     }
 }
 
@@ -677,7 +684,15 @@ try {
     # FIRST, before a byte is downloaded or a process is started: Postgres refuses
     # to run as Administrator, and the failure that produces arrives minutes later
     # in a subsystem the operator was not thinking about.
-    Assert-NotElevated
+    #
+    # SCOPED TO THE VERBS THAT START THE STACK, because that is the whole content of the
+    # rule: Postgres refuses to run as Administrator, and Postgres is started by `orchicon
+    # install`. -Uninstall, -RemoveBinary, -DryRun and -NoSetup start nothing — they stop
+    # things, print a plan, or place two executables — so a blanket refusal would answer an
+    # operator removing Orchicon from an admin prompt with a message about a program that
+    # never runs. (An elevated shell is the one people habitually use to remove software.)
+    $startsStack = -not ($Uninstall -or $RemoveBinary -or $DryRun -or $NoSetup)
+    if ($startsStack) { Assert-NotElevated }
 
     # --- Defaults ---------------------------------------------------------------
     # THE NATIVE INSTALL DIR: %LOCALAPPDATA%\Programs\Orchicon is per-user, needs no
@@ -1205,7 +1220,7 @@ function Ask-Instance {
     Write-Host "  Fix what is reported above, then:"
     Write-Host "    PowerShell:  irm https://orchicon.dev/install.ps1 | iex" -ForegroundColor Cyan
     if ($InstallDir -and (Test-Path -LiteralPath (Join-Path $InstallDir "orchicon.exe"))) {
-        Write-Host "    Setup only:  & \"$(Join-Path $InstallDir 'orchicon.exe')\" install" -ForegroundColor Cyan
+        Write-Host ('    Setup only:  & "' + (Join-Path $InstallDir 'orchicon.exe') + '" install') -ForegroundColor Cyan
     }
     if ($script:ContainerOptIn -and $script:Distro) {
         Write-Host "    Containers:  wsl -d $script:Distro -e bash -lc 'uname -r'" -ForegroundColor Cyan

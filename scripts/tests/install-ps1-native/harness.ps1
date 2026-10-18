@@ -771,6 +771,17 @@ Check "it halts BEFORE downloading or installing anything" `
 Check "the session survives and the outcome is non-zero" (($elevRun -match $marker) -and ($elevRun -match 'EXITCODE=1')) `
   (($elevRun -split "`n" | Where-Object { $_ -match 'EXITCODE|RETURNED' }) -join ' / ')
 
+# THE OTHER DIRECTION, and it is a real case rather than symmetry: an elevated prompt is where
+# people habitually remove software. Postgres refuses to run as Administrator, but -Uninstall
+# STARTS nothing — it stops what runs and deletes two files — so a blanket refusal would answer
+# "remove Orchicon" with a message about a program that never runs. The install dir here holds
+# no binaries, so the verb reports "nothing to remove" and touches nothing.
+$elevUninstall = Invoke-ChildInstaller -Env @{ PROCESSOR_ARCHITECTURE = "AMD64"; HOME = (Join-Path $elevRoot "home"); ORCHICON_INSTALL_LOG = "off"; ORCHICON_INSTANCE = "" } `
+  -Command "& ([scriptblock]::Create((Get-Content -Raw '$($elevCopy.Replace("'", "''"))'))) -Uninstall -Instance dev -InstallDir '$(Join-Path $elevRoot 'bin')'; 'EXITCODE=' + `$global:LASTEXITCODE"
+Check "an elevated -Uninstall is NOT refused — the guard is about starting Postgres, not removing it" `
+  (-not ($elevUninstall -match 'running as Administrator')) `
+  ("got: " + (($elevUninstall -split "`n" | Where-Object { $_ -match 'Administrator|Uninstalled|Data preserved|nothing to remove' }) -join ' / '))
+
 # --- 24. THE SECOND INSTALL ASKS NOTHING, AND THE PORTS ARE THE RECORD'S -----
 # Ports are RECORD-FIRST now (install_ports.go resolveInstallPorts): an instance that already has a
 # ports.json keeps those ports silently, and a genuine collision names the other instance or the
