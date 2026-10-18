@@ -203,8 +203,7 @@ stack therefore runs inside **WSL2**, and the installer orchestrates it:
    replayed at the end. It also asks about the host ports — press ENTER to accept
    each default.
 5. **Connection info** — WSL2 forwards `localhost`, so it prints the
-   Windows-visible URLs: `http://localhost:8080` (control plane) and
-   `http://localhost:3002` (Grafana). If the URLs do not answer, check Windows
+   Windows-visible URL: `http://localhost:8080` (control plane). If the URL does not answer, check Windows
    Defender Firewall or add a `netsh interface portproxy` port forward.
 
 **The installer never closes your PowerShell window.** Whatever goes wrong it prints
@@ -365,7 +364,9 @@ An install resolves every published port for its instance, and **three instance 
 | Port | dev | prod | test |
 |---|---|---|---|
 | Web UI + API (`ORCHICON_CONTROL_PORT`) | 8080 | 8091 | 8092 |
-| Grafana (`ORCHICON_GRAFANA_PORT`) | 3002 | 3003 | 3004 |
+| ~~Grafana (`ORCHICON_GRAFANA_PORT`)~~ | ~~3002~~ | ~~3003~~ | ~~3004~~ |
+
+3002/3003/3004 are **retired and reserved** — they were Grafana's, and no service reuses them.
 
 **Setting the variable pins the port and skips the prompt** — the non-interactive path for a scripted
 install. Left unset, a port already in use raises a prompt on your terminal offering the next free one;
@@ -806,10 +807,9 @@ Workers, Recovery, or Cost Explorer.
 
 **Where:** top bar → **Overview** → **Telemetry**
 
-**Purpose.** Traces, metrics and logs, and the entry point to the embedded Grafana
-stack.
+**Purpose.** Traces, metrics and logs, read directly from the telemetry backends.
 
-**What it shows.** A trace list with span detail, plus the live telemetry
+**What it shows.** A trace list with span detail, the log and metric explorers, plus the live telemetry
 subscription (footnote status, refresh on event, automatic reconnect).
 
 **How to use it.**
@@ -819,10 +819,12 @@ subscription (footnote status, refresh on event, automatic reconnect).
    where the error originated.
 3. Use the `trace_id` shown on an audit event or execution to correlate the same
    work across surfaces.
-4. For raw exploration, the **embedded Grafana UI** is available at `/grafana`
-   (Tempo for traces, Loki for logs, VictoriaMetrics for metrics).
+4. For raw exploration, use the **Traces / Metrics / Logs** tabs — they read Tempo, VictoriaMetrics and Loki
+   directly through the plane's authenticated API. (The embedded Grafana UI and its `/grafana` proxy were
+   removed: a browser iframe cannot send an Authorization header, and the old workaround mounted the proxy
+   outside the auth middleware. Nothing is mounted outside `ResolveAuth` now.)
 
-**Actions.** Read-only, plus the Grafana jump-off.
+**Actions.** Read-only.
 
 ### 6.3 Cost Explorer
 
@@ -1600,7 +1602,7 @@ deleted, and is the tenant-admin bypass.
 - **Events** — the actor-based record of **who did what**: the action
   (`work_item.created`, `worker.published`, `auth.login`, …), the actor and auth
   method, the polymorphic target, before/after snapshots for updates, and the OTel
-  `trace_id` for cross-correlation with Grafana traces. A filter bar scopes by
+  `trace_id` for cross-correlation with Tempo traces. A filter bar scopes by
   action, actor, target type, target id and time window.
 - **Decisions** — the Rego policy-decision trail.
 

@@ -1,6 +1,6 @@
 // Telemetry query hooks (TanStack Query + Connect-ES, docs/07 §3.9,
 // docs/08 §5). The TelemetryService proxies tenant-scoped queries to
-// Tempo/Loki/VictoriaMetrics; raw exploration uses the embedded Grafana UI
+// Tempo/Loki/VictoriaMetrics; raw exploration goes through these panes
 // (docs/10 §11), while the Orchicon dashboard is a custom roll-up.
 
 import { useQuery } from "@tanstack/react-query";

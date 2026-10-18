@@ -128,7 +128,7 @@ func servicesDSN(ports map[string]int) string {
 //
 // THE INNER LOOP NEEDS THE DB AND THE BUS. The four telemetry backends are
 // ~300 MB of downloads and a wider port set for no inner-loop benefit, and a
-// first `make run` that spends minutes fetching Grafana's dependencies before it
+// first `make run` that spends minutes fetching the backends' dependencies before it
 // can serve a request is the wrong default. An explicit ORCHICON_TELEMETRY
 // always wins.
 func telemetryOffForTheInnerLoop() {

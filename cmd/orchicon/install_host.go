@@ -159,7 +159,7 @@ func waitServicesReadyFor(instance string, ports map[string]int, tries int, slee
 // IT MUST NOT REPORT "NOT READY" FOR A CARRIER IT HAS NO HOST ENDPOINT FOR, and that is a real bug this
 // function used to have. A container-RESIDENT plane keeps postgres and nats in the container's OWN network
 // namespace and publishes NEITHER on a host port (install_ports.go: their ContainerBind is bindNone), so the
-// resolved port set for that shape names only the control and Grafana ports — the two service keys are
+// resolved port set for that shape names only the control port — the service keys are
 // ABSENT, read as port 0, and the probe then asked a nonexistent endpoint and answered false. Consequence:
 // the install's own repair gate (`!healthy || !servicesReady(instance, ports)`) fired on EVERY
 // container-resident install, `docker restart`ing the instance container — and the plane inside it — on every
@@ -186,7 +186,7 @@ func servicesReady(instance string, ports map[string]int) bool {
 //
 // THE RESOLVED PORT SET IS THE RIGHT SIGNAL because it IS the carrier: activeInstallPorts gives the host
 // shape the service ports (they are published on 127.0.0.1 so a host plane can reach them) and gives the
-// container-resident shape only the control and Grafana ports (its services are internal). Keying on the
+// container-resident shape only the control port (its services are internal). Keying on the
 // ports rather than on a residency string keeps the one place that decides which ports exist
 // (install_ports.go's table) authoritative.
 func servicesProbeableFromHost(ports map[string]int) bool {
@@ -251,7 +251,6 @@ var hostServicesPortEnvs = []string{
 	"ORCHICON_TEMPO_PORT",
 	"ORCHICON_LOKI_PORT",
 	"ORCHICON_VM_PORT",
-	"ORCHICON_GRAFANA_PORT",
 	"ORCHICON_TEMPO_OTLP_GRPC_PORT",
 	"ORCHICON_TEMPO_OTLP_HTTP_PORT",
 	"ORCHICON_OTEL_HEALTH_PORT",

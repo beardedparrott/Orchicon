@@ -5,8 +5,8 @@
 // Usage is dual-written (docs/08 §1, §5.2):
 //   - Postgres usage_records table is the source of truth.
 //   - OTel metrics (orchicon_tokens_consumed, orchicon_cost_usd) flow
-//     from the producer to the OTel collector to the Grafana stack for
-//     fast telemetry queries.
+//     from the producer to the OTel collector to the telemetry
+//     backends for fast telemetry queries.
 //
 // Cost attribution rolls up Tenant → Project → Task → Execution
 // (docs/10 §11 cost explorer).

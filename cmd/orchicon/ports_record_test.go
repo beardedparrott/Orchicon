@@ -28,7 +28,7 @@ func TestReadResolvedPortsRoundTripsWhatTheInstallRecorded(t *testing.T) {
 	// Written through the PRODUCTION writer, so this pins the pair rather than a JSON shape
 	// invented here — a reader that agrees only with the test's own marshal would not notice the
 	// writer changing.
-	written := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_GRAFANA_PORT": 3002}
+	written := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_POSTGRES_PORT": 5440}
 	writeResolvedPorts(instance, written)
 
 	got, err := readResolvedPorts(instance)
