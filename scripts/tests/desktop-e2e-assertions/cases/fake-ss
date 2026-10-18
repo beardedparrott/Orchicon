@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# fixture: a `ss` that reports a listener on the control port with a known PID,
+# so step 3/7's independent PID probe can be observed without a real plane.
+printf 'State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n'
+printf 'LISTEN 0      4096   127.0.0.1:8080     0.0.0.0:*    users:(("orchicon",pid=4242,fd=9))\n'
+exit 0
