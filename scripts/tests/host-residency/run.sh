@@ -182,7 +182,7 @@ check_lacks "default dev does NOT publish the plane port (it is a host process)"
 
 # AND THE OPT-IN STILL WORKS, which is the other half of the change rather than a leftover.
 check "explicit container is container" "container" "$(field "$(shape dev container)" residency)"
-check "explicit container publishes the plane 8080:8080" "-p 8080:8080 -p 3002:3000" \
+check "explicit container publishes the plane 8080:8080" "-p 8080:8080" \
   "$(field "$(shape dev container)" publish_ports)"
 check_lacks "explicit container sets no services-only env" "SERVICES_ONLY" "$(shape dev container)"
 
@@ -230,10 +230,16 @@ check_contains "host dev isolates the detached-serve PID file" \
 # Every service publish must be loopback-bound, and nothing may be published on
 # 0.0.0.0 (the pg_hba trust rules are only safe because of this).
 SVC="$(field "$HOST_DEV" service_ports)"
-check "host dev publish count (9 services)" "9" "$(printf '%s' "$SVC" | grep -o '127\.0\.0\.1:' | wc -l | tr -d ' ')"
+check "host dev publish count (8 services)" "8" "$(printf '%s' "$SVC" | grep -o '127\.0\.0\.1:' | wc -l | tr -d ' ')"
 check_lacks "host dev publishes nothing on a wildcard address" "0.0.0.0:" "$SVC"
-for port in 5432 4222 8222 4317 4318 3200 3100 8428 3002; do
+for port in 5432 4222 8222 4317 4318 3200 3100 8428; do
   check_contains "host dev publishes dev port $port on loopback" "127.0.0.1:$port:" "$SVC"
+done
+# 3002/3003/3004 were Grafana's published port. Grafana is gone and those ports are RETIRED and
+# RESERVED (cmd/orchicon/install_ports.go), so publishing one again — here or in scripts/lib/
+# instances.sh — would hand a retired port to a new component without anyone deciding to.
+for port in 3002 3003 3004; do
+  check_lacks "host dev does not publish the retired port $port" "127.0.0.1:$port:" "$SVC"
 done
 check "host dev publishes the same set it reports" "$SVC" "$(field "$HOST_DEV" publish_ports)"
 
