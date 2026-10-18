@@ -24,6 +24,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 	"os"
 	"testing"
 	"time"
@@ -350,3 +351,154 @@ func TestPruneExecutionHistoryIsIdempotent(t *testing.T) {
 }
 
 var _ = fmt.Sprintf
+
+// THE BUG THIS TEST EXISTS FOR: the child steps and the delete must agree about WHICH ROWS GO.
+//
+// The first version computed every child step from a STATUS-FILTERED candidate set (anything holding a
+// dispatch slot excluded) while the delete ran over the executions table. The two classes do not coincide,
+// so an execution outside the filter could be deleted with its children left behind. Measured on the live
+// tenant afterwards: 2,898 usage rows still pointing at deleted executions.
+//
+// TWO WAYS THE FIRST ATTEMPT AT THIS TEST WAS WORTHLESS, both worth stating because both are easy to repeat:
+//
+//  1. IT SEEDED ONLY `succeeded` AND `running` — exactly the two classes where the sets coincide, so no
+//     assertion could fail. Every status is seeded now.
+//  2. IT INVITED THE PRUNE'S OWN REFUSAL. With a `running` row present the prune refuses and deletes
+//     NOTHING, so the test passed vacuously — a green tick over an operation that never ran. The fixture
+//     now separates the two contracts: DELETABLE classes go through a prune that must succeed, and the
+//     slot-holding classes are asserted to REFUSE (in their own test below).
+func TestPruneLeavesNoChildOfADeletedExecution(t *testing.T) {
+	pool := retentionTestPool(t)
+	tenant := uniqID("tnt_retention_classes")
+	project := uniqID("proj_retention_classes")
+	ctx := context.Background()
+
+	// The DELETABLE classes — the prunable set, which no longer contains `terminating`. That status is what
+	// forced this correction: it HOLDS a dispatch slot (so the live guard refuses it) while not being terminal
+	// (so the old negated predicate admitted it to the candidate set, and the delete — which had no filter at
+	// all — took it while the child steps skipped it). It is covered by the REFUSAL test below instead.
+	statuses := []string{"succeeded", "failed", "failed_to_start", "terminated", "completed"}
+
+	now := time.Now().UTC()
+	ids := make(map[string]string, len(statuses))
+	ttx, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	for i, st := range statuses {
+		id := uniqID("zz_cls")
+		if _, err := ttx.Exec(ctx, `INSERT INTO worker_executions
+			(id, tenant_id, project_id, task_id, worker_id, worker_version, status, health_state, version, created_at, updated_at)
+			VALUES ($1,$2,$3,'task_probe','w_1',1,$4,'terminating',1,$5,$5)`,
+			id, tenant, project, st, now.Add(-time.Duration(50-i)*time.Hour)); err != nil {
+			ttx.Rollback(ctx)
+			t.Fatalf("seed %s: %v", st, err)
+		}
+		if _, err := ttx.Exec(ctx, `INSERT INTO execution_session_parts (execution_id, tenant_id, seq, kind, payload, created_at)
+			VALUES ($1,$2,1,'text','{}',now())`, id, tenant); err != nil {
+			ttx.Rollback(ctx)
+			t.Fatalf("seed part %s: %v", st, err)
+		}
+		if _, err := ttx.Exec(ctx, `INSERT INTO usage_records (id, tenant_id, project_id, execution_id, provider, model, total_tokens, cost_usd, occurred_at)
+			VALUES ($1,$2,$3,$4,'deepseek','deepseek-flash',10,0.001,now())`, uniqID("zz_clsu"), tenant, project, id); err != nil {
+			ttx.Rollback(ctx)
+			t.Fatalf("seed usage %s: %v", st, err)
+		}
+		ids[st] = id
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// keep=0: every one of these is a delete candidate, so the prune must actually run.
+	plan, err := pool.PruneExecutionHistory(ctx, tenant, 0, 100)
+	if err != nil {
+		t.Fatalf("prune refused a fixture with no live execution: %v", err)
+	}
+	// AND IT MUST HAVE DONE SOMETHING. A refusal-shaped pass would make every assertion below vacuous —
+	// the exact trap the first version of this test fell into.
+	if plan.DeleteExecutions == 0 {
+		t.Fatalf("the prune reported nothing to delete; this test would pass over an operation that never ran")
+	}
+
+	for st, id := range ids {
+		execs := countTenantRows(t, pool, tenant,
+			`SELECT count(*) FROM worker_executions WHERE tenant_id=$1 AND id=$2`, tenant, id)
+		parts := countTenantRows(t, pool, tenant,
+			`SELECT count(*) FROM execution_session_parts WHERE tenant_id=$1 AND execution_id=$2`, tenant, id)
+		usageLinked := countTenantRows(t, pool, tenant,
+			`SELECT count(*) FROM usage_records WHERE tenant_id=$1 AND execution_id=$2`, tenant, id)
+
+		// BIDIRECTIONAL, and the second half is what the first version of this test was missing: asserting
+		// only "deleted ⇒ no children" lets a row that SURVIVES with its children stripped pass unnoticed,
+		// which is exactly what a child step keyed on the wrong set produces.
+		if execs != 0 {
+			if parts != 1 {
+				t.Errorf("%s: execution SURVIVED but its session part is gone (%d present) — a child step "+
+					"keyed on a set wider than the delete strips rows that were never removed", st, parts)
+			}
+			if usageLinked != 1 {
+				t.Errorf("%s: execution SURVIVED but its usage link was cleared (%d linked)", st, usageLinked)
+			}
+			continue
+		}
+		if parts != 0 {
+			t.Errorf("%s: execution was DELETED but %d session part(s) survived it", st, parts)
+		}
+		if usageLinked != 0 {
+			t.Errorf("%s: execution was DELETED but %d usage row(s) still point at it — cost attribution "+
+				"follows a dead id, which is the live-tenant bug this pins", st, usageLinked)
+		}
+	}
+
+	orphans := countTenantRows(t, pool, tenant, `SELECT count(*) FROM usage_records u
+		WHERE u.tenant_id=$1 AND u.execution_id <> ''
+		  AND NOT EXISTS (SELECT 1 FROM worker_executions e WHERE e.id=u.execution_id)`, tenant)
+	if orphans != 0 {
+		t.Errorf("%d usage rows point at an execution that no longer exists", orphans)
+	}
+}
+
+// THE OTHER HALF: a live execution makes the prune refuse, and it deletes nothing.
+//
+// Separate test, because one fixture cannot assert both — the refusal short-circuits the delete, which is
+// what made the first version of the test above pass while the bug was present.
+func TestPruneRefusesRatherThanDeleteHistoryAroundALiveRow(t *testing.T) {
+	pool := retentionTestPool(t)
+	tenant := uniqID("tnt_retention_refuse")
+	project := uniqID("proj_retention_refuse")
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	ttx, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	// `terminating` is here BECAUSE it is the ambiguous one: it must behave like a live row (refuse), not like a
+	// terminal one (pruneable). That distinction is the entire bug this pair of tests pins.
+	for i, st := range []string{"succeeded", "running", "terminating"} {
+		id := uniqID("zz_ref")
+		if _, err := ttx.Exec(ctx, `INSERT INTO worker_executions
+			(id, tenant_id, project_id, task_id, worker_id, worker_version, status, health_state, version, created_at, updated_at)
+			VALUES ($1,$2,$3,'task_probe','w_1',1,$4,'healthy',1,$5,$5)`,
+			id, tenant, project, st, now.Add(-time.Duration(20-i)*time.Hour)); err != nil {
+			ttx.Rollback(ctx)
+			t.Fatalf("seed %s: %v", st, err)
+		}
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	_, err = pool.PruneExecutionHistory(ctx, tenant, 0, 100)
+	if err == nil {
+		t.Fatal("the prune did not refuse while a `running`/`terminating` execution was present")
+	}
+	if !strings.Contains(err.Error(), "still live") {
+		t.Errorf("the refusal must say WHY, got: %v", err)
+	}
+	// AND IT DELETED NOTHING — not even the terminal row it could have taken.
+	if n := countTenantRows(t, pool, tenant, `SELECT count(*) FROM worker_executions WHERE tenant_id=$1`, tenant); n != 3 {
+		t.Errorf("executions after a REFUSED prune = %d, want 3 (a refusal must be inert)", n)
+	}
+}

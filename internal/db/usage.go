@@ -596,6 +596,33 @@ func ClearUsageSessionIDs(ctx context.Context, tx pgx.Tx, tenantID string, ids .
 	return tag.RowsAffected(), nil
 }
 
+// ClearUsageExecutionIDs de-links usage rows from executions that are about to be (or have been) deleted,
+// by clearing execution_id. Returns the number of rows de-linked.
+//
+// THE LEDGER IS KEPT AND THE LINK IS CLEARED — that is the contract, and it is deliberate. usage_records is
+// the tenant's spend ledger (migration 20260731000015 exists so cost attribution SURVIVES execution
+// deletion), so removing the rows would rewrite the operator's history of what they spent. But the
+// execution_id column has NO FOREIGN KEY, so a delete without this leaves rows pointing at a row that is
+// gone — silently, because nothing errors. Both the API delete paths and the retention prune call this.
+func ClearUsageExecutionIDs(ctx context.Context, tx pgx.Tx, tenantID string, executionIDs ...string) (int64, error) {
+	clean := make([]string, 0, len(executionIDs))
+	for _, id := range executionIDs {
+		if id != "" {
+			clean = append(clean, id)
+		}
+	}
+	if len(clean) == 0 {
+		return 0, nil
+	}
+	const q = `UPDATE usage_records SET execution_id = ''
+	            WHERE tenant_id = $1 AND execution_id <> '' AND execution_id = ANY($2)`
+	tag, err := tx.Exec(ctx, q, tenantID, clean)
+	if err != nil {
+		return 0, fmt.Errorf("db: clear usage execution ids: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ExecutionUsageTotals is one execution's summed token/cost totals.
 type ExecutionUsageTotals struct {
 	Tokens  int64

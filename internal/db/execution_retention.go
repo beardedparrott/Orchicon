@@ -106,7 +106,20 @@ const deleteSetSQL = `(SELECT id FROM worker_executions
 // the negation can only be wrong in the safe direction (a new ACTIVE state would be treated as prunable
 // only if it were also missing from the slot-holding set, which is the same edit that would break the
 // dispatch guard).
-const candidateStatusesSQL = `status NOT IN ` + activeExecutionStatuses
+// THE TERMINAL SET — and `terminating` is deliberately NOT in it, which is the fix for a real orphan bug.
+//
+// It used to be `status NOT IN activeExecutionStatuses`, a NEGATION of the slot-holding set. That is the wrong
+// shape: the negated set is not "terminal", it is "everything the dispatch guard does not count", and the two
+// differ on `terminating` — an execution on its way out. `terminating` HOLDS a slot, so the live guard refuses
+// to prune while one is present, but it is not terminal, so the old predicate admitted it to the candidate set.
+// The result was two statements disagreeing about one row: the child steps skipped it (status-filtered) and
+// the DELETE took it (unfiltered), leaving its children behind — measured on the live tenant as 2,898 usage
+// rows pointing at deleted executions.
+//
+// ENUMERATED NOW, because "terminal" is a fact about the lifecycle worth stating rather than deriving by
+// subtraction. A status added later is simply not prunable until someone decides it is — which fails SAFE
+// (history stops shrinking, visibly) instead of destructively (rows vanish, children do not).
+const candidateStatusesSQL = `status IN ('succeeded','failed','failed_to_start','terminated','completed')`
 
 // PlanExecutionRetention computes what pruning to the newest `keep` executions would remove, without
 // changing anything.
@@ -222,32 +235,44 @@ func (p *Pool) PruneExecutionHistory(ctx context.Context, tenantID string, keep 
 		q    string
 	}{
 		{"execution session parts", `DELETE FROM execution_session_parts
-			WHERE tenant_id = $1 AND execution_id IN ` + candidates},
-		{"checkpoints", `DELETE FROM checkpoints WHERE worker_execution_id IN ` + candidates},
+			WHERE tenant_id = $1 AND execution_id NOT IN ` + keepSetSQL},
+		{"checkpoints", `DELETE FROM checkpoints
+			WHERE worker_execution_id <> ''
+			  AND worker_execution_id NOT IN ` + keepSetSQL},
 		{"recovery step runs", `DELETE FROM recovery_step_runs
-			WHERE tenant_id = $1 AND worker_execution_id IN ` + candidates},
+			WHERE tenant_id = $1 AND worker_execution_id <> ''
+			  AND worker_execution_id NOT IN ` + keepSetSQL},
 		// THE RECOVERY ITSELF, not only the step runs. A recovery_executions row is identified by the
 		// execution that FAILED (failed_execution_id), so it is a child of that execution in everything but
 		// the schema. Deleting the execution and leaving the recovery leaves a recovery whose reason for
 		// existing is gone — the same orphan class, one table further out.
 		{"continuation plans", `DELETE FROM continuation_plans
 			WHERE recovery_id IN (SELECT id FROM recovery_executions
-			                      WHERE tenant_id = $1 AND failed_execution_id IN ` + candidates + `)`},
+			                      WHERE tenant_id = $1 AND failed_execution_id <> ''
+			                        AND failed_execution_id NOT IN ` + keepSetSQL + `)`},
 		{"recovery executions", `DELETE FROM recovery_executions
-			WHERE tenant_id = $1 AND failed_execution_id IN ` + candidates},
+			WHERE tenant_id = $1 AND failed_execution_id <> ''
+			  AND failed_execution_id NOT IN ` + keepSetSQL},
 		// THE STEP-RUN REFERENCE IS CLEARED, NOT THE STEP RUN. workflow_step_runs is the RUN's state — it
 		// may still be the record of a step of a live workflow run, and deleting it would corrupt a run
 		// graph that is not history at all. Emptying the reference is the same thing DeleteWorkflowRun's
 		// mirror image does, and it leaves the step run readable.
 		{"workflow step run references", `UPDATE workflow_step_runs SET worker_execution_id = ''
-			WHERE tenant_id = $1 AND worker_execution_id IN ` + candidates},
+			WHERE tenant_id = $1 AND worker_execution_id <> ''
+			  AND worker_execution_id NOT IN ` + keepSetSQL},
 		// USAGE IS DE-LINKED, NOT DELETED — deliberately. migration 20260731000015 exists so that cost
 		// attribution SURVIVES execution deletion; usage_records is the tenant's spend ledger and the Cost
 		// Explorer reads it. Removing those rows would rewrite the operator's history of what they spent,
 		// which is a different act from removing their execution history, and not one this prune may take
 		// on its own authority. The execution_id link is cleared so nothing points at a dead row.
+		// DE-LINKED BY THE SURVIVOR SET, NOT BY THE CANDIDATE SET — a bug fix, not a tidy-up. Keying this on
+		// the status-filtered candidate set meant the two statements disagreed about which rows would go: an
+		// execution outside that filter could be deleted with its usage links still pointing at it. Observed
+		// on the live tenant as 2,898 orphaned usage rows. The suite could not see it because it seeded only
+		// the classes where the sets coincide.
 		{"usage record links", `UPDATE usage_records SET execution_id = ''
-			WHERE tenant_id = $1 AND execution_id IN ` + candidates},
+			WHERE tenant_id = $1 AND execution_id <> ''
+			  AND execution_id NOT IN ` + keepSetSQL},
 	}
 	for _, s := range childSteps {
 		if _, err := p.Exec(ctx, s.q, tenantID, keep); err != nil {
