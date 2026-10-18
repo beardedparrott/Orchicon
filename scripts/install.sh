@@ -52,6 +52,9 @@ FORCE_CLEAN=false
 DRY_RUN=false
 SETUP=true
 INSTALL_ORCH=true  # orch = the thin remote TUI client (skippable via --no-orch)
+DESKTOP=false      # --desktop: also install the desktop app. It is a CLIENT (it talks to
+                   # this plane over loopback and starts one if none is running), so it is
+                   # opt-in and the default install is unchanged.
 
 # --- Colors -----------------------------------------------------------------
 if [ -t 1 ]; then
@@ -87,6 +90,8 @@ while [ $# -gt 0 ]; do
     --dry-run)         DRY_RUN=true; shift ;;
     --no-setup)        SETUP=false; shift ;;
     --no-orch)         INSTALL_ORCH=false; shift ;;
+    --desktop)         DESKTOP=true; shift ;;
+    --no-desktop)      DESKTOP=false; shift ;;
     --help|-h)
       # QUOTED DELIMITER: this is a usage TEXT, so nothing in it may be expanded or EXECUTED. It was
       # `<<EOF`, and the backticked phrases in it were therefore COMMAND SUBSTITUTIONS — so
@@ -127,6 +132,14 @@ Options:
    --no-setup           Install the binary only — do NOT pull images, start the
                         runtime daemon, or launch the container (default: full
                         one-command setup runs `orchicon install`).
+    --desktop            ALSO install the desktop app (a GUI client for this plane):
+                         Linux  -> the AppImage into the install directory, which
+                                   bundles WebKitGTK so no system package is needed
+                         macOS  -> the signed, notarised .app into ~/Applications
+                         Never uses sudo, never writes to /Applications. Linux arm64
+                         has no prebuilt app yet, and says so.
+    --no-desktop         Do not install the desktop app (the default). The install
+                         still prints where to get it.
   -h, --help           Show this help.
 EOF
       exit 0 ;;
@@ -376,7 +389,28 @@ stop_service_for() {
 
 # remove_binaries removes both executables. It does NOT stop anything: the caller must have settled who
 # is using them first, because that is the part that can break a running system.
+# remove_desktop_app removes the desktop app this script may have installed.
+#
+# SEPARATE FROM remove_binaries because on macOS it is a .app BUNDLE (a directory), not a
+# file, and because it lives outside the install directory: ~/Applications on macOS, so an
+# uninstall that forgot it would leave a window that starts with no plane behind it.
+remove_desktop_app() {
+  local app_linux="$INSTALL_DIR/orchicon-desktop"
+  local app_mac="${HOME}/Applications/Orchicon.app"
+  if [ -f "$app_linux" ]; then
+    info "removing the desktop app: $app_linux"
+    $DRY_RUN || rm -f "$app_linux"
+    ok_dry "desktop app removed" "desktop app be removed"
+  fi
+  if [ -d "$app_mac" ]; then
+    info "removing the desktop app: $app_mac"
+    $DRY_RUN || rm -rf "$app_mac"
+    ok_dry "desktop app removed" "desktop app be removed"
+  fi
+}
+
 remove_binaries() {
+  remove_desktop_app
   local bin
   for bin in $(binary_paths); do
     if [ -f "$bin" ]; then
@@ -406,6 +440,100 @@ detect_arch() {
     aarch64|arm64) echo "arm64" ;;
     *)              die "unsupported architecture: $arch" ;;
   esac
+}
+
+# --- Desktop app (optional) ---------------------------------------------------
+#
+# THE APP IS A CLIENT. It talks to the plane over loopback (http://127.0.0.1:8080) and
+# starts one if none is running, so installing it changes nothing about the stack — which
+# is why it is opt-in rather than part of the default install.
+#
+# NO sudo, and never /Applications: the app lands where this script already writes
+# ($INSTALL_DIR on Linux, ~/Applications on macOS). A .deb exists for anyone who wants apt
+# to own it — the docs name the command — but installing a package needs root, and an
+# installer that silently escalates is not one to pipe into bash.
+#
+# AND NO QUARANTINE STRIPPING. If spctl rejects the .app, this says so and points at the
+# issue tracker rather than running `xattr -dr com.apple.quarantine`, because a released
+# .app that Gatekeeper blocks is a bug in the release, not in the user's machine.
+desktop_url() {
+  local os="$1" asset
+  case "$os" in
+    linux)  asset="orchicon_desktop_${VERSION#v}_linux_amd64.AppImage" ;;
+    darwin) asset="orchicon_desktop_${VERSION#v}_darwin_universal.zip" ;;
+    *) return 1 ;;
+  esac
+  printf '%s/%s/%s' "$ASSET_BASE_URL" "$VERSION" "$asset"
+}
+
+install_desktop() {
+  local os arch url tmp pkg
+  os="$(detect_os)"
+  arch="$(detect_arch)"
+  if ! url="$(desktop_url "$os")"; then
+    warn "no desktop app is published for ${os}"
+    return 0
+  fi
+  if [ "$os" = "linux" ] && [ "$arch" != "amd64" ]; then
+    warn "no prebuilt desktop app for linux/${arch} yet — build it from source:"
+    warn "  make desktop-linux-deps-check && make desktop-package-linux"
+    return 0
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    ok "would download the desktop app from ${url}"
+    return 0
+  fi
+
+  tmp="$(mktemp -d)"
+  pkg="${tmp}/$(basename "$url")"
+  info "downloading the desktop app…"
+  if ! curl -fsSL --retry 2 -o "$pkg" "$url"; then
+    warn "the desktop app is not in release ${VERSION} ($(basename "$url") is missing)"
+    warn "  download it from: https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${VERSION}"
+    rm -rf "$tmp"
+    return 0
+  fi
+
+  case "$os" in
+    linux)
+      install -m 0755 "$pkg" "${INSTALL_DIR}/orchicon-desktop"
+      ok "desktop app installed: ${INSTALL_DIR}/orchicon-desktop"
+      if command -v ldconfig >/dev/null 2>&1 && ! ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.[01]\.so\.37'; then
+        warn "this system has no WebKitGTK: sudo apt install libwebkit2gtk-4.0-37"
+        warn "  (the AppImage normally bundles it — if the app still refuses to start, that is the fix)"
+      fi
+      ;;
+    darwin)
+      local dest="${HOME}/Applications"
+      mkdir -p "$dest"
+      if ! ditto -x -k "$pkg" "$dest" 2>/dev/null; then
+        if command -v unzip >/dev/null 2>&1; then
+          unzip -q -o "$pkg" -d "$dest"
+        else
+          warn "cannot unpack ${pkg} (neither ditto nor unzip is available)"
+          rm -rf "$tmp"
+          return 0
+        fi
+      fi
+      local app
+      app="$(find "$dest" -maxdepth 1 -name '*.app' -type d 2>/dev/null | head -1)"
+      if [ -z "$app" ]; then
+        warn "no .app was found in the downloaded archive"
+        rm -rf "$tmp"
+        return 0
+      fi
+      ok "desktop app installed: ${app}"
+      if spctl -a -t exec "$app" >/dev/null 2>&1; then
+        ok "Gatekeeper accepts it (signed, notarised and stapled): it opens with no warning"
+      else
+        warn "Gatekeeper did not accept ${app}"
+        warn "  that is expected ONLY for a locally built, unsigned .app. If yours came from the"
+        warn "  release, please report it here rather than stripping the quarantine flag:"
+        warn "  https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/issues"
+      fi
+      ;;
+  esac
+  rm -rf "$tmp"
 }
 
 check_cmd() {
@@ -808,6 +936,15 @@ main() {
     else
       warn "orch companion binary not found in archive (older release?) — skipping"
     fi
+  fi
+
+  # THE DESKTOP APP, opt-in. Without --desktop this is one line naming where to get it,
+  # which is the difference between "the option exists" and the user being left to find it.
+  if [ "$DESKTOP" = true ]; then
+    install_desktop
+  else
+    echo -e "  ${D}Desktop app (optional): re-run with --desktop, or download it from${X}"
+    echo -e "  ${D}  https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${VERSION}${X}"
   fi
 
   # Verify

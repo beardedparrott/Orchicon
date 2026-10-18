@@ -584,6 +584,53 @@ TUI's launch default is the **`forest`** palette — each chosen for its own sur
 than matched to the other. Each is a *default, not a pin*: a stored preference always
 wins, and every palette is available in both clients.
 
+### The desktop app
+
+Orchicon also ships a **desktop app** — a native window around the same web GUI, for the
+three platforms people actually run it on. It is a *third front end*, not a third client:
+it renders the same UI, against the same plane, and it exists to remove the "open a
+browser and type a URL" step.
+
+The desktop app is a **client**. It does not replace the plane: it talks to a running
+Orchicon instance over loopback (`http://127.0.0.1:8080` by default), and if none is
+running it starts one for you — which takes a few seconds on first launch. The **CLI is
+still the canonical entry point** (`orchicon install`, `orchicon start`,
+`orchicon status`), but once the app is installed you do not need it to use Orchicon. The
+app is optional: everything the app does, the web UI at the same URL does too.
+
+**Installing it.** It is opt-in in both installers, so a CLI install is unchanged:
+
+```bash
+curl -fsSL https://orchicon.dev/install | bash -s -- --desktop   # Linux / macOS
+```
+
+```powershell
+irm https://orchicon.dev/install.ps1 | iex                       # then run with -Desktop
+```
+
+Either installer prints where to get the app even when you do not pass the flag. You can
+also take the package straight from
+[GitHub Releases](https://github.com/beardedparrott/Orchicon/releases).
+
+**What each platform does for you — and what it cannot.**
+
+| Platform | Package | The webview gap, and how it is closed |
+|---|---|---|
+| **macOS** | `.app` (universal, in a zip) | WKWebView is part of macOS. The real gap was **Gatekeeper**: the release `.app` is signed with a Developer ID, notarised by Apple and **stapled**, so it opens on a clean machine with no right-click-open and no `xattr` incantation — including offline. A local `make desktop-build-macos` build is unsigned, and Gatekeeper will refuse it: that is expected, and the fix is to install the release artifact. |
+| **Windows 11** | NSIS installer, or portable zip | WebView2 is preinstalled, so nothing to do. |
+| **Windows 10** | NSIS installer, or portable zip | WebView2 may be absent. The **installer** carries the Evergreen bootstrapper and provisions it during setup. The **portable zip** cannot, so the app detects the missing runtime and shows a native dialog naming the download (<https://go.microsoft.com/fwlink/p/?LinkId=2124703>) — never a blank window. |
+| **Linux** | `.deb` (Debian/Ubuntu ≤ 23.10) or AppImage | The `.deb` declares `libwebkit2gtk-4.0-37` and `libgtk-3-0`. Newer distros dropped WebKitGTK 4.0: use the **AppImage**, which bundles it. If the runtime library is somehow missing, `orchicon-desktop` (the launcher the package installs) prints the missing soname and the exact install command before anything tries to open a window. |
+
+On Linux the `.deb` is installed with apt so the dependency is enforced:
+`sudo apt install ./orchicon_desktop_<version>_linux_amd64.deb`. The AppImage needs no
+package manager at all — `chmod +x` it and run it, or let `install.sh --desktop` place it
+in `~/.local/bin/orchicon-desktop`.
+
+**Where it fits.** Use the web GUI in a browser tab when you want zero install, the
+terminal client when you are already in a shell, and the desktop app when you want a window
+in the dock and no tab to lose. All three write to the same plane, so a change made in one
+appears in the others.
+
 ---
 
 # Part I — The web GUI
