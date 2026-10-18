@@ -594,8 +594,8 @@ say "[10] the desktop app (--desktop)"
 # this script already writes, and WITHOUT it the user must be told where to get it rather than left to
 # find it. The asset is served from the same fake release as the CLI archive, so the URL shape the
 # installer builds is exercised for real (no network, no real release).
-if [ "${ARCH}" = "amd64" ]; then
-  DESKTOP_ASSET="orchicon_desktop_${VERSION_NUM}_linux_${ARCH}.AppImage"
+if [ "${BUILD_GOARCH}" = "amd64" ]; then
+  DESKTOP_ASSET="orchicon_desktop_${VERSION_NUM}_linux_${BUILD_GOARCH}.AppImage"
   # A stand-in the installer only has to download, chmod and place: the real artifact is a Wails build.
   printf '#!/bin/sh\necho fake-appimage\n' > "${PKG}/${VERSION}/${DESKTOP_ASSET}"
   chmod +x "${PKG}/${VERSION}/${DESKTOP_ASSET}"
@@ -622,7 +622,7 @@ if [ "${ARCH}" = "amd64" ]; then
     ls -la "${DDEST}" 2>/dev/null | sed 's/^/      /' | head -5
   fi
 else
-  say "  SKIP  linux/${ARCH}: the desktop AppImage is amd64-only (documented; install.sh says so)"
+  say "  SKIP  linux/${BUILD_GOARCH}: the desktop AppImage is amd64-only (documented; install.sh says so)"
 fi
 
 # WITHOUT the flag the install must NAME where the app comes from — that line is AC5.
