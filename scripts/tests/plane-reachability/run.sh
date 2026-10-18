@@ -41,7 +41,6 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
-CONTAINER_SH="${REPO_ROOT}/scripts/container.sh"
 INSTANCES_SH="${REPO_ROOT}/scripts/lib/instances.sh"
 ENGINE_SH="${REPO_ROOT}/scripts/lib/engine.sh"
 [ "$#" -gt 0 ] && INSTANCES_SH="$1"

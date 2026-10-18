@@ -21,8 +21,8 @@
 #   4. AN UNDOCUMENTED TARGET. `make help` is generated from `##` comments, so a
 #      new target without one is invisible.
 #
-# WHAT IS REAL HERE: scripts/container.sh's pure query verbs are EXECUTED (they
-# touch no Docker and no state), and the Makefile is driven with `make -n` /
+# WHAT IS REAL HERE: scripts/instance-ports.sh's pure query verbs are EXECUTED (they
+# touch no engine and no state), and the Makefile is driven with `make -n` /
 # `make help`. The Go side is guarded by `go test ./cmd/orchicon` in ci-go, so this
 # harness does not shell out to Go.
 #
@@ -34,7 +34,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
-CONTAINER_SH="${REPO_ROOT}/scripts/container.sh"
+PORTS_SH="${REPO_ROOT}/scripts/instance-ports.sh"
 MAKEFILE="${REPO_ROOT}/Makefile"
 
 # The harness's own environment must not decide any case, and a PARENT make's
@@ -80,7 +80,7 @@ strip_banners() {
       -e '/^make: Leaving directory/d'
 }
 
-# cs <verb args...> — run scripts/container.sh with the override knobs cleared.
+# cs <verb args...> — run scripts/instance-ports.sh with the override knobs cleared.
 #
 # AND WITH AN EMPTY HOME, because these assertions are about the DERIVATION, not about the operator's
 # instance. `services-port`/`db-url` apply the RECORD-FIRST rule: an instance whose install wrote
@@ -96,11 +96,11 @@ CS_HOME="$(mktemp -d)"
 cs() {
   ( cd "$REPO_ROOT" && \
     env -u ORCHICON_POSTGRES_PORT -u ORCHICON_NATS_PORT -u ORCHICON_NATS_MONITOR_PORT HOME="$CS_HOME" \
-      "$CONTAINER_SH" "$@" ) 2>&1
+      "$PORTS_SH" "$@" ) 2>&1
 }
 
 # scrub_ambient <cmd...> — run a command with the knobs that would MASK the derivation
-# cleared. The same discipline `cs` applies to container.sh, applied to make: CI exports
+# cleared. The same discipline `cs` applies to instance-ports.sh, applied to make: CI exports
 # DB_URL (the postgres service it starts for the migrate/rls-check steps), and `DB_URL ?=`
 # then takes the ENVIRONMENT over the derivation — so an unscrubbed harness would grade the
 # CI job's DSN instead of the Makefile's per-instance one. The port overrides legitimately
@@ -119,12 +119,12 @@ make_do() { ( cd "$REPO_ROOT" && scrub_ambient make "$@" ) 2>&1 | strip_banners;
 # be used for that: it pipes through strip_banners, so $? is the pipe's, not make's.
 make_rc() { ( cd "$REPO_ROOT" && scrub_ambient make "$@" ) >/dev/null 2>&1; if [ $? -ne 0 ]; then echo refused; else echo ran; fi; }
 
-echo "container.sh under test: ${CONTAINER_SH}"
+echo "instance-ports.sh under test: ${PORTS_SH}"
 echo "Makefile under test:     ${MAKEFILE}"
 echo
 
 # --- (i) the pure per-instance query verbs --------------------------------
-echo "  -- container.sh services-port / db-url (the derived port table) --"
+echo "  -- instance-ports.sh services-port / db-url (the derived port table) --"
 
 check "services-port dev postgres"  "5432" "$(cs services-port dev postgres)"
 check "services-port prod postgres" "5433" "$(cs services-port prod postgres)"
@@ -135,7 +135,7 @@ check "services-port dev nats-mon"  "8222" "$(cs services-port dev nats-mon)"
 
 # THE OVERRIDE RUNG: same knobs the installer honours, at instance_info's one
 # choke point — so the derived DSN cannot disagree with the bound port.
-OVR="$(cd "$REPO_ROOT" && HOME="$CS_HOME" ORCHICON_POSTGRES_PORT=6543 "$CONTAINER_SH" services-port dev postgres 2>&1)"
+OVR="$(cd "$REPO_ROOT" && HOME="$CS_HOME" ORCHICON_POSTGRES_PORT=6543 "$PORTS_SH" services-port dev postgres 2>&1)"
 check "services-port honours ORCHICON_POSTGRES_PORT" "6543" "$OVR"
 
 # THE SHELL HALF MUST MIRROR THE GO HALF'S RECORD-FIRST RULE. `orchicon services
@@ -148,11 +148,11 @@ REC_HOME="$(mktemp -d)"
 mkdir -p "$REC_HOME/.local/share/orchicon-dev"
 printf '{\n  "ORCHICON_POSTGRES_PORT": 6001,\n  "ORCHICON_NATS_PORT": 6002,\n  "ORCHICON_CONTROL_PORT": 6003\n}\n' \
   > "$REC_HOME/.local/share/orchicon-dev/ports.json"
-check "services-port uses the RECORDED postgres port" "6001" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$CONTAINER_SH" services-port dev postgres 2>&1)"
-check "services-port uses the RECORDED control port" "6003" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$CONTAINER_SH" services-port dev control 2>&1)"
-check_contains "db-url agrees with the RECORD" "6001" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$CONTAINER_SH" db-url dev 2>&1)"
+check "services-port uses the RECORDED postgres port" "6001" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$PORTS_SH" services-port dev postgres 2>&1)"
+check "services-port uses the RECORDED control port" "6003" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$PORTS_SH" services-port dev control 2>&1)"
+check_contains "db-url agrees with the RECORD" "6001" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$PORTS_SH" db-url dev 2>&1)"
 printf '{\n  "ORCHICON_POSTGRES_PORT": 6001\n}\n' > "$REC_HOME/.local/share/orchicon-dev/ports.json"
-check "a PARTIAL record falls back to the default (all-or-nothing)" "5432" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$CONTAINER_SH" services-port dev postgres 2>&1)"
+check "a PARTIAL record falls back to the default (all-or-nothing)" "5432" "$(cd "$REPO_ROOT" && HOME="$REC_HOME" "$PORTS_SH" services-port dev postgres 2>&1)"
 
 check_contains "db-url dev uses 5432"  ":5432/" "$(cs db-url dev)"
 check_contains "db-url prod uses 5433" ":5433/" "$(cs db-url prod)"
@@ -282,21 +282,14 @@ for t in instance-up instance-down instance-restart instance-status instance-log
   check_lacks "make $t reaches no container.sh" "container.sh" "$(make_n "$t")"
 done
 
-# THE OLD NAMES STILL WORK, as aliases that say what they became. Muscle memory is
-# the asset this rename protects, so a dead verb would be the failure.
-for pair in container-build:instance-build container-up:instance-up container-down:instance-down \
-            container-rebuild:instance-rebuild container-status:instance-status \
-            container-logs:instance-logs container-ps:instance-ps; do
-  old="${pair%%:*}"; new="${pair##*:}"
-  ALIAS="$(make_n "$old")"
-  check_contains "make $old announces $new" "is now $new" "$ALIAS"
-  check_contains "make $old really runs $new" "$new" "$ALIAS"
+# THE OLD NAMES ARE GONE. The aliases said "this is now instance-<verb>" while the
+# container they were named for no longer exists — a retired shape wearing a forwarding
+# address. Their ABSENCE is asserted here, so a re-added alias fails this harness.
+for old in container-build container-up container-down container-rebuild \
+           container-status container-logs container-ps; do
+  check_lacks "make $old is retired" "
+$old:" "\n$(cat "$MAKEFILE")"
 done
-
-# ...AND THE ALIAS MUST NOT DEFEAT THE DESTRUCTIVE GUARD: instance= is forwarded only
-# when the operator named one, so a bare `make container-rebuild` still refuses.
-check_contains "make container-rebuild still refuses without an instance" 'test -n ""' "$(make_n container-rebuild 2>&1 | grep -m1 'test -n' || true)"
-check_contains "make container-rebuild honours a named instance" 'test -n "command line"' "$(make_n container-rebuild instance=prod 2>&1 | grep -m1 'test -n' || true)"
 
 # THE RUNTIME TARGETS MOVED TO runtime.sh, and they must not go back through
 # container.sh either.
@@ -310,7 +303,7 @@ echo
 echo "  -- vacuity guards (a rename must fail this harness, not pass it) --"
 
 for fn in services_port db_url pg_psql; do
-  check_contains "container.sh defines ${fn}()" "$(printf '%s() {' "$fn")" "$(cat "$CONTAINER_SH")"
+  check_contains "instance-ports.sh defines ${fn}()" "$(printf '%s() {' "$fn")" "$(cat "$PORTS_SH")"
 done
 
 MAIN_GO="$(cat "${REPO_ROOT}/cmd/orchicon/main.go")"

@@ -25,7 +25,7 @@ The documentation lives at the project root:
 ## Technology Stack
 
 - **Control plane**: Go (single binary, k8s-style reconcilers)
-- **Single container**: `orchicon container` runs the whole stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, control plane) as PID 1 — see [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md)
+- **One shape**: the plane and its services (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana) are host processes of your user, one set per instance — see [ARCHITECTURE.md §One shape](ARCHITECTURE.md)
 - **API**: Protobuf + Connect (gRPC + REST + streaming from one schema)
 - **Database**: PostgreSQL 16 with RLS + transactional outbox
 - **Event bus**: NATS JetStream
@@ -61,7 +61,7 @@ Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchic
 curl -fsSL https://orchicon.dev/install | bash
 ```
 
-The installer downloads the binary, then runs `orchicon install` to set up everything: pull the published images, start the runtime daemon, launch the single-container instance, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
+The installer downloads the binary, then runs `orchicon install` to set up everything: start the instance's services and plane on this host, register the runtime daemon, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
 
 > **Adapters are optional — the native engine needs nothing installed.** Orchicon ships its own runtime engine and runs sessions inside the control plane, so a fresh install is complete on its own: no adapter CLI, no binary probe, no serve. Install an external adapter (OpenCode, and future ones like Claude Code / Codex) only if you want to run work on that runtime. Orchicon **never bundles or ships** an adapter CLI — your own host install is bind-mounted into the containers at runtime, which keeps the product redistributable regardless of an adapter's licence (Claude Code's terms prohibit bundling).
 >
@@ -88,7 +88,7 @@ The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, co
 docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon
 ```
 
-The `orchicon` binary is the PID-1 supervisor (`orchicon container`). See [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md) for the lifecycle script, env vars, and data-preservation notes.
+The `orchicon` binary is the plane, its service supervisor and the CLI (`orchicon serve`, `orchicon host-services`). See [ARCHITECTURE.md §One shape](ARCHITECTURE.md) for the lifecycle, env vars and data-preservation notes.
 
 ### Windows (WSL2)
 
@@ -137,8 +137,7 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 ```
 
 After installation, verify with `orchicon version`. The full stack runs
-as a single container — see [Single container](#single-container-docker)
-and [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md).
+on this host — see [ARCHITECTURE.md §One shape](ARCHITECTURE.md).
 
 > **Note:** Pre-built binaries are published to [GitHub
 > Releases](https://github.com/beardedparrott/Orchicon/releases). If no
@@ -236,7 +235,6 @@ Generated code is committed (see ARCHITECTURE.md §Code Generation).
 | `proto/` | Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`) |
 | `api/gen/` | Generated Go code |
 | `db/` | Atlas declarative schema + versioned migrations |
-| `deploy/container/` | Single-container image (Dockerfile + embedded runtime configs) |
 | `frontend/` | Vite + React + Connect-ES + TanStack Router + shadcn/ui |
 | `site/` | Static landing page (`orchicon.dev`) |
 | `scripts/` | Installers, CI gates, dev controller |

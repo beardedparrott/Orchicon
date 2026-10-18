@@ -42,7 +42,6 @@ bad()  { printf '   FAIL %s\n' "$*"; fail=1; }
 # from an unrelated describe (a test fixture, a changelog count).
 FILES=(
   Makefile
-  scripts/container.sh
   scripts/gen-release-notes.sh
   scripts/build-site.sh
 )

@@ -281,7 +281,7 @@ else
 fi
 
 # --- 11. THE RE-HOMED TEARDOWN: scripts/orchicon.sh uninstall ------------------
-# The instance teardown used to be `scripts/container.sh uninstall <inst> --yes`,
+# The instance teardown used to be `scripts/instance-ports.sh uninstall <inst> --yes`,
 # and that script owned the instance table. Both moved: the table is
 # scripts/lib/instances.sh and the documented teardown verb is
 # `scripts/orchicon.sh uninstall <inst> --yes`. The PROMISE did not move, so it is

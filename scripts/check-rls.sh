@@ -8,18 +8,17 @@
 # Usage: check-rls.sh <postgres-url>
 #   e.g. scripts/check-rls.sh "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"
 #
-# If psql is not on PATH (common on dev hosts) or the URL is unreachable
-# (postgres runs inside the single-container instance, not on the host), falls
-# back to the instance's OWN downloaded psql (`scripts/container.sh pg-psql`,
-# from infra-binaries.json), then to `docker exec` into the dev container
-# instance. The downloaded rung is what makes this gate reachable on a host with
-# no container engine and no system Postgres — the de-containerized inner loop.
+# If psql is not on PATH (common on dev hosts) or the URL is unreachable (the
+# instance's services are not up), falls back to the instance's OWN downloaded psql
+# (`scripts/instance-ports.sh pg-psql`, from infra-binaries.json). The downloaded
+# rung is what makes this gate reachable on a host with no container engine and no
+# system Postgres — the de-containerized inner loop.
 #
-# When NO database is reachable at all (host psql absent/unreachable AND the
-# instance container is not running) the gate is SKIPPED with a warning and
+# When NO database is reachable at all (host psql absent/unreachable AND no
+# downloaded psql for the instance) the gate is SKIPPED with a warning and
 # exits 0 — so `make rebuild-dev`/`make ci` does not hard-fail on a dev box
-# where the instance isn't up yet. CI (which always has a reachable DB, and
-# runs after `container up`) still enforces the gate.
+# where the instance isn't up yet. CI (which always has a reachable DB) still
+# enforces the gate.
 set -euo pipefail
 
 if [ "$#" -lt 1 ]; then
@@ -28,9 +27,8 @@ if [ "$#" -lt 1 ]; then
 fi
 
 URL="$1"
-CONTAINER="orchicon-cnt-dev"
 # This script lives in scripts/, so the repo root is one level up. Used to reach
-# scripts/container.sh, which resolves the instance's DOWNLOADED psql.
+# scripts/instance-ports.sh, which resolves the instance's DOWNLOADED psql.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # The instance whose downloaded Postgres holds the DB. The Makefile resolves
@@ -39,26 +37,25 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTANCE="${ORCHICON_INSTANCE:-dev}"
 
 # the_bindir_psql prints the psql of the PostgreSQL this instance RESOLVED, via
-# scripts/container.sh pg-psql (which reads <hostDataDir>/infra-binaries.json),
+# scripts/instance-ports.sh pg-psql (which reads <hostDataDir>/infra-binaries.json),
 # or nothing when there is no such record. ORCHICON_PG_PSQL wins outright.
 #
-# THIS IS THE RUNG THAT KEEPS THE GATE REACHABLE ON A DE-CONTAINERIZED HOST: a
-# developer with no system psql and no container still has one, under the
-# instance's own data dir, and it is not on PATH. Without it the gate SKIPS on
-# exactly the host shape this work item is about.
+# THIS IS THE RUNG THAT KEEPS THE GATE REACHABLE ON A HOST WITH NO SYSTEM PSQL: a
+# developer with no system psql still has one, under the instance's own data dir,
+# and it is not on PATH. Without it the gate SKIPS on exactly the host shape this
+# product ships.
 the_bindir_psql() {
   if [ -n "${ORCHICON_PG_PSQL:-}" ]; then
     printf '%s\n' "$ORCHICON_PG_PSQL"
     return 0
   fi
-  local sh="${REPO_ROOT}/scripts/container.sh"
+  local sh="${REPO_ROOT}/scripts/instance-ports.sh"
   [ -x "$sh" ] || return 0
   "$sh" pg-psql "$INSTANCE" 2>/dev/null || true
 }
 
 # Stream SQL results when a DB is reachable (host psql, then the instance's own
-# downloaded psql, then the dev instance container). Returns 3 when no DB is
-# reachable so the caller can skip the gate.
+# downloaded psql). Returns 3 when no DB is reachable so the caller can skip the gate.
 run_sql() {
   if command -v psql >/dev/null 2>&1 && psql "$URL" -c "SELECT 1" >/dev/null 2>&1; then
     psql "$URL" -t -A -F '|'
@@ -68,10 +65,6 @@ run_sql() {
   bindir_psql="$(the_bindir_psql)"
   if [ -n "$bindir_psql" ] && [ -x "$bindir_psql" ] && "$bindir_psql" "$URL" -c "SELECT 1" >/dev/null 2>&1; then
     "$bindir_psql" "$URL" -t -A -F '|'
-    return 0
-  fi
-  if docker exec -i "$CONTAINER" psql "$URL" -c "SELECT 1" >/dev/null 2>&1; then
-    docker exec -i "$CONTAINER" psql "$URL" -t -A -F '|'
     return 0
   fi
   return 3
@@ -105,8 +98,8 @@ rc=$?
 set -e
 
 if [ "$rc" -eq 3 ]; then
-  echo "RLS gate SKIPPED: no reachable Postgres (no host psql, no downloaded psql for '$INSTANCE', and $CONTAINER not running)." >&2
-  echo "Start the instance (scripts/container.sh up dev) or run with a reachable DB_URL to enforce this gate." >&2
+  echo "RLS gate SKIPPED: no reachable Postgres (no host psql, and no downloaded psql for '$INSTANCE')." >&2
+  echo "Start the instance's services ('make services instance=dev', or scripts/orchicon.sh start dev) or run with a reachable DB_URL to enforce this gate." >&2
   exit 0
 fi
 if [ "$rc" -ne 0 ]; then
