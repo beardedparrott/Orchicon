@@ -684,6 +684,8 @@ desktop-deps: ## Print the host prerequisites for building the desktop app (wail
 	@echo "desktop app prerequisites:"
 	@echo "  Go toolchain (go.mod's version), Node 22+, CGO enabled"
 	@echo "  Linux:   libgtk-3-dev libwebkit2gtk-4.1-dev   (apt-get install ...)"
+	@echo "           the 4.1 ABI needs the webkit2_41 BUILD TAG (desktop-build sets it);"
+	@echo "           only an old distro with libwebkit2gtk-4.0-dev drops it"
 	@echo "  macOS:   Xcode command line tools (WKWebView is part of the OS)"
 	@echo "  Windows: WebView2 runtime + gcc (either 32/64-bit match, per Wails docs)"
 	@echo "  wails CLI: go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0"
@@ -692,8 +694,11 @@ desktop-deps: ## Print the host prerequisites for building the desktop app (wail
 # because `//go:embed all:frontend/dist` matches the tracked .gitkeep when the
 # bundle has not been built: a misordered build compiles perfectly and opens an
 # empty window.
+# `webkit2_41` selects the WebKitGTK 4.1 ABI, which is what current distros ship as
+# libwebkit2gtk-4.1-dev; without the tag the cgo files ask pkg-config for 4.0 and the
+# build stops. Inert on macOS (WKWebView) and Windows (WebView2).
 desktop-build: fe-build ## Build the desktop app for THIS OS (CGO on; NOT part of cross-compile)
-	CGO_ENABLED=1 go build -tags desktop,production -o bin/orchicon-desktop ./cmd/orchicon-desktop
+	CGO_ENABLED=1 go build -tags desktop,production,webkit2_41 -o bin/orchicon-desktop ./cmd/orchicon-desktop
 
 desktop-test: ## CI gate: the desktop shell's guards (no webview needed)
 	go build ./internal/desktop/ ./internal/controlport/

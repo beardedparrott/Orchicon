@@ -116,11 +116,11 @@ func (s *Shell) Start() error {
 		// artefact this check exists to prevent.
 		return errors.New(noFrontendMessage)
 	}
-	listen := ""
-	if s.planeURL != nil {
-		listen = "127.0.0.1:0"
-	}
-	ln, err := net.Listen("tcp", listen)
+	// LOOPBACK ONLY, unconditionally. This origin serves the embedded SPA and
+	// proxies the plane's API with no authentication of its own, so binding it
+	// anywhere but the loopback address would hand the plane to the LAN. The port
+	// is ephemeral so the shell never competes with the plane's own.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
 	}

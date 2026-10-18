@@ -159,6 +159,12 @@ jobs:
   # THE FRONTEND BUILD MUST COME FIRST: `go:embed all:frontend/dist` matches the tracked
   # frontend/dist/.gitkeep when the bundle has not been built, so a misordered job compiles perfectly
   # and ships an app that opens an empty window. Asserted by TestDesktopJobBuildsFrontendBeforeBinary.
+  #
+  # AND THE `webkit2_41` TAG IS NOT OPTIONAL ON LINUX: Wails selects the WebKitGTK ABI by build tag
+  # (`#cgo !webkit2_41 pkg-config: webkit2gtk-4.0` / `#cgo webkit2_41 pkg-config: webkit2gtk-4.1`).
+  # Without it the cgo files demand webkit2gtk-4.0's pkg-config file, which no current Ubuntu ships —
+  # the step below installs `libwebkit2gtk-4.1-dev`, so the tags and the package must agree. The tag is
+  # inert on macOS (WKWebView) and Windows (WebView2). Asserted by TestReleaseBuildsDesktopAppPerOS.
   desktop:
     needs: guard
     if: needs.guard.outputs.proceed == 'true'
@@ -195,7 +201,7 @@ jobs:
       - name: Build the desktop app
         run: |
           set -euo pipefail
-          wails build -tags desktop,production -clean
+          wails build -tags desktop,production,webkit2_41 -clean
       - uses: actions/upload-artifact@v4
         with:
           name: orchicon-desktop-${{ matrix.os }}

@@ -429,9 +429,16 @@ func TestReleaseBuildsDesktopAppPerOS(t *testing.T) {
 	if found == nil {
 		t.Fatal("release.yml has no `desktop` job — the desktop app would never be built for a release")
 	}
-	for _, want := range []string{"actions/upload-artifact", "wails build", "libwebkit2gtk-4.1-dev"} {
-		if !strings.Contains(found.body, want) {
-			t.Errorf("the desktop job does not mention %q", want)
+	for _, want := range []struct{ token, why string }{
+		{"actions/upload-artifact", "the built app has to be published as an artifact"},
+		{"wails build", "the app is packaged by the Wails CLI, not by `go build`"},
+		{"libwebkit2gtk-4.1-dev", "Linux needs the 4.1 webview development package"},
+		{"webkit2_41", "wails picks the WebKitGTK ABI by BUILD TAG: without `webkit2_41` its cgo files ask " +
+			"pkg-config for webkit2gtk-4.0, which no current Ubuntu ships, so the job installs 4.1 and then " +
+			"fails to build"},
+	} {
+		if !strings.Contains(found.body, want.token) {
+			t.Errorf("the desktop job does not mention %q — %s", want.token, want.why)
 		}
 	}
 }

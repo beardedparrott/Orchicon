@@ -34,9 +34,13 @@ type Geometry struct {
 // Size is a width/height pair.
 type Size struct{ W, H int }
 
-// Rect is a monitor's usable area, in the same coordinate space the window
-// manager reports (Wails' runtime.Screen has Left/Top/Width/Height, negative
-// for monitors left of or above the primary).
+// Rect is a monitor's usable area in the same coordinate space the window
+// manager reports.
+//
+// Wails v2's runtime.Screen reports SIZE ONLY (no origin), so the callers in
+// cmd/orchicon-desktop leave X/Y at zero and every monitor is treated as
+// anchored at the origin. The fields exist so a caller that DOES know the layout
+// (a test, or a future Wails that reports origins) can describe it exactly.
 type Rect struct{ X, Y, W, H int }
 
 // DefaultGeometry is the initial window: 1440x900, which fits the always-rendered
@@ -134,21 +138,53 @@ func ClampToMonitors(g Geometry, monitors []Rect) Geometry {
 		return g
 	}
 	primary := monitors[0]
-	if g.W > primary.W {
-		g.W = primary.W
-	}
-	if g.H > primary.H {
-		g.H = primary.H
-	}
 	if g.X == 0 && g.Y == 0 {
-		return centred(g, primary)
+		// Not placed yet: centre it, sized to the monitor it will land on.
+		return centred(capSize(g, primary), primary)
 	}
+	// Cap the size to the monitors the window ACTUALLY lands on, not to the
+	// primary: a window remembered on a larger second screen must keep its size,
+	// and one straddling two screens is capped to the LARGER of them.
+	var visible []Rect
 	for _, m := range monitors {
 		if intersects(Geometry{X: g.X, Y: g.Y, W: g.W, H: g.H}, m) {
-			return g
+			visible = append(visible, m)
 		}
 	}
-	return centred(g, primary)
+	if len(visible) == 0 {
+		// The monitor it was placed on is gone: the POSITION is dropped and the
+		// size the operator chose is kept (capped to the primary it is centred on).
+		return centred(capSize(g, primary), primary)
+	}
+	w, h := visible[0].W, visible[0].H
+	for _, m := range visible[1:] {
+		if m.W > w {
+			w = m.W
+		}
+		if m.H > h {
+			h = m.H
+		}
+	}
+	if g.W > w {
+		g.W = w
+	}
+	if g.H > h {
+		g.H = h
+	}
+	return g
+}
+
+// capSize shrinks g to fit inside m. The minimum window is applied by
+// ClampToMonitors before this runs, so a tiny monitor is the only way to get a
+// size below it.
+func capSize(g Geometry, m Rect) Geometry {
+	if g.W > m.W {
+		g.W = m.W
+	}
+	if g.H > m.H {
+		g.H = m.H
+	}
+	return g
 }
 
 // intersects reports whether the window rect overlaps the monitor rect at all.

@@ -34,7 +34,7 @@ Consequences, all deliberate:
 | **Chrome** | **No native menu bar, no in-webview header — the SPA's own top bar IS the app chrome.** The shell draws zero pixels above the content, because a second header is the likeliest drift from the web app. |
 | **macOS traffic lights** | The **standard native title bar** is retained (`mac.TitleBarDefault()`). Content starts below it, so nothing sits under the traffic lights and nothing can clip the SPA's top bar. A hidden-inset bar would require shell-drawn chrome — rejected for the same reason as above. |
 | **Appearance** | The window **frame follows the OS** (`mac.DefaultAppearance`); the shell sets no colour, class or `data-theme`. The **SPA's theme store is the sole authority for the content area** (default dark = Teal Depths). |
-| **Navigation** | Only the shell origin may be loaded; external URIs go to the OS browser. |
+| **Navigation** | The webview is loaded at the shell's own origin (the asset handler 307s there and serves nothing else). The shell intercepts no navigation: a link the SPA opens with `target="_blank"` is left to the platform webview, exactly as in a browser. |
 
 ## The desktop signal (one flag, one helper)
 
@@ -85,7 +85,12 @@ make desktop-test-live ORCHICON_DESKTOP_PLANE_URL=http://127.0.0.1:8080   # tran
 Then `./bin/orchicon-desktop --plane http://127.0.0.1:8091` (or set `ORCHICON_DESKTOP_PLANE_URL`);
 with neither, it points at the dev instance's control port.
 
-**CI**: a separate `desktop-shell` job (not `ci-go`, which is `CGO_ENABLED=0`-shaped).
+**CI**: a separate `desktop-shell` job (not `ci-go`, which is `CGO_ENABLED=0`-shaped). It compiles the
+entry point with the release's own tags (`desktop,production,webkit2_41`), so a Linux cgo break is a CI
+failure rather than a release-time surprise — without `production` Wails compiles a stub and no cgo file is
+built at all.
 **Release**: `.github/workflows/release.yml`'s `desktop` job builds per OS on `ubuntu/macos/windows` runners.
+**Linux ABI tag**: `webkit2_41` selects WebKitGTK 4.1 (`libwebkit2gtk-4.1-dev`). Wails chooses the ABI by
+build tag, so the tags and the apt package must agree or the Linux build cannot find its pkg-config file.
 **`CROSS_PLATFORMS` is untouched** — the app is CGO + a native webview and cannot come from a
 `CGO_ENABLED=0` cross-compile (`TestDesktopNotInCrossPlatforms`).

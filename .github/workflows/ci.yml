@@ -263,5 +263,11 @@ jobs:
       # The guards do not compile the Wails entry point (it is behind the `desktop`
       # build tag so ordinary Go builds stay CGO-free). This does, which is the only
       # thing that catches a signature drift in the thin main.go.
-      - name: Compile the Wails entry point
-        run: go build -tags desktop -o /tmp/orchicon-desktop ./cmd/orchicon-desktop
+      #
+      # `production,webkit2_41` are the RELEASE's tags, not decoration: without
+      # `production` Wails compiles a stub and no cgo file is ever built (so a broken
+      # Linux build would only be discovered at release time), and without
+      # `webkit2_41` the cgo files demand webkit2gtk-4.0's pkg-config file while this
+      # job installs 4.1. CI therefore compiles the same thing the release ships.
+      - name: Compile the Wails entry point (the release's build path)
+        run: go build -tags desktop,production,webkit2_41 -o /tmp/orchicon-desktop ./cmd/orchicon-desktop

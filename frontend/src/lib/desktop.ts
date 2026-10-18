@@ -29,13 +29,19 @@ const GLOBAL_KEY = "__ORCHICON_DESKTOP__";
 /**
  * desktopInfo returns the shell's payload, or null in a browser.
  *
+ * READ THROUGH `globalThis`, NOT `window`: in a browser or a webview the two are
+ * the SAME object (the shell's injection lands on `globalThis` because `window`
+ * IS `globalThis`), so the lookup is identical — but `globalThis` also exists in
+ * the DOM-less environment this repo's vitest suite runs in (there is no jsdom
+ * here; component tests render to a string instead), which is what lets the
+ * forgery test run at all.
+ *
  * The shape is validated rather than trusted: a global of any other shape (an
  * old shell, a page script that got there first) yields null, never a
  * half-truth the Manage Server page could act on.
  */
 export function desktopInfo(): DesktopInfo | null {
-  if (typeof window === "undefined") return null;
-  const raw = (window as unknown as Record<string, unknown>)[GLOBAL_KEY];
+  const raw = (globalThis as unknown as Record<string, unknown>)[GLOBAL_KEY];
   if (!raw || typeof raw !== "object") return null;
   const candidate = raw as Partial<DesktopInfo>;
   if (candidate.desktop !== true) return null;

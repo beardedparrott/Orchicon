@@ -81,4 +81,20 @@ func TestClampToMonitors(t *testing.T) {
 	if got := ClampToMonitors(DefaultGeometry(), []Rect{primary}); got.X == 0 && got.Y == 0 {
 		t.Error("fresh geometry stayed at 0,0 instead of being centred on the primary monitor")
 	}
+
+	// THE CAP FOLLOWS THE MONITOR THE WINDOW IS ON, not the primary: a window
+	// remembered on a larger second screen keeps its size, or a maximised window
+	// would shrink on every launch on a mixed-size desk.
+	big := Rect{X: 1920, Y: 0, W: 2560, H: 1440}
+	onBig := Geometry{X: 2000, Y: 100, W: 2400, H: 1300}
+	if got := ClampToMonitors(onBig, []Rect{primary, big}); got != onBig {
+		t.Errorf("geometry on the larger second monitor = %+v, want it kept as %+v — the size cap must follow "+
+			"the monitor the window is on, not the primary", got, onBig)
+	}
+
+	// Straddling two screens: capped to the LARGEST it covers, not the smaller.
+	straddling := Geometry{X: 1900, Y: 100, W: 2500, H: 1400}
+	if got := ClampToMonitors(straddling, []Rect{primary, big}); got != straddling {
+		t.Errorf("straddling geometry = %+v, want %+v (capped to the largest monitor it covers)", got, straddling)
+	}
 }
