@@ -67,3 +67,39 @@ func TestToolCreateProjectExecutionModeInvalidRejected(t *testing.T) {
 		t.Fatalf("error = %q, want %q", err.Error(), db.ExecutionModeInvalidMsg)
 	}
 }
+
+// The UPDATE path routes through the same parser as create: a spelling create
+// accepts is not rejected on update, a bogus value still is, and a blank value
+// is not silently treated as "unchanged" (it is not a mode).
+func TestToolUpdateProjectExecutionModeParsing(t *testing.T) {
+	pool := workItemKindTestPool(t)
+	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
+
+	created, err := askCreateProject(t, pool, `{"title":"Mode Ask Update `+strings.ToLower(db.NewID())+`"}`)
+	if err != nil {
+		t.Fatalf("toolCreateProject: %v", err)
+	}
+	if created.ExecutionMode != db.ExecutionModeLocal {
+		t.Fatalf("created mode = %q, want local", created.ExecutionMode)
+	}
+
+	out, err := toolUpdateProject(ctx, pool, json.RawMessage(`{"id":"`+created.ID+`","execution_mode":" Runtime "}`))
+	if err != nil {
+		t.Fatalf("toolUpdateProject(\" Runtime \"): %v", err)
+	}
+	var updated db.ProjectRow
+	if err := json.Unmarshal(out, &updated); err != nil {
+		t.Fatalf("unmarshal updated project: %v", err)
+	}
+	if updated.ExecutionMode != db.ExecutionModeRuntime {
+		t.Fatalf("updated mode = %q, want runtime", updated.ExecutionMode)
+	}
+
+	for _, raw := range []string{`"banana"`, `"   "`, `""`} {
+		if _, err := toolUpdateProject(ctx, pool, json.RawMessage(`{"id":"`+created.ID+`","execution_mode":`+raw+`}`)); err == nil {
+			t.Fatalf("toolUpdateProject(execution_mode=%s) succeeded, want rejection", raw)
+		} else if !strings.Contains(err.Error(), db.ExecutionModeInvalidMsg) {
+			t.Fatalf("toolUpdateProject(execution_mode=%s) error = %q, want %q", raw, err.Error(), db.ExecutionModeInvalidMsg)
+		}
+	}
+}

@@ -180,16 +180,18 @@ func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		update.DefaultRuntimeImage = &v
 	}
 	if params.ExecutionMode != nil {
-		switch *params.ExecutionMode {
-		case db.ExecutionModeLocal:
-			m := db.ExecutionModeLocal
-			update.ExecutionMode = &m
-		case db.ExecutionModeRuntime:
-			m := db.ExecutionModeRuntime
-			update.ExecutionMode = &m
-		default:
+		// Route through the SAME parser as create: a raw switch here rejected
+		// spellings create accepts (" Runtime "), so the two paths disagreed
+		// about what a valid mode is. An absent/blank value is not a mode —
+		// reject it rather than handing "" to the column's CHECK constraint.
+		m, err := db.ParseExecutionMode(*params.ExecutionMode, "")
+		if err != nil {
+			return nil, err
+		}
+		if m == "" {
 			return nil, errors.New(db.ExecutionModeInvalidMsg)
 		}
+		update.ExecutionMode = &m
 	}
 	project, err := db.UpdateProject(ctx, ttx.Tx, tenantID, params.ID, current.Version, update)
 	if err != nil {
