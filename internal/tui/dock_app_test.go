@@ -189,6 +189,10 @@ func TestNavCommandParity(t *testing.T) {
 		"/dashboard", "/telemetry", "/cost-explorer", "/usage",
 		// system
 		"/help", "/connect", "/context", "/quit",
+		// plane lifecycle (plane_lifecycle.go) — the TUI is one of only two user-facing control
+		// surfaces, so removing a registration must fail HERE as well as in
+		// TestPlaneCommandsRegisteredEverywhere.
+		"/plane", "/plane-start", "/plane-stop", "/plane-restart",
 	}
 	for _, name := range required {
 		if m.slash.resolve(name) == nil {

@@ -155,9 +155,20 @@ type App struct {
 	// lastStreamErr is the last stream error already surfaced in the dock, so
 	// the same failure is not re-reported on every status update.
 	lastStreamErr string
-	help          helpModel
-	routes        []KeyRoute
-	quitting      bool
+	// plane is the last PLANE-STATE probe (plane_lifecycle.go). It is the shell's answer to "is there a
+	// plane, and is it the build I am running" — a question the stream status cannot answer, because a
+	// rejected/refused stream only says the CONNECTION failed.
+	plane planeInfo
+	// planeProbed says the first-layout probe has been armed, so a resize storm does not re-probe.
+	planeProbed bool
+	// planeDownErrText is the EXACT strip text applyPlaneState wrote for a down plane, so leaving the
+	// down state clears that message and never one somebody else wrote.
+	planeDownErrText string
+	// planeReprobeAt is when the last disconnect-driven re-probe was armed — planeReprobeCmd's cooldown.
+	planeReprobeAt time.Time
+	help           helpModel
+	routes         []KeyRoute
+	quitting       bool
 	// launchDir is the directory the process was launched from — a FACT ABOUT THE
 	// PROCESS (os.Getwd), set by tui.WithLaunchDir and empty in tests and embedders.
 	//
@@ -2332,7 +2343,16 @@ func (m *App) surfaceStreamError() {
 			continue
 		}
 		m.lastStreamErr = errText
-		m.dock.SetError(st.Name + ": " + errText)
+		text := st.Name + ": " + errText
+		// A BARE "connection refused" IS THE FAILURE THIS FEATURE WAS FILED FOR. When the plane probe
+		// says the plane is down, the strip ALSO carries the remedy (start it, or read the log) — the
+		// text is built here, from the state applyPlaneState already set, so the two can never disagree.
+		// A DRIFTED plane is deliberately excluded: it is answering, and the remedy for it is a
+		// restart, not a start.
+		if m.plane.State == planeStateDown {
+			text += " — " + planeRemedy(m.plane)
+		}
+		m.dock.SetError(text)
 		return
 	}
 }
