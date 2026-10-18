@@ -1,5 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { EngineAvailability } from "@/components/EngineAvailability";
+import { LocalModeDisclosure } from "@/components/LocalModeDisclosure";
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
@@ -225,11 +226,15 @@ function NewProjectPage() {
                   className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
                   <option value="runtime">runtime — always-container (default)</option>
-                  <option value="local">local — in-process (fenced)</option>
+                  <option value="local">local — host process, not contained</option>
                 </select>
                 {/* Containers are what "runtime" MEANS — say whether they are available, and
                     why not, right where the choice is made (AC5). */}
                 <EngineAvailability />
+                {/* Local mode is a host process with the operator's own filesystem access, and
+                    the permission rules + guard are defense-in-depth, not containment. Say so
+                    AT THE MOMENT OF CHOOSING — never buried in the docs. */}
+                {executionMode === "local" && <LocalModeDisclosure />}
               </div>
             </div>
 

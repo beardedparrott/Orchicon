@@ -870,13 +870,21 @@ that are injected into every worker prompt.
 
 **The fields, and why you'd set them.**
 
+> **Local mode is not contained.** `runtime` runs each execution in a short-lived, root-free
+> container — that is a real isolation boundary. `local` runs the worker as a **host process with
+> your own filesystem access**: it can read and write anything you can. The layers that remain —
+> opencode's permission deny rules, the OS execution guard that shims dangerous binaries, and the
+> worker prompt's Safety rules — are **defense-in-depth, not containment**, and a determined worker
+> escapes them (an absolute-path `/bin/rm`, or a binary it writes and runs itself). If isolation
+> matters, keep `runtime`.
+
 | Field | What it is | Why you'd set it |
 |---|---|---|
 | **Name** / **Slug** | The display name, and an optional short slug used in URLs and references | Set the slug once if you will refer to the project by name in scripts or URLs |
 | **Project directory** | The directory workers operate in — and the boundary they are held to | Always set it. It is also the only directory guaranteed to be mounted into the containers where workers run, so everything a worker may touch must live under it |
 | **Git strategy** | How a run handles branches and pull requests — see below | Choose the outcome you want: a pushed branch, a reviewed PR, or nothing pushed at all |
 | **Default runtime image** | The container image work items use unless they set their own. Empty = the base image | Set it when your projects need extra tooling (a language runtime, a browser, a CLI) so you are not setting it per work item |
-| **Execution mode** | `runtime` — always run in a container (default), or `local` — run in-process on the host | Keep `runtime` for isolation. Use `local` when a task genuinely needs the host's own environment, accepting that it is no longer contained |
+| **Execution mode** | `runtime` — always run in a container (default), or `local` — run in-process on the host | Keep `runtime` for isolation: it is the only real boundary. `local` runs as a host process with your own filesystem access — the permission rules and execution guard are defense-in-depth and can be escaped (an absolute-path `/bin/rm`, a binary the worker writes itself), so choose `local` only when a task genuinely needs the host's own environment |
 | **Max concurrent runs** | Caps how many executions may run at once. `0` = no additional restriction | Set it when a project would otherwise saturate the machine or race itself; the effective limit is `min(tenant, project)` |
 | **Goals** | Free-form markdown describing what the project is for | Worth writing: goals are injected into worker prompts, so they steer every task in the project |
 | **Context files** | Files or directories injected into every worker prompt, on top of the work item's own | Point them at the conventions, specs or reference material a worker should always have |
