@@ -548,7 +548,13 @@ Both clients drive the **same** server, the same conversations, and the same con
 | | |
 |---|---|
 | **GUI** | the `/ask-orchicon` route; composer with the model chip, the stat strip, a **Fullsend** dropdown, and the mode dropdown |
-| **TUI** | `bin/orch`, `F1 · Ask Orchicon`; composer with the mode pill and the `FULLSEND` badge, slash commands (`/fullsend`, `/mode`, `/grants`, `/permissions`) |
+| **TUI** | `bin/orch`, `F1 · Ask Orchicon`; composer with the mode pill and the `FULLSEND` badge, slash commands (`/fullsend`, `/mode`, `/grants`, `/permissions`, `/plane`, `/plane-start`, `/plane-stop`, `/plane-restart`) |
+
+The TUI is also a **plane lifecycle control surface** (`/plane`, `/plane-start`, `/plane-stop`,
+`/plane-restart` plus a footer state chip: up / down / drifted / not local). It calls
+`internal/planecontrol` **directly** — no API, no lifecycle RPC — which is what lets it START a plane
+that is not serving, since `orch` is a separate binary. The web app carries no lifecycle control by
+design (a browser cannot spawn a process); see `docs/tui-parity.md`.
 
 A conversation is per-project, carries its own model, and is reachable from either client. Consent
 state is server-side, so a decision made in one client settles the card in the other — including a
@@ -1126,6 +1132,23 @@ scripts/container.sh verify dev       # what the instance ACTUALLY runs (ports, 
 scripts/container.sh plane-stop dev   # stop the HOST plane; the services container keeps running
 scripts/container.sh plane-start dev  # start it again — no container restart
 ```
+
+**Instance lifecycle verbs** (the CLI's own surface; `scripts/orchicon.sh` delegates to these):
+
+```bash
+orchicon start   [instance]   # services, then the plane — after a reboot, this is the one
+orchicon stop    [instance]   # plane, then services; idempotent
+orchicon restart [instance]   # re-read the environment (PATH, a newly installed adapter CLI)
+orchicon plane   status|start|stop|restart [instance]   # the plane only
+orchicon services up|down|status [instance]             # postgres + NATS only
+orchicon plane status <instance>   # instance, residency, PID, serving binary, drift, health
+```
+
+There is **no `serve --start`**: `serve` runs a plane in the foreground and manages the *detached* one
+(`--detach` / `--stop` / `--status`); starting an instance is `orchicon start`. `serve --status` reports
+exactly what `orchicon plane status` reports — the same `planecontrol.StatusOf` call, so the two cannot
+disagree — and keeps its machine-read exit code (`0` only when the PID file names a live process), which
+is what `scripts/orchicon.sh` relies on.
 
 **Migration rule:** dev and prod migrate independently and coexist in different shapes; a rebuild of one instance must never alter the other's. `scripts/container.sh verify <inst>` is the check.
 
