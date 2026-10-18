@@ -2,10 +2,10 @@ package scheduler
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
 // TestIsLiveDSN pins the local-mode DSN fence matcher (acceptance E): the
@@ -60,27 +60,55 @@ func TestIsLiveDSN(t *testing.T) {
 }
 
 // TestProjectExecutionModeDefaults pins the mode helper's fail-open
-// contract: empty project or read failure degrades to runtime.
+// contract: empty project or read failure degrades to runtime, and an ITEM
+// override is honoured — including a local item inside a runtime project
+// (the fence must follow the item, not the project).
 func TestProjectExecutionModeDefaults(t *testing.T) {
-	dsn := os.Getenv("ORCHICON_TEST_DSN")
-	if dsn == "" {
-		t.Skip("ORCHICON_TEST_DSN not set; skipping DB-backed mode test")
-	}
+	// scratchPool applies the migrations, so this test is self-sufficient on a
+	// fresh disposable database (it writes real projects/items below).
+	pool := scratchPool(t)
 	ctx := context.Background()
-	pool, err := db.Open(ctx, dsn)
-	if err != nil {
-		t.Fatalf("open test pool: %v", err)
-	}
-	defer pool.Close()
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ttx.Rollback(ctx)
-	if got := projectExecutionMode(ctx, ttx.Tx, approvalTestTenant, ""); got != db.ExecutionModeRuntime {
+	// A local ITEM inside a RUNTIME project must trip the fence: the resolved
+	// mode follows the item override, not the project row.
+	prj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
+		ID: "prj_fence_item", TenantID: approvalTestTenant,
+		Name: "fence item", Slug: "fence-item", Status: "active", Goals: []byte("[]"),
+		ProjectDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("create fence project: %v", err)
+	}
+	if prj.ExecutionMode != db.ExecutionModeRuntime {
+		t.Fatalf("fence project mode = %q, want runtime", prj.ExecutionMode)
+	}
+	local := db.ExecutionModeLocal
+	wi, err := db.CreateWorkItem(ctx, ttx.Tx, db.WorkItemRow{
+		ID: "wi_fence_item", TenantID: approvalTestTenant, ProjectID: prj.ID,
+		Kind: domain.WorkItemKindTask, Title: "fence", Status: domain.WorkItemReady,
+		ExecutionMode: &local,
+	})
+	if err != nil {
+		t.Fatalf("create fence item: %v", err)
+	}
+	if got := executionModeFor(ctx, ttx.Tx, approvalTestTenant, wi.ID, prj.ID); got != db.ExecutionModeLocal {
+		t.Errorf("local item in runtime project mode = %q, want local", got)
+	}
+
+	// NOT FOUND probes LAST: a failed read inside the tenant tx leaves the
+	// transaction unusable for further writes, and these only assert the
+	// fail-open contract anyway.
+	if got := executionModeFor(ctx, ttx.Tx, approvalTestTenant, "", ""); got != db.ExecutionModeRuntime {
 		t.Errorf("empty project mode = %q, want runtime", got)
 	}
-	if got := projectExecutionMode(ctx, ttx.Tx, approvalTestTenant, "prj_does_not_exist"); got != db.ExecutionModeRuntime {
+	if got := executionModeFor(ctx, ttx.Tx, approvalTestTenant, "", "prj_does_not_exist"); got != db.ExecutionModeRuntime {
 		t.Errorf("missing project mode = %q, want runtime", got)
+	}
+	if got := executionModeFor(ctx, ttx.Tx, approvalTestTenant, "wi_does_not_exist", ""); got != db.ExecutionModeRuntime {
+		t.Errorf("missing item mode = %q, want runtime", got)
 	}
 }
