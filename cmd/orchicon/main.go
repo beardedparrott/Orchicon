@@ -73,6 +73,12 @@ func main() {
 			os.Exit(exitOnErr(runRuntimeClient(os.Args[2:], log)))
 		case "install":
 			os.Exit(exitOnErr(runInstall(os.Args[2:], log)))
+		case "start":
+			// The one-verb lifeline: services then plane, composed from the primitives below.
+			os.Exit(exitOnErr(runStart(os.Args[2:], log)))
+		case "stop":
+			// The mirror of start: plane then services. Both halves are idempotent.
+			os.Exit(exitOnErr(runStop(os.Args[2:])))
 		case "restart":
 			os.Exit(exitOnErr(runRestart(os.Args[2:], log)))
 		case "plane":
@@ -289,6 +295,12 @@ func printHelp() {
 			"Restart the instance so its components re-read their environment.",
 			"Use this after installing an adapter CLI or changing PATH: a plane inherits its",
 			"environment when it STARTS, so `install` alone will not refresh it."}},
+		{cmd: bin + " start [instance]", desc: []string{
+			"Start an INSTALLED instance: its services (Postgres + NATS), then its plane.",
+			"Idempotent, and it never installs — use `install` for a machine with nothing on it."}},
+		{cmd: bin + " stop [instance]", desc: []string{
+			"Stop an instance: its plane, then its services. Idempotent, so running it on a",
+			"stopped instance is a successful no-op."}},
 		{cmd: bin + " plane", desc: []string{
 			"status | start | stop | restart one instance's plane (the same local mechanism the",
 			"TUI and the desktop app call; `scripts/orchicon.sh` delegates to it too)."}},
