@@ -127,9 +127,6 @@ func PlaneEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket 
 		fmt.Sprintf("ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:%d/orchicon?sslmode=disable", ports["ORCHICON_POSTGRES_PORT"]),
 		fmt.Sprintf("ORCHICON_NATS_URL=nats://localhost:%d", ports["ORCHICON_NATS_PORT"]),
 		fmt.Sprintf("ORCHICON_OTEL_ENDPOINT=localhost:%d", ports["ORCHICON_OTLP_GRPC_PORT"]),
-		// Grafana is proxied same-origin under /grafana, so the plane reaches it
-		// on the Grafana publish's host port.
-		fmt.Sprintf("ORCHICON_GRAFANA_URL=http://localhost:%d", ports["ORCHICON_GRAFANA_PORT"]),
 		fmt.Sprintf("ORCHICON_TEMPO_URL=http://localhost:%d", ports["ORCHICON_TEMPO_PORT"]),
 		fmt.Sprintf("ORCHICON_LOKI_URL=http://localhost:%d", ports["ORCHICON_LOKI_PORT"]),
 		fmt.Sprintf("ORCHICON_VM_URL=http://localhost:%d", ports["ORCHICON_VM_PORT"]),

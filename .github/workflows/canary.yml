@@ -72,6 +72,8 @@ jobs:
             arch: amd64
           - os: darwin
             arch: arm64
+          - os: windows
+            arch: amd64
     steps:
       - uses: actions/checkout@v4
 
@@ -107,19 +109,28 @@ jobs:
                    -X github.com/beardedparrott/orchicon/internal/version.gitTag=canary \
                    -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           export CGO_ENABLED=0
-          GOOS="${{ matrix.os }}" GOARCH="${{ matrix.arch }}" go build -ldflags "$LDFLAGS" -o orchicon ./cmd/orchicon
-          GOOS="${{ matrix.os }}" GOARCH="${{ matrix.arch }}" go build -ldflags "$LDFLAGS" -o orch ./cmd/orch
+          EXT=""
+          if [ "${{ matrix.os }}" = "windows" ]; then EXT=".exe"; fi
+          GOOS="${{ matrix.os }}" GOARCH="${{ matrix.arch }}" go build -ldflags "$LDFLAGS" -o "orchicon${EXT}" ./cmd/orchicon
+          GOOS="${{ matrix.os }}" GOARCH="${{ matrix.arch }}" go build -ldflags "$LDFLAGS" -o "orch${EXT}" ./cmd/orch
           ASSET="orchicon_canary_${{ matrix.os }}_${{ matrix.arch }}"
           mkdir -p "$ASSET"
-          cp orchicon orch "$ASSET/"
+          cp "orchicon${EXT}" "orch${EXT}" "$ASSET/"
           cp README.md LICENSE "$ASSET/" 2>/dev/null || true
-          tar -czf "${ASSET}.tar.gz" "$ASSET"
-          ls -l "${ASSET}.tar.gz"
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            zip -r "${ASSET}.zip" "$ASSET"
+            ls -l "${ASSET}.zip"
+          else
+            tar -czf "${ASSET}.tar.gz" "$ASSET"
+            ls -l "${ASSET}.tar.gz"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: canary-${{ matrix.os }}-${{ matrix.arch }}
-          path: orchicon_*.tar.gz
+          path: |
+            orchicon_*.tar.gz
+            orchicon_*.zip
           if-no-files-found: error
 
   # THE CONTAINER IMAGE, because the binaries alone cannot exercise the container half of an install. The
@@ -213,9 +224,9 @@ jobs:
           )
 
           if gh release view canary >/dev/null 2>&1; then
-            gh release upload canary dist/*.tar.gz --clobber
+            gh release upload canary dist/*.tar.gz dist/*.zip --clobber
             gh release edit canary --prerelease --title "canary (develop)" --notes "$NOTES"
           else
-            gh release create canary --prerelease --title "canary (develop)" --notes "$NOTES" dist/*.tar.gz
+            gh release create canary --prerelease --title "canary (develop)" --notes "$NOTES" dist/*.tar.gz dist/*.zip
           fi
           gh release view canary --json tagName,isPrerelease -q '"published " + .tagName + " prerelease=" + (.isPrerelease|tostring)'

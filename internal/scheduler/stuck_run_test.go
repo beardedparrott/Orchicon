@@ -77,7 +77,8 @@ func createStuckTestProject(t *testing.T, pool *db.Pool) db.ProjectRow {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Stuck Test", Slug: slug,
 		Status: domain.ProjectActive, Goals: []byte("[]"),
-		ProjectDir: "/tmp/orchicon/" + slug,
+		ProjectDir:    "/tmp/orchicon/" + slug,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)

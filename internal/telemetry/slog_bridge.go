@@ -90,8 +90,8 @@ func (h *multiHandler) WithGroup(name string) slog.Handler {
 
 // otelHandler converts each slog.Record into an OTel log record and
 // emits it through the global LoggerProvider. The OTel SDK is
-// already wired into the same Loki store the embedded Grafana
-// UI reads, so the records appear in the Telemetry logs tab without
+// already wired into the same Loki store the Telemetry logs tab
+// reads, so the records appear there without
 // any extra exporter wiring.
 type otelHandler struct {
 	providerMu sync.RWMutex

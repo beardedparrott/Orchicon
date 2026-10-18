@@ -119,7 +119,7 @@ function PlaneSection() {
   useEffect(() => {
     if (!plane) return;
     let cancelled = false;
-    const port = portOf(info?.planeUrl ?? "");
+    const port = portOf(info?.planeURL ?? "");
     plane
       .ResolveControlPort(port)
       .then((res) => {
@@ -131,7 +131,7 @@ function PlaneSection() {
     return () => {
       cancelled = true;
     };
-  }, [plane, info?.planeUrl]);
+  }, [plane, info?.planeURL]);
 
   const refresh = async (): Promise<StatusDTO | null> => {
     if (!plane || !instance) return null;
@@ -208,7 +208,7 @@ function PlaneSection() {
   };
 
   const portText = current?.ControlPort ? `port ${current.ControlPort}` : choice.running[0]?.ControlPort ? `port ${choice.running[0].ControlPort}` : "port unknown";
-  const triedUrl = current?.URL ?? info?.planeUrl ?? "";
+  const triedUrl = current?.URL ?? info?.planeURL ?? "";
 
   return (
     <div className="space-y-4">

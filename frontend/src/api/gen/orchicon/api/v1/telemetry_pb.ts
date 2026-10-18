@@ -2,10 +2,10 @@
 // docs/07_API_Specification.md §3.9).
 //
 // Telemetry is OTel-native and flows from the producer to the OTel
-// collector to the Grafana stack (Tempo/Loki/VictoriaMetrics) — it does NOT flow through
+// collector to the telemetry backends (Tempo/Loki/VictoriaMetrics) — it does NOT flow through
 // NATS (docs/08 §1). The TelemetryService proxies tenant-scoped queries
 // to the backends so users explore traces/metrics/logs without leaving the
-// Orchicon shell (docs/10 §11: seamless Grafana embedding).
+// Orchicon shell (docs/10 §11: native telemetry panes).
 //
 // A single correlation_id propagates across all spans in a user action
 // (docs/08 §3, §5.1): api.<service>.<rpc> → reconcile.<kind>.<id> →
@@ -590,6 +590,13 @@ export class TelemetryQuery extends Message<TelemetryQuery> {
    */
   pageToken = "";
 
+  /**
+   * optional scope (joins via attributes)
+   *
+   * @generated from field: string work_item_id = 11;
+   */
+  workItemId = "";
+
   constructor(data?: PartialMessage<TelemetryQuery>) {
     super();
     proto3.util.initPartial(data, this);
@@ -608,6 +615,7 @@ export class TelemetryQuery extends Message<TelemetryQuery> {
     { no: 8, name: "end", kind: "message", T: Timestamp },
     { no: 9, name: "limit", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 10, name: "page_token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 11, name: "work_item_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TelemetryQuery {

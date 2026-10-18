@@ -542,23 +542,30 @@ disk-report-test: ## CI gate: assert disk-report's subtraction, its bounds, and 
 # it) and its long or interactive steps must STREAM rather than capture (a captured step
 # is indistinguishable from a hang, and a captured PROMPT blocks for ever).
 #
-# It needs pwsh + iconv and no Windows at all: a wsl.exe double carries the contract, and
-# the failure paths are run inside a child pwsh. PWSH=/path/to/pwsh overrides the lookup.
+# It needs pwsh + iconv + python3 and no Windows at all: a wsl.exe double and a release-archive
+# double carry the contract, and the WHOLE install path runs inside a child pwsh. That archive
+# double's orchicon.exe is behind a deny-list that now covers podman as well as docker — a real
+# install started from a test mutates the operator's machine AND is indistinguishable from a hang,
+# so it must be impossible rather than unlikely. New assertions: a plain install never invokes wsl
+# (WSL2 is provisioned only for -Containers), the setup is told when a human is present
+# (ORCHICON_INSTALL_INTERACTIVE=1) and when not (-Yes), and the ports printed are the RECORDED ones
+# rather than a constant. PWSH=/path/to/pwsh overrides the lookup.
 # This is pwsh 7, NOT Windows PowerShell 5.1 — the 5.1-only behaviours it must avoid (the
 # `2>&1` ErrorRecord trap) are documented in the installer's source instead.
 .PHONY: install-ps1-test
-install-ps1-test: ## CI gate: the Windows installer never closes the session, and streams
+install-ps1-test: ## CI gate: the Windows installer is native, never closes the session, and streams
 	PWSH="$${PWSH:-$$(command -v pwsh || ls -d .dev/tools/pwsh/*/pwsh 2>/dev/null | head -1)}" \
-		bash scripts/tests/install-ps1-wsl-encoding/run.sh
+		bash scripts/tests/install-ps1-native/run.sh
 
 # install-path-test RUNS THE REAL INSTALLER against a real artifact: scripts/tests/install-path
 # packages a build in the release's exact asset shape, serves it over HTTP, and runs scripts/install.sh
 # against it end to end. It needs no network, no Docker and no release — which is the point, because the
 # install path was previously exercised only by a user, and a broken installer reached two published
-# releases that way. It covers the POSIX installer; install.ps1's WSL path needs a Windows runner (its
-# offline behaviour is covered by install-ps1-test).
-install-path-test: ## Run the real installer against a locally-served artifact, and the uninstall verbs against a stubbed docker
+# releases that way. It covers the POSIX installer; install.ps1's NATIVE path is covered offline by
+# install-ps1-test (a real zip, a real child process); only the container opt-in needs a Windows runner.
+install-path-test: ## Run the real installer against a locally-served artifact, and the uninstall verbs against redirected state and stubbed engines
 	bash scripts/tests/install-path/run.sh
+	bash scripts/tests/install-path/run.sh --os darwin
 	bash scripts/tests/install-path/uninstall.sh
 
 # host-residency-test guards the LAUNCH SHAPE of an instance: which of the two residencies a plain
@@ -624,6 +631,33 @@ no-engine-e2e-assertions-test: ## CI gate: the no-engine acceptance harness neve
 runtime-e2e-assertions-test: ## CI gate: the runtime-container acceptance harness never PASSes on an empty capture
 	bash scripts/tests/runtime-e2e-assertions/run.sh
 
+# plane-control-e2e-assertions-test pins the PLANE-CONTROL acceptance harness's own
+# honesty. Its verdicts are absence-shaped too: "the connection was REFUSED", "every
+# port is free", "the plane was left alone", "the status does not say drifted" — all
+# trivially true of a probe that failed to run, and all of them the difference between
+# a Stop that worked and a Stop nobody verified. Offline: it sources the harness and
+# drives it against a throwaway python3 HTTP fixture and the real /proc socket table,
+# so it touches no Orchicon plane, instance, port or database.
+.PHONY: plane-control-e2e-assertions-test
+plane-control-e2e-assertions-test: ## CI gate: the plane-control acceptance harness never PASSes on a refused/empty probe
+	bash scripts/tests/plane-control-e2e-assertions/run.sh
+
+# published-archive-e2e-assertions-test pins the PUBLISHED-ARCHIVE acceptance harness's
+# own honesty. Its verdicts are IDENTITY- and ABSENCE-shaped: "this artifact IS the
+# version under test", "no engine was invoked", "the install asked nothing" — every one
+# of them trivially true of a probe that failed to run. Offline: it sources the harness,
+# runs the engine shims for real, and measures a fixture tree with the footprint tool.
+# No release is downloaded, no plane starts, no port is bound, no database is touched.
+.PHONY: published-archive-e2e-assertions-test
+published-archive-e2e-assertions-test: ## CI gate: the published-archive acceptance harness never PASSes on an empty/unverified probe
+	bash scripts/tests/published-archive-e2e-assertions/run.sh
+
+# The MEASUREMENT the epic's "under 1 GB" claim is checked with — measured, not derived
+# (scripts/disk-report.sh answers a different question: btrfs snapshot-pinned bytes).
+.PHONY: published-archive-e2e-footprint
+published-archive-e2e-footprint: ## Measure an install's footprint (binaries + host services + instance data, excl. projects/runtime images)
+	bash scripts/e2e/footprint.sh $(if $(INSTANCE),--instance $(INSTANCE),) $(FOOTPRINT_ARGS)
+
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
@@ -672,6 +706,44 @@ fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live und
 # leaves the working tree clean — which is what makes it safe to put in the gate.
 fe-typecheck: ## CI gate: typecheck the frontend (tsc -b) — the only gate that can see a type error
 	cd frontend && npm run typecheck
+
+# --- Desktop app -----------------------------------------------------------
+# THE DESKTOP APP IS NOT PART OF CROSS_PLATFORMS. It is CGO + a native webview
+# (WebKitGTK/WKWebView/WebView2), so it cannot go in the CGO_ENABLED=0
+# cross-compile loop — that loop would fail, and folding it in would break
+# `make cross-compile` for everyone. Each OS builds its own binary on its own
+# runner in .github/workflows/release.yml.
+.PHONY: desktop-deps desktop-build desktop-test desktop-test-live
+desktop-deps: ## Print the host prerequisites for building the desktop app (wails CLI + webkit2gtk)
+	@echo "desktop app prerequisites:"
+	@echo "  Go toolchain (go.mod's version), Node 22+, CGO enabled"
+	@echo "  Linux:   libgtk-3-dev libwebkit2gtk-4.1-dev   (apt-get install ...)"
+	@echo "           the 4.1 ABI needs the webkit2_41 BUILD TAG (desktop-build sets it);"
+	@echo "           only an old distro with libwebkit2gtk-4.0-dev drops it"
+	@echo "  macOS:   Xcode command line tools (WKWebView is part of the OS)"
+	@echo "  Windows: WebView2 runtime + gcc (either 32/64-bit match, per Wails docs)"
+	@echo "  wails CLI: go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0"
+
+# desktop-build builds the app for THIS OS only. The frontend build comes FIRST
+# because `//go:embed all:frontend/dist` matches the tracked .gitkeep when the
+# bundle has not been built: a misordered build compiles perfectly and opens an
+# empty window.
+# `webkit2_41` selects the WebKitGTK 4.1 ABI, which is what current distros ship as
+# libwebkit2gtk-4.1-dev; without the tag the cgo files ask pkg-config for 4.0 and the
+# build stops. Inert on macOS (WKWebView) and Windows (WebView2).
+desktop-build: fe-build ## Build the desktop app for THIS OS (CGO on; NOT part of cross-compile)
+	CGO_ENABLED=1 go build -tags desktop,production,webkit2_41 -o bin/orchicon-desktop ./cmd/orchicon-desktop
+
+desktop-test: ## CI gate: the desktop shell's guards (no webview needed)
+	go build ./internal/desktop/ ./internal/controlport/
+	go test ./internal/desktop/... ./internal/controlport/...
+	go vet ./internal/desktop/... ./internal/controlport/...
+
+# desktop-test-live is the TRANSPORT PROOF: unary + server-streaming RPCs through
+# the shell's own origin against a real plane. Skips loudly when the plane URL is
+# unset, so a unit run reports "not configured" rather than a false green.
+desktop-test-live: ## Transport proof through the shell origin against a REAL plane (set ORCHICON_DESKTOP_PLANE_URL)
+	go test -tags desktop_e2e ./internal/desktop/ -run 'TestLive' -v
 
 site-check: ## Assert the landing page's nav and version-stamp invariants
 	@# The landing page is served from a CDN and rendered by a browser, so a CSS or
@@ -1023,11 +1095,12 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
 # Windows, so no amount of running them would have caught it. Compiling for the shipped platforms is
 # the only check that does.
 #
-# Output goes to a temp directory: this is a COMPILE check, not a build, and dropping four pairs of
+# Output goes to a temp directory: this is a COMPILE check, not a build, and dropping six pairs of
 # binaries into the repo root would leave them behind.
 #
 # THE CACHE GOES THE SAME WAY AS THE BINARIES — and its absence is why the dev cache reached 71 GB.
-# This gate compiles FOUR platforms, and each platform's package archives are ~130 MB, so ONE
+# This gate compiles SIX platforms (the five that ship plus windows/arm64), and each platform's
+# package archives are ~130 MB, so ONE
 # `make ci-go` (and therefore one `make rebuild-dev`) wrote TENS OF GB into the shared dev GOCACHE.
 # Those artifacts are worthless to the dev loop — nothing on an amd64 dev host ever links a
 # windows/arm64 archive — but they are not free: they are what filled the disk.
@@ -1038,17 +1111,23 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
 # THE SOURCE; `make cache-trim` bounds whatever is left.
 #
 # The cost is measured, not assumed: a COLD cross-compile of the two shipped binaries for one
-  # platform takes ~21s and writes ~1.1 GB, so all four from a clean cache is a couple of minutes of
-  # CPU — paid once per gate run, in exchange for a shared cache that no longer carries foreign bytes.
-  #
-  # WINDOWS IS HERE, and it is the point of the difference between this list and the release matrix.
-  # This list is the COMPILE GATE, not the ship list: Postgres now runs as a HOST process on Windows
-  # (cmd/orchicon/privilege_windows.go, hostproc_windows.go), so a windows/amd64 build break is a
-  # release-blocking failure for that host even though no Windows artifact is published. It is not a
-  # hypothetical: cmd/orchicon/install_host.go called syscall.Kill from an UNTAGGED file, and
-  # windows/amd64 and windows/arm64 failed to build for it while this gate stayed green — because
-  # Windows was not in this list. release.yml's matrix is a SEPARATE decision (what SHIPS) and is
-  # deliberately left alone; the gate and the matrix now differ on purpose.
+# platform takes ~21s and writes ~1.1 GB, so all six from a clean cache is a couple of minutes of
+# CPU — paid once per gate run, in exchange for a shared cache that no longer carries foreign bytes.
+#
+# WINDOWS IS IN BOTH LISTS NOW, and the one remaining difference is stated rather than implied.
+# windows/amd64 SHIPS (release.yml builds orchicon_<version>_windows_amd64.zip): the plane and the
+# host services are HOST processes on Windows (cmd/orchicon/privilege_windows.go,
+# hostproc_windows.go), so `orchicon install`/`serve` there run a NATIVE orchicon.exe and WSL2 is
+# left with only the runtime CONTAINERS — which need a Linux kernel. windows/arm64 does NOT ship
+# (Windows on ARM runs the amd64 zip under emulation, so a second artifact would be published for
+# nobody) but it stays in THIS list on purpose: a compile break there must fail here, before a
+# release, not on a user's machine after one. Gate = six platforms, ship list = five; the gap is
+# exactly arm64 Windows.
+#
+# WHY THE GATE IS NOT OPTIONAL: cmd/orchicon/install_host.go once called syscall.Kill from an
+# UNTAGGED file, so windows/amd64 and windows/arm64 could not compile while every gate stayed green
+# — because Windows was not in this list. `go build`, `go vet` and `go test` on linux/amd64 all pass
+# for code that cannot build for Windows.
   CROSS_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
 # CROSS_TMP is where cross-compile keeps its throwaway cache and output. It is under the repo rather
@@ -1058,7 +1137,7 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
 # directory is gitignored and removed by the trap, so nothing is left behind.
 CROSS_TMP := $(CURDIR)/.cross-compile
 .PHONY: cross-compile
-cross-compile: ## Compile the shipped binaries for every release platform (catches platform-specific breaks)
+cross-compile: ## Compile the shipped binaries for every release platform plus windows/arm64 (compile-only; catches platform-specific breaks)
 	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
 	@set -e; mkdir -p $(CROSS_TMP); xcache="$$(mktemp -d $(CROSS_TMP)/cache.XXXXXX)"; tmp="$$(mktemp -d $(CROSS_TMP)/out.XXXXXX)"; \
 	trap 'rm -rf "$$tmp" "$$xcache"' EXIT; \
@@ -1113,7 +1192,7 @@ cross-compile: ## Compile the shipped binaries for every release platform (catch
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-typecheck fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate

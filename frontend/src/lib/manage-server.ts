@@ -105,7 +105,7 @@ export type InstanceChoice = {
  * configured against — and an unrecognised port with no shell instance means ASK.
  */
 export function resolveChoice(
-  shellInstance: string | undefined,
+  shellInstance: string | null | undefined,
   resolution: ResolutionDTO | null,
 ): InstanceChoice {
   if (shellInstance) {

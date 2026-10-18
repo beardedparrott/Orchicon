@@ -63,8 +63,8 @@ message Project {
   // image tag. Empty = inherit tenant/base; copied onto work items at
   // create time when the caller passes no runtime_image.
   string default_runtime_image = 15;
-  // execution_mode selects always-container (runtime, default) vs
-  // in-process (local, with honest prompt + DSN fence).
+  // execution_mode selects always-container (runtime, opt-in) vs
+  // in-process (local, the default, with honest prompt + DSN fence).
   ExecutionMode execution_mode = 16;
   // skill_files are absolute paths (files OR directories) to SKILL artifacts
   // selected for this project. Each is validated by internal/contextfiles
@@ -119,9 +119,9 @@ enum GitStrategy {
 
 // ExecutionMode controls where native executions run
 // (always-container runtime):
-//   - runtime: executions run inside the run's container (default).
-//   - local: in-process execution allowed, with an honest prompt block
-//     and a hard DSN fence refusing live-plane writes.
+//   - runtime: executions run inside the run's container (opt-in).
+//   - local: in-process execution allowed (the default), with an honest
+//     prompt block and a hard DSN fence refusing live-plane writes.
 enum ExecutionMode {
   EXECUTION_MODE_UNSPECIFIED = 0;
   EXECUTION_MODE_RUNTIME = 1;
@@ -137,7 +137,7 @@ message CreateProjectRequest {
   string request_id = 5; // idempotency key (docs/07 §5.5)
   GitStrategy git_strategy = 6;
   // default_runtime_image seeds projects.default_runtime_image (empty =
-  // inherit tenant/base). execution_mode defaults to runtime.
+  // inherit tenant/base). execution_mode defaults to local.
   string default_runtime_image = 7;
   ExecutionMode execution_mode = 8;
 }

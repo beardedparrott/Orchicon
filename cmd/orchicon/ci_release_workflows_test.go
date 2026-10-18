@@ -64,15 +64,80 @@ func TestCanaryMatchesReleaseMatrix(t *testing.T) {
 			"A canary that builds something other than what ships tests a different install path than the "+
 			"one users get.", release, canary)
 	}
-	// WINDOWS IS OUT OF BOTH, and that is the decision this guards: nothing consumes a Windows artifact
-	// (the stack runs in WSL2 there, and the installer installs the Linux binary into the distro), so a
-	// platform reappearing in one file without the other is the drift worth catching.
+	// WINDOWS IS IN BOTH, and the exclusion that used to live here is dead. It read "nothing consumes a
+	// Windows artifact (the stack runs in WSL2 there, and the installer installs the Linux binary into the
+	// distro)" — which stopped being true when the plane became a HOST process: on Windows `orchicon
+	// install` and `orchicon serve` run a NATIVE orchicon.exe, and WSL2 is left with only the runtime
+	// CONTAINERS, which need a Linux kernel. So the release publishes
+	// orchicon_<version>_windows_amd64.zip, and a release that stopped building it would silently take
+	// Windows support away from a platform the plane now serves.
+	//
+	// windows/arm64 is deliberately ABSENT from the release matrix: Windows on ARM runs the amd64 zip under
+	// emulation, so a second artifact would be published for nobody. It is still in `make cross-compile`'s
+	// CROSS_PLATFORMS, so an arm64 break fails the gate rather than a release — that difference between the
+	// SHIP list and the COMPILE list is the decision asserted here.
+	wantWindows := [2]string{"windows", "amd64"}
+	gotWindows := false
 	for _, p := range release {
-		if p[0] == "windows" {
-			t.Errorf("release.yml builds %v again — Windows artifacts are deliberately not shipped; if that "+
-				"decision has been reversed, update canary.yml and the docs in the same change", p)
+		if p == wantWindows {
+			gotWindows = true
+		}
+		if p[0] == "windows" && p != wantWindows {
+			t.Errorf("release.yml builds %v — only windows/amd64 ships; windows/arm64 is compiled by "+
+				"`make cross-compile` but not published (Windows on ARM runs the amd64 zip under emulation)", p)
 		}
 	}
+	if !gotWindows {
+		t.Errorf("release.yml no longer builds %v — Windows is a SHIPPED platform (the plane runs "+
+			"natively there; WSL2 is only for runtime containers). If that decision has been reversed, "+
+			"update canary.yml, Makefile's CROSS_PLATFORMS and ARCHITECTURE.md in the same change", wantWindows)
+	}
+}
+
+// TestReleaseWorkflowPackagesTheWindowsZip — a matrix entry alone does NOT produce the file AC2 promises.
+// The target, the `.exe` suffix and the zip branch are three separate wirings in release.yml (and two in
+// canary.yml), each of which can rot on its own: a `windows` matrix entry whose build step loses its
+// `.exe` branch packages a binary Windows cannot run, and one whose archive selector is `tar.gz` publishes
+// an archive the documented install command does not fetch. Asserted by string because the alternative is
+// a release run — the point is to fail before one.
+func TestReleaseWorkflowPackagesTheWindowsZip(t *testing.T) {
+	release := readWorkflow(t, "../../.github/workflows/release.yml")
+	canary := readWorkflow(t, "../../.github/workflows/canary.yml")
+
+	// TWICE: the build step names the binaries and the package step copies them again. One without the
+	// other is a broken asset, not a partially-complete one.
+	if n := strings.Count(release, `[ "${{ matrix.os }}" = "windows" ] && EXT=".exe"`); n != 2 {
+		t.Errorf("release.yml release:119-141: found %d `EXT=\".exe\"` branches, want 2 (build + package) — "+
+			"a matrix entry without them builds a binary named `orchicon` for Windows", n)
+	}
+	for _, want := range []struct{ what, sub string }{
+		{"release.yml:76-87 the matrix target", "- os: windows"},
+		{"release.yml:76-87 the archive selector (zip, not tar.gz)", "archive: zip"},
+		{"release.yml:132 the published asset name", `ASSET="orchicon_${VERSION_NUM}_${{ matrix.os }}_${{ matrix.arch }}"`},
+		{"release.yml:141 the zip packaging branch", `zip -r "${ASSET}.zip" "$ASSET"`},
+		{"canary.yml the same matrix target", "- os: windows"},
+		{"canary.yml the zip packaging branch", `zip -r "${ASSET}.zip" "$ASSET"`},
+		{"canary.yml the artifact upload glob", "orchicon_*.zip"},
+		{"canary.yml the prerelease publish glob", "dist/*.zip"},
+	} {
+		src := release
+		if strings.HasPrefix(want.what, "canary.yml") {
+			src = canary
+		}
+		if !strings.Contains(src, want.sub) {
+			t.Errorf("%s is missing %q — the Windows zip would be built but never published, or published "+
+				"under a name the install command does not resolve", want.what, want.sub)
+		}
+	}
+}
+
+func readWorkflow(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
 }
 
 // THE STABLE ASSET NAME IS A CONTRACT WITH THE DOCUMENTED COMMAND, not a style choice: the canary's whole
@@ -362,5 +427,433 @@ func TestEveryWorkflowPipelineUsesPipefailAtLeastWhereItMatters(t *testing.T) {
 					"step reports success.\nUse `set -euo pipefail`.", filepath.Base(path), i+1)
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// THE DESKTOP APP — a job that is like no other in these workflows.
+//
+// It is CGO + a native webview per OS, so it is not a cross-compile, and it has
+// two traps specific to it:
+//
+//  1. `matrixPlatforms` above pairs an `os:` line with a following `arch:` line
+//     and `t.Fatalf`s when a workflow it reads has no such pairs. The desktop
+//     matrix is `os:`-ONLY, so it must NOT be routed through that scanner — a
+//     separate scanner reads it.
+//  2. `TestEveryJobThatBuildsTheBinaryBuildsTheFrontendFirst` matches
+//     "./cmd/orchicon" as a SUBSTRING, which also matches
+//     "./cmd/orchicon-desktop". That test skips jobs with no `go build`, and
+//     the desktop job builds with `wails build` — so the ordering rule needs its
+//     own assertion here rather than riding on that skip.
+
+// desktopMatrixOSes reads the desktop job's runner list.
+func desktopMatrixOSes(t *testing.T, path string) []string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	for _, job := range jobsIn(string(b)) {
+		if job.name != "desktop" {
+			continue
+		}
+		for _, line := range strings.Split(job.body, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, "os:") || !strings.Contains(trimmed, "[") {
+				continue
+			}
+			list := trimmed[strings.Index(trimmed, "[")+1:]
+			list = strings.TrimSuffix(strings.TrimSpace(list), "]")
+			var out []string
+			for _, part := range strings.Split(list, ",") {
+				if p := strings.TrimSpace(part); p != "" {
+					out = append(out, p)
+				}
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+// TestReleaseBuildsDesktopAppPerOS — the app ships from the release, or it does
+// not ship at all.
+func TestReleaseBuildsDesktopAppPerOS(t *testing.T) {
+	b, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	var found *job
+	jobs := jobsIn(string(b))
+	for i := range jobs {
+		if jobs[i].name == "desktop" {
+			found = &jobs[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("release.yml has no `desktop` job — the desktop app would never be built for a release")
+	}
+	for _, want := range []struct{ token, why string }{
+		{"actions/upload-artifact", "the built app has to be published as an artifact"},
+		{"wails build", "the app is packaged by the Wails CLI, not by `go build`"},
+		{"libwebkit2gtk-4.1-dev", "Linux needs the 4.1 webview development package"},
+		{"webkit2_41", "wails picks the WebKitGTK ABI by BUILD TAG: without `webkit2_41` its cgo files ask " +
+			"pkg-config for webkit2gtk-4.0, which no current Ubuntu ships, so the job installs 4.1 and then " +
+			"fails to build"},
+	} {
+		if !strings.Contains(found.body, want.token) {
+			t.Errorf("the desktop job does not mention %q — %s", want.token, want.why)
+		}
+	}
+}
+
+// TestDesktopMatrixCoversLinuxMacOSWindows — AC1's build matrix. Three operating
+// systems, each on its own runner, because the webview is a per-OS native
+// library.
+func TestDesktopMatrixCoversLinuxMacOSWindows(t *testing.T) {
+	got := desktopMatrixOSes(t, "../../.github/workflows/release.yml")
+	want := []string{"ubuntu-latest", "macos-latest", "windows-latest"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the desktop matrix runs on %v, want %v — the app must build on Linux, macOS and Windows", got, want)
+	}
+}
+
+// TestDesktopJobBuildsFrontendBeforeBinary — the silent-embed trap, asserted for
+// the job that `TestEveryJobThatBuildsTheBinaryBuildsTheFrontendFirst` cannot see
+// (it has no `go build`, so that scanner skips it).
+func TestDesktopJobBuildsFrontendBeforeBinary(t *testing.T) {
+	b, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	for _, job := range jobsIn(string(b)) {
+		if job.name != "desktop" {
+			continue
+		}
+		frontend := strings.Index(job.body, "npm run build")
+		binary := strings.Index(job.body, "wails build")
+		if frontend < 0 {
+			t.Fatal("the desktop job never builds the frontend — go:embed would match frontend/dist/.gitkeep " +
+				"and the app would open an empty window")
+		}
+		if binary >= 0 && frontend > binary {
+			t.Fatal("the desktop job builds the app BEFORE the frontend, so the embed cannot see the bundle")
+		}
+		return
+	}
+	t.Fatal("no desktop job found")
+}
+
+// TestDesktopNotInCrossPlatforms — the brief's explicit constraint: the desktop
+// app is NOT a CGO_ENABLED=0 cross-compile and must not be folded into the loop
+// that is.
+func TestDesktopNotInCrossPlatforms(t *testing.T) {
+	b, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	src := string(b)
+	i := strings.Index(src, "CROSS_PLATFORMS")
+	if i < 0 {
+		t.Fatal("Makefile has no CROSS_PLATFORMS")
+	}
+	// A make list continues across lines ending in a backslash; stop at the first
+	// line that does not, so the scan cannot wander into the desktop targets.
+	lines := strings.Split(src[i:], "\n")
+	var listBuf strings.Builder
+	for _, line := range lines {
+		listBuf.WriteString(line)
+		listBuf.WriteString("\n")
+		if !strings.HasSuffix(strings.TrimSpace(line), "\\") {
+			break
+		}
+	}
+	list := listBuf.String()
+	if strings.Contains(list, "desktop") {
+		t.Fatalf("CROSS_PLATFORMS mentions the desktop app:\n%s\nIt is CGO + a native webview and cannot be "+
+			"produced by the CGO_ENABLED=0 cross-compile loop — it builds per OS in release.yml instead", list)
+	}
+	// And the per-OS targets must exist, or the release job has nothing to call.
+	for _, want := range []string{"desktop-build:", "desktop-test:", "desktop-test-live:"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("Makefile has no %q target", want)
+		}
+	}
+}
+
+// TestDesktopBuildRunsInTheWailsProjectDirectory — the Wails CLI has NO project-dir
+// flag: `wails build` loads ./wails.json from its WORKING DIRECTORY
+// (wails/v2/internal/project.Load -> os.Getwd). wails.json lives in
+// cmd/orchicon-desktop, so a job that runs the CLI from the repo root dies on a
+// missing project file and the desktop artifact is never produced — the failure
+// this assertion exists to prevent.
+func TestDesktopBuildRunsInTheWailsProjectDirectory(t *testing.T) {
+	const projectDir = "cmd/orchicon-desktop"
+	b, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	for _, job := range jobsIn(string(b)) {
+		if job.name != "desktop" {
+			continue
+		}
+		if !strings.Contains(job.body, "wails build") {
+			t.Fatal("the desktop job no longer runs `wails build` — the app is packaged by the CLI")
+		}
+		if !strings.Contains(job.body, "working-directory: "+projectDir) &&
+			!strings.Contains(job.body, "cd "+projectDir) {
+			t.Fatalf("the desktop job does not run `wails build` from %s. The Wails CLI resolves its project "+
+				"from the working directory (os.Getwd + ./wails.json) and has no project-dir flag, so from the "+
+				"repo root the step fails with a missing wails.json", projectDir)
+		}
+		// The directory the job names must actually hold the Wails project file.
+		if _, err := os.Stat(filepath.Join("../../", projectDir, "wails.json")); err != nil {
+			t.Fatalf("%s/wails.json: %v — the working directory this job names has no Wails project file", projectDir, err)
+		}
+		// And the artifact it publishes must be where the CLI writes it: BuildDir
+		// defaults to `build` INSIDE the project directory.
+		if !strings.Contains(job.body, projectDir+"/build/bin/") {
+			t.Errorf("the desktop job does not publish %s/build/bin/ — that is where `wails build` puts the binary", projectDir)
+		}
+		return
+	}
+	t.Fatal("no desktop job found")
+}
+
+// A DOWNLOADED BINARY THAT CANNOT RUN IS NOT A RELEASE, AND THE VERIFICATION STORY MUST NOT DEPEND ON
+// WHICH INSTALLER THE USER RAN.
+//
+// There is no code-signing certificate behind this project, so there is no signed macOS binary and the
+// Windows .exe an install places is unsigned. What replaces them is a PRECISE instruction
+// plus a checksum the download can be held to — and both must be in place on every platform, in both
+// installers, with the same words. These three assertions are that, as tests rather than as intentions.
+// ---------------------------------------------------------------------------
+
+const (
+	guidanceBegin = "# >>> verification-guidance"
+	guidanceEnd   = "# <<< verification-guidance"
+)
+
+// guidanceBlock returns the lines between the guidance markers, markers included.
+//
+// It fails loudly when a marker is missing: a block that silently vanished would pass a naive
+// "both files contain the same thing (nothing)" comparison, which is the failure mode of every
+// copy-paste equality check.
+func guidanceBlock(t *testing.T, path string) []string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var out []string
+	in := false
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == guidanceBegin {
+			in = true
+		}
+		if !in {
+			continue
+		}
+		out = append(out, line)
+		if strings.TrimSpace(line) == guidanceEnd {
+			return out
+		}
+	}
+	t.Fatalf("%s has no %q … %q block — the verification guidance is what a user has instead of a signed "+
+		"binary, so it must exist and be comparable", path, guidanceBegin, guidanceEnd)
+	return nil
+}
+
+// TestInstallersPrintTheSameVerificationGuidance pins ACM-4: the outcome must not depend on which
+// installer was used. The two installers are separate programs in separate languages, so the only way
+// they can be held to the same words is to compare the words.
+func TestInstallersPrintTheSameVerificationGuidance(t *testing.T) {
+	sh := guidanceBlock(t, "../../scripts/install.sh")
+	ps := guidanceBlock(t, "../../scripts/install.ps1")
+	if !reflect.DeepEqual(sh, ps) {
+		t.Errorf("the installers print different verification guidance.\n  scripts/install.sh:\n%s\n  "+
+			"scripts/install.ps1:\n%s\nA user who ran the PowerShell installer would take a different "+
+			"security instruction away than one who ran the shell installer.",
+			strings.Join(sh, "\n    "), strings.Join(ps, "\n    "))
+		return
+	}
+	// AND IT MUST ACTUALLY SAY THE THINGS. An identical block that had been emptied would satisfy the
+	// comparison above and tell the user nothing, so the substance is asserted too: the exact macOS
+	// command, the fact that it does not disable Gatekeeper, and the Windows SmartScreen route out.
+	body := strings.Join(sh, "\n")
+	for _, want := range []string{
+		"xattr -d com.apple.quarantine",
+		"It does not disable Gatekeeper",
+		"curl sets no quarantine bit",
+		"Run anyway",
+		"Windows protected your PC",
+		"Unblock-File -LiteralPath",
+		"SHA256SUMS",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the verification guidance no longer mentions %q — that line is the instruction a "+
+				"user acts on, not decoration", want)
+		}
+	}
+}
+
+// TestReleasePublishesChecksums pins both halves of the checksum story, because the halves fail
+// independently and the SECOND one fails silently.
+//
+// `artifacts/` is flat (`merge-multiple: true`), the checksums are generated there — and then the upload
+// manifest is the `find` in the Create GitHub Release step. Generating the file without adding it to that
+// find produces a perfectly good SHA256SUMS that is published to nobody, and every installer would then
+// quietly skip verification forever ("older releases predate it"). So the find is asserted, not assumed.
+func TestReleasePublishesChecksums(t *testing.T) {
+	b, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	src := string(b)
+	if !strings.Contains(src, "> SHA256SUMS") || !strings.Contains(src, "sha256sum") {
+		t.Error("release.yml no longer generates a SHA256SUMS file — the installers have nothing to verify " +
+			"the download against, and the check they print would never fire")
+	}
+	findLine := ""
+	for _, line := range strings.Split(src, "\n") {
+		if strings.Contains(line, "ASSETS=$(find") {
+			findLine = line
+			break
+		}
+	}
+	if findLine == "" {
+		t.Fatal("release.yml has no `ASSETS=$(find ...)` upload manifest — did the release step change shape?")
+	}
+	if !strings.Contains(findLine, "-name 'SHA256SUMS'") {
+		t.Errorf("release.yml generates SHA256SUMS but does NOT list it in the upload manifest:\n  %s\n"+
+			"The find IS the manifest, so the file is produced and never published, and every installer "+
+			"silently falls back to no verification.", strings.TrimSpace(findLine))
+	}
+	// The consumer half: both installers must actually check it.
+	if !strings.Contains(readFile(t, "../../scripts/install.sh"), "verify_checksum") {
+		t.Error("scripts/install.sh no longer calls verify_checksum — the published checksums would be decoration")
+	}
+	if !strings.Contains(readFile(t, "../../scripts/install.ps1"), "SHA256SUMS") {
+		t.Error("scripts/install.ps1 has no SHA256SUMS check — a Windows install would be unverified while a " +
+			"Linux/macOS install is verified")
+	}
+}
+
+// TestMacOSSigningJobRunsOnAMacOSRunner pins ACM-2 — and it is written as a CLASS check, because the
+// failure it guards is silent: `codesign` does not exist on ubuntu-latest, so a signing step that drifted
+// onto a Linux runner fails to sign, and the release still publishes an unsigned archive that everyone
+// downstream calls "signed".
+func TestMacOSSigningJobRunsOnAMacOSRunner(t *testing.T) {
+	b, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	jobs := jobsIn(string(b))
+	var signing *job
+	for i := range jobs {
+		if jobs[i].name == "sign-macos" {
+			signing = &jobs[i]
+		}
+	}
+	if signing == nil {
+		t.Fatal("release.yml has no `sign-macos` job — the signed-artifact path is the thing that makes a " +
+			"downloaded macOS binary runnable without the quarantine override, and it must be designed now " +
+			"even while it is dormant")
+	}
+	for _, want := range []string{"runs-on: macos-14", "MACOS_SIGNING_ENABLED", "notarytool", "stapler"} {
+		if !strings.Contains(signing.body, want) {
+			t.Errorf("the sign-macos job no longer contains %q", want)
+		}
+	}
+	// THE CLASS: nothing that signs or notarises may run anywhere but a macOS runner.
+	//
+	// COMMENTS ARE STRIPPED FIRST, and it is load-bearing: `jobsIn` attributes the comment block that
+	// explains a job to the job ABOVE it, so the `build` job's body carries the paragraph that mentions
+	// `codesign` and `notarytool` while explaining why the signing job exists. A detector tripped by its
+	// own documentation is worse than none.
+	for _, j := range jobs {
+		var code []string
+		for _, line := range strings.Split(j.body, "\n") {
+			code = append(code, stripComment(line))
+		}
+		body := strings.Join(code, "\n")
+		if !strings.Contains(body, "codesign") && !strings.Contains(body, "notarytool") {
+			continue
+		}
+		if !strings.Contains(body, "runs-on: macos-") {
+			t.Errorf("release.yml job %q signs or notarises but does not run on a macOS runner:\n"+
+				"`codesign`/`notarytool` are macOS-only, so this job would fail — or, worse, be "+
+				"rewritten into a cross-compile that publishes an unsigned artifact called signed.", j.name)
+		}
+	}
+}
+
+// TestReleaseInstallsTheSignedMacOSArchivesOverTheUnsignedOnes pins the half of ACM-2 that stays broken
+// even once a signing job exists: the signed archives must be the ones the release PUBLISHES.
+//
+// The release job merges every artifact into ONE flat directory and writes SHA256SUMS there from a
+// non-recursive glob. Two regressions therefore pass every other test while shipping an unsigned binary
+// called signed:
+//
+//   - an upload path with `**` in it, so the signed archives land in a SUBDIRECTORY next to the unsigned
+//     archives of the same name — the glob, the checksums and `gh release` all resolve to the flat
+//     unsigned copy; and
+//   - a release job that never downloads the signed artifact explicitly, leaving which copy survives the
+//     merge to the (unspecified) artifact order.
+//
+// So both are asserted. Comments are stripped first: the explanation above names the very patterns the
+// check looks for, and a detector tripped by its own documentation is worse than none.
+func TestReleaseInstallsTheSignedMacOSArchivesOverTheUnsignedOnes(t *testing.T) {
+	b, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read release.yml: %v", err)
+	}
+	jobs := jobsIn(string(b))
+	code := func(j job) string {
+		var out []string
+		for _, line := range strings.Split(j.body, "\n") {
+			out = append(out, stripComment(line))
+		}
+		return strings.Join(out, "\n")
+	}
+	var signing, release *job
+	for i := range jobs {
+		switch jobs[i].name {
+		case "sign-macos":
+			signing = &jobs[i]
+		case "release":
+			release = &jobs[i]
+		}
+	}
+	if signing == nil {
+		t.Fatal("release.yml has no `sign-macos` job")
+	}
+	if release == nil {
+		t.Fatal("release.yml has no `release` job — did it get renamed?")
+	}
+
+	signingCode := code(*signing)
+	if strings.Contains(signingCode, "**/") {
+		t.Errorf("the sign-macos upload uses a recursive path:\n%s\nAn artifact uploaded with `**` keeps "+
+			"its subdirectories, so the signed archives land beside the unsigned ones instead of replacing "+
+			"them and every published checksum still describes the UNSIGNED download.", signingCode)
+	}
+	if !strings.Contains(signingCode, "path: signed/*") {
+		t.Errorf("the sign-macos job no longer stages its signed archives flat (`path: signed/*`), which is "+
+			"what makes them replace the unsigned ones at the artifact root:\n%s", signingCode)
+	}
+
+	releaseCode := code(*release)
+	if !strings.Contains(releaseCode, "sign-macos") {
+		t.Error("the release job does not depend on sign-macos, so the signed archives may not exist yet " +
+			"when it collects them — a release that races the job that signs its artifacts publishes the " +
+			"unsigned build")
+	}
+	if !strings.Contains(releaseCode, "pattern: orchicon-darwin-signed") {
+		t.Error("the release job never downloads `orchicon-darwin-signed` explicitly. The artifacts are " +
+			"merged flat, so the signed and unsigned macOS archives have the SAME file names and the merge " +
+			"order is unspecified: without this download the unsigned copy can be the one published, " +
+			"checksums and all, while the run reports success")
 	}
 }

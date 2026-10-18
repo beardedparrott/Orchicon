@@ -1,54 +1,87 @@
-// desktop.ts — THE ONE place the SPA decides "am I the desktop shell".
+// THE ONE AND ONLY DESKTOP SIGNAL — and the one place plane control is reached.
 //
-// A SECOND, AD-HOC DETECTION ANYWHERE IS A BUG. Three surfaces read this file:
+// The shell (internal/desktop/spa.go) injects window.__ORCHICON_DESKTOP__ into
+// index.html with `configurable: false`, `writable: false` and Object.freeze, so
+// page script can neither define it nor mutate it — the flag cannot be turned on
+// from the SPA. In a browser the plane never injects it, so it is `undefined`.
 //
-//   1. the nav gate (lib/nav-config.ts:visibleNavGroups) — a `desktopOnly` item
-//      is rendered only when this says desktop;
+// NOTHING ELSE MAY READ THAT GLOBAL. A second detection (window.runtime,
+// user-agent sniffing, location.protocol) is a bug: two answers to "am I the
+// desktop app?" is exactly how the Manage Server page ends up rendering plane
+// controls in a browser.
+//
+// Three surfaces read this file, and any two of them disagreeing is the leak the
+// brief forbids:
+//
+//   1. the nav gate (components/app-shell.tsx → nav-config.ts) — a `desktopOnly`
+//      item is rendered only when this says desktop;
 //   2. the /manage-server route (routes/manage-server.tsx:beforeLoad) — a browser
 //      hit REDIRECTS to /dashboard (absence, not an explanation);
-//   3. the page's plane-control actions — the binding is reachable only here.
-//
-// Any two of them disagreeing is exactly how the Manage Server entry leaks into
-// the browser, which is the thing the brief forbids.
-//
-// The signal is one frozen global installed by the Wails shell
-// (`globalThis.__ORCHICON_DESKTOP__ = { planeUrl, instance? }`,
-// writable:false, configurable:false). It is read through a CAST rather than a
-// declared `window` field: vitest runs this suite in the NODE environment (no
-// jsdom), so touching `window` would throw instead of returning "not desktop".
+//   3. the page's plane-control actions — planeControl() below is reachable only
+//      when the shell bound it.
 
-export type DesktopInfo = {
-  /** The configured plane URL, e.g. "http://localhost:8080". */
-  planeUrl: string;
-  /** The instance the shell was configured with, when it knew one. */
-  instance?: string;
-};
+export interface DesktopInfo {
+  desktop: true;
+  /** The plane this window is configured with (NOT the shell's own origin). */
+  planeURL: string;
+  /** dev / prod / test, resolved from the plane's control port; "unknown" otherwise. */
+  instance: string;
+  /** The desktop binary's own version (internal/version). */
+  appTag: string;
+  /** The plane's version, or "unreachable" when it did not answer. */
+  planeTag: string;
+  /** True only when both tags are known and differ. */
+  versionMismatch: boolean;
+}
 
 /** The key the Wails shell installs. Renaming it is a one-file change, here only. */
 export const DESKTOP_GLOBAL = "__ORCHICON_DESKTOP__";
 
-type GlobalWithDesktop = { [DESKTOP_GLOBAL]?: unknown };
-
-/** desktopInfo returns the shell's info, or null when this is a browser. */
+/**
+ * desktopInfo returns the shell's payload, or null in a browser.
+ *
+ * READ THROUGH `globalThis`, NOT `window`: in a browser or a webview the two are
+ * the SAME object (the shell's injection lands on `globalThis` because `window`
+ * IS `globalThis`), so the lookup is identical — but `globalThis` also exists in
+ * the DOM-less environment this repo's vitest suite runs in (there is no jsdom
+ * here; component tests render to a string instead), which is what lets the
+ * forgery test run at all.
+ *
+ * The shape is validated rather than trusted: a global of any other shape (an
+ * old shell, a page script that got there first) yields null, never a
+ * half-truth the Manage Server page could act on.
+ */
 export function desktopInfo(): DesktopInfo | null {
-  const raw = (globalThis as GlobalWithDesktop)[DESKTOP_GLOBAL];
+  const raw = (globalThis as unknown as Record<string, unknown>)[DESKTOP_GLOBAL];
   if (!raw || typeof raw !== "object") return null;
-  const info = raw as { planeUrl?: unknown; instance?: unknown };
-  if (typeof info.planeUrl !== "string" || info.planeUrl === "") return null;
+  const candidate = raw as Partial<DesktopInfo>;
+  if (candidate.desktop !== true) return null;
+  if (typeof candidate.planeURL !== "string" || typeof candidate.instance !== "string") return null;
   return {
-    planeUrl: info.planeUrl,
-    instance: typeof info.instance === "string" && info.instance !== "" ? info.instance : undefined,
+    desktop: true,
+    planeURL: candidate.planeURL,
+    instance: candidate.instance,
+    appTag: typeof candidate.appTag === "string" ? candidate.appTag : "",
+    planeTag: typeof candidate.planeTag === "string" ? candidate.planeTag : "",
+    versionMismatch: candidate.versionMismatch === true,
   };
 }
 
-/** isDesktop reports whether this SPA instance is the Wails desktop shell. */
+/** isDesktop reports whether this page is running inside the desktop shell. */
 export function isDesktop(): boolean {
   return desktopInfo() !== null;
 }
 
-/** desktopInstance is the instance the shell named, if any (never a guess). */
-export function desktopInstance(): string | undefined {
-  return desktopInfo()?.instance;
+/**
+ * desktopInstance is the instance the shell is pointed at, or null in a browser.
+ *
+ * "unknown" is the shell SAYING it could not resolve one (internal/desktop/info.go
+ * BuildInfo). That is not a decision: the Manage Server page must ASK which
+ * instance, never start "the plane" under a name nobody resolved.
+ */
+export function desktopInstance(): string | null {
+  const instance = desktopInfo()?.instance;
+  return instance && instance !== "unknown" ? instance : null;
 }
 
 /** portOf parses the control port out of a configured plane URL. 0 when unparseable. */
@@ -78,9 +111,9 @@ export function redirectTarget(pathname: string, desktop: boolean): string | nul
 }
 
 // ---------------------------------------------------------------------------
-// The Wails binding, resolved by PATH rather than by importing generated
-// `wailsjs/go/...` files: those do not exist until the shell builds, and this
-// file must typecheck on a branch with no shell.
+// The plane control binding, resolved by PATH rather than by importing generated
+// `wailsjs/go/...` files: those do not exist until the shell builds (and never
+// exist in the browser bundle or in these tests).
 // ---------------------------------------------------------------------------
 
 /** A plane's connection state. FOUR states, and `plane-error` is never `offline`. */

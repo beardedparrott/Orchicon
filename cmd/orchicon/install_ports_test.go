@@ -71,9 +71,7 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 		"PLANE_HTTP_PORT=8080",
 		"PLANE_HTTP_PORT=8091",
 		"PLANE_HTTP_PORT=8092",
-		"GRAFANA_HOST_PORT=3002",
-		"GRAFANA_HOST_PORT=3003",
-		"GRAFANA_HOST_PORT=3004",
+		"PLANE_HTTP_PORT=8092",
 		"PG_PORT=5432",
 		"PG_PORT=5433",
 		"PG_PORT=5434",
@@ -120,7 +118,7 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 		`-p 127.0.0.1:$NATS_PORT:4222 -p 127.0.0.1:$NATS_MON_PORT:8222`,
 		`-p 127.0.0.1:$OTLP_GRPC_PORT:4317 -p 127.0.0.1:$OTLP_HTTP_PORT:4318`,
 		`-p 127.0.0.1:$TEMPO_PORT:3200 -p 127.0.0.1:$LOKI_PORT:3100`,
-		`-p 127.0.0.1:$VM_PORT:8428 -p 127.0.0.1:$GRAFANA_HOST_PORT:3000`,
+		`-p 127.0.0.1:$VM_PORT:8428`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("scripts/lib/instances.sh's SERVICE_PORTS no longer contains %q — the host→container mapping drifted", want)
@@ -133,7 +131,6 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 	type wantCase struct{ dev, prod, test, container int }
 	wantDefaults := map[string]wantCase{
 		"ORCHICON_CONTROL_PORT":      {8080, 8091, 8092, 8080},
-		"ORCHICON_GRAFANA_PORT":      {3002, 3003, 3004, 3000},
 		"ORCHICON_POSTGRES_PORT":     {5432, 5433, 5434, 5432},
 		"ORCHICON_NATS_PORT":         {4222, 4223, 4224, 4222},
 		"ORCHICON_NATS_MONITOR_PORT": {8222, 8223, 8224, 8222},
@@ -200,7 +197,6 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 	// launcher. Asserted as whole shell lines so a rename on either side fails.
 	for _, want := range []string{
 		`PLANE_HTTP_PORT="${ORCHICON_CONTROL_PORT:-$PLANE_HTTP_PORT}"`,
-		`GRAFANA_HOST_PORT="${ORCHICON_GRAFANA_PORT:-$GRAFANA_HOST_PORT}"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("scripts/lib/instances.sh must apply %q so an override moves the port in both launchers", want)
@@ -208,30 +204,47 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 	}
 
 	// The publishes must be COMPOSED from those variables: a literal beside them
-	// is how an override silently leaves `up` on the old number.
-	if !strings.Contains(script, `PORTS="-p $PLANE_HTTP_PORT:8080 -p $GRAFANA_HOST_PORT:3000"`) {
-		t.Error("instances.sh's PORTS must be composed from PLANE_HTTP_PORT/GRAFANA_HOST_PORT, not written as literals")
+	// is how an override silently leaves `up` on the old number. There is ONE publish left (the
+	// plane) because Grafana's 3002/3003/3004 row was retired — those ports are RESERVED, not free.
+	if !strings.Contains(script, `PORTS="-p $PLANE_HTTP_PORT:8080"`) {
+		t.Error("instances.sh's PORTS must be composed from PLANE_HTTP_PORT, not written as a literal")
 	}
 
-	// ...and the Go table must agree with the defaults above.
-	control, grafana := installerPorts()[0], installerPorts()[1]
+	// ...and the Go table must agree with the defaults above. Rows are found by
+	// ENV, never by position: removing a row must not silently re-point the
+	// assertions at a different port.
+	control := portByEnv(t, "ORCHICON_CONTROL_PORT")
+	postgres := portByEnv(t, "ORCHICON_POSTGRES_PORT")
 	if control.Defaults["dev"] != 8080 || control.Defaults["prod"] != 8091 || control.Defaults["test"] != 8092 {
 		t.Errorf("control defaults = %v, want dev 8080 / prod 8091 / test 8092", control.Defaults)
 	}
-	if grafana.Defaults["dev"] != 3002 || grafana.Defaults["prod"] != 3003 || grafana.Defaults["test"] != 3004 {
-		t.Errorf("grafana defaults = %v, want dev 3002 / prod 3003 / test 3004", grafana.Defaults)
+	if postgres.Defaults["dev"] != 5432 || postgres.Defaults["prod"] != 5433 || postgres.Defaults["test"] != 5434 {
+		t.Errorf("postgres defaults = %v, want dev 5432 / prod 5433 / test 5434", postgres.Defaults)
 	}
-	// The host->container mapping must match instances.sh's -p pairs
-	// (8080:8080 and 3002:3000), or the published port lands on the wrong
-	// listener.
-	if control.ContainerPort != 8080 || grafana.ContainerPort != 3000 {
-		t.Errorf("container ports = %d/%d, want 8080/3000", control.ContainerPort, grafana.ContainerPort)
+	// The host->container mapping must match instances.sh's -p pair (8080:8080),
+	// or the published port lands on the wrong listener.
+	if control.ContainerPort != 8080 {
+		t.Errorf("control container port = %d, want 8080", control.ContainerPort)
 	}
 	// The Env names are the contract with instances.sh, so pin them literally:
 	// the shell assertions above hardcode these exact strings.
-	if control.Env != "ORCHICON_CONTROL_PORT" || grafana.Env != "ORCHICON_GRAFANA_PORT" {
-		t.Errorf("env knobs = %q/%q, want ORCHICON_CONTROL_PORT/ORCHICON_GRAFANA_PORT", control.Env, grafana.Env)
+	if control.Env != "ORCHICON_CONTROL_PORT" {
+		t.Errorf("control env knob = %q, want ORCHICON_CONTROL_PORT", control.Env)
 	}
+}
+
+// portByEnv finds an installerPorts row by its env knob. Position-based
+// lookups (installerPorts()[1]) break silently whenever a row is removed, which
+// is exactly how a retired port would sneak back into the assertions.
+func portByEnv(t *testing.T, env string) installPort {
+	t.Helper()
+	for _, p := range installerPorts() {
+		if p.Env == env {
+			return p
+		}
+	}
+	t.Fatalf("installerPorts has no row for %s", env)
+	return installPort{}
 }
 
 // alwaysFree / freeExcept are the injected conflict probes.
@@ -255,8 +268,8 @@ func TestPlanInstallPortsDefaultsNonInteractive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planInstallPorts: %v", err)
 	}
-	if got["ORCHICON_CONTROL_PORT"] != 8080 || got["ORCHICON_GRAFANA_PORT"] != 3002 {
-		t.Fatalf("dev defaults = %v, want control 8080 / grafana 3002", got)
+	if got["ORCHICON_CONTROL_PORT"] != 8080 || got["ORCHICON_POSTGRES_PORT"] != 5432 {
+		t.Fatalf("dev defaults = %v, want control 8080 / postgres 5432", got)
 	}
 	if !strings.Contains(out.String(), "Control plane (web UI + API): 8080") {
 		t.Errorf("headless install must state the port it bound; got:\n%s", out.String())
@@ -274,8 +287,8 @@ func TestPlanInstallPortsProdDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planInstallPorts: %v", err)
 	}
-	if got["ORCHICON_CONTROL_PORT"] != 8091 || got["ORCHICON_GRAFANA_PORT"] != 3003 {
-		t.Fatalf("prod defaults = %v, want control 8091 / grafana 3003", got)
+	if got["ORCHICON_CONTROL_PORT"] != 8091 || got["ORCHICON_POSTGRES_PORT"] != 5433 {
+		t.Fatalf("prod defaults = %v, want control 8091 / postgres 5433", got)
 	}
 }
 
@@ -406,8 +419,8 @@ func TestPlanInstallPortsPinWinsAndIsNotPrompted(t *testing.T) {
 func TestPlanInstallPortsPinnedConflictWarnsNotReassigns(t *testing.T) {
 	var out bytes.Buffer
 	pinned := map[string]int{
-		"ORCHICON_CONTROL_PORT": 9080,
-		"ORCHICON_GRAFANA_PORT": 9081,
+		"ORCHICON_CONTROL_PORT":  9080,
+		"ORCHICON_POSTGRES_PORT": 9081,
 	}
 	got, err := planInstallPorts("dev", installerPorts(), pinned, freeExcept(9080), nil, &out)
 	if err != nil {
@@ -439,7 +452,7 @@ func TestPlanInstallPortsEnterAcceptsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planInstallPorts: %v", err)
 	}
-	if got["ORCHICON_CONTROL_PORT"] != 8080 || got["ORCHICON_GRAFANA_PORT"] != 3002 {
+	if got["ORCHICON_CONTROL_PORT"] != 8080 || got["ORCHICON_POSTGRES_PORT"] != 5432 {
 		t.Fatalf("enter must accept defaults; got %v", got)
 	}
 	// The note the operator asked for must precede the prompts.
@@ -464,8 +477,8 @@ func TestPlanInstallPortsTypedOverride(t *testing.T) {
 	if got["ORCHICON_CONTROL_PORT"] != 8080 {
 		t.Errorf("control = %d, want the 8080 default", got["ORCHICON_CONTROL_PORT"])
 	}
-	if got["ORCHICON_GRAFANA_PORT"] != 9000 {
-		t.Errorf("grafana = %d, want the typed 9000", got["ORCHICON_GRAFANA_PORT"])
+	if got["ORCHICON_POSTGRES_PORT"] != 9000 {
+		t.Errorf("postgres = %d, want the typed 9000", got["ORCHICON_POSTGRES_PORT"])
 	}
 }
 
@@ -498,7 +511,7 @@ func TestAskInstallPort(t *testing.T) {
 // TestParseInstancePorts maps real docker inspect output back to the env keys,
 // which is what stops a re-run from treating its own instance as a conflict.
 func TestParseInstancePorts(t *testing.T) {
-	raw := []byte(`{"3000/tcp":[{"HostIp":"0.0.0.0","HostPort":"3002"}],"8080/tcp":[{"HostIp":"0.0.0.0","HostPort":"8081"}]}`)
+	raw := []byte(`{"5432/tcp":[{"HostIp":"0.0.0.0","HostPort":"5440"}],"8080/tcp":[{"HostIp":"0.0.0.0","HostPort":"8081"}]}`)
 	got, ok := parseInstancePorts(raw, installerPorts())
 	if !ok {
 		t.Fatal("expected the bindings to parse")
@@ -506,8 +519,8 @@ func TestParseInstancePorts(t *testing.T) {
 	if got["ORCHICON_CONTROL_PORT"] != 8081 {
 		t.Errorf("control = %d, want 8081 (a moved port must be read back)", got["ORCHICON_CONTROL_PORT"])
 	}
-	if got["ORCHICON_GRAFANA_PORT"] != 3002 {
-		t.Errorf("grafana = %d, want 3002", got["ORCHICON_GRAFANA_PORT"])
+	if got["ORCHICON_POSTGRES_PORT"] != 5440 {
+		t.Errorf("postgres = %d, want 5440", got["ORCHICON_POSTGRES_PORT"])
 	}
 
 	// An unparseable payload must report "not ok" so the caller falls back to
@@ -556,7 +569,6 @@ func TestParseInstancePortsRealHostResidencyBindings(t *testing.T) {
 
 	// Every published service port must be read back, keyed by env var.
 	for env, want := range map[string]int{
-		"ORCHICON_GRAFANA_PORT":      3002,
 		"ORCHICON_POSTGRES_PORT":     5432,
 		"ORCHICON_NATS_PORT":         4222,
 		"ORCHICON_NATS_MONITOR_PORT": 8222,
@@ -616,7 +628,7 @@ func TestNextFreePortHonoursClaimed(t *testing.T) {
 // instance of ours owns its ports") asked a CONTAINER, so the de-containerization gated it behind the engine
 // probe — correct, since `docker inspect` may not run on a host with no engine — but left the no-engine host
 // with NO rung 0 at all. A re-run then went straight to fresh resolution and probed the instance's OWN
-// listeners as conflicts: control 8092→8093, postgres 5434→5435, Grafana 3004→3005. Downstream that is not
+// listeners as conflicts: control 8092→8093, postgres 5434→5435, VM 8430→8431. Downstream that is not
 // merely cosmetic: startHostServices' readiness probe asks the SHIFTED ports, finds nothing, and starts a
 // SECOND host stack beside the running one, while startHostPlane tries a second plane. Two stacks on one
 // instance is the opposite of convergence, and the ports the operator sees change under them.

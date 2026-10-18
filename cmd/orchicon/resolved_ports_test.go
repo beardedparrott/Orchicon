@@ -11,7 +11,7 @@ import (
 // resolved_ports_test.go — THE INSTALL RECORDS THE PORTS IT BOUND.
 //
 // Why this exists, and it is a real report rather than a hypothetical: installing on Windows, the operator
-// answered 3001 for Grafana. `orchicon install` printed 3001, and then scripts/install.ps1 — which prints
+// answered 3001 for a published port. `orchicon install` printed 3001, and then scripts/install.ps1 — which prints
 // the "Open from Windows" URLs after the setup step — printed 3002. One run, two contradicting numbers, and
 // the second one was a port nothing had bound.
 //
@@ -26,8 +26,8 @@ func TestWriteResolvedPortsRecordsWhatWasBound(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	ports := map[string]int{
-		"ORCHICON_CONTROL_PORT": 8092, // NOT the dev default (8080)
-		"ORCHICON_GRAFANA_PORT": 3001, // NOT the dev default (3002)
+		"ORCHICON_CONTROL_PORT":  8092, // NOT the dev default (8080)
+		"ORCHICON_POSTGRES_PORT": 5444, // NOT the dev default (5432)
 	}
 	writeResolvedPorts("test", ports)
 
@@ -63,10 +63,10 @@ func TestResolvedPortsArePerInstance(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	writeResolvedPorts("dev", map[string]int{"ORCHICON_GRAFANA_PORT": 3002})
-	writeResolvedPorts("test", map[string]int{"ORCHICON_GRAFANA_PORT": 3001})
+	writeResolvedPorts("dev", map[string]int{"ORCHICON_POSTGRES_PORT": 5433})
+	writeResolvedPorts("test", map[string]int{"ORCHICON_POSTGRES_PORT": 5434})
 
-	for inst, want := range map[string]int{"dev": 3002, "test": 3001} {
+	for inst, want := range map[string]int{"dev": 5433, "test": 5434} {
 		path, err := resolvedPortsFile(inst)
 		if err != nil {
 			t.Fatalf("resolvedPortsFile(%s): %v", inst, err)
@@ -79,8 +79,8 @@ func TestResolvedPortsArePerInstance(t *testing.T) {
 		if err := json.Unmarshal(b, &got); err != nil {
 			t.Fatalf("parse %s: %v", inst, err)
 		}
-		if got["ORCHICON_GRAFANA_PORT"] != want {
-			t.Errorf("instance %s recorded grafana %d, want %d", inst, got["ORCHICON_GRAFANA_PORT"], want)
+		if got["ORCHICON_POSTGRES_PORT"] != want {
+			t.Errorf("instance %s recorded postgres %d, want %d", inst, got["ORCHICON_POSTGRES_PORT"], want)
 		}
 	}
 }

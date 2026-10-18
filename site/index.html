@@ -342,6 +342,13 @@ table.fk tbody th{vertical-align:top}
 .panel .c{color:var(--on-console-2)}
 .panel .p{color:var(--signal); user-select:none}
 .panel-note{font-size:15px; color:var(--ink-2); margin:14px 0 0}
+/* PROSE INSIDE A CONSOLE PANEL NEEDS THE CONSOLE'S OWN COLORS. `.intro` is a light-background token
+   (--ink-2 is a dark green), and a panel's background is --console: a paragraph that inherited --ink-2
+   rendered dark-on-dark at ~1.8:1 — present in the DOM and invisible to a reader. The inline <code>
+   chips are --paper-2 swatches for the same reason, so they get a console swatch here. */
+.panel .intro{color:var(--on-console-2); font-size:14px; margin:14px 0 0}
+.panel .intro strong{color:var(--on-console)}
+.panel .intro code{background:var(--console-2); color:var(--on-console)}
 /* The installer's common commands. It is a LIST OF WHAT EACH FLAG DOES, because the panel above shows only
    the bare command and the one-line pointer to the README left the reader with nowhere to look. Same tokens
    as everything else on the page (--rule, --ink-2/3, --mono) so it cannot drift from the rest of the type. */
@@ -474,7 +481,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
       <p class="harness"><b>Prefer a classic harness?</b> Orchicon works like any other one too. Open Ask Orchicon in Iteration mode and pair with it directly in your repo, from the browser or the terminal. Add workflows, budgets and schedules only when you need them.</p>
     </div>
     <div class="hero-side">
-      <p>One command installs the whole stack: control plane, web app, terminal client, Postgres, NATS and a Grafana telemetry plane.</p>
+      <p>One command installs the whole stack: control plane, web app, terminal client, Postgres, NATS and a Tempo/Loki/VictoriaMetrics telemetry plane.</p>
       <div class="hero-actions">
         <a class="btn btn-primary" href="#install">Install Orchicon</a>
         <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon/blob/main/USERGUIDE.md">User Guide</a>
@@ -640,7 +647,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
           <tr><th scope="row">Cost</th><td class="alone">You find out on the invoice.</td><td class="with">Hard ceilings on tokens, dollars, wall-clock time and tool calls, rolled up by tenant, project, task and execution.</td></tr>
           <tr><th scope="row">Safety</th><td class="alone">The prompt asks it nicely not to.</td><td class="with">Disallowed tools are withheld and refused at execution. Every dispatch passes a Rego policy with a full decision trace.</td></tr>
           <tr><th scope="row">Isolation</th><td class="alone">Runs in your working copy.</td><td class="with">Each run gets its own container and git worktree, reset to pristine afterwards. Nothing leaks between runs.</td></tr>
-          <tr><th scope="row">Visibility</th><td class="alone">Terminal scrollback.</td><td class="with">Traces, logs and metrics in Grafana, an audit trail of every action, and a searchable history of every run.</td></tr>
+          <tr><th scope="row">Visibility</th><td class="alone">Terminal scrollback.</td><td class="with">Traces, logs and metrics in the built-in telemetry explorer, an audit trail of every action, and a searchable history of every run.</td></tr>
         </tbody>
       </table>
     </div>
@@ -868,6 +875,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
       <div class="panel" role="tabpanel" id="p-unix" aria-labelledby="t-unix">
         <pre><span class="p">$ </span><span id="c-unix">curl -fsSL https://orchicon.dev/install | bash</span></pre>
         <button class="copy" data-copy="c-unix">Copy</button>
+        <p class="intro">macOS: nothing to unblock — <code>curl</code> sets no quarantine bit, so this install runs without a Gatekeeper prompt. Only a <strong>browser</strong> download is marked; clear it on that one file with <code>xattr -d com.apple.quarantine /path/to/orchicon</code>. That does not disable Gatekeeper. Every release publishes <code>SHA256SUMS</code> and both installers verify the download against it.</p>
       </div>
       <div class="panel" role="tabpanel" id="p-win" aria-labelledby="t-win" hidden>
         <pre><span class="p">PS&gt; </span><span id="c-win">irm https://orchicon.dev/install.ps1 | iex</span></pre>
@@ -1134,7 +1142,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
   var notes = {
     "t-unix":"Requires <code>curl</code>, <code>tar</code> and Docker.",
     "t-win":"Runs the whole stack inside WSL2. Needs Windows 10 21H2+ or Windows 11 and Docker Desktop with WSL integration.",
-    "t-docker":"Web app on port 8080, Grafana on 3002. Your data lives in the <code>orchicon-data</code> volume."
+    "t-docker":"Web app on port 8080. Your data lives in the <code>orchicon-data</code> volume."
   };
   // SCOPED TO THIS TABLIST, and the scoping IS the fix.
   //

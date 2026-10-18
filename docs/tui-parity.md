@@ -323,6 +323,45 @@ One genuine parity gap remains, recorded rather than hidden: **`/context`** (vie
 pinning the injected context preamble) has no GUI surface at all. That is a missing feature,
 not a missing control.
 
+## Plane lifecycle control (deliberate divergence, NOT a parity gap)
+
+The TUI can **start, stop and restart the plane** it talks to, and shows the plane's state in the
+footer (`plane up` / `plane down` / `plane drifted` / `plane remote`), and the error strip names
+the remedy.
+
+**The web app has NO lifecycle control, and that is by design — not an outstanding parity item.**
+A browser cannot spawn a process, and the one RPC that ever existed for it had to answer BEFORE
+killing the server answering it (`internal/planecontrol`'s package doc records the decision). The
+web app is therefore out of scope for plane control, permanently.
+
+That makes the TUI one of only **two** user-facing control surfaces, alongside the desktop app. This
+matters for a terminal-first operator: for them the TUI is the ONLY place a plane they just stopped
+can be started again, so these commands are load-bearing rather than a convenience.
+
+| TUI command | Desktop app | Web app |
+|---|---|---|
+| `/plane` — show the state, name the remedy | plane status indicator | none (no lifecycle control) |
+| `/plane-start` | "Start plane" | **none, by design** |
+| `/plane-stop` | "Stop plane" | **none, by design** |
+| `/plane-restart` (also the remedy for drift) | "Restart plane" | **none, by design** |
+
+All four call `internal/planecontrol` DIRECTLY — the same Go package `orchicon plane <verb>` and the
+desktop app call. There is no lifecycle RPC and the TUI adds none: the verbs never touch the plane's
+API, which is why they work when the plane is down (the TUI is a separate binary that does not
+depend on the plane serving it).
+
+The verbs re-exec the **installed `orchicon`** — the plane binary — never `orch` itself: the TUI is a
+thin remote client, so re-execing itself would launch a second TUI and never reach the plane. The
+resolution lives in `internal/planecontrol` (`resolvePlaneBinary`), so the desktop app inherits it.
+
+Which instance: `ORCHICON_INSTANCE` if set, otherwise the local instance whose recorded
+`ORCHICON_CONTROL_PORT` is the port this shell is connected to. A plane that cannot be positively
+identified is reported **not local** and the verbs refuse — they never fall back to a guessed
+instance.
+
+**Do not re-file the web app's absence as a parity gap.** It is the one row in this document where
+the GUI will never catch up, and the reason is a browser's capabilities, not unbuilt work.
+
 ## Recomputed child work items
 
 Every `missing` row above is a child work item under the **Terminal UI & File Diff Views** epic.
