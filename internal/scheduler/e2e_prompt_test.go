@@ -34,6 +34,7 @@ func TestE2EDirectoryInProjectContextPrompt(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "E2E Dir",
 		Slug: "e2e-dir-" + strings.ToLower(db.NewID()), Status: "active",
 		Goals: []byte("[]"), ProjectDir: root,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -97,6 +98,7 @@ func TestE2EWorkItemContextFilesInPrompt(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "E2E WI",
 		Slug: "e2e-wi-" + strings.ToLower(db.NewID()), Status: "active",
 		Goals: []byte("[]"), ProjectDir: root,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)

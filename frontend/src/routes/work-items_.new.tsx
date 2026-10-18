@@ -11,6 +11,12 @@ import { FileBrowser } from "@/components/FileBrowser";
 import { SecretsPicker } from "@/components/SecretsPicker";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { LocalModeDisclosure } from "@/components/LocalModeDisclosure";
+import {
+  ExecutionModeSelect,
+  executionModeToProto,
+  executionModeValueOf,
+  type ExecutionModeChoice,
+} from "@/components/ExecutionModeSelect";
 import { WorkItemParentSelect, depthForKind } from "@/components/work-items/work-item-parent-select";
 import { WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { Button } from "@/components/ui/button";
@@ -109,6 +115,10 @@ function NewWorkItemPage() {
   const selectedKind = watch("kind");
   const selectedParentId = watch("parentId");
   const [runtimeImage, setRuntimeImage] = useState("");
+  // Execution-mode override: "inherit" is the default because the column is
+  // nullable and NULL means "use the project's mode" (resolution order:
+  // item -> project -> tenant default, resolved server-side).
+  const [executionMode, setExecutionMode] = useState<ExecutionModeChoice>("inherit");
   const [secretIds, setSecretIds] = useState<string[]>([]);
   const [contextFiles, setContextFiles] = useState<string[]>([]);
   const selectedProject = projects?.find((p) => p.id === selectedProjectId);
@@ -145,6 +155,7 @@ function NewWorkItemPage() {
       acceptanceCriteria: values.acceptanceCriteria || undefined,
       priority: values.priority,
       runtimeImage: runtimeImage || undefined,
+      executionMode: executionModeToProto(executionMode),
       secretIds: secretIds.length > 0 ? secretIds : undefined,
       contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
     });
@@ -269,6 +280,12 @@ function NewWorkItemPage() {
 
             <SecretsPicker value={secretIds} onChange={setSecretIds} />
 
+            <ExecutionModeSelect
+              value={executionMode}
+              inherited={executionModeValueOf(selectedProject)}
+              onChange={setExecutionMode}
+            />
+
             <div className="space-y-2">
               <Label htmlFor="runtimeImage">Runtime image</Label>
               <RuntimeImageSelect value={runtimeImage} onChange={setRuntimeImage} />
@@ -278,10 +295,12 @@ function NewWorkItemPage() {
               </p>
             </div>
 
-            {/* The project decides whether this item runs in a container or as a host process.
-                If the project is in local mode, say what that means HERE — where the work item
-                is created — not only on the project page. */}
-            {protoToExecutionMode(selectedProject?.executionMode) === "local" && (
+            {/* The item resolves local either by inheriting a local project or by an explicit
+                override, and both are a CHOICE made on this form — so the disclosure fires for
+                either, HERE, not only on the project page. */}
+            {(executionMode === "local" ||
+              (executionMode === "inherit" &&
+                protoToExecutionMode(selectedProject?.executionMode) === "local")) && (
               <LocalModeDisclosure />
             )}
 

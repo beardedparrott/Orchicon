@@ -202,8 +202,8 @@ table "projects" {
   column "execution_mode" {
     type = text
     null = false
-    default = "runtime"
-    comment = "runtime = always-container; local = in-process allowed with honest prompt + DSN fence"
+    default = "local"
+    comment = "local = in-process (default); runtime = always-container (opt-in)"
   }
   column "skill_files" {
     type = jsonb
@@ -626,6 +626,11 @@ table "work_items" {
     type = text
     null = false
     default = ""
+  }
+  column "execution_mode" {
+    type = text
+    null = true
+    comment = "Where this item's executions run: runtime = always-container, local = in-process with the honest prompt + DSN fence. NULL = inherit from the project. Resolved ONLY by db.EffectiveExecutionMode (internal/db/execution_mode.go): item -> project -> tenant default."
   }
   column "secret_ids" {
     type = jsonb

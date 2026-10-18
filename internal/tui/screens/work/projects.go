@@ -317,11 +317,12 @@ func gitStrategyOptions() []kit2.Option {
 	}
 }
 
-// executionModeOptions mirror the GUI's select.
+// executionModeOptions mirror the GUI's select: local is the default, runtime
+// the opt-in per-run container.
 func executionModeOptions() []kit2.Option {
 	return []kit2.Option{
-		{Value: "runtime", Label: "runtime — per-run container (isolated)"},
-		{Value: "local", Label: "local — in the control plane"},
+		{Value: "local", Label: "local — in-process (default)"},
+		{Value: "runtime", Label: "runtime — per-run container (opt-in)"},
 	}
 }
 
@@ -345,16 +346,16 @@ func gitStrategyField(p *apiv1.Project) string {
 	return "local"
 }
 
-// executionModeField reads a project's execution mode, defaulting to runtime (the
-// proto's and the server's default).
+// executionModeField reads a project's execution mode, defaulting to local (the
+// proto's and the server's default): containers are opt-in.
 func executionModeField(p *apiv1.Project) string {
 	if p == nil {
-		return "runtime"
+		return "local"
 	}
 	if s := executionModeString(p.GetExecutionMode()); s != "" {
 		return s
 	}
-	return "runtime"
+	return "local"
 }
 
 // maxConcurrentField renders the override as the field's text. 0 is the proto's
