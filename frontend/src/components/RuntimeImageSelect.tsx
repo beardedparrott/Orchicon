@@ -32,7 +32,7 @@ export function RuntimeImageSelect({
   const defaultImage = data?.defaultImage || stock[0] || "";
   const chosen = value || defaultImage;
   const chosenRow = (rows ?? []).find((r) => r?.tag && r.tag === chosen);
-  const chosenAbsent = chosenRow?.status === RuntimeImageStatus.RUNTIME_IMAGE_STATUS_ABSENT;
+  const chosenAbsent = chosenRow?.status === RuntimeImageStatus.ABSENT;
 
   return (
     <>
