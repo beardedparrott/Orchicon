@@ -4,25 +4,27 @@
 #
 # WHY THIS IS A SEPARATE HARNESS, AND WHY IT IS BUILT THE WAY IT IS.
 #
-# These verbs remove containers, volumes, state directories and executables. Testing them the obvious
-# way — point them at a real host and see what happens — is how an operator's PROD container was removed
-# twice by an assistant verifying its own work. "Be careful" is not a mechanism; the mechanism is that
-# this harness CANNOT reach a real resource:
+# These verbs destroy an instance's state directory and remove its executables. Testing them the obvious
+# way — point them at a real host and see what happens — is how an operator's PROD stack was removed twice
+# by an assistant verifying its own work. "Be careful" is not a mechanism; the mechanism is that this
+# harness CANNOT reach a real resource:
 #
-#   * `docker` is a STUB placed first on PATH that logs its arguments and does nothing. Every container
-#     and volume operation the installer makes is therefore recorded, never performed.
 #   * `XDG_DATA_HOME` points at a scratch directory, so `inst_state_dir` resolves inside it. The
 #     installer's answer to "does this instance exist?" is then entirely under this test's control, and
 #     dev/prod are absent unless the test creates them.
 #   * `--install-dir` points at a scratch directory holding FAKE binaries, so no real executable is ever
 #     a candidate for removal.
+#   * `docker`/`podman` remain on PATH as TRIPWIRES that record every argument and do nothing. The
+#     installer no longer has an engine path at all, so these logs must stay EMPTY: a non-empty one is a
+#     regression that put a container call back into an installer that should not have one.
 #
-# The assertions are then about the LOG — what the installer would have done — which is the only safe
-# place to observe a destructive command.
+# The assertions are therefore about the FILESYSTEM (exactly which state dirs survived) and about the
+# TRIPWIRE logs (which must be empty) — the only safe places to observe a destructive command.
 #
-# THE ASSERTION THAT MATTERS MOST is the scope check: for every verb, the recorded docker arguments must
-# name ONLY the instance under test. That is the operator's absolute requirement — "when I run this with
-# instance=test it must ABSOLUTELY not mess up dev and prod" — expressed as a test rather than a promise.
+# THE ASSERTION THAT MATTERS MOST is the scope check: for every verb, only the instance under test may be
+# touched, and another instance's state must be byte-identical afterwards. That is the operator's absolute
+# requirement — "when I run this with instance=test it must ABSOLUTELY not mess up dev and prod" —
+# expressed as a test rather than a promise.
 #
 #   scripts/tests/install-path/uninstall.sh
 #
@@ -47,7 +49,9 @@ rm -rf "${WORK}"
 mkdir -p "${WORK}"
 trap 'rm -rf "${WORK}"' EXIT
 
-# --- the stub: docker can only write its arguments down ----------------------
+# --- the tripwires: an engine call can only write its arguments down ---------
+# The installer has no container-engine path any more. These stubs are kept FIRST ON PATH so that if one
+# creeps back in, the call is RECORDED (and the assertions below fail) instead of landing on a real host.
 BIN="${WORK}/bin"
 mkdir -p "${BIN}"
 cat > "${BIN}/docker" <<'STUB'
@@ -82,11 +86,12 @@ run() {
       bash "${INSTALLER}" --install-dir "${INSTALL_DIR}" "$@" 2>&1
 }
 
-# mutations <log> — only the docker calls that CHANGE something. `inspect` is read-only, and the
-# installer uses it legitimately to ask whether another instance still exists; flagging a read as a leak
-# would be a test that cannot tell asking from acting.
-mutations() {
-  grep -E '^(rm|volume rm|stop)( |$)' "$1" 2>/dev/null
+# no_engine_calls <log> — the tripwire log must be EMPTY. There is no container engine in the install
+# path, so any call at all is the regression, not just a mutating one; `inspect` used to be excused because
+# asking "does another instance exist" was legitimate, and that question is now answered from the state dir.
+no_engine_calls() {
+  [ -s "$1" ] && return 1
+  return 0
 }
 
 # run_detached <logfile> <args...> — the same, in a session with NO controlling terminal.
@@ -104,17 +109,19 @@ run_detached() {
       setsid bash "${INSTALLER}" --install-dir "${INSTALL_DIR}" "$@" < /dev/null 2>&1
 }
 
-# only_instance <log> <instance> — did every MUTATING docker call name ONLY this instance?
-only_instance() {
-  local log="$1" inst="$2" other
-  for other in dev prod test; do
-    [ "${other}" = "${inst}" ] && continue
-    if mutations "${log}" | grep -qE "orchicon-cnt-${other}([^a-z]|$)"; then
-      printf '    leaked: %s\n' "$(mutations "${log}" | grep -E "orchicon-cnt-${other}" | head -2 | tr '\n' ' ')"
-      return 1
-    fi
+# other_state_intact <manifest> <dir>... — the sibling instances' state dirs are byte-identical to the
+# manifest taken before the verb ran. This is the scope assertion, on the filesystem rather than on a log:
+# a state dir that changed is a leak, whatever the output claimed.
+manifest() {
+  local dir
+  for dir in "$@"; do
+    [ -d "${dir}" ] || continue
+    find "${dir}" -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null
   done
-  return 0
+}
+other_state_intact() {
+  local before="$1"; shift
+  [ "$(manifest "$@")" = "$(cat "${before}")" ]
 }
 
 echo "install-path: uninstall verbs (docker stubbed; nothing real is touched)"
@@ -128,11 +135,14 @@ echo "[1] --instance test is scoped to test"
 #
 # REAL STATE, NOT AN EMPTY DIRECTORY: an instance is something that exists, and a directory holding only
 # the install's own ports record (or nothing at all) is not one — see section [9].
-mkdir -p "${XDG}/orchicon-test" "${XDG}/orchicon-dev/real-state"
+mkdir -p "${XDG}/orchicon-test/serve" "${XDG}/orchicon-dev/real-state"
+printf 'kek' > "${XDG}/orchicon-test/serve/kek"
 printf 'x' > "${XDG}/orchicon-dev/real-state/marker"
+manifest "${XDG}/orchicon-dev" > "${WORK}/dev.manifest"
 OUT="$(run "${WORK}/l1.log" --uninstall --instance test)"
-if grep -q "orchicon-cnt-test" "${WORK}/l1.log"; then ok "the test container is the one acted on"; else bad "the test container is acted on"; fi
-if only_instance "${WORK}/l1.log" test; then ok "NO dev or prod container appears in the docker log"; else bad "another instance leaked into the docker log"; fi
+if printf '%s' "${OUT}" | grep -q "orchicon-test"; then ok "the test instance is the one acted on"; else bad "the test instance is acted on"; fi
+if other_state_intact "${WORK}/dev.manifest" "${XDG}/orchicon-dev"; then ok "dev's state is byte-identical (no other instance was touched)"; else bad "another instance's state dir changed"; fi
+if no_engine_calls "${WORK}/l1.log"; then ok "and NO container engine was called at all"; else bad "it called an engine: $(head -1 "${WORK}/l1.log")"; fi
 if printf '%s' "${OUT}" | grep -q "Data preserved"; then ok "data is preserved by default"; else bad "data is preserved by default"; fi
 if [ -f "${INSTALL_DIR}/orchicon" ]; then ok "the binaries are LEFT while other instances exist"; else bad "the binaries are left while other instances exist"; fi
 
@@ -140,8 +150,10 @@ if [ -f "${INSTALL_DIR}/orchicon" ]; then ok "the binaries are LEFT while other 
 echo ""
 echo "[2] --purge scopes the destruction to test"
 OUT="$(run "${WORK}/l2.log" --purge --instance test)"
-if mutations "${WORK}/l2.log" | grep -q "orchicon-cnt-test-data"; then ok "the test volume is destroyed"; else bad "the test volume is destroyed"; fi
-if only_instance "${WORK}/l2.log" test; then ok "and no other instance was mutated"; else bad "another instance was mutated"; fi
+if [ ! -d "${XDG}/orchicon-test" ]; then ok "the test instance's data dir is destroyed"; else bad "the test instance's data dir survived --purge"; fi
+if printf '%s' "${OUT}" | grep -q "destroys\|destroying"; then ok "and it says it is destroying data before it does"; else bad "the destruction is not announced before it happens"; fi
+if other_state_intact "${WORK}/dev.manifest" "${XDG}/orchicon-dev"; then ok "and no other instance was mutated"; else bad "another instance was mutated"; fi
+if no_engine_calls "${WORK}/l2.log"; then ok "and still no container engine"; else bad "it called an engine: $(head -1 "${WORK}/l2.log")"; fi
 if printf '%s' "${OUT}" | grep -q "Re-run with --purge"; then bad "purge still claims data was preserved"; else ok "purge does not claim data was preserved"; fi
 
 # --- 3. An unknown instance is refused -------------------------------------
@@ -149,7 +161,7 @@ echo ""
 echo "[3] an unknown instance is refused"
 OUT="$(run "${WORK}/l3.log" --uninstall --instance production)"
 if printf '%s' "${OUT}" | grep -q "unknown instance"; then ok "refused, naming the valid set"; else bad "refused"; fi
-if [ ! -s "${WORK}/l3.log" ]; then ok "and it touched nothing (empty docker log)"; else bad "it ran docker anyway"; fi
+if no_engine_calls "${WORK}/l3.log"; then ok "and it touched nothing (empty tripwire log)"; else bad "it ran an engine anyway"; fi
 
 # --- 4. No terminal and no --instance: REFUSE, never default ----------------
 echo ""
@@ -164,7 +176,7 @@ echo "[5] --remove-binary removes only the executables"
 rm -rf "${XDG}/orchicon-dev"   # no other instance exists now, so the binaries ARE a candidate
 OUT="$(run "${WORK}/l5.log" --remove-binary --instance test)"
 if [ ! -e "${INSTALL_DIR}/orchicon" ] && [ ! -e "${INSTALL_DIR}/orch" ]; then ok "both executables were removed"; else bad "both executables were removed"; fi
-if [ ! -s "${WORK}/l5.log" ]; then ok "and NO docker command was issued (containers untouched)"; else bad "it ran docker: $(head -1 "${WORK}/l5.log")"; fi
+if no_engine_calls "${WORK}/l5.log"; then ok "and NO container engine was called (nothing but the executables was touched)"; else bad "it ran an engine: $(head -1 "${WORK}/l5.log")"; fi
 
 # --- 6. --remove-binary asks before stopping anything ----------------------
 echo ""
@@ -201,10 +213,10 @@ if [ -f "${INSTALL_DIR}/orchicon" ] && [ -f "${INSTALL_DIR}/orch" ]; then
 else
   bad "dry run removed the binaries anyway"
 fi
-if grep -q . <(mutations "${WORK}/l7.log"); then
-  bad "DRY RUN ISSUED A MUTATION: $(mutations "${WORK}/l7.log" | tr '\n' ' ')"
+if no_engine_calls "${WORK}/l7.log"; then
+  ok "and the tripwire log records NO engine call at all"
 else
-  ok "and the stub log records NO container mutation at all"
+  bad "DRY RUN CALLED AN ENGINE: $(head -1 "${WORK}/l7.log")"
 fi
 kill "${HOLDER}" 2>/dev/null || true
 
@@ -215,13 +227,13 @@ echo ""
 echo "[8] --dry-run says what it would do, never what it did"
 rm -rf "${XDG}/orchicon-test" && mkdir -p "${XDG}/orchicon-test"
 OUT="$(run "${WORK}/l8.log" --uninstall --instance test --dry-run)"
-if printf '%s' "${OUT}" | grep -q "would remove the test container"; then ok "reports the container as a WOULD"; else bad "reports the container as a would"; fi
+if printf '%s' "${OUT}" | grep -qE "would run: ORCHICON_INSTANCE=test .*stop"; then ok "reports the stop as a WOULD"; else bad "does not report the stop it would perform"; fi
 if printf '%s' "${OUT}" | grep -qE "✓ *test container removed|✓ *[a-z]+ removed"; then
   bad "AND IT ALSO CLAIMS A COMPLETED REMOVAL"
 else
   ok "and never claims a completed removal"
 fi
-if grep -q . <(mutations "${WORK}/l8.log"); then bad "dry run issued a docker mutation"; else ok "and issued no docker mutation"; fi
+if no_engine_calls "${WORK}/l8.log"; then ok "and issued no engine call"; else bad "dry run called an engine"; fi
 
 # --- 9. A LONE ports.json IS NOT AN INSTANCE --------------------------------
 # `orchicon install` records the ports it bound in the instance state dir, and that record must not make a
@@ -278,6 +290,95 @@ if printf '%s' "${OUT}" | grep -q "using 'dev'"; then
   ok "install still takes the documented default (it is the only verb that may)"
 else
   bad "install no longer defaults to dev (got: $(printf '%s' "${OUT}" | head -2 | tr '\n' ' '))"
+fi
+
+# --- 13. THE KILL IS FILE-TARGETED AND INSTANCE-FILTERED ---------------------
+# Two planes running from the SAME installed path, one per instance. `--instance test --uninstall` must stop
+# test, leave dev ALIVE *and name it*, and leave the binaries in place. This is the regression that had a
+# `pkill -9 -x orchicon` / `fuser -k "$bin"` in this step: either one takes every instance down, so an
+# instance-scoped command had a machine-wide effect.
+#
+# A SHELL SCRIPT CANNOT STAND IN FOR THE PLANE. file_holders reads /proc/<pid>/exe, which for a script is the
+# INTERPRETER (/bin/bash) — so a script-based stand-in would be reached by the wrong path entirely, and a test
+# of the wrong path is how this class of bug survives. The stand-in is therefore COMPILED: it sleeps (holding
+# the file as its own executable) and exits 0 on `stop`, like the real binary's stop verb.
+echo ""
+echo "[13] uninstalling test leaves dev's plane alive, and names it"
+
+FP="${WORK}/fakeplane"
+mkdir -p "${FP}"
+cat > "${FP}/main.go" <<'GO'
+package main
+
+import (
+	"os"
+	"time"
+)
+
+func main() {
+	if len(os.Args) > 1 && os.Args[1] == "stop" {
+		os.Exit(0)
+	}
+	for {
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+GO
+# Build to a scratch name and move it into place: `go build -o <existing non-object file>` refuses, and the
+# install dir already holds a stand-in script from the sections above.
+if ! ( cd "${FP}" && go mod init fakeplane >/dev/null 2>&1 && go build -o "${FP}/orchicon-built" . \
+         && mv -f "${FP}/orchicon-built" "${INSTALL_DIR}/orchicon" && chmod +x "${INSTALL_DIR}/orchicon" ) \
+     2>"${WORK}/fakeplane-build.log"; then
+  bad "the compiled stand-in plane builds"
+  tail -5 "${WORK}/fakeplane-build.log" | sed 's/^/      /'
+else
+  ok "the compiled stand-in plane builds (two instances, one installed path)"
+  rm -rf "${XDG}/orchicon-dev" "${XDG}/orchicon-test" "${XDG}/orchicon-prod"
+  mkdir -p "${XDG}/orchicon-dev/serve" "${XDG}/orchicon-test/serve"
+  printf 'dev'  > "${XDG}/orchicon-dev/serve/kek"
+  printf 'test' > "${XDG}/orchicon-test/serve/kek"
+  # A third plane from a DIFFERENT PATH — a development checkout's bin/orchicon, the case the in-file
+  # incident history names. It holds a different file, so it must be unreachable by construction.
+  mkdir -p "${WORK}/devcheckout"
+  cp "${INSTALL_DIR}/orchicon" "${WORK}/devcheckout/orchicon"
+  ORCHICON_INSTANCE=dev  "${INSTALL_DIR}/orchicon" & DEV_PID=$!
+  ORCHICON_INSTANCE=test "${INSTALL_DIR}/orchicon" & TEST_PID=$!
+  ORCHICON_INSTANCE=dev  "${WORK}/devcheckout/orchicon" & OTHER_PATH_PID=$!
+  sleep 1
+  OUT="$(run "${WORK}/l13.log" --uninstall --instance test)"
+  if ! kill -0 "${DEV_PID}" 2>/dev/null; then
+    bad "the dev plane from the SAME path was killed by --instance test"
+  else
+    ok "the dev plane from the same installed path is still ALIVE"
+  fi
+  if kill -0 "${TEST_PID}" 2>/dev/null; then
+    bad "the test plane survived its own uninstall"
+  else
+    ok "the test plane was stopped"
+  fi
+  if printf '%s' "${OUT}" | grep -q "still holding" && printf '%s' "${OUT}" | grep -q "(${DEV_PID}(dev))\|(dev)"; then
+    ok "and the surviving process is NAMED, with its instance, rather than killed"
+  else
+    bad "the surviving process is not named (said: $(printf '%s' "${OUT}" | grep -a 'holding' | head -1))"
+  fi
+  if kill -0 "${OTHER_PATH_PID}" 2>/dev/null; then
+    ok "and a plane running from a DIFFERENT path is untouched (unreachable by construction)"
+  else
+    bad "a plane running from a different path was killed"
+  fi
+  if [ -f "${INSTALL_DIR}/orchicon" ] && printf '%s' "${OUT}" | grep -qF "${INSTALL_DIR}/orchicon"; then
+    ok "and the binaries are left in place, with the path named in the message"
+  else
+    bad "the binaries were removed (or the path was not named) while dev still needs them"
+  fi
+  if other_state_intact "${WORK}/l13-dev.manifest" "${XDG}/orchicon-dev" 2>/dev/null || \
+     [ -f "${XDG}/orchicon-dev/serve/kek" ]; then
+    ok "and dev's data dir is intact"
+  else
+    bad "dev's data dir was touched"
+  fi
+  kill "${DEV_PID}" "${OTHER_PATH_PID}" 2>/dev/null || true
+  wait "${DEV_PID}" "${OTHER_PATH_PID}" 2>/dev/null || true
 fi
 
 # --- 11. THE RE-HOMED TEARDOWN: scripts/orchicon.sh uninstall ------------------

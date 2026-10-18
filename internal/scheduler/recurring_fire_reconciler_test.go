@@ -102,6 +102,7 @@ func TestRecurringFireFiresLeafAndAdvancesNextRunAt(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-fire",
 		Slug: "recur-fire-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +164,7 @@ func TestRecurringFireFiresSequenceParent(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-seq",
 		Slug: "recur-seq-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -223,6 +225,7 @@ func TestRecurringFireSkipsNonDueItems(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-skip",
 		Slug: "recur-skip-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -310,6 +313,7 @@ func TestRecurringFireIdempotency(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-ide",
 		Slug: "recur-ide-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -364,6 +368,7 @@ func TestRecurringFireSkipsNoWorkflow(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-nowf",
 		Slug: "recur-nowf-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -411,6 +416,7 @@ func TestRecurringAdvanceNextRunAt(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-adv",
 		Slug: "recur-adv-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -482,6 +488,7 @@ func TestRecurringFireBothLeafAndSequenceParent(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-both",
 		Slug: "recur-both-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -550,6 +557,7 @@ func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-lifecycle",
 		Slug: "recur-lifecycle-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -685,6 +693,7 @@ func TestRecurringRunFailureKeepsItemRecurring(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-failure",
 		Slug: "recur-failure-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -832,6 +841,7 @@ func TestRecurringRunFailureAtStartKeepsItemRecurring(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-fail-start",
 		Slug: "recur-fail-start-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -955,6 +965,7 @@ func TestRecurringFireRecordsLedgerOnFire(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-ledger",
 		Slug: "recur-ledger-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1012,6 +1023,7 @@ func TestRecurringFireFailedFireRecordsLedgerAndAdvances(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-failfire",
 		Slug: "recur-failfire-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1069,6 +1081,7 @@ func TestRecurringFireSkipsPausedItem(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "recur-paused",
 		Slug: "recur-paused-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)

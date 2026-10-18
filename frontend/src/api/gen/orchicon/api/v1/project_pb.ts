@@ -103,9 +103,9 @@ proto3.util.setEnumType(GitStrategy, "orchicon.api.v1.GitStrategy", [
 /**
  * ExecutionMode controls where native executions run
  * (always-container runtime):
- *   - runtime: executions run inside the run's container (default).
- *   - local: in-process execution allowed, with an honest prompt block
- *     and a hard DSN fence refusing live-plane writes.
+ *   - runtime: executions run inside the run's container (opt-in).
+ *   - local: in-process execution allowed (the default), with an honest
+ *     prompt block and a hard DSN fence refusing live-plane writes.
  *
  * @generated from enum orchicon.api.v1.ExecutionMode
  */
@@ -328,8 +328,8 @@ export class Project extends Message<Project> {
   defaultRuntimeImage = "";
 
   /**
-   * execution_mode selects always-container (runtime, default) vs
-   * in-process (local, with honest prompt + DSN fence).
+   * execution_mode selects always-container (runtime, opt-in) vs
+   * in-process (local, the default, with honest prompt + DSN fence).
    *
    * @generated from field: orchicon.api.v1.ExecutionMode execution_mode = 16;
    */
@@ -537,7 +537,7 @@ export class CreateProjectRequest extends Message<CreateProjectRequest> {
 
   /**
    * default_runtime_image seeds projects.default_runtime_image (empty =
-   * inherit tenant/base). execution_mode defaults to runtime.
+   * inherit tenant/base). execution_mode defaults to local.
    *
    * @generated from field: string default_runtime_image = 7;
    */

@@ -2,10 +2,10 @@
 // docs/07_API_Specification.md §3.9).
 //
 // Telemetry is OTel-native and flows from the producer to the OTel
-// collector to the Grafana stack (Tempo/Loki/VictoriaMetrics) — it does NOT flow through
+// collector to the telemetry backends (Tempo/Loki/VictoriaMetrics) — it does NOT flow through
 // NATS (docs/08 §1). The TelemetryService proxies tenant-scoped queries
 // to the backends so users explore traces/metrics/logs without leaving the
-// Orchicon shell (docs/10 §11: seamless Grafana embedding).
+// Orchicon shell (docs/10 §11: native telemetry panes).
 //
 // A single correlation_id propagates across all spans in a user action
 // (docs/08 §3, §5.1): api.<service>.<rpc> → reconcile.<kind>.<id> →
@@ -111,4 +111,5 @@ message TelemetryQuery {
   google.protobuf.Timestamp end = 8;     // time window end
   int32 limit = 9;            // max results (bounded at the handler)
   string page_token = 10;    // opaque pagination cursor
+  string work_item_id = 11;  // optional scope (joins via attributes)
 }

@@ -35,6 +35,7 @@ func TestFactsFileCarriesStepAttribution(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "Facts file",
 		Slug: "facts-file-" + strings.ToLower(db.NewID()), Status: "active",
 		Goals: []byte("[]"), ProjectDir: root,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +131,7 @@ func TestFactsFileExtractsFromTranscriptOnTerminal(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "Facts transcript terminal",
 		Slug: "facts-term-" + strings.ToLower(db.NewID()), Status: "active",
 		Goals: []byte("[]"), ProjectDir: root,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)

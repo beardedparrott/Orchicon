@@ -25,11 +25,11 @@ The documentation lives at the project root:
 ## Technology Stack
 
 - **Control plane**: Go (single binary, k8s-style reconcilers)
-- **Single container**: `orchicon container` runs the whole stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, control plane) as PID 1 — see [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md)
+- **Single container**: `orchicon container` runs the whole stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics, control plane) as PID 1 — see [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md)
 - **API**: Protobuf + Connect (gRPC + REST + streaming from one schema)
 - **Database**: PostgreSQL 16 with RLS + transactional outbox
 - **Event bus**: NATS JetStream
-- **Telemetry**: OpenTelemetry → Grafana stack (Tempo + Loki + VictoriaMetrics) — fully separated infra
+- **Telemetry**: OpenTelemetry → the telemetry backends (Tempo + Loki + VictoriaMetrics), read by the native Telemetry panes — fully separated infra
 - **Policy**: Rego (Open Policy Agent)
 - **Runtime adapters**: pluggable gRPC sidecars — a **built-in native engine runs by default and needs nothing installed**, plus external adapters such as OpenCode. Adapters are optional and never bundled.
 - **Frontend**: TypeScript + React + Vite + Connect-ES
@@ -84,50 +84,53 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 > `orchicon install` no longer requires it. A plane whose model refs need no adapter never probes for the binary, never starts a serve, and never mounts it into a container — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```powershell
-# Windows (PowerShell) — runs the stack inside WSL2
+# Windows (PowerShell) — NATIVE: installs orchicon.exe + orch.exe, no WSL2 or Docker required
 irm https://orchicon.dev/install.ps1 | iex
+
+# ...and only if you also want a workflow's runtime CONTAINER (this provisions the WSL2 substrate):
+& ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Containers
 ```
 
 ### Single container (Docker)
 
-The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, control plane) runs in one container:
+The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics, control plane) runs in one container:
 
 ```bash
-docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon
+docker run --rm -p 8080:8080 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon
 ```
 
 The `orchicon` binary is the PID-1 supervisor (`orchicon container`). See [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md) for the lifecycle script, env vars, and data-preservation notes.
 
-### Windows (WSL2)
+### Windows
 
 ```powershell
 irm https://orchicon.dev/install.ps1 | iex
 ```
 
-Orchicon's runtime layer (runtime daemon, unix socket, container mounts) is POSIX-only, so on Windows the **whole stack runs inside WSL2**. The installer provisions/detects WSL2, installs the **Linux** binary inside the distro, and runs the one-command setup there. WSL2 forwards `localhost`, so the UIs open from Windows at the same URLs as on Linux: `http://localhost:8080` (control plane) and `http://localhost:3002` (Grafana).
+Orchicon runs on Windows as **native processes of the user who installs it**: `install.ps1` places `orchicon.exe` and `orch.exe` in `%LOCALAPPDATA%\Programs\Orchicon`, adds that directory to your **user** `PATH`, and runs the one-command setup there. **WSL2 is needed only for a workflow's runtime container**, which the installer provisions when you ask for it (`-Containers`); a plain install never runs `wsl` and works on a machine that has none.
 
-The installer never closes your PowerShell window: a failure prints what failed and the next steps, then returns to the prompt with your session intact. The long steps (image pull, stack setup) stream their output as they run, the setup step asks about host ports (ENTER accepts each default), and the full log lands in `%TEMP%`. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation).
+The installer never closes your PowerShell window: a failure prints what failed and the next steps, then returns to the prompt with your session intact. The long steps (binary acquisition, stack setup) stream their output as they run, the setup step asks about host ports (ENTER accepts each default), and the full log lands in `%TEMP%`. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation).
 
-> **Windows: there is no `.exe`, so SmartScreen has no Orchicon binary to warn about.** The stack runs inside WSL2 and the installer installs the **Linux** binary there. The one thing Windows does mark is a **saved** `install.ps1`: if you right-clicked "Save link as" instead of using `irm … | iex`, PowerShell may refuse to run it and SmartScreen may warn — clear the mark on that one file with `Unblock-File -LiteralPath .\install.ps1`. The documented `irm https://orchicon.dev/install.ps1 | iex` writes no file at all and trips nothing.
+> **Windows SmartScreen.** The installer downloads `orchicon.exe` itself, so the binary it installs carries no mark-of-the-web and runs without a prompt. If you instead downloaded the **zip in a browser**, Windows marks that archive and SmartScreen warns *"Windows protected your PC"* the first time you run the extracted `orchicon.exe`: click **More info → Run anyway**, or clear the mark on the archive **before extracting it** with `Unblock-File -LiteralPath .\orchicon_<version>_windows_amd64.zip`. Neither step changes a Windows security setting — every other unsigned download on the machine stays blocked. A **saved** `install.ps1` (right-click → "Save link as") can be marked the same way: `Unblock-File -LiteralPath .\install.ps1`. The documented `irm https://orchicon.dev/install.ps1 | iex` writes no file at all and trips nothing.
 
 Prerequisites:
-- **Windows 10 21H2+ / Windows 11**, with WSL2 and a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
-- **Docker Desktop** with WSL2 integration enabled for your distro (or Docker Engine installed inside it).
+- **Windows 10 21H2+ / Windows 11.** A native install needs no WSL2 distro and no Docker Desktop. `-Containers` additionally needs WSL2 with a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
+- A **container engine is optional**: the plane and its services run as host processes, so nothing needs Docker. An engine is only used for a workflow's *runtime container*, and only if you opt in.
 
-Project directories are entered in the UI as their **WSL path** — a Windows project `C:\Users\you\projects\Foo` is `/mnt/c/Users/you/projects/Foo` inside WSL. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
+Project directories are entered in the UI as **host paths** — with a native install that stays the Windows path (`C:\Users\you\projects\Foo`), not a `/mnt/c/…` translation. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
 
 ### Options
 
 | Flag | Description |
 |---|---|
 | `--version <tag>` | Install a specific version (e.g. `v0.4.5`). Default: latest. |
-| `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). On Windows this is a **WSL path** (the binary installs inside the distro). |
-| `--no-setup` | Install the binary only — do not pull images / start the runtime daemon / launch the container. |
+| `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). The PowerShell installer's `-InstallDir` defaults to `%LOCALAPPDATA%\Programs\Orchicon` and needs no administrator rights. |
+| `--no-setup` | Install the binary only — do not start the host services, the runtime daemon or the plane. |
 | `--no-verify` | Skip the `SHA256SUMS` check on the downloaded archive. The check is what proves the archive is the one the release published; only skip it against a mirror you control. |
 | `--uninstall` | Remove Orchicon from the install directory. |
 | `--dry-run` | Print what would happen without making changes. |
-| `--clean` | Stop dev containers, remove old binary, then install latest. All user data preserved. |
-| `--force-clean` / `--nuke` | Wipe everything: destroy Docker volumes, remove blob store data and runtime state, then install latest. **All data lost.** |
+| `--clean` | Stop this instance's plane and host services, remove old binary, then install latest. All user data preserved. |
+| `--force-clean` / `--nuke` | Wipe everything for this instance: destroy its data directory (database, blob store, runtime state), then install latest. **All data lost.** |
 
 ```bash
 # Install a specific version
@@ -165,7 +168,7 @@ and [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md).
 | `orchicon serve` | Run the control plane with embedded frontend (headless) |
 | `orchicon serve --detach` / `--stop` | Fork/stop a background server |
 | `orchicon container` | Run the whole stack as PID 1 (container image) |
-| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info |
+| `orchicon install` | One-command setup: acquire the infrastructure binaries (Postgres, NATS), start the runtime daemon, start this instance's services and plane, print connection info. Offers the optional runtime images (default: none) |
 | `orchicon runtime-daemon` | Host process owning the Docker socket; owns the warm pool of per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 (hosts the container's adapter serve, when the run needs one) |
 | `orchicon runtime-client` | Forwards daemon requests (serve handshake / ping) into the runtime container |

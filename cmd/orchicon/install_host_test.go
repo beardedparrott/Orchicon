@@ -61,12 +61,12 @@ func TestActiveInstallPortsPerResidency(t *testing.T) {
 	host := activeInstallPorts(residencyHost)
 	container := activeInstallPorts(residencyContainer)
 
-	if len(container) != 2 {
-		t.Errorf("container residency binds %d ports, want 2 (control + grafana)", len(container))
+	if len(container) != 1 {
+		t.Errorf("container residency binds %d ports, want 1 (control)", len(container))
 	}
-	// 10: control (plane-bound) + grafana + 8 services.
-	if len(host) != 10 {
-		t.Errorf("host residency binds %d ports, want 10", len(host))
+	// 9: control (plane-bound) + 8 services.
+	if len(host) != 9 {
+		t.Errorf("host residency binds %d ports, want 9", len(host))
 	}
 
 	// Every shape must include the plane port, or there is no instance to reach.
@@ -99,7 +99,6 @@ func TestActiveInstallPortsPerResidency(t *testing.T) {
 func TestPublishArgsShapeAndSafety(t *testing.T) {
 	ports := map[string]int{
 		"ORCHICON_CONTROL_PORT":      9080,
-		"ORCHICON_GRAFANA_PORT":      4002,
 		"ORCHICON_POSTGRES_PORT":     5442,
 		"ORCHICON_NATS_PORT":         4333,
 		"ORCHICON_NATS_MONITOR_PORT": 8333,
@@ -116,7 +115,7 @@ func TestPublishArgsShapeAndSafety(t *testing.T) {
 		t.Errorf("host residency must not publish the plane port (the host plane binds it); got: %s", host)
 	}
 	// Services are loopback-bound and use the RESOLVED host port.
-	for _, want := range []string{"127.0.0.1:5442:5432", "127.0.0.1:4333:4222", "127.0.0.1:8333:8222", "127.0.0.1:4002:3000"} {
+	for _, want := range []string{"127.0.0.1:5442:5432", "127.0.0.1:4333:4222", "127.0.0.1:8333:8222"} {
 		if !strings.Contains(host, want) {
 			t.Errorf("host publishes must contain %q; got: %s", want, host)
 		}
@@ -129,9 +128,6 @@ func TestPublishArgsShapeAndSafety(t *testing.T) {
 	// The container shape DOES publish the plane port (the plane is inside it).
 	if !strings.Contains(container, "9080:8080") {
 		t.Errorf("container residency must publish its plane port; got: %s", container)
-	}
-	if !strings.Contains(container, "4002:3000") {
-		t.Errorf("container residency must publish grafana; got: %s", container)
 	}
 	// ...and must NOT drag in the service publishes it does not need.
 	if strings.Contains(container, ":5432") {
@@ -151,7 +147,6 @@ func TestPlaneEnvIsPerInstanceAndComplete(t *testing.T) {
 
 	ports := map[string]int{
 		"ORCHICON_CONTROL_PORT":   9080,
-		"ORCHICON_GRAFANA_PORT":   4002,
 		"ORCHICON_POSTGRES_PORT":  5442,
 		"ORCHICON_NATS_PORT":      4333,
 		"ORCHICON_OTLP_GRPC_PORT": 4317,
@@ -174,7 +169,6 @@ func TestPlaneEnvIsPerInstanceAndComplete(t *testing.T) {
 		"ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:5442/orchicon?sslmode=disable",
 		"ORCHICON_NATS_URL=nats://localhost:4333",
 		"ORCHICON_OTEL_ENDPOINT=localhost:4317",
-		"ORCHICON_GRAFANA_URL=http://localhost:4002",
 		"ORCHICON_TEMPO_URL=http://localhost:3200",
 		"ORCHICON_LOKI_URL=http://localhost:3100",
 		"ORCHICON_VM_URL=http://localhost:8428",
@@ -685,7 +679,7 @@ func TestServicesReadyUsesResolvedPortsAndDirectProbes(t *testing.T) {
 //
 // The omitted key used to read as PORT 0 and be probed: a container-RESIDENT instance keeps postgres and nats
 // inside the container's network namespace and publishes neither on a host port, so its resolved port set names
-// only the control and Grafana ports. `planInstallPorts` writes a key only for the ports `activeInstallPorts`
+// only the control port. `planInstallPorts` writes a key only for the ports `activeInstallPorts`
 // yields, so the two service keys are ABSENT — `servicesReady` then ran `pg_isready -p 0` and probed
 // `http://127.0.0.1:0/healthz`, answered false, and the install's own repair gate
 // (`!healthy || !servicesReady(instance, ports)`) fired on EVERY re-run: a `docker restart` of a perfectly

@@ -148,7 +148,8 @@ func newWorktreeTestEnv(t *testing.T) *worktreeTestEnv {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Worktree Reconciler Project", Slug: "worktree-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"),
-		ProjectDir: env.repo,
+		ProjectDir:    env.repo,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -350,7 +351,8 @@ func TestWorktreeNonRepoProjectSkipped(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Plain Directory Project", Slug: "plain-dir-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"),
-		ProjectDir: plain,
+		ProjectDir:    plain,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create non-repo project: %v", err)
@@ -480,7 +482,8 @@ func TestWorktreeNonRepoProjectCachesFalse(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Cache Non-Repo Project", Slug: "cache-nonrepo-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"),
-		ProjectDir: plain,
+		ProjectDir:    plain,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create non-repo project: %v", err)
@@ -573,7 +576,8 @@ func TestWorktreeNonRepoSecondPassNoGitShellOut(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "NoGit Second Pass", Slug: "nogit-second-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"),
-		ProjectDir: plain,
+		ProjectDir:    plain,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -638,7 +642,8 @@ func TestWorktreeSkippedNotReprovisioned(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Later Git Project", Slug: "later-git-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"),
-		ProjectDir: plain,
+		ProjectDir:    plain,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)

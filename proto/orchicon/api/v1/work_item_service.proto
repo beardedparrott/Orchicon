@@ -183,6 +183,11 @@ message CreateWorkItemRequest {
   // creates leave it empty (backward compatible).
   string run_context = 19;
   repeated string secret_ids = 20;
+  // execution_mode sets this item's override for where its executions run.
+  // EXECUTION_MODE_UNSPECIFIED (the default) = inherit from the project - on
+  // create there is no prior value, so "absent" needs no separate meaning.
+  // Resolution order: item -> project -> tenant default.
+  ExecutionMode execution_mode = 21;
 }
 
 message CreateWorkItemResponse {
@@ -284,6 +289,15 @@ message UpdateWorkItemRequest {
   // When both this and scheduled_start_at are present, CLEAR WINS (the explicit removal is the more
   // specific intent, and leaving both applied would be contradictory).
   bool clear_scheduled_start_at = 28;
+  // execution_mode sets this item's execution-mode override. UNSET = unchanged
+  // (field-mask semantics: the request is a patch).
+  optional ExecutionMode execution_mode = 29;
+  // clear_execution_mode returns the item to "inherit from the project" - it is
+  // the ONLY way to remove an override, because an absent execution_mode means
+  // unchanged. When both are present, CLEAR WINS (same rule as
+  // clear_scheduled_start_at above: the explicit removal is the more specific
+  // intent, and leaving both applied would be contradictory).
+  bool clear_execution_mode = 30;
 }
 
 // DependencyIds is a set of dependency target work item IDs. Used for

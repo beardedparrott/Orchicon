@@ -126,7 +126,14 @@ func resolveInstallRuntimeImagesFor(instance string, promptOut io.Writer, answer
 	// NOBODY TO ASK. A redirected/backgrounded install must not block on a question — the same rule the port
 	// prompt follows (install_ports.go promptTerminal), and for the same reason: the read would either hang
 	// or consume input that belongs to whatever is driving us.
+	//
+	// --yes STILL COUNTS HERE. It is an answer that never needed a terminal, and it is the documented way to
+	// make a non-interactive install decide something: `scripts/install.sh --yes` exports ORCHICON_ASSUME_YES
+	// and runs `orchicon install` with no flags, so the environment is the only channel it has.
 	if !installIsInteractive() {
+		if choices, answered := assumeYesRuntimeImages(promptOut, imageTag); answered {
+			return choices, nil
+		}
 		fmt.Fprintln(promptOut, "  runtime images: not asking (non-interactive install) — fetch one later from the Runtime Images page if a run needs it")
 		return nil, nil
 	}
@@ -152,7 +159,33 @@ func resolveInstallRuntimeImagesFor(instance string, promptOut io.Writer, answer
 			}
 		}
 	}
+	// --yes IS AN ANSWER, and it is checked AFTER the record so that it can never override one: an instance
+	// that already answered "none" (or "1,3") keeps that answer, because a rebuild is not a first install and
+	// --yes must not turn every rebuild into a multi-GB download. On a first install, "all" is what an
+	// affirmative answer to "which of these?" means, and the total is printed BEFORE anything is fetched so a
+	// several-GB choice is never a surprise.
+	if choices, answered := assumeYesRuntimeImages(promptOut, imageTag); answered {
+		return choices, nil
+	}
 	return resolveInstallRuntimeImages(promptOut, answerIn, imageTag)
+}
+
+// assumeYesRuntimeImages returns every choice when ORCHICON_ASSUME_YES names an affirmative answer. The
+// second return says whether an answer was given AT ALL, so a caller can distinguish "--yes answered" from
+// "no opinion" without re-reading the environment.
+func assumeYesRuntimeImages(promptOut io.Writer, imageTag string) ([]runtimeImageChoice, bool) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ORCHICON_ASSUME_YES"))) {
+	case "1", "true", "yes", "y":
+	default:
+		return nil, false
+	}
+	choices := installRuntimeImageChoices(imageTag)
+	var total int64
+	for _, c := range choices {
+		total += c.SizeBytes
+	}
+	fmt.Fprintf(promptOut, "  runtime images: all %d selected (%s) — answered affirmatively (--yes)\n", len(choices), humanSize(total))
+	return choices, true
 }
 
 // runtimeImagesAnsweredPath is where the answer is recorded, in the instance's own state dir.

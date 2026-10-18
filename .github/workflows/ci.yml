@@ -231,7 +231,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Assert the installer's halt and progress invariants
-        run: bash scripts/tests/install-ps1-wsl-encoding/run.sh
+        run: bash scripts/tests/install-ps1-native/run.sh --no-selfcheck
 
       # A DETECTOR THAT STOPPED DETECTING IS WORSE THAN NO DETECTOR, so prove this one still
       # bites: re-introduce the defect into a copy — the sentinel `throw` that unwinds safely
@@ -242,7 +242,7 @@ jobs:
           broken="$RUNNER_TEMP/install-exit.ps1"
           cp scripts/install.ps1 "$broken"
           perl -0pi -e 's/throw "OrchiconInstallHalt"/exit 1/' "$broken"
-          if bash scripts/tests/install-ps1-wsl-encoding/run.sh "$broken"; then
+          if bash scripts/tests/install-ps1-native/run.sh "$broken" --no-selfcheck; then
             echo "::error::the harness passed an installer whose halt closes the operator's session"
             exit 1
           fi

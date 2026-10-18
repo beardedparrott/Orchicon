@@ -35,8 +35,8 @@ const MigrationsDir = "db/migrations"
 const FrontendDir = "frontend/dist"
 
 // ServiceConfigsFS embeds the SUPERVISED SERVICES' runtime configs
-// (deploy/configs/) — Tempo/Loki/OTel-collector/Grafana configs with
-// @DATA_DIR@ and @…_PORT@ placeholders, plus the Grafana provisioning. The
+// (deploy/configs/) — Tempo/Loki/OTel-collector configs with
+// @DATA_DIR@ and @…_PORT@ placeholders. The
 // `orchicon container` supervisor (cmd/orchicon/container.go) writes these
 // into the instance data dir, substituting the data dir and the resolved port
 // table, and spawns each process against them. The configs are NOT
