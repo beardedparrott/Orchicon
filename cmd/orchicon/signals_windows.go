@@ -26,6 +26,15 @@ package main
 // success line says the plane was FORCE-stopped and never ran its shutdown path, rather than "it ignored
 // SIGTERM", which would imply it received one.
 //
+// THE TIMING COST OF KEEPING THE LADDER IDENTICAL, stated because it is the part an operator notices. On Unix
+// a cooperative child exits on SIGTERM at once, so the supervisor's 20 s `shutdownTimeout` is a CEILING that is
+// rarely reached. Here the graceful attempt routinely cannot be delivered, so nothing child-side acts on it and
+// the wait is spent in full: a Windows supervisor shutdown reads "children did not exit within the grace period"
+// and takes ~20 s — one shared deadline across ALL children, not 20 s each — before TerminateProcess ends them.
+// That is bounded and it does end in a clean stop; it is simply slower than the Unix path. Shortening the grace
+// for the undeliverable case was considered and rejected as the more surprising behaviour: a child that stops
+// itself a few seconds after its console closes would then be killed mid-exit.
+//
 // DECISION (revisitable): if CTRL_BREAK_EVENT proves deliverable in practice — a plane started
 // foreground/attached to the caller's console — this stays as-is and the ladder degrades gracefully. The
 // alternative (an RPC stop path) is explicitly out of scope: package planecontrol's doc forbids it, because
