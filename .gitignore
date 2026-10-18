@@ -123,6 +123,7 @@ deploy/runtime/orch
 
 # cross-compile throwaway cache/output (see Makefile CROSS_TMP)
 .cross-compile/
+.gocache-go/
 
 # Acceptance EVIDENCE is the deliverable, so the per-step logs under qa-evidence/ are kept
 # even though `*.log` above is ignored: they hold the exact commands, exit codes and
