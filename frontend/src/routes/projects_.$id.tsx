@@ -69,7 +69,7 @@ function ProjectDetailPage() {
   const [savingGitStrategy, setSavingGitStrategy] = useState(false);
   const [savingMaxRuns, setSavingMaxRuns] = useState(false);
   const [draftDefaultImage, setDraftDefaultImage] = useState("");
-  const [draftExecutionMode, setDraftExecutionMode] = useState<"runtime" | "local">("runtime");
+  const [draftExecutionMode, setDraftExecutionMode] = useState<"runtime" | "local">("local");
   const [savingRuntime, setSavingRuntime] = useState(false);
   // The project's skill-file selection is edited through the SAME FileBrowser
   // as context files, but reported back here (onChange) so a skills save does

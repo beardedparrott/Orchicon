@@ -37,6 +37,7 @@ func TestRunCompletionWithSkippedStepMarksWorkItemSkipped(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "skip-producer",
 		Slug: "skip-producer-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -119,6 +120,7 @@ func TestRunCompletionSkippedChildAdvancesParentChain(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "skip-advance",
 		Slug: "skip-advance-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)

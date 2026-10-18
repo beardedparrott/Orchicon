@@ -61,6 +61,12 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	// execution_mode defaults to local when the caller sends no mode; an
+	// unknown value is rejected at this boundary rather than coerced.
+	executionMode, err := executionModeFromProto(msg.GetExecutionMode(), db.DefaultExecutionMode)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 
 	row := db.ProjectRow{
 		ID:       db.NewID(),
@@ -100,14 +106,7 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 			}
 			return nil
 		}(),
-		ExecutionMode: func() string {
-			switch msg.GetExecutionMode() {
-			case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
-				return db.ExecutionModeLocal
-			default:
-				return db.ExecutionModeRuntime
-			}
-		}(),
+		ExecutionMode: executionMode,
 	}
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
@@ -269,16 +268,14 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		fields.DefaultRuntimeImage = &v
 	}
 	if msg.ExecutionMode != nil {
-		switch *msg.ExecutionMode {
-		case apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME:
-			m := db.ExecutionModeRuntime
-			fields.ExecutionMode = &m
-		case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
-			m := db.ExecutionModeLocal
-			fields.ExecutionMode = &m
-		default:
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_mode must be runtime or local"))
+		// A present mode is explicit: UNSPECIFIED or an unknown enum value is
+		// a client bug, rejected with the shared message. An absent field still
+		// means "unchanged", so an update never re-defaults an existing project.
+		m, err := executionModeFromProto(*msg.ExecutionMode, "")
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
+		fields.ExecutionMode = &m
 	}
 	if fd := msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && msg.ProtoReflect().Has(fd) {
 		enumVal := msg.ProtoReflect().Get(fd).Enum()
@@ -781,4 +778,25 @@ func mapDBError(err error) error {
 		return connect.NewError(connect.CodeNotFound, errors.New("project not found"))
 	}
 	return connect.NewError(connect.CodeInternal, err)
+}
+
+// executionModeFromProto maps a wire execution mode to the stored string.
+//
+// `unset` decides what an EXECUTION_MODE_UNSPECIFIED caller means: create
+// passes db.DefaultExecutionMode (an absent mode means "the default", local),
+// while update passes "" so an absent field still means "leave it unchanged".
+// An UNSPECIFIED value with no unset default, or any unknown enum value, is a
+// client bug and is rejected with the shared db.ExecutionModeInvalidMsg.
+func executionModeFromProto(v apiv1.ExecutionMode, unset string) (string, error) {
+	switch v {
+	case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
+		return db.ExecutionModeLocal, nil
+	case apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME:
+		return db.ExecutionModeRuntime, nil
+	case apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED:
+		if unset != "" {
+			return unset, nil
+		}
+	}
+	return "", errors.New(db.ExecutionModeInvalidMsg)
 }

@@ -287,10 +287,15 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, key string) reconciler.R
 	return reconciler.Result{}
 }
 
-// projectExecutionMode returns the project's execution_mode
-// (runtime|local), defaulting to runtime on any read failure (preserves
-// current opencode behavior; fail-open toward the container, never toward
-// silent host exec).
+// projectExecutionMode returns the project's execution_mode (runtime|local).
+// An unreadable/empty mode degrades to runtime: a read failure must fail
+// toward the container, never toward a silent host exec. Only an explicitly
+// stored 'local' places a worker in-process.
+//
+// The mode is resolved PER DISPATCH (per execution/step), so changing a
+// project's mode takes effect for subsequent runs; an execution already
+// spawned keeps the transport it was started with (container proc vs local
+// proc) and is not torn down by a mode change.
 func projectExecutionMode(ctx context.Context, tx pgx.Tx, tenantID, projectID string) string {
 	if strings.TrimSpace(projectID) == "" {
 		return db.ExecutionModeRuntime

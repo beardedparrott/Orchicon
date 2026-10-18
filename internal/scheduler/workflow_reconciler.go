@@ -3647,9 +3647,12 @@ func anyDirectCompleted(history []histEntryType) bool {
 	return false
 }
 
-// runExecutionMode returns the run's project execution_mode
-// (runtime|local) for arm routing. Best-effort: empty project or read
-// failure degrades to runtime (fail-open toward the container).
+// runExecutionMode returns the run's project execution_mode (runtime|local)
+// for arm routing. Best-effort: an empty project or a read failure degrades to
+// runtime (fail toward the container, never toward a silent host exec).
+//
+// Like projectExecutionMode this is resolved per dispatch, so a mode change
+// applies to subsequent runs while an in-flight run keeps its transport.
 func runExecutionMode(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow) string {
 	if strings.TrimSpace(run.ProjectID) == "" {
 		return db.ExecutionModeRuntime
