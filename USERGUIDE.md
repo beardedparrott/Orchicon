@@ -332,6 +332,18 @@ working. Naming two instances at once is refused rather than guessed.
 > **There is no boot-time autostart.** After a machine reboot, run `orchicon start`. Orchicon installs
 > no systemd unit and no launchd job, so nothing starts the plane for you.
 
+> **You are only asked the setup questions once per instance.** The host ports and the optional
+> runtime-image download are recorded in the instance's state dir, so a later `orchicon install`,
+> `make instance-up` or `make rebuild-<instance>` does not ask again. To change the runtime-image answer
+> deliberately, run with `ORCHICON_RUNTIME_IMAGES_ASK=1`.
+
+> **Ports held by a previous run.** If a start cannot bind because something still owns `5432`/`4222`,
+> `orchicon stop <instance>` and `orchicon services down <instance>` will stop the instance's **own**
+> leftovers — including the container an older version created, which is what usually holds them. If the
+> holder is **not** this instance's (a database you started yourself, a sibling instance, an unrelated
+> service), nothing is killed: the command names the pid and the executable and stops, so you decide.
+> `services down --force` widens it only as far as this instance's own processes.
+
 `install` and `start` are not the same verb, and the difference is deliberate:
 
 | | `orchicon install` | `orchicon start` |
@@ -2356,7 +2368,7 @@ The `orchicon` binary runs the plane and its supporting services.
 | `orchicon stop [instance]` | Stop an instance: its plane, then its services. **Idempotent** — running it on a stopped instance is a successful no-op |
 | `orchicon restart [instance]` | Restart this instance so its components re-read their environment. Use it after installing an adapter CLI or changing `PATH` — see *Installing an adapter CLI* |
 | `orchicon plane <status\|start\|stop\|restart> [instance]` | The **plane only** — leaves the services running. The mechanism the TUI and the desktop app call |
-| `orchicon services <up\|down\|status> [instance]` | The **services only** — this instance's Postgres + NATS on the host. `up` is idempotent; `down` verifies the ports came free |
+| `orchicon services <up\|down\|status> [instance]` | The **services only** — this instance's Postgres + NATS on the host. `up` is idempotent; `down` verifies the ports came free, and stops this instance's **own** container from an older install if that is what still holds them. `down --force` also terminates this instance's leftover processes — never one it does not own |
 | `orchicon serve` | Run the control plane with the embedded frontend (headless, migrations on boot) |
 | `orchicon serve --detach` / `--status` / `--stop` | Manage a background `serve` instance (PID file) |
 | `orchicon container` | **Internal.** The supervisor the host services re-exec as; not a supported way to run an instance |

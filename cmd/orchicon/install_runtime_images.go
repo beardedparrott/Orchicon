@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -108,6 +110,67 @@ func humanSize(n int64) string {
 //
 // The prompt is written to promptOut (the caller's console) and the answer is
 // read from answerIn.
+// runtimeImagesAnsweredFile records that this instance has ALREADY been asked which runtime images to fetch.
+//
+// THE PROMPT USED TO APPEAR ON EVERY INSTALL, and an install runs on every `make instance-up` /
+// `rebuild-<instance>`. So a developer who had answered it once — or declined, which is the recommended
+// default — was asked again on every rebuild, alongside the port prompts. That is the difference between a
+// first-run questionnaire and a command you cannot put in a script.
+//
+// The ANSWER is recorded, not just the fact of asking: "none" is recorded as "none", so declining stays
+// declined, while a later explicit `orchicon install` with a real selection still overrides it. Same shape as
+// ports.json and the residency record — per instance, written by the install, read back by the next one.
+const runtimeImagesAnsweredFile = "runtime-images-answered"
+
+func resolveInstallRuntimeImagesFor(instance string, promptOut io.Writer, answerIn io.Reader, imageTag string, forcePrompt bool) ([]runtimeImageChoice, error) {
+	if !forcePrompt {
+		if p, err := runtimeImagesAnsweredPath(instance); err == nil {
+			if b, rerr := os.ReadFile(p); rerr == nil {
+				recorded := strings.TrimSpace(string(b))
+				fmt.Fprintf(promptOut, "  runtime images: %s (already answered for %s — not asking again)\n", recorded, instance)
+				if recorded == "" || recorded == "none" {
+					return nil, nil
+				}
+				// A recorded selection is re-resolved against TODAY'S choice list rather than replayed
+				// verbatim: the list can change between versions, and a stale index would fetch the wrong
+				// image silently.
+				if idxs, err := parseRuntimeImageSelection(recorded, len(installRuntimeImageChoices(imageTag))); err == nil {
+					choices := installRuntimeImageChoices(imageTag)
+					out := make([]runtimeImageChoice, 0, len(idxs))
+					for _, i := range idxs {
+						out = append(out, choices[i])
+					}
+					return out, nil
+				}
+			}
+		}
+	}
+	return resolveInstallRuntimeImages(promptOut, answerIn, imageTag)
+}
+
+// runtimeImagesAnsweredPath is where the answer is recorded, in the instance's own state dir.
+func runtimeImagesAnsweredPath(instance string) (string, error) {
+	dir, err := hostDataDir(instance)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, runtimeImagesAnsweredFile), nil
+}
+
+// recordRuntimeImagesAnswer persists what the operator chose, so the next install does not re-ask. Best
+// effort: losing the record costs one extra prompt, never a broken instance.
+func recordRuntimeImagesAnswer(instance, answer string) {
+	p, err := runtimeImagesAnsweredPath(instance)
+	if err != nil {
+		return
+	}
+	if strings.TrimSpace(answer) == "" {
+		answer = "none"
+	}
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	_ = os.WriteFile(p, []byte(strings.TrimSpace(answer)+"\n"), 0o644)
+}
+
 func resolveInstallRuntimeImages(promptOut io.Writer, answerIn io.Reader, imageTag string) ([]runtimeImageChoice, error) {
 	choices := installRuntimeImageChoices(imageTag)
 	fmt.Fprintln(promptOut, "")
@@ -152,4 +215,24 @@ func ensureInstallRuntimeImages(choices []runtimeImageChoice, out io.Writer) {
 			fmt.Fprintf(out, "  (%s is optional — continuing; it can be fetched later from the Runtime Images page)\n", c.Variant)
 		}
 	}
+}
+
+// selectionIndexes renders a selection back into the "1,3" form the record stores, so a later install can
+// re-resolve it against the CURRENT choice list rather than replaying stale structs.
+func selectionIndexes(picked []runtimeImageChoice) string {
+	all := installRuntimeImageChoices("")
+	idx := make(map[string]int, len(all))
+	for i, c := range all {
+		idx[c.Variant] = i + 1
+	}
+	var parts []string
+	for _, p := range picked {
+		if n, ok := idx[p.Variant]; ok {
+			parts = append(parts, strconv.Itoa(n))
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ",")
 }

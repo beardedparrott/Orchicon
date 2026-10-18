@@ -307,7 +307,9 @@ func printHelp() {
 		{cmd: bin + " services", desc: []string{
 			"Start/stop this instance's Postgres + NATS on the HOST (no container engine needed).",
 			"services up | down | status — the local backend `make run` and `make migrate` use.",
-			"up is idempotent; down verifies the ports came free."}},
+			"up is idempotent; down verifies the ports came free, and stops this instance's own",
+			"container-era container if one still holds them. `down --force` also terminates this",
+			"instance's own leftover processes — never a process it does not own."}},
 		{cmd: bin + " version", desc: []string{"Print version info"}},
 		{cmd: bin + " notices", desc: []string{"Print third-party license + notice text"}},
 

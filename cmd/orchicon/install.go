@@ -197,11 +197,22 @@ func runInstall(args []string, log *slog.Logger) error {
 	// than failed: absence of an engine is a supported mode, not a broken host.
 	if containersUsed {
 		installPhase("runtime images (optional)")
-		installChoices, cerr := resolveInstallRuntimeImages(os.Stdout, os.Stdin, imageTag)
+		// ASKED ONCE PER INSTANCE, then answered from the record. An install runs on every instance-up and
+		// every rebuild, so re-asking made a rebuild an interactive command — and reboots/CI/scripts have no
+		// one to answer. ORCHICON_RUNTIME_IMAGES_ASK=1 forces the question back for a deliberate change.
+		forceAsk := strings.TrimSpace(os.Getenv("ORCHICON_RUNTIME_IMAGES_ASK")) != ""
+		installChoices, cerr := resolveInstallRuntimeImagesFor(instance, os.Stdout, os.Stdin, imageTag, forceAsk)
 		if cerr != nil {
 			fmt.Printf("warning: %v\n", cerr)
 		}
-		ensureInstallRuntimeImages(installChoices, os.Stdout)
+		if len(installChoices) == 0 {
+			if forceAsk {
+				recordRuntimeImagesAnswer(instance, "none")
+			}
+		} else {
+			recordRuntimeImagesAnswer(instance, selectionIndexes(installChoices))
+			ensureInstallRuntimeImages(installChoices, os.Stdout)
+		}
 	} else {
 		installPhase("skipping the image pull — no container engine")
 		fmt.Println("orchicon: runtime images are only needed for per-workflow runtime containers, and there is nothing on this host to run them in")
