@@ -3,7 +3,7 @@
 //
 // Proxies tenant-scoped queries to Tempo/Loki/VictoriaMetrics so users explore
 // traces/metrics/logs without leaving the Orchicon shell (docs/10 §11:
-// seamless Grafana embedding — same origin, same visual language, inside
+// native telemetry panes — same origin, same visual language, inside
 // the Orchicon shell). The proxy enforces tenant isolation: the
 // tenant_id filter is injected from the request context, never trusted
 // from the client (AGENTS.md tenant isolation).
@@ -82,8 +82,8 @@ type TelemetryServiceClient interface {
 	// GetDashboard returns an Orchicon-specific telemetry dashboard: a
 	// curated set of metrics + summaries built custom on the Orchicon
 	// domain model (docs/10 §11). Custom dashboards are domain-specific
-	// (cost, executions, recovery) — raw exploration uses the embedded
-	// Grafana UI.
+	// (cost, executions, recovery) — raw exploration uses the Telemetry
+	// page panes.
 	GetDashboard(context.Context, *connect.Request[v1.GetDashboardRequest]) (*connect.Response[v1.GetDashboardResponse], error)
 }
 
@@ -184,8 +184,8 @@ type TelemetryServiceHandler interface {
 	// GetDashboard returns an Orchicon-specific telemetry dashboard: a
 	// curated set of metrics + summaries built custom on the Orchicon
 	// domain model (docs/10 §11). Custom dashboards are domain-specific
-	// (cost, executions, recovery) — raw exploration uses the embedded
-	// Grafana UI.
+	// (cost, executions, recovery) — raw exploration uses the Telemetry
+	// page panes.
 	GetDashboard(context.Context, *connect.Request[v1.GetDashboardRequest]) (*connect.Response[v1.GetDashboardResponse], error)
 }
 

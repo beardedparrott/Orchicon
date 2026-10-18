@@ -147,7 +147,7 @@ func runInstall(args []string, log *slog.Logger) error {
 		return err
 	}
 	// WRITE THE PORTS DOWN, because the operator can CHANGE them and a wrapper that re-prints them has
-	// nothing to read. This is the bug it fixes, seen on Windows: the operator answered 3001 for Grafana,
+	// nothing to read. This is the bug it fixes, seen on Windows: the operator answered 3001 for a port,
 	// this installer printed 3001, and then scripts/install.ps1 — which re-prints the URLs after the setup
 	// step — printed a hardcoded 3002, because the resolved values existed only as output on a stream it
 	// had already consumed. It is the same class of defect the port table itself was introduced to fix
@@ -747,7 +747,6 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 	// Read back the ports this install actually bound: re-deriving them from the
 	// instance name would print a URL pointing at a port we never bound.
 	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
-	grafanaPort := fmt.Sprintf("%d", ports["ORCHICON_GRAFANA_PORT"])
 	fmt.Println()
 	if healthy {
 		fmt.Println("┌─────────────────────────────────────────────────────────────┐")
@@ -784,7 +783,6 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 		fmt.Println("  Plane residency: container — the whole stack runs in the container.")
 	}
 	fmt.Printf("  Control plane:  http://localhost:%s\n", controlPort)
-	fmt.Printf("  Grafana:        http://localhost:%s\n", grafanaPort)
 	fmt.Printf("  Health check:   curl %s\n", healthURL)
 	fmt.Println()
 	// The manage-the-instance block names the commands that actually apply to this shape: a container shape is

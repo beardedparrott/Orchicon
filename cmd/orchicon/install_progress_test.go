@@ -70,7 +70,7 @@ func TestTailWriterKeepsOnlyTheTail(t *testing.T) {
 // opened a URL that did not respond with nothing to go on. The install IS real, so
 // the URLs stay; the claim about the plane does not.
 func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
-	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_GRAFANA_PORT": 3002}
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_POSTGRES_PORT": 5432}
 	call := func(healthy bool) string {
 		return captureStdout(t, func() {
 			printInstallInfo("dev", residencyContainer, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
@@ -131,7 +131,7 @@ func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
 	if containerEngineAvailable() {
 		t.Fatal("the fixture needs an empty PATH to make the re-probe disagree")
 	}
-	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_GRAFANA_PORT": 3002}
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_POSTGRES_PORT": 5432}
 	out := captureStdout(t, func() {
 		// residencyHost with containersUsed=true: a host plane whose services run in the instance container.
 		printInstallInfo("dev", residencyHost, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
@@ -162,7 +162,7 @@ func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
 func TestPrintInstallInfoIsHonestAboutTheNoEngineShape(t *testing.T) {
 	// No engine, so printInstallInfo's `containersUsed` is false — the install's threaded decision.
 	t.Setenv("PATH", t.TempDir())
-	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8092, "ORCHICON_GRAFANA_PORT": 3004}
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8092, "ORCHICON_POSTGRES_PORT": 5434}
 
 	noEngine := captureStdout(t, func() {
 		printInstallInfo("test", residencyHost, "orchicon-cnt-test", "orchicon-cnt-test-data",

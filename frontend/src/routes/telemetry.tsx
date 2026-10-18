@@ -3,7 +3,6 @@ import { useMemo, useState } from "react";
 
 import { useGetUsage, useListProviders } from "@/api/aigateway";
 import { useGetDashboard, useQueryLogs, useQueryMetrics, useQueryTraces } from "@/api/telemetry";
-import { GRAFANA_UI_URL } from "@/api/clients";
 import {
   Card,
   CardContent,
@@ -25,9 +24,9 @@ type Tab = "overview" | "traces" | "metrics" | "logs" | "credits";
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "credits", label: "Credits" },
-  { id: "traces", label: "Traces (Grafana)" },
-  { id: "metrics", label: "Metrics (Grafana)" },
-  { id: "logs", label: "Logs (Grafana)" },
+  { id: "traces", label: "Traces" },
+  { id: "metrics", label: "Metrics" },
+  { id: "logs", label: "Logs" },
 ];
 
 function TelemetryPage() {
@@ -137,13 +136,17 @@ function TracesPanel() {
   const degraded = data?.degraded ?? false;
   return (
     <div className="space-y-6">
-      <GrafanaEmbed title="Trace Explorer" degraded={degraded} />
+      {degraded && (
+        <div className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
+          Telemetry backend is starting up — traces may be missing until it answers. The stack
+          starts automatically with `orchicon start` / `orchicon dev start`.
+        </div>
+      )}
       <Card className="glass-panel">
         <CardHeader>
           <CardTitle>Recent traces</CardTitle>
           <CardDescription>
-            Projected from Tempo, scoped to the current tenant (docs/08 §5.1). Open the embedded
-            Grafana UI for full drill-down.
+            Projected from Tempo, scoped to the current tenant (docs/08 §5.1).
           </CardDescription>
         </CardHeader>
         <CardContent className="max-h-[200px] overflow-y-auto">
@@ -180,7 +183,11 @@ function LogsPanel() {
   const degraded = data?.degraded ?? false;
   return (
     <div className="space-y-6">
-      <GrafanaEmbed title="Log Explorer" degraded={degraded} />
+      {degraded && (
+        <div className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
+          Telemetry backend is starting up — logs may be missing until it answers.
+        </div>
+      )}
       <Card className="glass-panel">
         <CardHeader>
           <CardTitle>Recent logs</CardTitle>
@@ -224,7 +231,11 @@ function MetricsPanel() {
   const series = data?.series ?? [];
   return (
     <div className="space-y-6">
-      <GrafanaEmbed title="Metrics Explorer" degraded={degraded} />
+      {degraded && (
+        <div className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
+          Telemetry backend is starting up — metrics may be missing until it answers.
+        </div>
+      )}
       <Card className="glass-panel">
         <CardHeader>
           <CardTitle>Metric values</CardTitle>
@@ -361,40 +372,6 @@ function CreditsPanel() {
         })}
     </div>
   );
-}
-
-function GrafanaEmbed({ title, degraded }: { title: string; degraded?: boolean }) {
-  const src = `${GRAFANA_UI_URL}${grafanaDashboardPath()}`;
-  return (
-    <Card className="glass-panel">
-      <CardHeader>
-        <CardTitle>{title} — embedded Grafana</CardTitle>
-        <CardDescription>
-          Same visual language, inside the Orchicon shell (docs/10 §11). The Grafana UI is proxied
-          same-origin.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {degraded ? (
-          <div className="flex h-[160px] items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
-            Telemetry backend is starting up — check back in a moment. The dev stack starts
-            automatically with `orchicon start` / `orchicon dev start`.
-          </div>
-        ) : (
-          <iframe
-            src={src}
-            title={title}
-            className="h-[640px] w-full rounded-md border"
-            sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-          />
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function grafanaDashboardPath(): string {
-  return `/d/orchicon-dashboard/orchicon?kiosk&from=now-1h&to=now`;
 }
 
 function StatCard({ label, value, loading }: { label: string; value: string; loading?: boolean }) {

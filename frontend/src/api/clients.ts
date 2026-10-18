@@ -132,9 +132,6 @@ export const runtimeImageClient = createClient(RuntimeImageService, connectTrans
 export const secretsClient = createClient(SecretsService, connectTransport);
 export const categoryClient = createClient(CategoryService, connectTransport);
 
-// Grafana UI base URL for the embedded telemetry explorer (docs/10 §11).
-export const GRAFANA_UI_URL = "/grafana";
-
 // Provider settings service (ADR-0006) — Settings → Adapters Providers tab.
 export const providerClient = createClient(ProviderService, connectTransport);
 
