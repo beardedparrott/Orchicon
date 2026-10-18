@@ -326,6 +326,58 @@ func TestDesktopWebviewDependencyDeclared(t *testing.T) {
 	}
 }
 
+// TestDesktopSigningChainIsInTheScript — the sign → notarise → staple → assert chain must live in the
+// SCRIPT the macOS job runs, and the job must actually RUN it.
+//
+// The distinction is the whole point: a substring check against release.yml would be satisfied by a YAML
+// COMMENT that mentions `spctl` while the job shipped an unsigned .app. So this reads
+// deploy/desktop/macos/sign-and-notarize.sh for the chain, and release.yml only for the invocation itself
+// (a `bash deploy/desktop/macos/…` line, which is a run: command, not prose).
+func TestDesktopSigningChainIsInTheScript(t *testing.T) {
+	script := mustRead(t, "../../deploy/desktop/macos/sign-and-notarize.sh")
+
+	// ORDER MATTERS: signing must precede submission, and the staple must precede the assertion — a
+	// notarised-but-unstapled app fails on the user's first launch whenever Apple is unreachable.
+	order := []string{"codesign --force", "notarytool submit", "stapler staple", "spctl -a -vvv"}
+	prev := -1
+	for _, want := range order {
+		i := strings.Index(script, want)
+		if i < 0 {
+			t.Fatalf("deploy/desktop/macos/sign-and-notarize.sh does not contain %q — the .app would reach "+
+				"users unsigned or unstapled, and Gatekeeper blocks it on a clean Mac (AC1)", want)
+		}
+		if i < prev {
+			t.Errorf("%q appears BEFORE the preceding step in sign-and-notarize.sh — the chain must be "+
+				"sign → notarise → staple → assert, in that order (AC1)", want)
+		}
+		prev = i
+	}
+
+	// A missing secret must FAIL the job. Shipping an unsigned .app because CI had no certificate is
+	// precisely the failure AC1 describes, and it would be silent.
+	for _, secret := range []string{"MACOS_CERT_P12", "MACOS_CERT_PASSWORD", "MACOS_NOTARY_APPLE_ID",
+		"MACOS_NOTARY_TEAM_ID", "MACOS_NOTARY_PASSWORD"} {
+		if !strings.Contains(script, ": \"${"+secret+":?") {
+			t.Errorf("sign-and-notarize.sh does not guard ${%s} with `: \"${…:?}\"` — an unset secret would "+
+				"not fail the job, so it would ship an unsigned .app (AC1)", secret)
+		}
+	}
+
+	// And the workflow must RUN it. `bash deploy/desktop/macos/sign-and-notarize.sh` inside a run: block is
+	// an invocation; the string on its own could be a comment, which is why the script is read above.
+	src := mustRead(t, releaseWorkflowPath)
+	invoked := false
+	for _, j := range jobsIn(src) {
+		if strings.Contains(j.body, "runs-on: macos-") && strings.Contains(j.body, "bash deploy/desktop/macos/sign-and-notarize.sh") {
+			invoked = true
+		}
+	}
+	if !invoked {
+		t.Error("no macOS job RUNS `bash deploy/desktop/macos/sign-and-notarize.sh` — the signing chain " +
+			"exists but nothing calls it, so the published .app is unsigned (AC1)")
+	}
+}
+
 // TestCanaryPublishesAnImageThatIsNotLatest — the canary must ship a CONTAINER IMAGE, and must never touch
 // the floating release tag.
 //
