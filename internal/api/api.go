@@ -410,6 +410,15 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	// first-boot generation in the instance data dir); a nil/short key
 	// leaves the store disabled (fail-closed at the service layer).
 	secretsSvc := secrets.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
+	// A ROTATED PROVIDER KEY MUST REACH THE NEXT REQUEST. Provider clients are
+	// cached with the resolved credential baked in, and the resolver caches the
+	// decrypted plaintext for the process's life — both dropped only by
+	// Registry.Invalidate. The PROVIDERS service calls it on its own token
+	// mutations; this makes a write through Settings → Secrets do the same, so
+	// replacing an expired key does not need a plane restart to take effect.
+	if deps.ProvidersService != nil {
+		secretsSvc.SetOnChanged(deps.ProvidersService.InvalidateSecret)
+	}
 	mux.Handle(apiv1connect.NewSecretsServiceHandler(secretsSvc, interceptorOpt))
 
 	// AskOrchiconService — conversational agent.

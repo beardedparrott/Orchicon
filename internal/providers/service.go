@@ -1181,6 +1181,62 @@ func (s *Service) invalidate(tenantID, providerID string) {
 	reg.Invalidate(tenantID, providerID)
 }
 
+// InvalidateSecret drops the substrate caches for every provider whose credential
+// lives in a tenant secret of that NAME.
+//
+// THE GAP IT CLOSES. Registry.Invalidate is called by every PROVIDERS mutation
+// (SetProviderToken, ClearProviderToken, UpdateSettings, custom create/update/
+// delete) — but a provider key can also be rotated straight from Settings →
+// Secrets, which writes the same row through internal/secrets and knew nothing
+// about the caches. The provider clients are cached with the resolved credential
+// baked in and the resolver caches the decrypted plaintext for the process's
+// life, so such a rotation kept authenticating with the OLD value until restart:
+// the operator replaces an expired key, retries, and gets the same 401 while the
+// plane insists nothing is wrong. internal/secrets now calls this through
+// SetOnChanged.
+//
+// A SECRET NAME MATCHES MORE THAN ONE PROVIDER BY DESIGN: opencode and
+// opencode-go both read OPENCODE_API_KEY (ADR D4 — distinct base URLs, one
+// credential), so every id in the map must be invalidated, not the first.
+//
+// An unmatched name still clears the credential cache: the resolver is keyed by
+// (tenant, secret name), so a name nobody maps today may be read by a custom
+// provider or by a future one, and dropping a cache is cheap next to serving a
+// revoked key.
+func (s *Service) InvalidateSecret(_ context.Context, tenantID, name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	ids := make([]string, 0, 2)
+	for id, secretName := range builtinSecretNames {
+		if secretName == name {
+			ids = append(ids, id)
+		}
+	}
+	// Custom providers derive their secret name from the ref
+	// (CUSTOM_<REF>_API_KEY), so the match is computed rather than stored.
+	if tx, err := s.pool.BeginTenantTx(context.Background(), tenantID); err == nil {
+		if rows, lerr := db.ListProviderSettings(context.Background(), tx.Tx, tenantID); lerr == nil {
+			for _, row := range rows {
+				if row.IsCustom && CustomSecretName(row.ProviderID) == name {
+					ids = append(ids, row.ProviderID)
+				}
+			}
+		}
+		_ = tx.Rollback(context.Background())
+	}
+	reg, _, creds := s.substrate()
+	for _, id := range ids {
+		reg.Invalidate(tenantID, id)
+	}
+	// Always: the plaintext cache is keyed by name, and Registry.Invalidate only
+	// clears it per provider it is told about.
+	if len(ids) == 0 && creds != nil {
+		creds.Invalidate()
+	}
+}
+
 // applyBaseURLRepair persists a self-healed base URL (custom providers
 // only — a built-in's override must go through the operator, since it
 // changes which endpoint the built-in wire profile targets). Audit-logged

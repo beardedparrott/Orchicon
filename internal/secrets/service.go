@@ -20,10 +20,43 @@ const maxSecretsPerItem = 10
 type Service struct {
 	pool *db.Pool
 	kek  []byte
+
+	// onChanged is called AFTER a successful create/update/delete commits, with
+	// the tenant and the secret's NAME. Nil is fine (no listener).
+	//
+	// WHY IT EXISTS. Provider clients are cached by the orchicon registry with the
+	// resolved credential BAKED INTO them, and the credential resolver caches the
+	// decrypted plaintext for the life of the process. Both are dropped by
+	// Registry.Invalidate — which the PROVIDERS service calls on every token
+	// mutation (SetProviderToken/ClearProviderToken/UpdateSettings…). The SECRETS
+	// service called nothing, so rotating a provider key from Settings → Secrets
+	// left the plane authenticating with the OLD value until the process
+	// restarted: the operator replaces an expired key, retries, and gets the same
+	// 401 with no way to tell the plane had not noticed. That is this hook.
+	//
+	// It is a callback rather than an import because internal/secrets must stay a
+	// store: it knows nothing about providers, and internal/providers already
+	// depends on the secrets TABLE, not this package.
+	onChanged func(ctx context.Context, tenantID, name string)
 }
 
 func New(pool *db.Pool, kek []byte) *Service {
 	return &Service{pool: pool, kek: kek}
+}
+
+// SetOnChanged installs the post-write hook (see the field's comment). Called
+// once at wiring time; nil disables it.
+func (s *Service) SetOnChanged(fn func(ctx context.Context, tenantID, name string)) {
+	s.onChanged = fn
+}
+
+// notify runs the hook, if any. Best-effort by design: a cache that fails to
+// clear must not fail the write the operator asked for — the next restart still
+// picks the new value up.
+func (s *Service) notify(ctx context.Context, tenantID, name string) {
+	if s.onChanged != nil {
+		s.onChanged(ctx, tenantID, name)
+	}
 }
 
 func (s *Service) requireKEK() error {
@@ -102,6 +135,9 @@ func (s *Service) Create(ctx context.Context, tenantID, name, value, description
 	if err := tx.Commit(ctx); err != nil {
 		return Secret{}, err
 	}
+	// AFTER the commit: a listener that clears a cache for a write that then
+	// rolled back would serve a value the database does not hold.
+	s.notify(ctx, tenantID, row.Name)
 	return rowToSecret(row), nil
 }
 
@@ -181,6 +217,8 @@ func (s *Service) Update(ctx context.Context, tenantID, id string, value *string
 	if err := tx.Commit(ctx); err != nil {
 		return Secret{}, err
 	}
+	// A ROTATED VALUE MUST REACH THE NEXT REQUEST, not the next restart.
+	s.notify(ctx, tenantID, row.Name)
 	return rowToSecret(row), nil
 }
 
@@ -190,6 +228,13 @@ func (s *Service) Delete(ctx context.Context, tenantID, id string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// READ THE NAME BEFORE THE ROW GOES: the post-write hook is keyed by NAME (a
+	// cache is keyed by what it was asked for), and after the delete there is
+	// nothing left to look it up by.
+	name := ""
+	if row, gerr := db.GetSecret(ctx, tx.Tx, tenantID, id); gerr == nil {
+		name = row.Name
+	}
 	if err := db.DeleteSecret(ctx, tx.Tx, tenantID, id); err != nil {
 		return err
 	}
@@ -197,6 +242,9 @@ func (s *Service) Delete(ctx context.Context, tenantID, id string) error {
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
+	// A DELETED credential must stop being served from cache too: otherwise a
+	// cleared token keeps authenticating until restart.
+	s.notify(ctx, tenantID, name)
 	return nil
 }
 
