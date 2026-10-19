@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/controlport"
 )
 
 // AuthMethod selects how orch authenticates to the plane.
@@ -602,4 +604,46 @@ func parseList(v string) []string {
 		}
 	}
 	return out
+}
+
+// InstanceURL is the control URL of a named LOCAL instance.
+//
+// IT DELEGATES TO internal/controlport, WHICH IS THE POINT: the installer owns the
+// per-instance control ports (cmd/orchicon/install_ports.go), the desktop app already
+// consumes that table, and a third copy here would be a third thing to keep equal. An
+// unknown name yields "" — the caller must refuse rather than substitute another
+// instance, so "prod" can never quietly resolve to dev.
+func InstanceURL(instance string) string {
+	port, ok := controlport.Defaults()[instance]
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
+// ProfileForInstance returns the SAVED profile whose URL points at that instance's
+// control port, or nil.
+//
+// WHY MATCH ON THE PORT RATHER THAN THE NAME: profiles are keyed by their host:port
+// (config.go's package note), not by instance name, because a profile can outlive a
+// moved port or describe a remote host. controlport.InstanceForURL is the one place
+// that mapping is defined, so this reuses it instead of re-deriving "which instance is
+// this URL".
+//
+// The returned profile is the SAVED one (not a copy) because the caller copies it before
+// retargeting — and that caller-side copy is deliberate: a switch must never rewrite the
+// operator's stored credentials.
+func ProfileForInstance(cfg *Config, instance string) *Profile {
+	if cfg == nil || instance == "" {
+		return nil
+	}
+	for _, p := range cfg.Profiles {
+		if p == nil {
+			continue
+		}
+		if got, ok := controlport.InstanceForURL(p.URL); ok && got == instance {
+			return p
+		}
+	}
+	return nil
 }

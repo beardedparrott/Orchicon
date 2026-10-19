@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"flag"
 	"fmt"
 	"log"
@@ -28,6 +29,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -35,6 +37,23 @@ import (
 	"github.com/beardedparrott/orchicon/internal/desktop"
 	"github.com/beardedparrott/orchicon/internal/planebind"
 )
+
+// appIcon is THE WINDOW ICON, and it is a DIFFERENT thing from the packaging icon.
+//
+// build/appicon.png feeds the PACKAGER — Wails turns it into the .ico for Windows,
+// the .icns for macOS and the .desktop/AppImage art for Linux. It does NOT reach a
+// running window: on Linux the window's icon comes from options.Linux.Icon, a []byte
+// the APP must supply (internal/frontend/desktop/linux/window.go SetWindowIcon). We
+// set neither, so the window had no icon and the desktop environment drew its own
+// fallback — the generic Wails-yellow square the operator saw on the task bar, while
+// the .deb produced by a package build already carried our mark.
+//
+// Embedding it here means the icon is IN the binary, so `make desktop-build` (which
+// is `go build`, not `wails build`, and therefore never runs the packager) still
+// ships a branded window.
+//
+//go:embed build/appicon.png
+var appIcon []byte
 
 func main() {
 	planeFlag := flag.String("plane", "", "plane URL (default: $ORCHICON_DESKTOP_PLANE_URL, else --instance / the remembered instance)")
@@ -155,6 +174,19 @@ func main() {
 		// APPEARANCE: the window FRAME follows the OS; the CONTENT follows the
 		// SPA's own theme store (default dark "Teal Depths"). The shell sets no
 		// colour and mutates no class, so there is exactly one theme authority.
+		Linux: &linux.Options{
+			Icon: appIcon,
+			// EXPLICIT, because passing a non-nil Linux options CHANGES THE DEFAULT:
+			// Wails documents that a nil options.Linux sets WebviewGpuPolicy to
+			// Never (wails#2977). Adding an icon must not silently turn hardware
+			// acceleration back on — that is a rendering change on a machine where
+			// the safe default was deliberate.
+			WebviewGpuPolicy: linux.WebviewGpuPolicyNever,
+			// Window grouping with the installed .desktop file
+			// (deploy/desktop/linux/orchicon-desktop.desktop). Without it the window
+			// manager matches on the executable name instead.
+			ProgramName: "orchicon-desktop",
+		},
 		Mac: &mac.Options{
 			// The standard native title bar, deliberately: with a hidden-inset
 			// title bar the content would start under the traffic lights and the

@@ -9,8 +9,11 @@ package main
 // PROMPT option is added only on the first.
 
 import (
+	"fmt"
+	"os"
 	"testing"
 
+	"github.com/beardedparrott/orchicon/internal/controlport"
 	"github.com/beardedparrott/orchicon/internal/tui"
 )
 
@@ -71,3 +74,69 @@ func TestTheContinuationCarriesNoPromptOption(t *testing.T) {
 // THE OPTIONS ARE REAL tui.AppOptions — a compile-time guard that shellLaunchOptions' return type stays the
 // one tui.NewApp accepts, so main's `runShell(profile, opts...)` cannot drift from it.
 var _ []tui.AppOption = shellLaunchOptions(true, "/home/me/projects/orch")
+
+// TestParseArgsReadsInstance — the flag forms an operator will actually type.
+func TestParseArgsReadsInstance(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--instance", "prod"}, "prod"},
+		{[]string{"-i", "dev"}, "dev"},
+		{[]string{"--instance", "test", "--insecure"}, "test"},
+		{[]string{"--profile", "x", "--instance", "prod"}, "prod"},
+		{[]string{}, ""},
+	} {
+		if got := parseArgs(tc.args).instance; got != tc.want {
+			t.Errorf("parseArgs(%v).instance = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}
+
+// TestInstanceSelectionSetsTheEnvSoPlaneVerbsAgree — connecting to an instance and
+// ACTING on that instance must be the same answer.
+//
+// internal/tui's instanceForProfile reads ORCHICON_INSTANCE first, before deriving an
+// instance from the profile's port. Without this, `orch --instance prod` would connect
+// to prod while /plane restart acted on whatever the port suggested — or on nothing,
+// leaving the operator believing they had restarted the plane they were looking at.
+func TestInstanceSelectionSetsTheEnvSoPlaneVerbsAgree(t *testing.T) {
+	t.Setenv("ORCHICON_INSTANCE", "") // start from nothing, and restore afterwards
+	os.Unsetenv("ORCHICON_INSTANCE")
+
+	got, err := selectInstance("prod")
+	if err != nil {
+		t.Fatalf("selectInstance(prod): %v", err)
+	}
+	// The URL comes from the SHARED table — the same number the installer writes and the
+	// desktop app connects to.
+	if want := fmt.Sprintf("http://127.0.0.1:%d", controlport.Defaults()["prod"]); got != want {
+		t.Errorf("selectInstance(prod) = %q, want %q", got, want)
+	}
+	// AND THE PROCESS IS PINNED: this is the half that makes /plane verbs act on the
+	// instance the shell is connected to.
+	if env := os.Getenv("ORCHICON_INSTANCE"); env != "prod" {
+		t.Errorf("ORCHICON_INSTANCE = %q after selectInstance(prod), want \"prod\" — /plane restart "+
+			"would act on a different instance than the one being displayed", env)
+	}
+
+	// An empty name is a no-op: no env write, no URL, so a bare `orch` is unchanged.
+	os.Unsetenv("ORCHICON_INSTANCE")
+	got, err = selectInstance("")
+	if err != nil || got != "" {
+		t.Errorf("selectInstance(\"\") = (%q, %v), want (\"\", nil)", got, err)
+	}
+	if env := os.Getenv("ORCHICON_INSTANCE"); env != "" {
+		t.Errorf("a bare launch set ORCHICON_INSTANCE=%q", env)
+	}
+}
+
+// TestUnknownInstanceIsRefused — never substituted with a real plane.
+func TestUnknownInstanceIsRefused(t *testing.T) {
+	for _, name := range []string{"staging", "prdo", "DEV"} {
+		if _, err := selectInstance(name); err == nil {
+			t.Errorf("selectInstance(%q) succeeded — an unrecognised instance must be refused, not "+
+				"mapped onto a real one", name)
+		}
+	}
+}

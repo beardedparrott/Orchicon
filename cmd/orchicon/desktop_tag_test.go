@@ -226,3 +226,98 @@ func minInt(a, b int) int {
 	}
 	return b
 }
+
+// TestDesktopWindowIconIsSet — the RUNNING window must carry our icon, not the
+// desktop environment's fallback.
+//
+// THE BUG THIS PINS. build/appicon.png fed only the PACKAGER (the .ico, the .icns,
+// the .deb/.AppImage art). On Linux the window icon is options.Linux.Icon — a
+// []byte the app must supply — and we passed no Linux options at all, so the
+// window had none and the task bar drew a generic square. The operator saw the
+// Wails-yellow default while a packaged build would have shown our mark.
+//
+// Asserted at the source for the same reason the tag tests are: nothing else in
+// the gate can see it. The app compiles, the shell guards pass, `wails build`
+// packages a correctly-branded .deb — and the running window is still icon-less.
+func TestDesktopWindowIconIsSet(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "orchicon-desktop", "main.go"))
+	if err != nil {
+		t.Fatalf("read cmd/orchicon-desktop/main.go: %v", err)
+	}
+	src := string(b)
+
+	// The icon must be EMBEDDED, so `go build` (make desktop-build) has it too —
+	// a path read at runtime would break the moment the binary moves.
+	if !strings.Contains(src, "//go:embed build/appicon.png") {
+		t.Error("main.go does not embed build/appicon.png; `make desktop-build` is a plain `go build`, " +
+			"which never runs the packager, so the window would have no icon")
+	}
+	// ...and handed to Wails as the Linux window icon.
+	if !strings.Contains(src, "Linux:") {
+		t.Fatal("main.go passes no options.Linux. On Linux the window icon comes from " +
+			"options.Linux.Icon alone; without it the desktop environment draws its own fallback.")
+	}
+	if !strings.Contains(src, "Icon:") || !strings.Contains(src, "appIcon") {
+		t.Error("options.Linux sets no Icon from the embedded appIcon")
+	}
+	// Setting options.Linux non-nil CHANGES the WebviewGpuPolicy default (Wails
+	// documents nil => Never, wails#2977). Leaving it unstated would silently turn
+	// hardware acceleration back on.
+	if !strings.Contains(src, "WebviewGpuPolicy") {
+		t.Error("options.Linux does not state WebviewGpuPolicy. Passing a non-nil options.Linux " +
+			"changes the default away from WebviewGpuPolicyNever (wails#2977), so adding an icon " +
+			"would also change how the app renders.")
+	}
+}
+
+// TestDevRebuildRefreshesThePlaneBinary — `make rebuild-dev` must repoint the
+// `orchicon` a THIN CLIENT will run.
+//
+// THE BUG THIS PINS, and it is the most expensive one in this batch because it
+// made a successful rebuild look like a bad build:
+//
+//	$ make rebuild-dev          # builds bin/orchicon, restarts dev
+//	$ orchicon --version        # canary, built six days earlier
+//	web app:  "vCanary", the OLD telemetry page, Grafana still in the nav
+//	desktop :  v0.5.105
+//	Reports :  "Could not load reports [unimplemented] HTTP 404"
+//
+// THREE symptoms, ONE cause. internal/planecontrol's resolvePlaneBinary runs the
+// plane from $PATH whenever the caller is not itself `orchicon` — the TUI and the
+// desktop app are exactly that shape ("the thin-client case, and it is the normal
+// one for two of the three surfaces"). So "start dev" from Manage Server launched
+// the stale regular file in ~/.local/bin, which nothing refreshed: this target
+// symlinked only `orch`. The instance then ran a six-day-old binary whose embedded
+// SPA predates the native telemetry page and which has no GetTelemetryReport at
+// all — hence `unimplemented`.
+func TestDevRebuildRefreshesThePlaneBinary(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	src := string(b)
+
+	// Isolate the dev launcher target: the prod one deliberately keeps a snapshot.
+	start := strings.Index(src, "orch-launcher-dev:")
+	if start < 0 {
+		t.Fatal("Makefile has no orch-launcher-dev target")
+	}
+	end := strings.Index(src[start:], "\n# orch-launcher-prod")
+	if end < 0 {
+		t.Fatalf("cannot find the end of orch-launcher-dev")
+	}
+	body := src[start : start+end]
+
+	if !strings.Contains(body, `$(BIN_DIR)/orchicon" "$(LAUNCHER_DIR)/orchicon"`) {
+		t.Errorf("orch-launcher-dev does not refresh $(LAUNCHER_DIR)/orchicon.\n"+
+			"A dev rebuild then leaves the plane binary a THIN CLIENT resolves from $PATH untouched, so\n"+
+			"`make rebuild-dev` reports success while dev keeps serving a stale binary: old embedded SPA,\n"+
+			"a version that disagrees with the desktop app, and RPCs it does not implement.\n"+
+			"target body:\n%s", body)
+	}
+	// And it must be the DEV build, not a copy that then goes stale.
+	if !strings.Contains(body, "ln -sfn") {
+		t.Error("orch-launcher-dev should SYMLINK orchicon at the repo build (like `orch`), not copy it — " +
+			"a copy becomes stale the moment the next build lands")
+	}
+}

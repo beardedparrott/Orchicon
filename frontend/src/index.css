@@ -9,6 +9,26 @@
    See architecture-notes/11-theme-expansion-…md
 */
 @layer base {
+  /* COLOR-SCHEME: THE ONE THING CSS CANNOT RESTYLE ITS WAY OUT OF.
+     ---------------------------------------------------------------
+     A native <select>, its dropdown popup, scrollbars, date pickers and the
+     caret are painted by the USER AGENT, not by our tokens. Without
+     `color-scheme` the UA renders them in LIGHT mode whatever our custom
+     properties say, so on a dark theme the telemetry filter row showed white
+     boxes with near-white text — the operator's "weird rendering on colors for
+     drop downs that make it hard to see anything". `glass-input` was resolving
+     to the correct dark value the whole time; the widget simply ignored it.
+
+     Declared per FAMILY, keyed off the `.dark` class the theme store already
+     toggles (lib/theme-store.ts apply()), so a new theme inherits the right
+     answer without anybody remembering to set it. This also fixes the popup
+     list, which is drawn by the OS and was the least readable part. */
+  :root {
+    color-scheme: light;
+  }
+  .dark {
+    color-scheme: dark;
+  }
   :root {
     --radius: 0.5rem;
     --kind-sky: 199 89% 38%;
