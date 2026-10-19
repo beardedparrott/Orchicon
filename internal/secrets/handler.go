@@ -26,6 +26,13 @@ func NewHandler(pool *db.Pool, kek []byte, log *slog.Logger) *Handler {
 	return &Handler{svc: New(pool, kek), log: log}
 }
 
+// SetOnChanged forwards the service's post-write hook, so a caller that only
+// holds the HANDLER (api.Mount) can register the cache invalidation that makes a
+// rotated credential take effect without a restart. See secrets.Service.onChanged.
+func (h *Handler) SetOnChanged(fn func(ctx context.Context, tenantID, name string)) {
+	h.svc.SetOnChanged(fn)
+}
+
 func requireTenant(ctx context.Context) (string, error) {
 	id := tenant.FromContext(ctx)
 	if id == "" {

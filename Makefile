@@ -772,6 +772,35 @@ desktop-build: fe-build ## Build the desktop app for THIS OS (CGO on; NOT part o
 	@# exactly why this target is the one to use for the inner loop.
 	CGO_ENABLED=1 go build -tags orchicon_desktop,production,webkit2_41 -ldflags '$(LDFLAGS)' -o bin/orchicon-desktop ./cmd/orchicon-desktop
 
+desktop-install: desktop-build ## Install the app for THIS USER: menu entry + taskbar icon (no root)
+	@# WHY THIS TARGET EXISTS, AND WHY IT IS ABOUT ICONS RATHER THAN CONVENIENCE.
+	@#
+	@# On Wayland the window's own icon does NOT reach the taskbar. Wails sets it with
+	@# gtk_window_set_icon, which is X11-only (it publishes _NET_WM_ICON) and is ignored by a
+	@# compositor. KDE resolves a task's icon as app_id -> .desktop -> Icon=; with no .desktop
+	@# installed, launching the binary straight from a terminal gives you a generic entry
+	@# whatever the binary embeds. That is the "still the yellow icon" report on a Wayland
+	@# session, and the fix is an installed .desktop + icon, not more work in main.go.
+	@#
+	@# The package installs both system-wide (deploy/desktop/nfpm.yaml); this does the same
+	@# thing for a DEV CHECKOUT, per user, with Exec pointing at THIS build — so the dev loop
+	@# gets the real icon without a .deb.
+	@test -x $(DESKTOP_PROJECT)/build/appicon.png || test -f $(DESKTOP_PROJECT)/build/appicon.png || \
+		{ echo "ERROR: $(DESKTOP_PROJECT)/build/appicon.png is missing"; exit 1; }
+	@mkdir -p "$(HOME)/.local/share/applications" "$(HOME)/.local/share/icons/hicolor/512x512/apps"
+	@sed -e 's|^Exec=.*|Exec=$(CURDIR)/bin/orchicon-desktop|' \
+	     -e 's|^TryExec=.*|TryExec=$(CURDIR)/bin/orchicon-desktop|' \
+	     deploy/desktop/linux/orchicon-desktop.desktop > "$(HOME)/.local/share/applications/orchicon-desktop.desktop"
+	@cp -f $(DESKTOP_PROJECT)/build/appicon.png "$(HOME)/.local/share/icons/hicolor/512x512/apps/orchicon-desktop.png"
+	@-gtk-update-icon-cache -f -t "$(HOME)/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+	@-for k in kbuildsycoca6 kbuildsycoca5 update-desktop-database; do \
+		if command -v $$k >/dev/null 2>&1; then $$k >/dev/null 2>&1 || true; fi; \
+	done
+	@echo "==> installed $(HOME)/.local/share/applications/orchicon-desktop.desktop"
+	@echo "==> installed $(HOME)/.local/share/icons/hicolor/512x512/apps/orchicon-desktop.png"
+	@echo "    Launch from the menu (or the taskbar entry will pick the icon up) — a window"
+	@echo "    started from a shell still associates through the same app_id."
+
 desktop-test: ## CI gate: the desktop shell's guards (no webview needed)
 	go build ./internal/desktop/ ./internal/controlport/
 	go test ./internal/desktop/... ./internal/controlport/...

@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -319,5 +320,86 @@ func TestDevRebuildRefreshesThePlaneBinary(t *testing.T) {
 	if !strings.Contains(body, "ln -sfn") {
 		t.Error("orch-launcher-dev should SYMLINK orchicon at the repo build (like `orch`), not copy it — " +
 			"a copy becomes stale the moment the next build lands")
+	}
+}
+
+// TestDesktopEntryMatchesTheAppID — the .desktop must key off the SAME app_id the
+// app sets, and must name an icon.
+//
+// THE BUG THIS PINS, on the operator's Wayland session: the taskbar showed the
+// generic (Wails) icon while the binary embedded our mark correctly. Wails sets
+// the window icon with gtk_window_set_icon, which publishes the X11
+// _NET_WM_ICON property — and a Wayland compositor IGNORES it. KDE resolves a
+// task's icon as app_id -> .desktop -> Icon=, so with no .desktop installed the
+// entry falls back regardless of what the binary carries. Launching from a
+// terminal makes it more visible, not more true: the association is the same.
+//
+// The app_id is options.Linux.ProgramName. If these two ever disagree the icon
+// silently stops resolving, which is why it is asserted rather than documented.
+func TestDesktopEntryMatchesTheAppID(t *testing.T) {
+	mainSrc, err := os.ReadFile(filepath.Join("..", "orchicon-desktop", "main.go"))
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	m := regexp.MustCompile(`ProgramName:\s*"([^"]+)"`).FindStringSubmatch(string(mainSrc))
+	if m == nil {
+		t.Fatal("main.go sets no options.Linux.ProgramName — without it the app_id is the executable " +
+			"name, which will not match the .desktop after any rename")
+	}
+	appID := m[1]
+
+	entry, err := os.ReadFile(filepath.Join("..", "..", "deploy", "desktop", "linux", "orchicon-desktop.desktop"))
+	if err != nil {
+		t.Fatalf("read the .desktop: %v", err)
+	}
+	entrySrc := string(entry)
+
+	if !strings.Contains(entrySrc, "StartupWMClass="+appID) {
+		t.Errorf(".desktop does not declare StartupWMClass=%s (options.Linux.ProgramName is %q).\n"+
+			"On Wayland the taskbar icon resolves app_id -> .desktop -> Icon=; a mismatched class "+
+			"leaves the entry generic however correct the embedded icon is.", appID, appID)
+	}
+	if !strings.Contains(entrySrc, "Icon="+appID) {
+		t.Errorf(".desktop does not declare Icon=%s, matching the icon file name `desktop-install` "+
+			"writes into hicolor (%s.png)", appID, appID)
+	}
+}
+
+// TestDesktopInstallInstallsAnIconAndMenuEntry — the DEV path must install what
+// the package installs, or the icon works only for .deb users.
+func TestDesktopInstallInstallsAnIconAndMenuEntry(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	src := string(b)
+
+	start := strings.Index(src, "desktop-install:")
+	if start < 0 {
+		t.Fatal("Makefile has no desktop-install target — a dev checkout then has no .desktop, so on " +
+			"Wayland the taskbar cannot resolve the icon at all")
+	}
+	end := strings.Index(src[start:], "\ndesktop-test:")
+	if end < 0 {
+		t.Fatalf("cannot find the end of desktop-install")
+	}
+	body := src[start : start+end]
+
+	for _, want := range []struct{ needle, why string }{
+		// KEYED ON THE COMMAND, NOT ON THE PATH: the target's own comments and its
+		// closing echo both mention these paths, so a path-only assertion still
+		// passes after the copy is deleted — a guard that cannot fail is worse than
+		// none, because it reports coverage it does not have.
+		{"cp -f $(DESKTOP_PROJECT)/build/appicon.png", "it must COPY our appicon.png into the hicolor theme"},
+		{"hicolor/512x512/apps/orchicon-desktop.png", "the icon must land under the name Icon= expects"},
+		{"applications/orchicon-desktop.desktop", "the entry must land in the user's applications dir"},
+		// The shipped entry says bare `orchicon-desktop`, which is not on PATH for a
+		// dev build — so the target must REWRITE Exec, and this is the only line
+		// that does it (the echoes mention the path but never the sed script).
+		{"s|^Exec=", "it must rewrite Exec to this checkout's binary"},
+	} {
+		if !strings.Contains(body, want.needle) {
+			t.Errorf("desktop-install does not mention %q: %s", want.needle, want.why)
+		}
 	}
 }

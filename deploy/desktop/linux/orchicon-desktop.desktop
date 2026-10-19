@@ -10,3 +10,11 @@ Terminal=false
 Categories=Development;
 Keywords=ai;workflow;orchestration;agents;
 StartupNotify=true
+# MATCHES THE APP_ID THE APP SETS (options.Linux.ProgramName = "orchicon-desktop").
+# On Wayland this is the ONLY icon path that reaches the taskbar: Wails sets the
+# window icon with gtk_window_set_icon, which is X11-only (_NET_WM_ICON) and is
+# ignored by a compositor. KDE resolves the task icon as app_id → .desktop →
+# Icon=, so without this file (and its Icon=) the entry falls back to a generic
+# icon no matter what the binary embeds. StartupWMClass is the same association
+# for X11.
+StartupWMClass=orchicon-desktop
