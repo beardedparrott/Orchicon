@@ -294,8 +294,8 @@ func (s *supervisor) acquiredArtifacts() []string {
 func (s *supervisor) configTokens() map[string]string {
 	p := s.ports
 	return map[string]string{
-		"@DATA_DIR@":                 s.dataDir,
-		"@TEMPO_HTTP_PORT@":          strconv.Itoa(p.tempo),
+		"@DATA_DIR@":        s.dataDir,
+		"@TEMPO_HTTP_PORT@": strconv.Itoa(p.tempo),
 		// Resolved, not copied: an INTERNAL listener still has to be bindable.
 		// See internalListenerPort.
 		"@TEMPO_GRPC_PORT@":          strconv.Itoa(internalListenerPort(p.tempoGRPC)),
@@ -306,6 +306,12 @@ func (s *supervisor) configTokens() map[string]string {
 		"@COLLECTOR_OTLP_GRPC_PORT@": strconv.Itoa(p.collectorOTLPGRPC),
 		"@COLLECTOR_OTLP_HTTP_PORT@": strconv.Itoa(p.collectorOTLPHTTP),
 		"@COLLECTOR_HEALTH_PORT@":    strconv.Itoa(p.collectorHealth),
+		// The collector's self-metrics exporter is an INTERNAL listener whose
+		// DEFAULT is localhost:8888, so like Tempo's gRPC port it has to be
+		// walked off whatever the previous instance already owns. Nothing in
+		// this repo scrapes it; it is kept (rather than disabled) so an operator
+		// still has the collector's own stats when they want them.
+		"@COLLECTOR_SELF_METRICS_PORT@": strconv.Itoa(internalListenerPort(p.collectorSelfMetrics)),
 	}
 }
 

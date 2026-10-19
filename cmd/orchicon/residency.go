@@ -61,6 +61,22 @@ type servicePorts struct {
 	collectorOTLPGRPC int
 	collectorOTLPHTTP int
 	collectorHealth   int
+
+	// collectorSelfMetrics is the collector's OWN Prometheus exporter — the port
+	// it serves its internal telemetry on (otelcol_* receivers/exporters/queue
+	// stats). It is the THIRD instance of the same bug the two above carry: the
+	// collector DEFAULTS this to localhost:8888, so nothing ever assigned it and
+	// two instances demanded the same socket. Measured on this host: prod holding
+	// 127.0.0.1:8888 and dev's collector crash-looping for ever on
+	// "binding address localhost:8888 for Prometheus exporter: bind: address
+	// already in use" — 16 restarts — which also meant dev shipped NO OTLP at
+	// all, so its Metrics view showed only the plane's own outbox gauges while
+	// tokens/cost/executions were emitted into nothing.
+	//
+	// Templated into otel-collector.yaml's service.telemetry.metrics.address and
+	// resolved through internalListenerPort, so it walks off an occupied port the
+	// same way Tempo's gRPC listener does.
+	collectorSelfMetrics int
 }
 
 // servicePortDefaults are the literals every install binds and probes when the
@@ -84,6 +100,9 @@ func servicePortDefaults() servicePorts {
 		collectorOTLPGRPC: 4317,
 		collectorOTLPHTTP: 4318,
 		collectorHealth:   13133,
+		// The collector's own default (localhost:8888) — recorded here so it can
+		// be overridden and walked off a collision, not because we chose it.
+		collectorSelfMetrics: 8888,
 	}
 }
 
@@ -116,6 +135,7 @@ func servicePortsFromEnv() servicePorts {
 		{"ORCHICON_TEMPO_OTLP_GRPC_PORT", &p.tempoOTLPGRPC},
 		{"ORCHICON_TEMPO_OTLP_HTTP_PORT", &p.tempoOTLPHTTP},
 		{"ORCHICON_OTEL_HEALTH_PORT", &p.collectorHealth},
+		{"ORCHICON_OTEL_SELF_METRICS_PORT", &p.collectorSelfMetrics},
 	}
 	for _, o := range overrides {
 		if v := os.Getenv(o.env); v != "" {

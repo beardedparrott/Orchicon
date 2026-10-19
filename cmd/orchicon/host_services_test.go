@@ -454,7 +454,10 @@ func TestWriteConfigsResolvesPortTokens(t *testing.T) {
 // telemetry works perfectly.
 func TestNoEmbeddedConfigHardcodesAListenerPort(t *testing.T) {
 	// `key` is the config field that makes the child BIND a socket.
-	listenerKeys := []string{"http_listen_port:", "grpc_listen_port:", "endpoint: 0.0.0.0:", `endpoint: "0.0.0.0:`}
+	// `address: 0.0.0.0:` is the collector's self-metrics exporter (service.telemetry.metrics).
+	// Its ABSENCE is covered separately by TestCollectorDeclaresItsSelfMetricsListener —
+	// this list can only find a literal that is already written down.
+	listenerKeys := []string{"http_listen_port:", "grpc_listen_port:", "endpoint: 0.0.0.0:", `endpoint: "0.0.0.0:`, "address: 0.0.0.0:"}
 	files := []string{"deploy/configs/tempo.yaml", "deploy/configs/loki.yaml", "deploy/configs/otel-collector.yaml"}
 
 	for _, path := range files {
@@ -560,4 +563,83 @@ func freePortForTest(t *testing.T) int {
 	port := ln.Addr().(*net.TCPAddr).Port
 	_ = ln.Close()
 	return port
+}
+
+// THE COLLECTOR'S SELF-METRICS LISTENER MUST BE DECLARED IN THE CONFIG.
+//
+// TestNoEmbeddedConfigHardcodesAListenerPort cannot catch this one, and the gap
+// is the interesting part: that test scans for a LITERAL port in a listener
+// field. The collector's own stats exporter has no field until you write one —
+// leave the `service.telemetry` block out and the process quietly falls back to
+// its DEFAULT, localhost:8888. There is nothing in the file to find.
+//
+// So the failure looked like this, measured on a real host with two instances:
+//
+//	dev otel-collector  err="binding address localhost:8888 for Prometheus
+//	                          exporter: listen tcp 127.0.0.1:8888: bind: address
+//	                          already in use"        (16 restarts, for ever)
+//
+// and because the collector is what ships OTLP from the plane to Tempo, Loki
+// and VictoriaMetrics, the operator lost MORE than the collector: no logs, no
+// traces, and a Metrics view showing only the plane's own outbox gauges —
+// tokens, cost and execution counts were emitted into nothing. "Still can't
+// talk to logs or traces, and I don't see the new metrics" was ONE cause.
+func TestCollectorDeclaresItsSelfMetricsListener(t *testing.T) {
+	data, err := assets.ServiceConfigsFS.ReadFile("deploy/configs/otel-collector.yaml")
+	if err != nil {
+		t.Fatalf("read embedded otel-collector.yaml: %v", err)
+	}
+	cfg := string(data)
+
+	// The block must exist...
+	svcIdx := strings.Index(cfg, "\nservice:")
+	if svcIdx < 0 {
+		t.Fatal("otel-collector.yaml has no `service:` block")
+	}
+	svc := cfg[svcIdx:]
+
+	// ...and declare a metrics address under service.telemetry.
+	telIdx := strings.Index(svc, "telemetry:")
+	if telIdx < 0 {
+		t.Fatalf("otel-collector.yaml's `service:` block declares no `telemetry:`.\n" +
+			"With no service.telemetry.metrics.address the collector falls back to its DEFAULT\n" +
+			"localhost:8888, so the second instance on a host crash-loops on\n" +
+			"\"bind: address already in use\" — and takes its whole OTLP pipeline (metrics, logs,\n" +
+			"traces) with it.")
+	}
+	block := svc[telIdx:]
+	addrIdx := strings.Index(block, "address:")
+	if addrIdx < 0 {
+		t.Fatalf("service.telemetry declares no `metrics.address`; the collector would default to localhost:8888")
+	}
+	line := strings.SplitN(block[addrIdx:], "\n", 2)[0]
+
+	// And it must be TEMPLATED, not a literal — the whole point is per-instance.
+	if !strings.Contains(line, "@COLLECTOR_SELF_METRICS_PORT@") {
+		t.Errorf("service.telemetry.metrics.address is %q; it must be templated from\n"+
+			"@COLLECTOR_SELF_METRICS_PORT@ so each instance binds its own socket (resolved via\n"+
+			"internalListenerPort, which walks off an occupied port).", strings.TrimSpace(line))
+	}
+}
+
+// The token above must actually be RESOLVED, or the config ships the literal
+// placeholder and the collector fails to parse its own address — a strictly
+// worse failure than the collision it replaced.
+func TestCollectorSelfMetricsTokenIsResolved(t *testing.T) {
+	sup := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(), ports: servicePortDefaults()}
+	tokens := sup.configTokens()
+
+	raw, ok := tokens["@COLLECTOR_SELF_METRICS_PORT@"]
+	if !ok {
+		t.Fatal("configTokens does not provide @COLLECTOR_SELF_METRICS_PORT@: otel-collector.yaml would\n" +
+			"be written with the literal placeholder and the collector would refuse to start")
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		t.Fatalf("@COLLECTOR_SELF_METRICS_PORT@ resolved to %q, which is not a number", raw)
+	}
+	// BINDABLE, not merely equal to the default: 8888 may well be taken.
+	if port <= 0 || port > 65535 {
+		t.Fatalf("@COLLECTOR_SELF_METRICS_PORT@ resolved to %d, outside the usable range", port)
+	}
 }
