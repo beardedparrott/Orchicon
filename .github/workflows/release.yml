@@ -541,7 +541,7 @@ jobs:
           if-no-files-found: error
 
   desktop-windows:
-    name: Desktop — Windows (NSIS installer + portable zip)
+    name: Desktop — Windows (NSIS installer + portable zip + MSI)
     needs: guard
     if: needs.guard.outputs.proceed == 'true'
     runs-on: windows-latest
@@ -582,6 +582,56 @@ jobs:
           cd cmd/orchicon-desktop
           wails build -clean -platform windows/amd64 -webview2 download -nsis \
             -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION}"
+
+      # THE MSI NEEDS THE CLI BINARIES TOO, and they are built HERE rather than
+      # downloaded from the `build` job: that job publishes a .zip, and unzipping it
+      # to reach two .exe files would couple this packaging step to the archive
+      # layout for no gain. GOOS/GOARCH are explicit because this runner's default
+      # is already windows/amd64 — stating them means the step cannot silently
+      # produce something else.
+      - name: Build the Windows CLI binaries (they go IN the MSI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon.exe ./cmd/orchicon
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orch.exe ./cmd/orch
+
+      # WIX IS A .NET GLOBAL TOOL, which is why this job (and the release) is where
+      # the MSI is built: no other host in this project has dotnet. Pinned in spirit
+      # by dotnet's own resolution — see deploy/desktop/README.md for the version
+      # the artifact was last built with.
+      - name: Install the WiX CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet tool install --global wix
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # THE FILE LIST LIVES IN THE .wxs, NOT HERE. This step only stages what the
+      # .wxs names, so adding a component means editing one file; the two drifting
+      # apart is what cmd/orchicon/windows_msi_test.go exists to prevent.
+      - name: Build the MSI
+        shell: pwsh
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = $env:ORCHICON_VERSION.TrimStart('v')
+          $src = "dist/msi-src"
+          $null = New-Item -ItemType Directory -Force -Path $src, dist/desktop
+          Copy-Item bin/orchicon.exe $src/
+          Copy-Item bin/orch.exe $src/
+          Copy-Item cmd/orchicon-desktop/build/bin/orchicon-desktop.exe $src/
+          Copy-Item deploy/desktop/windows/orchicon-setup.cmd $src/
+          Copy-Item deploy/desktop/windows/README-WINDOWS.txt $src/
+          Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
+          Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
+          $srcAbs = (Resolve-Path $src).Path
+          wix build deploy/desktop/windows/Orchicon.wxs -arch x64 `
+            -d "Version=$v" -d "SourceDir=$srcAbs" `
+            -o "dist/desktop/orchicon_${v}_windows_amd64.msi"
+          Get-ChildItem dist/desktop
 
       # The portable zip does NOT carry the bootstrapper (an unzip cannot run an
       # installer), so it ships README-WINDOWS.txt naming the Evergreen URL
@@ -734,7 +784,7 @@ jobs:
           #
           # SHA256SUMS IS IN THIS LIST ON PURPOSE — this find IS the upload manifest, so an asset
           # not named here is silently not published, however carefully it was produced.
-          ASSETS=$(find artifacts desktop-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*_installer.exe' -o -name 'SHA256SUMS' \) 2>/dev/null \
+          ASSETS=$(find artifacts desktop-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*_installer.exe' -o -name '*.msi' -o -name 'SHA256SUMS' \) 2>/dev/null \
                    | awk -F/ '!seen[$NF]++' | sort || true)
           if [ -z "$ASSETS" ]; then
             echo "::error::No release assets found under artifacts/"

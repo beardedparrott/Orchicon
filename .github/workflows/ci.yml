@@ -279,6 +279,89 @@ jobs:
             exit 1
           fi
 
+  # THE WINDOWS DESKTOP BUILD HAS NEVER RUN. It is the one shipped artifact with no
+  # CI coverage at all: the only job that runs `wails build -nsis` lives in release.yml
+  # on a main tag, and no tag has been cut since windows/amd64 joined the matrix on
+  # 2026-10-18. So `orchicon-desktop.exe` and the installer around it are unexercised
+  # code, and the MSI now packages them — which would make a release the FIRST test
+  # of the file it publishes.
+  #
+  # WHAT THIS PROVES, and what it cannot: that the Windows WebView2 build compiles,
+  # that WiX accepts the .wxs, and that an MSI comes out non-trivial. It does NOT
+  # install it — that needs a real machine, and the honest statement of that gap is
+  # in deploy/desktop/README.md.
+  windows-desktop-msi:
+    name: windows desktop + MSI (build only)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build the frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd frontend && npm ci && npm run build
+      - name: Install the pinned Wails CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Build the desktop app
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cmd/orchicon-desktop
+          wails build -platform windows/amd64 -webview2 download
+      - name: Build the Windows CLI binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon.exe ./cmd/orchicon
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orch.exe ./cmd/orch
+      - name: Install the WiX CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet tool install --global wix
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build the MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = "dist/msi-src"
+          $null = New-Item -ItemType Directory -Force -Path $src, dist/desktop
+          Copy-Item bin/orchicon.exe $src/
+          Copy-Item bin/orch.exe $src/
+          Copy-Item cmd/orchicon-desktop/build/bin/orchicon-desktop.exe $src/
+          Copy-Item deploy/desktop/windows/orchicon-setup.cmd $src/
+          Copy-Item deploy/desktop/windows/README-WINDOWS.txt $src/
+          Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
+          Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
+          $srcAbs = (Resolve-Path $src).Path
+          wix build deploy/desktop/windows/Orchicon.wxs -arch x64 `
+            -d "Version=0.0.0" -d "SourceDir=$srcAbs" `
+            -o "dist/desktop/orchicon_0.0.0_windows_amd64.msi"
+          $msi = Get-Item "dist/desktop/orchicon_0.0.0_windows_amd64.msi"
+          # A 0-byte or tiny MSI means WiX "succeeded" without packaging the payload.
+          # The three binaries alone are ~170 MB, so anything under 50 MB is the
+          # empty-package failure wearing a success code.
+          if ($msi.Length -lt 50MB) {
+            throw "MSI is only $([math]::Round($msi.Length/1MB,1)) MB — the payload was not packaged"
+          }
+          Write-Host "MSI: $($msi.Name) ($([math]::Round($msi.Length/1MB,1)) MB)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          path: dist/desktop/*.msi
+          if-no-files-found: error
+
   # THE DESKTOP SHELL IS A SEPARATE JOB ON PURPOSE. `go-ci` is CGO_ENABLED=0-shaped and runs the
   # plane's whole gate; the shell needs libgtk-3-dev + libwebkit2gtk-4.1-dev, so folding it in would
   # push a large apt install into every Go run and couple the desktop build to the plane's gate.

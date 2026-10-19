@@ -117,6 +117,12 @@ processes of the user who installs them. This script installs the Windows build
 (orchicon.exe + orch.exe) into %LOCALAPPDATA%\Programs\Orchicon and runs the
 one-command setup, which starts this instance's plane and prints the URL it bound.
 
+When the release publishes an MSI, this script installs from THAT instead: the
+same binaries, wrapped so Windows' own deployment tooling (Intune, SCCM, Group
+Policy, `msiexec /qn`) can use it, and carrying the desktop app and its shortcuts.
+The MSI is per-user and needs no elevation. -Yes and -NoSetup deliberately keep the
+zip path, because an MSI's wizard cannot be driven unattended.
+
 WSL2 and Docker Desktop are NOT required. WSL2 is provisioned only when you opt
 into containers (-Containers): a workflow's runtime container needs a Linux
 substrate, and nothing else does.
@@ -1124,7 +1130,7 @@ function Ask-Instance {
     # the record was introduced to fix; the setup prints the ports it actually bound.
     if ($DryRun) {
         Write-Info "planned steps:"
-        Write-Host "  1. download $asset"
+        Write-Host "  1. download ${asset}(or the MSI, when this release publishes one)"
         Write-Host "  2. extract orchicon.exe and orch.exe, install them into $InstallDir"
         if ($script:ContainerOptIn) {
             Write-Host "  3. provision/verify the WSL2 substrate the container engine needs (-Containers)"
@@ -1135,6 +1141,80 @@ function Ask-Instance {
         }
         Write-Ok "dry-run complete — no changes made"
         return
+    }
+
+    # --- THE MSI, WHEN THE RELEASE HAS ONE -------------------------------------
+    #
+    # WHY PREFER IT. The MSI is the package a Windows estate can DEPLOY (Intune,
+    # SCCM, Group Policy, `msiexec /qn`), and it installs the desktop app too. Ran
+    # from here it gives the user the native experience: a wizard, then a real
+    # console walking the usual questions - which is what this script does by hand
+    # today, minus the hand-assembly.
+    #
+    # WHY ONLY IN THIS BRANCH. Three cases keep the zip path EXACTLY as it was,
+    # because each is where the MSI's wizard is the wrong tool:
+    #   -Yes        unattended: the MSI would open a console nothing can answer.
+    #               The zip path already solves this with ORCHICON_ASSUME_YES, and
+    #               it is the path the install-path suite exercises.
+    #   -NoSetup    binaries only: the zip path does that natively; the MSI would
+    #               need SKIPSETUP and then leave its own idea of "installed".
+    #   ORCHICON_INSTALL_ARCHIVE  the offline seam — a local ZIP. Not an MSI.
+    # A release with no MSI (every release so far — none has been cut since
+    # windows/amd64 joined the matrix) falls through to the zip automatically, so
+    # this is inert until the first release publishes one.
+    $msiAsset = "orchicon_${versionNum}_windows_${arch}.msi"
+    $useMsi = -not ($Yes -or $NoSetup -or $env:ORCHICON_INSTALL_ARCHIVE)
+    if ($useMsi) {
+        $msiUrl = "$baseUrl/$Version/$msiAsset"
+        $msiAvailable = $false
+        try {
+            $probe = Invoke-WebRequest -Uri $msiUrl -Method Head -UseBasicParsing -ErrorAction Stop
+            $msiAvailable = ($probe.StatusCode -eq 200)
+        } catch { $msiAvailable = $false }
+
+        if (-not $msiAvailable) {
+            Write-Info "no MSI published for $Version — installing from the zip (same binaries, assembled here)"
+        } else {
+            Write-Info "installing Orchicon $Version from $msiAsset (per-user, no elevation)"
+            $msiPath = Join-Path $tmpdir $msiAsset
+            try {
+                Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing
+            } catch {
+                Remove-Item -Path $tmpdir -Recurse -Force -ErrorAction SilentlyContinue
+                Stop-Install "could not download ${msiAsset}: $($_.Exception.Message)"
+            }
+
+            # INSTANCE travels as a public MSI property; the setup wrapper receives it
+            # as %1 and exports ORCHICON_INSTANCE for `orchicon install`. /norestart
+            # because nothing here needs a reboot, and a silent reboot is the worst
+            # thing an installer can do.
+            $msiArgs = @("/i", "`"$msiPath`"", "/norestart", "/l*v", "`"$(Join-Path $tmpdir 'msi.log')`"",
+                         "INSTANCE=$($script:Instance)")
+            if ($InstallDir) { $msiArgs += "INSTALLFOLDER=`"$InstallDir`"" }
+
+            Write-Info "running the installer (this opens the Orchicon setup console)…"
+            $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
+            if ($proc.ExitCode -ne 0) {
+                $logHint = Join-Path $tmpdir 'msi.log'
+                Stop-Install "the MSI exited $($proc.ExitCode). The binaries may not be installed. MSI log: $logHint"
+            }
+
+            # VERIFY, the same way the zip path does: run what was installed. The MSI
+            # does not print where it put things, so ask the binary rather than assume
+            # -InstallDir was honoured.
+            $exe = if ($InstallDir) { Join-Path $InstallDir "orchicon.exe" }
+                   else { Join-Path (Join-Path $env:LOCALAPPDATA "Programs\Orchicon") "orchicon.exe" }
+            if (-not (Test-Path -LiteralPath $exe)) {
+                Stop-Install "the MSI reported success but $exe is not there. Check its log: $(Join-Path $tmpdir 'msi.log')"
+            }
+            $verify = ""
+            try { $verify = ((& $exe version 2>&1 | Out-String)).Trim() } catch { $verify = "" }
+            if ($verify) { Write-Ok "verified: $verify" } else { Write-Warn "could not run the installed binary to verify it" }
+            Write-Ok "Installed: $exe"
+            Write-Info "setup runs in the console that just opened (it asks for the host ports and the optional runtime images)"
+            Remove-Item -Path $tmpdir -Recurse -Force -ErrorAction SilentlyContinue
+            return
+        }
     }
 
     # [System.IO.Path]::GetTempPath() rather than $env:TEMP. TEMP is always set on
