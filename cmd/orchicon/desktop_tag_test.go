@@ -172,3 +172,57 @@ func TestWailsJSONCarriesTheReleaseTags(t *testing.T) {
 		}
 	}
 }
+
+// TestDesktopShipsOurIcon — the app must carry the ORCHICON mark, not Wails'.
+//
+// THE BUG THIS PINS. `cmd/orchicon-desktop/build/appicon.png` did not exist, so
+// Wails fell back to its own default: a generic yellow square. The operator saw
+// exactly that on the task bar and asked for our logo.
+//
+// WHY AN ASSERTION AND NOT JUST THE FILE. Two silent ways for it to disappear:
+// `build/` is a gitignored BINARY directory, so a `.gitignore` edit (or a clean
+// clone that never had the exception) drops the icon from the tree without
+// anything failing; and Wails does not warn — it substitutes its default. The
+// app then looks unbranded and no gate notices.
+//
+// PNG specifically: Wails generates the .ico/.icns and the window icon FROM this
+// file, and it must be a raster image. A committed .svg here would be ignored by
+// the CLI just as quietly.
+func TestDesktopShipsOurIcon(t *testing.T) {
+	path := filepath.Join("..", "orchicon-desktop", "build", "appicon.png")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v\n\nWithout this file Wails draws its DEFAULT icon (a yellow square), so the "+
+			"desktop app ships unbranded. It is source, not build output: it lives under build/ because "+
+			"that is where the Wails CLI looks, and .gitignore re-includes it by name.", path, err)
+	}
+	// PNG magic: \x89PNG\r\n\x1a\n
+	if len(b) < 8 || string(b[1:4]) != "PNG" {
+		t.Fatalf("%s is not a PNG (first bytes %q); Wails needs a raster image it can resample", path, b[:minInt(8, len(b))])
+	}
+	// The CLI resamples down to window/taskbar sizes, so a small source loses.
+	// 1024 is the size the icon was rasterised at, and the size Wails documents.
+	if w, h := pngSize(t, b); w < 256 || h < 256 {
+		t.Errorf("%s is %dx%d; a source icon below 256px cannot be resampled up for the taskbar "+
+			"and installer images", path, w, h)
+	}
+}
+
+// pngSize reads the IHDR width/height without pulling in an image decoder for a
+// test that only needs two integers.
+func pngSize(t *testing.T, b []byte) (int, int) {
+	t.Helper()
+	// 8-byte signature, then a 4-byte length + "IHDR", then width and height.
+	if len(b) < 24 {
+		t.Fatalf("truncated PNG (%d bytes)", len(b))
+	}
+	be := func(p []byte) int { return int(p[0])<<24 | int(p[1])<<16 | int(p[2])<<8 | int(p[3]) }
+	return be(b[16:20]), be(b[20:24])
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
