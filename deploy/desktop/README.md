@@ -13,7 +13,7 @@ signed macOS build **cannot** be produced on `ubuntu-latest`.
 |---|---|---|
 | `.deb` + `.AppImage` | `ubuntu-22.04` | The `.deb` links against `libwebkit2gtk-4.0` (Ubuntu ≤ 23.10, Debian 12). Building on 24.04 would link 4.1 and break every older user. |
 | `.app` (signed, notarised, stapled) | `macos-14` | `codesign`/`notarytool`/`stapler`/`spctl` are macOS-only, and notarisation is an Apple service call. |
-| NSIS installer + portable zip | `windows-latest` | `wails build -webview2 download -nsis` needs makensis and the Windows toolchain. |
+| NSIS installer + portable zip + **MSI** | `windows-latest` | `wails build -webview2 download -nsis` needs makensis and the Windows toolchain; the MSI needs the WiX CLI, which is a .NET global tool no other runner in this project has. |
 
 None of the three jobs uses an `os:`/`arch:` matrix, deliberately: the release
 workflow's matrix scanner in `cmd/orchicon/ci_release_workflows_test.go` reads
@@ -35,7 +35,36 @@ signing failure cannot stop the CLI binaries from publishing.
 | `appimage/AppRun`, `appimage/build.sh` | AppImage for distros that dropped WebKitGTK 4.0 (Ubuntu 24.04+, Fedora 40+). Bundles `libwebkit2gtk` + `libjavascriptcoregtk`. **The two ABI families have different SONAMEs and they are not symmetric** — 4.0 is `libwebkit2gtk-4.0.so.37` + `libjavascriptcoregtk-4.0.so.18`; 4.1 is `libwebkit2gtk-4.1.so.0` + `libjavascriptcoregtk-4.1.so.0`. Writing `4.1.so.37` compiles, ships, and silently matches nothing. |
 | `macos/entitlements.plist` | Hardened runtime + the JIT entitlements JavaScriptCore requires. No sandbox (loopback + child process). |
 | `macos/sign-and-notarize.sh` | codesign → `notarytool submit --wait` → `stapler staple` → `spctl -a` **assertion**. Fails the job rather than shipping an unsigned app. |
-| `windows/README-WINDOWS.txt` | Ships in the portable zip: what to do if WebView2 is missing, and the Evergreen URL. |
+| `windows/README-WINDOWS.txt` | Ships in the portable zip **and** the MSI: what to do if WebView2 is missing, and the Evergreen URL. |
+| `windows/Orchicon.wxs` | The **MSI** — the whole product (CLI, TUI, desktop app) in one package, because Intune/SCCM/Group Policy and `msiexec /qn` cannot drive an NSIS wizard. Per-user, no elevation. `cmd/orchicon/windows_msi_test.go` fails if a shipped binary is missing from it. |
+| `windows/orchicon-setup.cmd` | The MSI's last step: hands off to the real `orchicon install` in a visible console, with the wizard's answers as `ORCHICON_INSTANCE` / `ORCHICON_INSTALL_RUNTIME_IMAGES`. Delegates rather than reimplementing, so the package and the CLI cannot disagree about what "installed" means. |
+| `windows/orchicon-desktop.ico` | Multi-resolution icon (`convert appicon.png -define icon:auto-resize=256,128,64,48,32,16`). Wails' PNG feeds only its own packaging; shortcuts and Add/Remove Programs need a real `.ico`. |
+
+## The Windows MSI
+
+Built by the WiX CLI (`dotnet tool install --global wix`), so **it can only be built on a
+Windows host with the .NET SDK** — `make desktop-package-windows` refuses with that
+sentence rather than failing inside a missing command.
+
+What it deliberately does **not** do, each for a measured reason:
+
+- **It does not bundle the service binaries.** Those are 542 MB (otelcol-contrib 293,
+  loki 105, tempo 74, postgres 34, victoria-metrics 24, nats 16) and would version-lock
+  to the installer. `orchicon install` acquires them at setup, exactly as the one-line
+  `install.ps1` does. The MSI is ~200 MB.
+- **It does not run the setup as an MSI dialog sequence.** An MSI custom action has no
+  console, so `installIsInteractive()` is false and any prompt writes into nothing and
+  blocks for ever. Setup runs `orchicon install` in a real console launched from the
+  last step — which is what "the normal questions and the runtime-image download" means
+  in practice, and it cannot drift from the CLI.
+- **It is not per-machine.** A per-machine install would put the binaries under one
+  identity and run the services as another, which is the one arrangement the product
+  does not support. Per-user also means no UAC prompt.
+
+**The install itself is unverified by CI.** `windows-desktop-msi` in `ci.yml` proves the
+Windows desktop app compiles, that WiX accepts the `.wxs`, and that a non-trivial MSI
+comes out (it fails below 50 MB, because WiX exits 0 for an empty package). It does not
+run the MSI — that needs a real machine.
 
 ## Building locally
 

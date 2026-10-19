@@ -1172,6 +1172,17 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
 # a release build use the same framework.
 WAILS_VERSION  := v2.17.0
 NFPM_VERSION   := v2.41.0
+# WIX_VERSION IS PINNED, AND MUST STAY BELOW 6. WiX v6 introduced the Open Source
+# Maintenance Fee EULA: an UNPINNED `dotnet tool install --global wix` now resolves
+# to v7 and fails the build outright with
+#
+#     error WIX7015: You must accept the Open Source Maintenance Fee (OSMF) EULA
+#
+# which is a licensing decision, not a build detail — so this target must not make
+# it implicitly by floating to latest. 5.0.2 is the last free line, and it takes the
+# same v4 schema namespace this .wxs uses. Raising it is a deliberate act that must
+# come with whatever the new version requires.
+WIX_VERSION    ?= 5.0.2
 WAILS          ?= $(shell command -v wails 2>/dev/null || echo $(HOME)/go/bin/wails)
 DESKTOP_DIST   := dist/desktop
 DESKTOP_VERSION := $(patsubst v%,%,$(VERSION))
@@ -1213,6 +1224,60 @@ desktop-build-linux: desktop-check ## Build the Linux .deb payload (needs libweb
 		echo "       Install libwebkit2gtk-4.0-dev, or run 'make desktop-build' for a local"; \
 		echo "       build against whichever ABI this host ships."; exit 1; }
 	cd $(DESKTOP_PROJECT) && $(WAILS) build -clean -platform linux/amd64 -tags orchicon_desktop,production -ldflags '$(LDFLAGS)'
+
+# --- Windows MSI -----------------------------------------------------------
+#
+# WHY AN MSI ON TOP OF THE NSIS INSTALLER. Wails emits an NSIS .exe, and the
+# tooling a Windows estate actually uses speaks MSI: Intune, SCCM, Group Policy
+# and `msiexec /qn`. None of them can drive an NSIS wizard. The NSIS installer
+# stays (it is the desktop app's own installer, used by `install.ps1 -Desktop`);
+# the MSI packages the WHOLE product - CLI, TUI and desktop app - for the managed
+# case, and per-user so it needs no elevation (see deploy/desktop/windows/Orchicon.wxs).
+#
+# IT BUILDS ON WINDOWS, NOT HERE. WiX is a .NET tool (`dotnet tool install --global wix`),
+# and this host has no dotnet/msbuild — so the target REFUSES with a sentence rather
+# than failing inside a missing command. CI proves it builds and validates; only a
+# real Windows run proves it installs.
+WIX ?= $(shell command -v wix 2>/dev/null)
+MSI_SRC_DIR := $(DESKTOP_DIST)/msi-src
+
+desktop-package-windows: ## Produce the Windows MSI (Windows host with the WiX CLI only)
+	@test -n "$(WIX)" || { \
+		printf 'error: the WiX CLI (`wix`) was not found.\n\n'; \
+		printf '  The MSI is built by WiX v4, a .NET global tool:\n'; \
+		printf '      dotnet tool install --global wix --version $(WIX_VERSION)\n\n'; \
+		printf '  The version is PINNED ($(WIX_VERSION)): WiX v6+ requires accepting the Open Source\n'; \
+		printf '  Maintenance Fee EULA, so an unpinned install resolves to v7 and fails.\n\n'; \
+		printf '  This host cannot build it, and that is not a repo defect: the release and CI build the\n'; \
+		printf '  MSI on windows-latest. To produce one by hand, run this target on Windows.\n'; \
+		exit 1; }
+	@# EVERY FILE THE .wxs NAMES MUST BE HERE FIRST. The MSI's components are files,
+	@# so a missing exe is a build error that names a path — staging them makes that
+	@# error impossible rather than explaining it later.
+	@test -f $(DESKTOP_PROJECT)/build/bin/orchicon-desktop.exe || { \
+		echo "error: $(DESKTOP_PROJECT)/build/bin/orchicon-desktop.exe is missing — run 'wails build --nsis' (or the release's desktop-windows job) first"; exit 1; }
+	@test -f $(BIN_DIR)/orchicon.exe || { echo "error: $(BIN_DIR)/orchicon.exe is missing — build the Windows binaries first"; exit 1; }
+	@mkdir -p $(MSI_SRC_DIR)
+	cp -f $(BIN_DIR)/orchicon.exe $(MSI_SRC_DIR)/
+	cp -f $(BIN_DIR)/orch.exe $(MSI_SRC_DIR)/
+	cp -f $(DESKTOP_PROJECT)/build/bin/orchicon-desktop.exe $(MSI_SRC_DIR)/
+	cp -f deploy/desktop/windows/orchicon-setup.cmd $(MSI_SRC_DIR)/
+	cp -f deploy/desktop/windows/README-WINDOWS.txt $(MSI_SRC_DIR)/
+	cp -f deploy/desktop/windows/LICENSE.rtf $(MSI_SRC_DIR)/
+	cp -f deploy/desktop/windows/orchicon-desktop.ico $(MSI_SRC_DIR)/
+	@# -arch x64: the release matrix builds windows/amd64 only (Windows on ARM runs
+	@# the amd64 package under emulation — see release.yml's matrix comment).
+	@# `-ext` resolves through WiX's OWN extension store, not NuGet, so the extension
+	@# must be installed once before the build can name it. Idempotent: adding an
+	@# extension that is already there is a no-op.
+	$(WIX) extension add -g WixToolset.UI.wixext/$(WIX_VERSION) || true
+	$(WIX) build deploy/desktop/windows/Orchicon.wxs \
+		-arch x64 \
+		-ext WixToolset.UI.wixext \
+		-d Version=$(DESKTOP_VERSION) \
+		-d SourceDir=$(abspath $(MSI_SRC_DIR)) \
+		-o "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi"
+	@ls -l "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi"
 
 desktop-package-linux: desktop-build-linux ## Produce the .deb (nfpm) + the AppImage
 	mkdir -p $(DESKTOP_DIST)

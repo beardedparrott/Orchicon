@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Orchicon.msi - the Windows installer.
+
+  WHY AN MSI AT ALL. Wails emits an NSIS installer, and an NSIS .exe cannot be
+  deployed by the tooling a Windows estate actually uses: Intune, SCCM, Group
+  Policy and `msiexec /qn` all speak MSI, and none of them can drive an NSIS
+  wizard. The NSIS installer stays (it is the desktop app's own installer, and
+  `install.ps1 -Desktop` uses it); this packages the WHOLE product - CLI, TUI and
+  desktop app - for the managed case.
+
+  THE SHAPE, and each choice is a consequence of something measured:
+
+  * PER-USER, NO ELEVATION (`Scope="perUser"`). Orchicon's whole model is "the
+    plane and its services are host processes of the user who installs them",
+    with a per-user data directory. A per-machine install (Program Files, an
+    elevated service account) would put the BINARIES under one identity and run
+    the SERVICES under another - the one arrangement the product does not
+    support. Per-user also means no UAC prompt.
+
+  * THE SERVICE BINARIES ARE NOT IN HERE (542 MB measured: otelcol 293, loki
+    105, tempo 74, postgres 34, vm 24, nats 16). Bundling them would make a
+    ~750 MB MSI that still has to pull multi-GB container images, and it would
+    version-lock the services to the installer. `orchicon install` acquires them
+    at setup time, which is what the one-line ps1 install does today.
+
+  * THE SETUP RUNS `orchicon install` IN A VISIBLE CONSOLE, from the last step.
+    NOT a custom action that talks to the operator: an MSI custom action has no
+    console, so `installIsInteractive()` is false and any prompt writes into
+    nothing and blocks for ever - the hazard install.ps1 documents at length.
+    Delegating also means the MSI cannot drift from the CLI's notion of
+    "installed": there is one implementation, and it is not here.
+
+  * THE WIZARD'S ANSWERS TRAVEL AS ENVIRONMENT. `INSTANCE` and `RUNTIMEIMAGES`
+    are PUBLIC properties (settable on the command line for `msiexec /qn`) and
+    are handed to the wrapper as %1/%2. RUNTIMEIMAGES is the variable added in
+    the same change - without it a wizard's multi-select was silently discarded
+    by the non-interactive path, so an install fetched none of what was ticked.
+-->
+<!--
+  BUILDING THIS FILE NEEDS TWO THINGS ON THE COMMAND LINE, and neither is implied by
+  anything inside it:
+
+      wix build Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext/5.0.2
+
+  * -ext ... : ui:WixUI is an EXTENSION element. The xmlns below makes the file
+    well-formed and does NOT enable it (WIX0200).
+  * the /5.0.2 suffix : the extension is restored from NuGet, and a bare package
+    name does not resolve ("error WIX0144: The extension 'WixToolset.UI.wixext'
+    could not be found"). It is versioned to match WIX_VERSION in the Makefile.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="Orchicon"
+           Manufacturer="Orchicon"
+           Version="$(var.Version)"
+           UpgradeCode="DF9438BD-B311-5C12-A1D2-EB415DF74F2D"
+           Scope="perUser"
+           Compressed="yes"
+           InstallerVersion="500">
+
+    <!-- A MAJOR UPGRADE REPLACES IN PLACE. Without this an install over an older
+         version leaves two ARP entries and two sets of files, and the second
+         `orchicon install` then has to guess which binary is "the" plane. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Orchicon is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- PUBLIC PROPERTIES = the unattended surface. All-uppercase ids are
+         settable from the command line, so an enterprise deployment is
+             msiexec /i Orchicon.msi /qn INSTANCE=prod RUNTIMEIMAGES=1 SKIPSETUP=1
+         and needs no wizard. -->
+    <Property Id="INSTANCE" Value="dev" />
+    <!-- NO Value: an empty Value attribute is illegal (WIX0006), and it must default to
+         UNSET rather than "none" — the wrapper leaves the env var alone when %2 is
+         empty, which is what keeps the interactive runtime-image prompt alive. A
+         default of "none" would be an ANSWER, and the prompt would be skipped.
+         Secure="yes" declares a property that carries a value from the UI or the
+         command line without giving it one (and without being ignored — WIX1006). -->
+    <Property Id="RUNTIMEIMAGES" Secure="yes" />
+    <Property Id="SKIPSETUP" Value="0" />
+
+    <Property Id="ARPPRODUCTICON" Value="OrchiconIcon" />
+    <!-- ARPNOMODIFY IS NOT DECLARED HERE. WixUI_InstallDir already defines it, and a
+         second declaration is a hard error:
+             error WIX0091: Duplicate Property with identifier 'ARPNOMODIFY' found.
+         The UI set gives it, which is also the right value for this package. -->
+    <Property Id="ARPURLINFOABOUT" Value="https://orchicon.dev" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <Property Id="WixUILicenseRtf" Value="$(var.SourceDir)\LICENSE.rtf" />
+
+    <Icon Id="OrchiconIcon" SourceFile="$(var.SourceDir)\orchicon-desktop.ico" />
+
+    <!-- PER-USER LOCATIONS ONLY. LocalAppDataFolder and the per-user Program Menu
+         need no elevation; ProgramFilesFolder and the machine Program Menu would
+         need both, and would put the binaries somewhere the installing user may
+         not be able to write. -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Orchicon" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="CliFeature" Title="Orchicon (plane, CLI and TUI)" Level="1"
+             Description="orchicon.exe and orch.exe: the control plane, the CLI and the TUI.">
+      <ComponentGroupRef Id="CliComponents" />
+    </Feature>
+
+    <Feature Id="DesktopFeature" Title="Orchicon desktop app" Level="1"
+             Description="The GUI client. Optional — the web UI at the plane's URL does everything it does.">
+      <ComponentGroupRef Id="DesktopComponents" />
+    </Feature>
+
+    <ComponentGroup Id="CliComponents" Directory="INSTALLFOLDER">
+      <!-- KeyPath on the FILE (not the directory): per-user installs cannot use a
+           directory as a key path, and a registry key path would add state to
+           clean up for no benefit. -->
+      <Component Id="OrchiconExe" Guid="*">
+        <File Id="OrchiconExeFile" Source="$(var.SourceDir)\orchicon.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="OrchExe" Guid="*">
+        <File Id="OrchExeFile" Source="$(var.SourceDir)\orch.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="SetupWrapper" Guid="*">
+        <!-- The setup hand-off. Shipped as a file rather than an inline ExeCommand
+             so the wizard's answers reach the child as %1/%2 with no nested quoting;
+             see the header of orchicon-setup.cmd. -->
+        <File Id="SetupCmdFile" Source="$(var.SourceDir)\orchicon-setup.cmd" KeyPath="yes" />
+      </Component>
+      <Component Id="ReadmeFile" Guid="*">
+        <File Id="ReadmeTxtFile" Source="$(var.SourceDir)\README-WINDOWS.txt" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="DesktopComponents" Directory="INSTALLFOLDER">
+      <Component Id="DesktopExe" Guid="*">
+        <File Id="DesktopExeFile" Source="$(var.SourceDir)\orchicon-desktop.exe" KeyPath="yes">
+          <!-- Advertise="no" is REQUIRED for a per-user shortcut: an advertised
+               shortcut is a machine-wide feature and fails without elevation. -->
+          <Shortcut Id="StartMenuShortcut"
+                    Directory="ProgramMenuFolder"
+                    Name="Orchicon"
+                    Description="Orchicon desktop app"
+                    Advertise="no"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="OrchiconIcon" />
+          <Shortcut Id="DesktopShortcut"
+                    Directory="DesktopFolder"
+                    Name="Orchicon"
+                    Description="Orchicon desktop app"
+                    Advertise="no"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="OrchiconIcon" />
+        </File>
+        <!-- The shortcuts are removed by their parent component's uninstall, so no
+             explicit RemoveFolder is needed for them. -->
+      </Component>
+    </ComponentGroup>
+
+    <!-- ===================== THE SETUP HAND-OFF =============================
+         IMMEDIATE, NOT DEFERRED, and that is the load-bearing choice. A deferred
+         custom action cannot read public properties - it only sees
+         CustomActionData, which would mean a second property-setting action and
+         a nested-quoting exercise to pass [INSTANCE] and [RUNTIMEIMAGES]
+         through. An immediate action resolves them normally. Nothing here
+         modifies the machine (it launches a detached process), so immediate is
+         also the honest classification.
+
+         Return="asyncNoWait": the MSI does not wait for the setup. Setup is
+         minutes of downloads plus prompts a human answers - holding InstallFinalize
+         open for that would make the wizard look hung and time out. The setup is
+         idempotent and resumable, so losing the wait costs nothing.
+
+         Impersonate="yes": it runs AS THE INSTALLING USER, not as SYSTEM,
+         because everything it starts (the plane, postgres, nats) must belong to
+         that user.
+
+         `cmd /c start "title" ...` is what produces a VISIBLE console: a process
+         spawned straight from a custom action inherits a hidden window, and the
+         operator would see an install with no progress and no prompts. The empty
+         first argument of `start` is the window TITLE, which is why the wrapper
+         path is quoted as the second argument. -->
+    <CustomAction Id="LaunchSetup"
+                  Directory="INSTALLFOLDER"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="asyncNoWait"
+                  ExeCommand="cmd.exe /c start &quot;Orchicon setup&quot; &quot;[INSTALLFOLDER]orchicon-setup.cmd&quot; &quot;[INSTANCE]&quot; &quot;[RUNTIMEIMAGES]&quot;" />
+
+    <InstallExecuteSequence>
+      <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent:
+           a repair or an upgrade should re-converge, and `orchicon install` is
+           idempotent - it upgrades an existing instance rather than duplicating
+           it. SKIPSETUP=1 is the unattended opt-out (binaries only). -->
+      <Custom Action="LaunchSetup" After="InstallFiles" Condition="NOT REMOVE AND SKIPSETUP &lt;&gt; &quot;1&quot;" />
+    </InstallExecuteSequence>
+
+    <ui:WixUI Id="WixUI_InstallDir" />
+  </Package>
+</Wix>

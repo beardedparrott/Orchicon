@@ -122,7 +122,65 @@ func humanSize(n int64) string {
 // ports.json and the residency record — per instance, written by the install, read back by the next one.
 const runtimeImagesAnsweredFile = "runtime-images-answered"
 
+// runtimeImagesEnv is the EXPLICIT, non-interactive answer to "which runtime images?".
+//
+// WHY IT EXISTS. Everything below assumes a HUMAN: the prompt needs a terminal, and
+// ORCHICON_ASSUME_YES is a blanket "yes" that means ALL. That left a gap for a
+// GRAPHICAL installer — the Windows MSI — which asks the operator for a multi-select
+// in its own UI and then runs `orchicon install` with no console. Its answer had
+// nowhere to go: the non-interactive arm returns "none" before the recorded-answer
+// file is even read, so a wizard's choice of "base + dev" silently installed nothing.
+//
+// It takes the SAME grammar the prompt accepts (parseRuntimeImageSelection), so the
+// command line, the prompt and an installer cannot disagree about what "1,3" means:
+//
+//	unset/empty → no answer (fall through to the rest of the resolution)
+//	none        → answered: fetch nothing
+//	all         → answered: fetch everything
+//	1,3 / "1 3" → answered: those choices (1-based, as printed)
+//	garbage     → an ERROR, not a silent "none": an installer that asked a question
+//	              and then fetched nothing is worse than one that fails and says why.
+const runtimeImagesEnv = "ORCHICON_INSTALL_RUNTIME_IMAGES"
+
+// explicitRuntimeImages reads runtimeImagesEnv. The second return says whether an
+// answer was given at all, so a caller can tell "answered nothing" from "unset".
+func explicitRuntimeImages(promptOut io.Writer, imageTag string) ([]runtimeImageChoice, bool, error) {
+	raw := strings.TrimSpace(os.Getenv(runtimeImagesEnv))
+	if raw == "" {
+		return nil, false, nil
+	}
+	choices := installRuntimeImageChoices(imageTag)
+	idx, err := parseRuntimeImageSelection(raw, len(choices))
+	if err != nil {
+		return nil, true, fmt.Errorf("%s=%q: %w", runtimeImagesEnv, raw, err)
+	}
+	if len(idx) == 0 {
+		fmt.Fprintf(promptOut, "  runtime images: none selected (answered by %s)\n", runtimeImagesEnv)
+		return nil, true, nil
+	}
+	out := make([]runtimeImageChoice, 0, len(idx))
+	var total int64
+	for _, i := range idx {
+		out = append(out, choices[i])
+		total += choices[i].SizeBytes
+	}
+	fmt.Fprintf(promptOut, "  runtime images: %d selected (%s) — answered by %s\n",
+		len(out), humanSize(total), runtimeImagesEnv)
+	return out, true, nil
+}
+
 func resolveInstallRuntimeImagesFor(instance string, promptOut io.Writer, answerIn io.Reader, imageTag string, forcePrompt bool) ([]runtimeImageChoice, error) {
+	// THE MOST SPECIFIC SIGNAL WINS, and an environment answer is the most specific
+	// there is: an installer set it for THIS run, having just asked the operator. It
+	// therefore outranks both the interactivity gate below (which would discard it)
+	// and a recorded answer (which exists so a REBUILD does not re-ask, not to
+	// overrule someone who has just answered).
+	if choices, answered, err := explicitRuntimeImages(promptOut, imageTag); err != nil {
+		return nil, err
+	} else if answered {
+		return choices, nil
+	}
+
 	// NOBODY TO ASK. A redirected/backgrounded install must not block on a question — the same rule the port
 	// prompt follows (install_ports.go promptTerminal), and for the same reason: the read would either hang
 	// or consume input that belongs to whatever is driving us.

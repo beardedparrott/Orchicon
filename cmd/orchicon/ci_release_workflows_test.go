@@ -729,6 +729,25 @@ func isPipe(l string) bool {
 	return false
 }
 
+// shellIsPowerShell reports whether the step owning the `run:` at index i declares a
+// PowerShell shell. Steps are YAML list items, so the owning step starts at the nearest
+// preceding line beginning with "- " and the shell key, if any, sits between them.
+// An absent key is GitHub's default (bash on Linux runners), which is NOT PowerShell.
+func shellIsPowerShell(lines []string, runIdx int) bool {
+	for i := runIdx - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "- ") {
+			return false // reached the start of the step without seeing a shell key
+		}
+		if !strings.HasPrefix(trimmed, "shell:") {
+			continue
+		}
+		val := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, "shell:")))
+		return strings.HasPrefix(val, "pwsh") || strings.HasPrefix(val, "powershell")
+	}
+	return false
+}
+
 // TestEveryWorkflowPipelineUsesPipefailAtLeastWhereItMatters pins the second half: a `run:`
 // block containing a shell pipeline must set `pipefail`, or a failing command's status is
 // discarded in favour of the last command's — which is how a hard failure becomes a green run.
@@ -766,7 +785,31 @@ func TestEveryWorkflowPipelineUsesPipefailAtLeastWhereItMatters(t *testing.T) {
 					hasPipefail = true
 				}
 			}
-			if hasPipe && !hasPipefail {
+			if !hasPipe {
+				continue
+			}
+			// THE REQUIREMENT IS PER SHELL, because `pipefail` is a BASH concept and
+			// demanding it of a PowerShell block is unsatisfiable — the block can never
+			// comply. PowerShell's equivalent guard is $ErrorActionPreference = 'Stop':
+			// a non-terminating error is otherwise written to the error stream and the
+			// step still exits 0, which is the SAME swallowed-failure this test exists
+			// to prevent, in the other shell's vocabulary.
+			//
+			// Found by adding the first `shell: pwsh` step that contains a pipeline (the
+			// MSI job's `| Out-File ... GITHUB_PATH`): every earlier pwsh step here
+			// happened to use no pipe, so the false positive had never been hit.
+			if shellIsPowerShell(lines, i) {
+				if !strings.Contains(strings.Join(body, "\n"), "ErrorActionPreference") {
+					t.Errorf("%s line %d: a `shell: pwsh` block contains a pipeline but does not set "+
+						"`$ErrorActionPreference = 'Stop'`.\nWithout it a non-terminating error is "+
+						"written to the error stream and the step still exits 0, so a failing "+
+						"`Invoke-WebRequest`/`dotnet` at the head of the pipe is swallowed and the "+
+						"step reports success.\n(pwsh has no `pipefail`; this is that invariant in "+
+						"PowerShell's own vocabulary.)", filepath.Base(path), i+1)
+				}
+				continue
+			}
+			if !hasPipefail {
 				t.Errorf("%s line %d: a `run: |` block contains a pipeline but does not set "+
 					"`pipefail`.\nWithout it the block's status is its LAST command's, so a "+
 					"failing `gh`/`curl`/`docker` at the head of the pipe is swallowed and the "+
