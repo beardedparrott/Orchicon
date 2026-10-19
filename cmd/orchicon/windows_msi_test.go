@@ -293,3 +293,36 @@ func wixPinnedVersion(t *testing.T) string {
 	t.Fatal("the Makefile declares no WIX_VERSION")
 	return ""
 }
+
+// TestWiXBuildEnablesTheUIExtension — a .wxs that uses ui:WixUI cannot be built
+// without it, and the failure is at build time on windows-latest:
+//
+//	error WIX0200: The Package element contains an unhandled extension element
+//	'WixUI'. Please ensure that the extension for elements in the
+//	'http://wixtoolset.org/schemas/v4/wxs/ui' namespace has been provided.
+//
+// The xmlns declaration makes the file WELL-FORMED and is not enough — the
+// extension must be enabled on the command line. That pairing is asserted here so
+// it cannot be dropped from one of the three places that build the MSI.
+func TestWiXBuildEnablesTheUIExtension(t *testing.T) {
+	body := readMSIFile(t, wxs())
+	if !strings.Contains(body, "ui:WixUI") {
+		t.Fatal("the .wxs no longer uses ui:WixUI, so this test's premise is gone")
+	}
+	for _, where := range []struct{ file string }{
+		{filepath.Join("..", "..", ".github", "workflows", "ci.yml")},
+		{filepath.Join("..", "..", ".github", "workflows", "release.yml")},
+		{filepath.Join("..", "..", "Makefile")},
+	} {
+		b, err := os.ReadFile(where.file)
+		if err != nil {
+			t.Fatalf("read %s: %v", where.file, err)
+		}
+		if !strings.Contains(string(b), "-ext WixToolset.UI.wixext") {
+			t.Errorf("%s builds the .wxs without `-ext WixToolset.UI.wixext`.\n"+
+				"The .wxs uses ui:WixUI, which is an EXTENSION element: the xmlns makes the\n"+
+				"file well-formed and does not enable it. The build fails with WIX0200.",
+				filepath.Base(where.file))
+		}
+	}
+}

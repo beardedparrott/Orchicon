@@ -1269,6 +1269,7 @@ desktop-package-windows: ## Produce the Windows MSI (Windows host with the WiX C
 	@# the amd64 package under emulation — see release.yml's matrix comment).
 	$(WIX) build deploy/desktop/windows/Orchicon.wxs \
 		-arch x64 \
+		-ext WixToolset.UI.wixext \
 		-d Version=$(DESKTOP_VERSION) \
 		-d SourceDir=$(abspath $(MSI_SRC_DIR)) \
 		-o "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi"

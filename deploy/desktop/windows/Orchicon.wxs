@@ -59,7 +59,13 @@
              msiexec /i Orchicon.msi /qn INSTANCE=prod RUNTIMEIMAGES=1 SKIPSETUP=1
          and needs no wizard. -->
     <Property Id="INSTANCE" Value="dev" />
-    <Property Id="RUNTIMEIMAGES" Value="" />
+    <!-- NO Value: an empty Value attribute is illegal (WIX0006), and it must default to
+         UNSET rather than "none" — the wrapper leaves the env var alone when %2 is
+         empty, which is what keeps the interactive runtime-image prompt alive. A
+         default of "none" would be an ANSWER, and the prompt would be skipped.
+         Secure="yes" declares a property that carries a value from the UI or the
+         command line without giving it one (and without being ignored — WIX1006). -->
+    <Property Id="RUNTIMEIMAGES" Secure="yes" />
     <Property Id="SKIPSETUP" Value="0" />
 
     <Property Id="ARPPRODUCTICON" Value="OrchiconIcon" />
@@ -171,9 +177,7 @@
            a repair or an upgrade should re-converge, and `orchicon install` is
            idempotent - it upgrades an existing instance rather than duplicating
            it. SKIPSETUP=1 is the unattended opt-out (binaries only). -->
-      <Custom Action="LaunchSetup" After="InstallFiles">
-        NOT REMOVE AND SKIPSETUP &lt;&gt; "1"
-      </Custom>
+      <Custom Action="LaunchSetup" After="InstallFiles" Condition="NOT REMOVE AND SKIPSETUP &lt;&gt; &quot;1&quot;" />
     </InstallExecuteSequence>
 
     <ui:WixUI Id="WixUI_InstallDir" />
