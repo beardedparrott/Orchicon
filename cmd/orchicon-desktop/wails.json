@@ -7,5 +7,5 @@
   "author": {
     "name": "Orchicon"
   },
-  "build:tags": "orchicon_desktop,production,webkit2_41"
+  "build:tags": "orchicon_desktop,production"
 }

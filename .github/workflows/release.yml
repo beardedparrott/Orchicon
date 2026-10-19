@@ -444,7 +444,15 @@ jobs:
         run: |
           set -euo pipefail
           cd cmd/orchicon-desktop
-          wails build -clean -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION}"
+          # THE TAGS ARE EXPLICIT HERE BECAUSE THE ABI IS THIS ARTIFACT'S DECISION, NOT
+          # THE HOST'S. nfpm.yaml declares `depends: libwebkit2gtk-4.0-37`, so the .deb
+          # must LINK 4.0 — i.e. it must NOT carry the `webkit2_41` tag. That tag is
+          # therefore deliberately absent from wails.json (which every `wails build`
+          # inherits) and named here, where the compatibility promise is made: this job
+          # runs on ubuntu-22.04 and installs libwebkit2gtk-4.0-dev, which is exactly the
+          # ABI the package promises its users.
+          wails build -clean -tags orchicon_desktop,production \
+            -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION}"
 
       # The .deb is where AC3's DECLARATION lives (deploy/desktop/nfpm.yaml:
       # depends on libwebkit2gtk-4.0-37), and its /usr/bin entry point is the

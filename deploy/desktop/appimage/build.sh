@@ -56,7 +56,13 @@ fi
 # left to the system, because every desktop that can run a GTK app already has
 # them; bundling the whole GTK stack is what appimage-builder exists for, and
 # hand-rolling it is how an AppImage ends up subtly broken.
-for so in libwebkit2gtk-4.0.so.37 libjavascriptcoregtk-4.0.so.18 libwebkit2gtk-4.1.so.37 \
+# THE SONAMEs ARE NOT SYMMETRIC, and that is not a typo to normalise away:
+#   WebKitGTK 4.0 -> libwebkit2gtk-4.0.so.37 + libjavascriptcoregtk-4.0.so.18
+#   WebKitGTK 4.1 -> libwebkit2gtk-4.1.so.0  + libjavascriptcoregtk-4.1.so.0
+# This list used to ask for `libwebkit2gtk-4.1.so.37`, which no distribution ships,
+# so on a 4.1-only host nothing matched, the copy loop was a no-op, and the build
+# died on the "no libwebkit2gtk found to bundle" guard below.
+for so in libwebkit2gtk-4.0.so.37 libjavascriptcoregtk-4.0.so.18 libwebkit2gtk-4.1.so.0 \
           libjavascriptcoregtk-4.1.so.0; do
   found="$(ldconfig -p 2>/dev/null | awk -v n="$so" '$1 == n { print $NF; exit }')"
   if [ -n "${found:-}" ]; then

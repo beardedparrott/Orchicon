@@ -31,8 +31,8 @@ signing failure cannot stop the CLI binaries from publishing.
 |---|---|
 | `linux/orchicon-desktop` | The **AC3 detection point**. A POSIX-sh launcher: WebKitGTK is a dynamic-link dependency, so the loader fails before `main()` — the check must live in a script, not the binary. Installed as `/usr/bin/orchicon-desktop`, execs `/usr/lib/orchicon/orchicon-desktop`. |
 | `linux/orchicon-desktop.desktop` | Menu entry (`Exec`/`TryExec` = the launcher). |
-| `nfpm.yaml` | The **AC3 declaration**. `depends: libwebkit2gtk-4.0-37, libgtk-3-0`. |
-| `appimage/AppRun`, `appimage/build.sh` | AppImage for distros that dropped WebKitGTK 4.0 (Ubuntu 24.04+, Fedora 40+). Bundles `libwebkit2gtk` + `libjavascriptcoregtk`. |
+| `nfpm.yaml` | The **AC3 declaration**. `depends: libwebkit2gtk-4.0-37, libgtk-3-0`. The ABI named here must be the ABI the package's binary LINKS — so the job that builds it passes `-tags orchicon_desktop,production` and NOT `webkit2_41` (`cmd/orchicon/webkit_abi_consistency_test.go` fails the pair if they diverge). |
+| `appimage/AppRun`, `appimage/build.sh` | AppImage for distros that dropped WebKitGTK 4.0 (Ubuntu 24.04+, Fedora 40+). Bundles `libwebkit2gtk` + `libjavascriptcoregtk`. **The two ABI families have different SONAMEs and they are not symmetric** — 4.0 is `libwebkit2gtk-4.0.so.37` + `libjavascriptcoregtk-4.0.so.18`; 4.1 is `libwebkit2gtk-4.1.so.0` + `libjavascriptcoregtk-4.1.so.0`. Writing `4.1.so.37` compiles, ships, and silently matches nothing. |
 | `macos/entitlements.plist` | Hardened runtime + the JIT entitlements JavaScriptCore requires. No sandbox (loopback + child process). |
 | `macos/sign-and-notarize.sh` | codesign → `notarytool submit --wait` → `stapler staple` → `spctl -a` **assertion**. Fails the job rather than shipping an unsigned app. |
 | `windows/README-WINDOWS.txt` | Ships in the portable zip: what to do if WebView2 is missing, and the Evergreen URL. |

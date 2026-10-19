@@ -123,29 +123,29 @@ func TestWailsJSONTagsMatchTheEntryPointTag(t *testing.T) {
 	}
 }
 
-// TestWailsJSONCarriesTheReleaseTags — wails.json must supply the SAME tags the
-// release builds with, not merely the project's own.
+// TestWailsJSONCarriesTheProjectTags — wails.json supplies the PROJECT's identity
+// and release flavour, and must NOT supply the WebKitGTK ABI.
 //
-// THE BUG THIS PINS, from the operator's own terminal:
+// THIS TEST WAS WRONG WHEN FIRST WRITTEN, and the correction is the point. It used
+// to require `webkit2_41` here, on the reasoning that the shell's asset handler
+// answered with a 307 and WebKitGTK 4.0's backend refuses any status but 200
+// (`webkit2_legacy.go:40`). BOTH halves of that reasoning have since moved:
 //
-//	unable to finish request: StatusCodes not supported: 307 - Temporary Redirect
+//  1. the handler no longer redirects at all — it serves a 200 bootstrap document
+//     that navigates itself (internal/desktop BootstrapHTML), so the 4.0 backend is
+//     perfectly able to answer it; and
+//  2. the ABI is a property of the BUILD HOST, not of the project. Wails APPENDS
+//     the tags from this file to any CLI tags (`compiledTags := append(projectTags,
+//     userTags...)`), so it can add but never SUBTRACT — meaning a tag here applies
+//     to EVERY `wails build`, including the .deb job on ubuntu-22.04, which has
+//     libwebkit2gtk-4.0-dev and NOT 4.1. Requiring it here made that job
+//     impossible to build while deploy/desktop/nfpm.yaml went on declaring a 4.0
+//     dependency (see cmd/orchicon/webkit_abi_consistency_test.go).
 //
-// The shell's asset handler answers every request with a 307 to its own origin,
-// which is a legitimate design and works — but ONLY on Wails' modern asset
-// backend. Wails selects the WebKitGTK ABI by BUILD TAG, and the legacy 4.0
-// backend refuses any status but 200 (webkit2_legacy.go:40 `if code !=
-// http.StatusOK` → "StatusCodes not supported"). With `build:tags` naming only
-// `orchicon_desktop`, a bare `wails build` produced a binary linked against
-// libwebkit2gtk-4.0 — verified with ldd on the artifact — so the shell loaded
-// and then could not answer a single request.
-//
-// The three PACKAGING jobs (desktop-linux/.deb + AppImage, desktop-macos,
-// desktop-windows) pass no `-tags` of their own — they inherit this file. So a
-// wails.json missing `webkit2_41` does not merely break the developer's local
-// build: it ships installers with the same defect. Wails MERGES these with any
-// CLI tags (cmd/wails/build.go: `compiledTags := append(projectTags, userTags...)`),
-// so stating them here is safe alongside a job that also passes them.
-func TestWailsJSONCarriesTheReleaseTags(t *testing.T) {
+// So: `orchicon_desktop` (the project's own tag — without it the build excludes
+// every file) and `production` (the release flavour). The ABI is detected by
+// `make desktop-build` and named explicitly by the packaging job.
+func TestWailsJSONCarriesTheProjectTags(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "orchicon-desktop", "wails.json"))
 	if err != nil {
 		t.Fatalf("read wails.json: %v", err)
@@ -160,16 +160,24 @@ func TestWailsJSONCarriesTheReleaseTags(t *testing.T) {
 	for _, tag := range strings.Split(cfg.BuildTags, ",") {
 		have[strings.TrimSpace(tag)] = true
 	}
-	// production: the release flavour (no dev tooling / dev server path).
-	// webkit2_41:  the 4.1 ABI, whose asset backend can return a redirect.
-	for _, want := range []string{"orchicon_desktop", "production", "webkit2_41"} {
+	for _, want := range []string{"orchicon_desktop", "production"} {
 		if !have[want] {
 			t.Errorf("wails.json build:tags = %q is missing %q.\n"+
-				"Every `wails build` inherits this file — including the three packaging jobs that pass no\n"+
-				"-tags of their own — so a missing %q either fails the build outright (a missing\n"+
-				"orchicon_desktop) or ships installers with the legacy WebKitGTK 4.0 backend, which\n"+
-				"cannot answer the shell's 307 (\"StatusCodes not supported: 307\").",
-				cfg.BuildTags, want, want)
+				"Every `wails build` inherits this file: without orchicon_desktop the build excludes "+
+				"every file in cmd/orchicon-desktop (\"build constraints exclude all Go files\"), and "+
+				"without production the shell ships the development flavour.",
+				cfg.BuildTags, want)
+		}
+	}
+	// THE ABI MUST NOT BE HERE — see this test's header. The pairing with the
+	// package's declared dependency is asserted in webkit_abi_consistency_test.go.
+	for _, tag := range []string{"webkit2_41", "webkit2_40", "webkit2_36"} {
+		if have[tag] {
+			t.Errorf("wails.json build:tags = %q pins the WebKitGTK ABI.\n"+
+				"EVERY `wails build` inherits this file and Wails appends CLI tags, so it cannot "+
+				"subtract one: the .deb job on ubuntu-22.04 (libwebkit2gtk-4.0-dev) would then demand "+
+				"webkit2gtk-4.1's pkg-config file, which that image does not have. Detect the ABI in "+
+				"`make desktop-build` and state it explicitly in the packaging job.", cfg.BuildTags)
 		}
 	}
 }

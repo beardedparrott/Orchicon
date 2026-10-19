@@ -34,7 +34,7 @@ Consequences, all deliberate:
 | **Chrome** | **No native menu bar, no in-webview header — the SPA's own top bar IS the app chrome.** The shell draws zero pixels above the content, because a second header is the likeliest drift from the web app. |
 | **macOS traffic lights** | The **standard native title bar** is retained (`mac.TitleBarDefault()`). Content starts below it, so nothing sits under the traffic lights and nothing can clip the SPA's top bar. A hidden-inset bar would require shell-drawn chrome — rejected for the same reason as above. |
 | **Appearance** | The window **frame follows the OS** (`mac.DefaultAppearance`); the shell sets no colour, class or `data-theme`. The **SPA's theme store is the sole authority for the content area** (default dark = Teal Depths). |
-| **Navigation** | The webview is loaded at the shell's own origin (the asset handler 307s there and serves nothing else). The shell intercepts no navigation: a link the SPA opens with `target="_blank"` is left to the platform webview, exactly as in a browser. |
+| **Navigation** | The webview is loaded at the shell's own origin. The Wails asset handler is asked for the first document on Wails' own scheme, and it answers with a tiny **200 bootstrap page that navigates itself** (`internal/desktop.BootstrapHTML`) — NOT a 3xx: WebKit's custom-scheme handler cannot turn a redirect into a navigation, so it renders the redirect's response body, which is how the app once opened as a white page containing the words "Temporary Redirect". The shell intercepts no navigation: a link the SPA opens with `target="_blank"` is left to the platform webview, exactly as in a browser. |
 
 ## The desktop signal (one flag, one helper)
 

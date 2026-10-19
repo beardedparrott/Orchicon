@@ -28,15 +28,24 @@ webkit_present() {
   # host that has a working webview (a container without ldconfig, say) would be a
   # worse bug than the one this check exists to report.
   command -v ldconfig >/dev/null 2>&1 || return 0
-  ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.[01]\.so\.37'
+  # THE TWO ABI FAMILIES HAVE DIFFERENT SONAMEs, AND THEY ALWAYS HAVE:
+  #   WebKitGTK 4.0  ->  libwebkit2gtk-4.0.so.37   (Ubuntu <= 23.10, Debian 12)
+  #   WebKitGTK 4.1  ->  libwebkit2gtk-4.1.so.0    (Ubuntu >= 24.04, Fedora 40+, Arch)
+  # The old pattern `libwebkit2gtk-4\.[01]\.so\.37` looked like it accepted both and
+  # could never match 4.1 — `4.1.so.37` does not exist anywhere. On a 4.1-only distro
+  # this launcher therefore reported "WebKitGTK not installed" for a system that had
+  # it, and refused to start the app.
+  ldconfig -p 2>/dev/null | grep -qE 'libwebkit2gtk-4\.0\.so\.37|libwebkit2gtk-4\.1\.so\.0'
 }
 
 if ! webkit_present; then
   cat >&2 <<'MSG'
 Orchicon needs WebKitGTK, which is not installed on this system.
-  missing: libwebkit2gtk-4.0.so.37 (or the 4.1 series, libwebkit2gtk-4.1.so.37)
-  fix:     sudo apt install libwebkit2gtk-4.0-37
-           (Fedora: sudo dnf install webkit2gtk4.0   Arch: sudo pacman -S webkit2gtk)
+  missing: libwebkit2gtk-4.0.so.37  (Ubuntu <= 23.10 / Debian 12)
+           libwebkit2gtk-4.1.so.0   (Ubuntu >= 24.04 / Fedora 40+ / Arch)
+  fix:     sudo apt install libwebkit2gtk-4.0-37      (older Ubuntu/Debian)
+           sudo apt install libwebkit2gtk-4.1-0       (Ubuntu >= 24.04)
+           (Fedora: sudo dnf install webkit2gtk4.1   Arch: sudo pacman -S webkit2gtk)
            Or use the AppImage instead, which bundles it:
            https://github.com/beardedparrott/Orchicon/releases
 MSG

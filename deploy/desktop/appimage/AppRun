@@ -13,20 +13,26 @@ set -eu
 APPDIR="$(dirname "$(readlink -f "$0")")"
 BUNDLED="$APPDIR/usr/lib/orchicon"
 
+# THE TWO ABI FAMILIES HAVE DIFFERENT SONAMEs:
+#   WebKitGTK 4.0 -> libwebkit2gtk-4.0.so.37   4.1 -> libwebkit2gtk-4.1.so.0
+# This file used to test `libwebkit2gtk-4.1.so.37`, which does not exist in any
+# distribution, so an AppImage built on a 4.1-only host looked broken.
 webkit_present() {
-  if [ -e "$BUNDLED/libwebkit2gtk-4.0.so.37" ] || [ -e "$BUNDLED/libwebkit2gtk-4.1.so.37" ]; then
+  if [ -e "$BUNDLED/libwebkit2gtk-4.0.so.37" ] || [ -e "$BUNDLED/libwebkit2gtk-4.1.so.0" ]; then
     return 0
   fi
   command -v ldconfig >/dev/null 2>&1 || return 0
-  ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.[01]\.so\.37'
+  ldconfig -p 2>/dev/null | grep -qE 'libwebkit2gtk-4\.0\.so\.37|libwebkit2gtk-4\.1\.so\.0'
 }
 
 if ! webkit_present; then
   cat >&2 <<'MSG'
 Orchicon needs WebKitGTK, and this AppImage does not carry a bundled copy.
-  missing: libwebkit2gtk-4.0.so.37 (or libwebkit2gtk-4.1.so.37)
-  fix:     sudo apt install libwebkit2gtk-4.0-37
-           (Fedora: sudo dnf install webkit2gtk4.0   Arch: sudo pacman -S webkit2gtk)
+  missing: libwebkit2gtk-4.0.so.37  (Ubuntu <= 23.10 / Debian 12)
+           libwebkit2gtk-4.1.so.0   (Ubuntu >= 24.04 / Fedora 40+ / Arch)
+  fix:     sudo apt install libwebkit2gtk-4.0-37      (older Ubuntu/Debian)
+           sudo apt install libwebkit2gtk-4.1-0       (Ubuntu >= 24.04)
+           (Fedora: sudo dnf install webkit2gtk4.1   Arch: sudo pacman -S webkit2gtk)
   This AppImage was built without its bundled libraries — please report it.
 MSG
   exit 1
