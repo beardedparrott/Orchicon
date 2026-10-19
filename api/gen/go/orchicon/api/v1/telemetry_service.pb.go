@@ -1149,11 +1149,18 @@ func (x *TelemetryReportTotals) GetFailureRate() float64 {
 }
 
 type GetTelemetryReportResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Rows          []*TelemetryReportRow  `protobuf:"bytes,1,rep,name=rows,proto3" json:"rows,omitempty"`
-	Totals        *TelemetryReportTotals `protobuf:"bytes,2,opt,name=totals,proto3" json:"totals,omitempty"`
-	WindowStart   *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=window_start,json=windowStart,proto3" json:"window_start,omitempty"`
-	WindowEnd     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=window_end,json=windowEnd,proto3" json:"window_end,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Rows        []*TelemetryReportRow  `protobuf:"bytes,1,rep,name=rows,proto3" json:"rows,omitempty"`
+	Totals      *TelemetryReportTotals `protobuf:"bytes,2,opt,name=totals,proto3" json:"totals,omitempty"`
+	WindowStart *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=window_start,json=windowStart,proto3" json:"window_start,omitempty"`
+	WindowEnd   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=window_end,json=windowEnd,proto3" json:"window_end,omitempty"`
+	// outcomes and models answer the questions a cost/window table cannot: how
+	// much work actually FINISHED, how, and which models did it. They are
+	// separate dimensions, not more columns on a project row — a project row is
+	// a cost bucket and would double-count if it also carried tenant-wide
+	// outcome totals.
+	Outcomes      *TelemetryReportOutcomes `protobuf:"bytes,5,opt,name=outcomes,proto3" json:"outcomes,omitempty"`
+	Models        []*TelemetryReportModel  `protobuf:"bytes,6,rep,name=models,proto3" json:"models,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1214,6 +1221,231 @@ func (x *GetTelemetryReportResponse) GetWindowEnd() *timestamppb.Timestamp {
 		return x.WindowEnd
 	}
 	return nil
+}
+
+func (x *GetTelemetryReportResponse) GetOutcomes() *TelemetryReportOutcomes {
+	if x != nil {
+		return x.Outcomes
+	}
+	return nil
+}
+
+func (x *GetTelemetryReportResponse) GetModels() []*TelemetryReportModel {
+	if x != nil {
+		return x.Models
+	}
+	return nil
+}
+
+// TelemetryReportOutcomes is the high-level "what happened to the work"
+// roll-up. Both halves are counted over work that reached a TERMINAL state
+// inside the window — the question an operator asks of a dashboard is "what
+// finished in the last day, and how did it end", not "what was created".
+// Open work is reported separately so the totals are not silently a lie:
+// work_* and the workflow_* counters do not sum to each other, and neither
+// pair sums to a throughput number on its own.
+type TelemetryReportOutcomes struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Work items whose status is terminal, by outcome. work_open is everything
+	// else (pending/ready/assigned/running/blocked/…): in flight, not a unit.
+	WorkSucceeded int32 `protobuf:"varint,1,opt,name=work_succeeded,json=workSucceeded,proto3" json:"work_succeeded,omitempty"`
+	WorkCancelled int32 `protobuf:"varint,2,opt,name=work_cancelled,json=workCancelled,proto3" json:"work_cancelled,omitempty"`
+	WorkFailed    int32 `protobuf:"varint,3,opt,name=work_failed,json=workFailed,proto3" json:"work_failed,omitempty"`
+	WorkOpen      int32 `protobuf:"varint,4,opt,name=work_open,json=workOpen,proto3" json:"work_open,omitempty"`
+	// Workflow runs. workflow_runs.status lives in
+	// {'pending','running','completed','failed','aborted'} — the success state
+	// is 'completed', NOT 'succeeded', and 'aborted' is a distinct terminal
+	// outcome that must not be folded into failed.
+	WorkflowsCompleted int32 `protobuf:"varint,5,opt,name=workflows_completed,json=workflowsCompleted,proto3" json:"workflows_completed,omitempty"`
+	WorkflowsFailed    int32 `protobuf:"varint,6,opt,name=workflows_failed,json=workflowsFailed,proto3" json:"workflows_failed,omitempty"`
+	WorkflowsAborted   int32 `protobuf:"varint,7,opt,name=workflows_aborted,json=workflowsAborted,proto3" json:"workflows_aborted,omitempty"`
+	WorkflowsRunning   int32 `protobuf:"varint,8,opt,name=workflows_running,json=workflowsRunning,proto3" json:"workflows_running,omitempty"`
+	// work_skipped is terminal but neither a success nor a failure, so it gets
+	// its own counter: folding it into work_succeeded would report work that
+	// never ran as completed, and folding it into work_open would report
+	// finished work as in flight.
+	WorkSkipped   int32 `protobuf:"varint,9,opt,name=work_skipped,json=workSkipped,proto3" json:"work_skipped,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TelemetryReportOutcomes) Reset() {
+	*x = TelemetryReportOutcomes{}
+	mi := &file_orchicon_api_v1_telemetry_service_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TelemetryReportOutcomes) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TelemetryReportOutcomes) ProtoMessage() {}
+
+func (x *TelemetryReportOutcomes) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_telemetry_service_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TelemetryReportOutcomes.ProtoReflect.Descriptor instead.
+func (*TelemetryReportOutcomes) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_telemetry_service_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *TelemetryReportOutcomes) GetWorkSucceeded() int32 {
+	if x != nil {
+		return x.WorkSucceeded
+	}
+	return 0
+}
+
+func (x *TelemetryReportOutcomes) GetWorkCancelled() int32 {
+	if x != nil {
+		return x.WorkCancelled
+	}
+	return 0
+}
+
+func (x *TelemetryReportOutcomes) GetWorkFailed() int32 {
+	if x != nil {
+		return x.WorkFailed
+	}
+	return 0
+}
+
+func (x *TelemetryReportOutcomes) GetWorkOpen() int32 {
+	if x != nil {
+		return x.WorkOpen
+	}
+	return 0
+}
+
+func (x *TelemetryReportOutcomes) GetWorkflowsCompleted() int32 {
+	if x != nil {
+		return x.WorkflowsCompleted
+	}
+	return 0
+}
+
+func (x *TelemetryReportOutcomes) GetWorkflowsFailed() int32 {
+	if x != nil {
+		return x.WorkflowsFailed
+	}
+	return 0
+}
+
+func (x *TelemetryReportOutcomes) GetWorkflowsAborted() int32 {
+	if x != nil {
+		return x.WorkflowsAborted
+	}
+	return 0
+}
+
+func (x *TelemetryReportOutcomes) GetWorkflowsRunning() int32 {
+	if x != nil {
+		return x.WorkflowsRunning
+	}
+	return 0
+}
+
+func (x *TelemetryReportOutcomes) GetWorkSkipped() int32 {
+	if x != nil {
+		return x.WorkSkipped
+	}
+	return 0
+}
+
+// TelemetryReportModel is one model's share of the window: the "top models"
+// leaderboard and the per-model statistics beneath it, ordered by cost.
+type TelemetryReportModel struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Model           string                 `protobuf:"bytes,1,opt,name=model,proto3" json:"model,omitempty"`
+	TotalTokens     int64                  `protobuf:"varint,2,opt,name=total_tokens,json=totalTokens,proto3" json:"total_tokens,omitempty"`
+	CostUsd         float64                `protobuf:"fixed64,3,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
+	Executions      int32                  `protobuf:"varint,4,opt,name=executions,proto3" json:"executions,omitempty"`
+	PromptTokens    int64                  `protobuf:"varint,5,opt,name=prompt_tokens,json=promptTokens,proto3" json:"prompt_tokens,omitempty"`
+	CacheReadTokens int64                  `protobuf:"varint,6,opt,name=cache_read_tokens,json=cacheReadTokens,proto3" json:"cache_read_tokens,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *TelemetryReportModel) Reset() {
+	*x = TelemetryReportModel{}
+	mi := &file_orchicon_api_v1_telemetry_service_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TelemetryReportModel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TelemetryReportModel) ProtoMessage() {}
+
+func (x *TelemetryReportModel) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_telemetry_service_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TelemetryReportModel.ProtoReflect.Descriptor instead.
+func (*TelemetryReportModel) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_telemetry_service_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *TelemetryReportModel) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *TelemetryReportModel) GetTotalTokens() int64 {
+	if x != nil {
+		return x.TotalTokens
+	}
+	return 0
+}
+
+func (x *TelemetryReportModel) GetCostUsd() float64 {
+	if x != nil {
+		return x.CostUsd
+	}
+	return 0
+}
+
+func (x *TelemetryReportModel) GetExecutions() int32 {
+	if x != nil {
+		return x.Executions
+	}
+	return 0
+}
+
+func (x *TelemetryReportModel) GetPromptTokens() int64 {
+	if x != nil {
+		return x.PromptTokens
+	}
+	return 0
+}
+
+func (x *TelemetryReportModel) GetCacheReadTokens() int64 {
+	if x != nil {
+		return x.CacheReadTokens
+	}
+	return 0
 }
 
 var File_orchicon_api_v1_telemetry_service_proto protoreflect.FileDescriptor
@@ -1314,13 +1546,35 @@ const file_orchicon_api_v1_telemetry_service_proto_rawDesc = "" +
 	"failedRuns\x12*\n" +
 	"\x11duration_ms_total\x18\x06 \x01(\x03R\x0fdurationMsTotal\x12&\n" +
 	"\x0fduration_ms_avg\x18\a \x01(\x03R\rdurationMsAvg\x12!\n" +
-	"\ffailure_rate\x18\b \x01(\x01R\vfailureRate\"\x8f\x02\n" +
+	"\ffailure_rate\x18\b \x01(\x01R\vfailureRate\"\x94\x03\n" +
 	"\x1aGetTelemetryReportResponse\x127\n" +
 	"\x04rows\x18\x01 \x03(\v2#.orchicon.api.v1.TelemetryReportRowR\x04rows\x12>\n" +
 	"\x06totals\x18\x02 \x01(\v2&.orchicon.api.v1.TelemetryReportTotalsR\x06totals\x12=\n" +
 	"\fwindow_start\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\vwindowStart\x129\n" +
 	"\n" +
-	"window_end\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\twindowEnd*\x92\x01\n" +
+	"window_end\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\twindowEnd\x12D\n" +
+	"\boutcomes\x18\x05 \x01(\v2(.orchicon.api.v1.TelemetryReportOutcomesR\boutcomes\x12=\n" +
+	"\x06models\x18\x06 \x03(\v2%.orchicon.api.v1.TelemetryReportModelR\x06models\"\xfe\x02\n" +
+	"\x17TelemetryReportOutcomes\x12%\n" +
+	"\x0ework_succeeded\x18\x01 \x01(\x05R\rworkSucceeded\x12%\n" +
+	"\x0ework_cancelled\x18\x02 \x01(\x05R\rworkCancelled\x12\x1f\n" +
+	"\vwork_failed\x18\x03 \x01(\x05R\n" +
+	"workFailed\x12\x1b\n" +
+	"\twork_open\x18\x04 \x01(\x05R\bworkOpen\x12/\n" +
+	"\x13workflows_completed\x18\x05 \x01(\x05R\x12workflowsCompleted\x12)\n" +
+	"\x10workflows_failed\x18\x06 \x01(\x05R\x0fworkflowsFailed\x12+\n" +
+	"\x11workflows_aborted\x18\a \x01(\x05R\x10workflowsAborted\x12+\n" +
+	"\x11workflows_running\x18\b \x01(\x05R\x10workflowsRunning\x12!\n" +
+	"\fwork_skipped\x18\t \x01(\x05R\vworkSkipped\"\xdb\x01\n" +
+	"\x14TelemetryReportModel\x12\x14\n" +
+	"\x05model\x18\x01 \x01(\tR\x05model\x12!\n" +
+	"\ftotal_tokens\x18\x02 \x01(\x03R\vtotalTokens\x12\x19\n" +
+	"\bcost_usd\x18\x03 \x01(\x01R\acostUsd\x12\x1e\n" +
+	"\n" +
+	"executions\x18\x04 \x01(\x05R\n" +
+	"executions\x12#\n" +
+	"\rprompt_tokens\x18\x05 \x01(\x03R\fpromptTokens\x12*\n" +
+	"\x11cache_read_tokens\x18\x06 \x01(\x03R\x0fcacheReadTokens*\x92\x01\n" +
 	"\x16TelemetryReportGroupBy\x12)\n" +
 	"%TELEMETRY_REPORT_GROUP_BY_UNSPECIFIED\x10\x00\x12%\n" +
 	"!TELEMETRY_REPORT_GROUP_BY_PROJECT\x10\x01\x12&\n" +
@@ -1347,7 +1601,7 @@ func file_orchicon_api_v1_telemetry_service_proto_rawDescGZIP() []byte {
 }
 
 var file_orchicon_api_v1_telemetry_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_orchicon_api_v1_telemetry_service_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_orchicon_api_v1_telemetry_service_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_orchicon_api_v1_telemetry_service_proto_goTypes = []any{
 	(TelemetryReportGroupBy)(0),        // 0: orchicon.api.v1.TelemetryReportGroupBy
 	(*QueryTracesRequest)(nil),         // 1: orchicon.api.v1.QueryTracesRequest
@@ -1365,53 +1619,57 @@ var file_orchicon_api_v1_telemetry_service_proto_goTypes = []any{
 	(*TelemetryReportRow)(nil),         // 13: orchicon.api.v1.TelemetryReportRow
 	(*TelemetryReportTotals)(nil),      // 14: orchicon.api.v1.TelemetryReportTotals
 	(*GetTelemetryReportResponse)(nil), // 15: orchicon.api.v1.GetTelemetryReportResponse
-	(*TelemetryQuery)(nil),             // 16: orchicon.api.v1.TelemetryQuery
-	(*Trace)(nil),                      // 17: orchicon.api.v1.Trace
-	(*MetricSeries)(nil),               // 18: orchicon.api.v1.MetricSeries
-	(*LogRecord)(nil),                  // 19: orchicon.api.v1.LogRecord
-	(*MetricPoint)(nil),                // 20: orchicon.api.v1.MetricPoint
-	(*UsageEvent)(nil),                 // 21: orchicon.api.v1.UsageEvent
-	(*timestamppb.Timestamp)(nil),      // 22: google.protobuf.Timestamp
+	(*TelemetryReportOutcomes)(nil),    // 16: orchicon.api.v1.TelemetryReportOutcomes
+	(*TelemetryReportModel)(nil),       // 17: orchicon.api.v1.TelemetryReportModel
+	(*TelemetryQuery)(nil),             // 18: orchicon.api.v1.TelemetryQuery
+	(*Trace)(nil),                      // 19: orchicon.api.v1.Trace
+	(*MetricSeries)(nil),               // 20: orchicon.api.v1.MetricSeries
+	(*LogRecord)(nil),                  // 21: orchicon.api.v1.LogRecord
+	(*MetricPoint)(nil),                // 22: orchicon.api.v1.MetricPoint
+	(*UsageEvent)(nil),                 // 23: orchicon.api.v1.UsageEvent
+	(*timestamppb.Timestamp)(nil),      // 24: google.protobuf.Timestamp
 }
 var file_orchicon_api_v1_telemetry_service_proto_depIdxs = []int32{
-	16, // 0: orchicon.api.v1.QueryTracesRequest.query:type_name -> orchicon.api.v1.TelemetryQuery
-	17, // 1: orchicon.api.v1.QueryTracesResponse.traces:type_name -> orchicon.api.v1.Trace
-	16, // 2: orchicon.api.v1.QueryMetricsRequest.query:type_name -> orchicon.api.v1.TelemetryQuery
-	18, // 3: orchicon.api.v1.QueryMetricsResponse.series:type_name -> orchicon.api.v1.MetricSeries
-	16, // 4: orchicon.api.v1.QueryLogsRequest.query:type_name -> orchicon.api.v1.TelemetryQuery
-	19, // 5: orchicon.api.v1.QueryLogsResponse.logs:type_name -> orchicon.api.v1.LogRecord
-	20, // 6: orchicon.api.v1.StreamTelemetryResponse.metric:type_name -> orchicon.api.v1.MetricPoint
-	21, // 7: orchicon.api.v1.StreamTelemetryResponse.usage:type_name -> orchicon.api.v1.UsageEvent
-	22, // 8: orchicon.api.v1.GetDashboardRequest.start:type_name -> google.protobuf.Timestamp
-	22, // 9: orchicon.api.v1.GetDashboardRequest.end:type_name -> google.protobuf.Timestamp
-	18, // 10: orchicon.api.v1.GetDashboardResponse.panels:type_name -> orchicon.api.v1.MetricSeries
+	18, // 0: orchicon.api.v1.QueryTracesRequest.query:type_name -> orchicon.api.v1.TelemetryQuery
+	19, // 1: orchicon.api.v1.QueryTracesResponse.traces:type_name -> orchicon.api.v1.Trace
+	18, // 2: orchicon.api.v1.QueryMetricsRequest.query:type_name -> orchicon.api.v1.TelemetryQuery
+	20, // 3: orchicon.api.v1.QueryMetricsResponse.series:type_name -> orchicon.api.v1.MetricSeries
+	18, // 4: orchicon.api.v1.QueryLogsRequest.query:type_name -> orchicon.api.v1.TelemetryQuery
+	21, // 5: orchicon.api.v1.QueryLogsResponse.logs:type_name -> orchicon.api.v1.LogRecord
+	22, // 6: orchicon.api.v1.StreamTelemetryResponse.metric:type_name -> orchicon.api.v1.MetricPoint
+	23, // 7: orchicon.api.v1.StreamTelemetryResponse.usage:type_name -> orchicon.api.v1.UsageEvent
+	24, // 8: orchicon.api.v1.GetDashboardRequest.start:type_name -> google.protobuf.Timestamp
+	24, // 9: orchicon.api.v1.GetDashboardRequest.end:type_name -> google.protobuf.Timestamp
+	20, // 10: orchicon.api.v1.GetDashboardResponse.panels:type_name -> orchicon.api.v1.MetricSeries
 	11, // 11: orchicon.api.v1.GetDashboardResponse.summary:type_name -> orchicon.api.v1.DashboardSummary
-	22, // 12: orchicon.api.v1.DashboardSummary.window_start:type_name -> google.protobuf.Timestamp
-	22, // 13: orchicon.api.v1.DashboardSummary.window_end:type_name -> google.protobuf.Timestamp
+	24, // 12: orchicon.api.v1.DashboardSummary.window_start:type_name -> google.protobuf.Timestamp
+	24, // 13: orchicon.api.v1.DashboardSummary.window_end:type_name -> google.protobuf.Timestamp
 	0,  // 14: orchicon.api.v1.GetTelemetryReportRequest.group_by:type_name -> orchicon.api.v1.TelemetryReportGroupBy
-	22, // 15: orchicon.api.v1.GetTelemetryReportRequest.start:type_name -> google.protobuf.Timestamp
-	22, // 16: orchicon.api.v1.GetTelemetryReportRequest.end:type_name -> google.protobuf.Timestamp
+	24, // 15: orchicon.api.v1.GetTelemetryReportRequest.start:type_name -> google.protobuf.Timestamp
+	24, // 16: orchicon.api.v1.GetTelemetryReportRequest.end:type_name -> google.protobuf.Timestamp
 	13, // 17: orchicon.api.v1.GetTelemetryReportResponse.rows:type_name -> orchicon.api.v1.TelemetryReportRow
 	14, // 18: orchicon.api.v1.GetTelemetryReportResponse.totals:type_name -> orchicon.api.v1.TelemetryReportTotals
-	22, // 19: orchicon.api.v1.GetTelemetryReportResponse.window_start:type_name -> google.protobuf.Timestamp
-	22, // 20: orchicon.api.v1.GetTelemetryReportResponse.window_end:type_name -> google.protobuf.Timestamp
-	1,  // 21: orchicon.api.v1.TelemetryService.QueryTraces:input_type -> orchicon.api.v1.QueryTracesRequest
-	3,  // 22: orchicon.api.v1.TelemetryService.QueryMetrics:input_type -> orchicon.api.v1.QueryMetricsRequest
-	5,  // 23: orchicon.api.v1.TelemetryService.QueryLogs:input_type -> orchicon.api.v1.QueryLogsRequest
-	7,  // 24: orchicon.api.v1.TelemetryService.StreamTelemetry:input_type -> orchicon.api.v1.StreamTelemetryRequest
-	9,  // 25: orchicon.api.v1.TelemetryService.GetDashboard:input_type -> orchicon.api.v1.GetDashboardRequest
-	12, // 26: orchicon.api.v1.TelemetryService.GetTelemetryReport:input_type -> orchicon.api.v1.GetTelemetryReportRequest
-	2,  // 27: orchicon.api.v1.TelemetryService.QueryTraces:output_type -> orchicon.api.v1.QueryTracesResponse
-	4,  // 28: orchicon.api.v1.TelemetryService.QueryMetrics:output_type -> orchicon.api.v1.QueryMetricsResponse
-	6,  // 29: orchicon.api.v1.TelemetryService.QueryLogs:output_type -> orchicon.api.v1.QueryLogsResponse
-	8,  // 30: orchicon.api.v1.TelemetryService.StreamTelemetry:output_type -> orchicon.api.v1.StreamTelemetryResponse
-	10, // 31: orchicon.api.v1.TelemetryService.GetDashboard:output_type -> orchicon.api.v1.GetDashboardResponse
-	15, // 32: orchicon.api.v1.TelemetryService.GetTelemetryReport:output_type -> orchicon.api.v1.GetTelemetryReportResponse
-	27, // [27:33] is the sub-list for method output_type
-	21, // [21:27] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	24, // 19: orchicon.api.v1.GetTelemetryReportResponse.window_start:type_name -> google.protobuf.Timestamp
+	24, // 20: orchicon.api.v1.GetTelemetryReportResponse.window_end:type_name -> google.protobuf.Timestamp
+	16, // 21: orchicon.api.v1.GetTelemetryReportResponse.outcomes:type_name -> orchicon.api.v1.TelemetryReportOutcomes
+	17, // 22: orchicon.api.v1.GetTelemetryReportResponse.models:type_name -> orchicon.api.v1.TelemetryReportModel
+	1,  // 23: orchicon.api.v1.TelemetryService.QueryTraces:input_type -> orchicon.api.v1.QueryTracesRequest
+	3,  // 24: orchicon.api.v1.TelemetryService.QueryMetrics:input_type -> orchicon.api.v1.QueryMetricsRequest
+	5,  // 25: orchicon.api.v1.TelemetryService.QueryLogs:input_type -> orchicon.api.v1.QueryLogsRequest
+	7,  // 26: orchicon.api.v1.TelemetryService.StreamTelemetry:input_type -> orchicon.api.v1.StreamTelemetryRequest
+	9,  // 27: orchicon.api.v1.TelemetryService.GetDashboard:input_type -> orchicon.api.v1.GetDashboardRequest
+	12, // 28: orchicon.api.v1.TelemetryService.GetTelemetryReport:input_type -> orchicon.api.v1.GetTelemetryReportRequest
+	2,  // 29: orchicon.api.v1.TelemetryService.QueryTraces:output_type -> orchicon.api.v1.QueryTracesResponse
+	4,  // 30: orchicon.api.v1.TelemetryService.QueryMetrics:output_type -> orchicon.api.v1.QueryMetricsResponse
+	6,  // 31: orchicon.api.v1.TelemetryService.QueryLogs:output_type -> orchicon.api.v1.QueryLogsResponse
+	8,  // 32: orchicon.api.v1.TelemetryService.StreamTelemetry:output_type -> orchicon.api.v1.StreamTelemetryResponse
+	10, // 33: orchicon.api.v1.TelemetryService.GetDashboard:output_type -> orchicon.api.v1.GetDashboardResponse
+	15, // 34: orchicon.api.v1.TelemetryService.GetTelemetryReport:output_type -> orchicon.api.v1.GetTelemetryReportResponse
+	29, // [29:35] is the sub-list for method output_type
+	23, // [23:29] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_telemetry_service_proto_init() }
@@ -1432,7 +1690,7 @@ func file_orchicon_api_v1_telemetry_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_telemetry_service_proto_rawDesc), len(file_orchicon_api_v1_telemetry_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   15,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
