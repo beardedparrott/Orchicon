@@ -757,9 +757,23 @@ desktop-deps: ## Print the host prerequisites for building the desktop app (wail
 # because `//go:embed all:frontend/dist` matches the tracked .gitkeep when the
 # bundle has not been built: a misordered build compiles perfectly and opens an
 # empty window.
-# `webkit2_41` selects the WebKitGTK 4.1 ABI, which is what current distros ship as
-# libwebkit2gtk-4.1-dev; without the tag the cgo files ask pkg-config for 4.0 and the
-# build stops. Inert on macOS (WKWebView) and Windows (WebView2).
+# THE WEBKITGTK ABI IS A PROPERTY OF THE BUILD HOST, NOT OF THE PROJECT — so it is
+# DETECTED here and NOT baked into wails.json. Wails selects the ABI with a build tag,
+# and the tag decides which pkg-config file cgo demands:
+#
+#	#cgo !webkit2_41 pkg-config: webkit2gtk-4.0
+#	#cgo  webkit2_41 pkg-config: webkit2gtk-4.1
+#
+# A host has whichever its distro ships: current releases ship 4.1, while Ubuntu 22.04
+# and Debian 12 ship only 4.0. Putting the tag in wails.json (which every `wails build`
+# inherits) therefore forced 4.1 into the .deb job running on ubuntu-22.04, where
+# libwebkit2gtk-4.1-dev does not exist — the release would have failed to build. Putting
+# it here unconditionally is the mirror-image bug for a 22.04 developer. So: ask the host.
+# Inert on macOS (WKWebView) and Windows (WebView2), where there is no such tag.
+comma := ,
+WEBKIT_TAG := $(shell pkg-config --exists webkit2gtk-4.1 2>/dev/null && echo webkit2_41)
+DESKTOP_TAGS := orchicon_desktop,production$(if $(WEBKIT_TAG),$(comma)$(WEBKIT_TAG))
+
 desktop-build: fe-build ## Build the desktop app for THIS OS (CGO on; NOT part of cross-compile)
 	@# THE LDFLAGS ARE NOT DECORATION. Without them version.Current().Tag keeps its
 	@# "dev" placeholder, the shell's AppTag becomes "dev", and the SPA's mismatch
@@ -770,7 +784,8 @@ desktop-build: fe-build ## Build the desktop app for THIS OS (CGO on; NOT part o
 	@#
 	@# `wails build` cannot inherit these (wails.json has no ldflags key), which is
 	@# exactly why this target is the one to use for the inner loop.
-	CGO_ENABLED=1 go build -tags orchicon_desktop,production,webkit2_41 -ldflags '$(LDFLAGS)' -o bin/orchicon-desktop ./cmd/orchicon-desktop
+	@printf '==> desktop tags: %s\n' '$(DESKTOP_TAGS)'
+	CGO_ENABLED=1 go build -tags $(DESKTOP_TAGS) -ldflags '$(LDFLAGS)' -o bin/orchicon-desktop ./cmd/orchicon-desktop
 
 desktop-install: desktop-build ## Install the app for THIS USER: menu entry + taskbar icon (no root)
 	@# WHY THIS TARGET EXISTS, AND WHY IT IS ABOUT ICONS RATHER THAN CONVENIENCE.
@@ -1180,8 +1195,24 @@ desktop-linux-deps-check: ## Report whether this host can build/run the desktop 
 	@command -v wails >/dev/null 2>&1 && echo "wails:   $$(wails version 2>/dev/null | head -1)" || echo "wails:   not installed (run: make desktop-deps)"
 	@test -f $(DESKTOP_PROJECT)/wails.json && echo "shell:   $(DESKTOP_PROJECT)/ present" || echo "shell:   $(DESKTOP_PROJECT)/wails.json MISSING — nothing to package yet"
 
-desktop-build-linux: desktop-check ## Build the Linux desktop binary (needs libwebkit2gtk-4.0-dev)
-	cd $(DESKTOP_PROJECT) && $(WAILS) build -clean -platform linux/amd64 -ldflags '$(LDFLAGS)'
+desktop-build-linux: desktop-check ## Build the Linux .deb payload (needs libwebkit2gtk-4.0-dev — see NOTE)
+	@# THE 4.0 ABI IS A DELIBERATE ARTIFACT DECISION, NOT A HOST ACCIDENT.
+	@#
+	@# deploy/desktop/nfpm.yaml declares `depends: libwebkit2gtk-4.0-37`, because the
+	@# .deb exists for Ubuntu <= 23.10 and Debian 12, which ship WebKitGTK 4.0; newer
+	@# distros get the AppImage instead. So this build must link 4.0 and the tags must
+	@# say so EXPLICITLY — hence no `webkit2_41` here, and hence it is NOT left to
+	@# wails.json or to $(DESKTOP_TAGS): the dependency the package declares and the
+	@# SONAME the binary links have to be the same ABI, and on this target that is 4.0.
+	@#
+	@# It therefore needs 4.0's DEV headers even on a 4.1-only host, which is what the
+	@# preflight says out loud instead of failing inside cgo.
+	@pkg-config --exists webkit2gtk-4.0 2>/dev/null || { \
+		echo "ERROR: this target builds the 4.0 .deb (deploy/desktop/nfpm.yaml depends on"; \
+		echo "       libwebkit2gtk-4.0-37) but webkit2gtk-4.0 dev headers are not installed."; \
+		echo "       Install libwebkit2gtk-4.0-dev, or run 'make desktop-build' for a local"; \
+		echo "       build against whichever ABI this host ships."; exit 1; }
+	cd $(DESKTOP_PROJECT) && $(WAILS) build -clean -platform linux/amd64 -tags orchicon_desktop,production -ldflags '$(LDFLAGS)'
 
 desktop-package-linux: desktop-build-linux ## Produce the .deb (nfpm) + the AppImage
 	mkdir -p $(DESKTOP_DIST)
