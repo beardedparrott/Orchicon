@@ -127,6 +127,13 @@ deploy/runtime/orch
 bin/orchicon-desktop*
 cmd/orchicon-desktop/build/
 
+# Wails' generated TypeScript bindings. `wails build` writes <frontend:dir>/wailsjs —
+# our frontend SOURCE tree — with a path the CLI does not let us configure. They are
+# machine-generated reflection of the Go API (models.ts is a namespace full of `any`),
+# so committing them would go stale silently the first time the bound types change.
+# `make desktop-build` does not emit them (it calls go build); `wails build` does.
+frontend/wailsjs/
+
 # Acceptance EVIDENCE is the deliverable, so the per-step logs under qa-evidence/ are kept
 # even though `*.log` above is ignored: they hold the exact commands, exit codes and
 # verbatim /healthz output that AC11 asks for. Scoped to qa-evidence/ only.
