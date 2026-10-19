@@ -1095,7 +1095,15 @@ func (s *Service) SetProviderToken(ctx context.Context, tenantID, providerID, to
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
-	s.invalidate(tenantID, providerID)
+	// EVERY PROVIDER THAT READS THIS SECRET, NOT JUST THE ONE CLICKED.
+	//
+	// opencode and opencode-go share OPENCODE_API_KEY. An operator rotating the key
+	// under "opencode" used to invalidate ONLY opencode's cached client, so a
+	// session running model_ref orchicon/opencode-go/... kept its old, expired
+	// credential. Measured on the dev instance: provider.token_set at 18:35:04Z,
+	// and the same session still returning api_key_expired at 18:36:14Z — the save
+	// had worked and the plane could not see it.
+	s.InvalidateSecret(ctx, tenantID, name)
 	return name, nil
 }
 
@@ -1129,7 +1137,9 @@ func (s *Service) ClearProviderToken(ctx context.Context, tenantID, providerID s
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	s.invalidate(tenantID, providerID)
+	// Clearing must be as complete as setting: a revoked credential cannot keep
+	// authenticating through a sibling provider's cached client.
+	s.InvalidateSecret(ctx, tenantID, name)
 	return nil
 }
 
@@ -1203,10 +1213,20 @@ func (s *Service) invalidate(tenantID, providerID string) {
 // (tenant, secret name), so a name nobody maps today may be read by a custom
 // provider or by a future one, and dropping a cache is cheap next to serving a
 // revoked key.
-func (s *Service) InvalidateSecret(_ context.Context, tenantID, name string) {
+// builtinProvidersSharingSecret lists every BUILT-IN provider whose credential
+// lives in the tenant secret of that NAME.
+//
+// ONE SECRET, SEVERAL PROVIDERS is a documented property, not an accident:
+// opencode and opencode-go are distinct wire profiles (different base URLs, ADR
+// D4) authenticated by the SAME OPENCODE_API_KEY. So anything keyed by provider
+// id — such as the registry's client cache — has to be cleared for ALL of them
+// when that one secret changes.
+//
+// It is a pure function so the mapping is assertable without a database.
+func builtinProvidersSharingSecret(name string) []string {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return
+		return nil
 	}
 	ids := make([]string, 0, 2)
 	for id, secretName := range builtinSecretNames {
@@ -1214,6 +1234,16 @@ func (s *Service) InvalidateSecret(_ context.Context, tenantID, name string) {
 			ids = append(ids, id)
 		}
 	}
+	sort.Strings(ids) // deterministic for callers and tests
+	return ids
+}
+
+func (s *Service) InvalidateSecret(_ context.Context, tenantID, name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	ids := builtinProvidersSharingSecret(name)
 	// Custom providers derive their secret name from the ref
 	// (CUSTOM_<REF>_API_KEY), so the match is computed rather than stored.
 	if tx, err := s.pool.BeginTenantTx(context.Background(), tenantID); err == nil {
