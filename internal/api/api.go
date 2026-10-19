@@ -10,7 +10,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -473,7 +473,7 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 				if parsed, _ := feAsk.RecordEngineOutput(ctx, tenantID, db.FileEditOwnerAskConversation, convID, toolName, output); parsed > 0 {
 					break
 				}
-				dir := askBaseDir()
+				dir := askBaseDir(ctx, deps)
 				o := feObserver(convID, dir)
 				if o == nil {
 					return
@@ -499,7 +499,7 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 			}
 		})
 		askSvc.SetFileEditReconciler(func(ctx context.Context, tenantID, convID string) {
-			dir := askBaseDir()
+			dir := askBaseDir(ctx, deps)
 			if dir == "" {
 				return
 			}
@@ -540,17 +540,51 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	return h
 }
 
-// askBaseDir resolves the directory an Ask conversation's file edits
-// resolve against. Ask sessions run on the host opencode serve as
-// directory-less sessions (NewSessionClient directory ""), so relative
-// paths resolve against the server process's working directory — the same
-// base the serve itself uses. Real file state on both sides of the
-// snapshot. Returns "" when the cwd cannot be read — callers then skip
-// ledger observation/reconciliation (never fail the turn).
-func askBaseDir() string {
-	wd, err := os.Getwd()
-	if err != nil || wd == "" {
+// askBaseDir resolves the directory an Ask conversation's file edits resolve against.
+//
+// IT IS THE CONVERSATION'S PROJECT DIRECTORY, and getting that wrong is why the Ask
+// diff pane showed nothing.
+//
+// This used to return os.Getwd() — the CONTROL PLANE's working directory — on the
+// stated reasoning that "Ask sessions run on the host opencode serve as
+// directory-less sessions, so relative paths resolve against the server process's
+// working directory". That was true of the opencode-serve transport and FALSE of
+// every other one: a native orchicon session runs its file/shell suite against
+// AskFileScopeFor's directory (the conversation's project), and a claude session
+// runs against its own cwd. So the observer watched the plane's cwd while the
+// session wrote somewhere else, every snapshot pair was "unchanged", and the ledger
+// recorded NOTHING — the operator's "I don't see ANY files under diff viewer right
+// now in this ask session".
+//
+// It is worse than a miss, because it is SILENT: the plane's cwd usually EXISTS and
+// usually contains a file at the same relative path (it is the repo the plane was
+// started from), so the observer compares the WRONG FILE against the previous
+// contents of the wrong file. A session editing `internal/db/usage.go` in its own
+// worktree had the plane diff `<plane cwd>/internal/db/usage.go`, which it never
+// touched — so the row was either dropped as unchanged or, on a coincidental
+// difference, recorded against a file the session never opened.
+//
+// THE FIX IS TO ASK THE SAME AUTHORITY THE TOOLS ASK. AskFileScopeFor already
+// resolves the conversation's directory from one read of one row, and its own
+// comment insists the prompt and the suite "agree by construction, from one read of
+// one row". The diff observer is a third reader of that same question, so it now
+// reads it the same way rather than inventing a second answer. An unassigned
+// conversation still resolves to the anchor AskFileScopeFor names, so the
+// directory-less case keeps working exactly as before.
+//
+// Returns "" when there is no resolvable directory — callers then skip ledger
+// observation/reconciliation (never fail the turn), which is the pre-existing
+// posture for a DB-less plane.
+func askBaseDir(ctx context.Context, deps *Dependencies) string {
+	if deps == nil || deps.Pool == nil {
 		return ""
 	}
-	return wd
+	scope, err := askorchicon.AskFileScopeFor(ctx, deps.Pool)
+	if err != nil {
+		// A conversation with no project, or a project whose dir is unset. The turn
+		// proceeds; the ledger simply observes nothing rather than observing the
+		// wrong tree.
+		return ""
+	}
+	return strings.TrimSpace(scope.Dir)
 }
