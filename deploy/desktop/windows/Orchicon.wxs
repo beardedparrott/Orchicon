@@ -37,6 +37,18 @@
     the same change - without it a wizard's multi-select was silently discarded
     by the non-interactive path, so an install fetched none of what was ticked.
 -->
+<!--
+  BUILDING THIS FILE NEEDS TWO THINGS ON THE COMMAND LINE, and neither is implied by
+  anything inside it:
+
+      wix build Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext/5.0.2
+
+  * -ext ... : ui:WixUI is an EXTENSION element. The xmlns below makes the file
+    well-formed and does NOT enable it (WIX0200).
+  * the /5.0.2 suffix : the extension is restored from NuGet, and a bare package
+    name does not resolve ("error WIX0144: The extension 'WixToolset.UI.wixext'
+    could not be found"). It is versioned to match WIX_VERSION in the Makefile.
+-->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
 

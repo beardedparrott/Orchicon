@@ -633,7 +633,7 @@ jobs:
           Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
           Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
           $srcAbs = (Resolve-Path $src).Path
-          wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext `
+          wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext/5.0.2 `
             -d "Version=$v" -d "SourceDir=$srcAbs" `
             -o "dist/desktop/orchicon_${v}_windows_amd64.msi"
           Get-ChildItem dist/desktop
