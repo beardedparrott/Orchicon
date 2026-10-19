@@ -16,7 +16,15 @@ import {
   fmtInt,
   isPermissionDenied,
 } from "@/components/telemetry/states";
-import { formatCompact, formatDurationMs, formatPercent } from "@/lib/chart-geometry";
+import {
+  ReportModels,
+  ReportOutcomes,
+} from "@/components/telemetry/report-outcomes";
+import {
+  formatCompact,
+  formatDurationMs,
+  formatPercent,
+} from "@/lib/chart-geometry";
 import { cn } from "@/lib/utils";
 
 type GroupByKey = "project" | "workflow";
@@ -36,7 +44,11 @@ interface RowLike {
 
 /** failureRate uses runs when the grouping produced them, else executions —
  *  the same denominator the server uses for totals.failure_rate. */
-export function failureRate(runs: number, executions: number, failed: number): number {
+export function failureRate(
+  runs: number,
+  executions: number,
+  failed: number,
+): number {
   const denom = runs > 0 ? runs : executions;
   return denom > 0 ? failed / denom : 0;
 }
@@ -107,7 +119,11 @@ export function ReportsPanel({ filters }: { filters: TelemetryFilters }) {
           : "ready";
 
   const groupToggle = (
-    <div className="flex rounded-md border" role="group" aria-label="Group reports by">
+    <div
+      className="flex rounded-md border"
+      role="group"
+      aria-label="Group reports by"
+    >
       {(["project", "workflow"] as GroupByKey[]).map((key) => (
         <button
           key={key}
@@ -171,70 +187,96 @@ export function ReportsPanel({ filters }: { filters: TelemetryFilters }) {
           hint="Reports read Postgres, so they keep working while a telemetry store is down. Widen the window to see earlier work."
         />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-xl glass-panel p-4">
-            <h3 className="mb-2 text-sm font-medium">Cost share</h3>
-            <BarList
-              items={sorted.slice(0, 8).map((r) => ({
-                key: r.groupKey,
-                label: r.groupName,
-                value: r.costUsd,
-                note: `${fmtInt(r.executions)} exec`,
-              }))}
-              valueFormat={(v) => `$${v.toFixed(4)}`}
-            />
-          </div>
-          <div className="overflow-x-auto rounded-xl glass-panel p-4">
-            <h3 className="mb-2 text-sm font-medium">
-              {groupBy === "project" ? "Per project" : "Per workflow"}
-            </h3>
-            <table className="w-full text-left text-sm">
-              <caption className="sr-only">Telemetry report sorted by {sortKey}</caption>
-              <thead>
-                <tr className="text-[11px] uppercase text-muted-foreground">
-                  <th scope="col" className="py-1 pr-2 font-medium">
-                    {groupBy === "project" ? "Project" : "Workflow"}
-                  </th>
-                  <th scope="col" className="py-1 pr-2 font-medium">
-                    <SortButton active={sortKey === "tokens"} onClick={() => setSortKey("tokens")}>
-                      Tokens
-                    </SortButton>
-                  </th>
-                  <th scope="col" className="py-1 pr-2 font-medium">
-                    <SortButton active={sortKey === "cost"} onClick={() => setSortKey("cost")}>
-                      Cost
-                    </SortButton>
-                  </th>
-                  <th scope="col" className="py-1 pr-2 font-medium">
-                    <SortButton active={sortKey === "duration"} onClick={() => setSortKey("duration")}>
-                      Avg time
-                    </SortButton>
-                  </th>
-                  <th scope="col" className="py-1 font-medium">
-                    <SortButton active={sortKey === "failure"} onClick={() => setSortKey("failure")}>
-                      Fail
-                    </SortButton>
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/10">
-                {sorted.map((r) => (
-                  <tr key={r.groupKey}>
-                    <td className="py-1.5 pr-2">
-                      <span className="line-clamp-1" title={r.groupName}>
-                        {r.groupName}
-                      </span>
-                    </td>
-                    <td className="py-1.5 pr-2 tabular-nums">{formatCompact(Number(r.totalTokens))}</td>
-                    <td className="py-1.5 pr-2 tabular-nums">${r.costUsd.toFixed(4)}</td>
-                    <td className="py-1.5 pr-2 tabular-nums">{formatDurationMs(Number(r.durationMsAvg))}</td>
-                    <td className="py-1.5 tabular-nums">{formatPercent(r.rate)}</td>
+        <>
+          <ReportOutcomes outcomes={data?.outcomes} />
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-xl glass-panel p-4">
+              <h3 className="mb-2 text-sm font-medium">Cost share</h3>
+              <BarList
+                items={sorted.slice(0, 8).map((r) => ({
+                  key: r.groupKey,
+                  label: r.groupName,
+                  value: r.costUsd,
+                  note: `${fmtInt(r.executions)} exec`,
+                }))}
+                valueFormat={(v) => `$${v.toFixed(4)}`}
+              />
+            </div>
+            <div className="overflow-x-auto rounded-xl glass-panel p-4">
+              <h3 className="mb-2 text-sm font-medium">
+                {groupBy === "project" ? "Per project" : "Per workflow"}
+              </h3>
+              <table className="w-full text-left text-sm">
+                <caption className="sr-only">
+                  Telemetry report sorted by {sortKey}
+                </caption>
+                <thead>
+                  <tr className="text-[11px] uppercase text-muted-foreground">
+                    <th scope="col" className="py-1 pr-2 font-medium">
+                      {groupBy === "project" ? "Project" : "Workflow"}
+                    </th>
+                    <th scope="col" className="py-1 pr-2 font-medium">
+                      <SortButton
+                        active={sortKey === "tokens"}
+                        onClick={() => setSortKey("tokens")}
+                      >
+                        Tokens
+                      </SortButton>
+                    </th>
+                    <th scope="col" className="py-1 pr-2 font-medium">
+                      <SortButton
+                        active={sortKey === "cost"}
+                        onClick={() => setSortKey("cost")}
+                      >
+                        Cost
+                      </SortButton>
+                    </th>
+                    <th scope="col" className="py-1 pr-2 font-medium">
+                      <SortButton
+                        active={sortKey === "duration"}
+                        onClick={() => setSortKey("duration")}
+                      >
+                        Avg time
+                      </SortButton>
+                    </th>
+                    <th scope="col" className="py-1 font-medium">
+                      <SortButton
+                        active={sortKey === "failure"}
+                        onClick={() => setSortKey("failure")}
+                      >
+                        Fail
+                      </SortButton>
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-white/10">
+                  {sorted.map((r) => (
+                    <tr key={r.groupKey}>
+                      <td className="py-1.5 pr-2">
+                        <span className="line-clamp-1" title={r.groupName}>
+                          {r.groupName}
+                        </span>
+                      </td>
+                      <td className="py-1.5 pr-2 tabular-nums">
+                        {formatCompact(Number(r.totalTokens))}
+                      </td>
+                      <td className="py-1.5 pr-2 tabular-nums">
+                        ${r.costUsd.toFixed(4)}
+                      </td>
+                      <td className="py-1.5 pr-2 tabular-nums">
+                        {formatDurationMs(Number(r.durationMsAvg))}
+                      </td>
+                      <td className="py-1.5 tabular-nums">
+                        {formatPercent(r.rate)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+          <ReportModels models={data?.models ?? []} />
+        </>
       )}
     </div>
   );
@@ -256,7 +298,9 @@ function SortButton({
       aria-pressed={active}
       className={cn(
         "inline-flex items-center gap-0.5 rounded px-1 py-0.5 uppercase transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-        active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+        active
+          ? "text-foreground"
+          : "text-muted-foreground hover:text-foreground",
       )}
     >
       {children}

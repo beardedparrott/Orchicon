@@ -13,15 +13,21 @@ import { useQuery } from "@tanstack/react-query";
 
 import { telemetryClient } from "@/api/clients";
 import { TelemetryReportGroupBy } from "@/api/gen/orchicon/api/v1/telemetry_service_pb";
-import type { LogRecord, MetricSeries, Trace } from "@/api/gen/orchicon/api/v1/telemetry_pb";
+import type {
+  LogRecord,
+  MetricSeries,
+  Trace,
+} from "@/api/gen/orchicon/api/v1/telemetry_pb";
 
 export const telemetryKeys = {
   all: ["telemetry"] as const,
   traces: (f: TelemetryFilterKey) => ["telemetry", "traces", f] as const,
   metrics: (f: TelemetryFilterKey) => ["telemetry", "metrics", f] as const,
   logs: (f: TelemetryFilterKey) => ["telemetry", "logs", f] as const,
-  dashboard: (projectId?: string) => ["telemetry", "dashboard", projectId] as const,
-  report: (f: TelemetryFilterKey & { groupBy: number }) => ["telemetry", "report", f] as const,
+  dashboard: (projectId?: string) =>
+    ["telemetry", "dashboard", projectId] as const,
+  report: (f: TelemetryFilterKey & { groupBy: number }) =>
+    ["telemetry", "report", f] as const,
 };
 
 /** TelemetryFilters is the shared filter set the whole page drives. */
@@ -68,7 +74,9 @@ function windowTs(f?: TelemetryFilters) {
 }
 
 // Poll while degraded so the view auto-recovers when the backend starts.
-function degradedPollInterval(query: { state: { data?: unknown } }): number | false {
+function degradedPollInterval(query: {
+  state: { data?: unknown };
+}): number | false {
   const d = query.state.data as { degraded?: boolean } | undefined;
   return d?.degraded ? 10_000 : false;
 }
@@ -195,6 +203,14 @@ export function useGetTelemetryReport(opts: {
       return {
         rows: res.rows ?? [],
         totals: res.totals,
+        // outcomes and models are separate dimensions, not more columns on a
+        // row: "how much work finished, and how" and "which models did it"
+        // are answered independently of the project/workflow grouping. They
+        // are passed through here rather than left on the raw response so the
+        // panel cannot silently render a blank section when the server starts
+        // sending them.
+        outcomes: res.outcomes,
+        models: res.models ?? [],
         windowStart: res.windowStart,
         windowEnd: res.windowEnd,
       };

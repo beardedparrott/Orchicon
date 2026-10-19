@@ -12,7 +12,13 @@
 
 import { useId, useMemo, useState } from "react";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   areaPathFromPoints,
   axisTickTimes,
@@ -43,15 +49,30 @@ export interface ChartFrameProps {
 
 /** ChartFrame is the shell every graph lives in: title, description, actions,
  *  and a single state slot so no panel invents its own empty/error wording. */
-export function ChartFrame({ title, description, actions, state, children, className }: ChartFrameProps) {
+export function ChartFrame({
+  title,
+  description,
+  actions,
+  state,
+  children,
+  className,
+}: ChartFrameProps) {
   return (
     <Card className={cn("glass-panel", className)}>
       <CardHeader className="flex flex-row items-start justify-between gap-3 pb-2">
         <div className="min-w-0">
-          <CardTitle className="truncate text-sm font-medium">{title}</CardTitle>
-          {description ? <CardDescription className="text-xs">{description}</CardDescription> : null}
+          <CardTitle className="truncate text-sm font-medium">
+            {title}
+          </CardTitle>
+          {description ? (
+            <CardDescription className="text-xs">{description}</CardDescription>
+          ) : null}
         </div>
-        {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
+        {actions ? (
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {actions}
+          </div>
+        ) : null}
       </CardHeader>
       <CardContent className="pt-2">{state ?? children}</CardContent>
     </Card>
@@ -91,7 +112,10 @@ function axisTimeLabel(t: number, spanMs: number): string {
       minute: "2-digit",
     });
   }
-  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 /** TimeSeriesChart renders one series as an area + line with a keyboard cursor. */
@@ -120,10 +144,14 @@ export function TimeSeriesChart({
   }, [values]);
 
   const line = useMemo(() => pathFromPoints(points, VIEW_W, VIEW_H), [points]);
-  const area = useMemo(() => areaPathFromPoints(points, VIEW_W, VIEW_H), [points]);
+  const area = useMemo(
+    () => areaPathFromPoints(points, VIEW_W, VIEW_H),
+    [points],
+  );
   const ticks = useMemo(() => niceTicks(vMin, vMax, 4), [vMin, vMax]);
 
-  const active = cursor >= 0 && cursor < points.length ? points[cursor] : undefined;
+  const active =
+    cursor >= 0 && cursor < points.length ? points[cursor] : undefined;
   const summary =
     points.length === 0
       ? `${label}: no data in this window`
@@ -158,10 +186,14 @@ export function TimeSeriesChart({
 
   const cursorX =
     active && points.length > 1
-      ? ((active.t - points[0].t) / (points[points.length - 1].t - points[0].t)) * VIEW_W
+      ? ((active.t - points[0].t) /
+          (points[points.length - 1].t - points[0].t)) *
+        VIEW_W
       : VIEW_W;
   const [cMin, cMax] = boundsOf(values);
-  const cursorY = active ? VIEW_H - ((active.v - cMin) / (cMax - cMin || 1)) * VIEW_H : 0;
+  const cursorY = active
+    ? VIEW_H - ((active.v - cMin) / (cMax - cMin || 1)) * VIEW_H
+    : 0;
 
   // Axis labels are DOM text, never <text> inside the plot SVG. The plot is
   // preserveAspectRatio="none" so the path fills any container width, and
@@ -186,7 +218,10 @@ export function TimeSeriesChart({
     <div className="w-full">
       <div className="flex w-full gap-2">
         {/* Y axis: a fixed gutter so labels never sit on top of the series. */}
-        <div className={cn("relative w-10 shrink-0", heightClass)} aria-hidden="true">
+        <div
+          className={cn("relative w-10 shrink-0", heightClass)}
+          aria-hidden="true"
+        >
           {yLabels.map((l) => (
             <span
               key={l.value}
@@ -225,7 +260,9 @@ export function TimeSeriesChart({
                 />
               );
             })}
-            {area ? <path d={area} fill={color} fillOpacity={0.12} stroke="none" /> : null}
+            {area ? (
+              <path d={area} fill={color} fillOpacity={0.12} stroke="none" />
+            ) : null}
             {line ? (
               <path
                 d={line}
@@ -307,7 +344,11 @@ export interface BarListProps {
 }
 
 /** BarList is the horizontal breakdown primitive (cost by project, etc.). */
-export function BarList({ items, valueFormat = formatCompact, colorIndex = 0 }: BarListProps) {
+export function BarList({
+  items,
+  valueFormat = formatCompact,
+  colorIndex = 0,
+}: BarListProps) {
   const max = items.reduce((m, i) => Math.max(m, i.value), 0);
   const color = chartSeries(colorIndex);
   return (
@@ -322,11 +363,19 @@ export function BarList({ items, valueFormat = formatCompact, colorIndex = 0 }: 
               </span>
               <span className="shrink-0 tabular-nums text-muted-foreground">
                 {valueFormat(item.value)}
-                {item.note ? <span className="ml-2 text-xs">{item.note}</span> : null}
+                {item.note ? (
+                  <span className="ml-2 text-xs">{item.note}</span>
+                ) : null}
               </span>
             </div>
-            <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
-              <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
+            <div
+              className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted"
+              aria-hidden="true"
+            >
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${pct}%`, backgroundColor: color }}
+              />
             </div>
           </li>
         );
@@ -336,7 +385,13 @@ export function BarList({ items, valueFormat = formatCompact, colorIndex = 0 }: 
 }
 
 /** Sparkline is the inline trend next to a stat value. */
-export function Sparkline({ points, colorIndex = 0 }: { points: ChartPoint[]; colorIndex?: number }) {
+export function Sparkline({
+  points,
+  colorIndex = 0,
+}: {
+  points: ChartPoint[];
+  colorIndex?: number;
+}) {
   const line = useMemo(() => pathFromPoints(points, 100, 24), [points]);
   if (!line) {
     return <div className="h-6 w-full" aria-hidden="true" />;
