@@ -121,3 +121,54 @@ func TestWailsJSONTagsMatchTheEntryPointTag(t *testing.T) {
 			"`wails build` would then compile without it", cfg.BuildTags, own)
 	}
 }
+
+// TestWailsJSONCarriesTheReleaseTags — wails.json must supply the SAME tags the
+// release builds with, not merely the project's own.
+//
+// THE BUG THIS PINS, from the operator's own terminal:
+//
+//	unable to finish request: StatusCodes not supported: 307 - Temporary Redirect
+//
+// The shell's asset handler answers every request with a 307 to its own origin,
+// which is a legitimate design and works — but ONLY on Wails' modern asset
+// backend. Wails selects the WebKitGTK ABI by BUILD TAG, and the legacy 4.0
+// backend refuses any status but 200 (webkit2_legacy.go:40 `if code !=
+// http.StatusOK` → "StatusCodes not supported"). With `build:tags` naming only
+// `orchicon_desktop`, a bare `wails build` produced a binary linked against
+// libwebkit2gtk-4.0 — verified with ldd on the artifact — so the shell loaded
+// and then could not answer a single request.
+//
+// The three PACKAGING jobs (desktop-linux/.deb + AppImage, desktop-macos,
+// desktop-windows) pass no `-tags` of their own — they inherit this file. So a
+// wails.json missing `webkit2_41` does not merely break the developer's local
+// build: it ships installers with the same defect. Wails MERGES these with any
+// CLI tags (cmd/wails/build.go: `compiledTags := append(projectTags, userTags...)`),
+// so stating them here is safe alongside a job that also passes them.
+func TestWailsJSONCarriesTheReleaseTags(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "orchicon-desktop", "wails.json"))
+	if err != nil {
+		t.Fatalf("read wails.json: %v", err)
+	}
+	var cfg struct {
+		BuildTags string `json:"build:tags"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatalf("parse wails.json: %v", err)
+	}
+	have := map[string]bool{}
+	for _, tag := range strings.Split(cfg.BuildTags, ",") {
+		have[strings.TrimSpace(tag)] = true
+	}
+	// production: the release flavour (no dev tooling / dev server path).
+	// webkit2_41:  the 4.1 ABI, whose asset backend can return a redirect.
+	for _, want := range []string{"orchicon_desktop", "production", "webkit2_41"} {
+		if !have[want] {
+			t.Errorf("wails.json build:tags = %q is missing %q.\n"+
+				"Every `wails build` inherits this file — including the three packaging jobs that pass no\n"+
+				"-tags of their own — so a missing %q either fails the build outright (a missing\n"+
+				"orchicon_desktop) or ships installers with the legacy WebKitGTK 4.0 backend, which\n"+
+				"cannot answer the shell's 307 (\"StatusCodes not supported: 307\").",
+				cfg.BuildTags, want, want)
+		}
+	}
+}
