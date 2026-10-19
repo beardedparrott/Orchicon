@@ -460,6 +460,23 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// ledger gap never fails the session.
 	feStore := fileedit.NewPGStore(pool)
 	feSvc := fileedit.NewService(feStore, log)
+	// THE DIFF LEDGER IS INSTALLED ON THE DISPATCHER, ONCE, FOR EVERY BRIDGE.
+	//
+	// It used to be applied one bridge at a time, below, and the Ask half was
+	// applied to exactly ONE of the three Ask-capable adapters. `opencode` and
+	// `claude` both implement ChatTurnClient — so both serve Ask conversations —
+	// and neither had an Ask ledger hook, so those conversations recorded NOTHING
+	// and the diff pane showed no files. Not a defect in either adapter: a wiring
+	// step nobody remembered for them. A fourth adapter would have repeated it.
+	//
+	// Installing here means an adapter gets diff support BY REGISTERING. It works
+	// whichever order the calls happen in — SetDiffLedger also applies to bridges
+	// already registered — so a future adapter cannot be left out by registering
+	// early, which is the failure mode a comment would not have prevented.
+	dispatcher.SetDiffLedger(
+		scheduler.DiffLedgerFunc(newFileEditHook(feSvc, log, db.FileEditOwnerExecution)),
+		scheduler.DiffLedgerFunc(newFileEditHook(feSvc, log, db.FileEditOwnerAskConversation)),
+	)
 	if pub != nil {
 		// PUBLISHED FOR EVERY OWNER KIND, under its OWN subject and event type.
 		//
@@ -481,7 +498,6 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// ingestion point — engine file_edits output tried first for
 	// write/edit, observer fallback for genuine built-in usage
 	// (internal/server/fileedit_hook.go).
-	adapterBridge.SetFileEditHook(newFileEditHook(feSvc, log, db.FileEditOwnerExecution))
 
 	// Register the opencode bridge under its adapter kind. This is the
 	// ONLY place the concrete adapter appears in a dispatch-capable
@@ -740,13 +756,11 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// same constructor as the opencode adapter above — the session fires it
 	// once per completed registry result in executeTools, so every
 	// native-loop provider (ollama, commandcode, …) ledgers through one site.
-	nativeBridge.SetFileEditHook(newFileEditHook(feSvc, log, db.FileEditOwnerExecution))
 	// The native Ask path runs its tools in-process via chatturn.executeToolCalls
 	// (NOT via a Session), so it needs its own hook: attributed to the ASK
 	// CONVERSATION so the live per-edit rows land under the exact tuple both
 	// clients query, instead of being visible only after the post-turn git
 	// sweep. Same constructor, owner kind Ask.
-	nativeBridge.SetAskFileEditHook(newFileEditHook(feSvc, log, db.FileEditOwnerAskConversation))
 	dispatcher.Register("orchicon", nativeBridge)
 
 	// Claude Code bridge (kind "claude" — NEVER "anthropic": anthropic is a
@@ -761,7 +775,6 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	claudeBridge := claude.New(log)
 	claudeBridge.SetUsageRecorder(usageRecorderFn)
 	claudeBridge.SetSessionStore(sessionStoreFn)
-	claudeBridge.SetFileEditHook(newFileEditHook(feSvc, log, db.FileEditOwnerExecution))
 	// MCP: the SAME two wirings the native bridge receives above, because the
 	// resolution is shared rather than per-adapter. Which servers an execution
 	// gets (the project-owned ∪ the scope's own definitions, with ${SECRET_NAME}

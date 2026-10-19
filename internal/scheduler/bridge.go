@@ -238,6 +238,45 @@ type LivenessReporter interface {
 	IsExecutionActive(execID string) bool
 }
 
+// DiffLedgerSink is the OPTIONAL capability for a bridge that can report the
+// file edits its sessions make, so the diff pane shows ground truth for EVERY
+// adapter rather than for whichever ones happened to be wired by hand.
+//
+// WHY THIS IS AN INTERFACE RATHER THAN A SETTER PER BRIDGE, and it is the whole
+// point of its existence. The ledger hook used to be applied one bridge at a
+// time in server construction — adapterBridge.SetFileEditHook(...),
+// nativeBridge.SetAskFileEditHook(...), claudeBridge.SetFileEditHook(...) — and
+// the Ask half was applied to exactly ONE of the three. So `opencode` and
+// `claude` conversations, BOTH of which are Ask-capable (each implements
+// ChatTurnClient), produced ZERO diff rows: not a bug in either adapter, but a
+// wiring step nobody remembered for them. Adding a fourth adapter would have
+// repeated it.
+//
+// A bridge that can ledger file edits implements this. The server applies the
+// sink to every REGISTERED bridge in ONE loop, so an adapter gets diff support
+// by registering, not by being remembered. A bridge that cannot ledger simply
+// does not implement it — the same optional-capability discipline as
+// MessageInjector/Aborter/ChatTurnClient, resolved by type assertion and never
+// a panic.
+//
+// ownerKind selects WHICH population the rows belong to, and it is a parameter
+// because one bridge serves both: db.FileEditOwnerExecution for worker runs and
+// db.FileEditOwnerAskConversation for Ask conversations. A bridge that serves
+// only one population ignores the kinds it does not have.
+type DiffLedgerSink interface {
+	// SetDiffLedger installs the ledger callback for worker executions
+	// (owner kind execution) and for Ask conversations (owner kind
+	// ask_conversation). Either may be nil when a caller wants only one.
+	SetDiffLedger(execution, ask DiffLedgerFunc)
+}
+
+// DiffLedgerFunc is the ledger callback shape. It mirrors the adapters'
+// existing hook signature: the session's own directory travels WITH the call
+// (execDir), because the sink must observe the files the SESSION touched — a
+// sink that reached for the process's working directory instead watched the
+// wrong tree entirely, which is the defect this replaces.
+type DiffLedgerFunc func(ctx context.Context, ownerID, tenantID, execDir, toolName string, input map[string]any, output string)
+
 // ErrSessionNotFound marks that a conversation's persisted session id is
 // no longer known to the adapter's session transport (a serve/backend
 // restart wiped its store, or the session expired). The Ask collector

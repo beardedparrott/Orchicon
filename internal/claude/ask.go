@@ -1178,7 +1178,7 @@ func (s *askSession) readLoop(ctx context.Context, proc ProcSession) {
 				s.busEmit(scheduler.SessionEvent{Kind: "error", Text: msg})
 				return
 			}
-			s.handleLine(line)
+			s.handleLine(ctx, line)
 		}
 	}
 }
@@ -1220,7 +1220,7 @@ func (s *askSession) stderrTail(proc ProcSession) string {
 // claude's: deltas and parts for text, a typed tool_result for a resolved call,
 // "permission" for an ask, and "idle" to end the turn. That mapping is what keeps
 // the Ask surfaces adapter-agnostic.
-func (s *askSession) handleLine(line []byte) {
+func (s *askSession) handleLine(ctx context.Context, line []byte) {
 	ev, err := ParseLine(line)
 	if err != nil {
 		return // a malformed line is not a reason to end a live turn
@@ -1290,6 +1290,19 @@ func (s *askSession) handleLine(line []byte) {
 	case "user":
 		for _, tr := range ev.ToolResults {
 			call := s.takeTool(tr.ToolUseID)
+			// THE DIFF LEDGER, FIRED WHERE THE FILE IS ON DISK. This is the same
+			// point the execution path fires from, and for the same reason: at
+			// tool_use time the CLI has not performed the write yet, so an observer
+			// would diff the file against itself and drop the row. The result is
+			// where the edit has actually happened.
+			//
+			// It was never called on this path at all, so a claude Ask conversation
+			// recorded no file edits and the diff pane stayed empty — see
+			// Bridge.SetDiffLedger's note. A FAILED call does not ledger (there is no
+			// ground truth to record), matching the execution funnel's nil-error gate.
+			if !tr.IsError && s.b.askFileEdits != nil && call.name != "" {
+				s.b.askFileEdits(ctx, s.convID, s.tenantID, s.askDir, call.name, call.input, tr.Content)
+			}
 			s.busEmit(scheduler.SessionEvent{
 				Kind:       "tool_result",
 				Type:       "tool_result",

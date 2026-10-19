@@ -40,6 +40,9 @@ type Bridge struct {
 	usageRecorder scheduler.UsageRecorderFunc
 	sessionStore  scheduler.SessionStoreFunc
 	fileEdits     FileEditHookFunc
+	// askFileEdits is the Ask-population ledger hook (owner kind
+	// ask_conversation) — the half that was never installed.
+	askFileEdits FileEditHookFunc
 	rt            *runtime.Client
 
 	// spawn is the process factory (local vs container). Overridable in
@@ -95,6 +98,20 @@ func (b *Bridge) SetRuntimeClient(rt *runtime.Client) { b.rt = rt }
 
 // SetFileEditHook injects the diff-pipeline ledger callback. Nil = no ledger.
 func (b *Bridge) SetFileEditHook(fn FileEditHookFunc) { b.fileEdits = fn }
+
+// SetDiffLedger implements scheduler.DiffLedgerSink.
+//
+// THE ASK HALF WAS MISSING HERE TOO. claude implements ChatTurnClient, so its
+// Ask conversations run through this bridge, and the Ask ledger hook was never
+// installed — those turns recorded nothing and the diff pane stayed empty. See
+// opencode's identical note; the cause is one wiring step applied to the native
+// bridge alone.
+func (b *Bridge) SetDiffLedger(execution, ask FileEditHookFunc) {
+	b.fileEdits = execution
+	if ask != nil {
+		b.askFileEdits = ask
+	}
+}
 
 // SetSpawnOverride replaces the process factory (tests only).
 func (b *Bridge) SetSpawnOverride(fn procFactory) { b.spawnOverride = fn }

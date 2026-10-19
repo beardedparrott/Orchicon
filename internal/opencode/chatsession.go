@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
+	"github.com/beardedparrott/orchicon/internal/tenant"
+	"sync"
 )
 
 // ChatTurnClient is implemented on *Adapter (see adapter.go) by delegating
@@ -169,7 +169,20 @@ func (a *Adapter) Subscribe(ctx context.Context, conversationID string) (schedul
 	if err != nil {
 		return nil, err
 	}
-	ad := newSessionEventAdapter(sub)
+	// The conversation's directory, so the ledger observes the files THIS session
+	// touched — resolved by the SERVER's installed resolver, not by reaching for
+	// the process's working directory. That reach is the defect that made every
+	// Ask diff pane blank (see internal/api's askBaseDir note), and an adapter
+	// cannot do better on its own: it has no pool, and reading a project row here
+	// would be a layering violation.
+	//
+	// A nil resolver (or one that errors) yields "" — the ledger then observes
+	// nothing rather than observing the WRONG tree, which is the safer failure.
+	dir := ""
+	if a.askDirResolver != nil {
+		dir = a.askDirResolver(ctx, conversationID)
+	}
+	ad := newSessionEventAdapterWithLedger(sub, conversationID, dir, tenant.FromContext(ctx), a.askFileEdits)
 	return ad, nil
 }
 
@@ -183,6 +196,16 @@ type sessionEventAdapter struct {
 	// calls correlates an in-flight tool call's args with the permission.asked
 	// raised for it (see toolCallIndex).
 	calls *toolCallIndex
+	// The diff-ledger context: the conversation this adapter is serving, the
+	// session's own directory, and the hook. Carried HERE rather than resolved
+	// inside the pure classifier, because the classifier maps one event to one
+	// SessionEvent and must stay free of side effects — and because the ledger
+	// needs the conversation id and directory, which are properties of the
+	// SUBSCRIPTION rather than of the event.
+	convID   string
+	baseDir  string
+	tenantID string
+	ledger   FileEditHookFunc
 }
 
 func (a *sessionEventAdapter) start() {
@@ -195,6 +218,7 @@ func (a *sessionEventAdapter) start() {
 				if !ok {
 					return
 				}
+				a.ledgerToolCall(evt)
 				if se := classifyBusEventIndexed(evt, a.calls); se != nil {
 					select {
 					case a.events <- *se:
@@ -207,6 +231,49 @@ func (a *sessionEventAdapter) start() {
 			}
 		}
 	}()
+}
+
+// ledgerToolCall records the file edits of a COMPLETED tool_use part.
+//
+// It fires only for a completed call, for the same reason the execution path
+// does: a running call has not written anything yet, so an observer would diff
+// the file against itself and drop the row. It also fires BEFORE the classifier,
+// because the classifier's output is capped for the UI while the ledger needs
+// the RAW output — a huge batch_write carries its file_edits payload at the END
+// of the JSON, which a cap would splice away.
+func (a *sessionEventAdapter) ledgerToolCall(evt BusEvent) {
+	if a.ledger == nil || a.convID == "" {
+		return
+	}
+	legacy, ok := LegacyEventFromBus(evt)
+	if !ok {
+		return
+	}
+	if etype, _ := legacy["type"].(string); etype != "tool_use" {
+		return
+	}
+	part, _ := legacy["part"].(map[string]any)
+	if part == nil {
+		return
+	}
+	state, _ := part["state"].(map[string]any)
+	if state == nil {
+		return
+	}
+	// Only a finished call has ground truth on disk.
+	if st, _ := state["status"].(string); st != "" && st != "completed" {
+		return
+	}
+	toolName, _ := part["tool"].(string)
+	if toolName == "" {
+		return
+	}
+	input, _ := state["input"].(map[string]any)
+	if input == nil {
+		input = map[string]any{}
+	}
+	output, _ := state["output"].(string)
+	a.ledger(context.Background(), a.convID, a.tenantID, a.baseDir, toolName, input, output)
 }
 
 func (a *sessionEventAdapter) Events() <-chan scheduler.SessionEvent { return a.events }
@@ -335,10 +402,29 @@ func NewSessionBusFromSub(sub BusSub) scheduler.SessionBus {
 // newSessionEventAdapter builds a started adapter carrying a fresh tool-call
 // correlation index.
 func newSessionEventAdapter(sub BusSub) *sessionEventAdapter {
+	return newSessionEventAdapterWithLedger(sub, "", "", "", nil)
+}
+
+// newSessionEventAdapterWithLedger is newSessionEventAdapter for an Ask
+// conversation, which additionally ledgers the file edits its tool calls make.
+//
+// WHY THE LEDGER IS FED FROM HERE. This adapter sees every raw bus event for the
+// session, including the COMPLETED tool_use part carrying state.input and
+// state.output — the same ground truth the execution path ledgers from. Without
+// it an opencode Ask conversation recorded NOTHING and the diff pane showed no
+// files, even though opencode is a first-class Ask adapter (it implements
+// ChatTurnClient). Nothing about the adapter was wrong; the hook was simply
+// never installed on it, which is the asymmetry the Dispatcher's central
+// application point removes.
+func newSessionEventAdapterWithLedger(sub BusSub, convID, baseDir, tenantID string, ledger FileEditHookFunc) *sessionEventAdapter {
 	ad := &sessionEventAdapter{
-		sub:    sub,
-		events: make(chan scheduler.SessionEvent, 32),
-		calls:  newToolCallIndex(),
+		sub:      sub,
+		events:   make(chan scheduler.SessionEvent, 32),
+		calls:    newToolCallIndex(),
+		convID:   convID,
+		baseDir:  baseDir,
+		tenantID: tenantID,
+		ledger:   ledger,
 	}
 	ad.start()
 	return ad
