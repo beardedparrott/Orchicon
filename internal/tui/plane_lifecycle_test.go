@@ -146,6 +146,16 @@ func TestPlaneStateFromStatus(t *testing.T) {
 		{"no pid file", planecontrol.Status{}, planeStateDown},
 		{"pid but dead", planecontrol.Status{PID: 42, Alive: false}, planeStateDown},
 		{"alive but not answering", planecontrol.Status{PID: 42, Alive: true, Healthy: false, Drift: planecontrol.Current}, planeStateDown},
+		// THE OPERATOR'S CASE. A plane started OUTSIDE `orchicon serve --detach` — in the field, by
+		// systemd as a user service — writes no PID file, so the footer said "plane down" with
+		// `/plane start` as the remedy, while the TUI was CONNECTED to it and loading data. The
+		// operator: "it still says 'plane down' even though I am connected."
+		//
+		// The health probe is the authoritative "is something serving this instance" signal and does
+		// not depend on how the plane was launched, so an answering plane IS up.
+		{"healthy but no pid file (started outside serve --detach)", planecontrol.Status{Healthy: true, Drift: planecontrol.Unknown}, planeStateUp},
+		// And the drift verdict still only applies to a LIVE process we can identify.
+		{"healthy, no pid, drifted verdict", planecontrol.Status{Healthy: true, Alive: false, Drift: planecontrol.Drifted}, planeStateUp},
 	}
 	for _, tc := range cases {
 		if got := stateFromStatus(tc.st); got != tc.want {

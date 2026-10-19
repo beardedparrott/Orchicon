@@ -195,13 +195,39 @@ func planeLogPath(instance string) string {
 // A DRIFTED VERDICT ABOUT A DEAD PROCESS IS NOT DRIFTED: drift can only be observed through a live
 // PID file, but if the process is gone the problem is "down", and telling the operator to restart
 // something that is not running is the wrong instruction.
+//
+// A HEALTHY PLANE WITH NO PID FILE IS UP, and requiring the PID file was a real defect. The TUI is
+// CONNECTED to the plane — it is answering RPCs and loading data — and the footer said "plane down",
+// with `/plane start` as its remedy, which of course did nothing because the plane was already running.
+// The operator: "it is giving me an error saying the plane for this instance is down and to run /plane
+// start which didn't do anything. It still says 'plane down' even though I am connected."
+//
+// The cause is a plane started OUTSIDE `orchicon serve --detach` — in the field, by systemd as a user
+// service — so no PID file is ever written. StatusOf already probes /healthz INDEPENDENTLY of the PID
+// file (see its own comment: a PID file plus /proc/<pid>/exe says WHICH process, the health probe says
+// whether anything is serving), so the information was there and this function simply ignored it.
+//
+// THE ORDER MATTERS AND IS THE POINT:
+//
+//   1. health is the AUTHORITATIVE "is something serving this instance" signal, and it does not depend on
+//      how the plane was started. A plane that answers /healthz IS up, whoever launched it.
+//   2. drift is reported only for a LIVE PID we can identify — unchanged, because telling an operator to
+//      restart a process that is not running is still the wrong instruction.
+//   3. a live PID that is NOT answering is still DOWN: "the process exists but serves nothing" is a real
+//      failure and the health probe is what distinguishes it from a working plane.
+//
+// What is deliberately NOT claimed: a plane reachable by health but with no PID file cannot be STOPPED
+// by the lifecycle verbs (there is no PID to signal). That is a truthful limit of a plane started by
+// something else, and it is better than reporting a working plane as dead.
 func stateFromStatus(st planecontrol.Status) planeState {
-	if st.Drift == planecontrol.Drifted && st.Alive {
-		return planeStateDrifted
-	}
-	if st.PID > 0 && st.Alive && st.Healthy {
+	if st.Healthy {
+		if st.Drift == planecontrol.Drifted && st.Alive {
+			return planeStateDrifted
+		}
 		return planeStateUp
 	}
+	// Not answering: down, whether or not a PID file exists. A live PID that serves nothing is still a
+	// failure, and reporting it as "up" would hide the thing the operator needs to fix.
 	return planeStateDown
 }
 
