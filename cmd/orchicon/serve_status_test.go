@@ -96,7 +96,24 @@ func TestServeStatusOutputMatchesPlaneStatus(t *testing.T) {
 	// operator types cannot disagree.
 	assertPlaneStatusAgrees(t, instance, out)
 
-	want, err := planecontrol.StatusOf(planecontrol.Defaults(instance, io.Discard))
+	// THE EXPECTED STRING IS COMPUTED WITH THE SAME WRITER THE COMMANDS USE, and getting that wrong is
+	// what made this test fail on a developer's machine while passing in CI.
+	//
+	// Drift writes an EXPLANATION to the writer it is given when the live process is not the binary this
+	// build would install ("plane runs from X, not Y — leaving it"). serveStatus passes os.Stdout, so that
+	// line lands in the captured output. This test used to compute `want` with io.Discard, which SUPPRESSES
+	// the line — so the two strings differed by exactly that sentence and the test failed.
+	//
+	// It only bit a host where the drift probe reaches the "different binary" branch, which needs a plane
+	// binary at ~/.local/bin/orchicon (resolvePlaneBinary's fallback). CI has none, so the branch was never
+	// taken there and the test passed; a developer who had installed the plane hit it every time. A test
+	// that fails on the developer's machine and passes in CI is the least actionable kind, because the code
+	// is fine and the environment is the difference.
+	//
+	// Same writer, same content: the comparison now asks the question the test is FOR (do the two commands
+	// agree?) rather than accidentally asking whether the writer happened to be silent.
+	var wantBuf strings.Builder
+	want, err := planecontrol.StatusOf(planecontrol.Defaults(instance, &wantBuf))
 	if err != nil {
 		t.Fatalf("planecontrol.StatusOf: %v", err)
 	}
@@ -104,8 +121,10 @@ func TestServeStatusOutputMatchesPlaneStatus(t *testing.T) {
 		t.Fatalf("the PID file did not resolve to this process (got PID %d), so this test would prove "+
 			"nothing about agreeing surfaces: %+v", want.PID, want)
 	}
-	if got := strings.TrimSpace(out); got != want.String() {
-		t.Errorf("serve --status and plane status disagree for instance %q.\n  serve --status: %s\n  plane status:   %s", instance, got, want.String())
+	// The drift explanation is part of what the command PRINTS, so it is part of what must agree.
+	wantOut := wantBuf.String() + want.String() + "\n"
+	if got := strings.TrimSpace(out); got != strings.TrimSpace(wantOut) {
+		t.Errorf("serve --status and plane status disagree for instance %q.\n  serve --status: %s\n  plane status:   %s", instance, got, strings.TrimSpace(wantOut))
 	}
 	if rc != 0 {
 		t.Errorf("a live PID file must exit 0 — `scripts/orchicon.sh` machine-reads it as \"the plane is "+
