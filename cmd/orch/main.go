@@ -33,6 +33,7 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 
+	"github.com/beardedparrott/orchicon/internal/controlport"
 	"github.com/beardedparrott/orchicon/internal/tui"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
@@ -52,6 +53,12 @@ type flags struct {
 	token    string
 	insecure bool
 	showVer  bool
+	// instance names a LOCAL Orchicon instance (dev|prod|test) to connect to, resolved
+	// through the SHARED control-port table — the same one the desktop app and the
+	// installer use, so "dev" is the same port on every surface. It is the flag form of
+	// ORCHICON_INSTANCE, and it SETS that variable for this process so the plane
+	// lifecycle verbs act on the instance the shell is connected to.
+	instance string
 }
 
 func main() {
@@ -124,6 +131,11 @@ func parseArgs(args []string) *flags {
 				i++
 				fl.profile = args[i]
 			}
+		case "--instance", "-i":
+			if i+1 < len(args) {
+				i++
+				fl.instance = args[i]
+			}
 		case "--insecure", "-k":
 			fl.insecure = true
 		case "--help", "-h":
@@ -142,11 +154,16 @@ const usage = `orch — Orchicon remote client (TUI)
 Usage:
   orch                   launch the TUI
   orch --profile NAME    pin this process to a saved profile (one per instance)
+  orch --instance dev    connect to a local instance (dev|prod|test)
   orch version           print the client version
   orch --url URL --token oc_... [--insecure]
 
 Credentials persist in ~/.orchicon/config (0600).
 ORCHICON_URL / ORCHICON_TOKEN override the config file.
+--instance resolves through the shared control-port table, so dev/prod/test mean the
+same thing here as in the desktop app and the installer. It also sets
+ORCHICON_INSTANCE for this process, so /plane start|stop|restart act on the instance
+you are connected to.
 ORCHICON_PROFILE selects a named profile for THIS PROCESS without changing which
 profile a plain "orch" uses, so several orch processes can talk to several instances
 at once. Each instance is saved under its own name (its host:port), so connecting to a
@@ -157,6 +174,36 @@ scopes for the areas orch displays.
 
 // run resolves the profile then either launches the connection screen
 // (first run / missing credential) or the app shell directly.
+// selectInstance validates --instance, pins the process to it, and returns the control
+// URL it names.
+//
+// IT VALIDATES AGAINST THE SHARED TABLE (internal/controlport) — the one the installer
+// owns and the desktop app already consumes — so "prod" cannot mean 8091 here and
+// something else there, and this file cannot invent a fifth instance.
+//
+// AN UNKNOWN NAME IS A REFUSAL, NOT A FALLBACK. Silently connecting to a default is how
+// an operator who typed `prod` ends up reading dev's conversations and then blaming the
+// TUI for showing the wrong thing; internal/controlport states the same rule for the
+// same reason.
+//
+// IT ALSO SETS ORCHICON_INSTANCE FOR THIS PROCESS, which is what makes the plane verbs
+// agree with the connection: internal/tui's instanceForProfile reads that variable
+// first. Without it, `orch --instance prod` would connect to prod while /plane restart
+// acted on whatever the profile's port suggested — or left the plane alone.
+func selectInstance(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", nil
+	}
+	if _, ok := controlport.Defaults()[name]; !ok {
+		return "", fmt.Errorf("unknown instance %q — expected dev, prod or test (or use --url for an arbitrary plane)", name)
+	}
+	if err := os.Setenv("ORCHICON_INSTANCE", name); err != nil {
+		return "", fmt.Errorf("select instance %q: %w", name, err)
+	}
+	return config.InstanceURL(name), nil
+}
+
 func run(fl *flags) error {
 	path, err := config.DefaultPath()
 	if err != nil {
@@ -212,8 +259,46 @@ func run(fl *flags) error {
 			loadWarning = msg
 		}
 	}
+	// WHICH LOCAL INSTANCE. --instance names one of dev/prod/test and resolves it through
+	// the SHARED control-port table (internal/controlport), which the installer owns and the
+	// desktop app already consumes — so the two surfaces cannot mean different ports by
+	// "prod", and this file cannot invent a fifth one.
+	//
+	// IT ALSO SETS ORCHICON_INSTANCE FOR THIS PROCESS. That is what makes the plane verbs
+	// agree with the connection: internal/tui's instanceForProfile reads that variable
+	// FIRST (before deriving an instance from the profile's port). Without it, `orch
+	// --instance prod` would connect to prod while /plane restart acted on whatever the
+	// profile's port suggested, or on nothing at all — the exact mismatch the flag exists
+	// to remove. Set once, here, so every later reader sees one answer.
+	target, err := selectInstance(fl.instance)
+	if err != nil {
+		return err
+	}
+
 	if profile == nil && fl.url != "" {
 		profile = &config.Profile{URL: strings.TrimRight(fl.url, "/"), AuthMethod: config.AuthAPIKey, Token: fl.token, InsecureSkipVerify: fl.insecure}
+	}
+	// THE INSTANCE RETARGETS THE CONNECTION, AND REUSES THE CREDENTIAL ALREADY SAVED FOR IT.
+	//
+	// --url WINS: it is the finer escape hatch (a tunnel, a moved port, another host) and
+	// the desktop app gives its --plane URL the same precedence over --instance.
+	//
+	// When a credential is already saved for that instance it is kept — the operator
+	// connected to dev once, and making them sign in again for asking by NAME would be a
+	// worse answer than the URL/port one. Absent a saved profile the session still TARGETS
+	// the instance (empty token), so the connection screen collects the credential against
+	// the right host instead of the wrong one.
+	if target != "" && fl.url == "" {
+		if profile == nil {
+			profile = config.ProfileForInstance(cfg, fl.instance)
+		}
+		if profile == nil {
+			profile = &config.Profile{AuthMethod: config.AuthAPIKey, Token: fl.token, InsecureSkipVerify: fl.insecure}
+		} else {
+			cp := *profile // never mutate the saved profile
+			profile = &cp
+		}
+		profile.URL = target
 	}
 	if profile == nil && (fl.token != "" || fl.insecure) {
 		return fmt.Errorf("--token/--insecure given but no --url (and no config): pass --url or set ORCHICON_URL")
