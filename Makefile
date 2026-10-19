@@ -1172,6 +1172,17 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
 # a release build use the same framework.
 WAILS_VERSION  := v2.17.0
 NFPM_VERSION   := v2.41.0
+# WIX_VERSION IS PINNED, AND MUST STAY BELOW 6. WiX v6 introduced the Open Source
+# Maintenance Fee EULA: an UNPINNED `dotnet tool install --global wix` now resolves
+# to v7 and fails the build outright with
+#
+#     error WIX7015: You must accept the Open Source Maintenance Fee (OSMF) EULA
+#
+# which is a licensing decision, not a build detail — so this target must not make
+# it implicitly by floating to latest. 5.0.2 is the last free line, and it takes the
+# same v4 schema namespace this .wxs uses. Raising it is a deliberate act that must
+# come with whatever the new version requires.
+WIX_VERSION    ?= 5.0.2
 WAILS          ?= $(shell command -v wails 2>/dev/null || echo $(HOME)/go/bin/wails)
 DESKTOP_DIST   := dist/desktop
 DESKTOP_VERSION := $(patsubst v%,%,$(VERSION))
@@ -1234,8 +1245,9 @@ desktop-package-windows: ## Produce the Windows MSI (Windows host with the WiX C
 	@test -n "$(WIX)" || { \
 		printf 'error: the WiX CLI (`wix`) was not found.\n\n'; \
 		printf '  The MSI is built by WiX v4, a .NET global tool:\n'; \
-		printf '      dotnet tool install --global wix\n'; \
-		printf '      dotnet tool install --global wix --add-source https://api.nuget.org/v3/index.json  # (already configured by the above)\n\n'; \
+		printf '      dotnet tool install --global wix --version $(WIX_VERSION)\n\n'; \
+		printf '  The version is PINNED ($(WIX_VERSION)): WiX v6+ requires accepting the Open Source\n'; \
+		printf '  Maintenance Fee EULA, so an unpinned install resolves to v7 and fails.\n\n'; \
 		printf '  This host cannot build it, and that is not a repo defect: the release and CI build the\n'; \
 		printf '  MSI on windows-latest. To produce one by hand, run this target on Windows.\n'; \
 		exit 1; }

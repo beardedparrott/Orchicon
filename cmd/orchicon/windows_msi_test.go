@@ -26,6 +26,7 @@ package main
 
 import (
 	"encoding/xml"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,4 +226,70 @@ func TestInstallPS1PrefersTheMSIWithoutBreakingUnattended(t *testing.T) {
 		t.Error("install.ps1 does not run the installed binary to verify the MSI, so a package " +
 			"that exits 0 without installing anything would be reported as success")
 	}
+}
+
+// TestWiXVersionIsPinnedBelowSix — the build must not float into a licensing decision.
+//
+// WHAT HAPPENED. `dotnet tool install --global wix` with no --version resolved to v7,
+// and the job died with
+//
+//	error WIX7015: You must accept the Open Source Maintenance Fee (OSMF) EULA to use
+//	WiX Toolset v7.
+//
+// That is a LICENSING decision, and a build must never make one implicitly by floating
+// to latest. It is pinned, and pinned below 6, in both the workflows and the Makefile —
+// and this fails if the two ever disagree, which is how one of them silently starts
+// resolving to a version the other does not use.
+func TestWiXVersionIsPinnedBelowSix(t *testing.T) {
+	want := wixPinnedVersion(t)
+
+	// v6 introduced the fee, so anything >= 6 is not buildable without accepting it.
+	var major int
+	if _, err := fmt.Sscanf(strings.SplitN(want, ".", 2)[0], "%d", &major); err != nil {
+		t.Fatalf("cannot parse the WiX version %q", want)
+	}
+	if major >= 6 {
+		t.Errorf("WIX_VERSION is %q.\n"+
+			"WiX v6+ requires accepting the Open Source Maintenance Fee EULA, so every build\n"+
+			"fails with \"error WIX7015\". Pin a version below 6 and treat raising it as the\n"+
+			"licensing decision it is.", want)
+	}
+
+	// ONE VERSION, EVERYWHERE. A workflow on a different version than the Makefile is
+	// how a local build and CI start producing different packages.
+	mk := readMSIFile(t, "..", "..", "Makefile")
+	if !strings.Contains(mk, "WIX_VERSION    ?= "+want) {
+		t.Errorf("the Makefile does not pin WIX_VERSION to %q", want)
+	}
+	for _, wf := range []string{"ci.yml", "release.yml"} {
+		body := readMSIFile(t, "..", "..", ".github", "workflows", wf)
+		if !strings.Contains(body, "dotnet tool install --global wix --version "+want) {
+			t.Errorf("%s does not install wix --version %s.\n"+
+				"An UNPINNED install resolves to v7 and fails the build; a differently-pinned one\n"+
+				"produces a package the Makefile would not.", wf, want)
+		}
+		// And it must not ALSO contain an unpinned install that would win.
+		if strings.Contains(body, "dotnet tool install --global wix\n") {
+			t.Errorf("%s contains an UNPINNED `dotnet tool install --global wix`, which resolves "+
+				"to v7 and fails with the OSMF EULA error", wf)
+		}
+	}
+}
+
+// wixPinnedVersion reads the version the Makefile pins.
+func wixPinnedVersion(t *testing.T) string {
+	t.Helper()
+	mk := readMSIFile(t, "..", "..", "Makefile")
+	for _, line := range strings.Split(mk, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "WIX_VERSION") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			return strings.TrimSpace(parts[1])
+		}
+	}
+	t.Fatal("the Makefile declares no WIX_VERSION")
+	return ""
 }

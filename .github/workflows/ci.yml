@@ -329,7 +329,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet tool install --global wix
+          # PINNED, AND BELOW 6: WiX v6+ requires accepting the Open Source Maintenance
+          # Fee EULA, and an unpinned install resolves to v7 — which fails the build with
+          # "error WIX7015: You must accept the Open Source Maintenance Fee (OSMF) EULA".
+          # That is a licensing decision, not something a build should make by floating.
+          # cmd/orchicon/windows_msi_test.go fails if this and the Makefile disagree.
+          dotnet tool install --global wix --version 5.0.2
           "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
       - name: Build the MSI
         shell: pwsh
