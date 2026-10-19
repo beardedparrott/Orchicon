@@ -761,7 +761,16 @@ desktop-deps: ## Print the host prerequisites for building the desktop app (wail
 # libwebkit2gtk-4.1-dev; without the tag the cgo files ask pkg-config for 4.0 and the
 # build stops. Inert on macOS (WKWebView) and Windows (WebView2).
 desktop-build: fe-build ## Build the desktop app for THIS OS (CGO on; NOT part of cross-compile)
-	CGO_ENABLED=1 go build -tags orchicon_desktop,production,webkit2_41 -o bin/orchicon-desktop ./cmd/orchicon-desktop
+	@# THE LDFLAGS ARE NOT DECORATION. Without them version.Current().Tag keeps its
+	@# "dev" placeholder, the shell's AppTag becomes "dev", and the SPA's mismatch
+	@# banner fires against a REAL plane ("this window's UI is dev but the plane is
+	@# v0.5.104") on a tree that matches it exactly. That banner is a genuine signal —
+	@# a UI from one tree talking to a plane from another may speak a different API —
+	@# so the fix is to stamp the build, never to silence the warning.
+	@#
+	@# `wails build` cannot inherit these (wails.json has no ldflags key), which is
+	@# exactly why this target is the one to use for the inner loop.
+	CGO_ENABLED=1 go build -tags orchicon_desktop,production,webkit2_41 -ldflags '$(LDFLAGS)' -o bin/orchicon-desktop ./cmd/orchicon-desktop
 
 desktop-test: ## CI gate: the desktop shell's guards (no webview needed)
 	go build ./internal/desktop/ ./internal/controlport/
