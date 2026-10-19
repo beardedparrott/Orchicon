@@ -4,8 +4,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useGetUsage, useListProviders } from "@/api/aigateway";
 import { setTelemetryAttribution } from "@/api/clients";
 import { useListProjects } from "@/api/projects";
-import { useGetDashboard, type TelemetryFilters as TelemetryFilterSet } from "@/api/telemetry";
-import { LogsPanel, MetricsGraphPanel, TracesPanel } from "@/components/telemetry/graphs";
+import {
+  useGetDashboard,
+  useGetTelemetryReport,
+  type TelemetryFilters as TelemetryFilterSet,
+} from "@/api/telemetry";
+import { TelemetryReportGroupBy } from "@/api/gen/orchicon/api/v1/telemetry_service_pb";
+import {
+  LogsPanel,
+  MetricsGraphPanel,
+  TracesPanel,
+} from "@/components/telemetry/graphs";
 import { ReportsPanel } from "@/components/telemetry/reports-panel";
 import { StatCard, fmtInt } from "@/components/telemetry/states";
 import {
@@ -43,7 +52,9 @@ const TABS: { id: Tab; label: string }[] = [
 
 function TelemetryPage() {
   const [tab, setTab] = useState<Tab>("overview");
-  const [filters, setFilters] = useState<TelemetryFilterValue>(DEFAULT_TELEMETRY_FILTERS);
+  const [filters, setFilters] = useState<TelemetryFilterValue>(
+    DEFAULT_TELEMETRY_FILTERS,
+  );
   const { data: projects } = useListProjects();
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
@@ -112,8 +123,9 @@ function TelemetryPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Telemetry</h1>
         <p className="text-sm text-muted-foreground">
-          Native OTEL telemetry — graphs, reports and search over traces, metrics and logs, served
-          by Orchicon itself. For token and cost breakdown, see{" "}
+          Native OTEL telemetry — graphs, reports and search over traces,
+          metrics and logs, served by Orchicon itself. For token and cost
+          breakdown, see{" "}
           <Link to="/cost-explorer" className="text-primary hover:underline">
             Cost Explorer
           </Link>
@@ -180,43 +192,136 @@ function TelemetryPage() {
 function OverviewPanel({ query }: { query: TelemetryFilterSet }) {
   const { data, isLoading } = useGetDashboard({ projectId: query.projectId });
   const { data: providers } = useListProviders();
+
+  // THE DASHBOARD ANSWERS "DID THE WORK LAND?" TOO, NOT ONLY "WHAT DID IT COST?".
+  //
+  // GetDashboard is a cost/usage roll-up over usage_records: it can say what the
+  // workspace spent and how many executions ran, but not whether any work
+  // FINISHED or how it ended — so the landing tab had nothing to say about
+  // outcomes at all. The counters come from the same Postgres-only report the
+  // Reports tab reads, which also means they keep working while a telemetry
+  // store is down (the whole point of that split).
+  //
+  // Same filters, same window as Reports: two surfaces answering "how much
+  // failed" with different windows would be worse than one answering neither.
+  const { data: report } = useGetTelemetryReport({
+    groupBy: TelemetryReportGroupBy.PROJECT,
+    filters: query,
+  });
+  const outcomes = report?.outcomes;
+  const windowLabel = useMemo(() => {
+    const start = report?.windowStart;
+    const end = report?.windowEnd;
+    if (!start || !end) return "in this window";
+    const hours = Math.max(
+      1,
+      Math.round(
+        (Number(end.seconds) * 1000 - Number(start.seconds) * 1000) / 3_600_000,
+      ),
+    );
+    return hours === 1 ? "last hour" : `last ${hours}h`;
+  }, [report?.windowStart, report?.windowEnd]);
+
   const summary = data?.summary;
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label="Total tokens"
-          value={summary ? fmtInt(summary.totalTokens) : "—"}
-          loading={isLoading}
-        />
-        <StatCard
-          label="Total cost (USD)"
-          value={summary ? `$${summary.totalCostUsd.toFixed(4)}` : "—"}
-          loading={isLoading}
-        />
-        <StatCard
-          label="Executions"
-          value={summary ? fmtInt(summary.totalExecutions) : "—"}
-          loading={isLoading}
-        />
-        <StatCard
-          label="Providers"
-          value={providers ? String(providers.length) : "—"}
-          loading={isLoading}
-        />
-      </div>
+      <section aria-labelledby="overview-outcomes">
+        <h2 id="overview-outcomes" className="mb-2 text-sm font-medium">
+          Work outcomes
+        </h2>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            label="Work completed"
+            value={fmtInt(outcomes?.workSucceeded ?? 0)}
+            loading={isLoading}
+            hint={windowLabel}
+          />
+          <StatCard
+            label="Work failed"
+            value={fmtInt(outcomes?.workFailed ?? 0)}
+            loading={isLoading}
+            hint={windowLabel}
+          />
+          <StatCard
+            label="Work cancelled"
+            value={fmtInt(outcomes?.workCancelled ?? 0)}
+            loading={isLoading}
+            hint={windowLabel}
+          />
+          <StatCard
+            label="Work still open"
+            value={fmtInt(outcomes?.workOpen ?? 0)}
+            loading={isLoading}
+            hint="in flight, not a unit"
+          />
+        </div>
+      </section>
+
+      <Card className="glass-panel">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Workflow runs</CardTitle>
+          <CardDescription>
+            Completed is the success state; aborted is cancelled work, not a
+            failure. {windowLabel}.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[
+            { label: "Completed", value: outcomes?.workflowsCompleted ?? 0 },
+            { label: "Failed", value: outcomes?.workflowsFailed ?? 0 },
+            { label: "Aborted", value: outcomes?.workflowsAborted ?? 0 },
+            { label: "Running", value: outcomes?.workflowsRunning ?? 0 },
+          ].map((w) => (
+            <div key={w.label}>
+              <div className="text-xs text-muted-foreground">{w.label}</div>
+              <div className="text-lg font-semibold tabular-nums">
+                {fmtInt(w.value)}
+              </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      <section aria-labelledby="overview-cost">
+        <h2 id="overview-cost" className="mb-2 text-sm font-medium">
+          Cost and usage
+        </h2>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            label="Total tokens"
+            value={summary ? fmtInt(summary.totalTokens) : "—"}
+            loading={isLoading}
+          />
+          <StatCard
+            label="Total cost (USD)"
+            value={summary ? `$${summary.totalCostUsd.toFixed(4)}` : "—"}
+            loading={isLoading}
+          />
+          <StatCard
+            label="Executions"
+            value={summary ? fmtInt(summary.totalExecutions) : "—"}
+            loading={isLoading}
+          />
+          <StatCard
+            label="Providers"
+            value={providers ? String(providers.length) : "—"}
+            loading={isLoading}
+          />
+        </div>
+      </section>
       <Card className="glass-panel">
         <CardHeader>
           <CardTitle>Cost by model</CardTitle>
           <CardDescription>
-            Per-model USD spend over the lifetime of the workspace (custom Orchicon roll-up from
-            Postgres usage_records — source of truth).
+            Per-model USD spend over the lifetime of the workspace (custom
+            Orchicon roll-up from Postgres usage_records — source of truth).
           </CardDescription>
         </CardHeader>
         <CardContent>
           {data?.panels && data.panels.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              No usage recorded yet. Run an execution to populate cost telemetry.
+              No usage recorded yet. Run an execution to populate cost
+              telemetry.
             </p>
           )}
           {data?.panels && data.panels.length > 0 && (
@@ -302,14 +407,23 @@ function CreditsPanel() {
           value={`$${grandTotal.cost.toFixed(4)}`}
           loading={isLoading}
         />
-        <StatCard label="Total tokens" value={fmtInt(grandTotal.tokens)} loading={isLoading} />
-        <StatCard label="Usage records" value={fmtInt(grandTotal.count)} loading={isLoading} />
+        <StatCard
+          label="Total tokens"
+          value={fmtInt(grandTotal.tokens)}
+          loading={isLoading}
+        />
+        <StatCard
+          label="Usage records"
+          value={fmtInt(grandTotal.count)}
+          loading={isLoading}
+        />
       </div>
       {byProvider.size === 0 && !isLoading && (
         <Card className="glass-panel">
           <CardContent className="py-6">
             <p className="text-center text-sm text-muted-foreground">
-              No usage records yet. Run an execution to populate credit telemetry.
+              No usage records yet. Run an execution to populate credit
+              telemetry.
             </p>
           </CardContent>
         </Card>
@@ -322,7 +436,8 @@ function CreditsPanel() {
               <CardHeader>
                 <CardTitle>{displayName}</CardTitle>
                 <CardDescription>
-                  ${p.totalCost.toFixed(4)} · {fmtInt(p.totalTokens)} tokens · {p.count} records
+                  ${p.totalCost.toFixed(4)} · {fmtInt(p.totalTokens)} tokens ·{" "}
+                  {p.count} records
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -334,7 +449,8 @@ function CreditsPanel() {
                     >
                       <span className="font-mono text-xs">{model}</span>
                       <span className="text-xs text-muted-foreground">
-                        ${m.cost.toFixed(4)} · {fmtInt(m.tokens)} tok · {m.count} calls
+                        ${m.cost.toFixed(4)} · {fmtInt(m.tokens)} tok ·{" "}
+                        {m.count} calls
                       </span>
                     </div>
                   ))}
