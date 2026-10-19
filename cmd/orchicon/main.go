@@ -289,7 +289,9 @@ func printHelp() {
 	rows := []row{
 		{section: "Setting up and driving an instance:"},
 		{cmd: bin + " install", desc: []string{
-			"Set up this machine: pull the images, create the instance, start the plane.",
+			"Set up this machine: resolve the host ports and binaries, start Postgres + NATS",
+			"as host processes, then start the plane. No container is created and no image is",
+			"pulled — runtime images are optional and fetched later, per project, on demand.",
 			"IDEMPOTENT — re-running converges an existing instance and upgrades a superseded",
 			"plane. It does NOT restart a plane that is already healthy on the installed binary,",
 			"which is why it is not the way to pick up an environment change."}},
