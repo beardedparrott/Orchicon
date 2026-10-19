@@ -5,9 +5,19 @@ auth_enabled: false
 
 server:
   http_listen_port: @LOKI_HTTP_PORT@
-  # Offset the gRPC listener from the default 9095 (which collides with
-  # another process in the single-container network namespace).
-  grpc_listen_port: 9096
+  # EPHEMERAL ON PURPOSE — 0 asks the kernel for a free port.
+  #
+  # This listener is INTERNAL: nothing outside the process dials it (the
+  # collector ships logs to the HTTP port above; readiness probes that), so it
+  # needs a socket and no particular number. A fixed number was the bug: the
+  # literal 9096 was chosen to dodge the collector in the retired
+  # single-container namespace, and once every instance shared the real host,
+  # the second instance could never bind it — dev's Loki crash-looped on
+  # "listen tcp :9096: bind: address already in use" while prod held it, so the
+  # operator's Logs view said the backend was unreachable while it was fine on
+  # the other instance. Verified against the shipped Loki binary: port 0 binds
+  # an ephemeral socket and startup proceeds normally.
+  grpc_listen_port: 0
 
 common:
   path_prefix: "@DATA_DIR@/loki"

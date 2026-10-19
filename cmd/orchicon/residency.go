@@ -33,6 +33,16 @@ type servicePorts struct {
 	loki        int
 	vm          int
 
+	// tempoGRPC is Tempo's OWN gRPC listener (its querier/frontend talk over it;
+	// the collector does NOT — it uses the OTLP receivers above). It is NOT an
+	// HTTP port and nothing outside the process dials it, which is exactly why
+	// leaving it at Tempo's default was invisible until a second instance tried
+	// to start: two instances cannot both own :9095, so the second one died on
+	// `bind: address already in use` and its Traces view reported the backend
+	// unreachable for ever. Templated (see tempo.yaml) so the child binds what
+	// this table says.
+	tempoGRPC int
+
 	// The telemetry children's port fields below are NOT in argv: each lives in
 	// an embedded config (tempo.yaml, loki.yaml, otel-collector.yaml) that
 	// writeConfigs ships with @TOKEN@ placeholders. Binding and probing read the
@@ -51,6 +61,22 @@ type servicePorts struct {
 	collectorOTLPGRPC int
 	collectorOTLPHTTP int
 	collectorHealth   int
+
+	// collectorSelfMetrics is the collector's OWN Prometheus exporter — the port
+	// it serves its internal telemetry on (otelcol_* receivers/exporters/queue
+	// stats). It is the THIRD instance of the same bug the two above carry: the
+	// collector DEFAULTS this to localhost:8888, so nothing ever assigned it and
+	// two instances demanded the same socket. Measured on this host: prod holding
+	// 127.0.0.1:8888 and dev's collector crash-looping for ever on
+	// "binding address localhost:8888 for Prometheus exporter: bind: address
+	// already in use" — 16 restarts — which also meant dev shipped NO OTLP at
+	// all, so its Metrics view showed only the plane's own outbox gauges while
+	// tokens/cost/executions were emitted into nothing.
+	//
+	// Templated into otel-collector.yaml's service.telemetry.metrics.address and
+	// resolved through internalListenerPort, so it walks off an occupied port the
+	// same way Tempo's gRPC listener does.
+	collectorSelfMetrics int
 }
 
 // servicePortDefaults are the literals every install binds and probes when the
@@ -68,11 +94,15 @@ func servicePortDefaults() servicePorts {
 		tempo:             3200,
 		loki:              3100,
 		vm:                8428,
+		tempoGRPC:         9095, // Tempo's own default
 		tempoOTLPGRPC:     14317,
 		tempoOTLPHTTP:     14318,
 		collectorOTLPGRPC: 4317,
 		collectorOTLPHTTP: 4318,
 		collectorHealth:   13133,
+		// The collector's own default (localhost:8888) — recorded here so it can
+		// be overridden and walked off a collision, not because we chose it.
+		collectorSelfMetrics: 8888,
 	}
 }
 
@@ -98,12 +128,14 @@ func servicePortsFromEnv() servicePorts {
 		{"ORCHICON_NATS_MONITOR_PORT", &p.natsMonitor},
 		{"ORCHICON_VM_PORT", &p.vm},
 		{"ORCHICON_TEMPO_PORT", &p.tempo},
+		{"ORCHICON_TEMPO_GRPC_PORT", &p.tempoGRPC},
 		{"ORCHICON_LOKI_PORT", &p.loki},
 		{"ORCHICON_OTLP_GRPC_PORT", &p.collectorOTLPGRPC},
 		{"ORCHICON_OTLP_HTTP_PORT", &p.collectorOTLPHTTP},
 		{"ORCHICON_TEMPO_OTLP_GRPC_PORT", &p.tempoOTLPGRPC},
 		{"ORCHICON_TEMPO_OTLP_HTTP_PORT", &p.tempoOTLPHTTP},
 		{"ORCHICON_OTEL_HEALTH_PORT", &p.collectorHealth},
+		{"ORCHICON_OTEL_SELF_METRICS_PORT", &p.collectorSelfMetrics},
 	}
 	for _, o := range overrides {
 		if v := os.Getenv(o.env); v != "" {

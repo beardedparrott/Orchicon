@@ -45,6 +45,23 @@ extensions:
     endpoint: 0.0.0.0:@COLLECTOR_HEALTH_PORT@
 
 service:
+  # THE COLLECTOR'S OWN STATS LISTENER MUST BE DECLARED, NOT DEFAULTED.
+  #
+  # Left out, the collector serves its internal telemetry on its DEFAULT
+  # localhost:8888 — a socket every instance on the host then claims. That is
+  # the third instance of the same bug the Loki/Tempo internal listeners had:
+  # measured here, prod held 127.0.0.1:8888 and dev's collector crash-looped
+  # for ever ("binding address localhost:8888 for Prometheus exporter: bind:
+  # address already in use", 16 restarts). Because the COLLECTOR is what ships
+  # OTLP from the plane to Tempo, Loki and VictoriaMetrics, dev also ingested
+  # nothing: its Metrics view showed only the plane's own outbox gauges while
+  # tokens, cost and execution counts were emitted into nothing at all.
+  #
+  # Templated and walked off an occupied port (see countTokens/internalListenerPort)
+  # so the second instance binds without an install-time allocation.
+  telemetry:
+    metrics:
+      address: 0.0.0.0:@COLLECTOR_SELF_METRICS_PORT@
   extensions: [health_check]
   pipelines:
     traces:
