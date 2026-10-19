@@ -341,7 +341,7 @@ jobs:
         working-directory: cmd/orchicon-desktop
         run: |
           set -euo pipefail
-          wails build -tags desktop,production,webkit2_41 -clean
+          wails build -tags orchicon_desktop,production,webkit2_41 -clean
       - uses: actions/upload-artifact@v4
         with:
           name: orchicon-desktop-${{ matrix.os }}

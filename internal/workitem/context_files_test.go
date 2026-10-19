@@ -189,7 +189,14 @@ func TestContextFilesColumnExistsDB(t *testing.T) {
 	}
 	defer func() { _ = ttx.Rollback(context.Background()) }()
 	// The column exists (a pre-migration query would fail here).
-	var one string
+	//
+	// A nullable scan, because the assertion is "the column exists and is
+	// readable", not "the first row Postgres happens to return has a value".
+	// Scanning into a plain string made this test depend on which row the
+	// planner picked: it passed on an empty-ish database and failed on any
+	// populated one, because context_files is nullable (and is jsonb, so
+	// COALESCE-ing it to a string literal is not valid JSON either).
+	var one *string
 	if err := ttx.Tx.QueryRow(ctx,
 		`SELECT context_files FROM work_items LIMIT 1`).Scan(&one); err != nil && !strings.Contains(err.Error(), "no rows") {
 		t.Fatalf("query context_files column: %v", err)

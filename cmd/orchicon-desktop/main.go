@@ -1,4 +1,4 @@
-//go:build desktop
+//go:build orchicon_desktop
 
 // orchicon-desktop is the thin Wails entry point: it owns NO logic. Everything
 // testable lives in internal/desktop (the loopback origin, the proxy, the

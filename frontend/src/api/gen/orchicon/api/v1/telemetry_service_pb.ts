@@ -957,6 +957,22 @@ export class GetTelemetryReportResponse extends Message<GetTelemetryReportRespon
    */
   windowEnd?: Timestamp;
 
+  /**
+   * outcomes and models answer the questions a cost/window table cannot: how
+   * much work actually FINISHED, how, and which models did it. They are
+   * separate dimensions, not more columns on a project row — a project row is
+   * a cost bucket and would double-count if it also carried tenant-wide
+   * outcome totals.
+   *
+   * @generated from field: orchicon.api.v1.TelemetryReportOutcomes outcomes = 5;
+   */
+  outcomes?: TelemetryReportOutcomes;
+
+  /**
+   * @generated from field: repeated orchicon.api.v1.TelemetryReportModel models = 6;
+   */
+  models: TelemetryReportModel[] = [];
+
   constructor(data?: PartialMessage<GetTelemetryReportResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -969,6 +985,8 @@ export class GetTelemetryReportResponse extends Message<GetTelemetryReportRespon
     { no: 2, name: "totals", kind: "message", T: TelemetryReportTotals },
     { no: 3, name: "window_start", kind: "message", T: Timestamp },
     { no: 4, name: "window_end", kind: "message", T: Timestamp },
+    { no: 5, name: "outcomes", kind: "message", T: TelemetryReportOutcomes },
+    { no: 6, name: "models", kind: "message", T: TelemetryReportModel, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetTelemetryReportResponse {
@@ -985,6 +1003,182 @@ export class GetTelemetryReportResponse extends Message<GetTelemetryReportRespon
 
   static equals(a: GetTelemetryReportResponse | PlainMessage<GetTelemetryReportResponse> | undefined, b: GetTelemetryReportResponse | PlainMessage<GetTelemetryReportResponse> | undefined): boolean {
     return proto3.util.equals(GetTelemetryReportResponse, a, b);
+  }
+}
+
+/**
+ * TelemetryReportOutcomes is the high-level "what happened to the work"
+ * roll-up. Both halves are counted over work that reached a TERMINAL state
+ * inside the window — the question an operator asks of a dashboard is "what
+ * finished in the last day, and how did it end", not "what was created".
+ * Open work is reported separately so the totals are not silently a lie:
+ * work_* and the workflow_* counters do not sum to each other, and neither
+ * pair sums to a throughput number on its own.
+ *
+ * @generated from message orchicon.api.v1.TelemetryReportOutcomes
+ */
+export class TelemetryReportOutcomes extends Message<TelemetryReportOutcomes> {
+  /**
+   * Work items whose status is terminal, by outcome. work_open is everything
+   * else (pending/ready/assigned/running/blocked/…): in flight, not a unit.
+   *
+   * @generated from field: int32 work_succeeded = 1;
+   */
+  workSucceeded = 0;
+
+  /**
+   * @generated from field: int32 work_cancelled = 2;
+   */
+  workCancelled = 0;
+
+  /**
+   * @generated from field: int32 work_failed = 3;
+   */
+  workFailed = 0;
+
+  /**
+   * @generated from field: int32 work_open = 4;
+   */
+  workOpen = 0;
+
+  /**
+   * Workflow runs. workflow_runs.status lives in
+   * {'pending','running','completed','failed','aborted'} — the success state
+   * is 'completed', NOT 'succeeded', and 'aborted' is a distinct terminal
+   * outcome that must not be folded into failed.
+   *
+   * @generated from field: int32 workflows_completed = 5;
+   */
+  workflowsCompleted = 0;
+
+  /**
+   * @generated from field: int32 workflows_failed = 6;
+   */
+  workflowsFailed = 0;
+
+  /**
+   * @generated from field: int32 workflows_aborted = 7;
+   */
+  workflowsAborted = 0;
+
+  /**
+   * @generated from field: int32 workflows_running = 8;
+   */
+  workflowsRunning = 0;
+
+  /**
+   * work_skipped is terminal but neither a success nor a failure, so it gets
+   * its own counter: folding it into work_succeeded would report work that
+   * never ran as completed, and folding it into work_open would report
+   * finished work as in flight.
+   *
+   * @generated from field: int32 work_skipped = 9;
+   */
+  workSkipped = 0;
+
+  constructor(data?: PartialMessage<TelemetryReportOutcomes>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.TelemetryReportOutcomes";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "work_succeeded", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 2, name: "work_cancelled", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 3, name: "work_failed", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 4, name: "work_open", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 5, name: "workflows_completed", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 6, name: "workflows_failed", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 7, name: "workflows_aborted", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 8, name: "workflows_running", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 9, name: "work_skipped", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TelemetryReportOutcomes {
+    return new TelemetryReportOutcomes().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TelemetryReportOutcomes {
+    return new TelemetryReportOutcomes().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TelemetryReportOutcomes {
+    return new TelemetryReportOutcomes().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: TelemetryReportOutcomes | PlainMessage<TelemetryReportOutcomes> | undefined, b: TelemetryReportOutcomes | PlainMessage<TelemetryReportOutcomes> | undefined): boolean {
+    return proto3.util.equals(TelemetryReportOutcomes, a, b);
+  }
+}
+
+/**
+ * TelemetryReportModel is one model's share of the window: the "top models"
+ * leaderboard and the per-model statistics beneath it, ordered by cost.
+ *
+ * @generated from message orchicon.api.v1.TelemetryReportModel
+ */
+export class TelemetryReportModel extends Message<TelemetryReportModel> {
+  /**
+   * @generated from field: string model = 1;
+   */
+  model = "";
+
+  /**
+   * @generated from field: int64 total_tokens = 2;
+   */
+  totalTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: double cost_usd = 3;
+   */
+  costUsd = 0;
+
+  /**
+   * @generated from field: int32 executions = 4;
+   */
+  executions = 0;
+
+  /**
+   * @generated from field: int64 prompt_tokens = 5;
+   */
+  promptTokens = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 cache_read_tokens = 6;
+   */
+  cacheReadTokens = protoInt64.zero;
+
+  constructor(data?: PartialMessage<TelemetryReportModel>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.TelemetryReportModel";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "model", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "total_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 3, name: "cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
+    { no: 4, name: "executions", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 5, name: "prompt_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 6, name: "cache_read_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TelemetryReportModel {
+    return new TelemetryReportModel().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TelemetryReportModel {
+    return new TelemetryReportModel().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TelemetryReportModel {
+    return new TelemetryReportModel().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: TelemetryReportModel | PlainMessage<TelemetryReportModel> | undefined, b: TelemetryReportModel | PlainMessage<TelemetryReportModel> | undefined): boolean {
+    return proto3.util.equals(TelemetryReportModel, a, b);
   }
 }
 

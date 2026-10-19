@@ -310,4 +310,4 @@ jobs:
       # `webkit2_41` the cgo files demand webkit2gtk-4.0's pkg-config file while this
       # job installs 4.1. CI therefore compiles the same thing the release ships.
       - name: Compile the Wails entry point (the release's build path)
-        run: go build -tags desktop,production,webkit2_41 -o /tmp/orchicon-desktop ./cmd/orchicon-desktop
+        run: go build -tags orchicon_desktop,production,webkit2_41 -o /tmp/orchicon-desktop ./cmd/orchicon-desktop

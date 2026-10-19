@@ -159,7 +159,14 @@ type procState struct {
 	cmd      *exec.Cmd
 	exitCh   chan error
 	restarts int
+	// recovered records that this generation already had its state quarantined, so
+	// recovery runs once rather than on every subsequent crash.
+	recovered bool
 }
+
+// recoveryThreshold is how many consecutive crashes prove that a restart cannot
+// fix the component. See managedProc.recoverState.
+const recoveryThreshold = 3
 
 // managedProc describes a supervised child process.
 type managedProc struct {
@@ -172,6 +179,29 @@ type managedProc struct {
 	// orchicon database once postgres is up).
 	postReady func(ctx context.Context) error
 	restart   bool
+	// recoverState runs when a component has crashed enough times to prove the
+	// restart CANNOT fix it, and it is the difference between a service that heals
+	// and one that crash-loops for ever.
+	//
+	// WHY IT EXISTS, measured. Loki refuses to start when its WAL has a
+	// non-sequential segment — the state an unclean kill leaves behind (a 0-byte
+	// segment written but never filled, then a jump in the numbering):
+	//
+	//	get segment range: segments are not sequential
+	//	error initialising module: ingester
+	//
+	// That is PERMANENT. The supervisor's restart-with-backoff is exactly right for
+	// a transient crash and exactly wrong for this one: observed in the field as
+	// `restarts=71 backoff=32s` on loki, retrying every 32 seconds for hours while
+	// the Logs view reported "loki is unreachable" — a service that could never
+	// recover, burning a process slot and filling the log with the same failure.
+	//
+	// The hook QUARANTINES the unstartable state (moving it aside, never deleting)
+	// so the next start begins from a clean directory. Moving rather than removing
+	// is deliberate: the bytes are the operator's telemetry, and a recovery that
+	// silently destroys data is worse than the crash-loop it fixes. Nil = this
+	// component has no recoverable state, which is most of them.
+	recoverState func() error
 }
 
 // prepare creates the data/config dirs, writes the embedded config files, then
@@ -549,6 +579,29 @@ func (s *supervisor) reapRestart(ctx context.Context) {
 			backoff := restartBackoff(st.restarts)
 			s.log.Warn("component exited; restarting", "component", st.proc.name,
 				"restarts", st.restarts, "backoff", backoff.String(), "error", err)
+			// PAST THE POINT WHERE A RESTART CAN HELP, TRY TO REPAIR THE STATE.
+			//
+			// Three crashes in a row is the threshold: one crash is a transient
+			// fault and two can be a race, but three consecutive failures of the SAME
+			// child with the SAME backoff means the restart is not converging — the
+			// process is being handed the same unstartable state every time. That is
+			// what a corrupt WAL looks like from here, and no amount of retrying
+			// reaches a different outcome.
+			//
+			// It runs ONCE per recovery generation (the counter resets when the
+			// process comes up, see below), so a component that genuinely cannot run
+			// does not have its state moved aside on every tick — the log records
+			// that recovery was attempted, and the next crashes take the ordinary
+			// backoff path.
+			if st.proc.recoverState != nil && st.restarts == recoveryThreshold && !st.recovered {
+				st.recovered = true
+				s.log.Warn("component has failed repeatedly — quarantining its state and retrying",
+					"component", st.proc.name, "restarts", st.restarts)
+				if rerr := st.proc.recoverState(); rerr != nil {
+					s.log.Error("state recovery failed; the component will keep failing",
+						"component", st.proc.name, "error", rerr)
+				}
+			}
 			time.Sleep(backoff)
 			if err := s.start(ctx, st.proc); err != nil {
 				s.log.Error("restart failed", "component", st.proc.name, "error", err)
@@ -737,6 +790,36 @@ func (s *supervisor) lokiProc() *managedProc {
 		args:    []string{"-config.file=" + filepath.Join(s.configDir, "loki.yaml")},
 		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.loki) + "/ready"),
 		restart: true,
+		// LOKI IS THE ONE COMPONENT WITH STATE A RESTART CANNOT FIX.
+		//
+		// It refuses to start on a non-sequential WAL, which is what an unclean kill
+		// leaves behind: a segment written but never filled, then a jump in the
+		// numbering. Measured in the field — loki at `restarts=71 backoff=32s`,
+		// retrying for hours while the Logs view reported it unreachable.
+		//
+		// The WAL is quarantined by RENAMING the directory, never deleting it: the
+		// segments are the operator's own telemetry, and a recovery that destroys
+		// data to fix a crash-loop is a worse failure than the loop. Loki starts
+		// clean and writes a fresh WAL; the old one is left beside it for an operator
+		// who wants to recover the bytes.
+		//
+		// Only the WAL is moved. Loki's chunks and its index are readable state that
+		// survives a restart, and moving them would discard logs that are perfectly
+		// good — the corrupt thing is the write-ahead log, so that is all that goes.
+		recoverState: func() error {
+			wal := filepath.Join(s.dataDir, "loki", "wal")
+			if _, err := os.Stat(wal); err != nil {
+				return nil // nothing to quarantine
+			}
+			quarantine := fmt.Sprintf("%s.corrupt-%s", wal, time.Now().UTC().Format("20060102T150405Z"))
+			if err := os.Rename(wal, quarantine); err != nil {
+				return fmt.Errorf("quarantine loki WAL %s: %w", wal, err)
+			}
+			s.log.Warn("loki WAL quarantined — a non-sequential WAL is permanent, so retrying could never "+
+				"recover it; loki will start with a fresh one and the old segments are kept",
+				"moved", wal, "to", quarantine)
+			return nil
+		},
 	}
 }
 

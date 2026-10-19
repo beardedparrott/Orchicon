@@ -179,4 +179,51 @@ message GetTelemetryReportResponse {
   TelemetryReportTotals totals = 2;
   google.protobuf.Timestamp window_start = 3;
   google.protobuf.Timestamp window_end = 4;
+  // outcomes and models answer the questions a cost/window table cannot: how
+  // much work actually FINISHED, how, and which models did it. They are
+  // separate dimensions, not more columns on a project row — a project row is
+  // a cost bucket and would double-count if it also carried tenant-wide
+  // outcome totals.
+  TelemetryReportOutcomes outcomes = 5;
+  repeated TelemetryReportModel models = 6;
+}
+
+// TelemetryReportOutcomes is the high-level "what happened to the work"
+// roll-up. Both halves are counted over work that reached a TERMINAL state
+// inside the window — the question an operator asks of a dashboard is "what
+// finished in the last day, and how did it end", not "what was created".
+// Open work is reported separately so the totals are not silently a lie:
+// work_* and the workflow_* counters do not sum to each other, and neither
+// pair sums to a throughput number on its own.
+message TelemetryReportOutcomes {
+  // Work items whose status is terminal, by outcome. work_open is everything
+  // else (pending/ready/assigned/running/blocked/…): in flight, not a unit.
+  int32 work_succeeded = 1;
+  int32 work_cancelled = 2;
+  int32 work_failed = 3;
+  int32 work_open = 4;
+  // Workflow runs. workflow_runs.status lives in
+  // {'pending','running','completed','failed','aborted'} — the success state
+  // is 'completed', NOT 'succeeded', and 'aborted' is a distinct terminal
+  // outcome that must not be folded into failed.
+  int32 workflows_completed = 5;
+  int32 workflows_failed = 6;
+  int32 workflows_aborted = 7;
+  int32 workflows_running = 8;
+  // work_skipped is terminal but neither a success nor a failure, so it gets
+  // its own counter: folding it into work_succeeded would report work that
+  // never ran as completed, and folding it into work_open would report
+  // finished work as in flight.
+  int32 work_skipped = 9;
+}
+
+// TelemetryReportModel is one model's share of the window: the "top models"
+// leaderboard and the per-model statistics beneath it, ordered by cost.
+message TelemetryReportModel {
+  string model = 1;
+  int64 total_tokens = 2;
+  double cost_usd = 3;
+  int32 executions = 4;
+  int64 prompt_tokens = 5;
+  int64 cache_read_tokens = 6;
 }

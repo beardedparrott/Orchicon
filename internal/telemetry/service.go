@@ -362,6 +362,46 @@ func (s *Service) GetTelemetryReport(ctx context.Context, req *connect.Request[a
 		totals.FailureRate = float64(totals.FailedRuns) / float64(d)
 	}
 	out.Totals = totals
+
+	// Outcomes and models are answered independently of the grouping: "how
+	// much work finished, and how" is the same question whether the table is
+	// grouped by project or by workflow. They read different tables from the
+	// rows above, so a failure here fails the report rather than quietly
+	// returning zeroes an operator would read as "nothing finished".
+	outcomes, err := db.GetOutcomeCounts(ctx, ttx.Tx, tenantID, projectID, workItemID, start, end)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	out.Outcomes = &apiv1.TelemetryReportOutcomes{
+		WorkSucceeded:      outcomes.WorkSucceeded,
+		WorkSkipped:        outcomes.WorkSkipped,
+		WorkCancelled:      outcomes.WorkCancelled,
+		WorkFailed:         outcomes.WorkFailed,
+		WorkOpen:           outcomes.WorkOpen,
+		WorkflowsCompleted: outcomes.WorkflowsCompleted,
+		WorkflowsFailed:    outcomes.WorkflowsFailed,
+		WorkflowsAborted:   outcomes.WorkflowsAborted,
+		WorkflowsRunning:   outcomes.WorkflowsRunning,
+	}
+
+	// The model leaderboard is the existing per-model cost roll-up, scoped by
+	// the SAME filters as the rows so the two halves of one screen cannot
+	// disagree: a model total that ignored the project filter would answer a
+	// different question than the table beside it.
+	models, err := db.GetCostRollup(ctx, ttx.Tx, tenantID, db.RollupModel, projectID, workItemID, executionID, start, end)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	for _, m := range models {
+		out.Models = append(out.Models, &apiv1.TelemetryReportModel{
+			Model:           m.GroupKey,
+			TotalTokens:     m.TotalTokens,
+			PromptTokens:    m.PromptTokens,
+			CacheReadTokens: m.CacheReadTokens,
+			CostUsd:         m.CostUSD,
+			Executions:      m.ExecutionCount,
+		})
+	}
 	return connect.NewResponse(out), nil
 }
 
