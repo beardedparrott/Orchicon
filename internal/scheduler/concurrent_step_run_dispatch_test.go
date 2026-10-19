@@ -57,22 +57,85 @@ func TestParallelBranchChildIDs(t *testing.T) {
 // barrierDispatcher is a TaskDispatcher stub that waits until `expected`
 // dispatches are all IN FLIGHT before any returns, so tests can assert
 // bounded concurrency without timing flakes.
+//
+// IT MUST NEVER HANG, and it did — which cost the whole package.
+//
+// The original waited on `<-d.done` with NO escape. `done` closes only when the call count REACHES `expected`,
+// so if fewer dispatches arrived than expected the barrier blocked for ever, `dispatchInline`'s WaitGroup.Wait
+// never returned, and the test binary hung until the 10-minute panic timeout. Observed exactly that way:
+// scheduler.test wedged for 8+ minutes with this goroutine parked in DispatchTask, and the symptom the
+// operator saw was "the tests hang", not "a test failed".
+//
+// A MISMATCH IS NOW A TEST FAILURE RATHER THAN A DEADLOCK. The barrier releases on ctx cancellation, on the
+// test's own deadline, or when the count is reached — and it records the shortfall so the assertion can report
+// "expected 2 in flight, saw 1" instead of leaving a wedged process to be diagnosed from a stack dump.
+//
+// WHY THE SHORTFALL HAPPENS AT ALL is worth stating, because it is not flakiness in the product code: these
+// tests reconcile runs in the SHARED `tnt_dev` tenant (production hardcodes that tenant in ~86 places, so a
+// test cannot use another one for these paths), and several packages' tests create runs in it concurrently.
+// A pass that lands while another test's rows are present can dispatch a different set than the fixture
+// intends. The barrier turning that into a clear failure is the honest fix; the deeper tenant isolation is
+// tracked separately.
 type barrierDispatcher struct {
 	mu       sync.Mutex
 	expected int
 	calls    []string
 	done     chan struct{}
+	// released records that the barrier gave up rather than reaching `expected`, so a test can assert on the
+	// shortfall instead of hanging.
+	released bool
+	// deadline bounds the wait. Zero means defaultBarrierWait.
+	deadline time.Duration
 }
 
-func (d *barrierDispatcher) DispatchTask(_ context.Context, _ string, stepRunID string) error {
+// defaultBarrierWait bounds how long the barrier will hold a dispatch. Long enough that a slow CI machine
+// cannot trip it, short enough that a mismatch surfaces as a failure rather than a timeout panic.
+const defaultBarrierWait = 20 * time.Second
+
+func (d *barrierDispatcher) DispatchTask(ctx context.Context, _ string, stepRunID string) error {
 	d.mu.Lock()
 	d.calls = append(d.calls, stepRunID)
-	if len(d.calls) == d.expected {
-		close(d.done)
+	if len(d.calls) >= d.expected {
+		select {
+		case <-d.done:
+		default:
+			close(d.done)
+		}
 	}
+	done := d.done
 	d.mu.Unlock()
-	<-d.done
-	return nil
+
+	wait := d.deadline
+	if wait <= 0 {
+		wait = defaultBarrierWait
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		// The expected dispatches never all arrived. Release so the caller cannot deadlock, and record it.
+		d.mu.Lock()
+		d.released = true
+		select {
+		case <-d.done:
+		default:
+			close(d.done)
+		}
+		d.mu.Unlock()
+		return nil
+	}
+}
+
+// shortfall reports whether the barrier released without ever reaching `expected` dispatches — the condition a
+// test should assert on, in place of the deadlock it used to produce.
+func (d *barrierDispatcher) shortfall() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.released || len(d.calls) < d.expected
 }
 
 func (d *barrierDispatcher) stepRuns() []string {
@@ -502,7 +565,19 @@ func TestParallelBranchHeldUntilWorktreeReady(t *testing.T) {
 	}
 	calls := barrier2.stepRuns()
 	if len(calls) != 2 {
-		t.Fatalf("branches dispatched %d step runs, want 2: %v", len(calls), calls)
+		// A SHORTFALL, reported rather than deadlocked. This is the case that used to hang the whole
+		// package: the barrier waited for a second dispatch that never came.
+		//
+		// The cause is the SHARED `tnt_dev` TENANT rather than a product defect: several packages' tests
+		// create runs in it concurrently (production hardcodes that tenant, so these paths cannot use
+		// another), and a pass landing among foreign rows can dispatch a different set than the fixture
+		// intends. The assertion is therefore about the fixture's own two branches, and it says so.
+		t.Fatalf("branches dispatched %d step runs, want 2: %v — if this is 1, the pass ran while another "+
+			"test's rows were present in the shared %s tenant", len(calls), calls, approvalTestTenant)
+	}
+	if barrier2.shortfall() {
+		t.Fatalf("the dispatch barrier released without both branches in flight — the concurrency assertion "+
+			"below would be vacuous: %v", calls)
 	}
 	if p := peak(); p < 2 {
 		t.Errorf("peak in-flight branch dispatches = %d, want >= 2 (concurrent)", p)
