@@ -125,7 +125,16 @@ deploy/runtime/orch
 
 # desktop app build output (wails emits into cmd/orchicon-desktop/build/)
 bin/orchicon-desktop*
-cmd/orchicon-desktop/build/
+# THE CONTENTS, NOT THE DIRECTORY — because git cannot re-include a file whose
+# PARENT DIRECTORY is excluded ("It is not possible to re-include a file if a
+# parent directory of that file is excluded"). Ignoring `build/` outright would
+# make the negation below a no-op, silently.
+cmd/orchicon-desktop/build/*
+# ...EXCEPT the app icon, which is SOURCE, not output: Wails reads
+# build/appicon.png to generate the window icon, the .ico and the .icns. Without
+# it every build ships Wails' default yellow square — which is what the operator
+# saw.
+!cmd/orchicon-desktop/build/appicon.png
 
 # Wails' generated TypeScript bindings. `wails build` writes <frontend:dir>/wailsjs —
 # our frontend SOURCE tree — with a path the CLI does not let us configure. They are

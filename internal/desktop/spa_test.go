@@ -14,7 +14,7 @@ import (
 // asserted on the properties that make it so rather than on its existence
 // alone: writable:false + configurable:false + Object.freeze.
 func TestShellInjectsDesktopFlagNonConfigurable(t *testing.T) {
-	script := desktopScript(testInfo())
+	script := desktopScript(testInfo(), "test-token")
 	for _, want := range []string{
 		`Object.defineProperty(window,"` + desktopGlobal + `"`,
 		"writable:false",

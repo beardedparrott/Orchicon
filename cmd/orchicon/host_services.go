@@ -75,7 +75,7 @@ func runHostServices(args []string) int {
 	sup := &supervisor{
 		log:     log,
 		dataDir: dataDir,
-		ports:   servicePortsFromEnv(),
+		ports:   resolveInternalListenerPorts(servicePortsFromEnv()),
 		// Set BEFORE prepare(): prepare() is what acquires the binaries, and it
 		// must know whether the four telemetry backends are part of this boot —
 		// a plane with ORCHICON_TELEMETRY=none must not download ~300 MB of
@@ -298,7 +298,7 @@ func (s *supervisor) configTokens() map[string]string {
 		"@TEMPO_HTTP_PORT@": strconv.Itoa(p.tempo),
 		// Resolved, not copied: an INTERNAL listener still has to be bindable.
 		// See internalListenerPort.
-		"@TEMPO_GRPC_PORT@":          strconv.Itoa(internalListenerPort(p.tempoGRPC)),
+		"@TEMPO_GRPC_PORT@":          strconv.Itoa(p.tempoGRPC),
 		"@TEMPO_OTLP_GRPC_PORT@":     strconv.Itoa(p.tempoOTLPGRPC),
 		"@TEMPO_OTLP_HTTP_PORT@":     strconv.Itoa(p.tempoOTLPHTTP),
 		"@LOKI_HTTP_PORT@":           strconv.Itoa(p.loki),
@@ -311,8 +311,60 @@ func (s *supervisor) configTokens() map[string]string {
 		// walked off whatever the previous instance already owns. Nothing in
 		// this repo scrapes it; it is kept (rather than disabled) so an operator
 		// still has the collector's own stats when they want them.
-		"@COLLECTOR_SELF_METRICS_PORT@": strconv.Itoa(internalListenerPort(p.collectorSelfMetrics)),
+		"@COLLECTOR_SELF_METRICS_PORT@": strconv.Itoa(p.collectorSelfMetrics),
 	}
+}
+
+// resolveInternalListenerPorts walks the INTERNAL listeners off any port another
+// instance already holds, and leaves every operator-facing port untouched.
+//
+// IT RUNS ONCE, ON THE TABLE, AND NOT INSIDE configTokens. That distinction is
+// the whole point: the supervisor's readiness probes and its config templates
+// both read s.ports, so resolving in one place is what keeps "the port the child
+// BINDS" and "the port the gate PROBES" the same number. Walking inside the token
+// table instead would have made the collector bind a walked port while its probe
+// dialled the un-walked one — a child that is up and reported dead (or, worse,
+// reported healthy by answering on the OTHER instance's collector).
+//
+// WHICH PORTS ARE HERE, and why exactly these: each is a listener whose default
+// is a fixed number no per-instance allocation ever covers, because nothing
+// outside the child's own process dials it —
+//
+//	tempoGRPC            Tempo's internal gRPC (its querier/frontend)
+//	tempoOTLPGRPC/HTTP   Tempo's receivers, dialled only by our own collector
+//	collectorHealth      the collector's health extension (probed by US, on loopback)
+//	collectorSelfMetrics the collector's own stats exporter
+//
+// Every other port in the table is one the OPERATOR reaches (the plane, Postgres,
+// NATS, the telemetry UIs and their OTLP receiving faces). Those must NOT be
+// walked: the installer allocates each instance a distinct value, ports.json
+// records it, and the plane's own env points at it — silently moving one would
+// break the operator's URLs and the plane's exporters.
+//
+// THE OTLP PAIR IS WALKED, NOT ALLOCATED, because ports.json on an existing
+// install predates them (dev's record has no ORCHICON_TEMPO_OTLP_*_PORT), so the
+// shared literal is what a second instance would actually get.
+func resolveInternalListenerPorts(p servicePorts) servicePorts {
+	// ONE PASS, ONE SET OF CLAIMS. internalListenerPort probes and releases, so two
+	// walks inside the same pass can land on the same number if one is pushed onto
+	// another's preferred value — two of OUR OWN children then fight for it, which
+	// is the same crash this function exists to prevent, just self-inflicted. The
+	// taken set makes every port in one pass distinct.
+	taken := make(map[int]bool, 5)
+	walk := func(preferred int) int {
+		got := internalListenerPort(preferred)
+		for taken[got] {
+			got = internalListenerPort(got + 1)
+		}
+		taken[got] = true
+		return got
+	}
+	p.tempoGRPC = walk(p.tempoGRPC)
+	p.tempoOTLPGRPC = walk(p.tempoOTLPGRPC)
+	p.tempoOTLPHTTP = walk(p.tempoOTLPHTTP)
+	p.collectorHealth = walk(p.collectorHealth)
+	p.collectorSelfMetrics = walk(p.collectorSelfMetrics)
+	return p
 }
 
 // internalListenerPort returns a port the child can actually BIND, starting at

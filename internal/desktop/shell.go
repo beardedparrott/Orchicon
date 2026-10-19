@@ -36,6 +36,13 @@ type Config struct {
 	HTTPClient *http.Client
 	// Logf is the shell's log sink (optional).
 	Logf func(format string, args ...any)
+	// ControlToken is the credential the SPA sends to the shell's own
+	// plane-control endpoints. Generated per run by the caller; empty disables
+	// the token check (tests that drive the endpoints directly).
+	ControlToken string
+	// PrefsPath is where the chosen instance is remembered. Empty means "do not
+	// persist" (tests, and a host with no config dir).
+	PrefsPath string
 }
 
 // Shell owns the loopback origin server: the embedded SPA plus the plane proxy.
@@ -52,6 +59,15 @@ type Shell struct {
 	ln   net.Listener
 	addr string
 	srv  *http.Server
+
+	// appTag is this binary's own version, captured at New so UsePlane can
+	// rebuild Info without re-reading the (unchanging) build metadata.
+	appTag string
+	// control is the plane-control surface, nil on a shell that serves no
+	// control endpoints (a test bundle, or a browser-shaped harness).
+	control      Control
+	controlToken string
+	prefsPath    string
 
 	logf func(format string, args ...any)
 }
@@ -87,12 +103,21 @@ func New(cfg Config) (*Shell, error) {
 	}
 	info := BuildInfo(planeURL.String(), version.Current().Tag, planeTag)
 
-	indexHTML, err := readIndexHTML(spaFS, info)
+	indexHTML, err := readIndexHTML(spaFS, info, cfg.ControlToken)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Shell{planeURL: planeURL, info: info, spaFS: spaFS, indexHTML: indexHTML, logf: logf}, nil
+	return &Shell{
+		planeURL:     planeURL,
+		info:         info,
+		appTag:       version.Current().Tag,
+		spaFS:        spaFS,
+		indexHTML:    indexHTML,
+		controlToken: cfg.ControlToken,
+		prefsPath:    cfg.PrefsPath,
+		logf:         logf,
+	}, nil
 }
 
 // Start binds the origin and begins serving. It is idempotent-ish: calling it
@@ -128,6 +153,14 @@ func (s *Shell) Start() error {
 	spa := s.spaHandler()
 	proxy := s.newProxy()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// ORDER IS THE CONTRACT, most specific first:
+		//   1. our own control endpoints — never forwarded to the plane, or a
+		//      plane route added later could shadow them;
+		//   2. plane paths (the prefix table in proxy.go);
+		//   3. the embedded SPA, which is the fallback everything else wants.
+		if s.handleControl(w, r) {
+			return
+		}
 		if isPlanePath(r.URL.Path) {
 			proxy.ServeHTTP(w, r)
 			return
@@ -168,6 +201,9 @@ func (s *Shell) OriginURL() string {
 	}
 	return "http://" + addr
 }
+
+// binaryTag is this binary's own version, as captured at New.
+func (s *Shell) binaryTag() string { return s.appTag }
 
 // Info is the resolved desktop payload (plane URL, instance, versions).
 func (s *Shell) Info() Info { return s.info }

@@ -63,7 +63,15 @@ func isPlanePath(p string) bool {
 func (s *Shell) newProxy() *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			// READ THE TARGET PER REQUEST, UNDER THE LOCK. Two reasons, both
+			// load-bearing: UsePlane swaps the plane at runtime (so a proxy built
+			// once from the launch URL would keep talking to the old instance), and
+			// that swap is a concurrent write — reading the field unguarded here is
+			// a data race the race detector reports, on the one field every request
+			// touches.
+			s.mu.Lock()
 			target := *s.planeURL
+			s.mu.Unlock()
 			pr.Out.URL.Scheme = target.Scheme
 			pr.Out.URL.Host = target.Host
 			// Preserve the request path as-is (no path rewriting: the plane's

@@ -77,26 +77,7 @@ describe("desktop signal", () => {
     expect(desktopInstance()).toBeNull();
   });
 
-  it("cannot be turned on from the page", () => {
-    // A frozen, non-configurable, non-writable property is what the shell ships.
-    // Re-defining it must throw, and the value must not change.
-    Object.defineProperty(g, KEY, {
-      value: Object.freeze({
-        desktop: true,
-        planeURL: "http://127.0.0.1:8080",
-        instance: "dev",
-        appTag: "a",
-        planeTag: "b",
-        versionMismatch: false,
-      }),
-      configurable: false,
-      writable: false,
-    });
-    expect(() => {
-      Object.defineProperty(g, KEY, { value: { desktop: true, planeURL: "http://evil", instance: "prod" } });
-    }).toThrow();
-    expect(desktopInstance()).toBe("dev");
-  });
+
 });
 
 describe("redirectTarget", () => {
@@ -132,11 +113,86 @@ describe("portOf", () => {
   });
 });
 
-describe("the plane control binding", () => {
-  it("is absent in a browser, and the bound service when the shell provides it", () => {
+describe("the plane control surface", () => {
+  function clearDesktop() {
+    const descriptor = Object.getOwnPropertyDescriptor(g, KEY);
+    if (descriptor?.configurable) delete g[KEY];
+    delete g.go;
+  }
+
+  it("is absent in a browser", () => {
+    clearDesktop();
+    expect(desktopInfo()).toBeNull();
     expect(planeControl()).toBeNull();
+  });
+
+  it("prefers the Wails binding when the shell serves its own document", () => {
+    clearDesktop();
     const svc = { Status: () => Promise.resolve() };
     g.go = { planebind: { Service: svc } };
     expect(planeControl()).toBe(svc);
+  });
+
+  it("falls back to the shell's own HTTP endpoints when this page is the app", () => {
+    // THE PATH THE DESKTOP APP ACTUALLY USES. Wails' bindings exist only on
+    // Wails' document, and the app is served from the shell's loopback origin so
+    // the refresh cookie and a Connect server-stream work — so `window.go` is
+    // undefined there and, before this fallback, Manage Server sat on
+    // "contacting the plane…" with every control inert.
+    clearDesktop();
+    setGlobal(
+      Object.freeze({
+        desktop: true,
+        planeURL: "http://127.0.0.1:8080",
+        instance: "dev",
+        appTag: "v1.0.0",
+        planeTag: "v1.0.0",
+        versionMismatch: false,
+        controlToken: "tok-123",
+      }),
+    );
+    const ctl = planeControl();
+    expect(ctl).not.toBeNull();
+    // The six methods the Manage Server page drives, all present.
+    for (const m of ["Instances", "Status", "ResolveControlPort", "Start", "Stop", "Restart"] as const) {
+      expect(typeof ctl?.[m]).toBe("function");
+    }
+  });
+
+  it("never reports the surface when the payload is a browser-shaped half-truth", () => {
+    // A global that is not the shell's payload must not unlock plane control.
+    clearDesktop();
+    setGlobal({ desktop: false });
+    expect(planeControl()).toBeNull();
+  });
+});
+
+// THIS DESCRIBE MUST STAY LAST. Its subject is a NON-CONFIGURABLE property —
+// that immutability IS the property under test — so it cannot be cleaned up by
+// an afterEach, and any test that runs after it inherits a live desktop payload.
+// It previously sat in the middle of the file and silently seeded
+// `desktopInfo()` for everything below: the plane-control tests then found a
+// desktop global they never installed. Ordering is the fix; a shared mutable
+// fixture would be the bug.
+describe("forgery resistance (leaves a non-configurable global — keep this describe last)", () => {
+  it("cannot be turned on from the page", () => {
+    // A frozen, non-configurable, non-writable property is what the shell ships.
+    // Re-defining it must throw, and the value must not change.
+    Object.defineProperty(g, KEY, {
+      value: Object.freeze({
+        desktop: true,
+        planeURL: "http://127.0.0.1:8080",
+        instance: "dev",
+        appTag: "a",
+        planeTag: "b",
+        versionMismatch: false,
+      }),
+      configurable: false,
+      writable: false,
+    });
+    expect(() => {
+      Object.defineProperty(g, KEY, { value: { desktop: true, planeURL: "http://evil", instance: "prod" } });
+    }).toThrow();
+    expect(desktopInstance()).toBe("dev");
   });
 });

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -505,7 +507,12 @@ func TestTempoGRPCPortComesFromTheTableAndAvoidsACollision(t *testing.T) {
 	// the table legitimately resolves to a different number, and a test demanding
 	// the default would forbid the very behaviour that lets the second instance
 	// boot.
-	resolved := embeddedConfigPort(t, "deploy/configs/tempo.yaml", "grpc_listen_port", 0, base)
+	// THROUGH THE RESOLVER, because that is where the walk happens now: the
+	// token table simply copies the field it is given. Rendering from the raw
+	// defaults would assert against a number the child never binds on a host where
+	// another instance holds it.
+	resolved := embeddedConfigPort(t, "deploy/configs/tempo.yaml", "grpc_listen_port", 0,
+		resolveInternalListenerPorts(base))
 	if ln, err := net.Listen("tcp", ":"+strconv.Itoa(resolved)); err != nil {
 		t.Errorf("tempo.yaml binds gRPC port %d, which is not bindable: %v", resolved, err)
 	} else {
@@ -520,7 +527,8 @@ func TestTempoGRPCPortComesFromTheTableAndAvoidsACollision(t *testing.T) {
 	if p.tempoGRPC != free {
 		t.Fatalf("ORCHICON_TEMPO_GRPC_PORT=%d did not reach the port table (got %d)", free, p.tempoGRPC)
 	}
-	if got := embeddedConfigPort(t, "deploy/configs/tempo.yaml", "grpc_listen_port", 0, p); got != free {
+	if got := embeddedConfigPort(t, "deploy/configs/tempo.yaml", "grpc_listen_port", 0,
+		resolveInternalListenerPorts(p)); got != free {
 		t.Errorf("tempo.yaml binds gRPC port %d but the knob said %d", got, free)
 	}
 
@@ -642,4 +650,225 @@ func TestCollectorSelfMetricsTokenIsResolved(t *testing.T) {
 	if port <= 0 || port > 65535 {
 		t.Fatalf("@COLLECTOR_SELF_METRICS_PORT@ resolved to %d, outside the usable range", port)
 	}
+}
+
+// EVERY LISTENER IN THE PORT TABLE IS ACCOUNTED FOR — WALKED OR ALLOCATED.
+//
+// This is the sweep that the earlier fixes lacked, and its absence is why the
+// same bug had to be reported three times in a row (loki 9096, tempo 9095,
+// collector 8888 — then tempo 14317/14318 and collector 13133 in the next
+// round). Each fix corrected the ports somebody had already named; nothing
+// asserted that the SET was covered, so the next shared default was invisible
+// until it crash-looped.
+//
+// The two legal states for a listener port, and there is no third:
+//
+//	WALKED     an internal listener nothing outside the process dials, resolved
+//	           per boot by resolveInternalListenerPorts (so a second instance
+//	           binds the next free number instead of dying on the first one's).
+//	ALLOCATED  an operator-facing port the installer gives each instance a
+//	           distinct value for, recorded in ports.json and pointed at by the
+//	           plane's env. Deliberately NOT walked: silently moving it would
+//	           break the operator's URLs and the plane's exporters.
+//
+// A port listed in NEITHER set is a shared default, which is the bug: the second
+// instance on the host binds nothing and its telemetry view reports the backend
+// unreachable while the first instance is perfectly healthy.
+//
+// The lists are keyed by the servicePorts FIELD NAME and checked against the
+// struct's own field set by reflection, so ADDING A PORT FORCES A DECISION here
+// rather than defaulting silently into the broken state.
+var walkedPorts = map[string]bool{
+	"tempoGRPC":            true, // Tempo's internal gRPC
+	"tempoOTLPGRPC":        true, // Tempo's receivers, dialled by our collector
+	"tempoOTLPHTTP":        true,
+	"collectorHealth":      true, // the gate probes this one, on loopback
+	"collectorSelfMetrics": true, // the collector's own stats exporter
+}
+
+var allocatedPorts = map[string]bool{
+	"postgres":          true, // the operator connects to these
+	"nats":              true,
+	"natsMonitor":       true,
+	"tempo":             true, // the telemetry UIs the operator visits
+	"loki":              true,
+	"vm":                true,
+	"collectorOTLPGRPC": true, // the plane ships OTLP here — its env names it
+	"collectorOTLPHTTP": true,
+}
+
+func TestEveryServicePortIsWalkedOrAllocated(t *testing.T) {
+	walked, allocated := walkedPorts, allocatedPorts
+	typ := reflect.TypeOf(servicePorts{})
+	var unaccounted []string
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		switch {
+		case walked[name] && allocated[name]:
+			t.Errorf("%s is listed as BOTH walked and allocated — pick one: walking an "+
+				"allocated port moves it away from the value ports.json records and the plane's "+
+				"env points at", name)
+		case !walked[name] && !allocated[name]:
+			unaccounted = append(unaccounted, name)
+		}
+	}
+	sort.Strings(unaccounted)
+	if len(unaccounted) > 0 {
+		t.Errorf("%d listener port(s) are neither walked nor allocated: %s\n\n"+
+			"A shared default is the bug: the second instance on this host binds nothing and "+
+			"crash-loops on \"address already in use\", so its Logs/Traces/Metrics views report the "+
+			"backend unreachable while the first instance is healthy. Either add it to "+
+			"resolveInternalListenerPorts (internal, nothing outside the process dials it) or to the "+
+			"installer's per-instance port table (the operator reaches it).",
+			len(unaccounted), strings.Join(unaccounted, ", "))
+	}
+}
+
+// The walk must actually make the SECOND instance bindable — AND it must cover
+// every port the sets above call "walked".
+//
+// THIS IS DRIVEN BY walkedPorts, NOT BY A HAND-WRITTEN LIST, and that is the
+// point. A hand-written list would pass while the resolver silently forgot an
+// entry: the classification test says "collectorHealth is walked", the resolver
+// does not walk it, and both tests stay green. (That exact hole existed for one
+// revision of this guard — dropping the collectorHealth line from the resolver
+// left every test passing.) Driving the assertion from the same map couples
+// "declared walked" to "is walked".
+func TestResolvedInternalPortsMoveOffAHeldPort(t *testing.T) {
+	holder, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("hold a port: %v", err)
+	}
+	defer holder.Close()
+	held := holder.Addr().(*net.TCPAddr).Port
+
+	// Every port classified as walked starts at the SAME held number.
+	raw := servicePorts{}
+	for name := range walkedPorts {
+		if !setPort(&raw, name, held) {
+			t.Fatalf("walkedPorts names %q, which setPort does not know — add it there (and check "+
+				"resolveInternalListenerPorts handles it)", name)
+		}
+	}
+	// An allocated port must survive untouched even when it is the held one.
+	raw.loki = 3100
+
+	got := resolveInternalListenerPorts(raw)
+	gv := reflect.ValueOf(got)
+
+	for name := range walkedPorts {
+		port := int(gv.FieldByName(name).Int())
+		if port == held {
+			t.Errorf("%s is declared WALKED but resolveInternalListenerPorts left it on the held port %d "+
+				"— the second instance would crash-loop on it", name, held)
+			continue
+		}
+		ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+		if err != nil {
+			t.Errorf("%s resolved to %d, which is not bindable: %v", name, port, err)
+			continue
+		}
+		_ = ln.Close()
+	}
+	if got.loki != 3100 {
+		t.Errorf("the walk moved the operator-facing loki port to %d — allocated ports must be left "+
+			"exactly where ports.json records them", got.loki)
+	}
+
+	// AND THE PASS MUST NOT COLLIDE WITH ITSELF: every walked port is distinct, or
+	// two of our own children fight for one number.
+	seen := map[int]string{}
+	for name := range walkedPorts {
+		port := int(gv.FieldByName(name).Int())
+		if other, dup := seen[port]; dup {
+			t.Errorf("%s and %s both resolved to %d — one pass must hand out distinct ports",
+				name, other, port)
+		}
+		seen[port] = name
+	}
+}
+
+// The probes and the configs must read the SAME resolved number. This is the
+// invariant that made resolving in the token table wrong: the collector's
+// readiness probe dials collectorHealth, and if the config bound a walked port
+// while the probe dialled the raw one, a healthy child would read as dead (or
+// the probe would answer from the OTHER instance's collector).
+func TestResolvedPortsReachBothConfigAndProbe(t *testing.T) {
+	sup := &supervisor{
+		log:     testLogger(),
+		dataDir: t.TempDir(),
+		infra:   testInfra(),
+		ports:   resolveInternalListenerPorts(servicePortsFromEnv()),
+	}
+	tokens := sup.configTokens()
+
+	cases := []struct {
+		token string
+		field int
+		what  string
+	}{
+		{"@TEMPO_GRPC_PORT@", sup.ports.tempoGRPC, "tempo gRPC"},
+		{"@TEMPO_OTLP_GRPC_PORT@", sup.ports.tempoOTLPGRPC, "tempo OTLP gRPC"},
+		{"@TEMPO_OTLP_HTTP_PORT@", sup.ports.tempoOTLPHTTP, "tempo OTLP HTTP"},
+		{"@COLLECTOR_HEALTH_PORT@", sup.ports.collectorHealth, "collector health"},
+		{"@COLLECTOR_SELF_METRICS_PORT@", sup.ports.collectorSelfMetrics, "collector self-metrics"},
+	}
+	for _, tc := range cases {
+		if tokens[tc.token] != strconv.Itoa(tc.field) {
+			t.Errorf("%s (%s) is written as %q but the table says %d — the child would bind one "+
+				"port and the gate would probe another", tc.token, tc.what, tokens[tc.token], tc.field)
+		}
+	}
+
+	// BEHAVIOURAL half: the collector's readiness probe must dial the RESOLVED
+	// port. Listening on it and expecting ready proves the probe reads the field
+	// the config was templated from, rather than a literal it captured earlier.
+	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(sup.ports.collectorHealth))
+	if err != nil {
+		t.Skipf("cannot listen on the resolved health port %d: %v", sup.ports.collectorHealth, err)
+	}
+	defer ln.Close()
+	if !sup.collectorProc().ready(context.Background()) {
+		t.Errorf("the collector's readiness probe did not see the resolved health port %d, "+
+			"even though something is listening on it", sup.ports.collectorHealth)
+	}
+}
+
+// setPort writes one servicePorts field by name. Reflection cannot set an
+// unexported field, so this switch is the test's way in — and an UNKNOWN name
+// fails loudly, which is what forces a newly walked port to be handled here (and
+// therefore looked at in resolveInternalListenerPorts) instead of silently
+// skipping the assertion.
+func setPort(p *servicePorts, name string, v int) bool {
+	switch name {
+	case "postgres":
+		p.postgres = v
+	case "nats":
+		p.nats = v
+	case "natsMonitor":
+		p.natsMonitor = v
+	case "tempo":
+		p.tempo = v
+	case "loki":
+		p.loki = v
+	case "vm":
+		p.vm = v
+	case "tempoGRPC":
+		p.tempoGRPC = v
+	case "tempoOTLPGRPC":
+		p.tempoOTLPGRPC = v
+	case "tempoOTLPHTTP":
+		p.tempoOTLPHTTP = v
+	case "collectorOTLPGRPC":
+		p.collectorOTLPGRPC = v
+	case "collectorOTLPHTTP":
+		p.collectorOTLPHTTP = v
+	case "collectorHealth":
+		p.collectorHealth = v
+	case "collectorSelfMetrics":
+		p.collectorSelfMetrics = v
+	default:
+		return false
+	}
+	return true
 }
