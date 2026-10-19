@@ -242,8 +242,22 @@ spin "the gate is discoverable"
 HELP="$(cd "$REPO_ROOT" && make help 2>/dev/null || true)"
 expect "make help lists runtime-e2e-assertions-test" "yes" \
   "$(printf '%s\n' "$HELP" | grep -q 'runtime-e2e-assertions-test' && echo yes || echo no)"
+# THE QUESTION IS "IS THIS GATE PART OF ci-go", NOT "DOES ONE LINE NAME IT".
+#
+# This used to grep `^ci-go:.*runtime-e2e-assertions-test` — a literal match on a single Makefile
+# line. When the gate list moved into a CI_GO_GATES variable (so CI could run
+# cross-compile as a parallel job), the gates were still in ci-go and this check
+# could no longer SEE them, so it failed on correct code. Asking make itself is
+# the property that matters and it survives any re-expression of the list.
+# THE GATE MUST BE PART OF ci-go, and this reads the Makefile's OWN gate list
+# rather than running make: `make -n ci-go` expands prerequisites, and `tools`
+# fails without the pinned buf on PATH, so make stopped before printing the list
+# and the check became environment-dependent — worse than the brittle literal it
+# replaced. It accepts either expression (a literal `ci-go:` line, or the
+# CI_GO_GATES variable the list now lives in), so re-expressing the list cannot
+# silently drop the gate from the gate.
 expect "make ci-go runs this gate" "yes" \
-  "$(grep -qE '^ci-go:.*runtime-e2e-assertions-test' "${REPO_ROOT}/Makefile" && echo yes || echo no)"
+  "$(grep -qE "(^ci-go:|^CI_GO_GATES).*runtime-e2e-assertions-test" "${REPO_ROOT}/Makefile" && echo yes || echo no)"
 expect "the runbook exists and names the harness" "yes" \
   "$(grep -qF 'scripts/runtime-e2e.sh' "${REPO_ROOT}/docs/runtime-e2e-acceptance.md" 2>/dev/null && echo yes || echo no)"
 
