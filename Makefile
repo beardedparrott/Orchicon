@@ -1267,9 +1267,13 @@ desktop-package-windows: ## Produce the Windows MSI (Windows host with the WiX C
 	cp -f deploy/desktop/windows/orchicon-desktop.ico $(MSI_SRC_DIR)/
 	@# -arch x64: the release matrix builds windows/amd64 only (Windows on ARM runs
 	@# the amd64 package under emulation — see release.yml's matrix comment).
+	@# `-ext` resolves through WiX's OWN extension store, not NuGet, so the extension
+	@# must be installed once before the build can name it. Idempotent: adding an
+	@# extension that is already there is a no-op.
+	$(WIX) extension add -g WixToolset.UI.wixext/$(WIX_VERSION) || true
 	$(WIX) build deploy/desktop/windows/Orchicon.wxs \
 		-arch x64 \
-		-ext WixToolset.UI.wixext/5.0.2 \
+		-ext WixToolset.UI.wixext \
 		-d Version=$(DESKTOP_VERSION) \
 		-d SourceDir=$(abspath $(MSI_SRC_DIR)) \
 		-o "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi"

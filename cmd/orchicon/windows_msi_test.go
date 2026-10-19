@@ -318,11 +318,25 @@ func TestWiXBuildEnablesTheUIExtension(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", where.file, err)
 		}
-		if !strings.Contains(string(b), "-ext WixToolset.UI.wixext") {
+		body := string(b)
+		if !strings.Contains(body, "-ext WixToolset.UI.wixext") {
 			t.Errorf("%s builds the .wxs without `-ext WixToolset.UI.wixext`.\n"+
 				"The .wxs uses ui:WixUI, which is an EXTENSION element: the xmlns makes the\n"+
 				"file well-formed and does not enable it. The build fails with WIX0200.",
 				filepath.Base(where.file))
+		}
+		// AND IT MUST BE INSTALLED FIRST. `-ext` resolves a package name through WiX's
+		// own extension store, NOT NuGet, so naming it is not enough:
+		//   error WIX0144: The extension 'WixToolset.UI.wixext' could not be found.
+		//                 Checked paths: WixToolset.UI.wixext
+		// KEYED ON THE SUBCOMMAND, not on how the binary is invoked: the Makefile calls
+		// $(WIX) rather than the literal name, so a "wix extension add" needle fails
+		// against a correctly-wired Makefile.
+		if !strings.Contains(body, "extension add -g WixToolset.UI.wixext") {
+			t.Errorf("%s never runs `wix extension add -g WixToolset.UI.wixext`.\n"+
+				"`-ext` does not restore from NuGet — it looks the package up in WiX's own\n"+
+				"extension store, so the extension has to be installed before the build can\n"+
+				"name it (WIX0144).", filepath.Base(where.file))
 		}
 	}
 }

@@ -616,6 +616,18 @@ jobs:
       # THE FILE LIST LIVES IN THE .wxs, NOT HERE. This step only stages what the
       # .wxs names, so adding a component means editing one file; the two drifting
       # apart is what cmd/orchicon/windows_msi_test.go exists to prevent.
+      # `-ext` DOES NOT RESTORE FROM NUGET. It resolves a package name through WiX's
+      # own extension store, so the extension has to be INSTALLED first — otherwise:
+      #   error WIX0144: The extension 'WixToolset.UI.wixext/5.0.2' could not be found.
+      #                 Checked paths: WixToolset.UI.wixext/5.0.2
+      # It is its own step because the CLI's PATH export (above) only takes effect in
+      # the NEXT step of the job.
+      - name: Install the WiX UI extension
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+
       - name: Build the MSI
         shell: pwsh
         env:
@@ -633,7 +645,7 @@ jobs:
           Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
           Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
           $srcAbs = (Resolve-Path $src).Path
-          wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext/5.0.2 `
+          wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext `
             -d "Version=$v" -d "SourceDir=$srcAbs" `
             -o "dist/desktop/orchicon_${v}_windows_amd64.msi"
           Get-ChildItem dist/desktop
