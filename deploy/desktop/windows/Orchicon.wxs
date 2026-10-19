@@ -81,7 +81,10 @@
     <Property Id="SKIPSETUP" Value="0" />
 
     <Property Id="ARPPRODUCTICON" Value="OrchiconIcon" />
-    <Property Id="ARPNOMODIFY" Value="1" />
+    <!-- ARPNOMODIFY IS NOT DECLARED HERE. WixUI_InstallDir already defines it, and a
+         second declaration is a hard error:
+             error WIX0091: Duplicate Property with identifier 'ARPNOMODIFY' found.
+         The UI set gives it, which is also the right value for this package. -->
     <Property Id="ARPURLINFOABOUT" Value="https://orchicon.dev" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
     <Property Id="WixUILicenseRtf" Value="$(var.SourceDir)\LICENSE.rtf" />

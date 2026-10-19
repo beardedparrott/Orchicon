@@ -29,6 +29,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -338,5 +340,75 @@ func TestWiXBuildEnablesTheUIExtension(t *testing.T) {
 				"extension store, so the extension has to be installed before the build can\n"+
 				"name it (WIX0144).", filepath.Base(where.file))
 		}
+	}
+}
+
+// TestMSIDeclaresNoDuplicateIdentifiers — WiX rejects a repeated Id outright, and the
+// one that bit was a property the UI set already defines:
+//
+//	error WIX0091: Duplicate Property with identifier 'ARPNOMODIFY' found.
+//
+// That cost a full CI round (six minutes) to learn, on a runner, for something a
+// parser can see instantly — which is the whole point of this file. The check is per
+// ELEMENT TYPE, because that is how MSI scopes identity.
+func TestMSIDeclaresNoDuplicateIdentifiers(t *testing.T) {
+	body := readMSIFile(t, wxs())
+
+	type node struct {
+		XMLName xml.Name
+		Id      string `xml:"Id,attr"`
+	}
+	var doc struct {
+		XMLName xml.Name
+		Nodes   []node `xml:",any"`
+	}
+	if err := xml.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// Walk every element type that carries an Id, at any depth.
+	seen := map[string]map[string]int{} // element -> id -> count
+	var walk func(nodes []node)
+	walk = func(nodes []node) {
+		for _, n := range nodes {
+			if n.Id != "" {
+				if seen[n.XMLName.Local] == nil {
+					seen[n.XMLName.Local] = map[string]int{}
+				}
+				seen[n.XMLName.Local][n.Id]++
+			}
+		}
+	}
+	_ = walk
+
+	// encoding/xml's ",any" only reaches the top level, so do the sweep on the raw
+	// text instead: every Id="..." occurrence, grouped by the tag that carries it.
+	tagRE := regexp.MustCompile(`<([A-Za-z][\w.]*)[^>]*\sId="([^"]+)"`)
+	counts := map[string]map[string]int{}
+	for _, m := range tagRE.FindAllStringSubmatch(body, -1) {
+		el, id := m[1], m[2]
+		if counts[el] == nil {
+			counts[el] = map[string]int{}
+		}
+		counts[el][id]++
+	}
+	if len(counts) == 0 {
+		t.Fatal("found no Id attributes — the matcher is wrong and this test would pass vacuously")
+	}
+
+	var dups []string
+	for el, ids := range counts {
+		for id, n := range ids {
+			if n > 1 {
+				dups = append(dups, fmt.Sprintf("%s/@%s ×%d", el, id, n))
+			}
+		}
+	}
+	sort.Strings(dups)
+	if len(dups) > 0 {
+		t.Errorf("Orchicon.wxs declares duplicate identifiers: %v\n"+
+			"WiX rejects these outright (WIX0091) — and one of them was a Property the\n"+
+			"WixUI_InstallDir set already defines (ARPNOMODIFY), so declaring it here was both\n"+
+			"redundant and fatal.", dups)
 	}
 }
