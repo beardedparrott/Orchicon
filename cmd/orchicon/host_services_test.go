@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -431,4 +432,132 @@ func TestWriteConfigsResolvesPortTokens(t *testing.T) {
 	if !strings.Contains(string(tempo), "block_retention: 336h") {
 		t.Error("the written tempo.yaml lost its retention setting")
 	}
+}
+
+// A SECOND INSTANCE MUST BE ABLE TO START. This is the bug that made the
+// operator's Logs and Traces views report their backends as unreachable while
+// the SAME backends were healthy on the other instance:
+//
+//	dev  : 10:08:12 level=INFO msg="error running loki" err="listen tcp :9096: bind: address already in use"
+//	dev  : 10:07:40 level=INFO msg="error running Tempo" err="... listen tcp :9095: bind: address already in use"
+//
+// Both numbers were hardcoded in the embedded configs. Every OTHER port in the
+// table is one the operator reaches, so the installer assigns each instance a
+// distinct value; these two are INTERNAL, so nothing assigned them and both
+// instances demanded the same one. The child then crash-looped for ever, and
+// the supervisor's per-component restart never converged.
+//
+// Pinned as a property rather than as "tempo.yaml contains @TEMPO_GRPC_PORT@",
+// because the property is what broke: EVERY listener port in a shipped config
+// must either be templated from the table or be 0 (kernel-assigned). A bare
+// literal is the failure — and it is invisible, because the first instance's
+// telemetry works perfectly.
+func TestNoEmbeddedConfigHardcodesAListenerPort(t *testing.T) {
+	// `key` is the config field that makes the child BIND a socket.
+	listenerKeys := []string{"http_listen_port:", "grpc_listen_port:", "endpoint: 0.0.0.0:", `endpoint: "0.0.0.0:`}
+	files := []string{"deploy/configs/tempo.yaml", "deploy/configs/loki.yaml", "deploy/configs/otel-collector.yaml"}
+
+	for _, path := range files {
+		data, err := assets.ServiceConfigsFS.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", path, err)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "#") {
+				continue // documentation, not a binding
+			}
+			for _, key := range listenerKeys {
+				if !strings.HasPrefix(trimmed, key) {
+					continue
+				}
+				value := strings.Trim(strings.TrimSpace(strings.TrimLeft(
+					strings.TrimSpace(strings.TrimPrefix(trimmed, key)), "=: ")), `"'`)
+				if value == "" {
+					continue
+				}
+				// Acceptable: a placeholder (templated from the port table), or 0.
+				if strings.HasPrefix(value, "@") || strings.Contains(value, "@") || value == "0" {
+					continue
+				}
+				t.Errorf("%s:%d hardcodes the listener port %q (%s).\n"+
+					"A literal is a port TWO instances must share, so the second one crash-loops on\n"+
+					"\"bind: address already in use\" and its telemetry view reports the backend\n"+
+					"unreachable while the first instance works fine. Template it from the port\n"+
+					"table (@…_PORT@) or use 0 for an internal listener nothing outside the process dials.",
+					path, i+1, value, key)
+			}
+		}
+	}
+}
+
+// Tempo's internal gRPC port must come from the table, and must MOVE when the
+// configured one is already taken — that is what lets a second instance boot.
+func TestTempoGRPCPortComesFromTheTableAndAvoidsACollision(t *testing.T) {
+	base := servicePortDefaults()
+
+	// The value the config carries must be BINDABLE — not merely equal to the
+	// default. Equality is the wrong assertion here and the failure proves it:
+	// on a host where the default is already taken by another instance's Tempo,
+	// the table legitimately resolves to a different number, and a test demanding
+	// the default would forbid the very behaviour that lets the second instance
+	// boot.
+	resolved := embeddedConfigPort(t, "deploy/configs/tempo.yaml", "grpc_listen_port", 0, base)
+	if ln, err := net.Listen("tcp", ":"+strconv.Itoa(resolved)); err != nil {
+		t.Errorf("tempo.yaml binds gRPC port %d, which is not bindable: %v", resolved, err)
+	} else {
+		_ = ln.Close()
+	}
+
+	// The operator's knob reaches BOTH the table and the config. Proven against a
+	// port we know is free, so the assertion is exact rather than best-effort.
+	free := freePortForTest(t)
+	t.Setenv("ORCHICON_TEMPO_GRPC_PORT", strconv.Itoa(free))
+	p := servicePortsFromEnv()
+	if p.tempoGRPC != free {
+		t.Fatalf("ORCHICON_TEMPO_GRPC_PORT=%d did not reach the port table (got %d)", free, p.tempoGRPC)
+	}
+	if got := embeddedConfigPort(t, "deploy/configs/tempo.yaml", "grpc_listen_port", 0, p); got != free {
+		t.Errorf("tempo.yaml binds gRPC port %d but the knob said %d", got, free)
+	}
+
+	// AN OCCUPIED PORT MUST BE SKIPPED. This is the collision, simulated: hold
+	// the preferred port the way the other instance's Tempo does, then require a
+	// DIFFERENT, bindable one.
+	holder, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("hold a port: %v", err)
+	}
+	defer holder.Close()
+	taken := holder.Addr().(*net.TCPAddr).Port
+
+	got := internalListenerPort(taken)
+	if got == taken {
+		t.Errorf("internalListenerPort(%d) returned the port that is already bound — the second instance would crash-loop", taken)
+	}
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(got))
+	if err != nil {
+		t.Errorf("internalListenerPort(%d) chose %d, which is not bindable: %v", taken, got, err)
+	} else {
+		_ = ln.Close()
+	}
+	if got <= taken {
+		t.Errorf("internalListenerPort walked to %d, which is not above the occupied %d", got, taken)
+	}
+}
+
+// freePortForTest returns a port that was free at the moment it was asked for.
+// The probe-then-release race is acceptable in a test for the same reason it is
+// acceptable in internalListenerPort: the assertion that matters is "not the
+// occupied one", and nothing else on this machine is racing this test for a
+// specific high port.
+func freePortForTest(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("find a free port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	return port
 }

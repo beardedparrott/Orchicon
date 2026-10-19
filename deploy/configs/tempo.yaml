@@ -12,6 +12,13 @@
 # otel-collector.yaml and the readiness probes, not a cleanup.
 server:
   http_listen_port: @TEMPO_HTTP_PORT@
+  # Tempo's OWN gRPC listener — internal only, but it cannot be ephemeral the
+  # way Loki's can: Tempo's query frontend dials its own gRPC port, so 0 makes it
+  # dial 127.0.0.1:0 and fail forever ("error contacting frontend"). It is
+  # therefore TEMPLATED from the instance's port table, which also resolves a
+  # port that is actually free — see internalListenerPort. Left at Tempo's
+  # default 9095 it made the second instance unbootable.
+  grpc_listen_port: @TEMPO_GRPC_PORT@
 
 distributor:
   receivers:

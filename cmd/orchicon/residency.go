@@ -33,6 +33,16 @@ type servicePorts struct {
 	loki        int
 	vm          int
 
+	// tempoGRPC is Tempo's OWN gRPC listener (its querier/frontend talk over it;
+	// the collector does NOT — it uses the OTLP receivers above). It is NOT an
+	// HTTP port and nothing outside the process dials it, which is exactly why
+	// leaving it at Tempo's default was invisible until a second instance tried
+	// to start: two instances cannot both own :9095, so the second one died on
+	// `bind: address already in use` and its Traces view reported the backend
+	// unreachable for ever. Templated (see tempo.yaml) so the child binds what
+	// this table says.
+	tempoGRPC int
+
 	// The telemetry children's port fields below are NOT in argv: each lives in
 	// an embedded config (tempo.yaml, loki.yaml, otel-collector.yaml) that
 	// writeConfigs ships with @TOKEN@ placeholders. Binding and probing read the
@@ -68,6 +78,7 @@ func servicePortDefaults() servicePorts {
 		tempo:             3200,
 		loki:              3100,
 		vm:                8428,
+		tempoGRPC:         9095, // Tempo's own default
 		tempoOTLPGRPC:     14317,
 		tempoOTLPHTTP:     14318,
 		collectorOTLPGRPC: 4317,
@@ -98,6 +109,7 @@ func servicePortsFromEnv() servicePorts {
 		{"ORCHICON_NATS_MONITOR_PORT", &p.natsMonitor},
 		{"ORCHICON_VM_PORT", &p.vm},
 		{"ORCHICON_TEMPO_PORT", &p.tempo},
+		{"ORCHICON_TEMPO_GRPC_PORT", &p.tempoGRPC},
 		{"ORCHICON_LOKI_PORT", &p.loki},
 		{"ORCHICON_OTLP_GRPC_PORT", &p.collectorOTLPGRPC},
 		{"ORCHICON_OTLP_HTTP_PORT", &p.collectorOTLPHTTP},

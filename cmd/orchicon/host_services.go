@@ -296,6 +296,9 @@ func (s *supervisor) configTokens() map[string]string {
 	return map[string]string{
 		"@DATA_DIR@":                 s.dataDir,
 		"@TEMPO_HTTP_PORT@":          strconv.Itoa(p.tempo),
+		// Resolved, not copied: an INTERNAL listener still has to be bindable.
+		// See internalListenerPort.
+		"@TEMPO_GRPC_PORT@":          strconv.Itoa(internalListenerPort(p.tempoGRPC)),
 		"@TEMPO_OTLP_GRPC_PORT@":     strconv.Itoa(p.tempoOTLPGRPC),
 		"@TEMPO_OTLP_HTTP_PORT@":     strconv.Itoa(p.tempoOTLPHTTP),
 		"@LOKI_HTTP_PORT@":           strconv.Itoa(p.loki),
@@ -304,6 +307,40 @@ func (s *supervisor) configTokens() map[string]string {
 		"@COLLECTOR_OTLP_HTTP_PORT@": strconv.Itoa(p.collectorOTLPHTTP),
 		"@COLLECTOR_HEALTH_PORT@":    strconv.Itoa(p.collectorHealth),
 	}
+}
+
+// internalListenerPort returns a port the child can actually BIND, starting at
+// preferred and walking up until something is free.
+//
+// WHY THIS EXISTS. Every other port in the table is a host port the OPERATOR
+// reaches (the plane, the databases, the telemetry UIs), so the installer
+// assigns each instance a distinct one and a collision would be an install-time
+// error the operator sees. The children's INTERNAL listeners are different:
+// nothing outside the process dials them, so nothing ever assigned them, and
+// two instances on one host both tried to own the same number. Measured on this
+// host: prod running normally on :9095, dev's Tempo crash-looping for ever on
+// "listen tcp :9095: bind: address already in use" — retrying every 32s, with
+// the operator's Traces view reporting the backend unreachable because of it.
+//
+// THE PROBE IS BEST-EFFORT, AND THAT IS DELIBERATE. Freeing the port and letting
+// the child take it is not atomic, so a racing process can still win. The
+// alternative — a permanently, deterministically broken bind for the second
+// instance — is strictly worse, and the failure mode here is the same crash a
+// fixed port produces, not a new one.
+func internalListenerPort(preferred int) int {
+	const span = 32
+	for port := preferred; port < preferred+span; port++ {
+		if port == 0 || port > 65535 {
+			break
+		}
+		ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+		if err != nil {
+			continue // in use (or unavailable) — try the next one
+		}
+		_ = ln.Close()
+		return port
+	}
+	return preferred
 }
 
 // applyConfigTokens substitutes every configTokens key in body. Tokens are
