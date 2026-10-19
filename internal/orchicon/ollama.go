@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 )
 
 // OllamaClient (D5): turns via OpenAI-compat /v1 OR native /api/chat (when
@@ -21,6 +20,8 @@ type OllamaClient struct {
 	Host  string // default http://localhost:11434 (env OLLAMA_HOST)
 	HTTP  *http.Client
 	Retry RetryPolicy
+	// Logf, when set, reports repair and retry decisions. Nil = silent (tests, and any caller with no logger).
+	Logf func(format string, args ...any)
 
 	// APIKey is the optional Ollama Cloud credential (OLLAMA_API_KEY). The
 	// local server needs none; Ollama Cloud requires Bearer on every
@@ -231,26 +232,18 @@ func (c *OllamaClient) streamNative(ctx context.Context, req TurnRequest, numCtx
 	}
 	url := strings.TrimRight(c.host(), "/") + "/api/chat"
 	var resp *http.Response
-	err = doWithRetries(ctx, c.Retry, func(attempt int) (bool, error, time.Duration) {
-		r, err2 := postJSON(ctx, httpc, url, c.nativeHeaders(), body)
-		if err2 != nil {
-			return isConnectionErr(err2), err2, 0
-		}
-		if r.StatusCode >= 200 && r.StatusCode < 300 {
-			resp = r
-			return false, nil, 0
-		}
-		b, _ := io.ReadAll(io.LimitReader(r.Body, 8192))
-		_ = r.Body.Close()
-		e := httpStatusError(r.StatusCode, r.Status, b)
-		if retryableStatus(r.StatusCode) {
-			ra, _ := RetryAfter(r.Header.Get("Retry-After"), time.Now())
-			return true, e, ra
-		}
-		return false, e, 0
-	})
-	if err != nil {
-		return nil, err
+	// Shared send loop (requestrepair.go): transient failures are retried, request-shape 400s are
+	// repaired and resent, everything else surfaces. One loop for every client so resilience cannot be
+	// added to one and forgotten in another.
+	resp, serr := sendWithRepair(ctx, c.Retry, c.Logf,
+		func(ctx context.Context, b []byte) (*http.Response, error) {
+			return postJSON(ctx, httpc, url, c.nativeHeaders(), b)
+		},
+		func() ([]byte, error) { return body, nil },
+		&req,
+		func(kind RepairKind) bool { return repairRequest(kind, &req) })
+	if serr != nil {
+		return nil, serr
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)

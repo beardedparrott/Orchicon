@@ -42,6 +42,11 @@ type Dispatcher struct {
 	// Resolve can name the kind and say exactly why it will not dispatch,
 	// instead of falling back to another adapter silently.
 	disabled map[string]struct{}
+	// diffLedger is the installed diff-ledger callback pair, applied to every
+	// bridge at registration (and to those already registered). Nil until a
+	// caller installs one, so a Dispatcher used without a ledger — every test
+	// that does not care about diffs — behaves exactly as before.
+	diffLedger *diffLedgerHooks
 }
 
 // NewDispatcher creates an empty Dispatcher. Adapters register via
@@ -92,6 +97,14 @@ func (d *Dispatcher) DisabledKinds() []string {
 // rejected: it could never be resolved (ParseModelRef never yields an
 // empty Adapter), so registering it is a programming error surfaced
 // loudly at startup.
+//
+// IT ALSO APPLIES THE DIFF-LEDGER SINK, when one has been installed and the
+// bridge can take it. That is what makes diff support arrive BY REGISTERING
+// rather than by being remembered: the hook used to be set on each bridge by
+// hand in server construction, and the Ask half was set on exactly ONE of the
+// three Ask-capable adapters — so `opencode` and `claude` conversations showed
+// no files in the diff pane while the native one worked. A fourth adapter would
+// have inherited the same gap.
 func (d *Dispatcher) Register(kind string, bridge AdapterBridge) {
 	if kind == "" {
 		panic("scheduler: Dispatcher.Register with empty adapter kind")
@@ -102,6 +115,59 @@ func (d *Dispatcher) Register(kind string, bridge AdapterBridge) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.bridges[kind] = bridge
+	// A bridge that cannot ledger simply does not implement DiffLedgerSink —
+	// the same optional-capability discipline as MessageInjector/Aborter, and
+	// never a panic.
+	if d.diffLedger != nil {
+		if sink, ok := bridge.(DiffLedgerSink); ok {
+			sink.SetDiffLedger(d.diffLedger.execution, d.diffLedger.ask)
+		}
+	}
+}
+
+// SetDiffLedger installs the diff-ledger callbacks applied to EVERY bridge from
+// now on, and to every bridge already registered.
+//
+// BOTH HALVES ARE APPLIED IN ONE PLACE, which is the fix rather than a
+// convenience: the previous per-bridge setters let the execution half and the
+// Ask half drift, and the Ask half was missing for two of the three Ask-capable
+// adapters. A caller that wants only one population passes nil for the other.
+//
+// Applying to already-registered bridges as well means call order does not
+// matter — a server that wires the ledger before or after Register gets the same
+// result, so a future adapter cannot be silently left out by registering first.
+func (d *Dispatcher) SetDiffLedger(execution, ask DiffLedgerFunc) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.diffLedger = &diffLedgerHooks{execution: execution, ask: ask}
+	for _, b := range d.bridges {
+		if sink, ok := b.(DiffLedgerSink); ok {
+			sink.SetDiffLedger(execution, ask)
+		}
+	}
+}
+
+// diffLedgerHooks holds the installed callbacks. A small struct rather than two
+// fields so the nil test is ONE question ("has a ledger been installed?")
+// instead of two that could disagree.
+type diffLedgerHooks struct {
+	execution DiffLedgerFunc
+	ask       DiffLedgerFunc
+}
+
+// DiffLedgerCapable reports whether the bridge registered for kind can accept a
+// diff ledger. It exists so a test — and an operator-facing diagnostic — can ask
+// "does this adapter support the diff pane?" without type-asserting a bridge
+// itself, and so the answer is visible for an adapter nobody thought to check.
+func (d *Dispatcher) DiffLedgerCapable(kind string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	b, ok := d.bridges[kind]
+	if !ok {
+		return false
+	}
+	_, capable := b.(DiffLedgerSink)
+	return capable
 }
 
 // Resolve returns the AdapterBridge registered for the given adapter

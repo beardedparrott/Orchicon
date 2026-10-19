@@ -717,6 +717,20 @@ func (b *NativeBridge) SetFileEditHook(fn opencode.FileEditHookFunc) {
 	b.fileEditHook = fn
 }
 
+// SetDiffLedger implements scheduler.DiffLedgerSink, so the Dispatcher installs
+// this bridge's ledger hooks when it REGISTERS — one central application point
+// rather than a per-bridge setter somebody has to remember. The native bridge
+// serves both populations, so it takes both halves.
+func (b *NativeBridge) SetDiffLedger(execution, ask scheduler.DiffLedgerFunc) {
+	// Explicit conversion: the two func types are structurally identical but
+	// DISTINCT named types, and that separation is deliberate — scheduler must
+	// not import an adapter's hook type, and an adapter must not import the
+	// dispatcher's. The conversion at this one boundary is what keeps both
+	// directions of the dependency closed.
+	b.SetFileEditHook(opencode.FileEditHookFunc(execution))
+	b.SetAskFileEditHook(opencode.FileEditHookFunc(ask))
+}
+
 // SetAskFileEditHook wires the diff-pipeline ledger hook for the native Ask
 // path. Unlike SetFileEditHook (whose sessions are worker executions), the
 // hook fired here is attributed to the ASK CONVERSATION: executeToolCalls

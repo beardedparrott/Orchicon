@@ -7,7 +7,9 @@ name: CI
 # The gate is split the same way the Makefile splits it (`ci-go` vs
 # `fe-lint`/`fe-test`) so the two jobs run fully in parallel:
 #
-#   go-ci   — lint, gen-check, vet, test, synth-data, rls-check.
+#   go-ci   — lint, gen-check, vet, test, synth-data, rls-check (cross-compile
+#             moved to its OWN job, parallel with this one — it was the slowest
+#             target and shared nothing with the rest).
 #             No Node setup at all: `gen` runs the local protoc-gen-es /
 #             protoc-gen-connect-es plugins from a scratch npm prefix
 #             containing ONLY those two packages (~30s) instead of the
@@ -92,8 +94,38 @@ jobs:
       - name: Apply migrations (make rls-check non-vacuous)
         run: go run ./tools/atlas-ci
 
-      - name: Run Go control-plane gate (make ci-go)
-        run: make ci-go
+      # CROSS-COMPILE IS NOT HERE ANY MORE. It was the single slowest target in this job (140 s measured
+      # locally, and cold on every fresh runner) and it shares no state with the checks above, so running it
+      # serially at the end only lengthened the wall clock. It is its own job below, in parallel. The LOCAL
+      # `make ci-go` still runs everything, including it — one command, complete gate.
+      - name: Run Go control-plane gate (make ci-go-base)
+        run: make ci-go-base
+
+  # The platform compile gate, as its own job so it runs PARALLEL with go-ci instead of after it.
+  #
+  # What it catches, and why it cannot be deleted: `go build` never compiles `_test.go`, so a
+  # cross-platform break living in a test file is invisible to it; and a gate scoped to the packages a
+  # platform happens to break IN is not a gate for that platform. The recipe vets ./... under each target
+  # GOOS for exactly that reason (see the long note at the Makefile's cross-compile target — it records
+  # the `undefined: syscall.Kill` break that shipped because Windows was not in the list).
+  #
+  # NO BUILD CACHE IS CARRIED BETWEEN RUNS HERE, deliberately. The cache that makes this target fast
+  # locally is 6.8 GB; uploading and downloading that to save ~130 s is a losing trade, so the runner
+  # pays the cold cost and the win comes from running it in parallel instead.
+  cross-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Compile + typecheck every gated platform (make cross-compile)
+        run: make cross-compile
 
   fe-lint:
     runs-on: ubuntu-latest

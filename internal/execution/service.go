@@ -267,6 +267,20 @@ func (s *Service) DeleteExecution(ctx context.Context, req *connect.Request[apiv
 			return nil, mapDBError(err)
 		}
 	}
+	// DE-LINK THE SPEND LEDGER BEFORE THE ROW GOES, and this was a real defect rather than tidiness.
+	//
+	// usage_records is deliberately NOT deleted with an execution — migration 20260731000015 exists so cost
+	// attribution survives, and it is the tenant's spend ledger. But its execution_id is a PLAIN TEXT COLUMN
+	// WITH NO FOREIGN KEY, so deleting the execution orphans every row silently: nothing errors, and nothing
+	// points at the leftovers. This path did exactly that, and it is measurable — on the live tenant, 86 of
+	// the 107 execution ids that usage_records still referenced were ones with an `execution.deleted` audit
+	// row, i.e. deleted through HERE (the GUI and the TUI), not through the retention prune, which de-links
+	// correctly.
+	//
+	// The link is cleared in the SAME transaction as the delete, so the two cannot disagree.
+	if _, err := db.ClearUsageExecutionIDs(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("de-link usage records: %w", err))
+	}
 	if err := db.DeleteExecution(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
 	}
@@ -317,6 +331,11 @@ func (s *Service) BatchDeleteExecutions(ctx context.Context, req *connect.Reques
 			if err != nil {
 				continue
 			}
+		}
+		// Same de-link as the single path, in the same transaction, for the same reason — the batch path
+		// orphaned usage rows identically.
+		if _, err := db.ClearUsageExecutionIDs(ctx, ttx.Tx, tenantID, id); err != nil {
+			continue
 		}
 		if err := db.DeleteExecution(ctx, ttx.Tx, tenantID, id); err != nil {
 			continue

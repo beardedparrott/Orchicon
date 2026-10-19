@@ -699,6 +699,24 @@ func (m *App) dispatchSlash(text string) (bool, tea.Cmd) {
 	if !ok {
 		return false, nil
 	}
+	// A COMMAND DISMISSES THE CHOOSER. It is closed here, at the ONE place text becomes a command,
+	// rather than in the palette's own Enter arm — because Enter is not the only way in.
+	//
+	// THE BUG THIS FIXES. The palette's `enter` case closed itself ONLY when it had a selected
+	// candidate (palette.go: `if c == nil { return false, nil }`). The filter is computed from the WHOLE
+	// composer line, so typing a command WITH AN ARGUMENT matches nothing ("find foo" is not a command
+	// name) — the candidate list empties, Enter falls through to send the text, the command RUNS, and the
+	// box is left floating over a composer that has already been sent. The operator: "some slash commands
+	// leaves a box up after I initiate the command and I have to hit Esc to get rid of it" — precisely the
+	// argument-taking commands, and precisely because the command succeeded rather than failed.
+	//
+	// Closing HERE is the shape fix, not the instance fix: the palette forwards every key it does not case
+	// itself to the composer (see paletteHandleKey's default arm), and that set includes the dock's SECOND
+	// spelling of Enter — ctrl+j, the LF some terminals send. That path never reaches the `enter` case, so
+	// fixing the fall-through there would have left the same box behind for an operator whose terminal
+	// sends LF. Every route to a dispatched command passes through this function, so this is the one place
+	// the invariant "a command dismisses the chooser" can be true by construction.
+	m.closePalette()
 	cmd := m.slash.resolve(name)
 	if cmd == nil {
 		m.dock.SetError(fmt.Sprintf("unknown command %s — /help lists commands (escape a literal slash as \\/)", name))

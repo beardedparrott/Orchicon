@@ -296,7 +296,28 @@ run: services fetch-tags fe-build ## Run the control plane from source (starts t
 	ORCHICON_NATS_URL="nats://localhost:$$(scripts/instance-ports.sh services-port $(instance) nats)" \
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
-test: ## Run Go tests
+test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Testing)
+	@# A TEST MUST NEVER RUN AGAINST PRODUCTION, AND THIS WARNS BEFORE THE SUITES DO.
+	@#
+	@# THE INCIDENT. A `go test ./...` run from a shell with a live prod plane in it wrote ~125 test
+	@# projects into the deployment tenant and created 281 throwaway test tenants in a live instance —
+	@# because ORCHICON_TEST_DSN was pointed at the same prod DSN the plane was using. The suites create
+	@# real rows by design; nothing distinguished "a database" from "THIS database".
+	@#
+	@# The ENFORCEMENT is in the code (db.Open refuses a test binary opening the plane's own database —
+	@# internal/db/testguard.go), because a warning in a build log is missed and a failing test is not.
+	@# This is the EARLY, LOUD version: it prints before the suites run, so the operator can stop rather
+	@# than read it after the damage.
+	@#
+	@# It only warns — it cannot refuse — because make cannot know which database a DSN names: a mismatch
+	@# between the two variables here is a real signal, but the same DSN pointing at a legitimately restored
+	@# scratch clone is a deliberate act. Naming it plainly is the useful half.
+	@if [ -n "$$ORCHICON_TEST_DSN" ] && [ -n "$$ORCHICON_POSTGRES_DSN" ] && [ "$$ORCHICON_TEST_DSN" = "$$ORCHICON_POSTGRES_DSN" ]; then \
+		printf '\n*** ORCHICON_TEST_DSN IS THE SAME AS ORCHICON_POSTGRES_DSN ***\n'; \
+		printf 'Tests that open that database will write TEST DATA into the instance the plane is USING.\n'; \
+		printf 'db.Open will refuse it unless ORCHICON_TEST_ALLOW_PROD=1. Point it at the DEV instance\n'; \
+		printf '(the services container on 5432), not at the plane on 5433. See README, section Testing.\n\n'; \
+	fi
 	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
 	@# A TEST MUST NEVER TOUCH THE DEVELOPER'S REAL CONFIG.
 	@#
@@ -1185,12 +1206,43 @@ desktop-build-windows: desktop-check ## Build the NSIS installer + portable exe 
 # THROUGH and surface the disk as a COMPILE ERROR on whichever platform happened to hit it last. The
 # directory is gitignored and removed by the trap, so nothing is left behind.
 CROSS_TMP := $(CURDIR)/.cross-compile
+
+# CROSS_CACHE_DIR makes that cache PERSISTENT instead of throwaway. Empty (the local default) keeps the
+# behaviour above exactly as it was, which is right for a developer: a scratch run should not leave 6 GB
+# of foreign-platform object files behind.
+#
+# IT EXISTS BECAUSE THE THROWAWAY CACHE MAKES EVERY GATE RUN COLD, and that was the single largest cost
+# in the gate. Measured here: a warm `make cross-compile` (CPU caches warm, Go cache cold because the
+# trap deleted it) takes 140 s, against 28 s for the ENTIRE `go test ./...` and 4 s for `go vet ./...`.
+# So this one target was ~60% of the local Go gate, and in CI — where the runner is fresh — it is paid
+# in full on every push.
+#
+# Caching it is SAFE, and that is worth stating because it is a BUILD CACHE being restored across runs:
+# Go keys build-cache entries by content, so a restored entry can only ever be a MISS, never a wrong
+# answer. A stale cache costs nothing but the rebuild it would have done anyway. CI sets this to a
+# directory it restores and saves via actions/cache; the isolation that the throwaway rule protects is
+# preserved, because this cache still lives outside $(GOCACHE) and never carries foreign bytes into it.
+CROSS_CACHE_DIR ?=
 .PHONY: cross-compile
+# It is 6.8 GB when populated, so it is OPT-IN (CROSS_CACHE_DIR=... above) rather than a default nobody
+# asked for. Clean it with `make cross-cache-clean`, and see README §Build and test speed for the
+# measured trade-off (139 s cold-every-run vs 12.7 s warm).
+cross-cache-clean: ## Remove the persistent cross-compile cache (if CROSS_CACHE_DIR was used)
+	@if [ -n "$(CROSS_CACHE_DIR)" ]; then rm -rf "$(CROSS_CACHE_DIR)"; echo "removed $(CROSS_CACHE_DIR)"; \
+	else echo "CROSS_CACHE_DIR is unset — the cross-compile cache is throwaway and already removed each run"; fi
+
 cross-compile: ## Compile the shipped binaries for every release platform plus windows/arm64 (compile-only; catches platform-specific breaks)
 	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
-	@set -e; mkdir -p $(CROSS_TMP); xcache="$$(mktemp -d $(CROSS_TMP)/cache.XXXXXX)"; tmp="$$(mktemp -d $(CROSS_TMP)/out.XXXXXX)"; \
-	trap 'rm -rf "$$tmp" "$$xcache"' EXIT; \
-	echo "==> cross-compile cache: $$xcache (throwaway — never pollutes $(GOCACHE))"; \
+	@set -e; mkdir -p $(CROSS_TMP); tmp="$$(mktemp -d $(CROSS_TMP)/out.XXXXXX)"; \
+	if [ -n "$(CROSS_CACHE_DIR)" ]; then \
+	  xcache="$(CROSS_CACHE_DIR)"; mkdir -p "$$xcache"; \
+	  trap 'rm -rf "$$tmp"' EXIT; \
+	  echo "==> cross-compile cache: $$xcache (PERSISTENT — reused across runs)"; \
+	else \
+	  xcache="$$(mktemp -d $(CROSS_TMP)/cache.XXXXXX)"; \
+	  trap 'rm -rf "$$tmp" "$$xcache"' EXIT; \
+	  echo "==> cross-compile cache: $$xcache (throwaway — never pollutes $(GOCACHE))"; \
+	fi; \
 	for t in $(CROSS_PLATFORMS); do \
 	  os="$${t%%/*}"; arch="$${t##*/}"; \
 	  echo "==> $$os/$$arch"; \
@@ -1241,7 +1293,21 @@ cross-compile: ## Compile the shipped binaries for every release platform plus w
 # two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
 # are independent, so the union is the correct resolution — dropping either side would silently
 # retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test disk-report-test version-tag-match cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+# ci-go-base is the gate MINUS cross-compile. It exists so CI can run cross-compile as its OWN job, in
+# PARALLEL with everything else, instead of serially after it — cross-compile is the single slowest target
+# (140 s measured, ~60% of the gate) and it shares nothing with the other checks, so serialising it only
+# makes the wall clock longer. `ci-go` still includes it, so the LOCAL gate is unchanged and complete:
+# a developer runs one command and gets every check, including the platform compile.
+#
+# THE GATE LIST IS THE UNION OF BOTH SIDES. This branch added the parallel split; develop added
+# plane-control-e2e-assertions-test, published-archive-e2e-assertions-test and desktop-e2e-assertions-test.
+# They are independent, so neither side may be dropped — a gate quietly retired by a merge conflict is the
+# worst possible outcome for a file whose whole purpose is to catch what nobody looked at.
+CI_GO_GATES := lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test disk-report-test version-tag-match
+
+ci-go-base: $(CI_GO_GATES) ## The Go gate WITHOUT cross-compile (CI runs that as a parallel job)
+
+ci-go: ci-go-base cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
 ci: ci-go fe-lint fe-typecheck fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate

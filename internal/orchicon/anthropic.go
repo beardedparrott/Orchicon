@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 )
 
 // AnthropicClient is the native Anthropic Messages wire client (D3):
@@ -26,6 +25,8 @@ type AnthropicClient struct {
 
 	HTTP  *http.Client
 	Retry RetryPolicy
+	// Logf, when set, reports repair and retry decisions. Nil = silent (tests, and any caller with no logger).
+	Logf func(format string, args ...any)
 
 	// ModelsFn supplies ListModels (registry wires the sourcing service);
 	// nil → catalog only.
@@ -346,26 +347,18 @@ func (c *AnthropicClient) StreamTurn(ctx context.Context, req TurnRequest) (Turn
 	url := strings.TrimRight(base, "/") + "/v1/messages"
 
 	var resp *http.Response
-	err = doWithRetries(ctx, c.Retry, func(attempt int) (bool, error, time.Duration) {
-		r, err2 := postJSON(ctx, httpc, url, c.requestHeaders(), body)
-		if err2 != nil {
-			return isConnectionErr(err2), err2, 0
-		}
-		if r.StatusCode >= 200 && r.StatusCode < 300 {
-			resp = r
-			return false, nil, 0
-		}
-		b, _ := io.ReadAll(io.LimitReader(r.Body, 8192))
-		_ = r.Body.Close()
-		e := httpStatusError(r.StatusCode, r.Status, b)
-		if retryableStatus(r.StatusCode) {
-			ra, _ := RetryAfter(r.Header.Get("Retry-After"), time.Now())
-			return true, e, ra
-		}
-		return false, e, 0
-	})
-	if err != nil {
-		return nil, err
+	// Shared send loop (requestrepair.go): transient failures are retried, request-shape 400s are
+	// repaired and resent, everything else surfaces. One loop for every client so resilience cannot be
+	// added to one and forgotten in another.
+	resp, serr := sendWithRepair(ctx, c.Retry, c.Logf,
+		func(ctx context.Context, b []byte) (*http.Response, error) {
+			return postJSON(ctx, httpc, url, c.requestHeaders(), b)
+		},
+		func() ([]byte, error) { return body, nil },
+		&req,
+		func(kind RepairKind) bool { return repairRequest(kind, &req) })
+	if serr != nil {
+		return nil, serr
 	}
 	return newAnthropicStream(resp.Body), nil
 }

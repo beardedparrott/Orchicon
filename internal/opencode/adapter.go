@@ -120,6 +120,16 @@ type Adapter struct {
 	// contract mirrors SessionStoreFunc: best-effort, never blocks the
 	// event loop, all errors are the implementation's concern.
 	fileEdits FileEditHookFunc
+	// askFileEdits is the Ask-population ledger hook (owner kind
+	// ask_conversation). Separate from fileEdits because the two are built with
+	// different owner kinds and fired on different transports — a worker run
+	// and an Ask conversation — even though one bridge serves both.
+	askFileEdits FileEditHookFunc
+	// askDirResolver resolves an Ask conversation's working directory. Installed
+	// by the server (which owns the pool and the conversation's project row), so
+	// the ledger observes the tree the session actually writes to. Nil = the
+	// ledger observes nothing, never the process's working directory.
+	askDirResolver func(ctx context.Context, conversationID string) string
 
 	// resolveBinary is the adapter-CLI resolution seam. Default
 	// (resolveOpenCodeBinary) probes PATH then $HOME/.opencode/bin —
@@ -741,6 +751,29 @@ type FileEditHookFunc func(ctx context.Context, execID, tenantID, execDir, toolN
 // SetFileEditHook injects the file-edit ledger hook. Nil = no ledger.
 // It is the opencode implementation of the diff-pipeline wiring point.
 func (a *Adapter) SetFileEditHook(fn FileEditHookFunc) { a.fileEdits = fn }
+
+// SetDiffLedger implements scheduler.DiffLedgerSink.
+//
+// THE ASK HALF WAS MISSING, and that is a real gap rather than a formality:
+// opencode implements ChatTurnClient, so it IS an Ask-capable adapter and its
+// conversations are served by this bridge — yet the Ask ledger hook was never
+// installed on it, so those turns recorded NOTHING and the diff pane showed no
+// files. The execution hook was wired by hand in server construction and the Ask
+// hook was wired for the native bridge only, which is exactly the asymmetry the
+// Dispatcher's central application point removes.
+//
+// The Ask half rides the same field as the execution half because the hook is
+// told its OWNER KIND by the caller that builds it (the server passes
+// db.FileEditOwnerAskConversation for Ask and db.FileEditOwnerExecution for
+// runs), and the adapter's job is only to report a completed mutating tool call
+// with the session's directory. One field, two owners, no per-adapter
+// bookkeeping.
+func (a *Adapter) SetDiffLedger(execution, ask FileEditHookFunc) {
+	a.fileEdits = execution
+	if ask != nil {
+		a.askFileEdits = ask
+	}
+}
 
 // workerAgent is the opencode agent name the adapter injects the worker's
 // composed system prompt under (selected with --agent).

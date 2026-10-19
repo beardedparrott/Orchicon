@@ -60,6 +60,8 @@ func main() {
 			os.Exit(runDB(os.Args[2:], log))
 		case "backfill-pr":
 			os.Exit(runBackfillPR(os.Args[2:], log))
+		case "prune-executions":
+			os.Exit(runPruneExecutions(os.Args[2:], log))
 		case "claude-hook":
 			os.Exit(runClaudeHook(os.Stdin, os.Stdout))
 		case "run-context":
@@ -326,6 +328,7 @@ func printHelp() {
 		{section: "Operating an instance:"},
 		{cmd: bin + " db", desc: []string{"Database snapshots: backup | list | restore | prune"}},
 		{cmd: bin + " backfill-pr", desc: []string{"Backfill real PR URLs for completed git-backed runs"}},
+		{cmd: bin + " prune-executions", desc: []string{"Report (or with --apply, delete) executions older than the newest N"}},
 		{cmd: bin + " run-context", desc: []string{"Print a run's .orchicon archive (steps/summary) for context-by-reference"}},
 
 		{section: "Integration helpers (invoked by the runtime, not usually by hand):"},

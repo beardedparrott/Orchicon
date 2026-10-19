@@ -81,12 +81,30 @@ type mcpEntry struct {
 // fetchMCPs shells out to `opencode debug config` and reads the resolved
 // config JSON, which includes the full (merged) MCP server list.
 func (d *MCPDiscoverer) fetchMCPs(ctx context.Context) ([]*apiv1.OpenCodeMCP, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	// A GENEROUS TIMEOUT, matching the model discoverer's reasoning: this command reaches the same managed
+	// service, which lazily re-boots after an eviction, and the first call after a boot can spend real time
+	// getting it up. 15s was measured against a WARM service and reported spurious failures on a cold one.
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
-	out, err := runOpencodeCLI(ctx, d.binary, homeDir(), "debug", "config")
+	// RETRIED, WHICH IT WAS NOT. The model discoverer beside this one retried a transient failure and this
+	// one retried nothing, on the same CLI, the same service and the same eviction window — so a blip the
+	// model list absorbed as a retry surfaced here as a failure. That asymmetry is what this closes: one
+	// policy (cliresilience.go) for every CLI call the gateway makes, rather than one per discoverer.
+	//
+	// emptyIsTransient is FALSE here: an empty config is a legitimate answer (no MCP servers configured),
+	// unlike an empty model catalog, which is the documented mid-boot race.
+	var out []byte
+	_, err := withCLIRetries(ctx, d.log, "mcp config", false, func() (int, error) {
+		b, cerr := runOpencodeCLI(ctx, d.binary, homeDir(), "debug", "config")
+		if cerr != nil {
+			return 0, fmt.Errorf("list opencode MCP servers: %w", cerr)
+		}
+		out = b
+		return len(b), nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("list opencode MCP servers: %w", err)
+		return nil, err
 	}
 
 	var cfg resolvedConfig

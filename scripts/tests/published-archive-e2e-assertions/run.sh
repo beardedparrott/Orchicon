@@ -536,8 +536,15 @@ expect "make help lists published-archive-e2e-assertions-test" "yes" \
 	"$(printf '%s\n' "$HELP" | has_text 'published-archive-e2e-assertions-test' && echo yes || echo no)"
 expect "make help lists the footprint measurer" "yes" \
 	"$(printf '%s\n' "$HELP" | has_text 'published-archive-e2e-footprint' && echo yes || echo no)"
+# The gate list moved into a CI_GO_GATES variable, so a literal grep on one
+# Makefile line can no longer see it. Asking make what ci-go would RUN is the
+# property that matters and survives re-expression of the list.
+# Reads the Makefile's OWN gate list rather than running make: `make -n ci-go`
+# expands prerequisites and `tools` fails without the pinned buf on PATH, so make
+# stopped before printing the list. Accepts either expression (a literal `ci-go:`
+# line, or the CI_GO_GATES variable the list now lives in).
 expect "make ci-go runs this gate" "yes" \
-	"$(grep -qE '^ci-go:.*published-archive-e2e-assertions-test' "${REPO_ROOT}/Makefile" && echo yes || echo no)"
+	"$(grep -qE '(^ci-go:|^CI_GO_GATES).*published-archive-e2e-assertions-test' "${REPO_ROOT}/Makefile" && echo yes || echo no)"
 expect "the windows zip is still published (the harness assumes it exists)" "yes" \
 	"$(grep -qE 'name: .*\.zip|ASSET.*\.zip' "${REPO_ROOT}/.github/workflows/release.yml" && echo yes || echo no)"
 

@@ -329,12 +329,14 @@ func (d *ModelDiscoverer) refresh(ctx context.Context) ([]*apiv1.OpenCodeModel, 
 // retrying it only delays a real diagnosis.
 var errNoModels = errors.New("opencode listed no models")
 
-// emptyRetryAttempts and emptyRetryDelay bound the retry. Five attempts spread over ~4s: the boot
-// window measured in tens of milliseconds, so this is generous, and it is paid only when the command
-// actually returns empty — a normal discovery never enters the loop twice.
+// emptyRetryAttempts and emptyRetryDelay are the model discoverer's names for the SHARED CLI retry policy
+// (cliresilience.go). They are aliases rather than their own constants, and that is the point: two copies of
+// "five attempts over ~4s" is how the model list and the MCP config came to be retried by different rules in
+// the first place. The numbers and their reasoning now live in one place; these keep the existing call sites
+// and messages readable.
 const (
-	emptyRetryAttempts = 5
-	emptyRetryDelay    = 900 * time.Millisecond
+	emptyRetryAttempts = cliRetryAttempts
+	emptyRetryDelay    = cliRetryDelay
 )
 
 // fetchModels runs the model listing for this surface, RETRYING the transient empty result.
@@ -362,32 +364,26 @@ func (d *ModelDiscoverer) fetchModels(ctx context.Context) ([]*apiv1.OpenCodeMod
 	// The home dir is the right pin because it is where opencode's own config and auth live.
 	argv, preferred := d.modelsArgv()
 
-	// RETRY THE TRANSIENT EMPTY, and nothing else. See errNoModels for why an empty list is a race
-	// rather than an answer.
-	var lastErr error
-	for attempt := 1; attempt <= emptyRetryAttempts; attempt++ {
-		models, err := d.fetchModelsOnce(ctx, argv, preferred)
-		if err == nil {
-			if attempt > 1 {
-				d.log.Info("opencode models returned an empty list and succeeded on retry",
-					"attempt", attempt, "note", "the managed service evicts and lazily re-boots a "+
-						"location; a request landing in that window sees an empty catalog")
-			}
-			return models, nil
+	// RETRIED THROUGH THE SHARED POLICY (cliresilience.go), so the model catalog and the MCP config are
+	// retried by the SAME rule rather than by two copies of it. That is what this loop used to be: a private
+	// retry that the sibling discoverer did not share, which is how one path ends up hardened and the other
+	// not. The behaviour is unchanged — an empty catalog is still the transient case (errNoModels), and a
+	// deterministic failure is still returned immediately — the policy simply lives in one place now.
+	//
+	// emptyIsTransient is TRUE: an empty model list is the documented mid-boot race, not an answer.
+	var models []*apiv1.OpenCodeModel
+	_, err := withCLIRetries(ctx, d.log, "models", true, func() (int, error) {
+		got, ferr := d.fetchModelsOnce(ctx, argv, preferred)
+		if ferr != nil {
+			return 0, ferr
 		}
-		lastErr = err
-		if !errors.Is(err, errNoModels) {
-			return nil, err // deterministic: retrying only delays the diagnosis
-		}
-		if attempt < emptyRetryAttempts {
-			select {
-			case <-time.After(emptyRetryDelay):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
+		models = got
+		return len(got), nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, lastErr
+	return models, nil
 }
 
 // fetchModelsOnce is one attempt: the surface's preferred form, then the plainest one if the preferred

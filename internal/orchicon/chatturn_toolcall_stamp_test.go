@@ -40,7 +40,7 @@ func TestStampedLedgerDoesNotAlterNativeBridgeContentToolUse(t *testing.T) {
 			calls = append(calls, ToolCall{ToolCallID: r.ID, Name: r.FunctionName, ArgsJSON: r.Arguments})
 		}
 		var working []Message
-		bridge.appendAssistantTurn(&working, "on it", calls)
+		bridge.appendAssistantTurn(&working, "on it", calls, "")
 		return working
 	}
 

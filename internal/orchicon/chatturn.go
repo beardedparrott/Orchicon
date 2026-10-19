@@ -993,7 +993,13 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 	// roundReply holds only the CURRENT round's text (for history replay,
 	// which needs one assistant message per round).
 	var roundReply strings.Builder
+	// reasoning accumulates the WHOLE turn's thinking, for the transcript part (emitTurnParts).
 	var reasoning strings.Builder
+	// roundReasoning accumulates only the CURRENT round's thinking, because that is what the round's assistant
+	// message must carry back to the provider. One buffer cannot serve both: resetting it per round would
+	// truncate the transcript part to the last round, and NOT resetting it would attach every earlier round's
+	// reasoning to every later message — wrong on the wire and a payload that grows each round.
+	var roundReasoning strings.Builder
 
 	// emitTurnParts publishes what the turn accumulated as COMPLETED parts. It is split out
 	// so the ABORT path can publish the same thing: an aborted turn has no idle (it did not
@@ -1029,7 +1035,7 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 	}
 
 	for round := 0; ; round++ {
-		roundDone, calls, usage, aborted := b.drainOneRound(ctx, bus, stream, &roundReply, &reasoning)
+		roundDone, calls, usage, aborted := b.drainOneRound(ctx, bus, stream, &roundReply, &reasoning, &roundReasoning)
 		// Report the round's REAL usage (never estimated). Emitted per ROUND
 		// because each round is one provider call — so the newest sample's prompt
 		// size is exactly the context pressure a gate needs, and a multi-round
@@ -1096,7 +1102,9 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 			return
 		}
 		roundText := roundReply.String()
+		roundThought := roundReasoning.String()
 		roundReply.Reset()
+		roundReasoning.Reset()
 		if roundText != "" {
 			if reply.Len() > 0 {
 				reply.WriteString("\n\n")
@@ -1120,7 +1128,7 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		// uses, execute every call, and continue the turn with the results.
 		// Tool results are part of the replayable history (unlike the
 		// pre-tools turn, which committed text only).
-		b.appendAssistantTurn(&working, roundText, calls)
+		b.appendAssistantTurn(&working, roundText, calls, roundThought)
 		// The tool loop is unbounded by round count: it continues while the
 		// model keeps issuing tool calls and terminates naturally when a
 		// round returns none (the len(calls) == 0 → finishTurn() path above).
@@ -1170,7 +1178,10 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 // reply text. It returns roundDone (a Finish event arrived), the complete
 // tool calls issued this round, and aborted (the turn context was
 // cancelled).
-func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream TurnStream, reply, reasoning *strings.Builder) (roundDone bool, calls []ToolCall, usage Usage, aborted bool) {
+// reply and reasoning accumulate the TURN's text and thinking (for the transcript part); roundReasoning
+// accumulates only THIS ROUND's thinking, which is what the round's assistant message must carry back to the
+// provider. They are separate buffers because the two answer different questions — see the caller.
+func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream TurnStream, reply, reasoning, roundReasoning *strings.Builder) (roundDone bool, calls []ToolCall, usage Usage, aborted bool) {
 	for {
 		evt, ok, err := stream.Next(ctx)
 		if err != nil {
@@ -1189,6 +1200,7 @@ func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream T
 			bus.emit(scheduler.SessionEvent{Kind: "delta", Type: "text", Text: e.Text})
 		case ReasoningDelta:
 			reasoning.WriteString(e.Text)
+			roundReasoning.WriteString(e.Text)
 			bus.emit(scheduler.SessionEvent{Kind: "delta", Type: "reasoning", Text: e.Text, IsReasoning: true})
 		case ToolCall:
 			bus.emit(scheduler.SessionEvent{Kind: "tool_part", Type: "tool", Text: e.Name})
@@ -1392,7 +1404,11 @@ func (b *NativeBridge) appendAssistantText(working *[]Message, text string) {
 // appendAssistantTurn appends one assistant message carrying the round's
 // text (when non-blank) plus its tool uses, then clears the consumed text
 // from reply via the caller's Reset.
-func (b *NativeBridge) appendAssistantTurn(working *[]Message, text string, calls []ToolCall) {
+//
+// reasoning is the round's THINKING, and it is stored on the message rather than discarded because DeepSeek's
+// thinking mode requires it back on the next request (see Content.Reasoning). It is attached to the message,
+// not to a content block, so the serialiser can emit it whichever blocks the round happened to carry.
+func (b *NativeBridge) appendAssistantTurn(working *[]Message, text string, calls []ToolCall, reasoning string) {
 	var content []Content
 	if strings.TrimSpace(text) != "" {
 		t := text
@@ -1413,10 +1429,21 @@ func (b *NativeBridge) appendAssistantTurn(working *[]Message, text string, call
 		content = append(content, Content{ToolUse: &ContentToolUse{ToolCallID: c.ToolCallID, Name: c.Name, ArgsJSON: args}})
 	}
 	if len(content) == 0 {
-		return
+		// A round can be PURE reasoning with no text and no tool call. That is still a message the provider
+		// expects the reasoning for, so it is kept rather than dropped.
+		if strings.TrimSpace(reasoning) == "" {
+			return
+		}
+		content = append(content, Content{Text: strPtrEmpty()})
+	}
+	if r := strings.TrimSpace(reasoning); r != "" {
+		content[0].Reasoning = &r
 	}
 	*working = append(*working, Message{Role: RoleAssistant, Content: content})
 }
+
+// strPtrEmpty returns a pointer to the empty string, for a message that carries reasoning but no text.
+func strPtrEmpty() *string { s := ""; return &s }
 
 // danglingToolResultOutput is the explicit tool result attached in place of a
 // result that never arrived (the turn ended abnormally between the assistant's
