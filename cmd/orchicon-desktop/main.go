@@ -37,26 +37,66 @@ import (
 )
 
 func main() {
-	planeFlag := flag.String("plane", "", "plane URL (default: $ORCHICON_DESKTOP_PLANE_URL, else the dev control port)")
+	planeFlag := flag.String("plane", "", "plane URL (default: $ORCHICON_DESKTOP_PLANE_URL, else --instance / the remembered instance)")
+	instanceFlag := flag.String("instance", "", "which instance to connect to: dev, prod or test (default: $ORCHICON_DESKTOP_INSTANCE, else the remembered choice, else dev)")
 	flag.Parse()
 
+	// WHICH PLANE, IN PRECEDENCE ORDER — and every step of it is a way to say so,
+	// because there was previously no way at all and the app silently picked dev.
+	//
+	//   1. --plane URL   the explicit escape hatch (a remote or non-standard plane)
+	//   2. --instance    an instance name, resolved through the SHARED port table
+	//   3. $ORCHICON_DESKTOP_INSTANCE
+	//   4. the last instance chosen in the app (prefs.json)
+	//   5. dev
 	planeURL := *planeFlag
 	if planeURL == "" {
 		planeURL = os.Getenv("ORCHICON_DESKTOP_PLANE_URL")
 	}
+	instance := *instanceFlag
+	if planeURL == "" && instance == "" {
+		instance = os.Getenv("ORCHICON_DESKTOP_INSTANCE")
+	}
+	if planeURL == "" && instance == "" {
+		instance = desktop.LoadChosenInstance(desktop.PrefsPath())
+	}
 	if planeURL == "" {
-		// The dev instance's control port, through the SHARED table — never a
-		// hardcoded 8080 here (internal/controlport, asserted against the
-		// installer's ORCHICON_CONTROL_PORT row).
-		planeURL = fmt.Sprintf("http://127.0.0.1:%d", controlport.Defaults()["dev"])
+		if instance == "" {
+			instance = desktop.DefaultInstance
+		}
+		port, ok := controlport.Defaults()[instance]
+		if !ok {
+			log.Fatalf("orchicon-desktop: unknown instance %q — expected dev, prod or test", instance)
+		}
+		// Through the SHARED table — never a hardcoded 8080 here
+		// (internal/controlport, asserted against the installer's
+		// ORCHICON_CONTROL_PORT row).
+		planeURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 	}
 
-	shell, err := desktop.New(desktop.Config{PlaneURL: planeURL, Logf: log.Printf})
+	// ONE token, generated once, used for both the injected payload and the
+	// endpoint check — generating it twice would hand the SPA a credential the
+	// endpoints do not accept.
+	controlToken := desktop.NewControlToken()
+
+	shell, err := desktop.New(desktop.Config{
+		PlaneURL: planeURL,
+		Logf:     log.Printf,
+		// Per-run, and injected into the SPA only. See control.go for exactly what
+		// this does and does not defend against.
+		ControlToken: controlToken,
+		PrefsPath:    desktop.PrefsPath(),
+	})
 	if err != nil {
 		log.Fatalf("orchicon-desktop: %v", err)
 	}
 	// Start REFUSES when the binary embeds no SPA — an empty window with no
 	// explanation is the artefact that check exists to prevent.
+	// THE PLANE-CONTROL SURFACE. Served from the shell's own origin (see
+	// control.go for why it cannot be a Wails binding), delegating straight into
+	// internal/planebind — the same package the CLI and the TUI drive.
+	shell.SetControl(&planebind.Service{}, controlToken)
+
 	if err := shell.Start(); err != nil {
 		log.Fatalf("orchicon-desktop: %v", err)
 	}
@@ -87,8 +127,23 @@ func main() {
 		// likely way this drifts from the web app, and the content area must stay
 		// visually identical to the browser's.
 		AssetServer: &assetserver.Options{
+			// THE WINDOW'S FIRST DOCUMENT IS A NAVIGATION, NOT A REDIRECT.
+			//
+			// This used to answer `http.Redirect(..., StatusTemporaryRedirect)`.
+			// WebKit's custom-scheme handler cannot turn a 3xx into a navigation:
+			// it renders the response BODY instead, so the window opened as a white
+			// page containing Go's own link text — "temporary redirect" — which is
+			// precisely what the operator reported.
+			//
+			// bootstrapHTML is a page that navigates itself to the shell's real http
+			// origin. That navigation the webview performs for real, on every
+			// WebKitGTK version, and it is where the SPA must live anyway: the
+			// HttpOnly refresh cookie needs an http origin and a Connect
+			// server-stream must not be buffered through a scheme handler.
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				http.Redirect(w, r, shell.OriginURL()+r.URL.RequestURI(), http.StatusTemporaryRedirect)
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.Header().Set("Cache-Control", "no-store")
+				_, _ = w.Write([]byte(desktop.BootstrapHTML(shell.OriginURL())))
 			}),
 		},
 		// THE PLANE CONTROL BINDING. Manage Server's start/stop/restart reach

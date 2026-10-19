@@ -2,7 +2,12 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
@@ -11,6 +16,7 @@ import {
   desktopInstance,
   isDesktop,
   planeControl,
+  switchPlane,
   portOf,
   redirectTarget,
   type PlaneControl,
@@ -50,7 +56,12 @@ export const Route = createFileRoute("/manage-server")({
 // is the whole point of a sectioned surface rather than a one-off screen. The next
 // server-side operation (logs, rebuild, backups) appends here; it does not need a
 // second nav entry.
-type Section = { id: string; title: string; blurb: string; Component: () => React.ReactElement };
+type Section = {
+  id: string;
+  title: string;
+  blurb: string;
+  Component: () => React.ReactElement;
+};
 const SECTIONS: Section[] = [
   {
     id: "plane",
@@ -66,13 +77,16 @@ function ManageServerPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Manage Server</h1>
         <p className="text-sm text-muted-foreground">
-          Local server operations for this machine. Nothing here goes through the plane's API.
+          Local server operations for this machine. Nothing here goes through
+          the plane's API.
         </p>
       </div>
       {SECTIONS.map((section) => (
         <Card key={section.id} data-testid={`section-${section.id}`}>
           <CardHeader>
-            <h2 className="text-lg font-semibold leading-none tracking-tight">{section.title}</h2>
+            <h2 className="text-lg font-semibold leading-none tracking-tight">
+              {section.title}
+            </h2>
             <CardDescription>{section.blurb}</CardDescription>
           </CardHeader>
           <CardContent>
@@ -84,7 +98,10 @@ function ManageServerPage() {
   );
 }
 
-const STATE_BADGE: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
+const STATE_BADGE: Record<
+  string,
+  "default" | "secondary" | "destructive" | "outline"
+> = {
   connected: "default",
   connecting: "outline",
   offline: "secondary",
@@ -108,7 +125,29 @@ function PlaneSection() {
   const [pending, setPending] = useState(false);
   const [view, setView] = useState<View>(() => nextView(null, null, false));
   const [announcement, setAnnouncement] = useState("");
+  const [switching, setSwitching] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
+  // Read once: the payload is injected per document load, so a switch needs a reload.
+  const isDesktopApp = info !== null;
   const primaryRef = useRef<HTMLButtonElement>(null);
+
+  const onSwitch = async () => {
+    if (!instance) return;
+    setSwitching(true);
+    setSwitchError(null);
+    try {
+      await switchPlane(instance);
+      // The shell has already retargeted the proxy. Reload so desktopInfo (the
+      // instance name, both versions and the mismatch verdict) is re-read from the
+      // freshly injected document.
+      window.location.reload();
+    } catch (err) {
+      // Never silently leave the window on the old plane while the button says it
+      // connected: say what failed and stay put.
+      setSwitchError(err instanceof Error ? err.message : String(err));
+      setSwitching(false);
+    }
+  };
 
   const choice = resolveChoice(desktopInstance(), resolution);
   const instance = manual ?? choice.instance;
@@ -126,7 +165,13 @@ function PlaneSection() {
         if (!cancelled) setResolution(res);
       })
       .catch(() => {
-        if (!cancelled) setResolution({ Instance: "", ControlPort: port, Known: false, Running: [] });
+        if (!cancelled)
+          setResolution({
+            Instance: "",
+            ControlPort: port,
+            Known: false,
+            Running: [],
+          });
       });
     return () => {
       cancelled = true;
@@ -159,7 +204,11 @@ function PlaneSection() {
     let cancelled = false;
     const tick = () => {
       if (cancelled) return;
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      )
+        return;
       void refresh();
     };
     tick();
@@ -191,7 +240,11 @@ function PlaneSection() {
     setPending(true);
     try {
       const call = (plane: PlaneControl) =>
-        action === "start" ? plane.Start(instance) : action === "stop" ? plane.Stop(instance) : plane.Restart(instance);
+        action === "start"
+          ? plane.Start(instance)
+          : action === "stop"
+            ? plane.Stop(instance)
+            : plane.Restart(instance);
       const dto = await call(plane);
       const message = describeAction(dto);
       setAnnouncement(message);
@@ -207,7 +260,11 @@ function PlaneSection() {
     }
   };
 
-  const portText = current?.ControlPort ? `port ${current.ControlPort}` : choice.running[0]?.ControlPort ? `port ${choice.running[0].ControlPort}` : "port unknown";
+  const portText = current?.ControlPort
+    ? `port ${current.ControlPort}`
+    : choice.running[0]?.ControlPort
+      ? `port ${choice.running[0].ControlPort}`
+      : "port unknown";
   const triedUrl = current?.URL ?? info?.planeURL ?? "";
 
   return (
@@ -215,17 +272,30 @@ function PlaneSection() {
       {/* The selected instance is ON SCREEN, always: "which instance am I looking at"
           must be answerable from the page alone. */}
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <Badge variant={STATE_BADGE[view.state] ?? "outline"} data-testid="plane-state">
+        <Badge
+          variant={STATE_BADGE[view.state] ?? "outline"}
+          data-testid="plane-state"
+        >
           {stateLabel(view.state)}
         </Badge>
-        <span className="font-medium">{instance ?? "no instance selected"}</span>
+        <span className="font-medium">
+          {instance ?? "no instance selected"}
+        </span>
         <span className="text-muted-foreground">{portText}</span>
-        {current?.Residency ? <span className="text-muted-foreground">· {current.Residency}-resident</span> : null}
+        {current?.Residency ? (
+          <span className="text-muted-foreground">
+            · {current.Residency}-resident
+          </span>
+        ) : null}
       </div>
 
       {statusError ? (
         // A REAL failure, named: a read that failed must never look like progress.
-        <p className="text-sm text-destructive" role="alert" data-testid="plane-status-error">
+        <p
+          className="text-sm text-destructive"
+          role="alert"
+          data-testid="plane-status-error"
+        >
           {statusError}
         </p>
       ) : (
@@ -241,7 +311,9 @@ function PlaneSection() {
           <dt>PID</dt>
           <dd className="font-mono">{current.PID || "—"}</dd>
           <dt>Binary</dt>
-          <dd className="truncate font-mono">{current.Binary || "unidentified"}</dd>
+          <dd className="truncate font-mono">
+            {current.Binary || "unidentified"}
+          </dd>
           <dt>Drift</dt>
           <dd>{current.Drift}</dd>
         </dl>
@@ -249,13 +321,18 @@ function PlaneSection() {
 
       {view.state === "offline" ? (
         <p className="text-sm">
-          Nothing answers at <span className="font-mono">{triedUrl || "(configured URL unknown)"}</span>.
+          Nothing answers at{" "}
+          <span className="font-mono">
+            {triedUrl || "(configured URL unknown)"}
+          </span>
+          .
         </p>
       ) : null}
 
       {view.state === "plane-error" ? (
         <p className="text-sm text-destructive">
-          Something answers but it is not healthy. This is not the same as nothing running.
+          Something answers but it is not healthy. This is not the same as
+          nothing running.
         </p>
       ) : null}
 
@@ -277,7 +354,13 @@ function PlaneSection() {
           {choice.running.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {choice.running.map((r) => (
-                <Button key={r.Instance} variant="outline" size="sm" disabled={pending} onClick={() => setManual(r.Instance)}>
+                <Button
+                  key={r.Instance}
+                  variant="outline"
+                  size="sm"
+                  disabled={pending}
+                  onClick={() => setManual(r.Instance)}
+                >
                   {r.Instance} · {r.ControlPort} · {stateLabel(r.State)}
                 </Button>
               ))}
@@ -301,6 +384,32 @@ function PlaneSection() {
               {r.Instance} · {r.ControlPort} · {stateLabel(r.State)}
             </Button>
           ))}
+        </div>
+      ) : null}
+
+      {isDesktopApp && instance && instance !== info?.instance ? (
+        // THE OTHER HALF OF CHOOSING. The picker above changes which instance this
+        // PAGE INSPECTS; it does not change which plane the WINDOW talks to, which
+        // is why picking prod still left every API call on dev. This retargets the
+        // app itself (internal/desktop UsePlane) and reloads so the injected
+        // desktopInfo — instance name, versions, mismatch banner — is re-read.
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 p-3">
+          <span className="text-sm text-muted-foreground">
+            This window is connected to <code>{info?.instance}</code>.
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pending || switching}
+            onClick={() => void onSwitch()}
+          >
+            {switching ? "connecting…" : `Connect to ${instance}`}
+          </Button>
+          {switchError ? (
+            <span role="alert" className="text-sm text-destructive">
+              {switchError}
+            </span>
+          ) : null}
         </div>
       ) : null}
 
@@ -330,7 +439,14 @@ function PlaneSection() {
       </div>
 
       {/* Every action reports its outcome here, including the log path on failure. */}
-      <p role="status" aria-live="polite" className={cn("min-h-[1.25rem] text-sm", pending && "text-muted-foreground")}>
+      <p
+        role="status"
+        aria-live="polite"
+        className={cn(
+          "min-h-[1.25rem] text-sm",
+          pending && "text-muted-foreground",
+        )}
+      >
         {pending ? `Working on ${instance ?? "the plane"}…` : announcement}
       </p>
     </div>

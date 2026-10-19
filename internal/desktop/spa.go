@@ -46,16 +46,21 @@ func embeddedSPA() (fs.FS, error) {
 // to be the desktop app" holds against the SPA's own code, not just by
 // convention. The payload is produced by encoding/json so a URL containing
 // quotes cannot break out of the script tag.
-func desktopScript(info Info) string {
+func desktopScript(info Info, controlToken string) string {
 	payload, err := json.Marshal(struct {
 		Desktop bool `json:"desktop"`
+		// ControlToken is the credential the SPA must send to the shell's own
+		// plane-control endpoints (control.go). It lives in this frozen payload so
+		// a malicious web page — which cannot read a cross-origin response — can
+		// never learn it, and therefore cannot POST Start/Stop at the loopback.
+		ControlToken string `json:"controlToken"`
 		Info
-	}{Desktop: true, Info: info})
+	}{Desktop: true, ControlToken: controlToken, Info: info})
 	if err != nil {
 		// Info is all strings and a bool: marshalling cannot fail. Blanking the
 		// object would be worse than a broken script, so keep going with the
 		// fields we know are safe.
-		payload = []byte(`{"desktop":true}`)
+		payload = []byte(`{"desktop":true,"controlToken":""}`)
 	}
 	return `<script>(function(){Object.defineProperty(window,"` + desktopGlobal + `",{value:Object.freeze(` +
 		string(payload) + `),writable:false,configurable:false});})();</script>`
@@ -65,8 +70,8 @@ func desktopScript(info Info) string {
 // before any SPA module. If the bundle has no </head> (never true of a Vite
 // build, but a hand-rolled one could), the script is prefixed instead: the flag
 // must exist, whatever the document looks like.
-func injectDesktopScript(indexHTML []byte, info Info) []byte {
-	script := desktopScript(info)
+func injectDesktopScript(indexHTML []byte, info Info, controlToken string) []byte {
+	script := desktopScript(info, controlToken)
 	if i := bytes.Index(indexHTML, []byte("</head>")); i >= 0 {
 		out := make([]byte, 0, len(indexHTML)+len(script))
 		out = append(out, indexHTML[:i]...)
@@ -123,10 +128,51 @@ func writeIndex(w http.ResponseWriter, body []byte) {
 // readIndexHTML reads the embedded entry point and injects the desktop flag.
 // A missing index.html is the no-frontend build: the caller turns it into the
 // fatal launch error.
-func readIndexHTML(spaFS fs.FS, info Info) ([]byte, error) {
+func readIndexHTML(spaFS fs.FS, info Info, controlToken string) ([]byte, error) {
 	b, err := fs.ReadFile(spaFS, indexHTMLName)
 	if err != nil || len(b) == 0 {
 		return nil, nil
 	}
-	return injectDesktopScript(b, info), nil
+	return injectDesktopScript(b, info, controlToken), nil
+}
+
+// bootstrapHTML is the document Wails' own origin answers with: it NAVIGATES the
+// window to the shell's real http origin and renders nothing.
+//
+// WHY NOT A REDIRECT. This used to answer every request with
+// http.StatusTemporaryRedirect to OriginURL(). WebKit's custom-scheme handler
+// cannot turn that into a navigation, so the webview rendered the 307 RESPONSE
+// BODY — Go's `<a href="...">Temporary Redirect</a>` — which is exactly what the
+// operator saw: "a white screen with a hyperlink that says temporary redirect".
+// A served document that navigates itself is a navigation the webview performs
+// for real, on every WebKitGTK version.
+//
+// THE FALLBACK LINK IS DELIBERATE. If script is disabled or the navigation is
+// blocked, the operator gets a visible, clickable way in — never a blank window
+// with no explanation, which is the artefact the empty-SPA guard exists to
+// prevent one layer down.
+func BootstrapHTML(origin string) string {
+	esc := htmlEscape(origin)
+	return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Orchicon</title>
+<script>location.replace(` + goStringLiteral(origin) + `);</script>
+<style>body{background:#0F1F1A;color:#EDEDE6;font:14px system-ui,sans-serif;margin:0;display:grid;place-items:center;height:100vh}a{color:#5CBFA2}</style>
+</head><body><p>Starting Orchicon… <a href="` + esc + `">open the app</a></p></body></html>`
+}
+
+// htmlEscape escapes the few characters that matter inside an attribute.
+func htmlEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&#39;")
+	return r.Replace(s)
+}
+
+// goStringLiteral renders s as a JavaScript/Go string literal, so a URL bearing
+// a quote cannot break out of the inline script.
+func goStringLiteral(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	return string(b)
 }

@@ -32,6 +32,11 @@ export interface DesktopInfo {
   planeTag: string;
   /** True only when both tags are known and differ. */
   versionMismatch: boolean;
+  /**
+   * The credential for the shell's own plane-control endpoints. Injected per run
+   * and never written to disk; empty when the shell runs without one.
+   */
+  controlToken: string;
 }
 
 /** The key the Wails shell installs. Renaming it is a one-file change, here only. */
@@ -52,11 +57,17 @@ export const DESKTOP_GLOBAL = "__ORCHICON_DESKTOP__";
  * half-truth the Manage Server page could act on.
  */
 export function desktopInfo(): DesktopInfo | null {
-  const raw = (globalThis as unknown as Record<string, unknown>)[DESKTOP_GLOBAL];
+  const raw = (globalThis as unknown as Record<string, unknown>)[
+    DESKTOP_GLOBAL
+  ];
   if (!raw || typeof raw !== "object") return null;
   const candidate = raw as Partial<DesktopInfo>;
   if (candidate.desktop !== true) return null;
-  if (typeof candidate.planeURL !== "string" || typeof candidate.instance !== "string") return null;
+  if (
+    typeof candidate.planeURL !== "string" ||
+    typeof candidate.instance !== "string"
+  )
+    return null;
   return {
     desktop: true,
     planeURL: candidate.planeURL,
@@ -64,6 +75,8 @@ export function desktopInfo(): DesktopInfo | null {
     appTag: typeof candidate.appTag === "string" ? candidate.appTag : "",
     planeTag: typeof candidate.planeTag === "string" ? candidate.planeTag : "",
     versionMismatch: candidate.versionMismatch === true,
+    controlToken:
+      typeof candidate.controlToken === "string" ? candidate.controlToken : "",
   };
 }
 
@@ -103,7 +116,10 @@ export function portOf(planeUrl: string): number {
  * disclaimer about a control nobody in a browser is looking for is clutter, not
  * clarity (Plane Lifecycle Control AC4).
  */
-export function redirectTarget(pathname: string, desktop: boolean): string | null {
+export function redirectTarget(
+  pathname: string,
+  desktop: boolean,
+): string | null {
   if (pathname === "/manage-server" || pathname.startsWith("/manage-server/")) {
     return desktop ? null : "/dashboard";
   }
@@ -160,9 +176,124 @@ export type PlaneControl = {
   Restart(instance: string): Promise<ActionDTO>;
 };
 
-/** planeControl resolves the Wails binding, or null in a browser / in a test. */
+/** CONTROL_PATH mirrors internal/desktop/control.go's controlPath. */
+const CONTROL_PATH = "/__orchicon_desktop/";
+
+/** CONTROL_TOKEN_HEADER mirrors control.go's controlTokenHeader. */
+const CONTROL_TOKEN_HEADER = "X-Orchicon-Desktop";
+
+/**
+ * httpPlaneControl talks to the SHELL, not to the plane.
+ *
+ * This is the path the desktop app actually uses. Wails injects its JS bindings
+ * into ITS OWN document only, and the app deliberately does not run there: the
+ * SPA is served from the shell's loopback http origin so the HttpOnly refresh
+ * cookie works and a Connect server-stream is not buffered through a scheme
+ * handler. On that origin `window.go` simply does not exist — which is why
+ * Manage Server sat on "contacting the plane…" with every control inert.
+ *
+ * Same origin, so no CORS and no absolute URL: paths resolve against
+ * window.location, which IS the shell.
+ */
+function httpPlaneControl(token: string): PlaneControl {
+  const call = async <T>(path: string, init?: RequestInit): Promise<T> => {
+    const res = await fetch(CONTROL_PATH + path, {
+      ...init,
+      headers: {
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        [CONTROL_TOKEN_HEADER]: token,
+        ...(init?.headers ?? {}),
+      },
+      // The shell answers with fresh state every time; a cached 200 is a lie
+      // about a plane that may have stopped since.
+      cache: "no-store",
+    });
+    const body = (await res.json().catch(() => null)) as
+      T | { error?: string } | null;
+    // A shell-side failure is REPORTED, never swallowed into an empty success:
+    // "started" must only ever come from an action that really ran.
+    if (body && typeof body === "object" && "error" in body && body.error) {
+      throw new Error(body.error);
+    }
+    if (!res.ok) throw new Error(`desktop shell answered ${res.status}`);
+    return body as T;
+  };
+
+  return {
+    Instances: () => call<StatusDTO[]>("instances"),
+    Status: (instance: string) =>
+      call<StatusDTO>(`status?instance=${encodeURIComponent(instance)}`),
+    ResolveControlPort: (port: number) =>
+      call<ResolutionDTO>(`resolve?port=${port}`),
+    Start: (instance: string) =>
+      call<ActionDTO>("start", {
+        method: "POST",
+        body: JSON.stringify({ instance }),
+      }),
+    Stop: (instance: string) =>
+      call<ActionDTO>("stop", {
+        method: "POST",
+        body: JSON.stringify({ instance }),
+      }),
+    Restart: (instance: string) =>
+      call<ActionDTO>("restart", {
+        method: "POST",
+        body: JSON.stringify({ instance }),
+      }),
+  };
+}
+
+/**
+ * switchPlane points THIS WINDOW at another instance's plane and returns the
+ * shell's refreshed Info.
+ *
+ * Distinct from choosing which instance to INSPECT (the Manage Server picker):
+ * this retargets the app — every subsequent API call goes to the new plane — and
+ * the shell remembers the choice for the next launch. The caller reloads the
+ * window afterwards, because desktopInfo (instance, versions, mismatch banner) is
+ * injected into the document and only changes on a fresh load.
+ *
+ * A browser has no shell to switch, so it throws rather than pretending.
+ */
+export async function switchPlane(instance: string): Promise<DesktopInfo> {
+  const info = desktopInfo();
+  if (!info) throw new Error("this page is not running in the desktop app");
+  const res = await fetch(CONTROL_PATH + "plane", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      [CONTROL_TOKEN_HEADER]: info.controlToken,
+    },
+    body: JSON.stringify({ instance }),
+    cache: "no-store",
+  });
+  const body = (await res.json().catch(() => null)) as
+    DesktopInfo | { error?: string } | null;
+  if (body && typeof body === "object" && "error" in body && body.error)
+    throw new Error(body.error);
+  if (!res.ok) throw new Error(`desktop shell answered ${res.status}`);
+  return body as DesktopInfo;
+}
+
+/**
+ * planeControl resolves the plane-control surface, or null in a browser / in a test.
+ *
+ * ORDER, and both arms matter:
+ *   1. the Wails binding, when one exists (a shell that serves its own document —
+ *      kept so this file works whichever transport the shell ships);
+ *   2. over HTTP to the shell, when THIS PAGE IS THE DESKTOP APP. The decision is
+ *      `desktopInfo() !== null`, which is the ONE desktop signal, not a second
+ *      detection: in a browser the payload is absent, so this returns null and
+ *      Manage Server stays unreachable.
+ */
 export function planeControl(): PlaneControl | null {
   const g = globalThis as { go?: { planebind?: { Service?: unknown } } };
   const svc = g.go?.planebind?.Service;
-  return svc && typeof svc === "object" ? (svc as PlaneControl) : null;
+  if (svc && typeof svc === "object") return svc as PlaneControl;
+
+  const info = desktopInfo();
+  if (!info) return null;
+  // A shell that installed no control surface answers 404; that is indistinguishable
+  // from a browser's absence, and the page already handles `null`.
+  return httpPlaneControl(info.controlToken);
 }
