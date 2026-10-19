@@ -180,3 +180,25 @@ export function formatPercent(ratio: number | undefined | null): string {
   if (ratio === undefined || ratio === null || !Number.isFinite(ratio)) return "—";
   return `${trim(ratio * 100)}%`;
 }
+
+/**
+ * axisTickTimes picks the instants the X axis labels.
+ *
+ * Anchored on the first and last sample on purpose: an axis is a claim about
+ * the range of the data, so it must not label a moment the series does not
+ * span. Empty input labels nothing, and a single sample (or a zero-length
+ * window) labels exactly that one instant rather than dividing by zero.
+ *
+ * `maxSlots` is the number of GAPS, so the default returns up to five labels —
+ * beyond that they collide at the widths this dashboard actually uses, which
+ * is the same unreadable axis in a different costume.
+ */
+export function axisTickTimes(points: ChartPoint[], maxSlots = 4): number[] {
+  if (points.length === 0) return [];
+  const first = points[0].t;
+  const last = points[points.length - 1].t;
+  const span = last - first;
+  if (points.length === 1 || !(span > 0)) return [first];
+  const slots = Math.max(1, Math.min(maxSlots, points.length - 1));
+  return Array.from({ length: slots + 1 }, (_, i) => first + (span * i) / slots);
+}

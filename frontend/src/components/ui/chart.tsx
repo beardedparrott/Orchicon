@@ -15,6 +15,7 @@ import { useId, useMemo, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   areaPathFromPoints,
+  axisTickTimes,
   boundsOf,
   chartSeries,
   clampIndex,
@@ -75,6 +76,22 @@ function timeLabel(t: number): string {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+/** axisTimeLabel is the X-axis form: minute precision, and a date once the
+ *  window is longer than a day (otherwise every label reads 00:00–23:00 twice
+ *  over and the axis tells the operator nothing). */
+function axisTimeLabel(t: number, spanMs: number): string {
+  const d = new Date(t);
+  if (spanMs > 24 * 60 * 60 * 1000) {
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 /** TimeSeriesChart renders one series as an area + line with a keyboard cursor. */
@@ -146,58 +163,107 @@ export function TimeSeriesChart({
   const [cMin, cMax] = boundsOf(values);
   const cursorY = active ? VIEW_H - ((active.v - cMin) / (cMax - cMin || 1)) * VIEW_H : 0;
 
+  // Axis labels are DOM text, never <text> inside the plot SVG. The plot is
+  // preserveAspectRatio="none" so the path fills any container width, and
+  // that scale is NON-UNIFORM: x stretches to the container while y stays
+  // 1:1. SVG text inherits that transform and renders horizontally stretched
+  // and vertically squashed — the "squished font" operators reported on the
+  // graph's x coordinates. vectorEffect only rescues strokes, so there is no
+  // SVG-side fix. DOM text is laid out after the scale and cannot distort.
+  const yLabels = ticks.map((tick) => {
+    const ratio = vMax === vMin ? 0.5 : (tick - vMin) / (vMax - vMin);
+    return { value: tick, topPct: (1 - ratio) * 100 };
+  });
+
+  const xLabels = useMemo(() => {
+    const instants = axisTickTimes(points);
+    if (instants.length === 0) return [];
+    const span = points[points.length - 1].t - points[0].t;
+    return instants.map((t) => axisTimeLabel(t, span));
+  }, [points]);
+
   return (
     <div className="w-full">
-      <svg
-        role="img"
-        aria-label={summary}
-        aria-describedby={tableId}
-        tabIndex={0}
-        viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-        preserveAspectRatio="none"
-        onKeyDown={onKeyDown}
-        className={cn(
-          "w-full rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          heightClass,
-        )}
-      >
-        {ticks.map((tick) => {
-          const ratio = vMax === vMin ? 0.5 : (tick - vMin) / (vMax - vMin);
-          const y = VIEW_H - ratio * VIEW_H;
-          return (
-            <g key={tick}>
-              <line
-                x1={0}
-                x2={VIEW_W}
-                y1={y}
-                y2={y}
-                stroke="hsl(var(--border))"
-                strokeWidth={1}
-                strokeDasharray="2 4"
+      <div className="flex w-full gap-2">
+        {/* Y axis: a fixed gutter so labels never sit on top of the series. */}
+        <div className={cn("relative w-10 shrink-0", heightClass)} aria-hidden="true">
+          {yLabels.map((l) => (
+            <span
+              key={l.value}
+              className="absolute right-0 -translate-y-1/2 text-[10px] leading-none tabular-nums text-muted-foreground"
+              style={{ top: `${l.topPct}%` }}
+            >
+              {valueFormat(l.value)}
+            </span>
+          ))}
+        </div>
+        <div className={cn("relative min-w-0 flex-1", heightClass)}>
+          <svg
+            role="img"
+            aria-label={summary}
+            aria-describedby={tableId}
+            tabIndex={0}
+            viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+            preserveAspectRatio="none"
+            onKeyDown={onKeyDown}
+            className="h-full w-full rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {ticks.map((tick) => {
+              const ratio = vMax === vMin ? 0.5 : (tick - vMin) / (vMax - vMin);
+              const y = VIEW_H - ratio * VIEW_H;
+              return (
+                <line
+                  key={tick}
+                  x1={0}
+                  x2={VIEW_W}
+                  y1={y}
+                  y2={y}
+                  stroke="hsl(var(--border))"
+                  strokeWidth={1}
+                  strokeDasharray="2 4"
+                  vectorEffect="non-scaling-stroke"
+                />
+              );
+            })}
+            {area ? <path d={area} fill={color} fillOpacity={0.12} stroke="none" /> : null}
+            {line ? (
+              <path
+                d={line}
+                fill="none"
+                stroke={color}
+                strokeWidth={2}
+                strokeLinejoin="round"
+                strokeLinecap="round"
                 vectorEffect="non-scaling-stroke"
               />
-              <text x={2} y={Math.max(10, y - 3)} fill="hsl(var(--muted-foreground))" fontSize={9}>
-                {valueFormat(tick)}
-              </text>
-            </g>
-          );
-        })}
-        {area ? <path d={area} fill={color} fillOpacity={0.12} stroke="none" /> : null}
-        {line ? (
-          <path
-            d={line}
-            fill="none"
-            stroke={color}
-            strokeWidth={2}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        ) : null}
-        {active ? (
-          <circle cx={cursorX} cy={cursorY} r={3} fill={color} stroke="hsl(var(--background))" strokeWidth={1} />
-        ) : null}
-      </svg>
+            ) : null}
+          </svg>
+          {/* The cursor dot is DOM too: a <circle> in the non-uniform plot is
+              scaled into an ellipse, so it would be drawn as a smear. */}
+          {active ? (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full"
+              style={{
+                left: `${(cursorX / VIEW_W) * 100}%`,
+                top: `${(cursorY / VIEW_H) * 100}%`,
+                backgroundColor: color,
+                boxShadow: "0 0 0 1.5px hsl(var(--background))",
+              }}
+            />
+          ) : null}
+        </div>
+      </div>
+      <div
+        className="ml-12 mt-1 flex justify-between gap-2 text-[10px] leading-none tabular-nums text-muted-foreground"
+        aria-hidden="true"
+      >
+        {xLabels.map((l, i) => (
+          <span key={`${l}-${i}`} className="truncate">
+            {l}
+          </span>
+        ))}
+      </div>
       <p aria-live="polite" className="mt-1 text-[11px] text-muted-foreground">
         {active
           ? `${timeLabel(active.t)} — ${valueFormat(active.v)}${unit ? ` ${unit}` : ""}`
