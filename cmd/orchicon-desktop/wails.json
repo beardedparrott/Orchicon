@@ -6,5 +6,6 @@
   "frontend:build": "",
   "author": {
     "name": "Orchicon"
-  }
+  },
+  "build:tags": "orchicon_desktop"
 }
