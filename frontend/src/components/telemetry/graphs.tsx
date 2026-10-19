@@ -24,17 +24,61 @@ import {
 import { formatDurationMs } from "@/lib/chart-geometry";
 import { cn } from "@/lib/utils";
 
-/** The Orchicon metric families the graphs read (docs/08 §5.2). */
+/** The Orchicon metric families the graphs read (docs/08 §5.2).
+ *
+ *  EVERY INSTRUMENT THE PLANE DECLARES IS HERE. The list used to name three
+ *  (tokens, cost, outbox lag) while the control plane emitted seventeen, so
+ *  "the metrics page" silently omitted recovery, dispatch, session-recycle and
+ *  prefix-cache telemetry that was already being shipped to VictoriaMetrics —
+ *  the operator's "where are the metrics?" was partly this list, not only the
+ *  missing backend. Keep it in step with the `telemetry.Meter()` instrument
+ *  declarations in internal/ (cmd/orchicon's config guard does the same thing
+ *  for ports).
+ *
+ *  Order matters only for reading order: the money and outcome counters first,
+ *  then the health signals. */
 export const TELEMETRY_METRICS = [
+  // Cost and throughput — what the work consumed.
   "orchicon_tokens_consumed",
   "orchicon_cost_usd",
+  "orchicon_executions_total",
+  // Dispatch and delivery health.
+  "orchicon_worker_dispatch_deferred",
   "orchicon_outbox_lag",
+  "orchicon_outbox_oldest_unpublished_seconds",
+  "orchicon_outbox_lag_alerts_total",
+  // Recovery pipeline.
+  "orchicon_recovery_dispatch_held",
+  "orchicon_recovery_dispatch_blocked",
+  "orchicon_recovery_seed_written",
+  "orchicon_recovery_seed_verified",
+  "orchicon_recovery_seed_skipped",
+  "orchicon_recovery_seed_write_failure",
+  // Sessions and prefix cache.
+  "orchicon_prefix_cache_hit_total",
+  "orchicon_prefix_cache_miss_total",
+  "orchicon_prefix_cache_hit_rate",
+  "orchicon_session_recycle",
 ];
 
 const METRIC_UNITS: Record<string, string> = {
   orchicon_tokens_consumed: "tokens",
   orchicon_cost_usd: "USD",
+  orchicon_executions_total: "executions",
+  orchicon_worker_dispatch_deferred: "deferrals",
   orchicon_outbox_lag: "lag",
+  orchicon_outbox_oldest_unpublished_seconds: "s",
+  orchicon_outbox_lag_alerts_total: "alerts",
+  orchicon_recovery_dispatch_held: "held",
+  orchicon_recovery_dispatch_blocked: "blocked",
+  orchicon_recovery_seed_written: "seeds",
+  orchicon_recovery_seed_verified: "seeds",
+  orchicon_recovery_seed_skipped: "seeds",
+  orchicon_recovery_seed_write_failure: "failures",
+  orchicon_prefix_cache_hit_total: "hits",
+  orchicon_prefix_cache_miss_total: "misses",
+  orchicon_prefix_cache_hit_rate: "ratio",
+  orchicon_session_recycle: "recycles",
 };
 
 interface SeriesPointLike {
@@ -206,58 +250,43 @@ function sparkCharts(
     />
   );
 
-  // One chart per INDIVIDUAL series, not one per metric family. The previous
-  // version took `series.find(...)` — the first series matching each family —
-  // so on a tenant where a family is emitted per model, every model but one
-  // was silently dropped, and the page still claimed to be showing "M series".
-  return TELEMETRY_METRICS.flatMap((name, familyIdx) => {
+  const frames: React.ReactNode[] = [];
+  // Families that reported no series at all in this window. Seventeen empty
+  // chart frames is noise; one line naming them is information — it says
+  // "nothing happened" rather than "the page is broken".
+  const noData: string[] = [];
+
+  // One chart per INDIVIDUAL series, not one per metric family: `familySeries`
+  // (not `series.find(...)`, which returned only the first series of each
+  // family and silently dropped every other model).
+  TELEMETRY_METRICS.forEach((name, familyIdx) => {
     const unit = METRIC_UNITS[name];
-    const family = series
-      .filter((s) => s.metricName === name)
-      .map((s) => {
-        const points = pointsFromMetric(s.points);
-        return {
-          id: identifyingLabels(s.labels).join(" · "),
-          points,
-          latest: latestValue(points),
-        };
-      })
-      // Highest current value first: the top spender is what an operator is
-      // looking for, and truncation must never hide it.
-      .sort((a, b) => b.latest - a.latest);
+    const family = familySeries(series, name);
 
     if (family.length === 0) {
-      return [
-        <ChartFrame
-          key={name}
-          title={name}
-          description="No samples in this window"
-          state={kind === "ready" ? null : state}
-        >
-          <p className="py-6 text-center text-sm text-muted-foreground">
-            No samples in this window.
-          </p>
-        </ChartFrame>,
-      ];
+      noData.push(name);
+      return;
     }
 
     const shown = family.slice(0, MAX_SERIES_PER_FAMILY);
-    const frames = shown.map((s, idx) => (
-      <ChartFrame
-        key={`${name}:${s.id || "aggregate"}`}
-        title={s.id || name}
-        description={`${name} · latest ${fmtInt(Math.round(s.latest))} ${unit ?? ""}`}
-        state={kind === "ready" ? null : state}
-      >
-        <TimeSeriesChart
-          points={s.points}
-          label={s.id ? `${name} ${s.id}` : name}
-          unit={unit}
-          colorIndex={familyIdx + idx}
-          heightClass="h-[120px]"
-        />
-      </ChartFrame>
-    ));
+    shown.forEach((s, idx) => {
+      frames.push(
+        <ChartFrame
+          key={`${name}:${s.id || "aggregate"}`}
+          title={s.id || name}
+          description={`${name} · latest ${fmtInt(Math.round(s.latest))} ${unit ?? ""}`}
+          state={kind === "ready" ? null : state}
+        >
+          <TimeSeriesChart
+            points={s.points}
+            label={s.id ? `${name} ${s.id}` : name}
+            unit={unit}
+            colorIndex={familyIdx + idx}
+            heightClass="h-[120px]"
+          />
+        </ChartFrame>,
+      );
+    });
 
     if (family.length > shown.length) {
       frames.push(
@@ -271,8 +300,22 @@ function sparkCharts(
         </p>,
       );
     }
-    return frames;
   });
+
+  if (noData.length > 0 && kind === "ready") {
+    frames.push(
+      <p
+        key="no-data-families"
+        className="rounded-xl border border-dashed border-white/10 p-3 text-[11px] text-muted-foreground lg:col-span-3"
+      >
+        No samples in this window for: {noData.join(", ")}. Each family is
+        emitted only when the activity it counts happens, so an empty list means
+        that work did not run.
+      </p>,
+    );
+  }
+
+  return frames;
 }
 
 export function TracesPanel({ filters }: { filters: TelemetryFilters }) {
