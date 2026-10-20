@@ -160,16 +160,22 @@ func runInstall(args []string, log *slog.Logger) error {
 			instance = chosen
 		}
 	}
-	// THE PROMPT GOES TO THE TERMINAL, NOT TO STDOUT, whenever there is a terminal.
-	// In every normal run those are the same place. They are NOT the same place when
-	// something wraps this installer and captures its stdout — which is exactly what
-	// the Windows one-liner does — and written to a captured stdout the question is
-	// invisible while resolveInstallPorts blocks reading the terminal: an install that
-	// hangs, for ever, with nothing on screen. That is the report this answers.
-	// (The resolved ports are also listed in the summary, which is the record a
-	// captured log keeps.)
+	// THE PROMPT GOES TO A STREAM THAT CAN BE WRITTEN, WHICH IS NOT ALWAYS THE ONE WE READ.
+	//
+	// This used to say `if tty != nil { promptOut = tty }`, on the reasoning that a terminal is
+	// a terminal. It is not, on Windows:
+	//
+	//   promptTerminal() tries /dev/tty, which does not exist there, and falls back to
+	//   os.Stdin when it is a character device. So `tty` IS os.Stdin — a console INPUT handle.
+	//   Writing the port banner to it goes nowhere, and resolveInstallPorts then blocks reading
+	//   answers to a question nobody can see. The install hangs immediately after the instance
+	//   prompt, which is exactly where it was reported to stop.
+	//
+	// `ttyOwned` is the distinction that matters: only a /dev/tty we OPENED OURSELVES is
+	// read-write. In the os.Stdin fallback the console's OUTPUT is os.Stdout (CONOUT$ once the
+	// setup has reattached its stdio), so that is where the prompt belongs.
 	promptOut := io.Writer(os.Stdout)
-	if tty != nil {
+	if ttyOwned {
 		promptOut = tty
 	}
 	ports, err := resolveInstallPorts(instance, residency, promptOut, tty)

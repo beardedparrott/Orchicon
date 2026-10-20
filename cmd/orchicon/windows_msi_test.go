@@ -1474,3 +1474,42 @@ func TestSetupConsoleChildGetsWorkingStdio(t *testing.T) {
 		t.Error("no hasConsole() branch found — the relaunch logic changed shape")
 	}
 }
+
+// TestPromptsAreWrittenToAStreamThatCanBeWritten — the port prompt must not be written to a
+// console INPUT handle.
+//
+// THE REPORT: "After choosing dev as the instance, it just hangs and doesn't do anything else."
+//
+// On Windows promptTerminal() cannot open /dev/tty (it does not exist), so it falls back to
+// os.Stdin when that is a character device — which, after the setup reattaches CONIN$, it is.
+// The caller then did `if tty != nil { promptOut = tty }`, i.e. it wrote the port banner to
+// CONIN$: an INPUT handle. The text goes nowhere, and resolveInstallPorts blocks reading an
+// answer to a question nobody can see. The install stops dead immediately after the instance
+// prompt — exactly where it was reported to stop.
+//
+// The distinction that matters is `ttyOwned`: only a /dev/tty we OPENED OURSELVES is
+// read-write. In the os.Stdin fallback the console's OUTPUT is os.Stdout.
+func TestPromptsAreWrittenToAStreamThatCanBeWritten(t *testing.T) {
+	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "install.go")
+
+	if !strings.Contains(src, "promptOut") {
+		t.Fatal("no promptOut in install.go — the prompt-writing logic moved, and this guard with it")
+	}
+	// The old, wrong shape: any non-nil tty becomes the output.
+	if strings.Contains(src, "if tty != nil {\n\t\tpromptOut = tty") {
+		t.Error("promptOut is taken from `tty` whenever it is non-nil. On Windows that is os.Stdin " +
+			"— a console INPUT handle — so the prompt is written where nobody can read it and the " +
+			"install blocks. Gate it on ttyOwned (a /dev/tty we opened read-write).")
+	}
+	if !strings.Contains(src, "if ttyOwned {") {
+		t.Error("promptOut is not gated on ttyOwned — only a read-write /dev/tty can carry the prompt")
+	}
+
+	// AND promptTerminal MUST KEEP REPORTING WHICH CASE IT IS IN. It returns (file, owned); a
+	// refactor that drops the second value silently reintroduces the bug above.
+	ports := readMSIFile(t, "..", "..", "cmd", "orchicon", "install_ports.go")
+	if !strings.Contains(ports, "func promptTerminal() (*os.File, bool)") {
+		t.Error("promptTerminal no longer reports whether the terminal is OURS — that flag is what " +
+			"distinguishes a read-write /dev/tty from the os.Stdin fallback")
+	}
+}
