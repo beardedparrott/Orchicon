@@ -17,6 +17,11 @@ param(
 # native Windows process, so its contract is: it installs the NATIVE artifact, it never touches
 # WSL unless containers were asked for, it tells a human-is-present setup apart from an
 # unattended one, and it reads the ports the install RECORDED instead of guessing them.
+#
+# It ALSO pins the DEFAULT install path: an MSI is preferred when one is published, and that arm
+# sits behind an availability probe, so run.sh serves a fixture MSI to reach it. Every other case
+# forces the zip, which is how the MSI arm shipped unexercised — and then crashed on the first
+# Windows run with a null scratch directory.
 # The wsl.exe encoding assertions are still here — the container opt-in still carries scripts
 # into a distro — and the deny-list now covers podman as well as docker.
 $ErrorActionPreference = "Stop"
@@ -824,6 +829,48 @@ Check "an UNATTENDED install (-Yes) does NOT claim a human is present" `
 Check "and it answers the prompts with ORCHICON_ASSUME_YES instead" ($envUnattended -match 'ASSUME_YES=1') `
   "otherwise a -Yes run sits at the runtime-image prompt with nothing to answer it"
 Check "the instance name reaches the setup" ($envUnattended -match 'INSTANCE=dev') "the setup must act on the instance the operator chose"
+
+Say ""
+Say "[25] a PUBLISHED MSI is actually used (the arm that shipped broken)"
+# THE ARM HAD NEVER RUN UNDER TEST, and it crashed on its first real Windows run:
+#   Cannot bind argument to parameter 'Path' because it is null
+#   At line:1179  $msiPath = Join-Path $tmpdir $msiAsset
+# — the scratch directory was created BELOW the branch that used it, and PowerShell reads an
+# unassigned variable as $null without complaint.
+#
+# EVERY OTHER CASE HERE FORCES THE ZIP. They all pass ORCHICON_INSTALL_ARCHIVE (the offline
+# seam), and that seam sets $useMsi = false — so the MSI preference, which is the DEFAULT path
+# for a real Windows install, was exercised by nobody. The arm is also behind an availability
+# probe, so reaching it needs an HTTP authority that answers HEAD 200; run.sh serves one.
+#
+# WHAT THIS ASSERTS, and why each part is necessary:
+#   * the MSI arm is TAKEN  — otherwise this is another zip test wearing an MSI label;
+#   * it reaches the LAUNCH  — which happens only after the download and after every
+#     `Join-Path $tmpdir ...` in the argument construction, i.e. after the lines that crashed;
+#   * no unassigned-variable crash — the reported defect, named so a regression reads as itself;
+#   * the session survives   — a halt that closes the operator's window is its own reported bug.
+# It does NOT install: there is no msiexec here, and the installer must say so rather than
+# claim the installer is defective.
+if ($env:ORCHICON_TEST_MSI_BASE_URL) {
+  $msi = Invoke-InstallRun -NoArchive -Extra @{ ORCHICON_INSTALL_BASE_URL = $env:ORCHICON_TEST_MSI_BASE_URL }
+  Check "the MSI arm is TAKEN when one is published" `
+    ($msi.Text -match 'from orchicon_0\.0\.0_windows_amd64\.msi') `
+    (($msi.Text -split "`n" | Where-Object { $_ -match 'installing Orchicon|zip \(same binaries' }) -join ' / ')
+  Check "the scratch directory exists before the arm uses it (the reported crash)" `
+    (-not ($msi.Text -match 'Cannot bind argument')) `
+    "the crash is 'Cannot bind argument to parameter Path because it is null'"
+  Check "the MSI is downloaded and its msiexec arguments built" `
+    ($msi.Text -match 'running the installer') `
+    "reaching this line means every Join-Path on the scratch directory succeeded"
+  Check "a missing msiexec is NAMED, not reported as a defect in the installer" `
+    (($msi.Text -match 'could not start msiexec') -or ($msi.Text -match 'the MSI exited')) `
+    "Windows Installer can be disabled by policy, so this must say what happened"
+  Check "the session survives the halt" ($msi.Text -match $marker) `
+    $(if ($msi.Text -match $marker) { "$marker printed" } else { "NO MARKER — the child died" })
+} else {
+  Check "the MSI arm is exercised" $false `
+    "ORCHICON_TEST_MSI_BASE_URL is not set. run.sh normally serves the fixture; without it the MSI preference — the DEFAULT path on Windows, and the arm that crashed in the field — is untested."
+}
 
 Say ""
 if ($Fail.Count -eq 0) { Say "RESULT: all assertions passed" }
