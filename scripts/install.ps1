@@ -1232,7 +1232,17 @@ function Ask-Instance {
             # as %1 and exports ORCHICON_INSTANCE for `orchicon install`. /norestart
             # because nothing here needs a reboot, and a silent reboot is the worst
             # thing an installer can do.
-            $msiArgs = @("/i", "`"$msiPath`"", "/norestart", "/l*v", "`"$(Join-Path $tmpdir 'msi.log')`"",
+            # THE MSI LOG IS KEPT OUTSIDE THE SCRATCH DIRECTORY, WHICH IS DELETED.
+            #
+            # It used to be written to "$tmpdir\msi.log" and removed with tmpdir at the end of
+            # the run — so the ONE record of what Windows Installer actually did was discarded
+            # seconds after being produced. That was felt immediately: a report of
+            # "orchicon-setup.cmd could not be found" from the wizard arrived with no way to
+            # tell whether the file had failed to install or had been launched wrongly.
+            # $([System.IO.Path]::GetTempPath()) is stable and per-user, so the path can be
+            # PRINTED on success and quoted in a bug report later.
+            $msiLog = Join-Path ([System.IO.Path]::GetTempPath()) "orchicon-msi.log"
+            $msiArgs = @("/i", "`"$msiPath`"", "/norestart", "/l*v", "`"$msiLog`"",
                          "INSTANCE=$($script:Instance)")
             if ($InstallDir) { $msiArgs += "INSTALLFOLDER=`"$InstallDir`"" }
 
@@ -1251,8 +1261,7 @@ function Ask-Instance {
   rerun with -NoSetup for the binaries only, or fix Windows Installer."
             }
             if ($proc.ExitCode -ne 0) {
-                $logHint = Join-Path $tmpdir 'msi.log'
-                Stop-Install "the MSI exited $($proc.ExitCode). The binaries may not be installed. MSI log: $logHint"
+                Stop-Install "the MSI exited $($proc.ExitCode). The binaries may not be installed. MSI log: $msiLog"
             }
 
             # VERIFY, the same way the zip path does: run what was installed. The MSI
@@ -1261,13 +1270,16 @@ function Ask-Instance {
             $exe = if ($InstallDir) { Join-Path $InstallDir "orchicon.exe" }
                    else { Join-Path (Join-Path $env:LOCALAPPDATA "Programs\Orchicon") "orchicon.exe" }
             if (-not (Test-Path -LiteralPath $exe)) {
-                Stop-Install "the MSI reported success but $exe is not there. Check its log: $(Join-Path $tmpdir 'msi.log')"
+                Stop-Install "the MSI reported success but $exe is not there. Check its log: $msiLog"
             }
             $verify = ""
             try { $verify = ((& $exe version 2>&1 | Out-String)).Trim() } catch { $verify = "" }
             if ($verify) { Write-Ok "verified: $verify" } else { Write-Warn "could not run the installed binary to verify it" }
             Write-Ok "Installed: $exe"
             Write-Info "setup runs in the console that just opened (it asks for the host ports and the optional runtime images)"
+            # NAMED ON SUCCESS TOO. It is the only record of what Windows Installer did, and a
+            # path nobody is shown is a path nobody sends.
+            Write-Info "Windows Installer log: $msiLog"
             Remove-Item -Path $tmpdir -Recurse -Force -ErrorAction SilentlyContinue
             return
         }

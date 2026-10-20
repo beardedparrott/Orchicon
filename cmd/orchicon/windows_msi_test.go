@@ -860,4 +860,112 @@ func TestWindowsReadmeDoesNotPromiseAPlaneItCannotStart(t *testing.T) {
 				"and this file is what an operator reads when it does not.", want.what, want.sub)
 		}
 	}
+
+	// AND THE SAME CLAIM WAS IN THE MAIN DOCS, WHICH THIS GUARD DID NOT COVER.
+	//
+	// The sentence "if none is running it starts one for you — which takes a few seconds on
+	// first launch" appeared verbatim in README.md and USERGUIDE.md while nothing in
+	// internal/desktop or cmd/orchicon-desktop starts a plane. Fixing only the file this test
+	// watched is exactly how a guard gives false comfort, so the sweep now covers every doc a
+	// user is likely to read first.
+	for _, doc := range []string{"README.md", "USERGUIDE.md"} {
+		body := readMSIFile(t, "..", "..", doc)
+		if regexp.MustCompile(`(?i)starts one for\s+you|starts a plane (for you )?if`).MatchString(body) {
+			t.Errorf("%s promises the desktop app starts a plane. It does not — there is no "+
+				"plane-starting code in cmd/orchicon-desktop. Name the command instead "+
+				"(orchicon install / orchicon start).", doc)
+		}
+	}
+}
+
+// TestInstallerKeepsTheMSILog — the one record of what Windows Installer did must survive the run.
+//
+// install.ps1 wrote the MSI log into its scratch directory and deleted that directory seconds
+// later, so a report of a wizard failure arrived with NOTHING to read. That was felt directly:
+// "orchicon-setup.cmd could not be found" came with no log, and the question "did the file fail
+// to install, or was it launched wrongly?" could not be answered from the evidence.
+func TestInstallerKeepsTheMSILog(t *testing.T) {
+	ps1 := readMSIFile(t, "..", "..", "scripts", "install.ps1")
+	if !strings.Contains(ps1, `"/l*v", "`+"`"+`"$msiLog`+"`"+`""`) {
+		t.Error("install.ps1 no longer passes /l*v $msiLog to msiexec — the MSI log is how a wizard " +
+			"failure is diagnosed")
+	}
+	if !strings.Contains(ps1, `GetTempPath()) "orchicon-msi.log"`) {
+		t.Error("the MSI log is not written to a STABLE path. It used to live in $tmpdir, which is " +
+			"deleted at the end of the run — so the log explaining a failure was thrown away with it.")
+	}
+	if strings.Contains(ps1, `Join-Path $tmpdir 'msi.log'`) {
+		t.Error("the MSI log is written into $tmpdir again — that directory is deleted before the " +
+			"operator can read anything in it")
+	}
+	if !strings.Contains(ps1, "Windows Installer log: $msiLog") {
+		t.Error("the MSI log path is not PRINTED — a path nobody is shown is a path nobody sends")
+	}
+}
+
+// TestCIInstallsTheMSIPackage — the package had only ever been BUILT, so its first real run was
+// on an operator's machine, where the wizard's last step could not find orchicon-setup.cmd.
+//
+// Building it proves the .wxs compiles and the cab is populated. It does not prove InstallFiles
+// puts the files where the custom action looks — only running `msiexec /i` proves that.
+//
+// THE ASSERTIONS ARE SCOPED TO THE STEP, and that is not tidiness. Checking the whole file first
+// let TWO of these controls pass after their flag was deleted, because the sibling UNINSTALL step
+// uses the same tokens ('/qn', and the path): the guard was satisfied by a different occurrence
+// than the one doing the installing. A file-wide containment check cannot tell those apart, so
+// this one slices the step out by name and asserts inside it.
+func TestCIInstallsTheMSIPackage(t *testing.T) {
+	ci := readMSIFile(t, "..", "..", ".github", "workflows", "ci.yml")
+	step := workflowStep(t, ci, "Install the MSI per-user")
+	for _, want := range []struct{ what, sub string }{
+		{"installs the package", "'/i',"},
+		{"unattended, so it cannot block on a wizard", "'/qn',"},
+		{"with the setup hand-off suppressed (it would download ~540 MB)", "'SKIPSETUP=1'"},
+		{"verifies the file the wizard launches, by name", "'orchicon-setup.cmd'"},
+		{"fails the job when the install fails", "ExitCode -ne 0"},
+	} {
+		if !strings.Contains(step, want.sub) {
+			t.Errorf("the CI step \"Install the MSI per-user\" is missing %s (%q).\n"+
+				"  Until this step existed the MSI was only ever BUILT; the first time it was\n"+
+				"  actually installed was on an operator's Windows box, which is how the missing\n"+
+				"  orchicon-setup.cmd reached a user before it reached us.", want.what, want.sub)
+		}
+	}
+	// AND IT IS UNINSTALLED, in its own step, so the runner is left clean and the uninstall
+	// path is exercised too.
+	un := workflowStep(t, ci, "Uninstall the MSI")
+	for _, want := range []string{"'/x',", "orchicon.exe"} {
+		if !strings.Contains(un, want) {
+			t.Errorf("the CI uninstall step does not mention %q — the uninstall path is as much a "+
+				"part of the package as the install, and nothing else exercises it", want)
+		}
+	}
+}
+
+// workflowStep extracts one named step's text (from its `- name:` to the next step), so an
+// assertion lands on the step that does the work rather than on any other step that happens to
+// share a token.
+func workflowStep(t *testing.T, workflow, namePrefix string) string {
+	t.Helper()
+	lines := strings.Split(workflow, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, "- name:") && strings.Contains(line, namePrefix) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("no workflow step named %q — if it was renamed, this test must be updated "+
+			"with it", namePrefix)
+	}
+	end := len(lines)
+	for j := start + 1; j < len(lines); j++ {
+		trimmed := strings.TrimSpace(lines[j])
+		if strings.HasPrefix(trimmed, "- name:") || strings.HasPrefix(trimmed, "- uses:") {
+			end = j
+			break
+		}
+	}
+	return strings.Join(lines[start:end], "\n")
 }
