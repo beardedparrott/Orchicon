@@ -458,7 +458,11 @@ jobs:
               throw "$f is MISSING from $dir — the payload did not land"
             }
           }
-          Write-Host "installed payload verified in $dir:"
+          # ${dir} BRACED, NOT $dir:. PowerShell parses "$dir:" as a SCOPE/DRIVE-qualified
+          # variable and fails to parse the whole script — so this was a PARSER error, and the
+          # install never ran at all. It is a silent-by-inspection trap: $env: and $script: are
+          # legitimate, so the form looks ordinary.
+          Write-Host "installed payload verified in ${dir}:"
           Get-ChildItem $dir | ForEach-Object { Write-Host ("  {0,-26} {1,12}" -f $_.Name, $_.Length) }
           # THE LAUNCHED THING MUST AT LEAST START. SKIPSETUP stops the wizard's hand-off, but the
           # binary the wrapper runs is installed, so ask it its version: that proves the file is

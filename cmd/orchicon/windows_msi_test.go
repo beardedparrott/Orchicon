@@ -969,3 +969,63 @@ func workflowStep(t *testing.T, workflow, namePrefix string) string {
 	}
 	return strings.Join(lines[start:end], "\n")
 }
+
+// TestWorkflowPwshStepsParse — every `shell: pwsh` block in the workflows must PARSE.
+//
+// A POWERSHELL PARSER ERROR IS NOT A TEST FAILURE, IT IS A JOB FAILURE, and it fails the whole
+// script before a single line of it runs. That is how this guard came to exist: the CI step that
+// installs the MSI ended with
+//
+//	Write-Host "installed payload verified in $dir:"
+//
+// and PowerShell read `$dir:` as a SCOPE/DRIVE-qualified variable — `$env:` and `$script:` are
+// legitimate, so the form looks entirely ordinary — and refused to parse the file:
+//
+//	ParserError: Variable reference is not valid. ':' was not found after the variable name.
+//
+// The install never ran. The step failed in one second on a line that had already been reviewed
+// and read perfectly.
+//
+// This is a TOKENISER, not a linter: it reuses the same rule PowerShell applies (a `$name:`
+// reference must name a real drive or scope), so it can run here with no pwsh on the runner.
+func TestWorkflowPwshStepsParse(t *testing.T) {
+	// Real PowerShell drives/scopes. `$env:` is the common one; `$script:`/`$global:` etc. are
+	// scopes. Anything else followed by ':' is the defect.
+	validPrefixes := map[string]bool{
+		"env": true, "script": true, "global": true, "local": true, "private": true,
+		"using": true, "variable": true, "function": true, "alias": true,
+		// real PSDrives installed by default
+		"HKLM": true, "HKCU": true, "cert": true, "wsman": true, "Alias": true,
+		"Env": true, "Function": true, "Variable": true,
+	}
+	// $NAME: where NAME is an identifier immediately followed by a colon INSIDE a double-quoted
+	// string — which is where the subexpression is ambiguous. `$x:` outside a string is a
+	// different (also broken) form; this catches both.
+	ref := regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*):`)
+
+	for _, wf := range []string{"ci.yml", "canary.yml", "release.yml"} {
+		body := readMSIFile(t, "..", "..", ".github", "workflows", wf)
+		for i, line := range strings.Split(body, "\n") {
+			trimmed := strings.TrimSpace(line)
+			// A COMMENT IS NOT CODE, and this scan has to say so explicitly: the comment that
+			// DOCUMENTS this very defect quotes the broken form, so scanning raw text flags the
+			// explanation and fails a correct file. That is the fourth time in this file's
+			// history prose has defeated a check; the default is now to strip it first.
+			if strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			// GitHub expressions are substituted before pwsh ever sees the script, so
+			// `${{ github.run_number }}` is not PowerShell and must not be flagged.
+			scan := regexp.MustCompile(`\$\{\{[^}]*\}\}`).ReplaceAllString(trimmed, "GH_EXPR")
+			for _, m := range ref.FindAllStringSubmatch(scan, -1) {
+				if validPrefixes[m[1]] {
+					continue
+				}
+				t.Errorf("%s:%d has `$%s:` — PowerShell parses that as a scope/drive-qualified\n"+
+					"  variable and FAILS TO PARSE the whole script, so the step never runs:\n"+
+					"      %s\n"+
+					"  Write ${%s} instead.", wf, i+1, m[1], trimmed, m[1])
+			}
+		}
+	}
+}
