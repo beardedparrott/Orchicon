@@ -66,8 +66,19 @@ func relaunchInOwnConsole() (bool, error) {
 	args := os.Args[1:]
 	cmd := exec.Command(self, args...)
 	cmd.Env = append(os.Environ(), consoleRelaunchEnv+"=1")
-	// NO stdio wiring: the child owns its console and prints there. Inheriting this
-	// process's handles would tie its output to a window nobody can see.
+	// NIL STDIO HERE IS CORRECT, AND THE CHILD MUST FIX IT — this comment used to say the
+	// opposite ("no stdio wiring: the child owns its console and prints there"), which was
+	// simply wrong.
+	//
+	// os/exec gives a child whose Stdout/Stderr are nil the NUL DEVICE. That is not a window,
+	// it is nowhere: CREATE_NEW_CONSOLE hands the child a real console, but its handles still
+	// point at NUL, so everything it prints is discarded and every read hits EOF. The result is
+	// an install that opens a window, finishes in seconds and asks nothing — and a person
+	// cannot tell it apart from one that decided not to prompt.
+	//
+	// Inheriting THIS process's handles instead would be no better: msiexec has no console, so
+	// they are invalid or NUL too. The only handle that means anything is the child's OWN
+	// console, which it opens for itself (see reattachConsoleIO).
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	cmd.SysProcAttr = &windows.SysProcAttr{
 		// CREATE_NEW_CONSOLE: the whole point. NEW_PROCESS_GROUP so a Ctrl-C in the
@@ -82,6 +93,33 @@ func relaunchInOwnConsole() (bool, error) {
 	// independent and writes its own log.
 	_ = cmd.Process.Release()
 	return true, nil
+}
+
+// reattachConsoleIO points this process's standard streams at its OWN console.
+//
+// CALLED BY THE RELAUNCHED CHILD, AND THAT IS WHAT MAKES THE SETUP ABLE TO ASK ANYTHING.
+// CREATE_NEW_CONSOLE gives the process a console; it does not give it working handles. With
+// os/exec's nil stdio the handles are the NUL device, so the install's own interactivity gate
+// (installIsInteractive -> isCharDevice(os.Stdout)) is deciding about a discard stream:
+//
+//   - its prompts are written to nowhere, so the operator sees a blank window;
+//   - its reads hit EOF immediately, so every question takes its default;
+//   - and it all finishes in seconds, which reads as "the installer did not offer options"
+//     rather than "the installer had no output".
+//
+// CONIN$ and CONOUT$ are the documented way for a console process to address its own console,
+// and by the time this runs the console exists — the relaunch created it.
+//
+// Not fatal on failure: an install with no usable console must still be able to run headless,
+// and the callers fall through to the non-interactive path.
+func reattachConsoleIO() {
+	if in, err := os.OpenFile("CONIN$", os.O_RDWR, 0); err == nil {
+		os.Stdin = in
+	}
+	if out, err := os.OpenFile("CONOUT$", os.O_RDWR, 0); err == nil {
+		os.Stdout = out
+		os.Stderr = out
+	}
 }
 
 // ensureInteractiveConsole makes sure the setup has somewhere to ask its questions.
@@ -102,7 +140,10 @@ func ensureInteractiveConsole(wantInteractive bool) bool {
 		return false
 	}
 	if os.Getenv(consoleRelaunchEnv) == "1" {
-		return false // already the relaunched child; it must do the work
+		// Already the relaunched child. It has the console; it does NOT have the handles —
+		// they are NUL — so it must attach them before anything tries to print or ask.
+		reattachConsoleIO()
+		return false
 	}
 	// An explicit operator choice wins over the probe: ORCHICON_INSTALL_INTERACTIVE=0 means
 	// "never prompt", and re-launching a console would be the opposite of that.
@@ -110,6 +151,9 @@ func ensureInteractiveConsole(wantInteractive bool) bool {
 		return false
 	}
 	if hasConsole() {
+		// Started from a console already (an operator running `msiexec /i` in a shell, or the
+		// CLI by hand). Attach the streams to it so output and prompts land there.
+		reattachConsoleIO()
 		return false
 	}
 	relaunched, err := relaunchInOwnConsole()

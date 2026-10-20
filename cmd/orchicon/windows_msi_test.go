@@ -1418,3 +1418,59 @@ func TestInstallAsksWhichInstance(t *testing.T) {
 			"terminal as the port prompts can consume input intended for them")
 	}
 }
+
+// TestSetupConsoleChildGetsWorkingStdio — the relaunched setup must be able to PRINT and ASK.
+//
+// CREATE_NEW_CONSOLE gives the child a console. It does NOT give it handles: os/exec gives a
+// child whose Stdout/Stderr are nil the NUL DEVICE, so an install that "has a console" still
+// writes every prompt into nowhere and reads EOF for every answer. It then finishes in seconds
+// having asked nothing — which is reported as "it never prompted me for instance or any other
+// options" rather than as an I/O fault.
+//
+// Inheriting the parent's handles is no better: msiexec has no console, so those are invalid or
+// NUL too. The only handle that means anything is the child's OWN console, so the child opens
+// CONIN$/CONOUT$ for itself.
+//
+// Asserted on the source because the failure is invisible on any host that has a console —
+// which is every host this test could otherwise run on.
+func TestSetupConsoleChildGetsWorkingStdio(t *testing.T) {
+	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "console_windows.go")
+
+	// (1) the reattach exists and uses the documented device names
+	for _, want := range []struct{ what, sub string }{
+		{"it opens its own console for input", `"CONIN$"`},
+		{"it opens its own console for output", `"CONOUT$"`},
+		{"it replaces os.Stdin", "os.Stdin = in"},
+		{"it replaces os.Stdout", "os.Stdout = out"},
+		{"it replaces os.Stderr", "os.Stderr = out"},
+	} {
+		if !strings.Contains(src, want.sub) {
+			t.Errorf("console_windows.go does not show that %s (%q).\n"+
+				"  Without it the relaunched setup inherits the NUL device, so its prompts go\n"+
+				"  nowhere and its reads return EOF — an install that finishes instantly having\n"+
+				"  asked nothing.", want.what, want.sub)
+		}
+	}
+
+	// (2) THE CHILD MUST CALL IT. A helper nothing invokes is the "dead structure with a
+	// finished shape" failure: the code reads complete and the behaviour is unchanged.
+	child := src[strings.Index(src, `if os.Getenv(consoleRelaunchEnv) == "1" {`):]
+	child = child[:strings.Index(child, "\n\t}")]
+	if !strings.Contains(child, "reattachConsoleIO()") {
+		t.Error("the relaunched child does NOT call reattachConsoleIO, so it keeps the NUL " +
+			"handles and cannot prompt. This is the reported 'asked me nothing'.")
+	}
+
+	// (3) AND SO MUST THE CASE WHERE A CONSOLE ALREADY EXISTED, or an operator running
+	// `msiexec /i` from a shell loses the setup's output to the same NUL device.
+	if hasIdx := strings.Index(src, "if hasConsole() {"); hasIdx >= 0 {
+		block := src[hasIdx:]
+		block = block[:strings.Index(block, "\n\t}")]
+		if !strings.Contains(block, "reattachConsoleIO()") {
+			t.Error("the already-has-a-console path does not call reattachConsoleIO — the setup " +
+				"would print into the NUL device there too")
+		}
+	} else {
+		t.Error("no hasConsole() branch found — the relaunch logic changed shape")
+	}
+}
