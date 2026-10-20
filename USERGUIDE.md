@@ -566,6 +566,22 @@ build. Asset names are stable, so the command does not change between merges.
 curl -fsSL https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.sh | bash -s -- --version canary
 ```
 
+**Windows also gets the desktop app.** The canary publishes the same desktop artifacts a release does, so
+`-Desktop` resolves against it:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.ps1))) -Version canary -Desktop
+```
+
+That fetches `orchicon_desktop_canary_windows_amd64_installer.exe`. The MSI is published alongside it
+(`orchicon_canary_windows_amd64.msi`), and `install.ps1 -Version canary` prefers the MSI when it is
+there — so the plain command above installs the CLI, the TUI **and** the desktop app from one package.
+
+The MSI's own `ProductVersion` is `0.0.<run number>` rather than `canary`: an MSI version must be
+numeric, and it must **increase** so each rebuild upgrades the previous one instead of colliding with it
+(Windows would otherwise report "already installed" and leave the older build in place). The file name is
+the stable part.
+
 **To test the installer script alone**, against the last released version, drop the version flag:
 
 ```powershell

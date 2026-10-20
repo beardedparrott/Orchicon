@@ -22,6 +22,15 @@ name: Canary
 # both installers build `<base>/<version>/orchicon_<version>_<os>_<arch>.tar.gz` and strip a leading `v`,
 # so `canary` resolves to exactly these names.
 #
+# WINDOWS ALSO CARRIES THE DESKTOP APP (the `desktop-windows` job below):
+#   orchicon_canary_windows_amd64.msi                          per-user MSI, CLI + TUI + desktop
+#   orchicon_desktop_canary_windows_amd64_installer.exe        the NSIS installer alone
+#   orchicon_desktop_canary_windows_amd64.zip                  portable desktop app
+# Those stems carry `canary` for the same reason the archives do — install.ps1 builds the name it will
+# fetch from `<version>`, so a version number in the name would break the fixed command. The MSI's
+# ProductVersion is the one thing that cannot be `canary` (it must be numeric); see the Build the MSI
+# step for why it is 0.0.<run number> rather than a fixed 0.0.0.
+#
 #   Windows (PowerShell):
 #     $env:ORCHICON_INSTALL_BASE_URL = "https://github.com/beardedparrott/Orchicon/releases/download"
 #     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/beardedparrott/Orchicon/develop/scripts/install.ps1))) -Version canary
@@ -133,8 +142,169 @@ jobs:
             orchicon_*.zip
           if-no-files-found: error
 
+  # THE DESKTOP APP IS PART OF THE DEVELOP INSTALL PATH, so canary builds it too.
+  #
+  # WHY THIS JOB EXISTS. Without it, canary published the CLI and the TUI only, and the
+  # sole place an MSI had ever been built was a pull-request CI run: an artifact that
+  # expires, hangs off a branch that then gets deleted, and is therefore not an install
+  # path an operator can be handed. Canary exists precisely so a REAL installer is
+  # exercised against DEVELOP before anything is released — and for a Windows operator
+  # "the installer" now includes the desktop app.
+  #
+  # IT MIRRORS release.yml's `desktop-windows` ON PURPOSE, down to the pinned Wails and
+  # WiX versions and the asset stems. A canary whose artifacts are SHAPED differently
+  # from a release tests a different upgrade and extraction path than the one that
+  # ships, which is how a test quietly stops meaning anything. The ONE thing that must
+  # differ is the MSI's own Version property — see the Build step.
+  desktop-windows:
+    name: Desktop — Windows (MSI + NSIS installer + portable zip)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd frontend && npm ci && npm run build
+
+      - name: Install the pinned Wails CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # `-webview2 download` embeds the WebView2 Evergreen bootstrapper in the NSIS
+      # installer, so a Windows 10 machine provisions itself on first run instead of
+      # opening a blank window. Same flags as the release.
+      - name: Build the app + NSIS installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cmd/orchicon-desktop
+          wails build -clean -platform windows/amd64 -webview2 download -nsis \
+            -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=canary"
+
+      # THE MSI NEEDS THE CLI BINARIES TOO. Built here rather than downloaded from the
+      # `build` job: that job publishes a .zip, and unzipping it to reach two .exe files
+      # would couple this packaging step to the archive layout for no gain. The ldflags
+      # match the `build` job's exactly, so a canary from the MSI and a canary from the
+      # zip report the same version rather than differing by how they were packaged.
+      - name: Build the Windows CLI binaries (they go IN the MSI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          LDFLAGS="-X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(git rev-parse --short HEAD) \
+                   -X github.com/beardedparrott/orchicon/internal/version.gitTag=canary \
+                   -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o bin/orchicon.exe ./cmd/orchicon
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o bin/orch.exe ./cmd/orch
+
+      # PINNED BELOW 6, for the reason release.yml gives: WiX v6+ requires accepting the
+      # Open Source Maintenance Fee EULA, and an unpinned install resolves to v7 and fails
+      # with "error WIX7015". cmd/orchicon/windows_msi_test.go holds every workflow and the
+      # Makefile to the same pin.
+      - name: Install the WiX CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet tool install --global wix --version 5.0.2
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # `-ext` does NOT restore from NuGet — it resolves through WiX's own extension
+      # store, so the extension must be installed first (WIX0144 otherwise). Its own step
+      # because the PATH export above only takes effect in the NEXT step.
+      - name: Install the WiX UI extension
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+
+      # THE VERSION IS THE ONE THING THAT CANNOT MIRROR THE RELEASE, twice over:
+      #
+      #  1. AN MSI VERSION MUST BE NUMERIC. WiX rejects the ProductVersion "canary" —
+      #     the property is major.minor.build (major and minor ≤ 255, build ≤ 65535) —
+      #     so the tag cannot travel into it.
+      #  2. IT MUST STILL INCREASE. A fixed 0.0.0 would make every canary the SAME
+      #     product version, and the .wxs declares <MajorUpgrade>, so reinstalling after
+      #     the next merge would not upgrade anything — Windows would either report
+      #     "already installed" or leave the previous build in place, which is precisely
+      #     the re-test canary exists to make possible.
+      #
+      # `github.run_number` is monotonic per workflow and unique per run, so successive
+      # canaries always order above each other. It stays far below the 65535 ceiling.
+      # The ASSET NAME keeps `canary`, because that is what install.ps1 probes for
+      # (`orchicon_<version>_windows_<arch>.msi`, version digits never included).
+      - name: Build the MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = "dist/msi-src"
+          $null = New-Item -ItemType Directory -Force -Path $src, dist/desktop
+          Copy-Item bin/orchicon.exe $src/
+          Copy-Item bin/orch.exe $src/
+          Copy-Item cmd/orchicon-desktop/build/bin/orchicon-desktop.exe $src/
+          Copy-Item deploy/desktop/windows/orchicon-setup.cmd $src/
+          Copy-Item deploy/desktop/windows/README-WINDOWS.txt $src/
+          Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
+          Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
+          $srcAbs = (Resolve-Path $src).Path
+          wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext `
+            -d "Version=0.0.${{ github.run_number }}" -d "SourceDir=$srcAbs" `
+            -o "dist/desktop/orchicon_canary_windows_amd64.msi"
+          Get-ChildItem dist/desktop
+
+      # The stems carry `canary` for the same reason the .tar.gz/.zip assets do: the name
+      # is a fixed string an operator does not have to look up, and `install.ps1 -Desktop
+      # -Version canary` builds exactly this name. The portable zip does NOT carry the
+      # WebView2 bootstrapper (an unzip cannot run an installer), so it ships
+      # README-WINDOWS.txt naming the Evergreen URL instead.
+      - name: Name the desktop artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bins = Get-ChildItem -Path cmd/orchicon-desktop/build/bin -Filter *.exe -File
+          $installer = $null
+          $app = $null
+          foreach ($f in $bins) {
+            if ($f.Name -match 'installer') { $installer = $f } elseif ($null -eq $app) { $app = $f }
+          }
+          if ($null -eq $installer) { throw "no NSIS installer found in desktop/build/bin — wails build -nsis did not produce one" }
+          if ($null -eq $app) { throw "no desktop executable found in desktop/build/bin" }
+          $null = New-Item -ItemType Directory -Force -Path dist/desktop
+          Copy-Item $installer.FullName "dist/desktop/orchicon_desktop_canary_windows_amd64_installer.exe"
+          $stage = "stage/orchicon_desktop_canary_windows_amd64"
+          $null = New-Item -ItemType Directory -Force -Path $stage
+          Copy-Item $app.FullName "$stage/orchicon-desktop.exe"
+          Copy-Item deploy/desktop/windows/README-WINDOWS.txt "$stage/README-WINDOWS.txt"
+          Compress-Archive -Path $stage -DestinationPath "dist/desktop/orchicon_desktop_canary_windows_amd64.zip"
+          Get-ChildItem dist/desktop
+
+      # NAMED `canary-*` so the publish job's existing `pattern: canary-*` collects it —
+      # a differently-named artifact would build here and never reach the release, the
+      # "built and silently not published" failure this file's ASSETS list guards against.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canary-windows-desktop
+          path: dist/desktop/*
+          if-no-files-found: error
+
   publish:
-    needs: build
+    # BOTH JOBS, or a failed desktop build publishes a canary pointing at NEW code with
+    # the PREVIOUS merge's installer: `gh release upload --clobber` replaces matching
+    # names and leaves everything else, so the two would sit under one tag claiming to be
+    # the same commit. A canary that lies about its own contents is worse than no canary.
+    needs: [build, desktop-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -175,13 +345,26 @@ jobs:
 
           The version of the code inside is whatever develop was at the tag — check the commit on this
           release's tag.
+
+          **Windows now also carries the desktop app**, so the develop install path is the same shape a
+          release publishes:
+
+          - `orchicon_canary_windows_amd64.msi` — per-user installer (CLI + TUI + desktop app, Start
+            menu and desktop shortcuts). `install.ps1 -Version canary` prefers it automatically.
+          - `orchicon_desktop_canary_windows_amd64_installer.exe` — the NSIS installer on its own.
+          - `orchicon_desktop_canary_windows_amd64.zip` — portable desktop app, no installer.
+
+          The MSI's own version is `0.0.<run number>`, not `canary`: an MSI ProductVersion must be
+          numeric, and it must still increase so each rebuild upgrades the previous one rather than
+          colliding with it. The file name is the stable part.
           EOF
           )
 
           if gh release view canary >/dev/null 2>&1; then
-            gh release upload canary dist/*.tar.gz dist/*.zip --clobber
+            gh release upload canary dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe --clobber
             gh release edit canary --prerelease --title "canary (develop)" --notes "$NOTES"
           else
-            gh release create canary --prerelease --title "canary (develop)" --notes "$NOTES" dist/*.tar.gz dist/*.zip
+            gh release create canary --prerelease --title "canary (develop)" --notes "$NOTES" \
+              dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe
           fi
           gh release view canary --json tagName,isPrerelease -q '"published " + .tagName + " prerelease=" + (.isPrerelease|tostring)'
