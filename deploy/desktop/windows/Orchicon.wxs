@@ -250,22 +250,6 @@
       <Custom Action="LaunchSetup" After="InstallFinalize" Condition="NOT REMOVE AND SKIPSETUP &lt;&gt; &quot;1&quot;" />
     </InstallExecuteSequence>
 
-    <!-- ===================== THE WIZARD'S OWN PAGES, IN THE FLOW =====================
-         Defined in OrchiconConfig.wxs (a second source file). WIRED HERE because a dialog no
-         path reaches is the "seam nothing calls" failure — the pages would compile, ship, and
-         never be shown.
-             WelcomeDlg  -> InstanceDlg -> PortsDlg -> ImagesDlg -> VerifyReadyDlg
-         Order="2" on the initial publish overrides WixUI's own WelcomeDlgNext (order 1), which
-         points at the licence page; the licence page is reached from InstanceDlg's Back so the
-         terms are still shown before anything is written. -->
-    <InstallUISequence>
-      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2">1</Publish>
-      <!-- The licence page keeps its place in the flow: Back from InstanceDlg. -->
-      <Publish Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="2">1</Publish>
-      <!-- And the licence page's own Next now comes to us rather than straight to InstallDirDlg. -->
-      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2">LicenseAccepted = "1"</Publish>
-    </InstallUISequence>
-
     <ui:WixUI Id="WixUI_InstallDir" />
   </Package>
 </Wix>

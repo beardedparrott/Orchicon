@@ -28,6 +28,24 @@
          A whole stack: its own plane, ports, host services and data. Defaults to dev, which is
          what the CLI and the one-line install default to, so the wizard and the script agree. -->
     <UI>
+      <!-- ===================== THE FLOW =====================
+           A dialog no path reaches is the "seam nothing calls" failure: it compiles, it ships,
+           and the operator never sees it.
+
+               WelcomeDlg -> InstanceDlg -> PortsDlg -> ImagesDlg -> VerifyReadyDlg
+
+           Order="2" overrides WixUI's own WelcomeDlgNext (order 1, which points at the licence
+           page). The licence keeps its place via InstanceDlg's Back, and the licence page's own
+           Next comes back to us — so the terms are still shown before anything is written; the
+           licence is RE-SEQUENCED, not skipped.
+
+           <Publish> belongs under <UI> (or inside a <Dialog>) in WiX v4. Putting it under
+           <InstallUISequence> is "error WIX0004: The Publish element contains an unexpected
+           attribute 'Dialog'", which is what the first attempt at this produced. -->
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2">1</Publish>
+      <Publish Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="2">1</Publish>
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2">LicenseAccepted = "1"</Publish>
+
       <Dialog Id="InstanceDlg" Width="370" Height="270" Title="[ProductName] Setup">
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
