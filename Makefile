@@ -1274,7 +1274,7 @@ desktop-package-windows: ## Produce the Windows MSI (Windows host with the WiX C
 	@# must be installed once before the build can name it. Idempotent: adding an
 	@# extension that is already there is a no-op.
 	$(WIX) extension add -g WixToolset.UI.wixext/$(WIX_VERSION) || true
-	$(WIX) build deploy/desktop/windows/Orchicon.wxs deploy/desktop/windows/OrchiconConfig.wxs \
+	$(WIX) build deploy/desktop/windows/Orchicon.wxs \
 		-arch x64 \
 		-ext WixToolset.UI.wixext \
 		-d Version=$(DESKTOP_VERSION) \

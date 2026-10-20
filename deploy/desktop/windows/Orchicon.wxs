@@ -250,6 +250,132 @@
       <Custom Action="LaunchSetup" After="InstallFinalize" Condition="NOT REMOVE AND SKIPSETUP &lt;&gt; &quot;1&quot;" />
     </InstallExecuteSequence>
 
+    <!-- ===================== THE WIZARD'S OWN PAGES =====================
+         INSIDE <Package>, NEXT TO <ui:WixUI>, AND THAT PLACEMENT IS THE FIX.
+         These pages first lived in a separate source file as a <Fragment><UI>. WiX compiled
+         that file happily — it even reported the schema errors I was chasing — and then
+         DROPPED the whole thing at link: the finished MSI contained none of its dialogs and
+         none of its text, while every property defined here in <Package> shipped. A fragment
+         is not connected to the package's UI, so the dialogs were unreachable and pruned.
+
+         A dialog no path reaches is the "seam nothing calls" failure, and it is SILENT: the
+         build is green, the package installs, and the wizard is unchanged.
+
+         THE FLOW:
+             WelcomeDlg -> InstanceDlg -> PortsDlg -> ImagesDlg -> VerifyReadyDlg
+         WelcomeDlgNext is overridden at Order="2" (WixUI's own is 1, pointing at the licence
+         page). InstanceDlg's Back goes to the licence, and the licence's Next comes back here,
+         so the terms are still shown before anything is written — re-sequenced, not skipped.
+
+         THE CONDITION IS AN ATTRIBUTE IN WIX v4. WiX v3 took it as the element's text; v4
+         rejects that with "WIX0400: The Publish element contains illegal inner text". -->
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2" />
+      <Publish Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="2" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2" Condition="LicenseAccepted = &quot;1&quot;" />
+
+      <Dialog Id="InstanceDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}Which instance?" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="Each instance is a whole stack: its own plane, ports, services and data." />
+
+        <Control Id="InstanceRadio" Type="RadioButtonGroup" X="20" Y="60" Width="330" Height="90"
+                 Property="INSTANCE">
+          <RadioButtonGroup Property="INSTANCE">
+            <RadioButton Value="dev" X="0" Y="0" Width="330" Height="18" Text="dev — for trying it out (the default)" />
+            <RadioButton Value="test" X="0" Y="22" Width="330" Height="18" Text="test — for a second stack on this machine" />
+            <RadioButton Value="prod" X="0" Y="44" Width="330" Height="18" Text="prod — this machine's real instance" />
+          </RadioButtonGroup>
+        </Control>
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="WelcomeDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="NewDialog" Value="PortsDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <!-- ===================== PORTS =====================
+           The two the installer has always ASKED about. Everything else in the port table is
+           derived from the instance (and offset per instance), so putting sixteen fields here
+           would be a wall of numbers for values nobody wants to change. -->
+      <Dialog Id="PortsDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}Host ports" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="Leave a box empty to use this instance's default. A port already in use is reported during setup." />
+
+        <Control Id="ControlPortLabel" Type="Text" X="20" Y="62" Width="200" Height="15" NoPrefix="yes"
+                 Text="&amp;Control plane (web UI + API):" />
+        <Control Id="ControlPortEdit" Type="Edit" X="230" Y="60" Width="70" Height="17"
+                 Property="CONTROLPORT" Text="[CONTROLPORT]" />
+
+        <Control Id="PostgresPortLabel" Type="Text" X="20" Y="88" Width="200" Height="15" NoPrefix="yes"
+                 Text="&amp;PostgreSQL:" />
+        <Control Id="PostgresPortEdit" Type="Edit" X="230" Y="86" Width="70" Height="17"
+                 Property="POSTGRESPORT" Text="[POSTGRESPORT]" />
+
+        <Control Id="PortsHint" Type="Text" X="20" Y="120" Width="330" Height="60" Transparent="yes"
+                 Text="Orchicon offsets every other port (NATS, telemetry, traces, logs, metrics) per instance, so two instances never collide. The values bound are written down and printed at the end of setup." />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="InstanceDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="NewDialog" Value="ImagesDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <!-- ===================== RUNTIME IMAGES =====================
+           Optional, and defaulted OFF: a project starts in execution_mode=local, so someone who
+           never opts in needs no image at all. Pulling multi-GB layers up front made every
+           install pay for a feature it might never use. -->
+      <Dialog Id="ImagesDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}Runtime images" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="Optional container images for workflow runs. Downloading several GB now is not required." />
+
+        <Control Id="ImagesNone" Type="RadioButtonGroup" X="20" Y="62" Width="330" Height="80"
+                 Property="RUNTIMEIMAGES">
+          <RadioButtonGroup Property="RUNTIMEIMAGES">
+            <RadioButton Value="none" X="0" Y="0" Width="330" Height="18" Text="None — local execution only (recommended, and the default)" />
+            <RadioButton Value="all" X="0" Y="22" Width="330" Height="18" Text="All published images — downloads several GB now" />
+          </RadioButtonGroup>
+        </Control>
+
+        <Control Id="ImagesHint" Type="Text" X="20" Y="150" Width="330" Height="60" Transparent="yes"
+                 Text="Images can be added at any time from Settings → Runtime images, so nothing here is final." />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="PortsDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+    </UI>
+
     <ui:WixUI Id="WixUI_InstallDir" />
   </Package>
 </Wix>

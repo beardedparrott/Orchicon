@@ -62,7 +62,7 @@ OUT="$WORK/out.msi"
 LOG="$WORK/build.log"
 
 wix build \
-  "$SRC/Orchicon.wxs" "$SRC/OrchiconConfig.wxs" \
+  "$SRC/Orchicon.wxs" \
   -arch x64 -ext WixToolset.UI.wixext \
   -d "Version=0.0.0" -d "SourceDir=$WORK/src" \
   -bindvariable "WixUILicenseRtf=$WORK/src/LICENSE.rtf" \

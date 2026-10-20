@@ -603,7 +603,11 @@ func TestMSIDeclaresNoDuplicateIdentifiers(t *testing.T) {
 	var dups []string
 	for el, ids := range counts {
 		for id, n := range ids {
-			if n > 1 {
+			// CONTROL IDs ARE SCOPED PER DIALOG. Every dialog has its own Back/Next/Cancel/
+			// Title/Description, so finding those three times is correct — WiX keys Control by
+			// (Dialog_, Control), not by Control alone. Only the globally-unique identifiers are
+			// a duplicate at ×2.
+			if n > 1 && el != "Control" {
 				dups = append(dups, fmt.Sprintf("%s/@%s ×%d", el, id, n))
 			}
 		}
