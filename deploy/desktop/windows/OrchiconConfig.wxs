@@ -15,11 +15,13 @@
   definitions stay in one compiled unit — WiX resolves dialog references across the merged
   fragments, and the UI sequence is overridden in Orchicon.wxs where the rest of the flow is.
 -->
-<!-- WIX0048: an INCLUDED file is rooted at <Include>, not <Wix>. WiX rejects a <Wix> document
-     element here because the include is spliced INTO the parent document, and two document
-     elements would make an incorrectly structured document. -->
-<Include xmlns="http://wixtoolset.org/schemas/v4/wxs"
-         xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+<!-- A SECOND SOURCE FILE, NOT AN <?include?>.
+     WiX merges the fragments of every source it is given, so the wizard's pages live here and
+     `wix build` is handed BOTH files. <?include?> would be text substitution — it splices this
+     document inside <Wix> and produces "error WIX0001: This operation would create an
+     incorrectly structured document", which is exactly what the first attempt did. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
 
   <Fragment>
     <!-- ===================== WHICH INSTANCE =====================
@@ -128,4 +130,4 @@
       </Dialog>
     </UI>
   </Fragment>
-</Include>
+</Wix>

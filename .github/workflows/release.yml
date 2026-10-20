@@ -684,7 +684,7 @@ jobs:
           Copy-Item deploy/desktop/windows/wizard-banner.bmp $src/
           Copy-Item deploy/desktop/windows/wizard-dialog.bmp $src/
           $srcAbs = (Resolve-Path $src).Path
-          wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext `
+          wix build deploy/desktop/windows/Orchicon.wxs deploy/desktop/windows/OrchiconConfig.wxs -arch x64 -ext WixToolset.UI.wixext `
             -d "Version=$v" -d "SourceDir=$srcAbs" -bindvariable "WixUILicenseRtf=$srcAbs\LICENSE.rtf" `
             -o "dist/desktop/orchicon_${v}_windows_amd64.msi"
           Get-ChildItem dist/desktop
