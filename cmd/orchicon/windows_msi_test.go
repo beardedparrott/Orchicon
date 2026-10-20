@@ -263,7 +263,7 @@ func TestWiXVersionIsPinnedBelowSix(t *testing.T) {
 	if !strings.Contains(mk, "WIX_VERSION    ?= "+want) {
 		t.Errorf("the Makefile does not pin WIX_VERSION to %q", want)
 	}
-	for _, wf := range []string{"ci.yml", "release.yml"} {
+	for _, wf := range []string{"ci.yml", "release.yml", "canary.yml"} {
 		body := readMSIFile(t, "..", "..", ".github", "workflows", wf)
 		if !strings.Contains(body, "dotnet tool install --global wix --version "+want) {
 			t.Errorf("%s does not install wix --version %s.\n"+
@@ -410,5 +410,122 @@ func TestMSIDeclaresNoDuplicateIdentifiers(t *testing.T) {
 			"WiX rejects these outright (WIX0091) — and one of them was a Property the\n"+
 			"WixUI_InstallDir set already defines (ARPNOMODIFY), so declaring it here was both\n"+
 			"redundant and fatal.", dups)
+	}
+}
+
+// TestCanaryPublishesTheWindowsDesktopApp — CANARY IS THE DEVELOP INSTALL PATH, and for a
+// Windows operator "the installer" now includes the desktop app.
+//
+// WHY THIS JOB HAD TO EXIST. Canary published the CLI and the TUI only, so the sole place an
+// MSI had ever been built was a pull-request CI run: an artifact that expires, hangs off a
+// branch that is then deleted, and is therefore not an install path an operator can be handed.
+// Canary exists so a REAL installer is exercised against DEVELOP before anything is released.
+//
+// THE ASSERTIONS ARE KEYED ON THE WIRING LINES, NOT ON THE NAMES. That distinction is not
+// pedantry: the publish NOTES in the same file list `orchicon_canary_windows_amd64.msi`, so a
+// guard that merely looked for that string would still pass after the build step lost it — a
+// trap this file's sibling `errfix` controls hit, where a deleted component still matched
+// because its name survived in a comment. Each case below therefore carries a COUNT, and the
+// count is what fails when the wiring goes.
+func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
+	canary := readMSIFile(t, "..", "..", ".github", "workflows", "canary.yml")
+	release := readMSIFile(t, "..", "..", ".github", "workflows", "release.yml")
+
+	// THE ASSET NAMES ARE A CROSS-FILE CONTRACT: install.ps1 BUILDS the name it will fetch and
+	// canary.yml must publish exactly that. Asserted against install.ps1's own templates rather
+	// than against a literal copied here, so a rename on EITHER side fails this test instead of
+	// silently producing a published installer that no install path resolves.
+	installPS1 := readMSIFile(t, "..", "..", "scripts", "install.ps1")
+	for _, tpl := range []struct{ sub, why string }{
+		{`$msiAsset = "orchicon_${versionNum}_windows_${arch}.msi"`,
+			"the MSI name the interactive install probes for (install.ps1 -Version canary)"},
+		{`$stem = "orchicon_desktop_$($ver -replace '^v','')_windows_amd64"`,
+			"the desktop installer stem install.ps1 -Desktop resolves"},
+	} {
+		if !strings.Contains(installPS1, tpl.sub) {
+			t.Errorf("install.ps1 no longer builds %s.\n"+
+				"  looked for: %s\n"+
+				"  That template is %s — if it moved, this guard and canary.yml's asset names\n"+
+				"  must move with it, or the canary publishes an installer nothing fetches.",
+				tpl.why, tpl.sub, tpl.why)
+		}
+	}
+
+	for _, want := range []struct {
+		what  string
+		sub   string
+		count int
+	}{
+		{"the desktop job itself", "\n  desktop-windows:\n", 1},
+		{"the MSI build step", "wix build deploy/desktop/windows/Orchicon.wxs", 1},
+		// install.ps1 probes `orchicon_<version>_windows_<arch>.msi` with version = "canary",
+		// so the published file must carry the WORD canary, not a run number.
+		{"the MSI output name install.ps1 probes", `-o "dist/desktop/orchicon_canary_windows_amd64.msi"`, 1},
+		{"the NSIS installer name install.ps1 -Desktop resolves",
+			`"dist/desktop/orchicon_desktop_canary_windows_amd64_installer.exe"`, 1},
+		{"the portable desktop zip",
+			`"dist/desktop/orchicon_desktop_canary_windows_amd64.zip"`, 1},
+		// BOTH publish paths, or a canary that creates the release carries the desktop app and
+		// one that updates it does not — the two diverge on the second merge.
+		{"the desktop assets on the UPLOAD path",
+			"gh release upload canary dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe --clobber", 1},
+		{"the desktop assets on the CREATE path",
+			"dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe", 2},
+		// The publish job's download pattern is `canary-*`; an artifact named anything else is
+		// built, uploaded, and then never reaches the release.
+		{"an artifact name the publish pattern collects", "name: canary-windows-desktop", 1},
+		{"the desktop artifact upload paths", "path: dist/desktop/*", 1},
+	} {
+		if n := strings.Count(canary, want.sub); n != want.count {
+			t.Errorf("canary.yml: %s appears %d time(s), want %d — %q.\n"+
+				"  Without it the desktop app is either not built, or built and never published, or\n"+
+				"  published under a name the installer does not resolve.",
+				want.what, n, want.count, want.sub)
+		}
+	}
+
+	// THE PUBLISH JOB MUST WAIT FOR THE DESKTOP BUILD. `gh release upload --clobber` replaces
+	// matching names and leaves everything else, so a publish that ran while the desktop job
+	// failed would keep the PREVIOUS merge's installer under a tag claiming this commit.
+	// A canary that lies about its own contents is worse than no canary.
+	if !strings.Contains(canary, "needs: [build, desktop-windows]") {
+		t.Error("canary.yml's publish job does not depend on desktop-windows.\n" +
+			"  On a failed desktop build the publish would still run and leave the previous\n" +
+			"  merge's MSI under a tag that claims to be this commit.")
+	}
+
+	// THE MSI VERSION MUST BE NUMERIC AND MUST INCREASE.
+	//
+	// Numeric because an MSI ProductVersion is major.minor.build — "canary" is rejected outright.
+	// Increasing because the .wxs declares <MajorUpgrade>: with a fixed 0.0.0 every canary would be
+	// the SAME product version, so reinstalling after the next merge would not upgrade anything —
+	// Windows would report "already installed" or leave the previous build in place, which is
+	// precisely the re-test canary exists to make possible. github.run_number is monotonic per
+	// workflow and stays far below WiX's 65535 ceiling for the build field.
+	for _, want := range []struct{ what, sub string }{
+		{"a NUMERIC MSI version", `-d "Version=0.0.${{ github.run_number }}"`},
+		{"the Wails CLI pinned to the release's version", "wails@v2.17.0"},
+		{"the WebView2 bootstrapper (so Windows 10 provisions itself)", "-webview2 download"},
+	} {
+		if !strings.Contains(canary, want.sub) {
+			t.Errorf("canary.yml is missing %s (%q)", want.what, want.sub)
+		}
+	}
+	for _, bad := range []string{
+		`-d "Version=canary"`, // not a valid ProductVersion: WiX refuses it
+		`-d "Version=0.0.0"`,  // fixed: <MajorUpgrade> then never upgrades across merges
+	} {
+		if strings.Contains(canary, bad) {
+			t.Errorf("canary.yml passes %q to wix build.\n"+
+				"  An MSI ProductVersion must be numeric AND must increase, or successive canaries\n"+
+				"  collide: 'already installed', or the previous build left in place.", bad)
+		}
+	}
+
+	// THE WAILS PIN MUST MATCH THE RELEASE'S, for the same reason the WiX pin must: a canary built
+	// by a different Wails produces an app packaged by a different toolchain than the one that ships.
+	if !strings.Contains(release, "wails@v2.17.0") {
+		t.Error("release.yml no longer installs wails@v2.17.0 — if the release moved, canary.yml must " +
+			"move with it or the two build the desktop app with different toolchains")
 	}
 }
