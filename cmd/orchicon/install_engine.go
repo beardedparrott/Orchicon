@@ -5,13 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
-
-	"github.com/beardedparrott/orchicon/internal/containerengine"
+	"time"
 )
 
 // engineCLI is the binary the INSTALL PATH drives for image and container operations,
@@ -54,8 +54,33 @@ func engineBinary() string {
 	return engineResolved
 }
 
-// engineCommand is an engine invocation through the resolved binary.
-func engineCommand(args ...string) *exec.Cmd { return exec.Command(engineBinary(), args...) }
+// engineCommandTimeout bounds every engine invocation the INSTALL makes.
+//
+// WHY A TIMEOUT IS NOT OPTIONAL HERE. `exec.Command` has no deadline, and on Windows a Docker
+// Desktop / podman pipe that EXISTS but whose daemon is wedged does not fail — it BLOCKS. An
+// operator hit exactly that: the install printed
+//
+//	== resolving the plane residency and host ports
+//
+// and then simply stopped. That phase's first act is rung 0, which asks the engine whether this
+// instance is already running (`docker inspect`) — an unbounded call against a dead pipe. The
+// install had no way to recover and no way to say what it was waiting for.
+//
+// Bounded at 20s: generous for a healthy daemon (tens of milliseconds), short enough that a
+// broken one degrades to "no container is running" instead of hanging the install for ever.
+// The probe that decides AVAILABILITY is separate and already bounded (internal/containerengine),
+// so a timeout here can only move the install onto the host path — which is the supported shape.
+const engineCommandTimeout = 20 * time.Second
+
+// engineCommand is an engine invocation through the resolved binary, with a deadline.
+func engineCommand(args ...string) *exec.Cmd {
+	ctx, cancel := context.WithTimeout(context.Background(), engineCommandTimeout)
+	// Cancel when the process is waited on; exec.Cmd does not expose a completion hook, so the
+	// timer is released by the deadline expiring at worst. The leak window is one timer per
+	// call, and calls are few and sequential.
+	_ = cancel
+	return exec.CommandContext(ctx, engineBinary(), args...)
+}
 
 // engineStatus is the availability decision the install MADE, cached for the summary. It is a
 // decision, not a re-probe: an install summary that re-detected could describe a carrier the

@@ -243,7 +243,7 @@ func TestBurnBundleWrapsTheMSI(t *testing.T) {
 		// fundamentally changed and requires BootstrapperApplication support"). So the guard
 		// asserts the ABSENCE of the attribute rather than its value, because its presence is
 		// now a build error and its behaviour lives in the BA.
-		{"the setup is skipped inside the bundle (one UI at a time)", `<MsiProperty Name="SKIPSETUP" Value="1"`},
+		{"the instance reaches the MSI (as the setup's default)", `<MsiProperty Name="INSTANCE"`},
 		{"the instance reaches the MSI", `<MsiProperty Name="INSTANCE"`},
 		{"the licence page uses the SAME RTF as the MSI", `LicenseFile="$(var.LicenseRtf)"`},
 		{"a standard BA theme that can show RTF (the terms we actually ship)", `Theme="rtfLicense"`},
@@ -251,6 +251,17 @@ func TestBurnBundleWrapsTheMSI(t *testing.T) {
 		if !strings.Contains(bundle, want.sub) {
 			t.Errorf("OrchiconSetup.wxs does not show that %s (%q)", want.what, want.sub)
 		}
+	}
+
+	// THE SETUP MUST ACTUALLY RUN. `SKIPSETUP=1` in the bundle is the defect this cost an
+	// install to find: the MSI's last step never fired, so a fresh install finished in seconds,
+	// started no plane, and left the desktop app opening on "the control plane is not reachable".
+	// An installer that leaves the operator with binaries and a list of commands has not
+	// installed the product.
+	if strings.Contains(bundle, `Name="SKIPSETUP"`) {
+		t.Error("OrchiconSetup.wxs passes SKIPSETUP to the MSI, which means the setup NEVER RUNS.\n" +
+			"  That is how a fresh install came to finish in seconds with no plane and no prompts.\n" +
+			"  The bundle must let the MSI's hand-off open its console and set the plane up.")
 	}
 
 	// AND THE REMOVED ATTRIBUTE MUST NOT COME BACK — it reads as the obvious way to do this and
@@ -1032,8 +1043,14 @@ func TestWizardArtIsOurs(t *testing.T) {
 		w, h  int
 		file  string
 	}{
-		{"WixUIBannerBmp", 493, 58, "wizard-banner.bmp"},
-		{"WixUIDialogBmp", 493, 312, "wizard-dialog.bmp"},
+		// THESE ARE THE MSI WIZARD'S OWN CONTROL SIZES, not the Burn theme's. They were 493x58 /
+		// 493x312 — the sizes the BURN standard BA draws into, which is a DIFFERENT wizard — so
+		// the artwork was being scaled into a smaller box and looked squashed and misaligned:
+		//
+		//   LicenseAgreementDlg: <Control Id="BannerBitmap" Width="370" Height="44" />
+		//   WelcomeDlg:         <Control Id="Bitmap"       Width="370" Height="234" />
+		{"WixUIBannerBmp", 370, 44, "wizard-banner.bmp"},
+		{"WixUIDialogBmp", 370, 234, "wizard-dialog.bmp"},
 	} {
 		// 1. the .wxs points at it
 		if !strings.Contains(body, `<WixVariable Id="`+want.varID+`"`) {
@@ -1318,5 +1335,86 @@ func TestSetupHandoffRunsAfterTheFilesExist(t *testing.T) {
 	if !strings.Contains(body, `<Custom Action="LaunchSetup" After="InstallFinalize"`) {
 		t.Error("the setup hand-off is not scheduled After=\"InstallFinalize\".\n" +
 			"  It needs the payload on disk, and only the deferred pass puts it there.")
+	}
+}
+
+// TestEngineCallsAreBounded — an interactive install must never wait for ever on a broken
+// container engine.
+//
+// REPORTED FROM A REAL INSTALL: the setup printed
+//
+//	== resolving the plane residency and host ports
+//
+// and then stopped. That phase's first act is rung 0 — "is this instance already running?" —
+// which shells out to the engine (`docker inspect`). `exec.Command` has NO deadline, and on
+// Windows a Docker Desktop pipe that EXISTS while its daemon is wedged does not fail, it
+// BLOCKS. The operator had exactly that state (the log above it says "failed to connect to the
+// docker API at npipe:////./pipe/dockerDesktopLinuxEngine").
+//
+// A bounded call degrades a broken engine to "no container is running", which lands the install
+// on the host path — the supported shape — instead of hanging with nothing on screen.
+func TestEngineCallsAreBounded(t *testing.T) {
+	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "install_engine.go")
+
+	if !strings.Contains(src, "func engineCommand(") {
+		t.Fatal("engineCommand is gone — the engine call sites have moved, and this guard with them")
+	}
+	body := src[strings.Index(src, "func engineCommand("):]
+	body = body[:strings.Index(body, "\n}")+2]
+
+	if strings.Contains(body, "exec.Command(") && !strings.Contains(body, "exec.CommandContext(") {
+		t.Error("engineCommand uses exec.Command, which has NO deadline. On a wedged engine pipe " +
+			"the install blocks for ever — that is the reported hang at \"resolving the plane " +
+			"residency and host ports\". Use exec.CommandContext with a bound.")
+	}
+	if !strings.Contains(body, "WithTimeout") {
+		t.Error("engineCommand does not bound its context — a wedged engine must degrade to " +
+			"\"no container is running\", not hang the install.")
+	}
+	if !strings.Contains(src, "engineCommandTimeout") {
+		t.Error("no engineCommandTimeout constant — the bound must be named so it can be reasoned about")
+	}
+}
+
+// TestInstallAsksWhichInstance — the installer must PUT the instance question to a human.
+//
+// The instance decides the whole stack: its ports, its data directory, its plane. Until now the
+// only thing that ever asked was scripts/install.ps1; `orchicon install` — which is what the MSI
+// hand-off and the Burn bundle actually run — silently took the default. So a person who
+// installed from the wizard got `dev` without being told, which is the opposite of an installer
+// that takes someone all the way to a working product.
+func TestInstallAsksWhichInstance(t *testing.T) {
+	install := readMSIFile(t, "..", "..", "cmd", "orchicon", "install.go")
+	if !strings.Contains(install, "askInstance(") {
+		t.Error("runInstall never calls askInstance — the wizard's setup would silently install " +
+			"the default instance without asking")
+	}
+
+	// AND IT MUST NOT BLOCK A HEADLESS RUN. The prompt is only reached with a terminal, and its
+	// reader must fall back rather than wait — the same contract askInstallPort keeps.
+	ports := readMSIFile(t, "..", "..", "cmd", "orchicon", "install_ports.go")
+	i := strings.Index(ports, "func askInstance(")
+	if i < 0 {
+		t.Fatal("askInstance is gone")
+	}
+	body := ports[i:]
+	body = body[:strings.Index(body, "\n}")+2]
+	for _, want := range []struct{ what, sub string }{
+		{"it keeps the decided value when nothing can be read", "return current, false"},
+		{"ENTER takes the default", `if name == "" {`},
+		{"it validates the answer", "validateInstance(name)"},
+		{"it gives up rather than loop", "attempt < 3"},
+	} {
+		if !strings.Contains(body, want.sub) {
+			t.Errorf("askInstance does not show that %s (%q)", want.what, want.sub)
+		}
+	}
+
+	// THE READER IS UNBUFFERED ON A TERMINAL, deliberately: resolveInstallPorts wraps the same
+	// *os.File in its own bufio.Reader, and a second buffered reader would read ahead and swallow
+	// the keystrokes meant for the port prompts.
+	if !strings.Contains(body, "*os.File") {
+		t.Error("askInstance does not special-case *os.File — a buffered reader over the same " +
+			"terminal as the port prompts can consume input intended for them")
 	}
 }

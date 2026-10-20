@@ -698,3 +698,61 @@ func resolveInstallPorts(instance, residency string, out io.Writer, tty *os.File
 	}
 	return planInstallPorts(instance, specs, pinned, portFree, r, out)
 }
+
+// askInstance asks which instance to set up, offering the already-decided value as the default.
+//
+// WHY HERE AND NOT IN THE INSTALLER SCRIPT. scripts/install.ps1 has always asked; `orchicon
+// install` — which is what the MSI's hand-off and the bundle actually run — never did, so a
+// person who installed from the wizard was silently given `dev`. An installer is supposed to
+// take someone all the way to a working product, and this is the question that decides WHICH
+// product they get.
+//
+// ok=false means "no answer available, keep what was decided": a reader with nothing on it, or
+// three unusable entries. That is the same contract askInstallPort keeps, so a headless run
+// can never block, and a run whose stdin is a pipe cannot consume the pipe.
+func askInstance(r io.Reader, current string) (string, bool) {
+	// UNBUFFERED ON A REAL TERMINAL, DELIBERATELY. resolveInstallPorts wraps the same *os.File in
+	// its OWN bufio.Reader a few lines later; a second buffered reader here would read ahead and
+	// could swallow the keystrokes meant for the port prompts — losing input the operator typed.
+	// Reading one byte at a time costs nothing at human typing speed and cannot desynchronise.
+	readLine := func() (string, error) {
+		if f, ok := r.(*os.File); ok {
+			var b []byte
+			one := make([]byte, 1)
+			for {
+				if _, err := f.Read(one); err != nil {
+					return string(b), err
+				}
+				if one[0] == '\n' {
+					return string(b), nil
+				}
+				if one[0] != '\r' {
+					b = append(b, one[0])
+				}
+			}
+		}
+		line, err := bufio.NewReader(r).ReadString('\n')
+		return line, err
+	}
+	if current == "" {
+		current = "dev"
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		fmt.Fprintf(os.Stderr, "\n  Which instance? dev, test or prod (%s): ", current)
+		line, err := readLine()
+		if err != nil && line == "" {
+			return current, false // nothing on the reader: keep the decision, do not block
+		}
+		name := strings.ToLower(strings.TrimSpace(line))
+		if name == "" {
+			return current, true // ENTER takes the default
+		}
+		if err := validateInstance(name); err != nil {
+			fmt.Fprintf(os.Stderr, "  %q is not an instance (dev, test or prod) — try again.\n", name)
+			continue
+		}
+		return name, true
+	}
+	fmt.Fprintf(os.Stderr, "  too many unusable entries — using %q.\n", current)
+	return current, true
+}
