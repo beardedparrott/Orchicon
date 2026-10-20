@@ -153,6 +153,64 @@ func (b *NativeBridge) resolveAskContextWindow(ctx context.Context, prov Provide
 	return 0, NoContextWindow + ":model_not_found:" + model
 }
 
+// resolveAskPricing resolves the conversation model's PRICING, cached once per
+// session through the same provider ListModels the context window uses.
+//
+// WHY THE ASK TURN NEEDS THIS AT ALL. The worker execution loop prices its turn
+// before handing it to the usage sink (loop.go: `usage.CostUSD = s.priceUsage(...)`)
+// and the sinks record whatever they are given. The Ask turn has its own turn loop
+// with its own sink, and that sink was recording the provider-reported cost
+// verbatim — which for this NativeBridge is ALWAYS ZERO, because the wire clients
+// decode tokens off the provider's response and never a price. So every Ask usage
+// record landed at cost_usd = 0. MEASURED on the operator's own conversation: 4,673
+// session-scoped rows, 218 priced (all before the Ask turn loop landed) and the
+// rest zero, while the tokens and cache counters in the same rows were correct —
+// which is why the composer's strip kept showing 155.8M tokens and $0.0000.
+//
+// nil means "resolved, and this model carries no pricing" — a free or
+// catalog-missing model. The caller then records the round unpriced rather than
+// inventing rates; prices are never synthesized.
+//
+// A lookup FAILURE is not cached, for the reason resolveAskContextWindow gives: a
+// transient provider error must not leave the conversation permanently unpriced.
+func (b *NativeBridge) resolveAskPricing(ctx context.Context, prov Provider, sessionID, model string) *Pricing {
+	b.mu.Lock()
+	if p, ok := b.askPricing[sessionID]; ok {
+		b.mu.Unlock()
+		return p
+	}
+	b.mu.Unlock()
+	if prov == nil {
+		return nil
+	}
+	models, err := prov.ListModels(ctx)
+	if err != nil {
+		return nil
+	}
+	for i := range models {
+		if models[i].ID != model {
+			continue
+		}
+		p := models[i].Pricing
+		b.mu.Lock()
+		if b.askPricing == nil {
+			b.askPricing = map[string]*Pricing{}
+		}
+		b.askPricing[sessionID] = p
+		b.mu.Unlock()
+		return p
+	}
+	// The model is not in the provider's own list. Resolved-and-absent is cached
+	// too: a model the provider does not describe will not appear mid-conversation.
+	b.mu.Lock()
+	if b.askPricing == nil {
+		b.askPricing = map[string]*Pricing{}
+	}
+	b.askPricing[sessionID] = nil
+	b.mu.Unlock()
+	return nil
+}
+
 // maybeCompactForPressure compacts a native Ask conversation BEFORE its next turn
 // when its measured prompt size has crossed the configured fraction of the
 // model's live context window.

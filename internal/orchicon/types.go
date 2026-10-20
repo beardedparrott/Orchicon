@@ -327,7 +327,17 @@ func (m ModelInfo) CostFor(u Usage) float64 {
 	if m.Pricing == nil {
 		return 0
 	}
-	p := m.Pricing
+	return m.Pricing.CostFor(u)
+}
+
+// CostFor prices one usage record at these rates.
+//
+// IT LIVES ON Pricing, not only on ModelInfo, because a caller can hold the RATES
+// without holding the whole model descriptor — the Ask turn does exactly that: it
+// caches the resolved Pricing for its session and prices each round from it. One
+// implementation of the arithmetic, so a future rate field cannot be honoured on
+// one path and silently ignored on the other.
+func (p Pricing) CostFor(u Usage) float64 {
 	return float64(u.InputTokens)/1e6*p.InputPerM +
 		float64(u.OutputTokens)/1e6*p.OutputPerM +
 		float64(u.CacheReadTokens)/1e6*p.CacheReadPerM +
