@@ -49,6 +49,7 @@
     name does not resolve ("error WIX0144: The extension 'WixToolset.UI.wixext'
     could not be found"). It is versioned to match WIX_VERSION in the Makefile.
 -->
+<?include OrchiconConfig.wxs ?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
 
@@ -77,8 +78,24 @@
          default of "none" would be an ANSWER, and the prompt would be skipped.
          Secure="yes" declares a property that carries a value from the UI or the
          command line without giving it one (and without being ignored — WIX1006). -->
-    <Property Id="RUNTIMEIMAGES" Secure="yes" />
+    <!-- DEFAULTS TO "none", WHICH IS NOW THE WIZARD'S ANSWER RATHER THAN A SUPPRESSION.
+         It used to be intentionally UNSET so the setup's own console prompt stayed alive. The
+         console prompt is gone — the ImagesDlg page asks — so leaving it unset would produce
+         a dangling runtime-image flag with no value, which the parser correctly rejects.
+         "none" is also what the page defaults to: a project starts in execution_mode=local, so
+         someone who never opts in needs no image at all. -->
+    <Property Id="RUNTIMEIMAGES" Value="none" Secure="yes" />
     <Property Id="SKIPSETUP" Value="0" />
+    <!-- THE WIZARD'S OWN ANSWERS. Public (all-uppercase) so they survive into the execute
+         sequence AND can be set on the command line for an unattended install. Empty means
+         "use this instance's default", which is what the port resolver already does with an
+         absent pin, so blank fields need no special case. -->
+    <Property Id="CONTROLPORT" Secure="yes" />
+    <Property Id="POSTGRESPORT" Secure="yes" />
+    <!-- WHERE THE WIZARD'S QUESTIONS GO. The default (0) means "ask me": the setup step opens
+         its own console and prompts. Set SKIPCONFIG=1 for an unattended run, where the values
+         above must already be filled in. -->
+    <Property Id="SKIPCONFIG" Value="0" />
 
     <Property Id="ARPPRODUCTICON" Value="OrchiconIcon" />
     <!-- ARPNOMODIFY IS NOT DECLARED HERE. WixUI_InstallDir already defines it, and a
@@ -110,6 +127,11 @@
          treatment as the .ico), so packaging never needs Python or a font. -->
     <WixVariable Id="WixUIBannerBmp" Value="$(var.SourceDir)\wizard-banner.bmp" />
     <WixVariable Id="WixUIDialogBmp" Value="$(var.SourceDir)\wizard-dialog.bmp" />
+
+    <!-- FIRST-RUN DEFAULTS FOR THE WIZARD'S FIELDS, so a blank box means the instance's
+         documented port rather than nothing. A re-install must NOT clobber a value already
+         supplied on the command line — hence the "NOT Installed" guard on the publish. -->
+    <Property Id="WIX_ORCHICON_DEFAULTS_SET" Value="0" />
 
     <Icon Id="OrchiconIcon" SourceFile="$(var.SourceDir)\orchicon-desktop.ico" />
 
@@ -214,7 +236,7 @@
                   Execute="immediate"
                   Impersonate="yes"
                   Return="asyncNoWait"
-                  ExeCommand="install --instance [INSTANCE]" />
+                  ExeCommand="install --instance [INSTANCE] --port ORCHICON_CONTROL_PORT=[CONTROLPORT] --port ORCHICON_POSTGRES_PORT=[POSTGRESPORT] --runtime-images [RUNTIMEIMAGES]" />
 
     <InstallExecuteSequence>
       <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent: a repair or

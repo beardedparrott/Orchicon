@@ -158,7 +158,10 @@ func TestSetupRunsTheInstalledExeDirectly(t *testing.T) {
 		{"a wrapper script", "orchicon-setup.cmd"},
 		{"a quoted path", "&quot;[#"},
 		{"a path assembled from a directory", "[INSTALLFOLDER]orchicon"},
-		{"the runtime-image property on the command line", "[RUNTIMEIMAGES]"},
+		// [RUNTIMEIMAGES] IS ALLOWED NOW, but only as a FLAG VALUE with a default. It used to
+		// be forbidden because it was an empty QUOTED ARGUMENT (a lost-quote hazard); today it
+		// is `--runtime-images [RUNTIMEIMAGES]`, so what matters is that the property is never
+		// empty — see the default assertion below.
 	} {
 		if strings.Contains(ca, forbidden.sub) {
 			t.Errorf("LaunchSetup still contains %s (%q):\n  %s\n"+
@@ -167,10 +170,19 @@ func TestSetupRunsTheInstalledExeDirectly(t *testing.T) {
 		}
 	}
 	// And the one argument it DOES pass.
-	if !strings.Contains(ca, `ExeCommand="install --instance [INSTANCE]"`) {
-		t.Errorf("LaunchSetup does not run `install --instance [INSTANCE]`:\n  %s\n"+
-			"  The instance must reach the setup, or every install becomes dev whatever was chosen.", ca)
+	for _, want := range []struct{ what, sub string }{
+		{"the instance reaches the setup", "install --instance [INSTANCE]"},
+		{"the ports reach the setup", "--port ORCHICON_CONTROL_PORT=[CONTROLPORT]"},
+		{"the runtime-image choice reaches the setup", "--runtime-images [RUNTIMEIMAGES]"},
+	} {
+		if !strings.Contains(ca, want.sub) {
+			t.Errorf("LaunchSetup does not pass %s (%q) — the wizard's page would be decoration.\n  %s",
+				want.what, want.sub, ca)
+		}
 	}
+	// (The exact-command assertion that used to live here is superseded by the loop above: the
+	// command now carries the ports and the image choice too, so pinning its full text would
+	// fail the moment a page is added — while the loop keeps checking that each answer ARRIVES.)
 }
 
 // TestSetupRelaunchesIntoItsOwnConsole — the process that prompts must have a console, and it
