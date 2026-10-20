@@ -397,6 +397,9 @@ jobs:
           Copy-Item deploy/desktop/windows/README-WINDOWS.txt $src/
           Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
           Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
+          # THE WIZARD ART (WixUIBannerBmp / WixUIDialogBmp reach it via $(var.SourceDir)).
+          Copy-Item deploy/desktop/windows/wizard-banner.bmp $src/
+          Copy-Item deploy/desktop/windows/wizard-dialog.bmp $src/
           $srcAbs = (Resolve-Path $src).Path
           wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext `
             -d "Version=0.0.0" -d "SourceDir=$srcAbs" -bindvariable "WixUILicenseRtf=$srcAbs\LICENSE.rtf" `
