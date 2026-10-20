@@ -292,10 +292,16 @@ jobs:
   # on the first Windows release. Running `-nsis` HERE means a pull request finds that
   # class of fault instead of a release.
   #
-  # WHAT THIS PROVES, and what it cannot: that the Windows WebView2 build compiles, that
-  # makensis produced an installer, that WiX accepts the .wxs, and that an MSI comes out
-  # non-trivial. It does NOT install either one — that needs a real machine, and the
-  # honest statement of that gap is in deploy/desktop/README.md.
+  # WHAT THIS PROVES: that the Windows WebView2 build compiles, that makensis produced an
+  # installer, that WiX accepts the .wxs, that an MSI comes out non-trivial, that the LICENCE
+  # PAGE carries our text rather than WiX's placeholder, and that the package INSTALLS — it is
+  # installed per-user, every file the wizard needs is asserted by name, and it is uninstalled
+  # again.
+  #
+  # THAT LAST PART IS NEW, and it was earned: the package had only ever been BUILT, so its
+  # first real run was on an operator's machine, where the wizard's last step could not find
+  # orchicon-setup.cmd. No gate could have known. It does NOT open the app — a WebView2 window
+  # in a session with no desktop is not something CI can assert — which is the remaining gap.
   windows-desktop-msi:
     name: windows desktop + MSI (build only)
     runs-on: windows-latest
@@ -418,6 +424,65 @@ jobs:
             throw "MSI is only $([math]::Round($msi.Length/1MB,1)) MB — the payload was not packaged"
           }
           Write-Host "MSI: $($msi.Name) ($([math]::Round($msi.Length/1MB,1)) MB)"
+
+      # THE PACKAGE IS INSTALLED HERE, NOT MERELY BUILT.
+      #
+      # UNTIL THIS STEP IT WAS ONLY EVER BUILT — by CI and by canary — so the first time this
+      # package was ever run was on an operator's machine, and it reported
+      # "Windows cannot find ...\orchicon-setup.cmd" from the wizard's last step with no gate
+      # anywhere that could have known. An install covers InstallFiles, the component tree and
+      # the payload TOGETHER, which is what "the file is in the cab" cannot tell you.
+      #
+      # SKIPSETUP=1 stops the setup from launching (it would try to download ~540 MB of host
+      # services); everything up to and including the payload landing is exercised for real.
+      - name: Install the MSI per-user, and verify every file the wizard needs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem dist/desktop/*.msi | Select-Object -First 1).FullName
+          $log = Join-Path $env:TEMP 'msi-install.log'
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
+            '/i', "`"$msi`"", '/qn', '/norestart', '/l*v', "`"$log`"", 'SKIPSETUP=1', 'INSTANCE=dev')
+          if ($p.ExitCode -ne 0) {
+            Get-Content $log -Tail 80
+            throw "msiexec /i exited $($p.ExitCode) — see $log"
+          }
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Orchicon'
+          if (-not (Test-Path $dir)) { throw "the per-user install dir was not created: $dir" }
+          # NAMED INDIVIDUALLY. A partial product installs cleanly and is simply missing a file
+          # — and "orchicon-setup.cmd is missing" is exactly the shape this reported in the
+          # field, so every file the wizard touches is asserted by name.
+          foreach ($f in @('orchicon.exe','orch.exe','orchicon-desktop.exe','orchicon-setup.cmd','README-WINDOWS.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir $f))) {
+              Get-ChildItem $dir | ForEach-Object { Write-Host "  present: $($_.Name)" }
+              throw "$f is MISSING from $dir — the payload did not land"
+            }
+          }
+          # ${dir} BRACED, NOT $dir:. PowerShell parses "$dir:" as a SCOPE/DRIVE-qualified
+          # variable and fails to parse the whole script — so this was a PARSER error, and the
+          # install never ran at all. It is a silent-by-inspection trap: $env: and $script: are
+          # legitimate, so the form looks ordinary.
+          Write-Host "installed payload verified in ${dir}:"
+          Get-ChildItem $dir | ForEach-Object { Write-Host ("  {0,-26} {1,12}" -f $_.Name, $_.Length) }
+          # THE LAUNCHED THING MUST AT LEAST START. SKIPSETUP stops the wizard's hand-off, but the
+          # binary the wrapper runs is installed, so ask it its version: that proves the file is
+          # an executable image and not a zero-length stub.
+          $exe = Join-Path $dir 'orchicon.exe'
+          $v = (& $exe version 2>&1 | Out-String).Trim()
+          if (-not $v) { throw "$exe ran but printed no version" }
+          Write-Host "installed binary reports: $v"
+
+      - name: Uninstall the MSI (leave the runner clean)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem dist/desktop/*.msi | Select-Object -First 1).FullName
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/x', "`"$msi`"", '/qn', '/norestart')
+          if ($p.ExitCode -ne 0) { throw "msiexec /x exited $($p.ExitCode)" }
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Orchicon'
+          if (Test-Path (Join-Path $dir 'orchicon.exe')) { throw "uninstall left orchicon.exe behind in $dir" }
+          Write-Host "uninstalled cleanly"
+
       - uses: actions/upload-artifact@v4
         with:
           name: windows-msi

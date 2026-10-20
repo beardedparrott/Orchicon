@@ -697,11 +697,13 @@ it renders the same UI, against the same plane, and it exists to remove the "ope
 browser and type a URL" step.
 
 The desktop app is a **client**. It does not replace the plane: it talks to a running
-Orchicon instance over loopback (`http://127.0.0.1:8080` by default), and if none is
-running it starts one for you — which takes a few seconds on first launch. The **CLI is
-still the canonical entry point** (`orchicon install`, `orchicon start`,
-`orchicon status`), but once the app is installed you do not need it to use Orchicon. The
-app is optional: everything the app does, the web UI at the same URL does too.
+Orchicon instance over loopback (`http://127.0.0.1:8080` by default) and **does not start
+one** — the plane is started by setup at install time, and by `orchicon start` after a
+reboot. If no plane is reachable the app says so and names the address it tried, rather
+than opening on an unexplained error. The **CLI is still the canonical entry point**
+(`orchicon install`, `orchicon start`, `orchicon status`), but once the app is installed
+you do not need it to use Orchicon. The app is optional: everything the app does, the web
+UI at the same URL does too.
 
 **Installing it.** It is opt-in in both installers, so a CLI install is unchanged:
 
