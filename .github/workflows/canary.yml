@@ -296,9 +296,24 @@ jobs:
           Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
           $srcAbs = (Resolve-Path $src).Path
           wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext `
-            -d "Version=0.0.${{ github.run_number }}" -d "SourceDir=$srcAbs" -d "WixUILicenseRtf=$srcAbs\LICENSE.rtf" `
+            -d "Version=0.0.${{ github.run_number }}" -d "SourceDir=$srcAbs" -bindvariable "WixUILicenseRtf=$srcAbs\LICENSE.rtf" `
             -o "dist/desktop/orchicon_canary_windows_amd64.msi"
           Get-ChildItem dist/desktop
+          # THE LICENSE PAGE TEXT MUST BE IN THE PACKAGE — asserted on the BYTES, because the
+          # flag that puts it there is easy to get subtly wrong and twice did: as an MSI
+          # Property (never read) and as a -d preprocessor variable (never read either, because
+          # the dialog declares a BIND variable). Both times the build succeeded and the wizard
+          # silently kept WiX's lorem-ipsum placeholder. A check that knows nothing about flags
+          # cannot be fooled by them.
+          $msiFile = Get-Item "dist/desktop/orchicon_canary_windows_amd64.msi"
+          $bytes = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($msiFile.FullName))
+          if ($bytes -notmatch [regex]::Escape("beardedparrott")) {
+            throw "the license page text is NOT in the MSI: WixUILicenseRtf did not reach the dialog (use -bindvariable, not -d)."
+          }
+          if ($bytes -match "Lorem ipsum") {
+            throw "the MSI still contains WiX's lorem-ipsum placeholder license text."
+          }
+          Write-Host "license page text is in the package, and no placeholder remains"
 
       # The stems carry `canary` for the same reason the .tar.gz/.zip assets do: the name
       # is a fixed string an operator does not have to look up, and `install.ps1 -Desktop

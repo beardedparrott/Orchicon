@@ -698,12 +698,23 @@ func collapseSpace(s string) string {
 // So this asserts three things: the build sites wire the variable, the RTF carries no
 // foreign license, and every line of LICENSE actually appears on the page.
 func TestMSILicensePageCarriesOurLicenseText(t *testing.T) {
-	// (1) EVERY SITE THAT BUILDS THE MSI MUST PASS THE VARIABLE.
+	// (1) EVERY SITE THAT BUILDS THE MSI MUST PASS IT AS A BIND VARIABLE.
+	//
+	// THREE WAYS TO GET THIS WRONG, and this fix went through all three:
+	//   <Property Id="WixUILicenseRtf" .../>   an MSI property — the UI extension never reads it
+	//   -d WixUILicenseRtf=...                 a PREPROCESSOR variable — also never read, because
+	//                                          the dialog declares !(wix.WixUILicenseRtf=...), a
+	//                                          BIND variable; the build succeeds, silently keeping
+	//                                          the placeholder. Measured: the MSI still contained
+	//                                          "Lorem ipsum" after the -d version shipped.
+	//   -bindvariable WixUILicenseRtf=...           correct — what WiX's own UI tests use
+	//                                          -bindvariable only, NOT -bindvar, and
+	//                                          WiX's own UI test uses -bv.
 	for _, site := range []struct{ what, sub string }{
-		{"the Makefile", "-d WixUILicenseRtf=$(abspath $(MSI_SRC_DIR))/LICENSE.rtf"},
-		{"release.yml", `-d "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
-		{"ci.yml", `-d "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
-		{"canary.yml", `-d "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
+		{"the Makefile", "-bindvariable WixUILicenseRtf=$(abspath $(MSI_SRC_DIR))/LICENSE.rtf"},
+		{"release.yml", `-bindvariable "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
+		{"ci.yml", `-bindvariable "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
+		{"canary.yml", `-bindvariable "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
 	} {
 		var body string
 		if site.what == "the Makefile" {
@@ -715,6 +726,24 @@ func TestMSILicensePageCarriesOurLicenseText(t *testing.T) {
 			t.Errorf("%s does not pass %s.\n"+
 				"  WixUILicenseRtf is a BUILD-TIME variable, not a Property: without it the wizard\n"+
 				"  silently renders WiX's lorem-ipsum placeholder. That is the reported bug.", site.what, site.sub)
+		}
+	}
+
+	// (1b) THE TWO NO-OP FORMS MUST NOT COME BACK. Both compile, both look right, neither
+	// reaches the dialog — so neither fails until a user opens the wizard.
+	for _, site := range []string{"Makefile", ".github/workflows/release.yml",
+		".github/workflows/ci.yml", ".github/workflows/canary.yml"} {
+		var body string
+		if site == "Makefile" {
+			body = readMSIFile(t, "..", "..", "Makefile")
+		} else {
+			body = readMSIFile(t, "..", "..", ".github", "workflows", filepath.Base(site))
+		}
+		if regexp.MustCompile(`-d\s+"?WixUILicenseRtf=`).MatchString(body) {
+			t.Errorf("%s passes WixUILicenseRtf with -d.\n"+
+				"  -d defines a PREPROCESSOR variable; the license page declares a BIND variable\n"+
+				"  (!(wix.WixUILicenseRtf=...)), so -d is silently ignored and the wizard keeps\n"+
+				"  WiX's lorem-ipsum placeholder. Use -bindvariable (or -bv).", site)
 		}
 	}
 
