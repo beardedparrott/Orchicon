@@ -1029,3 +1029,36 @@ func TestWorkflowPwshStepsParse(t *testing.T) {
 		}
 	}
 }
+
+// TestSetupHandoffRunsAfterTheFilesExist — the hand-off must be scheduled After="InstallFinalize",
+// not After="InstallFiles".
+//
+// MSI RUNS THE EXECUTE SEQUENCE TWICE. The IMMEDIATE pass walks it and builds a script; the
+// DEFERRED pass runs that script and copies the files. An IMMEDIATE custom action runs in the
+// immediate pass — so one placed After="InstallFiles" runs when InstallFiles has merely been
+// SCHEDULED, and the payload is not on disk yet.
+//
+// That is the reported bug, and it is why the report looked self-contradictory. The wizard
+// reached Finish, the hand-off fired, and Windows raised "cannot find
+// C:\Users\...\Orchicon\orchicon-setup.cmd" — while every later inspection, including this
+// repository's own CI install, finds the file there (2428 bytes, same directory). Nothing was
+// missing; the launch simply happened first.
+//
+// InstallFinalize is after the deferred script completes, so the payload is committed by the
+// time the action runs. A DEFERRED action would also work in principle, but a deferred one
+// cannot read [INSTANCE]/[RUNTIMEIMAGES] without CustomActionData, so the sequence placement is
+// the right lever for this action.
+func TestSetupHandoffRunsAfterTheFilesExist(t *testing.T) {
+	body := stripXMLComments(readMSIFile(t, wxs()))
+
+	if strings.Contains(body, `After="InstallFiles"`) {
+		t.Error("a custom action is scheduled After=\"InstallFiles\".\n" +
+			"  An IMMEDIATE action placed there runs during the immediate pass, before the\n" +
+			"  deferred script has written anything — which is how the setup hand-off came to\n" +
+			"  launch before orchicon-setup.cmd existed. Schedule it After=\"InstallFinalize\".")
+	}
+	if !strings.Contains(body, `<Custom Action="LaunchSetup" After="InstallFinalize"`) {
+		t.Error("the setup hand-off is not scheduled After=\"InstallFinalize\".\n" +
+			"  It needs the payload on disk, and only the deferred pass puts it there.")
+	}
+}

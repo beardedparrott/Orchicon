@@ -210,8 +210,30 @@
       <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent:
            a repair or an upgrade should re-converge, and `orchicon install` is
            idempotent - it upgrades an existing instance rather than duplicating
-           it. SKIPSETUP=1 is the unattended opt-out (binaries only). -->
-      <Custom Action="LaunchSetup" After="InstallFiles" Condition="NOT REMOVE AND SKIPSETUP &lt;&gt; &quot;1&quot;" />
+           it. SKIPSETUP=1 is the unattended opt-out (binaries only).
+
+           AFTER="InstallFinalize", NOT "InstallFiles" - AND THAT WAS THE BUG.
+
+           MSI runs the execute sequence TWICE: an IMMEDIATE pass, which walks the
+           sequence and builds the script, and a DEFERRED pass, which runs it and
+           actually copies the files. An IMMEDIATE custom action runs in the
+           immediate pass, so one placed After="InstallFiles" runs when InstallFiles
+           has merely been SCHEDULED - the files are not on disk yet.
+
+           Reported from a real install: the wizard reached Finish, the hand-off
+           fired, and Windows raised "cannot find
+           C:\Users\...\Orchicon\orchicon-setup.cmd". Every later inspection
+           found the file there, at exactly that path, which is what made the report
+           look contradictory: CI now installs the package and lists
+           orchicon-setup.cmd (2428 bytes) in that directory. The file was never
+           missing - the hand-off ran BEFORE it was written.
+
+           InstallFinalize sits after the deferred script has completed, so by the
+           time this fires the payload is committed. (A deferred action would also
+           work, but a deferred one cannot read [INSTANCE]/[RUNTIMEIMAGES] without
+           CustomActionData - see the custom action's own note - so the sequence
+           placement is the right lever.) -->
+      <Custom Action="LaunchSetup" After="InstallFinalize" Condition="NOT REMOVE AND SKIPSETUP &lt;&gt; &quot;1&quot;" />
     </InstallExecuteSequence>
 
     <ui:WixUI Id="WixUI_InstallDir" />
