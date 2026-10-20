@@ -81,6 +81,7 @@ import { bubbleKindFor } from "@/lib/ask-bubble";
 import {
   dropSupersededMirror,
   hasLiveTextItems,
+  mirrorRowProseLifted,
 } from "@/lib/ask-live-merge";
 import {
   groupStreamItems,
@@ -713,7 +714,22 @@ function AskOrchiconPage() {
   // painted from `groupedStream` (the render's own live-item map), so adding it here too would draw every
   // streaming reply twice; WITH a search that render is gated off and these blocks are the only way the
   // text the operator is looking at can be searched.
-  const searchBlocks = searchActive ? [...transcriptBlocks, ...liveBlocks] : transcriptBlocks;
+  // AND THE SEARCH MUST NOT SEE A LIFTED PROSE TWICE EITHER. A row whose prose is lifted is still in the
+  // transcript (for its card and tool calls), but its text is drawn — and therefore searched — from the
+  // live copy. Left in, a live turn would report every match twice and next/prev would step onto the
+  // same words in two invisible copies.
+  const searchBlocks = searchActive
+    ? [
+        ...transcriptBlocks.filter(
+          (b) =>
+            !(
+              b.kind === "message" &&
+              mirrorRowProseLifted(b.message, pendingReplyId, isStreaming, liveItemsPresent)
+            ),
+        ),
+        ...liveBlocks,
+      ]
+    : transcriptBlocks;
 
   // AN UNANSWERED QUESTION IS NOT A TRANSCRIPT ENTRY — IT BELONGS AT THE BOTTOM.
   //
@@ -2316,6 +2332,13 @@ function AskOrchiconPage() {
                               block.kind === "message" &&
                               block.message.id === pendingReplyId
                             }
+                            // AND ITS PROSE IS LIFTED TOO, but only while the live stream is drawing
+                            // the same text — otherwise the reply appears twice (see
+                            // mirrorRowProseLifted). The row stays for its tool calls and card.
+                            proseLifted={
+                              block.kind === "message" &&
+                              mirrorRowProseLifted(block.message, pendingReplyId, isStreaming, liveItemsPresent)
+                            }
                           />
                         )}
                       </div>
@@ -2797,6 +2820,7 @@ function MessageBubble({
   onSelectOption,
   highlight = "",
   cardLifted = false,
+  proseLifted = false,
 }: {
   message: ChatMessage;
   onRetry?: () => void;
@@ -2813,6 +2837,17 @@ function MessageBubble({
    * the live text, so drawing the card inside the row strands it mid-reply.
    */
   cardLifted?: boolean;
+  /**
+   * proseLifted tells this bubble its TEXT and REASONING are being drawn by the live stream and it
+   * must not draw its own copy.
+   *
+   * The in-flight row is kept in the transcript even while the reply streams, because it carries the
+   * turn's tool calls and its recorded ask_user card — and the live stream carries neither. But it also
+   * carried a 250ms-old snapshot of the very text the live stream is drawing, so the reply was painted
+   * twice: once as the row's prose, once as the growing live copy. The operator: "while the model is
+   * responding/thinking, it prints the message twice." See mirrorRowProseLifted.
+   */
+  proseLifted?: boolean;
 }) {
   // WHICH SHELL DRAWS THIS MESSAGE. Decided in one tested place (lib/ask-bubble.ts)
   // rather than by a fall-through: `system` is the PLATFORM speaking about the
@@ -2896,12 +2931,12 @@ function MessageBubble({
 
   return (
     <>
-      {hasReasoning && (
+      {hasReasoning && !proseLifted && (
         <ReasoningBubble text={reasoning!.join("\n")} />
       )}
       {/* A running turn's mirrored partial row can hold reasoning but no text
           yet (the model is still thinking) — skip the empty bubble shell. */}
-      {message.content && (
+      {message.content && !proseLifted && (
         <AssistantBubble
           text={message.content}
           label="Orchicon"
