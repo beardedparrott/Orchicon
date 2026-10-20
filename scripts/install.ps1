@@ -97,10 +97,31 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# STRICT MODE, VERSION 1.0: reading an unassigned variable is an ERROR.
+#
+# THIS IS THE CLASS GUARD for the defect that shipped. The MSI arm used $tmpdir before
+# anything assigned it, and PowerShell silently reads an unassigned variable as $null — so the
+# failure surfaced one line later as
+#   Cannot bind argument to parameter 'Path' because it is null
+# which reads as a broken install rather than as an unset variable, and sent the operator to
+# report a crash that named nothing. Under this mode the same mistake fails AT THE USE:
+#   The variable '$tmpdir' cannot be retrieved because it has not been set.
+#
+# VERSION 1.0 ON PURPOSE, and it is the narrowest mode that catches this. Later versions also
+# prohibit non-existent object PROPERTIES and out-of-bounds array indexes — a much wider net
+# than this fix should cast over a 1400-line installer operators run.
+Set-StrictMode -Version 1.0
+
 $GitHubOwner = "beardedparrott"
 $GitHubRepo = "Orchicon"
 $script:Distro = ""
 $script:WslPresent = $false
+# INITIALISED, not merely assigned-on-use. Under Set-StrictMode (above) reading an unassigned
+# variable is an error, and the transcript state is only set when a transcript is actually
+# started — so every run with ORCHICON_INSTALL_LOG=off used to read it unset. Found by turning
+# strict mode on: six harness assertions failed on exactly this.
+$script:LogStarted = $false
+$script:LogPath = ""
 # THE CONTAINER OPT-IN, resolved once. -Containers is the documented switch; the
 # environment form exists because the documented invocation is `irm … | iex`, and
 # an env var is easier to set in a script than a switch on an iex'd scriptblock.
@@ -1162,6 +1183,29 @@ function Ask-Instance {
     # A release with no MSI (every release so far — none has been cut since
     # windows/amd64 joined the matrix) falls through to the zip automatically, so
     # this is inert until the first release publishes one.
+    # --- The scratch directory ---------------------------------------------------
+    # CREATED HERE, BEFORE EITHER BRANCH, AND THAT PLACEMENT IS THE FIX.
+    #
+    # This block used to sit BELOW the MSI decision, so `$useMsi` could take the MSI
+    # arm and use `$tmpdir` before anything had assigned it. PowerShell does not
+    # complain about reading an unassigned variable — it is simply $null — so the
+    # failure surfaced one line later as
+    #   Cannot bind argument to parameter 'Path' because it is null
+    #   At line:1179  $msiPath = Join-Path $tmpdir $msiAsset
+    # which reads as a defect in the install rather than as "this variable was never
+    # set". Reported from a real Windows run of `-Version canary`, the first time the
+    # MSI arm had ever executed: the branch was written behind an availability probe
+    # that no test could pass, so it shipped unexercised. The harness now passes that
+    # probe (see scripts/tests/install-ps1-native), which is what keeps it exercised.
+    #
+    # [System.IO.Path]::GetTempPath() rather than $env:TEMP. TEMP is always set on
+    # Windows, but the installer should not CRASH where it is not, and crashing here
+    # is a bad failure for the same reason: the error is raised from a string join
+    # and names no environment variable. (Found by running the installer's failure
+    # paths under a stripped environment.)
+    $tmpdir = Join-Path ([System.IO.Path]::GetTempPath()) "orchicon-install-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tmpdir -Force | Out-Null
+
     $msiAsset = "orchicon_${versionNum}_windows_${arch}.msi"
     $useMsi = -not ($Yes -or $NoSetup -or $env:ORCHICON_INSTALL_ARCHIVE)
     if ($useMsi) {
@@ -1193,7 +1237,19 @@ function Ask-Instance {
             if ($InstallDir) { $msiArgs += "INSTALLFOLDER=`"$InstallDir`"" }
 
             Write-Info "running the installer (this opens the Orchicon setup console)…"
-            $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
+            # NAMED CAUSE WHEN MSIEXEC ITSELF WILL NOT START. Start-Process raises a
+            # TERMINATING error here, so without this catch it escapes to the top-level
+            # handler and the operator is told "this is a defect in the installer" — when the
+            # real cause is that Windows Installer could not be launched. That happens on a
+            # real machine: the Windows Installer service can be disabled by group policy, and
+            # msiexec.exe can be missing from a stripped image. The zip path installs the same
+            # binaries, so the useful thing to say is so.
+            try {
+                $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
+            } catch {
+                Stop-Install "could not start msiexec.exe: $($_.Exception.Message)`n  Windows Installer may be disabled by policy. The zip installer installs the same binaries:
+  rerun with -NoSetup for the binaries only, or fix Windows Installer."
+            }
             if ($proc.ExitCode -ne 0) {
                 $logHint = Join-Path $tmpdir 'msi.log'
                 Stop-Install "the MSI exited $($proc.ExitCode). The binaries may not be installed. MSI log: $logHint"
@@ -1217,14 +1273,6 @@ function Ask-Instance {
         }
     }
 
-    # [System.IO.Path]::GetTempPath() rather than $env:TEMP. TEMP is always set on
-    # Windows, but the installer should not CRASH where it is not, and crashing here
-    # is a bad failure: the error is "Cannot bind argument to parameter 'Path'
-    # because it is null", raised from a string join, which reads as a defect in the
-    # install rather than as a missing environment variable. (Found by running the
-    # installer's failure paths under a stripped environment.)
-    $tmpdir = Join-Path ([System.IO.Path]::GetTempPath()) "orchicon-install-$(Get-Random)"
-    New-Item -ItemType Directory -Path $tmpdir -Force | Out-Null
     $archive = Join-Path $tmpdir $asset
 
     # ORCHICON_INSTALL_ARCHIVE is the offline seam, for the same reason

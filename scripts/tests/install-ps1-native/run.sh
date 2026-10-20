@@ -362,6 +362,60 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
 FIXTURE_ZIP
 test -f "${FIXTURE}/release/orchicon_0.0.0_windows_amd64.zip" || { echo "run.sh: fixture archive was not built" >&2; exit 2; }
 
+# --- a PUBLISHED MSI, so the MSI arm can be taken ----------------------------
+# THE ARM THAT SHIPPED BROKEN. install.ps1 prefers an MSI when one is published, but every
+# other case here sets ORCHICON_INSTALL_ARCHIVE (the offline seam), which forces the zip —
+# so the MSI arm had NEVER executed under test and reached a real operator unexercised. It
+# crashed on the first Windows run ("Cannot bind argument to parameter 'Path' because it is
+# null": the scratch directory was created BELOW the branch that used it).
+#
+# The arm is behind an availability PROBE, so reaching it needs an HTTP authority that answers
+# HEAD 200 for <base>/<version>/<msi-asset>. That is all this is: a fixture MSI on a local
+# listener. The file is never installed — there is no msiexec on this runner — and the case
+# asserts the installer gets AS FAR AS LAUNCHING it, which is the whole of the arm's setup.
+MSI_DIR="${FIXTURE}/msi"
+mkdir -p "${MSI_DIR}/v0.0.0"
+# Not a valid package on purpose: if this ever ran where msiexec exists it must fail fast
+# rather than open an installer UI.
+printf 'not an msi\n' > "${MSI_DIR}/v0.0.0/orchicon_0.0.0_windows_amd64.msi"
+
+# PORT 0, THEN REPORT IT: a fixed port collides on a busy runner, and a retry loop is another
+# thing that can hang. The server writes the port it got and the harness reads it.
+MSI_PORT_FILE="${STUB}/msi-port.txt"
+python3 - "${MSI_DIR}" "${MSI_PORT_FILE}" >/dev/null 2>&1 <<'MSI_SERVER' &
+import http.server, socketserver, sys, os
+root, portfile = sys.argv[1], sys.argv[2]
+os.chdir(root)
+class Quiet(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *a): pass
+httpd = socketserver.TCPServer(("127.0.0.1", 0), Quiet)
+with open(portfile, "w") as f:
+    f.write(str(httpd.server_address[1]))
+httpd.serve_forever()
+MSI_SERVER
+MSI_SERVER_PID=$!
+trap 'kill "${MSI_SERVER_PID}" 2>/dev/null || true; rm -rf "${STUB}" 2>/dev/null || true' EXIT
+
+for _ in $(seq 1 50); do
+  [ -s "${MSI_PORT_FILE}" ] && break
+  sleep 0.1
+done
+if [ -s "${MSI_PORT_FILE}" ]; then
+  ORCHICON_TEST_MSI_BASE_URL="http://127.0.0.1:$(cat "${MSI_PORT_FILE}")"
+  export ORCHICON_TEST_MSI_BASE_URL
+  # The probe must really answer, or the case silently tests the zip path and proves nothing.
+  if curl -sf -o /dev/null -I "${ORCHICON_TEST_MSI_BASE_URL}/v0.0.0/orchicon_0.0.0_windows_amd64.msi" 2>/dev/null \
+     || python3 -c "import urllib.request,sys; urllib.request.urlopen('${ORCHICON_TEST_MSI_BASE_URL}/v0.0.0/orchicon_0.0.0_windows_amd64.msi')" 2>/dev/null; then
+    echo "MSI arm fixture     : ${ORCHICON_TEST_MSI_BASE_URL}/v0.0.0/orchicon_0.0.0_windows_amd64.msi (probe answers)"
+  else
+    echo "run.sh: the MSI fixture listener did not answer — the MSI arm would not be exercised" >&2
+    exit 2
+  fi
+else
+  echo "run.sh: the MSI fixture listener never reported a port" >&2
+  exit 2
+fi
+
 echo "installer under test : ${INSTALLER}"
 [ -n "${BASELINE}" ] && echo "baseline (must FAIL)  : ${BASELINE}"
 echo
