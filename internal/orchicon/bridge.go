@@ -145,6 +145,12 @@ type NativeBridge struct {
 	// (sessionID → tokens, 0 = resolved-but-unknown). Resolved once from the
 	// bound provider's ListModels, mirroring the execution path. Guarded by mu.
 	askWindowTokens map[string]int64
+	// askPricing caches the resolved PRICING for an Ask session's model
+	// (sessionID → rates; a nil VALUE means "resolved, this model has none"). It
+	// exists because the Ask turn must PRICE each round before recording it — see
+	// askUsageSink — and a ListModels call per round would be wasteful. Resolved
+	// through the same provider lookup the context window uses. Guarded by mu.
+	askPricing map[string]*Pricing
 	// askCompactNotice, when wired, records a completed compaction so the
 	// conversation's transcript can carry a durable marker for it. Nil (tests, or
 	// a plane with no Ask service) leaves the log line as the only record — the

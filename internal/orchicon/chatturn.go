@@ -735,6 +735,7 @@ func (b *NativeBridge) PurgeConversationHistory(_ context.Context, conversationI
 	// happened to reuse the session id).
 	delete(b.askPromptTokens, sid)
 	delete(b.askWindowTokens, sid)
+	delete(b.askPricing, sid)
 	dir := b.askHistoryDir
 	b.mu.Unlock()
 	if dir == "" {
@@ -956,7 +957,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	bus.adopt()
 	b.mu.Unlock()
 
-	go b.drainChatTurn(turnCtx, prov, bus, stream, req, conversationID, sessionID, history, b.askUsageSink(tenantID, conversationID, sessionID, modelRef, providerID, model))
+	go b.drainChatTurn(turnCtx, prov, bus, stream, req, conversationID, sessionID, history, b.askUsageSink(prov, tenantID, conversationID, sessionID, modelRef, providerID, model))
 
 	// Return nil (accepted) BEFORE the drain goroutine emits, so the
 	// collector observes every event with sent == true (D4).
@@ -1232,11 +1233,24 @@ func (b *NativeBridge) drainOneRound(ctx context.Context, bus *chatBus, stream T
 // sink was wired only on the worker-execution path (bridge.go, emitTurnUsage),
 // which is bound to an execution row. That left the Ask path with no measurable
 // prompt size at all.
-func (b *NativeBridge) askUsageSink(tenantID, conversationID, sessionID, modelRef, provider, model string) func(context.Context, Usage) {
+func (b *NativeBridge) askUsageSink(prov Provider, tenantID, conversationID, sessionID, modelRef, provider, model string) func(context.Context, Usage) {
 	if b.usageRecorder == nil {
 		return nil
 	}
 	return func(ctx context.Context, u Usage) {
+		// PRICE THE ROUND BEFORE DECIDING IT IS EMPTY.
+		//
+		// The wire clients report TOKENS only — no provider on this bridge returns a
+		// price — so u.CostUSD arrives as 0 on every round and the record was written
+		// at $0.00. The worker loop prices its turn the same way before its own sink
+		// (loop.go, s.priceUsage); this is that step, for the Ask turn.
+		//
+		// ORDER MATTERS: pricing happens BEFORE the empty-sample guard below, or a
+		// cost-only round (a provider that bills without reporting tokens) would be
+		// dropped as "genuinely empty" — the guard must judge the PRICED usage.
+		if p := b.resolveAskPricing(ctx, prov, sessionID, model); p != nil {
+			u.CostUSD = p.CostFor(u)
+		}
 		// A genuinely empty round is dropped (parity with emitTurnUsage): a
 		// provider that reported nothing is not a zero-cost sample.
 		if u.InputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 &&

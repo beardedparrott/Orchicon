@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   dropSupersededMirror,
   hasLiveTextItems,
+  mirrorRowProseLifted,
   mirrorRowSuperseded,
 } from "./ask-live-merge";
 
@@ -88,5 +89,37 @@ describe("hasLiveTextItems", () => {
     expect(hasLiveTextItems([{ kind: "reasoning" }])).toBe(true);
     expect(hasLiveTextItems([{ kind: "error" }, { kind: "user" }])).toBe(false);
     expect(hasLiveTextItems([])).toBe(false);
+  });
+});
+
+// THE REPLY WAS DRAWN TWICE. A row carrying tool calls is never superseded (it is the only thing
+// that can render the ask_user card), so it stayed in the transcript WITH its prose — and the live
+// stream was already drawing that same prose. The operator: "while the model is responding/thinking,
+// it prints the message twice." Measured in their screenshot: 802 chars above 958, the second a
+// strict superset of the first, because the row is a 250ms-old snapshot of the live text.
+describe("mirrorRowProseLifted", () => {
+  const IN_FLIGHT = "msg-acked";
+
+  it("lifts the in-flight row's prose while the live stream draws it", () => {
+    expect(mirrorRowProseLifted({ id: IN_FLIGHT }, IN_FLIGHT, true, true)).toBe(true);
+  });
+
+  it("lifts it EVEN WHEN the row carries tool calls — that is the case the bug was in", () => {
+    // mirrorRowSuperseded deliberately keeps such a row (for its card); its prose is still a duplicate.
+    const withTools = { id: IN_FLIGHT, toolCalls: [{ id: "call-1" }] };
+    expect(mirrorRowSuperseded(withTools, IN_FLIGHT, true, true)).toBe(false);
+    expect(mirrorRowProseLifted(withTools, IN_FLIGHT, true, true)).toBe(true);
+  });
+
+  it("keeps the row's prose whenever the row is the only copy on screen", () => {
+    // No live stream (reload / second tab / turn elsewhere) or no live text yet: the row IS the view,
+    // so lifting its prose would blank the turn.
+    expect(mirrorRowProseLifted({ id: IN_FLIGHT }, IN_FLIGHT, false, true)).toBe(false);
+    expect(mirrorRowProseLifted({ id: IN_FLIGHT }, IN_FLIGHT, true, false)).toBe(false);
+  });
+
+  it("never touches another message's prose", () => {
+    expect(mirrorRowProseLifted({ id: "msg-older" }, IN_FLIGHT, true, true)).toBe(false);
+    expect(mirrorRowProseLifted({ id: IN_FLIGHT }, null, true, true)).toBe(false);
   });
 });

@@ -216,7 +216,7 @@ func TestAskUsageSinkRecordsPromptTokensForGate(t *testing.T) {
 		n++
 		return nil
 	}}
-	sink := b.askUsageSink("t", "conv-1", "orchicon-ask:conv-1", "orchicon/x/m", "p", "m")
+	sink := b.askUsageSink(nil, "t", "conv-1", "orchicon-ask:conv-1", "orchicon/x/m", "p", "m")
 	sink(context.Background(), Usage{InputTokens: 1_016_584, OutputTokens: 10})
 
 	if got := b.askLastPromptTokens("orchicon-ask:conv-1"); got != 1_016_584 {

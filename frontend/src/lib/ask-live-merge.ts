@@ -88,3 +88,38 @@ export function dropSupersededMirror<T extends MirrorRowMessage>(
 export function hasLiveTextItems(items: readonly { kind: string }[]): boolean {
   return items.some((i) => i.kind === "text" || i.kind === "reasoning");
 }
+
+/**
+ * mirrorRowProseLifted answers whether the in-flight row's PROSE should be skipped because the live
+ * stream is already drawing it — while the row ITSELF stays in the transcript.
+ *
+ * THE BUG THIS FIXES. A row carrying tool calls is never superseded (see mirrorRowSuperseded): the
+ * live stream carries text and reasoning only, so the row is the only thing that can render its card.
+ * But keeping the row kept its TEXT too, and the live copy is drawing that same text — so the reply
+ * appeared TWICE, one stale copy above the one still being written. The operator: "while the model is
+ * responding/thinking, it prints the message twice."
+ *
+ * The two copies are visibly the same string at different lengths: the server upserts the turn's
+ * collected text into the row every 250ms (upsertPartialMessage), so the row is a snapshot of the live
+ * stream a fraction of a second behind it. Measured in the operator's screenshot: 802 chars above 958,
+ * the second one a strict superset of the first.
+ *
+ * SO THE ROW IS KEPT AND ITS PROSE IS LIFTED, which is the same shape already used for the clarifying
+ * card (ask-orchicon.tsx: liftedCard): keep the container the operator needs, drop the duplicate of
+ * what is drawn elsewhere. Only prose and reasoning are lifted — never the tool calls, and never the
+ * card, which are the row's whole reason for surviving.
+ *
+ * The row is not dropped, because dropping it would take the card with it: liftedCard is read from
+ * durableMessages, so a dropped row means no lifted card either.
+ */
+export function mirrorRowProseLifted(
+  message: MirrorRowMessage,
+  pendingReplyId: string | null,
+  isStreaming: boolean,
+  hasLiveItems: boolean,
+): boolean {
+  if (!isStreaming) return false; // no live stream here: the row's prose IS the view
+  if (!pendingReplyId) return false; // no acked id: cannot tell which row is the mirror
+  if (message.id !== pendingReplyId) return false; // only the in-flight row is mirrored live
+  return hasLiveItems; // live text exists, so this row's copy of it is the duplicate
+}
