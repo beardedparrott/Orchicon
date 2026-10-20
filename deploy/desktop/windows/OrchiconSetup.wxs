@@ -83,20 +83,23 @@
     </BootstrapperApplication>
 
     <Chain>
-      <!-- THE MSI IS THE ONLY PACKAGE, AND ITS OWN UI IS SUPPRESSED — the bundle is the UI
-           now. `DisplayInternalUI="no"` is what makes that true; without it a person would
-           see the MSI wizard inside the bundle's window and be asked everything twice.
+      <!-- THE MSI IS THE ONLY PACKAGE. The bundle is the UI.
 
-           SKIPSETUP=1 is passed so the setup does not try to prompt underneath the bundle's
-           own progress. `Repair`/`Uninstall` are left to the bundle, which forwards to the
-           package.
+           THERE IS NO DisplayInternalUI ATTRIBUTE, and that is not an omission: WiX v4 REMOVED
+           it. (v5 rejects it outright — "error WIX0004: The MsiPackage element contains an
+           unexpected attribute 'DisplayInternalUI'".) Its own converter says the functionality
+           "has fundamentally changed and requires BootstrapperApplication support": in v4+ the
+           bundle's BA decides, and the standard BA does NOT display a package's internal UI. So
+           a person sees one wizard, which is the point.
 
-           SCOPE IS NOT SET HERE ON PURPOSE. The package is per-user (see Orchicon.wxs), and
-           Burn detects a package's scope from the MSI itself — there is no PerUser attribute,
-           and asking for one is a build error. -->
+           SKIPSETUP=1 is passed so the setup does not try to prompt underneath the bundle's own
+           progress. `Repair`/`Uninstall` are left to the bundle, which forwards to the package.
+
+           SCOPE IS NOT SET HERE ON PURPOSE. The package is per-user (see Orchicon.wxs), and Burn
+           detects a package's scope from the MSI itself — there is no PerUser attribute, and
+           asking for one is a build error. -->
       <MsiPackage Id="OrchiconMsi"
                   SourceFile="$(var.MsiPath)"
-                  DisplayInternalUI="no"
                   Vital="yes"
                   Compressed="yes">
         <MsiProperty Name="INSTANCE" Value="[Instance]" />

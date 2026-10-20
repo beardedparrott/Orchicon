@@ -238,7 +238,11 @@ func TestBurnBundleWrapsTheMSI(t *testing.T) {
 
 	for _, want := range []struct{ what, sub string }{
 		{"the MSI is chained in (the bundle wraps it, it does not replace it)", "<MsiPackage"},
-		{"the MSI's own UI is suppressed (the bundle IS the UI)", `DisplayInternalUI="no"`},
+		// THE MSI'S OWN UI IS NOT SHOWN, and in WiX v4+ that is the DEFAULT plus the only
+		// option: `DisplayInternalUI` was REMOVED (v5 rejects it with WIX0004 — it "has
+		// fundamentally changed and requires BootstrapperApplication support"). So the guard
+		// asserts the ABSENCE of the attribute rather than its value, because its presence is
+		// now a build error and its behaviour lives in the BA.
 		{"the setup is skipped inside the bundle (one UI at a time)", `<MsiProperty Name="SKIPSETUP" Value="1"`},
 		{"the instance reaches the MSI", `<MsiProperty Name="INSTANCE"`},
 		{"the licence page uses the SAME RTF as the MSI", `LicenseFile="$(var.LicenseRtf)"`},
@@ -247,6 +251,14 @@ func TestBurnBundleWrapsTheMSI(t *testing.T) {
 		if !strings.Contains(bundle, want.sub) {
 			t.Errorf("OrchiconSetup.wxs does not show that %s (%q)", want.what, want.sub)
 		}
+	}
+
+	// AND THE REMOVED ATTRIBUTE MUST NOT COME BACK — it reads as the obvious way to do this and
+	// fails the build six minutes into a Windows run.
+	if strings.Contains(bundle, "DisplayInternalUI") {
+		t.Error("OrchiconSetup.wxs sets DisplayInternalUI. WiX v4 REMOVED that attribute (v5 " +
+			"rejects it: WIX0004 \"unexpected attribute\"). In v4+ the bootstrapper application " +
+			"decides, and the standard BA does not show a package's internal UI.")
 	}
 
 	// THE INSTANCE VARIABLE MUST BE DECLARED. `[Instance]` in an MsiProperty resolves against
