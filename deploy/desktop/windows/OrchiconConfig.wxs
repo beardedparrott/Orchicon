@@ -42,9 +42,13 @@
            <Publish> belongs under <UI> (or inside a <Dialog>) in WiX v4. Putting it under
            <InstallUISequence> is "error WIX0004: The Publish element contains an unexpected
            attribute 'Dialog'", which is what the first attempt at this produced. -->
-      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2">1</Publish>
-      <Publish Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="2">1</Publish>
-      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2">LicenseAccepted = "1"</Publish>
+      <!-- THE CONDITION IS AN ATTRIBUTE IN WIX v4, NOT INNER TEXT.
+           WiX v3 wrote `<Publish …>1</Publish>` with the condition as the element's text; v4
+           rejects that with "error WIX0400: The Publish element contains illegal inner text".
+           An absent condition means "always", so the two unconditional publishes carry none. -->
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2" />
+      <Publish Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="2" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2" Condition="LicenseAccepted = &quot;1&quot;" />
 
       <Dialog Id="InstanceDlg" Width="370" Height="270" Title="[ProductName] Setup">
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
