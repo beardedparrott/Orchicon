@@ -90,7 +90,6 @@ func TestMSICarriesEveryShippedBinary(t *testing.T) {
 		{`Source="$(var.SourceDir)\orchicon.exe"`, "the control plane, the CLI and the setup step itself"},
 		{`Source="$(var.SourceDir)\orch.exe"`, "the TUI — without it the package has no remote client"},
 		{`Source="$(var.SourceDir)\orchicon-desktop.exe"`, "the desktop app the MSI exists to deploy"},
-		{`Source="$(var.SourceDir)\orchicon-setup.cmd"`, "the hand-off to `orchicon install`; without it the MSI installs binaries and never sets them up"},
 	} {
 		if !strings.Contains(body, want.src) {
 			t.Errorf("Orchicon.wxs has no component with %s (%s).\n"+
@@ -124,39 +123,221 @@ func TestMSIPublishesTheVersionAndIcon(t *testing.T) {
 	}
 }
 
-// TestSetupWrapperClaimsAHuman — the wizard's answers have to reach the child, and
-// the child has to be allowed to ask.
-func TestSetupWrapperClaimsAHuman(t *testing.T) {
-	wrapper := readMSIFile(t, "..", "..", "deploy", "desktop", "windows", "orchicon-setup.cmd")
+// TestSetupRunsTheInstalledExeDirectly — the hand-off must be ONE process with ONE plain-word
+// argument: no `cmd.exe`, no `start`, no wrapper script, no quoted arguments.
+//
+// THE HISTORY IS THE REASON, and every step of it was a quoting bug:
+//
+//	"[#SetupCmdFile]" "[INSTANCE]" "[RUNTIMEIMAGES]"  — RUNTIMEIMAGES is unset BY DESIGN (an
+//	  empty default would skip the setup's own image prompt), so that token became an EMPTY
+//	  QUOTED STRING. Crossing MSI's command-line building, `cmd /c` and `start`, a quote was
+//	  eaten per hop and cmd was handed the wrapper's PATH as a COMMAND NAME:
+//	      'C:\...\orchicon-setup.cmd"  "dev" "' is not recognized as an internal or external command
+//	…then a bare `orchicon-setup.cmd` from the working directory: fixed the quoting, kept three
+//	  processes and a file to get wrong.
+//
+// Now `FileRef` names the File row, so MSI writes the command line itself from the binary it
+// just installed, and the only argument is `install --instance <name>` — which has no
+// empty-value case.
+func TestSetupRunsTheInstalledExeDirectly(t *testing.T) {
+	body := stripXMLComments(readMSIFile(t, wxs()))
 
-	// THE ONE THAT MATTERS: without this the port questions never appear, because
-	// installIsInteractive() checks the installer's OWN stdout for a terminal.
-	if !strings.Contains(wrapper, `set "ORCHICON_INSTALL_INTERACTIVE=1"`) {
-		t.Error("orchicon-setup.cmd does not set ORCHICON_INSTALL_INTERACTIVE=1.\n" +
-			"The installer only prompts when it can see a terminal of its own, so the wizard's\n" +
-			"setup would run with NO port questions and NO runtime-image offer — silently taking\n" +
-			"every default.")
+	ca := regexp.MustCompile(`<CustomAction Id="LaunchSetup"[\s\S]*?/>`).FindString(body)
+	if ca == "" {
+		t.Fatal("no LaunchSetup custom action — the setup hand-off is gone")
 	}
-	// The wizard's multi-select travels as %2 → this env var. Without it, a choice
-	// made in the UI is discarded by the non-interactive path.
-	if !strings.Contains(wrapper, "ORCHICON_INSTALL_RUNTIME_IMAGES") {
-		t.Error("orchicon-setup.cmd does not pass ORCHICON_INSTALL_RUNTIME_IMAGES, so a " +
-			"runtime image selected in the wizard would be silently ignored")
+	// It must run a FILE from the package, not a shell.
+	if !strings.Contains(ca, `FileRef="OrchiconExeFile"`) {
+		t.Error("LaunchSetup does not use FileRef=\"OrchiconExeFile\".\n" +
+			"  FileRef makes MSI build the command line from the installed file itself; anything\n" +
+			"  else means assembling a path, which is the class of bug this fixes.")
 	}
-	// It must DELEGATE to the real installer rather than reimplementing it.
-	if !strings.Contains(wrapper, `orchicon.exe" install`) {
-		t.Error("orchicon-setup.cmd does not run `orchicon install` — the setup must delegate, " +
-			"not carry a second implementation that can drift from the CLI")
+	for _, forbidden := range []struct{ what, sub string }{
+		{"a shell (cmd.exe)", "cmd.exe"},
+		{"`start`", "start "},
+		{"a wrapper script", "orchicon-setup.cmd"},
+		{"a quoted path", "&quot;[#"},
+		{"a path assembled from a directory", "[INSTALLFOLDER]orchicon"},
+		{"the runtime-image property on the command line", "[RUNTIMEIMAGES]"},
+	} {
+		if strings.Contains(ca, forbidden.sub) {
+			t.Errorf("LaunchSetup still contains %s (%q):\n  %s\n"+
+				"  Every historical failure here was this chain losing a quote. One process and\n"+
+				"  one plain-word argument has no quoting to lose.", forbidden.what, forbidden.sub, ca)
+		}
 	}
-	// A failure must not look like a hang: the window stays open.
-	if !strings.Contains(wrapper, "pause") {
-		t.Error("orchicon-setup.cmd does not pause, so the console vanishes on completion and " +
-			"the operator cannot read what happened — the classic Windows installer complaint")
+	// And the one argument it DOES pass.
+	if !strings.Contains(ca, `ExeCommand="install --instance [INSTANCE]"`) {
+		t.Errorf("LaunchSetup does not run `install --instance [INSTANCE]`:\n  %s\n"+
+			"  The instance must reach the setup, or every install becomes dev whatever was chosen.", ca)
 	}
 }
 
-// TestReleaseBuildsAndPublishesTheMSI — built but not published is the failure the
-// ASSETS list exists to prevent.
+// TestSetupRelaunchesIntoItsOwnConsole — the process that prompts must have a console, and it
+// must be the process that makes one.
+//
+// A Windows Installer custom action has NO console. The old design manufactured one with
+// `cmd /c start`, which is where the quoting bugs came from. `orchicon install` now re-executes
+// ITSELF with CREATE_NEW_CONSOLE, so the installer can run it directly.
+//
+// ASSERTED ON THE SOURCE because the behaviour is Windows-only and needs a console-less parent
+// to exercise — which no unit test on any host can provide. What CAN be checked is that the
+// load-bearing pieces are present and are not quietly disabled.
+func TestSetupRelaunchesIntoItsOwnConsole(t *testing.T) {
+	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "console_windows.go")
+
+	for _, want := range []struct{ what, sub string }{
+		{"it asks Windows for a NEW console", "CREATE_NEW_CONSOLE"},
+		{"it re-executes this same binary", "os.Executable()"},
+		{"it marks the child so it cannot relaunch for ever", "consoleRelaunchEnv"},
+		{"it does not wait for the child (the installer must not hang)", "cmd.Process.Release()"},
+	} {
+		if !strings.Contains(src, want.sub) {
+			t.Errorf("console_windows.go does not show that %s (%q)", want.what, want.sub)
+		}
+	}
+
+	// DETACHED_PROCESS in the relaunch flags would silently produce NO window — the exact
+	// failure it exists to prevent. It is legitimately used for the runtime DAEMON, so this
+	// check is scoped to relaunchInOwnConsole's own body.
+	start := strings.Index(src, "func relaunchInOwnConsole()")
+	if start < 0 {
+		t.Fatal("relaunchInOwnConsole is gone")
+	}
+	end := strings.Index(src[start:], "\n}")
+	if end < 0 {
+		t.Fatal("could not delimit relaunchInOwnConsole")
+	}
+	block := src[start : start+end]
+	if strings.Contains(block, "detachedProcess") || strings.Contains(block, "DETACHED_PROCESS") {
+		t.Error("relaunchInOwnConsole sets DETACHED_PROCESS, which SUPPRESSES the console it is " +
+			"asking for. CREATE_NEW_CONSOLE alone is the correct flag.")
+	}
+	if !strings.Contains(block, "CREATE_NEW_CONSOLE") {
+		t.Error("relaunchInOwnConsole does not set CREATE_NEW_CONSOLE")
+	}
+
+	// AND THE INSTALL PATH MUST CALL IT, or none of the above ever runs.
+	install := readMSIFile(t, "..", "..", "cmd", "orchicon", "install.go")
+	if !strings.Contains(install, "ensureInteractiveConsole(") {
+		t.Error("runInstall never calls ensureInteractiveConsole — the setup would run " +
+			"console-less inside the MSI and its prompts would go nowhere")
+	}
+}
+
+// TestBurnBundleWrapsTheMSI — the setup EXPERIENCE a person runs.
+//
+// A bare MSI is the right unit of deployment (Intune, SCCM, Group Policy and `msiexec /qn` all
+// speak it) but a poor experience for a human: it draws the wizard and then hands the
+// interesting part — a long download with prompts — to a console it cannot report on. A Burn
+// bundle owns the UI and chains the MSI, so progress and the log belong to the wizard.
+//
+// IT DOES NOT REPLACE THE MSI. Both artifacts are asserted, not just the new one.
+func TestBurnBundleWrapsTheMSI(t *testing.T) {
+	bundle := stripXMLComments(readMSIFile(t, "..", "..", "deploy", "desktop", "windows", "OrchiconSetup.wxs"))
+
+	for _, want := range []struct{ what, sub string }{
+		{"the MSI is chained in (the bundle wraps it, it does not replace it)", "<MsiPackage"},
+		// THE MSI'S OWN UI IS NOT SHOWN, and in WiX v4+ that is the DEFAULT plus the only
+		// option: `DisplayInternalUI` was REMOVED (v5 rejects it with WIX0004 — it "has
+		// fundamentally changed and requires BootstrapperApplication support"). So the guard
+		// asserts the ABSENCE of the attribute rather than its value, because its presence is
+		// now a build error and its behaviour lives in the BA.
+		{"the setup is skipped inside the bundle (one UI at a time)", `<MsiProperty Name="SKIPSETUP" Value="1"`},
+		{"the instance reaches the MSI", `<MsiProperty Name="INSTANCE"`},
+		{"the licence page uses the SAME RTF as the MSI", `LicenseFile="$(var.LicenseRtf)"`},
+		{"a standard BA theme that can show RTF (the terms we actually ship)", `Theme="rtfLicense"`},
+	} {
+		if !strings.Contains(bundle, want.sub) {
+			t.Errorf("OrchiconSetup.wxs does not show that %s (%q)", want.what, want.sub)
+		}
+	}
+
+	// AND THE REMOVED ATTRIBUTE MUST NOT COME BACK — it reads as the obvious way to do this and
+	// fails the build six minutes into a Windows run.
+	if strings.Contains(bundle, "DisplayInternalUI") {
+		t.Error("OrchiconSetup.wxs sets DisplayInternalUI. WiX v4 REMOVED that attribute (v5 " +
+			"rejects it: WIX0004 \"unexpected attribute\"). In v4+ the bootstrapper application " +
+			"decides, and the standard BA does not show a package's internal UI.")
+	}
+
+	// THE INSTANCE VARIABLE MUST BE DECLARED. `[Instance]` in an MsiProperty resolves against
+	// bundle variables, and an UNDECLARED one resolves to an empty string — so every install
+	// would silently become whatever the MSI defaults to, whatever was asked for.
+	if !strings.Contains(bundle, `<Variable Name="Instance"`) {
+		t.Error("OrchiconSetup.wxs references [Instance] but never declares it. An undeclared " +
+			"variable resolves to EMPTY, so the wizard's instance choice would be silently dropped.")
+	}
+
+	// THE UPGRADE CODE MUST DIFFER FROM THE MSI'S, or Windows treats the bundle as an upgrade of
+	// the package and removes the files out from under it.
+	msiBody := stripXMLComments(readMSIFile(t, wxs()))
+	msiUpgrade := regexp.MustCompile(`UpgradeCode="([^"]+)"`).FindStringSubmatch(msiBody)
+	bundleUpgrade := regexp.MustCompile(`UpgradeCode="([^"]+)"`).FindStringSubmatch(bundle)
+	if msiUpgrade == nil || bundleUpgrade == nil {
+		t.Fatal("could not read both UpgradeCodes")
+	}
+	if msiUpgrade[1] == bundleUpgrade[1] {
+		t.Errorf("the bundle and the MSI share UpgradeCode %s. A bundle and a package are "+
+			"different products to Windows; sharing one makes the bundle \"upgrade\" the MSI and "+
+			"delete its files.", msiUpgrade[1])
+	}
+
+	// AND EVERY SITE THAT BUILDS IT MUST INSTALL THE BAL EXTENSION FIRST — `-ext` resolves
+	// through WiX's own store, never NuGet, and Bal is a SEPARATE package from the UI extension
+	// the MSI build already installs.
+	for _, site := range []struct{ what, path string }{
+		{"the Makefile", filepath.Join("..", "..", "Makefile")},
+		{"ci.yml", filepath.Join("..", "..", ".github", "workflows", "ci.yml")},
+		{"release.yml", filepath.Join("..", "..", ".github", "workflows", "release.yml")},
+		{"canary.yml", filepath.Join("..", "..", ".github", "workflows", "canary.yml")},
+	} {
+		src := readMSIFile(t, site.path)
+		for _, want := range []struct{ what, sub string }{
+			{"builds the bundle", "OrchiconSetup.wxs"},
+			// THE PACKAGE ID AND THE DLL NAME MUST MATCH. `wix extension add -g <id>/<ver>`
+			// resolves `-ext <id>` to <id>/<ver>/wixext5/<id>.dll, so an id whose DLL is named
+			// differently cannot be found — exactly how this failed first:
+			//   error WIX0144: The extension 'WixToolset.Bal.wixext' could not be found.
+			//          Checked paths: …\WixToolset.Bal.wixext\5.0.2\wixext5\WixToolset.Bal.wixext.dll
+			// …while that package ships WixToolset.BootstrapperApplications.wixext.dll.
+			{"names the bundle extension on the build", "-ext WixToolset.BootstrapperApplications.wixext"},
+			{"installs it first (or -ext cannot resolve it)", "WixToolset.BootstrapperApplications.wixext/"},
+		} {
+			if !strings.Contains(src, want.sub) {
+				t.Errorf("%s does not show that it %s (%q)", site.what, want.what, want.sub)
+			}
+		}
+	}
+
+	// THE MISMATCHED ID MUST NOT COME BACK. It LOOKS like the right package (it is the one
+	// documented as "the Bal extension") and its DLL is named differently, so WiX reports
+	// WIX0144 and the build dies six minutes in.
+	for _, site := range []string{"Makefile", ".github/workflows/ci.yml",
+		".github/workflows/canary.yml", ".github/workflows/release.yml"} {
+		var body string
+		if site == "Makefile" {
+			body = readMSIFile(t, "..", "..", "Makefile")
+		} else {
+			body = readMSIFile(t, "..", "..", ".github", "workflows", filepath.Base(site))
+		}
+		if strings.Contains(body, "WixToolset.Bal.wixext") {
+			t.Errorf("%s references WixToolset.Bal.wixext. That PACKAGE ships "+
+				"WixToolset.BootstrapperApplications.wixext.dll, so `-ext WixToolset.Bal.wixext` "+
+				"fails with WIX0144 (WiX looks for a DLL named after the id). Use the "+
+				"BootstrapperApplications id.", site)
+		}
+	}
+
+	// THE RELEASE MUST PUBLISH IT. A bundle built and left in the run is the "artifact built and
+	// silently not published" failure the release ASSETS list exists to prevent.
+	rel := readMSIFile(t, "..", "..", ".github", "workflows", "release.yml")
+	if !strings.Contains(rel, "-name 'OrchiconSetup_*.exe'") {
+		t.Error("the release ASSETS find does not include 'OrchiconSetup_*.exe' — the bundle would " +
+			"be built and then silently left out of the release")
+	}
+}
+
 func TestReleaseBuildsAndPublishesTheMSI(t *testing.T) {
 	rel := readMSIFile(t, "..", "..", ".github", "workflows", "release.yml")
 
@@ -843,117 +1024,6 @@ func TestMSILicensePageCarriesOurLicenseText(t *testing.T) {
 // Three shells is too many to thread quoted data through, so none is threaded. The
 // wizard's answers go into the registry (see TestSetupConfigReachesTheWrapper) and the
 // wrapper is named bare, in the working directory Directory="INSTALLFOLDER" already sets.
-func TestSetupHandoffCarriesNoDataThroughTheShell(t *testing.T) {
-	body := stripXMLComments(readMSIFile(t, wxs()))
-
-	// Find the custom action's ExeCommand, whatever else the file says about it.
-	ca := regexp.MustCompile(`<CustomAction Id="LaunchSetup"[\s\S]*?ExeCommand="([^"]*)"`).FindStringSubmatch(body)
-	if ca == nil {
-		t.Fatal("no LaunchSetup custom action with an ExeCommand — the setup hand-off is gone")
-	}
-	cmd := ca[1]
-
-	for _, forbidden := range []struct{ what, sub string }{
-		{"a wizard answer ([INSTANCE])", "[INSTANCE]"},
-		{"a wizard answer ([RUNTIMEIMAGES])", "[RUNTIMEIMAGES]"},
-		{"a file path ([#SetupCmdFile])", "[#SetupCmdFile]"},
-		{"any other property formatter", "[#"},
-	} {
-		if strings.Contains(cmd, forbidden.sub) {
-			t.Errorf("the hand-off puts %s on the command line:\n  %s\n"+
-				"  That value crosses MSI's command-line building, `cmd /c` and `start`, and an\n"+
-				"  empty one (RUNTIMEIMAGES is unset by design) loses a quote at each end — which\n"+
-				"  is how cmd came to be handed a path as a COMMAND NAME. Pass data through the\n"+
-				"  registry instead (SetupConfig), and name the wrapper BARE.",
-				forbidden.what, cmd)
-		}
-	}
-
-	// And it must be the bare-name form, in the action's own working directory.
-	if !strings.Contains(cmd, "orchicon-setup.cmd") {
-		t.Errorf("the hand-off does not run orchicon-setup.cmd:\n  %s", cmd)
-	}
-	if strings.Contains(cmd, `\\orchicon-setup.cmd`) || strings.Contains(cmd, `&quot;[`) {
-		t.Errorf("the hand-off quotes a PATH to the wrapper:\n  %s\n"+
-			"  Directory=\"INSTALLFOLDER\" already sets the working directory, so the bare name\n"+
-			"  resolves and nothing has to be quoted or concatenated.", cmd)
-	}
-	// A title is still wanted: `start` treats an unquoted first argument as the PROGRAM,
-	// so without one it would try to run "Orchicon".
-	if !strings.Contains(cmd, `start &quot;`) {
-		t.Errorf("the hand-off passes no window TITLE to `start`:\n  %s\n"+
-			"  `start` reads its first argument as the title only when it is QUOTED; unquoted it\n"+
-			"  is the program to run.", cmd)
-	}
-	// The action must still run in the install folder, or the bare name resolves elsewhere.
-	caBlock := regexp.MustCompile(`<CustomAction Id="LaunchSetup"[^>]*`).FindString(body)
-	if !strings.Contains(caBlock, `Directory="INSTALLFOLDER"`) {
-		t.Error("LaunchSetup no longer sets Directory=\"INSTALLFOLDER\" — the bare wrapper name " +
-			"would resolve against whatever directory the action inherited")
-	}
-}
-
-// TestSetupConfigReachesTheWrapper — the answers must have a route the shell cannot mangle.
-//
-// Both halves are needed and neither is obvious from the other: the MSI must WRITE the
-// two values, and the wrapper must READ them back. A change to either alone silently
-// reverts the setup to its defaults, which looks like "the wizard ignored what I chose".
-func TestSetupConfigReachesTheWrapper(t *testing.T) {
-	wxsBody := stripXMLComments(readMSIFile(t, wxs()))
-	for _, want := range []struct{ what, sub string }{
-		{"writes the instance", `Value="[INSTANCE]"`},
-		{"writes the runtime-image selection", `Value="[RUNTIMEIMAGES]"`},
-		{"uses the per-user hive (no elevation)", `Root="HKCU"`},
-		{"cleans up on uninstall", `Action="removeOnUninstall"`},
-	} {
-		if !strings.Contains(wxsBody, want.sub) {
-			t.Errorf("Orchicon.wxs does not %s (%q) — the wrapper would have nothing to read and "+
-				"the setup would silently use its defaults.", want.what, want.sub)
-		}
-	}
-	if !strings.Contains(wxsBody, `Key="Software\Orchicon\Setup"`) {
-		t.Error("Orchicon.wxs does not write the HKCU\\\\Software\\\\Orchicon\\\\Setup key — " +
-			"the key the wrapper reads")
-	}
-
-	// COMMENTS STRIPPED: the header of this script quotes both the broken command line and
-	// the `2^>nul` idiom, so raw-text assertions are satisfied by the explanation.
-	wrapper := stripBatchComments(readMSIFile(t, "..", "..", "deploy", "desktop", "windows", "orchicon-setup.cmd"))
-	for _, want := range []struct{ what, sub string }{
-		{"reads the key the MSI writes", `HKCU\Software\Orchicon\Setup`},
-		{"reads the instance", "Instance ORCHICON_INSTANCE"},
-		{"reads the runtime-image selection", "RuntimeImages ORCHICON_INSTALL_RUNTIME_IMAGES"},
-		{"asks the registry", "reg query"},
-	} {
-		if !strings.Contains(wrapper, want.sub) {
-			t.Errorf("orchicon-setup.cmd does not %s (%q) — the wizard's answers would be lost.",
-				want.what, want.sub)
-		}
-	}
-	// A MISSING KEY MUST BE SILENT. This runs on every install, and a red "ERROR: The
-	// system was unable to find the specified registry key" would be the first thing the
-	// operator sees on a perfectly good run.
-	if !strings.Contains(wrapper, "2^>nul") {
-		t.Error("the registry read does not suppress stderr — a missing key would print a " +
-			"scary error on every install, before anything has gone wrong")
-	}
-	// AND THE OLD ARGUMENT ROUTE MUST STILL WORK, so the script can be run by hand.
-	for _, want := range []string{`if not "%~1"==""`, `if not "%~2"==""`} {
-		if !strings.Contains(wrapper, want) {
-			t.Errorf("orchicon-setup.cmd no longer accepts %s — the wrapper is documented as "+
-				"hand-runnable, and install.ps1-style automation would break", want)
-		}
-	}
-}
-
-// TestWizardArtIsOurs — the wizard must draw our artwork, not WiX's red default.
-//
-// Reported from a real install: the page had a red/black pattern with nothing to do with
-// Orchicon, and it FLICKERED as the dialog repainted. The cause was simply that neither
-// WixUIBannerBmp nor WixUIDialogBmp was set, so WixUI fell back to its own bitmaps.
-//
-// The dimensions are the dialog layout's, not a preference: WiX draws the banner into a
-// 493x58 strip and the dialog panel into 493x312. A wrong-sized bitmap is stretched.
 func TestWizardArtIsOurs(t *testing.T) {
 	body := stripXMLComments(readMSIFile(t, wxs()))
 
@@ -1105,7 +1175,11 @@ func TestCIInstallsTheMSIPackage(t *testing.T) {
 		{"installs the package", "'/i',"},
 		{"unattended, so it cannot block on a wizard", "'/qn',"},
 		{"with the setup hand-off suppressed (it would download ~540 MB)", "'SKIPSETUP=1'"},
-		{"verifies the file the wizard launches, by name", "'orchicon-setup.cmd'"},
+		// THE FILE THE WIZARD'S LAST STEP RUNS. It used to be the orchicon-setup.cmd wrapper;
+		// the hand-off now uses FileRef="OrchiconExeFile" and runs orchicon.exe itself, so the
+		// wrapper is gone (see TestSetupRunsTheInstalledExeDirectly) and asserting it would
+		// assert a file that must not exist.
+		{"verifies the binary the hand-off runs, by name", "'orchicon.exe'"},
 		{"fails the job when the install fails", "ExitCode -ne 0"},
 	} {
 		if !strings.Contains(step, want.sub) {

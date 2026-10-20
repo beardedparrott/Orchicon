@@ -1261,7 +1261,6 @@ desktop-package-windows: ## Produce the Windows MSI (Windows host with the WiX C
 	cp -f $(BIN_DIR)/orchicon.exe $(MSI_SRC_DIR)/
 	cp -f $(BIN_DIR)/orch.exe $(MSI_SRC_DIR)/
 	cp -f $(DESKTOP_PROJECT)/build/bin/orchicon-desktop.exe $(MSI_SRC_DIR)/
-	cp -f deploy/desktop/windows/orchicon-setup.cmd $(MSI_SRC_DIR)/
 	cp -f deploy/desktop/windows/README-WINDOWS.txt $(MSI_SRC_DIR)/
 	cp -f deploy/desktop/windows/LICENSE.rtf $(MSI_SRC_DIR)/
 	cp -f deploy/desktop/windows/orchicon-desktop.ico $(MSI_SRC_DIR)/
@@ -1283,6 +1282,34 @@ desktop-package-windows: ## Produce the Windows MSI (Windows host with the WiX C
 		-bindvariable WixUILicenseRtf=$(abspath $(MSI_SRC_DIR))/LICENSE.rtf \
 		-o "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi"
 	@ls -l "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi"
+
+# THE BUNDLE: one wizard for a person, built ON TOP of the MSI above.
+#
+# A bare MSI is the right unit of deployment but a poor experience: it draws the wizard and
+# then hands the interesting part — a long download with prompts — to a console it cannot
+# report on. The Burn bundle owns the UI and chains the MSI, so progress and the log belong
+# to the wizard. It does NOT replace the MSI: `msiexec /qn` estates keep using that.
+#
+# The Bal extension is a SEPARATE NuGet package from the UI one, and needs the same
+# `wix extension add` dance — `-ext` resolves through WiX's own store, never NuGet.
+desktop-package-windows-bundle: ## Produce OrchiconSetup.exe (the Burn bundle around the MSI)
+	@test -n "$(WIX)" || { \
+		printf 'error: the WiX CLI (`wix`) was not found.\n\n'; \
+		printf '  The bundle is built by the same .NET global tool as the MSI:\n'; \
+		printf '      dotnet tool install --global wix --version $(WIX_VERSION)\n\n'; \
+		printf '  See desktop-package-windows for why the version is pinned.\n'; \
+		exit 1; }
+	@test -f "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi" || { \
+		echo "error: the MSI is missing — run 'make desktop-package-windows' first (the bundle wraps it)"; exit 1; }
+	$(WIX) extension add -g WixToolset.BootstrapperApplications.wixext/$(WIX_VERSION) || true
+	$(WIX) build deploy/desktop/windows/OrchiconSetup.wxs \
+		-ext WixToolset.BootstrapperApplications.wixext \
+		-d Version=$(DESKTOP_VERSION) \
+		-d MsiPath=$(abspath $(DESKTOP_DIST))/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi \
+		-d LicenseRtf=$(abspath $(MSI_SRC_DIR))/LICENSE.rtf \
+		-outputtype bundle \
+		-o "$(DESKTOP_DIST)/OrchiconSetup_$(DESKTOP_VERSION)_windows_amd64.exe"
+	@ls -l "$(DESKTOP_DIST)/OrchiconSetup_$(DESKTOP_VERSION)_windows_amd64.exe"
 
 desktop-package-linux: desktop-build-linux ## Produce the .deb (nfpm) + the AppImage
 	mkdir -p $(DESKTOP_DIST)

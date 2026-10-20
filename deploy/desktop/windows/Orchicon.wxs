@@ -143,27 +143,6 @@
       <Component Id="OrchExe" Guid="*">
         <File Id="OrchExeFile" Source="$(var.SourceDir)\orch.exe" KeyPath="yes" />
       </Component>
-      <Component Id="SetupWrapper" Guid="*">
-        <!-- The setup hand-off. Shipped as a file rather than an inline ExeCommand
-             so the wizard's answers reach the child as %1/%2 with no nested quoting;
-             see the header of orchicon-setup.cmd. -->
-        <File Id="SetupCmdFile" Source="$(var.SourceDir)\orchicon-setup.cmd" KeyPath="yes" />
-      </Component>
-      <Component Id="SetupConfig" Guid="*">
-        <!-- THE WIZARD'S ANSWERS, WRITTEN WHERE THE WRAPPER CAN READ THEM.
-             MSI's Registry table is the normal way to persist a property; threading the
-             values through an ExeCommand into `cmd /c` into `start` is not, and is what
-             the "is not recognized as an internal or external command" report was.
-             Written by WriteRegistryValues, which completes before InstallFinalize — so
-             the values are there before the hand-off runs. Removed on uninstall.
-             An EMPTY RUNTIMEIMAGES writes an empty value, which the wrapper treats as
-             unset, preserving the setup's own prompt. -->
-        <RegistryKey Root="HKCU" Key="Software\Orchicon\Setup">
-          <RegistryValue Name="Instance" Type="string" Value="[INSTANCE]" KeyPath="yes" />
-          <RegistryValue Name="RuntimeImages" Type="string" Value="[RUNTIMEIMAGES]" />
-        </RegistryKey>
-        <RemoveRegistryKey Root="HKCU" Key="Software\Orchicon\Setup" Action="removeOnUninstall" />
-      </Component>
       <Component Id="ReadmeFile" Guid="*">
         <File Id="ReadmeTxtFile" Source="$(var.SourceDir)\README-WINDOWS.txt" KeyPath="yes" />
       </Component>
@@ -195,92 +174,58 @@
     </ComponentGroup>
 
     <!-- ===================== THE SETUP HAND-OFF =============================
-         IMMEDIATE, NOT DEFERRED, and that is the load-bearing choice. A deferred
-         custom action cannot read public properties - it only sees
-         CustomActionData, which would mean a second property-setting action and
-         a nested-quoting exercise to pass [INSTANCE] and [RUNTIMEIMAGES]
-         through. An immediate action resolves them normally. Nothing here
-         modifies the machine (it launches a detached process), so immediate is
-         also the honest classification.
+         IT RUNS THE INSTALLED EXE DIRECTLY. No `cmd.exe`, no `start`, no wrapper script, no
+         path assembly, no quoted arguments — `FileRef` names the File row, so MSI writes the
+         command line itself from the file it just installed.
 
-         Return="asyncNoWait": the MSI does not wait for the setup. Setup is
-         minutes of downloads plus prompts a human answers - holding InstallFinalize
-         open for that would make the wizard look hung and time out. The setup is
-         idempotent and resumable, so losing the wait costs nothing.
+         THE HISTORY IS THE REASON, and every step of it was a quoting bug:
 
-         Impersonate="yes": it runs AS THE INSTALLING USER, not as SYSTEM,
-         because everything it starts (the plane, postgres, nats) must belong to
-         that user.
+           "[#SetupCmdFile]" "[INSTANCE]" "[RUNTIMEIMAGES]"   → RUNTIMEIMAGES is unset BY
+             DESIGN (an empty default would skip the setup's own image prompt), so that token
+             became an empty quoted string. Crossing MSI's command-line building, `cmd /c` and
+             `start`, a quote was eaten per hop and cmd was handed the wrapper's PATH as a
+             COMMAND NAME: "'…orchicon-setup.cmd"  "dev" "' is not recognized…"
+           …then a bare `orchicon-setup.cmd` from the working directory, which fixed the
+             quoting but kept three processes and a file to get wrong.
 
-         `cmd /c start "title" ...` is what produces a VISIBLE console: a process
-         spawned straight from a custom action inherits a hidden window, and the
-         operator would see an install with no progress and no prompts. The first
-         argument of `start` is the window TITLE, which is why the wrapper path is
-         quoted as the second argument.
+         Now there is nothing left to get wrong: one process, and one argument —
+         "install" plus the instance flag — which has no empty-value case.
 
-         NO PROPERTIES AND NO PATH ON THE COMMAND LINE — and that is the fix for
-         "orchicon-setup.cmd" "dev" "" is not recognized as an internal or external
-         command'.
+         The instance FLAG rather than an environment variable, because a custom action cannot set
+         the child's environment. It is a plain word, so it needs no quoting.
 
-         This action used to end with  "[#SetupCmdFile]" "[INSTANCE]" "[RUNTIMEIMAGES]".
-         RUNTIMEIMAGES has no default (it must be UNSET, not "none", so the setup's own
-         prompt stays alive), so that last token resolved to an EMPTY quoted string. The
-         result crossed MSI's command-line building AND `cmd /c` AND `start`, and one
-         quote at each end was consumed on the way: cmd was handed
-         `C:\...\orchicon-setup.cmd"  "dev" "` — the path as a COMMAND NAME — and said
-         so in exactly those words.
+         THE CONSOLE. A custom action has none, and the setup prompts. `orchicon install`
+         allocates its OWN console (CREATE_NEW_CONSOLE, see cmd/orchicon/console_windows.go)
+         and re-executes itself — which is why this action no longer needs `start` to
+         manufacture a visible window.
 
-         THREE SHELLS IS TOO MANY TO THREAD QUOTED DATA THROUGH. So none is threaded:
-           * the wizard's answers go into the registry (SetupConfig, below), which is
-             how MSI normally carries data, and the wrapper reads them back;
-           * the wrapper is named BARE — its directory is this action's working
-             directory, already set by Directory="INSTALLFOLDER" — so no path is quoted
-             and there is no concatenation to get wrong;
-           * what is left is one quoted TITLE and one filename.
+         Return="asyncNoWait": the re-exec is immediate, but the install behind it is minutes
+         of downloads and prompts. Holding InstallFinalize open for that would make the
+         wizard look hung; the install is idempotent and resumable, so there is nothing to
+         wait for.
 
-         [#SetupCmdFile] IS THE MSI'S OWN PATH FOR THAT FILE, and it is not the same
-         thing as pasting a directory onto a filename. [INSTALLFOLDER]orchicon-setup.cmd
-         ASSUMES the folder the wizard ended up using is the one this action thinks it
-         is; a formatter for a File key asks the database where the file actually went.
-         Reported from a real install: the wizard reached Finish, `start` could not find
-         the wrapper and Windows raised "Windows cannot find
-         C:\Users\...\Orchicon\orchicon-setup.cmd" — on a package whose cab provably
-         contains it. A path built from a directory is the one thing here that can
-         disagree with the install while looking right. -->
+         Impersonate="yes": it runs AS THE INSTALLING USER. Everything it starts (the plane,
+         postgres, nats) must belong to that user.
+
+         SKIPSETUP=1 remains the unattended opt-out (binaries only), and the Burn bundle
+         passes it because the bundle gives the operator its own UI. -->
     <CustomAction Id="LaunchSetup"
-                  Directory="INSTALLFOLDER"
+                  FileRef="OrchiconExeFile"
                   Execute="immediate"
                   Impersonate="yes"
                   Return="asyncNoWait"
-                  ExeCommand="cmd.exe /c start &quot;Orchicon setup&quot; orchicon-setup.cmd" />
+                  ExeCommand="install --instance [INSTANCE]" />
 
     <InstallExecuteSequence>
-      <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent:
-           a repair or an upgrade should re-converge, and `orchicon install` is
-           idempotent - it upgrades an existing instance rather than duplicating
-           it. SKIPSETUP=1 is the unattended opt-out (binaries only).
+      <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent: a repair or
+           an upgrade should re-converge, and `orchicon install` is idempotent.
 
-           AFTER="InstallFinalize", NOT "InstallFiles" - AND THAT WAS THE BUG.
-
-           MSI runs the execute sequence TWICE: an IMMEDIATE pass, which walks the
-           sequence and builds the script, and a DEFERRED pass, which runs it and
-           actually copies the files. An IMMEDIATE custom action runs in the
-           immediate pass, so one placed After="InstallFiles" runs when InstallFiles
-           has merely been SCHEDULED - the files are not on disk yet.
-
-           Reported from a real install: the wizard reached Finish, the hand-off
-           fired, and Windows raised "cannot find
-           C:\Users\...\Orchicon\orchicon-setup.cmd". Every later inspection
-           found the file there, at exactly that path, which is what made the report
-           look contradictory: CI now installs the package and lists
-           orchicon-setup.cmd (2428 bytes) in that directory. The file was never
-           missing - the hand-off ran BEFORE it was written.
-
-           InstallFinalize sits after the deferred script has completed, so by the
-           time this fires the payload is committed. (A deferred action would also
-           work, but a deferred one cannot read [INSTANCE]/[RUNTIMEIMAGES] without
-           CustomActionData - see the custom action's own note - so the sequence
-           placement is the right lever.) -->
+           AFTER="InstallFinalize" — AN IMMEDIATE ACTION PLACED AFTER "InstallFiles" RUNS TOO
+           EARLY. MSI walks the execute sequence twice: an immediate pass that BUILDS the
+           script, and a deferred pass that runs it and copies the files. An immediate action
+           runs in the first, when the payload is merely scheduled — which is how the old
+           hand-off came to launch before the wrappper existed. InstallFinalize is after the
+           deferred script has completed. -->
       <Custom Action="LaunchSetup" After="InstallFinalize" Condition="NOT REMOVE AND SKIPSETUP &lt;&gt; &quot;1&quot;" />
     </InstallExecuteSequence>
 

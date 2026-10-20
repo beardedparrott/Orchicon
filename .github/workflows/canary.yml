@@ -290,7 +290,6 @@ jobs:
           Copy-Item bin/orchicon.exe $src/
           Copy-Item bin/orch.exe $src/
           Copy-Item cmd/orchicon-desktop/build/bin/orchicon-desktop.exe $src/
-          Copy-Item deploy/desktop/windows/orchicon-setup.cmd $src/
           Copy-Item deploy/desktop/windows/README-WINDOWS.txt $src/
           Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
           Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
@@ -323,6 +322,29 @@ jobs:
       # -Version canary` builds exactly this name. The portable zip does NOT carry the
       # WebView2 bootstrapper (an unzip cannot run an installer), so it ships
       # README-WINDOWS.txt naming the Evergreen URL instead.
+      # THE BURN BUNDLE: the wizard a PERSON runs. It wraps the MSI built above, so it has to
+      # come after it. `wix extension add` is required for the Bal extension for the same
+      # reason as the UI one: -ext resolves through WiX's own store, not NuGet.
+      - name: Install the WiX Bal extension (for the bundle)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          wix extension add -g WixToolset.BootstrapperApplications.wixext/5.0.2
+
+      - name: Build the Burn bundle (OrchiconSetup.exe)
+        shell: pwsh
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Resolve-Path "dist/desktop/orchicon_canary_windows_amd64.msi").Path
+          $src = (Resolve-Path "dist/msi-src").Path
+          wix build deploy/desktop/windows/OrchiconSetup.wxs -ext WixToolset.BootstrapperApplications.wixext `
+            -d "Version=0.0.${{ github.run_number }}" -d "MsiPath=$msi" -d "LicenseRtf=$src\LICENSE.rtf" `
+            -outputtype bundle -o "dist/desktop/OrchiconSetup_canary_windows_amd64.exe"
+          Get-Item "dist/desktop/OrchiconSetup_canary_windows_amd64.exe" | ForEach-Object {
+            Write-Host "bundle: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)" }
+
       - name: Name the desktop artifacts
         shell: pwsh
         run: |

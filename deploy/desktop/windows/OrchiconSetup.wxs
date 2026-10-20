@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OrchiconSetup.wxs - the Windows SETUP EXPERIENCE: one wizard, real progress.
+
+  WHY THIS EXISTS. The MSI is the right unit of deployment (Intune, SCCM, Group Policy and
+  `msiexec /qn` all speak it) but a bare MSI is a POOR EXPERIENCE for a person: it draws the
+  wizard, then hands the interesting part — a multi-hundred-megabyte download with prompts —
+  to a console window it cannot see or report on. The operator asked, reasonably, whether the
+  whole thing could live in the wizard instead. A Burn bundle is the Windows answer to that:
+  it is a bootstrapper that OWNS the UI and CHAINS packages, so it can show real progress per
+  package, expose the log, and hand over cleanly.
+
+  WHAT IT IS NOT: a replacement for the MSI. The bundle wraps it. An estate that deploys with
+  `msiexec /qn` keeps working exactly as before, and this .exe is for people.
+
+  THE DIVISION OF LABOUR, and it is deliberate:
+    * the BUNDLE owns the wizard, the licence page, progress and the log;
+    * the MSI owns installation of the files (per-user, no elevation);
+    * `orchicon install` still owns the plane itself — it is the same code path the one-line
+      PowerShell install runs, and duplicating it here is how the two start disagreeing about
+      what "installed" means.
+
+  THE SETUP STEP STAYS INSIDE THE MSI (its custom action), NOT HERE, and the reason is
+  concrete rather than stylistic: `orchicon install` calls os.Executable() to find the sibling
+  `orch` binary and to launch the runtime daemon. A Burn ExePackage runs a cached COPY from
+  its own folder, so the daemon would be registered against a temp path that later disappears.
+  The install must run the binary that is actually installed — which is what the MSI's action
+  does, and it now invokes it directly (FileRef) with "install" plus the instance flag: no cmd, no
+  start, no wrapper script to get wrong.
+
+  SKIPSETUP=1 IS PASSED BY THIS BUNDLE. Not to skip the setup — but because the setup would
+  otherwise prompt inside a custom action while the BUNDLE is showing "Installing", which is
+  two UIs at once. The bundle tells the operator what it is doing and then lets the setup open
+  its own console at the end. Pass SKIPSETUP=1 yourself on the command line to install the
+  binaries only.
+
+  BUILDING: same WiX CLI as the MSI, plus the Bal extension (a separate NuGet package, and the
+  same two-step install dance — `wix extension add` before `-ext` can name it):
+
+      wix extension add -g WixToolset.Bal.wixext/5.0.2
+      wix build OrchiconSetup.wxs -ext WixToolset.Bal.wixext ^
+        -d Version=<ver> -d MsiPath=<msi> -d LicenseRtf=<rtf> ^
+        -outputtype bundle -o OrchiconSetup.exe
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+
+  <!-- UPGRADE CODE MUST DIFFER FROM THE MSI'S.
+       A bundle and a package are different products to Windows; sharing an UpgradeCode makes
+       the bundle "upgrade" the MSI and removes the files out from under it. The MSI's is
+       DF9438BD-B311-5C12-A1D2-EB415DF74F2D — this one is deliberately a different GUID. -->
+  <Bundle Name="Orchicon"
+          Version="$(var.Version)"
+          Manufacturer="Orchicon"
+          UpgradeCode="7C4F1D62-9A3B-4E85-B1C7-2D8E5A0F6B94"
+          Copyright="Copyright 2026 beardedparrott"
+          AboutUrl="https://github.com/beardedparrott/Orchicon"
+          HelpUrl="https://github.com/beardedparrott/Orchicon#readme"
+          UpdateUrl="https://github.com/beardedparrott/Orchicon/releases">
+
+    <!-- THE INSTANCE, as a BUNDLE VARIABLE. It has to be declared here: `[Instance]` in an
+         MsiProperty resolves against the bundle's variables, and an UNDECLARED one resolves to
+         an empty string — which the MSI would refuse as an unknown instance, or (worse) accept
+         as a silent default. Overridable from the command line:
+             OrchiconSetup.exe Instance=prod
+         defaulting to dev, exactly as the MSI and install.ps1 do. -->
+    <Variable Name="Instance" Type="string" Value="dev" />
+
+    <BootstrapperApplication>
+      <!-- THE STANDARD BOOTSTRAPPER APPLICATION, with the RTF licence theme: it renders an
+           RTF in a scrollable box on a licence page, which is the only theme that can carry
+           the terms we actually ship. `LicenseFile` points at the SAME LICENSE.rtf the MSI's
+           own licence page uses, so a person sees one set of terms whichever way they
+           install.
+
+           It also gives, with no code of ours: a progress bar per package, a cancel button, a
+           "Show log" affordance, and a finish page — which is the whole reason for a bundle
+           and the part an MSI cannot do for a long download. -->
+      <bal:WixStandardBootstrapperApplication
+          Theme="rtfLicense"
+          LicenseFile="$(var.LicenseRtf)"
+          SuppressOptionsUI="yes" />
+    </BootstrapperApplication>
+
+    <Chain>
+      <!-- THE MSI IS THE ONLY PACKAGE. The bundle is the UI.
+
+           THERE IS NO DisplayInternalUI ATTRIBUTE, and that is not an omission: WiX v4 REMOVED
+           it. (v5 rejects it outright — "error WIX0004: The MsiPackage element contains an
+           unexpected attribute 'DisplayInternalUI'".) Its own converter says the functionality
+           "has fundamentally changed and requires BootstrapperApplication support": in v4+ the
+           bundle's BA decides, and the standard BA does NOT display a package's internal UI. So
+           a person sees one wizard, which is the point.
+
+           SKIPSETUP=1 is passed so the setup does not try to prompt underneath the bundle's own
+           progress. `Repair`/`Uninstall` are left to the bundle, which forwards to the package.
+
+           SCOPE IS NOT SET HERE ON PURPOSE. The package is per-user (see Orchicon.wxs), and Burn
+           detects a package's scope from the MSI itself — there is no PerUser attribute, and
+           asking for one is a build error. -->
+      <MsiPackage Id="OrchiconMsi"
+                  SourceFile="$(var.MsiPath)"
+                  Vital="yes"
+                  Compressed="yes">
+        <MsiProperty Name="INSTANCE" Value="[Instance]" />
+        <MsiProperty Name="SKIPSETUP" Value="1" />
+      </MsiPackage>
+    </Chain>
+  </Bundle>
+</Wix>

@@ -40,6 +40,19 @@ func installPhase(msg string) {
 // is idempotent: re-running reports the existing instance instead of
 // creating a duplicate.
 func runInstall(args []string, log *slog.Logger) error {
+	// THE SETUP MAY HAVE BEEN STARTED WITHOUT A CONSOLE, and the only caller that does that is
+	// the Windows MSI's last step (a custom action has no console). Rather than manufacture one
+	// through `cmd.exe /c start <wrapper>.cmd` — three processes and a command line that ate a
+	// quote per hop — the program re-executes ITSELF in a new console and exits. On every other
+	// platform this is a no-op.
+	//
+	// BEFORE the instance is parsed, deliberately: the relaunched child gets the same argv, so
+	// parsing here as well would be harmless — but doing the work twice is not the point. This
+	// is a hand-off, and a hand-off that has already started acting is not one.
+	if ensureInteractiveConsole(true) {
+		log.Info("orchicon install: relaunched in its own console")
+		return nil
+	}
 	// THE ARGUMENTS ARE PARSED, AND THAT IS A FIX RATHER THAN A TIDY-UP. `install` used to
 	// accept `args` and never read a byte of them, so `orchicon install --instance prod`
 	// installed (or REPAIRED) `dev` while the operator believed they had chosen prod. The
