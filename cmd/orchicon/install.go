@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -52,6 +53,31 @@ func runInstall(args []string, log *slog.Logger) error {
 	if ensureInteractiveConsole(true) {
 		log.Info("orchicon install: relaunched in its own console")
 		return nil
+	}
+	// THE WIZARD'S ANSWERS COME IN AS FLAGS AND BECOME THE ENVIRONMENT THIS INSTALL ALREADY READS.
+	//
+	// The MSI's custom action runs this binary directly (FileRef — no shell, by design) and can
+	// pass ARGUMENTS but cannot set a child's ENVIRONMENT. So the wizard's pages reach us here.
+	//
+	// THEY ARE TRANSLATED RATHER THAN THREADED THROUGH. Each flag sets the very variable the
+	// install already consults (ORCHICON_<X>_PORT for a port, ORCHICON_INSTALL_RUNTIME_IMAGES
+	// for the image choice), so there is ONE code path and one meaning per value — a second,
+	// parallel way to reach the resolver is how the wizard and the CLI start disagreeing about
+	// what was actually chosen.
+	flags, rest, err := parseInstallFlags(args)
+	if err != nil {
+		return err
+	}
+	args = rest
+	for env, port := range flags.Ports {
+		if err := os.Setenv(env, strconv.Itoa(port)); err != nil {
+			return fmt.Errorf("apply --port %s: %w", env, err)
+		}
+	}
+	if flags.RuntimeImages != "" {
+		if err := os.Setenv("ORCHICON_INSTALL_RUNTIME_IMAGES", flags.RuntimeImages); err != nil {
+			return fmt.Errorf("apply --runtime-images: %w", err)
+		}
 	}
 	// THE ARGUMENTS ARE PARSED, AND THAT IS A FIX RATHER THAN A TIDY-UP. `install` used to
 	// accept `args` and never read a byte of them, so `orchicon install --instance prod`
