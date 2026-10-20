@@ -181,7 +181,11 @@ LOG="${WORK}/install.log"
 set +e
 # --instance test, because the installer now ASKS which instance (it has a tty here, so an unattended run
 # would otherwise block on the question). Passing it is the documented way to skip the prompt.
-ORCHICON_INSTALL_BASE_URL="${BASE}" bash "${INSTALLER}" \
+# `env -u DISPLAY -u WAYLAND_DISPLAY`: the desktop app is now installed by DEFAULT when a
+# graphical session exists, and this harness must not depend on whether the MACHINE RUNNING IT
+# has one — otherwise CI (headless) and a developer'"'"'s laptop (not) would exercise different
+# paths and report differently. The display-dependent cases live in section 11.
+ORCHICON_INSTALL_BASE_URL="${BASE}" env -u DISPLAY -u WAYLAND_DISPLAY bash "${INSTALLER}" \
   --version "${VERSION}" --install-dir "${DEST}" --instance test --no-setup >"${LOG}" 2>&1
 RC=$?
 set -e
@@ -634,10 +638,24 @@ fi
 NLOG="${WORK}/install-nodesktop.log"
 ORCHICON_INSTALL_BASE_URL="${BASE}" bash "${INSTALLER}" \
   --version "${VERSION}" --install-dir "${WORK}/bin-nodesktop" --instance test --no-setup >"${NLOG}" 2>&1 || true
-if grep -q 'Desktop app (optional)' "${NLOG}"; then
-  ok "without --desktop it still says how to get the app (nobody is left to find it)"
+# THE DEFAULT MOVED, SO THIS ASSERTION DID. The app used to be opt-in and the skip line said
+# "Desktop app (optional)". It is now installed whenever a graphical session exists, so on this
+# HEADLESS run the skip is the auto decision — and what must survive is the part that matters:
+# an operator who did not get the app is still told where to get it. The display is pinned so
+# this reads the same on a laptop as on the runner.
+set +e
+ORCHICON_INSTALL_BASE_URL="${BASE}" env -u DISPLAY -u WAYLAND_DISPLAY bash "${INSTALLER}" \
+  --version "${VERSION}" --install-dir "${WORK}/bin-nodesktop" --instance test --no-setup >"${NLOG}" 2>&1 || true
+set -e
+# THE CONTRACT IS THE URL, not the sentence that introduces it: on Linux a headless run SKIPS
+# the app and points at the release, and on macOS (where a graphical session is assumed) this
+# fixture serves no .app, so it reports that and points at the same release. Both satisfy
+# "nobody is left to find it"; an assertion keyed to one wording would fail the other.
+if grep -q "releases/tag/${VERSION}" "${NLOG}"; then
+  ok "when the app is not installed it names where to get it (nobody is left to find it)"
 else
-  bad "without --desktop it names where to get the app"
+  bad "when the app is not installed it names where to get it"
+  sed 's/^/      /' "${NLOG}" | grep -i desktop | head -3
 fi
 
 # AND THE QUARANTINE RULE, at the source: a released .app that Gatekeeper rejects is a release bug, so the
@@ -658,6 +676,74 @@ else
   ok "install.sh never strips the quarantine flag from the desktop app (comment-only mentions do not count)"
 fi
 
+# --- 11. THE DESKTOP APP IS INSTALLED WITHOUT BEING ASKED FOR --------------------
+#
+# Windows has shipped the desktop app inside the MSI from the start — one package, all three
+# binaries, nothing to know. Linux and macOS required `--desktop`, so "install Orchicon" gave
+# two of three clients and left the third to be discovered. That asymmetry is the reported
+# problem, and the fix is a default rather than more documentation.
+#
+# DEFAULT IS AUTO, NOT ALWAYS, because the install target is often a server: a GUI app on a
+# headless VPS is bytes nobody can launch. So the rule is "install it where it can run", and
+# every arm of that rule is asserted here — including the one that must NOT install.
+say ""
+say "[11] the desktop app installs by default where it can run"
+desktop_case() { # <label> <display-env-prefix> <extra-arg> <want-installed yes|no>
+  local label="$1" display="$2" extra="$3" want="$4" dest log rc installed
+  dest="${WORK}/desk-$5"
+  log="${WORK}/desk-$5.log"
+  rm -rf "${dest}"; mkdir -p "${dest}"
+  set +e
+  # shellcheck disable=SC2086  # ${display} is a deliberate env prefix ("env -u DISPLAY -u WAYLAND_DISPLAY" or "env DISPLAY=:0")
+  ORCHICON_INSTALL_BASE_URL="${BASE}" ${display} bash "${INSTALLER}" \
+    --version "${VERSION}" --install-dir "${dest}" --instance test --no-setup ${extra} >"${log}" 2>&1
+  rc=$?
+  set -e
+  if [ "${rc}" -ne 0 ]; then
+    bad "${label} — install.sh exits 0 (got ${rc})"
+    sed 's/^/      /' "${log}" | tail -10
+    return
+  fi
+  if [ -f "${dest}/orchicon-desktop" ]; then installed=yes; else installed=no; fi
+  if [ "${installed}" = "${want}" ]; then
+    ok "${label} — desktop app ${installed:+}$([ "${want}" = yes ] && echo installed || echo skipped)"
+  else
+    bad "${label} — desktop app was ${installed}, want ${want}"
+    sed 's/^/      /' "${log}" | grep -i desktop | head -5
+  fi
+  DESK_LOG="${log}"
+}
+
+if [ "${BUILD_GOARCH}" = "amd64" ]; then
+# (a) NO display: the auto rule must skip, and must SAY WHY rather than leaving the operator
+#     wondering why Windows got a client and this did not.
+desktop_case "headless: auto-decides to SKIP" "env -u DISPLAY -u WAYLAND_DISPLAY" "" no a
+if grep -qi 'no graphical session' "${DESK_LOG}"; then
+  ok "the skip names its reason (no graphical session)"
+else
+  bad "the skip names its reason — a silent skip is indistinguishable from a forgotten feature"
+  sed 's/^/      /' "${DESK_LOG}" | grep -i desktop | head -3
+fi
+if grep -qi 'releases/tag' "${DESK_LOG}"; then
+  ok "the skip still says where to get the app"
+else
+  bad "the skip still says where to get the app"
+fi
+
+# (b) A graphical session: installed with no flag at all. This is the whole change.
+desktop_case "GUI session: auto-decides to INSTALL" "env DISPLAY=:0" "" yes b
+
+# (c) --no-desktop wins even on a GUI host: an explicit flag is never overridden by the default.
+desktop_case "GUI session + --no-desktop: respects the flag" "env DISPLAY=:0" "--no-desktop" no c
+
+# (d) --desktop wins on a headless host: the operator can always force it, which is what makes
+#     "auto" safe to default — nothing is unreachable, it is only not assumed.
+desktop_case "headless + --desktop: forces it on" "env -u DISPLAY -u WAYLAND_DISPLAY" "--desktop" yes d
+else
+  say "  (skipped: no desktop AppImage is published for linux/${BUILD_GOARCH})"
+fi
+
+say ""
 say ""
 if [ "${FAIL}" -eq 0 ]; then
   say "RESULT: all ${PASS} assertion(s) passed"

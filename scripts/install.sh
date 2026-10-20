@@ -52,9 +52,18 @@ FORCE_CLEAN=false
 DRY_RUN=false
 SETUP=true
 INSTALL_ORCH=true  # orch = the thin remote TUI client (skippable via --no-orch)
-DESKTOP=false      # --desktop: also install the desktop app. It is a CLIENT (it talks to
-                   # this plane over loopback and starts one if none is running), so it is
-                   # opt-in and the default install is unchanged.
+# THE DESKTOP APP, ON BY DEFAULT WHERE IT CAN ACTUALLY RUN.
+#
+# It is a CLIENT (it talks to this plane over loopback and starts one if none is running), so
+# installing it never changes the stack. Windows has shipped it in the MSI from the start —
+# one package, all three binaries, nothing to know — and Linux/macOS required a flag, which is
+# the difference this default removes: "as easy as possible" cannot mean "find the flag".
+#
+# AUTO RATHER THAN ALWAYS, because the install target is just as often a server. A GUI app on
+# a headless VPS is bytes nobody can launch, and a `curl | bash` that quietly drops one into
+# $INSTALL_DIR is noise the operator has to discover and undo. So: a graphical session gets it,
+# a headless box is told why it did not, and both --desktop and --no-desktop override either.
+DESKTOP=auto
 VERIFY_CHECKSUM=true  # verify the download against the release's SHA256SUMS (disable with --no-verify)
 
 # --- Colors -----------------------------------------------------------------
@@ -91,8 +100,8 @@ while [ $# -gt 0 ]; do
     --dry-run)         DRY_RUN=true; shift ;;
     --no-setup)        SETUP=false; shift ;;
     --no-orch)         INSTALL_ORCH=false; shift ;;
-    --desktop)         DESKTOP=true; shift ;;
-    --no-desktop)      DESKTOP=false; shift ;;
+    --desktop)         DESKTOP=yes; shift ;;
+    --no-desktop)      DESKTOP=no; shift ;;
     --no-verify)       VERIFY_CHECKSUM=false; shift ;;
     --help|-h)
       # QUOTED DELIMITER: this is a usage TEXT, so nothing in it may be expanded or EXECUTED. It was
@@ -137,14 +146,18 @@ Options:
    --no-setup           Install the binary only — do NOT start the host services, the
                         runtime daemon, or the plane (default: full
                         one-command setup runs `orchicon install`).
-    --desktop            ALSO install the desktop app (a GUI client for this plane):
+    --desktop            Install the desktop app (a GUI client for this plane) even
+                         when no graphical session is detected:
                          Linux  -> the AppImage into the install directory, which
                                    bundles WebKitGTK so no system package is needed
                          macOS  -> the signed, notarised .app into ~/Applications
                          Never uses sudo, never writes to /Applications. Linux arm64
                          has no prebuilt app yet, and says so.
-    --no-desktop         Do not install the desktop app (the default). The install
-                         still prints where to get it.
+                         DEFAULT: installed when a graphical session is present (macOS
+                         always, Linux when DISPLAY or WAYLAND_DISPLAY is set) and
+                         skipped on a headless host, which then says why.
+    --no-desktop         Do not install the desktop app. The install still prints where
+                         to get it.
   --no-verify          Skip the SHA256SUMS check on the downloaded archive. The
                        check is what proves the archive is the one the release
                        published; only skip it against a mirror you control.
@@ -478,6 +491,42 @@ detect_arch() {
 # AND NO QUARANTINE STRIPPING. If spctl rejects the .app, this says so and points at the
 # issue tracker rather than running `xattr -dr com.apple.quarantine`, because a released
 # .app that Gatekeeper blocks is a bug in the release, not in the user's machine.
+# desktop_wanted answers whether to install the desktop app, given the flag value, and says
+# WHY when it declines. Split out from the install so the decision is one function with one
+# rule, and so --dry-run can report the same answer the real run would act on.
+#
+# THE RULE. `--desktop` forces yes and `--no-desktop` forces no (an explicit flag always wins).
+# Otherwise the app is installed when the host could plausibly run it:
+#   macOS  — yes. It is a GUI OS; ~/Applications is where a client belongs, and a headless Mac
+#            still has a window server for the logged-in user.
+#   Linux  — yes when DISPLAY or WAYLAND_DISPLAY is set, i.e. a graphical session is present.
+#            Unset means SSH, a container, CI or a server: an AppImage there is unrunnable.
+#   other  — no.
+# Returns 0 (install), 1 (skip, reason already printed to DESKTOP_SKIP_WHY).
+DESKTOP_SKIP_WHY=""
+desktop_wanted() {
+  local os="$1"
+  DESKTOP_SKIP_WHY=""
+  case "$DESKTOP" in
+    yes) return 0 ;;
+    no)  return 1 ;;
+  esac
+  case "$os" in
+    darwin) return 0 ;;
+    linux)
+      if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        return 0
+      fi
+      DESKTOP_SKIP_WHY="no graphical session (DISPLAY/WAYLAND_DISPLAY unset), so the desktop app was skipped; pass --desktop to install it anyway"
+      return 1
+      ;;
+    *)
+      DESKTOP_SKIP_WHY="no desktop app is published for ${os}"
+      return 1
+      ;;
+  esac
+}
+
 desktop_url() {
   local os="$1" asset
   case "$os" in
@@ -1018,12 +1067,17 @@ main() {
     fi
   fi
 
-  # THE DESKTOP APP, opt-in. Without --desktop this is one line naming where to get it,
-  # which is the difference between "the option exists" and the user being left to find it.
-  if [ "$DESKTOP" = true ]; then
+  # THE DESKTOP APP. Installed whenever the host could run it (see desktop_wanted); the
+  # skip branch always names the download, which is the difference between "the option
+  # exists" and the user being left to find it — and it names WHY when the skip was the
+  # auto decision rather than the operator's own --no-desktop.
+  if desktop_wanted "$os"; then
     install_desktop
   else
-    echo -e "  ${D}Desktop app (optional): re-run with --desktop, or download it from${X}"
+    if [ -n "${DESKTOP_SKIP_WHY}" ]; then
+      info "${DESKTOP_SKIP_WHY}"
+    fi
+    echo -e "  ${D}Desktop app: download it from${X}"
     echo -e "  ${D}  https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${VERSION}${X}"
   fi
 
