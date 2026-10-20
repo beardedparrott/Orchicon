@@ -1,11 +1,56 @@
 {\rtf1\ansi\deff0{\fonttbl{\f0 Segoe UI;}}
-\viewkind4\uc1\f0\fs20
-{\b License}\par
+\viewkind4\uc1\pard\f0\fs18
+
+{\b\fs22 Orchicon - license and installation information}\par
 \par
-Orchicon is licensed under the Apache License, Version 2.0.\par
+
+{\b\fs19 What this installer installed}\par
+orchicon.exe   the control plane, the CLI and the orchestrator\par
+orch.exe       the terminal client (TUI)\par
+orchicon-desktop.exe   the desktop app (this window's sibling)\par
 \par
-The full text ships with the product (LICENSE) and is available at\par
-http://www.apache.org/licenses/LICENSE-2.0\par
+They are per-user: nothing was written outside your own profile, and no\par
+administrator rights were needed.\par
 \par
-Unless required by applicable law or agreed to in writing, software distributed\nunder the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR\nCONDITIONS OF ANY KIND, either express or implied.\par
+
+{\b\fs19 What setup does next}\par
+Finishing this wizard opens a console that runs {\f1 orchicon install}. It\par
+downloads the host services Orchicon runs on (Postgres, NATS, the telemetry\par
+plane), then starts this instance's control plane. It is idempotent: if it\par
+stops, run it again and it resumes where it left off.\par
+\par
+Your data - databases, traces, logs and this instance's configuration - lives\par
+in your own profile, under {\f1 AppData\\Local} on this machine. Uninstalling\par
+Orchicon (Settings > Apps) removes the programs and leaves that data alone.\par
+\par
+{\b\fs19 Requirements}\par
+The desktop app draws its window with Microsoft Edge WebView2, which is\par
+preinstalled on Windows 11 and provisioned by the installer on Windows 10.\par
+\par
+
+{\b\fs19 License}\par
+\par
+Copyright 2026 beardedparrott\par
+\par
+All rights reserved.\par
+\par
+This software is made available for personal and non-commercial use.\par
+You may use, copy, and modify the software for your own non-commercial\par
+purposes free of charge.\par
+\par
+Redistribution, sublicensing, or incorporation of this software, in\par
+whole or in part, into any product, service, or project that generates\par
+revenue - directly or indirectly - is expressly prohibited without the\par
+prior written permission of the copyright holder.\par
+\par
+This software is provided "as is", without warranty of any kind,\par
+express or implied, including but not limited to the warranties of\par
+merchantability, fitness for a particular purpose, and noninfringement.\par
+In no event shall the authors or copyright holders be liable for any\par
+claim, damages, or other liability, whether in an action of contract,\par
+tort, or otherwise, arising from, out of, or in connection with the\par
+software or the use or other dealings in the software.\par
+\par
+The authoritative copy is the LICENSE file in the Orchicon repository:\par
+https://github.com/beardedparrott/Orchicon/blob/develop/LICENSE\par
 }
