@@ -87,7 +87,16 @@
          The UI set gives it, which is also the right value for this package. -->
     <Property Id="ARPURLINFOABOUT" Value="https://orchicon.dev" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
-    <Property Id="WixUILicenseRtf" Value="$(var.SourceDir)\LICENSE.rtf" />
+    <!-- THE LICENSE PAGE TEXT IS *NOT* A PROPERTY. It is a BUILD-TIME variable:
+             wix build ... -d WixUILicenseRtf=<path to the .rtf>
+         The UI extension reads it then, embeds the file as a Binary and points the
+         license control at that Binary. Declaring
+             <Property Id="WixUILicenseRtf" Value="...\LICENSE.rtf" />
+         looks like it should work and does NOTHING — the wizard kept rendering WiX's
+         built-in placeholder, which is lorem ipsum. Reported from a real install:
+         "the windows installer has some default text in there".
+         Every build site now passes the variable; cmd/orchicon/windows_msi_test.go
+         fails any of them that stops. -->
 
     <Icon Id="OrchiconIcon" SourceFile="$(var.SourceDir)\orchicon-desktop.ico" />
 
@@ -177,15 +186,25 @@
 
          `cmd /c start "title" ...` is what produces a VISIBLE console: a process
          spawned straight from a custom action inherits a hidden window, and the
-         operator would see an install with no progress and no prompts. The empty
-         first argument of `start` is the window TITLE, which is why the wrapper
-         path is quoted as the second argument. -->
+         operator would see an install with no progress and no prompts. The first
+         argument of `start` is the window TITLE, which is why the wrapper path is
+         quoted as the second argument.
+
+         [#SetupCmdFile] IS THE MSI'S OWN PATH FOR THAT FILE, and it is not the same
+         thing as pasting a directory onto a filename. [INSTALLFOLDER]orchicon-setup.cmd
+         ASSUMES the folder the wizard ended up using is the one this action thinks it
+         is; a formatter for a File key asks the database where the file actually went.
+         Reported from a real install: the wizard reached Finish, `start` could not find
+         the wrapper and Windows raised "Windows cannot find
+         C:\Users\...\Orchicon\orchicon-setup.cmd" — on a package whose cab provably
+         contains it. A path built from a directory is the one thing here that can
+         disagree with the install while looking right. -->
     <CustomAction Id="LaunchSetup"
                   Directory="INSTALLFOLDER"
                   Execute="immediate"
                   Impersonate="yes"
                   Return="asyncNoWait"
-                  ExeCommand="cmd.exe /c start &quot;Orchicon setup&quot; &quot;[INSTALLFOLDER]orchicon-setup.cmd&quot; &quot;[INSTANCE]&quot; &quot;[RUNTIMEIMAGES]&quot;" />
+                  ExeCommand="cmd.exe /c start &quot;Orchicon setup&quot; &quot;[#SetupCmdFile]&quot; &quot;[INSTANCE]&quot; &quot;[RUNTIMEIMAGES]&quot;" />
 
     <InstallExecuteSequence>
       <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent:

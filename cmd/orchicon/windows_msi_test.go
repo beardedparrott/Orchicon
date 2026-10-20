@@ -617,3 +617,218 @@ func TestEveryNSISBuildInstallsMakensis(t *testing.T) {
 			"delete this test and the Install NSIS steps with it; if not, the installer is gone")
 	}
 }
+
+// rtfPlainText reduces an RTF file to its visible text so a test can compare it with a plain
+// source. Deliberately small: drop the font/colour tables by NAME, turn the two line controls
+// into newlines, strip the remaining control words, and unescape what RTF escapes.
+//
+// NOT a general group stripper, and that matters: a loop that removes {…} groups one layer at a
+// time removes the DOCUMENT group last and takes every character with it — which reads as "the
+// RTF is empty" and would make this guard fail on a correct file. The tables are named instead,
+// because they are the only groups that must go.
+func rtfPlainText(src string) string {
+	s := strings.ReplaceAll(src, `\par`, "\n")
+	s = strings.ReplaceAll(s, `\line`, "\n")
+	// Escaped literals, before the control-word pass can see them.
+	s = strings.ReplaceAll(s, `\\`, "\x00")
+	s = strings.ReplaceAll(s, `\{`, "{")
+	s = strings.ReplaceAll(s, `\}`, "}")
+	// The groups that carry no visible text, removed whole (they contain no nested braces).
+	for _, table := range []string{`\fonttbl`, `\colortbl`, `\*`} {
+		re := regexp.MustCompile(`(?s)\{` + regexp.QuoteMeta(table) + `[^{}]*\}`)
+		for {
+			n := re.ReplaceAllString(s, "")
+			if n == s {
+				break
+			}
+			s = n
+		}
+	}
+	// Any other control word (\fs20, \uc1, \b, \pard …), with an optional signed parameter.
+	s = regexp.MustCompile(`\\[a-zA-Z]+-?[0-9]*`).ReplaceAllString(s, "")
+	// Structural braces, then the backslash placeholder.
+	s = strings.ReplaceAll(s, "{", "")
+	s = strings.ReplaceAll(s, "}", "")
+	s = strings.ReplaceAll(s, "\x00", `\`)
+	return s
+}
+
+// stripXMLComments removes <!-- … --> so a guard can look for an ELEMENT without matching the
+// prose that explains why that element is wrong.
+//
+// THIS IS NOT PEDANTRY. The Orchicon.wxs now carries a comment quoting the exact
+// <Property Id="WixUILicenseRtf" …/> element this file forbids; a guard that scanned the raw
+// text matched the comment and failed a correct file. That is the third time in this file's
+// history a check was satisfied (or defeated) by prose, so comment-stripping is the default.
+func stripXMLComments(s string) string {
+	re := regexp.MustCompile(`(?s)<!--.*?-->`)
+	for {
+		n := re.ReplaceAllString(s, "")
+		if n == s {
+			return s
+		}
+		s = n
+	}
+}
+
+// collapseSpace makes two texts comparable regardless of where either wrapped.
+func collapseSpace(s string) string {
+	// The license file uses a dash where the RTF needs plain ASCII, and a non-breaking
+	// space survives copy-paste from a browser. Normalising BOTH sides means the guard
+	// compares words, not byte-for-byte typography.
+	s = strings.ReplaceAll(s, "\u2014", "-")
+	s = strings.ReplaceAll(s, "\u2013", "-")
+	s = strings.ReplaceAll(s, "\u00a0", " ")
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// TestMSILicensePageCarriesOurLicenseText — the wizard's license page must show OUR terms
+// with OUR information on it.
+//
+// TWO DEFECTS, reported together from a real install:
+//
+//  1. THE PAGE SHOWED LOREM IPSUM. `WixUILicenseRtf` is a BUILD-TIME variable, not an MSI
+//     Property. Declaring <Property Id="WixUILicenseRtf" Value="..."/> looks right and does
+//     nothing, so the UI extension kept its built-in placeholder. Every build site must pass
+//     `-d WixUILicenseRtf=...`.
+//  2. THE RTF SAID APACHE 2.0. The repository is NOT Apache-licensed — LICENSE is a custom
+//     non-commercial grant. A wizard page that misstates the terms is worse than a placeholder,
+//     because it looks authoritative.
+//
+// So this asserts three things: the build sites wire the variable, the RTF carries no
+// foreign license, and every line of LICENSE actually appears on the page.
+func TestMSILicensePageCarriesOurLicenseText(t *testing.T) {
+	// (1) EVERY SITE THAT BUILDS THE MSI MUST PASS THE VARIABLE.
+	for _, site := range []struct{ what, sub string }{
+		{"the Makefile", "-d WixUILicenseRtf=$(abspath $(MSI_SRC_DIR))/LICENSE.rtf"},
+		{"release.yml", `-d "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
+		{"ci.yml", `-d "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
+		{"canary.yml", `-d "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
+	} {
+		var body string
+		if site.what == "the Makefile" {
+			body = readMSIFile(t, "..", "..", "Makefile")
+		} else {
+			body = readMSIFile(t, "..", "..", ".github", "workflows", site.what)
+		}
+		if !strings.Contains(body, site.sub) {
+			t.Errorf("%s does not pass %s.\n"+
+				"  WixUILicenseRtf is a BUILD-TIME variable, not a Property: without it the wizard\n"+
+				"  silently renders WiX's lorem-ipsum placeholder. That is the reported bug.", site.what, site.sub)
+		}
+	}
+
+	// (2) ... AND THE PROPERTY FORM MUST NOT COME BACK.
+	wxsBody := stripXMLComments(readMSIFile(t, wxs()))
+	if regexp.MustCompile(`<Property\s+Id="WixUILicenseRtf"`).MatchString(wxsBody) {
+		t.Error("Orchicon.wxs declares <Property Id=\"WixUILicenseRtf\"> again. That does NOTHING —\n" +
+			"  the UI extension reads a build-time variable and falls back to a lorem-ipsum\n" +
+			"  placeholder when it is unset, which is exactly the reported symptom.")
+	}
+
+	// (3) NOT APACHE. The repository's LICENSE is a custom non-commercial grant.
+	rtfRaw := readMSIFile(t, "..", "..", "deploy", "desktop", "windows", "LICENSE.rtf")
+	page := collapseSpace(rtfPlainText(rtfRaw))
+	for _, foreign := range []string{"apache license", "apache.org/licenses", "version 2.0"} {
+		if strings.Contains(strings.ToLower(page), foreign) {
+			t.Errorf("the wizard's license page mentions %q. Orchicon is NOT Apache-licensed:\n"+
+				"  see ./LICENSE. A page that misstates the terms looks authoritative and is worse\n"+
+				"  than the placeholder it replaced.", foreign)
+		}
+	}
+
+	// (4) EVERY LINE OF LICENSE IS ON THE PAGE, so the two cannot drift.
+	lic := collapseSpace(readMSIFile(t, "..", "..", "LICENSE"))
+	for _, line := range strings.Split(lic, ". ") {
+		line = strings.TrimSpace(line)
+		if len(line) < 12 {
+			continue // a fragment, not a claim
+		}
+		if !strings.Contains(page, line) {
+			t.Errorf("deploy/desktop/windows/LICENSE.rtf does not carry this LICENSE text:\n  %q\n"+
+				"  The wizard page is the only place a user is shown the terms, so it must be the\n"+
+				"  same terms. Regenerate the RTF from ./LICENSE.", line)
+		}
+	}
+
+	// (5) AND IT IS ACTUALLY INFORMATIVE, which is the other half of the report ("we should put
+	// some kind of actual information in there"). A page that is only legalese tells the
+	// operator nothing about what they just installed.
+	// EVERY BINARY BY NAME, not one of them: a first cut asserted only "orchicon.exe", so
+	// deleting the whole inventory still passed — the word survives elsewhere on the page.
+	// A section that is meant to tell the operator what they just installed is only tested by
+	// requiring what it lists.
+	for _, want := range []struct{ what, sub string }{
+		{"the control plane binary", "orchicon.exe"},
+		{"the TUI binary", "orch.exe"},
+		{"the desktop binary", "orchicon-desktop.exe"},
+		{"that it is per-user / needs no administrator", "administrator"},
+		{"where setup continues", "orchicon install"},
+		{"that setup is idempotent and resumable", "idempotent"},
+		{"where the data lives", "data"},
+		{"WebView2 (the runtime the desktop app needs)", "WebView2"},
+		{"the authoritative copy of the terms", "LICENSE"},
+	} {
+		if !strings.Contains(page, want.sub) {
+			t.Errorf("the wizard's license page does not mention %s (%q) — it should say what was\n"+
+				"  installed and what happens next, not only the terms.", want.what, want.sub)
+		}
+	}
+}
+
+// TestSetupHandoffUsesTheFileKey — the Finish step must address the wrapper by its MSI FILE
+// KEY, not by pasting a directory onto a filename.
+//
+// [INSTALLFOLDER]orchicon-setup.cmd assumes the folder the wizard ended up using is the one
+// this action believes it is. [#SetupCmdFile] asks the database where that file actually went.
+// Reported from a real install: the wizard reached Finish and Windows raised "cannot find
+// C:\Users\...\Orchicon\orchicon-setup.cmd" — on a package whose cab provably contains it, so
+// a constructed path was the one thing that could be wrong while looking right.
+func TestSetupHandoffUsesTheFileKey(t *testing.T) {
+	// Comments stripped for the same reason as above: the comment beside the custom action
+	// quotes the [INSTALLFOLDER]orchicon-setup.cmd form in order to explain why it is wrong.
+	body := stripXMLComments(readMSIFile(t, wxs()))
+	if !strings.Contains(body, `[#SetupCmdFile]`) {
+		t.Error("the Finish-page hand-off does not use [#SetupCmdFile].\n" +
+			"  A path assembled from [INSTALLFOLDER] can disagree with where the file was placed;\n" +
+			"  the file-key formatter cannot.")
+	}
+	if strings.Contains(body, `[INSTALLFOLDER]orchicon-setup.cmd`) {
+		t.Error("the Finish-page hand-off still builds the wrapper path from [INSTALLFOLDER].\n" +
+			"  That is the form that produced \"Windows cannot find ...orchicon-setup.cmd\".")
+	}
+	// The wrapper must still be a shipped component, or the key resolves to nothing.
+	if !strings.Contains(body, `<File Id="SetupCmdFile"`) {
+		t.Error("orchicon-setup.cmd is no longer declared as a File with Id \"SetupCmdFile\" — " +
+			"[#SetupCmdFile] would resolve to nothing and the hand-off would silently not run")
+	}
+}
+
+// TestWindowsReadmeDoesNotPromiseAPlaneItCannotStart — the shipped README claimed the desktop
+// app "starts one for you if none is running". It does not: cmd/orchicon-desktop has no
+// plane-starting code at all. An operator reads that file precisely when something is wrong, so
+// a promise in it is not marketing — it is the thing they will act on, and it sent one of them
+// looking at the app instead of at the plane.
+//
+// Asserted on the FILE because the claim is prose: no unit test of the shell can see it, and
+// the false sentence survived several releases.
+func TestWindowsReadmeDoesNotPromiseAPlaneItCannotStart(t *testing.T) {
+	readme := readMSIFile(t, "..", "..", "deploy", "desktop", "windows", "README-WINDOWS.txt")
+
+	if regexp.MustCompile(`(?i)starts one for\s+you|starts a plane (for you )?if`).MatchString(readme) {
+		t.Error("README-WINDOWS.txt promises the desktop app starts a plane. It does not — there is " +
+			"no plane-starting code in cmd/orchicon-desktop. Name the command instead " +
+			"(orchicon install / orchicon start).")
+	}
+	// And the honest version must actually be there, or deleting the sentence would pass.
+	for _, want := range []struct{ what, sub string }{
+		{"that it does not start one", "DOES NOT START ONE"},
+		{"how to install/serve one", "orchicon install"},
+		{"how to start one later", "orchicon start"},
+	} {
+		if !strings.Contains(readme, want.sub) {
+			t.Errorf("README-WINDOWS.txt does not say %s (%q) — the app cannot work without a plane, "+
+				"and this file is what an operator reads when it does not.", want.what, want.sub)
+		}
+	}
+}
