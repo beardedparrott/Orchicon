@@ -569,6 +569,26 @@ jobs:
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      # NSIS IS WHAT `-nsis` ACTUALLY RUNS, AND IT IS NOT ON THE RUNNER IMAGE.
+      #
+      # Wails shells out to makensis. When it is absent it prints
+      #   Warning: Cannot create installer: makensis not found
+      # and EXITS 0 — so the build step goes green and the installer simply is not
+      # produced. THIS JOB HAD EXACTLY THAT DEFECT and no release had ever revealed it:
+      # windows/amd64 joined the matrix on 2026-10-18 and no tag has been cut since, so
+      # the canary build was the first thing in the project's history to run `-nsis`.
+      # It failed, which is why this step exists.
+      #
+      # Chocolatey is preinstalled on the hosted Windows runners. Its PATH change does
+      # not reach this session, so the directory is exported for the NEXT step, which is
+      # where makensis is first used.
+      - name: Install NSIS (makensis)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nsis -y --no-progress
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
+
       # `-webview2 download` embeds the WebView2 Evergreen bootstrapper in the NSIS
       # installer, which is what makes a Windows 10 machine provision itself on
       # first run instead of opening a blank window (AC2). `-nsis` is the
@@ -579,9 +599,26 @@ jobs:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
           set -euo pipefail
+          # FAIL LOUDLY WHEN MAKENSIS IS MISSING. Without this the `wails` invocation
+          # below exits 0 having produced no installer, which is a green build that
+          # shipped nothing — and the naming step's throw is two steps too late to say why.
+          if ! command -v makensis >/dev/null 2>&1; then
+            echo "error: makensis is not on PATH — the 'Install NSIS (makensis)' step is missing or failed."
+            echo "       `wails -nsis` only WARNS without it and exits 0, so this assert is what makes it loud."
+            exit 1
+          fi
           cd cmd/orchicon-desktop
           wails build -clean -platform windows/amd64 -webview2 download -nsis \
             -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION}"
+          # AND ASSERT THE ARTIFACT, not just the exit code.
+          shopt -s nullglob
+          inst=(build/bin/*installer*.exe)
+          if [ ${#inst[@]} -eq 0 ]; then
+            echo "error: wails build -nsis produced no installer in build/bin although makensis was on PATH."
+            ls -l build/bin
+            exit 1
+          fi
+          echo "installer: ${inst[0]}"
 
       # THE MSI NEEDS THE CLI BINARIES TOO, and they are built HERE rather than
       # downloaded from the `build` job: that job publishes a .zip, and unzipping it
