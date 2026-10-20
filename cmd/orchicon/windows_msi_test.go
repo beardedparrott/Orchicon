@@ -45,6 +45,25 @@ func readMSIFile(t *testing.T, parts ...string) string {
 	return string(b)
 }
 
+// stripXMLComments removes <!-- ... --> blocks, so an assertion about what the package
+// DECLARES is never satisfied or defeated by prose describing it.
+func stripXMLComments(s string) string {
+	var b strings.Builder
+	for {
+		i := strings.Index(s, "<!--")
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:i])
+		j := strings.Index(s[i:], "-->")
+		if j < 0 {
+			return b.String()
+		}
+		s = s[i+j+3:]
+	}
+}
+
 func wxs() string { return filepath.Join("..", "..", "deploy", "desktop", "windows", "Orchicon.wxs") }
 
 // TestMSIIsWellFormedXML — an unparseable .wxs fails on windows-latest, six
@@ -615,5 +634,134 @@ func TestEveryNSISBuildInstallsMakensis(t *testing.T) {
 	if len(builds) == 0 {
 		t.Error("no workflow runs `-nsis` — if the NSIS installer was dropped deliberately, " +
 			"delete this test and the Install NSIS steps with it; if not, the installer is gone")
+	}
+}
+
+// TestEveryMSIBuildPassesTheLicenceText — WixUILicenseRtf is a BUILD variable, and passing it as
+// an MSI property LOOKS right, builds clean, and shows the operator lorem ipsum.
+//
+// THE DEFECT, reported from a real install with a screenshot: the wizard's first page read
+//
+//	"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor…"
+//
+// because WixUI_InstallDir composes the licence page from `$(var.WixUILicenseRtf)` AT COMPILE
+// TIME and falls back to its own built-in sample when the variable is undefined. The .wxs had
+//
+//	<Property Id="WixUILicenseRtf" Value="$(var.SourceDir)\LICENSE.rtf" />
+//
+// which sets a runtime MSI property of the same name — a string the dialog never reads. So
+// writing a correct LICENSE.rtf was never enough; the file has to be named on the command line.
+//
+// This is asserted on the WIRING because that is the only thing that was wrong: every build site
+// must pass `-d WixUILicenseRtf=`, and none may reintroduce the Property. ci.yml additionally
+// byte-scans the built MSI for the placeholder, which catches the class even if a new build site
+// appears here that this list does not know about — the two together are the belt and the braces.
+func TestEveryMSIBuildPassesTheLicenceText(t *testing.T) {
+	// THE PROPERTY MUST NOT COME BACK. Its presence is the exact bug.
+	// COMMENTS FIRST. The .wxs now EXPLAINS this defect in a comment that quotes the very
+	// element being banned, so a raw containment check matches the explanation and fails a
+	// correct file — the same "detector defeated by prose" trap this file has hit before.
+	// Every scan below therefore runs on comment-stripped XML or on the build wiring.
+	if strings.Contains(stripXMLComments(readMSIFile(t, wxs())), `Property Id="WixUILicenseRtf"`) {
+		t.Error("Orchicon.wxs declares <Property Id=\"WixUILicenseRtf\"/>. That is a RUNTIME MSI\n" +
+			"  property and the licence dialog never reads it, so the wizard silently shows WiX's\n" +
+			"  built-in placeholder (\"Lorem ipsum dolor sit amet…\"). It must be passed to\n" +
+			"  `wix build` as -d WixUILicenseRtf=<abs path>\\LICENSE.rtf instead.")
+	}
+
+	// EVERY SITE THAT RUNS `wix build` MUST NAME IT. Enumerated rather than discovered, so a
+	// new build site has to be added here consciously.
+	type site struct{ what, path, want string }
+	sites := []site{
+		{"the Makefile target", filepath.Join("..", "..", "Makefile"), "WixUILicenseRtf="},
+		{"ci.yml", filepath.Join("..", "..", ".github", "workflows", "ci.yml"), `-d "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
+		{"release.yml", filepath.Join("..", "..", ".github", "workflows", "release.yml"), `-d "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
+		{"canary.yml", filepath.Join("..", "..", ".github", "workflows", "canary.yml"), `-d "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
+	}
+	for _, s := range sites {
+		body := readMSIFile(t, s.path)
+		// THE MAKEFILE CALLS $(WIX) — the same binary through a variable — so both spellings count.
+		if !strings.Contains(body, "wix build") && !strings.Contains(body, "$(WIX) build") {
+			t.Errorf("%s no longer runs a wix build — if the MSI moved, this list must move with it", s.what)
+			continue
+		}
+		if !strings.Contains(body, s.want) {
+			t.Errorf("%s builds the MSI without %s.\n"+
+				"  Without it the licence page falls back to WiX's PLACEHOLDER (lorem ipsum), which is\n"+
+				"  what a real install showed the operator. Checked sites live in this test.", s.what, s.want)
+		}
+	}
+
+	// AND THE FILE IT POINTS AT MUST BE THERE — a wired path to a missing file fails the build,
+	// which is loud, but this names it in a second instead of six minutes into a Windows run.
+	lic := readMSIFile(t, "..", "..", "deploy", "desktop", "windows", "LICENSE.rtf")
+	if !strings.HasPrefix(lic, `{\rtf1`) {
+		t.Error("LICENSE.rtf is not an RTF file (it must start with {\\rtf1)")
+	}
+	// The placeholder must never be our own text, or the byte scan in ci.yml would pass on a
+	// placeholder we reintroduced ourselves.
+	if strings.Contains(lic, "Lorem ipsum") {
+		t.Error("LICENSE.rtf itself contains \"Lorem ipsum\" — it would defeat the CI byte scan")
+	}
+	// AND IT MUST SAY SOMETHING USEFUL. The brief was that the wizard should carry actual
+	// information, so the things a person installing needs are asserted rather than left to
+	// taste: what gets installed, where, what is NOT in the package, and the licence.
+	for _, want := range []struct{ what, sub string }{
+		{"what the package installs", "orchicon-desktop.exe"},
+		// RTF escapes '\' as '\\', so the path appears doubled in the source.
+		{"where it goes", `%LOCALAPPDATA%\\Programs\\Orchicon`},
+		{"what it deliberately does not contain", "downloaded"},
+		{"what setup asks", "orchicon install"},
+		{"the licence", "Apache License, Version 2.0"},
+	} {
+		if !strings.Contains(lic, want.sub) {
+			t.Errorf("LICENSE.rtf does not mention %s (%q) — the wizard is the only place the\n"+
+				"  installer explains anything, so it must carry the real information", want.what, want.sub)
+		}
+	}
+}
+
+// TestSetupLaunchPassesAWorkingDirectory — the wizard's last step must find orchicon-setup.cmd.
+//
+// REPORTED FROM A REAL INSTALL: "Windows cannot find
+// 'C:\Users\…\AppData\Local\Programs\Orchicon\orchicon-setup.cmd'". The file IS in the package
+// (five files in the cab, SetupCmdFile among them), so the launch, not the payload, is what to
+// harden: `start` is given the install directory via /D and the script by BARE NAME, so nothing
+// depends on how a fully-qualified path survives `cmd /c` quoting.
+func TestSetupLaunchPassesAWorkingDirectory(t *testing.T) {
+	body := readMSIFile(t, wxs())
+	if !strings.Contains(body, "orchicon-setup.cmd") {
+		t.Fatal("the .wxs no longer names orchicon-setup.cmd — the setup hand-off is gone")
+	}
+	if !strings.Contains(body, "/D &quot;[INSTALLFOLDER]&quot; orchicon-setup.cmd") {
+		t.Error("the LaunchSetup custom action does not run the wrapper via /D with a BARE NAME.\n" +
+			"  A fully-qualified path threaded through `cmd /c start` quoting is the form that\n" +
+			"  produced \"Windows cannot find '…\\orchicon-setup.cmd'\" on a real install; passing\n" +
+			"  the directory with /D and the name alone removes that whole class of failure.")
+	}
+	// The instance/image answers must still travel, or the wizard's choices are discarded.
+	for _, want := range []string{`&quot;[INSTANCE]&quot;`, `&quot;[RUNTIMEIMAGES]&quot;`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("LaunchSetup no longer passes %s — the wizard's answer would be discarded", want)
+		}
+	}
+}
+
+// TestInstallerKeepsTheMSILog — the one record of what Windows Installer did must survive the run.
+//
+// install.ps1 wrote the MSI log into its scratch directory and deleted that directory seconds
+// later, so a report of a wizard failure arrived with nothing to read. It is now written to a
+// stable per-user location AND printed, so the path can be quoted in a bug report.
+func TestInstallerKeepsTheMSILog(t *testing.T) {
+	ps1 := readMSIFile(t, "..", "..", "scripts", "install.ps1")
+	if !strings.Contains(ps1, `"/l*v", "`+"`"+`"$msiLog`+"`"+`""`) {
+		t.Error("install.ps1 no longer passes /l*v $msiLog to msiexec — the MSI log is how a wizard failure is diagnosed")
+	}
+	if !strings.Contains(ps1, `GetTempPath()) "orchicon-msi.log"`) {
+		t.Error("the MSI log is not written to a STABLE path. It used to live in $tmpdir, which is\n" +
+			"  deleted at the end of the run — so the log explaining a failure was thrown away with it.")
+	}
+	if !strings.Contains(ps1, "Windows Installer log: $msiLog") {
+		t.Error("the MSI log path is not PRINTED — a path nobody is shown is a path nobody sends")
 	}
 }

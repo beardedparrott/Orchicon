@@ -292,10 +292,15 @@ jobs:
   # on the first Windows release. Running `-nsis` HERE means a pull request finds that
   # class of fault instead of a release.
   #
-  # WHAT THIS PROVES, and what it cannot: that the Windows WebView2 build compiles, that
-  # makensis produced an installer, that WiX accepts the .wxs, and that an MSI comes out
-  # non-trivial. It does NOT install either one — that needs a real machine, and the
-  # honest statement of that gap is in deploy/desktop/README.md.
+  # WHAT THIS PROVES: that the Windows WebView2 build compiles, that makensis produced an
+  # installer, that WiX accepts the .wxs, that an MSI comes out non-trivial, that the licence
+  # page carries OUR text rather than WiX's lorem-ipsum placeholder, and that the MSI
+  # INSTALLS and delivers every file — it is installed per-user and uninstalled again here.
+  #
+  # THAT LAST PART IS NEW, and it was earned: the package had only ever been BUILT, so the
+  # first real install reported "cannot find orchicon-setup.cmd" from the wizard's last step
+  # and there was no gate anywhere that could have known. It does NOT open the app (WebView2
+  # in a session with no desktop is not a thing CI can do), which is the remaining gap.
   windows-desktop-msi:
     name: windows desktop + MSI (build only)
     runs-on: windows-latest
@@ -393,7 +398,7 @@ jobs:
           Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
           $srcAbs = (Resolve-Path $src).Path
           wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext `
-            -d "Version=0.0.0" -d "SourceDir=$srcAbs" `
+            -d "WixUILicenseRtf=$srcAbs\LICENSE.rtf" -d "Version=0.0.0" -d "SourceDir=$srcAbs" `
             -o "dist/desktop/orchicon_0.0.0_windows_amd64.msi"
           $msi = Get-Item "dist/desktop/orchicon_0.0.0_windows_amd64.msi"
           # A 0-byte or tiny MSI means WiX "succeeded" without packaging the payload.
@@ -403,6 +408,80 @@ jobs:
             throw "MSI is only $([math]::Round($msi.Length/1MB,1)) MB — the payload was not packaged"
           }
           Write-Host "MSI: $($msi.Name) ($([math]::Round($msi.Length/1MB,1)) MB)"
+
+      # THE LICENCE PAGE MUST NOT BE WIX'S PLACEHOLDER.
+      #
+      # WiX's WixUI dialogs compose the licence page from the BuildUILicenseRtf BUILD VARIABLE and
+      # fall back to a built-in sample when it is undefined — the sample being "Lorem ipsum dolor
+      # sit amet...". That is what a real install showed the operator, because the .wxs set a
+      # PROPERTY of that name (which the dialog never reads) instead of defining the variable.
+      #
+      # The fallback text is embedded as an uncompressed OLE stream, so a byte scan discriminates:
+      # the placeholder present means the wiring is absent. Proved against the artifact that
+      # prompted this (the lorem text is findable in its bytes), so a green here is not a guess.
+      - name: Assert the MSI carries our licence text, not WiX's placeholder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = Get-ChildItem dist/desktop/*.msi | Select-Object -First 1
+          if (-not $msi) { throw "no MSI was built" }
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($msi.FullName))
+          if ($text -match 'Lorem ipsum') {
+            throw ("the MSI embeds WiX's PLACEHOLDER licence text. Cause: WixUILicenseRtf is a BUILD " +
+              "variable, not an MSI property — it must be passed to `wix build` as " +
+              "-d WixUILicenseRtf=<abs path>\LICENSE.rtf. A <Property> with that id is silently " +
+              "ignored and the wizard shows lorem ipsum to the operator.")
+          }
+          Write-Host "licence text: our own (no WiX placeholder present)"
+
+      # THE MSI IS NOW INSTALLED, NOT MERELY BUILT.
+      #
+      # Until this step the package was never run anywhere: it built, it validated, and only a real
+      # Windows box revealed that the wizard's last step could not find orchicon-setup.cmd. An
+      # install is the one assertion that covers InstallFiles, the component tree and the payload
+      # together. SKIPSETUP=1 stops the setup from launching (it would try to download the host
+      # services); everything before that is exercised for real.
+      - name: Install the MSI per-user and verify the payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem dist/desktop/*.msi | Select-Object -First 1).FullName
+          $log = Join-Path $env:TEMP 'msi-install.log'
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
+            '/i', "`"$msi`"", '/qn', '/norestart', '/l*v', "`"$log`"", 'SKIPSETUP=1', 'INSTANCE=dev')
+          if ($p.ExitCode -ne 0) {
+            Get-Content $log -Tail 60
+            throw "msiexec /i exited $($p.ExitCode) — see $log"
+          }
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Orchicon'
+          if (-not (Test-Path $dir)) { throw "the per-user install dir was not created: $dir" }
+          # EVERY FILE THE WIZARD DEPENDS ON, named individually: a partial product installs
+          # cleanly, and 'orchicon-setup.cmd is missing' is exactly how that surfaced in the field.
+          foreach ($f in @('orchicon.exe','orch.exe','orchicon-desktop.exe','orchicon-setup.cmd','README-WINDOWS.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir $f))) {
+              Get-ChildItem $dir | ForEach-Object { Write-Host "  present: $($_.Name)" }
+              throw "$f is MISSING from $dir — the payload did not land"
+            }
+          }
+          Write-Host "installed payload verified in $dir"
+          Get-ChildItem $dir | ForEach-Object { Write-Host ("  {0,-26} {1,10}" -f $_.Name, $_.Length) }
+          # THE SETUP WRAPPER MUST BE RUNNABLE BY THE WIZARD'S LAST STEP, which launches it by a
+          # pass-through property path. Assert the exact file the custom action names exists.
+          if (-not (Test-Path -LiteralPath (Join-Path $dir 'orchicon-setup.cmd'))) {
+            throw "orchicon-setup.cmd is not at the path the LaunchSetup custom action names"
+          }
+
+      - name: Uninstall the MSI (leave the runner clean)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem dist/desktop/*.msi | Select-Object -First 1).FullName
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/x', "`"$msi`"", '/qn', '/norestart')
+          if ($p.ExitCode -ne 0) { throw "msiexec /x exited $($p.ExitCode)" }
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Orchicon'
+          if (Test-Path (Join-Path $dir 'orchicon.exe')) { throw "uninstall left orchicon.exe behind in $dir" }
+          Write-Host "uninstalled cleanly"
+
       - uses: actions/upload-artifact@v4
         with:
           name: windows-msi

@@ -4,10 +4,17 @@ Orchicon - portable Windows build
 WHAT THIS IS
   Orchicon is an AI workflow orchestrator. This zip contains the desktop app
   (orchicon-desktop.exe) without an installer. The app is a CLIENT: it talks to
-  an Orchicon plane on this machine at http://127.0.0.1:8080 and starts one for
-  you if none is running. The command line is still the canonical entry point
-  (orchicon install / orchicon start / orchicon status), but you do not need it
-  to use the app.
+  an Orchicon plane on this machine at http://127.0.0.1:8080 and does NOT start
+  one. If no plane is running, it says so and names the address it tried.
+
+  Start a plane first, from the full install (the MSI, or install.ps1):
+
+      "%LOCALAPPDATA%\Programs\Orchicon\orchicon.exe" install   (once)
+      "%LOCALAPPDATA%\Programs\Orchicon\orchicon.exe" start
+
+  The command line is still the canonical entry point (orchicon install /
+  orchicon start / orchicon status), but you do not need it to use the app once
+  a plane is up.
 
 FIRST RUN: WEBVIEW2
   Orchicon draws its window with Microsoft Edge WebView2, the same runtime

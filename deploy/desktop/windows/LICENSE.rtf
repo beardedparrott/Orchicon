@@ -1,11 +1,79 @@
 {\rtf1\ansi\deff0{\fonttbl{\f0 Segoe UI;}}
-\viewkind4\uc1\f0\fs20
+\viewkind4\uc1\f0\fs18
+
+{\b\fs24 Orchicon}\par
+\par
+An AI orchestration platform. This package installs the control plane, the command
+line, the terminal UI and the desktop app.\par
+\par
+{\b What this installer puts on this computer}\par
+\par
+\pard\li240 orchicon.exe\tab the control plane and CLI (install, start, status)\par
+orch.exe\tab the terminal UI, a remote client for a plane\par
+orchicon-desktop.exe\tab the desktop app\par
+\pard\li0\par
+It also adds Start menu and desktop shortcuts named "Orchicon".\par
+\par
+Everything goes under your own user account, in\par
+\par
+\pard\li240 %LOCALAPPDATA%\\Programs\\Orchicon\par
+\pard\li0\par
+so no administrator rights are needed and nothing is written to Program Files. Your
+data lives separately, in %LOCALAPPDATA%\\orchicon.\par
+\par
+{\b What it does NOT contain}\par
+\par
+The services a plane runs on (PostgreSQL, NATS, the Grafana stack and the
+OpenTelemetry collector) are about 540 MB, so they are downloaded during setup
+rather than bundled here. Optional runtime container images are downloaded only
+if you choose them. Setup needs an internet connection.\par
+\par
+{\b What happens when you click Finish}\par
+\par
+A console window opens and runs "orchicon install". It asks three things:\par
+\par
+\pard\li240 which instance to set up (dev, test or prod)\par
+which host ports to use (press ENTER for the defaults)\par
+whether to download any runtime images now\par
+\pard\li0\par
+Press ENTER to accept each default. This step is idempotent and resumable: if it
+stops for any reason, run it again and it continues where it left off.\par
+\par
+\pard\li240 "%LOCALAPPDATA%\\Programs\\Orchicon\\orchicon.exe" install\par
+\pard\li0\par
+{\b Requirements}\par
+\par
+Windows 10 or Windows 11, 64-bit. The desktop app draws its window with Microsoft
+Edge WebView2: it is preinstalled on Windows 11, and setup installs it on
+Windows 10 if it is missing.\par
+\par
+{\b Starting and stopping}\par
+\par
+The desktop app is a client: it connects to a running plane and does NOT start
+one. The plane is started by setup, and by "orchicon start" afterwards. If the app
+cannot reach a plane it says so and names the address it tried.\par
+\par
+{\b Uninstall}\par
+\par
+Use "Apps and features" (or "Add or remove programs"). That removes the binaries
+and the shortcuts. Your data directory and any running services are left in
+place; to clean those up as well, run:\par
+\par
+\pard\li240 "%LOCALAPPDATA%\\Programs\\Orchicon\\orchicon.exe" -Uninstall -Clean\par
+\pard\li0\par
 {\b License}\par
 \par
-Orchicon is licensed under the Apache License, Version 2.0.\par
+Orchicon is licensed under the Apache License, Version 2.0. The full text ships
+with the product as LICENSE and is available at\par
 \par
-The full text ships with the product (LICENSE) and is available at\par
-http://www.apache.org/licenses/LICENSE-2.0\par
+\pard\li240 http://www.apache.org/licenses/LICENSE-2.0\par
+\pard\li0\par
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied.\par
 \par
-Unless required by applicable law or agreed to in writing, software distributed\nunder the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR\nCONDITIONS OF ANY KIND, either express or implied.\par
+{\b More}\par
+\par
+\pard\li240 https://github.com/beardedparrott/Orchicon\par
+\pard\li0
 }

@@ -87,7 +87,19 @@
          The UI set gives it, which is also the right value for this package. -->
     <Property Id="ARPURLINFOABOUT" Value="https://orchicon.dev" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
-    <Property Id="WixUILicenseRtf" Value="$(var.SourceDir)\LICENSE.rtf" />
+    <!-- THE LICENCE TEXT IS A BUILD-TIME VARIABLE, NOT A PROPERTY, AND GETTING THAT
+         WRONG IS INVISIBLE. WiX's `WixUI_InstallDir` composes the licence page from
+         `$(var.WixUILicenseRtf)` when the .wxs is COMPILED, and falls back to its own
+         built-in sample when the variable is undefined — which is the placeholder
+         "Lorem ipsum dolor sit amet...", shipped verbatim to the operator.
+
+         This used to be `<Property Id="WixUILicenseRtf" .../>`. That sets an MSI
+         PROPERTY of the same name, which the dialog never reads, so the build stayed
+         green and the wizard showed lorem ipsum. It is passed on the command line
+         instead:
+             wix build ... -d WixUILicenseRtf=<abs path>\LICENSE.rtf
+         from the Makefile and all three workflows, and
+         cmd/orchicon/windows_msi_test.go fails if any of them stops doing it. -->
 
     <Icon Id="OrchiconIcon" SourceFile="$(var.SourceDir)\orchicon-desktop.ico" />
 
@@ -185,7 +197,7 @@
                   Execute="immediate"
                   Impersonate="yes"
                   Return="asyncNoWait"
-                  ExeCommand="cmd.exe /c start &quot;Orchicon setup&quot; &quot;[INSTALLFOLDER]orchicon-setup.cmd&quot; &quot;[INSTANCE]&quot; &quot;[RUNTIMEIMAGES]&quot;" />
+                  ExeCommand="cmd.exe /c start &quot;Orchicon setup&quot; /D &quot;[INSTALLFOLDER]&quot; orchicon-setup.cmd &quot;[INSTANCE]&quot; &quot;[RUNTIMEIMAGES]&quot;" />
 
     <InstallExecuteSequence>
       <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent:

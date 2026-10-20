@@ -1275,6 +1275,7 @@ desktop-package-windows: ## Produce the Windows MSI (Windows host with the WiX C
 		-arch x64 \
 		-ext WixToolset.UI.wixext \
 		-d Version=$(DESKTOP_VERSION) \
+		-d WixUILicenseRtf=$(abspath $(MSI_SRC_DIR))/LICENSE.rtf \
 		-d SourceDir=$(abspath $(MSI_SRC_DIR)) \
 		-o "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi"
 	@ls -l "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi"

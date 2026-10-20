@@ -430,10 +430,28 @@ export type AuthConfig = {
 
 // fetchAuthConfig reads the plane's auth capability flags for the
 // pre-login login page. Public endpoint — no credentials required.
+//
+// A NON-2xx IS REPORTED WITH ITS REASON, NOT JUST ITS CODE. The code alone is what the
+// operator re-ported: a fresh install whose setup had not started the plane opened the app on
+// a sign-in page reading "Error: auth/config failed: 502" — which names neither what failed nor
+// what to do. The 502 here is the DESKTOP SHELL's own proxy answer (internal/desktop/proxy.go),
+// whose body already says "the plane at http://127.0.0.1:8080 is unreachable — is it running?";
+// reading that body and showing it turns a code into an instruction.
 export async function fetchAuthConfig(): Promise<AuthConfig> {
   const res = await fetch("/auth/config", { credentials: "include" });
   if (!res.ok) {
-    throw new Error(`auth/config failed: ${res.status}`);
+    // Best-effort, and BOUNDED: a proxy that answered with a code is expected to answer this
+    // with a small body, but nothing guarantees it — a hung body would turn a clear error into
+    // a spinner. Failure or emptiness falls back to the status.
+    let detail = "";
+    try {
+      const text = (await res.text()).trim();
+      if (text.length > 0) detail = text.length > 300 ? `${text.slice(0, 300)}…` : text;
+    } catch {
+      /* no body worth reading */
+    }
+    const base = `auth/config failed: ${res.status}`;
+    throw new Error(detail ? `${base} — ${detail}` : base);
   }
   return (await res.json()) as AuthConfig;
 }
