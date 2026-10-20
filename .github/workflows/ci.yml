@@ -393,7 +393,6 @@ jobs:
           Copy-Item bin/orchicon.exe $src/
           Copy-Item bin/orch.exe $src/
           Copy-Item cmd/orchicon-desktop/build/bin/orchicon-desktop.exe $src/
-          Copy-Item deploy/desktop/windows/orchicon-setup.cmd $src/
           Copy-Item deploy/desktop/windows/README-WINDOWS.txt $src/
           Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
           Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
@@ -428,6 +427,36 @@ jobs:
           }
           Write-Host "MSI: $($msi.Name) ($([math]::Round($msi.Length/1MB,1)) MB)"
 
+      # THE BURN BUNDLE: the wizard a PERSON runs. Built here because it wraps the MSI this
+      # job just produced — and building it in the same job means a broken bundle cost is found
+      # on the pull request, not on a release.
+      #
+      # The Bal extension is a separate package from the UI one and needs its own install.
+      - name: Install the WiX Bal extension (for the bundle)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          wix extension add -g WixToolset.Bal.wixext/5.0.2
+
+      - name: Build the Burn bundle (OrchiconSetup.exe)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Resolve-Path "dist/desktop/orchicon_0.0.0_windows_amd64.msi").Path
+          $src = (Resolve-Path "dist/msi-src").Path
+          wix build deploy/desktop/windows/OrchiconSetup.wxs -ext WixToolset.Bal.wixext `
+            -d "Version=0.0.0" -d "MsiPath=$msi" -d "LicenseRtf=$src\LICENSE.rtf" `
+            -outputtype bundle -o "dist/desktop/OrchiconSetup_0.0.0_windows_amd64.exe"
+          $exe = Get-Item "dist/desktop/OrchiconSetup_0.0.0_windows_amd64.exe"
+          # A bundle is an .exe with the MSI inside it, so it must be BIGGER than the MSI. A
+          # tiny bundle means the chain did not compress the package in — the same
+          # "succeeded without packaging anything" shape the MSI check above guards against.
+          $msiLen = (Get-Item $msi).Length
+          if ($exe.Length -lt $msiLen) {
+            throw "the bundle ($([math]::Round($exe.Length/1MB,1)) MB) is SMALLER than the MSI ($([math]::Round($msiLen/1MB,1)) MB) — it did not embed the package"
+          }
+          Write-Host "bundle: $($exe.Name) ($([math]::Round($exe.Length/1MB,1)) MB)"
+
       # THE PACKAGE IS INSTALLED HERE, NOT MERELY BUILT.
       #
       # UNTIL THIS STEP IT WAS ONLY EVER BUILT — by CI and by canary — so the first time this
@@ -455,7 +484,10 @@ jobs:
           # NAMED INDIVIDUALLY. A partial product installs cleanly and is simply missing a file
           # — and "orchicon-setup.cmd is missing" is exactly the shape this reported in the
           # field, so every file the wizard touches is asserted by name.
-          foreach ($f in @('orchicon.exe','orch.exe','orchicon-desktop.exe','orchicon-setup.cmd','README-WINDOWS.txt')) {
+          # NO orchicon-setup.cmd ANY MORE: the setup is now run DIRECTLY from the installed
+          # orchicon.exe by the LaunchSetup custom action (FileRef + "install --instance …"), so
+          # the wrapper script is gone and asserting it would assert a file that must not exist.
+          foreach ($f in @('orchicon.exe','orch.exe','orchicon-desktop.exe','README-WINDOWS.txt')) {
             if (-not (Test-Path -LiteralPath (Join-Path $dir $f))) {
               Get-ChildItem $dir | ForEach-Object { Write-Host "  present: $($_.Name)" }
               throw "$f is MISSING from $dir — the payload did not land"
@@ -489,7 +521,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows-msi
-          path: dist/desktop/*.msi
+          # THE BUNDLE TOO: it is the artifact a person actually runs, so a PR that breaks it
+          # should make the bundle itself downloadable rather than only the MSI inside it.
+          path: |
+            dist/desktop/*.msi
+            dist/desktop/OrchiconSetup_*.exe
           if-no-files-found: error
 
   # THE DESKTOP SHELL IS A SEPARATE JOB ON PURPOSE. `go-ci` is CGO_ENABLED=0-shaped and runs the

@@ -677,7 +677,6 @@ jobs:
           Copy-Item bin/orchicon.exe $src/
           Copy-Item bin/orch.exe $src/
           Copy-Item cmd/orchicon-desktop/build/bin/orchicon-desktop.exe $src/
-          Copy-Item deploy/desktop/windows/orchicon-setup.cmd $src/
           Copy-Item deploy/desktop/windows/README-WINDOWS.txt $src/
           Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
           Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
@@ -709,6 +708,30 @@ jobs:
       # installer), so it ships README-WINDOWS.txt naming the Evergreen URL
       # instead — the app itself also detects the missing runtime and puts that
       # URL in a native dialog rather than failing to a blank window.
+      # THE BURN BUNDLE: the wizard a PERSON runs. It wraps the MSI built above, so it has to
+      # come after it. `wix extension add` is required for the Bal extension for the same
+      # reason as the UI one: -ext resolves through WiX's own store, not NuGet.
+      - name: Install the WiX Bal extension (for the bundle)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          wix extension add -g WixToolset.Bal.wixext/5.0.2
+
+      - name: Build the Burn bundle (OrchiconSetup.exe)
+        shell: pwsh
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $v = $env:ORCHICON_VERSION.TrimStart('v')
+          $msi = (Resolve-Path "dist/desktop/orchicon_${v}_windows_amd64.msi").Path
+          $src = (Resolve-Path "dist/msi-src").Path
+          wix build deploy/desktop/windows/OrchiconSetup.wxs -ext WixToolset.Bal.wixext `
+            -d "Version=$v" -d "MsiPath=$msi" -d "LicenseRtf=$src\LICENSE.rtf" `
+            -outputtype bundle -o "dist/desktop/OrchiconSetup_${v}_windows_amd64.exe"
+          Get-Item "dist/desktop/OrchiconSetup_${v}_windows_amd64.exe" | ForEach-Object {
+            Write-Host "bundle: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)" }
+
       - name: Name the artifacts
         shell: pwsh
         env:
@@ -856,7 +879,7 @@ jobs:
           #
           # SHA256SUMS IS IN THIS LIST ON PURPOSE — this find IS the upload manifest, so an asset
           # not named here is silently not published, however carefully it was produced.
-          ASSETS=$(find artifacts desktop-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*_installer.exe' -o -name '*.msi' -o -name 'SHA256SUMS' \) 2>/dev/null \
+          ASSETS=$(find artifacts desktop-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*_installer.exe' -o -name 'OrchiconSetup_*.exe' -o -name '*.msi' -o -name 'SHA256SUMS' \) 2>/dev/null \
                    | awk -F/ '!seen[$NF]++' | sort || true)
           if [ -z "$ASSETS" ]; then
             echo "::error::No release assets found under artifacts/"
