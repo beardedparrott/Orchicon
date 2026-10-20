@@ -68,6 +68,29 @@ wix build \
   -bindvariable "WixUILicenseRtf=$WORK/src/LICENSE.rtf" \
   -o "$OUT" >"$LOG" 2>&1 || true
 
+# NON-ASCII IN A STRING IS A BIND-STAGE FAILURE, so check it here where it is free.
+#
+#   error WIX0311: A string was provided with characters that are not available in the
+#                  specified database code page '1252'
+#
+# An em dash or an arrow in a dialog caption is enough. MSI's default code page is 1252, so
+# anything outside ASCII fails at BIND — a phase the compile check never reaches, five minutes
+# away on windows-latest. COMMENTS ARE EXEMPT (prose never enters the database), which is why
+# this strips them first: flagging the explanation of a defect instead of the defect is a
+# mistake this project keeps making.
+python3 - "$SRC/Orchicon.wxs" <<'PYEOF'
+import re, sys
+src = open(sys.argv[1], encoding='utf-8').read()
+src = re.sub(r'(?s)<!--.*?-->', '', src)          # comments cannot reach the database
+bad = [(i + 1, ln) for i, ln in enumerate(src.split('\n')) if any(ord(c) > 126 for c in ln)]
+if bad:
+    print("FAIL (non-ASCII outside ASCII; MSI code page is 1252):", file=sys.stderr)
+    for n, ln in bad[:8]:
+        print(f"  line {n}: {ln.strip()[:110]}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+if [ $? -ne 0 ]; then exit 1; fi
+
 # AN EMPTY LOG IS NOT A PASS. It means WiX never ran (a broken invocation, a missing tool), and
 # reporting "OK" there is worse than failing — this check exists to remove blind rounds, not add
 # them. (Found by its own negative control: a stray command prefix made WiX never execute and

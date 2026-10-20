@@ -72,14 +72,14 @@
          and needs no wizard. -->
     <Property Id="INSTANCE" Value="dev" />
     <!-- NO Value: an empty Value attribute is illegal (WIX0006), and it must default to
-         UNSET rather than "none" — the wrapper leaves the env var alone when %2 is
+         UNSET rather than "none" - the wrapper leaves the env var alone when %2 is
          empty, which is what keeps the interactive runtime-image prompt alive. A
          default of "none" would be an ANSWER, and the prompt would be skipped.
          Secure="yes" declares a property that carries a value from the UI or the
-         command line without giving it one (and without being ignored — WIX1006). -->
+         command line without giving it one (and without being ignored - WIX1006). -->
     <!-- DEFAULTS TO "none", WHICH IS NOW THE WIZARD'S ANSWER RATHER THAN A SUPPRESSION.
          It used to be intentionally UNSET so the setup's own console prompt stayed alive. The
-         console prompt is gone — the ImagesDlg page asks — so leaving it unset would produce
+         console prompt is gone - the ImagesDlg page asks - so leaving it unset would produce
          a dangling runtime-image flag with no value, which the parser correctly rejects.
          "none" is also what the page defaults to: a project starts in execution_mode=local, so
          someone who never opts in needs no image at all. -->
@@ -108,7 +108,7 @@
          The UI extension reads it then, embeds the file as a Binary and points the
          license control at that Binary. Declaring
              <Property Id="WixUILicenseRtf" Value="...\LICENSE.rtf" />
-         looks like it should work and does NOTHING — the wizard kept rendering WiX's
+         looks like it should work and does NOTHING - the wizard kept rendering WiX's
          built-in placeholder, which is lorem ipsum. Reported from a real install:
          "the windows installer has some default text in there".
          Every build site now passes the variable; cmd/orchicon/windows_msi_test.go
@@ -116,7 +116,7 @@
 
     <!-- THE WIZARD ART, INSTEAD OF WIX'S OWN.
          Without these two variables the WixUI dialogs fall back to WiX's default
-         bitmaps — a red/black pattern with nothing to do with Orchicon — and on the
+         bitmaps - a red/black pattern with nothing to do with Orchicon - and on the
          reporter's machine that art visibly FLICKERED as the dialog repainted.
          Sizes are fixed by the dialog layout, not by taste:
              WixUIBannerBmp   493 x 58    the strip across the top of every page
@@ -129,7 +129,7 @@
 
     <!-- FIRST-RUN DEFAULTS FOR THE WIZARD'S FIELDS, so a blank box means the instance's
          documented port rather than nothing. A re-install must NOT clobber a value already
-         supplied on the command line — hence the "NOT Installed" guard on the publish. -->
+         supplied on the command line - hence the "NOT Installed" guard on the publish. -->
     <Property Id="WIX_ORCHICON_DEFAULTS_SET" Value="0" />
 
     <Icon Id="OrchiconIcon" SourceFile="$(var.SourceDir)\orchicon-desktop.ico" />
@@ -150,7 +150,7 @@
     </Feature>
 
     <Feature Id="DesktopFeature" Title="Orchicon desktop app" Level="1"
-             Description="The GUI client. Optional — the web UI at the plane's URL does everything it does.">
+             Description="The GUI client. Optional - the web UI at the plane's URL does everything it does.">
       <ComponentGroupRef Id="DesktopComponents" />
     </Feature>
 
@@ -196,7 +196,7 @@
 
     <!-- ===================== THE SETUP HAND-OFF =============================
          IT RUNS THE INSTALLED EXE DIRECTLY. No `cmd.exe`, no `start`, no wrapper script, no
-         path assembly, no quoted arguments — `FileRef` names the File row, so MSI writes the
+         path assembly, no quoted arguments - `FileRef` names the File row, so MSI writes the
          command line itself from the file it just installed.
 
          THE HISTORY IS THE REASON, and every step of it was a quoting bug:
@@ -209,15 +209,15 @@
            …then a bare `orchicon-setup.cmd` from the working directory, which fixed the
              quoting but kept three processes and a file to get wrong.
 
-         Now there is nothing left to get wrong: one process, and one argument —
-         "install" plus the instance flag — which has no empty-value case.
+         Now there is nothing left to get wrong: one process, and one argument -
+         "install" plus the instance flag - which has no empty-value case.
 
          The instance FLAG rather than an environment variable, because a custom action cannot set
          the child's environment. It is a plain word, so it needs no quoting.
 
          THE CONSOLE. A custom action has none, and the setup prompts. `orchicon install`
          allocates its OWN console (CREATE_NEW_CONSOLE, see cmd/orchicon/console_windows.go)
-         and re-executes itself — which is why this action no longer needs `start` to
+         and re-executes itself - which is why this action no longer needs `start` to
          manufacture a visible window.
 
          Return="asyncNoWait": the re-exec is immediate, but the install behind it is minutes
@@ -241,10 +241,10 @@
       <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent: a repair or
            an upgrade should re-converge, and `orchicon install` is idempotent.
 
-           AFTER="InstallFinalize" — AN IMMEDIATE ACTION PLACED AFTER "InstallFiles" RUNS TOO
+           AFTER="InstallFinalize" - AN IMMEDIATE ACTION PLACED AFTER "InstallFiles" RUNS TOO
            EARLY. MSI walks the execute sequence twice: an immediate pass that BUILDS the
            script, and a deferred pass that runs it and copies the files. An immediate action
-           runs in the first, when the payload is merely scheduled — which is how the old
+           runs in the first, when the payload is merely scheduled - which is how the old
            hand-off came to launch before the wrappper existed. InstallFinalize is after the
            deferred script has completed. -->
       <Custom Action="LaunchSetup" After="InstallFinalize" Condition="NOT REMOVE AND SKIPSETUP &lt;&gt; &quot;1&quot;" />
@@ -253,7 +253,7 @@
     <!-- ===================== THE WIZARD'S OWN PAGES =====================
          INSIDE <Package>, NEXT TO <ui:WixUI>, AND THAT PLACEMENT IS THE FIX.
          These pages first lived in a separate source file as a <Fragment><UI>. WiX compiled
-         that file happily — it even reported the schema errors I was chasing — and then
+         that file happily - it even reported the schema errors I was chasing - and then
          DROPPED the whole thing at link: the finished MSI contained none of its dialogs and
          none of its text, while every property defined here in <Package> shipped. A fragment
          is not connected to the package's UI, so the dialogs were unreachable and pruned.
@@ -265,7 +265,7 @@
              WelcomeDlg -> InstanceDlg -> PortsDlg -> ImagesDlg -> VerifyReadyDlg
          WelcomeDlgNext is overridden at Order="2" (WixUI's own is 1, pointing at the licence
          page). InstanceDlg's Back goes to the licence, and the licence's Next comes back here,
-         so the terms are still shown before anything is written — re-sequenced, not skipped.
+         so the terms are still shown before anything is written - re-sequenced, not skipped.
 
          THE CONDITION IS AN ATTRIBUTE IN WIX v4. WiX v3 took it as the element's text; v4
          rejects that with "WIX0400: The Publish element contains illegal inner text". -->
@@ -286,9 +286,9 @@
         <Control Id="InstanceRadio" Type="RadioButtonGroup" X="20" Y="60" Width="330" Height="90"
                  Property="INSTANCE">
           <RadioButtonGroup Property="INSTANCE">
-            <RadioButton Value="dev" X="0" Y="0" Width="330" Height="18" Text="dev — for trying it out (the default)" />
-            <RadioButton Value="test" X="0" Y="22" Width="330" Height="18" Text="test — for a second stack on this machine" />
-            <RadioButton Value="prod" X="0" Y="44" Width="330" Height="18" Text="prod — this machine's real instance" />
+            <RadioButton Value="dev" X="0" Y="0" Width="330" Height="18" Text="dev - for trying it out (the default)" />
+            <RadioButton Value="test" X="0" Y="22" Width="330" Height="18" Text="test - for a second stack on this machine" />
+            <RadioButton Value="prod" X="0" Y="44" Width="330" Height="18" Text="prod - this machine's real instance" />
           </RadioButtonGroup>
         </Control>
 
@@ -356,13 +356,13 @@
         <Control Id="ImagesNone" Type="RadioButtonGroup" X="20" Y="62" Width="330" Height="80"
                  Property="RUNTIMEIMAGES">
           <RadioButtonGroup Property="RUNTIMEIMAGES">
-            <RadioButton Value="none" X="0" Y="0" Width="330" Height="18" Text="None — local execution only (recommended, and the default)" />
-            <RadioButton Value="all" X="0" Y="22" Width="330" Height="18" Text="All published images — downloads several GB now" />
+            <RadioButton Value="none" X="0" Y="0" Width="330" Height="18" Text="None - local execution only (recommended, and the default)" />
+            <RadioButton Value="all" X="0" Y="22" Width="330" Height="18" Text="All published images - downloads several GB now" />
           </RadioButtonGroup>
         </Control>
 
         <Control Id="ImagesHint" Type="Text" X="20" Y="150" Width="330" Height="60" Transparent="yes"
-                 Text="Images can be added at any time from Settings → Runtime images, so nothing here is final." />
+                 Text="Images can be added at any time from Settings, Runtime images, so nothing here is final." />
 
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
           <Publish Event="NewDialog" Value="PortsDlg" />
