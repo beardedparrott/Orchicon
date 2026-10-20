@@ -529,3 +529,91 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 			"move with it or the two build the desktop app with different toolchains")
 	}
 }
+
+// TestEveryNSISBuildInstallsMakensis — `-nsis` is a request to RUN makensis, and makensis is
+// not on the windows-latest image.
+//
+// Wails does not fail without it. It prints
+//
+//	Warning: Cannot create installer: makensis not found
+//
+// and EXITS 0, so the build step goes green and the installer simply is not produced. That is
+// a green build which shipped nothing — the same silent-degradation shape as the frontend
+// `.gitkeep` embed, and it is exactly how this was found: the canary's first run of `-nsis`
+// (the first run of it in the project's history) failed one step later, in the naming step,
+// with "no NSIS installer found". release.yml carried the identical defect and had never run
+// because windows/amd64 joined the matrix on 2026-10-18 and no tag has been cut since.
+//
+// THE TRIGGER IS A LINE THAT ACTUALLY RUNS IT, not the string "-nsis" anywhere in the file.
+//
+// Two rounds of tightening got here, both forced by a control that did not bite:
+//
+//  1. containment (`strings.Contains(body, "-nsis")`) PASSED after the build flag was deleted,
+//     because these workflows now discuss makensis at length in comments. So the scan went
+//     line-wise and asked for `wails build` and `-nsis` on the same line.
+//  2. THAT STILL PASSED, because the assert step's own error message —
+//     echo "error: wails build -nsis produced no installer ..."
+//     — contains both tokens. A detector defeated by the diagnostic it prints.
+//
+// So the line must BEGIN with the command. `wails build …` is an invocation; `echo "… wails
+// build -nsis …"` is prose that happens to quote one, and a `#` comment is prose outright.
+func nsisBuildLines(body string) []string {
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "wails build") {
+			continue
+		}
+		if strings.Contains(trimmed, "-nsis") {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// TestEveryNSISBuildInstallsMakensis: EVERY workflow that asks for `-nsis` must also install
+// NSIS, put it on PATH for the build step, and assert the artifact came out. The third part is
+// not redundant with the first two — a makensis that is present and still emits nothing is the
+// same failure.
+func TestEveryNSISBuildInstallsMakensis(t *testing.T) {
+	workflows := []string{"ci.yml", "release.yml", "canary.yml"}
+	builds := map[string]bool{}
+	for _, wf := range workflows {
+		body := readMSIFile(t, "..", "..", ".github", "workflows", wf)
+		if len(nsisBuildLines(body)) == 0 {
+			continue // this workflow does not build an NSIS installer
+		}
+		builds[wf] = true
+		for _, want := range []struct{ what, sub string }{
+			{"installs NSIS (makensis is not on the runner image)",
+				"choco install nsis"},
+			{"puts makensis on PATH for the BUILD step (an installer's PATH change does not " +
+				"reach the current session)", `C:\Program Files (x86)\NSIS`},
+			{"fails loudly when makensis is missing (Wails only WARNS and exits 0)",
+				"command -v makensis"},
+			{"asserts the installer actually came out, not just the exit code",
+				"*installer*.exe"},
+		} {
+			if !strings.Contains(body, want.sub) {
+				t.Errorf("%s runs `-nsis` but %s.\n"+
+					"  looked for: %s\n"+
+					"  Without it the job goes GREEN with no installer in it: Wails prints\n"+
+					"  \"Warning: Cannot create installer: makensis not found\" and exits 0.",
+					wf, want.what, want.sub)
+			}
+		}
+	}
+	// CI CARRIES THE COVERAGE CLAIM. Release and canary run on a tag and on a merge to
+	// develop; a pull request — where this class of fault should be found — only runs CI.
+	// If ci.yml stops building the installer, the next makensis-class regression first
+	// surfaces on a merge to develop, which is how this one surfaced.
+	if !builds["ci.yml"] {
+		t.Error("ci.yml no longer runs `wails build ... -nsis`, so no pull request exercises the " +
+			"NSIS installer. Release and canary are the only remaining runs, i.e. the fault " +
+			"first surfaces after it has been merged.")
+	}
+	if len(builds) == 0 {
+		t.Error("no workflow runs `-nsis` — if the NSIS installer was dropped deliberately, " +
+			"delete this test and the Install NSIS steps with it; if not, the installer is gone")
+	}
+}

@@ -13,7 +13,7 @@ signed macOS build **cannot** be produced on `ubuntu-latest`.
 |---|---|---|
 | `.deb` + `.AppImage` | `ubuntu-22.04` | The `.deb` links against `libwebkit2gtk-4.0` (Ubuntu ≤ 23.10, Debian 12). Building on 24.04 would link 4.1 and break every older user. |
 | `.app` (signed, notarised, stapled) | `macos-14` | `codesign`/`notarytool`/`stapler`/`spctl` are macOS-only, and notarisation is an Apple service call. |
-| NSIS installer + portable zip + **MSI** | `windows-latest` | `wails build -webview2 download -nsis` needs makensis and the Windows toolchain; the MSI needs the WiX CLI, which is a .NET global tool no other runner in this project has. |
+| NSIS installer + portable zip + **MSI** | `windows-latest` | `wails build -webview2 download -nsis` needs makensis and the Windows toolchain; the MSI needs the WiX CLI, which is a .NET global tool no other runner in this project has. **makensis is NOT on the runner image** — every job that passes `-nsis` installs it first (`choco install nsis`, then puts `C:\Program Files (x86)\NSIS` on PATH for the build step) and asserts the installer came out, because Wails only WARNS when it is missing ("Cannot create installer: makensis not found") and exits 0. `cmd/orchicon/windows_msi_test.go` fails any workflow that asks for `-nsis` without all three. |
 
 None of the three jobs uses an `os:`/`arch:` matrix, deliberately: the release
 workflow's matrix scanner in `cmd/orchicon/ci_release_workflows_test.go` reads

@@ -279,17 +279,23 @@ jobs:
             exit 1
           fi
 
-  # THE WINDOWS DESKTOP BUILD HAS NEVER RUN. It is the one shipped artifact with no
-  # CI coverage at all: the only job that runs `wails build -nsis` lives in release.yml
-  # on a main tag, and no tag has been cut since windows/amd64 joined the matrix on
-  # 2026-10-18. So `orchicon-desktop.exe` and the installer around it are unexercised
-  # code, and the MSI now packages them — which would make a release the FIRST test
-  # of the file it publishes.
+  # THE WINDOWS DESKTOP BUILD IS COVERED HERE TOO, INCLUDING THE NSIS INSTALLER.
   #
-  # WHAT THIS PROVES, and what it cannot: that the Windows WebView2 build compiles,
-  # that WiX accepts the .wxs, and that an MSI comes out non-trivial. It does NOT
-  # install it — that needs a real machine, and the honest statement of that gap is
-  # in deploy/desktop/README.md.
+  # It used to be covered nowhere: the only job that ran `wails build -nsis` lived in
+  # release.yml on a main tag, and no tag had been cut since windows/amd64 joined the
+  # matrix on 2026-10-18 — so `orchicon-desktop.exe` AND the installer around it were
+  # unexercised code, and the MSI packages both.
+  #
+  # THAT GAP HAD A REAL COST. When the canary first ran `-nsis`, it failed: makensis is
+  # not on the runner image and Wails only WARNS about it (exiting 0), so the installer
+  # was silently absent. release.yml carried the identical defect and would have failed
+  # on the first Windows release. Running `-nsis` HERE means a pull request finds that
+  # class of fault instead of a release.
+  #
+  # WHAT THIS PROVES, and what it cannot: that the Windows WebView2 build compiles, that
+  # makensis produced an installer, that WiX accepts the .wxs, and that an MSI comes out
+  # non-trivial. It does NOT install either one — that needs a real machine, and the
+  # honest statement of that gap is in deploy/desktop/README.md.
   windows-desktop-msi:
     name: windows desktop + MSI (build only)
     runs-on: windows-latest
@@ -312,12 +318,36 @@ jobs:
           set -euo pipefail
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - name: Build the desktop app
+      # NSIS IS WHAT `-nsis` ACTUALLY RUNS, AND IT IS NOT ON THE RUNNER IMAGE. Wails
+      # only WARNS when makensis is absent and exits 0, so the build below would go green
+      # with no installer in it. Chocolatey is preinstalled on the hosted Windows runners;
+      # its PATH change does not reach this session, hence the export for the next step.
+      - name: Install NSIS (makensis)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nsis -y --no-progress
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build the desktop app + NSIS installer
         shell: bash
         run: |
           set -euo pipefail
+          if ! command -v makensis >/dev/null 2>&1; then
+            echo "error: makensis is not on PATH — the 'Install NSIS (makensis)' step is missing or failed."
+            exit 1
+          fi
           cd cmd/orchicon-desktop
-          wails build -platform windows/amd64 -webview2 download
+          wails build -platform windows/amd64 -webview2 download -nsis
+          # ASSERT THE ARTIFACT: a present makensis that still emitted nothing is the same
+          # silent-degradation shape as the frontend `.gitkeep` embed.
+          shopt -s nullglob
+          inst=(build/bin/*installer*.exe)
+          if [ ${#inst[@]} -eq 0 ]; then
+            echo "error: wails build -nsis produced no installer in build/bin although makensis was on PATH."
+            ls -l build/bin
+            exit 1
+          fi
+          echo "installer: ${inst[0]}"
       - name: Build the Windows CLI binaries
         shell: bash
         run: |
