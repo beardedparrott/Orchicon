@@ -393,9 +393,24 @@ jobs:
           Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
           $srcAbs = (Resolve-Path $src).Path
           wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext `
-            -d "Version=0.0.0" -d "SourceDir=$srcAbs" -d "WixUILicenseRtf=$srcAbs\LICENSE.rtf" `
+            -d "Version=0.0.0" -d "SourceDir=$srcAbs" -bindvariable "WixUILicenseRtf=$srcAbs\LICENSE.rtf" `
             -o "dist/desktop/orchicon_0.0.0_windows_amd64.msi"
           $msi = Get-Item "dist/desktop/orchicon_0.0.0_windows_amd64.msi"
+          # THE LICENSE PAGE TEXT MUST BE IN THE PACKAGE, AND THIS IS ASSERTED ON THE BYTES
+          # because the flag that puts it there is easy to get subtly wrong — and twice was.
+          # `WixUILicenseRtf` reached this build as an MSI Property (never read) and then as a
+          # preprocessor variable via -d (also never read, because the dialog declares a BIND
+          # variable). Both times the build SUCCEEDED and the wizard kept WiX's lorem-ipsum
+          # placeholder. This check knows nothing about flags, so it cannot be fooled by them:
+          # it asks the finished package whether our text arrived.
+          $bytes = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($msi.FullName))
+          if ($bytes -notmatch [regex]::Escape("beardedparrott")) {
+            throw "the license page text is NOT in the MSI: WixUILicenseRtf did not reach the dialog (use -bindvariable, not -d). The wizard would show WiX's placeholder."
+          }
+          if ($bytes -match "Lorem ipsum") {
+            throw "the MSI still contains WiX's lorem-ipsum placeholder license text."
+          }
+          Write-Host "license page text is in the package, and no placeholder remains"
           # A 0-byte or tiny MSI means WiX "succeeded" without packaging the payload.
           # The three binaries alone are ~170 MB, so anything under 50 MB is the
           # empty-package failure wearing a success code.
