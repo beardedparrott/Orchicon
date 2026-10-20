@@ -660,6 +660,27 @@ func rtfPlainText(src string) string {
 // <Property Id="WixUILicenseRtf" …/> element this file forbids; a guard that scanned the raw
 // text matched the comment and failed a correct file. That is the third time in this file's
 // history a check was satisfied (or defeated) by prose, so comment-stripping is the default.
+// stripBatchComments removes REM/:: comment lines so an assertion about what a .cmd
+// DOES is not satisfied by a comment describing it.
+//
+// THIS IS NOT HYPOTHETICAL: the guard for the silent registry read looked for `2^>nul`
+// in the whole file, and it stayed green after that token was deleted from the `reg
+// query` line — because the comment explaining it still said `2^>nul`. A detector
+// satisfied by prose is a detector that has stopped detecting, which by now is this
+// file's most-repeated lesson.
+func stripBatchComments(s string) string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.ToUpper(strings.TrimSpace(line))
+		if strings.HasPrefix(trimmed, "REM ") || strings.HasPrefix(trimmed, "REM\t") || trimmed == "REM" ||
+			strings.HasPrefix(trimmed, "::") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 func stripXMLComments(s string) string {
 	re := regexp.MustCompile(`(?s)<!--.*?-->`)
 	for {
@@ -805,31 +826,194 @@ func TestMSILicensePageCarriesOurLicenseText(t *testing.T) {
 	}
 }
 
-// TestSetupHandoffUsesTheFileKey — the Finish step must address the wrapper by its MSI FILE
-// KEY, not by pasting a directory onto a filename.
+// TestSetupHandoffCarriesNoDataThroughTheShell — the Finish-page hand-off must put
+// NOTHING on the command line except a title and a bare filename.
 //
-// [INSTALLFOLDER]orchicon-setup.cmd assumes the folder the wizard ended up using is the one
-// this action believes it is. [#SetupCmdFile] asks the database where that file actually went.
-// Reported from a real install: the wizard reached Finish and Windows raised "cannot find
-// C:\Users\...\Orchicon\orchicon-setup.cmd" — on a package whose cab provably contains it, so
-// a constructed path was the one thing that could be wrong while looking right.
-func TestSetupHandoffUsesTheFileKey(t *testing.T) {
-	// Comments stripped for the same reason as above: the comment beside the custom action
-	// quotes the [INSTALLFOLDER]orchicon-setup.cmd form in order to explain why it is wrong.
+// THE REPORT: the installer finished and opened a console saying
+//
+//	'C:\Users\justi\AppData\Local\Programs\Orchicon\orchicon-setup.cmd"  "dev" "'
+//	is not recognized as an internal or external command
+//
+// The action used to end with  "[#SetupCmdFile]" "[INSTANCE]" "[RUNTIMEIMAGES]".
+// RUNTIMEIMAGES has no default — it must be UNSET rather than "none", or the setup's own
+// runtime-image prompt is skipped — so that last token resolved to an EMPTY QUOTED STRING.
+// The command then crossed MSI's command-line building, `cmd /c` and `start`, and a quote
+// was eaten at each end: cmd was handed the PATH as a COMMAND NAME.
+//
+// Three shells is too many to thread quoted data through, so none is threaded. The
+// wizard's answers go into the registry (see TestSetupConfigReachesTheWrapper) and the
+// wrapper is named bare, in the working directory Directory="INSTALLFOLDER" already sets.
+func TestSetupHandoffCarriesNoDataThroughTheShell(t *testing.T) {
 	body := stripXMLComments(readMSIFile(t, wxs()))
-	if !strings.Contains(body, `[#SetupCmdFile]`) {
-		t.Error("the Finish-page hand-off does not use [#SetupCmdFile].\n" +
-			"  A path assembled from [INSTALLFOLDER] can disagree with where the file was placed;\n" +
-			"  the file-key formatter cannot.")
+
+	// Find the custom action's ExeCommand, whatever else the file says about it.
+	ca := regexp.MustCompile(`<CustomAction Id="LaunchSetup"[\s\S]*?ExeCommand="([^"]*)"`).FindStringSubmatch(body)
+	if ca == nil {
+		t.Fatal("no LaunchSetup custom action with an ExeCommand — the setup hand-off is gone")
 	}
-	if strings.Contains(body, `[INSTALLFOLDER]orchicon-setup.cmd`) {
-		t.Error("the Finish-page hand-off still builds the wrapper path from [INSTALLFOLDER].\n" +
-			"  That is the form that produced \"Windows cannot find ...orchicon-setup.cmd\".")
+	cmd := ca[1]
+
+	for _, forbidden := range []struct{ what, sub string }{
+		{"a wizard answer ([INSTANCE])", "[INSTANCE]"},
+		{"a wizard answer ([RUNTIMEIMAGES])", "[RUNTIMEIMAGES]"},
+		{"a file path ([#SetupCmdFile])", "[#SetupCmdFile]"},
+		{"any other property formatter", "[#"},
+	} {
+		if strings.Contains(cmd, forbidden.sub) {
+			t.Errorf("the hand-off puts %s on the command line:\n  %s\n"+
+				"  That value crosses MSI's command-line building, `cmd /c` and `start`, and an\n"+
+				"  empty one (RUNTIMEIMAGES is unset by design) loses a quote at each end — which\n"+
+				"  is how cmd came to be handed a path as a COMMAND NAME. Pass data through the\n"+
+				"  registry instead (SetupConfig), and name the wrapper BARE.",
+				forbidden.what, cmd)
+		}
 	}
-	// The wrapper must still be a shipped component, or the key resolves to nothing.
-	if !strings.Contains(body, `<File Id="SetupCmdFile"`) {
-		t.Error("orchicon-setup.cmd is no longer declared as a File with Id \"SetupCmdFile\" — " +
-			"[#SetupCmdFile] would resolve to nothing and the hand-off would silently not run")
+
+	// And it must be the bare-name form, in the action's own working directory.
+	if !strings.Contains(cmd, "orchicon-setup.cmd") {
+		t.Errorf("the hand-off does not run orchicon-setup.cmd:\n  %s", cmd)
+	}
+	if strings.Contains(cmd, `\\orchicon-setup.cmd`) || strings.Contains(cmd, `&quot;[`) {
+		t.Errorf("the hand-off quotes a PATH to the wrapper:\n  %s\n"+
+			"  Directory=\"INSTALLFOLDER\" already sets the working directory, so the bare name\n"+
+			"  resolves and nothing has to be quoted or concatenated.", cmd)
+	}
+	// A title is still wanted: `start` treats an unquoted first argument as the PROGRAM,
+	// so without one it would try to run "Orchicon".
+	if !strings.Contains(cmd, `start &quot;`) {
+		t.Errorf("the hand-off passes no window TITLE to `start`:\n  %s\n"+
+			"  `start` reads its first argument as the title only when it is QUOTED; unquoted it\n"+
+			"  is the program to run.", cmd)
+	}
+	// The action must still run in the install folder, or the bare name resolves elsewhere.
+	caBlock := regexp.MustCompile(`<CustomAction Id="LaunchSetup"[^>]*`).FindString(body)
+	if !strings.Contains(caBlock, `Directory="INSTALLFOLDER"`) {
+		t.Error("LaunchSetup no longer sets Directory=\"INSTALLFOLDER\" — the bare wrapper name " +
+			"would resolve against whatever directory the action inherited")
+	}
+}
+
+// TestSetupConfigReachesTheWrapper — the answers must have a route the shell cannot mangle.
+//
+// Both halves are needed and neither is obvious from the other: the MSI must WRITE the
+// two values, and the wrapper must READ them back. A change to either alone silently
+// reverts the setup to its defaults, which looks like "the wizard ignored what I chose".
+func TestSetupConfigReachesTheWrapper(t *testing.T) {
+	wxsBody := stripXMLComments(readMSIFile(t, wxs()))
+	for _, want := range []struct{ what, sub string }{
+		{"writes the instance", `Value="[INSTANCE]"`},
+		{"writes the runtime-image selection", `Value="[RUNTIMEIMAGES]"`},
+		{"uses the per-user hive (no elevation)", `Root="HKCU"`},
+		{"cleans up on uninstall", `Action="removeOnUninstall"`},
+	} {
+		if !strings.Contains(wxsBody, want.sub) {
+			t.Errorf("Orchicon.wxs does not %s (%q) — the wrapper would have nothing to read and "+
+				"the setup would silently use its defaults.", want.what, want.sub)
+		}
+	}
+	if !strings.Contains(wxsBody, `Key="Software\Orchicon\Setup"`) {
+		t.Error("Orchicon.wxs does not write the HKCU\\\\Software\\\\Orchicon\\\\Setup key — " +
+			"the key the wrapper reads")
+	}
+
+	// COMMENTS STRIPPED: the header of this script quotes both the broken command line and
+	// the `2^>nul` idiom, so raw-text assertions are satisfied by the explanation.
+	wrapper := stripBatchComments(readMSIFile(t, "..", "..", "deploy", "desktop", "windows", "orchicon-setup.cmd"))
+	for _, want := range []struct{ what, sub string }{
+		{"reads the key the MSI writes", `HKCU\Software\Orchicon\Setup`},
+		{"reads the instance", "Instance ORCHICON_INSTANCE"},
+		{"reads the runtime-image selection", "RuntimeImages ORCHICON_INSTALL_RUNTIME_IMAGES"},
+		{"asks the registry", "reg query"},
+	} {
+		if !strings.Contains(wrapper, want.sub) {
+			t.Errorf("orchicon-setup.cmd does not %s (%q) — the wizard's answers would be lost.",
+				want.what, want.sub)
+		}
+	}
+	// A MISSING KEY MUST BE SILENT. This runs on every install, and a red "ERROR: The
+	// system was unable to find the specified registry key" would be the first thing the
+	// operator sees on a perfectly good run.
+	if !strings.Contains(wrapper, "2^>nul") {
+		t.Error("the registry read does not suppress stderr — a missing key would print a " +
+			"scary error on every install, before anything has gone wrong")
+	}
+	// AND THE OLD ARGUMENT ROUTE MUST STILL WORK, so the script can be run by hand.
+	for _, want := range []string{`if not "%~1"==""`, `if not "%~2"==""`} {
+		if !strings.Contains(wrapper, want) {
+			t.Errorf("orchicon-setup.cmd no longer accepts %s — the wrapper is documented as "+
+				"hand-runnable, and install.ps1-style automation would break", want)
+		}
+	}
+}
+
+// TestWizardArtIsOurs — the wizard must draw our artwork, not WiX's red default.
+//
+// Reported from a real install: the page had a red/black pattern with nothing to do with
+// Orchicon, and it FLICKERED as the dialog repainted. The cause was simply that neither
+// WixUIBannerBmp nor WixUIDialogBmp was set, so WixUI fell back to its own bitmaps.
+//
+// The dimensions are the dialog layout's, not a preference: WiX draws the banner into a
+// 493x58 strip and the dialog panel into 493x312. A wrong-sized bitmap is stretched.
+func TestWizardArtIsOurs(t *testing.T) {
+	body := stripXMLComments(readMSIFile(t, wxs()))
+
+	for _, want := range []struct {
+		varID string
+		w, h  int
+		file  string
+	}{
+		{"WixUIBannerBmp", 493, 58, "wizard-banner.bmp"},
+		{"WixUIDialogBmp", 493, 312, "wizard-dialog.bmp"},
+	} {
+		// 1. the .wxs points at it
+		if !strings.Contains(body, `<WixVariable Id="`+want.varID+`"`) {
+			t.Errorf("Orchicon.wxs does not set %s — WiXUI falls back to its own red/black "+
+				"default art, which is what the operator saw (and saw flicker).", want.varID)
+			continue
+		}
+		// 2. the file exists, is a real BMP, and is the size the dialog draws into
+		raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "desktop", "windows", want.file))
+		if err != nil {
+			t.Errorf("missing %s: %v", want.file, err)
+			continue
+		}
+		if len(raw) < 54 || raw[0] != 'B' || raw[1] != 'M' {
+			t.Errorf("%s is not a BMP (a Windows bitmap starts with the bytes 'BM')", want.file)
+			continue
+		}
+		w := int(raw[18]) | int(raw[19])<<8 | int(raw[20])<<16 | int(raw[21])<<24
+		h := int(raw[22]) | int(raw[23])<<8 | int(raw[24])<<16 | int(raw[25])<<24
+		if h < 0 {
+			h = -h // a top-down BMP stores a negative height
+		}
+		if w != want.w || h != want.h {
+			t.Errorf("%s is %dx%d; the dialog draws %s into %dx%d and will stretch anything else",
+				want.file, w, h, want.varID, want.w, want.h)
+		}
+		// 3. it is 24-bit, not a palettised or alpha bitmap: WiX renders an alpha BMP on
+		//    an unpredictable background.
+		if bits := int(raw[28]) | int(raw[29])<<8; bits != 24 {
+			t.Errorf("%s is %d bits per pixel, want 24 (an alpha BMP renders on an "+
+				"unpredictable background)", want.file, bits)
+		}
+	}
+
+	// 4. EVERY BUILD SITE MUST STAGE THEM. WixVariable resolves through $(var.SourceDir),
+	//    so an unstaged file is a build error on windows-latest — six minutes away.
+	for _, site := range []struct{ what, path string }{
+		{"the Makefile", filepath.Join("..", "..", "Makefile")},
+		{"ci.yml", filepath.Join("..", "..", ".github", "workflows", "ci.yml")},
+		{"release.yml", filepath.Join("..", "..", ".github", "workflows", "release.yml")},
+		{"canary.yml", filepath.Join("..", "..", ".github", "workflows", "canary.yml")},
+	} {
+		src := readMSIFile(t, site.path)
+		for _, f := range []string{"wizard-banner.bmp", "wizard-dialog.bmp"} {
+			if !strings.Contains(src, f) {
+				t.Errorf("%s does not stage %s into the MSI source dir. WixVariable resolves it "+
+					"through $(var.SourceDir), so the build fails on windows-latest instead of here.",
+					site.what, f)
+			}
+		}
 	}
 }
 

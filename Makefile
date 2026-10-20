@@ -1265,6 +1265,10 @@ desktop-package-windows: ## Produce the Windows MSI (Windows host with the WiX C
 	cp -f deploy/desktop/windows/README-WINDOWS.txt $(MSI_SRC_DIR)/
 	cp -f deploy/desktop/windows/LICENSE.rtf $(MSI_SRC_DIR)/
 	cp -f deploy/desktop/windows/orchicon-desktop.ico $(MSI_SRC_DIR)/
+	@# THE WIZARD ART. WixVariable points at these through $(var.SourceDir), so a missing
+	@# file fails the build — this is the copy that stops that being a mystery.
+	cp -f deploy/desktop/windows/wizard-banner.bmp $(MSI_SRC_DIR)/
+	cp -f deploy/desktop/windows/wizard-dialog.bmp $(MSI_SRC_DIR)/
 	@# -arch x64: the release matrix builds windows/amd64 only (Windows on ARM runs
 	@# the amd64 package under emulation — see release.yml's matrix comment).
 	@# `-ext` resolves through WiX's OWN extension store, not NuGet, so the extension

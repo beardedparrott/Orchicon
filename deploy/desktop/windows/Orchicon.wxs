@@ -98,6 +98,19 @@
          Every build site now passes the variable; cmd/orchicon/windows_msi_test.go
          fails any of them that stops. -->
 
+    <!-- THE WIZARD ART, INSTEAD OF WIX'S OWN.
+         Without these two variables the WixUI dialogs fall back to WiX's default
+         bitmaps — a red/black pattern with nothing to do with Orchicon — and on the
+         reporter's machine that art visibly FLICKERED as the dialog repainted.
+         Sizes are fixed by the dialog layout, not by taste:
+             WixUIBannerBmp   493 x 58    the strip across the top of every page
+             WixUIDialogBmp   493 x 312   the panel on the welcome/finish pages
+         The files are generated from build/appicon.png by
+         deploy/desktop/windows/make-wizard-bitmaps.py and COMMITTED (the same
+         treatment as the .ico), so packaging never needs Python or a font. -->
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.SourceDir)\wizard-banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.SourceDir)\wizard-dialog.bmp" />
+
     <Icon Id="OrchiconIcon" SourceFile="$(var.SourceDir)\orchicon-desktop.ico" />
 
     <!-- PER-USER LOCATIONS ONLY. LocalAppDataFolder and the per-user Program Menu
@@ -135,6 +148,21 @@
              so the wizard's answers reach the child as %1/%2 with no nested quoting;
              see the header of orchicon-setup.cmd. -->
         <File Id="SetupCmdFile" Source="$(var.SourceDir)\orchicon-setup.cmd" KeyPath="yes" />
+      </Component>
+      <Component Id="SetupConfig" Guid="*">
+        <!-- THE WIZARD'S ANSWERS, WRITTEN WHERE THE WRAPPER CAN READ THEM.
+             MSI's Registry table is the normal way to persist a property; threading the
+             values through an ExeCommand into `cmd /c` into `start` is not, and is what
+             the "is not recognized as an internal or external command" report was.
+             Written by WriteRegistryValues, which completes before InstallFinalize — so
+             the values are there before the hand-off runs. Removed on uninstall.
+             An EMPTY RUNTIMEIMAGES writes an empty value, which the wrapper treats as
+             unset, preserving the setup's own prompt. -->
+        <RegistryKey Root="HKCU" Key="Software\Orchicon\Setup">
+          <RegistryValue Name="Instance" Type="string" Value="[INSTANCE]" KeyPath="yes" />
+          <RegistryValue Name="RuntimeImages" Type="string" Value="[RUNTIMEIMAGES]" />
+        </RegistryKey>
+        <RemoveRegistryKey Root="HKCU" Key="Software\Orchicon\Setup" Action="removeOnUninstall" />
       </Component>
       <Component Id="ReadmeFile" Guid="*">
         <File Id="ReadmeTxtFile" Source="$(var.SourceDir)\README-WINDOWS.txt" KeyPath="yes" />
@@ -190,6 +218,26 @@
          argument of `start` is the window TITLE, which is why the wrapper path is
          quoted as the second argument.
 
+         NO PROPERTIES AND NO PATH ON THE COMMAND LINE — and that is the fix for
+         "orchicon-setup.cmd" "dev" "" is not recognized as an internal or external
+         command'.
+
+         This action used to end with  "[#SetupCmdFile]" "[INSTANCE]" "[RUNTIMEIMAGES]".
+         RUNTIMEIMAGES has no default (it must be UNSET, not "none", so the setup's own
+         prompt stays alive), so that last token resolved to an EMPTY quoted string. The
+         result crossed MSI's command-line building AND `cmd /c` AND `start`, and one
+         quote at each end was consumed on the way: cmd was handed
+         `C:\...\orchicon-setup.cmd"  "dev" "` — the path as a COMMAND NAME — and said
+         so in exactly those words.
+
+         THREE SHELLS IS TOO MANY TO THREAD QUOTED DATA THROUGH. So none is threaded:
+           * the wizard's answers go into the registry (SetupConfig, below), which is
+             how MSI normally carries data, and the wrapper reads them back;
+           * the wrapper is named BARE — its directory is this action's working
+             directory, already set by Directory="INSTALLFOLDER" — so no path is quoted
+             and there is no concatenation to get wrong;
+           * what is left is one quoted TITLE and one filename.
+
          [#SetupCmdFile] IS THE MSI'S OWN PATH FOR THAT FILE, and it is not the same
          thing as pasting a directory onto a filename. [INSTALLFOLDER]orchicon-setup.cmd
          ASSUMES the folder the wizard ended up using is the one this action thinks it
@@ -204,7 +252,7 @@
                   Execute="immediate"
                   Impersonate="yes"
                   Return="asyncNoWait"
-                  ExeCommand="cmd.exe /c start &quot;Orchicon setup&quot; &quot;[#SetupCmdFile]&quot; &quot;[INSTANCE]&quot; &quot;[RUNTIMEIMAGES]&quot;" />
+                  ExeCommand="cmd.exe /c start &quot;Orchicon setup&quot; orchicon-setup.cmd" />
 
     <InstallExecuteSequence>
       <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent:
