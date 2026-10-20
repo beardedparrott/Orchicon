@@ -15,8 +15,11 @@
   definitions stay in one compiled unit — WiX resolves dialog references across the merged
   fragments, and the UI sequence is overridden in Orchicon.wxs where the rest of the flow is.
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+<!-- WIX0048: an INCLUDED file is rooted at <Include>, not <Wix>. WiX rejects a <Wix> document
+     element here because the include is spliced INTO the parent document, and two document
+     elements would make an incorrectly structured document. -->
+<Include xmlns="http://wixtoolset.org/schemas/v4/wxs"
+         xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
 
   <Fragment>
     <!-- ===================== WHICH INSTANCE =====================
@@ -24,7 +27,7 @@
          what the CLI and the one-line install default to, so the wizard and the script agree. -->
     <UI>
       <Dialog Id="InstanceDlg" Width="370" Height="270" Title="[ProductName] Setup">
-        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.OrchiconBanner)" />
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
@@ -57,7 +60,7 @@
            derived from the instance (and offset per instance), so putting sixteen fields here
            would be a wall of numbers for values nobody wants to change. -->
       <Dialog Id="PortsDlg" Width="370" Height="270" Title="[ProductName] Setup">
-        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.OrchiconBanner)" />
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
@@ -94,7 +97,7 @@
            never opts in needs no image at all. Pulling multi-GB layers up front made every
            install pay for a feature it might never use. -->
       <Dialog Id="ImagesDlg" Width="370" Height="270" Title="[ProductName] Setup">
-        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.OrchiconBanner)" />
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
@@ -125,4 +128,4 @@
       </Dialog>
     </UI>
   </Fragment>
-</Wix>
+</Include>
