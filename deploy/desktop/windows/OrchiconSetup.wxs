@@ -28,11 +28,10 @@
   does, and it now invokes it directly (FileRef) with "install" plus the instance flag: no cmd, no
   start, no wrapper script to get wrong.
 
-  SKIPSETUP=1 IS PASSED BY THIS BUNDLE. Not to skip the setup — but because the setup would
-  otherwise prompt inside a custom action while the BUNDLE is showing "Installing", which is
-  two UIs at once. The bundle tells the operator what it is doing and then lets the setup open
-  its own console at the end. Pass SKIPSETUP=1 yourself on the command line to install the
-  binaries only.
+  THE SETUP RUNS FROM THE BUNDLE. The MSI's last step opens its own console, asks which
+  instance and which ports, and starts the plane — because an installer that leaves the
+  operator with binaries and a list of commands has not installed the product. Pass
+  SKIPSETUP=1 yourself on the command line to install the binaries only.
 
   BUILDING: same WiX CLI as the MSI, plus the Bal extension (a separate NuGet package, and the
   same two-step install dance — `wix extension add` before `-ext` can name it):
@@ -92,8 +91,21 @@
            bundle's BA decides, and the standard BA does NOT display a package's internal UI. So
            a person sees one wizard, which is the point.
 
-           SKIPSETUP=1 is passed so the setup does not try to prompt underneath the bundle's own
-           progress. `Repair`/`Uninstall` are left to the bundle, which forwards to the package.
+           THE SETUP RUNS. `SKIPSETUP` IS NOT PASSED, and that is a CORRECTION.
+           It was passed to avoid two windows competing for attention, and the effect was much
+           worse than the problem: SKIPSETUP=1 means the MSI's last step never runs, so a fresh
+           install finished in seconds, installed the binaries, started no plane, and left the
+           desktop app opening onto
+               "the control plane is not reachable (502) ... is it running?"
+           The installer is supposed to be ALL ENCOMPASSING: the operator gets their plane, not
+           a set of binaries and a list of commands to run afterwards.
+
+           So the MSI's hand-off runs at the end, opens its own console, asks which instance and
+           which ports, and starts the plane. That console appearing alongside the bundle's
+           progress is the intended shape: the bundle reports the INSTALL, the console runs the
+           SETUP, and the bundle finishes while the setup continues.
+
+           `Repair`/`Uninstall` are left to the bundle, which forwards to the package.
 
            SCOPE IS NOT SET HERE ON PURPOSE. The package is per-user (see Orchicon.wxs), and Burn
            detects a package's scope from the MSI itself — there is no PerUser attribute, and
@@ -102,8 +114,11 @@
                   SourceFile="$(var.MsiPath)"
                   Vital="yes"
                   Compressed="yes">
+        <!-- THE INSTANCE IS A DEFAULT, NOT A DECISION. The setup console asks, and shows this
+             as the default (so `OrchiconSetup.exe Instance=prod` still changes it). Passing it
+             is how the MSI property reaches the binary; the prompt is where the operator gets
+             the final say. -->
         <MsiProperty Name="INSTANCE" Value="[Instance]" />
-        <MsiProperty Name="SKIPSETUP" Value="1" />
       </MsiPackage>
     </Chain>
   </Bundle>

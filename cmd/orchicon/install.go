@@ -143,6 +143,23 @@ func runInstall(args []string, log *slog.Logger) error {
 	if ttyOwned {
 		defer tty.Close()
 	}
+	// 1.6a-bis. WHICH INSTANCE, ASKED OUT LOUD WHEN THERE IS SOMEBODY TO ASK.
+	//
+	// The instance decides the whole stack — its ports, its data dir, its plane — and until now
+	// the only place it was ever PUT TO a person was scripts/install.ps1. A run driven by the MSI
+	// (or by `orchicon install` straight from a fresh console) silently took the default, so an
+	// operator who expected to be asked got `dev` without being told.
+	//
+	// THE INSTALLER IS SUPPOSED TO BE ALL ENCOMPASSING, so it asks here too. `instance` is
+	// whatever the flag, the environment or the MSI property already decided, and it is offered
+	// as the DEFAULT — pressing ENTER keeps it, which is what makes an unattended run and an
+	// answered run agree. promptOut is used rather than stdout so the question lands on the
+	// terminal even when stdout is captured.
+	if tty != nil {
+		if chosen, ok := askInstance(tty, instance); ok {
+			instance = chosen
+		}
+	}
 	// THE PROMPT GOES TO THE TERMINAL, NOT TO STDOUT, whenever there is a terminal.
 	// In every normal run those are the same place. They are NOT the same place when
 	// something wraps this installer and captures its stdout — which is exactly what

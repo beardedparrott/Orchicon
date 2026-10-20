@@ -33,15 +33,42 @@ HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 SOURCE_ICON = REPO / "cmd" / "orchicon-desktop" / "build" / "appicon.png"
 
-BANNER = (493, 58)   # WixUI_Bmp_Banner
-DIALOG = (493, 312)  # WixUI_Bmp_Dialog
+# THE SIZES ARE THE DIALOG LAYOUT'S, AND GETTING THEM WRONG IS SILENT.
+#
+# These were 493x58 / 493x312 — the BURN standard-BA theme's sizes, which is a different
+# wizard. WixUI (the MSI's wizard) draws its banner into a 370x44 control and its dialog panel
+# into 370x234:
+#
+#   LicenseAgreementDlg: <Control Id="BannerBitmap" Width="370" Height="44" />
+#   WelcomeDlg:         <Control Id="Bitmap"       Width="370" Height="234" />
+#
+# So a 493-wide bitmap was being SCALED into a 370-wide box — squashed, which is what the
+# operator saw ("misplaced alignment on text"), with the left edge smeared into an odd strip.
+BANNER = (370, 44)   # WixUI_Bmp_Banner
+DIALOG = (370, 234)  # WixUI_Bmp_Dialog
 
-# The app icon's own background, sampled from appicon.png. Using it means the icon's
-# anti-aliased edges composite onto a background of exactly the colour they were drawn
-# against, so no halo appears where the two meet.
-BG_TOP = (15, 31, 26)
-BG_BOTTOM = (10, 21, 18)
-WORDMARK = (236, 245, 242)
+# THE DIALOG DRAWS ITS OWN TEXT ON TOP OF THESE BITMAPS, IN THE SYSTEM'S TEXT COLOUR — which is
+# near-black. Artwork behind that text must therefore be LIGHT, or the wizard is unreadable.
+#
+# That is the second half of what the operator reported: "the text font color was hard to see on
+# the green background". A dark brand panel is fine where nothing is written, and fatal underneath
+# a caption. So the layout follows WiX's own text positions rather than taste:
+#
+#   WelcomeDlg    Title/Description at X=135, width 220  -> the RIGHT of the dialog must be light
+#   *Dlg banner   Title at X=15 W=200, Description X=25 W=340 -> the WHOLE banner must be light
+#
+# Hence: a narrow brand sidebar where no text is drawn, and a plain light field everywhere the
+# wizard writes anything.
+PANEL_TOP = (15, 31, 26)      # the brand sidebar (no text lands here)
+PANEL_BOTTOM = (10, 21, 18)
+PAGE_TOP = (250, 252, 251)    # the text field: near-white, so the system's dark text reads
+PAGE_BOTTOM = (240, 244, 242)
+ACCENT = (45, 140, 136)       # the mark's own teal, as a 2px rule
+WORDMARK = (236, 245, 242)    # only used on the dark panel, where it is legible
+
+# WHERE WIX STARTS WRITING. WelcomeDlg puts Title/Description at X=135, so everything from here
+# right is the page; the sidebar is what is left.
+TEXT_LEFT = 130
 
 # WiX wants a real BMP. 24-bit RGB (no alpha channel): an alpha BMP is accepted by some
 # tools and silently rendered with a black background by others, and the wizard
@@ -51,19 +78,20 @@ def save_bmp(im: Image.Image, path: pathlib.Path) -> None:
     print(f"  wrote {path.relative_to(REPO)}  {im.size[0]}x{im.size[1]}  {path.stat().st_size} bytes")
 
 
-def gradient(size: tuple[int, int]) -> Image.Image:
-    """A vertical gradient, painted one row at a time — small enough to be free."""
+def vgradient(size: tuple[int, int], top: tuple[int, int, int],
+               bottom: tuple[int, int, int]) -> Image.Image:
+    """A vertical gradient, painted a row at a time — small enough to be free."""
     w, h = size
-    im = Image.new("RGB", size, BG_TOP)
+    im = Image.new("RGB", size, top)
     d = ImageDraw.Draw(im)
     for y in range(h):
         t = y / max(h - 1, 1)
         d.line(
             [(0, y), (w, y)],
             fill=(
-                round(BG_TOP[0] + (BG_BOTTOM[0] - BG_TOP[0]) * t),
-                round(BG_TOP[1] + (BG_BOTTOM[1] - BG_TOP[1]) * t),
-                round(BG_TOP[2] + (BG_BOTTOM[2] - BG_TOP[2]) * t),
+                round(top[0] + (bottom[0] - top[0]) * t),
+                round(top[1] + (bottom[1] - top[1]) * t),
+                round(top[2] + (bottom[2] - top[2]) * t),
             ),
         )
     return im
@@ -87,38 +115,40 @@ def scaled_icon(height: int) -> Image.Image:
 
 
 def make_banner() -> Image.Image:
+    """370 x 44, and LIGHT THROUGHOUT: the banner carries the page Title at X=15..215 and its
+    Description at X=25..365, so there is no region of it free of text."""
     w, h = BANNER
-    im = gradient(BANNER)
-    logo = scaled_icon(h - 12)  # 6px clear above and below
-    im.paste(logo, (10, 6), logo)
-
-    font = load_font(22)
-    if font is not None:
-        d = ImageDraw.Draw(im)
-        text = "Orchicon"
-        # +4 because "Orchicon" has no descender; keeps optical centring rather than
-        # metric centring, which sits a couple of pixels high.
-        d.text((10 + logo.width + 12, (h - 22) // 2 - 2 + 4), text, font=font, fill=WORDMARK)
+    im = vgradient(BANNER, PAGE_TOP, PAGE_BOTTOM)
+    # A brand rule along the bottom, 2px, which no text touches (Title is Y=6..21 of 44).
+    ImageDraw.Draw(im).rectangle([(0, h - 2), (w, h - 1)], fill=ACCENT)
+    # Small mark at the far right, clear of the Description's 25..365 span is impossible at this
+    # width, so it goes in the corner ABOVE the rule and BELOW the text baseline: 30px tall in a
+    # 44px strip leaves 7px top and bottom, and the Description starts at Y=23. Keep it out of the
+    # way entirely instead — a banner with no logo, and the brand carried by the dialog panel.
     return im
 
 
 def make_dialog() -> Image.Image:
-    w, h = DIALOG
-    im = gradient(DIALOG)
-    logo = scaled_icon(int(h * 0.56))
-    im.paste(logo, ((w - logo.width) // 2, (h - logo.height) // 2), logo)
+    """370 x 234: brand sidebar on the left, plain light page on the right.
 
-    font = load_font(26)
+    WelcomeDlg and friends write their Title and Description at X=135, so the sidebar stops at
+    130 and nothing of ours sits under their text."""
+    w, h = DIALOG
+    im = vgradient(DIALOG, PAGE_TOP, PAGE_BOTTOM)
+    # The sidebar: dark, because nothing is written on it, so the light wordmark is legible.
+    panel = vgradient((TEXT_LEFT, h), PANEL_TOP, PANEL_BOTTOM)
+    im.paste(panel, (0, 0))
+    ImageDraw.Draw(im).rectangle([(TEXT_LEFT - 2, 0), (TEXT_LEFT - 1, h)], fill=ACCENT)
+
+    logo = scaled_icon(84)
+    im.paste(logo, ((TEXT_LEFT - logo.width) // 2, 44), logo)
+
+    font = load_font(20)
     if font is not None:
         d = ImageDraw.Draw(im)
         text = "Orchicon"
         tw = d.textlength(text, font=font)
-        d.text(
-            ((w - tw) / 2, (h - logo.height) / 2 + logo.height + 14),
-            text,
-            font=font,
-            fill=WORDMARK,
-        )
+        d.text(((TEXT_LEFT - tw) / 2, 44 + logo.height + 14), text, font=font, fill=WORDMARK)
     return im
 
 
