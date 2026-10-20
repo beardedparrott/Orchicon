@@ -329,7 +329,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          wix extension add -g WixToolset.Bal.wixext/5.0.2
+          wix extension add -g WixToolset.BootstrapperApplications.wixext/5.0.2
 
       - name: Build the Burn bundle (OrchiconSetup.exe)
         shell: pwsh
@@ -339,7 +339,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $msi = (Resolve-Path "dist/desktop/orchicon_canary_windows_amd64.msi").Path
           $src = (Resolve-Path "dist/msi-src").Path
-          wix build deploy/desktop/windows/OrchiconSetup.wxs -ext WixToolset.Bal.wixext `
+          wix build deploy/desktop/windows/OrchiconSetup.wxs -ext WixToolset.BootstrapperApplications.wixext `
             -d "Version=0.0.${{ github.run_number }}" -d "MsiPath=$msi" -d "LicenseRtf=$src\LICENSE.rtf" `
             -outputtype bundle -o "dist/desktop/OrchiconSetup_canary_windows_amd64.exe"
           Get-Item "dist/desktop/OrchiconSetup_canary_windows_amd64.exe" | ForEach-Object {

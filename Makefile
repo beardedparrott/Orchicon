@@ -1301,9 +1301,9 @@ desktop-package-windows-bundle: ## Produce OrchiconSetup.exe (the Burn bundle ar
 		exit 1; }
 	@test -f "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi" || { \
 		echo "error: the MSI is missing — run 'make desktop-package-windows' first (the bundle wraps it)"; exit 1; }
-	$(WIX) extension add -g WixToolset.Bal.wixext/$(WIX_VERSION) || true
+	$(WIX) extension add -g WixToolset.BootstrapperApplications.wixext/$(WIX_VERSION) || true
 	$(WIX) build deploy/desktop/windows/OrchiconSetup.wxs \
-		-ext WixToolset.Bal.wixext \
+		-ext WixToolset.BootstrapperApplications.wixext \
 		-d Version=$(DESKTOP_VERSION) \
 		-d MsiPath=$(abspath $(DESKTOP_DIST))/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi \
 		-d LicenseRtf=$(abspath $(MSI_SRC_DIR))/LICENSE.rtf \

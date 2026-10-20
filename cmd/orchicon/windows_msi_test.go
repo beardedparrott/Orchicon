@@ -283,12 +283,37 @@ func TestBurnBundleWrapsTheMSI(t *testing.T) {
 		src := readMSIFile(t, site.path)
 		for _, want := range []struct{ what, sub string }{
 			{"builds the bundle", "OrchiconSetup.wxs"},
-			{"names the Bal extension on the build", "-ext WixToolset.Bal.wixext"},
-			{"installs the Bal extension first (or -ext cannot resolve it)", "WixToolset.Bal.wixext/"},
+			// THE PACKAGE ID AND THE DLL NAME MUST MATCH. `wix extension add -g <id>/<ver>`
+			// resolves `-ext <id>` to <id>/<ver>/wixext5/<id>.dll, so an id whose DLL is named
+			// differently cannot be found — exactly how this failed first:
+			//   error WIX0144: The extension 'WixToolset.Bal.wixext' could not be found.
+			//          Checked paths: …\WixToolset.Bal.wixext\5.0.2\wixext5\WixToolset.Bal.wixext.dll
+			// …while that package ships WixToolset.BootstrapperApplications.wixext.dll.
+			{"names the bundle extension on the build", "-ext WixToolset.BootstrapperApplications.wixext"},
+			{"installs it first (or -ext cannot resolve it)", "WixToolset.BootstrapperApplications.wixext/"},
 		} {
 			if !strings.Contains(src, want.sub) {
 				t.Errorf("%s does not show that it %s (%q)", site.what, want.what, want.sub)
 			}
+		}
+	}
+
+	// THE MISMATCHED ID MUST NOT COME BACK. It LOOKS like the right package (it is the one
+	// documented as "the Bal extension") and its DLL is named differently, so WiX reports
+	// WIX0144 and the build dies six minutes in.
+	for _, site := range []string{"Makefile", ".github/workflows/ci.yml",
+		".github/workflows/canary.yml", ".github/workflows/release.yml"} {
+		var body string
+		if site == "Makefile" {
+			body = readMSIFile(t, "..", "..", "Makefile")
+		} else {
+			body = readMSIFile(t, "..", "..", ".github", "workflows", filepath.Base(site))
+		}
+		if strings.Contains(body, "WixToolset.Bal.wixext") {
+			t.Errorf("%s references WixToolset.Bal.wixext. That PACKAGE ships "+
+				"WixToolset.BootstrapperApplications.wixext.dll, so `-ext WixToolset.Bal.wixext` "+
+				"fails with WIX0144 (WiX looks for a DLL named after the id). Use the "+
+				"BootstrapperApplications id.", site)
 		}
 	}
 
