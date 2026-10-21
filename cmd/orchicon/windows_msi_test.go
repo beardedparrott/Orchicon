@@ -1654,3 +1654,101 @@ func TestImagePageOffersMoreThanTheExtremes(t *testing.T) {
 			"receive an empty --runtime-images value")
 	}
 }
+
+// TestInstallFailsWhenTheServicesDoNotComeUp — the install must never report success over a stack
+// that is not there.
+//
+// REPORTED: "It seemed to install but nothing is running", with a plane that could not reach
+// postgres on 5432. Three defects stacked into that one sentence:
+//
+//  1. install.go called waitServicesReady(...) and DISCARDED its bool, so it started the plane
+//     on top of nothing and carried on;
+//  2. the supervisor logged "postgres did not become ready" and then KEPT RUNNING, so nothing
+//     downstream could tell it had failed and `orchicon status` still called it running;
+//  3. nothing pointed the operator at services.log, where the actual cause is written.
+//
+// A wizard that finishes into a broken instance has not installed the product, whatever the exit
+// code says. Asserted on the source because the behaviour needs a broken host to exercise.
+func TestInstallFailsWhenTheServicesDoNotComeUp(t *testing.T) {
+	install := readMSIFile(t, "..", "..", "cmd", "orchicon", "install.go")
+
+	// (1) the return value must be USED.
+	if strings.Contains(install, "waitServicesReady(instance, ports, os.Stdout)\n") {
+		t.Error("install.go discards waitServicesReady's result again. That is the defect: the " +
+			"install starts the plane over a stack that is not there and reports success.")
+	}
+	if !strings.Contains(install, "!waitServicesReady(") && !strings.Contains(install, "ready := waitServicesReady(") {
+		t.Error("install.go does not branch on waitServicesReady — a services stack that never came " +
+			"up would still be reported as a successful install")
+	}
+	if !strings.Contains(install, "servicesNotReadyError") {
+		t.Error("install.go does not produce a services-not-ready error, so a failure would name nothing")
+	}
+
+	// (2) the error must CARRY THE CAUSE, not just say "failed".
+	host := readMSIFile(t, "..", "..", "cmd", "orchicon", "install_host.go")
+	for _, want := range []struct{ what, sub string }{
+		{"it names the services log", `filepath.Join(hostDataDir, "services.log")`},
+		// THE CALL, NOT THE DEFINITION. `"tailLines("` is satisfied by `func tailLines(` alone, so
+		// emptying the call still passed — a control caught it. The argument list is what
+		// distinguishes a function that is called from one that merely exists.
+		{"it quotes the tail of that log", "tailLines(logPath"},
+		{"it treats a MISSING log as its own finding", "did not start"},
+		{"it says the install is resumable", "orchicon install"},
+	} {
+		if !strings.Contains(host, want.sub) {
+			t.Errorf("servicesNotReadyError does not show that %s (%q)", want.what, want.sub)
+		}
+	}
+
+	// (3) the supervisor must not outlive a failed critical chain.
+	svc := readMSIFile(t, "..", "..", "cmd", "orchicon", "host_services.go")
+	for _, comp := range []string{"postgres", "nats"} {
+		i := strings.Index(svc, comp+" did not become ready")
+		if i < 0 {
+			t.Errorf("no %q failure branch in host_services.go — the supervisor would carry on "+
+				"without it, holding the ports and the PID file while nothing works", comp)
+			continue
+		}
+		branch := svc[i:]
+		if end := strings.Index(branch, "\n\t}"); end > 0 {
+			branch = branch[:end]
+		}
+		if !strings.Contains(branch, "return 1") {
+			t.Errorf("%s failing does not stop the supervisor. A supervisor with no database "+
+				"supervises nothing: it keeps the ports, keeps the PID file, and `orchicon status` "+
+				"calls it running.", comp)
+		}
+	}
+}
+
+// TestTailLinesIsABoundedTail — the failure path must not try to read a 200 MB log into memory to
+// show the last twenty-five lines.
+func TestTailLinesIsABoundedTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "services.log")
+
+	var b strings.Builder
+	for i := 0; i < 5000; i++ {
+		fmt.Fprintf(&b, "line %d of a long services log\n", i)
+	}
+	b.WriteString("postgres did not become ready: initdb failed\n")
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := tailLines(path, 25)
+	if !strings.Contains(got, "postgres did not become ready") {
+		t.Error("tailLines did not keep the LAST line, which is the one that matters")
+	}
+	if strings.Contains(got, "line 0 of") {
+		t.Error("tailLines returned the head of the file rather than its tail")
+	}
+	if n := len(strings.Split(got, "\n")); n > 26 {
+		t.Errorf("tailLines returned %d lines, want at most 25", n)
+	}
+	if tailLines(filepath.Join(dir, "absent.log"), 25) != "" {
+		t.Error("a missing log must return empty, not an error: this runs on a failure path and " +
+			"must not replace the real error with a second one")
+	}
+}

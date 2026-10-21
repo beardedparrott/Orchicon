@@ -89,11 +89,22 @@ func runHostServices(args []string) int {
 	}
 
 	// Critical chain: postgres -> nats. Block on each so neither is raced.
+	//
+	// A FAILURE HERE ENDS THE SUPERVISOR, and that is a correction. These used to log and carry
+	// on, so a supervisor whose DATABASE never started stayed alive: it held the PID file and the
+	// ports, `orchicon status` called it running, and the install — which waits for postgres —
+	// simply timed out and (in the old code) started the plane anyway. The operator's report was
+	// "it seemed to install but nothing is running".
+	//
+	// A supervisor with no database supervises nothing. Exiting makes the failure immediate,
+	// named, and visible in the log the install then quotes back.
 	if err := sup.startAndWait(ctx, sup.postgresProc(), 120*time.Second); err != nil {
-		log.Error("postgres did not become ready", "error", err)
+		log.Error("postgres did not become ready — stopping the services; nothing downstream can work", "error", err)
+		return 1
 	}
 	if err := sup.startAndWait(ctx, sup.natsProc(), 60*time.Second); err != nil {
-		log.Error("nats did not become ready", "error", err)
+		log.Error("nats did not become ready — stopping the services; the plane needs its event bus", "error", err)
+		return 1
 	}
 
 	// Telemetry plane (optional). Spawned in parallel; nothing gates on it

@@ -349,7 +349,19 @@ func runInstall(args []string, log *slog.Logger) error {
 	// 4c. The services are up, so wait for them and then start the plane on THIS host. Waiting first keeps the
 	// plane's migrations from racing a half-started postgres.
 	{
-		waitServicesReady(instance, ports, os.Stdout)
+		// THE RETURN VALUE IS THE POINT, AND IT USED TO BE THROWN AWAY.
+		//
+		// This read `waitServicesReady(instance, ports, os.Stdout)` and ignored the bool, so an
+		// install whose DATABASE NEVER CAME UP went on to start the plane anyway, found nothing
+		// to talk to, and reported success. The operator's experience was an installer that
+		// finished cleanly and a product where nothing ran — with the real cause buried in a
+		// services log nobody had been told about.
+		//
+		// A services stack that is not up makes the rest of the install meaningless, so this is
+		// now fatal, and it names the log that says why.
+		if !waitServicesReady(instance, ports, os.Stdout) {
+			return servicesNotReadyError(instance, hostDataDirFor(instance))
+		}
 		if err := startHostPlane(instance, ports, hostDir, filepath.Join(socketDir, "runtime.sock"), os.Stdout); err != nil {
 			return err
 		}
