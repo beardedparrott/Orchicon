@@ -45,6 +45,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -205,4 +206,37 @@ func TerminateProcess(pid int) error {
 		return fmt.Errorf("terminate process %d: %w", pid, err)
 	}
 	return nil
+}
+
+// TerminateProcessTree terminates a process AND EVERYTHING IT SPAWNED.
+//
+// WHY THIS EXISTS ALONGSIDE TerminateProcess. TerminateProcess ends ONE process. The services
+// supervisor's children — postgres, nats, the telemetry backends — are separate processes, so
+// stopping the supervisor left them RUNNING: postgres kept the data directory's postmaster.pid
+// lock and its port, and the next install's postgres refused to start against it.
+//
+//	started component=postgres pid=1604
+//	FATAL:  lock file "postmaster.pid" already exists
+//	HINT:  Is another postmaster (PID 26376) running in data directory "…/orchicon-dev/postgres"?
+//
+// taskkill /T is the documented way to terminate a process tree on Windows. It is a child
+// process rather than a syscall, so it can fail where TerminateProcess would not — which is
+// why the caller still gets a useful error and the lock sweep covers the residue.
+func TerminateProcessTree(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("refusing to terminate pid %d", pid)
+	}
+	if pid == os.Getpid() {
+		return fmt.Errorf("refusing to terminate this process (pid %d)", pid)
+	}
+	// The tree first: it reaps the children.
+	if out, err := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").CombinedOutput(); err == nil {
+		return nil
+	} else {
+		// FALL BACK to terminating the supervisor itself. The children may survive — the lock
+		// sweep exists for exactly that — but the supervisor is the thing that was asked to
+		// stop, so it must go.
+		_ = out
+	}
+	return TerminateProcess(pid)
 }

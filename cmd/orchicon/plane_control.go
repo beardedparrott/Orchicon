@@ -107,3 +107,14 @@ func planeEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket 
 }
 func envWithout(env []string, keys ...string) []string { return planecontrol.EnvWithout(env, keys...) }
 func bridgeIP() (string, error)                        { return planecontrol.BridgeIP() }
+
+// terminateProcessTree stops a process and everything it spawned.
+//
+// THE UNIX HALF IS THE GROUP KILL, and it is exact: the supervisor was started with
+// setProcAttrBackground (the setsid analogue), so it leads its own process group, and signalling
+// that group reaches every child — postgres, nats, the telemetry backends — at once.
+//
+// THAT IS WHY THE WINDOWS HALF NEEDS SOMETHING ELSE. There is no process-group signal to
+// deliver on Windows, and TerminateProcess ends one process, so a stopped supervisor leaves its
+// children running. See planecontrol.TerminateProcessTree.
+func terminateProcessTree(pid int) error { return planecontrol.TerminateProcessTree(pid) }
