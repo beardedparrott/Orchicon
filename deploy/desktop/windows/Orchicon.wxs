@@ -91,6 +91,15 @@
          absent pin, so blank fields need no special case. -->
     <Property Id="CONTROLPORT" Secure="yes" />
     <Property Id="POSTGRESPORT" Secure="yes" />
+    <Property Id="LOKIPORT" Secure="yes" />
+    <Property Id="TEMPOPORT" Secure="yes" />
+    <!-- THE IMAGE CHECKBOXES AND THE MODE RADIO. The three boxes are individual selections; the
+         radio chooses between "none" and "choose". RUNTIMEIMAGES is what the install reads, and
+         it is written from these by the publish chain on Next. -->
+    <Property Id="IMAGESMODE" Value="none" Secure="yes" />
+    <Property Id="IMAGE1" Secure="yes" />
+    <Property Id="IMAGE2" Secure="yes" />
+    <Property Id="IMAGE3" Secure="yes" />
     <!-- WHERE THE WIZARD'S QUESTIONS GO. The default (0) means "ask me": the setup step opens
          its own console and prompts. Set SKIPCONFIG=1 for an unattended run, where the values
          above must already be filled in. -->
@@ -235,7 +244,7 @@
                   Execute="immediate"
                   Impersonate="yes"
                   Return="asyncNoWait"
-                  ExeCommand="install --instance [INSTANCE] --port ORCHICON_CONTROL_PORT=[CONTROLPORT] --port ORCHICON_POSTGRES_PORT=[POSTGRESPORT] --runtime-images [RUNTIMEIMAGES]" />
+                  ExeCommand="install --non-interactive --instance [INSTANCE] --port ORCHICON_CONTROL_PORT=[CONTROLPORT] --port ORCHICON_POSTGRES_PORT=[POSTGRESPORT] --port ORCHICON_LOKI_PORT=[LOKIPORT] --port ORCHICON_TEMPO_PORT=[TEMPOPORT] --runtime-images [RUNTIMEIMAGES]" />
 
     <InstallExecuteSequence>
       <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent: a repair or
@@ -317,17 +326,32 @@
                  Text="Leave a box empty to use this instance's default. A port already in use is reported during setup." />
 
         <Control Id="ControlPortLabel" Type="Text" X="20" Y="62" Width="200" Height="15" NoPrefix="yes"
-                 Text="&amp;Control plane (web UI + API):" />
+                 Text="Control plane (web UI + API):" />
         <Control Id="ControlPortEdit" Type="Edit" X="230" Y="60" Width="70" Height="17"
                  Property="CONTROLPORT" Text="[CONTROLPORT]" />
 
         <Control Id="PostgresPortLabel" Type="Text" X="20" Y="88" Width="200" Height="15" NoPrefix="yes"
-                 Text="&amp;PostgreSQL:" />
+                 Text="PostgreSQL:" />
         <Control Id="PostgresPortEdit" Type="Edit" X="230" Y="86" Width="70" Height="17"
                  Property="POSTGRESPORT" Text="[POSTGRESPORT]" />
 
-        <Control Id="PortsHint" Type="Text" X="20" Y="120" Width="330" Height="60" Transparent="yes"
-                 Text="Orchicon offsets every other port (NATS, telemetry, traces, logs, metrics) per instance, so two instances never collide. The values bound are written down and printed at the end of setup." />
+        <!-- THE TWO MOST LIKELY TO COLLIDE WITH SOMETHING ALREADY INSTALLED. Loki and Tempo are
+             where an existing Grafana stack usually already sits, so they are offered; the other
+             nine in the table (NATS, OTLP gRPC/HTTP, Tempo's two receivers, VictoriaMetrics,
+             collector health) stay derived per instance. A wall of thirteen fields would bury
+             the four that matter. -->
+        <Control Id="LokiPortLabel" Type="Text" X="20" Y="114" Width="200" Height="15" NoPrefix="yes"
+                 Text="Loki (logs):" />
+        <Control Id="LokiPortEdit" Type="Edit" X="230" Y="112" Width="70" Height="17"
+                 Property="LOKIPORT" Text="[LOKIPORT]" />
+
+        <Control Id="TempoPortLabel" Type="Text" X="20" Y="140" Width="200" Height="15" NoPrefix="yes"
+                 Text="Tempo (traces):" />
+        <Control Id="TempoPortEdit" Type="Edit" X="230" Y="138" Width="70" Height="17"
+                 Property="TEMPOPORT" Text="[TEMPOPORT]" />
+
+        <Control Id="PortsHint" Type="Text" X="20" Y="170" Width="330" Height="50" Transparent="yes"
+                 Text="Blank means this instance's default. The remaining ports (NATS, telemetry, metrics) are offset per instance, so two instances never collide; everything bound is written down and printed at the end of setup." />
 
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
           <Publish Event="NewDialog" Value="InstanceDlg" />
@@ -353,13 +377,25 @@
         <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
                  Text="Optional container images for workflow runs. Downloading several GB now is not required." />
 
-        <Control Id="ImagesNone" Type="RadioButtonGroup" X="20" Y="62" Width="330" Height="80"
-                 Property="RUNTIMEIMAGES">
-          <RadioButtonGroup Property="RUNTIMEIMAGES">
+        <!-- REAL CHECKBOXES, WHICH REAL CHECKBOXES, WHICH THE runtime-images LIST FORM WAS BUILT FOR ALL ALONG.
+             Two bulk answers (none / all) covered the extremes and nothing in between, and "some"
+             is the common case: someone who wants the base image without two others' worth of GB.
+             Each box appends its number to RUNTIMEIMAGES; none ticked sends "none", which is what
+             the install already understands. -->
+        <Control Id="ImagesNone" Type="RadioButtonGroup" X="20" Y="58" Width="330" Height="44"
+                 Property="IMAGESMODE">
+          <RadioButtonGroup Property="IMAGESMODE">
             <RadioButton Value="none" X="0" Y="0" Width="330" Height="18" Text="None - local execution only (recommended, and the default)" />
-            <RadioButton Value="all" X="0" Y="22" Width="330" Height="18" Text="All published images - downloads several GB now" />
+            <RadioButton Value="choose" X="0" Y="22" Width="330" Height="18" Text="Choose individual images:" />
           </RadioButtonGroup>
         </Control>
+
+        <Control Id="Image1" Type="CheckBox" X="40" Y="112" Width="310" Height="17"
+                 Property="IMAGE1" CheckBoxValue="1" Text="Runtime base image (the default workflow runner)" />
+        <Control Id="Image2" Type="CheckBox" X="40" Y="134" Width="310" Height="17"
+                 Property="IMAGE2" CheckBoxValue="1" Text="Browser / Playwright image (for web UI tests)" />
+        <Control Id="Image3" Type="CheckBox" X="40" Y="156" Width="310" Height="17"
+                 Property="IMAGE3" CheckBoxValue="1" Text="Data / tooling image (python, node, common CLIs)" />
 
         <Control Id="ImagesHint" Type="Text" X="20" Y="150" Width="330" Height="60" Transparent="yes"
                  Text="Images can be added at any time from Settings, Runtime images, so nothing here is final." />
@@ -368,7 +404,30 @@
           <Publish Event="NewDialog" Value="PortsDlg" />
         </Control>
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
-          <Publish Event="NewDialog" Value="VerifyReadyDlg" />
+          <!-- THE CHECKBOXES COMPOSE THE VALUE THE INSTALL READS. Without these publishes they
+               are decoration: three ticked boxes that never reach RUNTIMEIMAGES would install
+               nothing and report nothing wrong — the "page whose answer does not reach the
+               property" failure this wizard exists to avoid.
+
+               Each publish APPENDS its number with a leading comma ("[~]" appends), and the
+               first one is guarded on the property being empty-or-none so a sequence cannot
+               start with a stray comma. "none" and "[]" are both empty to the install, and
+               ValueToInstall translates a ticked-but-empty selection to none.
+
+               ORDER MATTERS: the reset to "none" runs first, then the appends, then the fixup. -->
+          <Publish Property="RUNTIMEIMAGES" Value="none" Order="1" Condition="IMAGESMODE = &quot;none&quot;" />
+          <Publish Property="RUNTIMEIMAGES" Value="[]" Order="2" Condition="IMAGESMODE = &quot;choose&quot;" />
+          <Publish Property="RUNTIMEIMAGES" Value="1" Order="3" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE1 = &quot;1&quot; AND RUNTIMEIMAGES = &quot;[]&quot;" />
+          <Publish Property="RUNTIMEIMAGES" Value="[~]1" Order="4" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE1 = &quot;1&quot; AND RUNTIMEIMAGES &lt;&gt; &quot;[]&quot;" />
+          <Publish Property="RUNTIMEIMAGES" Value="2" Order="5" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE2 = &quot;1&quot; AND (RUNTIMEIMAGES = &quot;[]&quot; OR RUNTIMEIMAGES = &quot;[]&quot;)" />
+          <Publish Property="RUNTIMEIMAGES" Value="[~]2" Order="6" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE2 = &quot;1&quot; AND RUNTIMEIMAGES &lt;&gt; &quot;[]&quot; AND RUNTIMEIMAGES &lt;&gt; &quot;1&quot;" />
+          <Publish Property="RUNTIMEIMAGES" Value="[~]2" Order="7" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE2 = &quot;1&quot; AND RUNTIMEIMAGES = &quot;1&quot;" />
+          <Publish Property="RUNTIMEIMAGES" Value="3" Order="8" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE3 = &quot;1&quot; AND RUNTIMEIMAGES = &quot;[]&quot;" />
+          <Publish Property="RUNTIMEIMAGES" Value="[~]3" Order="9" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE3 = &quot;1&quot; AND RUNTIMEIMAGES &lt;&gt; &quot;[]&quot;" />
+          <!-- A ticked "choose" with NOTHING selected is "none", not "[]" — the install must never
+               receive a value it has to guess at. -->
+          <Publish Property="RUNTIMEIMAGES" Value="none" Order="10" Condition="RUNTIMEIMAGES = &quot;[]&quot;" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="20" />
         </Control>
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
           <Publish Event="SpawnDialog" Value="CancelDlg" />

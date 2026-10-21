@@ -50,7 +50,11 @@ func runInstall(args []string, log *slog.Logger) error {
 	// BEFORE the instance is parsed, deliberately: the relaunched child gets the same argv, so
 	// parsing here as well would be harmless — but doing the work twice is not the point. This
 	// is a hand-off, and a hand-off that has already started acting is not one.
-	if ensureInteractiveConsole(true) {
+	// A NON-INTERACTIVE RUN NEVER RELAUNCHES FOR A CONSOLE. It has nothing to ask, so opening a
+	// window would be the one thing it must not do — that is the "brought up the script and asked
+	// me everything again" report, and it is why this precedes the relaunch.
+	wantConsole := !hasNonInteractiveFlag(args)
+	if wantConsole && ensureInteractiveConsole(true) {
 		log.Info("orchicon install: relaunched in its own console")
 		return nil
 	}
@@ -181,7 +185,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	// as the DEFAULT — pressing ENTER keeps it, which is what makes an unattended run and an
 	// answered run agree. promptOut is used rather than stdout so the question lands on the
 	// terminal even when stdout is captured.
-	if tty != nil {
+	if tty != nil && !flags.NonInteractive {
 		if chosen, ok := askInstance(tty, instance); ok {
 			instance = chosen
 		}
@@ -204,7 +208,14 @@ func runInstall(args []string, log *slog.Logger) error {
 	if ttyOwned {
 		promptOut = tty
 	}
-	ports, err := resolveInstallPorts(instance, residency, promptOut, tty)
+	// A NON-INTERACTIVE RUN PASSES NO READER, so planInstallPorts takes the record or the
+	// defaults and PRINTS which ports it used. That is the difference between "the wizard's
+	// answers were honoured" and "a console asked again over the top of them".
+	promptTTY := tty
+	if flags.NonInteractive {
+		promptTTY = nil
+	}
+	ports, err := resolveInstallPorts(instance, residency, promptOut, promptTTY)
 	if err != nil {
 		return err
 	}
