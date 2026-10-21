@@ -2167,3 +2167,54 @@ func TestEveryBundleBuildNamesTheExtensionThatExists(t *testing.T) {
 		}
 	}
 }
+
+// TestInstallDoesNotFailOnAMissingRuntimeDaemon — the runtime daemon is OPTIONAL when the host
+// has no container engine.
+//
+// MEASURED ON A REAL WINDOWS INSTALL, and it is the reason the install produced no plane at all:
+//
+//	== skipping the image pull — no container engine
+//	orchicon: runtime images are only needed for per-workflow runtime containers, and there is
+//	nothing on this host to run them in
+//	== starting the runtime daemon
+//	orchicon: error: runtime daemon did not become ready — see …\runtime-daemon.log
+//
+//	…and the daemon's log said: error: runtime engine "podman" not found on PATH.
+//
+// The install had ALREADY decided the feature was unavailable, and then refused to finish
+// because the feature's helper could not start. The operator was left with a desktop app that
+// could not reach anything, and the wizard reported success.
+//
+// AND THE PLANE DOES NOT NEED THE DAEMON. The server says so itself:
+//
+//	When the socket is absent (headless `orchicon serve`), the lifecycle is disabled and
+//	execution stays in-process.
+//
+// So without an engine the daemon's absence is a DEGRADATION TO REPORT, never a reason to
+// refuse to install.
+func TestInstallDoesNotFailOnAMissingRuntimeDaemon(t *testing.T) {
+	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "install.go")
+
+	// The failure must be CONDITIONAL on there being no engine — never unconditional.
+	i := strings.Index(src, "if err := ensureInstallDaemon(socketDir); err != nil {")
+	if i < 0 {
+		t.Fatal("the install no longer starts the runtime daemon at that step — this guard must " +
+			"follow the call to wherever it went")
+	}
+	block := src[i:]
+	if end := strings.Index(block, "\n\t}"); end > 0 {
+		block = block[:end]
+	}
+	if !strings.Contains(block, "containerEngineAvailable()") {
+		t.Error("a runtime daemon that cannot start still fails the install unconditionally.\n" +
+			"  On a host with no container engine the daemon CANNOT start, and the install has\n" +
+			"  already said the images are not needed — so this must be a DEGRADATION TO REPORT,\n" +
+			"  not a refusal. Measured: an install that aborted here left no services and no plane.")
+	}
+	// AND the operator must be told what still works, so the message is not just an error.
+	if !strings.Contains(block, "in-process") {
+		t.Error("the degraded path does not say that work still runs in-process. The operator has " +
+			"to know that the plane, the web UI and the TUI are unaffected — otherwise this reads " +
+			"as a failed install.")
+	}
+}
