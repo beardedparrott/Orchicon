@@ -2043,3 +2043,80 @@ func TestAPartialPortRecordIsNeverUsed(t *testing.T) {
 			"  Two ports checked and the rest unchecked is the defect itself.")
 	}
 }
+
+// TestStoppingTheServicesKillsTheirChildren — a stop must stop the DATABASE, not just the
+// supervisor.
+//
+// REPORTED, in the services log of a real install:
+//
+//	started component=postgres pid=1604
+//	FATAL:  lock file "postmaster.pid" already exists
+//	HINT:  Is another postmaster (PID 26376) running in data directory "…/orchicon-dev/postgres"?
+//	postgres exited during startup: exit status 1
+//
+// THE CHAIN. The services supervisor owns postgres as a CHILD process. The stop path terminated
+// the supervisor BY PID — one process — so postgres was ORPHANED: still running, still holding
+// the data directory's postmaster.pid lock and its port. The next install's postgres refused to
+// start against a lock another postmaster still held.
+//
+// So the stop must kill the TREE. On Unix the group kill does it exactly; on Windows it is
+// taskkill /T.
+func TestStoppingTheServicesKillsTheirChildren(t *testing.T) {
+	host := readMSIFile(t, "..", "..", "cmd", "orchicon", "install_host.go")
+	if !strings.Contains(host, "terminateProcessTree(pid)") {
+		t.Error("stopHostServices still terminates the supervisor alone. Its children — postgres, nats —\n" +
+			"  survive it: postgres keeps the postmaster.pid lock and its port, and the next install's\n" +
+			"  postgres refuses to start. That is the reported \"lock file postmaster.pid already\n" +
+			"  exists\".")
+	}
+
+	win := readMSIFile(t, "..", "..", "internal", "planecontrol", "hostproc_windows.go")
+	if !strings.Contains(win, "func TerminateProcessTree(") {
+		t.Error("the Windows half has no TerminateProcessTree — there is no process-group signal on " +
+			"Windows, so the tree kill has to be taskkill /T")
+	}
+	if !strings.Contains(win, `"/T"`) {
+		t.Error("TerminateProcessTree does not use taskkill /T — without /T it kills the " +
+			"supervisor and leaves its children, which is the defect")
+	}
+	// AND UNIX MUST STILL HAVE THE SEAM, or the call site will not compile there.
+	unix := readMSIFile(t, "..", "..", "internal", "planecontrol", "hostproc_unix.go")
+	if !strings.Contains(unix, "func TerminateProcessTree(") {
+		t.Error("the Unix half is missing TerminateProcessTree, so the shared call site will not " +
+			"compile on Unix")
+	}
+}
+
+// TestAStalePostmasterLockIsClearedBeforeInitdb — a leftover lock must not stop the database.
+//
+// The decision is platform-NEUTRAL even though the sweep is only NEEDED on Windows: a bug here
+// is a database that cannot start, and a test that only ran on the one platform nobody has in
+// CI is a test nobody runs.
+func TestAStalePostmasterLockIsClearedBeforeInitdb(t *testing.T) {
+	lock := readMSIFile(t, "..", "..", "cmd", "orchicon", "postgres_lock.go")
+
+	// The live/stale decision must consult LIVENESS, not mere existence: a lock naming a dead
+	// process is a leftover, and a lock naming a live one is postgres's own reason to refuse.
+	if !strings.Contains(lock, "pidAlive(pid)") {
+		t.Error("the lock sweep does not check whether the named process is alive. Existence is " +
+			"not staleness: postgres refuses to start for a LIVE postmaster on purpose.")
+	}
+	// And the sweep must run BEFORE initdb, or the new postgres still meets the lock.
+	//
+	// THE ORDER IS COMPARED IN THE FUNCTION THAT DOES BOTH, not in the file: a first draft
+	// compared the FIRST index of each name in the whole file, so moving the sweep after
+	// initdb — within the same function — still passed. A control caught that. The window
+	// between the two calls is what matters.
+	host := readMSIFile(t, "..", "..", "cmd", "orchicon", "host_services.go")
+	pre := host[strings.Index(host, "func (s *supervisor) prepare("):]
+	end := strings.Index(pre, "\nfunc ")
+	if end > 0 {
+		pre = pre[:end]
+	}
+	iLock := strings.Index(pre, "clearStalePostmasterLock(")
+	iInit := strings.Index(pre, "s.initPostgres()")
+	if iLock < 0 || iInit < 0 || iLock > iInit {
+		t.Error("the stale-lock sweep does not run before initdb in the same function — the new " +
+			"postgres would still meet the lock it is meant to be spared")
+	}
+}

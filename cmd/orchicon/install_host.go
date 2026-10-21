@@ -335,7 +335,22 @@ func stopHostServices(instance string, out io.Writer) error {
 		_ = os.Remove(pidFile)
 		return nil
 	}
-	if err := terminateProcess(pid); err != nil {
+	// KILL THE TREE, NOT JUST THE SUPERVISOR.
+	//
+	// TerminateProcess terminates ONE process, and the supervisor's CHILDREN — postgres, nats,
+	// the telemetry backends — are separate processes. So stopping the services left postgres
+	// ORPHANED: still running, still holding the data directory's postmaster.pid lock and its
+	// port. The next install's postgres then refused to start:
+	//
+	//	FATAL:  lock file "postmaster.pid" already exists
+	//	HINT:  Is another postmaster (PID 26376) running in data directory "…/orchicon-dev/postgres"?
+	//
+	// which is a failure with no obvious cause and no way out but hand-editing the data dir.
+	//
+	// The tree kill is what makes the stop mean what it says. The lock sweep in
+	// postgres_lock_windows.go is the SECOND half: a supervisor that was killed outright cannot
+	// clean up after itself, so a start must tolerate the lock it left.
+	if err := terminateProcessTree(pid); err != nil {
 		return fmt.Errorf("stop the host services for %s (pid %d): %w", instance, pid, err)
 	}
 	// BOUNDED, so a supervisor that ignores SIGTERM is REPORTED rather than slept through — the same posture

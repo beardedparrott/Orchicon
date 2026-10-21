@@ -274,6 +274,28 @@ func (s *supervisor) prepare(ctx context.Context) error {
 	if err := ensureHostPostgresPrivileges(); err != nil {
 		return err
 	}
+	// A STALE LOCK FILE IS CLEARED BEFORE initdb, and this is the difference between an
+	// install that works and one that cannot start its database.
+	//
+	// REPORTED, in the services log:
+	//
+	//	started component=postgres pid=1604
+	//	FATAL:  lock file "postmaster.pid" already exists
+	//	HINT:  Is another postmaster (PID 26376) running in data directory "…/orchicon-dev/postgres"?
+	//	postgres exited during startup: exit status 1
+	//
+	// WHY THE LOCK SURVIVED A STOP. The services supervisor is stopped by PID, and terminating
+	// one process does not take that process's children with it — so postgres was ORPHANED: it
+	// kept the data directory's lock and its port, and the next install's postgres refused to
+	// start against a directory another postmaster still held.
+	//
+	// So two things must be true, and only fixing one leaves the other:
+	//   1. a stop must take the children with it (see terminateProcessTree), and
+	//   2. a start must survive a lock left by a crash or a kill, because a supervisor that
+	//      was killed outright cannot clean up after itself.
+	if err := clearStalePostmasterLock(s.dataDir, os.Stderr, staleLockSweepNeeded()); err != nil {
+		return err
+	}
 	if err := s.initPostgres(); err != nil {
 		return err
 	}

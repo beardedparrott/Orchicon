@@ -136,3 +136,14 @@ func ServingPlaneAlive(instance string) bool {
 func TerminateProcess(pid int) error {
 	return syscall.Kill(pid, syscall.SIGTERM)
 }
+
+// TerminateProcessTree terminates a process AND EVERYTHING IT SPAWNED.
+//
+// ON UNIX THIS IS THE GROUP KILL, and it is exact: the services supervisor is started with
+// setProcAttrBackground (the setsid analogue), so it leads its own process group, and signalling
+// the group reaches every child — postgres, nats, the telemetry backends — at once.
+//
+// That is why the Windows half needs taskkill: there is no process-group signal there.
+func TerminateProcessTree(pid int) error {
+	return TerminateProcess(pid)
+}
