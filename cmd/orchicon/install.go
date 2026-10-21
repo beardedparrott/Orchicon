@@ -303,9 +303,44 @@ func runInstall(args []string, log *slog.Logger) error {
 	// 3. Ensure the host-side runtime daemon is running (the container
 	// mounts its socket directory; per-workflow runtime containers spawn
 	// from the runtime image above).
+	//
+	// THE DAEMON IS OPTIONAL WHEN THERE IS NO ENGINE, and making it fatal was a defect that
+	// stopped a whole install.
+	//
+	// The install has ALREADY decided, one step earlier, that this host has no container engine:
+	//
+	//	== skipping the image pull — no container engine
+	//	orchicon: runtime images are only needed for per-workflow runtime containers, and there
+	//	is nothing on this host to run them in
+	//
+	// …and then failed at this step, because the daemon cannot start without an engine either.
+	// So the install said the feature was unavailable and then refused to finish because the
+	// feature's helper was missing. MEASURED on a real Windows install: the install aborted
+	// with "runtime daemon did not become ready", having already started nothing — no services,
+	// no plane — and the operator was left with a desktop app that could not reach anything.
+	//
+	// AND THE PLANE DOES NOT NEED IT. The server's own comment says so:
+	//
+	//	When the socket is absent (headless `orchicon serve`), the lifecycle is disabled and
+	//	execution stays in-process.
+	//
+	// The daemon exists for PER-WORKFLOW RUNTIME CONTAINERS — the one feature this host has no
+	// engine for. Without an engine there is nothing it could do, so its absence is a
+	// DEGRADATION TO REPORT, never a reason to refuse to install.
 	installPhase("starting the runtime daemon")
 	if err := ensureInstallDaemon(socketDir); err != nil {
-		return err
+		if !containerEngineAvailable() {
+			// NO ENGINE: the daemon cannot run, and nothing needs it to. Say so, name the
+			// consequence, and CARRY ON — the services and the plane are what the operator
+			// actually came for.
+			fmt.Printf("orchicon: the runtime daemon could not start (%v)\n", err)
+			fmt.Println("orchicon: that only affects PER-WORKFLOW RUNTIME CONTAINERS; work runs in-process," +
+				" and the plane, the web UI and the TUI are unaffected.")
+			fmt.Println("orchicon: to enable runtime containers later, install a container engine and re-run: " +
+				"orchicon install")
+		} else {
+			return err
+		}
 	}
 
 	// 4. THE HOST DATA DIR IS PREPARED BEFORE ANYTHING ELSE TOUCHES IT, and the order is load-bearing in TWO
