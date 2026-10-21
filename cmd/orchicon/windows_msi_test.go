@@ -171,8 +171,9 @@ func TestSetupRunsTheInstalledExeDirectly(t *testing.T) {
 	}
 	// And the one argument it DOES pass.
 	for _, want := range []struct{ what, sub string }{
-		{"the instance reaches the setup", "install --instance [INSTANCE]"},
+		{"the instance reaches the setup", "--instance [INSTANCE]"},
 		{"the ports reach the setup", "--port ORCHICON_CONTROL_PORT=[CONTROLPORT]"},
+		{"the wizard-skipped-its-questions flag reaches the setup", "--non-interactive"},
 		{"the runtime-image choice reaches the setup", "--runtime-images [RUNTIMEIMAGES]"},
 	} {
 		if !strings.Contains(ca, want.sub) {
@@ -682,7 +683,8 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 		// The publish job's download pattern is `canary-*`; an artifact named anything else is
 		// built, uploaded, and then never reaches the release.
 		{"an artifact name the publish pattern collects", "name: canary-windows-desktop", 1},
-		{"the desktop artifact upload paths", "path: dist/desktop/*", 1},
+		// TWO now: desktop-windows and desktop-macos both upload from dist/desktop.
+		{"the desktop artifact upload paths", "path: dist/desktop/*", 2},
 	} {
 		if n := strings.Count(canary, want.sub); n != want.count {
 			t.Errorf("canary.yml: %s appears %d time(s), want %d — %q.\n"+
@@ -696,11 +698,8 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 	// matching names and leaves everything else, so a publish that ran while the desktop job
 	// failed would keep the PREVIOUS merge's installer under a tag claiming this commit.
 	// A canary that lies about its own contents is worse than no canary.
-	if !strings.Contains(canary, "needs: [build, desktop-windows]") {
-		t.Error("canary.yml's publish job does not depend on desktop-windows.\n" +
-			"  On a failed desktop build the publish would still run and leave the previous\n" +
-			"  merge's MSI under a tag that claims to be this commit.")
-	}
+	// (the dependency is asserted as a SET elsewhere in this test; this older literal is gone
+	// because macOS joined the list)
 
 	// THE MSI VERSION MUST BE NUMERIC AND MUST INCREASE.
 	//
@@ -1527,5 +1526,229 @@ func TestPromptsAreWrittenToAStreamThatCanBeWritten(t *testing.T) {
 	if !strings.Contains(ports, "func promptTerminal() (*os.File, bool)") {
 		t.Error("promptTerminal no longer reports whether the terminal is OURS — that flag is what " +
 			"distinguishes a read-write /dev/tty from the os.Stdin fallback")
+	}
+}
+
+// TestWizardAnswersReachTheInstallNonInteractively — the wizard's answers must ARRIVE, and the
+// setup must not ask again.
+//
+// REPORTED: "Once I hit install, it still brought up the script and still asked me to fill in all
+// of the same information which is redundant." The MSI had carried a SKIPCONFIG property for
+// exactly this; NOTHING IN THE GO CODE EVER READ IT. The wizard collected everything and the setup
+// then re-opened a console and put the same questions — so the pages were worse than useless, they
+// were a second round of the same form.
+//
+// Two halves, and both are needed: the action passes --non-interactive, and the install HONOURS it
+// (no console relaunch, no prompts). Either alone reproduces the bug.
+func TestWizardAnswersReachTheInstallNonInteractively(t *testing.T) {
+	wxsBody := stripXMLComments(readMSIFile(t, wxs()))
+	ca := regexp.MustCompile(`<CustomAction Id="LaunchSetup"[\s\S]*?/>`).FindString(wxsBody)
+	if ca == "" {
+		t.Fatal("no LaunchSetup custom action")
+	}
+	if !strings.Contains(ca, "--non-interactive") {
+		t.Error("LaunchSetup does not pass --non-interactive. The setup would open a console and " +
+			"ask every question the wizard already answered.")
+	}
+	// EVERY page's answer must be on the command line, or that page is decoration.
+	for _, want := range []struct{ page, sub string }{
+		{"InstanceDlg", "--instance [INSTANCE]"},
+		{"PortsDlg (control)", "--port ORCHICON_CONTROL_PORT=[CONTROLPORT]"},
+		{"PortsDlg (postgres)", "--port ORCHICON_POSTGRES_PORT=[POSTGRESPORT]"},
+		{"PortsDlg (loki)", "--port ORCHICON_LOKI_PORT=[LOKIPORT]"},
+		{"PortsDlg (tempo)", "--port ORCHICON_TEMPO_PORT=[TEMPOPORT]"},
+		{"ImagesDlg", "--runtime-images [RUNTIMEIMAGES]"},
+	} {
+		if !strings.Contains(ca, want.sub) {
+			t.Errorf("%s does not reach the install: the action never passes %q.\n"+
+				"  A page whose answer does not reach the property is decoration.", want.page, want.sub)
+		}
+	}
+
+	// AND THE INSTALL MUST HONOUR IT. A flag nothing reads is the same defect one layer down.
+	install := readMSIFile(t, "..", "..", "cmd", "orchicon", "install.go")
+	if !strings.Contains(install, "flags.NonInteractive") {
+		t.Error("install.go never consults flags.NonInteractive — the flag would be parsed and " +
+			"ignored, and the console would still ask everything")
+	}
+	if !strings.Contains(install, "wantConsole") {
+		t.Error("runInstall does not gate the console relaunch — a non-interactive run must not open " +
+			"a window it has no questions for")
+	}
+	// The port resolver must be given NO reader, so planInstallPorts takes the record/defaults.
+	if !strings.Contains(install, "promptTTY") {
+		t.Error("runInstall does not suppress the port reader for a non-interactive run — " +
+			"resolveInstallPorts would prompt over the top of the wizard's answers")
+	}
+}
+
+// TestDialogTextHasNoStrayAccelerators — `&` in MSI text marks the next character as a KEYBOARD
+// ACCELERATOR.
+//
+// REPORTED: "The ports screen shows ampersands in front of the values." The Text attribute held
+// `&amp;Control plane`, which XML-decodes to `&Control plane` — and MSI then ate the `&`, giving
+// an underscored C rather than the literal character the author meant.
+//
+// A literal ampersand must be written `&&`. An accelerator is legitimate on a LABEL that names a
+// field (that is how Alt+C focuses it) — so this checks the one shape that is always wrong: a
+// single `&` at the START of a Text attribute, which is what an escaped literal looks like.
+func TestDialogTextHasNoStrayAccelerators(t *testing.T) {
+	for _, n := range []int{1} {
+		_ = n
+	}
+	body := readMSIFile(t, wxs())
+	// Every Text="…" attribute in the dialog section.
+	texts := regexp.MustCompile(`Text="([^"]*)"`).FindAllStringSubmatch(body, -1)
+	if len(texts) == 0 {
+		t.Fatal("found no Text attributes — the matcher is wrong and this test would pass vacuously")
+	}
+	for _, m := range texts {
+		v := m[1]
+		if strings.HasPrefix(v, "&amp;") {
+			t.Errorf("a Text attribute starts with an escaped ampersand: %q\n"+
+				"  MSI reads a leading `&` as an ACCELERATOR marker and renders the next character\n"+
+				"  underscored, which is what the operator saw as a stray `&`. Drop it, or write\n"+
+				"  `&amp;&amp;` for a literal one.", v)
+		}
+	}
+}
+
+// TestImagePageOffersMoreThanTheExtremes — "none" and "all" covered the ends and nothing between,
+// and "some" is the common case.
+//
+// REPORTED: "The image screen only has None or ALL images. We should try and see if we can do a
+// checkbox type selector." The `--runtime-images 1,3` list form was built for this from the start;
+// the page simply never used it.
+//
+// The risk this guards is subtler than "the boxes are missing": three ticked ticks that never
+// compose RUNTIMEIMAGES install nothing and report nothing wrong.
+func TestImagePageOffersMoreThanTheExtremes(t *testing.T) {
+	body := stripXMLComments(readMSIFile(t, wxs()))
+
+	// EACH BOX BY NAME, not a count. A count passes after one is deleted while another is added,
+	// which is exactly what a control showed: removing Image2 left two boxes and this guard went
+	// green. Naming them means the page cannot quietly lose a choice.
+	for _, n := range []string{"1", "2", "3"} {
+		if !strings.Contains(body, `<Control Id="Image`+n+`" Type="CheckBox"`) {
+			t.Errorf("the images page has no checkbox %s. \"none\" and \"all\" covered the ends and\n"+
+				"  nothing between; \"some\" is the common case, which is what checkboxes are for.", n)
+		}
+	}
+	// EACH ONE MUST COMPOSE THE PROPERTY, or it is decoration.
+	for _, n := range []string{"1", "2", "3"} {
+		if !strings.Contains(body, `IMAGE`+n) {
+			t.Errorf("Image%s has no property reference", n)
+		}
+		appends := regexp.MustCompile(`Value="\[~\]` + n + `"`).MatchString(body)
+		starts := regexp.MustCompile(`Value="` + n + `"`).MatchString(body)
+		if !appends || !starts {
+			t.Errorf("Image%s does not compose RUNTIMEIMAGES: a publish appending \"[~]%s\" AND one "+
+				"setting it as the FIRST value are both needed, so the list never starts with a "+
+				"stray comma and never omits a box.", n, n)
+		}
+	}
+	// AND an empty selection must degrade to "none", not to an empty string the install has to
+	// guess at.
+	if !strings.Contains(body, `Value="none" Order="10"`) {
+		t.Error("nothing translates an empty checkbox selection to \"none\" — the install would " +
+			"receive an empty --runtime-images value")
+	}
+}
+
+// TestInstallFailsWhenTheServicesDoNotComeUp — the install must never report success over a stack
+// that is not there.
+//
+// REPORTED: "It seemed to install but nothing is running", with a plane that could not reach
+// postgres on 5432. Three defects stacked into that one sentence:
+//
+//  1. install.go called waitServicesReady(...) and DISCARDED its bool, so it started the plane
+//     on top of nothing and carried on;
+//  2. the supervisor logged "postgres did not become ready" and then KEPT RUNNING, so nothing
+//     downstream could tell it had failed and `orchicon status` still called it running;
+//  3. nothing pointed the operator at services.log, where the actual cause is written.
+//
+// A wizard that finishes into a broken instance has not installed the product, whatever the exit
+// code says. Asserted on the source because the behaviour needs a broken host to exercise.
+func TestInstallFailsWhenTheServicesDoNotComeUp(t *testing.T) {
+	install := readMSIFile(t, "..", "..", "cmd", "orchicon", "install.go")
+
+	// (1) the return value must be USED.
+	if strings.Contains(install, "waitServicesReady(instance, ports, os.Stdout)\n") {
+		t.Error("install.go discards waitServicesReady's result again. That is the defect: the " +
+			"install starts the plane over a stack that is not there and reports success.")
+	}
+	if !strings.Contains(install, "!waitServicesReady(") && !strings.Contains(install, "ready := waitServicesReady(") {
+		t.Error("install.go does not branch on waitServicesReady — a services stack that never came " +
+			"up would still be reported as a successful install")
+	}
+	if !strings.Contains(install, "servicesNotReadyError") {
+		t.Error("install.go does not produce a services-not-ready error, so a failure would name nothing")
+	}
+
+	// (2) the error must CARRY THE CAUSE, not just say "failed".
+	host := readMSIFile(t, "..", "..", "cmd", "orchicon", "install_host.go")
+	for _, want := range []struct{ what, sub string }{
+		{"it names the services log", `filepath.Join(hostDataDir, "services.log")`},
+		// THE CALL, NOT THE DEFINITION. `"tailLines("` is satisfied by `func tailLines(` alone, so
+		// emptying the call still passed — a control caught it. The argument list is what
+		// distinguishes a function that is called from one that merely exists.
+		{"it quotes the tail of that log", "tailLines(logPath"},
+		{"it treats a MISSING log as its own finding", "did not start"},
+		{"it says the install is resumable", "orchicon install"},
+	} {
+		if !strings.Contains(host, want.sub) {
+			t.Errorf("servicesNotReadyError does not show that %s (%q)", want.what, want.sub)
+		}
+	}
+
+	// (3) the supervisor must not outlive a failed critical chain.
+	svc := readMSIFile(t, "..", "..", "cmd", "orchicon", "host_services.go")
+	for _, comp := range []string{"postgres", "nats"} {
+		i := strings.Index(svc, comp+" did not become ready")
+		if i < 0 {
+			t.Errorf("no %q failure branch in host_services.go — the supervisor would carry on "+
+				"without it, holding the ports and the PID file while nothing works", comp)
+			continue
+		}
+		branch := svc[i:]
+		if end := strings.Index(branch, "\n\t}"); end > 0 {
+			branch = branch[:end]
+		}
+		if !strings.Contains(branch, "return 1") {
+			t.Errorf("%s failing does not stop the supervisor. A supervisor with no database "+
+				"supervises nothing: it keeps the ports, keeps the PID file, and `orchicon status` "+
+				"calls it running.", comp)
+		}
+	}
+}
+
+// TestTailLinesIsABoundedTail — the failure path must not try to read a 200 MB log into memory to
+// show the last twenty-five lines.
+func TestTailLinesIsABoundedTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "services.log")
+
+	var b strings.Builder
+	for i := 0; i < 5000; i++ {
+		fmt.Fprintf(&b, "line %d of a long services log\n", i)
+	}
+	b.WriteString("postgres did not become ready: initdb failed\n")
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := tailLines(path, 25)
+	if !strings.Contains(got, "postgres did not become ready") {
+		t.Error("tailLines did not keep the LAST line, which is the one that matters")
+	}
+	if strings.Contains(got, "line 0 of") {
+		t.Error("tailLines returned the head of the file rather than its tail")
+	}
+	if n := len(strings.Split(got, "\n")); n > 26 {
+		t.Errorf("tailLines returned %d lines, want at most 25", n)
+	}
+	if tailLines(filepath.Join(dir, "absent.log"), 25) != "" {
+		t.Error("a missing log must return empty, not an error: this runs on a failure path and " +
+			"must not replace the real error with a second one")
 	}
 }

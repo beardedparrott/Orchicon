@@ -18,6 +18,7 @@ package main
 // launcher created it.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -348,4 +349,67 @@ func stopHostServices(instance string, out io.Writer) error {
 		time.Sleep(250 * time.Millisecond)
 	}
 	return fmt.Errorf("the host services for %s (pid %d) did not stop — they may still be shutting down", instance, pid)
+}
+
+// servicesNotReadyError is the failure an install reports when the services it started never
+// became reachable — and it carries the tail of the services log, because that log is the only
+// place the real cause is written.
+//
+// WHY THIS EXISTS. The install used to discard waitServicesReady's result: it started the plane
+// on top of a stack that was not there, then reported success. The operator saw a clean finish
+// and a product where nothing ran, and the cause ("postgres did not become ready", with the
+// initdb or pg_ctl error above it) sat in a file nobody had been pointed at. A failure that
+// names nothing is indistinguishable from a product that does not work.
+func servicesNotReadyError(instance, hostDataDir string) error {
+	logPath := filepath.Join(hostDataDir, "services.log")
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "the %s services did not come up, so the plane was not started.\n", instance)
+	fmt.Fprintf(&b, "\n  what failed is recorded in:\n    %s\n", logPath)
+
+	if tail := tailLines(logPath, 25); tail != "" {
+		b.WriteString("\n  the last lines of that log:\n\n")
+		for _, line := range strings.Split(tail, "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "    %s\n", line)
+		}
+	} else {
+		// NO LOG IS ITSELF A FINDING: it means the supervisor never started far enough to write
+		// one, which is a different problem from "it started and the database failed".
+		b.WriteString("\n  that log is empty or missing, which means the services process did not start\n" +
+			"  far enough to report anything. Re-run `orchicon install` in a terminal and watch it.\n")
+	}
+
+	b.WriteString("\n  the binaries are installed and this is resumable — fix what the log shows, then:\n" +
+		"    orchicon install\n")
+	return errors.New(b.String())
+}
+
+// tailLines returns the last n lines of a file, or "" when it cannot be read. Best-effort by
+// design: this runs on a failure path, and a log that cannot be read must not replace the real
+// error with a second one.
+func tailLines(path string, n int) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	const maxRead = 64 << 10 // a tail, not the whole file
+	if st, err := f.Stat(); err == nil && st.Size() > maxRead {
+		if _, err := f.Seek(-maxRead, io.SeekEnd); err != nil {
+			return ""
+		}
+	}
+	body, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(body), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

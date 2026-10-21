@@ -50,7 +50,11 @@ func runInstall(args []string, log *slog.Logger) error {
 	// BEFORE the instance is parsed, deliberately: the relaunched child gets the same argv, so
 	// parsing here as well would be harmless — but doing the work twice is not the point. This
 	// is a hand-off, and a hand-off that has already started acting is not one.
-	if ensureInteractiveConsole(true) {
+	// A NON-INTERACTIVE RUN NEVER RELAUNCHES FOR A CONSOLE. It has nothing to ask, so opening a
+	// window would be the one thing it must not do — that is the "brought up the script and asked
+	// me everything again" report, and it is why this precedes the relaunch.
+	wantConsole := !hasNonInteractiveFlag(args)
+	if wantConsole && ensureInteractiveConsole(true) {
 		log.Info("orchicon install: relaunched in its own console")
 		return nil
 	}
@@ -181,7 +185,7 @@ func runInstall(args []string, log *slog.Logger) error {
 	// as the DEFAULT — pressing ENTER keeps it, which is what makes an unattended run and an
 	// answered run agree. promptOut is used rather than stdout so the question lands on the
 	// terminal even when stdout is captured.
-	if tty != nil {
+	if tty != nil && !flags.NonInteractive {
 		if chosen, ok := askInstance(tty, instance); ok {
 			instance = chosen
 		}
@@ -204,7 +208,14 @@ func runInstall(args []string, log *slog.Logger) error {
 	if ttyOwned {
 		promptOut = tty
 	}
-	ports, err := resolveInstallPorts(instance, residency, promptOut, tty)
+	// A NON-INTERACTIVE RUN PASSES NO READER, so planInstallPorts takes the record or the
+	// defaults and PRINTS which ports it used. That is the difference between "the wizard's
+	// answers were honoured" and "a console asked again over the top of them".
+	promptTTY := tty
+	if flags.NonInteractive {
+		promptTTY = nil
+	}
+	ports, err := resolveInstallPorts(instance, residency, promptOut, promptTTY)
 	if err != nil {
 		return err
 	}
@@ -338,7 +349,19 @@ func runInstall(args []string, log *slog.Logger) error {
 	// 4c. The services are up, so wait for them and then start the plane on THIS host. Waiting first keeps the
 	// plane's migrations from racing a half-started postgres.
 	{
-		waitServicesReady(instance, ports, os.Stdout)
+		// THE RETURN VALUE IS THE POINT, AND IT USED TO BE THROWN AWAY.
+		//
+		// This read `waitServicesReady(instance, ports, os.Stdout)` and ignored the bool, so an
+		// install whose DATABASE NEVER CAME UP went on to start the plane anyway, found nothing
+		// to talk to, and reported success. The operator's experience was an installer that
+		// finished cleanly and a product where nothing ran — with the real cause buried in a
+		// services log nobody had been told about.
+		//
+		// A services stack that is not up makes the rest of the install meaningless, so this is
+		// now fatal, and it names the log that says why.
+		if !waitServicesReady(instance, ports, os.Stdout) {
+			return servicesNotReadyError(instance, hostDataDirFor(instance))
+		}
 		if err := startHostPlane(instance, ports, hostDir, filepath.Join(socketDir, "runtime.sock"), os.Stdout); err != nil {
 			return err
 		}

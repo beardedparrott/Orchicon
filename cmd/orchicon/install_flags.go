@@ -25,6 +25,9 @@ type installFlags struct {
 	// RuntimeImages is the runtime-image selection: "none", "all", or a comma list ("1,3").
 	// Empty means "not decided" and leaves the existing prompt/record logic alone.
 	RuntimeImages string
+	// NonInteractive says "everything has already been decided; do not ask". The WINDOWS WIZARD
+	// sets it, because it has just collected every answer on its own pages.
+	NonInteractive bool
 }
 
 // parseInstallFlags extracts the wizard's flags and returns the argv with them removed, so the
@@ -76,6 +79,16 @@ func parseInstallFlags(args []string) (installFlags, []string, error) {
 			}
 			out.Ports[strings.TrimSpace(env)] = n
 
+		case arg == "--non-interactive" || arg == "-non-interactive":
+			// THE WIZARD ANSWERED EVERYTHING, SO THERE IS NOTHING LEFT TO ASK.
+			//
+			// Without this the setup opened a console and put the SAME questions again — the
+			// instance, then each port — which is what "it still brought up the script and asked
+			// me to fill in all of the same information" describes. The MSI already carried a
+			// SKIPCONFIG property for this; nothing ever read it, and this flag is the thing the
+			// custom action can actually pass.
+			out.NonInteractive = true
+
 		case arg == "--runtime-images" || arg == "-runtime-images":
 			if i+1 >= len(args) {
 				return out, nil, fmt.Errorf("--runtime-images needs a value: none, all, or a list like 1,3")
@@ -92,4 +105,18 @@ func parseInstallFlags(args []string) (installFlags, []string, error) {
 		}
 	}
 	return out, rest, nil
+}
+
+// hasNonInteractiveFlag peeks for --non-interactive WITHOUT consuming anything.
+//
+// It exists because the decision it feeds — "should I relaunch into a console?" — has to be made
+// BEFORE the full parse, and doing the full parse twice would mean two error paths for the same
+// malformed flag. A peek is the smaller thing to get right.
+func hasNonInteractiveFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--non-interactive" || a == "-non-interactive" {
+			return true
+		}
+	}
+	return false
 }

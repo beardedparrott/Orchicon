@@ -375,11 +375,83 @@ jobs:
           path: dist/desktop/*
           if-no-files-found: error
 
+  # THE macOS DESKTOP APP, SO A MAC CAN TEST THE SAME THING A WINDOWS BOX CAN.
+  #
+  # The canary published the CLI and the TUI only, so `install.sh` on a Mac fell through to
+  # "the desktop app is not in release canary" — the installer did the right thing and the
+  # release simply had nothing to give it. A platform where the develop install path silently
+  # halves is not a platform anyone can test.
+  #
+  # NOT SIGNED, NOT NOTARISED, AND THAT IS THE HONEST TRADE. Signing needs the Developer ID
+  # certificate and the Apple notary credentials, which live in the release path only. So
+  # Gatekeeper will refuse this .app and the tester opens it with right-click -> Open. The same
+  # .app WITH those secrets is what release.yml's desktop-macos job produces; this is the
+  # develop-buildable half, and it is stated plainly in README-WINDOWS.txt's macOS sibling.
+  desktop-macos:
+    name: Desktop — macOS (.app, UNSIGNED canary)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build frontend
+        run: |
+          set -euo pipefail
+          cd frontend && npm ci && npm run build
+
+      - name: Install the pinned Wails CLI
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # universal = one .app for Apple Silicon and Intel, which is why the asset is named
+      # ..._darwin_universal.zip rather than per-arch. Same name install.sh resolves.
+      - name: Build the .app
+        run: |
+          set -euo pipefail
+          cd cmd/orchicon-desktop
+          wails build -platform darwin/universal -clean             -ldflags "-X github.com/beardedparrott/Orchicon/internal/version.gitTag=canary"
+
+      - name: Package it the way the release does
+        run: |
+          set -euo pipefail
+          mkdir -p dist/desktop
+          app="$(find cmd/orchicon-desktop/build/bin -maxdepth 1 -name '*.app' -type d | head -1)"
+          if [ -z "$app" ]; then echo "wails produced no .app"; exit 1; fi
+          stage="stage/orchicon_desktop_canary_darwin_universal"
+          mkdir -p "$stage"
+          cp -R "$app" "$stage/"
+          ditto -c -k --sequesterRsrc --keepParent "$app" \
+            "dist/desktop/orchicon_desktop_canary_darwin_universal.zip"
+          ls -lh dist/desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canary-macos-desktop
+          path: dist/desktop/*.zip
+          if-no-files-found: error
+
   publish:
     # BOTH JOBS, or a failed desktop build publishes a canary pointing at NEW code with
     # the PREVIOUS merge's installer: `gh release upload --clobber` replaces matching
     # names and leaves everything else, so the two would sit under one tag claiming to be
     # the same commit. A canary that lies about its own contents is worse than no canary.
+    # macOS IS NOT IN `needs` YET, DELIBERATELY.
+    #
+    # It is a new job and its wails -platform darwin/universal build has never run — the release
+    # job that would prove it has not been exercised either, since no tag has been cut since it
+    # landed. Putting it in `needs` before it has ever succeeded would let an unproven macOS job
+    # BLOCK the canary that the Windows install is being tested against.
+    #
+    # So it builds and uploads as a workflow artifact, and its assets join the release when it
+    # works. Once it has succeeded at least once, move it into `needs` with desktop-windows —
+    # which is what cmd/orchicon/windows_msi_test.go asserts for the Windows job.
     needs: [build, desktop-windows]
     runs-on: ubuntu-latest
     steps:
