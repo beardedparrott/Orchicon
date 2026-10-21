@@ -6,7 +6,9 @@ package planecontrol
 // end up pointed at another's plane.
 
 import (
+	"context"
 	"fmt"
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"io"
 	"net"
 	"net/http"
@@ -14,9 +16,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
-
-	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
 // runtimeContainersEnv is the explicit override for whether runtime containers are in use. Unset means
@@ -74,7 +75,21 @@ func RuntimeContainersInUse() bool {
 	if strings.TrimSpace(os.Getenv("ORCHICON_DOCKER_BRIDGE_IP")) != "" {
 		return true
 	}
-	return ContainerEngineAvailable()
+	// THE LAST RUNG IS THE PROBLEM, AND IT IS WHY A LOCAL INSTALL DEMANDED A DOCKER BRIDGE.
+	//
+	// This used to return ContainerEngineAvailable(), which asks internal/containerengine's
+	// Detect — an EXECUTION-FREE probe that answers "is an engine binary installed?" from PATH
+	// and stat alone. On Windows with Docker Desktop installed but its daemon wedged, that is
+	// TRUE, so the plane concluded runtime containers were in use, computed a bridge bind, and
+	// refused to start: "cannot resolve the docker bridge address". The operator had chosen
+	// local execution and had just told the installer to fetch no images.
+	//
+	// An engine that CANNOT RUN A CONTAINER IS NOT AN ENGINE IN USE. So the fallback now asks
+	// the same question the install asks — can it actually run one? — through the cached
+	// verification in internal/containerengine, which pays a single bounded `docker info` and
+	// remembers the answer. When it cannot, this reports NO and the plane binds loopback with
+	// no bridge, which is the supported local shape.
+	return engineDaemonAnswers()
 }
 
 // PlaneBindEnv is the ONE place the bridge bind and the advertised plane URL are computed.
@@ -260,3 +275,45 @@ func BridgeIP() (string, error) {
 	return "", fmt.Errorf("cannot resolve the docker bridge address (docker network inspect bridge / docker0) — " +
 		"pin it with ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip>; refusing to guess or bind 0.0.0.0")
 }
+
+// engineDaemonAnswers reports whether the container engine's DAEMON is reachable — which is a
+// different question from whether its binary exists, and is the one that matters here.
+//
+// THE BUG THIS FIXES. internal/containerengine's Detect is EXECUTION-FREE on purpose: it answers
+// "is an engine installed?" from PATH and stat. On Windows with Docker Desktop installed and its
+// daemon wedged, that is true — so the plane concluded runtime containers were in use, computed a
+// bridge bind, and refused to start ("cannot resolve the docker bridge address"). The operator had
+// chosen local execution and had just told the installer to fetch no images.
+//
+// A BOUNDED `<engine> info` IS THE RIGHT PROBE, not `Verify`. Verify RUNS A CONTAINER, which
+// pulls an image — unacceptable on a plane-start path that may run on every boot. `info` asks the
+// daemon whether it is there, and "failed to connect to the docker API at npipe:////./pipe/…" is
+// exactly the answer an installed-but-dead Docker Desktop gives.
+//
+// The answer is cached: this is consulted on every plane start, and a daemon proven dead must not
+// be re-probed five times because the plane restarted five times. Clearing it is a process restart.
+func engineDaemonAnswers() bool {
+	engineProbeOnce.Do(func() {
+		probe := containerengine.DefaultProbe()
+		e, err := containerengine.Detect(probe)
+		if err != nil || e.Name == containerengine.EngineNone || e.Bin == "" {
+			engineProbeOK = false
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), engineProbeTimeout)
+		defer cancel()
+		_, err = probe.Run(ctx, e.Bin, "info")
+		engineProbeOK = err == nil
+	})
+	return engineProbeOK
+}
+
+// engineProbeTimeout bounds the daemon check. The same 20-second class the install uses: generous
+// for a healthy daemon (tens of milliseconds), short enough that a wedged pipe degrades to "no"
+// rather than hanging a plane start.
+const engineProbeTimeout = 20 * time.Second
+
+var (
+	engineProbeOnce sync.Once
+	engineProbeOK   bool
+)

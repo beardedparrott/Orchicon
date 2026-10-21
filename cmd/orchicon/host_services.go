@@ -571,6 +571,12 @@ func (s *supervisor) start(ctx context.Context, p *managedProc) error {
 	cmd.Env = append(os.Environ(), p.env...)
 	cmd.Stdout = s.logPipe(p.name)
 	cmd.Stderr = s.logPipe(p.name)
+	// NO CONSOLE WINDOW FOR A SUPERVISED CHILD. The supervisor runs detached (no console), so on
+	// Windows every console-subsystem child it spawns gets a BRAND NEW WINDOW — and reapRestart
+	// gives it another on every restart. That was reported as "a TON of blank command prompt
+	// windows … victoriametrics, otel, and nats … trying to start over and over". See
+	// procattr_windows.go; no-op on Unix.
+	setProcAttrNoWindow(cmd)
 
 	s.mu.Lock()
 	if _, exists := s.children[p.name]; exists {

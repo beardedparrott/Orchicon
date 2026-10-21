@@ -1752,3 +1752,47 @@ func TestTailLinesIsABoundedTail(t *testing.T) {
 			"must not replace the real error with a second one")
 	}
 }
+
+// TestSupervisedChildrenGetNoConsoleWindow — the supervisor's children must not open windows.
+//
+// REPORTED: "It also popped up a TON of blank command prompt windows that wouldn't go away until I
+// killed them… victoriametrics, otel, and nats. They seem to be trying to start over and over."
+//
+// That is exactly what the code did. The supervisor runs DETACHED (no console), and a
+// console-subsystem child of a process with no console gets a BRAND NEW WINDOW. Every nats /
+// victoriametrics / loki / tempo / otelcol start opened one, and reapRestart opened another on each
+// restart (backoff 2s, 4s, 8s…), so a child that crashed on boot produced a window every couple of
+// seconds for ever.
+//
+// CREATE_NO_WINDOW is the fix, and it is NOT DETACHED_PROCESS: these children stay attached to the
+// supervisor (their stdout is piped to its log) and must die with it.
+func TestSupervisedChildrenGetNoConsoleWindow(t *testing.T) {
+	svc := readMSIFile(t, "..", "..", "cmd", "orchicon", "host_services.go")
+	i := strings.Index(svc, "func (s *supervisor) start(")
+	if i < 0 {
+		t.Fatal("supervisor.start is gone — the child-spawn path moved, and this guard with it")
+	}
+	body := svc[i:]
+	if end := strings.Index(body, "\n}"); end > 0 {
+		body = body[:end]
+	}
+	if !strings.Contains(body, "setProcAttrNoWindow(cmd)") {
+		t.Error("supervisor.start does not call setProcAttrNoWindow. Every child it spawns on " +
+			"Windows opens its own console window, and reapRestart opens another on every " +
+			"restart — reported as \"a TON of blank command prompt windows\".")
+	}
+
+	// AND THE FLAG MUST BE CREATE_NO_WINDOW, not detached: a detached child would not be
+	// attached to the supervisor's log pipe or its lifetime.
+	win := readMSIFile(t, "..", "..", "cmd", "orchicon", "procattr_windows.go")
+	if !strings.Contains(win, "createNoWindow = 0x08000000") {
+		t.Error("procattr_windows.go does not define CREATE_NO_WINDOW (0x08000000)")
+	}
+	if !strings.Contains(win, "func setProcAttrNoWindow(cmd *exec.Cmd)") {
+		t.Fatal("setProcAttrNoWindow is missing from the Windows half")
+	}
+	unix := readMSIFile(t, "..", "..", "cmd", "orchicon", "procattr_unix.go")
+	if !strings.Contains(unix, "func setProcAttrNoWindow(*exec.Cmd)") {
+		t.Error("the Unix half is missing, so the supervisor call would not compile there")
+	}
+}
