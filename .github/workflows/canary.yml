@@ -442,7 +442,17 @@ jobs:
     # the PREVIOUS merge's installer: `gh release upload --clobber` replaces matching
     # names and leaves everything else, so the two would sit under one tag claiming to be
     # the same commit. A canary that lies about its own contents is worse than no canary.
-    needs: [build, desktop-windows, desktop-macos]
+    # macOS IS NOT IN `needs` YET, DELIBERATELY.
+    #
+    # It is a new job and its wails -platform darwin/universal build has never run — the release
+    # job that would prove it has not been exercised either, since no tag has been cut since it
+    # landed. Putting it in `needs` before it has ever succeeded would let an unproven macOS job
+    # BLOCK the canary that the Windows install is being tested against.
+    #
+    # So it builds and uploads as a workflow artifact, and its assets join the release when it
+    # works. Once it has succeeded at least once, move it into `needs` with desktop-windows —
+    # which is what cmd/orchicon/windows_msi_test.go asserts for the Windows job.
+    needs: [build, desktop-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
