@@ -41,3 +41,28 @@ func chownPath(path string, uid, gid int) error { return nil }
 
 // fileOwner is a no-op on Windows (no syscall.Stat_t).
 func fileOwner(fi os.FileInfo) (int, int, bool) { return 0, 0, false }
+
+// setProcAttrNoWindow stops a SUPERVISED CHILD from allocating a console window.
+//
+// REPORTED: "It also popped up a TON of blank command prompt windows that wouldn't go away until
+// I killed them… They look to be victoriametrics, otel, and nats. They seem to be trying to start
+// over and over."
+//
+// That is exactly what the code did. The supervisor spawns its children with plain
+// exec.CommandContext and no SysProcAttr, and the supervisor itself runs DETACHED — it has no
+// console. A console-subsystem child of a process with no console gets a BRAND NEW ONE, so every
+// nats/victoriametrics/loki/tempo/otelcol child opened a window, and reapRestart opened another
+// on each restart (backoff 2s, 4s, 8s…). A child that crashes on boot therefore produced a
+// window every couple of seconds, for ever.
+//
+// CREATE_NO_WINDOW is the documented "run this console application with no window" flag. It is
+// NOT DETACHED_PROCESS: these children stay attached to the job (their stdout is piped to the
+// supervisor's log) and must die with it, which DETACHED_PROCESS would not give us.
+//
+// The value is spelled out because stdlib syscall does not declare it — the same treatment
+// detachedProcess above already gets.
+const createNoWindow = 0x08000000
+
+func setProcAttrNoWindow(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
+}

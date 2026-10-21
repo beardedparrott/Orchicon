@@ -24,3 +24,8 @@ func fileOwner(fi os.FileInfo) (uid, gid int, ok bool) {
 	}
 	return 0, 0, false
 }
+
+// setProcAttrNoWindow is a NO-OP on Unix, and that is not laziness: a Unix process has no console
+// to allocate, so a supervised child can never open a window. The seam exists so the supervisor
+// can call it unconditionally instead of carrying a build-tagged branch in its start path.
+func setProcAttrNoWindow(*exec.Cmd) {}
