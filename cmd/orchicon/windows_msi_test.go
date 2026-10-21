@@ -683,7 +683,8 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 		// The publish job's download pattern is `canary-*`; an artifact named anything else is
 		// built, uploaded, and then never reaches the release.
 		{"an artifact name the publish pattern collects", "name: canary-windows-desktop", 1},
-		{"the desktop artifact upload paths", "path: dist/desktop/*", 1},
+		// TWO now: desktop-windows and desktop-macos both upload from dist/desktop.
+		{"the desktop artifact upload paths", "path: dist/desktop/*", 2},
 	} {
 		if n := strings.Count(canary, want.sub); n != want.count {
 			t.Errorf("canary.yml: %s appears %d time(s), want %d — %q.\n"+
@@ -697,11 +698,8 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 	// matching names and leaves everything else, so a publish that ran while the desktop job
 	// failed would keep the PREVIOUS merge's installer under a tag claiming this commit.
 	// A canary that lies about its own contents is worse than no canary.
-	if !strings.Contains(canary, "needs: [build, desktop-windows]") {
-		t.Error("canary.yml's publish job does not depend on desktop-windows.\n" +
-			"  On a failed desktop build the publish would still run and leave the previous\n" +
-			"  merge's MSI under a tag that claims to be this commit.")
-	}
+	// (the dependency is asserted as a SET elsewhere in this test; this older literal is gone
+	// because macOS joined the list)
 
 	// THE MSI VERSION MUST BE NUMERIC AND MUST INCREASE.
 	//
