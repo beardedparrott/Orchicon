@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -1850,6 +1851,158 @@ func TestBothPlaneStartPathsMigrate(t *testing.T) {
 		if !strings.Contains(tail, "os.Exit(1)") {
 			t.Error("main.go ignores a migration failure — the plane would serve from an " +
 				"unmigrated database instead of stopping")
+		}
+	}
+}
+
+// TestDialogControlsDoNotOverlap — the wizard must not paint one control through another.
+//
+// REPORTED: "the images screen also has some weird graphical glitches to where you can't read
+// all of the images." The hint Text sat at Y=150 and the third checkbox at Y=156, so the sentence
+// was drawn straight through the last row. Nothing failed — MSI happily paints overlapping
+// controls — and I cannot see a dialog from here, so this is checked geometrically instead.
+//
+// Only the controls that carry TEXT or INPUT are compared: the banner bitmap, its line and the
+// bottom rule are full-width decorations that legitimately sit under everything else.
+func TestDialogControlsDoNotOverlap(t *testing.T) {
+	body := stripXMLComments(readMSIFile(t, wxs()))
+
+	type rect struct {
+		id         string
+		x, y, w, h int
+	}
+
+	dialogRe := regexp.MustCompile(`(?s)<Dialog Id="([A-Za-z]+)"(.*?)</Dialog>`)
+	controlRe := regexp.MustCompile(`<Control Id="([A-Za-z0-9_]+)"([^>]*)/>`)
+	attr := func(s, name string) (int, bool) {
+		m := regexp.MustCompile(name + `="([0-9]+)"`).FindStringSubmatch(s)
+		if m == nil {
+			return 0, false
+		}
+		n, _ := strconv.Atoi(m[1])
+		return n, true
+	}
+
+	checked := 0
+	for _, d := range dialogRe.FindAllStringSubmatch(body, -1) {
+		dialog, rest := d[1], d[2]
+
+		var rects []rect
+		for _, c := range controlRe.FindAllStringSubmatch(rest, -1) {
+			id, attrs := c[1], c[2]
+			// Decorations: full-width art and lines sit beneath the content by design.
+			switch id {
+			case "BannerBitmap", "BannerLine", "BottomLine":
+				continue
+			}
+			x, ok1 := attr(attrs, "X")
+			y, ok2 := attr(attrs, "Y")
+			w, ok3 := attr(attrs, "Width")
+			h, ok4 := attr(attrs, "Height")
+			if !ok1 || !ok2 || !ok3 || !ok4 {
+				continue // e.g. a RadioButton nested inside its group, positioned relative
+			}
+			rects = append(rects, rect{id, x, y, w, h})
+		}
+		if len(rects) < 4 {
+			continue // not one of ours
+		}
+		checked++
+
+		for i := 0; i < len(rects); i++ {
+			for j := i + 1; j < len(rects); j++ {
+				a, b := rects[i], rects[j]
+				// Strict inequality: touching edges are fine, sharing area is not.
+				if a.x < b.x+b.w && b.x < a.x+a.w && a.y < b.y+b.h && b.y < a.y+a.h {
+					t.Errorf("%s: controls %q (%d,%d %dx%d) and %q (%d,%d %dx%d) OVERLAP.\n"+
+						"  MSI paints overlapping controls on top of each other, so one of them is\n"+
+						"  unreadable — that is the reported \"weird graphical glitches\". No build\n"+
+						"  fails for this; only the operator sees it.",
+						dialog, a.id, a.x, a.y, a.w, a.h, b.id, b.x, b.y, b.w, b.h)
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("found no dialogs to check — the matcher is wrong and this test would pass vacuously")
+	}
+}
+
+// TestPortLabelsNameTheirDefault — "so people aren't guessing what they are setting".
+//
+// The port fields started as bare labels with empty boxes: an operator had to know that 8080 is
+// dev's control port and 8092 is prod's. The default now appears IN the label, and it is three
+// numbers because the default depends on the instance chosen on the previous page — dev, test and
+// prod are offset by design so two stacks on one machine never collide.
+
+// TestPortLabelsNameTheirDefault — "so people aren't guessing what they are setting".
+//
+// The port fields started as bare labels with empty boxes: an operator had to know that 8080 is
+// dev's control port and 8092 is prod's. The default now appears IN the label, and it is three
+// numbers because the default depends on the instance chosen on the previous page — dev, test and
+// prod are offset by design so two stacks on one machine never collide.
+func TestPortLabelsNameTheirDefault(t *testing.T) {
+	body := stripXMLComments(readMSIFile(t, wxs()))
+
+	for _, want := range []struct{ env, label string }{
+		{"CONTROLPORT", "dev 8080"},
+		{"POSTGRESPORT", "dev 5432"},
+		{"LOKIPORT", "dev 3100"},
+		{"TEMPOPORT", "dev 3200"},
+	} {
+		// the label that precedes the edit control for this property
+		i := strings.Index(body, `Property="`+want.env+`"`)
+		if i < 0 {
+			t.Errorf("%s has no edit control — that field is gone", want.env)
+			continue
+		}
+		label := body[:i]
+		if !strings.Contains(label[len(label)-700:], want.label) {
+			t.Errorf("the label for %s does not name its default (%q). An empty box with a bare\n"+
+				"  label leaves the operator guessing which number they are overriding.", want.env, want.label)
+		}
+	}
+}
+
+// TestImageLabelsNameTheRealVariants — a page that does not name "dev" cannot be used to select it.
+//
+// REPORTED: "I don't see the orchicon-dev one." The labels were INVENTED — "Runtime base image",
+// "Browser / Playwright image", "Data / tooling image" — while the actual runtime variants are
+// base, gui and dev (installRuntimeImageChoices). An operator looking for the dev runtime had no
+// way to know which box that was.
+
+// TestImageLabelsNameTheRealVariants — a page that does not name "dev" cannot be used to select it.
+//
+// REPORTED: "I don't see the orchicon-dev one." The labels were INVENTED — "Runtime base image",
+// "Browser / Playwright image", "Data / tooling image" — while the actual runtime variants are
+// base, gui and dev (installRuntimeImageChoices). An operator looking for the dev runtime had no
+// way to know which box that was.
+func TestImageLabelsNameTheRealVariants(t *testing.T) {
+	body := stripXMLComments(readMSIFile(t, wxs()))
+
+	// The three real variants, from the same list the install uses.
+	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "install_runtime_images.go")
+	for _, variant := range []string{"base", "gui", "dev"} {
+		if !strings.Contains(src, `Variant: "`+variant+`"`) {
+			t.Errorf("install_runtime_images.go no longer defines the %q variant — if the set "+
+				"changed, the wizard's labels must change with it", variant)
+		}
+		// THE VARIANT MUST BE NAMED IN A CHECKBOX LABEL — anywhere in it, not merely as a
+		// prefix. develop renders them as "runtime base - the workflow runner…", which names the
+		// variant perfectly well; an earlier draft of this guard demanded the variant come first
+		// and failed a correct page.
+		// CASE-INSENSITIVE: the variant id is "gui" and the label reads "runtime GUI". Both name
+		// the same image, and demanding identical case would fail a correct page.
+		if !regexp.MustCompile(`(?i)<Control Id="Image[0-9]" Type="CheckBox"[^>]*Text="[^"]*\b` + variant + `\b`).MatchString(body) {
+			t.Errorf("no image checkbox names the %q variant. The wizard must use the real names: "+
+				"an invented label is a page nobody can act on.", variant)
+		}
+	}
+	// And the invented ones must not come back.
+	for _, invented := range []string{"Data / tooling", "Browser / Playwright image"} {
+		if strings.Contains(body, invented) {
+			t.Errorf("the image page still carries the invented label %q, which names no real "+
+				"runtime variant", invented)
 		}
 	}
 }
