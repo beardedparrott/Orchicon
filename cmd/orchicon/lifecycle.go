@@ -258,7 +258,32 @@ func runStart(args []string, log *slog.Logger) error {
 			"  See the plane's log in %s serve/logs/", instance, url, hostDataDirFor(instance))
 	}
 	fmt.Printf("✓ %s is serving %s\n", instance, url)
+	printInstanceGuidance(instance, ports)
 	return nil
+}
+
+// printInstanceGuidance tells the operator where to go next, because "it is serving" is the
+// end of the OUTPUT and not the end of the JOB.
+//
+// REPORTED: "It should start in the background and then tell you how to tail the logs and how to
+// stop/start it." `start` detached the plane correctly and then said nothing else, so the three
+// things an operator wants next — the log path, the status command, the stop command — had to be
+// found in a different command's output.
+//
+// The web UI is named too, because "it is serving <url>" is the plane's internal address and
+// the browser wants the same one; both are printed so neither has to be derived.
+func printInstanceGuidance(instance string, ports map[string]int) {
+	bin := filepath.Base(os.Args[0])
+	dir := hostDataDirFor(instance)
+
+	fmt.Println()
+	fmt.Printf("  Web UI   : %s\n", planeURL(ports))
+	fmt.Printf("  Logs    : %s\n", instanceLogPath(instance))
+	fmt.Printf("  Services: %s\n", filepath.Join(dir, "services.log"))
+	fmt.Println()
+	fmt.Printf("  Follow the logs:  %s logs %s\n", bin, instance)
+	fmt.Printf("  Check the status: %s status %s\n", bin, instance)
+	fmt.Printf("  Stop it:          %s stop %s\n", bin, instance)
 }
 
 // runStop implements `orchicon stop [instance]`.
