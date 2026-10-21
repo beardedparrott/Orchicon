@@ -174,18 +174,8 @@ func serveForeground() int {
 	// tracking table (_orchicon_migrations) that devStartParent uses.
 	// This ensures consistency regardless of whether the user calls
 	// orchicon-prod start (parent path) or orchicon-prod serve directly.
-	if cfg.MigrateOnBoot {
-		pool, err := db.Open(ctx, cfg.PostgresDSN)
-		if err != nil {
-			log.Error("failed to connect for migrations", "error", err)
-			return 1
-		}
-		if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
-			log.Error("migrations failed", "error", err)
-			pool.Close()
-			return 1
-		}
-		pool.Close()
+	if !migrateOnBoot(ctx, cfg, log) {
+		return 1
 	}
 
 	srv, err := server.New(cfg, log, rotator)
@@ -469,4 +459,34 @@ func instanceForServe() string {
 		return inst
 	}
 	return "dev"
+}
+
+// migrateOnBoot applies the embedded migrations before the server starts, and reports whether it
+// is safe to continue.
+//
+// IT IS A FUNCTION BECAUSE THERE ARE TWO WAYS TO START THIS PLANE, and only one of them migrated.
+// `serve` (and therefore `serve --detach`, which is what `orchicon install`, `orchicon start` and
+// the supervisor all use) ran the migrations; the BARE `orchicon` path in main.go constructed the
+// server directly and never did. So a plane started by hand came up against an EMPTY DATABASE and
+// every reconciler failed with "relation \"work_items\" does not exist (SQLSTATE 42P01)" — which
+// is what an operator reported after installing, starting the services by hand, and running
+// `orchicon`.
+//
+// One implementation, called by both paths, is the only way they cannot drift again.
+func migrateOnBoot(ctx context.Context, cfg config.Config, log *slog.Logger) bool {
+	if !cfg.MigrateOnBoot {
+		return true
+	}
+	pool, err := db.Open(ctx, cfg.PostgresDSN)
+	if err != nil {
+		log.Error("failed to connect for migrations", "error", err)
+		return false
+	}
+	defer pool.Close()
+	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
+		log.Error("migrations failed", "error", err)
+		return false
+	}
+	log.Info("migrations applied")
+	return true
 }

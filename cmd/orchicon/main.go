@@ -115,6 +115,18 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer cancel()
 
+	// MIGRATE HERE TOO. This path — `orchicon` with no subcommand — constructed the server
+	// directly and never applied the embedded migrations, so a plane started by hand came up
+	// against an EMPTY DATABASE: every reconciler failed with
+	//     relation "work_items" does not exist (SQLSTATE 42P01)
+	// and the web UI rejected every login because no users table existed.
+	//
+	// `serve` had always migrated. Two ways to start the same plane is how they drifted, so both
+	// now call the one function.
+	if !migrateOnBoot(ctx, cfg, log) {
+		os.Exit(1)
+	}
+
 	srv, err := server.New(cfg, log, nil)
 	if err != nil {
 		log.Error("failed to construct server", "error", err)

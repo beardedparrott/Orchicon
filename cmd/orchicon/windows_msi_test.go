@@ -1796,3 +1796,60 @@ func TestSupervisedChildrenGetNoConsoleWindow(t *testing.T) {
 		t.Error("the Unix half is missing, so the supervisor call would not compile there")
 	}
 }
+
+// TestBothPlaneStartPathsMigrate — a plane must never come up against an empty database.
+//
+// REPORTED: after installing, starting the services by hand and running `orchicon`, every
+// reconciler failed with `relation "work_items" does not exist (SQLSTATE 42P01)` and the web UI
+// said "invalid credentials" — because no schema and therefore no users table existed.
+//
+// THE CAUSE. There are TWO ways to start this plane and only one of them migrated:
+//
+//	`serve` / `serve --detach`  -> the migration block in serve.go   (install, start, supervisor)
+//	`orchicon` with no args     -> server.New() directly in main.go  (NOTHING)
+//
+// A migration that runs on one start path and not the other is worse than none, because it makes
+// the schema depend on HOW the operator happened to launch the binary.
+//
+// Asserted on the source: the behaviour needs a real Postgres to exercise, and the defect is a
+// missing call, which is visible statically.
+func TestBothPlaneStartPathsMigrate(t *testing.T) {
+	serve := readMSIFile(t, "..", "..", "cmd", "orchicon", "serve.go")
+	main := readMSIFile(t, "..", "..", "cmd", "orchicon", "main.go")
+
+	// ONE implementation, so the two cannot drift again.
+	if !strings.Contains(serve, "func migrateOnBoot(") {
+		t.Error("serve.go does not define migrateOnBoot — there is no single place both start " +
+			"paths share, which is how they diverged in the first place")
+	}
+	// `serve` must still use it.
+	if !strings.Contains(serve, "migrateOnBoot(ctx, cfg, log)") {
+		t.Error("serve.go no longer calls migrateOnBoot, so `serve --detach` — the path install, " +
+			"start and the supervisor all use — would stop migrating")
+	}
+	// AND SO MUST THE BARE PATH. This is the defect.
+	if !strings.Contains(main, "migrateOnBoot(ctx, cfg, log)") {
+		t.Error("main.go's no-subcommand path does not call migrateOnBoot. That plane comes up " +
+			"against an EMPTY database: every reconciler fails with \"relation \\\"work_items\\\" " +
+			"does not exist\" and the web UI rejects every login.")
+	}
+	// ORDER MATTERS: migrations before the server is constructed, or the reconcile loops start
+	// scanning tables that do not exist yet.
+	iMig := strings.Index(main, "migrateOnBoot(ctx, cfg, log)")
+	iSrv := strings.Index(main, "server.New(cfg, log, nil)")
+	if iMig >= 0 && iSrv >= 0 && iMig > iSrv {
+		t.Error("main.go migrates AFTER constructing the server — the reconcilers would scan " +
+			"tables that are not there yet")
+	}
+	// AND IT MUST BE FATAL ON FAILURE: a plane that cannot build its schema must not serve.
+	if iMig >= 0 {
+		tail := main[iMig:]
+		if end := strings.Index(tail, "}"); end > 0 {
+			tail = tail[:end]
+		}
+		if !strings.Contains(tail, "os.Exit(1)") {
+			t.Error("main.go ignores a migration failure — the plane would serve from an " +
+				"unmigrated database instead of stopping")
+		}
+	}
+}
