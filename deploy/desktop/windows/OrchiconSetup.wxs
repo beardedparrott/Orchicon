@@ -36,8 +36,8 @@
   BUILDING: same WiX CLI as the MSI, plus the Bal extension (a separate NuGet package, and the
   same two-step install dance — `wix extension add` before `-ext` can name it):
 
-      wix extension add -g WixToolset.Bal.wixext/5.0.2
-      wix build OrchiconSetup.wxs -ext WixToolset.Bal.wixext ^
+      wix extension add -g WixToolset.BootstrapperApplications.wixext/5.0.2
+      wix build OrchiconSetup.wxs -ext WixToolset.BootstrapperApplications.wixext ^
         -d Version=<ver> -d MsiPath=<msi> -d LicenseRtf=<rtf> ^
         -outputtype bundle -o OrchiconSetup.exe
 -->

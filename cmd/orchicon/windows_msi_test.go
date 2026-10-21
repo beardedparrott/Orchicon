@@ -2120,3 +2120,50 @@ func TestAStalePostmasterLockIsClearedBeforeInitdb(t *testing.T) {
 			"postgres would still meet the lock it is meant to be spared")
 	}
 }
+
+// TestEveryBundleBuildNamesTheExtensionThatExists — the bootstrapper extension's PACKAGE id and
+// its DLL name are not the same, and WiX resolves `-ext <id>` to <id>/<version>/wixext5/<id>.dll.
+//
+// The package is WixToolset.Bal.wixext, but the DLL inside it is named
+// WixToolset.BootstrapperApplications.wixext.dll — so the id that RESOLVES is
+// WixToolset.BootstrapperApplications.wixext, and naming the package id gives:
+//
+//	error WIX0144: The extension 'WixToolset.Bal.wixext' could not be found.
+//	              Checked paths: …\WixToolset.Bal.wixext\5.0.2\wixext5\WixToolset.Bal.wixext.dll
+//
+// which is how the canary's first bundle build failed. The same trap applies to the UI
+// extension, whose package and DLL names DO match, and to WixUILicenseRtf, which is a BIND
+// variable and not a preprocessor one.
+//
+// Every site that builds a bundle must name the id that resolves, and must install that
+// extension first — `-ext` never restores from NuGet.
+func TestEveryBundleBuildNamesTheExtensionThatExists(t *testing.T) {
+	const resolves = "WixToolset.BootstrapperApplications.wixext"
+	const doesNotResolve = "WixToolset.Bal.wixext"
+
+	for _, site := range []struct{ what, path string }{
+		{"ci.yml", filepath.Join("..", "..", ".github", "workflows", "ci.yml")},
+		{"release.yml", filepath.Join("..", "..", ".github", "workflows", "release.yml")},
+		{"canary.yml", filepath.Join("..", "..", ".github", "workflows", "canary.yml")},
+		{"OrchiconSetup.wxs", filepath.Join("..", "..", "deploy", "desktop", "windows", "OrchiconSetup.wxs")},
+	} {
+		body := readMSIFile(t, site.path)
+		if !strings.Contains(body, "OrchiconSetup.wxs") && site.what != "OrchiconSetup.wxs" {
+			continue // this site does not build a bundle
+		}
+		if strings.Contains(body, doesNotResolve) {
+			t.Errorf("%s names %s, which does not resolve: the package's DLL is named\n"+
+				"  %s.dll, and WiX looks for <id>/<version>/wixext5/<id>.dll.\n"+
+				"  This is the WIX0144 that failed the canary's first bundle build.",
+				site.what, doesNotResolve, resolves)
+		}
+		if !strings.Contains(body, resolves) {
+			t.Errorf("%s does not name %s, the id that actually resolves", site.what, resolves)
+		}
+		// AND THE EXTENSION MUST BE INSTALLED FIRST: -ext never restores from NuGet.
+		if !strings.Contains(body, "wix extension add") {
+			t.Errorf("%s builds a bundle without `wix extension add` — -ext resolves through "+
+				"WiX's own store, never NuGet, so the build cannot find the extension", site.what)
+		}
+	}
+}
