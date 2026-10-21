@@ -90,10 +90,26 @@ func servicesPortsFor(instance string) (map[string]int, error) {
 	if err := validateInstance(instance); err != nil {
 		return nil, err
 	}
-	if rec, err := readResolvedPorts(instance); err == nil {
-		if rec["ORCHICON_POSTGRES_PORT"] > 0 && rec["ORCHICON_NATS_PORT"] > 0 {
-			return rec, nil
-		}
+	// THE RECORD IS USED ONLY WHEN IT IS COMPLETE AND COHERENT.
+	//
+	// It used to be accepted whenever it merely HAD postgres and nats, and the record is
+	// written per-resolve — so a re-resolve that moved ONE port (a collision on a rebuild,
+	// or an operator who typed a different one) left a record mixing a moved port with the
+	// others' old values. The report is exact about it:
+	//
+	//	starting the host services for dev (postgres, nats, telemetry …)
+	//	note: the services for dev are still running (postgres :5433, nats :4222)
+	//	error: the host plane did not answer http://localhost:8080/healthz within 60s
+	//
+	// — 5433 is PROD's postgres port and 4222 is dev's nats port, in the same instance. The
+	// plane was pointed at a database that was never bound, and the services were told a
+	// different port than the one the plane used. Two halves of one instance, disagreeing.
+	//
+	// A record is only trustworthy if it names EVERY port this instance binds: then there is
+	// nothing to mix. A partial record is IGNORED, and the defaults are used, because the
+	// defaults are coherent by construction and a mixed record is not.
+	if rec, err := readResolvedPorts(instance); err == nil && portsRecordIsComplete(rec) {
+		return rec, nil
 	}
 	ports := map[string]int{}
 	for _, p := range activeInstallPorts(residencyHost) {
@@ -279,4 +295,20 @@ func servicesStatus(instance string) int {
 		"  DSN when up: %s\n  Start them with `make services instance=%s` (or `%s services up %s`).\n",
 		instance, pg, nats, dsn, instance, "orchicon", instance)
 	return 1
+}
+
+// portsRecordIsComplete reports whether a recorded port set names EVERY port this instance
+// binds.
+//
+// COMPLETENESS IS THE WHOLE TEST. The record is a per-resolve snapshot, so a re-resolve that
+// moved one port leaves the others' previous values in place — and the record then describes
+// two different instances at once. A record that names every port cannot be mixed like that,
+// because there is nothing left over from an earlier resolve to disagree with.
+func portsRecordIsComplete(rec map[string]int) bool {
+	for _, p := range activeInstallPorts(residencyHost) {
+		if rec[p.Env] <= 0 {
+			return false
+		}
+	}
+	return true
 }

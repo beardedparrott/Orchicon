@@ -91,6 +91,10 @@ func main() {
 		case "version", "--version", "-v":
 			fmt.Println(version.Current().String())
 			return
+		case "status":
+			os.Exit(exitOnErr(runStatus(os.Args[2:])))
+		case "logs":
+			os.Exit(exitOnErr(runLogs(os.Args[2:])))
 		case "notices":
 			os.Exit(runNotices(os.Args[2:]))
 		case "--help", "-h":
@@ -103,6 +107,31 @@ func main() {
 		}
 	}
 
+	// BARE `orchicon` IS NOW A LIFECYCLE COMMAND, NOT A PLANE.
+	//
+	// REPORTED: "whenever you start orchicon, it hangs in the logs. It should start in the
+	// background and then tell you how to tail the logs and how to stop/start it. Running
+	// orchicon.exe bare with a start/stop/status should do the full gambit."
+	//
+	// It used to run the control plane IN THE FOREGROUND, which is the wrong shape twice over:
+	// the operator's terminal became the plane's console (so the plane's logs interleaved with
+	// their prompt and Ctrl-C stopped the plane), and there was no start/stop/status to run
+	// instead. `orchicon start` already did the right thing — services then plane, both
+	// detached, with the log path and the stop command printed — so the bare command now says
+	// so and gets out of the way.
+	fmt.Fprintln(os.Stderr, "orchicon is a control-plane BINARY; it does not run the plane in your terminal.")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  orchicon start [instance]    start the services and the plane, in the background")
+	fmt.Fprintln(os.Stderr, "  orchicon stop [instance]     stop the plane and the services")
+	fmt.Fprintln(os.Stderr, "  orchicon status [instance]   is it up, and where")
+	fmt.Fprintln(os.Stderr, "  orchicon install [instance]  set this machine up for the first time")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  To watch the logs of a running plane:")
+	fmt.Fprintln(os.Stderr, "    orchicon logs dev")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  To run the plane in the foreground (for debugging):")
+	fmt.Fprintln(os.Stderr, "    orchicon serve")
+	fmt.Fprintln(os.Stderr, "")
 	log.Info("orchicon control plane", "version", version.Current().String())
 
 	cfg := config.Default()
@@ -307,6 +336,12 @@ func printHelp() {
 			"IDEMPOTENT — re-running converges an existing instance and upgrades a superseded",
 			"plane. It does NOT restart a plane that is already healthy on the installed binary,",
 			"which is why it is not the way to pick up an environment change."}},
+		{cmd: bin + " status [instance]", desc: []string{
+			"Report whether the instance is up: the plane, the services, where the logs are",
+			"and where the web UI is. Also names the start and stop commands."}},
+		{cmd: bin + " logs [instance]", desc: []string{
+			"Print the plane's recent log lines and then follow it, the way `tail -f` does.",
+			"The path is also printed by `status` and by `start`."}},
 		{cmd: bin + " restart", desc: []string{
 			"Restart the instance so its components re-read their environment.",
 			"Use this after installing an adapter CLI or changing PATH: a plane inherits its",

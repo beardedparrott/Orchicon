@@ -2006,3 +2006,40 @@ func TestImageLabelsNameTheRealVariants(t *testing.T) {
 		}
 	}
 }
+
+// TestAPartialPortRecordIsNeverUsed — the plane and the services must agree on the ports.
+//
+// REPORTED, and it is the crux of the Windows install:
+//
+//	starting the host services for dev (postgres, nats, telemetry as processes of this user) …
+//	note: the services for dev are still running (postgres :5433, nats :4222)
+//	error: the host plane did not answer http://localhost:8080/healthz within 60s
+//
+// 5433 is PROD's postgres port and 4222 is dev's nats port, in the SAME instance. The record
+// the services read was a MIX: one port had been re-resolved while the others still held their
+// previous values.
+//
+// servicesPortsFor used the record whenever it merely HAD postgres and nats, and the record is
+// written per-resolve — so a re-resolve that moved ONE port left a set describing two different
+// instances at once. The plane was pointed at a database that was never bound.
+//
+// A record is only usable if it names EVERY port this instance binds: then there is nothing
+// left over from an earlier resolve to disagree with.
+func TestAPartialPortRecordIsNeverUsed(t *testing.T) {
+	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "services.go")
+
+	// THE CALL SITE, NOT THE HELPER'S EXISTENCE. A first draft of this guard only looked for
+	// the helper being DEFINED, so reverting the call site left the helper in place and the
+	// guard went green — a control caught it. The definition proves nothing; the USE does.
+	if !strings.Contains(src, "err == nil && portsRecordIsComplete(rec)") {
+		t.Error("services.go does not check whether the port record is COMPLETE before using it.\n" +
+			"  A record that has postgres and nats but is missing the rest describes two\n" +
+			"  instances at once, and the plane and the services then disagree on where the\n" +
+			"  database is. That is the reported \"postgres :5433, nats :4222\".")
+	}
+	// AND THE CHECK MUST BE COMPLETENESS, not a spot check of two ports.
+	if !strings.Contains(src, "rec[p.Env] <= 0") {
+		t.Error("portsRecordIsComplete does not require EVERY port to be present.\n" +
+			"  Two ports checked and the rest unchecked is the defect itself.")
+	}
+}
