@@ -305,10 +305,35 @@ func servicesStatus(instance string) int {
 // two different instances at once. A record that names every port cannot be mixed like that,
 // because there is nothing left over from an earlier resolve to disagree with.
 func portsRecordIsComplete(rec map[string]int) bool {
-	for _, p := range activeInstallPorts(residencyHost) {
-		if rec[p.Env] <= 0 {
+	for _, key := range everyServicePortEnv() {
+		if rec[key] <= 0 {
 			return false
 		}
 	}
 	return true
+}
+
+// everyServicePortEnv names EVERY port a host instance binds, regardless of whether the install
+// publishes it on a host interface.
+//
+// NOT activeInstallPorts — THAT WAS THE BUG. activeInstallPorts filters to the ports a residency
+// EXPOSES (boundIn: HostBind != bindNone || HostPlaneBinds), which is the right question for "what
+// do we prompt for and what can collide on this host". It is the WRONG question for "can I trust
+// this record to be coherent": these ports are BOUND but not exposed, yet the child still binds them
+// and the readiness gate still probes them:
+//
+//	ORCHICON_TEMPO_OTLP_GRPC_PORT, ORCHICON_TEMPO_OTLP_HTTP_PORT,
+//	ORCHICON_OTEL_HEALTH_PORT, ORCHICON_OTEL_SELF_METRICS_PORT, ORCHICON_TEMPO_GRPC_PORT
+//
+// Every real ports.json therefore omits them, so portsRecordIsComplete said INCOMPLETE for every
+// correct record — silently, because its only caller falls back to the defaults. The fallback
+// happened to be identical, so nothing broke; but a record that is NEVER trusted cannot do its job
+// either, and anything reading the record directly (a readiness probe asking for
+// ORCHICON_OTEL_HEALTH_PORT) saw port 0 and reported a healthy collector as "not answering".
+func everyServicePortEnv() []string {
+	out := make([]string, 0, len(installerPorts()))
+	for _, p := range installerPorts() {
+		out = append(out, p.Env)
+	}
+	return out
 }

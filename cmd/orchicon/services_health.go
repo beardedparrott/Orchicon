@@ -77,6 +77,14 @@ func servicesHealth(instance string, ports map[string]int) []serviceHealthOpinio
 	pgPort := ports["ORCHICON_POSTGRES_PORT"]
 	natsMonitor := ports["ORCHICON_NATS_MONITOR_PORT"]
 
+	// THE TELEMETRY PROBES ARE BUILT ONLY WHEN THE RECORD NAMES A PORT FOR THEM.
+	//
+	// A port of 0 in the record is not "a component on port 0" — it is the ABSENCE OF AN ADDRESS, and
+	// probing it would manufacture a negative: http://127.0.0.1:0/ never answers, so a perfectly
+	// healthy collector would be reported down and every instance would look degraded for ever. That
+	// is exactly what happened when ports.json (correctly, at the time) omitted the internal,
+	// unpublished ports — see everyServicePortEnv. The fail-safe direction is the same one
+	// servicesProbeableFromHost takes: never invent a negative you cannot observe.
 	comps := []serviceComponent{
 		{
 			name: "postgres", required: true,
@@ -102,22 +110,28 @@ func servicesHealth(instance string, ports map[string]int) []serviceHealthOpinio
 		// Loki's /ready answers 503 while it is still replaying its WAL (measured: 15.3s on a
 		// cold boot), and treating a bound socket as "ready" would report a backend the plane
 		// cannot yet query.
-		comps = append(comps,
-			serviceComponent{name: "tempo", ready: func() bool {
-				return httpHealthy("http://127.0.0.1:"+strconv.Itoa(ports["ORCHICON_TEMPO_PORT"])+"/ready", 3*time.Second)
-			}},
-			serviceComponent{name: "loki", ready: func() bool {
-				return httpHealthy("http://127.0.0.1:"+strconv.Itoa(ports["ORCHICON_LOKI_PORT"])+"/ready", 3*time.Second)
-			}},
-			serviceComponent{name: "victoriametrics", ready: func() bool {
-				return httpHealthy("http://127.0.0.1:"+strconv.Itoa(ports["ORCHICON_VM_PORT"])+"/health", 3*time.Second)
-			}},
+		// Each entry is added ONLY if the record names a port for it, so a missing key degrades to
+		// "not asked" rather than to "not answering".
+		httpComp := func(name, env, path string) (serviceComponent, bool) {
+			port := ports[env]
+			if port <= 0 {
+				return serviceComponent{}, false
+			}
+			url := "http://127.0.0.1:" + strconv.Itoa(port) + path
+			return serviceComponent{name: name, ready: func() bool { return httpHealthy(url, 3*time.Second) }}, true
+		}
+		for _, c := range []struct{ name, env, path string }{
+			{"tempo", "ORCHICON_TEMPO_PORT", "/ready"},
+			{"loki", "ORCHICON_LOKI_PORT", "/ready"},
+			{"victoriametrics", "ORCHICON_VM_PORT", "/health"},
 			// The collector's health EXTENSION serves the health check on "/", not /healthz:
 			// graphhealthcheck with no path configured answers at the root.
-			serviceComponent{name: "otel-collector", ready: func() bool {
-				return httpHealthy("http://127.0.0.1:"+strconv.Itoa(ports["ORCHICON_OTEL_HEALTH_PORT"])+"/", 3*time.Second)
-			}},
-		)
+			{"otel-collector", "ORCHICON_OTEL_HEALTH_PORT", "/"},
+		} {
+			if comp, ok := httpComp(c.name, c.env, c.path); ok {
+				comps = append(comps, comp)
+			}
+		}
 	}
 
 	out := make([]serviceHealthOpinion, 0, len(comps))

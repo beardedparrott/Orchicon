@@ -245,3 +245,84 @@ func closedPort(t *testing.T) int {
 	}
 	return port
 }
+
+// THE PORTS RECORD MUST BE COMPLETE, AND "COMPLETE" MEANS EVERY PORT THE INSTANCE BINDS.
+//
+// portsRecordIsComplete asked activeInstallPorts, which filters to the ports a residency EXPOSES on a
+// host interface — the right question for "what may collide" and the wrong one for "is this record
+// coherent". Five ports are bound but not published (Tempo's gRPC listener and its two OTLP
+// receivers, the collector's health extension and its self-metrics exporter), so no REAL ports.json
+// ever named them, the completeness test answered false for every correct install, and the record
+// was therefore never trusted by anything that read it. The only caller fell back to the defaults —
+// identical, so nothing broke — but a readiness probe asking the record for
+// ORCHICON_OTEL_HEALTH_PORT got 0 and reported a healthy collector as "not answering".
+func TestPortsRecordIsCompleteCoversUnpublishedPorts(t *testing.T) {
+	// A record containing only the PUBLISHED ports — i.e. what every install wrote before this fix.
+	publishedOnly := map[string]int{}
+	for _, p := range activeInstallPorts(residencyHost) {
+		publishedOnly[p.Env] = 1234
+	}
+	if portsRecordIsComplete(publishedOnly) {
+		t.Error("a record naming only the PUBLISHED ports must not count as complete: the instance " +
+			"also binds Tempo's gRPC/OTLP listeners and the collector's health + self-metrics ports")
+	}
+
+	// The full table must be accepted.
+	full := map[string]int{}
+	for _, key := range everyServicePortEnv() {
+		full[key] = 1234
+	}
+	if !portsRecordIsComplete(full) {
+		t.Error("a record naming every port in the table must count as complete")
+	}
+
+	// And the record the install now writes really does satisfy it: withUnpublishedPorts is what
+	// closes the gap, so it is exercised rather than assumed.
+	written := withUnpublishedPorts("dev", publishedOnly)
+	for _, key := range everyServicePortEnv() {
+		if written[key] <= 0 {
+			t.Errorf("withUnpublishedPorts left %s unset — the written record would still be incomplete", key)
+		}
+	}
+	if written["ORCHICON_OTEL_HEALTH_PORT"] <= 0 {
+		t.Error("ORCHICON_OTEL_HEALTH_PORT is the port the collector's readiness is probed on and must " +
+			"be recorded")
+	}
+	// The operator's answers win over defaults for the ports that were already there.
+	for env, want := range publishedOnly {
+		if got := written[env]; got != want {
+			t.Errorf("%s = %d, want the resolved value %d — an explicit answer must not be overwritten "+
+				"by a default", env, got, want)
+		}
+	}
+}
+
+// A MISSING PORT IN THE RECORD MUST NOT MANUFACTURE A NEGATIVE.
+//
+// This is the trap the fix above leaves behind if the probe is careless: a 0 port is the ABSENCE of
+// an address, not a component listening on 0. Probing it can only ever fail, so a healthy collector
+// would be reported down and a correct instance would look degraded for ever.
+func TestServicesHealthSkipsComponentsWithNoRecordedPort(t *testing.T) {
+	t.Setenv(telemetryEnv, "embedded")
+	t.Setenv("PATH", writeFakePgIsReady(t, 0))
+	ports := map[string]int{
+		"ORCHICON_POSTGRES_PORT":     5432,
+		"ORCHICON_NATS_MONITOR_PORT": serveOK(t),
+		"ORCHICON_TEMPO_PORT":        serveOK(t),
+		"ORCHICON_LOKI_PORT":         serveOK(t),
+		"ORCHICON_VM_PORT":           serveOK(t),
+		// ORCHICON_OTEL_HEALTH_PORT deliberately ABSENT — an older/incomplete record.
+	}
+	for _, c := range servicesHealth("dev", ports) {
+		if c.name == "otel-collector" {
+			t.Fatal("a component with no recorded port must not be asked at all: probing port 0 can " +
+				"only fail, which reports a healthy collector as down")
+		}
+	}
+	// And it must not read as a degradation either.
+	for _, name := range degradedServices("dev", ports) {
+		if name == "otel-collector" {
+			t.Error("a component with no recorded port must not be listed as degraded")
+		}
+	}
+}
