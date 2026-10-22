@@ -4,6 +4,7 @@ package main
 // required/optional distinction the install now depends on.
 
 import (
+	"bytes"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -324,5 +325,59 @@ func TestServicesHealthSkipsComponentsWithNoRecordedPort(t *testing.T) {
 		if name == "otel-collector" {
 			t.Error("a component with no recorded port must not be listed as degraded")
 		}
+	}
+}
+
+// THE SERVICES LOG MUST BE BOUNDED.
+//
+// It was raw stdout behind a launcher's redirect: a component crash-looping writes a restart cycle
+// every 32 seconds for as long as the machine is up, so nothing ever capped it. Measured on a real
+// Windows instance it reached 1,560,928,277 bytes — 1.45 GB — from loki and tempo restarting for
+// hours, plus nats cycling behind an orphaned process that held its port.
+//
+// The assertion is on the CONFIGURATION the supervisor hands the rotating writer, because that is
+// what decides the bound: a rotation with no ceiling is the bug, and a ceiling with no retention is
+// the same bug a day later.
+func TestServicesLogRotationIsBounded(t *testing.T) {
+	cfg := servicesLogRotation
+	if cfg.MaxSizeBytes <= 0 {
+		t.Error("services.log has no size ceiling — a crash-looping component writes for as long as " +
+			"the machine is up, which is how it reached 1.45 GB")
+	}
+	if cfg.MaxSizeBytes > 256<<20 {
+		t.Errorf("services.log rotates at %d bytes, which is not a useful bound", cfg.MaxSizeBytes)
+	}
+	if cfg.RollInterval <= 0 {
+		t.Error("services.log never rolls on time, so a slow trickle still grows without limit")
+	}
+	if cfg.MaxFiles <= 0 && cfg.RetentionDays <= 0 {
+		t.Error("services.log has neither a file-count nor an age bound, so rotated generations " +
+			"accumulate without limit and the ceiling bounds nothing")
+	}
+	if cfg.BaseName != "services.log" {
+		t.Errorf("the rotating sink writes %q, but the installer's error messages, `orchicon status` "+
+			"and the documented log path all say services.log", cfg.BaseName)
+	}
+}
+
+// AND IT MUST DEGRADE RATHER THAN FAIL. A services log that cannot be opened must not stop the
+// database from starting: the services are the point, the log is how they are diagnosed.
+func TestHostServicesLoggerSurvivesAnUnopenableDirectory(t *testing.T) {
+	// A path that cannot be a directory (a regular file) makes logging.New fail.
+	f := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(dataDirEnv, f)
+
+	var fallback bytes.Buffer
+	log, closer := hostServicesLogger(&fallback)
+	defer closer()
+	if log == nil {
+		t.Fatal("hostServicesLogger must always return a usable logger")
+	}
+	log.Info("still logging")
+	if fallback.Len() == 0 {
+		t.Error("an unopenable log directory must fall back to the given writer, not swallow output")
 	}
 }

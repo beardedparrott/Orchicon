@@ -140,11 +140,49 @@ func waitServicesReadyFor(instance string, ports map[string]int, tries int, slee
 				instance, ports["ORCHICON_POSTGRES_PORT"], ports["ORCHICON_NATS_MONITOR_PORT"])
 			return true
 		}
+		// A DEAD SUPERVISOR CANNOT BECOME READY, SO STOP WAITING FOR IT.
+		//
+		// The supervisor exits immediately when it cannot prepare — an elevated shell is the reported
+		// case (postgres refuses an Administrators token), as is a data dir it cannot create. Waiting
+		// the full minute after that is pure delay in front of a certain failure, and it makes the
+		// failure look like a slow boot rather than a refusal.
+		//
+		// MEASURED: `orchicon start dev` in an elevated shell spent 60s polling a stack whose
+		// supervisor had already exited with "prepare failed", then reported the timeout.
+		//
+		// It returns false only when a supervisor PID was RECORDED and that process is gone. A start
+		// invoked outside `orchicon start`/`install` (no PID file) must still get its full wait — the
+		// pid file is written by whoever launched it, and its absence is not evidence of death.
+		if hostServicesRanAndDied(instance) {
+			fmt.Fprintf(out, "%s services supervisor exited during startup — it cannot become ready.\n", instance)
+			return false
+		}
 		time.Sleep(sleep)
 	}
 	fmt.Fprintf(out, "warning: %s services were not confirmed ready within %s — continuing\n",
 		instance, time.Duration(tries)*sleep)
 	return false
+}
+
+// hostServicesRanAndDied reports that a supervisor was launched for this instance and is now gone.
+//
+// It is deliberately narrow: a MISSING pid file answers false ("we did not observe a death"), so a
+// caller that never had one keeps the ordinary wait. Only a recorded pid that is no longer alive
+// counts, which is exactly the "it started and then refused" case.
+func hostServicesRanAndDied(instance string) bool {
+	pidFile, err := hostServicesPIDFile(instance)
+	if err != nil {
+		return false
+	}
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return false
+	}
+	return !pidAlive(pid)
 }
 
 // servicesReady asks the instance's services the same two questions the waiting loop does, as a boolean: is
