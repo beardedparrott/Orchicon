@@ -1013,3 +1013,60 @@ func TestPortResolverGatesItsContainerRead(t *testing.T) {
 			"expected the guarded block:\n%s", guarded)
 	}
 }
+
+// TestWaitServicesReadyStopsWhenTheSupervisorIsGone — a supervisor that has EXITED cannot become
+// ready, so the wait must stop rather than spend its full budget polling a stack that is not there.
+//
+// MEASURED on the affected machine: `orchicon start dev` in an elevated shell spent a full 60s
+// polling a stack whose supervisor had already exited with "prepare failed" (postgres refuses an
+// Administrators token), and then reported a plane timeout. The real cause was in services.log the
+// whole time — the wait simply had no reason to stop looking.
+func TestWaitServicesReadyStopsWhenTheSupervisorIsGone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir()) // no pg_isready, so nothing will ever be ready
+
+	ports := map[string]int{"ORCHICON_POSTGRES_PORT": 1, "ORCHICON_NATS_MONITOR_PORT": 1}
+
+	// A RECORDED PID THAT IS GONE. pid 0 is never a live process; the helper treats <=0 as "no
+	// opinion", so use a PID that certainly cannot exist but is still positive.
+	pidFile, err := hostServicesPIDFile("dev")
+	if err != nil {
+		t.Fatalf("hostServicesPIDFile: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pidFile, []byte("2147483646\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	start := time.Now()
+	// 600 tries at 1s would be 10 minutes if the early exit did not fire.
+	ready := waitServicesReadyFor("dev", ports, 600, time.Second, &out)
+	elapsed := time.Since(start)
+
+	if ready {
+		t.Fatal("a dead supervisor's stack cannot be ready")
+	}
+	if elapsed > 15*time.Second {
+		t.Fatalf("the wait ran %s after the supervisor had already exited — it must stop as soon as "+
+			"the process it is waiting on is gone", elapsed)
+	}
+	if !strings.Contains(out.String(), "exited during startup") {
+		t.Errorf("the wait must say the supervisor EXITED rather than merely timing out; got:\n%s",
+			out.String())
+	}
+}
+
+// THE ABSENCE OF A PID FILE IS NOT EVIDENCE OF DEATH.
+//
+// A stack started outside `orchicon start`/`install` has no recorded PID, and treating that as "it
+// died" would cut every such wait short. This pins the narrow shape of the early exit.
+func TestHostServicesRanAndDiedNeedsARealRecord(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if hostServicesRanAndDied("dev") {
+		t.Error("no pid file was ever written, so nothing was observed to die — this must be false")
+	}
+}

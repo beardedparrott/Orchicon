@@ -16,6 +16,7 @@ import (
 	"time"
 
 	assets "github.com/beardedparrott/orchicon"
+	yaml "go.yaml.in/yaml/v3"
 )
 
 // There is ONE shape now: nothing forwards to a host process, so postgres never
@@ -871,4 +872,155 @@ func setPort(p *servicePorts, name string, v int) bool {
 		return false
 	}
 	return true
+}
+
+// A WINDOWS DATA DIRECTORY MUST NOT BREAK THE TELEMETRY CONFIGS.
+//
+// This is the defect that made a Windows install "succeed" with a dead Logs and Traces view, and it
+// is invisible on the Linux host everything is developed on, because there the data dir holds no
+// backslashes.
+//
+// The real failure, from a real Windows instance's config dir:
+//
+//	config\loki.yaml: yaml: line 23: did not find expected hexdecimal number.
+//	  Use `-config.expand-env=true` flag if you want to expand environment variables in your config file
+//	config\tempo.yaml: yaml: line 36: did not find expected hexdecimal number
+//
+// The template had  path_prefix: "@DATA_DIR@/loki"  and the substituted value began C:\Users\…, so
+// the double-quoted YAML scalar was read as escapes: \U is not a legal escape, and the parse aborted.
+// Both children crash-looped for ever on a 32s backoff, and nothing in the install output said so.
+//
+// THE ASSERTION IS "THE CHILD'S PARSER ACCEPTS IT", not "the string looks right": the config is
+// rendered exactly as writeConfigs renders it, then PARSED with the YAML parser the children use.
+// A string comparison would have to encode the escape rules itself and would be the same mistake
+// again in a different place.
+func TestEmbeddedConfigsParseWithAWindowsDataDir(t *testing.T) {
+	// Every quoting shape that bites: backslashes (the reported case), an apostrophe in the home
+	// directory, a space, and a UNC path.
+	dirs := map[string]string{
+		"windows":          `C:\Users\justi\.local\share\orchicon-dev`,
+		"windows-spaces":   `C:\Users\Some User\AppData\Local\orchicon`,
+		"windows-quote":    `C:\Users\O'Brien\.local\share\orchicon-dev`,
+		"unc":              `\\server\share\orchicon`,
+		"posix":            `/home/justi/.local/share/orchicon-dev`,
+		"posix-with-quote": `/home/O'Brien/.local/share/orchicon-dev`,
+	}
+	for name, dataDir := range dirs {
+		t.Run(name, func(t *testing.T) {
+			s := &supervisor{dataDir: dataDir, ports: servicePortsFromEnv()}
+			tokens := s.configTokens()
+			keys := make([]string, 0, len(tokens))
+			for k := range tokens {
+				keys = append(keys, k)
+			}
+			sort.Sort(sort.Reverse(sort.StringSlice(keys)))
+
+			// render returns one config, substituted exactly as writeConfigs substitutes it.
+			render := func(cfg string) []byte {
+				raw, err := assets.ServiceConfigsFS.ReadFile(cfg)
+				if err != nil {
+					t.Fatalf("read embedded %s: %v", cfg, err)
+				}
+				return []byte(applyConfigTokens(keys, string(raw), tokens))
+			}
+
+			// WHAT IS ASSERTED IS THE PARSED VALUE, NOT THE RENDERED TEXT.
+			//
+			// A string comparison cannot tell "escaped correctly" from "escaped into a different
+			// directory", and that distinction is the whole point: a config that parses but names
+			// the WRONG path is worse than one that fails to parse, because the backend starts and
+			// writes its data somewhere else. So the path keys are decoded out of the parsed
+			// document and compared with the directory the supervisor actually meant.
+			tempo := render("deploy/configs/tempo.yaml")
+			var tempoDoc struct {
+				Storage struct {
+					Trace struct {
+						WAL struct {
+							Path string `yaml:"path"`
+						} `yaml:"wal"`
+						Local struct {
+							Path string `yaml:"path"`
+						} `yaml:"local"`
+					} `yaml:"trace"`
+				} `yaml:"storage"`
+			}
+			if err := yaml.Unmarshal(tempo, &tempoDoc); err != nil {
+				t.Fatalf("tempo.yaml with data dir %q does not parse as YAML — Tempo would refuse to "+
+					"start on this path, which is the dead Traces view:\n%v\n\nrendered config:\n%s",
+					dataDir, err, tempo)
+			}
+			for label, got := range map[string]string{
+				"tempo wal":    tempoDoc.Storage.Trace.WAL.Path,
+				"tempo blocks": tempoDoc.Storage.Trace.Local.Path,
+			} {
+				want := dataDir + "/tempo/wal"
+				if label == "tempo blocks" {
+					want = dataDir + "/tempo/blocks"
+				}
+				if got != want {
+					t.Errorf("%s resolved to %q, want %q — the backend would use the wrong directory",
+						label, got, want)
+				}
+			}
+
+			loki := render("deploy/configs/loki.yaml")
+			var lokiDoc struct {
+				Common struct {
+					PathPrefix string `yaml:"path_prefix"`
+				} `yaml:"common"`
+				Compactor struct {
+					WorkingDirectory string `yaml:"working_directory"`
+				} `yaml:"compactor"`
+			}
+			if err := yaml.Unmarshal(loki, &lokiDoc); err != nil {
+				t.Fatalf("loki.yaml with data dir %q does not parse as YAML — Loki would refuse to "+
+					"start on this path, which is the dead Logs view:\n%v\n\nrendered config:\n%s",
+					dataDir, err, loki)
+			}
+			if want := dataDir + "/loki"; lokiDoc.Common.PathPrefix != want {
+				t.Errorf("loki path_prefix resolved to %q, want %q", lokiDoc.Common.PathPrefix, want)
+			}
+			if want := dataDir + "/loki/compactor"; lokiDoc.Compactor.WorkingDirectory != want {
+				t.Errorf("loki working_directory resolved to %q, want %q",
+					lokiDoc.Compactor.WorkingDirectory, want)
+			}
+		})
+	}
+}
+
+// applyConfigTokens must escape only what the quoting context requires.
+//
+// A blanket escape would pass the parse test above while making every generated config file
+// unreadable, so the ordinary cases are pinned: a normal path and a port pass through unchanged,
+// and a quote is doubled because that is single-quoted YAML's one escape.
+func TestApplyConfigTokensEscapesOnlyTheQuote(t *testing.T) {
+	tokens := map[string]string{
+		"@DATA_DIR@":       `/home/justi/.local/share/orchicon-dev`,
+		"@LOKI_HTTP_PORT@": "3100",
+		"@QUOTED_DIR@":     `/home/O'Brien/x`,
+	}
+	keys := []string{"@DATA_DIR@", "@LOKI_HTTP_PORT@", "@QUOTED_DIR@"}
+	body := "a: '@DATA_DIR@/loki'\nb: @LOKI_HTTP_PORT@\nc: '@QUOTED_DIR@'"
+	got := applyConfigTokens(keys, body, tokens)
+
+	want := "a: '/home/justi/.local/share/orchicon-dev/loki'\nb: 3100\nc: '/home/O''Brien/x'"
+	if got != want {
+		t.Errorf("applyConfigTokens mismatch:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// yamlSingleQuoted is the one-quote-one-escape rule, stated once.
+func TestYAMLSingleQuoted(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{``, ``},
+		{`/plain/path`, `/plain/path`},
+		{`C:\Users\me`, `C:\Users\me`}, // backslashes are literal in single quotes
+		{`O'Brien`, `O''Brien`},        // the only escape there is
+		{`''`, `''''`},                 // each quote doubles
+		{`a"b`, `a"b`},                 // a double quote needs none
+	} {
+		if got := yamlSingleQuoted(tc.in); got != tc.want {
+			t.Errorf("yamlSingleQuoted(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
 }

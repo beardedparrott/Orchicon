@@ -230,7 +230,20 @@ func runInstall(args []string, log *slog.Logger) error {
 	// The instance's own state dir is the right home for it — it is the record of what THIS instance
 	// bound. Failure is a warning rather than fatal: an unwritable home directory must not fail an install
 	// that has already resolved everything, and the wrapper's fallback is the documented default.
-	writeResolvedPorts(instance, ports)
+	// THE RECORD IS COMPLETE, INCLUDING THE PORTS THIS SHAPE DOES NOT PUBLISH.
+	//
+	// `ports` above holds what the install PROMPTS for and publishes. The instance also BINDS
+	// internal listeners that are never exposed — Tempo's gRPC port, its two OTLP receivers, the
+	// collector's health extension and its self-metrics exporter — and those are exactly the ports a
+	// readiness probe needs by number. Recording only the published half left every record
+	// INCOMPLETE (portsRecordIsComplete answered false for every correct install, so the record was
+	// never trusted and the defaults were silently re-derived), and anything asking the record for
+	// ORCHICON_OTEL_HEALTH_PORT got 0 and reported a healthy collector as "not answering".
+	//
+	// The values are the SAME resolution the host-services child receives (servicesPortsFor's rule:
+	// the record, else the instance defaults, overridden by an explicit ORCHICON_*_PORT), so the
+	// written record and the child cannot disagree.
+	writeResolvedPorts(instance, withUnpublishedPorts(instance, ports))
 
 	// 1.7. RESOLVE THE INFRASTRUCTURE BINARIES. The services container needs a
 	// PostgreSQL server and a NATS server, and there is no image carrying them any
@@ -507,6 +520,27 @@ func runInstall(args []string, log *slog.Logger) error {
 		fmt.Println("  then re-run `orchicon install` — it is idempotent")
 	}
 
+	// 5b. SAY WHICH OPTIONAL COMPONENTS ARE NOT ANSWERING.
+	//
+	// This runs AFTER the plane is confirmed up, and that ordering is the point: a plane that
+	// answers /healthz but has no Loki is a WORKING instance whose Logs view is dead, and that is
+	// worth stating plainly — but it is not a failed install, so it must not turn into a non-zero
+	// exit over the whole run.
+	//
+	// WHY IT IS SAID AT ALL. `services: up` used to mean only "postgres and nats answer", so an
+	// install could bring up a stack whose entire telemetry plane had crash-looped and finish with
+	// no indication of it. The operator found out by opening the Logs view and being told the
+	// backend was unreachable. Four words here replace that hunt.
+	if down := degradedServices(instance, ports); len(down) > 0 {
+		fmt.Printf("note: %s is up, but these telemetry components are not answering: %s\n",
+			instance, strings.Join(down, ", "))
+		fmt.Println("      the UI and API work; the Logs/Traces/Metrics views for them will report")
+		fmt.Println("      their backend as unreachable until they do. Why:")
+		fmt.Printf("        %s\n", filepath.Join(hostDataDirFor(instance), "services.log"))
+		fmt.Printf("      They are retried automatically while the services run, and `%s status %s` lists them.\n",
+			filepath.Base(os.Args[0]), instance)
+	}
+
 	// 6. Install/refresh the `orch` companion launcher on PATH (the thin
 	// remote TUI client). Non-fatal: a missing sibling binary or a clobber
 	// guard only warns.
@@ -556,6 +590,28 @@ func writeResolvedPorts(instance string, ports map[string]int) {
 	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
 		fmt.Printf("warning: could not record the resolved ports: %v\n", err)
 	}
+}
+
+// withUnpublishedPorts fills in the ports this instance BINDS but does not PUBLISH, so the record
+// is a complete picture of the instance rather than only its public half.
+//
+// A port already in ports is kept as-is: the operator's answer for a published port is authoritative
+// and must not be second-guessed by a default. Everything else comes from the same per-instance
+// default table the install and the supervisor share.
+func withUnpublishedPorts(instance string, ports map[string]int) map[string]int {
+	out := make(map[string]int, len(ports)+8)
+	for k, v := range ports {
+		out[k] = v
+	}
+	for _, p := range installerPorts() {
+		if out[p.Env] > 0 {
+			continue
+		}
+		if d, ok := p.defaultFor(instance); ok {
+			out[p.Env] = d
+		}
+	}
+	return out
 }
 
 // defaultInstallDir returns the default launcher install directory

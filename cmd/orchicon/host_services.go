@@ -47,6 +47,7 @@ import (
 	"time"
 
 	assets "github.com/beardedparrott/orchicon"
+	"github.com/beardedparrott/orchicon/internal/logging"
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
@@ -65,7 +66,23 @@ func runHostServices(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 
-	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// THE SERVICES LOG IS ROTATED, BECAUSE IT IS THE FILE A CRASH-LOOP FILLS.
+	//
+	// This wrote to raw stdout with no ceiling. A launcher redirects stdout to
+	// <dataDir>/services.log, and a component that crash-loops writes a restart cycle every 32s for as
+	// long as the machine is up — so the file has no natural bound.
+	//
+	// MEASURED on a real Windows instance: services.log was 1,560,928,277 bytes (1.45 GB), grown by
+	// Loki and Tempo restarting every 32 seconds for hours, and by nats cycling every 32s behind an
+	// orphaned process that held its port. That is a user-visible disk problem caused by a bug, and it
+	// also makes the file useless for the one job it has: being read when something is wrong.
+	//
+	// The rotation reuses internal/logging's writer — the control plane's own sink, already tested for
+	// size and time rotation, retention and pruning — rather than introducing a second implementation.
+	// If it cannot be opened the services still run on stdout: a logging problem must never stop the
+	// database from starting, and whatever launcher redirected stdout still captures it.
+	log, logCloser := hostServicesLogger(os.Stdout)
+	defer logCloser()
 	log.Info("orchicon host-services starting", "version", version.Current().String())
 
 	dataDir := env(dataDirEnv, defaultDataDirFor())
@@ -135,6 +152,41 @@ func runHostServices(args []string) int {
 	return 0
 }
 
+// servicesLogRotation bounds the services log. 100 MiB and 7 daily files is the same shape the plane's
+// own log uses (internal/logging's defaults), so an operator has ONE retention story for both files
+// rather than two.
+var servicesLogRotation = logging.Config{
+	BaseName:      "services.log",
+	MaxSizeBytes:  100 << 20,
+	RollInterval:  24 * time.Hour,
+	RetentionDays: 7,
+	MaxFiles:      7,
+	CheckInterval: 30 * time.Second,
+}
+
+// hostServicesLogger returns the logger the supervisor AND its children write to, plus a closer.
+//
+// CHILD OUTPUT GOES THROUGH IT TOO (logPipe writes to s.log), so bounding the file bounds everything:
+// postgres, nats, loki, tempo and the collector all have their stdout piped into this sink. Writing
+// them anywhere else would leave the crash-loop's output — the actual disk consumer — unbounded.
+//
+// A failure to open the rotating file DEGRADES to the given writer instead of failing the boot: the
+// services are more important than their log, and a read-only or full data dir must not turn into a
+// database that will not start.
+func hostServicesLogger(fallback io.Writer) (*slog.Logger, func()) {
+	dir := env(dataDirEnv, defaultDataDirFor())
+	cfg := servicesLogRotation
+	cfg.Dir = dir
+	w, err := logging.New(cfg)
+	if err != nil {
+		slog.New(slog.NewTextHandler(fallback, &slog.HandlerOptions{Level: slog.LevelInfo})).
+			Warn("the services log cannot be rotated; writing to stdout instead", "error", err)
+		return slog.New(slog.NewTextHandler(fallback, &slog.HandlerOptions{Level: slog.LevelInfo})),
+			func() {}
+	}
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})), func() { _ = w.Close() }
+}
+
 // ----- supervisor -----
 
 type supervisor struct {
@@ -163,6 +215,10 @@ type supervisor struct {
 
 	mu       sync.Mutex
 	children map[string]*procState
+	// portOwnerReported remembers which components have already been told that a port they need is
+	// held by another process. ONCE PER COMPONENT, because the crash-loop can produce hundreds of
+	// restarts and the fact does not change between them; repeating it would bury the rest of the log.
+	portOwnerReported map[string]bool
 }
 
 type procState struct {
@@ -434,15 +490,41 @@ func internalListenerPort(preferred int) int {
 	return preferred
 }
 
-// applyConfigTokens substitutes every configTokens key in body. Tokens are
-// substituted LONGEST FIRST so a name that is a prefix of another
-// (@TEMPO_OTLP_GRPC_PORT@ vs @TEMPO_OTLP_HTTP_PORT@ is fine, but the general
-// rule matters) can never be partially rewritten by a shorter match.
+// applyConfigTokens substitutes the token table into an embedded config.
+//
+// THE CALLER SUBSTITUTES LONGEST FIRST (writeConfigs sorts the keys descending) so a name that is
+// a prefix of another (@TEMPO_OTLP_GRPC_PORT@ vs @TEMPO_OTLP_HTTP_PORT@) can never be partially
+// rewritten by a shorter match.
+//
+// THE VALUE IS ESCAPED, NOT COPIED, and that is what makes a Windows instance possible at all.
+//
+// The templates put tokens into SINGLE-QUOTED YAML scalars (see loki.yaml's path_prefix), which
+// take backslashes literally but in which a lone ' terminates the string. The values here are the
+// instance's DATA DIRECTORY plus ports, and a data directory is whatever the operator's home is —
+// on Windows that is C:\Users\…, which is safe inside single quotes, but an operator whose home
+// contains an apostrophe (C:\Users\O'Brien) or a data dir they chose themselves would break the
+// child's config with a syntax error the supervisor can only report as "exited during startup".
+//
+// So every substituted value is escaped for the quoting context it lands in. Today every token is
+// a path or a port, which is exactly the class that must survive being pasted into a config file.
 func applyConfigTokens(keys []string, body string, tokens map[string]string) string {
 	for _, k := range keys {
-		body = strings.ReplaceAll(body, k, tokens[k])
+		body = strings.ReplaceAll(body, k, yamlSingleQuoted(tokens[k]))
 	}
 	return body
+}
+
+// yamlSingleQuoted escapes a value so it can be placed inside a SINGLE-quoted YAML scalar.
+//
+// Single-quoted YAML has exactly ONE escape: a literal quote is written as two (” ), and a
+// backslash is an ordinary character. That is why the templates use single quotes for paths: the
+// same Windows path is a syntax error inside double quotes and a literal inside single ones.
+//
+// ONLY THE QUOTE IS DOUBLED. Ports and ordinary paths pass through unchanged, so the written
+// config is exactly what a reader (or a test) expects to see; the substitution is not
+// blanket-escaping that would make every generated file unreadable.
+func yamlSingleQuoted(v string) string {
+	return strings.ReplaceAll(v, "'", "''")
 }
 
 // writeConfigs lays out the embedded ServiceConfigsFS into the config dir,
@@ -727,6 +809,22 @@ func (s *supervisor) reapRestart(ctx context.Context) {
 			// does not have its state moved aside on every tick — the log records
 			// that recovery was attempted, and the next crashes take the ordinary
 			// backoff path.
+			// SAY WHO ELSE HOLDS THE PORT, ONCE, AT THE THRESHOLD.
+			//
+			// This is the same moment the state-recovery hook fires, and for the same reason: from
+			// here a restart is not converging, so the loop is no longer a transient it can wait
+			// out. A bind conflict and a genuine bug look IDENTICAL from inside this loop — the
+			// child reports a port and a protocol and nothing about WHO — so the most useful thing
+			// this supervisor can add is the owning process. Measured: a 19-hour-old orphaned nats
+			// held 4222/8222 while a fresh supervisor crash-looped 27 times, and the log never once
+			// said another process was involved.
+			//
+			// IT REPORTS AND NEVER ACTS. The holder is very often a SECOND INSTANCE's services,
+			// which is a legitimate thing to be running; killing it would be a destructive act on
+			// something this supervisor did not start.
+			if st.restarts == recoveryThreshold {
+				s.reportPortOwner(st.proc.name)
+			}
 			if st.proc.recoverState != nil && st.restarts == recoveryThreshold && !st.recovered {
 				st.recovered = true
 				s.log.Warn("component has failed repeatedly — quarantining its state and retrying",

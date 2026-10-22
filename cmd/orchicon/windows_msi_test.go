@@ -2038,9 +2038,20 @@ func TestAPartialPortRecordIsNeverUsed(t *testing.T) {
 			"  database is. That is the reported \"postgres :5433, nats :4222\".")
 	}
 	// AND THE CHECK MUST BE COMPLETENESS, not a spot check of two ports.
-	if !strings.Contains(src, "rec[p.Env] <= 0") {
+	//
+	// It iterates everyServicePortEnv — EVERY port in the table, published or not. It used to
+	// iterate activeInstallPorts, which filters out the five ports a host shape binds but does not
+	// PUBLISH (Tempo's gRPC listener and its two OTLP receivers, the collector's health extension and
+	// self-metrics exporter). No real ports.json ever named those, so the completeness test answered
+	// false for every CORRECT install and the record was never trusted at all.
+	if !strings.Contains(src, "for _, key := range everyServicePortEnv()") {
 		t.Error("portsRecordIsComplete does not require EVERY port to be present.\n" +
-			"  Two ports checked and the rest unchecked is the defect itself.")
+			"  Two ports checked and the rest unchecked is the defect itself — and checking only the\n" +
+			"  PUBLISHED ports is the same defect over a slightly larger set.")
+	}
+	if !strings.Contains(src, "if rec[key] <= 0 {") {
+		t.Error("portsRecordIsComplete does not reject a missing port — an unset port reads as 0 and " +
+			"must fail the completeness test, or a record describing two instances at once is used.")
 	}
 }
 

@@ -33,9 +33,13 @@ storage:
   trace:
     backend: local
     wal:
-      path: "@DATA_DIR@/tempo/wal"
+      # SINGLE-QUOTED for the same reason loki.yaml's paths are: a Windows data
+      # directory contains backslashes, and a double-quoted YAML scalar would read
+      # them as escapes ("did not find expected hexdecimal number") and refuse to
+      # parse. Tempo then crash-looped for ever and the Traces view was dead.
+      path: '@DATA_DIR@/tempo/wal'
     local:
-      path: "@DATA_DIR@/tempo/blocks"
+      path: '@DATA_DIR@/tempo/blocks'
 
 # Compaction + retention: prune trace blocks older than this window so
 # the telemetry volume cannot grow unbounded (Tempo's default is 336h,

@@ -220,6 +220,30 @@ func runStart(args []string, log *slog.Logger) error {
 		if err := startHostServices(instance, ports, hostDataDirFor(instance), os.Stdout); err != nil {
 			return err
 		}
+		// WAIT FOR THE SERVICES BEFORE STARTING THE PLANE, AND FAIL WITH THEIR REASON.
+		//
+		// This start had NO services gate at all. It launched the supervisor, immediately started
+		// the plane, and then waited 60s on the plane's /healthz — so a services stack that never
+		// came up was reported as "the host plane did not answer within 60s", which names the
+		// SYMPTOM and hides the cause.
+		//
+		// MEASURED, on the real machine: postgres refused to start because the shell was elevated
+		// ("Execution of PostgreSQL by a user with administrative permissions is not permitted"),
+		// and `orchicon start dev` spent a full minute and then said:
+		//
+		//	error: the host plane did not answer http://localhost:8080/healthz within 60s
+		//
+		// while the actual cause sat in services.log the whole time. The install path already
+		// treats this as fatal and quotes that log back (servicesNotReadyError); this is the same
+		// check, in the same place in the sequence, so the two entry points cannot disagree about
+		// what "started" means.
+		//
+		// IT IS THE REQUIRED SET, not the whole stack: a missing optional telemetry backend is a
+		// degradation the instance survives (the plane degrades too), so refusing to start over one
+		// would turn a working instance into a broken command.
+		if !waitServicesReady(instance, ports, os.Stdout) {
+			return servicesNotReadyError(instance, hostDataDirFor(instance))
+		}
 		if err := startHostPlane(instance, ports, hostDataDirFor(instance),
 			filepath.Join(socketDir(), "runtime.sock"), os.Stdout); err != nil {
 			// SAY WHAT IS STILL RUNNING. The services came up and are now unsupervised by a
