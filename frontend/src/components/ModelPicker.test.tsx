@@ -153,6 +153,23 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
 
   it("handles legacy 2-segment refs via parseModelRef (inferred opencode)", () => {
     expect(src).toContain("parseModelRef");
-    expect(src).toContain("parsed?.adapter ?? DEFAULT_ADAPTER_KIND");
+  });
+
+  // A STORED REF STILL WINS; AN EMPTY ONE SEEDS THE PRODUCT DEFAULT.
+  //
+  // These are two different questions and the picker used to answer both with DEFAULT_ADAPTER_KIND:
+  //
+  //   parsed?.adapter ?? DEFAULT_ADAPTER_KIND
+  //
+  // so a fresh selection (no ref at all) seeded the LEGACY INFERENCE — opencode — and the picker's
+  // first act was to ask the opencode-CLI discovery path, which on an opencode-free plane answers
+  // Unimplemented. The operator's issue #3: "The default selected provider in both the web, desktop
+  // and TUI should ALWAYS be orchicon. It's defaulting to opencode and thus giving the user an error
+  // message right away."
+  //
+  // The stored-ref half is unchanged (legacy refs are never repointed); only the EMPTY case moved.
+  it("seeds an EMPTY ref with the native product default, never the legacy inference", () => {
+    expect(src).toContain("parsed?.adapter ?? ORCHICON_ADAPTER_KIND");
+    expect(src).not.toContain("parsed?.adapter ?? DEFAULT_ADAPTER_KIND");
   });
 });

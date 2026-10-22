@@ -61,7 +61,14 @@ type Profile struct {
 	// RefreshToken is password mode's refresh token from the HttpOnly
 	// orchicon_refresh Set-Cookie on local-login (24h TTL). Enables the
 	// client's auto-refresh of the 900s access token.
-	RefreshToken       string
+	RefreshToken string
+	// TokenExpiresIn is the access token's lifetime in seconds, as the server reported it
+	// (LoginResponse/RefreshResponse expires_in). It is what the shell schedules its keep-alive
+	// against, so a password-mode session never meets an expiry at all.
+	//
+	// 0 means "unknown" (an api-key profile, or a plane that did not say), and the keep-alive is then
+	// inert rather than guessing a period.
+	TokenExpiresIn     int64
 	InsecureSkipVerify bool // TLS skip-verify for self-signed dev instances
 	// Newline is the chat dock's newline-insertion chord: alt+enter
 	// (default) | backslash-enter | both. bubbletea v1.3.10 has no kitty

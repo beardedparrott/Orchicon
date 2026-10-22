@@ -199,6 +199,15 @@ type App struct {
 	// running (which would multiply the refresh rate on every switch) — see refresh.go.
 	refreshGen uint64
 
+	// keepalive refreshes the access token BEFORE it expires, so a password-mode session never meets
+	// an expiry during an idle stretch (see client.StartKeepalive). Replaced on /connect, which builds
+	// a new client set; stopped in the same breath so a dead session's keeper cannot keep firing.
+	keepalive *client.Keepalive
+
+	// shellCtx is the shell's lifetime context: cancelled when the App is torn down, so background
+	// work (the keepalive above) exits with it rather than outliving the screen that started it.
+	shellCtx context.Context
+
 	// Chat dock state (feature: context-aware Ask Orchicon + slash).
 	dock      dock.Model
 	chat      *chat.Controller
@@ -796,6 +805,9 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		clients: cl,
 		profile: profile,
 		reg:     subs.NewRegistry(),
+		// The shell's lifetime context. Cancelled on teardown so the token keep-alive (and anything
+		// else started for the shell's lifetime) exits with it.
+		shellCtx: context.Background(),
 		// The SELECTION and its clipboard live on a shared pointer: App is a value model, so
 		// View and Update each receive a COPY — only a shared pointer lets the frame the
 		// renderer painted be read back by the mouse handler that arrives after it
@@ -1801,6 +1813,34 @@ func (m *App) wireSessionRecovery(cl *client.Clients) {
 		return
 	}
 	cl.Session.OnRefreshed = m.reconnectStreams
+
+	// AND KEEP THE TOKEN ALIVE, so the operator never meets an expiry at all.
+	//
+	// The 401 interceptor is a SAFETY NET, not a keep-alive: it only notices an expiry when a request
+	// happens to go out, and a TUI is mostly idle between actions — so the access token (default TTL
+	// 900s) aged out silently and the NEXT action discovered it. That is the operator's "weird
+	// authentication timeouts after some time", and when the action that discovered it was a chat
+	// turn's own session the turn was lost rather than retried.
+	//
+	// Stopping the PREVIOUS keeper first matters: /connect builds a whole new client set, so a keeper
+	// left running would keep refreshing a token nobody reads — and, worse, would keep firing
+	// OnRefreshed into a shell that has moved on.
+	if m.keepalive != nil {
+		m.keepalive.Stop()
+		m.keepalive = nil
+	}
+	m.keepalive = cl.StartKeepalive(m.shellCtx, m.tokenLifetime(), m.reconnectStreams)
+}
+
+// tokenLifetime is the access token's TTL, as the server reported it at login/refresh.
+//
+// A zero value means "the server did not say", and StartKeepalive then does nothing — guessing a period
+// from an unknown lifetime is how a client ends up either refreshing on every request or never.
+func (m *App) tokenLifetime() time.Duration {
+	if m.profile == nil || m.profile.TokenExpiresIn <= 0 {
+		return 0
+	}
+	return time.Duration(m.profile.TokenExpiresIn) * time.Second
 }
 
 // reconnectStreams forces every live subscription to redial now.

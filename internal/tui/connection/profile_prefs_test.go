@@ -26,7 +26,7 @@ func TestBuildProfileCarriesDisplayPreferences(t *testing.T) {
 	m := New(existing, ProbeFuncs{})
 	m.inputs[fieldURL].SetValue("http://new.example")
 
-	got := m.buildProfile("new-token", "")
+	got := m.buildProfile("new-token", "", 900)
 	if got.Theme != "gruvbox-dark" {
 		t.Errorf("Theme = %q, want it carried through the rebuild", got.Theme)
 	}
@@ -46,7 +46,7 @@ func TestBuildProfileCarriesDisplayPreferences(t *testing.T) {
 func TestBuildProfileWithoutExistingProfile(t *testing.T) {
 	m := New(nil, ProbeFuncs{})
 	m.inputs[fieldURL].SetValue("http://new.example")
-	got := m.buildProfile("tok", "")
+	got := m.buildProfile("tok", "", 900)
 	if got.Theme != "" || got.Newline != "" {
 		t.Errorf("preferences = (%q, %q), want empty on a first run", got.Theme, got.Newline)
 	}

@@ -256,11 +256,25 @@ const EMPTY_STREAM: ConvStream = {
   asks: [],
 };
 
-// The server's last-resort fallback when no Ask Orchicon model is configured
-// (conversation model_ref empty AND tenant default empty). Mirrors chat.go's
-// hardcoded fallback — the free model is rate-limited and is the #1 cause of
-// "Ask Orchicon is stuck" (a silent provider 429 looks like a stall).
-const FALLBACK_ASK_MODEL = "opencode/deepseek-v4-flash-free";
+// THERE IS NO LAST-RESORT MODEL, because every candidate was a lie.
+//
+// This mirrored the server's old hardcoded fallback, `opencode/deepseek-v4-flash-free`, and the
+// operator reported what it actually did:
+//
+//	conversation session send: orchicon bridge: start Ask turn: provider status 403 403 Forbidden:
+//	{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used
+//	from within OpenCode. Download it at https://opencode.ai and keep building."}}
+//
+// The ref was a legacy 2-segment one (so it INFERS the opencode adapter, which a fresh install has no
+// binary for) naming a FREE-TIER-ONLY model (which opencode gates on the request coming from inside
+// its own client — the native adapter is refused too, since it calls the same endpoints with the same
+// key). Both halves are unfixable without the opencode binary, so inventing a model here could only
+// ever produce an error the operator cannot act on.
+//
+// The server now REFUSES such a turn with a FailedPrecondition naming the setting to fix (see
+// askorchicon/chat.go). The UI shows "no model configured" — a true, fixable statement — instead of a
+// model name that cannot dispatch.
+const NO_MODEL_CONFIGURED_LABEL = "no model configured";
 
 // Ticks Date.now() every `intervalMs` while truthy, frozen otherwise. Used to
 // render live "last activity Ns ago" elapsed time in the reconnecting banner
@@ -986,9 +1000,11 @@ function AskOrchiconPage() {
     () =>
       activeConv?.modelRef ||
       settings?.defaultAskOrchiconModel ||
-      FALLBACK_ASK_MODEL,
+      "",
     [activeConv?.modelRef, settings?.defaultAskOrchiconModel],
   );
+  // "No model configured" is its own state, and the composer says so rather than naming a model that
+  // cannot dispatch. It is fixable in one click (the model chip), so it is a prompt, not an error.
   const isUsingFallbackModel =
     !activeConv?.modelRef && !settings?.defaultAskOrchiconModel;
 
@@ -2144,8 +2160,12 @@ function AskOrchiconPage() {
                   <ModeIcon mode={localMode} className="h-2.5 w-2.5" />
                   {conversationModeLabel(localMode)}
                 </span>
-                {/* The model answering this conversation — surfaced so a
-                    silent fallback to the free model is never invisible. */}
+                {/* The model answering this conversation.
+                    "No model configured" is its own state, and it is NOT a model name: there is no
+                    last-resort model any more, because every candidate could only fail (a legacy ref
+                    inferred the opencode adapter, and the free tier refuses any client but opencode
+                    itself). Saying so is a prompt the operator can act on; naming a model that cannot
+                    dispatch is an error they cannot. */}
                 <span
                   className={cn(
                     "shrink-0 max-w-[220px] truncate inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[10px]",
@@ -2155,11 +2175,11 @@ function AskOrchiconPage() {
                   )}
                   title={
                     isUsingFallbackModel
-                      ? "No Ask Orchicon model is configured — using the free fallback model, which is rate-limited and can appear stuck."
+                      ? "No Ask Orchicon model is configured — pick one here, or set a default in Settings → Defaults."
                       : "The model answering this conversation"
                   }
                 >
-                  {effectiveModel}
+                  {isUsingFallbackModel ? NO_MODEL_CONFIGURED_LABEL : effectiveModel}
                 </span>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -2181,15 +2201,16 @@ function AskOrchiconPage() {
                 so the server is answering with the free fallback model. That
                 model is rate-limited and is the #1 cause of a stuck turn —
                 surfacing it turns a confusing "Orchicon is thinking" into an
-                actionable "your model config is missing". */}
+                actionable "your model config is missing".
+                (There is no fallback model any more: see NO_MODEL_CONFIGURED_LABEL.) */}
             {isUsingFallbackModel && (
               <div className="flex items-start gap-2 border-b border-amber-300/40 bg-amber-50/60 px-6 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">
                 <RefreshCw aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0" />
                 <span className="min-w-0 [overflow-wrap:anywhere]">
-                  No Ask Orchicon model is configured — answering with the free
-                  fallback model (<span className="font-mono">{effectiveModel}</span>),
-                  which is rate-limited and can appear stuck. Set a model in
-                  Settings → Default models.
+                  No Ask Orchicon model is configured. Pick one from the model chip
+                  here, or set a default in Settings → Defaults → “Default Ask
+                  Orchicon model”. Messages cannot be sent until one is chosen — the
+                  native “orchicon” adapter needs nothing installed.
                 </span>
               </div>
             )}

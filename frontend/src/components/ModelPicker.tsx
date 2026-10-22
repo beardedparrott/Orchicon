@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import type { AIProvider, OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { ProviderEntry } from "@/api/gen/orchicon/api/v1/provider_pb";
+import { translateAdapterError } from "@/lib/adapter-errors";
 import {
   DEFAULT_ADAPTER_KIND,
   ORCHICON_ADAPTER_KIND,
@@ -63,9 +64,26 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
   // native kind only, which is exactly the pre-existing behaviour.
   const sourcingKinds = adapterKindsData?.sourcingKinds;
 
-  // Seeded adapter/provider from the stored ref; DEFAULT_ADAPTER_KIND when the
-  // ref is empty or unknown (never blank, never hidden).
-  const [adapter, setAdapter] = useState<string>(() => parsed?.adapter ?? DEFAULT_ADAPTER_KIND);
+  // Seeded adapter/provider from the stored ref.
+  //
+  // AN EMPTY REF SEEDS THE PRODUCT DEFAULT, NOT THE LEGACY INFERENCE, and the distinction is the
+  // operator's issue #3: "The default selected provider in both the web, desktop and TUI should
+  // ALWAYS be orchicon. It's defaulting to opencode and thus giving the user an error message right
+  // away."
+  //
+  // It used to seed DEFAULT_ADAPTER_KIND (opencode) here and rely on the seeding effect below to
+  // correct it once `adapterKinds` loaded. That left a real window — and on a plane where the kinds
+  // fetch is slow or fails, no window ever closed — during which the picker's FIRST act was to ask
+  // the opencode-CLI discovery path for providers and models. On an opencode-free plane that path is
+  // Unimplemented, so the operator's very first interaction produced two red error lines.
+  //
+  // Seeding the native kind here is also the honest default: it needs no external binary, so it is
+  // the only kind guaranteed dispatchable on a fresh install. A stored ref still wins (legacy refs
+  // are never repointed), and the effect below still corrects to DEFAULT_ADAPTER_KIND if the plane
+  // turns out not to register the native kind.
+  const [adapter, setAdapter] = useState<string>(
+    () => parsed?.adapter ?? ORCHICON_ADAPTER_KIND,
+  );
   const [provider, setProvider] = useState<string>(() => parsed?.provider ?? "");
   // The lazy useState initializers seed ONLY at mount — an externally-loaded
   // value (async settings fetch filling the draft AFTER the picker's first
@@ -583,8 +601,11 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
                   <span className="text-xs text-muted-foreground">Loading providers...</span>
                 )}
                 {providersError && (
-                  <span className="text-xs text-destructive">
-                    Failed to load providers: {String(providersError)}
+                  <span
+                    className="text-xs text-destructive"
+                    title={translateAdapterError(providersError, adapter, "providers").detail || undefined}
+                  >
+                    {translateAdapterError(providersError, adapter, "providers").message}
                   </span>
                 )}
                 {!providersLoading && !providersError && providers && (
@@ -636,8 +657,11 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
                   <p className="p-4 text-xs text-muted-foreground text-center">Loading models...</p>
                 )}
                 {modelsError && (
-                  <p className="p-4 text-xs text-destructive text-center">
-                    Failed to load models: {String(modelsError)}
+                  <p
+                    className="p-4 text-xs text-destructive text-center"
+                    title={translateAdapterError(modelsError, adapter, "models").detail || undefined}
+                  >
+                    {translateAdapterError(modelsError, adapter, "models").message}
                   </p>
                 )}
                 {!modelsLoading && !modelsError && filtered.length === 0 && (
