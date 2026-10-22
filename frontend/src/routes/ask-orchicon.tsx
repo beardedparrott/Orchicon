@@ -2207,10 +2207,25 @@ function AskOrchiconPage() {
               <div className="flex items-start gap-2 border-b border-amber-300/40 bg-amber-50/60 px-6 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">
                 <RefreshCw aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0" />
                 <span className="min-w-0 [overflow-wrap:anywhere]">
-                  No Ask Orchicon model is configured. Pick one from the model chip
-                  here, or set a default in Settings → Defaults → “Default Ask
-                  Orchicon model”. Messages cannot be sent until one is chosen — the
-                  native “orchicon” adapter needs nothing installed.
+                  No Ask Orchicon model is configured.{" "}
+                  <button
+                    type="button"
+                    // The chip is the control; pointing at it is not enough when the operator is
+                    // reading a banner at the other end of the composer. This opens the same picker
+                    // by clicking the chip for them.
+                    onClick={() =>
+                      document
+                        .querySelector<HTMLButtonElement>('[data-testid="ask-model-chip"]')
+                        ?.click()
+                    }
+                    className="font-medium underline underline-offset-2 hover:no-underline"
+                  >
+                    Choose a model
+                  </button>{" "}
+                  from the chip beside the message box, or set a default in Settings
+                  → Defaults → “Default Ask Orchicon model”. A message sent without
+                  one is refused — the native “orchicon” adapter needs nothing
+                  installed.
                 </span>
               </div>
             )}
@@ -3740,9 +3755,16 @@ function ChatInputField({
                 and immediately BEFORE the mode dropdown (the operator's
                 placement ask). The numbers hide first on a narrow box — the chip
                 is the CONTROL and must survive. */}
-            {modelRef && (
-              <AskModelChip model={modelRef} onModelChange={onModelChange} />
-            )}
+            {/* ALWAYS RENDERED, INCLUDING WHEN NO MODEL IS CONFIGURED — because the chip IS the
+                picker. Gating it on `modelRef` was a regression I introduced: with no default Ask
+                model set, `modelRef` is empty, so the control disappeared and there was no way to
+                choose a model from the conversation at all. The operator: "If no default ask model
+                is set, it doesn't show a picker in the conversation. That is the wrong approach. We
+                should definitely let people still choose from the conversation if no default is
+                set."
+                The comment below already said the chip "is the CONTROL and must survive"; the gate
+                contradicted it. An empty ref is the state that needs the control MOST, not least. */}
+            <AskModelChip model={modelRef} onModelChange={onModelChange} />
             {statsLine && (
               <span
                 className="hidden truncate font-mono text-[11px] text-muted-foreground sm:inline"
