@@ -336,14 +336,30 @@ func (d *Daemon) streamCommand(w http.ResponseWriter, r *http.Request, key, verb
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	enc := json.NewEncoder(w)
 	flusher, _ := w.(http.Flusher)
+	// THE TWO RELAYS SHARE ONE ResponseWriter, AND A ResponseWriter IS NOT SAFE FOR CONCURRENT USE.
+	//
+	// stdout and stderr are drained by two goroutines (they must be, or a build that fills one pipe's
+	// buffer while nobody reads the other deadlocks). Both then wrote to `w` through the same encoder
+	// with no coordination, which is a DATA RACE on the response — `go test -race` reports it at the
+	// Write below, and its consequence in production is exactly what an operator would blame on the
+	// build: interleaved or LOST log lines, because two goroutines mutate the writer's buffer at once.
+	//
+	// A mutex serialises the writes. Each event is one Encode + one Flush under the lock, so a line can
+	// never be torn in half and the flush cannot race the next write's header.
+	var writeMu sync.Mutex
+	writeEvent := func(ev AgentEvent) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = enc.Encode(ev)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 	relay := func(stream string, rdr interface{ Read([]byte) (int, error) }) {
 		sc := bufio.NewScanner(rdr)
 		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 		for sc.Scan() {
-			_ = enc.Encode(AgentEvent{Stream: stream, Data: sc.Text()})
-			if flusher != nil {
-				flusher.Flush()
-			}
+			writeEvent(AgentEvent{Stream: stream, Data: sc.Text()})
 		}
 	}
 	var relayWG sync.WaitGroup
@@ -378,10 +394,8 @@ func (d *Daemon) streamCommand(w http.ResponseWriter, r *http.Request, key, verb
 	if werr != nil {
 		ev.Error = werr.Error()
 	}
-	_ = enc.Encode(ev)
-	if flusher != nil {
-		flusher.Flush()
-	}
+	// Through the same lock: the terminal event must not race a relay that is still draining.
+	writeEvent(ev)
 	return code, true
 }
 
