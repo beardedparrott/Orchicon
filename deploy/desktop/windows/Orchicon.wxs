@@ -85,6 +85,15 @@
          someone who never opts in needs no image at all. -->
     <Property Id="RUNTIMEIMAGES" Value="none" Secure="yes" />
     <Property Id="SKIPSETUP" Value="0" />
+    <!-- DESTROY MY DATA ON UNINSTALL. Unset (= 0) keeps the database cluster, the attachment blobs
+         and the secrets KEK, which is the safe default: an uninstall removes the SOFTWARE, and the
+         operator's data is what a reinstall reuses. 1 runs the uninstall verb WITH THE PURGE FLAG,
+         which is IRREVERSIBLE and is the only path that removes the cluster or the KEK.
+
+         Public (all-uppercase) so it survives into the execute sequence and can be passed on the
+         command line for an unattended nuke:
+           msiexec /x Orchicon.msi /qn PURGEDATA=1 -->
+    <Property Id="PURGEDATA" Value="0" Secure="yes" />
     <!-- THE WIZARD'S OWN ANSWERS. Public (all-uppercase) so they survive into the execute
          sequence AND can be set on the command line for an unattended install. Empty means
          "use this instance's default", which is what the port resolver already does with an
@@ -246,7 +255,47 @@
                   Return="asyncNoWait"
                   ExeCommand="install --non-interactive --instance [INSTANCE] --port ORCHICON_CONTROL_PORT=[CONTROLPORT] --port ORCHICON_POSTGRES_PORT=[POSTGRESPORT] --port ORCHICON_LOKI_PORT=[LOKIPORT] --port ORCHICON_TEMPO_PORT=[TEMPOPORT] --runtime-images [RUNTIMEIMAGES]" />
 
+    <!-- ===================== THE UNINSTALL ==============================
+         AN UNINSTALL MUST TAKE THE SERVICES WITH IT, and until now it took nothing: LaunchSetup is
+         conditioned on NOT REMOVE, so uninstalling removed the binaries and left a live services
+         supervisor, a live plane, postgres and nats holding their ports, and the instance state
+         directory. The operator's report was "the past two uninstall/reinstalls don't start the
+         services and serve up fully automatically" — the REINSTALL inherited that orphan, and the
+         port conflict it caused was (until this same change) fatal before cleanup could run.
+
+         IT RUNS THE INSTALLED EXE, exactly like LaunchSetup, for the same reason: FileRef makes MSI
+         write the command line from the file it is removing, so there is no quoting to get wrong.
+
+         Return="asyncNoWait" during INSTALLVALIDATE-adjacent removal is deliberately NOT used: this
+         must FINISH before the binaries disappear, because it is the thing that stops them. It runs
+         at InstallFinalize on the REMOVE path, which is after the deferred script has done its work
+         and before the process exits.
+
+         IT CANNOT RUN AFTER THE FILES ARE GONE, so it is sequenced before RemoveFiles by using
+         InstallFinalize's position (RemoveFiles precedes it). A missing binary — a broken install —
+         is a no-op rather than a failed uninstall: the operator asked to remove the product, and a
+         missing exe must not block that. -->
+    <!-- TWO ACTIONS, ONE PER ANSWER, because MSI expands properties textually:  [PURGEDATA] would
+         interpolate a bare "1" as a positional argument, which the parser would then read as an
+         instance name. Two command lines with two conditions is unambiguous, and it keeps the flag
+         that destroys data visible in the source rather than inferred from a property value. -->
+    <CustomAction Id="LaunchUninstall"
+                  FileRef="OrchiconExeFile"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="ignore"
+                  ExeCommand="uninstall --instance [INSTANCE]" />
+    <CustomAction Id="LaunchUninstallPurge"
+                  FileRef="OrchiconExeFile"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="ignore"
+                  ExeCommand="uninstall --instance [INSTANCE] --purge" />
+
     <InstallExecuteSequence>
+      <!-- REMOVE ONLY: the mirror of LaunchSetup's NOT REMOVE. -->
+      <Custom Action="LaunchUninstall" After="InstallFinalize" Condition="REMOVE=&quot;ALL&quot; AND SKIPSETUP &lt;&gt; &quot;1&quot; AND PURGEDATA &lt;&gt; &quot;1&quot;" />
+      <Custom Action="LaunchUninstallPurge" After="LaunchUninstall" Condition="REMOVE=&quot;ALL&quot; AND SKIPSETUP &lt;&gt; &quot;1&quot; AND PURGEDATA=&quot;1&quot;" />
       <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent: a repair or
            an upgrade should re-converge, and `orchicon install` is idempotent.
 

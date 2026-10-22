@@ -36,6 +36,24 @@ import (
 // ORCHICON_ASK_TIMEOUT.
 const defaultHandshakeTimeout = 60 * time.Second
 
+// defaultHandshakeAttempts is the accept-retry budget: the first send plus two retries. See
+// askHandshakeAttempts for why the retry exists at all.
+const defaultHandshakeAttempts = 3
+
+// askHandshakeAttempts is how many times a turn will try to get its message ACCEPTED by the serve
+// before the failure reaches the operator. Default 3 (the first send plus two retries), which at the
+// default 60s window is up to three minutes of the plane handling a slow-starting serve itself.
+//
+// Env-overridable via ORCHICON_ASK_HANDSHAKE_ATTEMPTS.
+func askHandshakeAttempts() int {
+	if v := os.Getenv("ORCHICON_ASK_HANDSHAKE_ATTEMPTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultHandshakeAttempts
+}
+
 func askTimeout() time.Duration {
 	if v := os.Getenv("ORCHICON_ASK_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
@@ -1860,26 +1878,56 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 	// and the serve accepting our message are observed with sent == false
 	// and ignored.
 	sendCh := make(chan error, 1)
-	go func() {
-		// Attachments require the OPTIONAL attachment-aware capability. When
-		// the adapter lacks it, the turn FAILS LOUDLY (never silently falls
-		// back to text-only) — the AC routing landmine: a non-opencode client
-		// must not drop attachments.
-		if len(c.attachments) > 0 {
-			acc, ok := c.client.(scheduler.SendTurnMessageWithAttachments)
-			if !ok {
-				sendCh <- fmt.Errorf("adapter for this conversation does not support attachments to Ask chat")
+	// RE-DISPATCHABLE, AND THAT IS THE POINT: a serve that does not ACCEPT the message in time is a
+	// transient far more often than a failure — it is still binding its socket, still replaying a
+	// session, or busy with another turn. Showing the operator "the opencode serve did not accept the
+	// message within 1m0s — please try again" for that is making them do the retry work this loop can
+	// do itself: "Orchicon should be trying to handle these timeouts and other issues itself first.
+	// It's frustrating."
+	//
+	// EACH ATTEMPT OWNS A CANCELABLE CONTEXT so a retry cannot deliver the message TWICE. Without that,
+	// attempt N could still be in flight when attempt N+1 succeeds, and the serve would receive the
+	// same user message twice — a duplicate reply is worse than the timeout it was avoiding.
+	// EVERY ATTEMPT'S CANCEL IS RETAINED AND CALLED ON THE WAY OUT.
+	//
+	// A retry replaces the in-flight attempt's context (below), so a single named cancel would have to be
+	// reassigned — and `go vet` is right to object to that: a reassignment can leave an earlier cancel
+	// uncalled, leaking the attempt's context and its goroutine. Keeping them in one slice and cancelling
+	// the whole set on return makes that impossible by construction.
+	var sendCancels []context.CancelFunc
+	defer func() {
+		for _, c := range sendCancels {
+			c()
+		}
+	}()
+	sendCtx, cancelSend := context.WithCancel(subCtx)
+	sendCancels = append(sendCancels, cancelSend)
+	dispatchSend := func() {
+		go func() {
+			// Attachments require the OPTIONAL attachment-aware capability. When
+			// the adapter lacks it, the turn FAILS LOUDLY (never silently falls
+			// back to text-only) — the AC routing landmine: a non-opencode client
+			// must not drop attachments.
+			if len(c.attachments) > 0 {
+				acc, ok := c.client.(scheduler.SendTurnMessageWithAttachments)
+				if !ok {
+					sendCh <- fmt.Errorf("adapter for this conversation does not support attachments to Ask chat")
+					return
+				}
+				parts := make([]scheduler.ChatAttachment, 0, len(c.attachments))
+				for _, a := range c.attachments {
+					parts = append(parts, scheduler.ChatAttachment{Name: a.Name, MimeType: a.MimeType, Data: a.Data})
+				}
+				sendCh <- acc.SendTurnMessageWithAttachments(sendCtx, c.convID, sid, system, c.modelRef, c.userMsg, parts)
 				return
 			}
-			parts := make([]scheduler.ChatAttachment, 0, len(c.attachments))
-			for _, a := range c.attachments {
-				parts = append(parts, scheduler.ChatAttachment{Name: a.Name, MimeType: a.MimeType, Data: a.Data})
-			}
-			sendCh <- acc.SendTurnMessageWithAttachments(subCtx, c.convID, sid, system, c.modelRef, c.userMsg, parts)
-			return
-		}
-		sendCh <- c.client.SendTurnMessage(subCtx, c.convID, sid, system, c.modelRef, c.userMsg)
-	}()
+			sendCh <- c.client.SendTurnMessage(sendCtx, c.convID, sid, system, c.modelRef, c.userMsg)
+		}()
+	}
+	dispatchSend()
+	// handshakeAttempts counts ACCEPT attempts. The first is dispatched above; a timeout re-dispatches
+	// up to the budget, and only then does the operator see the message.
+	handshakeAttempts := 1
 
 	var reply strings.Builder
 	var reasoning []string
@@ -2112,8 +2160,26 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 			return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("reply timed out after %s on model %s — the model may be overloaded or unavailable. Check the Ask Orchicon model in Settings → Default models, then retry.", askReplyWindow(), c.modelRef)}
 		case <-handshake.C:
 			if !sent {
+				// RETRY IT OURSELVES FIRST. A serve that has not accepted the message is usually still
+				// coming up (binding, replaying its session store) or is busy — both of which resolve
+				// within one more window. The operator should almost never see this message, so the
+				// budget is generous and only exhausted for a serve that is genuinely not accepting.
+				if handshakeAttempts < askHandshakeAttempts() {
+					handshakeAttempts++
+					// Cancel the in-flight attempt BEFORE re-dispatching, so the serve can never be
+					// handed the same user message twice (a duplicate reply is worse than a timeout).
+					cancelSend()
+					sendCtx, cancelSend = context.WithCancel(subCtx)
+					sendCancels = append(sendCancels, cancelSend)
+					s.log.Warn("ask orchicon: the serve did not accept the message in time — retrying",
+						"conversation", c.convID, "session", sid, "model", c.modelRef,
+						"attempt", handshakeAttempts, "of", askHandshakeAttempts(), "window", askTimeout())
+					dispatchSend()
+					handshake.Reset(askTimeout())
+					continue
+				}
 				finalText, finalReasoning := settleAttempt()
-				return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("the opencode serve did not accept the message within %s — please try again", askTimeout())}
+				return turnAttemptResult{kind: turnFailed, text: finalText, reasoning: finalReasoning, err: fmt.Errorf("the opencode serve did not accept the message after %d attempt(s) of %s — it may still be starting. Try again, or check the serve log.", handshakeAttempts, askTimeout())}
 			}
 		case <-stallTicker.C:
 			// First, the AC1 MCP-wedge signal: a tool call issued but never
