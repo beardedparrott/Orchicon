@@ -356,3 +356,23 @@ func readFileBytes(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// THE SERVICES GATE MUST NOT PROBE THE TELEMETRY CHILDREN AT THEIR ORDINARY TIMEOUT.
+//
+// runHostServices brings postgres and nats up BEFORE it spawns the four telemetry children, and this gate
+// first passes the moment those two answer. Asking the optional components at their usual 3s timeout here
+// therefore guarantees "not answering" for a stack that is a fraction of a second from fine — measured
+// twice as a spurious "DEGRADED — tempo, loki not answering" immediately after a successful start.
+func TestServicesGateUsesAShortOptionalProbe(t *testing.T) {
+	src := readGoFile(t, "install_host.go")
+	if !strings.Contains(src, "requiredServicesReadyWithin(instance, ports, 500*time.Millisecond)") {
+		t.Error("the services gate uses the ordinary probe timeout, so it reports the telemetry children " +
+			"as not answering in the window where the supervisor has not spawned them yet")
+	}
+	// And the seam must exist, so the ordinary (user-facing) probe keeps its own timeout.
+	health := readGoFile(t, "services_health.go")
+	if !strings.Contains(health, "func servicesHealthTimeout(") {
+		t.Error("services_health.go has no timeout seam, so every caller is forced onto one timeout: the " +
+			"install gate's needs and `status`'s needs are not the same")
+	}
+}
