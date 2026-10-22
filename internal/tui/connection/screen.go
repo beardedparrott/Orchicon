@@ -293,7 +293,9 @@ func (m *Model) probe(ctx context.Context) (*Result, error) {
 		if err := m.probes.ListProjects(ctx, m.currentURL(), m.credential(), m.insecure); err != nil {
 			return nil, fmt.Errorf("API key rejected: %w\n\nRe-create the key in the GUI (Settings → API keys). Read scopes cover browsing; sending chat messages and interjecting into live executions needs the corresponding write scopes (conversations, execution messaging).", err)
 		}
-		return &Result{Profile: m.buildProfile(m.credential(), ""), ServerVersion: vr.Version}, nil
+		// API-KEY MODE HAS NO EXPIRY: a key is not a session token, so there is no lifetime to
+		// keep alive against. 0 is the honest value and makes the keep-alive inert.
+		return &Result{Profile: m.buildProfile(m.credential(), "", 0), ServerVersion: vr.Version}, nil
 	}
 	lr, err := m.probes.LocalLogin(ctx, m.currentURL(), m.username(), m.password(), m.insecure)
 	if err != nil {
@@ -314,7 +316,7 @@ func (m *Model) probe(ctx context.Context) (*Result, error) {
 	if refresh == "" {
 		refresh = m.storedRefresh
 	}
-	return &Result{Profile: m.buildProfile(lr.AccessToken, refresh), ServerVersion: vr.Version}, nil
+	return &Result{Profile: m.buildProfile(lr.AccessToken, refresh, lr.ExpiresIn), ServerVersion: vr.Version}, nil
 }
 
 // profileNameForURL names a profile after the INSTANCE its URL points at, so two
@@ -344,7 +346,7 @@ func profileNameForURL(raw string) string {
 // buildProfile assembles the profile from the form. token overrides the
 // credential field (password mode stores the minted access token, never
 // the password); refresh carries the login's refresh token.
-func (m *Model) buildProfile(token, refresh string) *config.Profile {
+func (m *Model) buildProfile(token, refresh string, expiresIn int64) *config.Profile {
 	name := profileNameForURL(m.currentURL())
 	method := config.AuthAPIKey
 	if !m.authAPI {
@@ -391,12 +393,15 @@ func (m *Model) buildProfile(token, refresh string) *config.Profile {
 		themeName, newlineMode = m.profile.Theme, m.profile.Newline
 	}
 	return &config.Profile{
-		Name:               name,
-		URL:                url_,
-		AuthMethod:         method,
-		Token:              cred,
-		Username:           user,
-		RefreshToken:       refresh,
+		Name:         name,
+		URL:          url_,
+		AuthMethod:   method,
+		Token:        cred,
+		Username:     user,
+		RefreshToken: refresh,
+		// The access token's lifetime, so the shell can refresh it BEFORE it expires instead of
+		// discovering the expiry on the operator's next action (see client.StartKeepalive).
+		TokenExpiresIn:     expiresIn,
 		InsecureSkipVerify: m.insecure,
 		Newline:            newlineMode,
 		Theme:              themeName,

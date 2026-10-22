@@ -34,13 +34,13 @@ func TestTwoInstancesGetTwoProfileSlots(t *testing.T) {
 
 	dev := New(nil, ProbeFuncs{})
 	dev.inputs[fieldURL].SetValue("http://localhost:8080")
-	if err := SaveProfile(path, &Result{Profile: dev.buildProfile("dev-token", ""), ServerVersion: "v1"}); err != nil {
+	if err := SaveProfile(path, &Result{Profile: dev.buildProfile("dev-token", "", 0), ServerVersion: "v1"}); err != nil {
 		t.Fatalf("save dev: %v", err)
 	}
 
 	prod := New(nil, ProbeFuncs{})
 	prod.inputs[fieldURL].SetValue("http://localhost:8091")
-	if err := SaveProfile(path, &Result{Profile: prod.buildProfile("prod-token", ""), ServerVersion: "v1"}); err != nil {
+	if err := SaveProfile(path, &Result{Profile: prod.buildProfile("prod-token", "", 0), ServerVersion: "v1"}); err != nil {
 		t.Fatalf("save prod: %v", err)
 	}
 

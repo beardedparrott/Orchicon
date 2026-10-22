@@ -6,11 +6,62 @@ import (
 )
 
 // DefaultAdapterKind is the adapter kind assumed when a model_ref has no
-// explicit adapter segment (a 1- or 2-segment legacy ref). "opencode" is
-// the only adapter wired into the dispatcher today; legacy refs like
+// explicit adapter segment (a 1- or 2-segment legacy ref). Legacy refs like
 // "opencode/deepseek-v4-flash-free" and "anthropic/claude-sonnet-4" keep
 // dispatching exactly as they did before the adapter namespace landed.
+//
+// IT IS THE LEGACY INFERENCE, NOT THE PRODUCT DEFAULT. The default adapter for a FRESH selection is
+// NativeAdapterKind — see ProductDefaultAdapterKind, and never use this constant to seed a picker:
+// it names the serve-backed adapter, which is precisely the one a fresh install may not have.
 const DefaultAdapterKind = "opencode"
+
+// NativeAdapterKind is the in-process adapter that runs a session inside the control plane. It needs
+// no external binary, so it is the only kind that is always dispatchable on a fresh install — which
+// is why it, and not DefaultAdapterKind, is the product default for a fresh selection (ADR-0005 D5).
+const NativeAdapterKind = "orchicon"
+
+// ProductDefaultAdapterKind is what a picker seeds when nothing is stored yet.
+//
+// WHY THIS EXISTS AS A NAME rather than callers reaching for NativeAdapterKind directly: the reason
+// the default matters is not cosmetic, and the next reader should find it stated once. A fresh
+// install has no opencode binary, so seeding DefaultAdapterKind made every new operator's FIRST
+// interaction an error:
+//
+//	Failed to load providers: ConnectError: [unimplemented] model discovery is not configured
+//	(set ORCHICON_OPENCODE_BIN or install opencode on PATH).
+//
+// The fix is not a nicer message for that error — it is not asking the question. See
+// FreeTierOnlySuffixes for the other half (a default must also not name a model the provider will
+// refuse).
+const ProductDefaultAdapterKind = NativeAdapterKind
+
+// FreeTierOnlySuffixes are model-id suffixes that exist ONLY under opencode's free tier.
+//
+// A ref naming one of these cannot be served through any adapter that talks to the model API over
+// HTTP, because opencode gates the free tier on the request coming from INSIDE its own client:
+//
+//	403 {"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be
+//	used from within OpenCode. Download it at https://opencode.ai and keep building."}}
+//
+// THE NATIVE ADAPTER IS NOT AN EXCEPTION. internal/orchicon calls the same endpoints
+// (https://opencode.ai/zen/v1, .../zen/go/v1) with the same OPENCODE_API_KEY, so it receives the same
+// refusal — the gate is about the CLIENT, not the credential or the adapter. There is therefore no
+// way to serve a free-tier model without the opencode binary, and a default must never name one.
+//
+// This is used to REFUSE a free-tier ref on a non-opencode adapter with a message that says so,
+// instead of letting the turn die on a 403 the operator cannot act on.
+var FreeTierOnlySuffixes = []string{"-free"}
+
+// IsFreeTierOnly reports whether a model id is served only by opencode's in-client free tier.
+func IsFreeTierOnly(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	for _, suffix := range FreeTierOnlySuffixes {
+		if strings.HasSuffix(m, suffix) {
+			return true
+		}
+	}
+	return false
+}
 
 // The adapter kinds wired into the dispatcher. KindOpencode is the
 // serve-backed session adapter; KindOrchicon is the native in-process

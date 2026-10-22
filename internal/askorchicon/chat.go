@@ -949,14 +949,33 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// interaction — the reply is collected detached). ---
 	modelRef := s.modelRefOrFallback(ctx, tenantID, conv.ModelRef)
 	if modelRef == "" {
-		// No model configured anywhere (conversation, tenant default): fall
-		// back to the free model. This is the silent failure that turned
-		// into "Ask Orchicon is stuck" for users — the free model is
-		// rate-limited and wedges turns. Log it loudly so the operator
-		// knows a model setting is missing.
-		modelRef = "opencode/deepseek-v4-flash-free"
-		s.log.Warn("ask orchicon using fallback free model — no model configured for conversation or tenant default",
-			"conversation", convID, "tenant", tenantID, "model", modelRef)
+		// NO MODEL IS CONFIGURED ANYWHERE, AND THERE IS NO HONEST DEFAULT TO INVENT.
+		//
+		// This used to fall back to `opencode/deepseek-v4-flash-free`, which was wrong in three
+		// compounding ways and produced the operator's report verbatim:
+		//
+		//  1. THE REF IS LEGACY 2-SEGMENT, so it INFERS the opencode adapter — the serve-backed kind a
+		//     fresh install has no binary for. The turn died in model discovery:
+		//         [unimplemented] model discovery is not configured (set ORCHICON_OPENCODE_BIN or
+		//         install opencode on PATH)
+		//  2. THE MODEL IS FREE-TIER-ONLY. opencode gates that tier on the request coming from inside
+		//     its own client, and the native adapter is not exempt — it calls the same zen endpoints
+		//     with the same key, so it gets the same refusal:
+		//         403 FreeTierError: "OpenCode's free tier can only be used from within OpenCode."
+		//     There is no way to serve it without the opencode binary (see adapter.FreeTierOnlySuffixes).
+		//  3. IT WAS SILENT. A warning in the plane log is invisible to the operator, who saw a turn
+		//     hang or fail with a provider error and no way to know a setting was missing.
+		//
+		// So the turn is REFUSED with an actionable message instead. "Ask Orchicon has no model
+		// configured" is a true, fixable statement; a doomed turn against a provider that will refuse
+		// is neither. It is FailedPrecondition — the caller must change a setting — not Internal.
+		releaseTurn()
+		return "", nil, nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(
+			"no model is configured for Ask Orchicon\n"+
+				"  Set one in Settings → Defaults → \"Default Ask Orchicon model\", or pick a model for this\n"+
+				"  conversation from the composer's model chip.\n"+
+				"  The native \"orchicon\" adapter needs no external binary and is the usual choice; the\n"+
+				"  \"opencode\" adapter additionally requires the opencode CLI on the plane's PATH."))
 	}
 
 	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
