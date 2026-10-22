@@ -39,6 +39,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/planecontrol"
 )
 
 // clearStalePostmasterLock removes a postmaster.pid whose process is gone.
@@ -88,12 +90,74 @@ func clearStalePostmasterLock(dataDir string, out io.Writer, enabled bool) error
 		return nil
 	}
 
-	// DEAD PROCESS: the lock is a leftover from a supervisor that was killed outright.
+	// A DEAD PID IS NOT PROOF THAT THE CLUSTER IS UNOWNED.
+	//
+	// This removed the lock as soon as the pid in it was gone, and that is how two postmasters end up on
+	// one data directory. MEASURED on a real Windows machine:
+	//
+	//	pid 30488  postgres.exe (postmaster)              -> DEAD
+	//	pid 26236  postgres.exe --forkaux 3892 0         -> ALIVE, parent=30488
+	//	Get-NetTCPConnection -LocalPort 5432 -> OwningProcess 30488
+	//
+	// postgres RE-PARENTS its per-connection backends, so killing the postmaster leaves them running,
+	// holding the data directory open and sharing its listening socket. The lock names the dead parent,
+	// yet the cluster is very much in use. Removing the lock then lets a NEW postmaster start against a
+	// directory another process still has open — the textbook route to a corrupt cluster, and a far worse
+	// outcome than a database that will not start.
+	//
+	// So the lock is only broken when NOTHING of this instance is still running. Anything else is a
+	// clean-up problem for the quiesce (cmd/orchicon/quiesce.go), which kills the instance's own
+	// leftovers and waits; when that leaves survivors the start fails with them named, which is the honest
+	// report.
+	if survivors := ownedProcsForDataDir(dataDir); len(survivors) > 0 {
+		return fmt.Errorf("the postgres lock %s names pid %d, which is gone, but %d process(es) of this "+
+			"instance are STILL RUNNING (%v) — they hold the data directory open, so removing the lock "+
+			"would let a second postmaster start on a live cluster.\n"+
+			"  Stop them first:  orchicon stop <instance>   (it terminates this instance's own leftovers\n"+
+			"  and waits for them to exit). If one survives that, it is not ours to kill — find it in Task\n"+
+			"  Manager → Details.", lockPath, pid, len(survivors), pidsOf(survivors))
+	}
+
+	// DEAD PROCESS AND NO SURVIVORS: the lock is a genuine leftover from a supervisor that was killed
+	// outright, and nothing is using the cluster.
 	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove the stale postgres lock file %s: %w", lockPath, err)
 	}
-	fmt.Fprintf(out, "removed a stale postgres lock file (pid %d is gone): %s\n", pid, lockPath)
+	fmt.Fprintf(out, "removed a stale postgres lock file (pid %d is gone and no process of this instance is running): %s\n",
+		pid, lockPath)
 	return nil
+}
+
+// ownedProcsForDataDir lists processes whose executable lives inside this instance's data directory.
+//
+// The data dir is the root, not a name: everything the resolver unpacks lives under <dataDir>/bin, so an
+// executable inside it is this instance's process by construction. Nothing outside it can match, which is
+// what keeps this from ever touching the operator's own PostgreSQL.
+func ownedProcsForDataDir(dataDir string) []planecontrol.ProcInfo {
+	var out []planecontrol.ProcInfo
+	seen := map[int]bool{}
+	for _, root := range []string{filepath.Join(dataDir, "bin"), filepath.Join(dataDir, "postgres")} {
+		procs, err := planecontrol.ProcessesUnder(root)
+		if err != nil {
+			continue
+		}
+		for _, p := range procs {
+			if !seen[p.PID] {
+				seen[p.PID] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// pidsOf reduces proc identities to pids, for a message.
+func pidsOf(procs []planecontrol.ProcInfo) []int {
+	pids := make([]int, 0, len(procs))
+	for _, p := range procs {
+		pids = append(pids, p.PID)
+	}
+	return pids
 }
 
 // staleLockSweepNeeded reports whether this platform can leave an orphaned postgres behind.

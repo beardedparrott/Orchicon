@@ -50,6 +50,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -239,4 +240,208 @@ func TerminateProcessTree(pid int) error {
 		_ = out
 	}
 	return TerminateProcess(pid)
+}
+
+// ----- instance-scoped process identity -----
+
+// procsUnder is the set of processes whose IMAGE lives inside a directory tree, with their parents.
+//
+// WINDOWS HAS NO /proc, SO IDENTITY IS DERIVED FROM THE IMAGE PATH — which is enough here, and better
+// than a heuristic, because an instance's supervised children are run from the instance's OWN bin and
+// data directories. That is a property of the deployment, not of a naming convention: the resolver
+// unpacks postgres, nats and the telemetry binaries under <dataDir>/bin, and postgres itself execs its
+// per-connection backends from that same bin directory.
+//
+// It is what makes "did my stop actually stop everything?" answerable on this platform at all. Today it
+// is not: see reclaim_proc_windows.go, where leftovers are REPORTED and never cleared, so a stopped
+// instance can leave a process holding the postgres socket for ever.
+type ProcInfo struct {
+	PID  int
+	PPID int
+	Exe  string
+}
+
+// ProcessesUnder returns every process whose executable path is inside root, using the Toolhelp32
+// snapshot API. os.ErrNotExist means "no such processes"; an error means the snapshot itself failed.
+//
+// PATHS ARE COMPARED AFTER NORMALISATION, case-insensitively, because Windows is: a process started as
+// C:\Users\x\... and a root recorded as c:/users/x/... are the same tree.
+func ProcessesUnder(root string) ([]ProcInfo, error) {
+	if strings.TrimSpace(root) == "" {
+		return nil, nil
+	}
+	normRoot := normalisePath(root)
+	procs, err := snapshotProcesses()
+	if err != nil {
+		return nil, err
+	}
+	var out []ProcInfo
+	for _, p := range procs {
+		if p.Exe == "" {
+			continue
+		}
+		exe := normalisePath(p.Exe)
+		if exe == normRoot || strings.HasPrefix(exe, normRoot+string(os.PathSeparator)) ||
+			strings.HasPrefix(exe, normRoot+"/") {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// normalisePath folds separators and case so two spellings of one Windows path compare equal.
+func normalisePath(p string) string {
+	p = strings.ReplaceAll(p, "/", string(os.PathSeparator))
+	return strings.ToLower(filepath.Clean(p))
+}
+
+// processEntry is the Toolhelp32 shape, sized for the platform's PROCESSENTRY32W.
+type processEntry struct {
+	dwSize              uint32
+	cntUsage            uint32
+	th32ProcessID       uint32
+	th32DefaultHeapID   uintptr
+	th32ModuleID        uint32
+	cntThreads          uint32
+	th32ParentProcessID uint32
+	pcPriClassBase      int32
+	dwFlags             uint32
+	szExeFile           [260]uint16
+}
+
+var (
+	procProcess32FirstW          = modkernel32.NewProc("Process32FirstW")
+	procProcess32NextW           = modkernel32.NewProc("Process32NextW")
+	procCreateToolhelp32Snapshot = modkernel32.NewProc("CreateToolhelp32Snapshot")
+)
+
+const (
+	th32csSnapProcess = 0x00000002
+	invalidHandle     = ^uintptr(0)
+)
+
+// snapshotProcesses enumerates every process's PID, parent PID and image path.
+//
+// IMAGE PATHS COME FROM QueryFullProcessImageNameW, NOT from PROCESSENTRY32W's szExeFile, which holds
+// only the BASE NAME. A base name cannot distinguish this instance's postgres from the operator's own
+// database install, and that distinction is the whole point of asking.
+func snapshotProcesses() ([]ProcInfo, error) {
+	h, _, err := procCreateToolhelp32Snapshot.Call(th32csSnapProcess, 0)
+	if uintptr(h) == invalidHandle {
+		return nil, fmt.Errorf("toolhelp snapshot: %w", err)
+	}
+	defer func() { _ = syscall.CloseHandle(syscall.Handle(h)) }()
+
+	var e processEntry
+	e.dwSize = uint32(unsafe.Sizeof(e))
+	r, _, _ := procProcess32FirstW.Call(uintptr(h), uintptr(unsafe.Pointer(&e)))
+	if r == 0 {
+		return nil, nil
+	}
+	var out []ProcInfo
+	for {
+		pid := int(e.th32ProcessID)
+		if pid > 0 && pid != os.Getpid() {
+			exe, _ := procExe(pid) // unreadable for a process we may not inspect; keep it anyway
+			out = append(out, ProcInfo{PID: pid, PPID: int(e.th32ParentProcessID), Exe: exe})
+		}
+		e.dwSize = uint32(unsafe.Sizeof(e))
+		r, _, _ = procProcess32NextW.Call(uintptr(h), uintptr(unsafe.Pointer(&e)))
+		if r == 0 {
+			break
+		}
+	}
+	return out, nil
+}
+
+// TerminateSubtree terminates every process in procs that is part of the tree rooted at root.
+//
+// TWO SHAPES MUST GO, AND THE SECOND ONE IS WHY THIS EXISTS:
+//
+//  1. the tree taskkill can see — children of the root, still parent-linked;
+//
+//  2. an ORPHAN. postgres's per-connection backends are re-parented when the postmaster they belong to
+//     exits, so after a force-stop they are still running, still hold the data directory open and still
+//     share the listening socket — while their PPID names a process that no longer exists:
+//
+//     pid 30488 postgres.exe (postmaster)   -> terminated
+//     pid 26236 postgres.exe "postgres.exe --forkaux 3892 0"  parent=30488 (DEAD), still serving
+//     Get-NetTCPConnection -LocalPort 5432  -> OwningProcess 30488   (a pid that is gone)
+//
+// A re-parented backend keeps its ORIGINAL executable, which is inside the instance's own bin tree, so
+// it is identified by ProcessesUnder rather than by walking parents.
+//
+// IT KILLS NOTHING IT CANNOT VOUCH FOR: `eligible` decides ownership, and this only terminates what it
+// returns true for. A process outside the caller's ownership test is reported, never killed — the same
+// boundary reclaim.go draws, and for the same reason (a wrong kill is unrecoverable).
+func TerminateSubtree(root int, procs []ProcInfo, eligible func(ProcInfo) bool) []int {
+	if root <= 0 {
+		return nil
+	}
+	// Breadth-first over the parent links, so a child of an eligible process is eligible even if its own
+	// image were replaced mid-flight.
+	children := map[int][]int{}
+	for _, p := range procs {
+		children[p.PPID] = append(children[p.PPID], p.PID)
+	}
+	byPID := map[int]ProcInfo{}
+	for _, p := range procs {
+		byPID[p.PID] = p
+	}
+
+	var order []int
+	seen := map[int]bool{}
+	queue := []int{root}
+	seen[root] = true
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		order = append(order, cur)
+		for _, c := range children[cur] {
+			if !seen[c] {
+				seen[c] = true
+				queue = append(queue, c)
+			}
+		}
+	}
+	// Everything in the caller's ownership set goes too, parent-linked or not: that is the orphan case.
+	for _, p := range procs {
+		if !seen[p.PID] && eligible(p) {
+			seen[p.PID] = true
+			order = append(order, p.PID)
+		}
+	}
+
+	var killed []int
+	for _, pid := range order {
+		if pid == root {
+			continue // the caller terminates the root itself, so it controls the ordering and the error
+		}
+		if err := TerminateProcess(pid); err == nil {
+			killed = append(killed, pid)
+		}
+	}
+	return killed
+}
+
+// WaitGone blocks until none of pids is alive, up to timeout, and reports what survived.
+//
+// A TERMINATE IS ASYNCHRONOUS: TerminateProcess returns as soon as the request is accepted, so a caller
+// that immediately re-binds the port races the kernel's teardown. Every one of this tool's stop paths
+// needs the WAIT, not the signal, and the survivors it names are what turn "it did not work" into a
+// diagnosis.
+func WaitGone(pids []int, timeout time.Duration) []int {
+	deadline := time.Now().Add(timeout)
+	for {
+		var alive []int
+		for _, pid := range pids {
+			if processAlive(pid) {
+				alive = append(alive, pid)
+			}
+		}
+		if len(alive) == 0 || time.Now().After(deadline) {
+			return alive
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

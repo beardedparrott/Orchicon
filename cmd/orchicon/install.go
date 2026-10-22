@@ -389,6 +389,27 @@ func runInstall(args []string, log *slog.Logger) error {
 	// and, under podman's passt forwarding, a pg_hba rule naming the network GATEWAY while the connection
 	// arrives from the host's own address, so the plane could not even connect. Host services are now the one
 	// shape, and an engine no longer decides where the instance's database lives.
+	// 4b-i. CLEAR THIS INSTANCE'S OWN LEFTOVERS FIRST.
+	//
+	// AN INSTALL MUST CONVERGE, INCLUDING OVER A RUNNING INSTANCE. This path used to start the services
+	// unconditionally, so a reinstall over an instance whose supervisor was mid-restart could put a
+	// SECOND supervisor on the same ports — and a supervisor killed by a Stop-Process (the operator's
+	// own recovery attempt) leaves its children running, holding postgres's socket and the data
+	// directory. The next postgres then refuses:
+	//
+	//	FATAL:  lock file "postmaster.pid" already exists
+	//
+	// The operator's message for exactly this was "it did NOT start orchicon after install", and it was
+	// true: the install had no step that decided what was already running.
+	//
+	// The quiesce terminates only processes whose executable is inside this instance's own data dir, so
+	// it cannot touch a sibling instance or the host's own PostgreSQL, and it WAITS for the ports — which
+	// is what makes the start that follows bind reliably rather than win a race.
+	installPhase("stopping anything already running for this instance")
+	if q := quiesceInstance(instance, ports, os.Stdout); len(q.Killed) > 0 {
+		fmt.Printf("stopped %d leftover process(es) from a previous run\n", len(q.Killed))
+	}
+
 	installPhase("starting the host services")
 	if err := startHostServices(instance, ports, hostDataDirFor(instance), os.Stdout); err != nil {
 		return err
