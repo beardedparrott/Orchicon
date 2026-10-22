@@ -434,15 +434,41 @@ func internalListenerPort(preferred int) int {
 	return preferred
 }
 
-// applyConfigTokens substitutes every configTokens key in body. Tokens are
-// substituted LONGEST FIRST so a name that is a prefix of another
-// (@TEMPO_OTLP_GRPC_PORT@ vs @TEMPO_OTLP_HTTP_PORT@ is fine, but the general
-// rule matters) can never be partially rewritten by a shorter match.
+// applyConfigTokens substitutes the token table into an embedded config.
+//
+// THE CALLER SUBSTITUTES LONGEST FIRST (writeConfigs sorts the keys descending) so a name that is
+// a prefix of another (@TEMPO_OTLP_GRPC_PORT@ vs @TEMPO_OTLP_HTTP_PORT@) can never be partially
+// rewritten by a shorter match.
+//
+// THE VALUE IS ESCAPED, NOT COPIED, and that is what makes a Windows instance possible at all.
+//
+// The templates put tokens into SINGLE-QUOTED YAML scalars (see loki.yaml's path_prefix), which
+// take backslashes literally but in which a lone ' terminates the string. The values here are the
+// instance's DATA DIRECTORY plus ports, and a data directory is whatever the operator's home is —
+// on Windows that is C:\Users\…, which is safe inside single quotes, but an operator whose home
+// contains an apostrophe (C:\Users\O'Brien) or a data dir they chose themselves would break the
+// child's config with a syntax error the supervisor can only report as "exited during startup".
+//
+// So every substituted value is escaped for the quoting context it lands in. Today every token is
+// a path or a port, which is exactly the class that must survive being pasted into a config file.
 func applyConfigTokens(keys []string, body string, tokens map[string]string) string {
 	for _, k := range keys {
-		body = strings.ReplaceAll(body, k, tokens[k])
+		body = strings.ReplaceAll(body, k, yamlSingleQuoted(tokens[k]))
 	}
 	return body
+}
+
+// yamlSingleQuoted escapes a value so it can be placed inside a SINGLE-quoted YAML scalar.
+//
+// Single-quoted YAML has exactly ONE escape: a literal quote is written as two (” ), and a
+// backslash is an ordinary character. That is why the templates use single quotes for paths: the
+// same Windows path is a syntax error inside double quotes and a literal inside single ones.
+//
+// ONLY THE QUOTE IS DOUBLED. Ports and ordinary paths pass through unchanged, so the written
+// config is exactly what a reader (or a test) expects to see; the substitution is not
+// blanket-escaping that would make every generated file unreadable.
+func yamlSingleQuoted(v string) string {
+	return strings.ReplaceAll(v, "'", "''")
 }
 
 // writeConfigs lays out the embedded ServiceConfigsFS into the config dir,

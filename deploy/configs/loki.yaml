@@ -20,11 +20,24 @@ server:
   grpc_listen_port: 0
 
 common:
-  path_prefix: "@DATA_DIR@/loki"
+  # SINGLE-QUOTED, and that is a correctness requirement rather than a style choice.
+  # @DATA_DIR@ is the INSTANCE'S DATA DIRECTORY, which on Windows is a path with
+  # backslashes in it (C:\Users\me\.local\share\orchicon-dev). A DOUBLE-quoted YAML
+  # scalar processes backslash escapes, so that path becomes the escape \U followed by
+  # "sers..." and the child refuses to parse its config at all:
+  #
+  #   yaml: line 23: did not find expected hexdecimal number
+  #
+  # which crash-looped Loki for ever and left the operator's Logs view dead. A
+  # single-quoted YAML scalar has one escape ('' for a literal ') and takes
+  # backslashes literally, so the same path survives on every platform.
+  # writeConfigs also escapes the substituted value (yamlSingleQuoted) — see its
+  # comment — but quoting the template is what makes the intent explicit.
+  path_prefix: '@DATA_DIR@/loki'
   storage:
     filesystem:
-      chunks_directory: "@DATA_DIR@/loki/chunks"
-      rules_directory: "@DATA_DIR@/loki/rules"
+      chunks_directory: '@DATA_DIR@/loki/chunks'
+      rules_directory: '@DATA_DIR@/loki/rules'
   replication_factor: 1
   ring:
     kvstore:
@@ -62,7 +75,7 @@ limits_config:
 # retention_period above is inert (Loki requires retention_enabled +
 # delete_request_store, and a working_directory for the compactor).
 compactor:
-  working_directory: "@DATA_DIR@/loki/compactor"
+  working_directory: '@DATA_DIR@/loki/compactor'
   compaction_interval: 10m
   retention_enabled: true
   delete_request_store: filesystem
