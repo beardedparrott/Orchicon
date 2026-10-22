@@ -215,6 +215,42 @@ func runInstall(args []string, log *slog.Logger) error {
 	if flags.NonInteractive {
 		promptTTY = nil
 	}
+	// CLEAR THIS INSTANCE'S OWN PREVIOUS RUN BEFORE RESOLVING PORTS, NOT AFTER.
+	//
+	// THE ORDER WAS THE BUG, and it is why a reinstall over a running (or half-dead) instance could not
+	// converge. Port resolution came FIRST, and it treats a held port as a conflict:
+	//
+	//	== resolving the plane residency and host ports
+	//	PostgreSQL: 5432 is held by a process this tool cannot identify — find it with PowerShell…
+	//	error: PostgreSQL: this instance is already installed on port 5432, which is held by …
+	//
+	// The cleanup step existed, but it ran further down — so the install aborted BEFORE reaching the code
+	// meant to free the port. Measured on the operator's machine: an orphaned supervisor's postgres held
+	// 5432, the install failed at resolution, and the operator's own `Stop-Process` was the only thing
+	// that ever cleared it. Their report was "the past two uninstall/reinstalls don't start the services
+	// and serve up fully automatically".
+	//
+	// AND FORCE-CLOSING IS THE RIGHT BEHAVIOUR HERE, not a workaround. The operator asked for it
+	// plainly: "If someone is actively installing to the dev instance, same ports, etc. then we should
+	// automatically assume they are aware and don't care if their processes are force closed to ensure a
+	// healthy run." Installing an instance IS the statement of intent to own it, so an install clears
+	// what that instance already has running — its supervisor, its orphaned children — and only then
+	// decides which ports it will use.
+	//
+	// IT ONLY TOUCHES WHAT PROVABLY BELONGS TO THIS INSTANCE (an executable inside its own data dir, or
+	// its own recorded supervisor PID), so a sibling instance and the host's own PostgreSQL are safe.
+	//
+	// The port set for this pre-clear comes from the RECORD, not from the resolution below — the record
+	// is what the previous run actually bound, which is exactly what has to be released.
+	if pre, perr := servicesPortsFor(instance); perr == nil {
+		installPhase("clearing this instance's previous run")
+		if err := stopInstanceCompletely(instance, pre, os.Stdout); err != nil {
+			// NOT FATAL: the resolution below reports honestly if a port is genuinely held by something
+			// that is not ours, and the start after it reports what it finds.
+			fmt.Printf("note: %v — continuing\n", err)
+		}
+	}
+
 	ports, err := resolveInstallPorts(instance, residency, promptOut, promptTTY)
 	if err != nil {
 		return err

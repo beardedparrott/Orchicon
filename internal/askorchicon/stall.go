@@ -52,7 +52,7 @@ const (
 	// AND IT IS NOT THE WHOLE FIX — see stallReason, which now suspends this signal entirely while a
 	// locally-bounded tool is open, because for those calls the transport's own deadline is the detector
 	// and any window here is guesswork.
-	defaultAskStallNoProgressWindow = 300 * time.Second
+	defaultAskStallNoProgressWindow = 600 * time.Second
 
 	// defaultAskStallNoToolNoProgressWindow is the window used when NO TOOL IS OPEN.
 	//
@@ -71,10 +71,20 @@ const (
 	// because it is fed by PLANE heartbeats, not by the model.
 	//
 	// So when nothing is open, the question stops being "might a tool be quietly working?" and becomes
-	// "is this provider answering at all?" — and that deserves a much shorter leash. 120s, the value
-	// this signal used before tools forced it up: the objection to 120s was specifically that a tool
-	// could be silent for longer, and with no tool open that objection does not exist.
-	defaultAskStallNoToolNoProgressWindow = 120 * time.Second
+	// "is this provider answering at all?" — which deserves a shorter leash than an open tool.
+	//
+	// BUT 120s WAS FAR TOO SHORT, and the operator said so directly: "2 minutes is far too aggressive
+	// as a default." 120s was carried over from before tools raised the other window, on the theory
+	// that "nothing is open, so silence means nothing is happening". THAT THEORY IS WRONG about the
+	// one thing it most needs to be right about: a REASONING model emits NOTHING while it thinks.
+	// DeepSeek/GLM-class models routinely reason for several minutes on a hard question, and every
+	// second of that is a healthy turn that 120s would abort — with a stall message the operator can
+	// do nothing about except retry into the same wall.
+	//
+	// So the two windows are now proportional rather than merely ordered: nothing may be silent for
+	// 300s, a tool may be silent for 600s. Both remain far inside the 30-minute reply window, and a
+	// tenant or environment override still wins, so this is a DEFAULT rather than a policy.
+	defaultAskStallNoToolNoProgressWindow = 300 * time.Second
 	defaultAskStallRepetitionCount        = 5
 	defaultAskStallRepetitionWindow       = 300 * time.Second
 	// 2026-09-09 (operator: "the conversation session wedged on a tool

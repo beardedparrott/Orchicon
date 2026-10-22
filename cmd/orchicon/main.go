@@ -72,6 +72,11 @@ func main() {
 			os.Exit(exitOnErr(runRuntimeSupervisor(os.Args[2:], log)))
 		case "runtime-client":
 			os.Exit(exitOnErr(runRuntimeClient(os.Args[2:], log)))
+		case "uninstall":
+			// Takes the instance state off this machine: stops everything, removes the binaries and the
+			// generated config, and KEEPS the data unless --purge. See uninstall.go for what is kept and
+			// why (the KEK above all).
+			os.Exit(exitOnErr(runUninstall(os.Args[2:], os.Stdout)))
 		case "install":
 			os.Exit(exitOnErr(runInstall(os.Args[2:], log)))
 		case "start":
@@ -336,6 +341,12 @@ func printHelp() {
 			"IDEMPOTENT — re-running converges an existing instance and upgrades a superseded",
 			"plane. It does NOT restart a plane that is already healthy on the installed binary,",
 			"which is why it is not the way to pick up an environment change."}},
+		{cmd: bin + " uninstall [instance] [--purge]", desc: []string{
+			"Take this instance OFF the machine: stop everything it runs, then remove the",
+			"services, their downloaded binaries and the generated config.",
+			"Your DATA is kept — the database cluster, the attachments and the secrets key —",
+			"so a later install of the same instance reuses it. --purge destroys the data too,",
+			"IRREVERSIBLY (it is the only path that removes the cluster or the secrets key)."}},
 		{cmd: bin + " status [instance]", desc: []string{
 			"Report whether the instance is up: the plane, the services, where the logs are",
 			"and where the web UI is. Also names the start and stop commands."}},
