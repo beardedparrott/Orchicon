@@ -157,10 +157,21 @@ func TerminateProcessTree(pid int) error {
 // of logic and must not fork per platform.
 
 // ProcInfo is one process's identity, in the shape the quiesce needs on every platform.
+//
+// Created is what separates a LEFTOVER from a process that is starting RIGHT NOW, and that distinction is
+// load-bearing rather than tidy: a check that asks "is anything of this instance running?" while the
+// instance is being started answers YES about the postgres it just spawned, and would refuse to start on
+// its own new process. Measured: a lock guard built on that question failed every start with
+//
+//	the postgres lock … names pid 33384, which is gone, but 1 process(es) of this instance are STILL
+//	RUNNING ([27540]) — they hold the data directory open
+//
+// where 27540 was a DIFFERENT pid on every run and was the postmaster being started at that moment.
 type ProcInfo struct {
-	PID  int
-	PPID int
-	Exe  string
+	PID     int
+	PPID    int
+	Exe     string
+	Created time.Time
 }
 
 // ProcessesUnder returns every process whose executable resolves inside root.
@@ -191,7 +202,8 @@ func ProcessesUnder(root string) ([]ProcInfo, error) {
 		// "path (deleted)" is what a replaced binary looks like; the path itself is what we compare.
 		exe = strings.TrimSuffix(exe, " (deleted)")
 		if exe == root || strings.HasPrefix(exe, root+string(os.PathSeparator)) {
-			out = append(out, ProcInfo{PID: pid, PPID: readPPID(e.Name()), Exe: exe})
+			out = append(out, ProcInfo{PID: pid, PPID: readPPID(e.Name()), Exe: exe,
+				Created: processStartTime(e.Name())})
 		}
 	}
 	return out, nil
@@ -219,6 +231,59 @@ func readPPID(pidDir string) int {
 		return 0
 	}
 	return n
+}
+
+// processStartTime reads a process's start time from /proc: field 22 of stat is the start time in clock
+// ticks since boot, and /proc/stat's btime is that boot.
+//
+// A zero time means "this platform could not say", and the callers treat that as NOT a leftover — the
+// conservative direction, because the cost of that mistake is a refusal that names the process, while the
+// cost of the other is a start that fights its own child.
+func processStartTime(pidDir string) time.Time {
+	stat, err := os.ReadFile(filepath.Join("/proc", pidDir, "stat"))
+	if err != nil {
+		return time.Time{}
+	}
+	s := string(stat)
+	i := strings.LastIndex(s, ")")
+	if i < 0 {
+		return time.Time{}
+	}
+	fields := strings.Fields(s[i+1:])
+	// After comm: state ppid pgrp session tty_nr tpgid flags minflt cminflt majflt cmajflt utime stime
+	// cutime cstime priority nice num_threads itrealvalue starttime — so starttime is index 19.
+	if len(fields) < 20 {
+		return time.Time{}
+	}
+	ticks, err := strconv.ParseUint(fields[19], 10, 64)
+	if err != nil {
+		return time.Time{}
+	}
+	boot, ok := bootTime()
+	if !ok {
+		return time.Time{}
+	}
+	hz := 100 // USER_HZ; Linux reports starttime in USER_HZ ticks.
+	return boot.Add(time.Duration(ticks) * time.Second / time.Duration(hz))
+}
+
+// bootTime is the monotonic origin starttime is measured from.
+func bootTime() (time.Time, bool) {
+	b, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.HasPrefix(line, "btime ") {
+			continue
+		}
+		secs, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "btime ")), 10, 64)
+		if err != nil {
+			return time.Time{}, false
+		}
+		return time.Unix(secs, 0), true
+	}
+	return time.Time{}, false
 }
 
 // TerminateSubtree terminates every process in procs that belongs to the tree rooted at root, or that

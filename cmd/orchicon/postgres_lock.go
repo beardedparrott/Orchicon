@@ -39,6 +39,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/planecontrol"
 )
@@ -109,7 +110,7 @@ func clearStalePostmasterLock(dataDir string, out io.Writer, enabled bool) error
 	// clean-up problem for the quiesce (cmd/orchicon/quiesce.go), which kills the instance's own
 	// leftovers and waits; when that leaves survivors the start fails with them named, which is the honest
 	// report.
-	if survivors := ownedProcsForDataDir(dataDir); len(survivors) > 0 {
+	if survivors := survivorsOlderThanBoot(dataDir, bootCutoff()); len(survivors) > 0 {
 		return fmt.Errorf("the postgres lock %s names pid %d, which is gone, but %d process(es) of this "+
 			"instance are STILL RUNNING (%v) — they hold the data directory open, so removing the lock "+
 			"would let a second postmaster start on a live cluster.\n"+
@@ -126,6 +127,40 @@ func clearStalePostmasterLock(dataDir string, out io.Writer, enabled bool) error
 	fmt.Fprintf(out, "removed a stale postgres lock file (pid %d is gone and no process of this instance is running): %s\n",
 		pid, lockPath)
 	return nil
+}
+
+// bootCutoff is how old a process must be to count as a LEFTOVER: it has to have existed BEFORE this boot
+// started.
+//
+// THE DISTINCTION IS THE WHOLE CORRECTNESS OF THIS CHECK, and it was learned by breaking it. "Is anything of
+// this instance running?" is the wrong question at this moment, because prepare() runs BEFORE postgres is
+// spawned and the answer is then about the PREVIOUS run — but a slightly later caller asks the same question
+// about the postgres IT JUST SPAWNED. Measured: a guard without this distinction failed every start with
+//
+//	the postgres lock … names pid 33384, which is gone, but 1 process(es) of this instance are STILL
+//	RUNNING ([27540]) — they hold the data directory open
+//
+// where 27540 was a different pid on every run and was the postmaster being started at that instant. The
+// instance could not start at all, and the message blamed a process that was its own newborn.
+//
+// A small grace is added so a process started in the same second as this one is never classified as old.
+func bootCutoff() time.Time { return processBootTime().Add(-2 * time.Second) }
+
+// processBootTime is when THIS process started — the moment the current boot of the instance began.
+var processBootTime = func() time.Time { return processStartedAt }
+
+// survivorsOlderThanBoot lists processes under dataDir that existed BEFORE cutoff, i.e. genuine leftovers
+// from a previous run rather than something this run is starting right now.
+func survivorsOlderThanBoot(dataDir string, cutoff time.Time) []planecontrol.ProcInfo {
+	var out []planecontrol.ProcInfo
+	for _, p := range ownedProcsForDataDir(dataDir) {
+		// A zero creation time means the platform could not say; do NOT call that a survivor, because the
+		// conservative direction here is "let postgres report its own refusal" rather than "refuse to boot".
+		if p.Created.IsZero() || p.Created.Before(cutoff) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // ownedProcsForDataDir lists processes whose executable lives inside this instance's data directory.

@@ -255,10 +255,13 @@ func TerminateProcessTree(pid int) error {
 // It is what makes "did my stop actually stop everything?" answerable on this platform at all. Today it
 // is not: see reclaim_proc_windows.go, where leftovers are REPORTED and never cleared, so a stopped
 // instance can leave a process holding the postgres socket for ever.
+// ProcInfo is one process's identity. Created is what separates a LEFTOVER from a process that is starting
+// RIGHT NOW — see the Unix half for the measured failure a check without it produced.
 type ProcInfo struct {
-	PID  int
-	PPID int
-	Exe  string
+	PID     int
+	PPID    int
+	Exe     string
+	Created time.Time
 }
 
 // ProcessesUnder returns every process whose executable path is inside root, using the Toolhelp32
@@ -343,7 +346,8 @@ func snapshotProcesses() ([]ProcInfo, error) {
 		pid := int(e.th32ProcessID)
 		if pid > 0 && pid != os.Getpid() {
 			exe, _ := procExe(pid) // unreadable for a process we may not inspect; keep it anyway
-			out = append(out, ProcInfo{PID: pid, PPID: int(e.th32ParentProcessID), Exe: exe})
+			out = append(out, ProcInfo{PID: pid, PPID: int(e.th32ParentProcessID), Exe: exe,
+				Created: processCreated(pid)})
 		}
 		e.dwSize = uint32(unsafe.Sizeof(e))
 		r, _, _ = procProcess32NextW.Call(uintptr(h), uintptr(unsafe.Pointer(&e)))
@@ -422,6 +426,31 @@ func TerminateSubtree(root int, procs []ProcInfo, eligible func(ProcInfo) bool) 
 		}
 	}
 	return killed
+}
+
+// processCreated reads a process's creation time via GetProcessTimes.
+//
+// A zero time means "could not read", which callers treat as NOT a leftover — the direction whose mistake
+// is a refusal that names the process, rather than a start that fights its own child.
+var procGetProcessTimes = modkernel32.NewProc("GetProcessTimes")
+
+func processCreated(pid int) time.Time {
+	if pid <= 0 {
+		return time.Time{}
+	}
+	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
+	if err != nil {
+		return time.Time{}
+	}
+	defer func() { _ = syscall.CloseHandle(h) }()
+	var creation, exit, kernel, user syscall.Filetime
+	r, _, _ := procGetProcessTimes.Call(uintptr(h),
+		uintptr(unsafe.Pointer(&creation)), uintptr(unsafe.Pointer(&exit)),
+		uintptr(unsafe.Pointer(&kernel)), uintptr(unsafe.Pointer(&user)))
+	if r == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, creation.Nanoseconds())
 }
 
 // WaitGone blocks until none of pids is alive, up to timeout, and reports what survived.

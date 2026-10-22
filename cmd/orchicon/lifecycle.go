@@ -366,30 +366,12 @@ func runStop(args []string) error {
 		stopInstanceContainer(instance, os.Stdout)
 	} else {
 		fmt.Printf("instance %s is host-resident: stopping the plane, then its services\n", instance)
-		if err := stopHostPlane(instance, os.Stdout); err != nil {
+		// THE ONE WAY DOWN. `stop` and `install`-before-start both call this, so neither can report a
+		// success the other could not back up — which is how "✓ dev is stopped" came to be printed over a
+		// re-parented postgres backend that still held the data directory and port 5432.
+		if err := stopInstanceCompletely(instance, ports, os.Stdout); err != nil {
 			return err
-		}
-		if err := stopHostServices(instance, os.Stdout); err != nil {
-			return err
-		}
-		// THE SUPERVISOR GOING IS NOT THE INSTANCE GOING, and this is what the operator saw:
-		//
-		//	the host services for dev (pid 14284) are no longer running
-		//	✓ dev is stopped
-		//	… while postgres.exe (orphaned, re-parented) still held 5432.
-		//
-		// stopHostServices terminates the SUPERVISOR's tree, and postgres's per-connection backends are
-		// RE-PARENTED when the postmaster exits, so they are no longer in that tree. They are still
-		// this instance's processes — they run from this instance's own bin directory — so quiesce
-		// removes them and WAITS for the ports to come free.
-		//
-		// A stop that leaves a process holding the database socket is not a stop; reporting one is how
-		// the next start fails with a bind error that names nothing.
-		if q := quiesceInstance(instance, ports, os.Stdout); !q.Clean() {
-			reportQuiesceFailure(instance, q, os.Stdout)
-			return fmt.Errorf("%s could not be fully stopped — see what survived above", instance)
-		}
-		// A CONTAINER-ERA INSTANCE CONTAINER STILL OWNS THESE PORTS. It was created by an older install of
+		} // A CONTAINER-ERA INSTANCE CONTAINER STILL OWNS THESE PORTS. It was created by an older install of
 		// this product under this instance's name, so stopping it is part of stopping the instance — and
 		// leaving it running is what makes the NEXT start fail to bind with nothing pointing at the cause.
 		stopInstanceContainer(instance, os.Stdout)
