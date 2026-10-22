@@ -85,9 +85,21 @@ func processName(pid int) string {
 	if err != nil {
 		return ""
 	}
+	// tasklist writes a HUMAN MESSAGE when nothing matches, and it is not a name:
+	//
+	//	INFO: No tasks are running which match the specified criteria.
+	//
+	// which arrived in an operator-facing message as
+	//   "port 5432 is still held by INFO: No tasks are running which match the specified criteria. (pid 30488)"
+	// — worse than saying nothing, because it looks like a process called INFO:. Only a quoted CSV name is a
+	// name; anything else means "this process is gone, or we cannot see it".
 	fields := strings.Split(strings.TrimSpace(string(out)), ",")
 	if len(fields) == 0 {
 		return ""
 	}
-	return strings.Trim(strings.TrimSpace(fields[0]), `"`)
+	name := strings.Trim(strings.TrimSpace(fields[0]), `"`)
+	if !strings.HasSuffix(strings.ToLower(name), ".exe") {
+		return ""
+	}
+	return name
 }

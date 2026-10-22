@@ -342,14 +342,35 @@ func runInstall(args []string, log *slog.Logger) error {
 	// DEGRADATION TO REPORT, never a reason to refuse to install.
 	installPhase("starting the runtime daemon")
 	if err := ensureInstallDaemon(socketDir); err != nil {
-		if !containerEngineAvailable() {
-			// NO ENGINE: the daemon cannot run, and nothing needs it to. Say so, name the
-			// consequence, and CARRY ON — the services and the plane are what the operator
-			// actually came for.
+		// THE DAEMON IS OPTIONAL WHENEVER CONTAINERS ARE UNAVAILABLE — AND "AN ENGINE IS INSTALLED" IS NOT
+		// "CONTAINERS ARE AVAILABLE".
+		//
+		// This asked containerEngineAvailable(), which answers "is an engine BINARY present". MEASURED on
+		// the affected Windows machine, Docker Desktop was installed but its daemon was not running, so:
+		//
+		//	== checking the container engine
+		//	orchicon: the container engine is installed but cannot run a container: failed to connect to
+		//	          the docker API at npipe:////./pipe/dockerDesktopLinuxEngine …
+		//	orchicon: runtime containers are unavailable — … work runs in-process
+		//	== starting the runtime daemon
+		//	error: runtime daemon did not become ready            <-- AND THE WHOLE INSTALL DIED HERE
+		//
+		// "Installed but cannot run a container" is exactly the state the install had ALREADY decided to
+		// carry on from one step earlier — and then it made that same state fatal here. The operator's
+		// report was "it did NOT start orchicon after install", and this is why: the install aborted
+		// BEFORE the data dir, the services and the plane, which all sit below this line.
+		//
+		// So the gate is the DECISION the install already made (engineStatus, set by
+		// resolveContainerEngine), not a second, coarser probe. The daemon exists to serve per-workflow
+		// runtime containers; when there is nothing to run them in, it has no job.
+		if !engineStatus.Available {
 			fmt.Printf("orchicon: the runtime daemon could not start (%v)\n", err)
 			fmt.Println("orchicon: that only affects PER-WORKFLOW RUNTIME CONTAINERS; work runs in-process," +
 				" and the plane, the web UI and the TUI are unaffected.")
-			fmt.Println("orchicon: to enable runtime containers later, install a container engine and re-run: " +
+			if reason := engineStatus.Reason; reason != "" {
+				fmt.Printf("orchicon: containers are unavailable because: %s\n", reason)
+			}
+			fmt.Println("orchicon: to enable runtime containers later, start your container engine and re-run: " +
 				"orchicon install")
 		} else {
 			return err
@@ -389,6 +410,41 @@ func runInstall(args []string, log *slog.Logger) error {
 	// and, under podman's passt forwarding, a pg_hba rule naming the network GATEWAY while the connection
 	// arrives from the host's own address, so the plane could not even connect. Host services are now the one
 	// shape, and an engine no longer decides where the instance's database lives.
+	// 4b-i. CLEAR THIS INSTANCE'S OWN LEFTOVERS FIRST.
+	//
+	// AN INSTALL MUST CONVERGE, INCLUDING OVER A RUNNING INSTANCE. This path used to start the services
+	// unconditionally, so a reinstall over an instance whose supervisor was mid-restart could put a
+	// SECOND supervisor on the same ports — and a supervisor killed by a Stop-Process (the operator's
+	// own recovery attempt) leaves its children running, holding postgres's socket and the data
+	// directory. The next postgres then refuses:
+	//
+	//	FATAL:  lock file "postmaster.pid" already exists
+	//
+	// The operator's message for exactly this was "it did NOT start orchicon after install", and it was
+	// true: the install had no step that decided what was already running.
+	//
+	// The quiesce terminates only processes whose executable is inside this instance's own data dir, so
+	// it cannot touch a sibling instance or the host's own PostgreSQL, and it WAITS for the ports — which
+	// is what makes the start that follows bind reliably rather than win a race.
+	// STOP WHAT THIS INSTANCE ALREADY HAS RUNNING, THE SAME WAY `orchicon stop` DOES.
+	//
+	// AN INSTALL MUST CONVERGE, INCLUDING OVER A RUNNING INSTANCE. Starting the services unconditionally
+	// put a SECOND supervisor on the same ports when a reinstall met a live one; and a supervisor killed by
+	// the operator's own Stop-Process leaves re-parented children holding postgres's data directory, which
+	// is the "FATAL: lock file postmaster.pid already exists" the operator kept hitting.
+	//
+	// THIS IS stopInstanceCompletely, not a bare quiesce, and the difference matters: a bare quiesce would
+	// kill a LIVE supervisor's children under it, and the supervisor would restart them all with backoff —
+	// measured as postgres restarts=6, nats=4, loki=3 from a single install command. The shared function
+	// stops the supervisor FIRST, so what the quiesce then finds is genuinely an orphan.
+	installPhase("stopping anything already running for this instance")
+	if err := stopInstanceCompletely(instance, ports, os.Stdout); err != nil {
+		// NOT FATAL HERE: the instance may have been half-up, and `startHostServices` below reports what it
+		// finds. A stop that could not finish is stated, and the start that follows fails honestly if it
+		// must — which is better than aborting an install that is otherwise complete.
+		fmt.Printf("note: %v — continuing the install over what is left\n", err)
+	}
+
 	installPhase("starting the host services")
 	if err := startHostServices(instance, ports, hostDataDirFor(instance), os.Stdout); err != nil {
 		return err

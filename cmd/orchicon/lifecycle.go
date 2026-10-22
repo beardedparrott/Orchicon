@@ -217,6 +217,24 @@ func runStart(args []string, log *slog.Logger) error {
 			instance, residency, filepath.Base(os.Args[0]), instance)
 	} else {
 		fmt.Printf("instance %s is host-resident: starting its services, then the plane\n", instance)
+		// CLEAR THIS INSTANCE'S OWN LEFTOVERS BEFORE STARTING ANYTHING.
+		//
+		// A start must converge, and it can only converge from a known state. Without this, a start after
+		// an unclean exit races its own orphan: the new supervisor spawns postgres, postgres finds the
+		// data directory still held by a re-parented backend from the previous run, and refuses —
+		//
+		//	FATAL:  lock file "postmaster.pid" already exists
+		//	HINT:  Is another postmaster (PID 30488) running in data directory ".../postgres"?
+		//
+		// which is the failure the operator hit repeatedly, and it blamed a pipe (`orchicon start` →
+		// "the services did not come up") rather than naming a process that a stop had left behind.
+		//
+		// IT ONLY KILLS WHAT IT CAN PROVE IS OURS (an executable inside this instance's own data dir), so
+		// a second instance's services and the operator's own PostgreSQL are untouched. Whatever it
+		// cannot clear is named, and the start proceeds to fail honestly against it.
+		if q := quiesceInstance(instance, ports, os.Stdout); len(q.Killed) > 0 {
+			fmt.Printf("cleared %d leftover process(es) from a previous run of %s\n", len(q.Killed), instance)
+		}
 		if err := startHostServices(instance, ports, hostDataDirFor(instance), os.Stdout); err != nil {
 			return err
 		}
@@ -332,6 +350,12 @@ func runStop(args []string) error {
 		return nil
 	}
 
+	// THE PORTS ARE NEEDED BY THE QUIESCE, which verifies them rather than trusting the pid files.
+	ports, err := servicesPortsFor(instance)
+	if err != nil {
+		return err
+	}
+
 	if residency := instanceResidency(instance); residency != residencyHost {
 		// A RECORDED CONTAINER RESIDENCY IS A RETIRED SHAPE. There is no instance container to supervise any
 		// more, so "stop" does the one useful thing left for such an instance: reclaim this instance's ports
@@ -342,13 +366,12 @@ func runStop(args []string) error {
 		stopInstanceContainer(instance, os.Stdout)
 	} else {
 		fmt.Printf("instance %s is host-resident: stopping the plane, then its services\n", instance)
-		if err := stopHostPlane(instance, os.Stdout); err != nil {
+		// THE ONE WAY DOWN. `stop` and `install`-before-start both call this, so neither can report a
+		// success the other could not back up — which is how "✓ dev is stopped" came to be printed over a
+		// re-parented postgres backend that still held the data directory and port 5432.
+		if err := stopInstanceCompletely(instance, ports, os.Stdout); err != nil {
 			return err
-		}
-		if err := stopHostServices(instance, os.Stdout); err != nil {
-			return err
-		}
-		// A CONTAINER-ERA INSTANCE CONTAINER STILL OWNS THESE PORTS. It was created by an older install of
+		} // A CONTAINER-ERA INSTANCE CONTAINER STILL OWNS THESE PORTS. It was created by an older install of
 		// this product under this instance's name, so stopping it is part of stopping the instance — and
 		// leaving it running is what makes the NEXT start fail to bind with nothing pointing at the cause.
 		stopInstanceContainer(instance, os.Stdout)

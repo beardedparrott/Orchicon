@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // processAlive is the POSIX liveness probe: signal 0 succeeds while the PID exists. It is a SEAM because
@@ -146,4 +147,202 @@ func TerminateProcess(pid int) error {
 // That is why the Windows half needs taskkill: there is no process-group signal there.
 func TerminateProcessTree(pid int) error {
 	return TerminateProcess(pid)
+}
+
+// ----- instance-scoped process identity (the Unix half) -----
+//
+// The pair to hostproc_windows.go. On this platform identity is a /proc read, so ProcessesUnder and
+// TerminateSubtree are exact where Windows has to derive them from image paths. The API is deliberately
+// identical on both, because the caller (a quiesce that must clear an instance's leftovers) is one piece
+// of logic and must not fork per platform.
+
+// ProcInfo is one process's identity, in the shape the quiesce needs on every platform.
+//
+// Created is what separates a LEFTOVER from a process that is starting RIGHT NOW, and that distinction is
+// load-bearing rather than tidy: a check that asks "is anything of this instance running?" while the
+// instance is being started answers YES about the postgres it just spawned, and would refuse to start on
+// its own new process. Measured: a lock guard built on that question failed every start with
+//
+//	the postgres lock … names pid 33384, which is gone, but 1 process(es) of this instance are STILL
+//	RUNNING ([27540]) — they hold the data directory open
+//
+// where 27540 was a DIFFERENT pid on every run and was the postmaster being started at that moment.
+type ProcInfo struct {
+	PID     int
+	PPID    int
+	Exe     string
+	Created time.Time
+}
+
+// ProcessesUnder returns every process whose executable resolves inside root.
+//
+// /proc/<pid>/exe IS A SYMLINK to the real path, and reading it fails for a process this user may not
+// inspect — which is correct: an uninspectable process is one we could not vouch for, so it must not
+// appear in a list whose only use is to justify a kill.
+func ProcessesUnder(root string) ([]ProcInfo, error) {
+	root = filepath.Clean(root)
+	if root == "" || root == "." {
+		return nil, nil
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	self := os.Getpid()
+	var out []ProcInfo
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == self {
+			continue
+		}
+		exe, err := os.Readlink(filepath.Join("/proc", e.Name(), "exe"))
+		if err != nil || exe == "" {
+			continue
+		}
+		// "path (deleted)" is what a replaced binary looks like; the path itself is what we compare.
+		exe = strings.TrimSuffix(exe, " (deleted)")
+		if exe == root || strings.HasPrefix(exe, root+string(os.PathSeparator)) {
+			out = append(out, ProcInfo{PID: pid, PPID: readPPID(e.Name()), Exe: exe,
+				Created: processStartTime(e.Name())})
+		}
+	}
+	return out, nil
+}
+
+// readPPID parses /proc/<pid>/stat for the parent PID. The comm field is parenthesised and may contain
+// spaces and parentheses, so the parse starts AFTER the LAST ')', which is the only robust way to do it.
+func readPPID(pidDir string) int {
+	b, err := os.ReadFile(filepath.Join("/proc", pidDir, "stat"))
+	if err != nil {
+		return 0
+	}
+	s := string(b)
+	i := strings.LastIndex(s, ")")
+	if i < 0 || i+1 >= len(s) {
+		return 0
+	}
+	fields := strings.Fields(s[i+1:])
+	// After the comm field: state ppid ... — so ppid is fields[1].
+	if len(fields) < 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// processStartTime reads a process's start time from /proc: field 22 of stat is the start time in clock
+// ticks since boot, and /proc/stat's btime is that boot.
+//
+// A zero time means "this platform could not say", and the callers treat that as NOT a leftover — the
+// conservative direction, because the cost of that mistake is a refusal that names the process, while the
+// cost of the other is a start that fights its own child.
+func processStartTime(pidDir string) time.Time {
+	stat, err := os.ReadFile(filepath.Join("/proc", pidDir, "stat"))
+	if err != nil {
+		return time.Time{}
+	}
+	s := string(stat)
+	i := strings.LastIndex(s, ")")
+	if i < 0 {
+		return time.Time{}
+	}
+	fields := strings.Fields(s[i+1:])
+	// After comm: state ppid pgrp session tty_nr tpgid flags minflt cminflt majflt cmajflt utime stime
+	// cutime cstime priority nice num_threads itrealvalue starttime — so starttime is index 19.
+	if len(fields) < 20 {
+		return time.Time{}
+	}
+	ticks, err := strconv.ParseUint(fields[19], 10, 64)
+	if err != nil {
+		return time.Time{}
+	}
+	boot, ok := bootTime()
+	if !ok {
+		return time.Time{}
+	}
+	hz := 100 // USER_HZ; Linux reports starttime in USER_HZ ticks.
+	return boot.Add(time.Duration(ticks) * time.Second / time.Duration(hz))
+}
+
+// bootTime is the monotonic origin starttime is measured from.
+func bootTime() (time.Time, bool) {
+	b, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.HasPrefix(line, "btime ") {
+			continue
+		}
+		secs, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "btime ")), 10, 64)
+		if err != nil {
+			return time.Time{}, false
+		}
+		return time.Unix(secs, 0), true
+	}
+	return time.Time{}, false
+}
+
+// TerminateSubtree terminates every process in procs that belongs to the tree rooted at root, or that
+// the caller's ownership test accepts. See the Windows half for why an ownership test is not optional:
+// a process we cannot vouch for is reported, never killed.
+func TerminateSubtree(root int, procs []ProcInfo, eligible func(ProcInfo) bool) []int {
+	if root <= 0 {
+		return nil
+	}
+	children := map[int][]int{}
+	for _, p := range procs {
+		children[p.PPID] = append(children[p.PPID], p.PID)
+	}
+	var order []int
+	seen := map[int]bool{}
+	queue := []int{root}
+	seen[root] = true
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		order = append(order, cur)
+		for _, c := range children[cur] {
+			if !seen[c] {
+				seen[c] = true
+				queue = append(queue, c)
+			}
+		}
+	}
+	for _, p := range procs {
+		if !seen[p.PID] && eligible(p) {
+			seen[p.PID] = true
+			order = append(order, p.PID)
+		}
+	}
+	var killed []int
+	for _, pid := range order {
+		if pid == root {
+			continue
+		}
+		if err := TerminateProcess(pid); err == nil {
+			killed = append(killed, pid)
+		}
+	}
+	return killed
+}
+
+// WaitGone blocks until none of pids is alive, up to timeout, and reports the survivors.
+func WaitGone(pids []int, timeout time.Duration) []int {
+	deadline := time.Now().Add(timeout)
+	for {
+		var alive []int
+		for _, pid := range pids {
+			if processAlive(pid) {
+				alive = append(alive, pid)
+			}
+		}
+		if len(alive) == 0 || time.Now().After(deadline) {
+			return alive
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

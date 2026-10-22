@@ -71,6 +71,17 @@ type serviceHealthOpinion struct {
 // note on servicesProbeableFromHost. This function only runs for a shape whose ports were resolved,
 // so in practice that is the host shape.
 func servicesHealth(instance string, ports map[string]int) []serviceHealthOpinion {
+	return servicesHealthTimeout(instance, ports, 3*time.Second)
+}
+
+// servicesHealthTimeout is servicesHealth with the per-component probe timeout made explicit.
+//
+// THE WAIT PATH NEEDS A SHORTER ONE, and the reason is a race rather than impatience: runHostServices
+// spawns the four telemetry children only AFTER postgres and nats are ready, and the install's services
+// gate passes the moment those two answer. Asking the optional components at their ordinary 3s timeout
+// therefore guarantees "not answering" for a stack that is a fraction of a second from being fine —
+// measured, twice, as a spurious "DEGRADED — tempo, loki not answering" immediately after a start.
+func servicesHealthTimeout(instance string, ports map[string]int, probeTimeout time.Duration) []serviceHealthOpinion {
 	if !servicesProbeableFromHost(ports) {
 		return nil
 	}
@@ -118,7 +129,7 @@ func servicesHealth(instance string, ports map[string]int) []serviceHealthOpinio
 				return serviceComponent{}, false
 			}
 			url := "http://127.0.0.1:" + strconv.Itoa(port) + path
-			return serviceComponent{name: name, ready: func() bool { return httpHealthy(url, 3*time.Second) }}, true
+			return serviceComponent{name: name, ready: func() bool { return httpHealthy(url, probeTimeout) }}, true
 		}
 		for _, c := range []struct{ name, env, path string }{
 			{"tempo", "ORCHICON_TEMPO_PORT", "/ready"},
@@ -146,7 +157,13 @@ func servicesHealth(instance string, ports map[string]int) []serviceHealthOpinio
 // This is the question `orchicon services status`'s exit code and a start's gate ask: a plane with
 // no database is broken, while a plane with no logs is degraded but working.
 func requiredServicesReady(instance string, ports map[string]int) bool {
-	for _, c := range servicesHealth(instance, ports) {
+	return requiredServicesReadyWithin(instance, ports, 3*time.Second)
+}
+
+// requiredServicesReadyWithin is requiredServicesReady with the probe timeout made explicit, for the install
+// and start gates — which ask immediately after spawning a supervisor.
+func requiredServicesReadyWithin(instance string, ports map[string]int, probeTimeout time.Duration) bool {
+	for _, c := range servicesHealthTimeout(instance, ports, probeTimeout) {
 		if c.required && !c.up {
 			return false
 		}

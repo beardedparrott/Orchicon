@@ -222,7 +222,16 @@ func servicesReady(instance string, ports map[string]int) bool {
 	// an optional one that is down is a degradation the install reports separately (see
 	// degradedServices) rather than a reason to refuse to finish. services_health.go owns both
 	// questions so no caller can answer them differently.
-	return requiredServicesReady(instance, ports)
+	// A SHORT PROBE TIMEOUT, BECAUSE THIS GATE ASKS IMMEDIATELY AFTER SPAWNING THE SUPERVISOR.
+	//
+	// runHostServices brings postgres and nats up before it spawns the four telemetry children, so at the
+	// instant this gate first passes, the optional components have not been started yet. A 3s probe against
+	// them would answer "not answering" for a stack that is moments from healthy and — measured twice —
+	// produced a spurious "DEGRADED — tempo, loki not answering" on an instance that was fine.
+	//
+	// 500ms is enough to tell "this endpoint is up" from "this endpoint is not yet listening", without
+	// turning the gate's own loop into a slow one.
+	return requiredServicesReadyWithin(instance, ports, 500*time.Millisecond)
 }
 
 // servicesProbeableFromHost reports whether this instance has a host endpoint to ask at all, i.e. whether its

@@ -30,6 +30,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -663,6 +664,25 @@ func resolveInstallPorts(instance, residency string, out io.Writer, tty *os.File
 	//   held by anything else      -> genuine collision -> resolve a new one, naming the pid
 	recorded, _ := readResolvedPorts(instance)
 	pinned := map[string]int{}
+	// AN EXISTING INSTANCE'S PORT IS PINNED, NOT SUGGESTED. This is the difference between a reinstall
+	// that converges and one that silently moves the operator's database.
+	//
+	// MEASURED on a real Windows machine: a leftover process held 5432, this function did what it is
+	// designed to do — walk to the next free port — and because the MSI runs `--non-interactive` it
+	// ACCEPTED ITS OWN SUGGESTION and persisted it:
+	//
+	//	PostgreSQL: port 5432 is in use — suggesting 5433
+	//	{"ORCHICON_POSTGRES_PORT": 5433, ...}    <-- ports.json
+	//
+	// Every later start then waited on 5433, where postgres would never listen, and reported "the
+	// services did not come up". The database port of an INSTALLED instance is not a suggestion: the
+	// instance's cluster, its pg_hba, its recorded state and its operator's notes all say 5433 now — and
+	// nothing in the product will ever move it back. Renumbering an instance is a decision, so it is
+	// left to an explicit ORCHICON_*_PORT (handled below, which outranks this record) and never
+	// performed implicitly by a re-run.
+	//
+	// A GENUINE conflict therefore FAILS, naming the holder, which is actionable; silently relocating is
+	// not. This is the same posture ORCHICON_STRICT_PORTS already takes for a fresh install.
 	for _, p := range specs {
 		if v, ok := recorded[p.Env]; ok && v > 0 {
 			if free := portFree(v); free || portHeldByThisInstance(v, instance) {
@@ -690,6 +710,33 @@ func resolveInstallPorts(instance, residency string, out io.Writer, tty *os.File
 			return nil, fmt.Errorf("%s=%q is not a port (1..65535)", p.Env, v)
 		}
 		pinned[p.Env] = n
+	}
+
+	// A RECORDED PORT THAT IS STILL BUSY IS A HARD FAILURE, UNLESS THE OPERATOR PINS A DIFFERENT ONE.
+	//
+	// The loop above could not report it: planInstallPorts would have found the pin missing and walked to
+	// the next free port, which is the renumbering this function must never do by itself. The operator's
+	// own pin (just read) is the explicit override, so it is the only way past this.
+	for _, p := range specs {
+		v, ok := recorded[p.Env]
+		if !ok || v <= 0 {
+			continue
+		}
+		if _, overridden := pinned[p.Env]; overridden && os.Getenv(p.Env) != "" {
+			continue // an explicit pin is the operator's decision, including moving it
+		}
+		if portFree(v) || portHeldByThisInstance(v, instance) {
+			continue
+		}
+		holder := portOwnerLabel(v, instance)
+		if holder == "" {
+			holder = "a process this tool cannot identify — find it with " + portHolderHint(v)
+		}
+		return nil, fmt.Errorf("%s: this instance is already installed on port %d, which is held by %s\n"+
+			"  An existing instance's port is not renumbered by a re-run: its database, its recorded\n"+
+			"  state and your own notes all refer to %d. Free the port, or move it deliberately with\n"+
+			"    %s=%d %s install --instance %s",
+			p.Label, v, holder, v, p.Env, v, filepath.Base(os.Args[0]), instance)
 	}
 
 	var r *bufio.Reader
