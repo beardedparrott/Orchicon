@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -176,10 +175,16 @@ func servicesReady(instance string, ports map[string]int) bool {
 		// one recordedResidency takes — never manufacture a negative you cannot observe (see above).
 		return true
 	}
-	pg := exec.Command(pgIsReadyBin(instance),
-		"-h", "127.0.0.1", "-p", strconv.Itoa(ports["ORCHICON_POSTGRES_PORT"]), "-U", "orchicon")
-	nats := fmt.Sprintf("http://127.0.0.1:%d/healthz", ports["ORCHICON_NATS_MONITOR_PORT"])
-	return pg.Run() == nil && httpHealthy(nats, 3*time.Second)
+	// THE WHOLE SET, NOT THE CRITICAL CHAIN. This used to ask postgres and nats and nothing else, so
+	// a stack whose four telemetry children had all crash-looped was reported ready — and that is
+	// precisely what a Windows install did: Loki and Tempo died on a config they could not parse,
+	// while the install said "services ready" and moved on to the plane.
+	//
+	// It asks for the REQUIRED components only. A required one that is down is a broken instance;
+	// an optional one that is down is a degradation the install reports separately (see
+	// degradedServices) rather than a reason to refuse to finish. services_health.go owns both
+	// questions so no caller can answer them differently.
+	return requiredServicesReady(instance, ports)
 }
 
 // servicesProbeableFromHost reports whether this instance has a host endpoint to ask at all, i.e. whether its
@@ -255,6 +260,17 @@ var hostServicesPortEnvs = []string{
 	"ORCHICON_TEMPO_OTLP_GRPC_PORT",
 	"ORCHICON_TEMPO_OTLP_HTTP_PORT",
 	"ORCHICON_OTEL_HEALTH_PORT",
+	// EVERY KNOB servicePortsFromEnv HONOURS MUST BE FORWARDED, OR THE TWO HALVES OF ONE INSTANCE
+	// DISAGREE — which is the class of bug this whole file's port handling exists to prevent.
+	//
+	// These two were missing. The supervisor's child would then pick its own value: Tempo's gRPC
+	// listener and the collector's self-metrics exporter are both INTERNAL listeners, so nothing
+	// outside the process dials them and an instance whose gate and child disagreed would look
+	// perfectly healthy while writing its data on a port the other half never expected. The tempos
+	// are harmless today only because each child's default is the same number the table holds —
+	// which is exactly the coincidence this list forbids anyone from relying on.
+	"ORCHICON_TEMPO_GRPC_PORT",
+	"ORCHICON_OTEL_SELF_METRICS_PORT",
 }
 
 // startHostServices starts the instance's SERVICES as HOST PROCESSES, detached, and records the PID.

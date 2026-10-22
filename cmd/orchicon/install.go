@@ -507,6 +507,27 @@ func runInstall(args []string, log *slog.Logger) error {
 		fmt.Println("  then re-run `orchicon install` — it is idempotent")
 	}
 
+	// 5b. SAY WHICH OPTIONAL COMPONENTS ARE NOT ANSWERING.
+	//
+	// This runs AFTER the plane is confirmed up, and that ordering is the point: a plane that
+	// answers /healthz but has no Loki is a WORKING instance whose Logs view is dead, and that is
+	// worth stating plainly — but it is not a failed install, so it must not turn into a non-zero
+	// exit over the whole run.
+	//
+	// WHY IT IS SAID AT ALL. `services: up` used to mean only "postgres and nats answer", so an
+	// install could bring up a stack whose entire telemetry plane had crash-looped and finish with
+	// no indication of it. The operator found out by opening the Logs view and being told the
+	// backend was unreachable. Four words here replace that hunt.
+	if down := degradedServices(instance, ports); len(down) > 0 {
+		fmt.Printf("note: %s is up, but these telemetry components are not answering: %s\n",
+			instance, strings.Join(down, ", "))
+		fmt.Println("      the UI and API work; the Logs/Traces/Metrics views for them will report")
+		fmt.Println("      their backend as unreachable until they do. Why:")
+		fmt.Printf("        %s\n", filepath.Join(hostDataDirFor(instance), "services.log"))
+		fmt.Printf("      They are retried automatically while the services run, and `%s status %s` lists them.\n",
+			filepath.Base(os.Args[0]), instance)
+	}
+
 	// 6. Install/refresh the `orch` companion launcher on PATH (the thin
 	// remote TUI client). Non-fatal: a missing sibling binary or a clobber
 	// guard only warns.

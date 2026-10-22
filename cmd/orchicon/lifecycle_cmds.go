@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/planecontrol"
@@ -42,15 +43,35 @@ func runStatus(args []string) error {
 
 	// Then the services, because a plane with no database is the failure that looks like a
 	// working plane.
+	//
+	// AND THEN EACH COMPONENT THAT IS NOT ANSWERING, BY NAME. `services: up` used to mean only
+	// "postgres and nats answer", so an instance whose Loki, Tempo, VictoriaMetrics and collector
+	// had all crash-looped reported itself completely healthy — the operator's Logs and Traces
+	// views were dead while this command said "up". The one-line summary stays (it is what a first
+	// glance reads), and a component that is down gets its own line, because "something is
+	// degraded" is not an actionable report and "loki is not answering" is.
 	ports, err := servicesPortsFor(instance)
 	if err != nil {
 		fmt.Printf("  services   : unknown (%v)\n", err)
-	} else if servicesReady(instance, ports) {
-		fmt.Printf("  services   : up (postgres %d, nats %d)\n",
-			ports["ORCHICON_POSTGRES_PORT"], ports["ORCHICON_NATS_PORT"])
+	} else if health := servicesHealth(instance, ports); len(health) == 0 {
+		// No host-visible endpoint to ask (container-resident shape): say that rather than
+		// claiming an answer this process could not have obtained.
+		fmt.Printf("  services   : not probeable from this host (their readiness is the plane's health)\n")
 	} else {
-		fmt.Printf("  services   : DOWN (postgres %d, nats %d)\n",
-			ports["ORCHICON_POSTGRES_PORT"], ports["ORCHICON_NATS_PORT"])
+		down := make([]string, 0, len(health))
+		for _, c := range health {
+			if !c.up {
+				down = append(down, c.name)
+			}
+		}
+		switch {
+		case len(down) == 0:
+			fmt.Printf("  services   : up (%s)\n", serviceList(health))
+		case requiredServicesReady(instance, ports):
+			fmt.Printf("  services   : up, DEGRADED — %s not answering\n", strings.Join(down, ", "))
+		default:
+			fmt.Printf("  services   : DOWN — %s not answering\n", strings.Join(down, ", "))
+		}
 	}
 
 	fmt.Printf("  logs       : %s\n", instanceLogPath(instance))
@@ -59,6 +80,15 @@ func runStatus(args []string) error {
 	fmt.Printf("  start / stop:  orchicon start %s   /   orchicon stop %s\n", instance, instance)
 	fmt.Printf("  tail logs    :  orchicon logs %s\n", instance)
 	return nil
+}
+
+// serviceList renders the answering components as one parenthetical, in table order.
+func serviceList(health []serviceHealthOpinion) string {
+	names := make([]string, 0, len(health))
+	for _, c := range health {
+		names = append(names, c.name)
+	}
+	return strings.Join(names, ", ")
 }
 
 // planeLine renders the plane's state as one readable phrase.
