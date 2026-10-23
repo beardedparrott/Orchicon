@@ -69,6 +69,11 @@ func launchDesktop() bool {
 	}
 
 	cmd := exec.Command(desktop, "--route", "/manage-server")
+	// AN EXPLICIT WORKING DIRECTORY. The app must not inherit the install's — an install runs DETACHED, and a
+	// GUI whose cwd is a directory that later disappears cannot start its own children on Windows
+	// (CREATE_ERROR, "The directory name is invalid"), which is the reported "it complained about … the
+	// directory the desktop ran from". The install directory is where this binary lives, so it exists.
+	cmd.Dir = filepath.Dir(exe)
 	// DETACHED, so the window outlives this process: install exits immediately after printing its summary, and
 	// a GUI that died with it would be worse than not launching one at all.
 	setProcAttrBackground(cmd)

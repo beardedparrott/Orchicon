@@ -221,6 +221,12 @@ func runSelf(args []string, env []string, out io.Writer) error {
 	// (serve --detach) happens INSIDE it and cannot help with the window it was born with.
 	cmd := quietCommand(self, args...)
 	cmd.Env = env
+	// THE PLANE'S OWN WORKING DIRECTORY, NOT THIS CALLER'S. runSelf is how the DESKTOP APP starts and stops
+	// a plane, and a GUI can be launched with a working directory that is not its own (an installer's staging
+	// area, a directory since removed). Windows refuses to create a child when the inherited directory does
+	// not exist (ERROR_DIRECTORY, "The directory name is invalid"), so a Start pressed in the app would fail
+	// for a reason that has nothing to do with the plane. The binary's own directory always exists.
+	cmd.Dir = filepath.Dir(self)
 	cmd.Stdout = out
 	cmd.Stderr = out
 	return cmd.Run()
