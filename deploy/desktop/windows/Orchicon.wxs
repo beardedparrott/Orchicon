@@ -94,6 +94,15 @@
          command line for an unattended nuke:
            msiexec /x Orchicon.msi /qn PURGEDATA=1 -->
     <Property Id="PURGEDATA" Value="0" Secure="yes" />
+
+    <!-- THE INSTANCE THIS MSI SET UP LAST, READ BACK ON A LATER RUN.
+         Written at install (see InstalledInstanceRecord) and searched here, so a SECOND run can
+         pre-select what is already on the machine instead of silently falling back to the property
+         default. Public so it survives into the execute sequence. -->
+    <Property Id="INSTALLEDINSTANCE" Secure="yes">
+      <RegistrySearch Id="SearchInstalledInstance" Root="HKCU" Key="Software\Orchicon\Setup"
+                      Name="InstalledInstance" Type="raw" />
+    </Property>
     <!-- THE WIZARD'S OWN ANSWERS. Public (all-uppercase) so they survive into the execute
          sequence AND can be set on the command line for an unattended install. Empty means
          "use this instance's default", which is what the port resolver already does with an
@@ -165,6 +174,9 @@
     <Feature Id="CliFeature" Title="Orchicon (plane, CLI and TUI)" Level="1"
              Description="orchicon.exe and orch.exe: the control plane, the CLI and the TUI.">
       <ComponentGroupRef Id="CliComponents" />
+      <!-- With the CLI feature because it is not optional UI state: it is the record of what this
+           package set up. Making it removable would let a partial install forget its instance. -->
+      <ComponentGroupRef Id="InstanceRecordComponents" />
     </Feature>
 
     <Feature Id="DesktopFeature" Title="Orchicon desktop app" Level="1"
@@ -184,6 +196,19 @@
       </Component>
       <Component Id="ReadmeFile" Guid="*">
         <File Id="ReadmeTxtFile" Source="$(var.SourceDir)\README-WINDOWS.txt" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- THE INSTANCE RECORD. One per-user value saying which instance this MSI most recently set up.
+         It is what lets a second run of the SAME MSI ask an informed question instead of defaulting to
+         "dev": see the InstanceDlg pre-selection and the maintenance wiring below.
+
+         KeyPath on the registry VALUE, which is the ordinary shape for a component that owns no file. -->
+    <ComponentGroup Id="InstanceRecordComponents" Directory="INSTALLFOLDER">
+      <Component Id="InstalledInstanceRecord" Guid="*">
+        <RegistryKey Root="HKCU" Key="Software\Orchicon\Setup">
+          <RegistryValue Name="InstalledInstance" Type="string" Value="[INSTANCE]" KeyPath="yes" />
+        </RegistryKey>
       </Component>
     </ComponentGroup>
 
@@ -405,7 +430,41 @@
            flow, so this publish is conditioned rather than unconditional. -->
       <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="RemoveOptionsDlg" Order="2" Condition="REMOVE=&quot;ALL&quot;" />
 
+      <!-- ===================== A SECOND RUN MUST ASK TOO =====================
+           THE OPERATOR: "When you run the MSI currently, you actually choose which instance you want
+           installed. dev, prod, or test. What if someone ran the install twice currently? What
+           happens?"
+
+           WHAT HAPPENED WAS SILENT AND WRONG. Running the same MSI again does not install anything
+           new: MSI sees the product is installed (same ProductCode) and enters MAINTENANCE mode,
+           which shows MaintenanceWelcomeDlg and MaintenanceTypeDlg and NEVER WelcomeDlg. Every page
+           below hangs off WelcomeDlg, so InstanceDlg was never shown, [INSTANCE] fell through to its
+           Property default ("dev"), and LaunchSetup still ran (its condition is NOT REMOVE, which is
+           true on a repair):
+
+               install - non-interactive - instance dev - port ... - runtime-images ...
+
+           So an operator who chose PROD on the first run, then ran the installer again, silently
+           got a DEV instance created as well — two stacks, one of them a surprise, while the wizard
+           appeared to have asked nothing because it had.
+
+           Repair IS the re-run path (MSI has no "install another" concept), so Repair now goes
+           through the instance question. That makes running the installer twice do the obvious
+           thing: set up the instance you pick.
+
+           REPAIR RATHER THAN MaintenanceWelcomeDlg's Next, deliberately: overriding the WELCOME page
+           would carry Remove down with it, and an operator who wants to uninstall must still reach
+           MaintenanceTypeDlg. -->
+      <!-- A property-setting Publish OMITS Event="" in WiX v4+ (Event and Property are exclusive;
+           the old SetProperty spelling is rejected with WIX0035). -->
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="INSTANCE" Value="[INSTALLEDINSTANCE]" Order="1" Condition="INSTALLEDINSTANCE" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="InstanceDlg" Order="2" />
+
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2" />
+      <!-- Back returns to whichever page actually led here: the licence on a first install, the
+           maintenance type page on a re-run. A single unconditional Back would send a re-running
+           operator to the licence page they already accepted. -->
+      <Publish Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="1" Condition="Installed" />
       <Publish Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="2" />
       <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2" Condition="LicenseAccepted = &quot;1&quot;" />
 
@@ -417,6 +476,12 @@
                  Text="{\WixUI_Font_Title}Which instance?" />
         <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
                  Text="Each instance is a whole stack: its own plane, ports, services and data." />
+        <!-- THE RE-RUN PROMISE, stated where the choice is made. Running the installer again is how a
+             second instance gets added, and the operator should not have to discover that: this page
+             is reached on a repair too (see the MaintenanceTypeDlg publish), pre-selected with what
+             was installed last, and picking a different one adds it. -->
+        <Control Id="RerunNote" Type="Text" X="25" Y="184" Width="330" Height="40" Transparent="yes" NoPrefix="yes"
+                 Text="Running this installer again sets up the instance chosen here. Pick a different one to add a second stack on this machine; picking the same one re-applies it and leaves its data alone." />
 
         <Control Id="InstanceRadio" Type="RadioButtonGroup" X="20" Y="60" Width="330" Height="90"
                  Property="INSTANCE">
