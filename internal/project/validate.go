@@ -59,6 +59,21 @@ func validateName(name string) (string, error) {
 	if name == "" {
 		return "", errors.New("name must not be empty")
 	}
+	// A CONTROL CHARACTER IS REFUSED HERE, WITH ITS NAME, rather than by Postgres with a byte offset.
+	//
+	// REPORTED (Windows TUI, creating a project): `internal: db: create project: ERROR: invalid byte
+	// sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)`. Two things made that message useless: it names
+	// no field, and the offending byte is INVISIBLE — the operator's name read "Temp" on screen. A text
+	// column cannot hold U+0000 at all, so this can never succeed; the only question is whether the client
+	// learns which field to fix.
+	//
+	// The TUI no longer puts one in a form field (kit2.sanitizeInput), but this boundary is the guarantee:
+	// the driver error must not be reachable from ANY client, including one written later.
+	if i := strings.IndexFunc(name, isControlRune); i >= 0 {
+		r := []rune(name)[i]
+		return "", fmt.Errorf("name must not contain control characters (found %#U at character %d); "+
+			"it is invisible on screen, and the database cannot store it", r, i+1)
+	}
 	if utf8.RuneCountInString(name) > maxNameLen {
 		return "", fmt.Errorf("name must be at most %d characters", maxNameLen)
 	}
@@ -418,4 +433,10 @@ func contextFilesFromJSONOrEmpty(data []byte) []string {
 		return nil
 	}
 	return files
+}
+
+// isControlRune reports whether r is a C0 control character or DEL. Newline and tab are control characters
+// too, and they are equally unstorable in a NAME — a project name is one line — so both are refused here.
+func isControlRune(r rune) bool {
+	return r < 0x20 || r == 0x7f
 }
