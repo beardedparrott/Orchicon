@@ -123,6 +123,13 @@ var (
 	driftProbe   = Drift         // (string, io.Writer) DriftState
 	planeAlive   = ServingPlaneAlive
 	healthyProbe = Healthy
+	// unrecordedPlane / terminateProcess / pidAlive belong to the ONE case where the PID file is not the
+	// answer: a plane that outlived it (see hostproc_unix.go). They are seams for the same reason the rest of
+	// this block is — the state can only otherwise be produced by really leaving a stale plane serving, which
+	// a test must not need to do.
+	unrecordedPlane  = unrecordedPlanePID
+	terminateProcess = TerminateProcess
+	pidAlive         = PidAlive
 	runCommand   = runSelf
 	binaryOf     = procExe
 	sleep        = time.Sleep
@@ -131,6 +138,19 @@ var (
 
 // planeBinaryName is the name of the binary that SERVES the plane (`serve --detach` / `serve --stop`).
 const planeBinaryName = "orchicon"
+
+// recordedControlPort is the control port this instance's record says it serves on, 0 when unknown.
+//
+// SHARED RATHER THAN PER-PLATFORM because it reads only the instance's port record. The platform halves need
+// it to say WHICH port they are looking for, and a copy in each would be a second definition of "this
+// instance's control port" — the exact drift the shared port table exists to prevent.
+func recordedControlPort(instance string) int {
+	ports, err := ReadPorts(instance)
+	if err != nil {
+		return 0
+	}
+	return ports["ORCHICON_CONTROL_PORT"]
+}
 
 // planeBinary is the binary this package re-execs to run the plane (and the binary a live plane is compared
 // against for drift). It is a seam so the resolution below is assertable without spawning processes.
@@ -327,11 +347,27 @@ func StatusOf(opts Options) (Status, error) {
 			st.HealthURL = fmt.Sprintf("http://localhost:%d/healthz", st.ControlPort)
 		}
 	}
-	// THE BINARY, NOT JUST THE PORT: a PID file plus /proc/<pid>/exe is the only pair that says WHICH process
-	// is serving. A version endpoint would answer with whatever the OLD process believes about itself.
+	// THE BINARY, NOT JUST THE PORT: a PID plus /proc/<pid>/exe is the only pair that says WHICH process is
+	// serving. A version endpoint would answer with whatever the OLD process believes about itself.
+	//
+	// effectivePlanePID ALSO FINDS A PLANE THAT OUTLIVED ITS PID FILE (see hostproc_unix.go). Without that,
+	// `status` reported "stopped" for a plane answering /healthz — a screen contradicting the machine — and
+	// every caller downstream concluded there was nothing to stop.
+	//
+	// THE TWO SOURCES GET DIFFERENT VERDICTS, and that is not fussiness — it is a pinned contract. When the
+	// PID file names the process, `planeAlive` alone decides Alive, so a platform whose liveness probe is
+	// weaker than Unix's still reports the PID and the binary instead of "no plane here"
+	// (TestStatusReportsThePIDFileEvenWhenTheLivenessSeamSaysNo). When identity was RECOVERED FROM THE PORT
+	// there is no file to ask, so the OS answers directly — and `Alive` beside a PID means what it says.
 	if pid, ok := ServingPlanePID(o.Instance); ok {
 		st.PID = pid
 		st.Alive = planeAlive(o.Instance)
+		if exe, err := binaryOf(pid); err == nil {
+			st.Binary = exe
+		}
+	} else if pid, ok := unrecordedPlane(o.Instance); ok {
+		st.PID = pid
+		st.Alive = pidAlive(pid)
 		if exe, err := binaryOf(pid); err == nil {
 			st.Binary = exe
 		}
@@ -429,6 +465,30 @@ func Stop(opts Options) error {
 	cmdEnv := append(EnvWithout(os.Environ(), instanceEnvKeys...),
 		ServeStateDirEnv+"="+filepath.Join(o.HostDataDir, "serve"))
 	if err := runCommand([]string{"serve", "--stop"}, cmdEnv, o.Out); err != nil {
+		// A THIRD CASE, AND THE ONE THAT BLOCKED A REBUILD: the PID file is GONE but the plane is not.
+		//
+		// `serve --stop` resolves the SAME PID file this layer does (ServeStateDirEnv is what makes it so), so
+		// a missing file makes it answer "serve is not running" — and the caller then reported that a
+		// rebuild over a serving plane had nothing to stop, while :8091 kept answering. Measured: a plane
+		// five days old whose binary a rebuild had replaced, with serve/pids/ empty.
+		//
+		// The listener on the instance's recorded control port is verified as our own (binary AND instance
+		// tag, never the port alone — see unrecordedPlanePID) before anything is signalled.
+		if pid, ok := unrecordedPlane(o.Instance); ok {
+			fmt.Fprintf(o.Out, "host plane for %s has no PID file but is serving on %d (pid %d) — stopping it\n",
+				o.Instance, recordedControlPort(o.Instance), pid)
+			if terr := terminateProcess(pid); terr != nil {
+				return fmt.Errorf("stop the host plane for %s (pid %d): %w", o.Instance, pid, terr)
+			}
+			for i := 0; i < stopPolls; i++ {
+				if !pidAlive(pid) {
+					return nil
+				}
+				sleep(stopPollInterval)
+			}
+			return fmt.Errorf("the host plane for %s (pid %d) did not stop — it may still be shutting down",
+				o.Instance, pid)
+		}
 		// TELL "NOTHING TO STOP" APART FROM "IT WOULD NOT STOP". The PID file this layer reads is the SAME
 		// one `serve --stop` resolved (ServeStateDirEnv is what makes it so), so no live process there IS the
 		// nothing-to-stop case — while a process still in the file is a stop that FAILED, and stays an error.

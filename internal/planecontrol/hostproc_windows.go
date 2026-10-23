@@ -473,3 +473,24 @@ func WaitGone(pids []int, timeout time.Duration) []int {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// ───────────────────────── the plane that outlived its PID file ─────────────────────────
+//
+// THE SAME STATE EXISTS ON WINDOWS and this half cannot recover it, deliberately rather than by omission.
+// Recovering it needs two verified readings — the pid listening on the instance's control port, and PROOF
+// that the process is this instance's own (its environment, or its image path) — and this file has neither:
+// there is no /proc, tasklist reports an image NAME without a path, and a process's environment is not
+// readable without a syscall this package does not make. Guessing from the port alone would be the "control a
+// plane you cannot identify" failure the fail-safe exists to prevent, so `effectivePlanePID` answers with the
+// PID file only and its callers report "not identifiable" — which is the truthful answer there, and the one
+// that leads an operator to `ss`/`tasklist` instead of to a wrong kill.
+//
+// The Windows-specific half of this problem is handled where it can be: `cmd/orchicon` identifies a leftover
+// by the instance directory its image lives in (reclaim_proc_windows.go), and uninstall/install clear
+// containers and host services through the recorded supervisor PID.
+
+// effectivePlanePID is the PID file's process. See the note above for why there is no port fallback here.
+func effectivePlanePID(instance string) (int, bool) { return ServingPlanePID(instance) }
+
+// unrecordedPlanePID cannot identify a plane on Windows: see the note above.
+func unrecordedPlanePID(string) (int, bool) { return 0, false }
