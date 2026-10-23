@@ -94,6 +94,8 @@
          command line for an unattended nuke:
            msiexec /x Orchicon.msi /qn PURGEDATA=1 -->
     <Property Id="PURGEDATA" Value="0" Secure="yes" />
+    <!-- Checked by default: the handover is the point of the page. -->
+    <Property Id="LAUNCHAPP" Value="1" Secure="yes" />
 
     <!-- THE INSTANCE THIS MSI SET UP LAST, READ BACK ON A LATER RUN.
          Written at install (see InstalledInstanceRecord) and searched here, so a SECOND run can
@@ -278,7 +280,7 @@
                   Execute="immediate"
                   Impersonate="yes"
                   Return="asyncNoWait"
-                  ExeCommand="install --non-interactive --instance [INSTANCE] --port ORCHICON_CONTROL_PORT=[CONTROLPORT] --port ORCHICON_POSTGRES_PORT=[POSTGRESPORT] --port ORCHICON_LOKI_PORT=[LOKIPORT] --port ORCHICON_TEMPO_PORT=[TEMPOPORT] --runtime-images [RUNTIMEIMAGES]" />
+                  ExeCommand="install --non-interactive --instance dev" />
 
     <!-- ===================== THE UNINSTALL ==============================
          AN UNINSTALL MUST TAKE THE SERVICES WITH IT, and until now it took nothing: LaunchSetup is
@@ -337,6 +339,25 @@
                   Return="ignore"
                   ExeCommand="uninstall --all --purge" />
 
+    <!-- ===================== LAUNCH ORCHICON (D7) =====================
+         THE SUPPORTED HANDOVER, not a silent auto-launch. A custom action that spawns the app while the
+         wizard is still on screen races it: the window can appear behind the dialog, or in the wrong
+         session, or before the firewall prompt. A checkbox on the Finish page is one visible click, and the
+         operator sees the app arrive because THEY opened it.
+
+         IT IS SAFE TO OFFER BECAUSE SETUP IS ALREADY RUNNING. LaunchSetup stays at InstallFinalize with
+         asyncNoWait, so the download and cluster init begin while this wizard is still open — by the time
+         Finish is reachable, setup is usually well underway. The checkbox opens the app on the Servers page,
+         which is where it can show that progress; it does not wait for anything.
+
+         Return="asyncNoWait" so the wizard closes without waiting for a GUI process. -->
+    <CustomAction Id="LaunchApp"
+                  FileRef="DesktopExeFile"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="asyncNoWait"
+                  ExeCommand="--route /manage-server" />
+
     <InstallExecuteSequence>
       <!-- REMOVE ONLY: the mirror of LaunchSetup's NOT REMOVE. -->
       <Custom Action="LaunchUninstall" After="InstallFinalize" Condition="REMOVE=&quot;ALL&quot; AND SKIPSETUP &lt;&gt; &quot;1&quot; AND PURGEDATA &lt;&gt; &quot;1&quot;" />
@@ -390,6 +411,38 @@
            IT WRITES PURGEDATA, which the two uninstall actions read (see LaunchUninstall /
            LaunchUninstallPurge). A RadioButtonGroup rather than a bare checkbox because two exclusive
            options are what this is, and a radio makes the safe one visibly selected. -->
+      <!-- ===================== THE FINISH PAGE =====================
+           OURS, NOT WixUI's, and that is deliberate. The standard hook is
+           WIXUI_EXITDIALOGOPTIONALCHECKBOX, which WixUI's own FinishDlg reads — but the dialog definitions
+           live inside a compressed managed resource in WixToolset.UI.wixext.dll and cannot be inspected
+           from this host, so whether WixUI_InstallDir's FinishDlg carries that hook could not be verified
+           before shipping. Defining the page here removes the question entirely: it is the same pattern
+           every other custom page in this file already uses, it compiles against the schema, and the
+           checkbox is wired to an action we can see.
+
+           VerifyReadyDlg's Finish already publishes NewDialog FinishDlg, so this page is reached without
+           another Publish. -->
+      <Dialog Id="FinishDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}Orchicon is installed" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="Setting it up continues in the background." />
+        <Control Id="SetupNote" Type="Text" X="25" Y="70" Width="320" Height="70" Transparent="yes" NoPrefix="yes"
+                 Text="Orchicon is now setting up its server: a database, an event bus and the telemetry backends, then the control plane. This takes a few minutes the first time. The app shows the progress and tells you when it is ready." />
+        <Control Id="LaunchCheck" Type="CheckBox" X="25" Y="170" Width="320" Height="17"
+                 Property="LAUNCHAPP" CheckBoxValue="1" Text="Launch Orchicon now" />
+        <Control Id="Finish" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUIFinish)">
+          <Publish Event="DoAction" Value="LaunchApp" Order="1" Condition="LAUNCHAPP=&quot;1&quot;" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
       <Dialog Id="RemoveOptionsDlg" Width="370" Height="270" Title="[ProductName] Setup">
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
@@ -457,179 +510,27 @@
            MaintenanceTypeDlg. -->
       <!-- A property-setting Publish OMITS Event="" in WiX v4+ (Event and Property are exclusive;
            the old SetProperty spelling is rejected with WIX0035). -->
-      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="INSTANCE" Value="[INSTALLEDINSTANCE]" Order="1" Condition="INSTALLEDINSTANCE" />
-      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="InstanceDlg" Order="2" />
+      <!-- REPAIR RE-CONVERGES THE SAME SERVER. It used to route through the instance page; with that page
+           gone there is nothing to ask, so a repair simply re-runs the idempotent setup for `dev`. -->
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" Order="2" />
 
-      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="LicenseAgreementDlg" Order="1" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="2" />
       <!-- Back returns to whichever page actually led here: the licence on a first install, the
            maintenance type page on a re-run. A single unconditional Back would send a re-running
            operator to the licence page they already accepted. -->
-      <Publish Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="1" Condition="Installed" />
-      <Publish Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="2" />
-      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2" Condition="LicenseAccepted = &quot;1&quot;" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="2" Condition="LicenseAccepted = &quot;1&quot;" />
 
-      <Dialog Id="InstanceDlg" Width="370" Height="270" Title="[ProductName] Setup">
-        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
-        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
-        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
-        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
-                 Text="{\WixUI_Font_Title}Which instance?" />
-        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
-                 Text="Each instance is a whole stack: its own plane, ports, services and data." />
-        <!-- THE RE-RUN PROMISE, stated where the choice is made. Running the installer again is how a
-             second instance gets added, and the operator should not have to discover that: this page
-             is reached on a repair too (see the MaintenanceTypeDlg publish), pre-selected with what
-             was installed last, and picking a different one adds it. -->
-        <Control Id="RerunNote" Type="Text" X="25" Y="184" Width="330" Height="40" Transparent="yes" NoPrefix="yes"
-                 Text="Running this installer again sets up the instance chosen here. Pick a different one to add a second stack on this machine; picking the same one re-applies it and leaves its data alone." />
-
-        <Control Id="InstanceRadio" Type="RadioButtonGroup" X="20" Y="60" Width="330" Height="90"
-                 Property="INSTANCE">
-          <RadioButtonGroup Property="INSTANCE">
-            <RadioButton Value="dev" X="0" Y="0" Width="330" Height="18" Text="dev - for trying it out (the default)" />
-            <RadioButton Value="test" X="0" Y="22" Width="330" Height="18" Text="test - for a second stack on this machine" />
-            <RadioButton Value="prod" X="0" Y="44" Width="330" Height="18" Text="prod - this machine's real instance" />
-          </RadioButtonGroup>
-        </Control>
-
-        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
-          <Publish Event="NewDialog" Value="WelcomeDlg" />
-        </Control>
-        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
-          <Publish Event="NewDialog" Value="PortsDlg" />
-        </Control>
-        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
-          <Publish Event="SpawnDialog" Value="CancelDlg" />
-        </Control>
-      </Dialog>
 
       <!-- ===================== PORTS =====================
            The two the installer has always ASKED about. Everything else in the port table is
            derived from the instance (and offset per instance), so putting sixteen fields here
            would be a wall of numbers for values nobody wants to change. -->
-      <Dialog Id="PortsDlg" Width="370" Height="270" Title="[ProductName] Setup">
-        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
-        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
-        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
-        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
-                 Text="{\WixUI_Font_Title}Host ports" />
-        <!-- HEIGHT 30, NOT 15: this sentence wraps to two lines and the second was being cut off
-             ("... is reported during se"). Eight dialogs in WixUI use 15 because their text is one
-             line; ours is not. -->
-        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="30" Transparent="yes" NoPrefix="yes"
-                 Text="Leave a box empty to use this instance's default. A port already in use is reported during setup." />
-
-        <Control Id="ControlPortLabel" Type="Text" X="20" Y="62" Width="200" Height="15" NoPrefix="yes"
-                 Text="Control plane (web UI + API) - dev 8080 / test 8091 / prod 8092:" />
-        <Control Id="ControlPortEdit" Type="Edit" X="230" Y="60" Width="70" Height="17"
-                 Property="CONTROLPORT" Text="[CONTROLPORT]" />
-
-        <Control Id="PostgresPortLabel" Type="Text" X="20" Y="88" Width="200" Height="15" NoPrefix="yes"
-                 Text="PostgreSQL - dev 5432 / test 5433 / prod 5434:" />
-        <Control Id="PostgresPortEdit" Type="Edit" X="230" Y="86" Width="70" Height="17"
-                 Property="POSTGRESPORT" Text="[POSTGRESPORT]" />
-
-        <!-- THE TWO MOST LIKELY TO COLLIDE WITH SOMETHING ALREADY INSTALLED. Loki and Tempo are
-             where an existing Grafana stack usually already sits, so they are offered; the other
-             nine in the table (NATS, OTLP gRPC/HTTP, Tempo's two receivers, VictoriaMetrics,
-             collector health) stay derived per instance. A wall of thirteen fields would bury
-             the four that matter. -->
-        <Control Id="LokiPortLabel" Type="Text" X="20" Y="114" Width="200" Height="15" NoPrefix="yes"
-                 Text="Loki (logs) - dev 3100 / test 3101 / prod 3102:" />
-        <Control Id="LokiPortEdit" Type="Edit" X="230" Y="112" Width="70" Height="17"
-                 Property="LOKIPORT" Text="[LOKIPORT]" />
-
-        <Control Id="TempoPortLabel" Type="Text" X="20" Y="140" Width="200" Height="15" NoPrefix="yes"
-                 Text="Tempo (traces) - dev 3200 / test 3201 / prod 3202:" />
-        <Control Id="TempoPortEdit" Type="Edit" X="230" Y="138" Width="70" Height="17"
-                 Property="TEMPOPORT" Text="[TEMPOPORT]" />
-
-        <Control Id="PortsHint" Type="Text" X="20" Y="170" Width="330" Height="50" Transparent="yes"
-                 Text="Blank means this instance's default. The remaining ports (NATS, telemetry, metrics) are offset per instance, so two instances never collide; everything bound is written down and printed at the end of setup." />
-
-        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
-          <Publish Event="NewDialog" Value="InstanceDlg" />
-        </Control>
-        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
-          <Publish Event="NewDialog" Value="ImagesDlg" />
-        </Control>
-        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
-          <Publish Event="SpawnDialog" Value="CancelDlg" />
-        </Control>
-      </Dialog>
 
       <!-- ===================== RUNTIME IMAGES =====================
            Optional, and defaulted OFF: a project starts in execution_mode=local, so someone who
            never opts in needs no image at all. Pulling multi-GB layers up front made every
            install pay for a feature it might never use. -->
-      <Dialog Id="ImagesDlg" Width="370" Height="270" Title="[ProductName] Setup">
-        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
-        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
-        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
-        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
-                 Text="{\WixUI_Font_Title}Runtime images" />
-        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
-                 Text="Optional container images for workflow runs. Downloading several GB now is not required." />
-
-        <!-- REAL CHECKBOXES, WHICH REAL CHECKBOXES, WHICH THE runtime-images LIST FORM WAS BUILT FOR ALL ALONG.
-             Two bulk answers (none / all) covered the extremes and nothing in between, and "some"
-             is the common case: someone who wants the base image without two others' worth of GB.
-             Each box appends its number to RUNTIMEIMAGES; none ticked sends "none", which is what
-             the install already understands. -->
-        <Control Id="ImagesNone" Type="RadioButtonGroup" X="20" Y="58" Width="330" Height="44"
-                 Property="IMAGESMODE">
-          <RadioButtonGroup Property="IMAGESMODE">
-            <RadioButton Value="none" X="0" Y="0" Width="330" Height="18" Text="None - local execution only (recommended, and the default)" />
-            <RadioButton Value="choose" X="0" Y="22" Width="330" Height="18" Text="Choose individual images:" />
-          </RadioButtonGroup>
-        </Control>
-
-        <Control Id="Image1" Type="CheckBox" X="40" Y="112" Width="310" Height="17"
-                 Property="IMAGE1" CheckBoxValue="1" Text="runtime base - the workflow runner everything builds on (~1 GB)" />
-        <Control Id="Image2" Type="CheckBox" X="40" Y="134" Width="310" Height="17"
-                 Property="IMAGE2" CheckBoxValue="1" Text="runtime GUI - adds a browser for web UI work (+150 MB)" />
-        <Control Id="Image3" Type="CheckBox" X="40" Y="156" Width="310" Height="17"
-                 Property="IMAGE3" CheckBoxValue="1" Text="runtime dev - adds python, node and common CLIs (+1.5-2.5 GB)" />
-
-        <!-- Y=186, CLEAR OF THE LAST CHECKBOX AT 156+17=173. It used to sit at 150 and printed
-             straight through it, which is the "graphical glitches" that made the image list
-             unreadable. -->
-        <Control Id="ImagesHint" Type="Text" X="20" Y="186" Width="330" Height="34" Transparent="yes"
-                 Text="Each variant builds on runtime base, so ticking one includes it. Images can be added at any time from Settings, Runtime images - nothing here is final." />
-
-        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
-          <Publish Event="NewDialog" Value="PortsDlg" />
-        </Control>
-        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
-          <!-- THE CHECKBOXES COMPOSE THE VALUE THE INSTALL READS. Without these publishes they
-               are decoration: three ticked boxes that never reach RUNTIMEIMAGES would install
-               nothing and report nothing wrong - the "page whose answer does not reach the
-               property" failure this wizard exists to avoid.
-
-               Each publish APPENDS its number with a leading comma ("[~]" appends), and the
-               first one is guarded on the property being empty-or-none so a sequence cannot
-               start with a stray comma. "none" and "[]" are both empty to the install, and
-               ValueToInstall translates a ticked-but-empty selection to none.
-
-               ORDER MATTERS: the reset to "none" runs first, then the appends, then the fixup. -->
-          <Publish Property="RUNTIMEIMAGES" Value="none" Order="1" Condition="IMAGESMODE = &quot;none&quot;" />
-          <Publish Property="RUNTIMEIMAGES" Value="[]" Order="2" Condition="IMAGESMODE = &quot;choose&quot;" />
-          <Publish Property="RUNTIMEIMAGES" Value="1" Order="3" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE1 = &quot;1&quot; AND RUNTIMEIMAGES = &quot;[]&quot;" />
-          <Publish Property="RUNTIMEIMAGES" Value="[~]1" Order="4" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE1 = &quot;1&quot; AND RUNTIMEIMAGES &lt;&gt; &quot;[]&quot;" />
-          <Publish Property="RUNTIMEIMAGES" Value="2" Order="5" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE2 = &quot;1&quot; AND (RUNTIMEIMAGES = &quot;[]&quot; OR RUNTIMEIMAGES = &quot;[]&quot;)" />
-          <Publish Property="RUNTIMEIMAGES" Value="[~]2" Order="6" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE2 = &quot;1&quot; AND RUNTIMEIMAGES &lt;&gt; &quot;[]&quot; AND RUNTIMEIMAGES &lt;&gt; &quot;1&quot;" />
-          <Publish Property="RUNTIMEIMAGES" Value="[~]2" Order="7" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE2 = &quot;1&quot; AND RUNTIMEIMAGES = &quot;1&quot;" />
-          <Publish Property="RUNTIMEIMAGES" Value="3" Order="8" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE3 = &quot;1&quot; AND RUNTIMEIMAGES = &quot;[]&quot;" />
-          <Publish Property="RUNTIMEIMAGES" Value="[~]3" Order="9" Condition="IMAGESMODE = &quot;choose&quot; AND IMAGE3 = &quot;1&quot; AND RUNTIMEIMAGES &lt;&gt; &quot;[]&quot;" />
-          <!-- A ticked "choose" with NOTHING selected is "none", not "[]" - the install must never
-               receive a value it has to guess at. -->
-          <Publish Property="RUNTIMEIMAGES" Value="none" Order="10" Condition="RUNTIMEIMAGES = &quot;[]&quot;" />
-          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="20" />
-        </Control>
-        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
-          <Publish Event="SpawnDialog" Value="CancelDlg" />
-        </Control>
-      </Dialog>
     </UI>
 
     <ui:WixUI Id="WixUI_InstallDir" />

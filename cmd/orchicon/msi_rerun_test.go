@@ -39,42 +39,38 @@ func wxsSource(t *testing.T) string {
 }
 
 // THE REPAIR PATH MUST REACH THE INSTANCE QUESTION.
-func TestMSIRerunAsksWhichInstance(t *testing.T) {
+func TestMSIRerunDoesNotAskAndReconvergesDev(t *testing.T) {
 	wxs := wxsSource(t)
 
-	// The instance page must be reachable from MaintenanceTypeDlg, which is the page a re-run lands on.
-	if !strings.Contains(wxs, `Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="InstanceDlg"`) {
-		t.Error("a re-run never reaches InstanceDlg: MSI enters maintenance mode, shows " +
-			"MaintenanceWelcomeDlg/MaintenanceTypeDlg and skips WelcomeDlg, so [INSTANCE] silently " +
-			"falls back to the property default and the setup runs against an instance the operator " +
-			"never chose")
+	// THE INSTANCE PAGE IS GONE, and that is what makes a second run SAFE and simple: there is no question
+	// to mis-answer and no property to lose. The MSI always sets up `dev`, and `orchicon install` is
+	// idempotent — so running the installer twice re-converges one server instead of creating a second
+	// with a name nobody chose.
+	//
+	// THIS SUPERSEDES the earlier wiring that routed a repair through the instance page. That was right
+	// while the page existed; with the page deleted, "ask again" is not available, and the answer is
+	// better anyway: a fresh install and a repair now do the same thing to the same server.
+	if strings.Contains(wxs, `Id="InstanceDlg"`) {
+		t.Error("the installer asks which instance again. MSI properties are session-scoped and a repair " +
+			"skips WelcomeDlg, so that question was answered unreliably at best — a second run created " +
+			"`dev` silently while the wizard looked as if it had asked nothing.")
+	}
+	if !strings.Contains(wxs, "--instance dev") {
+		t.Error("the setup hand-off does not name `dev`, so what a re-run converges is stated nowhere")
 	}
 
-	// And the pre-selection must come from the record, so the SAME instance can be re-applied.
-	if !strings.Contains(wxs, `Property="INSTANCE" Value="[INSTALLEDINSTANCE]"`) {
-		t.Error("a re-run does not pre-select the instance installed last, so the operator is shown a " +
-			"default that may be a different instance than the package set up")
-	}
-
-	// The record has to exist, be written, and be searchable.
+	// THE INSTANCE RECORD SURVIVES the page that used to fill it: it still tells the app which server this
+	// package set up.
 	for _, want := range []string{
 		`Property Id="INSTALLEDINSTANCE"`,
-		`RegistrySearch Id="SearchInstalledInstance"`,
 		`RegistryValue Name="InstalledInstance" Type="string" Value="[INSTANCE]"`,
-		`<ComponentGroupRef Id="InstanceRecordComponents" />`,
 	} {
 		if !strings.Contains(wxs, want) {
-			t.Errorf("the instance record is incomplete, missing %q — without it a second run has nothing "+
-				"to pre-select", want)
+			t.Errorf("the instance record lost %q", want)
 		}
 	}
 }
 
-// REMOVE MUST STILL BE REACHABLE FROM A RE-RUN.
-//
-// The repair wiring deliberately hangs off MaintenanceTypeDlg's Repair button rather than
-// MaintenanceWelcomeDlg's Next: overriding the welcome page would carry Remove down with it, and an
-// operator who wants to uninstall must still get to the type page.
 func TestMSIRerunStillPermitsRemove(t *testing.T) {
 	wxs := wxsSource(t)
 	if strings.Contains(wxs, `Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="InstanceDlg"`) {
@@ -86,27 +82,18 @@ func TestMSIRerunStillPermitsRemove(t *testing.T) {
 // BACK MUST RETURN TO THE PAGE THAT LED HERE.
 //
 // One unconditional Back would send a re-running operator to the licence page they already accepted.
-func TestMSIInstanceBackIsContextual(t *testing.T) {
+func TestMSINoPageNavigatesToADeletedDialog(t *testing.T) {
+	// The page whose Back button had to be contextual is gone, so the guard becomes the thing that would
+	// actually break the build — a Publish still pointing at a dialog nobody defines. The schema catches it
+	// too; asserting it HERE names the cause instead of leaving a WIX error to be decoded.
 	wxs := wxsSource(t)
-	if !strings.Contains(wxs, `Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="1" Condition="Installed"`) {
-		t.Error("InstanceDlg's Back has no maintenance arm, so a re-run's Back goes to the licence page " +
-			"instead of the maintenance type page")
-	}
-	if !strings.Contains(wxs, `Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg"`) {
-		t.Error("InstanceDlg's Back lost its first-install arm (the licence page)")
+	for _, stale := range []string{`Value="InstanceDlg"`, `Value="PortsDlg"`, `Value="ImagesDlg"`} {
+		if strings.Contains(wxs, stale) {
+			t.Errorf("a wizard page still navigates to a deleted dialog (%s)", stale)
+		}
 	}
 }
 
-// THE UNINSTALL'S DATA QUESTION MUST BE REACHABLE FROM THE ARP PATH.
-//
-// This is the guard #815 was missing. It asserted that a Publish MENTIONED RemoveOptionsDlg, which
-// cannot distinguish a reachable page from one whose condition is unsatisfiable at that point. The
-// publish hangs off MaintenanceWelcomeDlg's Next with Condition REMOVE="ALL" — and that IS satisfiable,
-// but only because Add/Remove Programs sets REMOVE=ALL on the command line BEFORE the UI runs. A
-// plain double-click of the MSI does not, so it correctly falls through to MaintenanceTypeDlg instead.
-//
-// The reachability therefore depends on REMOVE=ALL being pre-set, which is the ARP route: asserted here
-// so a future edit cannot move this page onto a path where that is never true.
 func TestMSIUninstallDataQuestionIsReachableFromARP(t *testing.T) {
 	wxs := wxsSource(t)
 	if !strings.Contains(wxs, `Value="RemoveOptionsDlg"`) {
