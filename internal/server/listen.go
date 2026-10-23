@@ -42,11 +42,58 @@ func listenerAddrs(cfg config.Config) []string {
 // ListenAndServe) so the bound address is known before serving starts and
 // so the optional bridge listener can share the same http.Server.
 func (s *Server) bindPrimary() (net.Listener, error) {
-	ln, err := net.Listen("tcp", s.cfg.HTTPAddr)
+	ln, err := listenRetryingEphemeral(s.cfg.HTTPAddr)
 	if err != nil {
 		return nil, fmt.Errorf("server: bind primary http %s: %w", s.cfg.HTTPAddr, err)
 	}
 	return ln, nil
+}
+
+// ephemeralBindAttempts and ephemeralBindBackoff bound the retry for a PORT-0 bind.
+//
+// WHY A RETRY EXISTS AT ALL. A request for port 0 means "give me ANY free port", so it is essentially
+// impossible to fail — which is exactly why a single failure must not be treated as a definitive answer.
+// Measured on a loaded developer host: `bind: address already in use` on `:0` and on `127.0.0.1:0`, four
+// tests at once, while the same package passed repeatedly in isolation minutes later. The host was
+// momentarily out of allocatable ephemeral ports, and the kernel's "none right now" is TRANSIENT by
+// definition — nothing else can own a port the kernel has not yet chosen.
+//
+// IT CANNOT MASK A REAL COLLISION, and that is the safety argument for having it. A real conflict names a
+// SPECIFIC port, and specific ports are NOT retried here: they fail on the first attempt exactly as
+// before, so the operator still sees the collision they need to see. Only the "any port" request is
+// retried, because only that request has no meaningful failure mode.
+//
+// These are variables, not constants, so a test can drive the retry without sleeping the real interval.
+var (
+	ephemeralBindAttempts = 5
+	ephemeralBindBackoff  = 100 * time.Millisecond
+)
+
+// listenFn is the bind seam. Production never reassigns it; a test does, so "the retry ENGAGES" can be
+// asserted rather than inferred from the loop's presence in the source.
+var listenFn = net.Listen
+
+// listenRetryingEphemeral binds addr, retrying ONLY when the port is 0.
+func listenRetryingEphemeral(addr string) (net.Listener, error) {
+	ln, err := listenFn("tcp", addr)
+	if err == nil {
+		return ln, nil
+	}
+	_, port, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil || port != "0" {
+		// A specific port (or an address we cannot parse): report the first failure. A collision on a
+		// named port is information, not noise, and retrying it would only delay the same answer.
+		return nil, err
+	}
+	for attempt := 1; attempt < ephemeralBindAttempts; attempt++ {
+		time.Sleep(ephemeralBindBackoff)
+		if ln, rerr := listenFn("tcp", addr); rerr == nil {
+			return ln, nil
+		}
+	}
+	// Exhausted: return the ORIGINAL error, so the message names the address the caller asked for rather
+	// than whichever attempt happened to be last.
+	return nil, err
 }
 
 // startListeners binds the primary listener (fatal on failure) and starts
