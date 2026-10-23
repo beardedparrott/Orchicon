@@ -45,7 +45,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { desktopInfo, switchPlane } from "@/lib/desktop";
+import { desktopInfo, switchAndRestart } from "@/lib/desktop";
 import {
   OUTCOME_SPAWNED,
   SETUP_DONE,
@@ -223,9 +223,12 @@ export function ServersSection() {
     setConnecting(name);
     setNotice("");
     try {
-      await switchPlane(name);
-      // The shell has already retargeted the proxy; a reload re-reads the document the shell injects.
-      window.location.reload();
+      await switchAndRestart(name);
+      // THE APP IS RESTARTING, so there is nothing left to do here — and deliberately no reload. A reload
+      // was the old behaviour and it is what left the window half-switched: the proxy pointed at the new
+      // server while the app's chrome and session still belonged to the old one. The replacement process
+      // opens on this same page, so the operator lands back where they were.
+      setNotice(`connected to ${name} — restarting…`);
     } catch (e) {
       setConnecting("");
       setNotice(`could not connect to ${name}: ${e instanceof Error ? e.message : String(e)}`);

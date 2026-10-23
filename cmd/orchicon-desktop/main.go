@@ -66,6 +66,20 @@ func main() {
 	// It is a plain route path, validated to be one of ours — a launch argument is not a channel for
 	// arbitrary navigation, and a typo must land on the default page rather than a blank window.
 	routeFlag := flag.String("route", "", "page to open on launch, e.g. /manage-server (default: the app's own start page)")
+	// A REPLACEMENT PROCESS WAITS FOR ITS PREDECESSOR TO EXIT BEFORE IT BEGINS — see internal/desktop
+	// relaunch.go. The internal flag is consumed HERE, before flag.Parse, or it would be reported as an
+	// undefined flag and the app would exit without ever opening a window.
+	awaitPID, restArgv, isReplacement := desktop.ParseAwaitPID(os.Args[1:])
+	if isReplacement {
+		os.Args = append([]string{os.Args[0]}, restArgv...)
+		if !desktop.WaitForExit(awaitPID, 20*time.Second, processAlive, nil) {
+			// THE PREDECESSOR IS STILL RUNNING. Two windows are worse than a stale one, so this process
+			// gives up rather than fighting for the single-instance slot — and says so in the log, because
+			// a silent exit would look like "Connect did nothing".
+			log.Printf("orchicon-desktop: the previous window (pid %d) did not exit; not opening a second one", awaitPID)
+			return
+		}
+	}
 	flag.Parse()
 
 	// WHICH PLANE, IN PRECEDENCE ORDER — and every step of it is a way to say so,
@@ -130,6 +144,39 @@ func main() {
 	// A nil writer on purpose: the app renders progress from the setup RECORD, not from this process's
 	// stdout, and a detached install has no stdout here at all.
 	shell.SetServers(instancectl.NewService(nil))
+
+	// THE RESTART HOOK — what makes "Connect" actually change servers.
+	//
+	// REPORTED: "When you connect to another instance, the top menu disappears and you are left on the manage
+	// server screen. If you close the desktop app and re-open, THEN you are connected to the other instance.
+	// We may want to build in an ability to just auto restart the desktop app once someone hits connect."
+	//
+	// Yes — and that is not a workaround, it is the correct model. A window is initialised from the injected
+	// payload, the proxy target, the version tags and a session store bound to the OLD plane's database. A
+	// reload rebuilds only what the document carries, which is why the app arrives half-switched. Restarting
+	// rebuilds all of it, by construction, and cannot miss state added later.
+	//
+	// THE REPLACEMENT WAITS FOR THIS PROCESS TO EXIT (--await-pid), so the two windows never coexist and the
+	// new one starts from exactly the state a hand restart would.
+	shell.SetRestart(func(instance, route string) error {
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		pid, err := desktop.StartReplacement(self, os.Getpid(), instance, route)
+		if err != nil {
+			return err
+		}
+		log.Printf("orchicon-desktop: restarting as pid %d on instance %s (%s)", pid, instance, route)
+		// EXIT AFTER A SHORT DELAY, so the HTTP response that triggered this is flushed to the page before
+		// the origin socket goes away. Exit immediately and the operator sees "Failed to fetch" on a switch
+		// that in fact succeeded — the same dishonest error this whole page is written to avoid.
+		go func() {
+			time.Sleep(250 * time.Millisecond)
+			wailsruntime.Quit(context.Background())
+		}()
+		return nil
+	})
 
 	if err := shell.Start(); err != nil {
 		log.Fatalf("orchicon-desktop: %v", err)
@@ -268,3 +315,9 @@ func saveGeometry(ctx context.Context, path string) {
 	}
 	log.Printf("orchicon-desktop: remembered window geometry %+v", g)
 }
+
+// processAlive reports whether pid is still running.
+//
+// SIGNAL 0 ON UNIX AND OpenProcess ON WINDOWS, in their own files — see alive_*.go. It exists so a
+// replacement process can wait for its predecessor deterministically instead of sleeping for a guessed
+// interval, which is how a self-restart ends up showing two windows.

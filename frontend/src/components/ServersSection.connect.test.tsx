@@ -29,11 +29,22 @@ function render() {
 }
 
 describe("ServersSection — switching the window's server", () => {
-  it("reaches the shell's own switchPlane rather than re-implementing a switch", () => {
-    // One implementation. The Plane section already retargets the app (internal/desktop UsePlane via
-    // POST /__orchicon_desktop/plane); a second path would be a second way to get it wrong.
-    expect(src).toContain('import { desktopInfo, switchPlane } from "@/lib/desktop"');
-    expect(src).toContain("await switchPlane(name)");
+  it("reaches the shell's own switch rather than re-implementing one", () => {
+    // ONE IMPLEMENTATION. The shell owns the retarget (internal/desktop UsePlane + a process replacement);
+    // a second path in this component would be a second way to get it wrong.
+    //
+    // IT USES switchAndRestart, NOT switchPlane + a reload — and that distinction is the whole bug the
+    // operator reported. A reload rebuilt only what the document carries, so the window arrived
+    // half-switched: "the top menu disappears and you are left on the manage server screen. If you close the
+    // desktop app and re-open, THEN you are connected." A restart rebuilds the session store, the proxy
+    // target, the injected payload and the version tags together, by construction.
+    expect(src).toContain(
+      'import { desktopInfo, switchAndRestart } from "@/lib/desktop"',
+    );
+    expect(src).toContain("await switchAndRestart(name)");
+    // AND IT MUST NOT RELOAD ANY MORE. A reload after asking the shell to restart would tear the page down
+    // mid-switch and show exactly the half-initialised screen this fix exists to remove.
+    expect(src).not.toContain("window.location.reload()");
   });
 
   it("offers Connect ON THE ROW, not in a separate card", () => {

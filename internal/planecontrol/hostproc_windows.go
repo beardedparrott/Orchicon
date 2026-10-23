@@ -45,7 +45,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -231,7 +230,7 @@ func TerminateProcessTree(pid int) error {
 		return fmt.Errorf("refusing to terminate this process (pid %d)", pid)
 	}
 	// The tree first: it reaps the children.
-	if out, err := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").CombinedOutput(); err == nil {
+	if out, err := quietCommand("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").CombinedOutput(); err == nil {
 		return nil
 	} else {
 		// FALL BACK to terminating the supervisor itself. The children may survive — the lock

@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -253,7 +252,7 @@ func BridgeIP() (string, error) {
 	if v := strings.TrimSpace(os.Getenv("ORCHICON_DOCKER_BRIDGE_IP")); v != "" {
 		return v, nil
 	}
-	if out, err := exec.Command(engineBinary(), "network", "inspect", "bridge",
+	if out, err := quietCommand(engineBinary(), "network", "inspect", "bridge",
 		"--format", "{{(index .IPAM.Config 0).Gateway}}").Output(); err == nil {
 		ip := strings.TrimSpace(string(out))
 		// The Go template prints "<no value>" for a nil gateway.
