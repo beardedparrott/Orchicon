@@ -285,38 +285,6 @@ export async function switchAndRestart(instance: string): Promise<DesktopInfo> {
 }
 
 /**
- * switchPlane points THIS WINDOW at another instance's plane and returns the
- * shell's refreshed Info.
- *
- * Distinct from choosing which instance to INSPECT (the Manage Server picker):
- * this retargets the app — every subsequent API call goes to the new plane — and
- * the shell remembers the choice for the next launch. The caller reloads the
- * window afterwards, because desktopInfo (instance, versions, mismatch banner) is
- * injected into the document and only changes on a fresh load.
- *
- * A browser has no shell to switch, so it throws rather than pretending.
- */
-export async function switchPlane(instance: string): Promise<DesktopInfo> {
-  const info = desktopInfo();
-  if (!info) throw new Error("this page is not running in the desktop app");
-  const res = await fetch(CONTROL_PATH + "plane", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      [CONTROL_TOKEN_HEADER]: info.controlToken,
-    },
-    body: JSON.stringify({ instance }),
-    cache: "no-store",
-  });
-  const body = (await res.json().catch(() => null)) as
-    DesktopInfo | { error?: string } | null;
-  if (body && typeof body === "object" && "error" in body && body.error)
-    throw new Error(body.error);
-  if (!res.ok) throw new Error(`desktop shell answered ${res.status}`);
-  return body as DesktopInfo;
-}
-
-/**
  * planeControl resolves the plane-control surface, or null in a browser / in a test.
  *
  * ORDER, and both arms matter:

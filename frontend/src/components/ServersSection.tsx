@@ -211,10 +211,10 @@ export function ServersSection() {
   /**
    * connect retargets THIS WINDOW at a server and reloads.
    *
-   * It uses the shell's own switchPlane — the same call the Plane section makes — and then reloads because
-   * desktopInfo (the injected instance name, both versions, the mismatch verdict) only changes on a fresh
-   * document. Nothing about the switch is re-implemented here; this surface just offers it where the
-   * operator looked for it.
+   * It uses the shell's own switch, the same one the Plane section uses, so there is ONE implementation of
+   * changing servers rather than two that can drift. The shell retargets the proxy, persists the choice and
+   * then replaces its own process: a reload could only rebuild what the document carries, which is why the
+   * window used to arrive half-switched with a top menu that had disappeared.
    *
    * A FAILED SWITCH STAYS PUT AND SAYS SO. Reloading over a failure would leave the window on the old
    * plane with no trace of what happened, which is indistinguishable from the button not working.

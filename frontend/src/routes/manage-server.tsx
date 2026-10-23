@@ -17,7 +17,7 @@ import {
   desktopInstance,
   isDesktop,
   planeControl,
-  switchPlane,
+  switchAndRestart,
   portOf,
   redirectTarget,
   type PlaneControl,
@@ -165,11 +165,13 @@ function PlaneSection() {
     setSwitching(true);
     setSwitchError(null);
     try {
-      await switchPlane(instance);
-      // The shell has already retargeted the proxy. Reload so desktopInfo (the
-      // instance name, both versions and the mismatch verdict) is re-read from the
-      // freshly injected document.
-      window.location.reload();
+      await switchAndRestart(instance);
+      // THE APP IS RESTARTING, and deliberately no reload. A reload rebuilt only what the document carries,
+      // so the window arrived half-switched — "the top menu disappears and you are left on the manage server
+      // screen. If you close the desktop app and re-open, THEN you are connected." A replacement process
+      // rebuilds the session store, the proxy target and the injected payload together. This is the SAME
+      // switch the Servers rows use, so there is one implementation of changing servers, not two.
+      setAnnouncement(`connected to ${instance} — restarting…`);
     } catch (err) {
       // Never silently leave the window on the old plane while the button says it
       // connected: say what failed and stay put.
