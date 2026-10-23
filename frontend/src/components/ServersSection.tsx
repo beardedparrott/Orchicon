@@ -15,6 +15,15 @@
  *             silently renders "no servers" over an unreachable shell is the worst of the four.
  *   denied    a browser (no shell to ask). Says why, rather than offering buttons that cannot work.
  *
+ * CHANGING WHICH SERVER THE APP TALKS TO HAPPENS HERE, ON THE ROW.
+ * The operator asked for exactly this: "there doesn't seem to be a way to switch to a different server in
+ * the manage server console". There WAS one — a `Connect to …` button — but it lived in a second card,
+ * below the list, and only appeared when more than one plane happened to be RUNNING at the time the page
+ * resolved its ports. So a person looking at their list of servers saw start/stop/restart/remove and
+ * nothing that said "use this one". The verb now sits on the row it belongs to, and it is not conditional
+ * on anything: a stopped server can be connected to, and the plane section will say plainly that nothing
+ * answers there.
+ *
  * THE DESTRUCTIVE ACTIONS ARE DELIBERATE. Remove asks which of two things you mean — keep the data, or
  * destroy it — and the destroying option names the secrets key, because deleting it does not delete secrets,
  * it makes them permanently undecryptable. A single "Remove" button that guessed would be the most
@@ -24,6 +33,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowRightLeft,
   Loader2,
   Play,
   Plus,
@@ -35,6 +45,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { desktopInfo, switchPlane } from "@/lib/desktop";
 import {
   SETUP_DONE,
   SETUP_FAILED,
@@ -65,8 +76,25 @@ export function ServersSection() {
   const [confirmRemove, setConfirmRemove] = useState<string>("");
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
+  // The server whose Connect is in flight. Switching retargets the shell and then reloads the window, so
+  // this is only ever visible for a moment — but a button that does nothing visible for a second invites
+  // a second click, and a half-switched app is worse than a slow one.
+  const [connecting, setConnecting] = useState("");
   // A generation counter so a refresh that lands after an action cannot overwrite newer state with older.
   const gen = useRef(0);
+  // WHAT THE PAGE LAST RENDERED, so an identical poll result does not re-render it.
+  //
+  // REPORTED: "the server screen was blinking like it was having a stroke". Part of that was console
+  // windows flashing over the app (see cmd/orchicon/quiet.go), but this page contributed: it polls every
+  // 1.5s while a setup is running and called setItems with a brand-new array every time, whether or not
+  // anything had changed. Every row re-rendered, the progress bar's width transition re-fired, and the
+  // indeterminate bar swung between pulsing-full-width and a determinate width as the phase percentage
+  // moved. A page that redraws identical content 40 times a minute looks broken even when it is right.
+  const lastSeen = useRef("");
+
+  // The instance this WINDOW is connected to — read once, because the shell injects it per document load
+  // and a switch reloads the document.
+  const current = useMemo(() => desktopInfo()?.instance ?? "", []);
 
   const refresh = useCallback(async () => {
     if (!api) return;
@@ -74,7 +102,14 @@ export function ServersSection() {
     try {
       const got = await api.List();
       if (mine !== gen.current) return; // a newer refresh already answered
-      setItems(got);
+      // NOTHING CHANGED, SO NEITHER DOES THE PAGE. A setup record only moves when something actually
+      // happens, so this is the common case during a long download — and re-rendering the same bytes is
+      // what made this screen flicker.
+      const seen = JSON.stringify(got);
+      if (seen !== lastSeen.current) {
+        lastSeen.current = seen;
+        setItems(got);
+      }
       setPhase("ready");
       setError("");
     } catch (e) {
@@ -128,6 +163,30 @@ export function ServersSection() {
     },
     [applyResult, refresh],
   );
+
+  /**
+   * connect retargets THIS WINDOW at a server and reloads.
+   *
+   * It uses the shell's own switchPlane — the same call the Plane section makes — and then reloads because
+   * desktopInfo (the injected instance name, both versions, the mismatch verdict) only changes on a fresh
+   * document. Nothing about the switch is re-implemented here; this surface just offers it where the
+   * operator looked for it.
+   *
+   * A FAILED SWITCH STAYS PUT AND SAYS SO. Reloading over a failure would leave the window on the old
+   * plane with no trace of what happened, which is indistinguishable from the button not working.
+   */
+  const connect = useCallback(async (name: string) => {
+    setConnecting(name);
+    setNotice("");
+    try {
+      await switchPlane(name);
+      // The shell has already retargeted the proxy; a reload re-reads the document the shell injects.
+      window.location.reload();
+    } catch (e) {
+      setConnecting("");
+      setNotice(`could not connect to ${name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, []);
 
   // ---------------------------------------------------------------- denied
   if (phase === "denied") {
@@ -206,6 +265,9 @@ export function ServersSection() {
             onStop={() => void run(s.name, "stop", () => api!.Stop(s.name))}
             onRestart={() => void run(s.name, "restart", () => api!.Restart(s.name))}
             onInstall={() => void run(s.name, "install", () => api!.Install(s.name))}
+            isCurrent={s.name === current}
+            connecting={connecting === s.name}
+            onConnect={() => void connect(s.name)}
             onRemove={(purge) => {
               setConfirmRemove("");
               void run(s.name, "uninstall", () =>
@@ -290,6 +352,9 @@ function ServerRow({
   onRestart,
   onInstall,
   onRemove,
+  isCurrent,
+  connecting,
+  onConnect,
 }: {
   server: ServerInstance;
   busy: boolean;
@@ -301,6 +366,11 @@ function ServerRow({
   onRestart: () => void;
   onInstall: () => void;
   onRemove: (purge: boolean) => void;
+  /** True when this is the server the app window is actually talking to. */
+  isCurrent: boolean;
+  /** True while this row's Connect is in flight. */
+  connecting: boolean;
+  onConnect: () => void;
 }) {
   const setup = server.setup;
   const active = isSetupActive(setup);
@@ -313,6 +383,17 @@ function ServerRow({
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-sm font-medium">{server.name}</span>
         <StateBadge server={server} />
+        {/* WHICH SERVER IS THIS WINDOW ON, answered from the row rather than deduced. Everything else on
+            this page is a fact about the machine; this one is a fact about the window, and the two are
+            different enough that the operator should never have to work it out. */}
+        {isCurrent && (
+          <span
+            className="rounded-full border px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+            data-testid={`server-current-${server.name}`}
+          >
+            this window
+          </span>
+        )}
         {server.controlPort > 0 && (
           <span className="font-mono text-[11px] text-muted-foreground">
             :{server.controlPort}
@@ -325,6 +406,22 @@ function ServerRow({
           />
         )}
         <div className="ml-auto flex flex-wrap items-center gap-1">
+          {/* THE SWITCH, ON THE ROW. Not conditional on health and not in another card: a stopped server
+              is still something you can connect the app to, and the plane section will then say honestly
+              that nothing answers. Hiding this when only one plane was up is what made it unfindable. */}
+          {!isCurrent && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onConnect}
+              disabled={busy || connecting}
+              title={`Point this window at ${server.name}`}
+              data-testid={`server-connect-${server.name}`}
+            >
+              <ArrowRightLeft aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+              {connecting ? "connecting…" : "Connect"}
+            </Button>
+          )}
           {!running && !active && (
             <Button variant="outline" size="sm" onClick={onStart} disabled={verbsDisabled}>
               <Play aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
@@ -407,16 +504,27 @@ function SetupLine({ setup }: { setup: SetupProgress }) {
           <span className="truncate">{setupLabel(setup)}</span>
           {setup.percent > 0 && <span className="ml-2 shrink-0">{setup.percent}%</span>}
         </div>
-        {/* An INDETERMINATE bar when the step does not report a percentage: install's phases are not all
-            measurable, and a bar frozen at 0% reads as stuck. */}
-        <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+        {/* AN INDETERMINATE BAR IS A DIFFERENT ELEMENT, NOT A DIFFERENT CLASSNAME ON THE SAME ONE.
+            That distinction is the whole fix. As one element, toggling between "a measurable 5%" and
+            "unmeasurable, pulse at 100%" changed the WIDTH while transition-[width] was active — so the bar
+            visibly SLAMMED between full and narrow every time a phase went from reporting a percentage to
+            not, which reads as a fault, not as progress. Install's phases are mixed: some report a percent,
+            some cannot. Two elements means no width transition is ever asked to animate a 95% jump. */}
+        {setup.percent > 0 ? (
+          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-sky-500 transition-[width] duration-500"
+              style={{ width: `${setup.percent}%` }}
+            />
+          </div>
+        ) : (
           <div
-            className={`h-full rounded-full bg-sky-500 transition-[width] ${
-              setup.percent > 0 ? "" : "animate-pulse"
-            }`}
-            style={{ width: `${setup.percent > 0 ? setup.percent : 100}%` }}
-          />
-        </div>
+            className="mt-1 h-1.5 overflow-hidden rounded-full bg-sky-500/30"
+            data-testid="server-setup-indeterminate"
+          >
+            <div className="h-full w-full animate-pulse rounded-full bg-sky-500" />
+          </div>
+        )}
       </div>
     );
   }

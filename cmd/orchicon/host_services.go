@@ -616,7 +616,7 @@ func (s *supervisor) initPostgres() error {
 		// portable way to observe it.
 		return err
 	}
-	cmd := exec.Command(s.resolved().Initdb,
+	cmd := quietCommand(s.resolved().Initdb,
 		"-D", dataDir, "-U", "orchicon", "--auth=trust", "-E", "UTF8")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -671,16 +671,18 @@ func (s *supervisor) postgresSocketDir() string {
 
 // start spawns a child and begins supervising it (log pipe + exit monitor).
 func (s *supervisor) start(ctx context.Context, p *managedProc) error {
-	cmd := exec.CommandContext(ctx, p.command, p.args...)
-	cmd.Env = append(os.Environ(), p.env...)
-	cmd.Stdout = s.logPipe(p.name)
-	cmd.Stderr = s.logPipe(p.name)
 	// NO CONSOLE WINDOW FOR A SUPERVISED CHILD. The supervisor runs detached (no console), so on
 	// Windows every console-subsystem child it spawns gets a BRAND NEW WINDOW — and reapRestart
 	// gives it another on every restart. That was reported as "a TON of blank command prompt
-	// windows … victoriametrics, otel, and nats … trying to start over and over". See
-	// procattr_windows.go; no-op on Unix.
-	setProcAttrNoWindow(cmd)
+	// windows … victoriametrics, otel, and nats … trying to start over and over".
+	//
+	// quietCommandContext rather than exec.CommandContext + setProcAttrNoWindow: this site used to
+	// be the ONLY one that remembered, which is why the same report came back. The attribute is now
+	// applied by the spawn helper for every helper tool the program runs — see quiet.go.
+	cmd := quietCommandContext(ctx, p.command, p.args...)
+	cmd.Env = append(os.Environ(), p.env...)
+	cmd.Stdout = s.logPipe(p.name)
+	cmd.Stderr = s.logPipe(p.name)
 
 	s.mu.Lock()
 	if _, exists := s.children[p.name]; exists {
@@ -982,7 +984,7 @@ func (s *supervisor) postgresProc() *managedProc {
 			// Create the orchicon database on first boot (idempotent).
 			// createdb exits 0 when created and errors on duplicate;
 			// "already exists" is fine.
-			cmd := exec.CommandContext(ctx, s.resolved().Createdb, "-U", "orchicon", "-h", "localhost", "-p", port, "orchicon")
+			cmd := quietCommandContext(ctx, s.resolved().Createdb, "-U", "orchicon", "-h", "localhost", "-p", port, "orchicon")
 			out, err := cmd.CombinedOutput()
 			if err != nil && !strings.Contains(string(out), "already exists") {
 				return fmt.Errorf("create orchicon db: %w: %s", err, strings.TrimSpace(string(out)))

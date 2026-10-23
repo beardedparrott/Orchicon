@@ -33,7 +33,6 @@ package main
 // reported as a permanent failure.
 
 import (
-	"os/exec"
 	"strconv"
 	"time"
 )
@@ -100,7 +99,10 @@ func servicesHealthTimeout(instance string, ports map[string]int, probeTimeout t
 		{
 			name: "postgres", required: true,
 			ready: func() bool {
-				return exec.Command(pgIsReadyBin(instance),
+				// quietCommand, NOT exec.Command: THIS IS THE LOOP THAT MADE THE SCREEN BLINK. The
+				// install and the start gate call this up to sixty times, once a second, from a
+				// process with no console — and every bare exec.Command there opened a window.
+				return quietCommand(pgIsReadyBin(instance),
 					"-h", "127.0.0.1", "-p", strconv.Itoa(pgPort), "-U", "orchicon").Run() == nil
 			},
 		},

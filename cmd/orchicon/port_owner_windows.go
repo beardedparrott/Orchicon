@@ -7,7 +7,6 @@ package main
 // the mapping from port to PID lives in the TCP table, and netstat -ano is its documented reader.
 
 import (
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -22,7 +21,7 @@ func lookupPortOwners(ports []int) ([]portOwner, error) {
 		want[p] = true
 	}
 	// -a all connections, -n numeric (no DNS, so it is fast and cannot hang), -o show the owning PID.
-	out, err := exec.Command("netstat", "-ano", "-p", "TCP").Output()
+	out, err := quietCommand("netstat", "-ano", "-p", "TCP").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +80,7 @@ func parseNetstatOwners(out string, want map[int]bool, nameOf func(int) string) 
 // processName is the executable's base name, or "" when it cannot be read (a process that exited
 // between netstat and this call, or one this user may not inspect).
 func processName(pid int) string {
-	out, err := exec.Command("tasklist", "/FI", "PID eq "+strconv.Itoa(pid), "/FO", "CSV", "/NH").Output()
+	out, err := quietCommand("tasklist", "/FI", "PID eq "+strconv.Itoa(pid), "/FO", "CSV", "/NH").Output()
 	if err != nil {
 		return ""
 	}

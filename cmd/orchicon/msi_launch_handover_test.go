@@ -9,6 +9,7 @@ package main
 // so the supported mechanism is a CHECKED checkbox on the Finish page. This asserts that shape.
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -26,60 +27,53 @@ import (
 // WixUI's FinishDlg already carries that control, bound to WIXUI_EXITDIALOGOPTIONALCHECKBOX, and HIDES it
 // unless WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT is set. So the fix is three properties' worth of wiring and no
 // dialog of ours at all — which is strictly fewer moving parts.
-func TestFinishPageLaunchesTheAppOnTheServersPage(t *testing.T) {
+func TestHandoverIsTheInstallsJobNotTheWizards(t *testing.T) {
 	wxs := wxsSource(t)
 
-	// THE EXIT PAGE IS OURS, and the route to it is a page this package PROVABLY has.
+	// THE HANDOVER IS IN THE INSTALL, AND THE WIZARD IS STOCK WIXUI.
 	//
-	// TWO WIRINGS FAILED BEFORE THIS ONE, and both are recorded in the source because the second looked
-	// correct:
+	// Three attempts to host a launch checkbox in the wizard failed, and the third explains why no amount of
+	// wiring there can work:
 	//
-	//   1. a custom `FinishDlg` — PRUNED at link, because this package's UI sequence never referenced it;
-	//   2. the documented WixUI hook (WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT / ...CHECKBOX) published on
-	//      `FinishDlg` — the BIND failed with
-	//          WIX0094: The identifier 'Dialog:FinishDlg' could not be found
-	//      i.e. there is no dialog of that name in this package to publish on. Which name the WixUI
-	//      extension gives its exit dialog is not something this file can verify: its definitions live in a
-	//      compressed managed resource in WixToolset.UI.wixext.dll, and `wix-check.sh` cannot reach the link.
+	//   1. a custom `FinishDlg`			pruned at link (nothing referenced it)
+	//   2. WIXUI_EXITDIALOGOPTIONALCHECKBOX*	published on `FinishDlg`; the bind said
+	//						"WIX0094: Dialog:FinishDlg could not be found"
+	//   3. a custom `OrchiconFinishDlg`		shipped and never reached — WixUI's own publish on
+	//						VerifyReadyDlg's Finish navigates to ITS ExitDialog first,
+	//						and a second NewDialog on the same control cannot outrank it
+	//						without a duplicate ControlEvent key
 	//
-	// SO THE GUARD DEMANDS THE SHAPE THAT CANNOT GUESS: an exit dialog this package DEFINES, and a publish
-	// FROM a page it already routes to.
-	if !strings.Contains(wxs, `Dialog Id="OrchiconFinishDlg"`) {
-		t.Error("there is no exit page of our own. Naming one of WixUI's dialogs is a guess this file " +
-			"cannot check, and the wrong guess is a LINK failure the compile-only checker cannot see")
+	// The operator then saw exactly that: "Completed the Orchicon Setup Wizard / Click the Finish button to
+	// exit the Setup Wizard" — WixUI's exit page, with no checkbox on it.
+	//
+	// So this asserts the NEW arrangement, which does not depend on WixUI's navigation at all:
+	// the install is told to open the app, and the wizard asks nothing.
+
+	ca := regexp.MustCompile(`<CustomAction Id="LaunchSetup"[\s\S]*?/>`).FindString(wxs)
+	if ca == "" {
+		t.Fatal("no LaunchSetup custom action")
 	}
-	if strings.Contains(wxs, `Dialog="FinishDlg"`) {
-		t.Error("a publish targets `FinishDlg`, whose existence in the linked package is exactly what the " +
-			"last bind failure disproved (WIX0094). Do not name WixUI's exit dialog.")
-	}
-	if !strings.Contains(wxs, `Publish Dialog="VerifyReadyDlg" Control="Finish" Event="NewDialog" Value="OrchiconFinishDlg" Order="2"`) {
-		t.Error("VerifyReadyDlg's Finish does not lead to our exit page. VerifyReadyDlg is a page this " +
-			"package already publishes TO, so the linker keeps it — which is what makes it a safe anchor.")
+	if !strings.Contains(ca, "-launch-desktop") {
+		t.Errorf("LaunchSetup does not pass the launch flag, so a wizard install never opens the app:\n  %s", ca)
 	}
 
-	// The checkbox exists, defaults to CHECKED (the handover is the point of the page), and is wired.
-	if !strings.Contains(wxs, `Property="LAUNCHAPP" CheckBoxValue="1"`) {
-		t.Error("the exit page has no launch checkbox")
-	}
-	if !strings.Contains(wxs, `Property Id="LAUNCHAPP" Value="1"`) {
-		t.Error("the launch checkbox does not default to CHECKED, so a clean install does not open the app")
-	}
-	if !strings.Contains(wxs, `Event="DoAction" Value="LaunchApp"`) {
-		t.Error("nothing runs the launch action, so ticking the box does nothing")
-	}
-	if !strings.Contains(wxs, `Condition="LAUNCHAPP=&quot;1&quot;"`) {
-		t.Error("the launch action is not conditioned on the checkbox, so it runs whether or not it is ticked")
-	}
-
-	// The action opens the SERVERS page, not the home page: on a fresh install the plane may not be serving
-	// yet, and Servers is the page that can show setup progress.
-	if !strings.Contains(wxs, `ExeCommand="--route /manage-server"`) {
-		t.Error("the launch action does not pass --route /manage-server, so a first run lands on a page " +
-			"that needs a plane which may not be up yet")
-	}
-	// AND IT MUST NOT WAIT: the wizard closes while the app opens.
-	if !strings.Contains(wxs, `Return="asyncNoWait"`) {
-		t.Error("the launch action waits for the GUI, which would hold the wizard open behind a window")
+	// THE WIZARD MUST NOT TRY TO HOST IT ANY MORE. A custom exit page is a page WixUI will not navigate to,
+	// and leaving one in the package is how the last three attempts looked wired while doing nothing.
+	// CODE ONLY: this function's own explanation NAMES the property it removed, so a raw scan would fail on
+	// the documentation of the fix. That is the fourth time in this file's history prose has defeated a
+	// check — strip it first, as the other MSI guards do.
+	code := stripXMLComments(wxs)
+	for _, gone := range []struct{ what, sub string }{
+		{"a custom exit page", `Dialog Id="OrchiconFinishDlg"`},
+		{"a publish on WixUI's exit dialog", `Dialog="FinishDlg"`},
+		{"the WixUI optional-checkbox properties", `WIXUI_EXITDIALOGOPTIONALCHECKBOX`},
+		{"a LAUNCHAPP property", `Property Id="LAUNCHAPP"`},
+	} {
+		if strings.Contains(code, gone.sub) {
+			t.Errorf("the wizard still carries %s (%s). WixUI owns the wizard's navigation — that is why "+
+				"the checkbox never appeared — and inert wiring beside working wiring is what made the last "+
+				"attempts look finished.", gone.what, gone.sub)
+		}
 	}
 }
 

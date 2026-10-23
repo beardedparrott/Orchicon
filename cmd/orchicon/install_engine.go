@@ -79,7 +79,9 @@ func engineCommand(args ...string) *exec.Cmd {
 	// timer is released by the deadline expiring at worst. The leak window is one timer per
 	// call, and calls are few and sequential.
 	_ = cancel
-	return exec.CommandContext(ctx, engineBinary(), args...)
+	// quietCommandContext, because the install makes MANY engine calls and runs with no console
+	// of its own (instancectl spawns it detached). Each bare one was another window.
+	return quietCommandContext(ctx, engineBinary(), args...)
 }
 
 // engineStatus is the availability decision the install MADE, cached for the summary. It is a
