@@ -230,3 +230,82 @@ func TestStatusExposesAStaleSetup(t *testing.T) {
 		t.Fatalf("a stale setup must be visible as stale through Status, got %+v", got.Setup)
 	}
 }
+
+// A DIRECTORY IS NOT AN INSTANCE.
+//
+// REPORTED: "on the TUI there is some weird desktop option showing up like it's a different server which is
+// wrong." It was real — `~/.local/share/orchicon-desktop` is where the DESKTOP APP keeps its WebView state
+// (hsts-storage.sqlite, localstorage, mediakeys, storage). Listing every `orchicon-*` directory made that a
+// server called "desktop": not startable, not stoppable, and wrong on a screen whose whole job is naming what
+// is running.
+//
+// The predicate is INSTANCE MARKERS, not the name, and any one is enough so a partially-created instance is
+// still visible.
+func TestADirectoryWithoutInstanceStateIsNotAServer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	// The desktop app's own directory, exactly as it appears on disk.
+	desktop := filepath.Join(home, ".local", "share", "orchicon-desktop")
+	if err := os.MkdirAll(desktop, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"hsts-storage.sqlite"} {
+		if err := os.WriteFile(filepath.Join(desktop, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range []string{"localstorage", "mediakeys", "storage"} {
+		if err := os.MkdirAll(filepath.Join(desktop, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A real instance beside it.
+	dev := filepath.Join(home, ".local", "share", "orchicon-dev")
+	if err := os.MkdirAll(filepath.Join(dev, "serve"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "dev" {
+		var names []string
+		for _, i := range got {
+			names = append(names, i.Name)
+		}
+		t.Fatalf("List() = %v, want exactly [dev] — the desktop app's WebView directory is NOT a server", names)
+	}
+}
+
+// A PARTIALLY-CREATED INSTANCE IS STILL AN INSTANCE: any ONE marker is enough, so an install caught mid-flight
+// does not vanish from the list the operator is watching.
+func TestOneMarkerIsEnoughToBeAnInstance(t *testing.T) {
+	for _, marker := range instanceMarkers {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		dir := filepath.Join(home, ".local", "share", "orchicon-half")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(dir, marker)
+		if marker == "ports.json" {
+			if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got, err := List()
+		if err != nil {
+			t.Fatalf("List with marker %q: %v", marker, err)
+		}
+		if len(got) != 1 || got[0].Name != "half" {
+			t.Errorf("a directory holding only %q was not listed as an instance", marker)
+		}
+	}
+}

@@ -159,12 +159,10 @@ func (s *Shell) Start() error {
 		//      plane route added later could shadow them;
 		//   2. plane paths (the prefix table in proxy.go);
 		//   3. the embedded SPA, which is the fallback everything else wants.
-		if s.handleControl(w, r) {
-			return
-		}
-		// The servers surface, same reason and same position: one of OUR endpoints, so it can never be
-		// shadowed by a plane route added later.
-		if s.handleServers(w, r) {
+		// ONE DISPATCHER, LONGEST PREFIX FIRST — see surfaces.go. Listing the two calls here in a chosen
+		// order is what produced the 404: controlPath is a PREFIX of serversPath, so the control surface
+		// claimed every servers request and answered 404 for a path it does not implement.
+		if s.handleOwnEndpoint(w, r) {
 			return
 		}
 		if isPlanePath(r.URL.Path) {
