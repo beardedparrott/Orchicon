@@ -1,5 +1,5 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { ServersSection } from "@/components/ServersSection";
 import { Button } from "@/components/ui/button";
@@ -121,8 +121,26 @@ const STATE_BADGE: Record<
 };
 
 function PlaneSection() {
-  const plane = planeControl();
-  const info = desktopInfo();
+  // MEMOISED, AND THAT IS THE WHOLE FIX FOR THE FLICKER.
+  //
+  // REPORTED: "On the server management page it flickers between these two screens over and over
+  // spastically during an install" — the two screens being "Connecting / port unknown / could not read the
+  // plane's status — Failed to fetch" and "Connected / port 8080 · host-resident / serving …".
+  //
+  // planeControl() BUILDS A NEW OBJECT ON EVERY CALL (lib/desktop.ts httpPlaneControl returns an object
+  // literal). Called during render and then placed in an effect's dependency array, it is a dependency that
+  // is a DIFFERENT VALUE EVERY RENDER — so the effect re-runs after every render, each run issues a status
+  // fetch, and the fetch's setState causes the next render. That is an unbounded request loop, and its two
+  // alternating outcomes are exactly the two screens above: a read that lands, then a read that arrives
+  // while the previous ones are still saturating the proxy and fails, for ever.
+  //
+  // It only LOOKS like an install-time bug because the Servers section is also polling then; the loop is
+  // always running, and it is loudest when the page re-renders for any other reason.
+  const plane = useMemo(() => planeControl(), []);
+  // Same reasoning, one step milder: desktopInfo() also builds a fresh object per call. It is only ever
+  // READ here (info?.instance, info?.planeURL), and those are strings, so it cannot drive an effect — but
+  // memoising it keeps this render's identity stable for the hooks below.
+  const info = useMemo(() => desktopInfo(), []);
   const toast = useToast();
   const [status, setStatus] = useState<StatusDTO | null>(null);
   // WHICH instance `status` describes. Without this a status read for the previous
