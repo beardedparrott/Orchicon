@@ -29,44 +29,60 @@ import (
 func TestFinishPageLaunchesTheAppOnTheServersPage(t *testing.T) {
 	wxs := wxsSource(t)
 
-	// 1. THE TEXT IS WHAT MAKES THE BOX APPEAR. Without it WixUI renders the page with no checkbox, which is
-	//    exactly the reported symptom.
-	if !strings.Contains(wxs, `Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT"`) {
-		t.Error("WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT is not set, so WixUI HIDES its optional checkbox — " +
-			"a Finish page with nothing to tick, and a Finish button that does nothing")
+	// THE EXIT PAGE IS OURS, and the route to it is a page this package PROVABLY has.
+	//
+	// TWO WIRINGS FAILED BEFORE THIS ONE, and both are recorded in the source because the second looked
+	// correct:
+	//
+	//   1. a custom `FinishDlg` — PRUNED at link, because this package's UI sequence never referenced it;
+	//   2. the documented WixUI hook (WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT / ...CHECKBOX) published on
+	//      `FinishDlg` — the BIND failed with
+	//          WIX0094: The identifier 'Dialog:FinishDlg' could not be found
+	//      i.e. there is no dialog of that name in this package to publish on. Which name the WixUI
+	//      extension gives its exit dialog is not something this file can verify: its definitions live in a
+	//      compressed managed resource in WixToolset.UI.wixext.dll, and `wix-check.sh` cannot reach the link.
+	//
+	// SO THE GUARD DEMANDS THE SHAPE THAT CANNOT GUESS: an exit dialog this package DEFINES, and a publish
+	// FROM a page it already routes to.
+	if !strings.Contains(wxs, `Dialog Id="OrchiconFinishDlg"`) {
+		t.Error("there is no exit page of our own. Naming one of WixUI's dialogs is a guess this file " +
+			"cannot check, and the wrong guess is a LINK failure the compile-only checker cannot see")
 	}
-	// 2. CHECKED BY DEFAULT: a clean install should end with the app open, not with a box nobody notices.
-	if !strings.Contains(wxs, `Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1"`) {
-		t.Error("the optional checkbox does not default to checked, so a clean install does not open the app")
+	if strings.Contains(wxs, `Dialog="FinishDlg"`) {
+		t.Error("a publish targets `FinishDlg`, whose existence in the linked package is exactly what the " +
+			"last bind failure disproved (WIX0094). Do not name WixUI's exit dialog.")
 	}
-	// 3. THE FINISH BUTTON RUNS THE ACTION, conditioned on the box — the documented WixUI pattern.
-	if !strings.Contains(wxs, `Dialog="FinishDlg" Control="Finish" Event="DoAction" Value="LaunchApp"`) {
-		t.Error("FinishDlg's Finish button does not run LaunchApp, so ticking the box does nothing")
-	}
-	if !strings.Contains(wxs, `Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1"`) {
-		t.Error("the launch is not conditioned on the checkbox, so it would fire even when unticked")
+	if !strings.Contains(wxs, `Publish Dialog="VerifyReadyDlg" Control="Finish" Event="NewDialog" Value="OrchiconFinishDlg" Order="2"`) {
+		t.Error("VerifyReadyDlg's Finish does not lead to our exit page. VerifyReadyDlg is a page this " +
+			"package already publishes TO, so the linker keeps it — which is what makes it a safe anchor.")
 	}
 
-	// 4. IT OPENS THE SERVERS PAGE, not the home page: on a fresh install the plane may not be serving yet,
-	//    and /manage-server is the page that can show setup progress.
-	if !strings.Contains(wxs, `ExeCommand="--route /manage-server"`) {
-		t.Error("the launch action does not pass --route /manage-server")
+	// The checkbox exists, defaults to CHECKED (the handover is the point of the page), and is wired.
+	if !strings.Contains(wxs, `Property="LAUNCHAPP" CheckBoxValue="1"`) {
+		t.Error("the exit page has no launch checkbox")
 	}
+	if !strings.Contains(wxs, `Property Id="LAUNCHAPP" Value="1"`) {
+		t.Error("the launch checkbox does not default to CHECKED, so a clean install does not open the app")
+	}
+	if !strings.Contains(wxs, `Event="DoAction" Value="LaunchApp"`) {
+		t.Error("nothing runs the launch action, so ticking the box does nothing")
+	}
+	if !strings.Contains(wxs, `Condition="LAUNCHAPP=&quot;1&quot;"`) {
+		t.Error("the launch action is not conditioned on the checkbox, so it runs whether or not it is ticked")
+	}
+
+	// The action opens the SERVERS page, not the home page: on a fresh install the plane may not be serving
+	// yet, and Servers is the page that can show setup progress.
+	if !strings.Contains(wxs, `ExeCommand="--route /manage-server"`) {
+		t.Error("the launch action does not pass --route /manage-server, so a first run lands on a page " +
+			"that needs a plane which may not be up yet")
+	}
+	// AND IT MUST NOT WAIT: the wizard closes while the app opens.
 	if !strings.Contains(wxs, `Return="asyncNoWait"`) {
 		t.Error("the launch action waits for the GUI, which would hold the wizard open behind a window")
 	}
-
-	// 5. AND WE DO NOT DEFINE A SECOND FinishDlg. Two dialogs of one name is not a merge with a defined
-	//    result, and it is what made the first attempt look wired while rendering nothing.
-	if strings.Contains(wxs, `Dialog Id="FinishDlg"`) {
-		t.Error("the package defines its own FinishDlg again. WixUI already supplies one; defining a " +
-			"second with the same Id silently produced a page with both control sets and no visible " +
-			"checkbox. Use WIXUI_EXITDIALOGOPTIONALCHECKBOX* instead.")
-	}
 }
 
-// SETUP STILL STARTS DETACHED, which is what makes the checkbox safe to offer: setup is already running by
-// the time Finish is reachable.
 func TestSetupStillStartsBeforeTheWizardCloses(t *testing.T) {
 	wxs := wxsSource(t)
 	if !strings.Contains(wxs, `Custom Action="LaunchSetup" After="InstallFinalize"`) {

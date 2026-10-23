@@ -29,11 +29,16 @@ import (
 
 // A SPECIFIC PORT STILL FAILS IMMEDIATELY — retrying it would only delay the answer the operator needs.
 func TestSpecificPortIsNotRetried(t *testing.T) {
-	// Hold a port, then ask for the same one twice.
-	held, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Skipf("cannot hold a port on this host: %v", err)
-	}
+	// Hold a port through the SHARED helper, not a raw net.Listen.
+	//
+	// A raw port-0 bind here trips TestEphemeralBindsGoThroughTheHelper — correctly: this package must not
+	// assume the host has an ephemeral port to give at any given instant. There are now TWO layers for that,
+	// and they are complementary rather than duplicated:
+	//
+	//   listenRetryingEphemeral (production)  the PLANE retries a port-0 bind, so a transient exhaustion is
+	//                                         not a failed boot
+	//   mustHoldLoopback       (tests)        a TEST retries the same way, so it is not a failed build
+	held := mustHoldLoopback(t)
 	defer func() { _ = held.Close() }()
 	addr := held.Addr().String()
 

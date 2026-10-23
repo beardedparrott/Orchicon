@@ -94,23 +94,32 @@
          command line for an unattended nuke:
            msiexec /x Orchicon.msi /qn PURGEDATA=1 -->
     <Property Id="PURGEDATA" Value="0" Secure="yes" />
-    <!-- THE HANDOVER USES WIXUI'S OWN CHECKBOX (design of record, D7).
-         WixUI's FinishDlg already carries a "FinishOptionalCheckBox" control bound to
-         WIXUI_EXITDIALOGOPTIONALCHECKBOX, and it is HIDDEN unless
-         WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT is set — which is exactly what the operator saw: a Finish page
-         with no checkbox, and a Finish button that did nothing.
+    <!-- CHECKED BY DEFAULT: the handover is the point of the exit page, and a box nobody notices is the
+         same as no box. Public so the value survives into the execute sequence, and settable on the command
+         line for an unattended install that wants the app opened (or one that does not). -->
+    <Property Id="LAUNCHAPP" Value="1" Secure="yes" />
+    <!-- THE HANDOVER IS OUR OWN EXIT PAGE, and the route to it is a page this package PROVABLY has.
+         Design of record, D7: one visible click, not a silent spawn.
 
-         IT WAS NOT OBVIOUS, AND THE EVIDENCE IS WORTH KEEPING. This file used to define its OWN FinishDlg
-         with a checkbox of its own. A dialog from an extension is keyed by Id, so defining "FinishDlg" here
-         did not replace WixUI's — the built package was found to contain BOTH control sets (our LaunchCheck
-         and SetupNote, AND WixUI's OptionalCheckBox) while no checkbox appeared. Two dialogs of one name is
-         not a merge with a defined result, and the supported hook needs no dialog at all, so ours is gone.
+         TWO EARLIER ATTEMPTS FAILED, and both are worth recording because the second looked right:
 
-         SETTING THE TEXT IS WHAT MAKES THE BOX APPEAR. Setting the box to 1 makes it CHECKED, so a clean
-         install ends with Orchicon open — the operator approved the visible click rather than a silent
-         spawn, and this is the same visible click with one less moving part. -->
-    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch Orchicon now" />
-    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" Secure="yes" />
+         1. A custom `FinishDlg` was PRUNED at link. WiX drops a dialog no reachable path leads to, and this
+            package's UI sequence never referenced it.
+
+         2. Setting WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT / ...CHECKBOX (the documented WixUI hook) does not
+            help if the dialog those properties drive is not the one the package links. The bind failed with:
+
+                error WIX0094: The identifier 'Dialog:FinishDlg' could not be found.
+
+            which is the whole answer: there is no `FinishDlg` in this package to publish on. The exit
+            dialog's NAME belongs to the WixUI extension and is not something this file can verify — its
+            dialog definitions live in a compressed managed resource inside WixToolset.UI.wixext.dll, which
+            `strings` cannot read and `scripts/dev/wix-check.sh` cannot compile-check.
+
+         SO THIS FILE NO LONGER NAMES IT. `OrchiconFinishDlg` is OURS: a name no extension can collide with,
+         reached by an explicit publish from `VerifyReadyDlg` — a page this package already publishes to and
+         which the linker therefore keeps. That removes the guess entirely rather than betting on a
+         documented name resolving to a dialog that exists. -->
 
     <!-- THE INSTANCE THIS MSI SET UP LAST, READ BACK ON A LATER RUN.
          Written at install (see InstalledInstanceRecord) and searched here, so a SECOND run can
@@ -373,11 +382,34 @@
                   Return="asyncNoWait"
                   ExeCommand="--route /manage-server" />
 
-    <!-- THE FINISH BUTTON RUNS IT, conditioned on the box. This is the documented WixUI pattern: the extension
-         renders the control and its text, and the package supplies the action to run when it is ticked. -->
     <UI>
-      <Publish Dialog="FinishDlg" Control="Finish" Event="DoAction" Value="LaunchApp" Order="1"
-               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1" />
+      <!-- VerifyReadyDlg's Finish LEADS TO OUR PAGE. Order="2" wins over WixUI's own publish on the same
+           control (the same override this file already uses for WelcomeDlg's Next), and using OUR dialog id
+           means the reference resolves against something this package defines. -->
+      <Publish Dialog="VerifyReadyDlg" Control="Finish" Event="NewDialog" Value="OrchiconFinishDlg" Order="2" />
+
+      <Dialog Id="OrchiconFinishDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}Orchicon is installed" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="Setting it up continues in the background." />
+        <Control Id="SetupNote" Type="Text" X="25" Y="70" Width="320" Height="70" Transparent="yes" NoPrefix="yes"
+                 Text="Orchicon is now setting up its server: a database, an event bus and the telemetry backends, then the control plane. This takes a few minutes the first time. The app shows the progress and tells you when it is ready." />
+        <Control Id="LaunchCheck" Type="CheckBox" X="25" Y="170" Width="320" Height="17"
+                 Property="LAUNCHAPP" CheckBoxValue="1" Text="Launch Orchicon now" />
+        <Control Id="Finish" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUIFinish)">
+          <!-- THE ACTION RUNS FROM THE BUTTON THAT CLOSES THE WIZARD, conditioned on the box. Order="1" so
+               it fires before EndDialog tears the UI down. -->
+          <Publish Event="DoAction" Value="LaunchApp" Order="1" Condition="LAUNCHAPP=&quot;1&quot;" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
     </UI>
 
     <InstallExecuteSequence>
