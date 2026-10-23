@@ -7,13 +7,10 @@ package main
 // gives them the option to also destroy data and do a nuke options with the wizard."
 //
 // THERE WAS NOTHING TO DO THAT. The MSI removes its binaries and, because its setup action is conditioned
-// on NOT REMOVE, it never stops the services it started:
-//
-//	<Custom Action="LaunchSetup" After="InstallFinalize" Condition="NOT REMOVE AND SKIPSETUP <> 1" />
-//
-// So uninstalling left a live services supervisor, a live plane, postgres and nats holding their ports,
-// and a data directory — on a machine where the product was "gone". The next install then met an orphan
-// holding 5432 (see install.go's pre-clear), which is the reported "uninstall then reinstall does not work".
+// on NOT REMOVE, it never stops the services it started. So uninstalling left a live services supervisor,
+// a live plane, postgres and nats holding their ports, and a data directory — on a machine where the
+// product was "gone". The next install then met an orphan holding 5432, which was the reported "uninstall
+// then reinstall does not work".
 //
 // WHAT IS REMOVED, AND WHAT IS DELIBERATELY KEPT, is the whole design of this file:
 //
@@ -37,6 +34,12 @@ package main
 //	PURGED with --purge — the whole instance directory, including the cluster. This is the wizard's
 //	"also destroy my data" option, and it is the ONLY path that removes the KEK or the cluster. It is
 //	irreversible and it says so.
+//
+// ONE INSTANCE OR ALL OF THEM. A machine can hold several instances (dev, prod, test — each with its own
+// data directory, its own ports and its own copy of the service binaries). `--all` removes every one, and
+// that is what the MSI's uninstall uses: removing orchicon.exe while an instance's services still run
+// leaves them running with NO CLI TO STOP THEM, which is worse than not uninstalling at all. Per-instance
+// granularity stays available and is the right tool for it — `orchicon uninstall dev` leaves prod alone.
 
 import (
 	"fmt"
@@ -44,6 +47,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // uninstallInfraDirs are removed on every uninstall: re-downloadable or regenerated on boot.
@@ -61,29 +65,89 @@ var uninstallDataDirs = []string{
 	"postgres", "blobs", "secrets", "backups",
 }
 
-// runUninstall implements `orchicon uninstall [instance] [--purge]`.
-//
-// IT STOPS BEFORE IT DELETES, always, and refuses to delete anything while a process of this instance is
-// still alive — removing a running postgres's data directory is corruption, not uninstallation.
+// runUninstall implements `orchicon uninstall [instance] [--purge] [--all]`.
 func runUninstall(args []string, out io.Writer) error {
-	purge := false
+	purge, all := false, false
 	var rest []string
 	for _, a := range args {
 		switch a {
 		case "--purge", "-purge", "--destroy-data", "--nuke":
 			purge = true
+		case "--all", "-all":
+			all = true
 		default:
 			rest = append(rest, a)
 		}
+	}
+	if all {
+		return runUninstallAll(purge, out)
 	}
 	instance, err := parseInstanceTarget(rest, env("ORCHICON_INSTANCE", "dev"))
 	if err != nil {
 		return err
 	}
+	return uninstallOne(instance, purge, out)
+}
 
+// installedInstances lists every instance that has a state directory on this machine, in a stable order.
+//
+// THE DIRECTORY IS THE RECORD. An instance exists because its state directory exists — the same
+// definition `instanceExists` uses, and the only one that also covers an instance created by a hand-run
+// `orchicon install --instance mine`, which the canonical instanceOrder table would not name.
+func installedInstances() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(filepath.Join(home, ".local", "share"))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "orchicon-") {
+			continue
+		}
+		name := strings.TrimPrefix(e.Name(), "orchicon-")
+		if name == "" {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// runUninstallAll removes every instance on the machine.
+//
+// IT REPORTS PER INSTANCE AND KEEPS GOING. An uninstall that stops at the first problem leaves the REST of
+// the machine in exactly the state this verb exists to clear — a stopped binary with services still
+// running — so one bad instance must not abort the others.
+func runUninstallAll(purge bool, out io.Writer) error {
+	instances := installedInstances()
+	if len(instances) == 0 {
+		fmt.Fprintln(out, "no Orchicon instance is installed on this machine")
+		return nil
+	}
+	fmt.Fprintf(out, "this machine has %d Orchicon instance(s): %s\n", len(instances), strings.Join(instances, ", "))
+	var firstErr error
+	for _, inst := range instances {
+		fmt.Fprintf(out, "\n--- %s ---\n", inst)
+		if err := uninstallOne(inst, purge, out); err != nil {
+			fmt.Fprintf(out, "could not remove %q: %v\n", inst, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+// uninstallOne removes ONE instance: stop it, remove its infrastructure, then keep or destroy its data.
+func uninstallOne(instance string, purge bool, out io.Writer) error {
 	dataDir := hostDataDirFor(instance)
 	if !instanceExists(instance) {
-		fmt.Fprintf(out, "nothing is installed for instance %q (no data directory at %s)\\n", instance, dataDir)
+		fmt.Fprintf(out, "nothing is installed for instance %q (no data directory at %s)\n", instance, dataDir)
 		return nil
 	}
 
@@ -91,10 +155,10 @@ func runUninstall(args []string, out io.Writer) error {
 	//    must not race a live postgres or supervisor, and an uninstall that leaves services running is the
 	//    reported defect this whole file exists to fix.
 	ports, _ := servicesPortsFor(instance)
-	fmt.Fprintf(out, "stopping instance %q\\n", instance)
+	fmt.Fprintf(out, "stopping instance %q\n", instance)
 	if err := stopInstanceCompletely(instance, ports, out); err != nil {
-		return fmt.Errorf("could not stop instance %q, so nothing was removed: %w\\n"+
-			"  Uninstalling a RUNNING instance would delete a live database's files. Stop it first:\\n"+
+		return fmt.Errorf("could not stop instance %q, so nothing was removed: %w\n"+
+			"  Uninstalling a RUNNING instance would delete a live database's files. Stop it first:\n"+
 			"    %s stop %s", instance, err, filepath.Base(os.Args[0]), instance)
 	}
 
@@ -111,7 +175,7 @@ func runUninstall(args []string, out io.Writer) error {
 			return fmt.Errorf("remove %s: %w", p, err)
 		}
 	}
-	fmt.Fprintf(out, "removed the services, their binaries and this instance's generated config\\n")
+	fmt.Fprintf(out, "removed the services, their binaries and this instance's generated config\n")
 
 	// 3. THE DATA: kept, or destroyed on request.
 	if purge {
@@ -120,20 +184,20 @@ func runUninstall(args []string, out io.Writer) error {
 		if err := os.RemoveAll(dataDir); err != nil {
 			return fmt.Errorf("purge %s: %w", dataDir, err)
 		}
-		fmt.Fprintf(out, "DESTROYED all data for instance %q, including the database cluster and the\\n"+
-			"secrets key (%s)\\n", instance, dataDir)
+		fmt.Fprintf(out, "DESTROYED all data for instance %q, including the database cluster and the\n"+
+			"secrets key (%s)\n", instance, dataDir)
 		return nil
 	}
 	kept := append([]string{}, uninstallDataDirs...)
 	sort.Strings(kept)
-	fmt.Fprintf(out, "kept your data in %s\\n", dataDir)
+	fmt.Fprintf(out, "kept your data in %s\n", dataDir)
 	for _, d := range kept {
 		if _, err := os.Stat(filepath.Join(dataDir, d)); err == nil {
-			fmt.Fprintf(out, "  %s/\\n", d)
+			fmt.Fprintf(out, "  %s/\n", d)
 		}
 	}
-	fmt.Fprintf(out, "  the database cluster is intact — reinstalling this instance reuses it\\n")
-	fmt.Fprintf(out, "  to destroy it too (IRREVERSIBLE):  %s uninstall %s --purge\\n",
+	fmt.Fprintf(out, "  the database cluster is intact — reinstalling this instance reuses it\n")
+	fmt.Fprintf(out, "  to destroy it too (IRREVERSIBLE):  %s uninstall %s --purge\n",
 		filepath.Base(os.Args[0]), instance)
 	return nil
 }

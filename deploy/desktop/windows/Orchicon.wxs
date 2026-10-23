@@ -278,19 +278,39 @@
     <!-- TWO ACTIONS, ONE PER ANSWER, because MSI expands properties textually:  [PURGEDATA] would
          interpolate a bare "1" as a positional argument, which the parser would then read as an
          instance name. Two command lines with two conditions is unambiguous, and it keeps the flag
-         that destroys data visible in the source rather than inferred from a property value. -->
+         that destroys data visible in the source rather than inferred from a property value.
+
+         ALL INSTANCES, NOT [INSTANCE], AND THAT IS A CORRECTNESS FIX.
+
+         It used to pass the instance the wizard chose. But MSI properties are SESSION-SCOPED: the
+         value set in the install session does not exist in the uninstall session, so on uninstall
+         [INSTANCE] fell back to its default ("dev") from the Property table. An operator who chose
+         prod would have had `orchicon uninstall —instance dev` run instead — removing the wrong
+         instance, or nothing at all, while reporting success.
+
+         —all is also the right SCOPE rather than a papering-over. A machine can hold several
+         instances (dev, prod, test — each with its own data dir, ports and copy of the service
+         binaries), and more can be created by hand with `orchicon install —instance <name>`. The
+         uninstall verb ENUMERATES the instance directories rather than trusting a remembered
+         property, so it reaches instances this MSI never created. And it must, because this action
+         is about to delete orchicon.exe: an instance whose services are still running after that
+         has no CLI to stop them, which is worse than not uninstalling at all.
+
+         Per-instance granularity is the CLI's job, and it already exists:
+             orchicon uninstall dev              remove one instance, keep its data
+             orchicon uninstall dev —purge      remove one instance and its data -->
     <CustomAction Id="LaunchUninstall"
                   FileRef="OrchiconExeFile"
                   Execute="immediate"
                   Impersonate="yes"
                   Return="ignore"
-                  ExeCommand="uninstall --instance [INSTANCE]" />
+                  ExeCommand="uninstall --all" />
     <CustomAction Id="LaunchUninstallPurge"
                   FileRef="OrchiconExeFile"
                   Execute="immediate"
                   Impersonate="yes"
                   Return="ignore"
-                  ExeCommand="uninstall --instance [INSTANCE] --purge" />
+                  ExeCommand="uninstall --all --purge" />
 
     <InstallExecuteSequence>
       <!-- REMOVE ONLY: the mirror of LaunchSetup's NOT REMOVE. -->
@@ -328,6 +348,63 @@
          THE CONDITION IS AN ATTRIBUTE IN WIX v4. WiX v3 took it as the element's text; v4
          rejects that with "WIX0400: The Publish element contains illegal inner text". -->
     <UI>
+      <!-- ===================== THE UNINSTALL'S DATA QUESTION =====================
+           THE OPERATOR: "We should have options in the uninstall of the MSI to allow people to remove all
+           data if they want or just infrastructure."
+
+           This is that page. It is reached ONLY on a full remove (REMOVE="ALL"), so an install, a repair
+           and a "change" never see it; and it is published at Order="2" so it wins over WixUI's own
+           MaintenanceWelcomeDlg -> MaintenanceTypeDlg hop, which a plain ARP uninstall has no use for
+           (there is nothing to modify: the operator already chose Remove).
+
+           THE DEFAULT IS KEEP, deliberately. An uninstall removes the SOFTWARE; the database cluster,
+           the attachments and the secrets key are the operator's, they are what a reinstall reuses, and
+           destroying them by default would make a routine "remove and reinstall" catastrophic. The
+           destructive choice is one explicit radio click away, and it says what it destroys.
+
+           IT WRITES PURGEDATA, which the two uninstall actions read (see LaunchUninstall /
+           LaunchUninstallPurge). A RadioButtonGroup rather than a bare checkbox because two exclusive
+           options are what this is, and a radio makes the safe one visibly selected. -->
+      <Dialog Id="RemoveOptionsDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}Remove [ProductName]" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="Everything Orchicon is running will be stopped first." />
+
+        <Control Id="DataRadio" Type="RadioButtonGroup" X="20" Y="56" Width="330" Height="80"
+                 Property="PURGEDATA">
+          <RadioButtonGroup Property="PURGEDATA">
+            <RadioButton Value="0" X="0" Y="0" Width="330" Height="18" Text="Keep my data (recommended)" />
+            <RadioButton Value="1" X="0" Y="22" Width="330" Height="18" Text="Also destroy my data - CANNOT be undone" />
+          </RadioButtonGroup>
+        </Control>
+
+        <!-- ONE NOTE, NOT TWO CONDITIONAL ONES. A control whose visibility follows a property needs
+             Publish/Hide events in WiX v4+ (a Condition CHILD element is rejected outright), and an
+             installer is the last place to add conditional UI state for a cosmetic gain: the two
+             outcomes are short enough to state together, and a wizard page that always renders is a
+             wizard page that cannot render wrong. -->
+        <Control Id="DataNote" Type="Text" X="36" Y="96" Width="316" Height="66" Transparent="yes" NoPrefix="yes"
+                 Text="Keep (recommended): leaves the database (projects, workers, conversations, executions), your attachments, and the key that decrypts your secrets, so a reinstall reuses them.  Destroy: deletes the database, your attachments AND that key, so the secrets can never be decrypted again. There is no undo." />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <!-- REMOVE="ALL" ONLY. A "change" (repair, or the maintenance type page) must keep WixUI's own
+           flow, so this publish is conditioned rather than unconditional. -->
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="RemoveOptionsDlg" Order="2" Condition="REMOVE=&quot;ALL&quot;" />
+
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2" />
       <Publish Dialog="InstanceDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="2" />
       <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="InstanceDlg" Order="2" Condition="LicenseAccepted = &quot;1&quot;" />

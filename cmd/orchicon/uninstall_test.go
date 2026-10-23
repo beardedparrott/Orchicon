@@ -138,7 +138,7 @@ func TestUninstallRefusesWhenItCannotStop(t *testing.T) {
 // THE MSI MUST ACTUALLY CALL IT ON UNINSTALL.
 func TestMSIRunsUninstallOnRemove(t *testing.T) {
 	wxs := readGoFileFor(t, filepath.Join("..", "..", "deploy", "desktop", "windows", "Orchicon.wxs"))
-	if !strings.Contains(wxs, `ExeCommand="uninstall --instance [INSTANCE]"`) {
+	if !strings.Contains(wxs, `ExeCommand="uninstall --all"`) {
 		t.Error("the MSI has no uninstall action: uninstalling removes the binaries and leaves the " +
 			"services, the plane and the instance state running — the reported defect")
 	}
@@ -146,7 +146,7 @@ func TestMSIRunsUninstallOnRemove(t *testing.T) {
 	if !strings.Contains(wxs, `Condition="REMOVE=&quot;ALL&quot;`) {
 		t.Error("the uninstall action is not conditioned on REMOVE=&quot;ALL&quot;")
 	}
-	if !strings.Contains(wxs, `ExeCommand="uninstall --instance [INSTANCE] --purge"`) {
+	if !strings.Contains(wxs, `ExeCommand="uninstall --all --purge"`) {
 		t.Error("there is no purge variant, so the wizard has no way to destroy the data")
 	}
 	if !strings.Contains(wxs, `Property Id="PURGEDATA"`) {
@@ -195,5 +195,105 @@ func TestInstallClearsItsPreviousRunBeforeResolvingPorts(t *testing.T) {
 	if !strings.Contains(src, "stopInstanceCompletely(instance, pre, os.Stdout)") {
 		t.Error("the pre-clear does not use stopInstanceCompletely, so a live supervisor's children are " +
 			"killed under it and restarted with backoff")
+	}
+}
+
+// --ALL MUST REACH AN INSTANCE THE MSI DID NOT CREATE.
+//
+// This is the operator's multi-instance question: "if someone has a prod instance and a dev instance and
+// they run the installer, can they remove just dev and just the postgres, etc. for dev and vice versa?"
+//
+// The MSI's uninstall used to pass [INSTANCE] — the instance the WIZARD chose. But MSI properties are
+// SESSION-SCOPED, so on uninstall that fell back to the property's default ("dev"): an operator who chose
+// prod had `uninstall --instance dev` run instead, removing the wrong instance or nothing while reporting
+// success. Worse, an instance created by hand (`orchicon install --instance mine`) was unreachable.
+//
+// --all ENUMERATES the instance directories, so it reaches every instance that actually exists. It has to,
+// because the action is about to delete orchicon.exe: an instance whose services are still running after
+// that has no CLI to stop them.
+func TestUninstallAllReachesEveryInstanceOnTheMachine(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("USERPROFILE", root)
+	for _, env := range []string{
+		"ORCHICON_POSTGRES_PORT", "ORCHICON_NATS_PORT", "ORCHICON_NATS_MONITOR_PORT",
+		"ORCHICON_TEMPO_PORT", "ORCHICON_LOKI_PORT", "ORCHICON_VM_PORT",
+		"ORCHICON_OTLP_GRPC_PORT", "ORCHICON_OTLP_HTTP_PORT", "ORCHICON_OTEL_HEALTH_PORT",
+		"ORCHICON_TEMPO_OTLP_GRPC_PORT", "ORCHICON_TEMPO_OTLP_HTTP_PORT", "ORCHICON_CONTROL_PORT",
+	} {
+		t.Setenv(env, strconv.Itoa(closedPort(t)))
+	}
+
+	// Three instances: two the table knows, one created by hand (which the table would NOT name).
+	share := filepath.Join(root, ".local", "share")
+	for _, inst := range []string{"dev", "prod", "mine"} {
+		dir := filepath.Join(share, "orchicon-"+inst)
+		for _, d := range []string{"bin", "config", "postgres", "blobs", "secrets"} {
+			if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// A directory that LOOKS like an instance but is not one must be left alone.
+	if err := os.MkdirAll(filepath.Join(share, "orchicon-not-an-instance-name"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := installedInstances(); len(got) != 4 {
+		t.Fatalf("installedInstances() = %v, want the four orchicon-* directories", got)
+	}
+
+	var out bytes.Buffer
+	if err := runUninstall([]string{"--all"}, &out); err != nil {
+		t.Fatalf("uninstall --all: %v\n%s", err, out.String())
+	}
+	for _, inst := range []string{"dev", "prod", "mine"} {
+		dir := filepath.Join(share, "orchicon-"+inst)
+		if _, err := os.Stat(filepath.Join(dir, "bin")); !os.IsNotExist(err) {
+			t.Errorf("%s/bin survived --all — an instance whose services are still on disk after the CLI "+
+				"is deleted has no manager left", inst)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "postgres")); err != nil {
+			t.Errorf("%s/postgres was removed by a plain --all; the data must be kept", inst)
+		}
+	}
+	if !strings.Contains(out.String(), "this machine has 3 Orchicon instance(s)") &&
+		!strings.Contains(out.String(), "instance(s)") {
+		t.Errorf("--all did not report which instances it found:\n%s", out.String())
+	}
+}
+
+// THE MSI MUST USE --all, AND MUST HAVE A DATA CHOICE ON THE REMOVE PATH.
+func TestMSIUninstallCoversAllInstancesAndAsksAboutData(t *testing.T) {
+	wxs := readGoFileFor(t, filepath.Join("..", "..", "deploy", "desktop", "windows", "Orchicon.wxs"))
+
+	if strings.Contains(wxs, `ExeCommand="uninstall --instance [INSTANCE]"`) {
+		t.Error("the MSI's uninstall still passes [INSTANCE]. MSI properties are session-scoped, so that " +
+			"falls back to the default 'dev' on uninstall — an operator who chose prod removes the wrong " +
+			"instance, or nothing.")
+	}
+	if !strings.Contains(wxs, `ExeCommand="uninstall --all"`) {
+		t.Error("the MSI's uninstall does not use --all, so instances it did not create keep running with " +
+			"no CLI to stop them once orchicon.exe is gone")
+	}
+	if !strings.Contains(wxs, `ExeCommand="uninstall --all --purge"`) {
+		t.Error("there is no purge variant, so the wizard cannot destroy the data")
+	}
+	// The question itself.
+	if !strings.Contains(wxs, `Dialog Id="RemoveOptionsDlg"`) {
+		t.Error("there is no uninstall options page, so the operator has no way to choose between keeping " +
+			"and destroying their data — the PURGEDATA property exists but nothing sets it")
+	}
+	if !strings.Contains(wxs, `Property="PURGEDATA"`) || !strings.Contains(wxs, `Value="1" X="0" Y="22"`) {
+		t.Error("RemoveOptionsDlg does not offer the destroy-data choice wired to PURGEDATA")
+	}
+	// And it must be REACHABLE, on the remove path only.
+	if !strings.Contains(wxs, `Value="RemoveOptionsDlg" Order="2" Condition="REMOVE=&quot;ALL&quot;"`) {
+		t.Error("the uninstall options page is defined but nothing navigates to it, or it is reachable on " +
+			"a non-remove path (a wizard page no path reaches is the silent seam-nothing-calls failure)")
+	}
+	// KEEP must be the default: an uninstall must not destroy data unless asked.
+	if !strings.Contains(wxs, `Property Id="PURGEDATA" Value="0"`) {
+		t.Error("PURGEDATA does not default to 0, so an uninstall could destroy data by default")
 	}
 }
