@@ -510,9 +510,18 @@
            MaintenanceTypeDlg. -->
       <!-- A property-setting Publish OMITS Event="" in WiX v4+ (Event and Property are exclusive;
            the old SetProperty spelling is rejected with WIX0035). -->
-      <!-- REPAIR RE-CONVERGES THE SAME SERVER. It used to route through the instance page; with that page
-           gone there is nothing to ask, so a repair simply re-runs the idempotent setup for `dev`. -->
-      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" Order="2" />
+      <!-- REPAIR NEEDS NO PUBLISH OF OURS ANY MORE, and adding one was a real mistake worth recording: WixUI
+           already routes MaintenanceTypeDlg's Repair button to VerifyReadyDlg. Replacing the old
+           "-> InstanceDlg" publish with an equivalent "-> VerifyReadyDlg" DUPLICATED that entry and WiX
+           rejected the whole package at LINK time:
+
+               WIX0130: The primary key
+               'MaintenanceTypeDlg/RepairButton/NewDialog/VerifyReadyDlg/1' is duplicated in table 'ControlEvent'
+
+           scripts/dev/wix-check.sh did not catch it, because that error is raised while BINDING, not while
+           compiling — the check states that limit itself, and CI's windows-installer job is what caught it.
+           So a repair re-converges `dev` through WixUI's own flow: the instance page is gone, there is
+           nothing left to ask, and the setup behind it is idempotent. -->
 
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="LicenseAgreementDlg" Order="1" />
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="2" />
