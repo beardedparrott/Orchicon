@@ -244,21 +244,28 @@ function httpPlaneControl(token: string): PlaneControl {
 }
 
 /**
- * switchPlane points THIS WINDOW at another instance's plane and returns the
- * shell's refreshed Info.
+ * switchAndRestart points the app at another instance AND restarts it.
  *
- * Distinct from choosing which instance to INSPECT (the Manage Server picker):
- * this retargets the app — every subsequent API call goes to the new plane — and
- * the shell remembers the choice for the next launch. The caller reloads the
- * window afterwards, because desktopInfo (instance, versions, mismatch banner) is
- * injected into the document and only changes on a fresh load.
+ * WHY A RESTART AND NOT A RELOAD. The operator: "When you connect to another
+ * instance, the top menu disappears and you are left on the manage server screen.
+ * If you close the desktop app and re-open, THEN you are connected to the other
+ * instance. We may want to build in an ability to just auto restart the desktop
+ * app once someone hits connect."
  *
- * A browser has no shell to switch, so it throws rather than pretending.
+ * A window is initialised from the injected payload, the proxy target, the version
+ * tags and a session store bound to the old plane's DATABASE. A reload rebuilds
+ * only what the document carries, which is why the app arrives half-switched — a
+ * different server is a different database with different users. `switchPlane`
+ * retargets the proxy and persists the choice; this asks the shell to replace its
+ * own process, which rebuilds everything by construction.
+ *
+ * THE RESPONSE ARRIVES BEFORE THE RESTART, so a caller can report "connected,
+ * restarting" instead of dying on a socket the shell just closed.
  */
-export async function switchPlane(instance: string): Promise<DesktopInfo> {
+export async function switchAndRestart(instance: string): Promise<DesktopInfo> {
   const info = desktopInfo();
   if (!info) throw new Error("this page is not running in the desktop app");
-  const res = await fetch(CONTROL_PATH + "plane", {
+  const res = await fetch(CONTROL_PATH + "switch", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -268,7 +275,9 @@ export async function switchPlane(instance: string): Promise<DesktopInfo> {
     cache: "no-store",
   });
   const body = (await res.json().catch(() => null)) as
-    DesktopInfo | { error?: string } | null;
+    | DesktopInfo
+    | { error?: string }
+    | null;
   if (body && typeof body === "object" && "error" in body && body.error)
     throw new Error(body.error);
   if (!res.ok) throw new Error(`desktop shell answered ${res.status}`);

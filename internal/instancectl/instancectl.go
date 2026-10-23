@@ -343,7 +343,24 @@ func sortedPortArgs(ports map[string]int) []string {
 // ANY ONE MARKER IS ENOUGH, because a partially-created instance must not be invisible: the resolver unpacks
 // into bin/, the install writes config/, the supervisor writes serve/, and postgres/blobs appear with the
 // first boot. The desktop's directory has none of them.
-var instanceMarkers = []string{"postgres", "serve", "blobs", "config", "ports.json"}
+// INSTALLATION MARKERS ONLY — NOT DATA.
+//
+// THE SECOND BUG THE SERVER LIST HAD. `orchicon uninstall` KEEPS the operator's data by default (postgres/,
+// blobs/, secrets/, backups/) and removes only the infrastructure. With `postgres` and `blobs` in this list,
+// a keep-data uninstall left a directory that still looked like an installation — so the operator removed a
+// server and the server stayed on the screen. They then checked the TUI and a restarted app, and reported
+// precisely that: the deletion works, the SCREEN is wrong.
+//
+// What remains after a keep-data uninstall is leftover DATA with no server attached to it. It is not an
+// installation: there are no binaries to run, no config, no ports, no plane. Listing it as one offered a
+// Start button for something that cannot start, which is worse than not showing it.
+//
+// THIS DOES NOT HIDE A PARTIALLY-CREATED INSTANCE, which is what the old "any marker" rule existed to
+// prevent. Every stage of an install writes infrastructure FIRST: the resolver unpacks bin/, the install
+// records ports.json and writes config/, and the supervisor writes serve/. Postgres and blobs only ever
+// appear AFTER those, on the first boot. So there is no stage at which a real (even half-built) instance has
+// data and nothing else.
+var instanceMarkers = []string{"bin", "config", "serve", "ports.json", "infra-binaries.json"}
 
 // isInstanceDir reports whether dir holds instance state.
 func isInstanceDir(dir string) bool {

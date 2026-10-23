@@ -245,7 +245,7 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 		return
 	}
 
-	cmd := exec.Command(d.engineBin(), "build", "-t", req.Tag, ctxDir)
+	cmd := quietCommand(d.engineBin(), "build", "-t", req.Tag, ctxDir)
 	cmd.Dir = ctxDir
 	code, started := d.streamCommand(w, r, req.Tag, "build", cmd)
 	if !started || code != 0 {
@@ -425,7 +425,7 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 		_ = enc.Encode(AgentEvent{Event: "exit", ExitCode: 0, Skipped: true})
 		return
 	}
-	cmd := exec.Command(d.engineBin(), "pull", ref)
+	cmd := quietCommand(d.engineBin(), "pull", ref)
 	d.streamCommand(w, r, ref, "pull", cmd)
 }
 

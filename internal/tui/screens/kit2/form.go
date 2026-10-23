@@ -603,6 +603,7 @@ func (f *Form) PasteText(text string) bool {
 	// pickers (the env var/header key, and the stored secret), and pasting a token name into them is the
 	// whole point of the report.
 	if s.Kind == KPicker {
+		text = sanitizeInput(text)
 		f.Values[s.Name] = text
 		f.setCaret(s.Name, len([]rune(text)))
 		if f.OnChange != nil {
@@ -620,8 +621,45 @@ func (f *Form) PasteText(text string) bool {
 	return true
 }
 
+// sanitizeInput removes CONTROL RUNES that no field may hold, and it exists because of a real report.
+//
+// REPORTED (Windows TUI, creating a project):
+//
+//	internal: db: create project: ERROR: invalid byte sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)
+//
+// A NUL had reached a TEXT column, and Postgres refuses one outright. It is INVISIBLE on screen, which is
+// what makes it so expensive: the field reads "Temp" and the server rejects it for a byte the operator
+// cannot see. NULs arrive from a TERMINAL far more readily than from a keyboard — a Windows console
+// delivers 0x00 for several chords and a paste can carry a trailing one — so the form must never be able to
+// hold one, whatever produced it.
+//
+// Newline and tab SURVIVE, because the multi-line kinds legitimately contain them (this function is applied
+// before the single-line collapse in PasteText, which turns them into spaces where they are not wanted).
+// Everything else below 0x20, and DEL, is dropped: there is no field in this product whose value is a
+// control character, and every one of them is invisible.
+func sanitizeInput(s string) string {
+	if !strings.ContainsFunc(s, isControlRune) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isControlRune(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// isControlRune reports whether r is a C0 control character or DEL, other than newline/tab.
+func isControlRune(r rune) bool {
+	if r == '\n' || r == '\t' {
+		return false
+	}
+	return r < 0x20 || r == 0x7f
+}
+
 // insertRunes splices text into a field at the caret.
 func (f *Form) insertRunes(name, ins string) {
+	ins = sanitizeInput(ins)
 	v := []rune(f.Values[name])
 	p := f.caret(name)
 	out := make([]rune, 0, len(v)+len(ins))

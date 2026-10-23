@@ -160,6 +160,39 @@ func (s *Shell) handleControl(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		writeJSON(w, http.StatusOK, info)
+	case "switch":
+		// SWITCH, THEN RESTART — the whole of a server change, in the order that works.
+		//
+		// UsePlane (above) retargets the PROXY and remembers the choice; on its own it leaves the window
+		// holding process-scoped state that belongs to the plane it started against. The operator's report
+		// was precise: "the top menu disappears and you are left on the manage server screen. If you close
+		// the desktop app and re-open, THEN you are connected to the other instance." So the retarget is
+		// followed by a replacement process, and this one exits.
+		//
+		// THE SWITCH HAPPENS FIRST AND IS PERSISTED, so even if the restart fails the next launch opens the
+		// right server — a failed restart must not leave the choice unrecorded.
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, errorBody{"POST required"})
+			return true
+		}
+		var body struct {
+			Instance string `json:"instance"`
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<12)).Decode(&body)
+		info, err := s.UsePlane(body.Instance)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorBody{err.Error()})
+			return true
+		}
+		// ANSWER BEFORE EXITING. The reply must reach the page, or a failed restart looks like a failed
+		// switch — the page has to be able to say "connected to prod, restarting" rather than hanging on a
+		// socket that died mid-response.
+		writeJSON(w, http.StatusOK, info)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		s.RequestRestart(body.Instance)
+		return true
 	default:
 		http.NotFound(w, r)
 	}
@@ -206,6 +239,41 @@ func (s *Shell) UsePlane(instance string) (Info, error) {
 		s.logMessage("desktop: could not remember the chosen instance: %v", err)
 	}
 	return info, nil
+}
+
+// restartFunc replaces this process with a new one. Installed by the desktop entry point, which is the only
+// place that knows both the executable path and that a window is running at all.
+//
+// A SEAM RATHER THAN A DIRECT CALL so the control surface — and therefore every switch — is drivable in a
+// test without spawning a GUI. It is also what lets internal/desktop stay testable in CI, where no webview
+// exists.
+type restartFunc func(instance, route string) error
+
+// SetRestart installs the restart hook. Called once at startup, beside SetControl.
+func (s *Shell) SetRestart(fn restartFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.restart = fn
+}
+
+// RequestRestart asks the shell to replace it with a new process opened on instance.
+//
+// BEST-EFFORT AND LOGGED, deliberately: by the time this runs the switch has already been applied and
+// persisted, so a restart that cannot be started leaves the operator on a working (if stale-looking) window
+// rather than with nothing. The page is told "connected", which is true.
+func (s *Shell) RequestRestart(instance string) {
+	s.mu.Lock()
+	fn := s.restart
+	s.mu.Unlock()
+	if fn == nil {
+		s.logMessage("desktop: no restart hook installed; the window keeps running against %s", instance)
+		return
+	}
+	// THE PAGE THE OPERATOR IS ON IS WHERE THEY SHOULD LAND. They switched from the Servers page, so a
+	// restart that dumped them on the dashboard would undo the context they need to see the new server.
+	if err := fn(instance, "/manage-server"); err != nil {
+		s.logMessage("desktop: could not restart the app: %v", err)
+	}
 }
 
 // PlaneURL is the plane this window currently points at.

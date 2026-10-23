@@ -45,8 +45,9 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { desktopInfo, switchPlane } from "@/lib/desktop";
+import { desktopInfo, switchAndRestart } from "@/lib/desktop";
 import {
+  OUTCOME_SPAWNED,
   SETUP_DONE,
   SETUP_FAILED,
   SETUP_RUNNING,
@@ -82,6 +83,26 @@ export function ServersSection() {
   const [connecting, setConnecting] = useState("");
   // A generation counter so a refresh that lands after an action cannot overwrite newer state with older.
   const gen = useRef(0);
+  // SETTLING: a spawned verb has been asked for and its effect is not visible yet.
+  //
+  // REPORTED: "When removing a server, it seems to do it, but it leaves the server up in the server screen
+  // … if you restart the desktop app it is gone from there as well. So something in how the desktop is
+  // sending the delete and how it refreshs its screen is causing the issue."
+  //
+  // THEY DIAGNOSED IT EXACTLY. install and uninstall are DETACHED (instancectl.spawn returns the moment the
+  // process starts — a minutes-long download must not die with the GUI), so the verb returns "spawned" and
+  // the refresh that follows reads the world BEFORE the work has happened. The row then stays stale, because
+  // the only thing that drives a poll is an ACTIVE SETUP RECORD — and a remove has none, while an install's
+  // record does not exist yet. Nothing ever polls again, so the operator sees a server that is already gone.
+  //
+  // The TUI has the same initial staleness and self-heals, because its table refreshes periodically. This
+  // page must not depend on the operator happening to look away and back.
+  //
+  // A BOUNDED WINDOW, not an endless poll: if the effect never becomes visible, the page stops asking rather
+  // than hammering the shell for ever. The deadline is generous enough for a stop-then-delete sequence and
+  // short enough that a genuinely stuck uninstall surfaces as a notice rather than a spinner.
+  const [settling, setSettling] = useState(0);
+  const settleTimer = useRef<number | undefined>(undefined);
   // WHAT THE PAGE LAST RENDERED, so an identical poll result does not re-render it.
   //
   // REPORTED: "the server screen was blinking like it was having a stroke". Part of that was console
@@ -127,11 +148,31 @@ export function ServersSection() {
   // POLL WHILE ANY SETUP IS IN FLIGHT. Deliberately keyed on the SETUP STATES rather than on a timer that
   // always runs: an idle page must not poll a machine that is not doing anything.
   const anySetupActive = items.some((i) => isSetupActive(i.setup));
+  // A SPAWNED VERB COUNTS AS ACTIVITY EVEN THOUGH IT HAS NO SETUP RECORD YET — see `settling`. Without
+  // this the page stopped polling precisely when a remove was in flight, which is why the row outlived the
+  // server.
+  const shouldPoll = anySetupActive || settling > Date.now();
   useEffect(() => {
-    if (!api || !anySetupActive) return;
+    if (!api || !shouldPoll) return;
     const t = window.setInterval(() => void refresh(), POLL_MS);
     return () => window.clearInterval(t);
-  }, [api, anySetupActive, refresh]);
+  }, [api, shouldPoll, refresh]);
+
+  // SETTLE_MS is how long a spawned verb may take to become visible before the page stops re-reading.
+  const SETTLE_MS = 60_000;
+
+  /** beginSettling opens (or extends) the window in which a spawned verb's effect is still being applied. */
+  const beginSettling = useCallback(() => {
+    setSettling(Date.now() + SETTLE_MS);
+    window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(
+      () => setSettling(0),
+      SETTLE_MS + 1_000,
+    );
+  }, []);
+
+  // The timer must not outlive the component.
+  useEffect(() => () => window.clearTimeout(settleTimer.current), []);
 
   const applyResult = useCallback(
     (r: ServerResult, verb: string) => {
@@ -143,9 +184,12 @@ export function ServersSection() {
           ? `${verb} ${who}: ${r.outcome.replace(/-/g, " ")}`
           : `${verb} ${who} failed: ${r.message || r.outcome}`,
       );
+      // A SPAWNED VERB HAS NOT HAPPENED YET, so a refresh now reads the world before the work. Say so to
+      // the poller instead of pretending the read is settled.
+      if (r.outcome === OUTCOME_SPAWNED) beginSettling();
       void refresh();
     },
-    [refresh],
+    [refresh, beginSettling],
   );
 
   const run = useCallback(
@@ -167,10 +211,10 @@ export function ServersSection() {
   /**
    * connect retargets THIS WINDOW at a server and reloads.
    *
-   * It uses the shell's own switchPlane — the same call the Plane section makes — and then reloads because
-   * desktopInfo (the injected instance name, both versions, the mismatch verdict) only changes on a fresh
-   * document. Nothing about the switch is re-implemented here; this surface just offers it where the
-   * operator looked for it.
+   * It uses the shell's own switch, the same one the Plane section uses, so there is ONE implementation of
+   * changing servers rather than two that can drift. The shell retargets the proxy, persists the choice and
+   * then replaces its own process: a reload could only rebuild what the document carries, which is why the
+   * window used to arrive half-switched with a top menu that had disappeared.
    *
    * A FAILED SWITCH STAYS PUT AND SAYS SO. Reloading over a failure would leave the window on the old
    * plane with no trace of what happened, which is indistinguishable from the button not working.
@@ -179,9 +223,12 @@ export function ServersSection() {
     setConnecting(name);
     setNotice("");
     try {
-      await switchPlane(name);
-      // The shell has already retargeted the proxy; a reload re-reads the document the shell injects.
-      window.location.reload();
+      await switchAndRestart(name);
+      // THE APP IS RESTARTING, so there is nothing left to do here — and deliberately no reload. A reload
+      // was the old behaviour and it is what left the window half-switched: the proxy pointed at the new
+      // server while the app's chrome and session still belonged to the old one. The replacement process
+      // opens on this same page, so the operator lands back where they were.
+      setNotice(`connected to ${name} — restarting…`);
     } catch (e) {
       setConnecting("");
       setNotice(`could not connect to ${name}: ${e instanceof Error ? e.message : String(e)}`);

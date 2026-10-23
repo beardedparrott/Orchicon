@@ -130,8 +130,27 @@ describe("action outcomes", () => {
   });
 });
 
+/**
+ * stripComments removes comments, because PROSE IS NOT CODE.
+ *
+ * The rule below is about COPY THE PAGE RENDERS (AC2/AC4: no explanatory text about the desktop app in front
+ * of a browser user). A comment recording what the operator actually said — "if you close the desktop app and
+ * re-open, THEN you are connected" — is not rendered to anyone, and it is the single most useful thing in the
+ * file. Matching it here made the guard punish provenance. The same trap caught the ServersSection guard and
+ * its own quiet_test; a substring checker that cannot tell prose from code will always do this.
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+}
+
 describe("the page's structure and its forbidden copy", () => {
-  const src = readFileSync(new URL("../routes/manage-server.tsx", import.meta.url), "utf8");
+  const raw = readFileSync(new URL("../routes/manage-server.tsx", import.meta.url), "utf8");
+  const src = raw;
+  // The copy checks read the STRIPPED source; the structural checks below read the raw file, because they
+  // assert on tokens that appear in code either way.
+  const rendered = stripComments(raw);
 
   it("is sectioned, with a stated way to add a section", () => {
     expect(src).toContain("const SECTIONS: Section[]");
@@ -148,7 +167,7 @@ describe("the page's structure and its forbidden copy", () => {
       "browser cannot",
       "available on desktop",
     ];
-    const lower = src.toLowerCase();
+    const lower = rendered.toLowerCase();
     for (const phrase of forbidden) {
       expect(lower).not.toContain(phrase.toLowerCase());
     }

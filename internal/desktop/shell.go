@@ -68,6 +68,7 @@ type Shell struct {
 	control      Control
 	controlToken string
 	servers      Servers
+	restart      restartFunc
 	prefsPath    string
 
 	logf func(format string, args ...any)
