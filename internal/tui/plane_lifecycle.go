@@ -42,6 +42,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/beardedparrott/orchicon/internal/planebind"
 	"github.com/beardedparrott/orchicon/internal/planecontrol"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
@@ -209,12 +210,12 @@ func planeLogPath(instance string) string {
 //
 // THE ORDER MATTERS AND IS THE POINT:
 //
-//   1. health is the AUTHORITATIVE "is something serving this instance" signal, and it does not depend on
-//      how the plane was started. A plane that answers /healthz IS up, whoever launched it.
-//   2. drift is reported only for a LIVE PID we can identify — unchanged, because telling an operator to
-//      restart a process that is not running is still the wrong instruction.
-//   3. a live PID that is NOT answering is still DOWN: "the process exists but serves nothing" is a real
-//      failure and the health probe is what distinguishes it from a working plane.
+//  1. health is the AUTHORITATIVE "is something serving this instance" signal, and it does not depend on
+//     how the plane was started. A plane that answers /healthz IS up, whoever launched it.
+//  2. drift is reported only for a LIVE PID we can identify — unchanged, because telling an operator to
+//     restart a process that is not running is still the wrong instruction.
+//  3. a live PID that is NOT answering is still DOWN: "the process exists but serves nothing" is a real
+//     failure and the health probe is what distinguishes it from a working plane.
 //
 // What is deliberately NOT claimed: a plane reachable by health but with no PID file cannot be STOPPED
 // by the lifecycle verbs (there is no PID to signal). That is a truthful limit of a plane started by
@@ -444,18 +445,34 @@ func (m *App) planeOpCmd(op string) tea.Cmd {
 				},
 			}
 		}
+		// THE VERBS GO THROUGH internal/planebind, NOT planecontrol.
+		//
+		// This was the last place a second implementation of the same three actions could drift: the
+		// desktop drives planebind (internal/planebind is its Wails binding), while the TUI called
+		// planecontrol directly. Two things that can STOP a plane must not decide independently what
+		// "stopped" means — that divergence is exactly what cost us the CLI-vs-MSI week, where
+		// `orchicon stop` verified its own pid files while a live postgres kept port 5432.
+		//
+		// planebind is a LEAF by construction (stdlib + planecontrol + instance, enforced by its own
+		// imports_test), so adopting it cannot drag the plane's HTTP server into the TUI.
+		//
+		// A READ is deliberately NOT routed through it: the TUI's footer chip and remedy messages are
+		// built from planecontrol.Status, which planebind flattens into a DTO for JSON. Actions mutate
+		// host state and must be single-sourced; reads are idempotent and a second projection of them
+		// cannot corrupt anything. (planebind.Status IS the source for the desktop, and both agree
+		// because they share the same StatusOf underneath.)
 		buf := &bytes.Buffer{}
-		opts := planecontrol.Defaults(inst, buf)
+		svc := &planebind.Service{Out: buf}
 		var err error
 		switch op {
 		case "start":
-			err = planecontrol.Start(opts)
+			_, err = svc.Start(inst)
 		case "stop":
 			// Stop is IDEMPOTENT (planecontrol.Stop: "nothing to stop" is success). It stays success
 			// here too — a second /plane-stop must never read as a failure.
-			err = planecontrol.Stop(opts)
+			_, err = svc.Stop(inst)
 		case "restart":
-			err = planecontrol.Restart(opts)
+			_, err = svc.Restart(inst)
 		default:
 			err = fmt.Errorf("unknown plane operation %q (use start, stop or restart)", op)
 		}
