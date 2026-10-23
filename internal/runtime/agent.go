@@ -470,7 +470,7 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	s := newExecSession(execID)
 	s.detached = true
 
-	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	cmd := quietCommand(req.Argv[0], req.Argv[1:]...)
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
 	}
@@ -576,7 +576,7 @@ func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
 		_ = enc.Encode(AgentEvent{Event: "error", Error: "exec argv[0] not allowlisted: " + base})
 		return
 	}
-	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	cmd := quietCommand(req.Argv[0], req.Argv[1:]...)
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
 	}
@@ -689,7 +689,7 @@ func (h *childRegistry) runStdio(dec *json.Decoder, enc *json.Encoder, req Agent
 	}
 	h.mu.Unlock()
 
-	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	cmd := quietCommand(req.Argv[0], req.Argv[1:]...)
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
 	}
@@ -991,7 +991,7 @@ func (h *childRegistry) startServeAgain(kind string, req AgentRequest) error {
 	s := newExecSession(execID)
 	s.detached = true
 
-	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	cmd := quietCommand(req.Argv[0], req.Argv[1:]...)
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
 	}
@@ -1161,7 +1161,7 @@ func (h *childRegistry) bootSandboxPostgres() error {
 	}
 	if _, err := os.Stat(filepath.Join(sandboxPgDataDir, "PG_VERSION")); os.IsNotExist(err) {
 		h.log.Info("sandbox plane: initdb", "dir", sandboxPgDataDir)
-		if out, err := exec.Command(filepath.Join(pgb, "initdb"),
+		if out, err := quietCommand(filepath.Join(pgb, "initdb"),
 			"-D", sandboxPgDataDir, "-U", "orchicon", "--auth=trust").CombinedOutput(); err != nil {
 			return fmt.Errorf("initdb: %v: %s", err, out)
 		}
@@ -1173,7 +1173,7 @@ func (h *childRegistry) bootSandboxPostgres() error {
 	// default) is root-owned in the container (docker's /run tmpfs), and
 	// postgres refuses to start without a writable socket dir.
 	opts := fmt.Sprintf("-p %d -c listen_addresses=localhost -c unix_socket_directories=%s", sandboxPgPort, sandboxDataDir)
-	if out, err := exec.Command(filepath.Join(pgb, "pg_ctl"),
+	if out, err := quietCommand(filepath.Join(pgb, "pg_ctl"),
 		"-D", sandboxPgDataDir, "-l", sandboxPgLog, "-o", opts, "-w", "start").CombinedOutput(); err != nil {
 		h.log.Warn("sandbox plane: pg_ctl start (may already be running)", "output", string(out), "error", err)
 	}
@@ -1182,7 +1182,7 @@ func (h *childRegistry) bootSandboxPostgres() error {
 	}
 	// initdb creates only postgres/template DBs; the plane's migrations
 	// target the `orchicon` database (the DSN's db name).
-	cmd := exec.Command(filepath.Join(pgb, "createdb"),
+	cmd := quietCommand(filepath.Join(pgb, "createdb"),
 		"-h", "localhost", "-p", fmt.Sprintf("%d", sandboxPgPort), "-U", "orchicon", "orchicon")
 	if out, err := cmd.CombinedOutput(); err != nil && !strings.Contains(string(out), "already exists") {
 		return fmt.Errorf("createdb orchicon: %v: %s", err, out)
@@ -1196,7 +1196,7 @@ func (h *childRegistry) bootSandboxPostgres() error {
 func (h *childRegistry) waitPgReady(pgb string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		out, err := exec.Command(filepath.Join(pgb, "pg_isready"),
+		out, err := quietCommand(filepath.Join(pgb, "pg_isready"),
 			"-h", "localhost", "-p", fmt.Sprintf("%d", sandboxPgPort), "-U", "orchicon").CombinedOutput()
 		if err == nil && strings.Contains(string(out), "accepting connections") {
 			return true
@@ -1216,7 +1216,7 @@ func (h *childRegistry) bootSandboxNATS() error {
 	if err := os.MkdirAll(sandboxNATSDataDir, 0o755); err != nil {
 		return err
 	}
-	cmd := exec.Command("nats-server", "-js", "-p", fmt.Sprintf("%d", sandboxNATSPort), "-sd", sandboxNATSDataDir)
+	cmd := quietCommand("nats-server", "-js", "-p", fmt.Sprintf("%d", sandboxNATSPort), "-sd", sandboxNATSDataDir)
 	cmd.Stdout = os.Stderr // sandbox logs go to the supervisor log
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -1265,7 +1265,7 @@ func (h *childRegistry) bootSandboxServe() error {
 		return nil
 	}
 	h.killAndClear(sandboxPlaneExecID)
-	cmd := exec.Command("orchicon", "serve")
+	cmd := quietCommand("orchicon", "serve")
 	cmd.Stdout = os.Stderr // sandbox plane logs go to the supervisor log
 	cmd.Stderr = os.Stderr
 	env := os.Environ()
@@ -1379,7 +1379,7 @@ func (h *childRegistry) stopSandboxPlane() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = exec.CommandContext(ctx, filepath.Join(pgb, "pg_ctl"),
+	_ = quietCommandContext(ctx, filepath.Join(pgb, "pg_ctl"),
 		"-D", sandboxPgDataDir, "-m", "fast", "stop").Run()
 }
 

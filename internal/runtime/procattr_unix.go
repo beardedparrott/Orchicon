@@ -30,3 +30,7 @@ func killGroup(cmd *exec.Cmd) error {
 	}
 	return nil
 }
+
+// setProcAttrNoWindow is a NO-OP on Unix: a Unix process has no console to allocate. It exists so
+// quietCommand (quiet.go) has one definition on every platform rather than a build-tagged call site.
+func setProcAttrNoWindow(*exec.Cmd) {}

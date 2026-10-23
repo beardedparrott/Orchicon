@@ -379,7 +379,7 @@ func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	cmd := exec.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
+	cmd := quietCommand(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(reqJSON)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -448,7 +448,7 @@ func (d *Daemon) handleRuntimeStdio(w http.ResponseWriter, r *http.Request, runI
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	cmd := exec.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
+	cmd := quietCommand(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -948,7 +948,7 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	}
 	args = append(args, "-e", "HOME="+d.HostHome)
 	// Put every MOUNTED adapter CLI on PATH so the supervisor's
-	// exec.Command("opencode", ...) / exec.Command("claude", ...) resolves
+	// quietCommand("opencode", ...) / quietCommand("claude", ...) resolves
 	// it. Per-kind (not just the default kind), and ONLY for a demanded
 	// kind whose host bin dir actually exists — the prefix never points at
 	// an absent host dir (the invariant above).
@@ -1014,7 +1014,7 @@ func (d *Daemon) claudeAuthAvailable(req CreateRequest) bool {
 func hostGHToken() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "auth", "token")
+	cmd := quietCommandContext(ctx, "gh", "auth", "token")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -1140,7 +1140,7 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 	if err != nil {
 		return 0, "", false, err
 	}
-	cmd := exec.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
+	cmd := quietCommand(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(reqJSON)
 	out, perr := cmd.Output()
 	if perr != nil {
@@ -1393,7 +1393,7 @@ func (d *Daemon) listRuntimes(instance string) ([]string, error) {
 // success; a missing container/socket or timeout returns false.
 func (d *Daemon) pingRuntime(name string) bool {
 	req, _ := json.Marshal(AgentRequest{Cmd: "ping"})
-	cmd := exec.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
+	cmd := quietCommand(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(req)
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {
@@ -1417,7 +1417,7 @@ func (d *Daemon) engine(args ...string) (string, error) {
 	if d.engineFn != nil {
 		return d.engineFn(args...)
 	}
-	cmd := exec.Command(d.engineBin(), args...)
+	cmd := quietCommand(d.engineBin(), args...)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf

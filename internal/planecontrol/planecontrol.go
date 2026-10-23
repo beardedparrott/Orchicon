@@ -195,7 +195,11 @@ func runSelf(args []string, env []string, out io.Writer) error {
 		// "run `serve --detach`: …" prefix in front of it only buries the remedy in the dock strip.
 		return err
 	}
-	cmd := exec.Command(self, args...)
+	// quietCommand, because THIS PROCESS MAY HAVE NO CONSOLE. runSelf is how the desktop app starts and
+	// stops a plane, and the app is a GUI: a console-subsystem child of a console-less parent is given a
+	// brand new window by Win32, so every Start pressed in the app flashed one. The child's own detach
+	// (serve --detach) happens INSIDE it and cannot help with the window it was born with.
+	cmd := quietCommand(self, args...)
 	cmd.Env = env
 	cmd.Stdout = out
 	cmd.Stderr = out

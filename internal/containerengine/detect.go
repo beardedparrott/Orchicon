@@ -98,7 +98,9 @@ func DefaultProbe() Probe {
 	return Probe{
 		LookPath: exec.LookPath,
 		Run: func(ctx context.Context, bin string, args ...string) (string, error) {
-			out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
+			// quietCommandContext: the probe runs from a DETACHED install (no console), so a bare
+			// exec.CommandContext here puts a window on the operator's screen on Windows.
+			out, err := quietCommandContext(ctx, bin, args...).CombinedOutput()
 			if err != nil {
 				return strings.TrimSpace(string(out)), fmt.Errorf("%s %s: %w: %s",
 					bin, strings.Join(args, " "), err, strings.TrimSpace(string(out)))

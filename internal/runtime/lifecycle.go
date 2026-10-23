@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -89,7 +88,7 @@ func isInsideWorkTree(ctx context.Context, projectDir string) bool {
 	if fi, err := os.Stat(projectDir); err != nil || !fi.IsDir() {
 		return false
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", projectDir, "rev-parse", "--is-inside-work-tree")
+	cmd := quietCommandContext(ctx, "git", "-C", projectDir, "rev-parse", "--is-inside-work-tree")
 	out, err := cmd.Output()
 	if err != nil {
 		return false
