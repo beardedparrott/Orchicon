@@ -136,6 +136,16 @@ const planeBinaryName = "orchicon"
 // against for drift). It is a seam so the resolution below is assertable without spawning processes.
 var planeBinary = resolvePlaneBinary
 
+// PlaneBinary is where the INSTALLED `orchicon` binary is, resolved for a thin client.
+//
+// EXPORTED FOR internal/instancectl, which needs to run the CLI's own verbs rather than reimplement them.
+// The resolution, and every reason behind it, lives in resolvePlaneBinary above — including the case that
+// matters most here: a GUI or TUI is a CLIENT, so re-execing SELF would ask a thin client to serve, and
+// `orch serve --detach` is not a subcommand.
+//
+// An error is returned rather than a fallback to self, and its text already names the remedy.
+func PlaneBinary() (string, error) { return planeBinary() }
+
 // resolvePlaneBinary answers "which binary runs the plane?" — which is NOT always "the binary that called
 // this package".
 //
