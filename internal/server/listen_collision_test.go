@@ -53,10 +53,7 @@ func TestWildcardPrimarySkipsDoomedBridgeBind(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	primary, err := s.startListeners(ctx)
-	if err != nil {
-		t.Fatalf("startListeners: %v", err)
-	}
+	primary := mustStartListeners(t, s, ctx)
 	defer func() { _ = primary.Close() }()
 
 	if !waitForLog(t, &buf, "bridge listener skipped", 2*time.Second) {

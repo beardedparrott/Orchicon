@@ -132,10 +132,7 @@ func TestPrimaryListenerServes(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	primary, err := s.startListeners(ctx)
-	if err != nil {
-		t.Fatalf("startListeners: %v", err)
-	}
+	primary := mustStartListeners(t, s, ctx)
 	addr := primary.Addr().String()
 	go func() { _ = s.httpSrv.Serve(primary) }()
 	defer func() { _ = s.httpSrv.Close() }()
@@ -162,10 +159,7 @@ func TestServeExtraFailureIsNonFatal(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	primary, err := s.startListeners(ctx)
-	if err != nil {
-		t.Fatalf("startListeners must not fail because the bridge bind cannot: %v", err)
-	}
+	primary := mustStartListeners(t, s, ctx)
 	addr := primary.Addr().String()
 	go func() { _ = s.httpSrv.Serve(primary) }()
 	defer func() { _ = s.httpSrv.Close() }()
@@ -205,10 +199,7 @@ func TestServeExtraBindsWhenAddressAppears(t *testing.T) {
 	defer func() { extraBindRetryInterval = prev }()
 
 	// Hold the address so serveExtra's first attempts fail.
-	holder, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("hold address: %v", err)
-	}
+	holder := mustHoldLoopback(t)
 	addr := holder.Addr().String()
 
 	var buf syncBuf
