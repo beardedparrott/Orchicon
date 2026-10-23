@@ -88,7 +88,6 @@ func (s *Shell) handleControl(w http.ResponseWriter, r *http.Request) bool {
 	}
 	s.mu.Lock()
 	ctl := s.control
-	want := s.controlToken
 	s.mu.Unlock()
 
 	// 404 (not 403) when no control surface is installed: the endpoint does not
@@ -100,7 +99,7 @@ func (s *Shell) handleControl(w http.ResponseWriter, r *http.Request) bool {
 	// SECRET COMPARISON IS NOT TIMING-SAFE HERE ON PURPOSE: the token authenticates
 	// a same-machine drive-by, not a network peer, and a timing side channel over
 	// loopback to a process that can already read the file is not the boundary.
-	if want != "" && r.Header.Get(controlTokenHeader) != want {
+	if !s.controlTokenOK(r) {
 		writeJSON(w, http.StatusForbidden, errorBody{"this endpoint needs the desktop app's own token"})
 		return true
 	}
@@ -238,4 +237,16 @@ func writeJSON(w http.ResponseWriter, code int, body any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// controlTokenOK reports whether r carries this run's control token.
+//
+// EXTRACTED SO THE SERVERS SURFACE USES THE SAME RULE, not a copy of it. A second implementation of "is
+// this caller allowed" is how one surface ends up weaker than the other — and these endpoints can destroy
+// a database, so the weaker one would be the dangerous one.
+func (s *Shell) controlTokenOK(r *http.Request) bool {
+	s.mu.Lock()
+	want := s.controlToken
+	s.mu.Unlock()
+	return want == "" || r.Header.Get(controlTokenHeader) == want
 }

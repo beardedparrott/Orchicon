@@ -67,6 +67,7 @@ type Shell struct {
 	// control endpoints (a test bundle, or a browser-shaped harness).
 	control      Control
 	controlToken string
+	servers      Servers
 	prefsPath    string
 
 	logf func(format string, args ...any)
@@ -159,6 +160,11 @@ func (s *Shell) Start() error {
 		//   2. plane paths (the prefix table in proxy.go);
 		//   3. the embedded SPA, which is the fallback everything else wants.
 		if s.handleControl(w, r) {
+			return
+		}
+		// The servers surface, same reason and same position: one of OUR endpoints, so it can never be
+		// shadowed by a plane route added later.
+		if s.handleServers(w, r) {
 			return
 		}
 		if isPlanePath(r.URL.Path) {

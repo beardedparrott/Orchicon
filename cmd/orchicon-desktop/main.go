@@ -35,6 +35,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/controlport"
 	"github.com/beardedparrott/orchicon/internal/desktop"
+	"github.com/beardedparrott/orchicon/internal/instancectl"
 	"github.com/beardedparrott/orchicon/internal/planebind"
 )
 
@@ -58,6 +59,13 @@ var appIcon []byte
 func main() {
 	planeFlag := flag.String("plane", "", "plane URL (default: $ORCHICON_DESKTOP_PLANE_URL, else --instance / the remembered instance)")
 	instanceFlag := flag.String("instance", "", "which instance to connect to: dev, prod or test (default: $ORCHICON_DESKTOP_INSTANCE, else the remembered choice, else dev)")
+	// ROUTE is where the window OPENS. It exists so an installer can land a first run on the page that
+	// finishes setting up (design of record, D7): the MSI's Finish-page checkbox launches
+	// `orchicon-desktop.exe --route /manage-server`, and the app opens there instead of the home page.
+	//
+	// It is a plain route path, validated to be one of ours — a launch argument is not a channel for
+	// arbitrary navigation, and a typo must land on the default page rather than a blank window.
+	routeFlag := flag.String("route", "", "page to open on launch, e.g. /manage-server (default: the app's own start page)")
 	flag.Parse()
 
 	// WHICH PLANE, IN PRECEDENCE ORDER — and every step of it is a way to say so,
@@ -115,6 +123,13 @@ func main() {
 	// control.go for why it cannot be a Wails binding), delegating straight into
 	// internal/planebind — the same package the CLI and the TUI drive.
 	shell.SetControl(&planebind.Service{}, controlToken)
+	// THE SERVERS SURFACE (design of record, phase 1): list / install / uninstall / start / stop / restart /
+	// setup-progress, all delegating to internal/instancectl — which is the thin client of the CLI, so the
+	// app, the TUI and `orchicon` cannot disagree about what an instance is.
+	//
+	// A nil writer on purpose: the app renders progress from the setup RECORD, not from this process's
+	// stdout, and a detached install has no stdout here at all.
+	shell.SetServers(instancectl.NewService(nil))
 
 	if err := shell.Start(); err != nil {
 		log.Fatalf("orchicon-desktop: %v", err)
@@ -162,7 +177,10 @@ func main() {
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				w.Header().Set("Cache-Control", "no-store")
-				_, _ = w.Write([]byte(desktop.BootstrapHTML(shell.OriginURL())))
+				// --route decides the OPENING PAGE (D7). It is validated to a known app route, so a
+				// launch argument cannot become an open redirect; an unrecognised value falls back to
+				// the app's own start page rather than to a blank window.
+				_, _ = w.Write([]byte(desktop.BootstrapHTML(shell.OriginURL() + desktop.SafeRoute(*routeFlag))))
 			}),
 		},
 		// THE PLANE CONTROL BINDING. Manage Server's start/stop/restart reach
