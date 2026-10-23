@@ -11,7 +11,16 @@ go.work
 go.work.sum
 
 # Node/Frontend
-node_modules/
+#
+# NO TRAILING SLASH, DELIBERATELY. `node_modules/` matches a DIRECTORY only, so a SYMLINK named
+# node_modules is not ignored — and one was committed (f109d2235) pointing at an absolute path on the
+# author's machine. Every checkout then got a self-referential link, every path under it failed with ELOOP,
+# `tsc -b` died and `make rebuild-dev` reported nothing but:
+#
+#     make[2]: *** [Makefile:707: fe-build] Error 216
+#
+# A pattern with no trailing slash matches a file, a symlink and a directory, which is what this must cover.
+node_modules
 dist/
 # Keep frontend/dist/.gitkeep so go:embed always has a target at build time.
 !frontend/dist/
