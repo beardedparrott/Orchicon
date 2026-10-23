@@ -886,7 +886,14 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		TabExecution:   func() Screen { return execution.New(m.clients, m.reg, "") },
 		TabAutomation:  func() Screen { return automation.New(m.clients, m.reg, "") },
 		TabEnforcement: func() Screen { return enforcement.New(m.clients, m.reg, "") },
-		TabControl:     func() Screen { return control.New(m.clients, m.reg) },
+		// SERVERS IS OFFERED ONLY FOR A LOCAL PLANE (D6). Management is a HOST operation: `orch` can be
+		// pointed at a plane on another machine, and offering install/remove there would either fail per
+		// button or act on the wrong host. Local is decided by the ONE resolver the /plane verbs already
+		// use, so the two cannot disagree about what "local" means.
+		TabControl: func() Screen {
+			_, local := instanceForProfile(m.profile)
+			return control.New(m.clients, m.reg, control.WithServers(local))
+		},
 	}
 	// The slash registry is generated from the screens' Sources() (the
 	// no-drift source of truth), so factories must exist before it builds.
