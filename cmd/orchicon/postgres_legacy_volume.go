@@ -87,7 +87,7 @@ var postgresVolumeExists = func(engineBin, name string) bool {
 	// Bounded: a missing or wedged daemon must not delay a plane start. Two
 	// seconds is generous for `volume inspect` on a live socket and short enough
 	// that a host with no engine notices nothing.
-	cmd := exec.Command(engineBin, "volume", "inspect", name)
+	cmd := quietCommand(engineBin, "volume", "inspect", name)
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {
 		return false
