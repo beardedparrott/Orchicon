@@ -787,6 +787,21 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 	installOrchLauncher(installDir)
 
 	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, ports, containersUsed, healthy, engineStatus)
+
+	// THE HANDOVER, AND IT HAPPENS HERE BECAUSE THE FACT IS KNOWN HERE.
+	//
+	// `healthy` above is the result of WAITING for the control plane to answer /healthz — so this is the one
+	// place in the product that knows the environment is actually up. The wizard's Finish page never could:
+	// WixUI owns that navigation, and three attempts to put a launch there failed (install_desktop.go records
+	// them). The installer stops asking and the thing that did the work opens the app.
+	//
+	// ONLY ON A HEALTHY INSTALL. Opening a GUI onto a plane that is not answering would show the operator the
+	// failure inside a window with no context — worse than not opening it.
+	//
+	// The flag OR the environment, so a shell script can request the same thing the MSI does.
+	if (flags.LaunchDesktop || env(desktopLauncherEnv, "") == "1") && healthy {
+		launchDesktop()
+	}
 	return nil
 }
 

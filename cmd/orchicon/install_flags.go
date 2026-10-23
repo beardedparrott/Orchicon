@@ -28,6 +28,10 @@ type installFlags struct {
 	// NonInteractive says "everything has already been decided; do not ask". The WINDOWS WIZARD
 	// sets it, because it has just collected every answer on its own pages.
 	NonInteractive bool
+	// LaunchDesktop opens the desktop app once the control plane is confirmed healthy. The MSI sets it,
+	// because the handover used to live in the wizard's Finish page and could not be made to work there —
+	// see install_desktop.go for the three attempts and why the fact belongs to the installer.
+	LaunchDesktop bool
 }
 
 // parseInstallFlags extracts the wizard's flags and returns the argv with them removed, so the
@@ -78,6 +82,11 @@ func parseInstallFlags(args []string) (installFlags, []string, error) {
 				return out, nil, fmt.Errorf("--port %s: %q is not a port (1..65535)", env, value)
 			}
 			out.Ports[strings.TrimSpace(env)] = n
+
+		case arg == "--launch-desktop" || arg == "-launch-desktop":
+			// A PLAIN SWITCH, not a value: "after a healthy install, open the app" is a yes/no, and a value
+			// form invites the empty-argument hazard this parser already documents elsewhere.
+			out.LaunchDesktop = true
 
 		case arg == "--non-interactive" || arg == "-non-interactive":
 			// THE WIZARD ANSWERED EVERYTHING, SO THERE IS NOTHING LEFT TO ASK.
