@@ -94,8 +94,23 @@
          command line for an unattended nuke:
            msiexec /x Orchicon.msi /qn PURGEDATA=1 -->
     <Property Id="PURGEDATA" Value="0" Secure="yes" />
-    <!-- Checked by default: the handover is the point of the page. -->
-    <Property Id="LAUNCHAPP" Value="1" Secure="yes" />
+    <!-- THE HANDOVER USES WIXUI'S OWN CHECKBOX (design of record, D7).
+         WixUI's FinishDlg already carries a "FinishOptionalCheckBox" control bound to
+         WIXUI_EXITDIALOGOPTIONALCHECKBOX, and it is HIDDEN unless
+         WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT is set — which is exactly what the operator saw: a Finish page
+         with no checkbox, and a Finish button that did nothing.
+
+         IT WAS NOT OBVIOUS, AND THE EVIDENCE IS WORTH KEEPING. This file used to define its OWN FinishDlg
+         with a checkbox of its own. A dialog from an extension is keyed by Id, so defining "FinishDlg" here
+         did not replace WixUI's — the built package was found to contain BOTH control sets (our LaunchCheck
+         and SetupNote, AND WixUI's OptionalCheckBox) while no checkbox appeared. Two dialogs of one name is
+         not a merge with a defined result, and the supported hook needs no dialog at all, so ours is gone.
+
+         SETTING THE TEXT IS WHAT MAKES THE BOX APPEAR. Setting the box to 1 makes it CHECKED, so a clean
+         install ends with Orchicon open — the operator approved the visible click rather than a silent
+         spawn, and this is the same visible click with one less moving part. -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch Orchicon now" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" Secure="yes" />
 
     <!-- THE INSTANCE THIS MSI SET UP LAST, READ BACK ON A LATER RUN.
          Written at install (see InstalledInstanceRecord) and searched here, so a SECOND run can
@@ -358,6 +373,13 @@
                   Return="asyncNoWait"
                   ExeCommand="--route /manage-server" />
 
+    <!-- THE FINISH BUTTON RUNS IT, conditioned on the box. This is the documented WixUI pattern: the extension
+         renders the control and its text, and the package supplies the action to run when it is ticked. -->
+    <UI>
+      <Publish Dialog="FinishDlg" Control="Finish" Event="DoAction" Value="LaunchApp" Order="1"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1" />
+    </UI>
+
     <InstallExecuteSequence>
       <!-- REMOVE ONLY: the mirror of LaunchSetup's NOT REMOVE. -->
       <Custom Action="LaunchUninstall" After="InstallFinalize" Condition="REMOVE=&quot;ALL&quot; AND SKIPSETUP &lt;&gt; &quot;1&quot; AND PURGEDATA &lt;&gt; &quot;1&quot;" />
@@ -411,37 +433,6 @@
            IT WRITES PURGEDATA, which the two uninstall actions read (see LaunchUninstall /
            LaunchUninstallPurge). A RadioButtonGroup rather than a bare checkbox because two exclusive
            options are what this is, and a radio makes the safe one visibly selected. -->
-      <!-- ===================== THE FINISH PAGE =====================
-           OURS, NOT WixUI's, and that is deliberate. The standard hook is
-           WIXUI_EXITDIALOGOPTIONALCHECKBOX, which WixUI's own FinishDlg reads — but the dialog definitions
-           live inside a compressed managed resource in WixToolset.UI.wixext.dll and cannot be inspected
-           from this host, so whether WixUI_InstallDir's FinishDlg carries that hook could not be verified
-           before shipping. Defining the page here removes the question entirely: it is the same pattern
-           every other custom page in this file already uses, it compiles against the schema, and the
-           checkbox is wired to an action we can see.
-
-           VerifyReadyDlg's Finish already publishes NewDialog FinishDlg, so this page is reached without
-           another Publish. -->
-      <Dialog Id="FinishDlg" Width="370" Height="270" Title="[ProductName] Setup">
-        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
-        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
-        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
-        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
-                 Text="{\WixUI_Font_Title}Orchicon is installed" />
-        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
-                 Text="Setting it up continues in the background." />
-        <Control Id="SetupNote" Type="Text" X="25" Y="70" Width="320" Height="70" Transparent="yes" NoPrefix="yes"
-                 Text="Orchicon is now setting up its server: a database, an event bus and the telemetry backends, then the control plane. This takes a few minutes the first time. The app shows the progress and tells you when it is ready." />
-        <Control Id="LaunchCheck" Type="CheckBox" X="25" Y="170" Width="320" Height="17"
-                 Property="LAUNCHAPP" CheckBoxValue="1" Text="Launch Orchicon now" />
-        <Control Id="Finish" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUIFinish)">
-          <Publish Event="DoAction" Value="LaunchApp" Order="1" Condition="LAUNCHAPP=&quot;1&quot;" />
-          <Publish Event="EndDialog" Value="Return" Order="2" />
-        </Control>
-        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
-          <Publish Event="SpawnDialog" Value="CancelDlg" />
-        </Control>
-      </Dialog>
 
       <Dialog Id="RemoveOptionsDlg" Width="370" Height="270" Title="[ProductName] Setup">
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
@@ -452,7 +443,11 @@
         <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
                  Text="Everything Orchicon is running will be stopped first." />
 
-        <Control Id="DataRadio" Type="RadioButtonGroup" X="20" Y="56" Width="330" Height="80"
+        <!-- HEIGHT IS THE GROUP'S BOX, NOT ITS CONTENT. It was 80 for two 18px radios, so the box ran to
+             y=136 and the note below it started at 96 — an overlap MSI paints on top of itself. The geometry
+             guard caught it only after that guard learned to see BUTTONS (it required self-closing controls,
+             which every button with a <Publish> child is not). -->
+        <Control Id="DataRadio" Type="RadioButtonGroup" X="20" Y="56" Width="330" Height="44"
                  Property="PURGEDATA">
           <RadioButtonGroup Property="PURGEDATA">
             <RadioButton Value="0" X="0" Y="0" Width="330" Height="18" Text="Keep my data (recommended)" />
@@ -465,7 +460,7 @@
              installer is the last place to add conditional UI state for a cosmetic gain: the two
              outcomes are short enough to state together, and a wizard page that always renders is a
              wizard page that cannot render wrong. -->
-        <Control Id="DataNote" Type="Text" X="36" Y="96" Width="316" Height="66" Transparent="yes" NoPrefix="yes"
+        <Control Id="DataNote" Type="Text" X="36" Y="110" Width="316" Height="66" Transparent="yes" NoPrefix="yes"
                  Text="Keep (recommended): leaves the database (projects, workers, conversations, executions), your attachments, and the key that decrypts your secrets, so a reinstall reuses them.  Destroy: deletes the database, your attachments AND that key, so the secrets can never be decrypted again. There is no undo." />
 
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">

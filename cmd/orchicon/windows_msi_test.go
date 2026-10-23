@@ -1805,7 +1805,13 @@ func TestDialogControlsDoNotOverlap(t *testing.T) {
 	}
 
 	dialogRe := regexp.MustCompile(`(?s)<Dialog Id="([A-Za-z]+)"(.*?)</Dialog>`)
-	controlRe := regexp.MustCompile(`<Control Id="([A-Za-z0-9_]+)"([^>]*)/>`)
+	// THE OPENING TAG IS ENOUGH, self-closing or not.
+	//
+	// This used to require "/>" so it matched only controls with no children — which silently excluded every
+	// BUTTON, because a button carries its <Publish> children. The vacuity guard below is what caught it:
+	// "found no dialogs to check — the matcher is wrong". A geometry check that skips the buttons is a check
+	// that cannot see the controls an operator clicks.
+	controlRe := regexp.MustCompile(`<Control Id="([A-Za-z0-9_]+)"([^>]*)>`)
 	attr := func(s, name string) (int, bool) {
 		m := regexp.MustCompile(name + `="([0-9]+)"`).FindStringSubmatch(s)
 		if m == nil {

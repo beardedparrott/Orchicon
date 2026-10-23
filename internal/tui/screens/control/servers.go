@@ -70,17 +70,35 @@ func serverMeta(s instancectl.Instance) string {
 		// The state that exists so a killed install cannot render as eternal progress.
 		return "setup stopped responding"
 	}
-	if s.Plane.PID > 0 && s.Plane.Healthy {
+	// HEALTH IS THE AUTHORITATIVE SIGNAL, AND A PID IS NOT REQUIRED TO REPORT IT.
+	//
+	// REPORTED: "It also claims that prod isn't running but I am talking to you on prod right now." Prod's
+	// plane answers /healthz (200) and its detail line in THIS SAME SCREEN said "plane serving
+	// http://localhost:8091/healthz" — while the state word said "stopped", because this required
+	// `PID > 0` and prod's serve/pids/ is empty (its plane was started outside the lifecycle, so nothing
+	// wrote a PID file).
+	//
+	// plane_lifecycle.go already records the rule and states why: "A plane that answers /healthz IS up,
+	// whoever launched it." A missing PID file means the lifecycle verbs cannot STOP it; it does not mean
+	// nothing is serving. Reporting "stopped" over a plane the operator is actively using is the worst
+	// kind of wrong — it invites them to "fix" a working instance.
+	if s.Plane.Healthy {
 		// The port is on the Instance AND on the plane DTO, and Status() sets them equal. Read either, so a
 		// caller that filled only one (a test, or a future DTO) still gets the port rather than ":0".
 		port := s.ControlPort
 		if port == 0 {
 			port = s.Plane.ControlPort
 		}
+		if port == 0 {
+			// Serving but the port never reached us: say the fact we HAVE rather than invent a ":0".
+			return "running"
+		}
 		return fmt.Sprintf("running :%d", port)
 	}
 	if s.Plane.PID > 0 {
-		return "not answering"
+		// A process that exists but serves nothing is a different failure, and naming it that way is what
+		// distinguishes a wedged plane from an absent one.
+		return "not answering (no /healthz)"
 	}
 	return "stopped"
 }

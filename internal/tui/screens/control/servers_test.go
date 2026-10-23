@@ -47,8 +47,11 @@ func TestServerMetaSaysWhenASetupStoppedResponding(t *testing.T) {
 		want string
 	}{
 		{"running", instancectl.Instance{Plane: planeAlive(8080, true)}, "running :8080"},
+		// THE REPORTED CASE: prod answers /healthz with NO PID file (its plane was started outside the
+		// lifecycle). "stopped" over a plane the operator is using is the worst kind of wrong.
+		{"serving without a pid file", instancectl.Instance{Plane: planeNoPID(8091)}, "running :8091"},
 		{"stopped", instancectl.Instance{}, "stopped"},
-		{"not answering", instancectl.Instance{Plane: planeAlive(8080, false)}, "not answering"},
+		{"process but no healthz", instancectl.Instance{Plane: planeAlive(8080, false)}, "not answering (no /healthz)"},
 		{"setting up", instancectl.Instance{Setup: &instancectl.SetupProgress{State: instancectl.SetupRunning}}, "setting up"},
 		{"progress pct", instancectl.Instance{Setup: &instancectl.SetupProgress{State: instancectl.SetupRunning, Percent: 62}}, "setting up 62%"},
 		{"failed", instancectl.Instance{Setup: &instancectl.SetupProgress{State: instancectl.SetupFailed}}, "setup FAILED"},
@@ -131,4 +134,10 @@ func mkInstance(t *testing.T, home, name string, setup instancectl.SetupProgress
 		return instancectl.WriteSetupProgress(name, setup)
 	}
 	return nil
+}
+
+// planeNoPID is the shape prod actually had: answering, no PID file.
+func planeNoPID(port int) planebind.StatusDTO {
+	return planebind.StatusDTO{ControlPort: port, PID: 0, Healthy: true, State: "connected",
+		Detail: "serving http://localhost:8091/healthz, host-resident — serving process identity unknown"}
 }

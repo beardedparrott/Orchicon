@@ -332,6 +332,29 @@ func sortedPortArgs(ports map[string]int) []string {
 	return out
 }
 
+// instanceMarkers are the entries that make a directory an INSTANCE rather than merely a directory that
+// happens to share the naming convention.
+//
+// THE BUG THIS EXISTS FOR. `orchicon-desktop` is real: the desktop app keeps its WebView state there
+// (`hsts-storage.sqlite`, `localstorage`, `storage`, `mediakeys`). Listing every `orchicon-*` directory made
+// that appear in the TUI as a server called "desktop" — which is not a server, cannot be started, and made
+// the list look wrong to the one person who knows what the names should be.
+//
+// ANY ONE MARKER IS ENOUGH, because a partially-created instance must not be invisible: the resolver unpacks
+// into bin/, the install writes config/, the supervisor writes serve/, and postgres/blobs appear with the
+// first boot. The desktop's directory has none of them.
+var instanceMarkers = []string{"postgres", "serve", "blobs", "config", "ports.json"}
+
+// isInstanceDir reports whether dir holds instance state.
+func isInstanceDir(dir string) bool {
+	for _, marker := range instanceMarkers {
+		if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // instanceDirs lists installed instance names from the state directories under the user's home.
 func instanceDirs() ([]string, error) {
 	home, err := os.UserHomeDir()
@@ -352,6 +375,11 @@ func instanceDirs() ([]string, error) {
 		}
 		name := strings.TrimPrefix(e.Name(), instanceDirPrefix)
 		if name == "" {
+			continue
+		}
+		// A DIRECTORY IS NOT AN INSTANCE. `orchicon-desktop` holds the app's own WebView state; requiring
+		// instance markers keeps it — and any future non-instance sibling — out of the server list.
+		if !isInstanceDir(filepath.Join(home, ".local", "share", e.Name())) {
 			continue
 		}
 		out = append(out, name)
