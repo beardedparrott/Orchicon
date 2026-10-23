@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/beardedparrott/orchicon/internal/containerengine"
+	"github.com/beardedparrott/orchicon/internal/instancectl"
 	"io"
 	"log/slog"
 	"net"
@@ -18,6 +19,111 @@ import (
 	"time"
 )
 
+// installProgress is the ACTIVE install's setup record, or nil when no install is running.
+//
+// A PACKAGE-LEVEL SEAM RATHER THAN A PARAMETER THREADED THROUGH EVERY CALL, and that is a deliberate
+// trade: installPhase is called from ten-plus sites across three files, and adding an argument to each
+// would be churn in the one file where churn is most dangerous (every line of it is an install path).
+// The variable is written in exactly two places — set at the start of runInstall and cleared on the way
+// out — so the lifetime is the install's, which is also the lifetime of the record it feeds.
+//
+// A nil tracker makes installPhase a no-op for progress, so a caller that is not an install (a test, or
+// any future phase banner) keeps the plain banner.
+var installProgress *setupTracker
+
+// setupTracker writes the machine-readable progress record (design of record, D4) beside the instance's
+// ports.json, which is the channel a GUI polls while a detached install runs.
+type setupTracker struct {
+	instance  string
+	lastPhase string
+	// startedAt is when THIS install began, carried through every write.
+	//
+	// LEARNED FROM A REAL RUN: the terminal records were written as fresh structs, so WriteSetupProgress
+	// stamped started_at = now on each one and the record ended up saying the install STARTED at the moment
+	// it FINISHED. A GUI showing "elapsed: 0s" for a six-minute download is the kind of small lie that makes
+	// the whole record untrustworthy.
+	startedAt string
+	// pid is this install process, so "is setup actually running?" is answered by the PROCESS TABLE rather
+	// than by guesswork about a file's age.
+	//
+	// ALSO FROM A REAL RUN: without it the record carried pid 0 on every write, so staleness fell back to
+	// the timestamp alone — the weaker of the two signals the design specifies.
+	pid int
+}
+
+// beginSetup starts a record for an instance: it CLEARS any previous one first, so a finished record from
+// an older run cannot be mistaken for this run's progress.
+func beginSetup(instance string) *setupTracker {
+	_ = instancectl.ClearSetupProgress(instance)
+	t := &setupTracker{instance: instance, pid: os.Getpid()}
+	t.write(instancectl.SetupRunning, "starting", "Starting setup", 0, "")
+	return t
+}
+
+// write is the ONE place a record is written, so every field that must persist (started_at, pid) persists
+// on every state — which is exactly what the two real-run gaps were: fields set in one writer and dropped
+// in another.
+func (t *setupTracker) write(state, phase, label string, percent int, errText string) {
+	if t == nil {
+		return
+	}
+	if t.startedAt == "" {
+		t.startedAt = nowRFC3339()
+	}
+	_ = instancectl.WriteSetupProgress(t.instance, instancectl.SetupProgress{
+		State: state, Phase: phase, Label: label, Percent: percent,
+		StartedAt: t.startedAt, PID: t.pid, Error: errText,
+	})
+}
+
+// phase records a new step, so the GUI's label follows the install rather than showing one frozen line.
+func (t *setupTracker) phase(msg string) {
+	if t == nil {
+		return
+	}
+	t.lastPhase = msg
+	t.write(instancectl.SetupRunning, slug(msg), msg, 0, "")
+}
+
+// done records a clean finish. The record is KEPT (not cleared) so a GUI that was closed during setup can
+// show "setup complete" once on reopen instead of an empty page.
+func (t *setupTracker) done() {
+	t.write(instancectl.SetupDone, "done", "Setup complete", 100, "")
+}
+
+// fail records the error, which is the whole point of the record on the failure path: "setup stopped" with
+// no reason is the black box this channel exists to replace.
+func (t *setupTracker) fail(err error) {
+	if err == nil {
+		return
+	}
+	t.write(instancectl.SetupFailed, "failed", "Setup failed", 0, oneLineProgress(err.Error()))
+}
+
+// nowRFC3339 is a seam so a test can pin the clock.
+var nowRFC3339 = func() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// slug turns a phase banner into a stable machine key ("starting the host services" -> "starting-the-host-services").
+// The KEY is what a GUI switches on; the LABEL is what it shows.
+func slug(msg string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range strings.ToLower(msg) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevDash = false
+		case !prevDash:
+			b.WriteByte('-')
+			prevDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// oneLineProgress collapses whitespace so a multi-line error still fits the record's single field.
+func oneLineProgress(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 // installPhase prints a phase banner for `orchicon install`.
 //
 // It exists because the one-command install is minutes long and largely unattended:
@@ -25,8 +131,12 @@ import (
 // is that nothing has failed yet, and the only way to describe a failure is "during
 // install". Naming each phase as it starts makes progress visible, and puts a failure
 // under the step that caused it.
+//
+// IT ALSO FEEDS THE SETUP RECORD when an install is running (see installProgress), so the same banner that
+// serves the terminal serves a GUI that has no terminal to read.
 func installPhase(msg string) {
 	fmt.Printf("== %s\n", msg)
+	installProgress.phase(msg)
 }
 
 // runInstall implements `orchicon install` — the one-command setup for a
@@ -92,6 +202,43 @@ func runInstall(args []string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+
+	// THE PROGRESS RECORD'S LIFETIME IS THIS INSTALL'S (design of record, D4).
+	//
+	// It starts here, once the instance is known, and is settled by the deferred pair below on BOTH exits:
+	// a clean finish records "done", a returned error records "failed" WITH the reason. Without the failure
+	// arm the record would be left claiming "running" by an install that gave up — the eternal-spinner state
+	// the staleness rule exists to catch, which should never be the normal way a failure is reported.
+	//
+	// beginSetup CLEARS any older record first, so a finished one from a previous run cannot be read as this
+	// run's progress.
+	// THE TRACKER IS CAPTURED IN A LOCAL, and that is what preserves its fields for the settle path.
+	//
+	// The first version called a helper to rebuild a tracker after nil-ing the package variable, so the
+	// terminal records were written by a FRESH tracker with no pid and no start time — the finished record
+	// claimed pid 0 and stated that the install had started at the moment it finished. Measured on a real
+	// run. Holding the original is both simpler and the only version that keeps its state.
+	tracker := beginSetup(instance)
+	installProgress = tracker
+	// THE RESULT IS THE WHOLE POINT OF NAMING IT. A defer cannot see an unnamed return, and "did this install
+	// fail?" is exactly what the record has to answer.
+	settled := func() (err error) {
+		defer func() {
+			installProgress = nil
+			if err != nil {
+				tracker.fail(err)
+			} else {
+				tracker.done()
+			}
+		}()
+		err = runInstallBody(args, log, instance, flags)
+		return err
+	}()
+	return settled
+}
+
+// runInstallBody is runInstall's work, split out so the setup record can be settled around it.
+func runInstallBody(args []string, log *slog.Logger, instance string, flags installFlags) error {
 	imageTag := env("ORCHICON_IMAGE_TAG", "latest")
 	runtimeImage := env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:"+imageTag)
 

@@ -785,18 +785,19 @@ func TestHostInstallRecordsItsShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(src)
-	start := strings.Index(body, "func runInstall(")
-	if start < 0 {
-		t.Fatal("install.go no longer defines runInstall — this assertion needs repointing")
-	}
-	// The install FLOW, i.e. runInstall's body (up to the next top-level func declaration).
-	flow := body[start:]
-	if end := strings.Index(flow[1:], "\nfunc "); end > 0 {
-		flow = flow[:1+end]
-	}
-	// VACUITY GUARD: the assertion below is only meaningful if this is still the flow that starts the host plane.
-	if !strings.Contains(flow, "startHostPlane(") {
-		t.Fatal("runInstall no longer starts the host plane — this assertion needs repointing, not deletion")
+	// THE FLOW MOVED, SO THE ASSERTION FOLLOWS IT RATHER THAN NAMING ONE FUNCTION.
+	//
+	// This used to slice runInstall's body. runInstall was then split so the setup record could be settled
+	// around it (installProgress, D4), and the flow now lives in runInstallBody — at which point a guard
+	// keyed on the literal name "func runInstall(" fails for a restructure that changed nothing about the
+	// behaviour it protects. Keying on the CALL instead means the next such split does not break it either:
+	// find whichever top-level function starts the host plane, and require the residency record in the same
+	// one. That is the property, and it is what "the install FLOW records the shape it created" means.
+	flow := enclosingFunc(body, "startHostPlane(")
+	// VACUITY GUARD: the assertion below is only meaningful if we found the flow that starts the host plane.
+	if flow == "" {
+		t.Fatal("no top-level function in install.go starts the host plane — this assertion needs " +
+			"repointing, not deletion")
 	}
 	if !strings.Contains(flow, "recordResidency(instance, residency)") {
 		t.Error("the install FLOW must record the shape it created: the host-services path never calls " +
@@ -1069,4 +1070,27 @@ func TestHostServicesRanAndDiedNeedsARealRecord(t *testing.T) {
 	if hostServicesRanAndDied("dev") {
 		t.Error("no pid file was ever written, so nothing was observed to die — this must be false")
 	}
+}
+
+// enclosingFunc returns the body of the top-level function in src that contains needle, or "".
+//
+// It exists so a wiring guard can follow the FLOW rather than name the function that happens to hold it
+// today: a pure restructure (splitting a function, renaming one) is not a behaviour change, and a guard
+// that fails on it trains the next reader to delete the guard.
+func enclosingFunc(src, needle string) string {
+	at := strings.Index(src, needle)
+	if at < 0 {
+		return ""
+	}
+	// The function declaration at or before the needle, at column 0.
+	start := strings.LastIndex(src[:at], "\nfunc ")
+	if start < 0 {
+		return ""
+	}
+	start++ // past the newline
+	rest := src[start:]
+	if end := strings.Index(rest[1:], "\nfunc "); end > 0 {
+		return rest[:1+end]
+	}
+	return rest
 }
