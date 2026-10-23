@@ -339,7 +339,18 @@ done
 # (3) is the one that would catch a regression the old absence check never could: a page that renders plane
 # controls to a browser is the leak the brief forbids, and it would pass "no matches in the modules" while
 # being exactly the defect. See frontend/src/lib/desktop.ts's own note on the three surfaces that read it.
-CONTROL_ALLOWED='^(frontend/src/lib/desktop\.ts|frontend/src/lib/desktop\.test\.ts|frontend/src/lib/manage-server\.ts|frontend/src/routes/manage-server\.tsx)$'
+# frontend/src/lib/servers.ts IS A SECOND MEMBER OF THE SAME CATEGORY, and it joined the list with the
+# SERVERS surface (phase 1 of the GUI-driven install design): a desktop-gated client that talks to the
+# shell's own origin for the instance verbs (install/uninstall/start/stop/restart/setup). It is gated the
+# same way — `servers()` returns null unless desktopInfo() exists, and the route that hosts the section
+# redirects a browser — so permitting it keeps this assertion's real invariant (control exists ONLY behind
+# the desktop gate) rather than weakening it.
+#
+# NOTE WHAT TRIPPED HERE FIRST, because it is the trap this file already warns about elsewhere: the file
+# matched on the WORD "plane-control" inside a prose comment, not on a control symbol. Contorting the
+# comment to dodge a grep would have been the wrong repair — the same "a detector tripped by its own
+# documentation" failure called out further down.
+CONTROL_ALLOWED='^(frontend/src/lib/desktop\.ts|frontend/src/lib/desktop\.test\.ts|frontend/src/lib/manage-server\.ts|frontend/src/lib/servers\.ts|frontend/src/lib/servers\.test\.ts|frontend/src/routes/manage-server\.tsx)$'
 expect "every plane-control symbol is confined to the desktop-gated modules" 0 \
   "$(grep -rIlE "$TRIPWIRE" "${REPO_ROOT}/frontend/src" --include='*.ts' --include='*.tsx' 2>/dev/null \
      | grep -v '/api/gen/' | sed "s#^${REPO_ROOT}/##" | grep -vE "$CONTROL_ALLOWED" | wc -l)"

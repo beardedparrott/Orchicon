@@ -1,6 +1,7 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { ServersSection } from "@/components/ServersSection";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -64,9 +65,19 @@ type Section = {
 };
 const SECTIONS: Section[] = [
   {
+    // SERVERS FIRST, because it is what most people came for and it now covers the whole lifecycle.
+    // The Plane section below it stays for the one thing Servers does not do: retarget THIS WINDOW at a
+    // different server, and show the connection detail for the plane the app is currently talking to.
+    id: "servers",
+    title: "Servers",
+    blurb:
+      "Every Orchicon server on this machine: set one up, start or stop it, and remove one — with or without its data.",
+    Component: ServersSection,
+  },
+  {
     id: "plane",
-    title: "Plane",
-    blurb: "Start, stop and inspect the plane this app talks to.",
+    title: "This window's plane",
+    blurb: "Start, stop and inspect the plane the app is connected to.",
     Component: PlaneSection,
   },
 ];

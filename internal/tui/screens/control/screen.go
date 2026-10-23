@@ -72,6 +72,9 @@ var adminSurfaces = []adminSurface{
 
 // Model is the Control screen.
 type Model struct {
+	// serversEnabled gates the Servers source. Management is a HOST operation, so it is only offered when
+	// the shell is talking to a LOCAL instance (design of record, D6). Set through WithServers.
+	serversEnabled bool
 	kit2.Base
 	cl  *client.Clients
 	reg *subs.Registry
@@ -147,7 +150,15 @@ type Model struct {
 }
 
 // New builds the screen.
-func New(cl *client.Clients, reg *subs.Registry) *Model {
+// Option configures the screen at construction.
+type Option func(*Model)
+
+// WithServers enables the Servers source. Pass true only when the shell is connected to a LOCAL instance:
+// installing or removing a server is a host operation, and offering it against a remote plane would either
+// fail per-button or, worse, act on the wrong machine.
+func WithServers(enabled bool) Option { return func(m *Model) { m.serversEnabled = enabled } }
+
+func New(cl *client.Clients, reg *subs.Registry, opts ...Option) *Model {
 	m := &Model{
 		cl:              cl,
 		reg:             reg,
@@ -179,6 +190,14 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	// the same plane API, so a change in either client is a change in the one
 	// file both clients read.
 	m.AddSource("permissions", "Permissions", m.fetchPermissions)
+	for _, opt := range opts {
+		opt(m)
+	}
+	// THE SERVERS SOURCE IS ADDED LAST, and only when management is available on this host: a source that
+	// appears and then fails every action is worse than one that is absent with the reason stated.
+	if m.serversEnabled {
+		m.AddSource(serversSourceName, "Servers (this machine)", m.fetchServers)
+	}
 	// Themes is a Control surface (Settings → Themes in the GUI sense): the TUI
 	// owns its palette set, and this is where the operator picks one. Selecting
 	// a row and pressing the action key applies + persists it.
@@ -826,6 +845,11 @@ func isPermissionErr(err error) bool {
 // --- detail -------------------------------------------------------------
 
 func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Field, string, error) {
+	// SERVERS IS LOCAL STATE, not a plane read: the whole point is that it works while the plane is
+	// stopped, which is exactly when an operator needs it.
+	if src == serversSourceName {
+		return id + " — server on this machine", m.serversDetail(id), "", nil
+	}
 	switch src {
 	case "workers":
 		resp, err := m.cl.Workers.GetWorker(ctx, connect.NewRequest(&apiv1.GetWorkerRequest{Id: id}))
@@ -1279,6 +1303,9 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			})
 		}
 		return acts
+
+	case serversSourceName:
+		return m.serversActions(item)
 
 	case "secrets":
 		id, name := item.ID, item.Title
@@ -2132,6 +2159,8 @@ func (m *Model) HintLine() string {
 		hint = "n: new · e: rotate value · x: delete (values are never read back)"
 	case "adapters":
 		hint = "t: enable/disable (local dispatch filter) · ←/→: pane · r: refresh"
+	case serversSourceName:
+		hint = "s: start · S: stop · R: restart · i: re-apply (retry a setup) · x: remove, keep data · X: remove, DESTROY data"
 	case "admin":
 		hint = "admin-gated — the first row reports the live permission state"
 	}

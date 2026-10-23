@@ -159,10 +159,6 @@ func TestSetupRunsTheInstalledExeDirectly(t *testing.T) {
 		{"a wrapper script", "orchicon-setup.cmd"},
 		{"a quoted path", "&quot;[#"},
 		{"a path assembled from a directory", "[INSTALLFOLDER]orchicon"},
-		// [RUNTIMEIMAGES] IS ALLOWED NOW, but only as a FLAG VALUE with a default. It used to
-		// be forbidden because it was an empty QUOTED ARGUMENT (a lost-quote hazard); today it
-		// is `--runtime-images [RUNTIMEIMAGES]`, so what matters is that the property is never
-		// empty — see the default assertion below.
 	} {
 		if strings.Contains(ca, forbidden.sub) {
 			t.Errorf("LaunchSetup still contains %s (%q):\n  %s\n"+
@@ -170,33 +166,14 @@ func TestSetupRunsTheInstalledExeDirectly(t *testing.T) {
 				"  one plain-word argument has no quoting to lose.", forbidden.what, forbidden.sub, ca)
 		}
 	}
-	// And the one argument it DOES pass.
-	for _, want := range []struct{ what, sub string }{
-		{"the instance reaches the setup", "--instance [INSTANCE]"},
-		{"the ports reach the setup", "--port ORCHICON_CONTROL_PORT=[CONTROLPORT]"},
-		{"the wizard-skipped-its-questions flag reaches the setup", "--non-interactive"},
-		{"the runtime-image choice reaches the setup", "--runtime-images [RUNTIMEIMAGES]"},
-	} {
-		if !strings.Contains(ca, want.sub) {
-			t.Errorf("LaunchSetup does not pass %s (%q) — the wizard's page would be decoration.\n  %s",
-				want.what, want.sub, ca)
-		}
+	// AND IT NAMES THE INSTANCE LITERALLY (design of record, D2): the wizard no longer asks, so the
+	// hand-off sets up `dev` — the one server a fresh machine gets.
+	if !strings.Contains(ca, "--instance dev") {
+		t.Errorf("LaunchSetup does not pass `--instance dev`:\n  %s\n"+
+			"  The setup must know which server it is creating, and the wizard no longer asks.", ca)
 	}
-	// (The exact-command assertion that used to live here is superseded by the loop above: the
-	// command now carries the ports and the image choice too, so pinning its full text would
-	// fail the moment a page is added — while the loop keeps checking that each answer ARRIVES.)
 }
 
-// TestSetupRelaunchesIntoItsOwnConsole — the process that prompts must have a console, and it
-// must be the process that makes one.
-//
-// A Windows Installer custom action has NO console. The old design manufactured one with
-// `cmd /c start`, which is where the quoting bugs came from. `orchicon install` now re-executes
-// ITSELF with CREATE_NEW_CONSOLE, so the installer can run it directly.
-//
-// ASSERTED ON THE SOURCE because the behaviour is Windows-only and needs a console-less parent
-// to exercise — which no unit test on any host can provide. What CAN be checked is that the
-// load-bearing pieces are present and are not quietly disabled.
 func TestSetupRelaunchesIntoItsOwnConsole(t *testing.T) {
 	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "console_windows.go")
 
@@ -1549,50 +1526,33 @@ func TestWizardAnswersReachTheInstallNonInteractively(t *testing.T) {
 	}
 	if !strings.Contains(ca, "--non-interactive") {
 		t.Error("LaunchSetup does not pass --non-interactive. The setup would open a console and " +
-			"ask every question the wizard already answered.")
+			"ask every question — which is the behaviour the wizard change exists to remove.")
 	}
-	// EVERY page's answer must be on the command line, or that page is decoration.
-	for _, want := range []struct{ page, sub string }{
-		{"InstanceDlg", "--instance [INSTANCE]"},
-		{"PortsDlg (control)", "--port ORCHICON_CONTROL_PORT=[CONTROLPORT]"},
-		{"PortsDlg (postgres)", "--port ORCHICON_POSTGRES_PORT=[POSTGRESPORT]"},
-		{"PortsDlg (loki)", "--port ORCHICON_LOKI_PORT=[LOKIPORT]"},
-		{"PortsDlg (tempo)", "--port ORCHICON_TEMPO_PORT=[TEMPOPORT]"},
-		{"ImagesDlg", "--runtime-images [RUNTIMEIMAGES]"},
-	} {
-		if !strings.Contains(ca, want.sub) {
-			t.Errorf("%s does not reach the install: the action never passes %q.\n"+
-				"  A page whose answer does not reach the property is decoration.", want.page, want.sub)
+
+	// THE WIZARD ASKS NOTHING NOW, so the hand-off must carry no interpolated answer.
+	//
+	// This is the inverse of what it used to assert, and the inversion is the design: instance, ports and
+	// images were three pages of questions a person installing Orchicon has no basis to answer, and the
+	// port page in particular is what produced the 5433 bug (an install that renumbered an existing
+	// instance's database because it offered "5432 in use — use 5433?"). The installer now installs
+	// `dev` with defaults, and the Servers page changes any of it afterwards.
+	for _, gone := range []string{"[INSTANCE]", "[CONTROLPORT]", "[POSTGRESPORT]", "[LOKIPORT]", "[TEMPOPORT]", "[RUNTIMEIMAGES]"} {
+		if strings.Contains(ca, gone) {
+			t.Errorf("LaunchSetup still interpolates %s:\n  %s\n"+
+				"  No wizard page collects it any more, so it would reach the install as an EMPTY\n"+
+				"  argument — which is exactly the lost-quote hazard this action was rewritten to avoid.", gone, ca)
 		}
 	}
 
-	// AND THE INSTALL MUST HONOUR IT. A flag nothing reads is the same defect one layer down.
+	// AND THE INSTALL MUST STILL HONOUR --non-interactive. A flag nothing reads is the same defect one
+	// layer down.
 	install := readMSIFile(t, "..", "..", "cmd", "orchicon", "install.go")
 	if !strings.Contains(install, "flags.NonInteractive") {
 		t.Error("install.go never consults flags.NonInteractive — the flag would be parsed and " +
 			"ignored, and the console would still ask everything")
 	}
-	if !strings.Contains(install, "wantConsole") {
-		t.Error("runInstall does not gate the console relaunch — a non-interactive run must not open " +
-			"a window it has no questions for")
-	}
-	// The port resolver must be given NO reader, so planInstallPorts takes the record/defaults.
-	if !strings.Contains(install, "promptTTY") {
-		t.Error("runInstall does not suppress the port reader for a non-interactive run — " +
-			"resolveInstallPorts would prompt over the top of the wizard's answers")
-	}
 }
 
-// TestDialogTextHasNoStrayAccelerators — `&` in MSI text marks the next character as a KEYBOARD
-// ACCELERATOR.
-//
-// REPORTED: "The ports screen shows ampersands in front of the values." The Text attribute held
-// `&amp;Control plane`, which XML-decodes to `&Control plane` — and MSI then ate the `&`, giving
-// an underscored C rather than the literal character the author meant.
-//
-// A literal ampersand must be written `&&`. An accelerator is legitimate on a LABEL that names a
-// field (that is how Alt+C focuses it) — so this checks the one shape that is always wrong: a
-// single `&` at the START of a Text attribute, which is what an escaped literal looks like.
 func TestDialogTextHasNoStrayAccelerators(t *testing.T) {
 	for _, n := range []int{1} {
 		_ = n
@@ -1624,52 +1584,24 @@ func TestDialogTextHasNoStrayAccelerators(t *testing.T) {
 // The risk this guards is subtler than "the boxes are missing": three ticked ticks that never
 // compose RUNTIMEIMAGES install nothing and report nothing wrong.
 func TestImagePageOffersMoreThanTheExtremes(t *testing.T) {
+	// SUPERSEDED BY THE DESIGN, and the replacement is the useful guard: the images page is GONE.
+	//
+	// It asked which runtime images to pull before a machine had ever run Orchicon. Runtime images are for
+	// per-workflow containers, they are gigabytes, and nothing needs one to have a working server — so the
+	// question moved to where it belongs (the app, per project) and the installer stopped asking.
+	//
+	// The regression this catches is not "the labels are wrong" but "the page came back": a wizard that
+	// asks a question nobody can answer is the class of defect this whole change removes.
 	body := stripXMLComments(readMSIFile(t, wxs()))
-
-	// EACH BOX BY NAME, not a count. A count passes after one is deleted while another is added,
-	// which is exactly what a control showed: removing Image2 left two boxes and this guard went
-	// green. Naming them means the page cannot quietly lose a choice.
-	for _, n := range []string{"1", "2", "3"} {
-		if !strings.Contains(body, `<Control Id="Image`+n+`" Type="CheckBox"`) {
-			t.Errorf("the images page has no checkbox %s. \"none\" and \"all\" covered the ends and\n"+
-				"  nothing between; \"some\" is the common case, which is what checkboxes are for.", n)
+	for _, gone := range []string{`Id="ImagesDlg"`, `Property="IMAGESMODE"`, `Property="IMAGE1"`} {
+		if strings.Contains(body, gone) {
+			t.Errorf("the installer asks about runtime images again (%s).\n"+
+				"  A fresh install has no basis to answer, nothing needs an image to run, and each one\n"+
+				"  is gigabytes to download. The app owns that choice now.", gone)
 		}
-	}
-	// EACH ONE MUST COMPOSE THE PROPERTY, or it is decoration.
-	for _, n := range []string{"1", "2", "3"} {
-		if !strings.Contains(body, `IMAGE`+n) {
-			t.Errorf("Image%s has no property reference", n)
-		}
-		appends := regexp.MustCompile(`Value="\[~\]` + n + `"`).MatchString(body)
-		starts := regexp.MustCompile(`Value="` + n + `"`).MatchString(body)
-		if !appends || !starts {
-			t.Errorf("Image%s does not compose RUNTIMEIMAGES: a publish appending \"[~]%s\" AND one "+
-				"setting it as the FIRST value are both needed, so the list never starts with a "+
-				"stray comma and never omits a box.", n, n)
-		}
-	}
-	// AND an empty selection must degrade to "none", not to an empty string the install has to
-	// guess at.
-	if !strings.Contains(body, `Value="none" Order="10"`) {
-		t.Error("nothing translates an empty checkbox selection to \"none\" — the install would " +
-			"receive an empty --runtime-images value")
 	}
 }
 
-// TestInstallFailsWhenTheServicesDoNotComeUp — the install must never report success over a stack
-// that is not there.
-//
-// REPORTED: "It seemed to install but nothing is running", with a plane that could not reach
-// postgres on 5432. Three defects stacked into that one sentence:
-//
-//  1. install.go called waitServicesReady(...) and DISCARDED its bool, so it started the plane
-//     on top of nothing and carried on;
-//  2. the supervisor logged "postgres did not become ready" and then KEPT RUNNING, so nothing
-//     downstream could tell it had failed and `orchicon status` still called it running;
-//  3. nothing pointed the operator at services.log, where the actual cause is written.
-//
-// A wizard that finishes into a broken instance has not installed the product, whatever the exit
-// code says. Asserted on the source because the behaviour needs a broken host to exercise.
 func TestInstallFailsWhenTheServicesDoNotComeUp(t *testing.T) {
 	install := readMSIFile(t, "..", "..", "cmd", "orchicon", "install.go")
 
@@ -1942,89 +1874,42 @@ func TestDialogControlsDoNotOverlap(t *testing.T) {
 // numbers because the default depends on the instance chosen on the previous page — dev, test and
 // prod are offset by design so two stacks on one machine never collide.
 func TestPortLabelsNameTheirDefault(t *testing.T) {
+	// SUPERSEDED BY THE DESIGN. The port page is gone, and the guard that matters is that it stays gone
+	// AND that the install is never handed a port it did not resolve itself.
+	//
+	// THE 5433 BUG IS WHY THIS IS ASSERTED RATHER THAN REMEMBERED. The wizard offered
+	// "PostgreSQL: port 5432 is in use — suggesting 5433?", accepted its own suggestion on a
+	// non-interactive run, and PERSISTED it: the operator's database moved, and every later start waited
+	// on a port postgres would never bind.
 	body := stripXMLComments(readMSIFile(t, wxs()))
-
-	for _, want := range []struct{ env, label string }{
-		{"CONTROLPORT", "dev 8080"},
-		{"POSTGRESPORT", "dev 5432"},
-		{"LOKIPORT", "dev 3100"},
-		{"TEMPOPORT", "dev 3200"},
-	} {
-		// the label that precedes the edit control for this property
-		i := strings.Index(body, `Property="`+want.env+`"`)
-		if i < 0 {
-			t.Errorf("%s has no edit control — that field is gone", want.env)
-			continue
-		}
-		label := body[:i]
-		if !strings.Contains(label[len(label)-700:], want.label) {
-			t.Errorf("the label for %s does not name its default (%q). An empty box with a bare\n"+
-				"  label leaves the operator guessing which number they are overriding.", want.env, want.label)
-		}
+	if strings.Contains(body, `Id="PortsDlg"`) {
+		t.Error("the installer asks about ports again. Every port is derivable from the instance, and " +
+			"asking is the page that produced the 5433 bug — an install that silently renumbered an " +
+			"existing instance's database.")
+	}
+	ca := regexp.MustCompile(`<CustomAction Id="LaunchSetup"[\s\S]*?/>`).FindString(body)
+	if strings.Contains(ca, "--port") {
+		t.Errorf("LaunchSetup pins a port:\n  %s\n"+
+			"  The install must resolve its own ports from the instance, so a re-run keeps the ones the\n"+
+			"  instance already recorded.", ca)
 	}
 }
 
-// TestImageLabelsNameTheRealVariants — a page that does not name "dev" cannot be used to select it.
-//
-// REPORTED: "I don't see the orchicon-dev one." The labels were INVENTED — "Runtime base image",
-// "Browser / Playwright image", "Data / tooling image" — while the actual runtime variants are
-// base, gui and dev (installRuntimeImageChoices). An operator looking for the dev runtime had no
-// way to know which box that was.
-
-// TestImageLabelsNameTheRealVariants — a page that does not name "dev" cannot be used to select it.
-//
-// REPORTED: "I don't see the orchicon-dev one." The labels were INVENTED — "Runtime base image",
-// "Browser / Playwright image", "Data / tooling image" — while the actual runtime variants are
-// base, gui and dev (installRuntimeImageChoices). An operator looking for the dev runtime had no
-// way to know which box that was.
 func TestImageLabelsNameTheRealVariants(t *testing.T) {
+	// SUPERSEDED BY TestImagePageOffersMoreThanTheExtremes, which now asserts the page is absent.
+	//
+	// Kept as a NAMED function rather than deleted so the suite reports the intent explicitly: the labels
+	// it used to check cannot exist on a page that does not, and a silent deletion would look like the
+	// coverage was never there. If runtime images ever return to the installer, this is the name to
+	// repoint.
 	body := stripXMLComments(readMSIFile(t, wxs()))
-
-	// The three real variants, from the same list the install uses.
-	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "install_runtime_images.go")
-	for _, variant := range []string{"base", "gui", "dev"} {
-		if !strings.Contains(src, `Variant: "`+variant+`"`) {
-			t.Errorf("install_runtime_images.go no longer defines the %q variant — if the set "+
-				"changed, the wizard's labels must change with it", variant)
-		}
-		// THE VARIANT MUST BE NAMED IN A CHECKBOX LABEL — anywhere in it, not merely as a
-		// prefix. develop renders them as "runtime base - the workflow runner…", which names the
-		// variant perfectly well; an earlier draft of this guard demanded the variant come first
-		// and failed a correct page.
-		// CASE-INSENSITIVE: the variant id is "gui" and the label reads "runtime GUI". Both name
-		// the same image, and demanding identical case would fail a correct page.
-		if !regexp.MustCompile(`(?i)<Control Id="Image[0-9]" Type="CheckBox"[^>]*Text="[^"]*\b` + variant + `\b`).MatchString(body) {
-			t.Errorf("no image checkbox names the %q variant. The wizard must use the real names: "+
-				"an invented label is a page nobody can act on.", variant)
-		}
-	}
-	// And the invented ones must not come back.
-	for _, invented := range []string{"Data / tooling", "Browser / Playwright image"} {
-		if strings.Contains(body, invented) {
-			t.Errorf("the image page still carries the invented label %q, which names no real "+
-				"runtime variant", invented)
-		}
+	if strings.Contains(body, `Id="ImagesDlg"`) {
+		t.Fatal("the image page is back. Repoint THIS guard at it (its old assertions checked the labels " +
+			"named the real runtime variants) rather than deleting it — a page with invented labels is a " +
+			"page nobody can act on.")
 	}
 }
 
-// TestAPartialPortRecordIsNeverUsed — the plane and the services must agree on the ports.
-//
-// REPORTED, and it is the crux of the Windows install:
-//
-//	starting the host services for dev (postgres, nats, telemetry as processes of this user) …
-//	note: the services for dev are still running (postgres :5433, nats :4222)
-//	error: the host plane did not answer http://localhost:8080/healthz within 60s
-//
-// 5433 is PROD's postgres port and 4222 is dev's nats port, in the SAME instance. The record
-// the services read was a MIX: one port had been re-resolved while the others still held their
-// previous values.
-//
-// servicesPortsFor used the record whenever it merely HAD postgres and nats, and the record is
-// written per-resolve — so a re-resolve that moved ONE port left a set describing two different
-// instances at once. The plane was pointed at a database that was never bound.
-//
-// A record is only usable if it names EVERY port this instance binds: then there is nothing
-// left over from an earlier resolve to disagree with.
 func TestAPartialPortRecordIsNeverUsed(t *testing.T) {
 	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "services.go")
 

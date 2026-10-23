@@ -333,14 +333,36 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           choco install nsis -y --no-progress
-          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+          # FIND makensis RATHER THAN ASSUMING ITS DIRECTORY.
+          #
+          # This appended the literal "C:\Program Files (x86)\NSIS". That is where nsis 3.12 put it, and it
+          # worked until it did not: on 2026-10-23 the same step installed nsis 3.13.0 successfully and the NEXT
+          # step still could not find makensis, so the job failed with "makensis is not on PATH" while the log
+          # plainly said the install had succeeded. A hardcoded path cannot survive a package that relocates.
+          $found = Get-ChildItem -Path "C:\Program Files (x86)\NSIS","C:\Program Files\NSIS" -Filter makensis.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($found) {
+            Write-Host "makensis: $($found.FullName)"
+            Split-Path -Parent $found.FullName | Out-File -FilePath $env:GITHUB_PATH -Append
+          } else {
+            Write-Host "makensis.exe not found after installing nsis"
+          }
       - name: Build the desktop app + NSIS installer
         shell: bash
         run: |
           set -euo pipefail
+          # RESOLVE IT HERE AS WELL: a $GITHUB_PATH append from the step above did not reach this one
+          # on 2026-10-23, so the job failed claiming the install was missing while the log showed it
+          # working. Adding the plausible directories costs nothing and makes this step independent of a
+          # mechanism we cannot observe from here.
+          # ${PATH} rather than $PATH: on purpose. The workflow tokeniser (windows_msi_test.go's
+          # TestWorkflowPwshStepsParse) applies PowerShell's "$name:" rule to every step, and `$PATH:`
+          # is a hard parse error THERE — so the brace form keeps a bash line from tripping a pwsh rule.
+          export PATH="${PATH}:/c/Program Files (x86)/NSIS:/c/Program Files/NSIS:/c/ProgramData/chocolatey/bin"
           if ! command -v makensis >/dev/null 2>&1; then
-            echo "error: makensis is not on PATH — the 'Install NSIS (makensis)' step is missing or failed."
-            exit 1
+              echo "error: makensis is not on PATH — the 'Install NSIS (makensis)' step is missing or failed."
+              echo "       `wails -nsis` only WARNS without it and exits 0, so this assert is what makes it loud."
+              exit 1
           fi
           cd cmd/orchicon-desktop
           wails build -platform windows/amd64 -webview2 download -nsis
