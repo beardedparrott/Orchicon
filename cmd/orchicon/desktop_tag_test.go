@@ -317,17 +317,37 @@ func TestDevRebuildRefreshesThePlaneBinary(t *testing.T) {
 	}
 	body := src[start : start+end]
 
-	if !strings.Contains(body, `$(BIN_DIR)/orchicon" "$(LAUNCHER_DIR)/orchicon"`) {
-		t.Errorf("orch-launcher-dev does not refresh $(LAUNCHER_DIR)/orchicon.\n"+
+	// THE MECHANISM MOVED, THE PROPERTY DID NOT.
+	//
+	// This used to assert the literal `ln -sfn "$(BIN_DIR)/orchicon" "$(LAUNCHER_DIR)/orchicon"` inside the
+	// target. That direct symlink is exactly what repointed the operator's launchers into a THROWAWAY
+	// WORKTREE when a rebuild ran from one — so deleting the worktree deleted them ("my orch binary has been
+	// deleted"). The linking now goes through scripts/dev/install-launcher.sh, which decides WHICH CHECKOUT a
+	// launcher may point at.
+	//
+	// So the assertion splits in two, over the two places the property now lives:
+	//   1. the TARGET must still refresh orchicon (the stale-plane bug this guard was written for);
+	//   2. the SCRIPT must still create a SYMLINK to a repo build rather than a copy (a copy goes stale).
+	if !strings.Contains(body, "install-launcher.sh") || !strings.Contains(body, "orchicon") {
+		t.Errorf("orch-launcher-dev does not refresh the orchicon launcher.\n"+
 			"A dev rebuild then leaves the plane binary a THIN CLIENT resolves from $PATH untouched, so\n"+
 			"`make rebuild-dev` reports success while dev keeps serving a stale binary: old embedded SPA,\n"+
 			"a version that disagrees with the desktop app, and RPCs it does not implement.\n"+
 			"target body:\n%s", body)
 	}
-	// And it must be the DEV build, not a copy that then goes stale.
-	if !strings.Contains(body, "ln -sfn") {
-		t.Error("orch-launcher-dev should SYMLINK orchicon at the repo build (like `orch`), not copy it — " +
-			"a copy becomes stale the moment the next build lands")
+
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "dev", "install-launcher.sh"))
+	if err != nil {
+		t.Fatalf("read install-launcher.sh: %v", err)
+	}
+	scriptSrc := string(script)
+	if !strings.Contains(scriptSrc, "ln -sfn") {
+		t.Error("install-launcher.sh should SYMLINK the launcher at the repo build (like `orch`), not copy " +
+			"it — a copy becomes stale the moment the next build lands")
+	}
+	if !strings.Contains(scriptSrc, `.orchicon-worktrees`) {
+		t.Error("install-launcher.sh does not refuse a worktree as the link target. That is the defect " +
+			"that deleted the operator's launchers when a worktree was removed.")
 	}
 }
 
