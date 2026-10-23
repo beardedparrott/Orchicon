@@ -71,6 +71,17 @@ export const SETUP_CANCELLED = "cancelled";
 /** COMPUTED by the Go side: a "running" record whose process is gone. */
 export const SETUP_STALE = "stale";
 
+/**
+ * OUTCOME_SPAWNED mirrors internal/instancectl.OutcomeSpawned: the verb started a detached process and
+ * nothing has happened yet.
+ *
+ * IT IS THE ONE OUTCOME THE PAGE MUST NOT TREAT AS SETTLED. install and uninstall are minutes of work
+ * behind a detached process, so their result says "started", not "done" — and a refresh issued off the back
+ * of it reads the world BEFORE that work. Named here so the state is compared against a constant rather
+ * than a string literal that can drift from the Go side.
+ */
+export const OUTCOME_SPAWNED = "spawned";
+
 /** SERVERS_PATH mirrors internal/desktop/servers.go's serversPath. */
 const SERVERS_PATH = "/__orchicon_desktop/servers/";
 const CONTROL_TOKEN_HEADER = "X-Orchicon-Desktop";
