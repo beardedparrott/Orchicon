@@ -40,6 +40,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	goruntime "runtime"
+
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 )
@@ -91,6 +93,91 @@ var systemWideOpenCode = []string{
 	filepath.Join("/usr", "bin", "opencode"),
 }
 
+// openCodePlatformCandidates returns ABSOLUTE candidate paths for the install locations a given platform
+// puts opencode in that the $HOME list above does not cover — EMPTY on Unix, where the $HOME list plus PATH is
+// the whole story and the system prefixes are diagnostic only (see systemWideOpenCode).
+//
+// WHY THIS EXISTS. REPORTED on Windows: "I installed opencode desktop and opencode command line on the
+// windows box and when I tried to select opencode models it claimed opencode was not on PATH."
+//
+// The $HOME candidates above are POSIX-SHAPED — they have no file extension — and `os.Stat` never appends one
+// (only the command interpreter does). So on Windows every one of them missed a real install, whatever the
+// operator did, while the plane's error told them to install something they had already installed.
+//
+// AND PATH ALONE IS NOT ENOUGH even when the file IS on it: the plane is a long-lived detached process, so its
+// PATH is the one it was STARTED with. Installing opencode after the plane started leaves the plane looking
+// somewhere it no longer exists — which is why the error says "restart the plane". Probing the KNOWN install
+// directories directly means the common case does not require that restart at all.
+//
+// .EXE ONLY, DELIBERATELY NOT .CMD/.BAT. An npm global install on Windows lands a `opencode.cmd` shim, and Go
+// cannot execute a .cmd directly (CreateProcess refuses it; it needs cmd.exe). Resolving the shim would be the
+// exact failure this file exists to prevent — discovery starts offering models and the first dispatch dies
+// somewhere else. The shim IS reported instead, by foundElsewhereHint, with the two remedies that work.
+func openCodePlatformCandidates(goos string, getenv func(string) string) []string {
+	if goos != "windows" {
+		return nil
+	}
+	env := func(k string) string {
+		if getenv == nil {
+			return ""
+		}
+		return strings.TrimSpace(getenv(k))
+	}
+	var out []string
+	// add takes the BASE SEPARATELY, because filepath.Join("", ".opencode", "bin") is ".opencode/bin" — a
+	// RELATIVE path, which os.Stat resolves against the process's own working directory. An install that is
+	// not there would then be "found" relative to wherever the app happens to be running, which is the same
+	// class of bug as launching from the wrong directory: quietly correct on one machine and wrong on another.
+	add := func(base string, parts ...string) {
+		if base == "" {
+			return
+		}
+		out = append(out, filepath.Join(append([]string{base}, parts...)...)+string(os.PathSeparator)+"opencode.exe")
+	}
+	// The per-user installs first: they need no elevation, so they are what a desktop machine has.
+	add(env("USERPROFILE"), ".opencode", "bin")
+	add(env("LOCALAPPDATA"), "Programs", "opencode")
+	add(env("USERPROFILE"), "scoop", "shims")
+	add(env("LOCALAPPDATA"), "Microsoft", "WinGet", "Links")
+	// Then the machine-wide ones, for an all-users install.
+	add(env("ProgramFiles"), "opencode")
+	add(env("ProgramFiles(x86)"), "opencode")
+	return out
+}
+
+// joinIfBase joins parts under base, returning "" when base is empty so a missing environment variable can
+// never produce a relative path.
+func joinIfBase(base string, parts ...string) string {
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(append([]string{base}, parts...)...)
+}
+
+// openCodeShimCandidates names the package-manager SHIMS the plane can find but cannot launch, so the error
+// message can point at the file the operator actually installed rather than repeating "install opencode".
+func openCodeShimCandidates(goos string, getenv func(string) string) []string {
+	if goos != "windows" {
+		return nil
+	}
+	env := func(k string) string {
+		if getenv == nil {
+			return ""
+		}
+		return strings.TrimSpace(getenv(k))
+	}
+	var out []string
+	for _, dir := range []string{env("APPDATA"), joinIfBase(env("USERPROFILE"), "scoop", "shims")} {
+		if dir == "" {
+			continue
+		}
+		for _, name := range []string{"opencode.cmd", "opencode.bat", "opencode.ps1", "opencode"} {
+			out = append(out, filepath.Join(dir, name))
+		}
+	}
+	return out
+}
+
 // resolveOpenCodeBinary is the ONE production resolver: the env override, then
 // PATH, then the container-visible $HOME candidates. It is the default for the
 // adapter's spawn path (SetBinaryResolver swaps it), the host serve, and the
@@ -118,21 +205,32 @@ func resolveOpenCodeBinary() (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("opencode binary not found on PATH or under $HOME (%s)%s (install it as your user, never with sudo: curl -fsSL https://opencode.ai/install | bash; set %s to point at an existing install; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev)",
-		strings.Join(openCodeRelCandidates, ", "), misplacedOpenCodeHint(), OpenCodeBinEnv)
+	// THE PLATFORM PASS: where THIS OS installs opencode beyond the POSIX $HOME shapes above. Empty on Unix.
+	for _, cand := range openCodePlatformCandidates(runtimeGOOS(), os.Getenv) {
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			return cand, nil
+		}
+	}
+	return "", fmt.Errorf("opencode binary not found on PATH or in any known install location (%s)%s%s (install it as your user, never with sudo: curl -fsSL https://opencode.ai/install | bash; set %s to point at an existing install; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev)",
+		strings.Join(openCodeRelCandidates, ", "), misplacedOpenCodeHint(), foundElsewhereHint(), OpenCodeBinEnv)
 }
 
 // OpenCodeBinDirs returns the host directories the resolver probes for opencode,
 // in probe order, as ABSOLUTE paths for the given home. Existence is NOT
-// filtered: callers that need only real dirs stat them (the host-plane PATH
-// augmentation in cmd/orchicon/container.go does), and a caller asking about the
-// RULE wants the rule rather than today's filesystem.
+// filtered: a caller asking about the RULE wants the rule rather than today's
+// filesystem.
 //
-// It exists so the plane's PATH augmentation and the resolver read ONE list. A
-// second hand-written list is how the PATH prefix and the resolution drift apart:
-// the plane would prepend a directory it thinks holds opencode while the resolver
-// looks somewhere else, and the symptom is a serve that reports 'not found' with
-// the binary sitting on the PATH it was handed.
+// IT HAS NO PRODUCTION CALLER. This comment used to name one — "the host-plane PATH augmentation in
+// cmd/orchicon/container.go" — and that caller no longer exists, so the sentence was describing an
+// arrangement the code had moved away from. It is kept as the exported statement of the probe order (and
+// binary_test.go pins it to the candidate list) because a PATH augmentation is the obvious next thing to
+// want; inventing it here would be a seam nothing calls, and deleting the only description of the order
+// would lose the rule.
+//
+// The rule it states is the one that matters: a second hand-written list is how a PATH prefix and the
+// resolver drift apart — the plane prepends a directory it thinks holds opencode while the resolver looks
+// somewhere else, and the symptom is a serve that reports 'not found' with the binary sitting on the PATH it
+// was handed.
 func OpenCodeBinDirs(home string) []string {
 	if strings.TrimSpace(home) == "" {
 		return nil
@@ -204,6 +302,35 @@ func misplacedOpenCodeHint() string {
 	}
 	return ""
 }
+
+// foundElsewhereHint names an opencode the plane FOUND but could not use, in terms the operator can act on.
+//
+// IT IS THE WINDOWS ANSWER TO "but I installed it". A package-manager install puts a `opencode.cmd` (or
+// `.ps1`) shim on PATH; the plane cannot execute either, so resolution correctly refuses — but refusing
+// silently is the report this fixes. The remedy is an absolute path to a real executable, which is exactly
+// what the advertised escape hatch takes.
+//
+// Empty when there is nothing to report, so it can be appended unconditionally.
+func foundElsewhereHint() string {
+	for _, p := range openCodeShimCandidates(runtimeGOOS(), os.Getenv) {
+		st, err := os.Stat(p)
+		if err != nil || st.IsDir() {
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(p), ".exe") {
+			continue // a real executable here would have resolved; this is for the shims
+		}
+		return fmt.Sprintf(" — NOTE: opencode IS installed at %s, but that is a package-manager SHIM and the plane cannot launch one directly (Windows needs cmd.exe for a .cmd, and a shim hides the real binary). Point at the executable instead: %s=<path to opencode.exe>",
+			p, OpenCodeBinEnv)
+	}
+	return ""
+}
+
+// runtimeGOOS is a seam so the platform tables can be tested for Windows from any host: the tables are pure
+// functions of the OS name, and a test that could only run on Windows is a test that will not run.
+// goruntime is the STANDARD LIBRARY's runtime, aliased: this file already imports
+// internal/runtime under the plain name (it reads the adapter mount roots from it).
+var runtimeGOOS = func() string { return goruntime.GOOS }
 
 // hostHome is os.UserHomeDir with the trim/emptiness handling every caller here
 // needs. An empty home means 'no scoped candidates and no visibility check'.
