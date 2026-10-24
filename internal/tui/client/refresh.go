@@ -133,6 +133,47 @@ func tlsConfig(insecure bool) *tls.Config {
 	return &tls.Config{InsecureSkipVerify: insecure}
 }
 
+// refreshTransports holds ONE transport per TLS mode, shared by every refresh attempt.
+//
+// REPORTED, and it cost the host its whole ephemeral port range: a TUI whose access token had expired sat
+// polling for an hour. `RefreshToken` below used to build a `&http.Transport{}` PER CALL and never close it,
+// so every failed refresh abandoned a transport together with its connection. MEASURED on the reporting
+// machine: one TUI held 28,226 ESTABLISHED sockets to the plane's control port, and with the host's
+// ephemeral range exhausted (28,333 in use of 28,231 available) every later `bind()` on the machine failed —
+// which is how it surfaced, as a `make rebuild-dev` that could not open a single listener.
+//
+// The mechanism reproduces in isolation: 40 calls in the old shape leave 40 connections ESTABLISHED and
+// nothing ever closes them (see TestRefreshTokenDoesNotLeakConnections). The leak is per ATTEMPT, so a
+// client that retries a permanently-failing refresh leaks in proportion to how long it keeps trying.
+//
+// REUSE IS THE FIX, not just cleanup. A shared transport pools connections, so N refresh attempts cost one
+// socket rather than N — and the pool is bounded (MaxIdleConnsPerHost), so a burst cannot grow it without
+// limit. Closing idle connections after each call would also stop the leak, but it would still open a fresh
+// socket every time; reuse is strictly better and no more code.
+var (
+	refreshTransportMu sync.Mutex
+	refreshTransports  = map[bool]*http.Transport{}
+)
+
+func refreshTransportFor(insecure bool) *http.Transport {
+	refreshTransportMu.Lock()
+	defer refreshTransportMu.Unlock()
+	if tr, ok := refreshTransports[insecure]; ok {
+		return tr
+	}
+	tr := &http.Transport{
+		TLSClientConfig: tlsConfig(insecure),
+		// BOUNDED, because this client is long-lived. The defaults are generous and this transport only
+		// ever talks to one endpoint (/auth/refresh), so a small pool covers every concurrent case while
+		// putting a hard ceiling on what a retry storm can hold open.
+		MaxIdleConns:        4,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	refreshTransports[insecure] = tr
+	return tr
+}
+
 // RefreshToken performs POST /auth/refresh with the stored refresh token
 // in the JSON body (the server's readRefreshToken accepts cookie OR body;
 // a non-browser client has no cookie jar, so the body carries it).
@@ -143,7 +184,8 @@ func RefreshToken(ctx context.Context, baseURL string, insecure bool, refreshTok
 	if err != nil {
 		return nil, err
 	}
-	tr := &http.Transport{TLSClientConfig: tlsConfig(insecure)}
+	// THE SHARED TRANSPORT, never a fresh one per call — see refreshTransportFor for the incident.
+	tr := refreshTransportFor(insecure)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/auth/refresh", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("refresh request: %w", err)
