@@ -177,8 +177,8 @@ func TestAuditServiceChatStreamMessageSent(t *testing.T) {
 func TestAuditServiceInterjectMessageSent(t *testing.T) {
 	pool, s, client, tenantID, actorID, convID := auditConvEnv(t, "tnt_audit_chat_interj")
 
-	// Interject drives startConversationTurnOpts(supersede=true) — the same
-	// RPC core as ChatStream. Drive through the real handler path.
+	// With no turn running, an interjection takes the same dispatch core as ChatStream (there is nothing to
+	// inject into and nothing to supersede). Drive through the real handler path.
 	handler := connect.NewServerStreamHandler(apiv1connect.AskOrchiconServiceInterjectConversationTurnProcedure,
 		func(ctx context.Context, req *connect.Request[apiv1.InterjectConversationTurnRequest], stream *connect.ServerStream[apiv1.ChatStreamResponse]) error {
 			ctx = tenant.WithID(ctx, tenantID)
