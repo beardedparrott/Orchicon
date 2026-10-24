@@ -4,9 +4,10 @@ package mcpclient
 
 import (
 	"os"
-	"os/exec"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // newStdioTransport builds the go-sdk CommandTransport for a stdio server
@@ -21,7 +22,7 @@ func newStdioTransport(spec ServerSpec) (*mcp.CommandTransport, error) {
 	if len(argv) == 0 {
 		return nil, errUnconfiguredCommand(spec)
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd := procwin.Command(argv[0], argv[1:]...)
 	// The process attributes are PER-OS: PDEATHSIG is Linux-only and Setpgid is portable, so the
 	// two live in their own files and this one just asks for the platform's answer. Writing the
 	// literal inline here is what broke the darwin release builds.

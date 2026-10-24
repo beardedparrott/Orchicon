@@ -8,14 +8,15 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 func lookupPortOwners(ports []int) ([]portOwner, error) {
 	args := []string{"-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pn"}
-	cmd := exec.Command("lsof", args...)
+	cmd := procwin.Command("lsof", args...)
 	// lsof exits 1 when it finds nothing, which is not an error for this question.
 	out, err := cmd.Output()
 	if err != nil && len(out) == 0 {
@@ -59,7 +60,7 @@ func processNameUnix(pid int) string {
 	if b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm"); err == nil {
 		return strings.TrimSpace(string(b))
 	}
-	out, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
+	out, err := procwin.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return ""
 	}

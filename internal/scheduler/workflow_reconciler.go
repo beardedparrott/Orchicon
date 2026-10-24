@@ -41,7 +41,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	osexec "os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -60,6 +59,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // WorkflowReconciler implements the reconciler.Reconciler interface for
@@ -423,7 +424,7 @@ func deterministicPRForBranch(repoSlug, branch string) (prURL, prState string, v
 	// The jq filter must not error on an empty result set: `length > 0`
 	// selects the first PR only when one exists, otherwise emits nothing and
 	// exits 0, so "no PR found" is distinguishable from "gh failed".
-	if out, err := osexec.Command(ghBin, "pr", "list", "--head", branch, "--state", "all",
+	if out, err := procwin.Command(ghBin, "pr", "list", "--head", branch, "--state", "all",
 		"--repo", repoSlug, "--json", "url,state",
 		"--jq", `if length > 0 then .[0] | [.url, .state] | @tsv else empty end`).Output(); err == nil {
 		if url, state := parsePRLine(string(out)); url != "" {
@@ -433,7 +434,7 @@ func deterministicPRForBranch(repoSlug, branch string) (prURL, prState string, v
 		return "", "", true
 	}
 	// Fallback: gh pr view <branch> --repo OWNER/REPO
-	if out, err := osexec.Command(ghBin, "pr", "view", branch,
+	if out, err := procwin.Command(ghBin, "pr", "view", branch,
 		"--repo", repoSlug, "--json", "url,state",
 		"--jq", `[.url, .state] | @tsv`).Output(); err == nil {
 		if url, state := parsePRLine(string(out)); url != "" {

@@ -15,6 +15,8 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // HostServe is the DEMAND-KEYED opencode serve for the in-process (local)
@@ -439,7 +441,7 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	// this plane started (and left behind) from the operator's own opencode.
 	env = setEnvKV(env, PlaneSpawnEnv, "1")
 
-	cmd := exec.CommandContext(ctx, binary,
+	cmd := procwin.CommandContext(ctx, binary,
 		"serve", "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", port))
 	cmd.Env = env
 	cmd.Stdout = os.Stderr // serve logs go to the plane's stderr/log file

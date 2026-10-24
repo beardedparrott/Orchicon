@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // engineCLI is the binary the INSTALL PATH drives for image and container operations,
@@ -81,7 +83,7 @@ func engineCommand(args ...string) *exec.Cmd {
 	_ = cancel
 	// quietCommandContext, because the install makes MANY engine calls and runs with no console
 	// of its own (instancectl spawns it detached). Each bare one was another window.
-	return quietCommandContext(ctx, engineBinary(), args...)
+	return procwin.CommandContext(ctx, engineBinary(), args...)
 }
 
 // engineStatus is the availability decision the install MADE, cached for the summary. It is a

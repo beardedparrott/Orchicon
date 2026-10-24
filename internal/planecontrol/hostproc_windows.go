@@ -51,6 +51,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // The three Windows facts stdlib syscall does not spell out. See the file header.
@@ -230,7 +232,7 @@ func TerminateProcessTree(pid int) error {
 		return fmt.Errorf("refusing to terminate this process (pid %d)", pid)
 	}
 	// The tree first: it reaps the children.
-	if out, err := quietCommand("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").CombinedOutput(); err == nil {
+	if out, err := procwin.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").CombinedOutput(); err == nil {
 		return nil
 	} else {
 		// FALL BACK to terminating the supervisor itself. The children may survive — the lock

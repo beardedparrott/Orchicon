@@ -1714,14 +1714,14 @@ func TestSupervisedChildrenGetNoConsoleWindow(t *testing.T) {
 	// precisely what this guard originally caught, and what a later round of probes reintroduced
 	// elsewhere. Asserting the ATTRIBUTE rather than one spelling of it is what keeps this guard
 	// pointing at the behaviour instead of at a line of code.
-	if !strings.Contains(body, "quietCommandContext(") && !strings.Contains(body, "setProcAttrNoWindow(cmd)") {
+	if !strings.Contains(body, "procwin.CommandContext(") && !strings.Contains(body, "setProcAttrNoWindow(cmd)") {
 		t.Error("supervisor.start neither uses quietCommandContext nor calls setProcAttrNoWindow. Every " +
 			"child it spawns on Windows opens its own console window, and reapRestart opens another on " +
 			"every restart — reported as \"a TON of blank command prompt windows\".")
 	}
-	if strings.Contains(body, "exec.CommandContext(") {
+	if strings.Contains(body, "exec.CommandContext(") && !strings.Contains(body, "procwin.CommandContext(") {
 		t.Error("supervisor.start still spawns with a bare exec.CommandContext. On Windows a console " +
-			"child of this DETACHED supervisor gets a brand new window — use quietCommandContext.")
+			"child of this DETACHED supervisor gets a brand new window — use procwin.CommandContext.")
 	}
 
 	// AND THE FLAG MUST BE CREATE_NO_WINDOW, not detached: a detached child would not be

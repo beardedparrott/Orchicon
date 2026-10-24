@@ -29,11 +29,12 @@ package opencode
 import (
 	"context"
 	"log/slog"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // apiShape describes one version of the serve's HTTP API.
@@ -273,7 +274,7 @@ func detectAPIShape(ctx context.Context, binary string) (shape apiShape, version
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(cctx, binary, "--version").Output()
+	out, err := procwin.CommandContext(cctx, binary, "--version").Output()
 	if err != nil {
 		return shapeV1, "", false
 	}

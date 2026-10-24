@@ -9,6 +9,8 @@ package main
 import (
 	"strconv"
 	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // lookupPortOwners returns the process listening on each port, for ports that HAVE a listener.
@@ -21,7 +23,7 @@ func lookupPortOwners(ports []int) ([]portOwner, error) {
 		want[p] = true
 	}
 	// -a all connections, -n numeric (no DNS, so it is fast and cannot hang), -o show the owning PID.
-	out, err := quietCommand("netstat", "-ano", "-p", "TCP").Output()
+	out, err := procwin.Command("netstat", "-ano", "-p", "TCP").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +82,7 @@ func parseNetstatOwners(out string, want map[int]bool, nameOf func(int) string) 
 // processName is the executable's base name, or "" when it cannot be read (a process that exited
 // between netstat and this call, or one this user may not inspect).
 func processName(pid int) string {
-	out, err := quietCommand("tasklist", "/FI", "PID eq "+strconv.Itoa(pid), "/FO", "CSV", "/NH").Output()
+	out, err := procwin.Command("tasklist", "/FI", "PID eq "+strconv.Itoa(pid), "/FO", "CSV", "/NH").Output()
 	if err != nil {
 		return ""
 	}

@@ -13,6 +13,8 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // Runtime names.
@@ -279,7 +281,7 @@ func (s *Service) runInstall(ctx context.Context, plan installPlan) InstallResul
 	res := InstallResult{Runtime: plan.runtime, Command: plan.display}
 	ctx, cancel := context.WithTimeout(ctx, installTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, plan.argv[0], plan.argv[1:]...)
+	cmd := procwin.CommandContext(ctx, plan.argv[0], plan.argv[1:]...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

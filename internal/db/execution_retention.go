@@ -29,10 +29,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // ExecutionRetentionPlan is what a prune WOULD do (or did), computed from the live data.
@@ -329,7 +330,7 @@ func RemoveWorktreePaths(ctx context.Context, paths []string) (int, error) {
 		// The project dir is the worktree's PARENT (.orchicon-worktrees/<id>), which is the directory git
 		// must be run from for `worktree remove` to resolve the worktree.
 		parent := filepath.Dir(path)
-		cmd := exec.CommandContext(ctx, "git", "-C", parent, "worktree", "remove", "--force", path)
+		cmd := procwin.CommandContext(ctx, "git", "-C", parent, "worktree", "remove", "--force", path)
 		if err := cmd.Run(); err != nil {
 			if rerr := os.RemoveAll(path); rerr != nil {
 				if firstErr == nil {

@@ -24,6 +24,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // MinimumVersion is the oldest Podman this product supports, in ONE place.
@@ -100,7 +102,7 @@ func DefaultProbe() Probe {
 		Run: func(ctx context.Context, bin string, args ...string) (string, error) {
 			// quietCommandContext: the probe runs from a DETACHED install (no console), so a bare
 			// exec.CommandContext here puts a window on the operator's screen on Windows.
-			out, err := quietCommandContext(ctx, bin, args...).CombinedOutput()
+			out, err := procwin.CommandContext(ctx, bin, args...).CombinedOutput()
 			if err != nil {
 				return strings.TrimSpace(string(out)), fmt.Errorf("%s %s: %w: %s",
 					bin, strings.Join(args, " "), err, strings.TrimSpace(string(out)))

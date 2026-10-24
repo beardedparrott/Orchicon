@@ -43,6 +43,8 @@ import (
 	"strings"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // The caps, mirrored from the server (internal/askorchicon/chat.go: "too many attachments (max 5)",
@@ -303,7 +305,7 @@ func readClipboardImage(current []attachment) (attachment, error) {
 		tmp.Close()
 		defer os.Remove(path)
 		argv = []string{"pngpaste", path}
-		out, err := exec.Command(argv[0], argv[1:]...).Output()
+		out, err := procwin.Command(argv[0], argv[1:]...).Output()
 		_ = out
 		if err != nil {
 			return attachment{}, errNoClipboardImage
@@ -311,7 +313,7 @@ func readClipboardImage(current []attachment) (attachment, error) {
 		return readFileAttachment(path, current)
 	}
 
-	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd := procwin.Command(argv[0], argv[1:]...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	data, err := cmd.Output()
@@ -372,7 +374,7 @@ func readClipboardText() (string, error) {
 	if argv == nil {
 		return "", errors.New("no clipboard reader on this machine — install " + clipboardHelperHint())
 	}
-	out, err := exec.Command(argv[0], argv[1:]...).Output()
+	out, err := procwin.Command(argv[0], argv[1:]...).Output()
 	if err != nil {
 		return "", errors.New("the clipboard holds no text")
 	}

@@ -41,6 +41,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // instanceContainerName is the name this product gives an instance's container. It is a CONVENTION shared
@@ -100,14 +102,14 @@ func stopInstanceContainer(instance string, out io.Writer) bool {
 
 // containerRunningOn asks ONE engine whether a container of that exact name is running.
 func containerRunningOn(engineBin, name string) bool {
-	out, err := quietCommand(engineBin, "inspect", "-f", "{{.State.Running}}", name).CombinedOutput()
+	out, err := procwin.Command(engineBin, "inspect", "-f", "{{.State.Running}}", name).CombinedOutput()
 	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
 // engineCommandOn runs an engine command against a NAMED binary, so a legacy container can be reached in
 // whichever engine actually holds it rather than only in the one the runtime prefers today.
 func engineCommandOn(engineBin string, args ...string) error {
-	out, err := quietCommand(engineBin, args...).CombinedOutput()
+	out, err := procwin.Command(engineBin, args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s %s: %w: %s", filepath.Base(engineBin), strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
@@ -175,7 +177,7 @@ func portHeldByThisInstance(port int, instance string) bool {
 
 // containerPublishesPort reports whether a container publishes a host port.
 func containerPublishesPort(engineBin, name string, port int) bool {
-	out, err := quietCommand(engineBin, "inspect", "-f",
+	out, err := procwin.Command(engineBin, "inspect", "-f",
 		"{{range $p, $b := .NetworkSettings.Ports}}{{(index $b 0).HostPort}} {{end}}", name).CombinedOutput()
 	if err != nil {
 		return false

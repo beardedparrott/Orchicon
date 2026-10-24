@@ -35,6 +35,8 @@ package main
 import (
 	"strconv"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // serviceComponent is one member of the services set and how to ask if it is up.
@@ -102,7 +104,7 @@ func servicesHealthTimeout(instance string, ports map[string]int, probeTimeout t
 				// quietCommand, NOT exec.Command: THIS IS THE LOOP THAT MADE THE SCREEN BLINK. The
 				// install and the start gate call this up to sixty times, once a second, from a
 				// process with no console — and every bare exec.Command there opened a window.
-				return quietCommand(pgIsReadyBin(instance),
+				return procwin.Command(pgIsReadyBin(instance),
 					"-h", "127.0.0.1", "-p", strconv.Itoa(pgPort), "-U", "orchicon").Run() == nil
 			},
 		},
