@@ -317,6 +317,30 @@ type ChatTurnClient interface {
 	ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error
 }
 
+// SessionQueuesPrompts is implemented by chat adapters that can HOLD a message sent while a turn is running
+// and answer it at that turn's next boundary — a real session with a server-side prompt queue.
+//
+// IT DECIDES HOW AN INTERJECTION IS DELIVERED, and getting it wrong is a real defect rather than a detail.
+// The two adapters behave differently and the difference is invisible from the interface above:
+//
+//   - opencode's serve queues: SendTurnMessage is documented as "a message sent while a turn is in flight is
+//     queued and answered at the next turn boundary — the nudge / mid-run chat primitive". Delivery IS the
+//     queue, so an interjection is simply a send.
+//   - the native bridge has NO queue: SendTurnMessage appends to history and then STARTS A NEW PROVIDER TURN,
+//     overwriting the running turn's cancel handle. Called mid-turn it runs a SECOND concurrent stream on the
+//     same session — and, when the turn is blocked on a human answer (ask_user), the provider rejects it
+//     outright. That is exactly the reported failure: an error banner, the draft restored, and the message
+//     never delivered.
+//
+// An adapter that does not implement this is treated as NOT queueing (see askorchicon.deliverInjection): the
+// message is persisted and answered by the next turn that occurs, which is the behaviour the operator asked
+// for — "fit it into the context when it is possible (a turn occurs)".
+type SessionQueuesPrompts interface {
+	// QueuesPrompts reports whether SendTurnMessage on a live session QUEUES the message for the current
+	// turn's boundary (true) rather than starting its own turn (false).
+	QueuesPrompts() bool
+}
+
 // SessionOwner is the OPTIONAL capability for an adapter that can identify
 // whether a session id belongs to it. Ask Orchicon uses it to enforce
 // adapter-scoped session identity across a mid-conversation model/adapter
