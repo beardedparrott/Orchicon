@@ -525,16 +525,49 @@ func (h *HostServe) credentialEnv() ([]string, []string) {
 	return credentialResolver(h.authSource(), adapter.DefaultAdapterKind)
 }
 
-// seedAuth copies the operator's opencode auth.json into the dedicated
-// data dir so the serve can authenticate to the model providers without
-// sharing the real opencode data store.
+// seedAuth gives the serve a credential store it can read, on the versions that keep credentials in a FILE.
+//
+// IT IS A NO-OP ON 2.x, and that is the fix rather than an omission. On 2.x auth.json is a FOSSIL: the store
+// imports it ONCE, at migration, and never rewrites it — so copying it into a fresh data dir is what makes the
+// CLI import a DEAD credential at first boot. Measured on the reporting host: the file was last written
+// 2026-09-07 while the operator had rotated the key on 2026-10-24, and every Ask turn through the opencode
+// adapter failed with "This API key has expired … Signing in again will not renew this key". Re-seeding cannot
+// repair it either, because the import happens exactly once.
+//
+// IT IS STILL REQUIRED ON 1.x, AND THAT IS WHY THIS IS A GATE RATHER THAN A DELETION. On 1.x auth.json IS the
+// credential store: the derive-a-private-data-dir design means the serve starts with NO credentials at all
+// unless one is copied in, and 1.x has no SQLite store to fall back on. Removing the copy outright would take
+// opencode away from every 1.x operator.
+//
+// (That 1.x reads it is the codebase's documented understanding — see AdapterCredentialEnv's note that "On 1.x
+// auth.json IS the credential store" — corroborated by 2.x migrating FROM that file, which only makes sense if
+// 1.x kept its credentials there. No 1.x binary was available on the dev host to observe directly, which is why
+// this is gated on a FILE-SHAPE test rather than on a version parse.)
+//
+// THE SIGNAL IS THE OPERATOR'S OWN opencode.db: 2.x creates it on first run, 1.x never does, and both families
+// leave it in place across upgrades. One stat, no subprocess, and it cannot be wrong about which store the
+// operator's own CLI is using — which is the fact that decides whether a copied auth.json will be imported or
+// read live.
 func (h *HostServe) seedAuth() error {
 	if h.dataDir == "" {
+		return nil
+	}
+	if operatorUsesSQLiteStore(h.authSource()) {
+		h.log.Info("host serve: operator's opencode keeps credentials in SQLite — not copying auth.json "+
+			"(2.x would import a stale copy once and prefer it); provider credentials are resolved from the "+
+			"live stores and delivered by environment instead", "data_dir", h.dataDir)
 		return nil
 	}
 	src := filepath.Join(h.authSource(), "auth.json")
 	b, err := os.ReadFile(src)
 	if err != nil {
+		// ABSENT IS NOT A FAILURE. A host with no opencode credentials is the native-only case, and this used to
+		// return the raw ENOENT so every such plane logged "host serve: seed model auth" on each start. Anything
+		// else (a permission error, a directory where a file should be) is still reported: those are the cases
+		// where a copy was intended and did not happen.
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
 	dir := filepath.Join(h.dataDir, "opencode")
@@ -551,6 +584,17 @@ func (h *HostServe) authSource() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "opencode")
+}
+
+// operatorUsesSQLiteStore reports whether the operator's opencode keeps credentials in the 2.x SQLite store
+// rather than in auth.json.
+//
+// THE FILE'S PRESENCE IS THE SIGNAL, deliberately: 2.x creates it on first run and 1.x never does, so it answers
+// "which store does the operator's own CLI use?" with one stat and no version parsing. That is the fact which
+// decides whether a copied auth.json will be imported ONCE and preferred (2.x) or read live as the store (1.x).
+func operatorUsesSQLiteStore(opencodeDataDir string) bool {
+	_, err := os.Stat(filepath.Join(opencodeDataDir, "opencode.db"))
+	return err == nil
 }
 
 // serveTenantID returns the plane's tenant for the built-in Orchicon MCP
