@@ -86,6 +86,11 @@ type Service struct {
 	// (conversation, ask id). The turn is not blocked by us — opencode holds
 	// the tool call; we record and await a reply on the turn's stream.
 	pending *pendingAskRegistry
+	// followUps holds an injected message that the running turn could not take, so the next turn answers it.
+	// See interject_queue.go — this is what makes a NON-queueing adapter (the native bridge) behave the way
+	// the operator asked: the message lands in the chat at once and is folded into the context at the next
+	// turn.
+	followUps *followUpQueue
 	// hubs is the live-turn broadcast registry (one hub per conversation
 	// with a running turn): every response drained to the dispatch stream
 	// is also published here so WatchTurnStream can re-attach a dropped
@@ -148,6 +153,7 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 		fullsend:     newFullsendStore(),
 		once:         newOnceStore(),
 		pending:      newPendingAskRegistry(),
+		followUps:    newFollowUpQueue(),
 	}
 	s.registerSessionTools()
 	s.startSweeper()

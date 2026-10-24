@@ -761,3 +761,8 @@ func classifyBusEventIndexed(evt BusEvent, calls *toolCallIndex) *scheduler.Sess
 	}
 	return nil
 }
+
+// QueuesPrompts implements scheduler.SessionQueuesPrompts: the opencode serve holds a prompt sent while a turn
+// is in flight and answers it at that turn's next boundary (SendMessage's own contract), so an interjection is
+// simply a send.
+func (a *Adapter) QueuesPrompts() bool { return true }

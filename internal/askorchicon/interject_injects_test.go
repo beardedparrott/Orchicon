@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
 // testInterjectModelRef is set on the conversation rather than left to the tenant default, so these tests are
@@ -33,8 +34,15 @@ const testInterjectModelRef = "opencode/test-model"
 func TestInterjectInjectsWithoutAborting(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
+	// THE QUEUEING PATH (opencode): the serve holds a prompt for the running turn's boundary, so delivery IS a
+	// send onto the live session. The non-queueing path (the native bridge) is covered by
+	// TestNativeAdapterHoldsTheInjectionForTheNextTurn.
 	client := &fakeSessionClient{}
 	s := newChatService(t, pool, client)
+	// DECLARE THE QUEUEING CAPABILITY (the opencode shape) so the injection DELIVERS by sending onto the live
+	// session. The non-queueing shape — the native bridge, which is the one that actually failed — is covered
+	// by TestNativeAdapterHoldsTheInjectionForTheNextTurn.
+	s.testServeClient = queueingClient{client}
 
 	convID := createConversation(t, pool, testInterjectModelRef)
 	setConversationSessionID(t, pool, convID, "ses_keep")
@@ -137,8 +145,15 @@ func TestInterjectInjectsWithoutAborting(t *testing.T) {
 func TestAStaleIdleDoesNotEndTheTurn(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
+	// THE QUEUEING PATH (opencode): the serve holds a prompt for the running turn's boundary, so delivery IS a
+	// send onto the live session. The non-queueing path (the native bridge) is covered by
+	// TestNativeAdapterHoldsTheInjectionForTheNextTurn.
 	client := &fakeSessionClient{}
 	s := newChatService(t, pool, client)
+	// DECLARE THE QUEUEING CAPABILITY (the opencode shape) so the injection DELIVERS by sending onto the live
+	// session. The non-queueing shape — the native bridge, which is the one that actually failed — is covered
+	// by TestNativeAdapterHoldsTheInjectionForTheNextTurn.
+	s.testServeClient = queueingClient{client}
 
 	convID := createConversation(t, pool, testInterjectModelRef)
 	setConversationSessionID(t, pool, convID, "ses_keep")
@@ -183,8 +198,15 @@ func TestAStaleIdleDoesNotEndTheTurn(t *testing.T) {
 func TestInjectionCarriesTheRunningTurnsPromptAndModel(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
+	// THE QUEUEING PATH (opencode): the serve holds a prompt for the running turn's boundary, so delivery IS a
+	// send onto the live session. The non-queueing path (the native bridge) is covered by
+	// TestNativeAdapterHoldsTheInjectionForTheNextTurn.
 	client := &fakeSessionClient{}
 	s := newChatService(t, pool, client)
+	// DECLARE THE QUEUEING CAPABILITY (the opencode shape) so the injection DELIVERS by sending onto the live
+	// session. The non-queueing shape — the native bridge, which is the one that actually failed — is covered
+	// by TestNativeAdapterHoldsTheInjectionForTheNextTurn.
+	s.testServeClient = queueingClient{client}
 
 	convID := createConversation(t, pool, testInterjectModelRef)
 	setConversationSessionID(t, pool, convID, "ses_keep")
@@ -290,4 +312,100 @@ func TestTheInjectionDoesNotCancelOrAbort(t *testing.T) {
 				"message to be ADDED to the running context, explicitly NOT to abort", forbidden)
 		}
 	}
+}
+
+// queueingClient wraps a chat client and DECLARES that it queues a mid-turn prompt — the opencode serve's
+// behaviour, where delivery of an interjection IS a send onto the live session.
+type queueingClient struct {
+	scheduler.ChatTurnClient
+}
+
+func (queueingClient) QueuesPrompts() bool { return true }
+
+// TestNativeAdapterHoldsTheInjectionForTheNextTurn is THE REPORTED FAILURE, pinned.
+//
+// The native bridge does not queue (scheduler.SessionQueuesPrompts == false): its SendTurnMessage starts a new
+// provider turn and takes over the running turn's cancel handle. Delivering an interjection that way ran a
+// SECOND concurrent stream, which the provider rejected while the turn waited on an ask_user answer — the
+// operator's "error message saying the message could not be sent", draft restored, and then a user card with
+// no reply.
+//
+// The contract now: nothing is sent mid-turn, the message is held, and a follow-up turn answers it — the
+// operator's own words: "send it immediately into the chat, no error message, and then fit it into the
+// context when it is possible (a turn occurs)".
+func TestNativeAdapterHoldsTheInjectionForTheNextTurn(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
+	pool := chatDBTestPool(t)
+	client := &fakeSessionClient{}
+	s := newChatService(t, pool, client)
+	// NO queueing declaration: this is the native bridge's shape.
+	s.testServeClient = client
+
+	convID := createConversation(t, pool, testInterjectModelRef)
+	setConversationSessionID(t, pool, convID, "ses_keep")
+	ctx := context.Background()
+
+	ack1, _, _, err := s.startConversationTurn(ctx, "tnt_dev", convID, "first", nil)
+	if err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	waitForSend(t, client, 1)
+	entry, running := s.turns.get(convID)
+	if !running {
+		t.Fatal("the first turn should be registered")
+	}
+
+	// THE INTERJECTION. It must return nil — no error banner — and must not send.
+	if err := s.deliverInjection(ctx, "tnt_dev", convID, "also check the logs", nil, entry); err != nil {
+		t.Fatalf("the interjection reported an error to the operator: %v — a saved message must never be "+
+			"reported as failed, which is what left the text in the composer", err)
+	}
+	client.mu.Lock()
+	sends := len(client.sendCalls)
+	client.mu.Unlock()
+	if sends != 1 {
+		t.Fatalf("send calls = %d, want 1 (the turn's own). A mid-turn send on this adapter starts a competing "+
+			"provider turn and is rejected while the turn waits on a human answer", sends)
+	}
+	// It is in the chat immediately — one persisted user row.
+	if n := countUserMessages(t, pool, convID, "also check the logs"); n != 1 {
+		t.Fatalf("persisted %d copies of the injected message, want 1 (it must appear in the chat at once)", n)
+	}
+	// And it is held for the next turn.
+	if !s.followUps.has(convID) {
+		t.Fatal("the message was neither sent nor held, so nothing will ever answer it — the operator's " +
+			"\"user card but then it didn't appear to be sent to the user\"")
+	}
+
+	// THE TURN FINISHES → A TURN OCCURS TO ANSWER IT.
+	client.sub.feed(busText("ses_keep", "first answer"))
+	client.sub.feed(busIdle("ses_keep"))
+	waitForMessage(t, pool, convID, ack1)
+
+	// The follow-up turn dispatches its own send, carrying the held text.
+	waitForSend(t, client, 2)
+	client.mu.Lock()
+	followUp := client.sendCalls[1].text
+	client.mu.Unlock()
+	if !strings.Contains(followUp, "also check the logs") {
+		t.Fatalf("the follow-up turn sent %q, want the held interjection", followUp)
+	}
+	// AND IT DID NOT DUPLICATE THE OPERATOR'S ROW: the dispatch runs with skipPersist because the message was
+	// persisted when they sent it.
+	if n := countUserMessages(t, pool, convID, "also check the logs"); n != 1 {
+		t.Errorf("persisted %d copies after the follow-up, want 1 — a duplicate shows the operator their own "+
+			"words twice and hands the model the same message twice", n)
+	}
+}
+
+// countUserMessages counts persisted USER rows whose content is exactly text.
+func countUserMessages(t *testing.T, pool *db.Pool, convID, text string) int {
+	t.Helper()
+	n := 0
+	for _, m := range listMessages(t, pool, convID) {
+		if m.Role == "user" && strings.TrimSpace(m.Content) == text {
+			n++
+		}
+	}
+	return n
 }

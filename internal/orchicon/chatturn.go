@@ -766,6 +766,20 @@ func (b *NativeBridge) Subscribe(ctx context.Context, conversationID string) (sc
 	return bus, nil
 }
 
+// QueuesPrompts implements scheduler.SessionQueuesPrompts and answers FALSE, which is the whole reason that
+// interface exists.
+//
+// The native bridge EMULATES a session: history is held in memory and re-sent with every request, and
+// SendTurnMessage STARTS A PROVIDER TURN each time (it also overwrites the running turn's cancel handle). It
+// has no server-side prompt queue, so a message sent mid-turn does not join the turn — it starts a second
+// concurrent stream on the same session. When the running turn is blocked on a human answer (ask_user), the
+// provider rejects the second one, and the operator gets an error banner for a message that should simply have
+// waited. Reported exactly that way.
+//
+// Claiming FALSE costs nothing and is honest: askorchicon then persists the message and answers it on the next
+// turn, which is what this adapter can actually do.
+func (b *NativeBridge) QueuesPrompts() bool { return false }
+
 // SendTurnMessage implements scheduler.ChatTurnClient. It appends the user
 // message to the session's in-memory history, resolves the provider from the
 // model_ref through the registry credential path, and streams ONE turn via

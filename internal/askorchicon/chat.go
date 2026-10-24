@@ -686,67 +686,82 @@ func (s *Service) InterjectConversationTurn(ctx context.Context, req *connect.Re
 	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh, st)
 }
 
-// errNothingToInjectInto means a running turn has no live session to add a message to.
+// injectIntoRunningTurn adds msg to a RUNNING turn WITHOUT interrupting it, then attaches the caller to the
+// reply that message joins.
 //
-// NOT A NORMAL STATE — the collector creates and persists a session before it sends anything — so the caller
-// falls back to the supersede path, which is guaranteed to answer, rather than failing the operator's
-// message outright. It is a sentinel so that decision lives in ONE place.
-var errNothingToInjectInto = errors.New("running turn has no live session to inject into")
-
-// injectIntoRunningTurn adds msg to a RUNNING turn's live session, without interrupting it, then attaches the
-// caller to the reply that message just joined.
+// IT NEVER REPORTS THE MESSAGE AS FAILED, and that is a correction of the previous behaviour. The operator:
+// "It gave an error message saying the message could not be sent and would be saved, then it left the text in
+// the composer… What should happen, is it should send it immediately into the chat, no error message, and then
+// fit it into the context when it is possible (a turn occurs)."
+//
+// The message is theirs and it IS saved the instant they send it, so there is nothing for them to fix and
+// nothing to retry — an error banner over a saved message is a lie about what happened, and restoring the
+// draft on top of it makes them send it twice. Delivery is now BEST-EFFORT AND INVISIBLE:
+//
+//   - an adapter that QUEUES (opencode) gets the message on the live session, where the serve answers it at
+//     the running turn's next boundary;
+//   - an adapter that does NOT queue (the native bridge — see scheduler.SessionQueuesPrompts) is not sent the
+//     message at all mid-turn, because a send there starts a competing provider turn and can be rejected
+//     outright; the message is held and answered by the next turn that occurs.
 func (s *Service) injectIntoRunningTurn(ctx context.Context, stream *connect.ServerStream[apiv1.ChatStreamResponse], tenantID, convID, msg string, attachments []*apiv1.AttachmentInput, entry turnEntry) error {
 	if err := s.deliverInjection(ctx, tenantID, convID, msg, attachments, entry); err != nil {
-		if errors.Is(err, errNothingToInjectInto) {
-			s.log.Warn("interjection found a running turn with no session — falling back to a fresh turn",
-				"conversation", convID, "assistant_message", entry.assistantMsgID)
-			assistantID, ch, st, derr := s.startConversationTurnOpts(ctx, tenantID, convID, msg, attachments, turnDispatchOpts{supersede: true})
-			if derr != nil {
-				return derr
-			}
-			return s.drainTurnStream(stream, convID, assistantID, ch, st)
-		}
+		// A PERSISTENCE FAILURE IS THE ONLY THING THE OPERATOR SEES, because it is the only case where their
+		// message is genuinely lost. Everything else is delivery, and delivery is best-effort by design.
 		return err
 	}
-	// 4. Attach to the reply this message just joined. It is the RUNNING turn's own assistant message, so the
-	// operator sees the work continue rather than a second, empty reply appearing beside it.
+	// Attach to the reply this message joins. It is the RUNNING turn's own assistant message, so the operator
+	// watches the work continue rather than a second, empty reply appearing beside it.
 	return s.watchRunningTurn(ctx, stream, convID, entry.assistantMsgID)
 }
 
-// deliverInjection persists msg as a user message and hands it to the running turn's live session.
+// deliverInjection persists msg as a user message and gets it into the model's context by whatever route the
+// conversation's adapter can actually honour.
 //
-// THE ORDER IS THE DESIGN:
-//
-//  1. the message is PERSISTED FIRST. If the send then fails, the operator's words are still in the
-//     transcript (and in the history a recreated session replays) rather than lost with an error dialog.
-//  2. it is SENT to the live session. Acceptance is what makes the injection real.
-//  3. the turn's injection counter is incremented — ONLY after the send succeeded — so the collector knows to
-//     expect work from it (see the idle guard in runOneTurnAttempt).
+// THE ORDER IS THE DESIGN: persist FIRST, so the operator's words are in the transcript (and in the history a
+// recreated session replays) before anything that could fail is attempted.
 func (s *Service) deliverInjection(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput, entry turnEntry) error {
 	conv, err := s.loadConversation(ctx, tenantID, convID)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(conv.SessionID) == "" {
-		return errNothingToInjectInto
-	}
 
-	// 1. Persist. Same path as a normal send, flagged as an injection in the audit trail.
+	// 1. Persist. Same path as a normal send, flagged as an injection in the audit trail. THIS is what makes
+	// the message appear in the chat immediately, and it is the only step whose failure is reported.
 	if _, err := s.persistUserMessage(ctx, tenantID, conv, msg, attachments, userSendFlags{injected: true}); err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
 
-	// 2. Send into the live session.
-	client, err := s.resolveChatClient(convID, conv.ModelRef)
-	if err != nil {
-		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
-			"your message was saved, but it could not be delivered to the running turn: %w — it is in the transcript; send it again once the turn finishes", err))
+	// 2. Get it into the context, by the route this adapter supports.
+	client, cerr := s.resolveChatClient(convID, conv.ModelRef)
+	if cerr != nil {
+		// The message is saved and will be answered by the next turn; there is nothing for the operator to do.
+		s.log.Warn("ask orchicon interjection: adapter could not be resolved — the message is saved and will be answered on the next turn",
+			"conversation", convID, "error", cerr)
+		s.queueFollowUp(convID, msg, attachments)
+		return nil
 	}
 
-	// THE PROMPT AND MODEL ARE THE RUNNING TURN'S, re-read from its registry entry rather than rebuilt.
-	// opencode applies `system` and `model` PER MESSAGE, so a second build could hand this message a different
-	// persona or a different model than the turn it is joining — the message would reach a different model than
-	// the work it is commenting on.
+	if !queuesPrompts(client) {
+		// THE NATIVE BRIDGE. Sending mid-turn would start a competing provider turn on the same session (and
+		// be rejected outright while the running turn waits on a human answer), so the message is HELD and
+		// answered by the next turn — which is the behaviour the operator described: "fit it into the context
+		// when it is possible (a turn occurs)".
+		s.log.Info("ask orchicon interjection queued for the next turn (this adapter has no prompt queue)",
+			"conversation", convID, "assistant_message", entry.assistantMsgID, "attachments", len(attachments))
+		s.queueFollowUp(convID, msg, attachments)
+		return nil
+	}
+
+	if strings.TrimSpace(conv.SessionID) == "" {
+		s.log.Warn("ask orchicon interjection: running turn has no session — the message is saved and will be answered on the next turn",
+			"conversation", convID, "assistant_message", entry.assistantMsgID)
+		s.queueFollowUp(convID, msg, attachments)
+		return nil
+	}
+
+	// THE PROMPT AND MODEL ARE THE RUNNING TURN'S, re-read from its registry entry rather than rebuilt. opencode
+	// applies `system` and `model` PER MESSAGE, so a second build could hand this message a different persona or
+	// a different model than the turn it is joining.
 	system := entry.reuseSystem
 	modelRef := entry.modelRef
 	if strings.TrimSpace(modelRef) == "" {
@@ -754,15 +769,17 @@ func (s *Service) deliverInjection(ctx context.Context, tenantID, convID, msg st
 	}
 
 	// NOT the request context: the stream this call arrived on may drop, and the injection must still land —
-	// that is the whole point of adding context to work that continues without the operator watching. Bounded
-	// on its own so a wedged serve cannot park the interjection for ever.
+	// that is the point of adding context to work that continues without the operator watching. Bounded on its
+	// own so a wedged serve cannot park it for ever.
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), askTimeout())
 	defer cancel()
 	if len(attachments) > 0 {
 		acc, ok := client.(scheduler.SendTurnMessageWithAttachments)
 		if !ok {
-			return connect.NewError(connect.CodeFailedPrecondition, errors.New(
-				"your message was saved, but this conversation's adapter cannot attach files to a running turn — send it again once the turn finishes"))
+			s.log.Warn("ask orchicon interjection: this adapter cannot attach files to a running turn — the message is saved and will be answered on the next turn",
+				"conversation", convID)
+			s.queueFollowUp(convID, msg, attachments)
+			return nil
 		}
 		parts := make([]scheduler.ChatAttachment, 0, len(attachments))
 		for _, a := range attachments {
@@ -773,8 +790,13 @@ func (s *Service) deliverInjection(ctx context.Context, tenantID, convID, msg st
 		err = client.SendTurnMessage(sendCtx, convID, conv.SessionID, system, modelRef, msg)
 	}
 	if err != nil {
-		return connect.NewError(connect.CodeUnavailable, fmt.Errorf(
-			"your message was saved, but it could not be delivered to the running turn: %w — it is in the transcript; send it again once the turn finishes", err))
+		// A DELIVERY FAILURE IS NOT THE OPERATOR'S PROBLEM. The message is in the transcript; hold it so the
+		// next turn answers it, and say NOTHING to the client — the previous code raised an error banner,
+		// restored the draft (so they sent it twice), and then left the message unanswered.
+		s.log.Warn("ask orchicon interjection could not be delivered to the live session — queued for the next turn",
+			"conversation", convID, "error", err)
+		s.queueFollowUp(convID, msg, attachments)
+		return nil
 	}
 
 	// 3. Tell the collector to expect work from it. AFTER the send, never before: an injection that failed put
@@ -783,6 +805,55 @@ func (s *Service) deliverInjection(ctx context.Context, tenantID, convID, msg st
 	s.log.Info("ask orchicon interjection injected into the running turn",
 		"conversation", convID, "assistant_message", entry.assistantMsgID, "attachments", len(attachments))
 	return nil
+}
+
+// startQueuedFollowUp answers a held interjection with a turn of its own.
+//
+// IT RUNS IN THE BACKGROUND and drains its own event channel: the operator may have closed the pane, and this
+// turn exists to answer their message, not to stream to a socket. The transcript poll picks the reply up, which
+// is what the GUI already does for any turn it is not streaming.
+//
+// skipPersist is set because the USER ROW ALREADY EXISTS — the interjection persisted it when it was sent.
+// Inserting it again would show the operator's words twice and hand the model a duplicate.
+func (s *Service) startQueuedFollowUp(ctx context.Context, tenantID, convID string) {
+	if s.followUps == nil {
+		return
+	}
+	item, ok := s.followUps.take(convID)
+	if !ok {
+		return
+	}
+	if _, running := s.turns.get(convID); running {
+		// A turn is already in flight — the operator sent something else while this one finished. Leave the
+		// message for that turn rather than racing it with a second.
+		s.followUps.put(convID, item.text, item.attachments)
+		return
+	}
+	s.log.Info("ask orchicon answering a held interjection on a follow-up turn",
+		"conversation", convID)
+	_, ch, _, err := s.startConversationTurnOpts(ctx, tenantID, convID, item.text, item.attachments, turnDispatchOpts{skipPersist: true})
+	if err != nil {
+		// NOT RE-QUEUED, deliberately: a follow-up that fails and re-queues itself is a request loop. The
+		// message is already in the transcript.
+		s.log.Warn("ask orchicon follow-up turn for a held interjection could not start — the message stays in the transcript for the next turn",
+			"conversation", convID, "error", err)
+		return
+	}
+	go func() {
+		for range ch {
+			// dropped: nobody is streaming this turn
+		}
+	}()
+}
+
+// queuesPrompts reports whether this adapter holds a message for the running turn's boundary (see
+// scheduler.SessionQueuesPrompts). An adapter that does not say is treated as NOT queueing — the safe answer,
+// because the unsafe one starts a competing turn.
+func queuesPrompts(client scheduler.ChatTurnClient) bool {
+	if q, ok := client.(scheduler.SessionQueuesPrompts); ok {
+		return q.QueuesPrompts()
+	}
+	return false
 }
 
 // loadConversation reads one conversation row in the tenant's scope.
@@ -1015,6 +1086,13 @@ type turnDispatchOpts struct {
 	// supersede makes the dispatch first interrupt any in-flight turn for
 	// the conversation (interject semantics) instead of rejecting it.
 	supersede bool
+	// skipPersist says this message's USER ROW ALREADY EXISTS, so the dispatch must not insert it again.
+	//
+	// It is how an interjection is answered. The message is persisted the moment the operator sends it (so it
+	// appears in the transcript immediately and durability never depends on delivery), and the FAILED-to-queue
+	// case answers it with a follow-up turn whose user row is that same message. Without this flag the
+	// operator's words would appear twice in the transcript and twice in the model's context.
+	skipPersist bool
 }
 
 // userSendFlags says how an operator message entered the conversation, for the audit trail.
@@ -1233,9 +1311,13 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 
 	// --- 2. Persist user message (and title on first message). ---
-	if _, err := s.persistUserMessage(ctx, tenantID, conv, msg, attachments, userSendFlags{superseded: opts.supersede}); err != nil {
-		releaseTurn()
-		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
+	//
+	// SKIPPED when the row already exists (an interjection being answered — see opts.skipPersist).
+	if !opts.skipPersist {
+		if _, err := s.persistUserMessage(ctx, tenantID, conv, msg, attachments, userSendFlags{superseded: opts.supersede}); err != nil {
+			releaseTurn()
+			return "", nil, nil, connect.NewError(connect.CodeInternal, err)
+		}
 	}
 
 	// --- 3. Resolve model and build prompts (DB-only, no serve
@@ -1530,6 +1612,15 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				}
 			} else {
 				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning, finalLedger)
+			}
+			// AN INJECTED MESSAGE THIS ADAPTER COULD NOT QUEUE IS ANSWERED HERE.
+			//
+			// The turn just finished cleanly, so a turn can occur — which is exactly the moment the operator
+			// described: "fit it into the context when it is possible (a turn occurs)". Only on a CLEAN collect:
+			// after a stop, a failure or a supersede the operator's attention is somewhere else, and the
+			// message stays in the transcript for whatever they send next (all three persist it).
+			if terr == nil {
+				s.startQueuedFollowUp(detached, tenantID, convID)
 			}
 			close(streamEventCh)
 		}()
