@@ -46,8 +46,11 @@ func auditCreateConversation(t *testing.T, pool *db.Pool, tenantID string) strin
 		t.Fatalf("begin tx: %v", err)
 	}
 	defer ttx.Rollback(ctx)
+	// A MODEL, OR EVERY DISPATCH FAILS BEFORE IT REACHES WHAT IS UNDER TEST. An unseeded tenant has no
+	// DefaultAskOrchiconModel, so a conversation created with ModelRef "" cannot send at all — these
+	// audit tests were silently never running for exactly that reason.
 	row, err := db.CreateConversation(ctx, ttx.Tx, db.ConversationRow{
-		ID: db.NewID(), TenantID: tenantID, ModelRef: "",
+		ID: db.NewID(), TenantID: tenantID, ModelRef: testInterjectModelRef,
 	})
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
@@ -172,8 +175,18 @@ func TestAuditServiceChatStreamMessageSent(t *testing.T) {
 }
 
 // TestAuditServiceInterjectMessageSent asserts one conversation.message_sent
-// row per InterjectConversationTurn send, with superseded=true in the after
-// snapshot (single implementation point, D8).
+// row per InterjectConversationTurn send, and that the after snapshot reports
+// WHAT ACTUALLY HAPPENED (single implementation point, D8).
+//
+// THE ASSERTION USED TO READ superseded=true, WHICH WAS NEVER TRUE HERE. This test drives the
+// no-turn-running case — its own second comment says so: "there is nothing to inject into and nothing to
+// supersede" — yet it demanded the flag that says something WAS superseded. Under the old code the flag was
+// set unconditionally, so the assertion matched a lie; once interjecting stopped aborting a healthy turn,
+// the honest value (both flags false) surfaced it.
+//
+// The two flags are now asserted TOGETHER, because they are a pair describing one decision: injected means
+// the message joined a live turn's session, superseded means a turn was cancelled to make room. Exactly one
+// of them can be true for a given send, and for THIS send neither is.
 func TestAuditServiceInterjectMessageSent(t *testing.T) {
 	pool, s, client, tenantID, actorID, convID := auditConvEnv(t, "tnt_audit_chat_interj")
 
@@ -223,8 +236,15 @@ func TestAuditServiceInterjectMessageSent(t *testing.T) {
 	if err := json.Unmarshal(rows[0].After, &after); err != nil {
 		t.Fatalf("unmarshal after: %v", err)
 	}
-	if after["superseded"] != true {
-		t.Fatalf("interject after = %v, want superseded=true", after)
+	// NEITHER FLAG, BECAUSE NOTHING WAS RUNNING: the message started a turn like any other send. Asserting
+	// both is what makes this a statement about the DECISION rather than about one field.
+	if after["injected"] != false {
+		t.Errorf("interject after = %v, want injected=false — no turn was running, so nothing was injected into", after)
+	}
+	if after["superseded"] != false {
+		t.Errorf("interject after = %v, want superseded=false — no turn was running, so nothing was "+
+			"superseded (this used to demand true, which matched an unconditional flag rather than the "+
+			"actual behaviour)", after)
 	}
 }
 

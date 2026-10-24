@@ -231,7 +231,7 @@ func TestInterjectConversationTurnSupersedes(t *testing.T) {
 	client := &fakeSessionClient{}
 	s := newChatService(t, pool, client)
 
-	convID := createConversation(t, pool, "")
+	convID := createConversation(t, pool, testInterjectModelRef)
 	setConversationSessionID(t, pool, convID, "ses_keep")
 	ctx := context.Background()
 

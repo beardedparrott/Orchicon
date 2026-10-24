@@ -123,7 +123,7 @@ func TestInterjectRecyclesWedgedSession(t *testing.T) {
 	client := &fakeSessionClient{}
 	s := newChatService(t, pool, client)
 	ctx := context.Background()
-	convID := createConversation(t, pool, "")
+	convID := createConversation(t, pool, testInterjectModelRef)
 	// The conversation already has a session (a follow-up turn reuses it). The
 	// wedged turn wedges THIS session; D4 must recycle away from it.
 	setConversationSessionID(t, pool, convID, "ses_live")
