@@ -103,6 +103,24 @@ type openCodeAuthEntry struct {
 // Returns (nil, nil) when no opencode demand, no store, or an unreadable store:
 // a host with no opencode credentials is not an error, it is the native-only
 // case. It never guesses an env name — an unmapped provider is REPORTED.
+// AdapterCredentialEnv is adapterCredentialEnv for callers outside this package — specifically the HOST
+// opencode serve, which needs the same credentials the container path is given.
+//
+// WHY IT HAS TO EXIST. adapterCredentialEnv already read BOTH stores with the database winning, because
+// "auth.json alone is not enough on a 2.x install" — but its only caller was the container spawn, so the HOST
+// serve was left seeding auth.json and nothing else. Reported: a dev instance whose opencode-go credential came
+// from an auth.json last written in September while the operator had rotated the key six weeks later; every Ask
+// turn through the opencode adapter failed with "This API key has expired … Signing in again will not renew this
+// key", while the operator's own `opencode` worked, because it reads the SQLite store this function prefers.
+//
+// MEASURED, and it is what makes env the right delivery channel rather than a guess: with the SAME stale store,
+// prompting opencode-go fails (the reported error), and with the resolved key in OPENCODE_API_KEY it succeeds.
+// The environment OUTRANKS the stored credential on 2.x, so no store surgery, no re-import and no deletion is
+// needed — the serve simply has to be told the credential.
+func AdapterCredentialEnv(home string, kinds ...string) (env []string, unusable []string) {
+	return adapterCredentialEnv(home, kinds...)
+}
+
 func adapterCredentialEnv(home string, kinds ...string) (env []string, unusable []string) {
 	if home == "" {
 		return nil, nil
@@ -119,7 +137,7 @@ func adapterCredentialEnv(home string, kinds ...string) (env []string, unusable 
 	}
 	// BOTH STORES, MERGED WITH THE DATABASE WINNING — see openCodeDBPath for why
 	// auth.json alone is not enough on a 2.x install.
-	keys := map[string]string{}
+	keys := map[string]credEntry{}
 	bad := map[string]struct{}{}
 	if b, err := os.ReadFile(openCodeAuthPath(home)); err == nil {
 		var entries map[string]openCodeAuthEntry
@@ -130,19 +148,39 @@ func adapterCredentialEnv(home string, kinds ...string) (env []string, unusable 
 					bad[norm] = struct{}{}
 					continue
 				}
-				keys[norm] = e.Key
+				// NO TIMESTAMP IN auth.json: this file is the OLDER source by construction on a 2.x install (2.x
+				// imports it once and never rewrites it), so a database copy of the same provider always wins.
+				keys[norm] = credEntry{key: e.Key, updated: 0}
 			}
 		}
 	}
-	for id, key := range credentialTableKeys(openCodeDBPath(home)) {
+	for id, e := range credentialTableEntries(openCodeDBPath(home)) {
 		norm := strings.ToLower(strings.TrimSpace(id))
-		if strings.TrimSpace(key) == "" {
+		if strings.TrimSpace(e.key) == "" {
 			continue
 		}
-		keys[norm] = key
+		keys[norm] = e
 		delete(bad, norm)
 	}
-	for id, key := range keys {
+
+	// ONE VALUE PER ENVIRONMENT VARIABLE.
+	//
+	// opencode's console issues SEPARATE integrations for `opencode` and `opencode-go`, and both map to
+	// OPENCODE_API_KEY — so the loop below used to emit that variable TWICE. The child takes the last
+	// assignment, and the pairs are sorted as strings, so the winner was decided by the credential's own TEXT:
+	// deterministic, arbitrary, and invisible. Measured on the reporting host, where `opencode` still held a key
+	// from a September auth.json and `opencode-go` held the key rotated in October, BOTH were emitted and either
+	// could win.
+	//
+	// The most recently WRITTEN credential is the one the operator just refreshed, so it wins: that is what
+	// "rotated the key" means. Provider ids break ties so the result never depends on map iteration order.
+	type chosen struct {
+		id      string
+		key     string
+		updated int64
+	}
+	byEnv := map[string]chosen{}
+	for id, e := range keys {
 		name, known := providerAPIKeyEnv[id]
 		if !known {
 			// A credential we cannot DELIVER: opencode would be handed a variable it
@@ -151,7 +189,12 @@ func adapterCredentialEnv(home string, kinds ...string) (env []string, unusable 
 			bad[id] = struct{}{}
 			continue
 		}
-		env = append(env, name+"="+key)
+		if cur, ok := byEnv[name]; !ok || e.updated > cur.updated || (e.updated == cur.updated && id < cur.id) {
+			byEnv[name] = chosen{id: id, key: e.key, updated: e.updated}
+		}
+	}
+	for name, c := range byEnv {
+		env = append(env, name+"="+c.key)
 	}
 	// `bad` is exactly the right set by now: an auth.json entry that was unusable
 	// (removed above when the database superseded it), plus any id carrying a
@@ -197,6 +240,29 @@ func openCodeDBPath(home string) string {
 // database with a write-ahead log, so `immutable` would let it read a torn state
 // and a plain open could take a write lock on someone else's store.
 func credentialTableKeys(dbPath string) map[string]string {
+	full := credentialTableEntries(dbPath)
+	out := make(map[string]string, len(full))
+	for id, e := range full {
+		out[id] = e.key
+	}
+	return out
+}
+
+// credEntry is one stored credential and WHEN it was last written, which is how two provider ids that share an
+// environment variable are resolved to one value (see adapterCredentialEnv's dedupe).
+type credEntry struct {
+	key     string
+	updated int64 // unix millis; 0 when the source carries no timestamp (auth.json)
+}
+
+// credentialTableEntries reads the 2.x store as id -> (key, last-updated).
+//
+// The timestamp is the deciding fact for a dedupe that would otherwise be arbitrary: opencode's console issues
+// SEPARATE integrations for `opencode` and `opencode-go`, and BOTH map to OPENCODE_API_KEY. When an operator
+// rotates one of them, the environment can carry only one value, and the most recently written credential is
+// the one they just refreshed. Without this, the winner was decided by the credential's own TEXT (the pairs were
+// sorted as strings and the child takes the last assignment) — deterministic, but arbitrary and invisible.
+func credentialTableEntries(dbPath string) map[string]credEntry {
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil
 	}
@@ -205,24 +271,70 @@ func credentialTableKeys(dbPath string) map[string]string {
 		return nil
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT integration_id, value FROM credential`)
+
+	// ONE QUERY, WITH A FALLBACK — not a Columns() probe. The probe version this replaces asked the driver for
+	// column names, decided the timestamp was absent, and returned NOTHING, which silently dropped the whole
+	// database half of the merge: the resolver fell back to auth.json alone and handed out exactly the stale
+	// credential this function exists to correct. A read that fails here now degrades to "no timestamps" rather
+	// than to "no credentials".
+	if out, ok := readCredentialRows(db, `SELECT integration_id, value, time_updated FROM credential`); ok {
+		return out
+	}
+	return readCredentialRowsTwoColumn(db)
+}
+
+// readCredentialRows runs q (three columns: id, value, updated) and returns id -> credEntry.
+// ok is false when the query itself failed, so the caller can try the older shape.
+func readCredentialRows(db *sql.DB, q string) (map[string]credEntry, bool) {
+	rows, err := db.Query(q)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	defer rows.Close()
-	out := map[string]string{}
+	out := map[string]credEntry{}
+	for rows.Next() {
+		var id, raw string
+		var updated int64
+		if err := rows.Scan(&id, &raw, &updated); err != nil {
+			continue
+		}
+		if e, ok := parseCredentialValue(raw); ok {
+			e.updated = updated
+			out[id] = e
+		}
+	}
+	return out, true
+}
+
+// readCredentialRowsTwoColumn is the shape without a timestamp (an older or unexpected schema). Credentials are
+// still delivered; only the dedupe ordering loses its tie-break.
+func readCredentialRowsTwoColumn(db *sql.DB) map[string]credEntry {
+	out := map[string]credEntry{}
+	rows, err := db.Query(`SELECT integration_id, value FROM credential`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
 	for rows.Next() {
 		var id, raw string
 		if err := rows.Scan(&id, &raw); err != nil {
 			continue
 		}
-		var v struct {
-			Key string `json:"key"`
+		if e, ok := parseCredentialValue(raw); ok {
+			out[id] = e
 		}
-		if json.Unmarshal([]byte(raw), &v) != nil || strings.TrimSpace(v.Key) == "" {
-			continue
-		}
-		out[id] = v.Key
 	}
 	return out
+}
+
+// parseCredentialValue decodes one stored credential's JSON ({type, key}). ok is false when the value is not
+// that shape or carries no key.
+func parseCredentialValue(raw string) (credEntry, bool) {
+	var v struct {
+		Key string `json:"key"`
+	}
+	if json.Unmarshal([]byte(raw), &v) != nil || strings.TrimSpace(v.Key) == "" {
+		return credEntry{}, false
+	}
+	return credEntry{key: v.Key}, true
 }

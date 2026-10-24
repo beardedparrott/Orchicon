@@ -10,13 +10,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
-
 	"github.com/beardedparrott/orchicon/internal/procwin"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 )
 
 // HostServe is the DEMAND-KEYED opencode serve for the in-process (local)
@@ -430,11 +432,39 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 		return fmt.Errorf("host serve disabled; executions fail fast — no one-shot fallback: %w", err)
 	}
 
+	// THE OPERATOR'S PROVIDER CREDENTIALS, DELIVERED BY ENVIRONMENT.
+	//
+	// REPORTED: every Ask turn through the opencode adapter failed with "This API key has expired … Signing in
+	// again will not renew this key", while the operator's own `opencode` worked fine. The cause was here: this
+	// serve only ever received a COPY of the operator's auth.json (seedAuth), which opencode 2.x wrote last in
+	// a 1.x-era install and never updates — so the copy held a key the operator had long since rotated. 2.x
+	// keeps its real credentials in its SQLite store, and re-seeding auth.json cannot help because the store
+	// imports that file only ONCE, at migration.
+	//
+	// THE FIX IS THE CHANNEL THE CONTAINER PATH ALREADY USES. internal/runtime resolves the credential from BOTH
+	// stores (database wins) and hands it to a runtime container as the environment; the host serve was simply
+	// never given the same treatment, so the two shapes disagreed about which credential a serve runs with.
+	//
+	// MEASURED ON 2.x BEFORE CHOOSING THIS: against the SAME stale store, prompting opencode-go fails with the
+	// reported error, and with the resolved key in OPENCODE_API_KEY the same prompt SUCCEEDS. The environment
+	// outranks the stored credential, which is why this needs no store surgery, no re-import and nothing
+	// deleted — the serve only has to be told.
 	env := append(os.Environ(),
 		ServePasswordEnv+"="+password,
 		"OPENCODE_CONFIG_CONTENT="+serveConfig,
 		"OPENCODE_DISABLE_AUTOUPDATE=1",
 	)
+	// BEST-EFFORT AND NEVER FATAL: a host with no opencode credentials is the native-only case, and a serve
+	// that starts without them behaves exactly as it did before this. The unresolved ids are logged so a silent
+	// gap has a trace, instead of surfacing later as an authentication failure with no cause.
+	if pairs, unusable := h.credentialEnv(); len(pairs) > 0 {
+		env = append(env, pairs...)
+		h.log.Info("host opencode serve: provider credentials delivered by environment",
+			"providers", len(pairs), "undeliverable", strings.Join(unusable, ","))
+	} else if len(unusable) > 0 {
+		h.log.Warn("host opencode serve: signed-in providers cannot be delivered through the environment — "+
+			"turns on them will fail to authenticate", "undeliverable", strings.Join(unusable, ","))
+	}
 	env = g.Apply(env)
 	env = setEnvKV(env, "XDG_DATA_HOME", h.dataDir)
 	// Stamp the plane spawn marker: it is how the boot sweep tells a process
@@ -480,6 +510,19 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	}
 	h.kill()
 	return fmt.Errorf("host serve did not become ready within 90s")
+}
+
+// credentialResolver resolves the operator's provider credentials for this serve. A package var so a test can
+// assert the DELIVERY without a real opencode install, and so the production wiring is one readable line.
+var credentialResolver = runtime.AdapterCredentialEnv
+
+// credentialEnv returns this serve's provider credentials as KEY=VALUE pairs, plus the provider ids that could
+// not be delivered that way.
+func (h *HostServe) credentialEnv() ([]string, []string) {
+	if h.dataDir == "" {
+		return nil, nil
+	}
+	return credentialResolver(h.authSource(), adapter.DefaultAdapterKind)
 }
 
 // seedAuth copies the operator's opencode auth.json into the dedicated
