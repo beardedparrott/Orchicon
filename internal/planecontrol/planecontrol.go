@@ -45,6 +45,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // DriftState says whether the plane now serving matches the binary this build is.
@@ -219,7 +221,7 @@ func runSelf(args []string, env []string, out io.Writer) error {
 	// stops a plane, and the app is a GUI: a console-subsystem child of a console-less parent is given a
 	// brand new window by Win32, so every Start pressed in the app flashed one. The child's own detach
 	// (serve --detach) happens INSIDE it and cannot help with the window it was born with.
-	cmd := quietCommand(self, args...)
+	cmd := procwin.Command(self, args...)
 	cmd.Env = env
 	// THE PLANE'S OWN WORKING DIRECTORY, NOT THIS CALLER'S. runSelf is how the DESKTOP APP starts and stops
 	// a plane, and a GUI can be launched with a working directory that is not its own (an installer's staging

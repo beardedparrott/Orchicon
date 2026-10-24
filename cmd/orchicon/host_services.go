@@ -49,6 +49,8 @@ import (
 	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/logging"
 	"github.com/beardedparrott/orchicon/internal/version"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 const (
@@ -616,7 +618,7 @@ func (s *supervisor) initPostgres() error {
 		// portable way to observe it.
 		return err
 	}
-	cmd := quietCommand(s.resolved().Initdb,
+	cmd := procwin.Command(s.resolved().Initdb,
 		"-D", dataDir, "-U", "orchicon", "--auth=trust", "-E", "UTF8")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -679,7 +681,7 @@ func (s *supervisor) start(ctx context.Context, p *managedProc) error {
 	// quietCommandContext rather than exec.CommandContext + setProcAttrNoWindow: this site used to
 	// be the ONLY one that remembered, which is why the same report came back. The attribute is now
 	// applied by the spawn helper for every helper tool the program runs — see quiet.go.
-	cmd := quietCommandContext(ctx, p.command, p.args...)
+	cmd := procwin.CommandContext(ctx, p.command, p.args...)
 	cmd.Env = append(os.Environ(), p.env...)
 	cmd.Stdout = s.logPipe(p.name)
 	cmd.Stderr = s.logPipe(p.name)
@@ -984,7 +986,7 @@ func (s *supervisor) postgresProc() *managedProc {
 			// Create the orchicon database on first boot (idempotent).
 			// createdb exits 0 when created and errors on duplicate;
 			// "already exists" is fine.
-			cmd := quietCommandContext(ctx, s.resolved().Createdb, "-U", "orchicon", "-h", "localhost", "-p", port, "orchicon")
+			cmd := procwin.CommandContext(ctx, s.resolved().Createdb, "-U", "orchicon", "-h", "localhost", "-p", port, "orchicon")
 			out, err := cmd.CombinedOutput()
 			if err != nil && !strings.Contains(string(out), "already exists") {
 				return fmt.Errorf("create orchicon db: %w: %s", err, strings.TrimSpace(string(out)))

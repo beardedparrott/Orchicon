@@ -65,6 +65,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 const (
@@ -791,7 +793,7 @@ func detectSingleBinary(a infraArtifact, opt acquireOptions) (path, version stri
 	if !ok {
 		return "", "", false
 	}
-	if out, err := quietCommand(p, "--version").Output(); err == nil {
+	if out, err := procwin.Command(p, "--version").Output(); err == nil {
 		version = strings.TrimSpace(string(out))
 	}
 	return p, version, true
@@ -865,7 +867,7 @@ func (rec *infraBinaries) fillPostgres(dir string, opt acquireOptions) error {
 
 // postgresVersionOf runs `postgres --version` and returns the trimmed line.
 func postgresVersionOf(bin string) (string, error) {
-	out, err := quietCommand(bin, "--version").Output()
+	out, err := procwin.Command(bin, "--version").Output()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg == "" {
@@ -895,7 +897,7 @@ func detectNatsServer(opt acquireOptions) (path, version string, ok bool) {
 	if !ok {
 		return "", "", false
 	}
-	if out, err := quietCommand(p, "--version").Output(); err == nil {
+	if out, err := procwin.Command(p, "--version").Output(); err == nil {
 		version = strings.TrimSpace(string(out))
 	}
 	return p, version, true
@@ -1655,7 +1657,7 @@ func acquireInfraBinaries(ctx context.Context, opt acquireOptions) (*infraBinari
 // back to the pinned tag when the binary cannot be asked. Version strings in the
 // record must be comparable regardless of which acquisition path produced it.
 func artifactReportedVersion(bin, fallback string) string {
-	out, err := quietCommand(bin, "--version").Output()
+	out, err := procwin.Command(bin, "--version").Output()
 	if err != nil {
 		return fallback
 	}
@@ -1866,7 +1868,7 @@ func checkPostgresShare(initdbPath, goos string) error {
 	if goos != "windows" {
 		pgConfig := filepath.Join(bindir, "pg_config")
 		if _, err := os.Stat(pgConfig); err == nil {
-			if out, err := quietCommand(pgConfig, "--sharedir").Output(); err == nil {
+			if out, err := procwin.Command(pgConfig, "--sharedir").Output(); err == nil {
 				share := strings.TrimSpace(string(out))
 				if share != "" {
 					if _, err := os.Stat(filepath.Join(share, "postgres.bki")); err == nil {

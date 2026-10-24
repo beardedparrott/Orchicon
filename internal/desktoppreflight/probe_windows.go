@@ -7,6 +7,8 @@ import (
 	"os/exec"
 
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // osProbe is the real Windows probe. WebView2 is best detected through the
@@ -16,7 +18,7 @@ func osProbe() Probe {
 	return Probe{
 		Lookup: exec.LookPath,
 		Run: func(name string, args ...string) (string, error) {
-			out, err := exec.Command(name, args...).Output()
+			out, err := procwin.Command(name, args...).Output()
 			return string(out), err
 		},
 		Env: os.Getenv,

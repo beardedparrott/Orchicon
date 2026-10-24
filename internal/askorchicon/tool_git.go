@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // toolListProjectBranches reports a project's git identity — whether it is git-backed at all, its current branch,
@@ -62,7 +63,7 @@ func toolListProjectBranches(ctx context.Context, pool *db.Pool, args json.RawMe
 	run := func(argv ...string) string {
 		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(cctx, "git", append([]string{"-C", dir}, argv...)...)
+		cmd := procwin.CommandContext(cctx, "git", append([]string{"-C", dir}, argv...)...)
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 		out, err := cmd.Output()
 		if err != nil {

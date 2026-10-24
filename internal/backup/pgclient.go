@@ -28,6 +28,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 const (
@@ -75,7 +77,7 @@ func (c pgClient) command(ctx context.Context, tool string, args ...string) (*ex
 	if err != nil {
 		return nil, err
 	}
-	return exec.CommandContext(ctx, exe, args...), nil
+	return procwin.CommandContext(ctx, exe, args...), nil
 }
 
 // infraRecordLookup is the seam through which the client prefers the PostgreSQL

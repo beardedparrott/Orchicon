@@ -6,12 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // runBackfillPR is a one-shot, idempotent data fix: resolve each git-backed
@@ -149,7 +150,7 @@ func runBackfillPR(args []string, log *slog.Logger) int {
 // branch has no PR. `pr_state` is normalized to the lowercase values the
 // frontend's prStateLabel maps (open/merged/draft/closed).
 func resolvePR(ctx context.Context, repoSlug, branch string) (prURL, prState string, err error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+	cmd := procwin.CommandContext(ctx, "gh", "pr", "list",
 		"--repo", repoSlug,
 		"--head", branch,
 		"--state", "all",

@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // ReconcileGit reconciles an owner's ledger against the run worktree's git
@@ -112,7 +113,7 @@ func isGitRepo(dir string) bool {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return false
 	}
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree")
+	cmd := procwin.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree")
 	out, err := cmd.Output()
 	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
@@ -121,7 +122,7 @@ func isGitRepo(dir string) bool {
 // `git status --porcelain=v1` (tracked + untracked, renames surfaced as
 // delete+add of their old/new paths).
 func gitChangedPaths(dir, mergeBase string) ([]string, error) {
-	cmd := exec.Command("git", "-C", dir, "status", "--porcelain=v1", "-z")
+	cmd := procwin.Command("git", "-C", dir, "status", "--porcelain=v1", "-z")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -213,7 +214,7 @@ func gitEntryFor(worktreeDir, relPath, mergeBase string) (Entry, bool) {
 // and a rename pair would need both to be tracked anyway. Each is then a normal
 // entry — a delete on one path and a create on the other.
 func committedPaths(dir, mergeBase string) ([]string, error) {
-	cmd := exec.Command("git", "-C", dir, "diff", "--name-only", "-z", "--no-renames", mergeBase, "HEAD")
+	cmd := procwin.Command("git", "-C", dir, "diff", "--name-only", "-z", "--no-renames", mergeBase, "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -231,7 +232,7 @@ func committedPaths(dir, mergeBase string) ([]string, error) {
 // there (a new file) or the ref cannot be read. A nil before is meaningful:
 // EntryFromSnapshots renders it as a creation.
 func gitShowAt(dir, rev, rel string) []byte {
-	cmd := exec.Command("git", "-C", dir, "show", rev+":"+rel)
+	cmd := procwin.Command("git", "-C", dir, "show", rev+":"+rel)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -243,7 +244,7 @@ func gitShowAt(dir, rev, rel string) []byte {
 // be resolved (unknown ref, no history, not a repo) — in which case the caller
 // keeps working-tree-only semantics rather than guessing.
 func mergeBaseRef(dir, base string) string {
-	cmd := exec.Command("git", "-C", dir, "merge-base", "HEAD", base)
+	cmd := procwin.Command("git", "-C", dir, "merge-base", "HEAD", base)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -262,16 +263,16 @@ func mergeBaseRef(dir, base string) string {
 // Returns "" when nothing resolves; callers then get working-tree semantics.
 func BaseRefFor(dir string) string {
 	for _, ref := range []string{"develop", "origin/develop"} {
-		if exec.Command("git", "-C", dir, "rev-parse", "--verify", "--quiet", ref).Run() == nil {
+		if procwin.Command("git", "-C", dir, "rev-parse", "--verify", "--quiet", ref).Run() == nil {
 			return ref
 		}
 	}
-	if out, err := exec.Command("git", "-C", dir, "symbolic-ref", "refs/remotes/origin/HEAD").Output(); err == nil {
+	if out, err := procwin.Command("git", "-C", dir, "symbolic-ref", "refs/remotes/origin/HEAD").Output(); err == nil {
 		if ref := strings.TrimPrefix(strings.TrimSpace(string(out)), "refs/remotes/"); ref != "" {
 			return ref
 		}
 	}
-	if out, err := exec.Command("git", "-C", dir, "symbolic-ref", "--short", "HEAD").Output(); err == nil {
+	if out, err := procwin.Command("git", "-C", dir, "symbolic-ref", "--short", "HEAD").Output(); err == nil {
 		if ref := strings.TrimSpace(string(out)); ref != "" {
 			return ref
 		}

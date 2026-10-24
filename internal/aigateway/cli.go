@@ -35,6 +35,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // cliOutputCap bounds how much of a failing CLI's output is put into an error. The message is
@@ -48,7 +50,7 @@ const cliOutputCap = 2000
 // inherit the caller's, which callers should avoid (see the note at the call sites: the plane's cwd
 // is whatever directory the operator ran the installer from).
 func runOpencodeCLI(ctx context.Context, binary, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd := procwin.CommandContext(ctx, binary, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/opencode"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // discoverReapPoint finds where THIS environment hands orphans, by making one:
@@ -44,7 +46,7 @@ import (
 // Making one real orphan and observing it is exact in any topology, and costs
 // one subprocess per sweep.
 func discoverReapPoint() int {
-	out, err := exec.Command("/bin/sh", "-c", "/bin/sleep 30 >/dev/null 2>&1 & echo $!; echo $$").Output()
+	out, err := procwin.Command("/bin/sh", "-c", "/bin/sleep 30 >/dev/null 2>&1 & echo $!; echo $$").Output()
 	if err != nil {
 		return 0
 	}
@@ -152,7 +154,7 @@ func orphanCandidates(pgrep, name string) []int {
 	if strings.Contains(name, " ") {
 		args = []string{"-f"} // use -f for multi-word patterns
 	}
-	out, err := exec.Command(pgrep, append(args, name)...).Output()
+	out, err := procwin.Command(pgrep, append(args, name)...).Output()
 	if err != nil {
 		return nil
 	}

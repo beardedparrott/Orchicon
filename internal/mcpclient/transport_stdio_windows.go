@@ -4,10 +4,11 @@ package mcpclient
 
 import (
 	"os"
-	"os/exec"
 	"syscall"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // newStdioTransport is the windows fallback: PDEATHSIG is a Linux/BSD
@@ -20,7 +21,7 @@ func newStdioTransport(spec ServerSpec) (*mcp.CommandTransport, error) {
 	if len(argv) == 0 {
 		return nil, errUnconfiguredCommand(spec)
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd := procwin.Command(argv[0], argv[1:]...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmd.Env = append(os.Environ(),
 		"ORCHICON_MCP_STDIO=1",

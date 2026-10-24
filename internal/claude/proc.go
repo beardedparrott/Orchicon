@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/runtime"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // ProcSession is one live claude subprocess. Stdout is line-framed JSONL
@@ -98,7 +100,7 @@ func newLocalProc(ctx context.Context, spec procSpec) (*localProc, error) {
 	if len(spec.Argv) == 0 {
 		return nil, fmt.Errorf("claude: empty argv")
 	}
-	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
+	cmd := procwin.Command(spec.Argv[0], spec.Argv[1:]...)
 	if spec.Cwd != "" {
 		cmd.Dir = spec.Cwd
 	}

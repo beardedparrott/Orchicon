@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // baseImageLabel marks an image as derived from the Orchicon runtime base.
@@ -245,7 +247,7 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 		return
 	}
 
-	cmd := quietCommand(d.engineBin(), "build", "-t", req.Tag, ctxDir)
+	cmd := procwin.Command(d.engineBin(), "build", "-t", req.Tag, ctxDir)
 	cmd.Dir = ctxDir
 	code, started := d.streamCommand(w, r, req.Tag, "build", cmd)
 	if !started || code != 0 {
@@ -425,7 +427,7 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 		_ = enc.Encode(AgentEvent{Event: "exit", ExitCode: 0, Skipped: true})
 		return
 	}
-	cmd := quietCommand(d.engineBin(), "pull", ref)
+	cmd := procwin.Command(d.engineBin(), "pull", ref)
 	d.streamCommand(w, r, ref, "pull", cmd)
 }
 

@@ -20,6 +20,11 @@ var permittedInternal = map[string]bool{
 	"github.com/beardedparrott/orchicon/internal/planebind":    true,
 	"github.com/beardedparrott/orchicon/internal/planecontrol": true,
 	"github.com/beardedparrott/orchicon/internal/instance":     true,
+	// internal/procwin is a STDLIB-ONLY LEAF that suppresses a console window on Windows (see that
+	// package's header). It cannot reach the plane's HTTP server, and it implements no operation, so it
+	// adds none of the risk this test exists to bound — a child spawned from the desktop shell must not
+	// flash a command prompt, and that rule has now been reported three times.
+	"github.com/beardedparrott/orchicon/internal/procwin": true,
 }
 
 func TestPackageImportsOnlyTheSharedControlPath(t *testing.T) {
@@ -42,8 +47,9 @@ func TestPackageImportsOnlyTheSharedControlPath(t *testing.T) {
 					if !permittedInternal[importPath] {
 						t.Errorf("internal/instancectl imports %q.\n"+
 							"  Only the shared control path is permitted (planebind, planecontrol,\n"+
-							"  instance). Anything else risks linking the plane's HTTP server into the\n"+
-							"  desktop shell, or growing a second implementation of an operation.", importPath)
+							"  instance) plus the stdlib-only procwin leaf. Anything else risks linking the\n"+
+							"  plane's HTTP server into the desktop shell, or growing a second implementation\n"+
+							"  of an operation.", importPath)
 					}
 				}
 			}

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,6 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/worktree"
 	"github.com/bmatcuk/doublestar/v4"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // hosttools.go: the native session engine's HOST tool suite — the real
@@ -654,7 +655,7 @@ func (h *HostTools) execBash(ctx context.Context, argsJSON string) (string, erro
 		}
 		return msg, nil
 	}
-	cmd := exec.CommandContext(cctx, "bash", "-c", a.Command)
+	cmd := procwin.CommandContext(cctx, "bash", "-c", a.Command)
 	cmd.Dir = h.base.Worktree
 	if h.envForBash != nil {
 		cmd.Env = h.envForBash()

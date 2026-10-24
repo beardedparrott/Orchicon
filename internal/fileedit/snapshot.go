@@ -4,12 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // maxObservedContent caps the in-memory "before" cache per path (the
@@ -219,7 +220,7 @@ func (o *Observer) ObserveAfter(rawPath, tool string) Entry {
 
 // gitShowHEAD returns the committed content of rel under dir, or nil.
 func gitShowHEAD(dir, rel string) []byte {
-	cmd := exec.Command("git", "-C", dir, "show", "HEAD:"+rel)
+	cmd := procwin.Command("git", "-C", dir, "show", "HEAD:"+rel)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil

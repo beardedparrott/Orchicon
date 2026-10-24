@@ -49,6 +49,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/slug"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // worktreeDirName is the subdirectory under project_dir where per-run
@@ -1476,7 +1478,7 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, gitCmdTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd := procwin.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), err

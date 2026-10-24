@@ -25,6 +25,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // devTenantID mirrors the single-dev-tenant assumption used by the
@@ -88,7 +90,7 @@ func isInsideWorkTree(ctx context.Context, projectDir string) bool {
 	if fi, err := os.Stat(projectDir); err != nil || !fi.IsDir() {
 		return false
 	}
-	cmd := quietCommandContext(ctx, "git", "-C", projectDir, "rev-parse", "--is-inside-work-tree")
+	cmd := procwin.CommandContext(ctx, "git", "-C", projectDir, "rev-parse", "--is-inside-work-tree")
 	out, err := cmd.Output()
 	if err != nil {
 		return false
