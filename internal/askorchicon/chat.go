@@ -822,9 +822,14 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// interjection lands on a healthy session rather than the stuck one.
 	useSessionID := conv.SessionID
 
+	// interruptedTurn records that this dispatch REPLACED a turn that was still running. It is what makes
+	// the continuity section below truthful: on an ordinary message there is nothing to be continuous with.
+	interruptedTurn := false
+
 	// --- 0.5. Supersede an in-flight turn (interject only). ---
 	if opts.supersede {
 		prevEntry, prevOk := s.turns.get(convID)
+		interruptedTurn = prevOk
 		if token, ok := s.turns.cancel(convID, errTurnSuperseded); ok {
 			s.turns.remove(convID, token)
 			s.log.Info("conversation turn superseded by interjection", "conversation", convID)
@@ -1040,6 +1045,40 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// persona with no session change or serve restart.
 	seedSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, true, attachments, projectContext, convProject, skillsSection)
 	reuseSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, false, attachments, projectContext, convProject, skillsSection)
+
+	// A SUPERSEDING INTERJECTION TELLS THE MODEL WHAT IT IS CONTINUING.
+	//
+	// REPORTED: "whenever I interject on an ask orchicon live session, the model doing the work seems to lose
+	// track of what it was already working on and seems to think that the current work may have been done by
+	// someone else. … It should just be adding additional context to the current running session and not
+	// break things."
+	//
+	// THE MECHANISM. Interjecting SUPERSEDES: the running turn's collector is cancelled and the provider
+	// session is ABORTED mid-generation (that is what makes the model stop now rather than queue behind a stuck
+	// turn). An aborted turn is a half-finished one, and what survives of it in the session is not the model's
+	// own completed reasoning: the tool results, the file changes and the transcript are all still there, but
+	// the assistant turn that CAUSED them was cut off. A model handed that state sees finished work with no
+	// record of having done it — which is precisely "the work may have been done by someone else" — and no
+	// record of what it was mid-way through, which is "lost track of what it was already working on".
+	//
+	// WHY THE FIX IS HERE AND NOT IN THE TRANSPORT. Making interject INJECT onto the live session instead of
+	// aborting it is the cleaner answer, and it is not a small change: InterjectConversationTurn's contract
+	// (proto/orchicon/api/v1/ask_orchicon_service.proto) ack's a NEW assistant message id and streams that
+	// turn's events, and both clients are written against it. Changing the ack and stream semantics in the
+	// same pass as a behavioural regression report is how a fix becomes an outage.
+	//
+	// SO THE FACTS ARE STATED WHERE THE MODEL CAN READ THEM. The system prompt is per-turn and MODEL-ONLY — it
+	// is not the persisted user message, so the operator's transcript does not gain a paragraph they did not
+	// type. The model is told what is true: this is its own session, the work in it is its own, and it was
+	// interrupted rather than restarted.
+	//
+	// IT IS APPENDED TO BOTH VARIANTS because either can be the one used: `seed` when the session is
+	// recreated (a wedged interjection recycles it — see D4), `reuse` in the steady state.
+	if interruptedTurn {
+		continuity := interjectionContinuitySection()
+		seedSystem += continuity
+		reuseSystem += continuity
+	}
 
 	// --- 4. Launch the detached reply collector and stream events to the
 	// client. The stream channel is buffered so the collector never blocks.
@@ -1335,6 +1374,37 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 // skillsSection is the ALREADY-RENDERED `# Skills` manifest for this turn ("" when the conversation and its
 // project have no skill files). It is rendered by skillManifestSection and forwarded to BuildSystemPrompt,
 // which appends it beside the tenant's free-text additional instructions — see writeSkillsManifest.
+// interjectionContinuitySection is what a superseded turn's successor is told about the work it inherited.
+//
+// IT ASSERTS, IT DOES NOT ASK. A model that is TOLD "you may have been interrupted" can conclude it is
+// starting fresh; one that is told the work is its own and the task is unfinished resumes. Each sentence
+// answers one of the two reported symptoms:
+//
+//	"loses track of what it was already working on"      -> resume the task you were on; the transcript and
+//	                                                        the working tree show where you were
+//	"thinks the current work was done by someone else"   -> everything already in this session is yours
+//
+// IT NAMES THE CONCRETE EVIDENCE (tool results, file changes, transcript) rather than speaking abstractly,
+// because that is what the model is actually looking at and what it was mis-attributing.
+//
+// MAXIMAL scope: it says nothing about WHICH project, file or task, because this function does not know.
+// Inventing specifics would be worse than saying none.
+func interjectionContinuitySection() string {
+	return "\n\n## Continuity — you were interrupted, not restarted\n" +
+		"\n" +
+		"This session is YOURS and the work in it is YOUR OWN. Every tool result, file change, diff and\n" +
+		"transcript entry already present was produced by YOU earlier in this same conversation. Do not\n" +
+		"treat any of it as work by another person, another session or another agent, and do not redo it\n" +
+		"to \"catch up\".\n" +
+		"\n" +
+		"The operator interrupted you while you were working, and their message is ADDITIONAL CONTEXT for\n" +
+		"the task you were already on — not a new task and not a correction of who did what. Resume from\n" +
+		"where the work in the session leaves off, fold their message into that plan, and carry on.\n" +
+		"\n" +
+		"If the interruption means you should change direction, say what you are changing and why. Do not\n" +
+		"silently restart, and do not re-verify what you have already established.\n"
+}
+
 func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext, convProject, skillsSection string) string {
 	var b strings.Builder
 
