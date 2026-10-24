@@ -250,7 +250,7 @@ func TestPostgresSocketDir(t *testing.T) {
 // table, so a bare strconv.Atoi would fail on "@TEMPO_HTTP_PORT@" and this helper
 // is what keeps the drift check meaningful.
 //
-// nth selects among repeated keys (endpoint: 0.0.0.0: appears for the collector's
+// nth selects among repeated keys (endpoint: 127.0.0.1: appears for the collector's
 // gRPC receiver, its HTTP receiver and its health extension). It is substituted
 // from the container defaults, so the returned number is the same integer the
 // child would bind in that residency — which is what these tests then compare
@@ -280,7 +280,7 @@ func embeddedConfigPort(t *testing.T, path, key string, nth int, ports servicePo
 			continue
 		}
 		rest := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(strings.TrimPrefix(trimmed, key)), "=: "))
-		// A quoted scalar (endpoint: "0.0.0.0:14317") is legitimate YAML.
+		// A quoted scalar (endpoint: "127.0.0.1:14317") is legitimate YAML.
 		rest = strings.Trim(strings.TrimSpace(rest), `"'`)
 		n, err := strconv.Atoi(rest)
 		if err != nil {
@@ -308,11 +308,11 @@ func TestServiceProbesMatchEmbeddedConfigPorts(t *testing.T) {
 	}{
 		{"tempo", "deploy/configs/tempo.yaml", "http_listen_port", "ORCHICON_TEMPO_PORT", 0, func(p servicePorts) int { return p.tempo }},
 		{"loki", "deploy/configs/loki.yaml", "http_listen_port", "ORCHICON_LOKI_PORT", 0, func(p servicePorts) int { return p.loki }},
-		{"tempo-otlp-grpc", "deploy/configs/tempo.yaml", `endpoint: "0.0.0.0:`, "ORCHICON_TEMPO_OTLP_GRPC_PORT", 0, func(p servicePorts) int { return p.tempoOTLPGRPC }},
-		{"tempo-otlp-http", "deploy/configs/tempo.yaml", `endpoint: "0.0.0.0:`, "ORCHICON_TEMPO_OTLP_HTTP_PORT", 1, func(p servicePorts) int { return p.tempoOTLPHTTP }},
-		{"collector-otlp-grpc", "deploy/configs/otel-collector.yaml", "endpoint: 0.0.0.0:", "ORCHICON_OTLP_GRPC_PORT", 0, func(p servicePorts) int { return p.collectorOTLPGRPC }},
-		{"collector-otlp-http", "deploy/configs/otel-collector.yaml", "endpoint: 0.0.0.0:", "ORCHICON_OTLP_HTTP_PORT", 1, func(p servicePorts) int { return p.collectorOTLPHTTP }},
-		{"collector-health", "deploy/configs/otel-collector.yaml", "endpoint: 0.0.0.0:", "ORCHICON_OTEL_HEALTH_PORT", 2, func(p servicePorts) int { return p.collectorHealth }},
+		{"tempo-otlp-grpc", "deploy/configs/tempo.yaml", `endpoint: "127.0.0.1:`, "ORCHICON_TEMPO_OTLP_GRPC_PORT", 0, func(p servicePorts) int { return p.tempoOTLPGRPC }},
+		{"tempo-otlp-http", "deploy/configs/tempo.yaml", `endpoint: "127.0.0.1:`, "ORCHICON_TEMPO_OTLP_HTTP_PORT", 1, func(p servicePorts) int { return p.tempoOTLPHTTP }},
+		{"collector-otlp-grpc", "deploy/configs/otel-collector.yaml", "endpoint: 127.0.0.1:", "ORCHICON_OTLP_GRPC_PORT", 0, func(p servicePorts) int { return p.collectorOTLPGRPC }},
+		{"collector-otlp-http", "deploy/configs/otel-collector.yaml", "endpoint: 127.0.0.1:", "ORCHICON_OTLP_HTTP_PORT", 1, func(p servicePorts) int { return p.collectorOTLPHTTP }},
+		{"collector-health", "deploy/configs/otel-collector.yaml", "endpoint: 127.0.0.1:", "ORCHICON_OTEL_HEALTH_PORT", 2, func(p servicePorts) int { return p.collectorHealth }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -344,7 +344,7 @@ func TestCollectorPointsAtTempoOffset(t *testing.T) {
 		t.Errorf("the collector's tempo exporter and its own OTLP HTTP receiver are both %d — the offset was removed", tempoOTLP)
 	}
 	// And tempo really does bind the port the exporter names.
-	if got := embeddedConfigPort(t, "deploy/configs/tempo.yaml", `endpoint: "0.0.0.0:`, 1, p); got != tempoOTLP {
+	if got := embeddedConfigPort(t, "deploy/configs/tempo.yaml", `endpoint: "127.0.0.1:`, 1, p); got != tempoOTLP {
 		t.Errorf("tempo's OTLP HTTP receiver binds %d but the collector exports to %d", got, tempoOTLP)
 	}
 }
@@ -467,10 +467,10 @@ func TestWriteConfigsResolvesPortTokens(t *testing.T) {
 // telemetry works perfectly.
 func TestNoEmbeddedConfigHardcodesAListenerPort(t *testing.T) {
 	// `key` is the config field that makes the child BIND a socket.
-	// `address: 0.0.0.0:` is the collector's self-metrics exporter (service.telemetry.metrics).
+	// `address: 127.0.0.1:` is the collector's self-metrics exporter (service.telemetry.metrics).
 	// Its ABSENCE is covered separately by TestCollectorDeclaresItsSelfMetricsListener —
 	// this list can only find a literal that is already written down.
-	listenerKeys := []string{"http_listen_port:", "grpc_listen_port:", "endpoint: 0.0.0.0:", `endpoint: "0.0.0.0:`, "address: 0.0.0.0:"}
+	listenerKeys := []string{"http_listen_port:", "grpc_listen_port:", "endpoint: 127.0.0.1:", `endpoint: "127.0.0.1:`, "address: 127.0.0.1:"}
 	files := []string{"deploy/configs/tempo.yaml", "deploy/configs/loki.yaml", "deploy/configs/otel-collector.yaml"}
 
 	for _, path := range files {
