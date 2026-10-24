@@ -85,6 +85,17 @@ type convState struct {
 	// retried caps the remedy at one re-issue, so a failure that path cannot fix is reported rather than
 	// retried forever.
 	attempt streamAttempt
+	// authDead records that this conversation's last transcript read was rejected as UNAUTHENTICATED.
+	//
+	// IT STOPS THE POLL. Reported: a TUI whose access token had expired kept polling ListMessages for an
+	// hour, one socket per attempt, until the host had no ephemeral ports left and every later `bind()`
+	// failed. The re-auth banner WAS shown — the operator simply was not looking at that terminal — so a
+	// passive banner is not enough: a 401 is PERMANENT until someone re-authenticates, and retrying it at
+	// full rate buys nothing except sockets.
+	//
+	// A fresh credential clears it (see SetToken's OnRefreshed path via markAuthOK), so a successful refresh
+	// or a re-connect resumes polling normally.
+	authDead bool
 	// lastActivity is the UnixMilli of the most recent event from the stream — a text chunk, a
 	// reasoning chunk, a tool event or a HEARTBEAT. The liveness watchdog reads it (see
 	// runLivenessWatch); without it, a stream whose socket died silently is indistinguishable
@@ -916,8 +927,13 @@ func (c *Controller) OpenConversation(id string) tea.Cmd {
 			PageSize:       200,
 		}))
 		if err != nil {
+			// A REJECTED CREDENTIAL STOPS THE POLL. Every retry costs a connection and cannot succeed until a
+			// human re-authenticates, so the loop is told to stand down rather than hammer (see
+			// convState.authDead). Any other error is transient by comparison and keeps polling.
+			c.markAuthFailure(id, err)
 			return TranscriptMsg{ConvID: id, Err: err.Error()}
 		}
+		c.markAuthOK(id)
 		// The page arrives NEWEST-first (see conversationItems) — it is reversed
 		// there, together with the millisecond timestamps.
 		return TranscriptMsg{
@@ -1912,8 +1928,12 @@ func (c *Controller) runTurnPoll(convID string) {
 		c.mu.Lock()
 		st := c.state[convID]
 		streaming := st != nil && st.streaming
+		dead := st != nil && st.authDead
 		c.mu.Unlock()
-		if !streaming || c.cmds == nil {
+		// A DEAD CREDENTIAL ENDS THE POLL, not just this iteration. The banner is already up, and every
+		// further tick would open another connection to a server that will keep rejecting it — the leak that
+		// exhausted the host's ephemeral ports.
+		if !streaming || dead || c.cmds == nil {
 			return
 		}
 		select {
@@ -2116,3 +2136,29 @@ func (c *Controller) ServerTimeSince(convID string) (int64, bool) {
 var errStreamStalled = errors.New("stream stalled: no event within the liveness timeout")
 
 func now() int64 { return time.Now().UnixMilli() }
+
+// markAuthFailure records that a transcript read was rejected as unauthenticated, which stops the turn poll
+// until the credential is replaced.
+//
+// ONLY 401 STOPS IT. Every other failure is a transient worth retrying (a restarting plane, a dropped socket),
+// and treating those as terminal would strand a live turn on a blip.
+func (c *Controller) markAuthFailure(convID string, err error) {
+	if !IsAuthExpired(err) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if st := c.state[convID]; st != nil {
+		st.authDead = true
+	}
+}
+
+// markAuthOK clears the flag after a read that SUCCEEDED, so a refreshed credential (or a re-connect) resumes
+// polling rather than staying parked for the rest of the process's life.
+func (c *Controller) markAuthOK(convID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if st := c.state[convID]; st != nil && st.authDead {
+		st.authDead = false
+	}
+}
