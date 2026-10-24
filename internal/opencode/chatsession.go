@@ -297,6 +297,16 @@ func (a *ClientSessionAdapter) CreateConversationSession(ctx context.Context, co
 	return a.sc.CreateSession(ctx, title)
 }
 
+// QueuesPrompts implements scheduler.SessionQueuesPrompts and answers TRUE — the same answer as the primary
+// Adapter, because it is the same serve underneath: SendTurnMessage here goes through SessionClient.SendMessage
+// to prompt_async, which the serve serialises per session ("a message sent while a turn is in flight is queued
+// and answered at the next turn boundary").
+//
+// IT WAS UNDECLARED, which is why this file's other adapter declared the capability and this one silently did
+// not: an undeclared adapter falls to "does not queue", so interjections on a conversation served through THIS
+// path were held until the turn ended rather than delivered to the boundary.
+func (a *ClientSessionAdapter) QueuesPrompts() bool { return true }
+
 func (a *ClientSessionAdapter) SendTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string) error {
 	err := a.sc.SendMessage(ctx, sessionID, system, modelRef, text)
 	if err != nil && errors.Is(err, ErrSessionNotFound) {

@@ -330,6 +330,28 @@ func (b *Bridge) CreateConversationSession(_ context.Context, conversationID, _ 
 	return sid, nil
 }
 
+// QueuesPrompts implements scheduler.SessionQueuesPrompts and answers TRUE: a turn written to the live child
+// while it is generating is QUEUED by the CLI and answered at that turn's boundary.
+//
+// THE EVIDENCE IS ALREADY IN THIS PACKAGE, on the execution path, and it is why this adapter is not treated
+// like the native bridge. session.SendTurn writes onto the live child's stdin mid-run and increments a `queued`
+// counter expressly so the run loop does NOT terminate at the next `result` boundary:
+//
+//	// SendTurn writes a follow-up user turn onto the live stdin and queues it so
+//	// the run loop does not terminate at the next result boundary.
+//	...
+//	// onTerminal applies the turn boundary: a mid-run injected turn is still
+//	// outstanding, so the session stays alive; otherwise the execution finishes.
+//
+// Same binary, same stream-json protocol on the Ask path (askSession.writeUserTurn), so an interjection written
+// mid-turn is held by the CLI rather than starting a competing turn — the property this declaration exists to
+// advertise.
+//
+// IT WAS UNDECLARED UNTIL IT WAS ASKED ABOUT ("did you cross check against the claude code adapter as well?"),
+// and falling to the default meant interjections on a claude conversation were held until the WHOLE turn ended
+// instead of folded in at the next boundary — the exact behaviour the operator asked for, silently downgraded.
+func (b *Bridge) QueuesPrompts() bool { return true }
+
 // SendTurnMessage implements scheduler.ChatTurnClient: append a user turn to the
 // conversation's live child, spawning it on the first message.
 func (b *Bridge) SendTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string) error {
