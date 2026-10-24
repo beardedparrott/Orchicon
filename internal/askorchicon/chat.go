@@ -327,6 +327,28 @@ type turnEntry struct {
 	// turn_progressing / turn_last_activity_at the frontend uses to show an
 	// accurate "still working" vs "stalled" state after a refresh (AC2, D3).
 	lastActivity time.Time
+
+	// reuseSystem and modelRef are what an INJECTION re-sends with its message. They are captured here
+	// rather than rebuilt at injection time, because opencode's prompt_async applies `system` and `model`
+	// per message: a second build could drift from the prompt the running turn is actually operating
+	// under, and the injected message would then reach the model with a different persona or a different
+	// model than the turn it is joining.
+	reuseSystem string
+	modelRef    string
+
+	// injections counts user messages ACCEPTED into this turn's live session (see noteInjection). The
+	// collector reads it when the serve reports idle: an idle that arrives before a just-accepted
+	// injection has been worked on is a STALE idle — the serve reporting the boundary between steps —
+	// and finalizing on it would end the turn with the operator's message unprocessed.
+	injections int64
+	// injectedAt is when the most recent injection was ACCEPTED.
+	//
+	// IT BOUNDS THE DEFERRAL. Without it, a message injected a moment before the model legitimately finished
+	// would defer the final idle and then wait for a completion that is never coming — the turn would hang
+	// until the reply window expired and then FAIL, turning a clean finish into a timeout. The deferral is
+	// therefore only for an idle that arrives while the injection is still young; an idle long after it means
+	// the serve has had its chance.
+	injectedAt time.Time
 }
 
 // turnRegistry tracks in-flight Ask Orchicon turns (keyed by conversation
@@ -407,6 +429,65 @@ func (r *turnRegistry) markWedged(convID string, token uint64) {
 		entry.wedged = true
 		r.turns[convID] = entry
 	}
+}
+
+// setTurnContext records the prompt and model an injection must re-send with its message.
+//
+// Called once per turn, right after the system prompts are built. Token-guarded like every other mutation
+// here, so a stale call from a superseded turn cannot repoint the replacement's injection context.
+func (r *turnRegistry) setTurnContext(convID string, token uint64, reuseSystem, modelRef string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if entry, ok := r.turns[convID]; ok && entry.token == token {
+		entry.reuseSystem = reuseSystem
+		entry.modelRef = modelRef
+		r.turns[convID] = entry
+	}
+}
+
+// noteInjection records that a user message was ACCEPTED into the turn's live session.
+//
+// ACCEPTED is the whole meaning: it is called only after the adapter confirmed the send, so the counter
+// answers "has something been added to this session that the collector has not yet seen the effect of?"
+// — which is the question the idle handler asks. An injection that FAILED is not counted, because nothing
+// entered the session and the turn is entitled to finish.
+func (r *turnRegistry) noteInjection(convID string, token uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if entry, ok := r.turns[convID]; ok && entry.token == token {
+		entry.injections++
+		entry.injectedAt = time.Now()
+		r.turns[convID] = entry
+	}
+}
+
+// injectionAcceptedAt reports when this turn last accepted an injection, and 0 when it never has.
+func (r *turnRegistry) injectionAcceptedAt(convID string, token uint64) time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if entry, ok := r.turns[convID]; ok && entry.token == token {
+		return entry.injectedAt
+	}
+	return time.Time{}
+}
+
+// injectionIdleGrace is how long after an accepted injection an idle is treated as STALE rather than final.
+//
+// IT IS A BOUND, NOT A TIMER: it exists so a message injected just before the model legitimately finished
+// cannot defer the completion for ever. Two seconds is comfortably longer than the gap between the serve
+// emitting an idle and processing a queued message, and far shorter than the reply window — so the bad case
+// degrades to "one extra attempt" instead of "a timeout".
+const injectionIdleGrace = 2 * time.Second
+
+// injectionSeq reports how many injections this turn has accepted. The collector compares it against the
+// value it last observed to tell a stale idle from a real completion.
+func (r *turnRegistry) injectionSeq(convID string, token uint64) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if entry, ok := r.turns[convID]; ok && entry.token == token {
+		return entry.injections
+	}
+	return 0
 }
 
 // markActivity records that a running turn last produced output at now,
@@ -536,15 +617,38 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh, st)
 }
 
-// InterjectConversationTurn is the chat equivalent of a worker-execution
-// nudge, with an interrupt: it SUPERSEDES the conversation's in-flight turn
-// (if any) and dispatches the interjection on a fresh turn. The superseded
-// turn's collector is cancelled (its partial content is persisted as a plain
-// assistant message — or dropped when empty), the conversation's opencode
-// session is aborted so the model stops generating NOW, and the interjection
-// is answered at the next turn boundary rather than queued behind a stuck
-// turn. When nothing is running it behaves exactly like ChatStream
-// (idempotent).
+// InterjectConversationTurn adds the operator's message to the conversation WHILE the model is working,
+// without interrupting it.
+//
+// THE OPERATOR, in their own words: "I would much rather just do the injecting instead. It should still look
+// like a chat message in the stream to the user, and it should inject in the context that the model is
+// constantly pulling back in (if that is possible). I want it to 'interject' by adding it to the overall
+// context as a user message but NOT abort."
+//
+// THAT IS WHAT THIS DOES NOW. It used to SUPERSEDE: cancel the collector, abort the provider session
+// mid-generation, and answer on a fresh turn. The reported consequence was a model that had "lost track of
+// what it was already working on" and "seemed to think the current work may have been done by someone else"
+// — because an aborted turn leaves its tool results, file changes and transcript behind without the
+// assistant turn that produced them, so the model inherits finished work with no record of having done it.
+//
+// THREE CASES, and only one of them is new:
+//
+//   - A TURN IS RUNNING AND HEALTHY -> INJECT. The message is persisted exactly like a normal send (so it is
+//     a chat message in the transcript, in the history a recreated session replays, and in the audit trail),
+//     and handed to the live session with prompt_async — the documented mid-run primitive, which the
+//     adapter's own docs describe as "a message sent while a turn is in flight is queued and answered at the
+//     next turn boundary". Nothing is cancelled and nothing is aborted: the model keeps its session, its
+//     context and its task, and the message becomes part of the context it is already working from. The
+//     caller then ATTACHES to the running reply (like a re-dialling client) so the operator sees the work
+//     continue.
+//
+//   - NO TURN IS RUNNING -> behave exactly like ChatStream, which is the old idempotent behaviour and still
+//     the right one: there is nothing to join, so the message starts a turn.
+//
+//   - THE RUNNING TURN IS WEDGED (its session is blocked on a tool call that never resolved) -> SUPERSEDE, as
+//     before. This is the one case where injecting cannot work: the session is not going to reach a turn
+//     boundary, so a message handed to it would never be answered. Recycling to a fresh session is what makes
+//     the operator's message land at all, and it is rare enough to be worth an exception rather than the rule.
 func (s *Service) InterjectConversationTurn(ctx context.Context, req *connect.Request[apiv1.InterjectConversationTurnRequest], stream *connect.ServerStream[apiv1.ChatStreamResponse]) error {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -560,12 +664,142 @@ func (s *Service) InterjectConversationTurn(ctx context.Context, req *connect.Re
 	if utf8.RuneCountInString(msg) > 10000 {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
 	}
+	if len(req.Msg.Attachments) > 5 {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("too many attachments (max 5)"))
+	}
 
-	assistantID, streamEventCh, st, err := s.startConversationTurnOpts(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments, turnDispatchOpts{supersede: true})
+	entry, running := s.turns.get(req.Msg.ConversationId)
+
+	// THE INJECTION PATH. Checked BEFORE anything is cancelled, so the healthy case cannot fall through into
+	// the supersede path by accident.
+	if running && !entry.wedged {
+		return s.injectIntoRunningTurn(ctx, stream, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments, entry)
+	}
+
+	// Wedged (recycle) or idle (start a turn). `supersede` is now true ONLY for the wedged case: with nothing
+	// running there is nothing to supersede, and passing it would let an idle conversation take a path whose
+	// whole purpose is to cancel something.
+	assistantID, streamEventCh, st, err := s.startConversationTurnOpts(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments, turnDispatchOpts{supersede: running})
 	if err != nil {
 		return err
 	}
 	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh, st)
+}
+
+// errNothingToInjectInto means a running turn has no live session to add a message to.
+//
+// NOT A NORMAL STATE — the collector creates and persists a session before it sends anything — so the caller
+// falls back to the supersede path, which is guaranteed to answer, rather than failing the operator's
+// message outright. It is a sentinel so that decision lives in ONE place.
+var errNothingToInjectInto = errors.New("running turn has no live session to inject into")
+
+// injectIntoRunningTurn adds msg to a RUNNING turn's live session, without interrupting it, then attaches the
+// caller to the reply that message just joined.
+func (s *Service) injectIntoRunningTurn(ctx context.Context, stream *connect.ServerStream[apiv1.ChatStreamResponse], tenantID, convID, msg string, attachments []*apiv1.AttachmentInput, entry turnEntry) error {
+	if err := s.deliverInjection(ctx, tenantID, convID, msg, attachments, entry); err != nil {
+		if errors.Is(err, errNothingToInjectInto) {
+			s.log.Warn("interjection found a running turn with no session — falling back to a fresh turn",
+				"conversation", convID, "assistant_message", entry.assistantMsgID)
+			assistantID, ch, st, derr := s.startConversationTurnOpts(ctx, tenantID, convID, msg, attachments, turnDispatchOpts{supersede: true})
+			if derr != nil {
+				return derr
+			}
+			return s.drainTurnStream(stream, convID, assistantID, ch, st)
+		}
+		return err
+	}
+	// 4. Attach to the reply this message just joined. It is the RUNNING turn's own assistant message, so the
+	// operator sees the work continue rather than a second, empty reply appearing beside it.
+	return s.watchRunningTurn(ctx, stream, convID, entry.assistantMsgID)
+}
+
+// deliverInjection persists msg as a user message and hands it to the running turn's live session.
+//
+// THE ORDER IS THE DESIGN:
+//
+//  1. the message is PERSISTED FIRST. If the send then fails, the operator's words are still in the
+//     transcript (and in the history a recreated session replays) rather than lost with an error dialog.
+//  2. it is SENT to the live session. Acceptance is what makes the injection real.
+//  3. the turn's injection counter is incremented — ONLY after the send succeeded — so the collector knows to
+//     expect work from it (see the idle guard in runOneTurnAttempt).
+func (s *Service) deliverInjection(ctx context.Context, tenantID, convID, msg string, attachments []*apiv1.AttachmentInput, entry turnEntry) error {
+	conv, err := s.loadConversation(ctx, tenantID, convID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(conv.SessionID) == "" {
+		return errNothingToInjectInto
+	}
+
+	// 1. Persist. Same path as a normal send, flagged as an injection in the audit trail.
+	if _, err := s.persistUserMessage(ctx, tenantID, conv, msg, attachments, userSendFlags{injected: true}); err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+
+	// 2. Send into the live session.
+	client, err := s.resolveChatClient(convID, conv.ModelRef)
+	if err != nil {
+		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+			"your message was saved, but it could not be delivered to the running turn: %w — it is in the transcript; send it again once the turn finishes", err))
+	}
+
+	// THE PROMPT AND MODEL ARE THE RUNNING TURN'S, re-read from its registry entry rather than rebuilt.
+	// opencode applies `system` and `model` PER MESSAGE, so a second build could hand this message a different
+	// persona or a different model than the turn it is joining — the message would reach a different model than
+	// the work it is commenting on.
+	system := entry.reuseSystem
+	modelRef := entry.modelRef
+	if strings.TrimSpace(modelRef) == "" {
+		modelRef = s.modelRefOrFallback(ctx, tenantID, conv.ModelRef)
+	}
+
+	// NOT the request context: the stream this call arrived on may drop, and the injection must still land —
+	// that is the whole point of adding context to work that continues without the operator watching. Bounded
+	// on its own so a wedged serve cannot park the interjection for ever.
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), askTimeout())
+	defer cancel()
+	if len(attachments) > 0 {
+		acc, ok := client.(scheduler.SendTurnMessageWithAttachments)
+		if !ok {
+			return connect.NewError(connect.CodeFailedPrecondition, errors.New(
+				"your message was saved, but this conversation's adapter cannot attach files to a running turn — send it again once the turn finishes"))
+		}
+		parts := make([]scheduler.ChatAttachment, 0, len(attachments))
+		for _, a := range attachments {
+			parts = append(parts, scheduler.ChatAttachment{Name: a.Name, MimeType: a.MimeType, Data: a.Data})
+		}
+		err = acc.SendTurnMessageWithAttachments(sendCtx, convID, conv.SessionID, system, modelRef, msg, parts)
+	} else {
+		err = client.SendTurnMessage(sendCtx, convID, conv.SessionID, system, modelRef, msg)
+	}
+	if err != nil {
+		return connect.NewError(connect.CodeUnavailable, fmt.Errorf(
+			"your message was saved, but it could not be delivered to the running turn: %w — it is in the transcript; send it again once the turn finishes", err))
+	}
+
+	// 3. Tell the collector to expect work from it. AFTER the send, never before: an injection that failed put
+	// nothing into the session, and counting it would keep a finishing turn open until the reply window expired.
+	s.turns.noteInjection(convID, entry.token)
+	s.log.Info("ask orchicon interjection injected into the running turn",
+		"conversation", convID, "assistant_message", entry.assistantMsgID, "attachments", len(attachments))
+	return nil
+}
+
+// loadConversation reads one conversation row in the tenant's scope.
+func (s *Service) loadConversation(ctx context.Context, tenantID, convID string) (db.ConversationRow, error) {
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return db.ConversationRow{}, connect.NewError(connect.CodeInternal, err)
+	}
+	conv, err := db.GetConversation(ctx, ttx.Tx, tenantID, convID)
+	ttx.Rollback(ctx)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return db.ConversationRow{}, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return db.ConversationRow{}, connect.NewError(connect.CodeInternal, err)
+	}
+	return conv, nil
 }
 
 // WatchTurnStream re-attaches a dropped socket to an ACKED turn's live
@@ -586,11 +820,37 @@ func (s *Service) WatchTurnStream(ctx context.Context, req *connect.Request[apiv
 	if !running || entry.assistantMsgID != req.Msg.AssistantMessageId || entry.tenant != tenantID {
 		return connect.NewError(connect.CodeNotFound, errors.New("no running turn for this message — the turn finished or was superseded"))
 	}
-	h, found := s.hubs.get(req.Msg.ConversationId)
-	if !found {
+	if _, found := s.hubs.get(req.Msg.ConversationId); !found {
 		return connect.NewError(connect.CodeNotFound, errors.New("no live stream for this turn — the turn finished or was superseded"))
 	}
 	s.log.Info("ask orchicon watch re-attached to running turn", "conversation", req.Msg.ConversationId, "assistant_message", req.Msg.AssistantMessageId)
+	return s.watchRunningTurn(ctx, stream, req.Msg.ConversationId, req.Msg.AssistantMessageId)
+}
+
+// watchRunningTurn attaches a client stream to a turn that is ALREADY RUNNING: it acks with that turn's
+// assistant message id and drains the conversation's broadcast hub until the turn finalises.
+//
+// IT IS ONE IMPLEMENTATION FOR TWO CALLERS, on purpose. WatchTurnStream reaches it after a dropped socket; an
+// INTERJECTION reaches it because injecting a message into the live session does not start a new turn — the
+// reply the operator's message joins is the one already streaming, so the interjecting client attaches to it
+// exactly the way a re-dialling client does. Two copies of "drain the hub for a running turn" would drift on
+// the details that matter here (the ack's message id, the pending-ask replay, the liveness heartbeats).
+func (s *Service) watchRunningTurn(ctx context.Context, stream *connect.ServerStream[apiv1.ChatStreamResponse], convID, assistantID string) error {
+	h, found := s.hubs.get(convID)
+	if !found {
+		// The turn reached its end between the caller's check and this subscribe. The reply is durable (the
+		// collector persists it) and the client polls ListMessages, so this is a clean end of stream rather
+		// than an error.
+		_ = stream.Send(&apiv1.ChatStreamResponse{
+			Event: &apiv1.ChatStreamResponse_TurnStarted{TurnStarted: &apiv1.TurnStarted{AssistantMessageId: assistantID}},
+		})
+		return nil
+	}
+	if err := stream.Send(&apiv1.ChatStreamResponse{
+		Event: &apiv1.ChatStreamResponse_TurnStarted{TurnStarted: &apiv1.TurnStarted{AssistantMessageId: assistantID}},
+	}); err != nil {
+		return err
+	}
 	subID, ch := h.subscribe()
 	defer h.unsubscribe(subID)
 	// RE-ATTACH RECOVERY: this stream does not replay the turn's earlier events
@@ -600,13 +860,13 @@ func (s *Service) WatchTurnStream(ctx context.Context, req *connect.Request[apiv
 	// for the conversation is re-emitted to the LATE subscriber; the client
 	// dedupes by ask id, and a decided/finalized ask is not replayed (its outcome
 	// already landed).
-	for _, a := range s.pending.list(req.Msg.ConversationId) {
+	for _, a := range s.pending.list(convID) {
 		if !a.isOpen() {
 			continue
 		}
 		if err := stream.Send(permissionAskEvent(a)); err != nil {
 			s.log.Warn("ask orchicon watch: replaying a pending consent ask failed",
-				"conversation", req.Msg.ConversationId, "ask", a.AskID, "error", err)
+				"conversation", convID, "ask", a.AskID, "error", err)
 			return nil
 		}
 	}
@@ -619,7 +879,7 @@ func (s *Service) WatchTurnStream(ctx context.Context, req *connect.Request[apiv
 				return nil // hub closed: turn finalized or superseded
 			}
 			if err := stream.Send(resp); err != nil {
-				s.log.Warn("ask orchicon watch stream send failed", "conversation", req.Msg.ConversationId, "assistant_message", req.Msg.AssistantMessageId, "cause", "watcher-gone-send-fail")
+				s.log.Warn("ask orchicon watch stream send failed", "conversation", convID, "assistant_message", assistantID, "cause", "watcher-gone-send-fail")
 				return nil
 			}
 		}
@@ -757,6 +1017,78 @@ type turnDispatchOpts struct {
 	supersede bool
 }
 
+// userSendFlags says how an operator message entered the conversation, for the audit trail.
+type userSendFlags struct {
+	// superseded is set when this message REPLACED a running turn (the wedged-session recycle).
+	superseded bool
+	// injected is set when this message was ADDED to a running turn's live session without interrupting it.
+	injected bool
+}
+
+// persistUserMessage stores one operator message — with its attachments — and audits it, atomically.
+//
+// ONE PATH FOR BOTH CALLERS, and that is the point rather than tidiness. A message that is INJECTED into a
+// running turn has to be indistinguishable from one that started a turn: same row shape, same attachment
+// JSON (so a recreated session replays it), same conversation timestamp, same audit row. Two copies of this
+// block would drift on exactly the fields nobody looks at until a session is recreated and half the history
+// is missing.
+func (s *Service) persistUserMessage(ctx context.Context, tenantID string, conv db.ConversationRow, msg string, attachments []*apiv1.AttachmentInput, flags userSendFlags) (string, error) {
+	attachmentsJSON := []byte("[]")
+	if len(attachments) > 0 {
+		if j, err := json.Marshal(attachments); err == nil {
+			attachmentsJSON = j
+		}
+	}
+	userMsg := db.MessageRow{
+		ID:             db.NewID(),
+		TenantID:       tenantID,
+		ConversationID: conv.ID,
+		Role:           "user",
+		Content:        msg,
+		ToolCalls:      []byte("[]"),
+		ToolResults:    []byte("[]"),
+		Attachments:    attachmentsJSON,
+		Metadata:       []byte("{}"),
+		Reasoning:      []string{},
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := db.CreateMessage(ctx, ttx.Tx, userMsg); err != nil {
+		ttx.Rollback(ctx)
+		return "", fmt.Errorf("save user message: %w", err)
+	}
+	if err := db.UpdateConversationTimestamp(ctx, ttx.Tx, tenantID, conv.ID); err != nil {
+		ttx.Rollback(ctx)
+		return "", err
+	}
+	if conv.Title == "" {
+		title := msg
+		if len(title) > 80 {
+			title = title[:80]
+		}
+		db.UpdateConversationTitle(ctx, ttx.Tx, tenantID, conv.ID, title)
+	}
+	// Audit the user send atomically with the message persistence (one row per user action). Message content is
+	// excluded from the snapshot (echo-privacy / compact trail); the message id refs the stored row.
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.message_sent", "conversation", conv.ID,
+		nil, audit.Snapshot(map[string]any{
+			"message_id": userMsg.ID,
+			"role":       "user",
+			"mode":       conv.Mode,
+			"superseded": flags.superseded,
+			"injected":   flags.injected,
+		})); err != nil {
+		ttx.Rollback(ctx)
+		return "", fmt.Errorf("audit conversation.message_sent: %w", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return userMsg.ID, nil
+}
+
 // startConversationTurn is ChatStream's core (extracted for testability): it
 // persists the user message, registers the in-flight turn, and launches the
 // detached reply collector. It returns the acked assistant message id under
@@ -822,14 +1154,9 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// interjection lands on a healthy session rather than the stuck one.
 	useSessionID := conv.SessionID
 
-	// interruptedTurn records that this dispatch REPLACED a turn that was still running. It is what makes
-	// the continuity section below truthful: on an ordinary message there is nothing to be continuous with.
-	interruptedTurn := false
-
-	// --- 0.5. Supersede an in-flight turn (interject only). ---
+	// --- 0.5. Supersede an in-flight turn (the WEDGED-only path — see InterjectConversationTurn). ---
 	if opts.supersede {
 		prevEntry, prevOk := s.turns.get(convID)
-		interruptedTurn = prevOk
 		if token, ok := s.turns.cancel(convID, errTurnSuperseded); ok {
 			s.turns.remove(convID, token)
 			s.log.Info("conversation turn superseded by interjection", "conversation", convID)
@@ -906,64 +1233,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 
 	// --- 2. Persist user message (and title on first message). ---
-	// Persist attachments as JSON so history + recreation carries them.
-	attachmentsJSON := []byte("[]")
-	if len(attachments) > 0 {
-		if j, err := json.Marshal(attachments); err == nil {
-			attachmentsJSON = j
-		}
-	}
-	userMsg := db.MessageRow{
-		ID:             db.NewID(),
-		TenantID:       tenantID,
-		ConversationID: convID,
-		Role:           "user",
-		Content:        msg,
-		ToolCalls:      []byte("[]"),
-		ToolResults:    []byte("[]"),
-		Attachments:    attachmentsJSON,
-		Metadata:       []byte("{}"),
-		Reasoning:      []string{},
-	}
-	ttx, err = s.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		releaseTurn()
-		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if _, err := db.CreateMessage(ctx, ttx.Tx, userMsg); err != nil {
-		ttx.Rollback(ctx)
-		releaseTurn()
-		return "", nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("save user message: %w", err))
-	}
-	if err := db.UpdateConversationTimestamp(ctx, ttx.Tx, tenantID, convID); err != nil {
-		ttx.Rollback(ctx)
-		releaseTurn()
-		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if conv.Title == "" {
-		title := msg
-		if len(title) > 80 {
-			title = title[:80]
-		}
-		db.UpdateConversationTitle(ctx, ttx.Tx, tenantID, convID, title)
-	}
-	// Audit the user send atomically with the message persistence (one
-	// row per user action — covers ChatStream and InterjectConversationTurn,
-	// which both dispatch through here). Message content is excluded from
-	// the snapshot (echo-privacy / compact trail); the message id refs the
-	// stored row.
-	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.message_sent", "conversation", convID,
-		nil, audit.Snapshot(map[string]any{
-			"message_id": userMsg.ID,
-			"role":       "user",
-			"mode":       conv.Mode,
-			"superseded": opts.supersede,
-		})); err != nil {
-		ttx.Rollback(ctx)
-		releaseTurn()
-		return "", nil, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit conversation.message_sent: %w", err))
-	}
-	if err := ttx.Commit(ctx); err != nil {
+	if _, err := s.persistUserMessage(ctx, tenantID, conv, msg, attachments, userSendFlags{superseded: opts.supersede}); err != nil {
 		releaseTurn()
 		return "", nil, nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -1046,39 +1316,11 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	seedSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, true, attachments, projectContext, convProject, skillsSection)
 	reuseSystem := buildSystemPrompt(conv.Mode, cfg, s.toolRegistry, prevMessages, false, attachments, projectContext, convProject, skillsSection)
 
-	// A SUPERSEDING INTERJECTION TELLS THE MODEL WHAT IT IS CONTINUING.
-	//
-	// REPORTED: "whenever I interject on an ask orchicon live session, the model doing the work seems to lose
-	// track of what it was already working on and seems to think that the current work may have been done by
-	// someone else. … It should just be adding additional context to the current running session and not
-	// break things."
-	//
-	// THE MECHANISM. Interjecting SUPERSEDES: the running turn's collector is cancelled and the provider
-	// session is ABORTED mid-generation (that is what makes the model stop now rather than queue behind a stuck
-	// turn). An aborted turn is a half-finished one, and what survives of it in the session is not the model's
-	// own completed reasoning: the tool results, the file changes and the transcript are all still there, but
-	// the assistant turn that CAUSED them was cut off. A model handed that state sees finished work with no
-	// record of having done it — which is precisely "the work may have been done by someone else" — and no
-	// record of what it was mid-way through, which is "lost track of what it was already working on".
-	//
-	// WHY THE FIX IS HERE AND NOT IN THE TRANSPORT. Making interject INJECT onto the live session instead of
-	// aborting it is the cleaner answer, and it is not a small change: InterjectConversationTurn's contract
-	// (proto/orchicon/api/v1/ask_orchicon_service.proto) ack's a NEW assistant message id and streams that
-	// turn's events, and both clients are written against it. Changing the ack and stream semantics in the
-	// same pass as a behavioural regression report is how a fix becomes an outage.
-	//
-	// SO THE FACTS ARE STATED WHERE THE MODEL CAN READ THEM. The system prompt is per-turn and MODEL-ONLY — it
-	// is not the persisted user message, so the operator's transcript does not gain a paragraph they did not
-	// type. The model is told what is true: this is its own session, the work in it is its own, and it was
-	// interrupted rather than restarted.
-	//
-	// IT IS APPENDED TO BOTH VARIANTS because either can be the one used: `seed` when the session is
-	// recreated (a wedged interjection recycles it — see D4), `reuse` in the steady state.
-	if interruptedTurn {
-		continuity := interjectionContinuitySection()
-		seedSystem += continuity
-		reuseSystem += continuity
-	}
+	// AN INJECTION RE-SENDS THESE, so the running turn publishes them here. See turnEntry.reuseSystem: the
+	// injected message must reach the model under the SAME persona and model as the turn it is joining, and a
+	// second build at injection time could drift from this one.
+	s.turns.setTurnContext(convID, token, reuseSystem, modelRef)
+
 
 	// --- 4. Launch the detached reply collector and stream events to the
 	// client. The stream channel is buffered so the collector never blocks.
@@ -1374,37 +1616,6 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 // skillsSection is the ALREADY-RENDERED `# Skills` manifest for this turn ("" when the conversation and its
 // project have no skill files). It is rendered by skillManifestSection and forwarded to BuildSystemPrompt,
 // which appends it beside the tenant's free-text additional instructions — see writeSkillsManifest.
-// interjectionContinuitySection is what a superseded turn's successor is told about the work it inherited.
-//
-// IT ASSERTS, IT DOES NOT ASK. A model that is TOLD "you may have been interrupted" can conclude it is
-// starting fresh; one that is told the work is its own and the task is unfinished resumes. Each sentence
-// answers one of the two reported symptoms:
-//
-//	"loses track of what it was already working on"      -> resume the task you were on; the transcript and
-//	                                                        the working tree show where you were
-//	"thinks the current work was done by someone else"   -> everything already in this session is yours
-//
-// IT NAMES THE CONCRETE EVIDENCE (tool results, file changes, transcript) rather than speaking abstractly,
-// because that is what the model is actually looking at and what it was mis-attributing.
-//
-// MAXIMAL scope: it says nothing about WHICH project, file or task, because this function does not know.
-// Inventing specifics would be worse than saying none.
-func interjectionContinuitySection() string {
-	return "\n\n## Continuity — you were interrupted, not restarted\n" +
-		"\n" +
-		"This session is YOURS and the work in it is YOUR OWN. Every tool result, file change, diff and\n" +
-		"transcript entry already present was produced by YOU earlier in this same conversation. Do not\n" +
-		"treat any of it as work by another person, another session or another agent, and do not redo it\n" +
-		"to \"catch up\".\n" +
-		"\n" +
-		"The operator interrupted you while you were working, and their message is ADDITIONAL CONTEXT for\n" +
-		"the task you were already on — not a new task and not a correction of who did what. Resume from\n" +
-		"where the work in the session leaves off, fold their message into that plan, and carry on.\n" +
-		"\n" +
-		"If the interruption means you should change direction, say what you are changing and why. Do not\n" +
-		"silently restart, and do not re-verify what you have already established.\n"
-}
-
 func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext, convProject, skillsSection string) string {
 	var b strings.Builder
 
@@ -2001,6 +2212,10 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 
 	var reply strings.Builder
 	var reasoning []string
+	// observedInjections is how many injections have already been accounted for in THIS attempt. Declared
+	// per attempt, not per turn: a re-attach starts with a fresh SSE subscription and must re-observe them,
+	// otherwise an injection accepted before a serve restart would pin the turn open for ever.
+	var observedInjections int64
 	// Live-delta buffers for the partial-reply mirror: completed parts are
 	// authoritative (reply/reasoning), but between parts the model streams
 	// token deltas — those stream into liveText/liveReasoning so a re-attached
@@ -2362,6 +2577,31 @@ func (s *Service) runOneTurnAttempt(ctx context.Context, window *turnReplyWindow
 				// (sent). A stale idle from a prior turn (sent == false)
 				// must never complete a new turn.
 				if sent {
+					// …AND AN IDLE THAT PREDATES A JUST-ACCEPTED INJECTION IS ALSO STALE.
+					//
+					// This is the one race injection introduces. `idle` means "the session has no work in
+					// flight", and the serve emits it at the boundary between steps. An operator message
+					// injected at that boundary can be accepted by the serve a moment BEFORE this event is
+					// consumed, in which case this idle describes the state before their message existed: the
+					// turn would finalise and the injected message would be answered by a session with no
+					// collector — the reply persisted nowhere and streamed to nobody.
+					//
+					// So an idle is only a completion when nothing has been added since the last idle we acted
+					// on. The counter is read from the registry, which is incremented ONLY after the adapter
+					// confirmed acceptance — an injection that failed cannot keep a turn alive.
+					if seq := s.turns.injectionSeq(c.convID, c.token); seq > observedInjections {
+						observedInjections = seq
+						if age := time.Since(s.turns.injectionAcceptedAt(c.convID, c.token)); age < injectionIdleGrace {
+							s.log.Info("ask orchicon idle deferred — an injection was accepted after it",
+								"conversation", c.convID, "injections", seq, "age", age.String())
+							continue
+						}
+						// THE INJECTION IS OLD AND THE SERVE HAS GONE QUIET ANYWAY: this idle is a real
+						// completion. Finalising is right — the alternative is hanging until the reply window
+						// and failing a turn that actually finished.
+						s.log.Warn("ask orchicon idle accepted despite an older injection",
+							"conversation", c.convID, "injections", seq, "age", time.Since(s.turns.injectionAcceptedAt(c.convID, c.token)).String())
+					}
 					finalText, finalReasoning := settleAttempt()
 					return turnAttemptResult{kind: turnCollected, text: strings.TrimSpace(finalText), reasoning: finalReasoning}
 				}

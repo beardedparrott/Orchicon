@@ -27,7 +27,10 @@ import (
 //     the turn: the slot goes reconnecting and WatchTurnStream re-dials
 //     the broadcast hub (no dispatch), while a ListMessages poll stays
 //     the completion authority.
-//   - InterjectConversationTurn supersedes an in-flight turn.
+//   - InterjectConversationTurn ADDS a message to an in-flight turn (injection): the
+//     server persists it and hands it to the live session, then acks with the
+//     RUNNING turn's assistant message id. The reply the operator was already
+//     watching is the one that continues.,
 //   - The live stream oneof carries textChunk | reasoning | turnStarted
 //     | heartbeat | error (current impl emits TurnStarted + live chunks
 //     + heartbeat; ListMessages remains authoritative for final text).
@@ -55,13 +58,18 @@ type convState struct {
 	// stream carries the generation it started under, so a stream that has been SUPERSEDED cannot tear
 	// down the slot its successor owns.
 	//
-	// WITHOUT IT, AN INTERJECTION KILLED ITS OWN TURN'S STATE. Interjecting supersedes the running turn,
-	// which closes the OLD stream cleanly — that close arrives as StreamDoneMsg and cleared `streaming`
-	// and `pendingReplyID` for the conversation, i.e. for the NEW turn the operator had just started. The
-	// visible effects are exactly the reported ones: the thinking indicator and the watchdog vanished the
-	// moment the interjection was accepted, the poll fell to the non-streaming REPLACE path and discarded
-	// the live reply, and the transcript could keep a half-merged copy of both turns. A generation turns
-	// "a stream ended" into "THIS stream ended", which is the fact the slot actually needs.
+	// WITHOUT IT, AN INTERJECTION KILLED ITS OWN TURN'S STATE. An interjection opens a SECOND stream for the
+	// same conversation, and the supersede path it used to take closed the old one — that close arrives as
+	// StreamDoneMsg and cleared `streaming` and `pendingReplyID` for the conversation, i.e. for the turn the
+	// operator was still watching. The visible effects are exactly the reported ones: the thinking indicator
+	// and the watchdog vanished the moment the interjection was accepted, the poll fell to the
+	// non-streaming REPLACE path and discarded the live reply, and the transcript could keep a half-merged
+	// copy of both turns. A generation turns "a stream ended" into "THIS stream ended", which is the fact
+	// the slot actually needs.
+	//
+	// IT STILL MATTERS AFTER THE MOVE TO INJECTION: there is no supersede on the healthy path, so the
+	// original stream stays open alongside the interjection's and only the generation decides which one owns
+	// the slot.
 	gen uint64
 	// optimisticUser is the not-yet-persisted sent text (rendered
 	// immediately; replaced by the transcript row once ListMessages
@@ -72,9 +80,10 @@ type convState struct {
 	//
 	// IT EXISTS FOR ONE FAILURE: the server refusing the attempt because a reply is already running on
 	// this conversation (its one-turn gate, see dropStream). That refusal is curable — the remedy is the
-	// supersede RPC — and curing it needs the very message the attempt carried, which is otherwise gone
-	// by the time the refusal arrives. retried caps the remedy at one re-issue, so a failure the
-	// supersede path cannot fix is reported rather than retried forever.
+	// interject RPC, which now ADDS the message to the running turn instead of replacing it — and curing it
+	// needs the very message the attempt carried, which is otherwise gone by the time the refusal arrives.
+	// retried caps the remedy at one re-issue, so a failure that path cannot fix is reported rather than
+	// retried forever.
 	attempt streamAttempt
 	// lastActivity is the UnixMilli of the most recent event from the stream — a text chunk, a
 	// reasoning chunk, a tool event or a HEARTBEAT. The liveness watchdog reads it (see

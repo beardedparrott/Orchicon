@@ -1636,12 +1636,14 @@ function AskOrchiconPage() {
     [runStream, setStream],
   );
 
-  // An interjection: sent while a turn is already streaming. The server
-  // supersedes the in-flight turn (persisting its partial content as a plain
-  // message) and answers this message on a fresh turn that acks a NEW
-  // assistant message id. The old id's partial message appears via the poll
-  // and must NOT clear the new turn — the poll effect keys on the current
-  // pendingReplyId, which turnStarted now points at the new id.
+  // An interjection: sent while a turn is already streaming. The server ADDS the
+  // message to that turn — it persists it (so it shows up in the transcript like
+  // any other user message) and injects it into the live session, so the model
+  // treats it as more context for the work in hand. Nothing is aborted.
+  //
+  // The ack still carries an assistant message id: the RUNNING turn's, because the
+  // reply this message just joined is the one that continues. The stream slot
+  // therefore keeps pointing at the message the operator was already watching.
   const interjectStreaming = useCallback(
     async (convId: string, text: string, attachments?: AttachmentInput[]): Promise<boolean> => {
       setStream(convId, (prev) => ({
@@ -1682,9 +1684,10 @@ function AskOrchiconPage() {
     async (text: string, attachments?: AttachmentInput[]): Promise<boolean> => {
       if (!text.trim() || !activeConvId) return false;
       if (isStreaming || serverTurnInFlight) {
-        // Send while streaming = interject: interrupt the current reply and
-        // redirect the model (the server aborts the session + supersedes the
-        // turn), never the "another reply already processing" dead-end.
+        // Send while streaming = interject: the server ADDS this message to the
+        // reply in flight (it persists it and injects it into the live session,
+        // so the model picks it up as more context) without aborting anything.
+        // Never the "another reply already processing" dead-end.
         // serverTurnInFlight covers the case where THIS browser's slot is
         // idle but the turn is running server-side (started here before a
         // refresh, or in another tab/device): the poll may not have re-armed
