@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"os/exec"
+	"path/filepath"
 	"syscall"
 )
 
@@ -17,6 +18,10 @@ const detachedProcess = 0x00000008
 // self-restart requires.
 func startReplacement(self string, args []string) (int, error) {
 	cmd := exec.Command(self, args...)
+	// THE REPLACEMENT GETS ITS OWN WORKING DIRECTORY, NOT THIS WINDOW'S. A GUI has no meaningful current
+	// directory, and Windows refuses to create a child at all when the inherited one has gone — which would
+	// make a restart fail after the app had been launched from a directory that was since removed.
+	cmd.Dir = filepath.Dir(self)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | detachedProcess,

@@ -60,14 +60,7 @@ func ourInstanceProcesses(instance string) []int {
 // BEST-EFFORT AND HONEST ABOUT IT: an unreadable /proc (another user's process, a hardened kernel) yields
 // nothing rather than a guess, and the caller's message still stands on its own.
 func portHolders(ports ...int) []portHolder {
-	want := map[string]bool{}
-	for _, p := range ports {
-		if p > 0 {
-			// /proc/net/tcp lists LOCAL_ADDRESS:PORT as 4 hex digits of the port, upper-case.
-			want[fmt.Sprintf(":%04X", p)] = true
-		}
-	}
-	if len(want) == 0 {
+	if len(ports) == 0 {
 		return nil
 	}
 	inodes := map[string]bool{}
@@ -76,15 +69,8 @@ func portHolders(ports ...int) []portHolder {
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(b), "\n")[1:] {
-			fields := strings.Fields(line)
-			if len(fields) < 10 || !want[fields[1][strings.LastIndex(fields[1], ":")+1:]] {
-				continue
-			}
-			if fields[3] != "0A" { // 0A = TCP_LISTEN
-				continue
-			}
-			inodes["socket:["+fields[9]+"]"] = true
+		for inode := range procNetTCPInodes(string(b), ports) {
+			inodes[inode] = true
 		}
 	}
 	if len(inodes) == 0 {
@@ -134,4 +120,53 @@ func processBelongsTo(pid int, instance string) bool {
 // something the operator can actually run.
 func portHolderHint(port int) string {
 	return fmt.Sprintf("`ss -ltnp` / `lsof -i :%d`", port)
+}
+
+// procNetTCPInodes returns the socket inodes LISTENING on any of ports, as "socket:[<inode>]" keys.
+//
+// THE BUG THIS FUNCTION EXISTS TO MAKE TESTABLE. It used to be inline, and it built its match set as
+// ":1F9B" (with the colon) while extracting the field as "1F9B" (without) — so EVERY comparison failed,
+// every line was skipped, and portHolders returned nothing on Linux, always. Nothing called it in a way
+// that could tell "no holder" from "a holder I cannot name", so the consequence surfaced only as an
+// unhelpful refusal:
+//
+//	Control plane (web UI + API): 8091 is held by a process this tool cannot identify
+//
+// on a machine where `ss -ltnp` named the pid immediately. MEASURED against a live /proc/net/tcp:
+//
+//	4: 010011AC:1F9B 00000000:0000 0A ... 737142006 2 ...
+//	                  ^^^^ local_address: LLADDR:PORT, PORT is 4 upper-case hex digits
+//	                                     ^^ st == 0A is TCP_LISTEN
+//
+// /proc/net/tcp is the platform's own table and is authoritative; it is parsed rather than shelling out to
+// ss/lsof because neither is guaranteed present and a teardown must not depend on an optional tool.
+func procNetTCPInodes(table string, ports []int) map[string]bool {
+	want := make(map[string]bool, len(ports))
+	for _, p := range ports {
+		if p > 0 {
+			// FOUR UPPER-CASE HEX DIGITS, no colon. The colon belongs to the field separator, not the port.
+			want[fmt.Sprintf("%04X", p)] = true
+		}
+	}
+	out := map[string]bool{}
+	if len(want) == 0 {
+		return out
+	}
+	for _, line := range strings.Split(table, "\n")[1:] { // [1:] skips the header row
+		fields := strings.Fields(line)
+		if len(fields) < 10 {
+			continue
+		}
+		// fields[1] is "010011AC:1F9B"; the port is what follows the LAST colon.
+		local := fields[1]
+		port := local[strings.LastIndex(local, ":")+1:]
+		if !want[port] {
+			continue
+		}
+		if fields[3] != "0A" { // 0A = TCP_LISTEN; a connection in TIME_WAIT is not a holder
+			continue
+		}
+		out["socket:["+fields[9]+"]"] = true
+	}
+	return out
 }

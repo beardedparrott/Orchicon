@@ -82,7 +82,10 @@ func Drift(instance string, out io.Writer) DriftState {
 	if err != nil {
 		return Unknown
 	}
-	pid, ok := ServingPlanePID(instance)
+	// effectivePlanePID, NOT ServingPlanePID: a plane that outlived its PID file is still a plane, and its
+	// drift is the reason it MUST be replaced rather than left — see the note on effectivePlanePID. Answering
+	// Unknown there is what let `Start` report success over a stale binary.
+	pid, ok := effectivePlanePID(instance)
 	if !ok {
 		return Unknown
 	}
@@ -345,4 +348,154 @@ func WaitGone(pids []int, timeout time.Duration) []int {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// ───────────────────────── the plane that outlived its PID file ─────────────────────────
+//
+// REPORTED (Linux): `make instance-rebuild instance=prod` refused with
+//
+//	Control plane (web UI + API): this instance is already installed on port 8091, which is held by a
+//	process this tool cannot identify
+//
+// and, one layer under it, `orchicon status prod` said "plane: stopped" while :8091 answered /healthz 200.
+// MEASURED on the reporter's machine: the listener was OUR OWN `orchicon serve` with ORCHICON_INSTANCE=prod,
+// five days old, and its `/proc/<pid>/exe` read `…/bin/orchicon (deleted)` — a rebuild had replaced the
+// binary underneath it. Its `serve/pids/` directory was EMPTY.
+//
+// THAT IS A STATE THE PRODUCT CAN REACH, and every consumer here assumed it could not. A later
+// `serve --detach` that loses the port race writes its own PID and then dies; the cleanup of that dead PID
+// removes the file, and the ORIGINAL plane keeps serving with no record of it. From then on:
+//
+//   - Drift answers Unknown (no PID file) so `Start` says "could not identify the process; leaving it" and
+//     reports success — a silent failure to upgrade, which is the "I thought I was on the newest code but was
+//     still running a stale binary" complaint this codebase already records;
+//   - `Stop` runs `serve --stop`, which reads the same missing file, says "serve is not running", and the
+//     caller concludes there was nothing to stop;
+//   - an install then either refuses on the held port or leaves the stale binary serving.
+//
+// SO IDENTITY IS RECOVERABLE FROM THE PORT, which is the one fact that is always observable. A listener on the
+// instance's RECORDED control port whose executable is our plane binary and whose environment names this
+// instance is this instance's plane — the same three-part proof `processBelongsTo` and `isOurBinary` use
+// elsewhere, applied to the only handle left.
+//
+// IT REFUSES ANYTHING IT CANNOT PROVE. A process that fails any of the three checks is not stopped: an
+// unidentified listener is a port conflict to report, never a process to kill.
+
+// effectivePlanePID is the pid of the process SERVING this instance: the PID file's process when that file
+// names a live one, and otherwise the verified listener on the recorded control port.
+func effectivePlanePID(instance string) (int, bool) {
+	if pid, ok := ServingPlanePID(instance); ok {
+		return pid, true
+	}
+	// THROUGH THE SEAM, so Drift is assertable in the state it exists for. The seam's production value IS
+	// unrecordedPlanePID; a test substitutes a verified orphan without needing a real stale plane serving.
+	return unrecordedPlane(instance)
+}
+
+// unrecordedPlanePID finds the instance's plane when the PID file does not name it.
+//
+// Returns ok=false for every case it cannot PROVE: no port record, no listener, a listener that is not our
+// binary, or one whose environment names a different instance. Callers treat false as "not identifiable" —
+// never as "free" and never as "safe to kill".
+func unrecordedPlanePID(instance string) (int, bool) {
+	port := recordedControlPort(instance)
+	if port <= 0 {
+		return 0, false
+	}
+	pid, ok := listenerOnPort(port)
+	if !ok || pid == os.Getpid() {
+		return 0, false
+	}
+	exe, err := procExe(pid)
+	if err != nil || !isPlaneBinaryName(exe) {
+		return 0, false
+	}
+	// THE INSTANCE CHECK IS NOT OPTIONAL. Two instances have different control ports, so a listener here that
+	// names ANOTHER instance means the port record is wrong or stale — and stopping that process would take
+	// down a sibling. Refusing is the only safe answer.
+	if !carriesInstance(pid, instance) {
+		return 0, false
+	}
+	return pid, true
+}
+
+// isPlaneBinaryName reports whether exe is the binary that SERVES a plane.
+//
+// The `(deleted)` suffix is the COMMON case here rather than an edge one: replacing the binary is exactly what
+// leaves a process unnamed by its PID file, so the suffix is stripped rather than treated as a mismatch. Only
+// `orchicon` matches — `orch` is the thin client and never serves a plane.
+func isPlaneBinaryName(exe string) bool {
+	exe = strings.TrimSuffix(exe, " (deleted)")
+	return filepath.Base(exe) == planeBinaryName
+}
+
+// carriesInstance reports whether pid's environment names this instance.
+//
+// /proc/<pid>/environ is NUL-separated with a trailing NUL, so the tag is matched delimiter-terminated OR at
+// the end — the same rule cmd/orchicon's processBelongsTo applies, and for the same reason: a bare substring
+// would let `ORCHICON_INSTANCE=prod2` answer for `prod`.
+func carriesInstance(pid int, instance string) bool {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+	if err != nil {
+		return false
+	}
+	tag := "ORCHICON_INSTANCE=" + instance
+	env := string(b)
+	return strings.Contains(env, tag+"\x00") || strings.HasSuffix(env, tag)
+}
+
+// listenerOnPort is the pid listening on a TCP port, read from /proc: the kernel's own table plus the socket
+// inodes each process holds open. No external tool, because a stop path must not depend on lsof existing.
+func listenerOnPort(port int) (int, bool) {
+	if port <= 0 {
+		return 0, false
+	}
+	// LOCAL_ADDRESS:PORT in /proc/net/tcp is 4 upper-case hex digits after the last colon.
+	want := fmt.Sprintf("%04X", port)
+	// `socket:[<inode>]` for every LISTEN row on that port; state 0A is TCP_LISTEN.
+	// A connection to the port is not a holder, so the state is checked rather than the port alone.
+	inodes := map[string]bool{}
+	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n")[1:] {
+			fields := strings.Fields(line)
+			if len(fields) < 10 || fields[3] != "0A" {
+				continue
+			}
+			local := fields[1]
+			if local[strings.LastIndex(local, ":")+1:] != want {
+				continue
+			}
+			inodes["socket:["+fields[9]+"]"] = true
+		}
+	}
+	if len(inodes) == 0 {
+		return 0, false
+	}
+	self := os.Getpid()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0, false
+	}
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == self {
+			continue
+		}
+		fdDir := filepath.Join("/proc", e.Name(), "fd")
+		fds, err := os.ReadDir(fdDir)
+		if err != nil {
+			continue
+		}
+		for _, fd := range fds {
+			target, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
+			if err == nil && inodes[target] {
+				return pid, true
+			}
+		}
+	}
+	return 0, false
 }

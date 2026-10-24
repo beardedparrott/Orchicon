@@ -296,12 +296,22 @@ func spawn(name, action string, args []string, out interface{ Write([]byte) (int
 		return Result{Action: action, Instance: name, Outcome: OutcomeFailed, Message: err.Error()}, err
 	}
 	cmd := newCommand(bin, args...)
+	// AN EXPLICIT WORKING DIRECTORY, NEVER THE APP'S. See spawndir.go: a GUI launched by an installer can
+	// inherit a directory that has since been removed, and Windows then refuses to create ANY child
+	// (ERROR_DIRECTORY, "The directory name is invalid") — which looked like "the directory the desktop ran
+	// from" and made creating a server fail only when the app was launched from the installer.
+	cmd.Dir = spawnDir()
 	cmd.Stdout = writerOrDiscard(out)
 	cmd.Stderr = writerOrDiscard(out)
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
-		return Result{Action: action, Instance: name, Outcome: OutcomeFailed,
-			Message: fmt.Sprintf("could not start `%s %s`: %v", filepath.Base(bin), strings.Join(args, " "), err)}, err
+		msg := fmt.Sprintf("could not start `%s %s`: %v", filepath.Base(bin), strings.Join(args, " "), err)
+		// NAME THE CAUSE WHEN IT IS THE ONE THAT MAKES THE MESSAGE ABOVE USELESS. The Win32 text for this is
+		// "The directory name is invalid", which points at the instance rather than at the launch.
+		if why := unusableCwd(); why != "" {
+			msg += "\n  " + why
+		}
+		return Result{Action: action, Instance: name, Outcome: OutcomeFailed, Message: msg}, err
 	}
 	// RELEASE, so nothing waits on a minutes-long process. The record of what it is doing is the
 	// progress file (written by the child), not a wait handle.
