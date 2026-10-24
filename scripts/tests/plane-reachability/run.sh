@@ -156,20 +156,21 @@ bind_with() {
 DEV="$(bind_with dev gateway '172.17.0.1')"
 PROD="$(bind_with prod gateway '172.17.0.1')"
 
-check "dev bind is the bridge ip at dev's own port" \
-  "ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8080" \
-  "$(printf '%s\n' "$DEV" | sed -n 1p)"
-check "dev advertises the same address it binds" \
+# THE ADVERTISED URL IS NOW THE ONLY THING bridge_bind_env COMPUTES.
+#
+# The listener half is gone: the plane binds ONE wildcard, which already serves
+# the bridge address the extra bind used to name. Emitting that address as a
+# second listener is the collision this change removes. What a runtime container
+# is TOLD to dial is still a real requirement, and it is still per instance.
+check "dev advertises the bridge ip at dev's own port" \
   "ORCHICON_PLANE_PUBLIC_URL=http://172.17.0.1:8080" \
-  "$(printf '%s\n' "$DEV" | sed -n 2p)"
-check "bridge_bind_env prints exactly two lines" "2" "$(printf '%s\n' "$DEV" | wc -l | tr -d ' ')"
+  "$(printf '%s\n' "$DEV" | sed -n 1p)"
+check "bridge_bind_env prints exactly one line (the URL)" "1" "$(printf '%s\n' "$DEV" | wc -l | tr -d ' ')"
+check_absent "dev emits no extra bind any more" "ORCHICON_HTTP_EXTRA_BIND" "$DEV"
 
-check "prod bind is the bridge ip at prod's own port" \
-  "ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8091" \
-  "$(printf '%s\n' "$PROD" | sed -n 1p)"
-check "prod advertises the same address it binds" \
+check "prod advertises the bridge ip at prod's own port" \
   "ORCHICON_PLANE_PUBLIC_URL=http://172.17.0.1:8091" \
-  "$(printf '%s\n' "$PROD" | sed -n 2p)"
+  "$(printf '%s\n' "$PROD" | sed -n 1p)"
 check_absent "prod's values contain no 8080 (dev's port)" "8080" "$PROD"
 
 # The crossover assertion: no line of dev's output may appear in prod's.
@@ -180,29 +181,38 @@ done
 check "dev and prod share no bind/URL value" "" "$shared"
 
 # --- bridge discovery ------------------------------------------------------- #
-check "docker's IPAM gateway is used when available" \
-  "ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8080" \
+check "the engine's IPAM gateway is used when available" \
+  "ORCHICON_PLANE_PUBLIC_URL=http://172.17.0.1:8080" \
   "$(bind_with dev gateway | sed -n 1p)"
-check "a <no value> gateway falls back to the docker0 address" \
-  "ORCHICON_HTTP_EXTRA_BIND=10.5.0.1:8080" \
+check "a <no value> gateway falls back to the bridge interface address" \
+  "ORCHICON_PLANE_PUBLIC_URL=http://10.5.0.1:8080" \
   "$(bind_with dev novalue | sed -n 1p)"
 check "ORCHICON_DOCKER_BRIDGE_IP overrides discovery" \
-  "ORCHICON_HTTP_EXTRA_BIND=192.168.65.1:8080" \
+  "ORCHICON_PLANE_PUBLIC_URL=http://192.168.65.1:8080" \
   "$(bind_with dev gateway '192.168.65.1' | sed -n 1p)"
 
-# No docker, no docker0, no override: a HARD failure, and never a wildcard.
+# AN UNRESOLVABLE BRIDGE IS NO LONGER FATAL. This used to be a hard failure, and
+# that is what broke a ROOTLESS PODMAN host: there is no docker0 and no
+# 172.17.0.1 there, so the plane refused to start over an address it does not
+# need. Every runtime container is created with
+# --add-host host.docker.internal:host-gateway (ADR-0013 D2.4), so the stable
+# NAME reaches the plane on both engines. The fallback advertises that name.
 NOBRIDGE="$(bind_with dev none 2>/dev/null)"
 NOBRIDGE_RC=$?
-check "no resolvable bridge exits non-zero" "1" "$NOBRIDGE_RC"
-check "no resolvable bridge emits nothing" "" "$NOBRIDGE"
-check_absent "no 0.0.0.0 fallback anywhere in the bind output" "0.0.0.0" "$NOBRIDGE"
+check "no resolvable bridge still succeeds" "0" "$NOBRIDGE_RC"
+check "no resolvable bridge advertises the stable host name" \
+  "ORCHICON_PLANE_PUBLIC_URL=http://host.docker.internal:8080" "$NOBRIDGE"
+check_absent "still no 0.0.0.0 in the advertised URL" "0.0.0.0" "$NOBRIDGE"
 
 # --- no shared-profile export ----------------------------------------------- #
 PLANE_URL_REFS="$(grep -rn 'export ORCHICON_PLANE_PUBLIC_URL' --exclude-dir=plane-reachability \
   "${REPO_ROOT}/scripts" "${REPO_ROOT}/.env.example" "${REPO_ROOT}/Makefile" 2>/dev/null || true)"
 check_absent "nothing export's a globally-shared ORCHICON_PLANE_PUBLIC_URL" \
   "export ORCHICON_PLANE_PUBLIC_URL" "${PLANE_URL_REFS}"
-check "the instance table computes ORCHICON_PLANE_PUBLIC_URL in exactly one place" "1" \
+# TWO sites now, both intentional and both in the ONE file that owns the value:
+# bridge_bind_env's resolved-bridge line, and plane_env's host.docker.internal
+# fallback for a host whose numeric bridge address cannot be resolved.
+check "the instance table computes ORCHICON_PLANE_PUBLIC_URL in exactly one file" "2" \
   "$(grep -c "printf 'ORCHICON_PLANE_PUBLIC_URL=" "${INSTANCES_SH}" | tr -d ' ')"
 check_absent ".env.example does not carry ORCHICON_PLANE_PUBLIC_URL" \
   "ORCHICON_PLANE_PUBLIC_URL" "$(cat "${REPO_ROOT}/.env.example" 2>/dev/null || true)"

@@ -161,10 +161,13 @@ func TestPlaneEnvIsPerInstanceAndComplete(t *testing.T) {
 	joined := strings.Join(env, "\n")
 	for _, want := range []string{
 		"ORCHICON_INSTANCE=dev",
-		// Loopback primary bind, bridge extra bind, and the URL — all on the
-		// RESOLVED port, and the bind and URL must share one bridge IP.
-		"ORCHICON_HTTP_ADDR=127.0.0.1:9080",
-		"ORCHICON_HTTP_EXTRA_BIND=172.99.0.1:9080",
+		// A WILDCARD primary bind on the RESOLVED port. One listener serves
+		// loopback (orch, the TUI, the desktop app), the engine bridge (runtime
+		// containers) and the LAN — it is a strict superset of the
+		// loopback-plus-bridge pair it replaces, so there is no second bind.
+		"ORCHICON_HTTP_ADDR=:9080",
+		// The ADVERTISED URL is still required: it is what a runtime container is
+		// told to dial, and it must carry THIS instance's port.
 		"ORCHICON_PLANE_PUBLIC_URL=http://172.99.0.1:9080",
 		"ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:5442/orchicon?sslmode=disable",
 		"ORCHICON_NATS_URL=nats://localhost:4333",
@@ -187,9 +190,19 @@ func TestPlaneEnvIsPerInstanceAndComplete(t *testing.T) {
 			t.Errorf("plane env is missing %q; got:\n%s", want, joined)
 		}
 	}
-	// A wildcard bind is the LAN exposure the operator rejected.
-	if strings.Contains(joined, "0.0.0.0") {
-		t.Errorf("plane env must never bind a wildcard:\n%s", joined)
+	// THE EXTRA BIND MUST BE ABSENT, and this is the assertion that keeps the
+	// original regression from coming back. A second listener on the bridge
+	// address cannot bind while the wildcard primary owns it, and the plane used
+	// to retry that doomed bind every 30s forever.
+	if strings.Contains(joined, "ORCHICON_HTTP_EXTRA_BIND=") {
+		t.Errorf("a wildcard primary already serves the bridge address; there must be no extra bind:\n%s", joined)
+	}
+	// The wildcard is DELIBERATE now, not an accident: it is what makes the plane
+	// reachable from other machines. Asserted positively so a future "tighten the
+	// bind" change has to argue with this test rather than silently take the
+	// plane off the LAN again.
+	if !strings.Contains(joined, "ORCHICON_HTTP_ADDR=:9080") {
+		t.Errorf("the wildcard primary bind is required for LAN reachability:\n%s", joined)
 	}
 }
 
@@ -226,22 +239,28 @@ func TestPlaneBindAndShape(t *testing.T) {
 	if bind != "172.99.0.1:9080" || url != "http://172.99.0.1:9080" {
 		t.Fatalf("planeBindEnv = (%q, %q), want one IP and this instance's port", bind, url)
 	}
-	if !strings.Contains(devJoined, "ORCHICON_HTTP_EXTRA_BIND="+bind) {
-		t.Errorf("planeEnv must carry the bind planeBindEnv computed:\n%s", devJoined)
-	}
+	// THE ADVERTISED URL IS EMITTED; THE BIND IS NOT.
+	//
+	// The bind is now INFORMATIONAL — the wildcard primary already serves that
+	// address, so emitting it as a listener would recreate the collision this
+	// change removes. The URL is the half that was ever load-bearing.
 	if !strings.Contains(devJoined, "ORCHICON_PLANE_PUBLIC_URL="+url) {
 		t.Errorf("planeEnv must carry the URL planeBindEnv computed:\n%s", devJoined)
 	}
-	// TWO INSTANCES CANNOT POINT AT EACH OTHER'S PLANE: the pairs differ by the instance's own port.
-	if strings.Contains(prodJoined, "ORCHICON_HTTP_EXTRA_BIND=172.99.0.1:9080") {
-		t.Errorf("prod must not bind dev's control port:\n%s", prodJoined)
+	if strings.Contains(devJoined, "ORCHICON_HTTP_EXTRA_BIND=") {
+		t.Errorf("the extra bind must not be emitted — the wildcard already serves it:\n%s", devJoined)
 	}
-	if !strings.Contains(prodJoined, "ORCHICON_HTTP_EXTRA_BIND=172.99.0.1:9091") {
-		t.Errorf("prod must bind its OWN control port:\n%s", prodJoined)
+	// TWO INSTANCES CANNOT POINT AT EACH OTHER'S PLANE: the URLs differ by the instance's own port.
+	if strings.Contains(prodJoined, "ORCHICON_PLANE_PUBLIC_URL=http://172.99.0.1:9080") {
+		t.Errorf("prod must not advertise dev's control port:\n%s", prodJoined)
 	}
+	if !strings.Contains(prodJoined, "ORCHICON_PLANE_PUBLIC_URL=http://172.99.0.1:9091") {
+		t.Errorf("prod must advertise its OWN control port:\n%s", prodJoined)
+	}
+	// The wildcard primary is required in BOTH shapes, and is per-instance on the port.
 	for _, joined := range []string{devJoined, prodJoined} {
-		if strings.Contains(joined, "0.0.0.0") {
-			t.Errorf("a wildcard bind is the LAN exposure the operator rejected:\n%s", joined)
+		if !strings.Contains(joined, "ORCHICON_HTTP_ADDR=:") {
+			t.Errorf("the wildcard primary bind is required for LAN reachability:\n%s", joined)
 		}
 	}
 }
@@ -294,17 +313,18 @@ func assertNoBridgeShape(t *testing.T) {
 		t.Fatalf("planeEnv must not fail without a bridge: %v", err)
 	}
 	joined := strings.Join(env, "\n")
-	if !strings.Contains(joined, "ORCHICON_HTTP_ADDR=127.0.0.1:9080") {
-		t.Errorf("the loopback primary bind is required:\n%s", joined)
+	// THE PRIMARY BIND IS A WILDCARD EVEN WITH NO ENGINE. A host with no container
+	// engine still has human clients on other machines, and the wildcard is what
+	// makes the plane reachable from them. The bind does not depend on the engine
+	// at all — only the ADVERTISED URL does.
+	if !strings.Contains(joined, "ORCHICON_HTTP_ADDR=:9080") {
+		t.Errorf("the wildcard primary bind is required:\n%s", joined)
 	}
 	if strings.Contains(joined, "ORCHICON_HTTP_EXTRA_BIND=") {
 		t.Errorf("no engine must produce NO extra bind:\n%s", joined)
 	}
 	if strings.Contains(joined, "ORCHICON_PLANE_PUBLIC_URL=") {
 		t.Errorf("no engine must produce NO advertised plane URL:\n%s", joined)
-	}
-	if strings.Contains(joined, "0.0.0.0") {
-		t.Errorf("no engine must never produce a wildcard bind:\n%s", joined)
 	}
 }
 
@@ -346,16 +366,15 @@ func TestInstallShapeWithAContainerEngine(t *testing.T) {
 	}
 	joined := strings.Join(env, "\n")
 	for _, want := range []string{
-		"ORCHICON_HTTP_ADDR=127.0.0.1:9080",
-		"ORCHICON_HTTP_EXTRA_BIND=172.99.0.1:9080",
+		"ORCHICON_HTTP_ADDR=:9080",
 		"ORCHICON_PLANE_PUBLIC_URL=http://172.99.0.1:9080",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("the with-engine shape is missing %q; got:\n%s", want, joined)
 		}
 	}
-	if strings.Contains(joined, "0.0.0.0") {
-		t.Errorf("the with-engine shape must still never bind a wildcard:\n%s", joined)
+	if strings.Contains(joined, "ORCHICON_HTTP_EXTRA_BIND=") {
+		t.Errorf("the with-engine shape must not emit an extra bind:\n%s", joined)
 	}
 }
 

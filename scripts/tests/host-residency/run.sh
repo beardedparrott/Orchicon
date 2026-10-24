@@ -185,27 +185,25 @@ check_contains "dev plane DSN uses dev's service port" \
   "plane_env:ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable" "$HOST_DEV"
 check_contains "dev plane NATS URL uses dev's service port" \
   "plane_env:ORCHICON_NATS_URL=nats://localhost:4222" "$HOST_DEV"
-# THE PRIMARY BIND IS LOOPBACK, NOT A WILDCARD. `:8080` already owns
-# 172.17.0.1:8080 on EVERY interface, so the extra bind below could never bind
-# — the host plane logged "bridge listener bind failed … address already in
-# use" and retried it every 30s on every boot. These two lines are the pair
-# that used to contradict each other at runtime.
-check_contains "dev plane binds its own HTTP port on loopback" \
-  "plane_env:ORCHICON_HTTP_ADDR=127.0.0.1:8080" "$HOST_DEV"
-check_contains "dev plane ALSO binds the engine bridge at its own port" \
-  "plane_env:ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8080" "$HOST_DEV"
-# …and the two cannot collide: the BIND SET (primary + extra — exactly the
-# addresses listenerAddrs hands the kernel) contains no wildcard address.
-DEV_BIND_SET="$(field "$HOST_DEV" plane_env:ORCHICON_HTTP_ADDR) $(field "$HOST_DEV" plane_env:ORCHICON_HTTP_EXTRA_BIND)"
-check "dev bind set is loopback + bridge" "127.0.0.1:8080 172.17.0.1:8080" "$DEV_BIND_SET"
-check_lacks "dev primary bind is not a bare-port wildcard" \
-  "plane_env:ORCHICON_HTTP_ADDR=:" "$HOST_DEV"
-for bind in $DEV_BIND_SET; do
-  case "$bind" in
-    :*|0.0.0.0:*|'[::]':*) check "dev bind $bind names a concrete address" "concrete" "WILDCARD" ;;
-    *) check "dev bind $bind names a concrete address" "concrete" "concrete" ;;
-  esac
-done
+# THE PRIMARY BIND IS ONE WILDCARD, AND THE EXTRA BIND IS GONE.
+#
+# A wildcard listener answers on EVERY IPv4 interface at once, so one listener
+# serves all three client populations: loopback (orch, the TUI, the desktop app),
+# the engine bridge (runtime containers) and the LAN (other machines). It is a
+# strict superset of the loopback-plus-bridge pair it replaces.
+#
+# THE PAIR WAS A WORKAROUND FOR A COLLISION, NOT A CAPABILITY. `:8080` already
+# owns 172.17.0.1:8080 on every interface, so the second listener could never
+# bind and the plane retried it every 30s forever. The fix is to DELETE the
+# redundant listener — not to narrow the primary, which silently took the plane
+# off the LAN.
+check_contains "dev plane binds a wildcard on its own HTTP port" \
+  "plane_env:ORCHICON_HTTP_ADDR=:8080" "$HOST_DEV"
+check_lacks "dev plane emits no extra bind (the wildcard already serves it)" \
+  "ORCHICON_HTTP_EXTRA_BIND=" "$HOST_DEV"
+# The wildcard IS the bind set now: exactly one address, and it is deliberate.
+DEV_BIND_SET="$(field "$HOST_DEV" plane_env:ORCHICON_HTTP_ADDR)"
+check "dev bind set is the single wildcard" ":8080" "$DEV_BIND_SET"
 check_contains "dev plane advertises that same address to its run containers" \
   "plane_env:ORCHICON_PLANE_PUBLIC_URL=http://172.17.0.1:8080" "$HOST_DEV"
 check_contains "dev plane state dir is a HOST path" \
@@ -241,15 +239,14 @@ check_contains "prod binds prod's NATS port" "127.0.0.1:4223:" "$(field "$HOST_P
 check_lacks "prod does NOT bind dev's postgres port" "127.0.0.1:5432:" "$(field "$HOST_PROD" service_ports)"
 check_contains "prod plane DSN uses prod's postgres port" \
   "ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:5433/orchicon?sslmode=disable" "$HOST_PROD"
-check_contains "prod plane binds the engine bridge at PROD's port" \
-  "plane_env:ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8091" "$HOST_PROD"
-check_contains "prod plane binds PROD's own port on loopback" \
-  "plane_env:ORCHICON_HTTP_ADDR=127.0.0.1:8091" "$HOST_PROD"
-check "prod bind set is loopback + bridge" \
-  "127.0.0.1:8091 172.17.0.1:8091" \
-  "$(field "$HOST_PROD" plane_env:ORCHICON_HTTP_ADDR) $(field "$HOST_PROD" plane_env:ORCHICON_HTTP_EXTRA_BIND)"
-check_lacks "prod plane does NOT bind the bridge at dev's port" \
-  "ORCHICON_HTTP_EXTRA_BIND=172.17.0.1:8080" "$HOST_PROD"
+check_contains "prod plane binds a wildcard on PROD's own port" \
+  "plane_env:ORCHICON_HTTP_ADDR=:8091" "$HOST_PROD"
+check_lacks "prod plane emits no extra bind" \
+  "ORCHICON_HTTP_EXTRA_BIND=" "$HOST_PROD"
+check "prod bind set is the single wildcard" \
+  ":8091" "$(field "$HOST_PROD" plane_env:ORCHICON_HTTP_ADDR)"
+check_lacks "prod plane does NOT bind dev's port" \
+  "ORCHICON_HTTP_ADDR=:8080" "$HOST_PROD"
 
 # No per-instance value may be shared: the two shapes must differ in the plane
 # URL, the plane port and the full service bind set.

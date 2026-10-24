@@ -1064,7 +1064,20 @@ func (s *supervisor) vmProc() *managedProc {
 		name:    "victoriametrics",
 		command: s.resolved().VictoriaMetrics,
 		args: []string{"-storageDataPath=" + filepath.Join(s.dataDir, "victoriametrics"),
-			"-retentionPeriod=720h", "-httpListenAddr=:" + strconv.Itoa(s.ports.vm)},
+			"-retentionPeriod=720h",
+			// LOOPBACK, NOT A WILDCARD. This was `-httpListenAddr=:` — every
+			// interface — so metrics were reachable from any machine on the LAN
+			// with no authentication, while every OTHER service this supervisor
+			// starts is loopback-only (postgres, nats, tempo, loki) and
+			// scripts/tests/host-residency/run.sh asserts "nothing may be published
+			// on 0.0.0.0". VictoriaMetrics was the one silent exception: a
+			// wildcard-bound metrics store contradicting the contract the rest of
+			// the stack keeps.
+			//
+			// Nothing needs it externally. The plane reads it over loopback, the
+			// collector exports to it over loopback, and the readiness probe below
+			// asks localhost. Exposing it bought nothing and leaked the topology.
+			"-httpListenAddr=127.0.0.1:" + strconv.Itoa(s.ports.vm)},
 		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.vm) + "/health"),
 		restart: true,
 	}

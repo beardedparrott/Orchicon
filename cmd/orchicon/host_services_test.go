@@ -186,8 +186,18 @@ func TestServiceProbeMatchesItsBindArg(t *testing.T) {
 		t.Errorf("nats does not serve monitoring on the probed port %d: %s", p.natsMonitor, nats)
 	}
 	vm := strings.Join(s.vmProc().args, " ")
-	if !strings.Contains(vm, "-httpListenAddr=:"+strconv.Itoa(p.vm)) {
-		t.Errorf("victoriametrics does not listen on the probed port %d: %s", p.vm, vm)
+	// LOOPBACK, NOT A WILDCARD. This asserted `-httpListenAddr=:<port>`, i.e. it
+	// pinned the wildcard as correct — so the one service that leaked onto every
+	// interface was also the one the test defended. The probe below asks
+	// localhost, so a loopback bind is what keeps the bind and the probe in
+	// agreement AND keeps the metrics store off the LAN, which is the contract
+	// every other service in this supervisor already keeps
+	// (scripts/tests/host-residency/run.sh: "nothing may be published on 0.0.0.0").
+	if !strings.Contains(vm, "-httpListenAddr=127.0.0.1:"+strconv.Itoa(p.vm)) {
+		t.Errorf("victoriametrics does not listen on loopback at the probed port %d: %s", p.vm, vm)
+	}
+	if strings.Contains(vm, "-httpListenAddr=:") {
+		t.Errorf("victoriametrics must not bind a wildcard — it is an internal service: %s", vm)
 	}
 }
 

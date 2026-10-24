@@ -108,11 +108,29 @@ func PlaneBindEnv(ports map[string]int) (bind, url string, err error) {
 	if !RuntimeContainersInUse() {
 		return "", "", nil
 	}
-	ip, err := BridgeIP()
-	if err != nil {
-		return "", "", err
-	}
 	control := ports["ORCHICON_CONTROL_PORT"]
+	// AN UNRESOLVABLE BRIDGE IS NO LONGER FATAL, AND MUST NOT BE.
+	//
+	// This used to fail the whole plane start when BridgeIP() could not answer.
+	// That lookup is a DOCKER lookup (`docker network inspect bridge`, then the
+	// docker0 interface), and a ROOTLESS PODMAN host has neither: no docker0, no
+	// 172.17.0.1, and a container IP in a per-user netns that is not host
+	// routable (ADR-0014). So the plane refused to start on a supported engine —
+	// for a value it no longer even needs.
+	//
+	// It is unnecessary because every runtime container is created with
+	// `--add-host host.docker.internal:host-gateway` (engine.go CreateBaseArgs,
+	// ADR-0013 D2.4): the stable NAME resolves to the host on BOTH engines and on
+	// every platform, and only the PORT distinguishes two instances.
+	// planePublicURL already documents exactly this fallback, so returning it is
+	// consistent rather than inventive.
+	//
+	// `bind` is now INFORMATIONAL (the bridge address, when there is one). Nothing
+	// emits it as a listener any more: the wildcard primary already owns it.
+	ip, iperr := BridgeIP()
+	if iperr != nil {
+		return "", fmt.Sprintf("http://host.docker.internal:%d", control), nil
+	}
 	return fmt.Sprintf("%s:%d", ip, control), fmt.Sprintf("http://%s:%d", ip, control), nil
 }
 
@@ -126,20 +144,32 @@ func PlaneBindEnv(ports map[string]int) (bind, url string, err error) {
 // pair is present ONLY when runtime containers are in use, because a host with
 // no container engine has no bridge to bind and needs none.
 func PlaneEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket string) ([]string, error) {
-	bind, url, err := PlaneBindEnv(ports)
+	_, url, err := PlaneBindEnv(ports)
 	if err != nil {
 		return nil, err
 	}
 	control := ports["ORCHICON_CONTROL_PORT"]
 	env := []string{
 		"ORCHICON_INSTANCE=" + instance,
-		// THE PRIMARY BIND IS LOOPBACK, NOT A WILDCARD — and that is load-bearing,
-		// not cosmetic: `:<port>` already owns <bridge ip>:<port> on EVERY
-		// interface, so the extra bind below could never bind ("address already in
-		// use") and the plane retried a doomed listener on every boot. Loopback
-		// keeps host clients (orch, the GUI) working and leaves the bridge address
-		// free for the listener that exists to serve runtime containers.
-		fmt.Sprintf("ORCHICON_HTTP_ADDR=127.0.0.1:%d", control),
+		// THE PRIMARY BIND IS A WILDCARD, AND THAT IS THE POINT.
+		//
+		// A wildcard listener answers on EVERY IPv4 interface at once, so one
+		// listener serves all three client populations: host clients on loopback
+		// (orch, the TUI, the desktop app), runtime containers dialling the host
+		// gateway, and any other machine on the LAN. It is a strict SUPERSET of
+		// the loopback-plus-bridge pair it replaces.
+		//
+		// The pair existed to work around a COLLISION, not a capability gap: a
+		// wildcard primary already owns <bridge ip>:<port> on every interface, so
+		// a second listener on that address could never bind and retried a doomed
+		// net.Listen forever. The fix was to delete the redundant listener, not to
+		// narrow the primary — narrowing it silently took the plane off the LAN,
+		// which is the regression this restores.
+		//
+		// It is also more robust than a set of concrete binds: a wildcard answers
+		// on interfaces that do not exist yet, so a docker0/podman bridge appearing
+		// after boot needs no rebind.
+		fmt.Sprintf("ORCHICON_HTTP_ADDR=:%d", control),
 		fmt.Sprintf("ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:%d/orchicon?sslmode=disable", ports["ORCHICON_POSTGRES_PORT"]),
 		fmt.Sprintf("ORCHICON_NATS_URL=nats://localhost:%d", ports["ORCHICON_NATS_PORT"]),
 		fmt.Sprintf("ORCHICON_OTEL_ENDPOINT=localhost:%d", ports["ORCHICON_OTLP_GRPC_PORT"]),
@@ -155,16 +185,18 @@ func PlaneEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket 
 		// must never share one, or stopping dev would kill prod.
 		ServeStateDirEnv + "=" + filepath.Join(hostDataDir, "serve"),
 	}
-	// ONLY WHEN RUNTIME CONTAINERS ARE IN USE. Absent is the correct state for a host with no container
-	// engine: there is no bridge to bind, no run container to reach the plane, and inventing a wildcard
-	// bind here is the LAN exposure the operator rejected. See PlaneBindEnv — both entries come from that
-	// ONE call, so they cannot disagree, and they carry THIS instance's port so two instances cannot be
-	// pointed at each other's plane.
-	if bind != "" {
-		env = append(env,
-			"ORCHICON_HTTP_EXTRA_BIND="+bind,
-			"ORCHICON_PLANE_PUBLIC_URL="+url,
-		)
+	// THE ADVERTISED URL ONLY — ORCHICON_HTTP_EXTRA_BIND IS GONE.
+	//
+	// The extra listener existed so runtime containers could reach a host-resident
+	// plane across the engine bridge. The wildcard primary above already serves
+	// that address, so the second listener was pure redundancy, and keeping it
+	// would reintroduce the collision that caused the original regression.
+	//
+	// The URL stays because it is a REAL requirement: it is what a runtime
+	// container is told to dial. It carries THIS instance's port, so two instances
+	// can never be pointed at each other's plane.
+	if url != "" {
+		env = append(env, "ORCHICON_PLANE_PUBLIC_URL="+url)
 	}
 	// Identity/keys the operator already set are INHERITED rather than invented —
 	// a deployment that picked its own tenant or signing key must keep them, or
