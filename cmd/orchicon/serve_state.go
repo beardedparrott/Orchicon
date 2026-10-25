@@ -105,7 +105,22 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/orchicon.api.v1") ||
 			strings.HasPrefix(path, "/auth/") ||
-			path == "/healthz" || path == "/versionz" ||
+			// THE THREE OPERATIONAL ENDPOINTS. /healthz and /versionz were here; /enginez was
+			// MISSING, and that is the reported bug:
+			//
+			//   "Container availability unknown — the plane did not answer /enginez."
+			//
+			// The plane DID answer — with the SPA's index.html, because this passthrough list is
+			// the only thing standing between an exact-path API route and the frontend catch-all
+			// below. mux.Handle("/enginez", …) registers the handler correctly (internal/api), and
+			// then this wrapper answers 200 text/html for it, so the client's JSON parse fails and
+			// the UI reports the plane as silent. Every instance on every OS showed it.
+			//
+			// A REAL ENDPOINT THAT THE UI CANNOT READ IS WORSE THAN A MISSING ONE: the fetch
+			// succeeds, the status is 200, and the only symptom is "unknown" — which reads like a
+			// network fault and sends the operator to the wrong place. Hence the test next to this
+			// fix: every exact-path handler api.Mount registers must be in this list.
+			path == "/healthz" || path == "/versionz" || path == "/enginez" ||
 			// Embedded OpenID Provider exact paths (internal/auth/op) —
 			// without passthrough the SPA fallback below would swallow
 			// them (they are not /auth/*-prefixed).

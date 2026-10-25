@@ -390,11 +390,39 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+// readError turns a daemon failure response into an error an operator can act on.
+//
+// "runtime daemon: request failed" WAS A DEAD END, and it is the message the operator reported:
+//
+//	runtime image fetch failed for orchicon-runtime:local: runtime image pull: runtime daemon:
+//	request failed
+//
+// The real answer was in the body — Go's plain-text "404 page not found" — and this function threw
+// it away because it only looked for a JSON `error` key. That 404 meant the RUNNING DAEMON DID NOT
+// HAVE THE ROUTE, i.e. it was started from an older binary (8d19h old in this case), which is
+// something the message could have said in one line and instead hid behind "request failed".
+//
+// SO: JSON `error` first (the daemon's own structured failures), then the raw body — truncated and
+// de-whitespaced, because a plain-text body is often a large HTML page and an error that scrolls is
+// only marginally better than no error.
 func readError(r io.Reader) error {
-	var e map[string]string
-	_ = json.NewDecoder(r).Decode(&e)
-	if msg, ok := e["error"]; ok {
-		return fmt.Errorf("runtime daemon: %s", msg)
+	body, _ := io.ReadAll(io.LimitReader(r, 4096))
+	if len(body) == 0 {
+		return fmt.Errorf("runtime daemon: request failed (empty response body)")
 	}
-	return fmt.Errorf("runtime daemon: request failed")
+	var e map[string]string
+	if err := json.Unmarshal(body, &e); err == nil {
+		if msg, ok := e["error"]; ok && msg != "" {
+			return fmt.Errorf("runtime daemon: %s", msg)
+		}
+	}
+	// NOT JSON, OR JSON WITHOUT AN error KEY. Both mean the daemon did not answer in its own
+	// vocabulary, which is itself the diagnosis — usually a route the running daemon does not have.
+	text := strings.Join(strings.Fields(string(body)), " ")
+	if len(text) > 300 {
+		text = text[:300] + "…"
+	}
+	return fmt.Errorf("runtime daemon: request failed — the daemon answered something other than its "+
+		"own JSON error shape (a 404 like this usually means the RUNNING DAEMON IS OLDER THAN THE "+
+		"BINARY, so restart it: orchicon runtime-daemon): %s", text)
 }

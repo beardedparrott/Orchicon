@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"github.com/beardedparrott/orchicon/internal/instancectl"
+	"github.com/beardedparrott/orchicon/internal/version"
 	"io"
 	"log/slog"
 	"net"
@@ -981,9 +982,36 @@ func adapterCLIPresent(name string) bool {
 // runtime containers; the supervisor container mounts its socket dir.
 func ensureInstallDaemon(socketDir string) error {
 	socketPath := filepath.Join(socketDir, "runtime.sock")
+	// HEALTHY IS NOT THE SAME AS CURRENT.
+	//
+	// This used to return early on any live socket, which let a daemon started from an older binary
+	// outlive every upgrade. REPORTED as "runtime image fetch failed for orchicon-runtime:local:
+	// runtime image pull: runtime daemon: request failed", diagnosed on the reporting host: the
+	// daemon had been up 8d19h with /proc/<pid>/exe pointing at a DELETED inode, so it did not have
+	// the /v1/images/pull route the current client calls — and it answered 404, which the client then
+	// flattened into "request failed". A liveness-only check cannot see any of that.
+	//
+	// SO THE BUILD IS COMPARED. /v1/health reports the daemon's tag+commit (internal/runtime), and a
+	// mismatch means this install wrote a newer binary than the one serving the socket: stop it and
+	// start the new one. That is safe here because the daemon spawns per-workflow containers and
+	// holds no durable state of its own — the images live in the engine, not in the process.
 	if socketHealthy(socketPath) {
-		fmt.Println("runtime daemon already running")
-		return nil
+		if current, running := daemonBuildMatches(socketPath); current {
+			fmt.Println("runtime daemon already running")
+			return nil
+		} else if running != "" {
+			fmt.Printf("runtime daemon is running an older build (%s) — restarting it on this one\n", running)
+			if err := stopDaemon(socketPath); err != nil {
+				fmt.Printf("  (could not stop the old daemon: %v — it will keep serving until it exits)\n", err)
+			}
+		} else {
+			// A daemon that answers /v1/health with {"status":"ok"} but no build is from before this
+			// check existed, i.e. certainly older than the binary being installed.
+			fmt.Println("runtime daemon is running an unversioned build — restarting it on this one")
+			if err := stopDaemon(socketPath); err != nil {
+				fmt.Printf("  (could not stop the old daemon: %v — it will keep serving until it exits)\n", err)
+			}
+		}
 	}
 	if err := os.MkdirAll(socketDir, 0o755); err != nil {
 		return fmt.Errorf("create runtime socket dir: %w", err)
@@ -1009,6 +1037,87 @@ func ensureInstallDaemon(socketDir string) error {
 		time.Sleep(250 * time.Millisecond)
 	}
 	return fmt.Errorf("runtime daemon did not become ready — see %s/runtime-daemon.log", socketDir)
+}
+
+// daemonBuildMatches reports whether the daemon on socketPath was built from the same source as THIS
+// binary. current is true when it matches (or when the socket is unanswerable, in which case the
+// caller starts a fresh one anyway); running is the daemon's tag+commit, empty when it predates the
+// build being reported at all.
+func daemonBuildMatches(socketPath string) (current bool, running string) {
+	out, err := daemonHealth(socketPath)
+	if err != nil {
+		return false, ""
+	}
+	if out["status"] != "ok" {
+		return false, ""
+	}
+	tag, commit := out["tag"], out["commit"]
+	if tag == "" && commit == "" {
+		return false, "" // pre-versioning daemon: older than anything we ship now
+	}
+	mine := version.Current()
+	if tag != mine.Tag || commit != mine.Commit {
+		return false, strings.TrimSpace(tag + " " + commit)
+	}
+	return true, tag
+}
+
+// daemonHealth reads /v1/health off the runtime daemon socket.
+func daemonHealth(socketPath string) (map[string]string, error) {
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+			},
+		},
+		Timeout: 2 * time.Second,
+	}
+	resp, err := client.Get("http://runtime/v1/health")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var out map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// stopDaemon stops the runtime daemon by asking it to exit, then removes the stale socket.
+//
+// BY HTTP, NOT BY SIGNAL, and not by process name: a signal would have to find the pid (unavailable
+// on Windows, where this runs too) and a name match could hit a second instance's daemon. The daemon
+// already serves a shutdown route for exactly this; if it does not answer, the socket is unlinked so
+// the next start is not blocked by a dead listener.
+func stopDaemon(socketPath string) error {
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://runtime/v1/shutdown", nil)
+	if err == nil {
+		if resp, derr := client.Do(req); derr == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	}
+	// Wait for the socket to stop accepting, so the caller's start does not race the old listener.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !socketHealthy(socketPath) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// Still answering: remove the socket file so a new daemon can bind. The old process keeps
+	// running on its now-unlinked inode and exits on its own; nothing else references it.
+	_ = os.Remove(socketPath)
+	return nil
 }
 
 func socketHealthy(socketPath string) bool {
