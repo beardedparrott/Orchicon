@@ -318,26 +318,37 @@ type ChatTurnClient interface {
 }
 
 // SessionQueuesPrompts is implemented by chat adapters that can HOLD a message sent while a turn is running
-// and answer it at that turn's next boundary — a real session with a server-side prompt queue.
+// and fold it into that SAME turn — rather than starting a competing one.
 //
-// IT DECIDES HOW AN INTERJECTION IS DELIVERED, and getting it wrong is a real defect rather than a detail.
-// The two adapters behave differently and the difference is invisible from the interface above:
+// IT DECIDES HOW AN INTERJECTION IS DELIVERED, and getting it wrong is a real defect rather than a detail: an
+// adapter that answers FALSE has its message persisted and held for the NEXT turn (askorchicon.deliverInjection),
+// which is correct but slower, and one that answered TRUE while expecting SendTurnMessage to start its own turn
+// ran a SECOND concurrent stream on the same session — rejected outright while the turn was parked on an
+// ask_user, which is the reported "error banner, draft restored, message never delivered".
 //
-//   - opencode's serve queues: SendTurnMessage is documented as "a message sent while a turn is in flight is
-//     queued and answered at the next turn boundary — the nudge / mid-run chat primitive". Delivery IS the
-//     queue, so an interjection is simply a send.
-//   - the native bridge has NO queue: SendTurnMessage appends to history and then STARTS A NEW PROVIDER TURN,
-//     overwriting the running turn's cancel handle. Called mid-turn it runs a SECOND concurrent stream on the
-//     same session — and, when the turn is blocked on a human answer (ask_user), the provider rejects it
-//     outright. That is exactly the reported failure: an error banner, the draft restored, and the message
-//     never delivered.
+// THE BOUNDARY IS ADAPTER-DEFINED, AND THAT GRANULARITY IS WHAT AN OPERATOR ACTUALLY FEELS. All three current
+// adapters answer TRUE, and they are NOT equivalent:
+//
+//   - the native bridge owns its generate loop, so it drains its own queue (askInjections) before each
+//     provider call: the model reads a mid-turn note at the NEXT MODEL CALL — one tool round away.
+//   - opencode's serve accepts `delivery: "steer"`, which runs the input at the running turn's NEXT STEP
+//     BOUNDARY. Same practical granularity as the native bridge, but the serve decides when.
+//   - claude's CLI owns its loop and we cannot drain it: the queue is drained on the stream's `result` event,
+//     so the note is answered as a NEW turn AFTER the current one ends. TRUE is still right (the message joins
+//     the session and is answered without re-sending), but it is the one adapter that does not steer a
+//     running turn. See claude.Bridge.QueuesPrompts for why that is structural rather than unfinished.
+//
+// So TRUE means "does not start a competing turn", and the comment at each implementation states its own
+// boundary. Do not read TRUE as "the model sees it immediately" — nothing can put text into a generation
+// already in flight, on any adapter.
 //
 // An adapter that does not implement this is treated as NOT queueing (see askorchicon.deliverInjection): the
 // message is persisted and answered by the next turn that occurs, which is the behaviour the operator asked
 // for — "fit it into the context when it is possible (a turn occurs)".
 type SessionQueuesPrompts interface {
-	// QueuesPrompts reports whether SendTurnMessage on a live session QUEUES the message for the current
-	// turn's boundary (true) rather than starting its own turn (false).
+	// QueuesPrompts reports whether SendTurnMessage on a live session folds the message into the CURRENT turn
+	// (true) rather than starting its own (false). The granularity of "the current turn" is the adapter's:
+	// see the type comment.
 	QueuesPrompts() bool
 }
 

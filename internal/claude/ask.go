@@ -350,6 +350,36 @@ func (b *Bridge) CreateConversationSession(_ context.Context, conversationID, _ 
 // IT WAS UNDECLARED UNTIL IT WAS ASKED ABOUT ("did you cross check against the claude code adapter as well?"),
 // and falling to the default meant interjections on a claude conversation were held until the WHOLE turn ended
 // instead of folded in at the next boundary — the exact behaviour the operator asked for, silently downgraded.
+//
+// WHAT "THE BOUNDARY" MEANS HERE, AND WHY IT IS NOT THE OPENCODE CASE. TRUE means "the message joins the
+// running turn rather than starting a competing one", and nothing more. On opencode the equivalent is
+// `delivery: "steer"`, which runs the input at the NEXT STEP BOUNDARY of the running turn (see
+// opencode.apiShape.promptStyle) — the model reads a mid-turn note one tool round later. Here the queue is
+// drained by onTerminal, which fires on the stream's `result` event: the END OF THE ASSISTANT'S TURN. The note
+// then runs as a NEW turn in the same session. So the operator's words are answered without re-sending, but
+// AFTER the current turn completes rather than during it.
+//
+// THAT IS A STRUCTURAL LIMIT, NOT AN OVERSIGHT, and it is worth stating because it is the one adapter where
+// the answer is "cannot" rather than "not yet". The CLI owns its generate loop; we write a user turn to its
+// stdin and IT decides when to read it. There is no route into its context mid-step, because:
+//
+//   - the control protocol carries permission traffic only. Its subtypes, read out of the installed binary,
+//     are `initialize`, `can_use_tool`, `set_permission_mode` and `mcp_message` — there is NO user-text
+//     injection subtype. The mid-turn channel we already speak (control.go) exists to answer tool calls, not
+//     to carry content.
+//   - the binary does have `send_now` / `cancel_queued`, and both are paired with an interrupt. That is the
+//     TUI's "interrupt and send now": it reaches the model sooner by ABORTING the current turn — the exact
+//     behaviour removed in 2e4043ac7, because an aborted turn leaves its tool results and file changes behind
+//     without the assistant message that produced them, and the model then inherits finished work it has no
+//     record of doing ("seems to think the current work may have been done by someone else").
+//
+// So this adapter has two options and no third: NO ABORT (a turn-boundary queue, what we do) or SEEN SOONER
+// (an abort we deliberately do not do). The native bridge can do better only because WE own its loop and
+// drain our own queue before each provider call; claude's loop is not ours to drain.
+//
+// The consequence for an operator: on a claude Ask conversation, an interjection is saved and answered, but
+// you should not expect the model to react to it mid-turn. If that matters for a given conversation, the
+// opencode or native adapters are the ones that steer.
 func (b *Bridge) QueuesPrompts() bool { return true }
 
 // SendTurnMessage implements scheduler.ChatTurnClient: append a user turn to the
