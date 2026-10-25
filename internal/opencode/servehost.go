@@ -525,9 +525,26 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	// No-project execution guard on PATH: destructive commands are refused
 	// unconditionally and every absolute-path target is blocked; relative
 	// paths stay inside each session's directory.
+	//
+	// A GUARD PROBLEM MUST NOT DISABLE CHAT. This used to `return` the error, which turned an
+	// unavailable defense-in-depth backstop into "Ask chat transport is disabled" for every turn. That
+	// is the severity the OTHER callers of this package already get right — internal/runtime's
+	// supervisor and internal/askorchicon's bash path both warn and continue — and the host serve was
+	// the one place that disagreed.
+	//
+	// On Windows the guard cannot exist at all (platform_windows.go explains why: symlink privilege,
+	// a bash shim, and PATHEXT), so this branch is the normal path there, not an edge case. opencode's
+	// own permission rules are still injected into the serve's config and cover the never-allow class
+	// on every platform; what is missing without the shim is the subprocess-level backstop.
 	g, err := guard.NewExecutionGuard("")
 	if err != nil {
-		return fmt.Errorf("host serve guard: %w", err)
+		h.log.Warn("host opencode serve: OS execution guard NOT applied — bash commands run without "+
+			"the PATH shim (opencode's own permission rules still apply)", "error", err)
+	}
+	if g != nil && !g.Enabled() {
+		h.log.Warn("host opencode serve: OS execution guard unavailable on this platform — commands "+
+			"run without the PATH shim (opencode's own permission rules still apply)",
+			"reason", g.DisabledReason())
 	}
 
 	// The SAME resolver the adapter spawns through, so the host serve and the

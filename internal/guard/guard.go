@@ -178,6 +178,13 @@ func buildGuardedBinaries() []guardedBinary {
 type Guard struct {
 	dir  string
 	real map[string]string
+	// disabled marks a guard that could not be BUILT on this platform, as opposed to one that was
+	// built and then removed. A disabled guard is inert: Apply returns the environment unchanged and
+	// Close does nothing. It is returned with a nil error deliberately — "this platform cannot have
+	// one" is a fact to report, not a failure to propagate, and returning an error made the host serve
+	// disable Ask chat over a defense-in-depth backstop (see platform_windows.go).
+	disabled bool
+	reason   string
 	// policyPath is the operator's persistent permission policy file, read
 	// PER INVOCATION by the shim's policy_lookup() (no cache, no watcher —
 	// an edit takes effect on the next command). Empty disables the check.
@@ -193,6 +200,12 @@ type Guard struct {
 // inside workflow runtime containers, where the control plane's own /tmp
 // is not reachable.
 func MakeGuard(targetDir, projectDir string) (string, error) {
+	if !supported() {
+		// "" means NO GUARD, and every caller must treat it that way rather than prepending an empty
+		// element to PATH (which would add the current directory to a worker's search path — a worse
+		// bug than the one being avoided).
+		return "", nil
+	}
 	dir, err := os.MkdirTemp(targetDir, "orchicon-guard-*")
 	if err != nil {
 		return "", err
@@ -216,6 +229,9 @@ func NewExecutionGuard(projectDir string) (*Guard, error) {
 // file (tests, and any caller that resolves the path itself). An empty
 // policyPath renders a shim without the deny check.
 func NewExecutionGuardWithPolicy(projectDir, policyPath string) (*Guard, error) {
+	if !supported() {
+		return &Guard{disabled: true, reason: unsupportedReason()}, nil
+	}
 	dir, err := os.MkdirTemp("", "orchicon-guard-*")
 	if err != nil {
 		return nil, err
@@ -290,9 +306,28 @@ func buildGuardIn(dir, projectDir, policyPath string) (*Guard, error) {
 	return g, nil
 }
 
+// Enabled reports whether this guard is actually intercepting commands. False means the platform
+// cannot support one (platform_windows.go) — NOT that a guard failed to build.
+func (g *Guard) Enabled() bool { return g != nil && !g.disabled && g.dir != "" }
+
+// DisabledReason explains an inert guard in words an operator can act on. Empty when enabled.
+func (g *Guard) DisabledReason() string {
+	if g == nil {
+		return "no guard"
+	}
+	return g.reason
+}
+
 // apply returns environ with the guard directory first on PATH, so every
 // process the worker spawns resolves guarded binaries through the shim.
+//
+// A DISABLED GUARD RETURNS THE ENVIRONMENT UNCHANGED — and returns a COPY, so a caller that appends to
+// the result cannot corrupt the slice it passed in. Adding an empty PATH element instead would put the
+// working directory on the worker's search path, which is strictly worse than no guard at all.
 func (g *Guard) Apply(environ []string) []string {
+	if !g.Enabled() {
+		return append([]string(nil), environ...)
+	}
 	out := make([]string, 0, len(environ)+1)
 	found := false
 	for _, kv := range environ {
