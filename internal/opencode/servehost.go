@@ -181,16 +181,59 @@ func (h *HostServe) Start(ctx context.Context) error {
 	if err := h.startOnce(ctx); err != nil {
 		return err
 	}
+	// ARMED HERE, NOT ONLY IN EnsureStarted. Supervision used to be armed by ONE caller, so a serve
+	// started any other way — a boot-time Start, a future direct call — ran completely unsupervised,
+	// and nothing said so. Arming inside Start makes "a serve exists" and "a serve is watched" the same
+	// fact, which is the only version of this that cannot drift.
+	h.armSupervision()
 	h.log.Info("host opencode serve ready",
 		"url", h.URL(), "data_dir", h.dataDir, "pid", h.pid())
 	return nil
+}
+
+// armSupervision starts a watchdog for this serve — and starts NONE if one is already running.
+//
+// IDEMPOTENT BY REFUSAL, NOT BY REPLACEMENT, and that distinction is load-bearing. Cancelling a previous
+// watchdog to install a new one looks tidier and is a trap: Watch's own shutdown path calls h.Stop(), so a
+// SUPERSEDED watchdog waking on its cancelled context would tear down the replacement's serve on its way
+// out. Refusing to arm a second watchdog means that situation cannot arise — one watchdog survives across
+// any number of serve restarts, which is exactly what supervision is for.
+//
+// h.superviseCancel is cleared by Stop() (and only there), so a watchdog that has legitimately been shut
+// down can be replaced on the next Start.
+func (h *HostServe) armSupervision() {
+	h.mu.Lock()
+	already := h.superviseCancel != nil
+	h.mu.Unlock()
+	if already {
+		return
+	}
+	sc, cancel := context.WithCancel(context.Background())
+	h.mu.Lock()
+	// RE-CHECK UNDER THE SAME LOCK that installs it: two concurrent Starts must not both arm.
+	if h.superviseCancel != nil {
+		h.mu.Unlock()
+		cancel()
+		return
+	}
+	h.superviseCancel = cancel
+	h.mu.Unlock()
+	go h.Watch(sc)
 }
 
 // Watch supervises the serve: it polls /global/health and restarts the
 // process with backoff when it dies, so the session host stays up. A
 // restart preserves the data dir, so sessions survive (the client
 // re-attaches by session id). Blocks until ctx is cancelled.
+// watchLiveHook is a TEST SEAM reporting watchdog entry (+1) and exit (-1), so "exactly one watchdog is
+// running" can be asserted rather than inferred from the source. Nil in production.
+var watchLiveHook func(delta int)
+
 func (h *HostServe) Watch(ctx context.Context) {
+	if watchLiveHook != nil {
+		watchLiveHook(1)
+		defer watchLiveHook(-1)
+	}
 	backoff := 5 * time.Second
 	const maxBackoff = 60 * time.Second
 	for {
@@ -219,7 +262,11 @@ func (h *HostServe) Watch(ctx context.Context) {
 		// The watchdog's only question is "is the process still answering?" — Healthy answers that,
 		// cheaply and definitively, and a genuinely wedged or dead serve fails it. WHETHER a serve can
 		// accept work is asked where it matters, at dispatch, by ProbeUsable (the run-start gate).
-		if client == nil || client.Healthy(ctx) {
+		// A NIL CLIENT IS NOT A HEALTHY SERVE. This read `client == nil || client.Healthy(ctx)` and
+		// CONTINUED on both, so a Watch that outlived a Stop() — which nils the client — spun forever
+		// reporting nothing while no serve existed at all. Nil means there is nothing to answer with,
+		// which is precisely when a restart is due.
+		if serveAnswering(ctx, client) {
 			backoff = 5 * time.Second
 			continue
 		}
@@ -229,9 +276,23 @@ func (h *HostServe) Watch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+		// SERIALIZED AGAINST A CONCURRENT EnsureStarted. Both paths can decide to (re)start, and two
+		// startOnce calls racing would leave two serve processes chasing one port — the second wins the
+		// bind and the first is leaked. startMu is the same lock EnsureStarted holds, so the loser waits
+		// and then finds the serve already up instead of stacking another.
+		h.startMu.Lock()
+		if h.ready() {
+			// Somebody else got there first. A DEAD serve no longer reports ready (its exit clears the
+			// state), so this can only be a live one.
+			h.startMu.Unlock()
+			backoff = 5 * time.Second
+			continue
+		}
 		h.kill()
-		if err := h.startOnce(ctx); err != nil {
-			h.log.Error("host opencode serve restart failed", "error", err)
+		startErr := h.startOnce(ctx)
+		h.startMu.Unlock()
+		if startErr != nil {
+			h.log.Error("host opencode serve restart failed", "error", startErr)
 			if backoff < maxBackoff {
 				backoff *= 2
 			}
@@ -279,12 +340,12 @@ func (h *HostServe) EnsureStarted(ctx context.Context) error {
 		h.log.Warn("host opencode serve lazy start failed", "error", err)
 		return err
 	}
-	sc, cancel := context.WithCancel(context.Background())
+	// NO WATCH ARMING HERE — Start armed it (armSupervision). Arming in both places spawned a SECOND
+	// watchdog on every lazy start and then overwrote the handle to the first, leaking it; two watchdogs
+	// thereafter both raced to restart one serve.
 	h.mu.Lock()
-	h.superviseCancel = cancel
 	h.startErr = nil
 	h.mu.Unlock()
-	go h.Watch(sc)
 	h.log.Info("host opencode serve started on demand", "url", h.URL())
 	return nil
 }
@@ -324,6 +385,50 @@ func (h *HostServe) ready() bool {
 	return h.started && h.client != nil
 }
 
+// reapAsync waits for a serve process and records its exit. THE WAIT IS THE POINT: it is what stops an
+// exited serve from lingering as a defunct process, and it is the only thing that notices the exit at all
+// for a serve that died on its own.
+func (h *HostServe) reapAsync(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	go func() {
+		h.markExited(cmd, cmd.Wait())
+	}()
+}
+
+// markExited records that a serve process has EXITED, and is the only place that happens for a serve that
+// died on its own.
+//
+// IT CLEARS STATE ONLY WHEN cmd IS STILL THE CURRENT ONE. A restart kills the old process and starts a
+// replacement; the old process's reaper then fires with a stale cmd, and clearing here would null out the
+// fields belonging to the serve that is now running — after which ready() would report a live serve as
+// absent and EnsureStarted would stack a second process on the same port.
+func (h *HostServe) markExited(cmd *exec.Cmd, err error) {
+	h.mu.Lock()
+	current := h.cmd == cmd
+	if current {
+		h.cmd = nil
+		h.client = nil
+		h.started = false
+		h.port = 0
+	}
+	h.mu.Unlock()
+	if current {
+		h.log.Warn("host opencode serve exited — supervision will restart it", "error", err)
+	}
+}
+
+// serveAnswering reports whether the serve is currently answering, which is the ONLY question the
+// watchdog asks.
+//
+// A NIL CLIENT IS NOT ANSWERING. This is the whole of the previous inversion: nil means there is no
+// client to ask, i.e. nothing is serving, which is precisely when a restart is due — not the healthy
+// state the old `client == nil || ...` condition treated it as.
+func serveAnswering(ctx context.Context, c *SessionClient) bool {
+	return c != nil && c.Healthy(ctx)
+}
+
 // Stop kills the serve process, stops its supervision, and releases the
 // guard.
 func (h *HostServe) Stop() {
@@ -358,7 +463,9 @@ func (h *HostServe) kill() {
 	h.mu.Unlock()
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		// NOT cmd.Wait() — the goroutine armed by startOnce owns the reap. Waiting here would race it
+		// ("Wait was already called") and would restore the very window this file now closes: a serve
+		// that died on its own would again be reaped only by whichever path happened to run next.
 	}
 }
 
@@ -493,6 +600,20 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	h.client.setAPIShape(shapeForBinary(ctx, h.log, binary))
 	h.started = true
 	h.mu.Unlock()
+
+	// REAP THE CHILD IN A GOROUTINE, AND LET ITS EXIT BE THE DEATH SIGNAL.
+	//
+	// TWO DEFECTS DIE HERE. cmd.Wait() used to be called ONLY from kill(), so a serve that exited on
+	// its own stayed DEFUNCT until the watchdog's next 15-second poll happened to reap it — the zombie
+	// processes the operator saw in ps. And nothing RECORDED the death: `started` and `client` were
+	// cleared only by Stop() and markStartFailed(), so ready() kept answering TRUE for a serve that was
+	// already gone. EnsureStarted therefore short-circuited ("already up") and the dispatch proceeded to
+	// fail with "connection refused" instead of restarting.
+	//
+	// A goroutine that WAITS is both halves at once: the child is reaped the instant it exits, and the
+	// exit clears the exact fields ready() reads. It clears them ONLY while `cmd` is still the current
+	// one, so a deliberate kill during a restart cannot null out the replacement's state.
+	h.reapAsync(cmd)
 
 	// Wait for readiness (cold start loads providers/models/MCP).
 	client := h.Client()
