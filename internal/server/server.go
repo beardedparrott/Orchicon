@@ -278,7 +278,13 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// DEMAND (AC 1): a native-only plane never runs `opencode` at boot.
 	var modelDiscoverer *aigateway.ModelDiscoverer
 	var mcpDiscoverer *aigateway.MCPDiscoverer
-	if opencodeInDemand {
+
+	// ONE CONSTRUCTION PATH, CALLED TWICE. This closure is the boot attempt AND the factory the
+	// service re-runs when a request arrives with no discoverer (aigateway.SetDiscovererFactory).
+	// Two copies of "resolve, build, warn" is how the late resolution would quietly behave
+	// differently from the early one — a model list that depends on whether the plane happened to
+	// start before or after opencode was installed.
+	resolveDiscoverers := func() (*aigateway.ModelDiscoverer, *aigateway.MCPDiscoverer, error) {
 		// ONE resolver, shared with the adapter's spawn path and the host serve
 		// (internal/opencode/binary.go). The inline probe that used to live here was
 		// the only one of the three that honoured ORCHICON_OPENCODE_BIN, so the
@@ -286,30 +292,38 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		// EXECUTION on a different binary — or on none at all.
 		opencodeBin, binErr := opencode.ResolveBinaryPath()
 		if binErr != nil {
-			log.Warn("opencode binary not found — model/MCP discovery disabled (set ORCHICON_OPENCODE_BIN or install opencode on PATH)", "error", binErr)
+			return nil, nil, binErr
+		}
+		model, mcp := aigateway.BuildDiscoverers(context.Background(), log, opencodeBin)
+		// PRESENT IS NOT THE SAME AS USABLE, and this is the half nothing checked.
+		// The plane runs on the host and spawns opencode with the host PATH, but a
+		// workflow execution runs in a runtime container that sees ONLY the adapter
+		// paths the runtime daemon bind-mounts — nothing outside $HOME. So a
+		// system-wide install (the npm prefix under sudo, i.e. /usr/local/bin) is
+		// resolvable here and ABSENT from every worker: the picker lists models and
+		// then every dispatch fails to find its binary.
+		if !opencode.ContainerVisible(opencodeBin) {
+			log.Warn("opencode resolves to a path the runtime containers cannot see — workflow-run executions will not find it",
+				"path", opencodeBin,
+				"fix", "install opencode under $HOME as your user, never with sudo: curl -fsSL https://opencode.ai/install | bash")
+		}
+		return model, mcp, nil
+	}
+
+	if opencodeInDemand {
+		if m, mc, binErr := resolveDiscoverers(); binErr != nil {
+			// THE MESSAGE NO LONGER PROMISES A RESTART IS NEEDED, because it is not: the service
+			// re-resolves on the next request for models, so installing opencode and re-selecting
+			// the adapter is enough. Said plainly here so the log does not outlive the behaviour.
+			log.Warn("opencode binary not found at boot — discovery stays unconfigured until one is resolvable (install opencode on PATH, set ORCHICON_OPENCODE_BIN, or just retry the model picker after installing it)", "error", binErr)
 		} else {
-			modelDiscoverer = aigateway.NewModelDiscoverer(log, opencodeBin)
-			// THE ARGV COMES FROM THE DETECTED API SURFACE, because the two versions need different
-			// forms of the same command: opencode 2.x starts a background server unless it is asked
-			// for --standalone, and 1.x needs --verbose for its model metadata. The rule lives with
-			// the surface table (internal/opencode) so it cannot be re-derived here and drift.
-			modelDiscoverer.SetModelsArgs(opencode.ModelsArgs(context.Background(), log, opencodeBin))
-			mcpDiscoverer = aigateway.NewMCPDiscoverer(log, opencodeBin)
-			// PRESENT IS NOT THE SAME AS USABLE, and this is the half nothing checked.
-			// The plane runs on the host and spawns opencode with the host PATH, but a
-			// workflow execution runs in a runtime container that sees ONLY the adapter
-			// paths the runtime daemon bind-mounts — nothing outside $HOME. So a
-			// system-wide install (the npm prefix under sudo, i.e. /usr/local/bin) is
-			// resolvable here and ABSENT from every worker: the picker lists models and
-			// then every dispatch fails to find its binary.
-			if !opencode.ContainerVisible(opencodeBin) {
-				log.Warn("opencode resolves to a path the runtime containers cannot see — workflow-run executions will not find it",
-					"path", opencodeBin,
-					"fix", "install opencode under $HOME as your user, never with sudo: curl -fsSL https://opencode.ai/install | bash")
-			}
+			modelDiscoverer, mcpDiscoverer = m, mc
 		}
 	} else {
-		log.Info("opencode model/MCP discovery disabled — the adapter demand set contains no opencode")
+		// NOT A DEAD END ANY MORE. The demand set decides whether the plane probes AT BOOT; a
+		// request for opencode models still triggers a late resolution, so a plane whose demand
+		// set is stale heals when someone actually asks for opencode rather than staying broken.
+		log.Info("no opencode demand at boot — discovery will resolve on the first request for opencode models")
 	}
 
 	// Reconciler framework (docs/03 §2). Phase 5 registers the
@@ -563,6 +577,8 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		Mode:              cfg.Mode,
 		ModelDiscoverer:   modelDiscoverer,
 		MCPDiscoverer:     mcpDiscoverer,
+		// The SAME closure boot used, so a late resolution cannot diverge from the early one.
+		DiscovererFactory: resolveDiscoverers,
 		AdapterKinds:      dispatcher.Kinds,
 		AdapterChatKinds:  dispatcher.ChatKinds,
 		Dispatcher:        dispatcher,
