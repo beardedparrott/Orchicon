@@ -260,8 +260,12 @@ func TestAnNpmGlobalInstallResolvesToTheRealBinary(t *testing.T) {
 
 	// npm's three shims for this one bin entry. None is launchable, and the .ps1 is the one the
 	// operator actually quoted.
-	mustWrite(t, filepath.Join(prefix, "opencode.ps1"), "#!/usr/bin/env pwsh\n")
-	mustWrite(t, filepath.Join(prefix, "opencode.cmd"), "@echo off\r\n")
+	// REAL shim bodies: the derivation now PARSES the shim for the target it names, so a fake
+	// "shim\n" body has nothing to point at (which is correct, and is why these were updated).
+	mustWrite(t, filepath.Join(prefix, "opencode.ps1"),
+		"& \"$basedir/node_modules/opencode-ai/bin/opencode.exe\"   $args\n")
+	mustWrite(t, filepath.Join(prefix, "opencode.cmd"),
+		"\"%dp0%\\node_modules\\opencode-ai\\bin\\opencode.exe\"   %*\r\n")
 
 	// The real binary, where the package's bin entry and postinstall put it.
 	real := filepath.Join(prefix, "node_modules", "opencode-ai", "bin", "opencode.exe")
@@ -370,8 +374,12 @@ func TestTheOperatorsNpmInstallResolvesEndToEnd(t *testing.T) {
 
 	prefix := filepath.Join(roaming, "npm")
 	// npm's three shims for the one bin entry. None is launchable.
-	mustWrite(t, filepath.Join(prefix, "opencode.ps1"), "#!/usr/bin/env pwsh\n")
-	mustWrite(t, filepath.Join(prefix, "opencode.cmd"), "@echo off\r\n")
+	// REAL shim bodies: the derivation now PARSES the shim for the target it names, so a fake
+	// "shim\n" body has nothing to point at (which is correct, and is why these were updated).
+	mustWrite(t, filepath.Join(prefix, "opencode.ps1"),
+		"& \"$basedir/node_modules/opencode-ai/bin/opencode.exe\"   $args\n")
+	mustWrite(t, filepath.Join(prefix, "opencode.cmd"),
+		"\"%dp0%\\node_modules\\opencode-ai\\bin\\opencode.exe\"   %*\r\n")
 
 	real := filepath.Join(prefix, "node_modules", "opencode-ai", "bin", "opencode.exe")
 
@@ -455,12 +463,13 @@ func TestTheShimRuleAloneFindsAnInstallInAnUnusualPrefix(t *testing.T) {
 	// The shim table only looks in %APPDATA%\npm, %APPDATA% and scoop's shims, so put it where the
 	// table can see it while the npm PREFIX it implies is not in the prefix list.
 	shimDir := filepath.Join(home, "elsewhere", "npm")
-	mustWrite(t, filepath.Join(shimDir, "opencode.ps1"), "shim\n")
+	mustWrite(t, filepath.Join(shimDir, "opencode.ps1"),
+		"& \"$basedir/node_modules/opencode-ai/bin/opencode.exe\"   $args\n")
 
 	// ...but the binary is in the odd prefix, which the shim does NOT point at. So instead drive the
 	// rule directly: a shim whose own directory is the unusual prefix.
 	oddShim := filepath.Join(oddPrefix, "opencode.cmd")
-	mustWrite(t, oddShim, "shim\n")
+	mustWrite(t, oddShim, "\"%dp0%\\node_modules\\opencode-ai\\bin\\opencode.exe\"   %*\r\n")
 	real := filepath.Join(oddPrefix, "node_modules", "opencode-ai", "bin", "opencode.exe")
 	mustWrite(t, real, "MZ real")
 
@@ -478,4 +487,143 @@ func TestTheShimRuleAloneFindsAnInstallInAnUnusualPrefix(t *testing.T) {
 			"which prefix npm used, so no table of prefixes is needed.", real, oddShim, derived)
 	}
 	_ = getenv
+}
+
+// TestTheShimIsParsedForItsTargetNotGuessed is the third and final iteration of this bug, and the
+// shims below are COPIED VERBATIM from the machine that reported it.
+//
+//	"Opencode is currently installed here C:\Users\justi\AppData\Roaming\npm\opencode.ps1"
+//
+// The second fix assumed the npm package was `opencode-ai` and probed
+// `node_modules/opencode-ai/bin/opencode.exe`. Their real install is `@opencode/cli`, so the guess
+// missed a 246 MB executable sitting at
+//
+//	C:\Users\justi\AppData\Roaming\npm\node_modules\@opencode\cli\bin\opencode.exe
+//
+// GUESSING THE PACKAGE NAME IS THE WRONG SHAPE. The name is not the plane's to know: it is scoped,
+// it has already changed once in the wild, and a distributor could publish it under anything. The
+// SHIM is the authority, because npm generates it from the package's own `bin` entry — so it names
+// exactly the file `npm i -g` made runnable.
+//
+// These three shim bodies are byte-for-byte what npm writes, which is what makes this a regression
+// test rather than a restatement of the parser.
+const (
+	npmShCmd = `@ECHO off\r
+GOTO start\r
+:find_dp0\r
+SET dp0=%~dp0\r
+EXIT /b\r
+:start\r
+SETLOCAL\r
+CALL :find_dp0\r
+\r
+"%dp0%\node_modules\@opencode\cli\bin\opencode.exe"   %*\r
+`
+	npmShPS1 = `#!/usr/bin/env pwsh
+$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent
+
+$exe=""
+if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) {
+  # Fix case when both the Windows and Linux builds of Node
+  # are installed in the same directory
+  $exe=".exe"
+}
+# Support pipeline input
+if ($MyInvocation.ExpectingInput) {
+  $input | & "$basedir/node_modules/@opencode/cli/bin/opencode.exe"   $args
+} else {
+  & "$basedir/node_modules/@opencode/cli/bin/opencode.exe"   $args
+}
+exit $LASTEXITCODE
+`
+	npmShSh = `#!/bin/sh
+basedir=$(dirname "$(echo "$0" | sed -e 's,\\,/,g')")
+
+case ` + "`uname`" + ` in
+    *CYGWIN*|*MINGW*|*MSYS*)
+        if command -v cygpath > /dev/null 2>&1; then
+            basedir=` + "`cygpath -w \"$basedir\"`" + `
+        fi
+    ;;
+esac
+
+exec "$basedir/node_modules/@opencode/cli/bin/opencode.exe"   "$@"
+`
+)
+
+func TestTheShimIsParsedForItsTargetNotGuessed(t *testing.T) {
+	prefix := t.TempDir()
+	real := filepath.Join(prefix, "node_modules", "@opencode", "cli", "bin", "opencode.exe")
+
+	for _, tc := range []struct{ shim, body string }{
+		{"opencode.cmd", npmShCmd},
+		{"opencode.ps1", npmShPS1},
+		{"opencode", npmShSh},
+	} {
+		path := filepath.Join(prefix, tc.shim)
+		mustWrite(t, path, tc.body)
+		got := npmTargetFromShim(path)
+		if got != real {
+			t.Errorf("npmTargetFromShim(%s) = %q, want %q\n"+
+				"  The shim names its target explicitly; guessing the package name is how a real\n"+
+				"  246 MB executable was missed on the reporting machine.", tc.shim, got, real)
+		}
+	}
+}
+
+// TestAShimPointingAtAScriptYieldsNothing — the malformed and non-executable cases. A shim that names
+// a .js entry is not spawnable by this plane, so it must not be returned as a resolution.
+func TestAShimPointingAtAScriptYieldsNothing(t *testing.T) {
+	prefix := t.TempDir()
+	for _, tc := range []struct{ name, body string }{
+		{"js-target.cmd", "\"%dp0%\\node_modules\\some-pkg\\bin\\cli.js\" %*"},
+		{"no-target.cmd", "@echo off\r\necho nothing here\r\n"},
+		{"empty.ps1", ""},
+	} {
+		path := filepath.Join(prefix, tc.name)
+		mustWrite(t, path, tc.body)
+		if got := npmTargetFromShim(path); got != "" {
+			t.Errorf("npmTargetFromShim(%s) = %q, want empty — a non-executable target must not be "+
+				"handed to a spawn", tc.name, got)
+		}
+	}
+}
+
+
+// TestTheScopedPackageFallbackCoversANoShimInstall pins the SECOND published name.
+//
+// The shim parse is the general rule, but it needs a shim to read. When there is none — deleted by
+// hand, or a PATH stripped before npm ran — the prefix table is all that is left, and it has to know
+// both names in use:
+//
+//	opencode-ai     the unscoped package
+//	@opencode/cli   the scoped one the reporting machine actually has
+//
+// Without this case the scoped entry can be deleted and every other test still passes (measured).
+func TestTheScopedPackageFallbackCoversANoShimInstall(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(OpenCodeBinEnv, "")
+	emptyPATH := t.TempDir()
+	t.Setenv("PATH", emptyPATH)
+
+	roaming := filepath.Join(home, "AppData", "Roaming")
+	getenv := winEnv(map[string]string{
+		"USERPROFILE": home,
+		"APPDATA":     roaming,
+		"PATH":        emptyPATH,
+	})
+	// NO SHIMS AT ALL, and the SCOPED layout.
+	real := filepath.Join(roaming, "npm", "node_modules", "@opencode", "cli", "bin", "opencode.exe")
+	mustWrite(t, real, "MZ real")
+
+	got, err := resolveOpenCodeBinaryFor("windows", getenv, nil)
+	if err != nil {
+		t.Fatalf("with no shim present the prefix table did not find the SCOPED layout %q: %v\n"+
+			"  @opencode/cli is the name the reporting machine has, so a table that only knows\n"+
+			"  opencode-ai covers the wrong half of the installs in the wild.", real, err)
+	}
+	if got != real {
+		t.Errorf("resolved %q, want %q", got, real)
+	}
 }

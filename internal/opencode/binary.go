@@ -176,8 +176,16 @@ func openCodePlatformCandidates(goos string, getenv func(string) string) []strin
 	// worse than not resolving at all — it prints an error and exits — which is why the stub's size is
 	// not what we test for (a future version could differ) but why the not-found message names the
 	// `--ignore-scripts` cause explicitly. See npmBinaryHint.
+	// THE PUBLISHED NAMES, for the case where NO shim survives (deleted by hand, or a PATH stripped
+	// before npm ran). Two, because the package has been renamed in the wild and both are in use:
+	//   opencode-ai   the unscoped name
+	//   @opencode/cli the scoped name the reporting operator actually has (246 MB binary at
+	//                 node_modules\@opencode\cli\bin\opencode.exe)
+	// The shim parse above is the general answer; these are the fallback for when there is no shim to
+	// read, so the list has to be kept in step with reality by hand.
 	for _, prefix := range npmGlobalPrefixes(env) {
 		add(prefix, "node_modules", "opencode-ai", "bin")
+		add(prefix, "node_modules", "@opencode", "cli", "bin")
 	}
 
 	// Then the machine-wide ones, for an all-users install.
@@ -278,16 +286,26 @@ func lookupEnvFold(getenv func(string) string, name string) string {
 
 // npmExeFromShims returns the real executables implied by npm shims that ACTUALLY EXIST on this machine.
 //
-// THIS IS THE GENERAL RULE, and the prefix table above is only its fast path. A shim in `<dir>` is proof
-// that `<dir>` is an npm-style prefix — whichever prefix npm was configured to use, including one set by
-// a corporate image or `npm config set prefix` — and the real binary is always at
-// `<dir>\node_modules\opencode-ai\bin\opencode.exe` because that is the package's declared `bin` entry.
+// IT PARSES THE SHIM'S TARGET rather than guessing a package name, and that is the correction the
+// operator's own machine forced. The first version assumed the package was `opencode-ai` and probed
+// `node_modules/opencode-ai/bin/opencode.exe`. Their real install is `@opencode/cli`, so the guess
+// missed a 246 MB executable that was sitting right there:
 //
-// IT FOLLOWS THE SHIM RATHER THAN HARDCODING A LIST, so an install in an unusual prefix resolves without
-// this file needing to know about it. The prefix table still matters for the case where no shim exists at
-// all (a PATH stripped before npm ran, or a shim deleted by hand).
+//	C:\Users\justi\AppData\Roaming\npm\node_modules\@opencode\cli\bin\opencode.exe
 //
-// Empty when no shim exists, so it costs one os.Stat per known shim location and nothing else.
+// GUESSING A PACKAGE NAME IS THE WRONG SHAPE OF ANSWER, because the name is not this plane's to know:
+// it has already changed once, it is scoped, and a distributor could publish it under anything. The
+// SHIM is the authority — npm generates it from the package's own `bin` entry, so it names the exact
+// file that `npm i -g` intended to be runnable:
+//
+//	opencode.cmd   "%dp0%\node_modules\@opencode\cli\bin\opencode.exe"  %*
+//	opencode.ps1   & "$basedir/node_modules/@opencode/cli/bin/opencode.exe" $args
+//	opencode       exec "$basedir/node_modules/@opencode/cli/bin/opencode.exe" "$@"
+//
+// All three spell the same path, so ONE parser covers .cmd, .ps1 and the POSIX shim.
+//
+// Empty when no shim exists or none names an executable, so it costs one small read per known shim
+// location and nothing else.
 func npmExeFromShims(goos string, getenv func(string) string) []string {
 	if goos != "windows" {
 		return nil
@@ -298,9 +316,53 @@ func npmExeFromShims(goos string, getenv func(string) string) []string {
 		if err != nil || st.IsDir() {
 			continue
 		}
-		out = append(out, filepath.Join(filepath.Dir(shim), "node_modules", "opencode-ai", "bin", "opencode.exe"))
+		if target := npmTargetFromShim(shim); target != "" {
+			out = append(out, target)
+		}
 	}
 	return out
+}
+
+// npmTargetFromShim reads an npm shim and returns the executable it points at, or "" when it names
+// none.
+//
+// THE PARSE IS DELIBERATELY NARROW. It looks for the literal `node_modules` — every npm shim contains
+// it and nothing else in the file resembles it — then takes everything up to the closing quote (or the
+// end of the token, for a shim that does not quote). It does NOT try to understand .cmd, .ps1 or sh
+// syntax: a real parser for three shell dialects, to read one string, would be a large amount of code
+// whose bugs would only show up on an operator's machine.
+//
+// ONLY AN EXECUTABLE IS RETURNED. A shim whose target is a `.js` entry point is not something this
+// plane can spawn, so it yields "" and the caller carries on to the next candidate rather than
+// handing a spawn a script.
+func npmTargetFromShim(shim string) string {
+	b, err := os.ReadFile(shim)
+	if err != nil || len(b) == 0 || len(b) > 64<<10 {
+		return "" // unreadable, or not plausibly a shim
+	}
+	text := string(b)
+	i := strings.Index(text, "node_modules")
+	if i < 0 {
+		return ""
+	}
+	rest := text[i:]
+	// The path ends at the closing quote, at whitespace, or at end of line — whichever comes first.
+	if j := strings.IndexAny(rest, "\"'\r\n\t "); j >= 0 {
+		rest = rest[:j]
+	}
+	if rest == "" {
+		return ""
+	}
+	// THE SHIMS DISAGREE ABOUT SEPARATORS, so both are normalised before the join. `.cmd` writes
+	// backslashes (`node_modules\@opencode\cli\bin\opencode.exe`) while `.ps1` and the POSIX shim
+	// write forward slashes for the SAME target. filepath.FromSlash only ever rewrites '/', so on a
+	// non-Windows host a backslash path would survive as a literal and never match a real file —
+	// found exactly that way: the test failed on Linux with the separators still in place.
+	target := filepath.Join(filepath.Dir(shim), filepath.FromSlash(strings.ReplaceAll(rest, `\`, "/")))
+	if !strings.EqualFold(filepath.Ext(target), ".exe") {
+		return ""
+	}
+	return target
 }
 
 // resolveOpenCodeBinary is the ONE production resolver: the env override, then
