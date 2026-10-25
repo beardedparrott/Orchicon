@@ -86,9 +86,14 @@ func (r *recorder) SettleConsentAsk(convID, askID, outcome, answer string) {
 	r.mu.Unlock()
 }
 
-func (r *recorder) ReconcilePendingAsks(convID string, openIDs []string) {
+func (r *recorder) ReconcilePendingAsks(convID string, openIDs []string, asks []PermissionAsk) {
 	r.mu.Lock()
 	r.reconcile = append(r.reconcile, convID+"|"+strings.Join(openIDs, ","))
+	// THE STORE DRAWS THESE, so the recorder must too. Settlement and drawing are ONE call now
+	// (appEventStore.ReconcilePendingAsks) precisely so a repaint cannot observe a card that was
+	// settled but not yet redrawn — which means a card counts as delivered here, exactly as it did
+	// when the controller called ShowConsentAsk per ask.
+	r.asks = append(r.asks, asks...)
 	r.mu.Unlock()
 }
 

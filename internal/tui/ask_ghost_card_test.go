@@ -218,3 +218,45 @@ func TestASettledCardStaysAsARecordAndNeverDoubles(t *testing.T) {
 		t.Fatal("a settled question must be de-duped against its durable KindAsk card — it would draw twice")
 	}
 }
+
+// ONE CALL MUST LEAVE A CONSISTENT TRANSCRIPT, because the repaint it triggers reads the WHOLE state.
+//
+// Settling and drawing used to be two separate store mutations with a poke after each (settle → poke →
+// draw → poke). The tea loop is concurrent with the discovery goroutine, so it could drain the first poke
+// and repaint BEFORE the draw landed — painting a frame in which a still-open card had been settled and not
+// yet redrawn. That intermediate frame IS the flicker: the card vanishing and coming back at poll cadence.
+//
+// This pins the contract that makes it unreachable: the one call the discovery path makes must both settle
+// what the server dropped AND re-arm what it still lists. A future refactor that splits them again fails
+// here rather than in front of the operator.
+func TestReconcileDoesBothJobsBeforeAnyRepaint(t *testing.T) {
+	m, keep := ghostApp(t)
+
+	// A second ask the server no longer lists: it must be settled by this call.
+	drop := chat.PermissionAsk{
+		ID: "ask-dropped", Kind: chat.AskTool, Tool: "write",
+		Target: "/home/ops/project/gone.go", Directory: "/home/ops/project",
+	}
+	m.ShowConsentAsk(drop)
+
+	// And put `keep` into the SETTLED state — the "one wrong settle is permanent" shape that
+	// drawConsentAsk re-arms. The single call must bring it back, because the server still lists it.
+	m.chatStore.settleStaleConsent("c1", map[string]bool{}) // nothing open => both settle
+	if dec, ok := consentCopy(m.chatStore, "c1", "ask-1"); !ok || dec == "" {
+		t.Fatalf("fixture: both cards should now be settled, got (dec=%q present=%v)", dec, ok)
+	}
+
+	// THE ONE CALL the discovery path makes (the store the controller is bound to).
+	appEventStore{m: m}.ReconcilePendingAsks("c1", []string{"ask-1"}, []chat.PermissionAsk{keep})
+
+	if dec, ok := consentCopy(m.chatStore, "c1", "ask-1"); !ok || dec != "" {
+		t.Errorf("the ask the server still lists must be ANSWERABLE after the call, got (dec=%q present=%v); "+
+			"settling without re-arming is the half-applied state a repaint would have shown", dec, ok)
+	}
+	if dec, ok := consentCopy(m.chatStore, "c1", "ask-dropped"); !ok || dec == "" {
+		t.Errorf("the ask the server no longer lists must be settled by the same call, got (dec=%q present=%v)", dec, ok)
+	}
+	if n := countConsent(m.chatStore, "c1", "ask-1"); n != 1 {
+		t.Errorf("re-arming must not duplicate the card: got %d for one ask", n)
+	}
+}

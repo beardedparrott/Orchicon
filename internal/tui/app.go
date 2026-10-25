@@ -3437,12 +3437,25 @@ func (s appEventStore) SettleConsentAsk(convID, askID, outcome, answer string) {
 // ReconcilePendingAsks settles the cards the server no longer lists, from DiscoverPendingAsks' answer.
 // Straight to the store, like the other card paths here: a settle that is dropped leaves an inert card
 // claiming a choice, and the poke that follows repaints (see EventStore.ReconcilePendingAsks).
-func (s appEventStore) ReconcilePendingAsks(convID string, openIDs []string) {
+func (s appEventStore) ReconcilePendingAsks(convID string, openIDs []string, asks []chat.PermissionAsk) {
 	open := make(map[string]bool, len(openIDs))
 	for _, id := range openIDs {
 		open[id] = true
 	}
 	s.m.chatStore.settleStaleConsent(convID, open)
+	// DRAW BEFORE THE POKE, NOT AFTER IT. These two mutations and the repaint used to be three
+	// separate steps with two pokes between them (settle → poke → draw → poke), so the tea loop could
+	// repaint after the settle alone. For an ask the server still lists, the drawn state is what the
+	// operator should see, and a frame painted in between showed the card as gone — the flicker.
+	//
+	// drawConsentAsk is idempotent and re-arms a card that was settled in error, so drawing here is
+	// always correct and never duplicates: the settle above deliberately skips any id in `open`.
+	for _, ask := range asks {
+		if ask.ConvID == "" {
+			ask.ConvID = convID
+		}
+		s.m.chatStore.drawConsentAsk(ask.ConvID, ask)
+	}
 	s.pokeChat()
 }
 

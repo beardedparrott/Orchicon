@@ -1492,14 +1492,20 @@ func (c *Controller) DiscoverPendingAsks(convID string) tea.Cmd {
 			for _, p := range resp.Msg.GetAsks() {
 				openIDs = append(openIDs, p.GetAskId())
 			}
-			store.ReconcilePendingAsks(convID, openIDs)
+			// ONE STORE CALL, ONE REPAINT — see ReconcilePendingAsks. Settling and drawing were two
+			// separate mutations, each followed by its own poke, so the tea loop could drain the first
+			// poke before the second landed and paint a frame in which a still-open card had been
+			// settled but not yet redrawn: the reported "it shows up and then goes away before I can
+			// answer". Doing both before a single poke makes that intermediate frame unreachable.
+			asks := make([]PermissionAsk, 0, len(resp.Msg.GetAsks()))
 			for _, p := range resp.Msg.GetAsks() {
 				ask := PermissionAskFromProto(p)
 				if ask.ConvID == "" {
 					ask.ConvID = convID
 				}
-				store.ShowConsentAsk(ask)
+				asks = append(asks, ask)
 			}
+			store.ReconcilePendingAsks(convID, openIDs, asks)
 		}
 		return nil
 	}
@@ -1611,7 +1617,7 @@ type EventStore interface {
 	// AN EMPTY (non-nil) list means the server reports nothing open, so every pending card settles. A
 	// query FAILURE never reaches here (DiscoverPendingAsks returns before it), so absence of evidence is
 	// never mistaken for evidence of absence — the direction that leaves a live card answerable.
-	ReconcilePendingAsks(convID string, openIDs []string)
+	ReconcilePendingAsks(convID string, openIDs []string, asks []PermissionAsk)
 }
 
 // handleEvent applies one ChatStreamResponse to the conversation's slot
