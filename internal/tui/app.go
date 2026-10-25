@@ -3434,22 +3434,36 @@ func (s appEventStore) SettleConsentAsk(convID, askID, outcome, answer string) {
 	s.pokeChat()
 }
 
-// ReconcilePendingAsks settles the cards the server no longer lists, from DiscoverPendingAsks' answer.
-// Straight to the store, like the other card paths here: a settle that is dropped leaves an inert card
-// claiming a choice, and the poke that follows repaints (see EventStore.ReconcilePendingAsks).
-func (s appEventStore) ReconcilePendingAsks(convID string, openIDs []string, asks []chat.PermissionAsk) {
-	open := make(map[string]bool, len(openIDs))
-	for _, id := range openIDs {
-		open[id] = true
-	}
-	s.m.chatStore.settleStaleConsent(convID, open)
-	// DRAW BEFORE THE POKE, NOT AFTER IT. These two mutations and the repaint used to be three
-	// separate steps with two pokes between them (settle → poke → draw → poke), so the tea loop could
-	// repaint after the settle alone. For an ask the server still lists, the drawn state is what the
-	// operator should see, and a frame painted in between showed the card as gone — the flicker.
-	//
-	// drawConsentAsk is idempotent and re-arms a card that was settled in error, so drawing here is
-	// always correct and never duplicates: the settle above deliberately skips any id in `open`.
+// ShowDiscoveredAsks draws the open asks the server just reported. IT ONLY EVER ADDS.
+//
+// THIS IS THE GUI'S RULE, and adopting it verbatim is the fix. The GUI's discovery effect is:
+//
+//	if (!pendingAsks || pendingAsks.length === 0) return;
+//	for (const ask of pendingAsks) applyAsk(activeConvId, ask);
+//
+// It adds what the server lists and never retires anything because the list did not mention it.
+//
+// WHAT THE TUI DID INSTEAD, and why it flickered. This method used to settle every pending card whose id
+// was ABSENT from the server's answer. Absence is not evidence: the answer is a point-in-time read over a
+// poll, and an empty or partial one (a read that raced the raise, a conversation the server was still
+// indexing, a poll that landed between the persist and the registry write) retired LIVE cards. The next
+// poll then drew them again — a settle → redraw cycle at poll cadence, which is exactly the flicker the
+// operator reported, and which the GUI never showed because it cannot settle this way at all. The
+// operator's own observation localised it: "Looks like just in the TUI."
+//
+// SO WHAT STILL SETTLES A CARD? Only positive evidence, never absence:
+//   - a RECORDED OUTCOME in the durable page (onTranscript → TranscriptMsg.SettledAsks), which is what
+//     survives a reload and covers an expiry at finalize and a decision taken in the other client;
+//   - a DECISION THIS CLIENT MADE (SettleConsentAsk, from the resolve event or its own reply).
+//
+// The other direction is the safe one: a card the server has genuinely dropped but that no outcome record
+// covers stays answerable — a stale card the operator can still click, which resolves to "already answered"
+// on the server, rather than a live card that vanished. A dead card that can be dismissed is a far smaller
+// harm than a live turn parked behind a card nobody can see.
+//
+// drawConsentAsk is idempotent by ask id and re-arms a card settled in error, so drawing on every poll is
+// correct and never duplicates. One poke, after every draw, so no repaint can observe a half-applied state.
+func (s appEventStore) ShowDiscoveredAsks(convID string, asks []chat.PermissionAsk) {
 	for _, ask := range asks {
 		if ask.ConvID == "" {
 			ask.ConvID = convID
@@ -4137,67 +4151,6 @@ func (s *chatStore) beginAskDraft(convID, key string) bool {
 		return true
 	}
 	return false
-}
-
-// settleStaleConsent resolves every PENDING consent card for a conversation that the SERVER's
-// authoritative open-ask list (ListPendingAsks) NO LONGER CONTAINS.
-//
-// IT IS AN EVIDENCE RULE, NOT AN INFERENCE, and the difference is the whole fix. It used to fire on a
-// CLIENT-SIDE GUESS that the turn was over — `!runningFor(convID)`, itself made of two liveness flags:
-// this client's stream slot, and the POLLED turn_in_flight row. That guess is wrong exactly when it
-// matters:
-//
-//   - a WATCH RE-DIAL is a passive follow that runs through the same consume(), so its graceful close
-//     tears the local slot down — IsStreaming goes false — while the server's turn is STILL running and
-//     its ask is still open;
-//   - the polled turn_in_flight row is stale by construction ("only as fresh as the last list read") and
-//     ABSENT for a conversation off the current rail page (the rail is paginated), so it reads as "no
-//     turn" for a turn that is very much alive.
-//
-// With both false, a still-open card was settled, `replace` then DROPPED it (its retention rule was
-// pending-only), and DiscoverPendingAsks re-added it from the server on the next attach/poll — the
-// add → settle → drop → re-add flicker the operator reported: "a card will still be in this ghost phase
-// where it shows up and then goes away before I can answer ... It forces me to go into the GUI". A card
-// the SERVER still lists must never be settled or dropped by this client's inference about the turn.
-//
-// SO THE INPUT IS THE SERVER'S OWN ANSWER. `open` is the set of ask ids the server's ListPendingAsks
-// just returned for this conversation. A pending card whose id IS in it is left alone (it is answerable,
-// and stays that way); a pending card whose id is NOT is settled. `open == nil` means this client has
-// NO EVIDENCE — the query failed or never ran — and then NOTHING is settled: settling on absence is the
-// very bug this replaces. See DiscoverPendingAsks (the query) and onStreamDone (which asks it on a close
-// rather than inferring from one).
-//
-// THE OTHER HALF OF "settle on evidence" is the recorded outcome: onTranscript settles every ask the
-// durable page records a resolution for (TranscriptMsg.SettledAsks) — the server's ledger row, the
-// "truth" the old doc already named. Together they cover both stopping conditions: the server no longer
-// LISTS the ask, and the server has RECORDED its outcome.
-//
-// SETTLED, NOT REMOVED: a settled card is the record that a permission was asked for and what it covered,
-// which someone scrolling back is entitled to see. It just stops being a choice — and replace now KEEPS
-// it on screen as that record rather than dropping it (see replace's retention rule).
-func (s *chatStore) settleStaleConsent(convID string, open map[string]bool) {
-	if open == nil {
-		// NO EVIDENCE, NO SETTLE. This is the difference between "the server said the ask is gone" and
-		// "this client did not hear back" — only the first may retire a card.
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	items := s.items[convID]
-	for i := range items {
-		it := &items[i]
-		if it.Kind != chat.KindConsent || it.Consent == nil || !it.Consent.Pending() {
-			continue
-		}
-		if open[it.AskID] {
-			// The server still lists this ask as open, so it is answerable and MUST stay a choice —
-			// whatever this client's sockets or conversation row just did.
-			continue
-		}
-		it.Consent.Decision = chat.DecisionSettled
-		it.Consent.Note = ""
-		it.Consent.OtherMode = false
-	}
 }
 
 func (s *chatStore) snapshot(convID string) []chat.ChatItem {

@@ -1486,17 +1486,9 @@ func (c *Controller) DiscoverPendingAsks(convID string) tea.Cmd {
 		// channel the turn poll also writes to dropped cards silently). See
 		// EventStore.ShowConsentAsk.
 		if store != nil {
-			// THE SERVER'S LIST SETTLES WHAT IT NO LONGER CONTAINS. Done BEFORE the draws so a card the
-			// server still lists is never touched, and a card it has dropped is settled exactly once.
-			openIDs := make([]string, 0, len(resp.Msg.GetAsks()))
-			for _, p := range resp.Msg.GetAsks() {
-				openIDs = append(openIDs, p.GetAskId())
-			}
-			// ONE STORE CALL, ONE REPAINT — see ReconcilePendingAsks. Settling and drawing were two
-			// separate mutations, each followed by its own poke, so the tea loop could drain the first
-			// poke before the second landed and paint a frame in which a still-open card had been
-			// settled but not yet redrawn: the reported "it shows up and then goes away before I can
-			// answer". Doing both before a single poke makes that intermediate frame unreachable.
+			// ONE STORE CALL, ONE REPAINT. Drawing is all this does now — the open-id list is not used to
+			// settle anything, because ABSENCE IS NOT EVIDENCE (see ShowDiscoveredAsks: a poll that
+			// answers empty must not retire a live card).
 			asks := make([]PermissionAsk, 0, len(resp.Msg.GetAsks()))
 			for _, p := range resp.Msg.GetAsks() {
 				ask := PermissionAskFromProto(p)
@@ -1505,7 +1497,7 @@ func (c *Controller) DiscoverPendingAsks(convID string) tea.Cmd {
 				}
 				asks = append(asks, ask)
 			}
-			store.ReconcilePendingAsks(convID, openIDs, asks)
+			store.ShowDiscoveredAsks(convID, asks)
 		}
 		return nil
 	}
@@ -1610,14 +1602,16 @@ type EventStore interface {
 	// expiring it — so this client's copy of the card stops being a choice. Same reasoning as above: a
 	// resolution that is dropped leaves a live-looking, inert card behind.
 	SettleConsentAsk(convID, askID, outcome, answer string)
-	// ReconcilePendingAsks settles every still-PENDING consent card for a conversation that the server's
-	// authoritative open-ask list does NOT contain — the EVIDENCE rule that replaces the old
-	// settle-on-inferred-turn-state sweep (see chatStore.settleStaleConsent).
+	// ShowDiscoveredAsks draws the open asks the server reported for a conversation. IT ONLY ADDS — it
+	// never settles a card, whatever the list does or does not contain.
 	//
-	// AN EMPTY (non-nil) list means the server reports nothing open, so every pending card settles. A
-	// query FAILURE never reaches here (DiscoverPendingAsks returns before it), so absence of evidence is
-	// never mistaken for evidence of absence — the direction that leaves a live card answerable.
-	ReconcilePendingAsks(convID string, openIDs []string, asks []PermissionAsk)
+	// ABSENCE IS NOT A SETTLE AUTHORITY, and that is the whole rule. This used to take the open-id list
+	// and settle every pending card missing from it, which retired LIVE cards whenever a poll answered
+	// empty or partial; the next poll drew them back, and the card flickered at poll cadence. The GUI has
+	// always worked the other way — it adds what discovery returns and retires nothing — so the TUI now
+	// matches it. A card is settled only by POSITIVE evidence: a recorded outcome in the durable page, or
+	// a decision this client made. See appEventStore.ShowDiscoveredAsks.
+	ShowDiscoveredAsks(convID string, asks []PermissionAsk)
 }
 
 // handleEvent applies one ChatStreamResponse to the conversation's slot
