@@ -64,6 +64,21 @@ INSTALL_ORCH=true  # orch = the thin remote TUI client (skippable via --no-orch)
 # $INSTALL_DIR is noise the operator has to discover and undo. So: a graphical session gets it,
 # a headless box is told why it did not, and both --desktop and --no-desktop override either.
 DESKTOP=auto
+# WHAT ACTUALLY HAPPENED TO THE DESKTOP APP, reported once at the end as a result rather than
+# left in a warning that scrolls past.
+#
+# REPORTED: "Shouldn't the canary download/install also install the desktop automatically
+# somewhere? I did run that." It should, and on Linux it could not: `canary` published no
+# Linux AppImage, so install_desktop's download 404'd, warned, and `return 0`ed — the install
+# exited SUCCESS with a CLI and no GUI, and the only evidence was one warning lost in the
+# output. "Everything you asked for is installed" and "the binary is installed and the app
+# you also asked for is not" must never look the same at the end of a run.
+#
+# installed   — it is on disk, at DESKTOP_RESULT_WHY
+# unavailable — this release genuinely does not carry one for this platform
+# skipped     — this host declined it (headless, --no-desktop) or it was a dry run
+DESKTOP_RESULT=""
+DESKTOP_RESULT_WHY=""
 VERIFY_CHECKSUM=true  # verify the download against the release's SHA256SUMS (disable with --no-verify)
 
 # --- Colors -----------------------------------------------------------------
@@ -542,15 +557,18 @@ install_desktop() {
   os="$(detect_os)"
   arch="$(detect_arch)"
   if ! url="$(desktop_url "$os")"; then
-    warn "no desktop app is published for ${os}"
+    DESKTOP_RESULT="unavailable"
+    DESKTOP_RESULT_WHY="no desktop app is published for ${os}"
     return 0
   fi
   if [ "$os" = "linux" ] && [ "$arch" != "amd64" ]; then
-    warn "no prebuilt desktop app for linux/${arch} yet — build it from source:"
-    warn "  make desktop-linux-deps-check && make desktop-package-linux"
+    DESKTOP_RESULT="unavailable"
+    DESKTOP_RESULT_WHY="no prebuilt desktop app for linux/${arch} yet"
     return 0
   fi
   if [ "$DRY_RUN" = true ]; then
+    DESKTOP_RESULT="skipped"
+    DESKTOP_RESULT_WHY="dry run — it would be downloaded from ${url}"
     ok "would download the desktop app from ${url}"
     return 0
   fi
@@ -559,8 +577,8 @@ install_desktop() {
   pkg="${tmp}/$(basename "$url")"
   info "downloading the desktop app…"
   if ! curl -fsSL --retry 2 -o "$pkg" "$url"; then
-    warn "the desktop app is not in release ${VERSION} ($(basename "$url") is missing)"
-    warn "  download it from: https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${VERSION}"
+    DESKTOP_RESULT="unavailable"
+    DESKTOP_RESULT_WHY="release ${VERSION} does not carry $(basename "$url")"
     rm -rf "$tmp"
     return 0
   fi
@@ -568,6 +586,8 @@ install_desktop() {
   case "$os" in
     linux)
       install -m 0755 "$pkg" "${INSTALL_DIR}/orchicon-desktop"
+      DESKTOP_RESULT="installed"
+      DESKTOP_RESULT_WHY="${INSTALL_DIR}/orchicon-desktop"
       ok "desktop app installed: ${INSTALL_DIR}/orchicon-desktop"
       if command -v ldconfig >/dev/null 2>&1 && ! ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.[01]\.so\.37'; then
         warn "this system has no WebKitGTK: sudo apt install libwebkit2gtk-4.0-37"
@@ -581,7 +601,8 @@ install_desktop() {
         if command -v unzip >/dev/null 2>&1; then
           unzip -q -o "$pkg" -d "$dest"
         else
-          warn "cannot unpack ${pkg} (neither ditto nor unzip is available)"
+          DESKTOP_RESULT="unavailable"
+          DESKTOP_RESULT_WHY="cannot unpack $(basename "$pkg") — neither ditto nor unzip is available"
           rm -rf "$tmp"
           return 0
         fi
@@ -589,10 +610,13 @@ install_desktop() {
       local app
       app="$(find "$dest" -maxdepth 1 -name '*.app' -type d 2>/dev/null | head -1)"
       if [ -z "$app" ]; then
-        warn "no .app was found in the downloaded archive"
+        DESKTOP_RESULT="unavailable"
+        DESKTOP_RESULT_WHY="no .app was found in the downloaded archive"
         rm -rf "$tmp"
         return 0
       fi
+      DESKTOP_RESULT="installed"
+      DESKTOP_RESULT_WHY="${app}"
       ok "desktop app installed: ${app}"
       if spctl -a -t exec "$app" >/dev/null 2>&1; then
         ok "Gatekeeper accepts it (signed, notarised and stapled): it opens with no warning"
@@ -1067,18 +1091,19 @@ main() {
     fi
   fi
 
-  # THE DESKTOP APP. Installed whenever the host could run it (see desktop_wanted); the
-  # skip branch always names the download, which is the difference between "the option
-  # exists" and the user being left to find it — and it names WHY when the skip was the
-  # auto decision rather than the operator's own --no-desktop.
+  # THE DESKTOP APP. Installed whenever the host could run it (see desktop_wanted). Every path
+  # that does NOT install it records WHY in DESKTOP_RESULT/DESKTOP_RESULT_WHY, and the summary at
+  # the end of the run states the outcome — the app is one of the three things this installer
+  # puts on the machine, so "it is not there" belongs in the result, not in a warning.
   if desktop_wanted "$os"; then
     install_desktop
   else
+    DESKTOP_RESULT="skipped"
     if [ -n "${DESKTOP_SKIP_WHY}" ]; then
-      info "${DESKTOP_SKIP_WHY}"
+      DESKTOP_RESULT_WHY="${DESKTOP_SKIP_WHY}"
+    else
+      DESKTOP_RESULT_WHY="not installed (--no-desktop)"
     fi
-    echo -e "  ${D}Desktop app: download it from${X}"
-    echo -e "  ${D}  https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${VERSION}${X}"
   fi
 
   # Verify
@@ -1152,6 +1177,41 @@ GUIDANCE
         echo -e "  Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
         echo -e "  ${D}export PATH=\"\$PATH:${INSTALL_DIR}\"${X}"
       fi
+      ;;
+  esac
+
+  # WHAT HAPPENED TO THE DESKTOP APP — SAID AS A RESULT, where the operator is already reading
+  # outcomes, rather than as a warning thirty lines up.
+  #
+  # The three states are genuinely different and only one of them is good news:
+  #   installed   → say where it is
+  #   skipped     → the host declined it; name the flag that overrides
+  #   unavailable → THIS RELEASE does not carry one for this platform, so no flag would have
+  #                 helped. That is the case the operator hit (canary had no Linux AppImage) and
+  #                 it is the one that must not read like a successful install.
+  case "$DESKTOP_RESULT" in
+    installed)
+      echo ""
+      ok "Desktop app: ${DESKTOP_RESULT_WHY}"
+      ;;
+    skipped)
+      echo ""
+      info "Desktop app: not installed — ${DESKTOP_RESULT_WHY}"
+      ;;
+    unavailable)
+      echo ""
+      warn "Desktop app: NOT INSTALLED — ${DESKTOP_RESULT_WHY}"
+      warn "  Everything else is installed and works; the GUI client is the only missing piece."
+      case "$os" in
+        linux)
+          echo -e "  ${D}Build it from this tree: make desktop-build   (then ./bin/orchicon-desktop)${X}"
+          echo -e "  ${D}Or use a build that carries one:${X}"
+          echo -e "  ${D}  https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases${X}"
+          ;;
+        *)
+          echo -e "  ${D}Download it from: https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${VERSION}${X}"
+          ;;
+      esac
       ;;
   esac
 
