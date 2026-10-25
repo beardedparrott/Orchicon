@@ -747,7 +747,7 @@ fe-typecheck: ## CI gate: typecheck the frontend (tsc -b) — the only gate that
 # cross-compile loop — that loop would fail, and folding it in would break
 # `make cross-compile` for everyone. Each OS builds its own binary on its own
 # runner in .github/workflows/release.yml.
-.PHONY: desktop-deps desktop-build desktop-test desktop-test-live
+.PHONY: desktop-deps desktop-build desktop-build-if-possible desktop-test desktop-test-live
 desktop-deps: ## Print the host prerequisites for building the desktop app (wails CLI + webkit2gtk)
 	@echo "desktop app prerequisites:"
 	@echo "  Go toolchain (go.mod's version), Node 22+, CGO enabled"
@@ -791,6 +791,67 @@ desktop-build: fe-build ## Build the desktop app for THIS OS (CGO on; NOT part o
 	@# exactly why this target is the one to use for the inner loop.
 	@printf '==> desktop tags: %s\n' '$(DESKTOP_TAGS)'
 	CGO_ENABLED=1 go build -tags $(DESKTOP_TAGS) -ldflags '$(LDFLAGS)' -o bin/orchicon-desktop ./cmd/orchicon-desktop
+
+# desktop-build-if-possible builds the desktop app WHEN THIS HOST CAN, and says why not when
+# it cannot — without failing the caller.
+#
+# WHY THE REBUILD CHAIN NEEDS THIS. Reported as three separate symptoms, and they were ONE
+# stale binary:
+#
+#   "On Linux, it doesn't have the nice server section separated" ... "It doesn't relaunch the
+#    desktop app when you switch instances" ... "the error/warning text is hard to see"
+#
+# All three had already been fixed on develop (f109d2235, 5e9f92490, 4533ef77a) and none of them
+# had reached the operator, because `make rebuild-dev` rebuilt bin/orchicon and bin/orch only.
+# The SPA is `go:embed`-ed at BUILD time (`//go:embed all:frontend/dist`), so the desktop binary
+# carries its own frozen copy of the UI: rebuilding the plane four times in a week left the app
+# from four days earlier still serving the old pages. Nothing failed. Nothing was even wrong.
+# The rebuild simply never touched the thing the operator was looking at.
+#
+# SO THE APP IS PART OF A REBUILD, the same way the plane and the TUI client are.
+#
+# BUT NOT UNCONDITIONALLY, and the reason is not politeness. desktop-build needs CGO, GTK and
+# WebKitGTK dev headers, and this chain also runs on headless servers and in CI containers where a
+# GUI can never launch. Making the rebuild FAIL there would trade one silent defect (a stale
+# window) for a loud one ("the rebuild I use every day no longer works on my build box"). So the
+# precondition is checked, the app is built when it is met, and when it is not the chain says so
+# ONCE and continues — the plane is still rebuilt, which is what those hosts actually run.
+#
+# THE SKIP IS PRINTED, NOT SWALLOWED. It used to be that the operator's only evidence of an
+# un-built app was a wrong page days later; a one-line "skipped" here is the difference between a
+# fact and a mystery.
+.PHONY: desktop-build-if-possible
+desktop-build-if-possible: ## Build the desktop app if this host can, else say why and continue
+	@# ONE SHELL, DELIBERATELY. Make runs each recipe line in its OWN shell, so an `exit 0` in a
+	@# separate line ends that line and NOT the recipe — make then happily runs the next line and
+	@# the guard protects nothing. Written as separate lines this target SKIPPED with the right
+	@# message and then invoked desktop-build anyway, which is how it was found. Everything below
+	@# is a single recipe line held together by backslashes, so `exit 0` really does stop it.
+	@#
+	@# THE SAME PRECONDITIONS desktop-build itself would demand, asked BEFORE invoking it, because
+	@# the failure mode being avoided is a cgo error buried inside a four-target rebuild.
+	@# `go env CGO_ENABLED` rather than a guess: it is 0 unless the toolchain and a C compiler are
+	@# usable. `pkg-config --exists` rather than `ldconfig`: cgo needs the DEV headers, and a host
+	@# with only the runtime library has the .so and not the .pc file.
+	@# Linux-only: WebView2 and WKWebView are part of Windows and macOS, so those hosts go straight
+	@# through.
+	@skip=""; \
+	if [ "$$(uname -s)" = "Linux" ]; then \
+		if [ "$$(go env CGO_ENABLED)" != "1" ]; then \
+			skip="cgo is disabled (CGO_ENABLED=0), so the GUI cannot be built here"; \
+		elif ! pkg-config --exists gtk+-3.0 2>/dev/null || \
+		     ! { pkg-config --exists webkit2gtk-4.1 2>/dev/null || pkg-config --exists webkit2gtk-4.0 2>/dev/null; }; then \
+			skip="this host has no GTK3/WebKitGTK dev headers"; \
+		fi; \
+	fi; \
+	if [ -n "$$skip" ]; then \
+		echo "==> desktop app: SKIPPED — $$skip"; \
+		echo "    install libgtk-3-dev + libwebkit2gtk-4.1-dev (see: make desktop-deps)"; \
+		echo "    the plane and the TUI were rebuilt; the desktop app keeps its previous UI."; \
+		exit 0; \
+	fi; \
+	$(MAKE) --no-print-directory desktop-build \
+		|| { echo "==> desktop app: the build FAILED (see above) — the plane and the TUI were rebuilt."; exit 0; }
 
 desktop-install: desktop-build ## Install the app for THIS USER: menu entry + taskbar icon (no root)
 	@# WHY THIS TARGET EXISTS, AND WHY IT IS ABOUT ICONS RATHER THAN CONVENIENCE.
@@ -890,7 +951,7 @@ docs-check: ## Validate every Mermaid diagram in the root docs with a real parse
 # Instance selection: `instance=dev` (the default) names which stack these targets
 # act on. `instance_given` is the narrower question "did the operator actually say
 # so", and only the DESTRUCTIVE targets ask it.
-.PHONY: instance-build instance-up instance-down instance-restart instance-status instance-logs instance-ps instance-rebuild
+.PHONY: instance-build instance-up instance-down instance-restart instance-status instance-logs instance-ps instance-rebuild desktop-build-if-possible
 
 # The launcher owns instance lifecycle; this file owns the Makefile concerns
 # (build, guards, the rebuild chain). Keeping that split means the launcher can be
@@ -1022,6 +1083,15 @@ full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + i
 	$(MAKE) ci
 	$(MAKE) migrate-hash
 	$(MAKE) instance-rebuild instance=$(instance)
+	# THE DESKTOP APP IS PART OF A REBUILD, and it goes LAST for a reason: it is the slowest
+	# step, and it must not stand between a failing test and the operator hearing about it. A
+	# rebuild that reported a stale window as success — while the plane was rebuilt four times
+	# — is the defect this line closes (see desktop-build-if-possible for the full account).
+	#
+	# Here rather than in rebuild-dev/rebuild-prod, because all three rebuild-* targets go
+	# through this one, and three copies of a hook is three chances to add a fourth target and
+	# forget it.
+	$(MAKE) desktop-build-if-possible
 	$(MAKE) cache-trim
 
 # instance= reaches instance-rebuild EXPLICITLY on the command line: that is how

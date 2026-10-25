@@ -247,3 +247,204 @@ func TestFeDepsRepairSequenceIsPresent(t *testing.T) {
 			"disappearing with no reason given")
 	}
 }
+
+// TestTheRebuildChainRebuildsTheDesktopApp — the staleness trap that produced three reported bugs.
+//
+// The operator reported three separate things:
+//
+//	"On Linux, it doesn't have the nice server section separated"
+//	"It doesn't relaunch the desktop app when you switch instances ... the tab bar goes missing"
+//	"the error/warning text in the desktop app is hard to see"
+//
+// All three had ALREADY been fixed on develop — f109d2235 (the Servers page), 5e9f92490 (Connect
+// restarts the app), 4533ef77a (readable error text) — and none had reached them. `make
+// rebuild-dev` rebuilt bin/orchicon and bin/orch only. The SPA is `go:embed`-ed at BUILD time, so
+// the desktop binary carries a FROZEN COPY of the UI: the plane was rebuilt four times in a week
+// while the app the operator was actually looking at stayed four days old. Nothing failed.
+//
+// So the assertion is not "the app is nice" — it is that a rebuild REACHES it. That has two
+// halves, and the second is the one that goes wrong:
+//
+//	1. full-rebuild (which rebuild-dev/prod/test all delegate to) invokes the desktop build.
+//	2. it invokes the CONDITIONAL one, not desktop-build — a rebuild must still work on a
+//	   headless server or a CI container where CGO/webkit are absent, and failing there would
+//	   trade a silent defect for a loud one on the machines that can never run a GUI.
+func TestTheRebuildChainRebuildsTheDesktopApp(t *testing.T) {
+	mk := mustRead(t, "../../Makefile")
+
+	// THE CALL, inside full-rebuild — which is the one place all three rebuild-* targets pass
+	// through. Asserting it in rebuild-dev alone would let rebuild-prod drift, and there are
+	// three of them.
+	full := makeTarget(t, mk, "full-rebuild")
+	// ASSERT THE INVOCATION, NOT THE NAME. The recipe carries a comment block that names the
+	// target ("see desktop-build-if-possible for the full account"), so a Contains on the bare
+	// name is satisfied by PROSE — measured: deleting the call line left this test green. The
+	// sub-make invocation is the thing that must exist.
+	if !strings.Contains(full, "$(MAKE) desktop-build-if-possible") {
+		t.Errorf("full-rebuild does not invoke desktop-build-if-possible, so `make rebuild-dev` / "+
+			"rebuild-prod / rebuild-test rebuild the plane and leave the desktop app on its older "+
+			"embedded UI.\n  full-rebuild:\n%s\n"+
+			"  That is the reported defect: three UI fixes shipped and never reached the operator "+
+			"because the rebuild never touched the app.", full)
+	}
+	// THE RIGHT VARIANT. A bare desktop-build here makes the everyday rebuild fail on any host
+	// without webkit dev headers, which is every headless server and every CI container.
+	if strings.Contains(full, "desktop-build\n") || strings.Contains(full, "$(MAKE) desktop-build ") {
+		t.Errorf("full-rebuild calls desktop-build unconditionally:\n%s\n"+
+			"  It must call desktop-build-if-possible, or a rebuild on a host without "+
+			"GTK3/WebKitGTK dev headers fails instead of rebuilding the plane and saying why the GUI "+
+			"was skipped.", full)
+	}
+
+	// THE CONDITIONAL TARGET EXISTS AND IS PHONED, or a file of that name would shadow it.
+	if !strings.Contains(mk, "\ndesktop-build-if-possible:") {
+		t.Fatal("the Makefile has no desktop-build-if-possible target")
+	}
+	if !strings.Contains(mk, ".PHONY:") || !strings.Contains(mk, "desktop-build-if-possible") {
+		t.Error("desktop-build-if-possible is not in a .PHONY list — a file with that name in the " +
+			"tree would silently disable the desktop half of every rebuild")
+	}
+
+	cond := makeTarget(t, mk, "desktop-build-if-possible")
+	// THE PRECONDITIONS ARE THE POINT: each must be checked BEFORE the build is invoked.
+	for _, want := range []struct{ what, sub string }{
+		{"a cgo check", "go env CGO_ENABLED"},
+		{"a GTK check", "pkg-config --exists gtk+-3.0"},
+		{"a webkit check", "pkg-config --exists webkit2gtk-4.1"},
+		{"the alternative webkit ABI", "pkg-config --exists webkit2gtk-4.0"},
+	} {
+		if !strings.Contains(cond, want.sub) {
+			t.Errorf("desktop-build-if-possible has no %s (%v), so it cannot tell a host that "+
+				"CAN build the GUI from one that cannot — and would fail a rebuild on a server",
+				want.what, want.sub)
+		}
+	}
+	// AND IT MUST STILL BUILD. A guard that skips on every host is a very quiet way to have no
+	// desktop app at all — so the INVOCATION is asserted, not the name (which appears in both this
+	// target's own declaration and its comment).
+	if !strings.Contains(cond, "$(MAKE) --no-print-directory desktop-build") {
+		t.Error("desktop-build-if-possible never invokes desktop-build, so the chain always skips")
+	}
+
+	// ONE SHELL — AND THIS IS THE ASSERTION THAT MATTERS MOST, because the bug it catches was made
+	// and only found by RUNNING the target.
+	//
+	// Make runs every recipe LINE in its own shell. Written the obvious way — the precondition
+	// block, then `exit 0` for the skip, then a separate line invoking desktop-build — the skip
+	// ended its own shell, make ran the next line anyway, and the target printed
+	// "SKIPPED — this host has no GTK3/WebKitGTK dev headers" and then invoked the build, which
+	// died inside cgo. A guard that reports a skip and builds anyway is worse than no guard: it
+	// says the opposite of what it does.
+	//
+	// So the `exit 0` and the desktop-build invocation must be in the SAME logical line, which in
+	// make means a backslash-continued run of recipe lines. Asserted on the recipe's real shape:
+	// split it into logical lines by trailing backslashes and require that the exit and the
+	// invocation land in the same one.
+	// THE PROPERTY IS "ONE SHELL", so it is asserted as exactly that: every non-comment recipe
+	// line that carries logic must belong to a SINGLE logical line. Counting groups rather than
+	// looking for a pair of markers matters — the fallback's `|| { …; exit 0; }` also contains
+	// "exit 0", so a marker pair finds a spurious match and passes on the mutated file (measured).
+	if n := len(logicalRecipeGroups(recipeLines(cond))); n != 1 {
+		t.Errorf("desktop-build-if-possible's skip `exit 0` and its desktop-build invocation are not "+
+			"in one logical recipe line:\n%s\n"+
+			"  Make runs each LINE in its own shell, so `exit 0` on its own line stops only that line "+
+			"and the build runs regardless — the target would print SKIPPED and then build. The recipe "+
+			"is %d separate shell group(s); it must be 1. Join the lines with backslashes.", cond, n)
+	}
+}
+
+// logicalRecipeGroups splits recipe lines into the scripts make actually runs: a line continues
+// into the next when it ends in a backslash, and each resulting group is ONE shell invocation.
+// Comment-only groups are dropped, since they carry no logic.
+func logicalRecipeGroups(lines []string) []string {
+	var groups []string
+	var cur strings.Builder
+	for _, ln := range lines {
+		cur.WriteString(ln)
+		cur.WriteString("\n")
+		if strings.HasSuffix(strings.TrimRight(ln, " \t"), "\\") {
+			continue
+		}
+		script := cur.String()
+		cur.Reset()
+		tr := strings.TrimSpace(script)
+		if tr == "" || strings.HasPrefix(tr, "#") || strings.HasPrefix(tr, "@#") {
+			continue
+		}
+		groups = append(groups, script)
+	}
+	if script := cur.String(); strings.TrimSpace(script) != "" {
+		groups = append(groups, script)
+	}
+	return groups
+}
+
+// makeTarget returns the body of a Makefile target: from its `name:` line to the next line that
+// starts in column 0 (the next target, comment or blank), which is where a make recipe ends.
+func makeTarget(t *testing.T, mk, name string) string {
+	t.Helper()
+	lines := strings.Split(mk, "\n")
+	start := -1
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, name+":") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("the Makefile has no %q target", name)
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		ln := lines[i]
+		if ln == "" || strings.HasPrefix(ln, "\t") || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		end = i
+		break
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+// recipeLines returns a target body's recipe lines (those starting with a tab), which is what make
+// actually hands to a shell — one shell per line, unless the line ends in a backslash.
+func recipeLines(body string) []string {
+	var out []string
+	for _, ln := range strings.Split(body, "\n")[1:] {
+		if strings.HasPrefix(ln, "\t") {
+			out = append(out, ln)
+		}
+	}
+	return out
+}
+
+// sameLogicalRecipeLine reports whether two markers appear in the SAME logical line: a run of
+// recipe lines joined by trailing backslashes, which make passes to one shell as a single script.
+func sameLogicalRecipeLine(lines []string, a, b string) bool {
+	var logical strings.Builder
+	flush := func() (string, bool) {
+		s := logical.String()
+		logical.Reset()
+		return s, s != ""
+	}
+	for _, ln := range lines {
+		trimmed := strings.TrimRight(ln, " \t")
+		logical.WriteString(ln)
+		logical.WriteString("\n")
+		if strings.HasSuffix(trimmed, "\\") {
+			continue // continues into the next line: still one shell
+		}
+		script, nonEmpty := flush()
+		if !nonEmpty || strings.HasPrefix(strings.TrimSpace(script), "#") ||
+			strings.HasPrefix(strings.TrimSpace(script), "@#") {
+			continue // a comment line is its own (no-op) shell and carries no logic
+		}
+		if strings.Contains(script, a) && strings.Contains(script, b) {
+			return true
+		}
+	}
+	if script, nonEmpty := flush(); nonEmpty && strings.Contains(script, a) && strings.Contains(script, b) {
+		return true
+	}
+	return false
+}
