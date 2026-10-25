@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -437,7 +438,56 @@ func printHelp() {
 	fmt.Print(b.String())
 }
 
+// mcpStderrLogger is the logger a stdio MCP server must use: JSON on STDERR.
+//
+// IT IS BUILT HERE RATHER THAN AT THE PROCESS ROOT because every other subcommand wants its records
+// on stdout, and a global change would move the plane's own logs. The invariant belongs to the one
+// function that owns the stdio transport, so a future caller cannot pick the wrong logger by
+// accident — which is how this defect happened.
+//
+// JSON rather than text: opencode's log capture expects it, and it keeps the format identical to the
+// rest of the product so an operator grepping both streams sees one shape.
+func mcpStderrLogger() *slog.Logger {
+	return mcpLogger(os.Stderr)
+}
+
+// mcpLogger takes the writer rather than naming stderr, so the format can be asserted in a test
+// without redirecting the real os.Stderr out from under the test runner.
+func mcpLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
+}
+
 func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
+	// STDIO TRANSPORT MEANS STDOUT IS THE PROTOCOL, NOT A LOG SINK.
+	//
+	// REPORTED as "ask cards are not rendering in both windows and Linux ... the model claims it
+	// sent and rendered a card but no card popped up", with the operator's own diagnosis: the
+	// orchicon MCP server had a failure inside opencode. It did, and this is why:
+	//
+	//   level=WARN message="mcp transport error" server=orchicon
+	//   error="... unrecognized_keys ... keys: [\"time\",\"level\",\"msg\"] ...
+	//           jsonrpc: Invalid input: expected \"2.0\" ..."
+	//
+	// That is OUR JSON LOG LINE being parsed as a JSON-RPC message. The process-wide logger is built
+	// with slog.NewJSONHandler(os.Stdout, ...) (see main), which is correct for every other
+	// subcommand — but `orchicon mcp` speaks JSON-RPC over stdin/stdout, so the first record it
+	// writes ("mcp server started (stdio transport)") lands in the middle of the protocol stream.
+	// opencode's validator rejects it, reports a transport error for the whole server, and the
+	// tool surface is unreliable — which is exactly the shape of the report: the model BELIEVES it
+	// called orchicon_ask_user (the tool result even says a card was shown) while no card can ever
+	// be raised, because the assistant's tool calls are not reaching this sidecar.
+	//
+	// IT AFFECTED BOTH PLATFORMS AND BOTH CARD KINDS because the corrupted channel is the ONLY way
+	// this sidecar is reached: clarifying questions and consent asks both arrive as tool calls, and
+	// neither can arrive over a stream opencode has declared invalid.
+	//
+	// SO LOGGING GOES TO STDERR HERE, and nowhere else in the process. stderr is what a stdio MCP
+	// child is expected to use: opencode captures it for its own logs and never parses it. The OTel
+	// handler is dropped as well — this process is a short-lived sidecar of somebody else's serve,
+	// so it has no business emitting telemetry of its own.
+	log = mcpStderrLogger()
+	slog.SetDefault(log)
+
 	// Worktree-only mode: a worker's composite file tools (batch_read /
 	// batch_grep / batch_write) run against a base directory and need no
 	// Postgres or valid plane config. The control plane sets
