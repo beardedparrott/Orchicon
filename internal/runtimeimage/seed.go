@@ -38,9 +38,24 @@ const cannedSeedMarker = "orchicon.seed"
 // referenced by variant resolution (base = the daemon's default image).
 type stockVariant struct {
 	File    string // embedded template path (assets.RuntimeImageTemplatesFS)
-	Variant string // "base" | "gui" | "dev"
+	Variant string // "base" | "gui" | "dev" | "web-research"
 	Name    string
 	Desc    string
+}
+
+// TagSuffix is the "<variant>-" segment a published tag carries before the version, matching the
+// daemon's convention ("ghcr.io/.../orchicon-runtime:gui-latest"). The base variant has NO suffix —
+// it IS the repository's default tag — which is why this returns "" for it rather than "base-".
+func (v stockVariant) TagSuffix() string {
+	if v.Variant == stockVariants[0].Variant {
+		return ""
+	}
+	// THE DAEMON'S OWN SPELLING, verified against a live /v1/images rather than inferred from the
+	// variant NAME: cmd/orchicon's runtimeImagesAllowlist emits "<repo>:gui-<tag>" and
+	// "<repo>:dev-<tag>" — so the development image is ":dev-latest", NOT ":orchicon-dev-latest".
+	// The first version of this returned the display name's spelling, which would have seeded a
+	// SECOND row for the same artifact and split the catalog in two.
+	return v.Variant + "-"
 }
 
 var stockVariants = []stockVariant{
@@ -76,14 +91,43 @@ var stockVariants = []stockVariant{
 //
 // A missing daemon (headless serve) skips seeding entirely.
 func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *runtime.Client) error {
+	// NO DAEMON IS NOT "NO CATALOG" — that conflation is the whole Windows report.
+	//
+	// This used to return here, and it is the branch a Windows host takes: no container engine means
+	// no runtime daemon ("runtime daemon not configured"), so the seeder skipped entirely and the
+	// Runtime Images page — which lists ROWS — showed NOTHING. "In Windows, it doesn't have ANY of the
+	// runtime images." With no rows there is no fetch button either, so it was a dead end rather than
+	// a missing feature, and no amount of fixing the fetch would have made it reachable.
+	//
+	// The shipped variants and their templates are compile-time facts. Only their LOCAL PRESENCE needs
+	// a daemon. So the catalog is seeded from the published tags as rows with no built_version, which
+	// is precisely the "available to download, not downloaded" state the page must be able to show —
+	// and which the presence check already understands.
 	if rt == nil {
-		log.Info("runtime daemon not configured — skipping canned runtime image seed")
-		return nil
+		log.Info("runtime daemon not configured — seeding the published runtime-image catalog so the images stay fetchable")
+		return seedPublishedCatalog(ctx, pool, log, nil)
 	}
 	imgs, err := rt.Images(ctx)
 	if err != nil || imgs == nil {
-		log.Warn("canned runtime image seed: daemon images unavailable", "error", err)
-		return nil // daemon down — retry next boot
+		// THE CATALOG MUST NOT DISAPPEAR WHEN THE DAEMON DOES.
+		//
+		// REPORTED: "In Windows, it doesn't have ANY of the runtime images." That is this branch: a
+		// host whose container engine is not set up yet has no daemon, so the daemon cannot report
+		// which stock images it knows — and the Runtime Images page, which lists ROWS, showed nothing
+		// at all. The operator then has no fetch button to press because there is nothing to press it
+		// on, which is a dead end rather than a missing feature.
+		//
+		// The shipped variants and their templates are COMPILE-TIME facts (stockVariants +
+		// assets.RuntimeImageTemplatesFS); only their LOCAL PRESENCE depends on the daemon. So they are
+		// seeded regardless, as rows with no built_version — "available to download, not downloaded" —
+		// which is precisely the state the page has to be able to show.
+		//
+		// THE TAG FALLBACK IS THE PUBLISHED ONE. Without a daemon there is no locally-built tag to ask
+		// about, so the row gets the released reference the image would be pulled from
+		// (publishedStockTags). On a host that later gets an engine, the next boot re-seeds from the
+		// daemon — which reconciles by TAG, so a locally-built tag wins and the row moves to it.
+		log.Warn("canned runtime image seed: daemon images unavailable — seeding the published catalog so the images stay fetchable", "error", err)
+		return seedPublishedCatalog(ctx, pool, log, rt)
 	}
 	infos := make(map[string]runtime.ImageInfo, len(imgs.Infos))
 	for _, i := range imgs.Infos {
@@ -101,6 +145,63 @@ func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *
 	}
 	return nil
 }
+
+// seedPublishedCatalog seeds one row per shipped variant from the PUBLISHED tags, with no daemon
+// involved. It is the path a host takes before it has a container engine, and the fallback when the
+// daemon is unreachable — one implementation for both, so the two cannot seed different sets.
+func seedPublishedCatalog(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *runtime.Client) error {
+	svc := &Service{pool: pool, log: log, rt: rt}
+	base := firstPublishedTag()
+	for _, tag := range publishedStockTags() {
+		variant, ok := resolveVariant(tag, base)
+		if !ok {
+			continue
+		}
+		// An all-empty ImageInfo means "no local evidence" — the row keeps built_version stale, so
+		// the presence check reports it as not downloaded and the fetch button appears.
+		if err := seedOneCannedImage(ctx, svc, tag, variant, runtime.ImageInfo{}, base); err != nil {
+			log.Warn("canned runtime image seed failed", "tag", tag, "error", err)
+		}
+	}
+	return nil
+}
+
+// PublishedStockBase is the registry reference the released runtime images live at. It mirrors the
+// daemon's own default (cmd/orchicon/runtime.go: ORCHICON_RUNTIME_IMAGE), because a row seeded from it
+// and a daemon image must name the SAME artifact — two spellings would seed the catalog twice.
+const PublishedStockBase = "ghcr.io/beardedparrott/orchicon-runtime:latest"
+
+// publishedStockTags lists the released tag for every shipped variant, base first. The convention is
+// the daemon's: "<repo>:<variant>-<tag>", with the base being "<repo>:<tag>".
+func publishedStockTags() []string {
+	repo, tag := splitImageRef(PublishedStockBase)
+	out := make([]string, 0, len(stockVariants))
+	for _, v := range stockVariants {
+		if v.Variant == stockVariants[0].Variant {
+			out = append(out, repo+":"+tag)
+			continue
+		}
+		out = append(out, repo+":"+v.TagSuffix()+tag)
+	}
+	return out
+}
+
+func firstPublishedTag() string { return publishedStockTags()[0] }
+
+// splitImageRef splits "repo:tag" into its parts. A ref with no tag yields "latest", matching the
+// engine's own default — the daemon does the same, so the two agree on what a tagless ref means.
+func splitImageRef(ref string) (repo, tag string) {
+	if i := strings.LastIndexByte(ref, ':'); i > strings.LastIndexByte(ref, '/') {
+		return ref[:i], ref[i+1:]
+	}
+	return ref, "latest"
+}
+
+// NOTE: there is deliberately no second variant resolver here. resolveVariant already maps a tag to
+// its shipped variant and handles every spelling in use (:gui-, :dev-, :orchicon-dev-, :web-research-),
+// including the ones an operator sets through ORCHICON_RUNTIME_IMAGES. A second mapping is how the
+// catalog path and the daemon path would come to disagree about which variant a tag names — and that
+// disagreement seeds the same artifact twice.
 
 // resolveVariant maps a daemon stock tag to its shipped variant. The base is
 // the daemon's default image; :gui / :orchicon-dev are matched by tag suffix

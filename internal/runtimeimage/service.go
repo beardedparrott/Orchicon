@@ -12,8 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"log/slog"
+	"os/exec"
 	"regexp"
+	goruntime "runtime"
 	"strings"
 	"time"
 
@@ -407,14 +410,110 @@ func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[ap
 			errors.New("runtime image has no tag to fetch"))
 	}
 
-	// Stream the pull. The daemon owns presence + idempotency; a fetch is a
-	// download, so there is no prune afterwards (nothing is orphaned).
-	exit, skipped, perr := s.rt.PullImage(ctx, row.Tag, func(ev runtime.AgentEvent) error {
-		if ev.Data == "" {
+	// FETCH IS NOT ALWAYS A PULL, and getting that wrong is the reported bug:
+	//
+	//	runtime image fetch failed for orchicon-runtime:local: runtime image pull: runtime daemon: request failed
+	//
+	// after the daemon stopped 404ing, the same fetch failed again inside podman with
+	//
+	//	short-name "orchicon-runtime:local" did not resolve to an alias
+	//
+	// because `orchicon-runtime:local` IS NOT A REGISTRY REFERENCE. It is a tag this host BUILDS
+	// from a shipped Dockerfile (deploy/runtime/Dockerfile*), so `podman pull` can never succeed for
+	// it — there is no registry holding it. The old comment said "Fetch DOWNLOADS a published image",
+	// which is true only of the CUSTOM case.
+	//
+	// SO THE ROW'S SOURCE DECIDES:
+	//   stock  -> BUILD from the shipped template it already carries. The template lives in
+	//             dockerfile_override (seed.go writes it there), so this is a normal build of a known
+	//             spec and the existing build path — including its up-to-date short-circuit and its
+	//             structured failure reporting — does the work.
+	//   custom -> PULL, which is what "fetch" means for an image someone else published.
+	//
+	// A stock row with no override cannot be built; that is a seeding defect, and it is reported as
+	// one rather than being turned into a confusing pull failure.
+	var (
+		exit    int
+		skipped bool
+		perr    error
+	)
+	// THE DECISION IS THE TAG, NOT THE SOURCE — corrected after the first attempt got it wrong.
+	//
+	// Source alone is the wrong axis: a STOCK image can be either kind. A development host builds
+	// `orchicon-runtime:local` from a shipped Dockerfile (Source=stock, must BUILD), while a released
+	// image is published at `ghcr.io/beardedparrott/orchicon-runtime:latest` (Source may also be
+	// stock, must PULL). Routing on Source would make one of them fail.
+	//
+	// The property that actually decides it is whether the tag names a REGISTRY. A reference with a
+	// registry and repository — "ghcr.io/org/name:tag", "docker.io/library/x:1" — is something `pull`
+	// can fetch. A bare "name:tag" is a SHORT NAME: on a fresh podman with no registries.conf it is
+	// exactly the string that produced
+	//
+	//	short-name "orchicon-runtime:local" did not resolve to an alias
+	//
+	// and it is, by construction, an image this host builds.
+	if !isRegistryRef(row.Tag) {
+		// OWNED END TO END, both ways. buildCore is the authority on a build's outcome — it writes
+		// the row ready, or failed WITH failure_reason/failed_step/log_tail/failure_category — so this
+		// path must return rather than fall through to recordFetchOutcome, which would overwrite that
+		// verdict with the far less useful "fetch failed". A stock fetch therefore reports exactly
+		// what a Deploy reports, because it IS one.
+		if strings.TrimSpace(row.DockerfileOverride) == "" {
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+				"stock runtime image %q has no shipped template to build from — the canned seeder did "+
+					"not populate dockerfile_override, so there is nothing to fetch", row.Tag))
+		}
+		_ = stream.Send(&apiv1.FetchRuntimeImageResponse{Log: fmt.Sprintf(
+			"%s is a locally-built stock image, not a registry reference — building it from the shipped template\n", row.Tag)})
+		built, bexit, berr := s.buildCore(ctx, tenantID, row.ID, func(chunk string) error {
+			if chunk == "" {
+				return nil
+			}
+			return stream.Send(&apiv1.FetchRuntimeImageResponse{Log: chunk})
+		})
+		exit, perr = bexit, berr
+		skipped = errors.Is(berr, errAlreadyUpToDate)
+		if berr == nil || skipped {
+			if err := stream.Send(&apiv1.FetchRuntimeImageResponse{
+				Status:  imageStatusProto(built.Status),
+				Tag:     row.Tag,
+				Skipped: skipped,
+			}); err != nil {
+				return err
+			}
+			// THE ENGINE CHECK RUNS ON THIS PATH TOO. A build that just succeeded is the strongest
+			// signal that runtime containers are about to be used — and returning above without this
+			// would have checked the engine only for PULLS, i.e. never on the dev hosts where the
+			// local tag is what gets fetched.
+			s.reportEngineReadiness(ctx, stream)
 			return nil
 		}
-		return stream.Send(&apiv1.FetchRuntimeImageResponse{Log: ev.Data})
-	})
+		// A BUILD FAILURE, reported with buildCore's own verdict — not re-derived here.
+		failMsg := built.FailureReason
+		if failMsg == "" {
+			failMsg = built.Error
+		}
+		if failMsg == "" {
+			failMsg = berr.Error()
+		}
+		if err := stream.Send(&apiv1.FetchRuntimeImageResponse{
+			Status: imageStatusProto(built.Status),
+			Error:  failMsg,
+			Tag:    row.Tag,
+		}); err != nil {
+			return err
+		}
+		return connect.NewError(connect.CodeInternal,
+			fmt.Errorf("runtime image fetch failed for %s: %s", row.Tag, failMsg))
+	} else {
+		// PULL. The daemon owns presence + idempotency; nothing is orphaned by downloading.
+		exit, skipped, perr = s.rt.PullImage(ctx, row.Tag, func(ev runtime.AgentEvent) error {
+			if ev.Data == "" {
+				return nil
+			}
+			return stream.Send(&apiv1.FetchRuntimeImageResponse{Log: ev.Data})
+		})
+	}
 	failed := perr != nil || exit != 0
 
 	// Persist the outcome. StatusOnly: a fetch is not a spec edit, so
@@ -446,7 +545,144 @@ func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[ap
 	if failed {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("runtime image fetch failed for %s: %s", row.Tag, failMsg))
 	}
+
+	// THE ENGINE IS CHECKED *AFTER* A SUCCESSFUL FETCH, because that is the moment the operator has
+	// declared they intend to use runtime containers — and the moment the engine matters.
+	//
+	// It is deliberately NOT a failure of the fetch: the image IS downloaded, and rolling that back
+	// would be a lie. It is reported as log lines on the same stream, ending with a plain statement of
+	// what is wrong and what fixes it.
+	//
+	// THE MACHINE STEP IS A REAL REPAIR on macOS and Windows: an absent or stopped podman VM is
+	// created or started here, with no elevation and no prompt, so the common fresh-desktop case heals
+	// itself. An engine that is not installed at all is REPORTED with its exact install command — a
+	// stream RPC has no terminal to confirm an elevation on, and escalating silently is worse than
+	// saying which command to run.
+	s.reportEngineReadiness(ctx, stream)
 	return nil
+}
+
+// reportEngineReadiness validates the container engine on the fetch stream, repairing what it can.
+//
+// Every line goes through the same log channel the fetch used, so the operator sees it in the dialog
+// they are already watching rather than in a server log they are not.
+func (s *Service) reportEngineReadiness(ctx context.Context, stream *connect.ServerStream[apiv1.FetchRuntimeImageResponse]) {
+	say := func(format string, args ...any) {
+		_ = stream.Send(&apiv1.FetchRuntimeImageResponse{Log: fmt.Sprintf(format, args...) + "\n"})
+	}
+	// THE PROOF COSTS ONE TRIVIAL CONTAINER (containerengine.DefaultVerifyImage, ~3 MB, already
+	// local after the first time and `--rm`-ed). That is the same rung the installer insists on, and
+	// it is the difference between "podman is installed" and "podman can run our work" — the state
+	// this check exists to report. Paid once per fetch, on a stream the operator is already watching.
+	say("\nchecking the container engine — the image is fetched, but runs need a usable engine\n")
+
+	res := containerengine.EnsureReady(ctx, containerengine.DefaultProbe(), engineLogWriter{send: say})
+	switch {
+	case res.Err == nil:
+		if res.Fixed {
+			say("container engine ready (%s %s) — the podman machine was started for you\n",
+				res.Status.Engine, res.Status.Version)
+		} else {
+			say("container engine ready (%s %s)\n", res.Status.Engine, res.Status.Version)
+		}
+	case res.InstallCommand != "":
+		// NOT INSTALLED. The one case this call cannot fix, stated with the command that can.
+		say("Container engine NOT available: %v\n", res.Err)
+		say("  This host needs podman. Orchicon cannot install it from here — a request has no\n")
+		say("  terminal to confirm an elevation on. Run, then press Fetch again:\n")
+		say("    %s\n", res.InstallCommand)
+		s.warnPerPlatform(say)
+	default:
+		say("Container engine NOT usable: %v\n", res.Err)
+		s.warnPerPlatform(say)
+	}
+	say("the image itself is fetched and available either way\n")
+}
+
+// warnPerPlatform adds the platform-specific prerequisite that the generic message cannot know: a
+// Windows host needs WSL2 behind podman, and a Mac needs the podman machine (which is a Linux VM).
+//
+// SAID ON EVERY NON-READY PATH RATHER THAN ONLY WHEN THE ENGINE IS ABSENT, because a podman that is
+// installed but cannot start its VM is exactly the state where the platform prerequisite is the
+// thing the operator is missing, and "podman is not usable" does not point at WSL or a VM.
+func (s *Service) warnPerPlatform(say func(string, ...any)) {
+	switch goruntime.GOOS {
+	case "windows":
+		// PODMAN ON WINDOWS, NOT PODMAN INSIDE WSL — and the difference decides whether anything
+		// works. This probe runs `podman` from the WINDOWS PATH. A podman installed *inside* a WSL
+		// distro is invisible to it, so advising "apt-get install podman in WSL" would send the
+		// operator to a state this plane cannot use — which is worse than no advice.
+		//
+		// Podman for Windows (winget RedHat.Podman, or Podman Desktop) is what belongs on PATH. It
+		// uses WSL2 as its BACKEND and manages its own machine, so WSL2 must be enabled first.
+		//
+		// WHICH STEP IS MISSING IS DETECTED, not guessed. On the reporting machine WSL was already
+		// present and podman was not, so a fixed three-step list would have led with a step that was
+		// done. The first line names the actual gap.
+		_, wslErr := exec.LookPath("wsl")
+		if wslErr != nil {
+			say("  Windows: WSL2 is not enabled, and podman for Windows needs it as its backend.\n")
+			say("    1. enable it:                     wsl --install        (then reboot)\n")
+			say("    2. install podman on Windows:     winget install --id RedHat.Podman -e\n")
+		} else {
+			say("  Windows: WSL is present; podman for Windows is what is missing.\n")
+			say("    1. install podman on Windows:     winget install --id RedHat.Podman -e\n")
+		}
+		say("    (podman installed INSIDE a WSL distro is NOT visible to this plane — it must be on\n")
+		say("     the Windows PATH)\n")
+		say("    Orchicon then creates/starts the podman machine for you on the next fetch.\n")
+	case "darwin":
+		say("  macOS: runtime containers run in podman's Linux VM, which must exist and be running.\n")
+		say("    podman machine init --now    (Orchicon does this for you when podman is installed)\n")
+	}
+}
+
+// engineLogWriter adapts the engine's io.Writer output onto the fetch stream, line by line, so the
+// operator watches the repair happen instead of waiting on a silent call.
+type engineLogWriter struct {
+	send func(string, ...any)
+}
+
+func (w engineLogWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		w.send("%s", string(p))
+	}
+	return len(p), nil
+}
+
+// isRegistryRef reports whether a tag names a registry repository, which is what `engine pull` can
+// fetch, as opposed to a bare short name that only ever exists because this host built it.
+//
+// THE RULE IS PODMAN'S OWN: a reference is registry-qualified when its first path component looks
+// like a host — it contains a dot ("ghcr.io"), a colon (a port), or is exactly "localhost". Anything
+// else ("orchicon-runtime:local", "ubuntu:24.04") is a short name that resolves through
+// registries.conf or not at all, and is not a download this feature can perform.
+//
+// Deliberately NOT "contains a slash": "beardedparrott/orchicon-runtime:latest" has a slash and is
+// still a short name (Docker Hub), which is why the dot/colon/localhost test is the one that matches
+// the engine's behaviour rather than a plausible-looking approximation of it.
+func isRegistryRef(tag string) bool {
+	ref := strings.TrimSpace(tag)
+	if ref == "" {
+		return false
+	}
+	// Strip any digest, then the tag, leaving "host/path".
+	if i := strings.IndexByte(ref, '@'); i >= 0 {
+		ref = ref[:i]
+	}
+	name := ref
+	if i := strings.LastIndexByte(name, ':'); i > strings.LastIndexByte(name, '/') {
+		name = name[:i]
+	}
+	slash := strings.IndexByte(name, '/')
+	if slash < 0 {
+		return false // no path at all: a plain short name
+	}
+	first := name[:slash]
+	if first == "localhost" {
+		return true
+	}
+	return strings.ContainsAny(first, ".:")
 }
 
 // recordFetchOutcome writes the row state a fetch leaves behind: ready at the
@@ -615,9 +851,25 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 		return row, 1, connect.NewError(connect.CodeInternal, err)
 	}
 
-	base := row.BaseImageRef
+	// THE DAEMON'S BASE WINS, and that is a correctness requirement rather than a preference.
+	//
+	// runtime's validateBuild refuses any base_image_ref that is not the DAEMON'S OWN base image
+	// ("base_image_ref must be the runtime base image (%s)"), and rewriteDockerfileBase then forces
+	// the FROM line to it anyway. So row.BaseImageRef is advisory: it is what the row was seeded
+	// against, not what will be built from.
+	//
+	// THAT MATTERS NOW because the catalog is seeded before a host has any engine (see
+	// seedPublishedCatalog), so those rows carry the PUBLISHED base — and on a development host whose
+	// daemon default is a locally-built tag, a build sent with the published base is rejected before
+	// it starts. Resolving the daemon's base first makes a seeded row buildable on whichever host it
+	// lands on, which is the whole point of seeding it.
+	//
+	// Falls back to the row's ref only when the daemon cannot say (no daemon, or it did not answer) —
+	// in which case the build fails at the daemon anyway, and the row's ref is the more informative
+	// thing to have tried.
+	base := s.ensureBase(ctx)
 	if base == "" {
-		base = s.ensureBase(ctx)
+		base = row.BaseImageRef
 	}
 	if base == "" {
 		return row, 1, connect.NewError(connect.CodeFailedPrecondition, errors.New("no base image configured"))

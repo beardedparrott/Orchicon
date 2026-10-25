@@ -64,9 +64,21 @@ export function RuntimeImageSelect({
             Fetch it
           </Link>
           {" "}
-          (downloads the published image; Deploy instead builds it, which is much slower).
+          (a published image is downloaded; a locally-built one is built from its shipped
+          template — either way the row ends ready).
         </p>
       )}
+      {/* ALWAYS PRESENT, not only when the CHOSEN image is missing.
+          The picker can only offer images the daemon already knows about, so an image nobody has
+          fetched yet is invisible here — which is a dead end: you cannot select it, so you never
+          learn it is missing, so you never fetch it. This link is the way out of that loop, and it
+          has to be visible before the choice is made rather than after it has gone wrong. */}
+      <p className="mt-1 text-xs text-muted-foreground">
+        <Link to="/runtime-images" className="underline">
+          Fetch new images
+        </Link>
+        {" "}— every image we host is listed there, downloaded or not.
+      </p>
     </>
   );
 }

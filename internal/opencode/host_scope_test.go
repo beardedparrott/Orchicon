@@ -49,8 +49,44 @@ func TestHostResolvedSetScopesTheTenant(t *testing.T) {
 	if rr.gotTenant != "tnt_exec" {
 		t.Fatalf("resolver saw tenant %q, want %q — an unscoped context makes mcpsettings.Resolver error and every in-process session silently loses its project's servers (AC 6)", rr.gotTenant, "tnt_exec")
 	}
-	if rr.gotRef.Kind != mcpclient.ScopeProject || rr.gotRef.ProjectID != "proj-1" {
-		t.Fatalf("resolver scope = %+v, want the PROJECT scope for proj-1", rr.gotRef)
+	// THE SCOPE IS WORKER, NOT PROJECT — and this assertion used to demand the opposite, which is why
+	// the worker half was missing on this adapter alone.
+	//
+	// ScopeProject resolves ONLY the project's owned rows. A worker whose version declares its own
+	// `mcp_servers` therefore had them listed in its settings and absent from every execution here,
+	// while claude and the native bridge (both ScopeWorker) resolved them normally. resolveWorker
+	// unions the project rows with the ref's own set, so ScopeWorker IS "project ∪ this version" —
+	// the union the requirement actually names, and NOT the cross-RUN union that stays forbidden.
+	if rr.gotRef.Kind != mcpclient.ScopeWorker {
+		t.Errorf("resolver scope kind = %v, want ScopeWorker — ScopeProject drops the executing "+
+			"version's own MCP servers, so a worker's declared servers never reach its runs on this "+
+			"adapter", rr.gotRef.Kind)
+	}
+	// The fields the worker scope NEEDS must be carried, or the union silently degrades back to
+	// "project only" — the exact failure this test exists for.
+	want := scheduler.ExecutionManifest{
+		ProjectID: "proj-1", WorkerID: "wk-1", WorkerVersion: 3, Permissions: []byte(`{"mcp_servers":[]}`),
+	}
+	got := a.hostResolvedSet(context.Background(), scheduler.ExecutionManifest{
+		ExecutionID: "exec-2", ProjectID: want.ProjectID, WorkerID: want.WorkerID,
+		WorkerVersion: want.WorkerVersion, Permissions: want.Permissions,
+	}, "tnt_exec")
+	_ = got
+	if rr.gotRef.ProjectID != want.ProjectID {
+		t.Errorf("resolver ProjectID = %q, want %q", rr.gotRef.ProjectID, want.ProjectID)
+	}
+	if rr.gotRef.WorkerID != want.WorkerID {
+		t.Errorf("resolver WorkerID = %q, want %q — without it the worker's own servers cannot be "+
+			"resolved", rr.gotRef.WorkerID, want.WorkerID)
+	}
+	if rr.gotRef.Version != want.WorkerVersion {
+		t.Errorf("resolver Version = %d, want %d — a PINNED dispatch must resolve the version it "+
+			"pinned, not the latest published one", rr.gotRef.Version, want.WorkerVersion)
+	}
+	if string(rr.gotRef.OwnPermissions) != string(want.Permissions) {
+		t.Errorf("resolver OwnPermissions = %q, want %q — the version's inline specs travel on the "+
+			"manifest because the runner is the only place that knows which version is executing",
+			rr.gotRef.OwnPermissions, want.Permissions)
 	}
 	_ = set
 }
