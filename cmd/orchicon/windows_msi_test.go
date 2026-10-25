@@ -644,6 +644,22 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 		count int
 	}{
 		{"the desktop job itself", "\n  desktop-windows:\n", 1},
+		// THE LINUX DESKTOP JOB, and each of these four lines is one of the ways it can be added
+		// and still not work:
+		//   the job            — it exists at all
+		//   ubuntu-22.04       — 24.04 dropped WebKitGTK 4.0, so build.sh's bundle loop finds
+		//                        nothing and fails its own guard; the AppImage cannot be built
+		//   the artifact name  — publish downloads `canary-*`, so anything else is built and lost
+		//   the assertion step — a misnamed AppImage builds, uploads, and is fetched by nobody
+		{"the Linux desktop job", "\n  desktop-linux:\n", 1},
+		{"the Linux job's pinned runner", "runs-on: ubuntu-22.04", 1},
+		{"the Linux AppImage artifact name the publish pattern collects",
+			"name: canary-linux-desktop", 1},
+		{"the AppImage name assertion", "Assert the asset name the installer resolves", 1},
+		// A CANARY .deb WOULD BE A TRAP: its version is the word `canary`, which dpkg orders BELOW
+		// every release, so installing one would make every subsequent real release look like an
+		// upgrade over it. Publishing it from a testing channel is worse than not publishing it.
+		{"no .deb packaging in the canary Linux job", "nfpm", 0},
 		{"the MSI build step", "wix build deploy/desktop/windows/Orchicon.wxs", 1},
 		// install.ps1 probes `orchicon_<version>_windows_<arch>.msi` with version = "canary",
 		// so the published file must carry the WORD canary, not a run number.
@@ -652,17 +668,32 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 			`"dist/desktop/orchicon_desktop_canary_windows_amd64_installer.exe"`, 1},
 		{"the portable desktop zip",
 			`"dist/desktop/orchicon_desktop_canary_windows_amd64.zip"`, 1},
-		// BOTH publish paths, or a canary that creates the release carries the desktop app and
-		// one that updates it does not — the two diverge on the second merge.
+		// BOTH publish paths, or a canary that creates the release carries the desktop app — and
+		// this line is now WIDER than Windows: the AppImage joined the same two glob lists, because
+		// a Linux asset that is built but not uploaded is exactly the gap that made `install.sh`
+		// on Linux finish with a CLI and no GUI (see desktop-linux in canary.yml).
 		{"the desktop assets on the UPLOAD path",
-			"gh release upload canary dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe --clobber", 1},
+			"gh release upload canary dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe dist/*.AppImage --clobber", 1},
 		{"the desktop assets on the CREATE path",
-			"dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe", 2},
+			"dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe dist/*.AppImage", 2},
 		// The publish job's download pattern is `canary-*`; an artifact named anything else is
 		// built, uploaded, and then never reaches the release.
 		{"an artifact name the publish pattern collects", "name: canary-windows-desktop", 1},
-		// TWO now: desktop-windows and desktop-macos both upload from dist/desktop.
-		{"the desktop artifact upload paths", "path: dist/desktop/*", 2},
+		// THREE now: desktop-windows and desktop-macos upload zips/exes, and desktop-linux uploads
+		// the AppImage. All three are gates on publish, so a failed one cannot publish a canary
+		// carrying the PREVIOUS merge's installer.
+		{"the desktop artifact upload paths", "path: dist/desktop/*", 3},
+		// THE LINUX APPIMAGE, named the way install.sh resolves it. This is the artifact the
+		// operator's report was about: it did not exist, so the Linux install path silently
+		// installed a CLI and no GUI.
+		//
+		// THREE occurrences, and the third is the RELEASE NOTE. The two that matter are the assertion
+		// on the built file (want=…) and the AppImage's name in the published-asset list; the note is
+		// documentation a reader needs so the asset is not a mystery. Pinning 3 keeps the note from
+		// being deleted silently, and the sub-assertions below prove the two functional ones are
+		// really doing their job rather than being satisfied by prose.
+		{"the Linux AppImage the installer probes",
+			"orchicon_desktop_canary_linux_amd64.AppImage", 3},
 	} {
 		if n := strings.Count(canary, want.sub); n != want.count {
 			t.Errorf("canary.yml: %s appears %d time(s), want %d — %q.\n"+

@@ -1246,3 +1246,137 @@ func TestReleaseInstallsTheSignedMacOSArchivesOverTheUnsignedOnes(t *testing.T) 
 			"checksums and all, while the run reports success")
 	}
 }
+
+// TestTheInstallerReportsADesktopAppItDidNotInstall — the silent-skip bug, and it was reported.
+//
+// The operator: "Shouldn't the canary download/install also install the desktop automatically
+// somewhere? I did run that."
+//
+// It should, and on Linux it could not: `canary` published no Linux AppImage, so install_desktop's
+// download 404'd, warned once, and `return 0`ed — and the install went on to print
+// "Installed. Next step:" having put a CLI and a TUI on the machine and no GUI. The only evidence
+// was one warning in the middle of the output, between the checksum guidance and the PATH hint.
+//
+// THIS TEST IS ABOUT THE REPORTING, NOT THE ASSET. Whether a given release carries an AppImage is a
+// release question (canary now builds one — see TestCanaryPublishesTheWindowsDesktopApp). This is
+// the other half: a run that did NOT install one must SAY SO in the result, so "everything you
+// asked for is there" and "the binary is there and the app is not" can never look the same.
+//
+// ASSERTED ON THE SOURCE, deliberately. The behaviour needs a real 404 from a real release to
+// exercise end to end, and a test that stubs curl would be testing the stub. The strings here are
+// the ones the summary actually prints, and the state variables are what install_desktop sets on
+// every exit path — a `return 0` that forgets to set one is exactly the silent skip coming back.
+func TestTheInstallerReportsADesktopAppItDidNotInstall(t *testing.T) {
+	src := readFile(t, "../../scripts/install.sh")
+
+	// The three outcomes are one record, set on EVERY path out of install_desktop. A boolean would
+	// collapse "this release has none" (no flag helps) into "you said no" (your choice), and the
+	// operator needs to be able to tell those apart.
+	for _, want := range []struct{ what, sub string }{
+		{"the result record", "DESKTOP_RESULT="},
+		{"the reason beside it", "DESKTOP_RESULT_WHY="},
+		{"the installed state", `DESKTOP_RESULT="installed"`},
+		{"the skipped state", `DESKTOP_RESULT="skipped"`},
+		{"the unavailable state", `DESKTOP_RESULT="unavailable"`},
+	} {
+		if !strings.Contains(src, want.sub) {
+			t.Errorf("scripts/install.sh no longer has %s (%q).\n"+
+				"  Without it a run that installs no desktop app reads like a complete install — "+
+				"which is the reported bug.", want.what, want.sub)
+		}
+	}
+
+	// THE SUMMARY MUST PRINT IT, and print it as a RESULT. This is the half that failed: the
+	// outcome existed, in a warning that scrolled. The assertion is on the summary block's own
+	// shape, because a case statement nobody prints is the same silence in a new variable.
+	for _, want := range []struct{ what, sub string }{
+		{"the summary names the missing app", "Desktop app: NOT INSTALLED"},
+		{"the summary names a skipped app", "Desktop app: not installed"},
+		{"the summary names an installed app", "Desktop app: ${DESKTOP_RESULT_WHY}"},
+		// THE WAY OUT, for the case no flag can fix: build it from the tree the plane came from.
+		{"the build-it-here recipe", "make desktop-build"},
+	} {
+		if !strings.Contains(src, want.sub) {
+			t.Errorf("scripts/install.sh no longer prints %s (%q).\n"+
+				"  The desktop outcome must appear where the other results appear, or the operator "+
+				"is told the install succeeded and left to discover the GUI is missing.", want.what, want.sub)
+		}
+	}
+
+	// EVERY EXIT FROM install_desktop MUST RECORD AN OUTCOME — this is the assertion that actually
+	// catches the bug. A "contains DESKTOP_RESULT=unavailable" check passes while one of the five
+	// exit paths silently `return 0`s, because the other four still set it. (Verified: deleting the
+	// 404 path's assignment left a contains-based test GREEN.) So the function is walked, and every
+	// `return 0` inside it must have a DESKTOP_RESULT write close above it.
+	fn := funcBody(t, src, "install_desktop() {")
+	lines := strings.Split(fn, "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, "return 0") {
+			continue
+		}
+		// Look back a short way: the assignment belongs to this exit, not a previous one.
+		found, at := false, -1
+		for j := i - 1; j >= 0 && i-j <= 6; j-- {
+			if strings.Contains(lines[j], "DESKTOP_RESULT=") {
+				found, at = true, j
+				break
+			}
+			// A `return 0` between is where the previous exit ended; do not read past it.
+			if strings.Contains(lines[j], "return ") {
+				break
+			}
+		}
+		if !found {
+			t.Errorf("scripts/install.sh: install_desktop has an exit with NO recorded desktop outcome:\n"+
+				"    %s\n"+
+				"  Every path out of install_desktop must set DESKTOP_RESULT, or the summary prints nothing\n"+
+				"  for it and the run looks like a complete install. That IS the reported bug: a 404 on the\n"+
+				"  AppImage warned, returned 0, and the install ended with \"Installed. Next step:\".",
+				strings.TrimSpace(line))
+			continue
+		}
+		_ = at
+		// The assignment must be BEFORE the return, in this function, and paired with a reason.
+		if !strings.Contains(lines[at], "DESKTOP_RESULT_WHY=") {
+			// The WHY may sit on the neighbouring line; accept that, but not absence.
+			near := false
+			for j := at - 1; j >= 0 && at-j <= 2; j-- {
+				if strings.Contains(lines[j], "DESKTOP_RESULT_WHY=") {
+					near = true
+					break
+				}
+			}
+			if !near && !strings.Contains(fn, "DESKTOP_RESULT_WHY=") {
+				t.Errorf("install_desktop records an outcome with no reason beside it near line %d", i)
+			}
+		}
+	}
+
+	// AND A MISSING DESKTOP APP MUST NOT FAIL THE INSTALL. The binary, the TUI and the plane are
+	// the product; the GUI is a client of it. A `die` here would turn "this channel carries no
+	// Linux app" into "the install failed", which is false and would stop an operator who only
+	// wanted a server. Asserted by absence around the failure site.
+	if strings.Contains(src, `die "the desktop app is not in release`) {
+		t.Error("a missing desktop app now FAILS the install. The plane, the CLI and the TUI are the " +
+			"product; the GUI is a client, and --no-setup installs on servers where it can never run. " +
+			"The install must continue and report the gap, not abort.")
+	}
+}
+
+// funcBody returns the source of a shell function, from its declaration to its closing brace at
+// column 0. Assertions about "every exit inside this function" need the function, not the file:
+// a file-wide strings.Contains cannot tell a path that records its outcome from one that does not.
+func funcBody(t *testing.T, src, decl string) string {
+	t.Helper()
+	i := strings.Index(src, decl)
+	if i < 0 {
+		t.Fatalf("scripts/install.sh has no %q", decl)
+	}
+	rest := src[i:]
+	// The closing brace of a top-level shell function is a `}` at the start of a line.
+	if j := strings.Index(rest, "\n}\n"); j >= 0 {
+		return rest[:j+3]
+	}
+	t.Fatalf("could not find the end of %q", decl)
+	return ""
+}

@@ -458,6 +458,107 @@ jobs:
           path: dist/desktop/*.zip
           if-no-files-found: error
 
+  # THE LINUX DESKTOP APP — the half that was missing, and the one the operator asked about.
+  #
+  # REPORTED: "Shouldn't the canary download/install also install the desktop automatically
+  # somewhere? I did run that." On Windows and macOS it did; on Linux it COULD NOT. install.sh
+  # resolves `orchicon_desktop_canary_linux_amd64.AppImage`, and this workflow published no
+  # such asset — so the download 404'd and the install finished with a CLI and no GUI. The gap
+  # was here, not in the installer.
+  #
+  # ubuntu-22.04, NOT ubuntu-latest, for the same reason release.yml pins it: the AppImage
+  # exists BECAUSE newer distros dropped WebKitGTK 4.0, so the host that BUILDS it must still
+  # have 4.0 to bundle. On 24.04 the bundle loop would find nothing and build.sh fails its own
+  # guard — a canary job that cannot build the artifact it exists to publish.
+  #
+  # NO .deb HERE, DELIBERATELY. release.yml also emits one, but nothing in the develop install
+  # path consumes it (install.sh resolves the AppImage only, because a .deb needs root), and
+  # canary's version is the literal word `canary` — a value dpkg orders BELOW every released
+  # version, so an installed canary .deb would be silently "upgraded" by any older release.
+  # Publishing an artifact with that ordering trap in a channel meant for testing is worse than
+  # not publishing it. The AppImage is the one the install path asks for, so it is the one built.
+  desktop-linux:
+    name: Desktop — Linux (AppImage)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # BOTH ABI FAMILIES. build.sh bundles whichever webkit it finds and fails its own guard if
+      # it finds none, so a host with only one dev package still works — but install.sh's WebKitGTK
+      # warning names 4.0, and the 4.1 package is what a modern host has. Installing both keeps
+      # the bundle list honest without depending on which one this runner image prefers.
+      - name: Install the webview build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev pkg-config
+
+      # THE EMBED TRAP: the app embeds frontend/dist, so the frontend must be built FIRST or the
+      # .gitkeep placeholder compiles happily and ships a window with no UI.
+      - name: Build frontend
+        run: |
+          set -euo pipefail
+          cd frontend && npm ci && npm run build
+
+      - name: Install the pinned Wails CLI
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # THE TAGS NAME THE ABI ON PURPOSE, and this job is where that promise is made: the runner
+      # has libwebkit2gtk-4.0-dev, so the app LINKS 4.0 and the AppImage bundles 4.0 for distros
+      # that no longer ship it. `webkit2_41` is deliberately absent — see release.yml's identical
+      # note. A 4.1-linked binary here would need a 4.1 system, which defeats the artifact.
+      - name: Build the desktop app
+        run: |
+          set -euo pipefail
+          cd cmd/orchicon-desktop
+          wails build -clean -tags orchicon_desktop,production \
+            -ldflags "-X github.com/beardedparrott/Orchicon/internal/version.gitTag=canary"
+
+      # THE FILENAME IS A CONTRACT WITH install.sh. desktop_url() builds
+      # `orchicon_desktop_${VERSION#v}_linux_amd64.AppImage`, and VERSION is `canary`, so the
+      # asset must be named ..._canary_linux_amd64.AppImage — no version number, exactly like the
+      # Windows and macOS stems. build.sh derives the name from ORCHICON_VERSION, so this passes
+      # `canary` rather than a number; a numeric version here publishes an asset nothing resolves.
+      - name: Package the AppImage
+        env:
+          ORCHICON_VERSION: canary
+        run: |
+          set -euo pipefail
+          bash deploy/desktop/appimage/build.sh
+          ls -lh dist/desktop
+
+      # THE NAME IS THE WHOLE ARTIFACT, so assert it rather than trusting build.sh's default. A
+      # canary that publishes ..._0.0.0-dev_linux_amd64.AppImage builds successfully, uploads
+      # successfully, and is fetched by nobody.
+      - name: Assert the asset name the installer resolves
+        run: |
+          set -euo pipefail
+          want="dist/desktop/orchicon_desktop_canary_linux_amd64.AppImage"
+          if [ ! -f "$want" ]; then
+            echo "the AppImage is not named the way install.sh resolves it:" >&2
+            ls -l dist/desktop >&2
+            echo "want: $want" >&2
+            exit 1
+          fi
+          echo "ok: $want"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: canary-linux-desktop
+          path: dist/desktop/*.AppImage
+          if-no-files-found: error
+
   publish:
     # BOTH JOBS, or a failed desktop build publishes a canary pointing at NEW code with
     # the PREVIOUS merge's installer: `gh release upload --clobber` replaces matching
@@ -470,7 +571,7 @@ jobs:
     # round. It has now built and published once, so it gates like Windows does — a publish after
     # a failed desktop build would otherwise leave the previous merge's artifacts under a tag
     # claiming to be this commit.
-    needs: [build, desktop-windows, desktop-macos]
+    needs: [build, desktop-windows, desktop-macos, desktop-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -520,6 +621,19 @@ jobs:
           - `orchicon_desktop_canary_windows_amd64_installer.exe` — the NSIS installer on its own.
           - `orchicon_desktop_canary_windows_amd64.zip` — portable desktop app, no installer.
 
+          **Linux and macOS carry one too**, and `install.sh --version canary` installs it without a
+          flag whenever a graphical session is present:
+
+          - `orchicon_desktop_canary_linux_amd64.AppImage` — the GUI client, bundling WebKitGTK so no
+            system package is needed. Lands in `~/.local/bin/orchicon-desktop`.
+          - `orchicon_desktop_canary_darwin_universal.zip` — an UNSIGNED `.app` (signing credentials
+            live in the release path only), so Gatekeeper refuses it and the tester opens it with
+            right-click → Open. Lands in `~/Applications`.
+
+          No `.deb` is published here on purpose: its version would be the literal word `canary`,
+          which dpkg orders BELOW every released version, so an installed canary `.deb` would be
+          silently "upgraded" by any older release.
+
           The MSI's own version is `0.0.<run number>`, not `canary`: an MSI ProductVersion must be
           numeric, and it must still increase so each rebuild upgrades the previous one rather than
           colliding with it. The file name is the stable part.
@@ -527,10 +641,10 @@ jobs:
           )
 
           if gh release view canary >/dev/null 2>&1; then
-            gh release upload canary dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe --clobber
+            gh release upload canary dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe dist/*.AppImage --clobber
             gh release edit canary --prerelease --title "canary (develop)" --notes "$NOTES"
           else
             gh release create canary --prerelease --title "canary (develop)" --notes "$NOTES" \
-              dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe
+              dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe dist/*.AppImage
           fi
           gh release view canary --json tagName,isPrerelease -q '"published " + .tagName + " prerelease=" + (.isPrerelease|tostring)'
