@@ -13,6 +13,7 @@ package orchicon
 // settle at poll cadence, in EVERY client. That is the card flicker.
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"strings"
@@ -67,5 +68,48 @@ func TestAskIDsKeepTheNativePrefix(t *testing.T) {
 	}
 	if strings.TrimPrefix(id, "native-ask-") == "" {
 		t.Errorf("ask id %q has no unique component at all", id)
+	}
+}
+
+// PERMISSION CARDS SPECIFICALLY — not questions, not a generic id helper.
+//
+// The operator's check was exact: "I want to make sure this also applies to permission cards because it
+// was permission cards that was the issue this go round and not ask cards." Both card kinds go through
+// nextPermID (chatturn.go: the permission wait raises at awaitConsentPermission, the question at
+// awaitUserAnswer), so the fix covers both — and this drives the REAL permission path rather than the id
+// function, so the claim is tested and not just asserted.
+//
+// The production evidence this pins: within one 200-message window,
+//
+//	native-ask-1  raised=9  decided=2     ← permission raises AND permission.user_* decisions
+//	native-ask-2  raised=3  decided=1
+//
+// i.e. the collided ids were carrying PERMISSION verdicts, which is exactly the card that flickered.
+func TestPermissionCardIDsAreUniqueAcrossRestarts(t *testing.T) {
+	t.Setenv("ORCHICON_ASK_CONSENT_WAIT", "5s")
+
+	raise := func() string {
+		b, bus, cancel := newConsentTestBridge(t)
+		defer cancel()
+		go func() {
+			_ = b.awaitConsentPermission(context.Background(), bus,
+				ToolCall{ToolCallID: "tc-1", Name: "bash", ArgsJSON: `{"command":"ls"}`}, `{"command":"ls"}`)
+		}()
+		return waitForAsk(t, b)
+	}
+
+	first := raise()
+	// A RESTART — a brand-new bridge, its counter back at zero. Under the old per-process counter this
+	// returned "native-ask-1" again, for a DIFFERENT ask, and the ledger was still holding the first
+	// ask's decision under that id.
+	second := raise()
+
+	if first == second {
+		t.Fatalf("a PERMISSION card was minted the id %q again after a restart. The transcript ledger "+
+			"still holds that id's recorded decision, so the new card is settled from the OLD one and "+
+			"then re-armed from the open-ask list — the permission-card flicker", first)
+	}
+	if !strings.HasPrefix(first, "native-ask-") {
+		t.Errorf("permission ask id %q lost the native-ask- prefix", first)
 	}
 }
