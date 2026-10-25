@@ -157,6 +157,17 @@ type SessionClient struct {
 	// systemDroppedNoted reports ONCE that a send did not carry the prompt, at debug: on v2 that is
 	// the normal case for every turn after the first.
 	systemDroppedNoted atomic.Bool
+	// apiPromptOff records that THIS serve does not actually serve the v2-shaped prompt route, so every
+	// later send goes straight to prompt_async instead of repeating a failed attempt.
+	//
+	// THE DETECTION CANNOT BE A STATUS CODE. A 1.x serve answers UNKNOWN routes with its web app:
+	// HTTP 200 and text/html (measured against a real 1.19.4 serve — a POST to a bogus /api path came
+	// back as the SPA). So "it did not error" is not evidence the route exists; the reply has to BE a
+	// prompt admission, which is what postNestedPrompt checks.
+	apiPromptOff atomic.Bool
+	// apiPromptAbsentNoted reports that fallback ONCE, at warn: it is a real downgrade (the note will be
+	// queued at the turn boundary rather than steered into the turn), so it is not debug noise.
+	apiPromptAbsentNoted atomic.Bool
 
 	// promptPending holds the sessions THIS CLIENT CREATED and has not yet delivered a system prompt
 	// to. It is the honest answer to "is this session new?", and the reason it is needed rather than
@@ -482,6 +493,25 @@ func (c *SessionClient) sendMessage(ctx context.Context, sessionID, system, mode
 	// THE BODY IS BUILT FOR THE SURFACE, because the two are not interchangeable (see
 	// apiShape.promptStyle). v1 takes a `parts` array plus `system` and `model`; v2 takes a
 	// top-level `text` (REQUIRED) and `files`, and has no field for either of the others.
+	// Files are built ONCE for BOTH body shapes that carry them — the v2 top-level `files` and the 1.x
+	// nested `prompt.files`. Same encoding (a data: URL is a uri), hoisted so the two cannot drift.
+	files := make([]map[string]any, 0, len(attachments))
+	for _, a := range attachments {
+		if a.MimeType == "" {
+			a.MimeType = "application/octet-stream"
+		}
+		if len(a.Data) == 0 {
+			continue
+		}
+		f := map[string]any{
+			"uri": "data:" + a.MimeType + ";base64," + base64.StdEncoding.EncodeToString(a.Data),
+		}
+		if a.Name != "" {
+			f["name"] = a.Name
+		}
+		files = append(files, f)
+	}
+
 	var body map[string]any
 	switch c.shape.promptStyle {
 	case "text":
@@ -513,25 +543,9 @@ func (c *SessionClient) sendMessage(ctx context.Context, sessionID, system, mode
 		// It is also correct for an IDLE session: steering wakes execution, which is exactly what a prompt
 		// sent to a session with nothing running must do.
 		body = map[string]any{"text": bodyText, "delivery": "steer"}
-		var files []map[string]any
-		for _, a := range attachments {
-			if a.MimeType == "" {
-				a.MimeType = "application/octet-stream"
-			}
-			if len(a.Data) == 0 {
-				continue
-			}
-			// FileAttachment = {uri (required), name?, description?, mention?}. v1 carried the bytes
-			// as a data: URL inside a `parts` entry; v2 takes a uri, and a data: URL is a uri — so
-			// the same encoding travels, under a different key and with `name` instead of `filename`.
-			f := map[string]any{
-				"uri": "data:" + a.MimeType + ";base64," + base64.StdEncoding.EncodeToString(a.Data),
-			}
-			if a.Name != "" {
-				f["name"] = a.Name
-			}
-			files = append(files, f)
-		}
+		// FileAttachment = {uri (required), name?, description?, mention?}. v1 carried the bytes as a
+		// data: URL inside a `parts` entry; v2 takes a uri, and a data: URL is a uri — so the same
+		// encoding travels, under a different key and with `name` instead of `filename`.
 		if len(files) > 0 {
 			body["files"] = files
 		}
@@ -545,6 +559,23 @@ func (c *SessionClient) sendMessage(ctx context.Context, sessionID, system, mode
 				"prompt; it is delivered with the session's first message and re-stated after a compact "+
 				"(the surface has no `system` field)")
 		}
+	case "nested":
+		// THE 1.x STEER BODY. opencode 1.18+ carries the v2-shaped prompt route next to its v1 routes,
+		// and its body nests the content under `prompt` with `delivery` as a SIBLING:
+		//
+		//	{"prompt": {"text": …, "files": [{uri, name}]}, "delivery": "steer"}
+		//
+		// MEASURED against a real 1.19.4 serve: 200 with "delivery":"steer" echoed back; files echoed
+		// back; an invalid value rejected with `Expected "steer" | "queue", got "nonsense" at
+		// ["delivery"]` — which is what proves the field is honoured rather than dropped.
+		//
+		// `text` is REQUIRED by this route (omitting it answers `Missing key at ["prompt"]["text"]`),
+		// so it is always present even when empty.
+		p := map[string]any{"text": text}
+		if len(files) > 0 {
+			p["files"] = files
+		}
+		body = map[string]any{"prompt": p, "delivery": "steer"}
 	default:
 		body = map[string]any{"parts": parts}
 		if system != "" {
@@ -573,10 +604,96 @@ func (c *SessionClient) sendMessage(ctx context.Context, sessionID, system, mode
 			}
 		}
 	}
-	if err := c.do(ctx, http.MethodPost, c.shape.promptPath(sessionID), body); err != nil {
+	// WHICH PROMPT ROUTE, decided with the body already built: the "nested" style is the 1.x steer route,
+	// and it is only usable if this serve really has it (apiPromptOff records that it does not).
+	path := c.shape.promptPath(sessionID)
+	if c.shape.promptStyle == "nested" {
+		if c.apiPromptOff.Load() {
+			// A PREVIOUS TURN PROVED THIS SERVE HAS NO SUCH ROUTE, so the attempt is skipped entirely:
+			// re-probing every turn would cost a doomed request on each one.
+			return c.sendV1Prompt(ctx, sessionID, parts, system, modelRef)
+		}
+		admitted, err := c.postNestedPrompt(ctx, path, body)
+		if err != nil {
+			return fmt.Errorf("opencode session send: %w", err)
+		}
+		if admitted {
+			return nil
+		}
+		// NOT THE ROUTE — see apiPromptAbsentNoted. Remember it and deliver the v1 way, so the operator's
+		// message still lands (at the turn boundary) instead of being swallowed by the catch-all.
+		c.apiPromptOff.Store(true)
+		c.warnOnce(&c.apiPromptAbsentNoted, "opencode: this 1.x serve did not admit a prompt on the "+
+			"/api prompt route (it answers unknown routes with its web app, so a 200 proves nothing) — "+
+			"falling back to prompt_async. Interjections will be queued at the turn boundary on this "+
+			"serve rather than steered into the running turn")
+		return c.sendV1Prompt(ctx, sessionID, parts, system, modelRef)
+	}
+	if err := c.do(ctx, http.MethodPost, path, body); err != nil {
 		return fmt.Errorf("opencode session send: %w", err)
 	}
 	return nil
+}
+
+// sendV1Prompt delivers a prompt the v1 way: parts + system + model in one body on the v1 route.
+//
+// IT IS THE FALLBACK, NOT THE PREFERRED PATH, on a surface that has the v2-shaped prompt route — and it
+// is reached only when that route proved absent, so its behaviour is exactly what this client did before
+// steering existed.
+func (c *SessionClient) sendV1Prompt(ctx context.Context, sessionID string, parts []map[string]any, system, modelRef string) error {
+	body, _ := v1PromptBody(parts, system, modelRef)
+	if err := c.do(ctx, http.MethodPost, c.shape.plainPromptPath(sessionID), body); err != nil {
+		return fmt.Errorf("opencode session send: %w", err)
+	}
+	return nil
+}
+
+// v1PromptBody is the v1 send body: `parts`, plus the system prompt and the model when there is one.
+func v1PromptBody(parts []map[string]any, system, modelRef string) (map[string]any, bool) {
+	body := map[string]any{"parts": parts}
+	if system != "" {
+		body["system"] = system
+	}
+	if modelRef != "" {
+		if provider, model, ok := adapter.SplitForServe(modelRef); ok {
+			body["model"] = map[string]any{"providerID": provider, "modelID": model}
+		}
+	}
+	return body, true
+}
+
+// postNestedPrompt posts the 1.x steer body and reports whether the serve ADMITTED it.
+//
+// false means "this serve has no such route" and is deliberately not an error: a 1.x serve answers unknown
+// paths with its web app (200 + text/html), so the only trustworthy evidence of admission is a decoded
+// JSON body carrying the new message id. A 2xx that is not that is the catch-all.
+func (c *SessionClient) postNestedPrompt(ctx context.Context, path string, body any) (bool, error) {
+	req, err := c.newRequest(ctx, http.MethodPost, path, body, nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return false, fmt.Errorf("opencode serve POST %s: http %d: %s", path, resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var out struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&out); err != nil {
+		// Not JSON: the web app, i.e. no such route on this serve.
+		return false, nil
+	}
+	return out.Data.ID != "", nil
 }
 
 // warnOnce logs a message at WARN the first time only, so a per-turn condition does not flood the log.
