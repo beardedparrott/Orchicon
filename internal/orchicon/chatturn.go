@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
@@ -1808,13 +1809,40 @@ func nativeConsentWait() time.Duration {
 // Buffered(1) so the replier never blocks on a waiter that has already given up.
 type permWait struct{ decision chan string }
 
-// nextPermID mints an ask id. Unique per bridge, which is all the correlation
-// needs: the collector keys its registry by conversation and ask id.
+// nextPermID mints an ask id that is UNIQUE ACROSS PROCESS LIVES, not merely unique within one.
+//
+// "UNIQUE PER BRIDGE" WAS THE BUG, and it was invisible until the evidence was read out of the database.
+// The counter was per-process and started at zero, so every plane restart re-minted the SAME ids for
+// different asks. Measured on one conversation after eleven restarts in a day:
+//
+//	native-ask-1 | ask, fullsend_approved, user_PERMISSION_CHOICE_ALLOW_ONCE, user_PERMISSION_CHOICE_ALLOW_SESSION
+//	native-ask-2 | ask, fullsend, session_grant, user_PERMISSION_CHOICE_ALLOW_ONCE, …
+//	native-ask-3 | ask, fullsend, session_grant, user_PERMISSION_CHOICE_ALLOW_ONCE
+//
+// One id, incompatible histories. The consequence is a settle/re-arm loop in EVERY client, because the
+// transcript ledger is the settle authority and it is keyed by this id:
+//
+//  1. an old ask id was ANSWERED, so the ledger holds permission.user_…ALLOW_ONCE under that id;
+//  2. a restart re-mints the same id for a NEW ask, which discovery reports as open;
+//  3. both clients settle the new card from the OLD recorded outcome (settleFromLedger in the GUI,
+//     SettledAsks in the TUI), and both then re-arm it from the open-ask list;
+//  4. at poll cadence that is settle → re-arm → settle: the flicker.
+//
+// The operator saw it in the TUI first and then in both, which is exactly the shape of this bug: the TUI
+// has always re-armed a settled id, and the GUI only started doing so when applyAskChunk learned to
+// re-arm. Before that the GUI silently refused to redraw and showed a dead card instead — the same
+// collision, wearing a quieter symptom.
+//
+// A ULID makes the id unique across restarts, so a new ask can never inherit a previous ask's recorded
+// outcome. That is the fix; re-arming and ledger-settling are both correct and both stay.
 func (b *NativeBridge) nextPermID() string {
 	b.permMu.Lock()
 	defer b.permMu.Unlock()
 	b.permSeq++
-	return fmt.Sprintf("native-ask-%d", b.permSeq)
+	// The prefix is kept for log readability ("native-ask-…" groups the native bridge's asks); the ID
+	// itself is globally unique. permSeq stays as a cheap in-process counter, but it no longer carries
+	// identity on its own.
+	return fmt.Sprintf("native-ask-%s", db.NewID())
 }
 
 // ConsentReadOnlyTools are the host-suite tools that NEVER ASK.

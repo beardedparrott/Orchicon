@@ -3,6 +3,8 @@ package askorchicon
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/beardedparrott/orchicon/internal/db"
 	"strings"
 	"sync"
 	"time"
@@ -81,8 +83,20 @@ func (l *toolLedger) recordPermission(tool, target, verdict, detail, askID strin
 	defer l.mu.Unlock()
 	id := strings.TrimSpace(askID)
 	if id == "" {
-		l.nextID++
-		id = fmt.Sprintf("perm-%d", l.nextID)
+		// A FALLBACK ID MUST NOT BE A PER-LEDGER COUNTER, and this one was. The ledger is created per
+		// TURN, so every turn re-minted perm-1, perm-2 … for different asks — and the transcript ledger
+		// is the SETTLE AUTHORITY, keyed by this id. A question in one turn could therefore inherit an
+		// answer recorded in another: measured on one conversation, within a single 200-message window,
+		//
+		//	perm-16 questions=3 answers=1
+		//	perm-15 questions=1 answers=1
+		//	perm-14 questions=1 answers=1
+		//
+		// One id, several incompatible histories — the same collision that made permission cards flicker
+		// (see orchicon.NativeBridge.nextPermID). The prefix is kept so the log still groups by it.
+		//
+		// Only the FALLBACK is affected: a record with a real ask id uses that id, unchanged.
+		id = "perm-" + db.NewID()
 	}
 	out := "permission " + verdict
 	if detail != "" {
