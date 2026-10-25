@@ -21,7 +21,7 @@ func TestPublishedStockTagsCoverEveryVariant(t *testing.T) {
 	// Every tag must map BACK to a distinct variant.
 	seen := make(map[string]bool, len(tags))
 	for _, tag := range tags {
-		v, ok := resolveVariantByTag(tag)
+		v, ok := resolveVariant(tag, PublishedStockBase)
 		if !ok {
 			t.Errorf("tag %q did not resolve to a variant", tag)
 			continue

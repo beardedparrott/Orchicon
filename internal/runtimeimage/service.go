@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"log/slog"
+	"os/exec"
 	"regexp"
 	goruntime "runtime"
 	"strings"
@@ -569,6 +570,10 @@ func (s *Service) reportEngineReadiness(ctx context.Context, stream *connect.Ser
 	say := func(format string, args ...any) {
 		_ = stream.Send(&apiv1.FetchRuntimeImageResponse{Log: fmt.Sprintf(format, args...) + "\n"})
 	}
+	// THE PROOF COSTS ONE TRIVIAL CONTAINER (containerengine.DefaultVerifyImage, ~3 MB, already
+	// local after the first time and `--rm`-ed). That is the same rung the installer insists on, and
+	// it is the difference between "podman is installed" and "podman can run our work" — the state
+	// this check exists to report. Paid once per fetch, on a stream the operator is already watching.
 	say("\nchecking the container engine — the image is fetched, but runs need a usable engine\n")
 
 	res := containerengine.EnsureReady(ctx, containerengine.DefaultProbe(), engineLogWriter{send: say})
@@ -603,9 +608,29 @@ func (s *Service) reportEngineReadiness(ctx context.Context, stream *connect.Ser
 func (s *Service) warnPerPlatform(say func(string, ...any)) {
 	switch goruntime.GOOS {
 	case "windows":
-		say("  Windows: runtime containers need WSL2 with podman running inside it.\n")
-		say("    wsl --install -d Ubuntu      (then, inside WSL: sudo apt-get install -y podman)\n")
-		say("    Orchicon starts the podman machine for you once it exists.\n")
+		// PODMAN ON WINDOWS, NOT PODMAN INSIDE WSL — and the difference decides whether anything
+		// works. This probe runs `podman` from the WINDOWS PATH. A podman installed *inside* a WSL
+		// distro is invisible to it, so advising "apt-get install podman in WSL" would send the
+		// operator to a state this plane cannot use — which is worse than no advice.
+		//
+		// Podman for Windows (winget RedHat.Podman, or Podman Desktop) is what belongs on PATH. It
+		// uses WSL2 as its BACKEND and manages its own machine, so WSL2 must be enabled first.
+		//
+		// WHICH STEP IS MISSING IS DETECTED, not guessed. On the reporting machine WSL was already
+		// present and podman was not, so a fixed three-step list would have led with a step that was
+		// done. The first line names the actual gap.
+		_, wslErr := exec.LookPath("wsl")
+		if wslErr != nil {
+			say("  Windows: WSL2 is not enabled, and podman for Windows needs it as its backend.\n")
+			say("    1. enable it:                     wsl --install        (then reboot)\n")
+			say("    2. install podman on Windows:     winget install --id RedHat.Podman -e\n")
+		} else {
+			say("  Windows: WSL is present; podman for Windows is what is missing.\n")
+			say("    1. install podman on Windows:     winget install --id RedHat.Podman -e\n")
+		}
+		say("    (podman installed INSIDE a WSL distro is NOT visible to this plane — it must be on\n")
+		say("     the Windows PATH)\n")
+		say("    Orchicon then creates/starts the podman machine for you on the next fetch.\n")
 	case "darwin":
 		say("  macOS: runtime containers run in podman's Linux VM, which must exist and be running.\n")
 		say("    podman machine init --now    (Orchicon does this for you when podman is installed)\n")
@@ -826,9 +851,25 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 		return row, 1, connect.NewError(connect.CodeInternal, err)
 	}
 
-	base := row.BaseImageRef
+	// THE DAEMON'S BASE WINS, and that is a correctness requirement rather than a preference.
+	//
+	// runtime's validateBuild refuses any base_image_ref that is not the DAEMON'S OWN base image
+	// ("base_image_ref must be the runtime base image (%s)"), and rewriteDockerfileBase then forces
+	// the FROM line to it anyway. So row.BaseImageRef is advisory: it is what the row was seeded
+	// against, not what will be built from.
+	//
+	// THAT MATTERS NOW because the catalog is seeded before a host has any engine (see
+	// seedPublishedCatalog), so those rows carry the PUBLISHED base — and on a development host whose
+	// daemon default is a locally-built tag, a build sent with the published base is rejected before
+	// it starts. Resolving the daemon's base first makes a seeded row buildable on whichever host it
+	// lands on, which is the whole point of seeding it.
+	//
+	// Falls back to the row's ref only when the daemon cannot say (no daemon, or it did not answer) —
+	// in which case the build fails at the daemon anyway, and the row's ref is the more informative
+	// thing to have tried.
+	base := s.ensureBase(ctx)
 	if base == "" {
-		base = s.ensureBase(ctx)
+		base = row.BaseImageRef
 	}
 	if base == "" {
 		return row, 1, connect.NewError(connect.CodeFailedPrecondition, errors.New("no base image configured"))

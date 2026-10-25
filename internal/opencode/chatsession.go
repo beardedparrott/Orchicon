@@ -69,6 +69,17 @@ func chatHost(ask, exec *HostServe) *HostServe {
 // the default serve). A resolution FAILURE also falls back rather than failing the turn, and says so
 // in the log: a conversation that cannot read its MCP configuration should still be able to talk,
 // unlike a dispatched execution where a missing server set means the work cannot be done.
+//
+// THE COST OF PER-SET SERVES, stated rather than discovered later: a pooled serve owns its own data
+// dir, so an opencode SESSION lives on exactly one of them. If a conversation's MCP set changes
+// mid-conversation — the operator adds a server to the project, or to the conversation — the next
+// turn lands on a DIFFERENT serve and the old session id is not there. That is already a handled
+// case rather than a new failure: SendTurnMessage maps the 404 onto scheduler.ErrSessionNotFound and
+// the Ask collector recreates and re-seeds the session from Orchicon's own history, so the
+// conversation continues with its transcript intact and the model's opencode-side session context
+// restarts. There is no alternative that keeps both properties — one shared serve cannot take a
+// per-conversation set without leaking it to every other conversation, which is the exact thing the
+// pool exists to prevent.
 func (a *Adapter) askServeFor(ctx context.Context) *HostServe {
 	fallback := chatHost(a.askHost, a.host)
 	if a.askPool == nil || a.hostScope == nil {
