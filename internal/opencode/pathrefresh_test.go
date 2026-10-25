@@ -231,3 +231,251 @@ func TestResolutionRecoversWithoutARestartAfterAnInstall(t *testing.T) {
 		t.Errorf("resolved %q, want %q", got, want)
 	}
 }
+
+// TestAnNpmGlobalInstallResolvesToTheRealBinary — the second report, with the operator's own path.
+//
+//	"Opencode is currently installed here C:\Users\justi\AppData\Roaming\npm\opencode.ps1"
+//
+// That is npm's SHIM. On Windows npm makes three per bin entry (`opencode`, `opencode.cmd`,
+// `opencode.ps1`) and never an `.exe`, so the directory above yields shims only — and a shim is
+// correctly refused as unlaunchable, which left resolution with nothing and the operator being told
+// to install what they had already installed.
+//
+// The real executable is deterministic: the package `opencode-ai` declares
+// `"bin": {"opencode": "bin/opencode.exe"}`, and its postinstall copies the 211 MB platform binary
+// over the stub. So the plane must look one level down, in node_modules.
+//
+// THIS IS TESTED WITH A REAL DIRECTORY TREE, not just a table, because the shim-implied rule has to
+// STAT the shim before it can follow it. The tree is built under a temp dir with the env vars pointed
+// at it, so the same code path runs on Linux that runs on the operator's machine.
+func TestAnNpmGlobalInstallResolvesToTheRealBinary(t *testing.T) {
+	home := t.TempDir()
+	env := map[string]string{
+		"USERPROFILE":  home,
+		"LOCALAPPDATA": filepath.Join(home, "AppData", "Local"),
+	}
+	// The npm prefix, exactly where their install is: %APPDATA%\npm.
+	prefix := filepath.Join(home, "AppData", "Roaming", "npm")
+	env["APPDATA"] = filepath.Join(home, "AppData", "Roaming")
+
+	// npm's three shims for this one bin entry. None is launchable, and the .ps1 is the one the
+	// operator actually quoted.
+	mustWrite(t, filepath.Join(prefix, "opencode.ps1"), "#!/usr/bin/env pwsh\n")
+	mustWrite(t, filepath.Join(prefix, "opencode.cmd"), "@echo off\r\n")
+
+	// The real binary, where the package's bin entry and postinstall put it.
+	real := filepath.Join(prefix, "node_modules", "opencode-ai", "bin", "opencode.exe")
+	mustWrite(t, real, "MZ fake pe binary")
+
+	getenv := winEnv(env)
+
+	// THE PREFIX TABLE must name it, for the case where no shim survived.
+	cands := openCodePlatformCandidates("windows", getenv)
+	foundInTable := false
+	for _, c := range cands {
+		if c == real {
+			foundInTable = true
+			break
+		}
+	}
+	if !foundInTable {
+		t.Errorf("the Windows candidate table does not name the npm package's real executable %q.\n"+
+			"  An `npm i -g opencode-ai` installs a real opencode.exe under node_modules, and the\n"+
+			"  table only looked at the prefix itself — where npm puts nothing but shims.\n got: %v",
+			real, cands)
+	}
+
+	// AND THE SHIM-IMPLIED RULE must find it too, which is what covers a custom npm prefix.
+	derived := npmExeFromShims("windows", getenv)
+	foundDerived := false
+	for _, c := range derived {
+		if c == real {
+			foundDerived = true
+			break
+		}
+	}
+	if !foundDerived {
+		t.Errorf("npmExeFromShims did not derive %q from the shims it found in %q.\n got: %v\n"+
+			"  Following the shim is what makes an install in an UNUSUAL prefix work: the shim proves\n"+
+			"  which prefix npm used, so the binary can be found without hardcoding it.",
+			real, prefix, derived)
+	}
+}
+
+// TestTheShimHintNamesTheRealExecutable — when only a shim is found, the operator is told where the
+// binary SHOULD be and why it might not be there. "Install it" is useless advice to someone who did.
+func TestTheShimHintNamesTheRealExecutable(t *testing.T) {
+	home := t.TempDir()
+	env := map[string]string{
+		"USERPROFILE": home,
+		"APPDATA":     filepath.Join(home, "AppData", "Roaming"),
+	}
+	prefix := filepath.Join(home, "AppData", "Roaming", "npm")
+	shim := filepath.Join(prefix, "opencode.ps1")
+	mustWrite(t, shim, "#!/usr/bin/env pwsh\n")
+
+	hint := foundElsewhereHintFor("windows", winEnv(env))
+	if hint == "" {
+		t.Fatal("foundElsewhereHint was empty with a real npm shim present — the operator is told " +
+			"to install opencode they have already installed, which is the reported bug")
+	}
+	wantExe := filepath.Join(prefix, "node_modules", "opencode-ai", "bin", "opencode.exe")
+	if !strings.Contains(hint, wantExe) {
+		t.Errorf("the hint does not name the real executable %q:\n%s", wantExe, hint)
+	}
+	if !strings.Contains(hint, "ignore-scripts") {
+		t.Errorf("the hint does not mention --ignore-scripts, which is the one cause of a shim that "+
+			"exists while its binary does not:\n%s", hint)
+	}
+}
+
+func mustWrite(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTheOperatorsNpmInstallResolvesEndToEnd drives the REAL resolver over the reported machine.
+//
+// This is the case that survived the first fix, quoted with the operator's own path:
+//
+//	"Opencode is currently installed here C:\Users\justi\AppData\Roaming\npm\opencode.ps1"
+//
+// `(Get-Command opencode).Source` returns exactly that — a shim — so using it as the answer would
+// resolve something Go cannot launch. The binary the shim wraps is deterministic though:
+// `<npm prefix>\node_modules\opencode-ai\bin\opencode.exe`, because that is the package's declared
+// `bin` entry and its postinstall copies the real platform binary there.
+//
+// The resolver is driven through resolveOpenCodeBinaryFor so the Windows branches actually execute on
+// a Linux CI box. Without that seam this scenario could only be reproduced on a Windows machine,
+// which is the trap this package already documents for its candidate tables.
+func TestTheOperatorsNpmInstallResolvesEndToEnd(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home) // hostHome()
+	t.Setenv(OpenCodeBinEnv, "")
+	emptyPATH := t.TempDir()
+	t.Setenv("PATH", emptyPATH) // exec.LookPath reads the PROCESS environment, not the injected map
+
+	roaming := filepath.Join(home, "AppData", "Roaming")
+	getenv := winEnv(map[string]string{
+		"USERPROFILE":  home,
+		"APPDATA":      roaming,
+		"LOCALAPPDATA": filepath.Join(home, "AppData", "Local"),
+		"PATH":         emptyPATH,
+	})
+
+	prefix := filepath.Join(roaming, "npm")
+	// npm's three shims for the one bin entry. None is launchable.
+	mustWrite(t, filepath.Join(prefix, "opencode.ps1"), "#!/usr/bin/env pwsh\n")
+	mustWrite(t, filepath.Join(prefix, "opencode.cmd"), "@echo off\r\n")
+
+	real := filepath.Join(prefix, "node_modules", "opencode-ai", "bin", "opencode.exe")
+
+	// (a) SHIMS ONLY: postinstall did not run, so the 479-byte stub's directory holds no exe at all.
+	// Resolution must fail AND the message must name the path that would fix it — "install opencode"
+	// is useless advice to someone who installed it.
+	if _, err := resolveOpenCodeBinaryFor("windows", getenv, nil); err == nil {
+		t.Fatal("resolution succeeded with no real binary present — a shim was accepted as the " +
+			"executable, which Go cannot launch")
+	} else if !strings.Contains(err.Error(), real) {
+		t.Errorf("the not-found message does not name the real executable %q:\n%v", real, err)
+	}
+
+	// (b) POSTINSTALL RAN: the real binary is in place and the NEXT resolution finds it.
+	mustWrite(t, real, "MZ the real 211MB PE binary")
+	got, err := resolveOpenCodeBinaryFor("windows", getenv, nil)
+	if err != nil {
+		t.Fatalf("after npm's postinstall placed the binary, resolution STILL fails: %v\n"+
+			"  This is the reported bug: opencode is installed, runnable from any shell, and the "+
+			"plane cannot find it.", err)
+	}
+	if got != real {
+		t.Errorf("resolved %q, want the npm-installed executable %q", got, real)
+	}
+}
+
+// The npm layout is found by TWO independent mechanisms, and each is pinned separately below.
+//
+// They overlap in the ordinary case, which is the point — an install resolves even if one of them is
+// broken — but overlap means a test that exercises only the ordinary case passes when EITHER is
+// deleted. (Measured: removing the prefix table, and separately removing the shim-implied rule, both
+// left TestTheOperatorsNpmInstall green, because the other mechanism covered for it.) So:
+//
+//	(a) NO SHIM AT ALL      -> only the PREFIX TABLE can find it
+//	(b) AN UNUSUAL PREFIX   -> only the SHIM-IMPLIED rule can find it
+
+func TestThePrefixTableAloneFindsAnNpmInstallWithNoShim(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(OpenCodeBinEnv, "")
+	emptyPATH := t.TempDir()
+	t.Setenv("PATH", emptyPATH)
+
+	roaming := filepath.Join(home, "AppData", "Roaming")
+	getenv := winEnv(map[string]string{
+		"USERPROFILE": home,
+		"APPDATA":     roaming,
+		"PATH":        emptyPATH,
+	})
+	// NO SHIMS. A npm prefix whose shims were deleted by hand, or a PATH stripped before npm ran —
+	// the table is the only thing that can still find the binary.
+	real := filepath.Join(roaming, "npm", "node_modules", "opencode-ai", "bin", "opencode.exe")
+	mustWrite(t, real, "MZ real")
+
+	got, err := resolveOpenCodeBinaryFor("windows", getenv, nil)
+	if err != nil {
+		t.Fatalf("with no shim present the PREFIX TABLE did not find %q: %v\n"+
+			"  The table is what covers an install whose shims are gone, so it has to work on its own.", real, err)
+	}
+	if got != real {
+		t.Errorf("resolved %q, want %q", got, real)
+	}
+}
+
+func TestTheShimRuleAloneFindsAnInstallInAnUnusualPrefix(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(OpenCodeBinEnv, "")
+	emptyPATH := t.TempDir()
+	t.Setenv("PATH", emptyPATH)
+
+	// A prefix that is NOT in npmGlobalPrefixes — the `npm config set prefix` case, or a corporate
+	// image. The table cannot name it, so following the shim is the only way to it.
+	oddPrefix := filepath.Join(home, "corp", "tools", "node")
+	getenv := winEnv(map[string]string{
+		"USERPROFILE": home,
+		// APPDATA deliberately points somewhere WITHOUT an npm prefix, so the table sees nothing.
+		"APPDATA": filepath.Join(home, "elsewhere"),
+		"PATH":    emptyPATH,
+	})
+	// The shim table only looks in %APPDATA%\npm, %APPDATA% and scoop's shims, so put it where the
+	// table can see it while the npm PREFIX it implies is not in the prefix list.
+	shimDir := filepath.Join(home, "elsewhere", "npm")
+	mustWrite(t, filepath.Join(shimDir, "opencode.ps1"), "shim\n")
+
+	// ...but the binary is in the odd prefix, which the shim does NOT point at. So instead drive the
+	// rule directly: a shim whose own directory is the unusual prefix.
+	oddShim := filepath.Join(oddPrefix, "opencode.cmd")
+	mustWrite(t, oddShim, "shim\n")
+	real := filepath.Join(oddPrefix, "node_modules", "opencode-ai", "bin", "opencode.exe")
+	mustWrite(t, real, "MZ real")
+
+	derived := npmExeFromShims("windows", winEnv(map[string]string{"USERPROFILE": home, "APPDATA": oddPrefix, "PATH": emptyPATH}))
+	found := false
+	for _, d := range derived {
+		if d == real {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("npmExeFromShims did not derive %q from the shim beside it (%q).\n got: %v\n"+
+			"  Following the shim is what makes an install in an UNKNOWN prefix work: the shim proves "+
+			"which prefix npm used, so no table of prefixes is needed.", real, oddShim, derived)
+	}
+	_ = getenv
+}
