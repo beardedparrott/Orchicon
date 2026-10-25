@@ -4,6 +4,7 @@ import {
   hasLiveTextItems,
   mirrorRowProseLifted,
   mirrorRowSuperseded,
+  orderInjectedBeforeReply,
 } from "./ask-live-merge";
 
 // The double-draw this module exists to prevent was MEASURED, not assumed: against the shared
@@ -121,5 +122,58 @@ describe("mirrorRowProseLifted", () => {
   it("never touches another message's prose", () => {
     expect(mirrorRowProseLifted({ id: "msg-older" }, IN_FLIGHT, true, true)).toBe(false);
     expect(mirrorRowProseLifted({ id: IN_FLIGHT }, null, true, true)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// orderInjectedBeforeReply — an interjected message must render BEFORE the reply it prompted.
+//
+// The operator: "the interjection on opencode adapter prints the user message AFTER the response. It
+// should print before and stay before the response from the model that comes after."
+//
+// created_at cannot express this: the assistant row is created when its turn STARTS, the interjection is
+// persisted mid-turn, so created_at puts the operator's message after the answer it prompted.
+// ---------------------------------------------------------------------------------------------
+describe("orderInjectedBeforeReply", () => {
+  const user = (id: string, injected = false) => ({ id, role: "user", injected });
+  const assistant = (id: string) => ({ id, role: "assistant", injected: false });
+
+  it("moves an interjection in front of the reply it was injected into", () => {
+    // Arrival/created_at order: user asked, assistant started, operator interjected mid-turn.
+    const rows = [user("u1"), assistant("a1"), user("u2", true)];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual(["u1", "u2", "a1"]);
+  });
+
+  it("keeps it before that reply for the rest of the conversation", () => {
+    const rows = [user("u1"), assistant("a1"), user("u2", true), user("u3"), assistant("a2")];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual([
+      "u1",
+      "u2",
+      "a1",
+      "u3",
+      "a2",
+    ]);
+  });
+
+  it("leaves a normal conversation untouched", () => {
+    const rows = [user("u1"), assistant("a1"), user("u2"), assistant("a2")];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual(["u1", "a1", "u2", "a2"]);
+  });
+
+  it("preserves the order of several interjections in one turn", () => {
+    const rows = [user("u1"), assistant("a1"), user("u2", true), user("u3", true)];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual(["u1", "u2", "u3", "a1"]);
+  });
+
+  it("leaves an interjection with no preceding turn where it is", () => {
+    // No assistant row before it means no turn to precede (nothing has started), so moving it would
+    // reorder it past unrelated history for no reason.
+    const rows = [user("u1"), user("u2", true)];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual(["u1", "u2"]);
+  });
+
+  it("does not treat a normal user message as injected", () => {
+    const rows = [user("u1"), assistant("a1"), user("u2")];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
   });
 });

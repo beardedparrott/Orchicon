@@ -108,6 +108,19 @@ func Drift(instance string, out io.Writer) DriftState {
 	return Current
 }
 
+// UnrecordedPlanePID reports a plane that is SERVING this instance's control port but is named by no PID
+// file — the "it outlived its PID file" case.
+//
+// IT IS EXPORTED BECAUSE cmd/orchicon's `serve --stop` NEEDS IT TOO, and its absence there was a real bug: the
+// PID file is the ONLY source serveStop consulted, so a plane without one made `--stop` answer "serve is not
+// running" while :8091 kept serving. The shell then read `serve --status` (which DOES have this fallback, via
+// StatusOf) and reported "the plane is STILL running after stop", failing every `make instance-rebuild`.
+//
+// The identification is deliberately strict — the listener on the recorded control port must be an orchicon
+// plane BINARY and must carry THIS instance's tag in its environment (see unrecordedPlanePID). Stopping a
+// sibling instance's plane is far worse than reporting nothing to stop.
+func UnrecordedPlanePID(instance string) (int, bool) { return unrecordedPlanePID(instance) }
+
 // ServingPlanePID reads the instance's detached-plane PID file and reports whether that process is alive.
 func ServingPlanePID(instance string) (int, bool) {
 	b, err := os.ReadFile(ServePIDFile(instance))

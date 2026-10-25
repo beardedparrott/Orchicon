@@ -275,7 +275,7 @@ func (h *Handler) localLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to issue tokens", http.StatusInternalServerError)
 		return
 	}
-	h.setRefreshCookie(w, pair.RefreshToken, refreshTTL)
+	h.setRefreshCookie(w, r, pair.RefreshToken, refreshTTL)
 	// Server-sourced forced-change flag (ADR-4): the SPA renders the
 	// change-password gate for flagged credentials; the token is still
 	// issued so the gate can call the change RPC.
@@ -405,7 +405,7 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to issue tokens", http.StatusInternalServerError)
 		return
 	}
-	h.setRefreshCookie(w, pair.RefreshToken, refreshTTL)
+	h.setRefreshCookie(w, r, pair.RefreshToken, refreshTTL)
 	resp := tokenResponse{
 		AccessToken: pair.AccessToken,
 		TokenType:   "Bearer",
@@ -672,7 +672,10 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   h.mode == config.ModeProduction,
+		// The CLEARING cookie must carry the same Secure flag as the one it
+		// replaces, or a browser on that origin ignores the deletion and the
+		// stale refresh token survives logout.
+		Secure:   h.secureCookie(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 		Expires:  time.Unix(1, 0),
@@ -761,7 +764,7 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to issue tokens", http.StatusInternalServerError)
 		return
 	}
-	h.setRefreshCookie(w, pair.RefreshToken, refreshTTL)
+	h.setRefreshCookie(w, r, pair.RefreshToken, refreshTTL)
 	// Redirect into the SPA with the access token in the URL fragment
 	// (fragments are not sent to servers, so the token does not leak into
 	// server logs or referrers). The SPA reads it on load.
@@ -824,21 +827,52 @@ func (h *Handler) localCredential(ctx context.Context, tenantID, identityID stri
 	return &row
 }
 
-// setRefreshCookie sets the refresh token as an HttpOnly cookie. In
-// local mode (plain HTTP) the Secure flag is relaxed so the cookie
-// survives the non-TLS connection; production always sets Secure.
+// setRefreshCookie sets the refresh token as an HttpOnly cookie.
+//
+// THE SECURE FLAG FOLLOWS THE ACTUAL TRANSPORT, NOT THE DEPLOYMENT MODE. It used
+// to be `h.mode == config.ModeProduction`, which was wrong in BOTH directions:
+//
+//   - TOO WEAK behind a TLS-terminating proxy. The browser speaks HTTPS to the
+//     proxy and the proxy speaks plain HTTP to the plane, so r.TLS is nil and
+//     the mode is whatever the install chose (local by default). The session
+//     cookie then goes out UNMARKED over a site the operator believes is HTTPS,
+//     which is exactly the downgrade hole a Secure flag exists to close. The
+//     proxy is the supported way to expose this plane beyond loopback, so this
+//     was the common case, not an exotic one.
+//   - TOO STRONG on loopback. Production mode on a plain-HTTP loopback plane
+//     set Secure on a response a local client had to store over http://.
+//
+// r.TLS covers direct TLS and X-Forwarded-Proto covers TLS terminated in front
+// of us. Loopback clients (the desktop app's proxy, the TUI, orch) keep
+// working over plain http because their transport really is plain http and the
+// cookie is scoped to a connection that never leaves the machine.
+//
 // The maxAge parameter is the refresh token TTL (used for MaxAge).
-func (h *Handler) setRefreshCookie(w http.ResponseWriter, token string, maxAge time.Duration) {
-	secure := h.mode == config.ModeProduction
+func (h *Handler) setRefreshCookie(w http.ResponseWriter, r *http.Request, token string, maxAge time.Duration) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     RefreshCookie,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   secure,
+		Secure:   h.secureCookie(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(maxAge / time.Second),
 	})
+}
+
+// secureCookie reports whether the refresh cookie must carry the Secure flag,
+// which is true exactly when the CLIENT's leg of the request was encrypted.
+//
+// BOTH SIGNALS ARE REQUIRED. r.TLS is direct TLS termination in this process;
+// X-Forwarded-Proto is what a trusted front proxy reports. Nothing else counts:
+// a mode string describes a deployment, not the connection carrying this
+// particular cookie, and those two disagree precisely in the proxy case that
+// matters.
+func (h *Handler) secureCookie(r *http.Request) bool {
+	if r == nil {
+		return h.mode == config.ModeProduction
+	}
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 // readRefreshToken returns the refresh token from the cookie or body.

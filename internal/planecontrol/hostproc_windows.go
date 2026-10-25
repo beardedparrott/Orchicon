@@ -155,6 +155,15 @@ func Drift(instance string, out io.Writer) DriftState {
 	return Unknown
 }
 
+// UnrecordedPlanePID is the Unix discovery seam, and on Windows it is deliberately always false.
+//
+// The Unix implementation attributes a listening process to an instance by reading /proc/<pid>/environ for the
+// instance tag. Windows has no equivalent that can prove WHICH instance a listening process belongs to, and
+// the file's own rule is that a wrong attribution must surface as "cannot identify" rather than as a wrong
+// guess — stopping a sibling instance's plane is the failure this whole file is shaped to avoid. So Windows
+// keeps the PID file as its only source, which is exactly today's behaviour.
+func UnrecordedPlanePID(string) (int, bool) { return 0, false }
+
 // ServingPlanePID reads the instance's detached-plane PID file and reports whether that process is alive.
 func ServingPlanePID(instance string) (int, bool) {
 	b, err := os.ReadFile(ServePIDFile(instance))

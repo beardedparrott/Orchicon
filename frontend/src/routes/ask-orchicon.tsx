@@ -82,6 +82,7 @@ import {
   dropSupersededMirror,
   hasLiveTextItems,
   mirrorRowProseLifted,
+  orderInjectedBeforeReply,
 } from "@/lib/ask-live-merge";
 import {
   groupStreamItems,
@@ -655,11 +656,16 @@ function AskOrchiconPage() {
   // groupedStream DOES need to be declared before this use; it is a `const` above (useMemo), and
   // this file's own rule is that a const used above its declaration is a TDZ error the production
   // build rejects.
-  const durableMessages = dropSupersededMirror(
-    messages ?? [],
-    pendingReplyId,
-    isStreaming,
-    liveItemsPresent,
+  // INTERJECTIONS ARE REORDERED BEFORE THE MIRROR IS CHOSEN.
+  //
+  // An interjected user message is persisted MID-TURN, so its created_at is later than the assistant row
+  // that was created when the turn started — which made the operator's message render BELOW the reply it
+  // prompted. orderInjectedBeforeReply puts it in front of that reply, where it reads as a chat message the
+  // model then answered. Done here, on the durable list, because every transcript consumer (the render, the
+  // search blocks and the mirror selection below) reads this one value; reordering later would leave one of
+  // them disagreeing.
+  const durableMessages = orderInjectedBeforeReply(
+    dropSupersededMirror(messages ?? [], pendingReplyId, isStreaming, liveItemsPresent),
   );
 
   // A LIVE-ONLY TURN MUST STILL BE SEARCHABLE.

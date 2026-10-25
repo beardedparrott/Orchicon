@@ -168,33 +168,45 @@ plane_env() {
   local inst="${1:-dev}"
   instance_info "$inst"
   echo "ORCHICON_INSTANCE=$inst"
-  # THE PRIMARY BIND IS LOOPBACK, NOT A WILDCARD — and that is load-bearing,
-  # not cosmetic: `:<port>` (the plane's own default) already owns
-  # <bridge ip>:<port> on EVERY interface, so the extra bind below could never
-  # bind ("address already in use") and the plane retried a doomed net.Listen
-  # every 30s on every single boot: "bridge listener bind failed —
-  # runtime-container workers cannot reach the plane". Loopback keeps host
-  # clients working (orch, the GUI) and leaves the bridge address free for the
-  # listener that exists to serve runtime containers.
-  echo "ORCHICON_HTTP_ADDR=127.0.0.1:$PLANE_HTTP_PORT"
-  # HOST-RESIDENT LISTENERS, PER INSTANCE: the plane must answer on the
-  # loopback address above (host clients: orch, the GUI) AND on the docker
-  # bridge at THIS instance's port, and it must hand its run containers THAT
-  # address. Both values come from the one place that computes them
-  # (bridge_bind_env), so the bind the plane listens on and the URL it
-  # advertises can never disagree.
+  # THE PRIMARY BIND IS A WILDCARD, AND THAT IS THE POINT.
   #
-  # An unresolvable bridge is LOUD here but not fatal: this function is also
-  # how plane_stop/plane_status build their env, and those must keep working.
-  # plane_start — the only path where a missing bind means "every plane-channel
-  # MCP call in every dispatched run times out" — refuses to start without it.
+  # A wildcard listener answers on EVERY IPv4 interface at once, so ONE listener
+  # serves all three client populations: host clients on loopback (orch, the TUI,
+  # the desktop app), runtime containers dialling the host gateway, and any other
+  # machine on the LAN. It is a strict SUPERSET of the loopback-plus-bridge pair
+  # it replaces, so nothing needs a second bind.
+  #
+  # The pair existed to work around a COLLISION, not a capability gap: `:<port>`
+  # already owns <bridge ip>:<port> on every interface, so a second listener
+  # there could never bind and retried a doomed net.Listen every 30s forever
+  # ("bridge listener bind failed — runtime-container workers cannot reach the
+  # plane"). The fix was to DELETE the redundant listener, not to narrow the
+  # primary — narrowing it silently took the plane off the LAN.
+  echo "ORCHICON_HTTP_ADDR=:$PLANE_HTTP_PORT"
+  # THE ADVERTISED URL ONLY — there is no extra bind any more.
+  #
+  # A runtime container still has to be told where the plane is, and that value
+  # is a REAL requirement: bridge_bind_env computes it per instance so two
+  # instances can never be pointed at each other's plane. Only the listener half
+  # is redundant, because the wildcard primary above already serves that address.
+  #
+  # An unresolvable bridge is now a WARNING, never fatal: the wildcard bind does
+  # not depend on it, and every runtime container is created with
+  # --add-host host.docker.internal:host-gateway (engine.go, ADR-0013 D2.4), so
+  # the stable NAME reaches the plane on both engines even when the numeric
+  # bridge address cannot be resolved. That is what keeps a rootless podman host
+  # (no docker0, no 172.17.0.1) working instead of refusing to start.
   local bind_env=""
   if bind_env=$(bridge_bind_env "$inst"); then
     printf '%s\n' "$bind_env"
   else
-    log_err "$inst: cannot resolve the docker bridge — the host plane would bind its loopback address ONLY,"
-    log_err "  and its run containers could not reach it. Pin the address and retry:"
-    log_err "  ORCHICON_DOCKER_BRIDGE_IP=<bridge gateway ip> $0 plane-start $inst"
+    # Unreachable while bridge_bind_env owns the fallback above; kept so a future
+    # change that reintroduces a failure mode still cannot leave the plane without
+    # an advertised URL (every plane-channel MCP call in every dispatched run
+    # would time out). The value is the same stable name, per instance.
+    log_warn "$inst: no plane URL could be computed — advertising the stable host name"
+    log_warn "  (host.docker.internal, which every runtime container resolves via --add-host)."
+    echo "ORCHICON_PLANE_PUBLIC_URL=http://host.docker.internal:$PLANE_HTTP_PORT"
   fi
   echo "ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:$PG_PORT/orchicon?sslmode=disable"
   echo "ORCHICON_NATS_URL=nats://localhost:$NATS_PORT"
@@ -276,9 +288,27 @@ bridge_ip() {
 bridge_bind_env() {
   local inst="${1:-dev}"
   instance_info "$inst" || return 1
+  # NO ORCHICON_HTTP_EXTRA_BIND LINE. The wildcard primary bind already serves
+  # this address; emitting it again would ask the plane for a second listener on
+  # an address the first one owns, which cannot bind and is the exact collision
+  # this change removes. Only the advertised URL is still needed.
+  #
+  # AN UNRESOLVABLE BRIDGE IS NOT AN ERROR, AND THIS IS THE ONE PLACE THAT
+  # DECIDES IT. It used to `return 1`, which made plane_start refuse to start on
+  # a host whose numeric bridge address could not be resolved — and a ROOTLESS
+  # PODMAN host has no docker0 and no 172.17.0.1 at all (ADR-0014), so a
+  # supported engine could not run the plane over a value it does not need.
+  #
+  # The fallback is the stable host NAME, not a guess: every runtime container is
+  # created with --add-host host.docker.internal:host-gateway (engine.go
+  # CreateBaseArgs, ADR-0013 D2.4), so the name resolves to the host on BOTH
+  # engines and every platform, and only the PORT distinguishes two instances.
+  # planePublicURL already documents exactly this as its last-resort branch.
   local ip
-  ip=$(bridge_ip) || return 1
-  printf 'ORCHICON_HTTP_EXTRA_BIND=%s:%s\n' "$ip" "$PLANE_HTTP_PORT"
+  if ! ip=$(bridge_ip); then
+    printf 'ORCHICON_PLANE_PUBLIC_URL=http://host.docker.internal:%s\n' "$PLANE_HTTP_PORT"
+    return 0
+  fi
   printf 'ORCHICON_PLANE_PUBLIC_URL=http://%s:%s\n' "$ip" "$PLANE_HTTP_PORT"
 }
 

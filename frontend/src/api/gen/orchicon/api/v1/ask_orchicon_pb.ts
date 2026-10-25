@@ -337,6 +337,26 @@ export class ChatMessage extends Message<ChatMessage> {
    */
   reasoning: string[] = [];
 
+  /**
+   * injected marks a USER message that was interjected into a turn that was
+   * already running, rather than one that started a turn.
+   *
+   * IT IS A DISPLAY-ORDER INPUT, not decoration. An assistant row is created when
+   * its turn STARTS and updated as it streams, so created_at puts it at the start
+   * of the turn. An interjection arrives mid-turn, so its created_at is LATER and
+   * it sorts AFTER the reply it is embedded in — the operator's message appeared
+   * below the answer it prompted, which reads as if the model replied first.
+   *
+   * The client must therefore place an injected message immediately BEFORE the
+   * assistant message it was injected into, which it can identify as the turn's
+   * pending/owning assistant message. created_at cannot express that on its own
+   * and no server-side reordering can, because the row that has to move is the
+   * assistant's and it is still being written.
+   *
+   * @generated from field: bool injected = 11;
+   */
+  injected = false;
+
   constructor(data?: PartialMessage<ChatMessage>) {
     super();
     proto3.util.initPartial(data, this);
@@ -355,6 +375,7 @@ export class ChatMessage extends Message<ChatMessage> {
     { no: 8, name: "metadata", kind: "message", T: MessageMetadata },
     { no: 9, name: "created_at", kind: "message", T: Timestamp },
     { no: 10, name: "reasoning", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 11, name: "injected", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ChatMessage {

@@ -80,6 +80,16 @@ type apiShape struct {
 	// ⚠ UNVERIFIED beyond the audit's note — see the file comment.
 	permissionReplyField string
 
+	// promptPathOverride, when set, replaces promptPath() for a surface that carries a v2-STYLE prompt
+	// route ALONGSIDE its v1 routes.
+	//
+	// IT EXISTS INSTEAD OF A `prefix` CHANGE ON PURPOSE. opencode 1.18+ serves BOTH
+	// /session/{id}/prompt_async (v1) and /api/session/{id}/prompt (the v2-shaped route, which accepts
+	// `delivery`). Reaching the second by setting prefix="/api" would also move abort, compact and the
+	// permission reply onto /api paths that were never verified on 1.x — breaking the paths that work
+	// today in order to improve one. Overriding ONLY the prompt route keeps the blast radius at the one
+	// call being changed.
+	promptPathOverride func(sessionID string) string
 	// promptStyle selects how a message is expressed, and the two are NOT interchangeable.
 	//
 	// v1: {"parts":[{"type":"text","text":…}], "system":…, "model":{"providerID":…,"modelID":…}}
@@ -169,6 +179,54 @@ var shapeV1 = apiShape{
 	modelFieldName:        "modelID",
 }
 
+// shapeV1APIPrompt is opencode 1.18+ — the versions that serve the v2-shaped PROMPT route alongside
+// their v1 routes, which is the only way to steer on 1.x.
+//
+// WHY IT EXISTS, measured (not inferred) on the 1.18.34 and 1.19.4 binaries from npm, each run as a
+// real serve and probed directly:
+//
+//	POST /session/{id}/prompt_async   body keys = {model, agent, noReply, tools, format, system,
+//	                                               variant, parts}     ← NO delivery; cannot steer
+//	POST /api/session/{id}/prompt     body keys = {id, prompt, delivery, resume}
+//	    {"prompt":{"text":"…"},"delivery":"steer"}                -> 200, echoes "delivery":"steer"
+//	    {"prompt":{"text":"…"},"delivery":"nonsense"}             -> 400
+//	                                     'Expected "steer" | "queue", got "nonsense" at ["delivery"]'
+//	    {"prompt":{"text":"…","files":[{"uri":…,"name":…}]},…}    -> 200, files echoed back
+//	POST /api/session/{id}/model      {"model":{"providerID":…,"id":…}} -> 204, reads back set
+//
+// The 400 on an invalid value is the proof that matters: the field is real and validated, so "steer"
+// is a decision the serve honours rather than an unknown key it silently drops.
+//
+// THE MODEL IS SET ON THE SESSION, exactly as on shapeV2, because this body has no model field (the
+// echo comes back as {"prompt":{"text":…}} alone). Same reason, same route, verified above.
+//
+// EVERY OTHER ROUTE STAYS v1 — health /global/health, abort /session/{id}/abort, compact
+// /session/{id}/summarize, and the nested permission reply. Those were not re-verified for this change
+// and are the paths that work on 1.x today.
+//
+// ⚠ THE PROMPT ROUTE'S OWN 404 CANNOT BE TRUSTED AS A PROBE. A 1.x serve answers UNKNOWN routes with
+// the web app — HTTP 200 and text/html (measured: POST to a bogus /api path returned the SPA). So this
+// shape is chosen by VERSION (1.18+, the versions measured to carry the route), and the send path
+// additionally falls back to prompt_async when the reply is not the JSON admission shape. Choosing it
+// by probing for a 404 would have silently sent prompts into a catch-all.
+var shapeV1APIPrompt = func() apiShape {
+	sh := shapeV1
+	sh.name = "v1+api-prompt"
+	sh.promptStyle = "nested"
+	sh.promptPathOverride = func(id string) string { return "/api/session/" + id + "/prompt" }
+	sh.setModelPath = func(id string) string { return "/api/session/" + id + "/model" }
+	return sh
+}()
+
+// v1APIPromptMinMinor is the lowest 1.x MINOR measured to carry /api/session/{id}/prompt: 1.18.34 was
+// run and probed, 1.19.4 was run and probed. A 1.x below this keeps prompt_async and its existing
+// behaviour — a missed improvement rather than a break, which is the correct direction for a floor
+// that was measured on two versions rather than read from a changelog.
+const v1APIPromptMinMinor = 18
+
+// apiPromptUnsupportedVersion is the shape for 1.x versions below the measured floor.
+var apiPromptUnsupportedVersion = shapeV1
+
 // shapeV2 is opencode 2.x. Every path here is quoted from V2_HTTP_API_AUDIT.md's endpoint table:
 //
 //	| 001–002 | GET  | /api/info                                  | server.info   | Keep |
@@ -211,6 +269,15 @@ func (s apiShape) sessionsPath() string { return s.prefix + "/session" }
 func (s apiShape) sessionPath(escapedID string) string { return s.prefix + "/session/" + escapedID }
 
 func (s apiShape) promptPath(sessionID string) string {
+	if s.promptPathOverride != nil {
+		return s.promptPathOverride(sessionID)
+	}
+	return s.plainPromptPath(sessionID)
+}
+
+// plainPromptPath is the surface's OWN prompt route, ignoring any override — the fallback a 1.x client
+// uses when the v2-shaped prompt route turns out not to be served (see shapeV1APIPrompt).
+func (s apiShape) plainPromptPath(sessionID string) string {
 	return s.prefix + "/session/" + sessionID + "/" + s.promptSuffix
 }
 
@@ -258,7 +325,27 @@ func apiShapeForVersion(version string) (apiShape, bool) {
 	if major >= 2 {
 		return shapeV2, true
 	}
+	// 1.x: above the measured floor the serve also carries the v2-shaped PROMPT route, which is the
+	// only way to steer an interjection into the running turn (see shapeV1APIPrompt). Below it, the
+	// behaviour is exactly what it has always been.
+	if minor, ok := minorOf(v); ok && minor >= v1APIPromptMinMinor {
+		return shapeV1APIPrompt, true
+	}
+	_ = apiPromptUnsupportedVersion
 	return shapeV1, true
+}
+
+// minorOf parses the minor version of a "MAJOR.MINOR[.PATCH]" string.
+func minorOf(v string) (int, bool) {
+	parts := strings.Split(v, ".")
+	if len(parts) < 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // detectAPIShape asks the binary which surface it serves.

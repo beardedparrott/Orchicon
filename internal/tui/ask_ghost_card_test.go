@@ -108,9 +108,9 @@ func TestAGhostCardSurvivesTheReportedSequenceWhileTheServerStillListsIt(t *test
 		t.Fatalf("a transcript load dropped/settled the still-open card, got (dec=%q present=%v)", dec, ok)
 	}
 
-	// 3. THE SERVER'S OWN ANSWER: discovery lists the ask as still open (what ReconcilePendingAsks is
-	//    handed), and it re-draws it (idempotent). Neither settles the card, and there is still exactly ONE.
-	m.chatStore.settleStaleConsent("c1", map[string]bool{"ask-1": true})
+	// 3. THE SERVER'S OWN ANSWER: discovery lists the ask as still open and re-draws it (idempotent).
+	//    It cannot settle the card — discovery only ADDS (see ShowDiscoveredAsks) — and there is still
+	//    exactly ONE.
 	m.ShowConsentAsk(ask)
 	if dec, ok := consentCopy(m.chatStore, "c1", "ask-1"); !ok || dec != "" {
 		t.Fatalf("the server lists the ask as open, so the card must stay answerable, got (dec=%q present=%v)", dec, ok)
@@ -123,7 +123,6 @@ func TestAGhostCardSurvivesTheReportedSequenceWhileTheServerStillListsIt(t *test
 	for i := 0; i < 3; i++ {
 		m.onStreamDone(chat.StreamDoneMsg{ConvID: "c1", Gen: m.chat.CurrentGen("c1")})
 		m.ShowConsentAsk(ask)
-		m.chatStore.settleStaleConsent("c1", map[string]bool{"ask-1": true})
 	}
 	if !m.chatStore.hasPendingConsent("c1") {
 		t.Fatal("reapplying the client-side events settled the card the server still lists as open")
@@ -138,7 +137,6 @@ func TestTheGhostCardIsStillTheLiveCardInThePaintedFrame(t *testing.T) {
 	_ = m.onTranscript(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "do the thing", Key: "m-1", At: 1},
 	}})
-	m.chatStore.settleStaleConsent("c1", map[string]bool{"ask-1": true})
 	m.ShowConsentAsk(ask)
 	m.onChatWake()
 
@@ -167,17 +165,17 @@ func TestAnsweringFromThisClientStillSettlesAndReplies(t *testing.T) {
 	}
 }
 
-// AC4. A GENUINELY-FINISHED ASK STILL SETTLES, both stopping conditions: the server no longer LISTS it,
-// and the page RECORDS an outcome. Without this the fix would be "never settle", leaving a dead card up.
+// AC4. A GENUINELY-FINISHED ASK STILL SETTLES — by the page RECORDING an outcome, which is the one
+// authority left now that absence does not settle. Without this the rule would be "never settle" and a
+// dead card would live forever.
+//
+// THE "SERVER NO LONGER LISTS IT" HALF IS GONE ON PURPOSE. It used to settle here, and it is exactly what
+// made the TUI flicker (see TestDiscoveryOnlyAddsAndNeverSettles): the open-ask list is a point-in-time
+// read over a poll, so a transient empty answer retired live cards. The GUI never settled that way and
+// never flickered. A card the server has genuinely dropped but that no outcome record covers now stays
+// answerable — clickable, and resolving to "already answered" server-side.
 func TestAGenuinelyFinishedAskStillSettles(t *testing.T) {
-	// (i) the server's authoritative open-ask list no longer contains it.
-	m, _ := ghostApp(t)
-	m.chatStore.settleStaleConsent("c1", map[string]bool{})
-	if m.chatStore.hasPendingConsent("c1") {
-		t.Fatal("the server lists nothing open, so the card must settle — otherwise a dead card lives forever")
-	}
-
-	// (ii) a recorded outcome on the durable page (answered elsewhere / expired at finalize).
+	// (i) a recorded outcome on the durable page (answered elsewhere / expired at finalize).
 	m2, _ := ghostApp(t)
 	_ = m2.onTranscript(chat.TranscriptMsg{
 		ConvID:      "c1",
@@ -216,5 +214,54 @@ func TestASettledCardStaysAsARecordAndNeverDoubles(t *testing.T) {
 	})
 	if _, ok := consentCopy(s2, "c1", "q-1"); ok {
 		t.Fatal("a settled question must be de-duped against its durable KindAsk card — it would draw twice")
+	}
+}
+
+// DISCOVERY ONLY ADDS — it can never retire a card, which is the rule the GUI has always followed.
+//
+// This is the TUI-only flicker: "Looks like just in the TUI." The TUI settled every pending card ABSENT
+// from the server's open-ask list, and a poll that answered empty or partial (a read racing the raise, a
+// conversation still being indexed) retired a LIVE card; the next poll drew it back. Settle → redraw, at
+// poll cadence.
+//
+// The card is settled instead by POSITIVE evidence, and this pins both halves.
+func TestDiscoveryOnlyAddsAndNeverSettles(t *testing.T) {
+	m, keep := ghostApp(t)
+
+	// A card the server no longer lists. Under the old rule it would be settled by the next poll; under
+	// this one it stays ANSWERABLE, because "the list did not mention it" is not evidence. A stale card
+	// the operator can still click is a far smaller harm than a live turn behind a card nobody can see.
+	drop := chat.PermissionAsk{
+		ID: "ask-dropped", Kind: chat.AskTool, Tool: "write",
+		Target: "/home/ops/project/gone.go", Directory: "/home/ops/project",
+	}
+	m.ShowConsentAsk(drop)
+
+	// THE ONE CALL the discovery path makes, several times, with both an empty answer and one that lists
+	// only `keep` — neither may settle anything.
+	store := appEventStore{m: m}
+	store.ShowDiscoveredAsks("c1", nil)
+	store.ShowDiscoveredAsks("c1", []chat.PermissionAsk{keep})
+	store.ShowDiscoveredAsks("c1", nil)
+
+	for _, id := range []string{"ask-1", "ask-dropped"} {
+		if dec, ok := consentCopy(m.chatStore, "c1", id); !ok || dec != "" {
+			t.Errorf("%s must still be ANSWERABLE after discovery polled without listing it, got "+
+				"(dec=%q present=%v) — settling on absence is the flicker", id, dec, ok)
+		}
+	}
+	if n := countConsent(m.chatStore, "c1", "ask-1"); n != 1 {
+		t.Errorf("repeated discovery must not duplicate a card: got %d for one ask", n)
+	}
+
+	// AND THE POSITIVE EVIDENCE STILL SETTLES. The durable page's recorded outcome is what retires a card
+	// now — the path that survives a reload and covers an expiry at finalize or a decision taken in the
+	// other client. Without this the rule would leak cards forever.
+	m.chatStore.settleAsk("c1", "ask-dropped", "allow_once", "")
+	if dec, ok := consentCopy(m.chatStore, "c1", "ask-dropped"); !ok || dec != chat.DecisionAllowOnce {
+		t.Errorf("a RECORDED outcome must still settle the card, got (dec=%q present=%v)", dec, ok)
+	}
+	if dec, _ := consentCopy(m.chatStore, "c1", "ask-1"); dec != "" {
+		t.Errorf("settling one ask must not touch another; ask-1 is now %q", dec)
 	}
 }

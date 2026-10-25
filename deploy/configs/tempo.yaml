@@ -25,9 +25,9 @@ distributor:
     otlp:
       protocols:
         grpc:
-          endpoint: "0.0.0.0:@TEMPO_OTLP_GRPC_PORT@"
+          endpoint: "127.0.0.1:@TEMPO_OTLP_GRPC_PORT@"
         http:
-          endpoint: "0.0.0.0:@TEMPO_OTLP_HTTP_PORT@"
+          endpoint: "127.0.0.1:@TEMPO_OTLP_HTTP_PORT@"
 
 storage:
   trace:

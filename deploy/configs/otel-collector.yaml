@@ -8,9 +8,9 @@ receivers:
   otlp:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:@COLLECTOR_OTLP_GRPC_PORT@
+        endpoint: 127.0.0.1:@COLLECTOR_OTLP_GRPC_PORT@
       http:
-        endpoint: 0.0.0.0:@COLLECTOR_OTLP_HTTP_PORT@
+        endpoint: 127.0.0.1:@COLLECTOR_OTLP_HTTP_PORT@
 
 processors:
   batch:
@@ -42,7 +42,7 @@ exporters:
 
 extensions:
   health_check:
-    endpoint: 0.0.0.0:@COLLECTOR_HEALTH_PORT@
+    endpoint: 127.0.0.1:@COLLECTOR_HEALTH_PORT@
 
 service:
   # THE COLLECTOR'S OWN STATS LISTENER MUST BE DECLARED, NOT DEFAULTED.
@@ -61,7 +61,7 @@ service:
   # so the second instance binds without an install-time allocation.
   telemetry:
     metrics:
-      address: 0.0.0.0:@COLLECTOR_SELF_METRICS_PORT@
+      address: 127.0.0.1:@COLLECTOR_SELF_METRICS_PORT@
   extensions: [health_check]
   pipelines:
     traces:

@@ -27,7 +27,14 @@ func TestAPIShapeForVersion(t *testing.T) {
 		parsed  bool
 		why     string
 	}{
-		{"1.18.34", "v1", true, "the version on the development host"},
+		// 1.18.34 IS "v1+api-prompt", NOT PLAIN v1, and that was measured rather than assumed: the
+		// 1.18.34 binary from npm was run as a serve and POST /api/session/{id}/prompt admitted
+		// {"prompt":{"text":…},"delivery":"steer"} with 200, while an invalid delivery value was REJECTED
+		// (`Expected "steer" | "queue"`). Its v1 prompt_async route has no delivery key at all, so this
+		// route is the only way to steer on 1.x.
+		{"1.18.34", "v1+api-prompt", true, "the version on the development host, measured to carry the /api prompt route"},
+		{"1.19.4", "v1+api-prompt", true, "the last 1.x measured; same route, same body"},
+		{"1.17.9", "v1", true, "below the measured floor: unchanged v1 behaviour (a missed improvement, never a break)"},
 		{"2.0.26", "v2", true, "the version reported from WSL, and the one that broke model discovery"},
 		{"v2.0.26", "v2", true, "a leading v is accepted, as `opencode --version` has used both"},
 		{"2.1.0", "v2", true, "the break is at the MAJOR; a later minor stays v2"},
@@ -274,7 +281,7 @@ func TestDetectAPIShapeReadsTheVersionStub(t *testing.T) {
 		comment string
 	}{
 		{"a 2.x stub", "2.0.26", "0", "v2", true, "the reported WSL version"},
-		{"a 1.x stub", "1.18.34", "0", "v1", true, "the development host version"},
+		{"a 1.x stub", "1.18.34", "0", "v1+api-prompt", true, "the development host version — it carries the /api prompt route, so it steers"},
 		{"a banner before the number", "opencode 2.0.26 (linux/amd64)", "0", "v2", true,
 			"real CLIs print more than a bare number; the first parseable token wins"},
 		{"a failing binary", "", "1", "v1", false, "a probe that cannot run must fall back, not guess"},

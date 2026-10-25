@@ -953,8 +953,13 @@ func (s *Service) ListMessages(ctx context.Context, req *connect.Request[apiv1.L
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	resp := &apiv1.ListMessagesResponse{}
+	// THE OPEN-ASK SET, read ONCE for this page. It is what lets a HISTORICAL resolution be withheld from an
+	// ask that is OPEN RIGHT NOW — see withholdStaleResolutions.
+	open := s.openAskIDs(req.Msg.ConversationId)
 	for _, r := range rows {
-		resp.Messages = append(resp.Messages, messageRowToProto(r))
+		msg := messageRowToProto(r)
+		withholdStaleResolutions(msg, open)
+		resp.Messages = append(resp.Messages, msg)
 	}
 	if len(rows) > 0 {
 		resp.NextPageToken = rows[len(rows)-1].ID
@@ -1375,6 +1380,11 @@ func conversationModeToProto(mode string) apiv1.ConversationMode {
 
 func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
 	meta := &apiv1.MessageMetadata{}
+	// injected marks a USER message that was interjected into an ALREADY RUNNING
+	// turn. The client uses it to place that message before the assistant reply it
+	// was injected into: created_at cannot, because the assistant row was created
+	// when the turn started and the interjection arrived mid-turn.
+	injected := false
 	if len(r.Metadata) > 0 {
 		var raw map[string]any
 		if err := json.Unmarshal(r.Metadata, &raw); err == nil {
@@ -1386,6 +1396,9 @@ func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
 			}
 			if v, ok := raw["error"].(string); ok {
 				meta.Error = v
+			}
+			if v, ok := raw["injected"].(bool); ok {
+				injected = v
 			}
 		}
 	}
@@ -1399,7 +1412,75 @@ func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
 		ToolResults:    toolResultsFromJSON(r.ToolResults),
 		Metadata:       meta,
 		CreatedAt:      timestamppb.New(r.CreatedAt),
+		Injected:       injected,
 	}
+}
+
+// openAskIDs is the set of asks the server currently holds OPEN for a conversation.
+//
+// It is the "current truth" half of the settle rule: the transcript ledger records what HAPPENED to an ask,
+// and the pending registry records what is happening NOW. Where they disagree, NOW wins.
+func (s *Service) openAskIDs(convID string) map[string]bool {
+	open := map[string]bool{}
+	for _, a := range s.pending.list(convID) {
+		if a != nil && a.isOpen() {
+			open[a.AskID] = true
+		}
+	}
+	return open
+}
+
+// permissionResolutionVerdicts are the ledger verdicts that SETTLE a card — the same vocabulary the clients
+// treat as an outcome (frontend settleFromLedger's outcomeFromRecord, and the TUI's
+// askOutcomeFromLedgerRow). A raise (`permission.ask`, `permission.question`) and a call that proceeded
+// WITHOUT a card (`session_grant`, `fullsend`, `accept`, `project`) are deliberately absent: they say nothing
+// about whether a card was answered.
+var permissionResolutionVerdicts = map[string]bool{
+	"permission.user_PERMISSION_CHOICE_ALLOW_ONCE":    true,
+	"permission.user_PERMISSION_CHOICE_ALLOW_SESSION": true,
+	"permission.user_PERMISSION_CHOICE_DENY":          true,
+	"permission.expired":                              true,
+	"permission.deny":                                 true,
+	"permission.never_allow":                          true,
+	"permission.policy_error":                         true,
+	"permission.answered":                             true,
+	"permission.fullsend_approved":                    true,
+}
+
+// withholdStaleResolutions drops any recorded resolution whose ask is OPEN RIGHT NOW.
+//
+// WHY THIS EXISTS, AND WHY IT IS THE HALF THAT FINISHES THE JOB. Ask ids are now globally unique
+// (orchicon.NativeBridge.nextPermID), so a NEW ask can never inherit an OLD ask's recorded outcome. But the
+// ids written BEFORE that fix are still in this ledger — native-ask-1 carries both an ALLOW_ONCE from one
+// day and a live raise from another — and a card raised against such an id is still settled from the stale
+// record, then re-armed from the open list: the settle/re-arm flicker, on legacy data only.
+//
+// The rule is deliberately narrow. A resolution is withheld ONLY when the server itself is currently holding
+// that exact ask open. That is a contradiction the server can see and the client cannot: the ledger says the
+// ask is finished, the registry says a turn is parked on it. The registry is right — the ledger entry belongs
+// to an earlier ask that reused the id — so the historical record must not be allowed to settle the live card.
+//
+// IT IS WITHHELD FROM THE WIRE, not deleted from the ledger. The durable row is the audit trail and stays
+// exactly as written; only the client-facing view is filtered, so nothing about the past is rewritten.
+//
+// A genuinely resolved ask is unaffected: it is no longer open, so its resolution reaches the clients and the
+// card settles normally. And the moment the live ask resolves, the registry drops it and the record flows
+// again on the next poll — self-healing, with no cleanup step and no migration.
+//
+// It cannot mask a lost card either. Withholding only ever makes a client LESS likely to settle, and a card
+// that stays answerable is the safe direction: clicking it answers the live ask, which is exactly right.
+func withholdStaleResolutions(msg *apiv1.ChatMessage, open map[string]bool) {
+	if msg == nil || len(open) == 0 || len(msg.ToolCalls) == 0 {
+		return
+	}
+	kept := msg.ToolCalls[:0]
+	for _, tc := range msg.ToolCalls {
+		if tc != nil && open[tc.GetId()] && permissionResolutionVerdicts[tc.GetFunctionName()] {
+			continue
+		}
+		kept = append(kept, tc)
+	}
+	msg.ToolCalls = kept
 }
 
 // toolCallsFromJSON maps the ask_orchicon_messages.tool_calls column

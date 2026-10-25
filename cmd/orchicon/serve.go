@@ -304,8 +304,45 @@ func serveStop() int {
 		if _, err := os.Stat(pidFile); err == nil {
 			_ = os.Remove(pidFile)
 		}
-		fmt.Println("serve is not running")
-		return 1
+		// BUT AN ABSENT PID FILE IS NOT EVIDENCE THAT NOTHING IS SERVING, and assuming it was made `--stop`
+		// LIE. A plane can outlive its PID file (the file was lost, or a rebuild replaced the binary and the
+		// record went with the old serve dir). This function then printed "serve is not running" while the
+		// port stayed bound — and every caller that cross-checks `--status` (which DOES discover an
+		// unrecorded plane, via planecontrol.StatusOf) saw the contradiction and refused to proceed:
+		//
+		//	✗ orchicon prod: the plane is STILL running after stop — refusing to report success
+		//	make: *** [Makefile:908: instance-down] Error 1
+		//
+		// which failed every `make instance-rebuild` over a serving instance.
+		//
+		// So the SAME discovery `--status` uses is applied here. The identification is strict — the listener
+		// on this instance's recorded control port must be an orchicon plane binary carrying THIS instance's
+		// tag — so a sibling instance is never signalled.
+		// THE FALLBACK MAY ONLY RUN WHEN WE ARE READING THE INSTANCE'S CANONICAL STATE DIR.
+		//
+		// Without this guard the discovery is DANGEROUS, and it caused a real outage. serveStateDir()
+		// prefers ORCHICON_INSTANCE over ORCHICON_SERVE_STATE_DIR, so a caller that redirected the state
+		// dir (a test, or any operator pinning a temp dir) is NOT looking at the instance's record at all —
+		// the "absence" of the PID file is manufactured, not evidence that a plane outlived its record.
+		//
+		// Measured consequence, with ORCHICON_INSTANCE=prod exported: a test that redirected the state dir
+		// to a temp dir still resolved servePIDFile() to the REAL prod record, wrote a bogus PID into it,
+		// cleared it, and then this fallback discovered the live prod plane on :8091 and STOPPED it. The
+		// symptom was a plane that "kept crashing" and a session that disconnected mid-turn.
+		//
+		// When the paths disagree the honest answer is what it always was: nothing of OURS to stop here.
+		if !serveStopMayDiscover() {
+			fmt.Println("serve is not running")
+			return 1
+		}
+		if discovered, ok := planecontrol.UnrecordedPlanePID(instanceForServe()); ok {
+			fmt.Printf("serve has no PID file but is serving this instance's port (PID %d) — stopping it\n", discovered)
+			pid = strconv.Itoa(discovered)
+			running = true
+		} else {
+			fmt.Println("serve is not running")
+			return 1
+		}
 	}
 	pidNum, err := strconv.Atoi(pid)
 	if err != nil {
@@ -454,6 +491,23 @@ func loggingFromEnv(cfg config.Config, logPath string) logging.Config {
 
 // instanceForServe names the instance this plane belongs to, for the child's environment. The state dir is
 // derived from it, so it must be explicit rather than inherited.
+// serveStopMayDiscover reports whether `serve --stop` is allowed to fall back to discovering a plane by
+// PORT when the PID file names nothing.
+//
+// IT IS TRUE ONLY WHEN THE PID FILE WE JUST READ IS THE INSTANCE'S CANONICAL ONE. Two paths can disagree:
+// servePIDFile() is derived from serveStateDir(), which a caller can redirect, while the plane the fallback
+// would signal is identified through planecontrol's instance-scoped records. When they disagree, the PID
+// file we read belongs to some OTHER state root, and its emptiness says nothing about whether this
+// instance's plane is running.
+//
+// This is the guard that keeps the fix for "a plane that outlived its PID file" from becoming "a plane
+// that was never ours gets killed". Erroring toward NOT stopping is the only safe direction: a refused
+// stop is reported to the operator, while a wrong stop takes down a live control plane.
+func serveStopMayDiscover() bool {
+	inst := instanceForServe()
+	return servePIDFile() == planecontrol.ServePIDFile(inst)
+}
+
 func instanceForServe() string {
 	if inst := strings.TrimSpace(os.Getenv("ORCHICON_INSTANCE")); inst != "" {
 		return inst

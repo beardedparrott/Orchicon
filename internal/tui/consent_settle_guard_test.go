@@ -6,79 +6,92 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// consent_settle_guard_test.go — A CARD MAY ONLY BE SETTLED BY SOMETHING THE SERVER SAID.
+// consent_settle_guard_test.go — A CARD MAY ONLY BE SETTLED BY POSITIVE EVIDENCE, NEVER BY ABSENCE.
 //
-// The reported loss: "a permissions card in the TUI get swallowed up, but the GUI still had it" —
-// and the follow-up that identified it, "the turn was sitting and waiting and no activity from the
-// model was happening until I went into the GUI and accepted the card that wasn't present in the
-// TUI". The card was therefore LIVE (the server still had the turn parked on the ask) when the TUI
-// retired it, and once retired it could never come back.
+// The reported loss: "a permissions card in the TUI get swallowed up, but the GUI still had it" — the turn
+// was still parked on the server when the TUI retired the card, and once retired it could never come back.
+// The first fix gated the sweep on the server's open-ask list, which was better than inferring from the
+// turn but still settled on ABSENCE: a poll that answered empty or partial retired LIVE cards, the next
+// poll drew them back, and the card flickered at poll cadence.
 //
-// The mechanism was a LOCAL event read as proof about the server's turn: a WATCH re-dial is a passive
-// follow that runs through the same consume(), so when the watch socket closed cleanly the shell saw
-// a graceful stream end, tore the turn's slot down and swept every pending card to "settled". The
-// durable re-read that follows is a `replace` (the slot is gone), and replace keeps a consent card
-// only while PENDING — so the card was dropped, with nothing left to rediscover it (no live slot, no
-// poll) while the plane still held the ask open.
+// The operator localised it precisely — "Looks like just in the TUI" — and the difference was that the GUI
+// has never settled this way. Its discovery effect only ADDS:
 //
-// These pin the two halves of the fix: the sweep is gated on the SERVER's authoritative OPEN-ASK LIST
-// (ListPendingAsks) rather than on any client-side guess about the turn, and a card that was settled
-// anyway is re-armed rather than refused when the server still lists its ask as open.
+//	if (!pendingAsks || pendingAsks.length === 0) return;
+//	for (const ask of pendingAsks) applyAsk(activeConvId, ask);
+//
+// The TUI now matches it. Discovery can only add; a card is settled solely by
+//   - a RECORDED OUTCOME in the durable page (which survives a reload, and covers an expiry at finalize
+//     or a decision taken in the other client), or
+//   - a DECISION THIS CLIENT MADE.
+//
+// The asymmetry is deliberate and it is the safe direction: a card the server has genuinely dropped but
+// that no outcome record covers stays answerable — a stale card the operator can dismiss, resolving to
+// "already answered" server-side — rather than a live turn parked behind a card nobody can see.
 
-// THE REGRESSION. While the SERVER still lists the ask as open, no sweep may touch its card — whatever
-// this client's own sockets or conversation row just did.
-func TestACardTheServerStillListsIsNotSweptAway(t *testing.T) {
-	m, _ := consentApp(t)
-	m.ShowConsentAsk(chat.PermissionAsk{
-		ID: "ask-1", Kind: chat.AskTool, Tool: "write",
-		Target: "/home/ops/project/main.go", Directory: "/home/ops/project",
-	})
-	if !m.chatStore.hasPendingConsent("c1") {
-		t.Fatal("precondition: the card must be pending after it is raised")
-	}
+// DISCOVERY NEVER SETTLES, whatever the list does or does not contain. This is the flicker, pinned.
+func TestDiscoveryNeverSettlesWhateverTheListSays(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		asks []chat.PermissionAsk
+	}{
+		{"empty answer", nil},
+		{"an answer listing nothing for this ask", []chat.PermissionAsk{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := consentApp(t)
+			m.ShowConsentAsk(chat.PermissionAsk{
+				ID: "ask-1", Kind: chat.AskTool, Tool: "write",
+				Target: "/home/ops/project/main.go", Directory: "/home/ops/project",
+			})
+			if !m.chatStore.hasPendingConsent("c1") {
+				t.Fatal("precondition: the card must be pending after it is raised")
+			}
 
-	// The server's open-ask list still contains the ask.
-	m.chatStore.settleStaleConsent("c1", map[string]bool{"ask-1": true})
+			appEventStore{m: m}.ShowDiscoveredAsks("c1", tc.asks)
 
-	if !m.chatStore.hasPendingConsent("c1") {
-		t.Fatal("the server still lists the ask as open, so its card must stay a choice — this is the " +
-			"reported ghost: a settle here drops a card the operator had to answer")
-	}
-	if st := m.chatStore.consentState("c1", "ask-1"); st == nil || !st.Pending() {
-		t.Fatalf("the card must still be a choice, got %+v", st)
+			if !m.chatStore.hasPendingConsent("c1") {
+				t.Fatal("discovery settled a live card — absence is not evidence, and this is what made " +
+					"the card flicker at poll cadence in the TUI while the GUI was stable")
+			}
+			if st := m.chatStore.consentState("c1", "ask-1"); st == nil || !st.Pending() {
+				t.Fatalf("the card must still be a choice, got %+v", st)
+			}
+		})
 	}
 }
 
-// AND NO EVIDENCE SETTLES NOTHING: a failed or never-run query hands the store nil, and a nil list must
-// never be read as "the server lists nothing" — that is the bug this whole file guards, in one line.
-func TestNoEvidenceSettlesNothing(t *testing.T) {
+// AND REPEATEDLY, so a one-shot tolerance cannot pass: the poll runs on a cadence, and the card must
+// survive every tick of it.
+func TestRepeatedDiscoveryPollsLeaveTheCardAnswerable(t *testing.T) {
 	m, _ := consentApp(t)
 	m.ShowConsentAsk(chat.PermissionAsk{
 		ID: "ask-1", Kind: chat.AskTool, Tool: "write",
 		Target: "/home/ops/project/main.go", Directory: "/home/ops/project",
 	})
-
-	m.chatStore.settleStaleConsent("c1", nil)
-
+	store := appEventStore{m: m}
+	for i := 0; i < 10; i++ {
+		store.ShowDiscoveredAsks("c1", nil)
+	}
 	if !m.chatStore.hasPendingConsent("c1") {
-		t.Fatal("a nil open-list is NO evidence, so the card must stay a choice — settling on absence " +
-			"is exactly the inference bug this replaces")
+		t.Fatal("ten empty discovery polls settled the card — at poll cadence that is the flicker")
+	}
+	if n := len(m.chatStore.snapshot("c1")); n == 0 {
+		t.Fatal("the card vanished from the transcript entirely")
 	}
 }
 
-// The sweep still does its job when the server's list no longer carries the ask — it is a gate, not a
-// removal (an EMPTY, non-nil list is the server saying "nothing is open").
-func TestAnAskTheServerNoLongerListsIsSwept(t *testing.T) {
+// DISCOVERY STILL DRAWS. Adding is the half it must keep: a card raised by a turn this client never
+// streamed is only ever learned about here.
+func TestDiscoveryStillDrawsACardItIsToldAbout(t *testing.T) {
 	m, _ := consentApp(t)
-	m.ShowConsentAsk(chat.PermissionAsk{
-		ID: "ask-1", Kind: chat.AskTool, Tool: "write",
-		Target: "/home/ops/project/main.go", Directory: "/home/ops/project",
-	})
-
-	m.chatStore.settleStaleConsent("c1", map[string]bool{})
-
-	if m.chatStore.hasPendingConsent("c1") {
-		t.Fatal("the server no longer lists the ask, so its card must stop being a choice")
+	ask := chat.PermissionAsk{
+		ID: "ask-9", Kind: chat.AskTool, Tool: "write",
+		Target: "/home/ops/project/new.go", Directory: "/home/ops/project",
+	}
+	appEventStore{m: m}.ShowDiscoveredAsks("c1", []chat.PermissionAsk{ask})
+	if st := m.chatStore.consentState("c1", "ask-9"); st == nil || !st.Pending() {
+		t.Fatalf("a discovered ask must be drawn and answerable, got %+v", st)
 	}
 }
 

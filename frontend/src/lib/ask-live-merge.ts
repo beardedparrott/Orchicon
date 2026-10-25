@@ -123,3 +123,69 @@ export function mirrorRowProseLifted(
   if (message.id !== pendingReplyId) return false; // only the in-flight row is mirrored live
   return hasLiveItems; // live text exists, so this row's copy of it is the duplicate
 }
+
+/**
+ * orderInjectedBeforeReply moves each INTERJECTED user message in front of the assistant turn it joined.
+ *
+ * THE BUG THIS FIXES. Interjecting on a running turn printed the operator's message BELOW the model's
+ * reply to it. The operator: "the interjection on opencode adapter prints the user message AFTER the
+ * response. It should print before and stay before the response from the model that comes after."
+ *
+ * WHY created_at CANNOT DO IT. An assistant row is created when its turn STARTS (the acked id, later
+ * updated as it streams), so its created_at is the START of the turn. An interjection is persisted
+ * MID-TURN, so its created_at is strictly later. Every surface that orders by created_at therefore put the
+ * operator's message after the reply it prompted, and no server-side reordering could fix it: the row that
+ * would have to move is the assistant's, which is still being written.
+ *
+ * THE RULE. An injected message is joined to the MOST RECENT assistant message BEFORE it — that is the
+ * turn it was injected into, and it is identifiable precisely because the assistant row exists from the
+ * turn's start. The injected message is emitted immediately before that row, so the operator's words read
+ * as a chat message and the model's reply follows them. It keeps that position permanently, which is what
+ * "stay before the response from the model that comes after" asks for, and it survives a reload because
+ * the flag is persisted on the row.
+ *
+ * An injected message with NO preceding assistant row has no turn to precede; it is left where it is
+ * rather than moved past unrelated history.
+ *
+ * Pure and stable: every other message keeps its relative order.
+ */
+export function orderInjectedBeforeReply<
+  T extends { role: string; injected?: boolean },
+>(messages: readonly T[]): T[] {
+  if (!messages.some((m) => m.injected && m.role === "user")) return [...messages];
+
+  // Index of the assistant row each injected message joins: the last assistant BEFORE it.
+  const moves = new Map<number, number[]>(); // assistantIndex -> injected indices, in order
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!(m.injected && m.role === "user")) continue;
+    let joined = -1;
+    for (let j = i - 1; j >= 0; j--) {
+      if (messages[j].role === "assistant") {
+        joined = j;
+        break;
+      }
+    }
+    if (joined < 0) continue; // no turn to precede: leave it in place
+    const list = moves.get(joined) ?? [];
+    list.push(i);
+    moves.set(joined, list);
+  }
+  if (moves.size === 0) return [...messages];
+
+  const out: T[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const lifted = moves.get(i);
+    if (lifted) {
+      // The interjections that joined THIS turn go first, then the turn's own reply.
+      for (const idx of lifted) out.push(messages[idx]);
+    }
+    // Skip the injected rows here: every one that could move has already been emitted above.
+    if (!lifted && messages[i].injected && messages[i].role === "user") {
+      const moved = [...moves.values()].some((idxs) => idxs.includes(i));
+      if (moved) continue;
+    }
+    out.push(messages[i]);
+  }
+  return out;
+}
