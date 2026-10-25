@@ -151,9 +151,62 @@ func openCodePlatformCandidates(goos string, getenv func(string) string) []strin
 	// all: bun's Windows install is a real .exe, so it resolves where npm's shim cannot.
 	add(env("APPDATA"), "npm")
 	add(env("USERPROFILE"), ".bun", "bin")
+
+	// WHERE AN NPM GLOBAL INSTALL ACTUALLY PUTS THE EXECUTABLE. This is the case that was still
+	// failing after the first pass, reported with the operator's own install path:
+	//
+	//	"Opencode is currently installed here C:\Users\justi\AppData\Roaming\npm\opencode.ps1"
+	//
+	// THAT PATH IS A SHIM, NOT A BINARY, and on Windows npm makes three of them (`opencode`,
+	// `opencode.cmd`, `opencode.ps1`) — never an `.exe`. So the directory above yielded shims only,
+	// the shim is correctly refused as unlaunchable, and resolution fell through to nothing. The
+	// operator was told to install something they had installed.
+	//
+	// THE REAL BINARY IS ONE LEVEL DEEPER AND ENTIRELY DETERMINISTIC. The npm package `opencode-ai`
+	// declares `"bin": {"opencode": "bin/opencode.exe"}` and its postinstall copies the 211 MB
+	// platform binary from `opencode-windows-x64` over the 479-byte stub that ships in the tarball.
+	// So a working global install has a real executable at:
+	//
+	//	<npm prefix>\node_modules\opencode-ai\bin\opencode.exe
+	//
+	// npm's global prefix on Windows is %APPDATA%\npm per-user, or the node install directory
+	// (%ProgramFiles%\nodejs) for an all-users install. pnpm's is %LOCALAPPDATA%\pnpm.
+	//
+	// A POSTINSTALL THAT NEVER RAN LEAVES THE 479-BYTE STUB in that same place. Resolving it would be
+	// worse than not resolving at all — it prints an error and exits — which is why the stub's size is
+	// not what we test for (a future version could differ) but why the not-found message names the
+	// `--ignore-scripts` cause explicitly. See npmBinaryHint.
+	for _, prefix := range npmGlobalPrefixes(env) {
+		add(prefix, "node_modules", "opencode-ai", "bin")
+	}
+
 	// Then the machine-wide ones, for an all-users install.
 	add(env("ProgramFiles"), "opencode")
 	add(env("ProgramFiles(x86)"), "opencode")
+	return out
+}
+
+// npmGlobalPrefixes names the directories npm (or pnpm) uses as its GLOBAL prefix on Windows, per-user
+// first, because that is what needs no elevation and is what a desktop machine has.
+//
+// IT IS A LIST RATHER THAN A SINGLE GUESS because these move between installers: npm's default is
+// %APPDATA%\npm, the Node MSI uses %ProgramFiles%\nodejs for all-users, a corporate image may set a
+// custom prefix (which the shim-adjacent rule below still covers), and pnpm uses %LOCALAPPDATA%\pnpm.
+// A missing prefix contributes nothing — joinIfBase returns "" — so an unset variable cannot produce a
+// relative path that would be probed against the process's working directory.
+func npmGlobalPrefixes(env func(string) string) []string {
+	var out []string
+	for _, p := range []string{
+		joinIfBase(env("APPDATA"), "npm"),
+		joinIfBase(env("USERPROFILE"), "AppData", "Roaming", "npm"),
+		joinIfBase(env("ProgramFiles"), "nodejs"),
+		joinIfBase(env("ProgramFiles(x86)"), "nodejs"),
+		joinIfBase(env("LOCALAPPDATA"), "pnpm"),
+	} {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
 	return out
 }
 
@@ -223,6 +276,33 @@ func lookupEnvFold(getenv func(string) string, name string) string {
 	return ""
 }
 
+// npmExeFromShims returns the real executables implied by npm shims that ACTUALLY EXIST on this machine.
+//
+// THIS IS THE GENERAL RULE, and the prefix table above is only its fast path. A shim in `<dir>` is proof
+// that `<dir>` is an npm-style prefix — whichever prefix npm was configured to use, including one set by
+// a corporate image or `npm config set prefix` — and the real binary is always at
+// `<dir>\node_modules\opencode-ai\bin\opencode.exe` because that is the package's declared `bin` entry.
+//
+// IT FOLLOWS THE SHIM RATHER THAN HARDCODING A LIST, so an install in an unusual prefix resolves without
+// this file needing to know about it. The prefix table still matters for the case where no shim exists at
+// all (a PATH stripped before npm ran, or a shim deleted by hand).
+//
+// Empty when no shim exists, so it costs one os.Stat per known shim location and nothing else.
+func npmExeFromShims(goos string, getenv func(string) string) []string {
+	if goos != "windows" {
+		return nil
+	}
+	var out []string
+	for _, shim := range openCodeShimCandidates(goos, getenv) {
+		st, err := os.Stat(shim)
+		if err != nil || st.IsDir() {
+			continue
+		}
+		out = append(out, filepath.Join(filepath.Dir(shim), "node_modules", "opencode-ai", "bin", "opencode.exe"))
+	}
+	return out
+}
+
 // resolveOpenCodeBinary is the ONE production resolver: the env override, then
 // PATH, then the container-visible $HOME candidates. It is the default for the
 // adapter's spawn path (SetBinaryResolver swaps it), the host serve, and the
@@ -233,13 +313,33 @@ func lookupEnvFold(getenv func(string) string, name string) string {
 // explicit instruction that is wrong — and quietly ignoring it (which is what
 // the discovery wiring used to do) hides a typo behind 'not found'.
 func resolveOpenCodeBinary() (string, error) {
-	if v := strings.TrimSpace(os.Getenv(OpenCodeBinEnv)); v != "" {
+	return resolveOpenCodeBinaryFor(runtimeGOOS(), os.Getenv, nil)
+}
+
+// resolveOpenCodeBinaryFor is the resolver with the OS, the environment and the persisted-PATH
+// directories INJECTABLE, and it is the real implementation — the wrapper above is the production
+// entry point.
+//
+// WHY, IN THE FILE'S OWN TERMS. Everything Windows-specific here (the candidate tables, the npm
+// layout, the shim refusal, the persisted PATH) is unreachable on a Linux CI box, so without a seam
+// the reported failure can only be reproduced on a maintainer's Windows machine — which is precisely
+// the "a test that could only run on Windows is a test that will not run" trap this package already
+// documents for its tables. With the seam, a test can build the operator's exact layout in a temp
+// directory and drive the REAL resolver over it, on any host.
+//
+// registryDirs is passed rather than called so the loop is testable too; production passes nil and
+// reads the registry (pathrefresh_windows.go), which is a no-op off Windows.
+func resolveOpenCodeBinaryFor(goos string, getenv func(string) string, registryDirs []string) (string, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if v := strings.TrimSpace(getenv(OpenCodeBinEnv)); v != "" {
 		if st, err := os.Stat(v); err != nil || st.IsDir() {
-			return "", fmt.Errorf("%s is set to %q, which is not an existing file — fix or unset it%s", OpenCodeBinEnv, v, misplacedOpenCodeHint())
+			return "", fmt.Errorf("%s is set to %q, which is not an existing file — fix or unset it%s", OpenCodeBinEnv, v, misplacedOpenCodeHintFor(goos, getenv))
 		}
 		return v, nil
 	}
-	if p, err := exec.LookPath("opencode"); err == nil && launchableResolved(runtimeGOOS(), p) {
+	if p, err := exec.LookPath("opencode"); err == nil && launchableResolved(goos, p) {
 		return p, nil
 	}
 	if home := hostHome(); home != "" {
@@ -251,7 +351,15 @@ func resolveOpenCodeBinary() (string, error) {
 		}
 	}
 	// THE PLATFORM PASS: where THIS OS installs opencode beyond the POSIX $HOME shapes above. Empty on Unix.
-	for _, cand := range openCodePlatformCandidates(runtimeGOOS(), os.Getenv) {
+	for _, cand := range openCodePlatformCandidates(goos, getenv) {
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			return cand, nil
+		}
+	}
+	// THE NPM INSTALL IMPLIED BY A SHIM THAT IS REALLY THERE, before the persisted PATH: this is a
+	// known package layout rather than a directory that happens to be on PATH, so it is the better
+	// answer when both would match.
+	for _, cand := range npmExeFromShims(goos, getenv) {
 		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
 			return cand, nil
 		}
@@ -264,14 +372,17 @@ func resolveOpenCodeBinary() (string, error) {
 	// AFTER the fixed candidates, deliberately: a known install location is a better answer than a
 	// directory that merely happens to be on PATH today, and the fixed list is what the container
 	// mounts are built from. Empty on Unix (see pathrefresh_other.go).
-	for _, dir := range registryPathDirs() {
+	if registryDirs == nil {
+		registryDirs = registryPathDirs()
+	}
+	for _, dir := range registryDirs {
 		cand := filepath.Join(dir, "opencode"+executableExt())
 		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
 			return cand, nil
 		}
 	}
 	return "", fmt.Errorf("opencode binary not found on PATH or in any known install location (%s)%s%s (install it as your user, never with sudo: curl -fsSL https://opencode.ai/install | bash; set %s to point at an existing install; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev)",
-		strings.Join(openCodeRelCandidates, ", "), misplacedOpenCodeHint(), foundElsewhereHint(), OpenCodeBinEnv)
+		strings.Join(openCodeRelCandidates, ", "), misplacedOpenCodeHintFor(goos, getenv), foundElsewhereHintFor(goos, getenv), OpenCodeBinEnv)
 }
 
 // OpenCodeBinDirs returns the host directories the resolver probes for opencode,
@@ -351,7 +462,11 @@ func ContainerVisible(path string) bool {
 // It is the difference between an error that is CORRECT and one that is USEFUL.
 // The report this answers is an operator who installed opencode, was told it
 // could not be found, installed it a second way, and was told the same thing.
-func misplacedOpenCodeHint() string {
+func misplacedOpenCodeHint() string { return misplacedOpenCodeHintFor(runtimeGOOS(), os.Getenv) }
+
+// misplacedOpenCodeHintFor is misplacedOpenCodeHint with the OS and environment injectable, matching
+// the rest of this file's seams.
+func misplacedOpenCodeHintFor(goos string, getenv func(string) string) string {
 	for _, p := range systemWideOpenCode {
 		st, err := os.Stat(p)
 		if err != nil || st.IsDir() {
@@ -371,7 +486,16 @@ func misplacedOpenCodeHint() string {
 //
 // Empty when there is nothing to report, so it can be appended unconditionally.
 func foundElsewhereHint() string {
-	for _, p := range openCodeShimCandidates(runtimeGOOS(), os.Getenv) {
+	return foundElsewhereHintFor(runtimeGOOS(), os.Getenv)
+}
+
+// foundElsewhereHintFor is foundElsewhereHint with the OS and environment injectable, for the same
+// reason openCodePlatformCandidates takes them: this is a Windows-only message about Windows-only
+// shims, and a message that can only be checked on Windows is a message that will not be checked by
+// a gate that runs on Linux. Found by trying to test it — the hint came back empty on Linux because
+// runtimeGOOS() refused the platform, which is correct in production and untestable there.
+func foundElsewhereHintFor(goos string, getenv func(string) string) string {
+	for _, p := range openCodeShimCandidates(goos, getenv) {
 		st, err := os.Stat(p)
 		if err != nil || st.IsDir() {
 			continue
@@ -379,8 +503,17 @@ func foundElsewhereHint() string {
 		if strings.EqualFold(filepath.Ext(p), ".exe") {
 			continue // a real executable here would have resolved; this is for the shims
 		}
-		return fmt.Sprintf(" — NOTE: opencode IS installed at %s, but that is a package-manager SHIM and the plane cannot launch one directly (Windows needs cmd.exe for a .cmd, and a shim hides the real binary). Point at the executable instead: %s=<path to opencode.exe>",
-			p, OpenCodeBinEnv)
+		// NAME THE REAL EXECUTABLE, not just the problem. The operator supplied their own shim path
+		// ("C:\Users\justi\AppData\Roaming\npm\opencode.ps1"), which means the useful answer is
+		// where the binary that shim stands for lives — one level down, in node_modules — and why it
+		// might be missing even though the shim is there.
+		real := filepath.Join(filepath.Dir(p), "node_modules", "opencode-ai", "bin", "opencode.exe")
+		return fmt.Sprintf(" — NOTE: opencode IS installed at %s, but that is an npm SHIM and the plane "+
+			"cannot launch one directly: Windows needs cmd.exe for a .cmd/.ps1, and the real executable "+
+			"is what the shim wraps. The plane looks for %q as well. If that file is absent, npm's "+
+			"postinstall never ran — it is what copies the platform binary over the 479-byte stub — so "+
+			"reinstall without --ignore-scripts: npm i -g opencode-ai",
+			p, real)
 	}
 	return ""
 }
