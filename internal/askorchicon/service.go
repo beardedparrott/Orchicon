@@ -1375,6 +1375,11 @@ func conversationModeToProto(mode string) apiv1.ConversationMode {
 
 func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
 	meta := &apiv1.MessageMetadata{}
+	// injected marks a USER message that was interjected into an ALREADY RUNNING
+	// turn. The client uses it to place that message before the assistant reply it
+	// was injected into: created_at cannot, because the assistant row was created
+	// when the turn started and the interjection arrived mid-turn.
+	injected := false
 	if len(r.Metadata) > 0 {
 		var raw map[string]any
 		if err := json.Unmarshal(r.Metadata, &raw); err == nil {
@@ -1386,6 +1391,9 @@ func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
 			}
 			if v, ok := raw["error"].(string); ok {
 				meta.Error = v
+			}
+			if v, ok := raw["injected"].(bool); ok {
+				injected = v
 			}
 		}
 	}
@@ -1399,6 +1407,7 @@ func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
 		ToolResults:    toolResultsFromJSON(r.ToolResults),
 		Metadata:       meta,
 		CreatedAt:      timestamppb.New(r.CreatedAt),
+		Injected:       injected,
 	}
 }
 

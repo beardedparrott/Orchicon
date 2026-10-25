@@ -1117,6 +1117,22 @@ func (s *Service) persistUserMessage(ctx context.Context, tenantID string, conv 
 			attachmentsJSON = j
 		}
 	}
+	// THE INJECTION FLAG IS PART OF THE ROW, not only of the audit trail.
+	//
+	// It was written to the audit row and nowhere else, so the READ path could not
+	// tell an interjection from a message that started a turn — and that is exactly
+	// what the client needs to order the transcript. An assistant row is created
+	// when its turn STARTS, so created_at places it first; an interjection is
+	// persisted MID-TURN, so created_at places it AFTER the reply it is embedded
+	// in, and the operator's message renders below the answer it prompted.
+	//
+	// Stamping it here keeps ONE persist path (see this function's own contract
+	// above) and makes the ordering survive a reload, which a client-side-only
+	// flag could not.
+	metaJSON := []byte("{}")
+	if flags.injected {
+		metaJSON = []byte(`{"injected":true}`)
+	}
 	userMsg := db.MessageRow{
 		ID:             db.NewID(),
 		TenantID:       tenantID,
@@ -1126,7 +1142,7 @@ func (s *Service) persistUserMessage(ctx context.Context, tenantID string, conv 
 		ToolCalls:      []byte("[]"),
 		ToolResults:    []byte("[]"),
 		Attachments:    attachmentsJSON,
-		Metadata:       []byte("{}"),
+		Metadata:       metaJSON,
 		Reasoning:      []string{},
 	}
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)

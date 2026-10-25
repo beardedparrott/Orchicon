@@ -352,7 +352,22 @@ type ChatMessage struct {
 	// reasoning part received that turn, boundaries preserved), rendered by the
 	// frontend as thinking bubbles. Empty for user/tool/system messages and for
 	// assistants that emit no reasoning parts.
-	Reasoning     []string `protobuf:"bytes,10,rep,name=reasoning,proto3" json:"reasoning,omitempty"`
+	Reasoning []string `protobuf:"bytes,10,rep,name=reasoning,proto3" json:"reasoning,omitempty"`
+	// injected marks a USER message that was interjected into a turn that was
+	// already running, rather than one that started a turn.
+	//
+	// IT IS A DISPLAY-ORDER INPUT, not decoration. An assistant row is created when
+	// its turn STARTS and updated as it streams, so created_at puts it at the start
+	// of the turn. An interjection arrives mid-turn, so its created_at is LATER and
+	// it sorts AFTER the reply it is embedded in — the operator's message appeared
+	// below the answer it prompted, which reads as if the model replied first.
+	//
+	// The client must therefore place an injected message immediately BEFORE the
+	// assistant message it was injected into, which it can identify as the turn's
+	// pending/owning assistant message. created_at cannot express that on its own
+	// and no server-side reordering can, because the row that has to move is the
+	// assistant's and it is still being written.
+	Injected      bool `protobuf:"varint,11,opt,name=injected,proto3" json:"injected,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -455,6 +470,13 @@ func (x *ChatMessage) GetReasoning() []string {
 		return x.Reasoning
 	}
 	return nil
+}
+
+func (x *ChatMessage) GetInjected() bool {
+	if x != nil {
+		return x.Injected
+	}
+	return false
 }
 
 // ToolCall represents a function call made by the agent.
@@ -1372,7 +1394,7 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"project_id\x18\x0f \x01(\tR\tprojectId\x12\x1a\n" +
 	"\bfullsend\x18\x10 \x01(\bR\bfullsend\x12\x1f\n" +
 	"\vskill_files\x18\x11 \x03(\tR\n" +
-	"skillFiles\"\xc4\x03\n" +
+	"skillFiles\"\xe0\x03\n" +
 	"\vChatMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x12\n" +
@@ -1386,7 +1408,8 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x1c\n" +
 	"\treasoning\x18\n" +
-	" \x03(\tR\treasoning\"\x9c\x01\n" +
+	" \x03(\tR\treasoning\x12\x1a\n" +
+	"\binjected\x18\v \x01(\bR\binjected\"\x9c\x01\n" +
 	"\bToolCall\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12#\n" +

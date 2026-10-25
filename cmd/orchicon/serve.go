@@ -304,8 +304,28 @@ func serveStop() int {
 		if _, err := os.Stat(pidFile); err == nil {
 			_ = os.Remove(pidFile)
 		}
-		fmt.Println("serve is not running")
-		return 1
+		// BUT AN ABSENT PID FILE IS NOT EVIDENCE THAT NOTHING IS SERVING, and assuming it was made `--stop`
+		// LIE. A plane can outlive its PID file (the file was lost, or a rebuild replaced the binary and the
+		// record went with the old serve dir). This function then printed "serve is not running" while the
+		// port stayed bound — and every caller that cross-checks `--status` (which DOES discover an
+		// unrecorded plane, via planecontrol.StatusOf) saw the contradiction and refused to proceed:
+		//
+		//	✗ orchicon prod: the plane is STILL running after stop — refusing to report success
+		//	make: *** [Makefile:908: instance-down] Error 1
+		//
+		// which failed every `make instance-rebuild` over a serving instance.
+		//
+		// So the SAME discovery `--status` uses is applied here. The identification is strict — the listener
+		// on this instance's recorded control port must be an orchicon plane binary carrying THIS instance's
+		// tag — so a sibling instance is never signalled.
+		if discovered, ok := planecontrol.UnrecordedPlanePID(instanceForServe()); ok {
+			fmt.Printf("serve has no PID file but is serving this instance's port (PID %d) — stopping it\n", discovered)
+			pid = strconv.Itoa(discovered)
+			running = true
+		} else {
+			fmt.Println("serve is not running")
+			return 1
+		}
 	}
 	pidNum, err := strconv.Atoi(pid)
 	if err != nil {
