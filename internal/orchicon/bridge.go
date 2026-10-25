@@ -91,6 +91,17 @@ type NativeBridge struct {
 	// by mu. Lost on a server restart (the DB transcript remains the
 	// durable record).
 	chatHistory map[string][]Message
+	// askInjections holds operator messages that arrived WHILE A TURN WAS LIVE on that session
+	// (sessionID → messages not yet shown to the model). Guarded by mu.
+	//
+	// THIS IS THE PROMPT QUEUE THE NATIVE BRIDGE DID NOT HAVE. The transports are sessionless, so there is
+	// no server-side queue to hand a mid-turn message to; the turn loop drains this into its own `working`
+	// history, which is re-sent as full context on the next provider call (chatturn.go). That makes an
+	// interjection visible to the model at the NEXT MODEL CALL rather than at the end of the whole turn.
+	//
+	// It cannot be earlier, and that is physics rather than a gap: a provider call's input is fixed for the
+	// duration of that call, so "the model sees it right away" can only mean "on the next call".
+	askInjections map[string][]Message
 	// askHistorySeen is a MULTISET of fingerprints for every message a session has ever held, so a message
 	// that DISAPPEARS is reported instead of passing silently. Guarded by mu.
 	//

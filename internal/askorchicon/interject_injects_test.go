@@ -333,12 +333,15 @@ func (queueingClient) QueuesPrompts() bool { return true }
 // The contract now: nothing is sent mid-turn, the message is held, and a follow-up turn answers it — the
 // operator's own words: "send it immediately into the chat, no error message, and then fit it into the
 // context when it is possible (a turn occurs)".
-func TestNativeAdapterHoldsTheInjectionForTheNextTurn(t *testing.T) {
+func TestAnAdapterThatCannotQueueHoldsTheInjectionForTheNextTurn(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
 	s := newChatService(t, pool, client)
-	// NO queueing declaration: this is the native bridge's shape.
+	// NO queueing declaration: an adapter that has no prompt queue of its own. The NATIVE BRIDGE used to be
+	// this shape and no longer is (it queues, see TestTheNativeBridgeDeclaresItQueues); the branch still
+	// exists because a future adapter may not be able to queue, and it must degrade to "held, not an error"
+	// rather than to a rejected stream.
 	s.testServeClient = client
 
 	convID := createConversation(t, pool, testInterjectModelRef)

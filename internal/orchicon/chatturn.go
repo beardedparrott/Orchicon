@@ -766,19 +766,86 @@ func (b *NativeBridge) Subscribe(ctx context.Context, conversationID string) (sc
 	return bus, nil
 }
 
-// QueuesPrompts implements scheduler.SessionQueuesPrompts and answers FALSE, which is the whole reason that
-// interface exists.
+// QueuesPrompts implements scheduler.SessionQueuesPrompts and answers TRUE, because the native bridge now HAS
+// a prompt queue of its own (askInjections, bridge.go).
 //
-// The native bridge EMULATES a session: history is held in memory and re-sent with every request, and
-// SendTurnMessage STARTS A PROVIDER TURN each time (it also overwrites the running turn's cancel handle). It
-// has no server-side prompt queue, so a message sent mid-turn does not join the turn — it starts a second
-// concurrent stream on the same session. When the running turn is blocked on a human answer (ask_user), the
-// provider rejects the second one, and the operator gets an error banner for a message that should simply have
-// waited. Reported exactly that way.
+// WHAT IT USED TO ANSWER, AND WHY THAT WAS NOT GOOD ENOUGH. It said FALSE, honestly: the transports are
+// sessionless, history is held in memory and re-sent per request, and SendTurnMessage STARTED A PROVIDER TURN
+// each time (also overwriting the running turn's cancel handle). A mid-turn send therefore did not join the
+// turn — it started a second concurrent stream, which the provider rejected outright while the running turn
+// waited on a human answer. So askorchicon HELD the message and answered it on the NEXT turn.
 //
-// Claiming FALSE costs nothing and is honest: askorchicon then persists the message and answers it on the next
-// turn, which is what this adapter can actually do.
-func (b *NativeBridge) QueuesPrompts() bool { return false }
+// The cost of that honesty was the behaviour the operator reported: "it doesn't get seen until the turn is
+// completely stopped … isn't extremely helpful if a user sees your reasoning and wants to add some notes".
+//
+// TRUE IS NOW ACCURATE, and accurate in the way the operator asked for: the message joins the RUNNING turn
+// instead of starting a competing one. dispatchTurnMessage sees a live turn and ENQUEUES; the turn loop drains
+// the queue into its own `working` history, which is re-sent as the full context of the next provider call. So
+// the model picks the note up at its next model call — the next tool round, seconds away — and when the model
+// is finishing instead, the drain forces one more round so the note is ANSWERED, not merely stored.
+func (b *NativeBridge) QueuesPrompts() bool { return true }
+
+// enqueueInjection adds a mid-turn message to the session's prompt queue, reporting whether it did.
+//
+// It reports true only when a turn was LIVE for this session; the caller then stops, because the message has
+// joined that turn and starting a provider turn would be the competing-stream bug this replaces.
+//
+// THE CHECK AND THE APPEND ARE ONE CRITICAL SECTION, deliberately. chatTurns is deleted by a finishing turn
+// under the same lock, so a message can never be enqueued against a turn that has already ended and then sit
+// unseen: the "ended first" answer is false, and the caller starts a normal turn instead.
+func (b *NativeBridge) enqueueInjection(sessionID, text string, attachments []scheduler.ChatAttachment) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.chatTurns[sessionID] == nil {
+		return false, nil
+	}
+	content, err := askUserContent(text, attachments)
+	if err != nil {
+		// It IS an injection — a turn is live — so the caller must report the unusable content rather than
+		// quietly starting a second turn.
+		return true, err
+	}
+	if b.askInjections == nil {
+		b.askInjections = map[string][]Message{}
+	}
+	b.askInjections[sessionID] = append(b.askInjections[sessionID], Message{Role: RoleUser, Content: content})
+	return true, nil
+}
+
+// drainInjections moves every queued injection into the turn's replayable history and reports whether there
+// was one. That history is re-sent as full context on the next provider call, which is what makes the
+// operator's note visible to the model.
+func (b *NativeBridge) drainInjections(sessionID string, working *[]Message) bool {
+	b.mu.Lock()
+	pending := b.askInjections[sessionID]
+	if len(pending) == 0 {
+		b.mu.Unlock()
+		return false
+	}
+	delete(b.askInjections, sessionID)
+	b.mu.Unlock()
+	*working = append(*working, pending...)
+	return true
+}
+
+// takeOrphanInjections removes any injection still queued for a session whose turn has ENDED, so the caller can
+// put it in context.
+//
+// THIS CLOSES THE ONE RACE THE DRAIN POINTS CANNOT. A turn drains at each tool round and at its own finish; a
+// message that lands just after that last drain has no round left to join. Left in the map it would be
+// invisible until some later turn happened to drain it — a user note silently parked. The turn's exit sweep
+// takes them into the session history so the next turn's replayed context carries them, and says so instead of
+// pretending they were delivered.
+func (b *NativeBridge) takeOrphanInjections(sessionID string) []Message {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	pending := b.askInjections[sessionID]
+	if len(pending) == 0 {
+		return nil
+	}
+	delete(b.askInjections, sessionID)
+	return pending
+}
 
 // SendTurnMessage implements scheduler.ChatTurnClient. It appends the user
 // message to the session's in-memory history, resolves the provider from the
@@ -857,6 +924,25 @@ func askUserContent(text string, attachments []scheduler.ChatAttachment) ([]Cont
 func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []scheduler.ChatAttachment) error {
 	if sessionID == "" {
 		return errors.New("orchicon bridge: send turn requires a session id (create the conversation session first)")
+	}
+	// A MESSAGE THAT ARRIVES WHILE A TURN IS LIVE JOINS THAT TURN — IT DOES NOT START A SECOND ONE.
+	//
+	// This is the interjection change at its entry point. askorchicon now calls this for an interjection
+	// (QueuesPrompts reports true), and the running turn picks the note up at its next provider call — what the
+	// operator asked for: injected into the running context, no abort, seen right away. Starting a streaming
+	// turn here instead is the competing-stream bug this replaces, and it is exactly why the old code held the
+	// message until the turn ended.
+	//
+	// BEFORE provider resolution and the pressure gate, deliberately: neither applies to a message that is only
+	// joining a turn already in flight, and the gate would compact a conversation on account of a note that has
+	// not joined anything yet.
+	if joined, jerr := b.enqueueInjection(sessionID, text, attachments); joined {
+		if jerr != nil {
+			return jerr
+		}
+		b.log.Info("orchicon: interjection joined the running turn",
+			"session", sessionID, "conversation", conversationID)
+		return nil
 	}
 	tenantID := tenant.FromContext(ctx)
 	if tenantID == "" {
@@ -990,9 +1076,26 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, conversationID, sessionID string, history []Message, usageSink func(context.Context, Usage)) {
 	defer bus.release()
 	defer func() {
+		// THE TURN IS OVER, so it can no longer drain a note that arrived in the last microseconds. Take any
+		// orphan out of the queue IN THE SAME CRITICAL SECTION that clears the live-turn marker, so enqueue's
+		// "is a turn live?" question can never answer yes for a turn that has already finished.
+		orphans := b.takeOrphanInjections(sessionID)
 		b.mu.Lock()
 		delete(b.chatTurns, sessionID)
 		b.mu.Unlock()
+		if len(orphans) > 0 {
+			// NOT DELIVERED, AND SAID SO. Appending to the session history puts the note in the context the
+			// NEXT turn replays, so it is not stranded — but no round is left to answer it here, and claiming
+			// otherwise would be the kind of quiet lie this file keeps fixing.
+			b.mu.Lock()
+			b.chatHistory[sessionID] = append(b.chatHistory[sessionID], orphans...)
+			// Persisted under the SAME lock, through the one choke point every history mutation uses, so a
+			// restart replays the note instead of dropping it.
+			b.persistAskHistoryLocked(sessionID)
+			b.mu.Unlock()
+			b.log.Warn("orchicon: an interjection arrived after the turn's last round — carried into the next turn's context",
+				"session", sessionID, "messages", len(orphans))
+		}
 	}()
 
 	// working is the turn's replayable history: it starts as the snapshot
@@ -1047,6 +1150,45 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		emitTurnParts()
 		bus.emit(scheduler.SessionEvent{Kind: "idle"})
 		b.commitChatHistory(sessionID, history, working)
+	}
+
+	// startRound rebuilds the request from `working` and opens the next provider call, reporting false when
+	// the turn must end (the failure has already been reported and committed).
+	//
+	// IT IS ONE CLOSURE, NOT TWO COPIES, because the two reasons to continue — a tool round, and an
+	// interjection that arrived as the model was finishing — must share ONE error path. A second copy is
+	// precisely how the commit-on-cancel fix (the long note below) would go missing from one of them.
+	startRound := func() (TurnStream, bool) {
+		req.Messages = append([]Message(nil), working...)
+		next, err := prov.StreamTurn(ctx, req)
+		if err != nil {
+			// COMMIT WHAT THE TURN ALREADY PRODUCED BEFORE LEAVING. This is the abort path's own principle
+			// ("everything the round produced is still in hand here, so it is published") applied to the place
+			// it was still missing. By this point `working` holds every COMPLETED tool round — the assistant's
+			// text, its tool calls and their results — and returning bare DISCARDS all of it, leaving the
+			// session with the operator's message followed by nothing.
+			//
+			// IT IS THE SUPERSEDE PATH, AND IT IS NOT RARE. A turn cancelled mid-loop surfaces HERE — as a
+			// context.Canceled from the NEXT round's StreamTurn — not through drainOneRound's aborted flag, so
+			// it bypassed the abort path's commit entirely.
+			//
+			// MEASURED, on the operator's own conversation, on a binary that already had that abort-path fix:
+			// a turn produced 123 chars of text and ran FOUR tools, the operator interjected, and the session
+			// ended up holding two consecutive user messages with no trace of the turn between them — the work
+			// was in the transcript and on the operator's screen, and invisible to the model.
+			//
+			// AND NO GUARD CAN SEE THIS ONE. The loss guard compares the session against what it last held, so
+			// it catches a message that DISAPPEARS. This message never arrived — an omission, not a
+			// disappearance — which is why the guard stayed silent while the work was lost.
+			if errors.Is(err, context.Canceled) {
+				b.commitChatHistory(sessionID, history, working)
+				return nil, false
+			}
+			bus.emit(scheduler.SessionEvent{Kind: "error", Type: "error", Text: err.Error()})
+			b.commitChatHistory(sessionID, history, working)
+			return nil, false
+		}
+		return next, true
 	}
 
 	for round := 0; ; round++ {
@@ -1136,6 +1278,25 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		}
 		if len(calls) == 0 {
 			b.appendAssistantText(&working, roundText)
+			// AN INTERJECTION THAT ARRIVED WHILE THIS ROUND WAS GENERATING MUST NOT BE LEFT UNANSWERED.
+			//
+			// The model has stopped calling tools, which is where a turn normally ends — but the operator may
+			// have added a note while this round streamed, and "answered on the NEXT turn" is exactly the
+			// complaint this change removes. So a pending note forces one more round: it joins the history and
+			// the model reads it and responds IN THIS TURN.
+			//
+			// The round count stays unbounded for the same reason the tool loop is: what bounds a turn is the
+			// time gates (the reply window, the turn TTL sweeper, the stall monitor), not a count — so a model
+			// that answers each note by finishing again simply extends the turn by one round per note, which
+			// is the intended behaviour rather than a runaway.
+			if b.drainInjections(sessionID, &working) {
+				next, ok := startRound()
+				if !ok {
+					return
+				}
+				stream = next
+				continue
+			}
 			finishTurn()
 			return
 		}
@@ -1154,34 +1315,12 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 		// ORCHICON_ASK_TURN_MAX_AGE — internal/askorchicon/chat.go), and the
 		// stall monitor (tenant stall settings).
 		b.executeToolCalls(ctx, bus, &working, calls, conversationID)
-		req.Messages = append([]Message(nil), working...)
-		next, err := prov.StreamTurn(ctx, req)
-		if err != nil {
-			// COMMIT WHAT THE TURN ALREADY PRODUCED BEFORE LEAVING. This is the abort path's own principle
-			// ("everything the round produced is still in hand here, so it is published") applied to the place
-			// it was still missing. By this point `working` holds every COMPLETED tool round — the assistant's
-			// text, its tool calls and their results — and returning bare DISCARDS all of it, leaving the
-			// session with the operator's message followed by nothing.
-			//
-			// IT IS THE SUPERSEDE PATH, AND IT IS NOT RARE. An interjection cancels the running turn
-			// mid-loop, and the cancellation surfaces HERE — as a context.Canceled from the NEXT round's
-			// StreamTurn — not through drainOneRound's aborted flag. So it bypassed the abort path's commit
-			// entirely, and the abort-path fix (which this file already carried) could not help.
-			//
-			// MEASURED, on the operator's own conversation, on a binary that already had that abort-path fix:
-			// a turn produced 123 chars of text and ran FOUR tools, the operator interjected, and the session
-			// ended up holding two consecutive user messages with no trace of the turn between them — the work
-			// was in the transcript and on the operator's screen, and invisible to the model.
-			//
-			// AND NO GUARD CAN SEE THIS ONE. The loss guard compares the session against what it last held, so
-			// it catches a message that DISAPPEARS. This message never arrived — an omission, not a
-			// disappearance — which is why the guard stayed silent while the work was lost.
-			if errors.Is(err, context.Canceled) {
-				b.commitChatHistory(sessionID, history, working)
-				return
-			}
-			bus.emit(scheduler.SessionEvent{Kind: "error", Type: "error", Text: err.Error()})
-			b.commitChatHistory(sessionID, history, working)
+		// A NOTE THAT ARRIVED DURING THE TOOL ROUND JOINS THE CONTEXT BEFORE THE NEXT MODEL CALL — the
+		// tightest boundary available, because a tool round IS one provider call. The operator's words are in
+		// front of the model on its very next turn of thought rather than at the end of the whole turn.
+		b.drainInjections(sessionID, &working)
+		next, ok := startRound()
+		if !ok {
 			return
 		}
 		stream = next

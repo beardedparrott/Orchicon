@@ -49,14 +49,34 @@ func TestQueuesPromptsRespectsTheDeclaration(t *testing.T) {
 	}
 }
 
-// TestTheNativeBridgeDeclaresItDoesNotQueue is the contract that makes the fix work, asserted where the
-// behaviour actually lives rather than only in this package's fakes.
-func TestTheNativeBridgeDeclaresItDoesNotQueue(t *testing.T) {
+// TestTheNativeBridgeDeclaresItQueues is the contract that makes an interjection JOIN the running turn,
+// asserted where the behaviour lives rather than only in this package's fakes.
+//
+// IT USED TO ASSERT `return false`, and that was right at the time: SendTurnMessage started a provider turn,
+// so delivering mid-turn ran a SECOND concurrent stream that the provider rejected. So askorchicon HELD the
+// message until the next turn — the behaviour the operator reported as "it doesn't get seen until the turn is
+// completely stopped".
+//
+// TRUE is correct now because the bridge has its own queue (askInjections): dispatchTurnMessage enqueues when a
+// turn is live, and the turn loop drains it into the history re-sent on the next provider call. Asserted as a
+// PAIR with the queue's existence, because the declaration alone would let a refactor delete the queue and
+// leave askorchicon sending into nothing.
+func TestTheNativeBridgeDeclaresItQueues(t *testing.T) {
 	src := readSource(t, "../../internal/orchicon/chatturn.go")
-	if !containsStr(src, "func (b *NativeBridge) QueuesPrompts() bool { return false }") {
-		t.Error("the native bridge no longer declares QueuesPrompts() == false. Its SendTurnMessage starts a " +
-			"new provider turn, so an interjection delivered that way runs a SECOND concurrent stream and is " +
-			"rejected while the turn waits on an ask_user answer — the reported error banner")
+	if !containsStr(src, "func (b *NativeBridge) QueuesPrompts() bool { return true }") {
+		t.Error("the native bridge no longer declares QueuesPrompts() == true, so an interjection would be held " +
+			"until the next turn instead of joining the running one — the reported \"not seen until the turn " +
+			"is completely stopped\"")
+	}
+	// THE OTHER HALF: the declaration is only honest if the queue it promises exists and is drained.
+	bridge := readSource(t, "../../internal/orchicon/bridge.go")
+	if !containsStr(bridge, "askInjections map[string][]Message") {
+		t.Error("QueuesPrompts() reports true but the bridge holds no injection queue — a mid-turn send would " +
+			"be accepted and then lost")
+	}
+	if !containsStr(src, "b.drainInjections(sessionID, &working)") {
+		t.Error("nothing drains the injection queue into the turn's history, so the model would never see a " +
+			"queued message")
 	}
 }
 
