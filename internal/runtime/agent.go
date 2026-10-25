@@ -484,8 +484,12 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	// The serve runs the agent's tools, so the same safety guard applies:
 	// destructive commands are refused even from worker subprocesses.
 	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
-	if guardErr != nil {
-		h.log.Warn("supervisor: guard not applied to serve", "error", guardErr)
+	if guardErr != nil || guardDir == "" {
+		// guardDir == "" is the UNSUPPORTED-PLATFORM case (Windows), not a failure:
+		// MakeGuard reports it with a nil error because no guard can exist there. Both
+		// cases mean "run without the shim", and prepending "" to PATH would put the
+		// working directory on the worker's search path.
+		h.log.Warn("supervisor: guard not applied to serve", "error", guardErr, "supported", guardDir != "")
 	} else {
 		env = prependGuard(env, guardDir)
 		s.guardDir = guardDir
@@ -584,8 +588,8 @@ func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
 	}
 	env := agentEnv(req)
 	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
-	if guardErr != nil {
-		h.log.Warn("supervisor: guard not applied to exec", "error", guardErr)
+	if guardErr != nil || guardDir == "" {
+		h.log.Warn("supervisor: guard not applied to exec", "error", guardErr, "supported", guardDir != "")
 	} else {
 		env = prependGuard(env, guardDir)
 		defer os.RemoveAll(guardDir)
@@ -697,8 +701,8 @@ func (h *childRegistry) runStdio(dec *json.Decoder, enc *json.Encoder, req Agent
 	}
 	env := agentEnv(req)
 	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
-	if guardErr != nil {
-		h.log.Warn("supervisor: guard not applied to stdio", "error", guardErr)
+	if guardErr != nil || guardDir == "" {
+		h.log.Warn("supervisor: guard not applied to stdio", "error", guardErr, "supported", guardDir != "")
 	} else {
 		env = prependGuard(env, guardDir)
 	}
@@ -1001,8 +1005,8 @@ func (h *childRegistry) startServeAgain(kind string, req AgentRequest) error {
 	env = setEnv(env, "OPENCODE_SERVER_PASSWORD", pw)
 	env = isolateOpenCodeDataInto(env, serveDataDir)
 	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
-	if guardErr != nil {
-		h.log.Warn("supervisor: guard not applied to serve restart", "error", guardErr)
+	if guardErr != nil || guardDir == "" {
+		h.log.Warn("supervisor: guard not applied to serve restart", "error", guardErr, "supported", guardDir != "")
 	} else {
 		env = prependGuard(env, guardDir)
 		s.guardDir = guardDir
