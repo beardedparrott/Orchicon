@@ -199,16 +199,27 @@ func TestFriendlyErrExplainsAnUnconfiguredDiscoverer(t *testing.T) {
 	}
 	// THE PLANE'S OWN REMEDY MUST SURVIVE. The plane names the fix in a parenthetical, and this client used to
 	// replace the whole message with a dead end — reported verbatim by the operator selecting the opencode
-	// adapter: "it says 'model discovery is not configured on this plane'". The hint and the restart are both
-	// part of the answer: the discoverer is built at BOOT, so installing opencode while the plane runs changes
-	// nothing until it restarts, and without that sentence the operator concludes the message is wrong.
+	// adapter: "it says 'model discovery is not configured on this plane'".
 	plane := errText("rpc error: code = Unimplemented desc = model discovery is not configured (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
 	got := FriendlyErr(plane)
 	if !strings.Contains(got, "ORCHICON_OPENCODE_BIN") || !strings.Contains(got, "install opencode on PATH") {
 		t.Errorf("FriendlyErr dropped the plane's remedy (got %q) — that parenthetical is the only actionable part", got)
 	}
-	if !strings.Contains(got, "restart") {
-		t.Errorf("FriendlyErr does not say the plane must restart (got %q) — the discoverer is built at boot, so that is the step the operator cannot guess", got)
+	// RETRY, NOT RESTART — and the assertion is INVERTED on purpose, which is worth reading before
+	// "fixing" it back. This used to REQUIRE the word "restart", because the discoverer was built once
+	// at boot and installing opencode changed nothing until the plane restarted. The plane now
+	// re-resolves on the request a selection makes (internal/aigateway's lazy discoverer), so a restart
+	// is no longer the step — and instructing one would send the operator to do something that does not
+	// help, then blame it when the message legitimately returns.
+	if strings.Contains(got, "restart") {
+		t.Errorf("FriendlyErr still tells the operator to restart the plane (got %q). Discovery is "+
+			"re-resolved on the next request, so the instruction is stale: it sends them to restart, "+
+			"see the same message if the binary really is absent, and conclude the message is wrong.",
+			got)
+	}
+	if !strings.Contains(got, "try again") {
+		t.Errorf("FriendlyErr does not invite a retry (got %q) — a retry is what re-probes for the "+
+			"binary now, so it is the action that fixes the common case", got)
 	}
 	if strings.Contains(got, "not configured (") {
 		t.Errorf("the plane's parentheses leaked through unfinished (got %q)", got)

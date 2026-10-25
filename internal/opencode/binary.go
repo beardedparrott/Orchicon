@@ -139,6 +139,18 @@ func openCodePlatformCandidates(goos string, getenv func(string) string) []strin
 	add(env("LOCALAPPDATA"), "Programs", "opencode")
 	add(env("USERPROFILE"), "scoop", "shims")
 	add(env("LOCALAPPDATA"), "Microsoft", "WinGet", "Links")
+	// NPM AND BUN GLOBALS ON WINDOWS, which the list above misses and which are the two most likely
+	// places a `npm i -g opencode-cli` or `bun add -g` lands.
+	//
+	// %APPDATA%\npm is the npm global prefix on Windows (%APPDATA%\Roaming\npm). It normally holds a
+	// `.cmd` shim rather than an executable — that is what openCodeShimCandidates reports — but some
+	// packages ship the real binary beside it, so it is probed as well as diagnosed. Probing a
+	// directory that turns out to hold only a shim costs one failed os.Stat.
+	//
+	// %USERPROFILE%\.bun\bin mirrors the POSIX list's .bun/bin, which had no Windows counterpart at
+	// all: bun's Windows install is a real .exe, so it resolves where npm's shim cannot.
+	add(env("APPDATA"), "npm")
+	add(env("USERPROFILE"), ".bun", "bin")
 	// Then the machine-wide ones, for an all-users install.
 	add(env("ProgramFiles"), "opencode")
 	add(env("ProgramFiles(x86)"), "opencode")
@@ -167,7 +179,15 @@ func openCodeShimCandidates(goos string, getenv func(string) string) []string {
 		return strings.TrimSpace(getenv(k))
 	}
 	var out []string
-	for _, dir := range []string{env("APPDATA"), joinIfBase(env("USERPROFILE"), "scoop", "shims")} {
+	// %APPDATA%\npm IS THE NPM GLOBAL PREFIX ON WINDOWS, and this list used to name %APPDATA% itself —
+	// one directory too high, so the shim it exists to find was never found and the hint stayed silent
+	// for the exact operator it was written for ("but I installed it"). Both are kept: APPDATA covers a
+	// hand-rolled shim at the top level, npm covers the real one.
+	for _, dir := range []string{
+		joinIfBase(env("APPDATA"), "npm"),
+		env("APPDATA"),
+		joinIfBase(env("USERPROFILE"), "scoop", "shims"),
+	} {
 		if dir == "" {
 			continue
 		}
@@ -176,6 +196,31 @@ func openCodeShimCandidates(goos string, getenv func(string) string) []string {
 		}
 	}
 	return out
+}
+
+// lookupEnvFold reads an environment variable case-INSENSITIVELY, which is how Windows names them.
+//
+// IT LIVES IN THE SHARED FILE, not the Windows one, for two reasons. The persisted Windows Path is
+// full of %SystemRoot%-style references while the process routinely exports the upper-case spelling,
+// so a case-sensitive lookup would expand nothing and silently drop real directories — that logic
+// needs to be reachable from a test on any OS. And it is only ever used by name from the Windows
+// path-expansion helper, so keeping it here costs the Unix build nothing.
+//
+// An EMPTY result means "not set": the caller treats an unexpanded reference as a dead directory.
+func lookupEnvFold(getenv func(string) string, name string) string {
+	if getenv == nil || name == "" {
+		return ""
+	}
+	if v := getenv(name); v != "" {
+		return v
+	}
+	for _, kv := range os.Environ() {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
 }
 
 // resolveOpenCodeBinary is the ONE production resolver: the env override, then
@@ -194,7 +239,7 @@ func resolveOpenCodeBinary() (string, error) {
 		}
 		return v, nil
 	}
-	if p, err := exec.LookPath("opencode"); err == nil {
+	if p, err := exec.LookPath("opencode"); err == nil && launchableResolved(runtimeGOOS(), p) {
 		return p, nil
 	}
 	if home := hostHome(); home != "" {
@@ -207,6 +252,20 @@ func resolveOpenCodeBinary() (string, error) {
 	}
 	// THE PLATFORM PASS: where THIS OS installs opencode beyond the POSIX $HOME shapes above. Empty on Unix.
 	for _, cand := range openCodePlatformCandidates(runtimeGOOS(), os.Getenv) {
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			return cand, nil
+		}
+	}
+	// THE PERSISTED PATH, LAST. This process's PATH is the one it was STARTED with, and on Windows that
+	// snapshot is taken from the registry at logon — so a plane started before opencode was installed
+	// keeps looking in the places the operator has since replaced. Re-reading the registry is what makes
+	// "I installed it and I can run it from anywhere" true for the plane too, without a restart.
+	//
+	// AFTER the fixed candidates, deliberately: a known install location is a better answer than a
+	// directory that merely happens to be on PATH today, and the fixed list is what the container
+	// mounts are built from. Empty on Unix (see pathrefresh_other.go).
+	for _, dir := range registryPathDirs() {
+		cand := filepath.Join(dir, "opencode"+executableExt())
 		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
 			return cand, nil
 		}
@@ -322,6 +381,49 @@ func foundElsewhereHint() string {
 		}
 		return fmt.Sprintf(" — NOTE: opencode IS installed at %s, but that is a package-manager SHIM and the plane cannot launch one directly (Windows needs cmd.exe for a .cmd, and a shim hides the real binary). Point at the executable instead: %s=<path to opencode.exe>",
 			p, OpenCodeBinEnv)
+	}
+	return ""
+}
+
+// launchableResolved reports whether a path LookPath returned can actually be EXECUTED here,
+// rather than merely found.
+//
+// THIS CLOSES A HOLE IN THE FILE'S OWN RULE. openCodePlatformCandidates states the policy plainly —
+// a Windows npm global install lands a `opencode.cmd` shim, Go cannot CreateProcess a .cmd (it needs
+// cmd.exe), so resolving the shim "would be the exact failure this file exists to prevent". But
+// LookPath runs BEFORE those candidates and returns the shim happily, so a PATH that carries the npm
+// prefix sailed past the policy: resolution "succeeded", discovery started offering models, and the
+// first execution died somewhere unrelated. The rule only held for paths the candidate tables found.
+//
+// Windows only. On Unix a shell script IS executable, so LookPath's answer is always launchable and
+// there is nothing to filter — gating on the OS keeps the Unix behaviour byte-for-byte unchanged
+// rather than relying on an extension allow-list that would be wrong there (.exe is a normal name).
+// THE OS IS A PARAMETER, not read from the host, for the same reason openCodePlatformCandidates
+// takes one: the rule is a pure function of the platform and the path, and a rule that can only be
+// checked on Windows is a rule that will not be checked by a gate that runs on Linux.
+func launchableResolved(goos, p string) bool {
+	if goos != "windows" {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".cmd", ".bat", ".ps1":
+		// Findable, not runnable. Falling through lets the candidate tables and the registry pass
+		// run, and foundElsewhereHint names the shim with the remedy that works.
+		return false
+	}
+	return true
+}
+
+// executableExt is the suffix a spawned executable needs on this platform: ".exe" on Windows, and
+// EMPTY everywhere else, where an extension is not part of the name.
+//
+// IT EXISTS SO THE REGISTRY-PATH PROBE DOES NOT SPELL THE PLATFORM OUT TWICE. The Windows candidate
+// table above already appends ".exe" by hand; a second literal in the probe loop is how the two lists
+// drift apart, and a drifted probe is silent — it just stops matching and resolution falls back
+// without anything reporting a problem.
+func executableExt() string {
+	if runtimeGOOS() == "windows" {
+		return ".exe"
 	}
 	return ""
 }

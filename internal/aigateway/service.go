@@ -42,6 +42,12 @@ type Service struct {
 	registry      adapter.ProviderRegistry
 	discoverer    *ModelDiscoverer
 	mcpDiscoverer *MCPDiscoverer
+	// discovererMu guards the lazy re-resolution of the pair above (discoverer_lazy.go). It is held
+	// across the factory call so two concurrent model-tier requests cannot both probe.
+	discovererMu sync.Mutex
+	// discovererFactory resolves the pair on first need, when boot could not. nil means "no late
+	// resolution available", which is the headless/test case.
+	discovererFactory DiscovererFactory
 	// adapterKinds returns the adapter kinds registered with the
 	// Dispatcher (ADR-0004 D1). nil falls back to the default adapter
 	// kind so the picker never blanks.
@@ -166,7 +172,12 @@ func (s *Service) providersForAdapter(adapterKind string) []*apiv1.AIProvider {
 // D3). A legacy 2-segment ref (no adapter) resolves to the default
 // adapter kind.
 func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[apiv1.ListOpenCodeModelsRequest]) (*connect.Response[apiv1.ListOpenCodeModelsResponse], error) {
-	if s.discoverer == nil {
+	// RESOLVE ON DEMAND, which is the whole of "selecting the opencode adapter finds opencode".
+	// Boot may have failed to find the binary; this asks again, once per process, and caches on
+	// success. Without it this branch was permanent for the life of the plane and the message
+	// blamed a binary that was, in fact, installed (discoverer_lazy.go has the report).
+	discoverer, _ := s.ensureDiscoverers()
+	if discoverer == nil {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("model discovery is not configured (set ORCHICON_OPENCODE_BIN or install opencode on PATH)"))
 	}
 	provider := ""
@@ -177,7 +188,7 @@ func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[a
 	if req.Msg.Adapter != nil {
 		adapterKind = *req.Msg.Adapter
 	}
-	models, err := s.discoverer.ListModels(ctx, provider)
+	models, err := discoverer.ListModels(ctx, provider)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list opencode models: %w", err))
 	}
@@ -206,10 +217,11 @@ func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[a
 // ListOpenCodeMCPs enumerates MCP servers configured in opencode
 // by shelling out to `opencode mcp list`.
 func (s *Service) ListOpenCodeMCPs(ctx context.Context, req *connect.Request[apiv1.ListOpenCodeMCPsRequest]) (*connect.Response[apiv1.ListOpenCodeMCPsResponse], error) {
-	if s.mcpDiscoverer == nil {
+	_, mcpDiscoverer := s.ensureDiscoverers()
+	if mcpDiscoverer == nil {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("MCP discovery is not configured"))
 	}
-	servers, err := s.mcpDiscoverer.ListMCPs(ctx)
+	servers, err := mcpDiscoverer.ListMCPs(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list opencode MCPs: %w", err))
 	}

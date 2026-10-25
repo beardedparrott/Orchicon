@@ -399,15 +399,24 @@ func FriendlyErr(err error) string {
 		// configured on this plane" instead, which is a DEAD END — reported verbatim by the operator
 		// selecting the opencode adapter: "it says 'model discovery is not configured on this plane'".
 		//
-		// THE RESTART IS PART OF THE ANSWER, not padding. The discoverer is built at BOOT from what the plane
-		// could find (see internal/server), so installing opencode while the plane runs does not enable
-		// discovery until it restarts. Without that sentence the operator installs opencode, retries, sees the
-		// same message, and concludes the message is wrong.
+		// THE RESTART SENTENCE IS GONE, AND THAT IS THE FIX RATHER THAN A TIDY-UP.
+		//
+		// It used to end "... — then restart the plane", and it was TRUE: the discoverer was built
+		// once at boot, so installing opencode while the plane ran changed nothing until a restart.
+		// Reported as "It should be auto discovering the location of opencode ... This should happen
+		// automatically when someone selects the opencode adapter" — and it now does, because the
+		// plane re-resolves on the request that a selection makes (internal/aigateway's lazy
+		// discoverer). Telling the operator to restart after that would be an instruction to do
+		// something that no longer helps, which is worse than saying nothing: they would restart,
+		// see the same message if the binary genuinely is absent, and blame the restart.
+		//
+		// So the remedy keeps its two real forms and ends with RETRY, which is now the action that
+		// actually re-probes.
 		hint := planeHint(txt)
 		if hint == "" {
 			hint = "install opencode on the plane's PATH, or set ORCHICON_OPENCODE_BIN"
 		}
-		return "model discovery is not configured on this plane — " + hint + " — then restart the plane"
+		return "model discovery is not configured on this plane — " + hint + " — then try again"
 	}
 	return txt
 }
