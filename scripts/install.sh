@@ -1194,24 +1194,24 @@ GUIDANCE
       echo ""
       ok "Desktop app: ${DESKTOP_RESULT_WHY}"
       ;;
-    skipped)
+    skipped|unavailable)
       echo ""
-      info "Desktop app: not installed — ${DESKTOP_RESULT_WHY}"
-      ;;
-    unavailable)
-      echo ""
-      warn "Desktop app: NOT INSTALLED — ${DESKTOP_RESULT_WHY}"
-      warn "  Everything else is installed and works; the GUI client is the only missing piece."
-      case "$os" in
-        linux)
-          echo -e "  ${D}Build it from this tree: make desktop-build   (then ./bin/orchicon-desktop)${X}"
-          echo -e "  ${D}Or use a build that carries one:${X}"
-          echo -e "  ${D}  https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases${X}"
-          ;;
-        *)
-          echo -e "  ${D}Download it from: https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${VERSION}${X}"
-          ;;
-      esac
+      if [ "$DESKTOP_RESULT" = "unavailable" ]; then
+        warn "Desktop app: NOT INSTALLED — ${DESKTOP_RESULT_WHY}"
+        warn "  Everything else is installed and works; the GUI client is the only missing piece."
+      else
+        info "Desktop app: not installed — ${DESKTOP_RESULT_WHY}"
+      fi
+      # NOBODY IS LEFT TO FIND IT, and this is the half a refactor is most likely to drop: the
+      # "where to get it" pointer used to live in the skip branch alone. It is printed for BOTH
+      # states because "this release carries none" is the case that needs it MOST — and because
+      # an operator who ran the documented one-liner and did not get a GUI must not be left
+      # guessing whether that was their fault. (scripts/tests/install-path asserts this URL in
+      # both cases; dropping it from the skip path is what failed CI first time round.)
+      if [ "$os" = "linux" ] && [ "$DESKTOP_RESULT" = "unavailable" ]; then
+        echo -e "  ${D}Build it from this tree: make desktop-build   (then ./bin/orchicon-desktop)${X}"
+      fi
+      echo -e "  ${D}Desktop app: https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${VERSION}${X}"
       ;;
   esac
 
