@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/askmode"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"sync"
@@ -48,11 +50,63 @@ func chatHost(ask, exec *HostServe) *HostServe {
 // The error is the start failure verbatim (disabled kill-switch, missing
 // binary, serve never ready): the Ask turn fails LOUDLY with the reason
 // instead of silently degrading (AC 4).
-func (a *Adapter) ensureHostServeClient(ctx context.Context) (*SessionClient, error) {
-	h := chatHost(a.askHost, a.host)
-	if h == nil {
-		return nil, errors.New("host opencode serve unavailable — Ask chat transport is disabled")
+// askServeFor picks the serve an Ask turn runs on, resolving the conversation's MCP SCOPE first.
+//
+// THIS CLOSES A GAP THAT EXISTED ON THIS ADAPTER ALONE. claude and the native bridge both resolved
+// "project-owned ∪ conversation-owned" for an Ask turn; opencode selected a single pre-built serve
+// whose config carried only the built-in Orchicon server, so an MCP server the operator added to a
+// PROJECT or to the CONVERSATION was invisible to it — and there was no symptom beyond tools that
+// simply were not there. Reported as "Scoped MCP servers added by the user in Conversations should
+// work for all adapters".
+//
+// THE SCOPE IS ALREADY ON THE CONTEXT, put there by the Ask collector beside the mode and the
+// project (askmode.ConversationScope, plus the tenant for the resolver). So this needs no new
+// parameter through the scheduler's chat interface, and no second source of truth: one turn, one
+// scope, read where it is needed.
+//
+// EMPTY SET -> THE DEFAULT ASK SERVE. A conversation with no project and no servers of its own must
+// behave exactly as it did before, which is what ServeFor already guarantees (the empty set maps to
+// the default serve). A resolution FAILURE also falls back rather than failing the turn, and says so
+// in the log: a conversation that cannot read its MCP configuration should still be able to talk,
+// unlike a dispatched execution where a missing server set means the work cannot be done.
+func (a *Adapter) askServeFor(ctx context.Context) *HostServe {
+	fallback := chatHost(a.askHost, a.host)
+	if a.askPool == nil || a.hostScope == nil {
+		return fallback
 	}
+	scope := askmode.ConversationScopeFromContext(ctx)
+	set := a.resolveAskMCPSet(ctx, scope)
+	pooled, err := a.askPool.ServeFor(ctx, set)
+	if err != nil {
+		a.log.Warn("ask session: host serve pool has no serve for this MCP set — using the default Ask serve",
+			"conversation", scope.ConversationID, "project", scope.ProjectID,
+			"servers", mcpclient.ProvenanceString(set.Servers), "error", err)
+		return fallback
+	}
+	return pooled
+}
+
+// resolveAskMCPSet resolves the conversation's MCP set: project-owned ∪ conversation-owned rows, the
+// same ScopeConversation the native and claude Ask paths use, so all three agree by construction.
+func (a *Adapter) resolveAskMCPSet(ctx context.Context, scope askmode.ConversationScope) mcpclient.Resolution {
+	if scope.ConversationID == "" {
+		return mcpclient.Resolution{} // no scope stamped: the default serve, unchanged
+	}
+	res, err := a.hostScope.ResolveScope(ctx, mcpclient.ScopeRef{
+		Kind:           mcpclient.ScopeConversation,
+		ProjectID:      scope.ProjectID,
+		ConversationID: scope.ConversationID,
+	})
+	if err != nil {
+		a.log.Warn("ask session: MCP resolution failed — using the default Ask serve",
+			"conversation", scope.ConversationID, "project", scope.ProjectID, "error", err)
+		return mcpclient.Resolution{}
+	}
+	return res
+}
+
+func (a *Adapter) ensureHostServeClient(ctx context.Context) (*SessionClient, error) {
+	h := a.askServeFor(ctx)
 	if err := h.EnsureStarted(ctx); err != nil {
 		return nil, fmt.Errorf("host opencode serve unavailable — Ask chat transport is disabled: %w", err)
 	}

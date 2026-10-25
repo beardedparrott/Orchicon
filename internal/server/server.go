@@ -395,6 +395,12 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			adapterBridge.SetAskHostServe(askServe)
 			askServePool = opencode.NewHostServePool(log, dataDir+"-ask", "", opencode.ProfileInteractive)
 			askServePool.SetDefaultServe(askServe)
+			// AND THE ADAPTER GETS IT, so an Ask turn can land on a serve whose baked config carries
+			// the conversation's own MCP servers. Without this line the pool exists and nothing asks
+			// it for anything: Ask stayed on the single askServe, whose config only ever holds the
+			// built-in Orchicon server, and a project- or conversation-scoped MCP server was invisible
+			// to the opencode adapter alone (claude and the native bridge always resolved it).
+			adapterBridge.SetAskHostServePool(askServePool)
 		} else {
 			log.Warn("host opencode serve data dir unavailable — sessions disabled")
 		}

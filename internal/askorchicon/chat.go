@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/beardedparrott/orchicon/internal/tenant"
 	"log/slog"
 	"os"
 	"strconv"
@@ -1242,6 +1243,19 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// fact this row already carries.
 	ctx = withAskConversationProject(ctx, conv.ProjectID)
 
+	// AND THE TENANT, for the same reason and by the same rule — this one closing a real gap rather
+	// than tidying. The MCP scope resolver (internal/mcpsettings) reads the tenant from the context and
+	// REFUSES an unscoped one, so any adapter resolving an MCP set from a turn's context needed it here.
+	// claude got away with it only because its bridge caches the tenant when the session is created;
+	// the opencode Ask path had nothing at all, which is why a conversation's own MCP servers could
+	// never reach it (see internal/opencode's ensureHostServeClient).
+	//
+	// THE TURN CONTEXT IS THE RIGHT PLACE for it: the tenant is a property of the conversation being
+	// served, it is already in scope as a parameter, and stamping it here means every adapter and tool
+	// on this turn reads ONE answer instead of threading a parameter each of them would have to
+	// remember.
+	ctx = tenant.WithID(ctx, tenantID)
+
 	// sessionIDOverride is the session the new turn dispatches on. Normally
 	// the conversation's persisted session; set to "" below (forcing a fresh
 	// seeded session) when the interject supersedes a WEDGED turn (D4) so the
@@ -1418,7 +1432,6 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// injected message must reach the model under the SAME persona and model as the turn it is joining, and a
 	// second build at injection time could drift from this one.
 	s.turns.setTurnContext(convID, token, reuseSystem, modelRef)
-
 
 	// --- 4. Launch the detached reply collector and stream events to the
 	// client. The stream channel is buffered so the collector never blocks.

@@ -71,6 +71,16 @@ type Adapter struct {
 	// tests and an unconfigured plane get.
 	askHost *HostServe
 
+	// askPool is the pool the ASK serve is drawn from, and it is what lets a conversation's own
+	// MCP servers reach an Ask turn on this adapter.
+	//
+	// It is SEPARATE FROM hostPool because the two answer different questions and must never be
+	// mixed: hostPool serves dispatched executions under the worker permission profile, askPool
+	// serves conversations under the interactive one, and a serve bakes its profile into its config
+	// at construction. Nil keeps the pre-existing behaviour — Ask on the single askHost, with only
+	// the built-in Orchicon server — which is what tests and an unconfigured plane get.
+	askPool *HostServePool
+
 	// hostPool is the DEMAND-KEYED pool of host serves for the in-process
 	// population, keyed by the RESOLVED MCP set (see HostServePool). A shared
 	// host serve builds its config ONCE and lives for the plane, so unioning
@@ -182,6 +192,10 @@ func (a *Adapter) SetHostServe(hs *HostServe) { a.host = hs }
 // permission profile). Nil leaves Ask on the worker serve, so an unconfigured
 // plane behaves exactly as it did before the profile split.
 func (a *Adapter) SetAskHostServe(hs *HostServe) { a.askHost = hs }
+
+// SetAskHostServePool injects the resolved-set-keyed pool the ASK serve is drawn from. Nil keeps
+// Ask on the single askHost, i.e. no conversation-scoped MCP servers.
+func (a *Adapter) SetAskHostServePool(p *HostServePool) { a.askPool = p }
 
 // SetHostServePool injects the resolved-set-keyed pool of host serves for the
 // in-process population. Nil keeps today's single host serve (a.host).
@@ -414,12 +428,20 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 // entitled to, so the pool can hand out a serve whose config matches exactly
 // that set.
 //
-// SCOPE IS PROJECT — deliberately NOT the run union. The run union is a
-// per-CONTAINER artifact (one serve per run, created once); the host serve
-// serves heterogeneous work over time, so a cross-project union there would
-// leak one project's servers into another project's session. A session with
-// no project (standalone dispatch, Ask) resolves the EMPTY set, which maps to
-// the default serve — today's behaviour, unchanged.
+// SCOPE IS WORKER — the project's owned rows ∪ THE EXECUTING VERSION's inline specs — and NOT the
+// run union. The two distinctions are different and only the second one is forbidden.
+//
+// It used to be ScopeProject, and that silently dropped the worker half: a worker whose version
+// declares its own `mcp_servers` had them listed in its settings and absent from every execution on
+// this adapter, while claude and the native bridge (both ScopeWorker) resolved them normally.
+// resolveWorker unions the project rows with the ref's own set, so ScopeWorker IS "project ∪ this
+// version" — reported as "Project and/or Worker MCP scopes should work in worker executions for ALL
+// adapter types".
+//
+// The RUN union stays forbidden here, for the reason it always was: it is a per-CONTAINER artifact
+// (one serve per run, created once), while this host serve serves heterogeneous work over time, so a
+// cross-RUN union would leak one run's servers into another's session. A session with no project
+// resolves the EMPTY set, which maps to the default serve.
 //
 // tenantID is scoped onto the context because mcpsettings.Resolver reads the
 // tenant from it (tenant.FromContext) and REFUSES an unscoped context — the
@@ -430,8 +452,11 @@ func (a *Adapter) hostResolvedSet(ctx context.Context, manifest scheduler.Execut
 		return mcpclient.Resolution{}
 	}
 	res, err := a.hostScope.ResolveScope(tenant.WithID(ctx, tenantID), mcpclient.ScopeRef{
-		Kind:      mcpclient.ScopeProject,
-		ProjectID: manifest.ProjectID,
+		Kind:           mcpclient.ScopeWorker,
+		ProjectID:      manifest.ProjectID,
+		WorkerID:       manifest.WorkerID,
+		Version:        manifest.WorkerVersion,
+		OwnPermissions: manifest.Permissions,
 	})
 	if err != nil {
 		// A failed resolution is NOT silently an empty set: an execution that
