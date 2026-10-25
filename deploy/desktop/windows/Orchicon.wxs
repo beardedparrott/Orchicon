@@ -70,6 +70,39 @@
          settable from the command line, so an enterprise deployment is
              msiexec /i Orchicon.msi /qn INSTANCE=prod RUNTIMEIMAGES=1 SKIPSETUP=1
          and needs no wizard. -->
+    <!-- ===================== THIS PRODUCT NEVER NEEDS A REBOOT =====================
+         Reported: "when I went to uninstall Orchicon on windows to prepare for this next update, it stated
+         that the system would need to reboot. That is odd to me and shouldn't be the case."
+
+         IT SHOULDN'T BE, AND IT ISN'T. Windows Installer only claims a reboot when it could not remove or
+         replace a file, which for this product means the PLANE was still running out of the install
+         directory (orchicon.exe is what the host plane executes) and the desktop app's own exe was open.
+         Both are ordinary processes of the invoking user in a PER-USER install under LOCALAPPDATA; neither
+         is a driver, a service, or anything the OS must reboot to release. So the claim was a symptom of
+         files left locked, not a real requirement.
+
+         Two things fix it, and the uninstall SEQUENCING fix matters more than these properties: the stop
+         action now runs BEFORE the files are removed (see InstallExecuteSequence), so nothing is locked by
+         the time Installer deletes it.
+
+         These properties are the belt to that braces:
+           REBOOT=ReallySuppress        never offer or schedule a restart, on install or uninstall, even if
+                                        something IS locked. This is a per-user application; a dialog that
+                                        says the computer must restart for it is always wrong, and a silent
+                                        reboot would be worse than a stale file.
+           MSIRESTARTMANAGERCONTROL     stop Restart Manager from sniffing for in-use files in the first
+           =Disable                     place. RM is the component that produces the "these files are in
+                                        use, you should restart" experience; for an app whose own stop verb
+                                        can close everything, it only adds noise.
+           MSIDISABLERMRESTART=1        and if RM is asked anyway, do not let it restart the machine.
+
+         NOT set: anything that would suppress a reboot REQUIRED by a future dependency. None exists today —
+         the payload is two executables and a shortcut. If that changes, this block is the thing to revisit,
+         and the reason it is written down rather than left as three bare properties. -->
+    <Property Id="REBOOT" Value="ReallySuppress" />
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
+    <Property Id="MSIDISABLERMRESTART" Value="1" />
+
     <Property Id="INSTANCE" Value="dev" />
     <!-- NO Value: an empty Value attribute is illegal (WIX0006), and it must default to
          UNSET rather than "none" - the wrapper leaves the env var alone when %2 is
@@ -349,8 +382,22 @@
 
          IT IS SAFE TO OFFER BECAUSE SETUP IS ALREADY RUNNING. LaunchSetup stays at InstallFinalize with
          asyncNoWait, so the download and cluster init begin while this wizard is still open — by the time
-         Finish is reachable, setup is usually well underway. The checkbox opens the app on the Servers page,
-         which is where it can show that progress; it does not wait for anything.
+         Finish is reachable, setup is usually well underway. The checkbox opens the app; it does not wait for
+         anything.
+
+         IT OPENS ON THE APP'S START PAGE, NOT ON /manage-server, AND THAT IS A FIX RATHER THAN A PREFERENCE.
+         The launch used to force the Servers page as the opening route, and on a clean Windows install that
+         window with NO TAB BAR and no way to sign in:
+
+           - /manage-server is in the frontend's PUBLIC_PATHS, because it must render when no plane answers
+             (it is how you start one). The auth guard returns EARLY for a public path, before it calls
+             ensureSession — so landing there never triggers the redirect to /login either.
+           - with no session, __root.tsx renders a public path BARE (no AppShell) by design: no nav, no tab
+             bar, and no route to a login screen. The operator was simply stuck.
+
+         The start page runs the guard, so an unauthenticated visitor is redirected to /login (with ?next=)
+         and an already-authenticated one — a reinstall over a live session — goes straight into the app.
+         Routing explicitly to /login would be wrong in that second case.
 
          Return="asyncNoWait" so the wizard closes without waiting for a GUI process. -->
     <CustomAction Id="LaunchApp"
@@ -358,7 +405,7 @@
                   Execute="immediate"
                   Impersonate="yes"
                   Return="asyncNoWait"
-                  ExeCommand="--route /manage-server" />
+                  ExeCommand="" />
 
     <!-- ===================== THERE IS NO CUSTOM EXIT PAGE, AND THAT IS THE FIX =====================
          WixUI OWNS THE WIZARD'S NAVIGATION. Three attempts to put a launch checkbox on it failed, and the
@@ -382,9 +429,27 @@
          The wizard goes back to being stock WixUI, which is one less thing that can be wrong. -->
 
     <InstallExecuteSequence>
-      <!-- REMOVE ONLY: the mirror of LaunchSetup's NOT REMOVE. -->
-      <Custom Action="LaunchUninstall" After="InstallFinalize" Condition="REMOVE=&quot;ALL&quot; AND SKIPSETUP &lt;&gt; &quot;1&quot; AND PURGEDATA &lt;&gt; &quot;1&quot;" />
-      <Custom Action="LaunchUninstallPurge" After="LaunchUninstall" Condition="REMOVE=&quot;ALL&quot; AND SKIPSETUP &lt;&gt; &quot;1&quot; AND PURGEDATA=&quot;1&quot;" />
+      <!-- REMOVE ONLY: the mirror of LaunchSetup's NOT REMOVE.
+
+           BEFORE="RemoveFiles", NOT After="InstallFinalize", AND THAT IS THE UNINSTALL FIX.
+
+           The action at InstallFinalize runs AFTER the deferred script has finished — which on the REMOVE
+           path means AFTER RemoveFiles has already tried to delete the binaries. So the uninstall verb, the one thing that STOPS the plane, was being asked to run a binary that
+           Installer had just tried to remove. With the plane still running out of the install directory, RemoveFiles could
+           not delete orchicon.exe, Windows Installer scheduled it in PendingFileRenameOperations, and the
+           installer reported that the system would need to restart — the reported claim. Return="ignore"
+           then swallowed the failure, so the services were never stopped either.
+
+           Sequencing it BEFORE RemoveFiles runs it in the IMMEDIATE pass, while the payload is still on
+           disk, so it stops the plane and its services FIRST and every file is unlocked when Installer
+           gets to them. RemoveFiles can then delete cleanly and no reboot is required or claimed.
+
+           THE INSTALL PATH KEEPS After="InstallFinalize" and must: LaunchSetup needs the payload COMMITTED,
+           which is exactly what InstallFinalize guarantees. The two paths want opposite ends of the
+           sequence for the same reason — one needs the files present, the other needs them gone — so the
+           asymmetry is deliberate, not an oversight. -->
+      <Custom Action="LaunchUninstall" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND SKIPSETUP &lt;&gt; &quot;1&quot; AND PURGEDATA &lt;&gt; &quot;1&quot;" />
+      <Custom Action="LaunchUninstallPurge" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND SKIPSETUP &lt;&gt; &quot;1&quot; AND PURGEDATA=&quot;1&quot;" />
       <!-- NOT REMOVE: never on uninstall. NOT Installed is deliberately absent: a repair or
            an upgrade should re-converge, and `orchicon install` is idempotent.
 
