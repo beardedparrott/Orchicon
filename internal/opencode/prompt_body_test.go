@@ -137,6 +137,14 @@ func TestV2PromptUsesTopLevelText(t *testing.T) {
 		t.Errorf("the v2 body must NOT carry `parts` — v2 has no such field and would drop it "+
 			"silently; got %v", got.body)
 	}
+	// AND IT MUST ASK TO STEER. Omitting `delivery` leaves the serve to pick, and what it picked was
+	// the behaviour the operator reported: the message was not seen until the turn was over. "steer"
+	// runs the input at the NEXT STEP BOUNDARY of the running turn; "queue" parks it behind the turn.
+	if got.body["delivery"] != "steer" {
+		t.Errorf("the v2 prompt body must carry delivery:\"steer\" so a mid-turn message joins the "+
+			"running turn at its next step rather than queueing until the turn ends; got %v",
+			got.body["delivery"])
+	}
 }
 
 func TestV2SetsTheModelOnTheSession(t *testing.T) {

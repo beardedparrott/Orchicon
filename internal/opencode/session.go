@@ -496,7 +496,23 @@ func (c *SessionClient) sendMessage(ctx context.Context, sessionID, system, mode
 		if carrySystem && strings.TrimSpace(system) != "" {
 			bodyText = system + "\n\n" + text
 		}
-		body = map[string]any{"text": bodyText}
+		// STEER, NOT QUEUE — AND THIS IS THE WHOLE DIFFERENCE BETWEEN "THE MODEL SEES IT AT THE NEXT STEP"
+		// AND "THE MODEL SEES IT WHEN THE TURN IS OVER".
+		//
+		// The v2 prompt body carries an optional delivery mode (apiShape.promptStyle records the MEASURED
+		// schema: {"text", "files", "agents", "skills", "metadata", "delivery": "steer"|"queue", "resume"}).
+		// Omitting it leaves the serve to choose, and the observed behaviour was the one the operator
+		// reported: "it doesn't get seen until the turn is completely stopped".
+		//
+		// "steer" means the input runs at the NEXT STEP BOUNDARY of the running turn; "queue" parks it behind
+		// the turn. The serve's own compaction route documents the same distinction ("Steers by default: it
+		// runs at the next step boundary instead of waiting behind queued prompts"), and opencode's
+		// interactive client sends delivery:"steer" for an ordinary submit, offering "queue" as a separate,
+		// deliberate action. An operator typing mid-turn is doing the ordinary thing.
+		//
+		// It is also correct for an IDLE session: steering wakes execution, which is exactly what a prompt
+		// sent to a session with nothing running must do.
+		body = map[string]any{"text": bodyText, "delivery": "steer"}
 		var files []map[string]any
 		for _, a := range attachments {
 			if a.MimeType == "" {
