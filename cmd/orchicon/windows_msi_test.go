@@ -2129,3 +2129,67 @@ func TestInstallDoesNotFailOnAMissingRuntimeDaemon(t *testing.T) {
 			"as a failed install.")
 	}
 }
+
+// TestUninstallStopsThePlaneBeforeRemovingFiles — the reported "the system would need to reboot".
+//
+// THE MECHANISM. The stop action was sequenced After="InstallFinalize", which on the REMOVE path is after
+// the deferred script has finished — i.e. after RemoveFiles already tried to delete the binaries. So the
+// uninstall verb, the one thing that stops the plane, was asked to run a binary Installer had just tried to
+// remove. With the plane still running out of the install directory, RemoveFiles could not delete
+// orchicon.exe, Windows Installer scheduled it in PendingFileRenameOperations, and the wizard reported that a
+// restart was needed. Return="ignore" then hid the failure, so the services were never stopped either.
+//
+// An action sequenced BEFORE RemoveFiles runs in the IMMEDIATE pass while the payload is still on disk, so it
+// stops the plane first and every file is unlocked by the time Installer touches them.
+//
+// THE INSTALL PATH KEEPS After="InstallFinalize" and must — LaunchSetup needs the payload committed. The
+// asymmetry is the fix, so both halves are asserted: moving both would break the install hand-off, and
+// moving neither leaves the reboot claim.
+func TestUninstallStopsThePlaneBeforeRemovingFiles(t *testing.T) {
+	wxs, err := os.ReadFile("../../deploy/desktop/windows/Orchicon.wxs")
+	if err != nil {
+		t.Fatalf("read Orchicon.wxs: %v", err)
+	}
+	src := string(wxs)
+
+	for _, action := range []string{"LaunchUninstall", "LaunchUninstallPurge"} {
+		if !strings.Contains(src, `<Custom Action="`+action+`" Before="RemoveFiles"`) {
+			t.Errorf("%s is not sequenced Before=\"RemoveFiles\". At InstallFinalize it runs AFTER RemoveFiles "+
+				"on the REMOVE path, so it stops nothing: the plane stays running, its exe stays locked, and "+
+				"Windows Installer schedules it for deletion on reboot — the reported claim that the system "+
+				"needs to restart to uninstall a per-user application", action)
+		}
+	}
+
+	// AND THE INSTALL HAND-OFF MUST STAY AFTER InstallFinalize — it needs the payload committed.
+	if !strings.Contains(src, `<Custom Action="LaunchSetup" After="InstallFinalize"`) {
+		t.Error("the install hand-off moved away from After=\"InstallFinalize\". It needs the payload " +
+			"COMMITTED before it runs; moving it earlier is the bug its own comment warns about")
+	}
+}
+
+// TestTheMSINeverClaimsAReboot — this product has no reboot requirement, and a prompt saying it does is
+// always wrong for a per-user app under LOCALAPPDATA.
+func TestTheMSINeverClaimsAReboot(t *testing.T) {
+	wxs, err := os.ReadFile("../../deploy/desktop/windows/Orchicon.wxs")
+	if err != nil {
+		t.Fatalf("read Orchicon.wxs: %v", err)
+	}
+	src := string(wxs)
+	for _, want := range []struct{ prop, value, why string }{
+		{"REBOOT", "ReallySuppress", "never offer or schedule a restart on install or uninstall"},
+		{"MSIRESTARTMANAGERCONTROL", "Disable", "stop Restart Manager sniffing for in-use files"},
+		{"MSIDISABLERMRESTART", "1", "and do not let it restart the machine if asked anyway"},
+	} {
+		probe := `<Property Id="` + want.prop + `" Value="` + want.value + `" />`
+		if !strings.Contains(src, probe) {
+			t.Errorf("the MSI does not set %s=%s — %s. The payload is two executables and a shortcut; "+
+				"nothing here can require a reboot", want.prop, want.value, want.why)
+		}
+	}
+	// A scheduled reboot would defeat the properties above, so its ABSENCE is asserted too.
+	if strings.Contains(src, "ScheduleReboot") {
+		t.Error("the MSI schedules a reboot. Nothing in this payload can require one, and a silent reboot " +
+			"is the worst thing an installer can do")
+	}
+}
