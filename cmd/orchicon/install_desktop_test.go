@@ -90,3 +90,62 @@ func TestLaunchDesktopIsNotFatalWhenTheAppIsAbsent(t *testing.T) {
 			"install into a failure")
 	}
 }
+
+// THE LAUNCH OPENS THE APP'S START PAGE, NOT /manage-server — the clean-install defect.
+//
+// Reported: "I just downloaded and re-installed Orchicon on Windows and the desktop app that first pops up
+// landed on the server management screen but the tab bar at the top was missing completely. I closed the
+// desktop app and then re-opened it and it went to the logon screen. I logged in and the tab bar was visible
+// again."
+//
+// THE MECHANISM, which makes the missing tab bar CORRECT-BY-DESIGN and the launch wrong:
+//   - /manage-server is in the frontend's PUBLIC_PATHS, because it has to render when no plane answers (it is
+//     how you start one). requireAuth returns EARLY for a public path, BEFORE ensureSession — so landing there
+//     never triggers the redirect to /login either.
+//   - with no session, __root.tsx renders a public path BARE (no AppShell): no nav, no tab bar, and no path to
+//     a sign-in screen. The operator is stuck.
+//
+// Re-opening worked because the app's start page is NOT public: the guard runs, resolves no session, and
+// redirects to /login — which is exactly what the operator then saw.
+//
+// These pin the two places a first run is launched from, because a fix in only one of them leaves the defect
+// for whichever install path the user happens to take.
+func TestFirstRunLaunchesTheStartPageNotTheServersPage(t *testing.T) {
+	// (1) the CLI install's launch.
+	src, err := os.ReadFile("install_desktop.go")
+	if err != nil {
+		t.Fatalf("read install_desktop.go: %v", err)
+	}
+	// THE QUOTED LITERAL, not the bare word: the file legitimately MENTIONS the flag in the comment that
+	// explains why it is no longer passed. A naive substring check fails on its own documentation, which is a
+	// test that punishes the explanation rather than the behaviour.
+	if strings.Contains(string(src), `"--route"`) {
+		t.Error("the install's desktop launch still passes a route argument. Anything but the start page can " +
+			"land on /manage-server, which renders BARE without a session — a window with no tab bar and no " +
+			"route to a login screen, which is the reported clean-install defect")
+	}
+
+	// (2) the MSI's Finish-page launch — a SEPARATE call site, and the one a Windows user actually takes.
+	wxs, err := os.ReadFile("../../deploy/desktop/windows/Orchicon.wxs")
+	if err != nil {
+		t.Fatalf("read Orchicon.wxs: %v", err)
+	}
+	if strings.Contains(string(wxs), "--route /manage-server") {
+		t.Error("the MSI's LaunchApp still forces /manage-server as the opening route — a clean Windows " +
+			"install lands on a bare page with no tab bar instead of the login screen")
+	}
+}
+
+// AND /manage-server STAYS PUBLIC. Moving the launch must not be "fixed" later by taking that route out of
+// PUBLIC_PATHS: it has to render precisely when NOTHING answers (no plane), which is the one case where
+// ensureSession cannot succeed. Removing it would make the page that starts a dead plane unreachable.
+func TestManageServerStaysPublicForTheNoPlaneCase(t *testing.T) {
+	src, err := os.ReadFile("../../frontend/src/auth/route-guard.ts")
+	if err != nil {
+		t.Fatalf("read route-guard.ts: %v", err)
+	}
+	if !strings.Contains(string(src), `"/manage-server"`) {
+		t.Error("/manage-server left PUBLIC_PATHS. It must render when no plane answers — the one case where " +
+			"ensureSession cannot succeed — so it has to stay public even though the launch no longer opens it")
+	}
+}

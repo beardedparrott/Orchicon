@@ -349,8 +349,22 @@
 
          IT IS SAFE TO OFFER BECAUSE SETUP IS ALREADY RUNNING. LaunchSetup stays at InstallFinalize with
          asyncNoWait, so the download and cluster init begin while this wizard is still open — by the time
-         Finish is reachable, setup is usually well underway. The checkbox opens the app on the Servers page,
-         which is where it can show that progress; it does not wait for anything.
+         Finish is reachable, setup is usually well underway. The checkbox opens the app; it does not wait for
+         anything.
+
+         IT OPENS ON THE APP'S START PAGE, NOT ON /manage-server, AND THAT IS A FIX RATHER THAN A PREFERENCE.
+         The launch used to force the Servers page as the opening route, and on a clean Windows install that
+         window with NO TAB BAR and no way to sign in:
+
+           - /manage-server is in the frontend's PUBLIC_PATHS, because it must render when no plane answers
+             (it is how you start one). The auth guard returns EARLY for a public path, before it calls
+             ensureSession — so landing there never triggers the redirect to /login either.
+           - with no session, __root.tsx renders a public path BARE (no AppShell) by design: no nav, no tab
+             bar, and no route to a login screen. The operator was simply stuck.
+
+         The start page runs the guard, so an unauthenticated visitor is redirected to /login (with ?next=)
+         and an already-authenticated one — a reinstall over a live session — goes straight into the app.
+         Routing explicitly to /login would be wrong in that second case.
 
          Return="asyncNoWait" so the wizard closes without waiting for a GUI process. -->
     <CustomAction Id="LaunchApp"
@@ -358,7 +372,7 @@
                   Execute="immediate"
                   Impersonate="yes"
                   Return="asyncNoWait"
-                  ExeCommand="--route /manage-server" />
+                  ExeCommand="" />
 
     <!-- ===================== THERE IS NO CUSTOM EXIT PAGE, AND THAT IS THE FIX =====================
          WixUI OWNS THE WIZARD'S NAVIGATION. Three attempts to put a launch checkbox on it failed, and the

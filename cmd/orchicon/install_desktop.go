@@ -47,7 +47,25 @@ func desktopBinName() string {
 	return "orchicon-desktop"
 }
 
-// launchDesktop opens the installed desktop app on the Servers page, and reports whether it managed to.
+// launchDesktop opens the installed desktop app on ITS START PAGE, and reports whether it managed to.
+//
+// NOT /manage-server, AND THAT WAS A REAL FIRST-RUN DEFECT. The app used to be handed `--route /manage-server`,
+// on the D7 reasoning that a first run should land on the page that finishes setting up. What that produced on a
+// clean Windows install was a window with NO TAB BAR and no way to sign in:
+//
+//   - /manage-server is in the frontend's PUBLIC_PATHS, because it must render when no plane answers (it is how
+//     you start one). `requireAuth` returns EARLY for a public path — before it calls ensureSession — so landing
+//     there never triggers the redirect to /login either.
+//   - with no session, __root.tsx renders that public path BARE (no AppShell) by design, so there is no nav, no
+//     tab bar, and no route to a login screen. The operator was simply stuck.
+//
+// The start page has neither problem: the guard resolves the session, an unauthenticated visitor is redirected to
+// /login with ?next=/, and an ALREADY-authenticated one (a reinstall over a live session) goes straight to the
+// app. Routing explicitly to /login would be wrong in that second case — it would ask a signed-in user to sign in.
+//
+// The plane is up by the time this runs (install waits for /healthz), so there is always something to
+// authenticate against. /manage-server remains reachable from the Control nav once signed in, and stays public so
+// it still works when the plane is DOWN and cannot be logged into at all.
 //
 // IT NEVER FAILS THE INSTALL. The install has already succeeded by the time this runs — the plane is up and
 // serving — so a missing or unlaunchable GUI is a note, not an error. Turning a completed install into a
@@ -68,7 +86,8 @@ func launchDesktop() bool {
 		return false
 	}
 
-	cmd := exec.Command(desktop, "--route", "/manage-server")
+	// NO --route. See above: the app's own start page is the one that works whether or not a session exists.
+	cmd := exec.Command(desktop)
 	// AN EXPLICIT WORKING DIRECTORY. The app must not inherit the install's — an install runs DETACHED, and a
 	// GUI whose cwd is a directory that later disappears cannot start its own children on Windows
 	// (CREATE_ERROR, "The directory name is invalid"), which is the reported "it complained about … the
