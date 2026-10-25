@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { EngineAvailability } from "@/components/EngineAvailability";
 import { LocalModeDisclosure } from "@/components/LocalModeDisclosure";
-import { createRoute, useNavigate } from "@tanstack/react-router";
+import { Link, createRoute, useNavigate } from "@tanstack/react-router";
 import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
 
@@ -216,6 +216,16 @@ function NewProjectPage() {
                 <p className="text-xs text-muted-foreground">
                   Copied onto work items at create time when they pass no runtime_image.
                 </p>
+                {/* Always visible: the picker only lists images the daemon already knows, and on a
+                    host with no engine yet it lists NOTHING — so without this there is no way to
+                    reach the fetch page at all. */}
+                <p className="text-xs text-muted-foreground">
+                  <Link to="/runtime-images" className="underline">
+                    Fetch new images
+                  </Link>
+                  {" "}— every image we host is listed there, downloaded or not.
+                </p>
+
               </div>
               <div className="space-y-2">
                 <Label htmlFor="executionMode">Execution mode</Label>

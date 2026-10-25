@@ -561,6 +561,16 @@ function ProjectDetailPage() {
                     <option value={draftDefaultImage}>{draftDefaultImage} (current)</option>
                   )}
                 </select>
+                {/* THE PICKER CAN ONLY OFFER WHAT THE DAEMON ALREADY KNOWS, so an image nobody has
+                    fetched is invisible here — you cannot select it, so you never learn it is
+                    missing, so you never fetch it. This link breaks that loop and is always visible,
+                    not only once the choice has gone wrong. */}
+                <p className="text-xs text-muted-foreground">
+                  <Link to="/runtime-images" className="underline">
+                    Fetch new images
+                  </Link>
+                  {" "}— every image we host is listed there, downloaded or not.
+                </p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="execution-mode">Execution mode</Label>
