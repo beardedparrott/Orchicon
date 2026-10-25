@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/beardedparrott/orchicon/internal/version"
 	"io"
 	"log/slog"
 	"net"
@@ -78,6 +79,14 @@ type Daemon struct {
 	// activeBuilds tracks in-flight engine builds by tag so Cancel can kill them.
 	buildMu      sync.Mutex
 	activeBuilds map[string]*exec.Cmd
+	// shutdown cancels the serve loop. Set by ListenAndServe; non-nil only while serving.
+	//
+	// IT EXISTS SO AN UPGRADE CAN RETIRE A STALE DAEMON PORTABLY. The daemon outlives installs (it
+	// held the socket for 8d19h on the reporting host, from a deleted inode), so it kept serving a
+	// route set older than the binary beside it — and /v1/images/pull 404'd. Stopping it by pid or
+	// signal is Unix-only and racy (a name match can hit another instance's daemon); asking the
+	// process to exit over the socket it already serves is neither.
+	shutdownFn func()
 	// Test seams: unexported func fields that override the production
 	// implementations. Nil (the default) = production behavior.
 	engineFn        func(args ...string) (string, error)                          // overrides engine()
@@ -188,6 +197,7 @@ func (d *Daemon) handler() http.Handler {
 	mux.HandleFunc("/v1/images/inspect", d.handleImageInspect)
 	mux.HandleFunc("/v1/images/build", d.handleBuildCancel)
 	mux.HandleFunc("/v1/images/pull", d.handlePull)
+	mux.HandleFunc("/v1/shutdown", d.handleShutdown)
 	return mux
 }
 
@@ -213,8 +223,14 @@ func (d *Daemon) ListenAndServe(ctx context.Context) error {
 	}
 
 	srv := &http.Server{Handler: d.handler(), ReadHeaderTimeout: 10 * time.Second}
+	// /v1/shutdown drives this; srv.Close releases Serve below, which returns to the caller and
+	// lets the process exit normally (the daemon holds no durable state — images live in the engine).
+	stop, stopCancel := context.WithCancel(ctx)
+	d.shutdownFn = stopCancel
+	_ = stop
+	defer func() { d.shutdownFn = nil; stopCancel() }()
 	go func() {
-		<-ctx.Done()
+		<-stop.Done()
 		srv.Close()
 	}()
 	// Warm-pool lifecycle: leases are daemon-resident, so the pool starts
@@ -242,8 +258,42 @@ func (d *Daemon) ListenAndServe(ctx context.Context) error {
 	return srv.Serve(l)
 }
 
+// handleShutdown asks the daemon to exit. POST only, on the unix socket, which is already the
+// daemon's own local control surface — the same trust boundary as every other /v1 route.
+//
+// IT RESPONDS FIRST AND EXITS AFTER, so the caller sees an answer rather than a reset connection: a
+// client that got no reply cannot tell "asked to stop" from "was already dead".
+func (d *Daemon) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
+		return
+	}
+	if d.shutdownFn == nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "daemon is not serving"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopping"})
+	go func() {
+		time.Sleep(50 * time.Millisecond) // let the response flush
+		d.shutdownFn()
+	}()
+}
+
 func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	// THE BUILD IS PART OF "HEALTHY", and its absence is why an eight-day-old daemon survived every
+	// upgrade. REPORTED as "runtime image fetch failed for orchicon-runtime:local: runtime image pull:
+	// runtime daemon: request failed" — the daemon answered /v1/images/pull with 404 because that
+	// route did not exist in the binary it was started from (it was running from a DELETED inode,
+	// 8d19h old, while the plane beside it had been rebuilt). A liveness-only probe cannot tell the
+	// difference between "up and current" and "up and three releases behind", so the caller had no
+	// way to decide it needed restarting.
+	v := version.Current()
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"tag":     v.Tag,
+		"commit":  v.Commit,
+		"builtAt": v.BuildDate,
+	})
 }
 
 // handleRuntimes implements the collection routes:
