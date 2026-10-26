@@ -27,8 +27,22 @@ const AuthHeader = "Authorization"
 
 // publicPaths are not tenant-scoped and require no authentication.
 var publicPaths = map[string]bool{
-	"/healthz":          true,
-	"/versionz":         true,
+	"/healthz":  true,
+	"/versionz": true,
+	// /enginez is the same CLASS of thing as the two above: a credential-free operational status the
+	// UI reads BEFORE it knows anything about the deployment. It is what tells the project page
+	// whether runtime containers are available, and it is read from an unauthenticated context as
+	// often as not.
+	//
+	// REPORTED: "under the runtime image it still says 'Container availability unknown — the plane did
+	// not answer /enginez.'" The plane DID answer — with 401 {"error":"missing credentials"} — because
+	// /healthz and /versionz were allowlisted here and /enginez was not. The client's raw fetch carries
+	// no bearer token (it is a plain JSON status, not a Connect call), so every read from a browser
+	// session that had not yet attached its token got a 401 the page could not parse, and reported the
+	// plane as silent.
+	//
+	// It leaks nothing: the same facts the operator's own terminal sees from `orchicon` on the host.
+	"/enginez":          true,
 	"/auth/local-login": true,
 	// Self-service account creation (embedded IdP): happens before a
 	// session exists, exactly like local-login.

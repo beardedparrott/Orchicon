@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"log/slog"
 	"strings"
 
@@ -41,6 +42,19 @@ type stockVariant struct {
 	Variant string // "base" | "gui" | "dev" | "web-research"
 	Name    string
 	Desc    string
+}
+
+// PublishedTag returns the registry tag this variant is actually published at, and false when it is
+// NOT published (web-research today): release.yml pushes ":latest" for the base and ":<variant>" for
+// the others, plus per-version tags this catalog does not need.
+func (v stockVariant) PublishedTag(repo string) (string, bool) {
+	switch v.Variant {
+	case stockVariants[0].Variant:
+		return repo + ":latest", true
+	case "gui", "dev":
+		return repo + ":" + v.Variant, true
+	}
+	return "", false
 }
 
 // TagSuffix is the "<variant>-" segment a published tag carries before the version, matching the
@@ -171,23 +185,6 @@ func seedPublishedCatalog(ctx context.Context, pool *db.Pool, log *slog.Logger, 
 // and a daemon image must name the SAME artifact — two spellings would seed the catalog twice.
 const PublishedStockBase = "ghcr.io/beardedparrott/orchicon-runtime:latest"
 
-// publishedStockTags lists the released tag for every shipped variant, base first. The convention is
-// the daemon's: "<repo>:<variant>-<tag>", with the base being "<repo>:<tag>".
-func publishedStockTags() []string {
-	repo, tag := splitImageRef(PublishedStockBase)
-	out := make([]string, 0, len(stockVariants))
-	for _, v := range stockVariants {
-		if v.Variant == stockVariants[0].Variant {
-			out = append(out, repo+":"+tag)
-			continue
-		}
-		out = append(out, repo+":"+v.TagSuffix()+tag)
-	}
-	return out
-}
-
-func firstPublishedTag() string { return publishedStockTags()[0] }
-
 // splitImageRef splits "repo:tag" into its parts. A ref with no tag yields "latest", matching the
 // engine's own default — the daemon does the same, so the two agree on what a tagless ref means.
 func splitImageRef(ref string) (repo, tag string) {
@@ -195,6 +192,49 @@ func splitImageRef(ref string) (repo, tag string) {
 		return ref[:i], ref[i+1:]
 	}
 	return ref, "latest"
+}
+
+// firstPublishedTag is the repository's default tag — the base image.
+func firstPublishedTag() string {
+	tags := publishedStockTags()
+	if len(tags) == 0 {
+		return PublishedStockBase
+	}
+	return tags[0]
+}
+
+// publishedStockTags lists the released tag for every variant that IS actually published, base first.
+//
+// THE TAGS ARE THE REGISTRY'S, NOT A GUESS. The first version of this derived them from the variant
+// NAME — ":gui-latest", ":dev-latest", ":web-research-latest" — and ALL THREE were wrong. Checked
+// against the registry:
+//
+//	ghcr.io/beardedparrott/orchicon-runtime:latest        EXISTS
+//	ghcr.io/beardedparrott/orchicon-runtime:gui-latest    MISSING
+//	ghcr.io/beardedparrott/orchicon-runtime:dev-latest    MISSING
+//
+// so a fetch of a seeded row failed with exactly what the operator saw:
+//
+//	reading manifest dev-latest in ghcr.io/beardedparrott/orchicon-runtime: manifest unknown
+//
+// release.yml pushes `:latest`, `:gui` and `:dev` (plus per-version tags). Those three are the
+// catalog.
+//
+// WEB-RESEARCH IS ABSENT ON PURPOSE: it has a shipped Dockerfile but release.yml does not build or
+// push it, so there is nothing to fetch. Seeding it produced a row whose only possible action was a
+// guaranteed failure. A variant with no published tag is simply not in the downloadable catalog; it
+// can still be built locally from its template if someone asks for it by tag.
+func publishedStockTags() []string {
+	repo, _ := splitImageRef(PublishedStockBase)
+	out := make([]string, 0, len(stockVariants))
+	for _, v := range stockVariants {
+		t, ok := v.PublishedTag(repo)
+		if !ok {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 // NOTE: there is deliberately no second variant resolver here. resolveVariant already maps a tag to
@@ -228,6 +268,73 @@ func resolveVariant(ref, defaultRef string) (stockVariant, bool) {
 	return stockVariant{}, false
 }
 
+// stockRowForVariant finds THE stock row for a variant, collapsing duplicates left by the old
+// tag-keyed seeding. Returns db.ErrNotFound when there is none yet.
+//
+// COLLAPSING IS DELIBERATE AND IS NOT DATA LOSS. These rows are machine-managed (source='stock') and
+// the catalog is theirs to manage; the image itself lives in the container engine, not in the row, so
+// removing a duplicate record does not untag or delete anything. Only PRISTINE seeds are removed —
+// a row whose Dockerfile an operator edited is theirs and is never touched, matching the seeder's
+// standing rule.
+//
+// When duplicates exist the survivor is: the one already carrying the preferred tag if there is one
+// (so nothing has to move), else the most-built one, so the row that records real work is the one
+// kept.
+func stockRowForVariant(ctx context.Context, tx pgx.Tx, variant stockVariant, ref string, log *slog.Logger) (db.RuntimeImageRow, int, error) {
+	slug := fmt.Sprintf("stock-%s", variant.Variant)
+	rows, err := db.ListRuntimeImages(ctx, tx, db.RuntimeImageFilter{TenantID: cannedTenant, Source: "stock"})
+	if err != nil {
+		return db.RuntimeImageRow{}, 0, err
+	}
+	var mine []db.RuntimeImageRow
+	for _, r := range rows {
+		if r.Slug == slug {
+			mine = append(mine, r)
+		}
+	}
+	if len(mine) == 0 {
+		return db.RuntimeImageRow{}, 0, db.ErrNotFound
+	}
+	removed := 0
+	// Prefer, in order: the row already on the preferred tag (nothing has to move, so the rename
+	// cannot collide with a sibling that still holds that tag), then the one furthest through its
+	// build, so the row recording real work survives.
+	preferred := ref
+	keep := mine[0]
+	score := func(r db.RuntimeImageRow) int {
+		n := 0
+		if r.Tag == preferred {
+			n += 1000
+		}
+		return n + r.BuiltVersion
+	}
+	for _, r := range mine[1:] {
+		if score(r) > score(keep) {
+			keep = r
+		}
+	}
+	for _, r := range mine {
+		if r.ID == keep.ID {
+			continue
+		}
+		content, cerr := assets.RuntimeImageTemplatesFS.ReadFile(variant.File)
+		if cerr == nil {
+			if pristine, _ := seedState(r.DockerfileOverride, content); !pristine {
+				log.Info("canned runtime image: keeping a diverged duplicate — it carries operator edits",
+					"slug", slug, "tag", r.Tag)
+				continue
+			}
+		}
+		if derr := db.DeleteRuntimeImage(ctx, tx, cannedTenant, r.ID); derr != nil {
+			log.Warn("canned runtime image: could not remove a duplicate row", "slug", slug, "tag", r.Tag, "error", derr)
+			continue
+		}
+		removed++
+		log.Info("canned runtime image: removed a duplicate row for this variant", "slug", slug, "tag", r.Tag)
+	}
+	return keep, removed, nil
+}
+
 // seedOneCannedImage creates or reconciles one canned stock row for a tag.
 // See SeedCannedImages for the contract. `info` is the daemon's version-label
 // view of the local image (may be all-empty when the image is missing).
@@ -256,7 +363,18 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 	}
 	defer ttx.Rollback(ctx)
 
-	row, err := db.GetRuntimeImageByTag(ctx, ttx.Tx, cannedTenant, ref)
+	// LOOK UP BY VARIANT (slug), NOT BY TAG — and that is the fix for the duplicated rows.
+	//
+	// REPORTED with a screenshot: six rows for three images, each variant listed TWICE — one
+	// "not downloaded" (the published tag this catalog seeded) and one "ready" (the local tag the
+	// daemon reported). Keying on the tag creates a NEW row for every tag the same variant is known
+	// by, so a host that first seeded from the published catalog and later got a container engine
+	// ends up with both.
+	//
+	// The identity that matters is the VARIANT: stock-base is stock-base whether it is called
+	// orchicon-runtime:local or ghcr.io/...:latest. So the row is found by slug, its tag is
+	// RECONCILED to the preferred one, and any duplicates left by the old behaviour are collapsed.
+	row, duplicatesRemoved, err := stockRowForVariant(ctx, ttx.Tx, variant, ref, svc.log)
 	if errors.Is(err, db.ErrNotFound) {
 		row, err = db.CreateRuntimeImage(ctx, ttx.Tx, db.RuntimeImageRow{
 			ID:                 db.NewID(),
@@ -292,6 +410,32 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 		return nil
 	}
 
+	// reconciled records that this pass changed the row's TAG (duplicate deletes are separate): both
+	// live in this transaction, so a path that returns without committing discards them.
+	reconciled := false
+
+	// RECONCILE THE TAG, so one row tracks whichever tag this variant is known by NOW.
+	//
+	// This is the other half of the duplication fix: a row found by slug may still carry the tag it
+	// was created under — the published one, from a boot before this host had a container engine. Left
+	// alone it would be a row whose tag no local image answers to, so a fetch would try to pull a
+	// registry ref for an image that is already built here. Moving the tag onto the preferred one also
+	// keeps built_version meaningful, because built_version describes the image behind THAT tag.
+	//
+	// A tag move does NOT bump `version`: the spec did not change, only which local name it refers to.
+	// StatusOnly is exactly that statement.
+	if row.Tag != ref {
+		newTag := ref
+		moved, terr := db.UpdateRuntimeImage(ctx, ttx.Tx, cannedTenant, row.ID, row.Version,
+			db.UpdateRuntimeImageFields{Tag: &newTag, StatusOnly: true})
+		if terr != nil {
+			return fmt.Errorf("reconcile canned image tag %s -> %s: %w", row.Tag, ref, terr)
+		}
+		svc.log.Info("canned runtime image: tag reconciled to this host's", "slug", row.Slug, "from", row.Tag, "to", ref)
+		row = moved
+		reconciled = true
+	}
+
 	rolledForward := false
 	if !current {
 		// Pristine row from an older seed generation: roll the seed forward —
@@ -311,8 +455,12 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 	case seedSkip:
 		// Nothing to reconcile. A roll-forward still has to be persisted, or
 		// the next boot would roll it forward again (and bump `version` a
-		// second time).
-		if rolledForward {
+		// second time). The same is true of a TAG RECONCILIATION and of the
+		// duplicate deletes above: they live in this transaction, so returning
+		// without committing discards them — which is exactly what happened
+		// when this was first written (the DB was unchanged after a reseed that
+		// had logged the rename).
+		if rolledForward || reconciled || duplicatesRemoved > 0 {
 			if err := ttx.Commit(ctx); err != nil {
 				return err
 			}

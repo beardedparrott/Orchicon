@@ -5,7 +5,49 @@ package runtimeimage
 // Two things here were got wrong before they were got right, and both are pure functions so both are
 // pinned here rather than discovered on a host.
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// TestPublishedStockTagsAreTheRegistrysOwn — the catalog must name tags that ACTUALLY EXIST.
+//
+// The first version derived them from the variant NAME — ":gui-latest", ":dev-latest" — and all three
+// were wrong. Measured against the registry:
+//
+//	:latest      EXISTS
+//	:gui-latest  MISSING
+//	:dev-latest  MISSING
+//
+// so every fetch of a seeded row failed exactly as the operator reported:
+//
+//	reading manifest dev-latest in ghcr.io/beardedparrott/orchicon-runtime: manifest unknown
+//
+// release.yml pushes `:latest`, `:gui`, `:dev` (plus per-version tags). Those are the catalog, and
+// web-research is NOT in it — it has a shipped Dockerfile but is never built or pushed, so seeding it
+// created a row whose only possible action was a guaranteed failure.
+func TestPublishedStockTagsAreTheRegistrysOwn(t *testing.T) {
+	got := publishedStockTags()
+	want := []string{
+		"ghcr.io/beardedparrott/orchicon-runtime:latest",
+		"ghcr.io/beardedparrott/orchicon-runtime:gui",
+		"ghcr.io/beardedparrott/orchicon-runtime:dev",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("publishedStockTags() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("tag %d = %q, want %q — these are the tags release.yml pushes", i, got[i], want[i])
+		}
+	}
+	// NO INVENTED SUFFIXES. "-latest" on a variant produced three tags that do not exist.
+	for _, tag := range got {
+		if strings.HasSuffix(tag, "-latest") && tag != PublishedStockBase {
+			t.Errorf("tag %q carries a -latest suffix; only the BASE is published at :latest", tag)
+		}
+	}
+}
 
 // TestPublishedStockTagsCoverEveryVariant — the catalog must name an artifact for EVERY shipped
 // template, or a variant exists as a Dockerfile nobody can fetch.
@@ -15,8 +57,16 @@ import "testing"
 // daemon happens to report.
 func TestPublishedStockTagsCoverEveryVariant(t *testing.T) {
 	tags := publishedStockTags()
-	if len(tags) != len(stockVariants) {
-		t.Fatalf("publishedStockTags() returned %d tags for %d shipped variants", len(tags), len(stockVariants))
+	// ONE TAG PER *PUBLISHED* VARIANT — not per shipped variant. web-research has a template and no
+	// registry tag, so the catalog is deliberately shorter than stockVariants.
+	publishedCount := 0
+	for _, v := range stockVariants {
+		if _, ok := v.PublishedTag("repo"); ok {
+			publishedCount++
+		}
+	}
+	if len(tags) != publishedCount {
+		t.Fatalf("publishedStockTags() returned %d tags for %d published variants", len(tags), publishedCount)
 	}
 	// Every tag must map BACK to a distinct variant.
 	seen := make(map[string]bool, len(tags))
@@ -32,10 +82,16 @@ func TestPublishedStockTagsCoverEveryVariant(t *testing.T) {
 		}
 		seen[v.Variant] = true
 	}
+	// EVERY VARIANT THAT IS PUBLISHED must be covered; a variant with no registry tag
+	// (web-research today) is deliberately absent rather than seeding an unfetchable row.
 	for _, v := range stockVariants {
-		if !seen[v.Variant] {
-			t.Errorf("shipped variant %q has no published tag — its template exists and cannot be "+
-				"fetched", v.Variant)
+		_, published := v.PublishedTag("repo")
+		if published && !seen[v.Variant] {
+			t.Errorf("shipped variant %q has a published tag and is not in the catalog", v.Variant)
+		}
+		if !published && seen[v.Variant] {
+			t.Errorf("variant %q is NOT published, yet the catalog lists it — its rows can only be "+
+				"fetched from a registry that does not carry it", v.Variant)
 		}
 	}
 	// The BASE is the repository's default tag, with no variant suffix. A ":base-latest" would name
