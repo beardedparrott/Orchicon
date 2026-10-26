@@ -1031,6 +1031,14 @@ runtime-stop: ## Stop the host-side workflow runtime daemon
 runtime-status: ## Show whether the runtime daemon is answering, and its socket
 	@$(RUNTIME_SH) daemon-status
 
+# runtime-daemon-refresh restarts the daemon ONLY if it is serving an older bin/orchicon, and is what
+# a rebuild calls. Separated from runtime-daemon because the caller's intent differs: `make
+# runtime-daemon` is an operator saying "start it", while this is a build saying "make sure what is
+# running is what I just built" — and a build must never START a daemon the operator did not have.
+.PHONY: runtime-daemon-refresh
+runtime-daemon-refresh: ## Restart the runtime daemon if (and only if) it serves a stale binary
+	@$(RUNTIME_SH) daemon-refresh
+
 # --- Retired names ----------------------------------------------------------
 # The container-era aliases (container-build/-up/-down/-rebuild/-status/-logs/-ps) were
 # REMOVED by the single-container-deletion work item: they printed "this is now
@@ -1082,6 +1090,20 @@ full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + i
 	$(MAKE) build
 	$(MAKE) ci
 	$(MAKE) migrate-hash
+	# THE RUNTIME DAEMON IS PART OF A REBUILD, for the same reason the desktop app is: it is a
+	# long-lived host process holding an image of the binary we just replaced, so a rebuild that
+	# skipped it left the daemon serving the PREVIOUS build from a deleted inode. That is not
+	# theoretical — it is how a fetch failed with "runtime image pull: runtime daemon: request failed"
+	# against a daemon eight days old, whose /v1/images/pull route did not exist yet.
+	#
+	# It REFRESHES rather than restarts. See runtime-daemon-refresh and scripts/runtime.sh
+	# cmd_daemon_refresh: the daemon is host-wide (one machine, shared by dev/prod/test), so cycling it
+	# unconditionally would disturb a sibling instance's in-flight work every time anyone rebuilt.
+	# Staleness is the only condition worth acting on, and it is always available to compare.
+	#
+	# BEFORE the instance restart, so the plane comes up against the daemon it will actually use, and
+	# so any disruption lands while the plane is going down anyway.
+	$(MAKE) runtime-daemon-refresh
 	$(MAKE) instance-rebuild instance=$(instance)
 	# THE DESKTOP APP IS PART OF A REBUILD, and it goes LAST for a reason: it is the slowest
 	# step, and it must not stand between a failing test and the operator hearing about it. A

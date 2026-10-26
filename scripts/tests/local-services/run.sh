@@ -293,7 +293,7 @@ done
 
 # THE RUNTIME TARGETS MOVED TO runtime.sh, and they must not go back through
 # container.sh either.
-for t in runtime-build runtime-daemon runtime-stop runtime-status; do
+for t in runtime-build runtime-daemon runtime-daemon-refresh runtime-stop runtime-status; do
   check_contains "make $t runs scripts/runtime.sh" "scripts/runtime.sh" "$(make_n "$t")"
   check_lacks "make $t reaches no container.sh" "container.sh" "$(make_n "$t")"
 done
