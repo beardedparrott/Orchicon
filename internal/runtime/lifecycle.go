@@ -309,7 +309,7 @@ func (l *Lifecycle) resolveRunWorkers(ctx context.Context, run db.WorkflowRunRow
 	// mode by construction (a local-mode project gets no container at all).
 	image := strings.TrimSpace(run.RuntimeImage)
 	if image == "" {
-		image = db.BaseRuntimeImage
+		image = db.RuntimeBaseImage()
 	}
 	mode := db.ExecutionModeRuntime
 

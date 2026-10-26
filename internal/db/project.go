@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -106,7 +107,53 @@ func ParseExecutionMode(raw, unset string) (string, error) {
 // BaseRuntimeImage is the fallback image of the resolve chain
 // (explicit work-item image -> project default -> base). It is never
 // empty and never the no-serve sentinel.
+//
+// IT IS A PLACEHOLDER, NOT A REAL TAG. "orchicon-runtime:base" matched no image on
+// any host: a release tags the base ghcr.io/beardedparrott/orchicon-runtime:latest
+// and a dev host builds it as orchicon-runtime:local (see runtimeimage/seed.go and
+// its seed_test.go table). So the resolve chain's LAST leg named an image the
+// runtime daemon's allowlist refuses, and the failure surfaced only at run start —
+// as an item with no image of its own could never get a container:
+//
+//	base "orchicon-runtime:base" -> image not allowed: orchicon-runtime:base
+//
+// The daemon is the only component that knows which tag is actually installed, so
+// it publishes it into the placeholder through SetBaseRuntimeImage at startup (see
+// UseDaemonBaseImage in internal/scheduler for the barrier). Reading it before that
+// barrier keeps the historical value, which is why the scheduler must apply the
+// barrier before resolving anything.
 const BaseRuntimeImage = "orchicon-runtime:base"
+
+// SetBaseRuntimeImage replaces the resolve chain's fallback with the image the
+// runtime daemon ACTUALLY uses.
+//
+// A SETTER RATHER THAN A CONFIG STRUCT FIELD, because the dependency cannot run the
+// other way: internal/runtime imports internal/db (lifecycle.go), so db may not
+// import internal/runtime without a cycle. A pull from the daemon is therefore
+// impossible from here, and this push is the only shape that keeps the resolve
+// chain's fallback and the daemon's allowlist in agreement without moving the
+// constant to a third package and re-exporting it from both.
+//
+// Empty is ignored: the fallback must never become empty, or the resolve chain would
+// hand the daemon an empty image and get "no image specified" instead.
+func SetBaseRuntimeImage(ref string) {
+	if ref = strings.TrimSpace(ref); ref == "" {
+		return
+	}
+	baseRuntimeImage.Store(ref)
+}
+
+// baseRuntimeImage backs BaseRuntimeImage's live value. It is a placeholder until
+// SetBaseRuntimeImage is called, so the zero value is the historical constant.
+var baseRuntimeImage atomic.Value
+
+// RuntimeBaseImage returns the fallback image currently in force.
+func RuntimeBaseImage() string {
+	if v, ok := baseRuntimeImage.Load().(string); ok && v != "" {
+		return v
+	}
+	return BaseRuntimeImage
+}
 
 // ErrNotFound is returned when a single-row query matches no rows. The
 // data-access layer treats this as a not-found condition; the API layer

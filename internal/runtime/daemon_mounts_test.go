@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,22 +74,43 @@ func opencodeAdapterMounts(home string) []string {
 	return out
 }
 
-// opencodePrivateDataHome is the uid-owned PRIVATE data home an
-// opencode-demanding run gets: the same path inside and out, as every mount is,
-// but a tmpfs owned by the runtime uid rather than the operator's directory.
-func opencodePrivateDataHome(home string) string {
-	return filepath.Join(home, ".local", "share", "opencode") + ":rw,uid=0,gid=0,mode=0755"
+// tmpfsOwnershipSuffix is the ownership grammar a --tmpfs entry carries for a
+// given engine family, so the expectations below stay engine-aware instead of
+// hard-coding one engine's spelling.
+//
+// THE TWO ENGINES DO NOT ACCEPT THE SAME OPTIONS, and pinning docker's was the
+// defect: podman rejects uid=/gid= outright ("unknown mount option \"uid=1000\""),
+// so a test that asserted `uid=0,gid=0,mode=0755` on EVERY argv was asserting a
+// string the engine refuses — green tests over a container that could not be
+// created. The runtime uid reaches its mounts through the MODE under podman.
+func tmpfsOwnershipSuffix(podman bool) string { return tmpfsOwnershipSuffixFor(podman, 0, 0) }
+
+// tmpfsOwnershipSuffixFor is the same grammar with an explicit uid/gid, for the
+// assertions that pin a daemon's REAL ids (docker receives the host uid).
+func tmpfsOwnershipSuffixFor(podman bool, uid, gid int) string {
+	if podman {
+		return ",mode=0777"
+	}
+	return fmt.Sprintf(",uid=%d,gid=%d,mode=0755", uid, gid)
 }
 
-// homeOwnedTmpfsOpts are the three uid-owned tmpfs entries that make $HOME —
-// and the `.local` and `.config` a bind inside it forces Docker to create as
-// root — writable by the runtime uid. Without them the adapter CLI exits 1 at
-// boot (`EACCES mkdir $HOME/.cache` on 1.x, `mkdir $HOME/.local/state` on 2.x).
-func homeOwnedTmpfsOpts(home string) []string {
+// opencodePrivateDataHome is the private data home an opencode-demanding run
+// gets: the same path inside and out, as every mount is, but a tmpfs the runtime
+// uid can write rather than the operator's directory.
+func opencodePrivateDataHome(home string, podman bool) string {
+	return filepath.Join(home, ".local", "share", "opencode") + ":rw" + tmpfsOwnershipSuffix(podman)
+}
+
+// homeOwnedTmpfsOpts are the three tmpfs entries that make $HOME — and the
+// `.local` and `.config` a bind inside it forces the engine to create as root —
+// writable by the runtime uid. Without them the adapter CLI exits 1 at boot
+// (`EACCES mkdir $HOME/.cache` on 1.x, `mkdir $HOME/.local/state` on 2.x).
+func homeOwnedTmpfsOpts(home string, podman bool) []string {
+	suffix := ":rw" + tmpfsOwnershipSuffix(podman)
 	return []string{
-		home + ":rw,uid=0,gid=0,mode=0755",
-		filepath.Join(home, ".local") + ":rw,uid=0,gid=0,mode=0755",
-		filepath.Join(home, ".config") + ":rw,uid=0,gid=0,mode=0755",
+		home + suffix,
+		filepath.Join(home, ".local") + suffix,
+		filepath.Join(home, ".config") + suffix,
 	}
 }
 
@@ -142,10 +164,10 @@ func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 			// The private data home follows the adapter demand like the host
 			// binds do; the uid-owned HOME trio does NOT (it is what makes the
 			// runtime's home writable at all, adapter or not).
-			if got := argValue(args, "--tmpfs", opencodePrivateDataHome(home)); got != c.wantAdapter {
+			if got := argValue(args, "--tmpfs", opencodePrivateDataHome(home, true)); got != c.wantAdapter {
 				t.Errorf("private data home present=%v, want %v (args %v)", got, c.wantAdapter, args)
 			}
-			for _, opt := range homeOwnedTmpfsOpts(home) {
+			for _, opt := range homeOwnedTmpfsOpts(home, true) {
 				if !argValue(args, "--tmpfs", opt) {
 					t.Errorf("missing uid-owned home tmpfs %s: %v", opt, args)
 				}
@@ -176,14 +198,14 @@ func TestStandardHostMountArgsOpencodePrivateDataHome(t *testing.T) {
 	if argValue(args, "-v", data+":"+data+":rw") {
 		t.Errorf("the operator's data dir must not be bind-mounted read-write — a worker would get write access to the credential store and session DB: %v", args)
 	}
-	if !argValue(args, "--tmpfs", opencodePrivateDataHome(home)) {
+	if !argValue(args, "--tmpfs", opencodePrivateDataHome(home, true)) {
 		t.Errorf("missing the private uid-owned data home: %v", args)
 	}
 	auth := filepath.Join(data, "auth.json")
 	if got, want := auth+":"+auth+":ro", true; argValue(args, "-v", got) != want {
 		t.Errorf("the credential file must be shared read-only into the private home: %v", args)
 	}
-	for _, opt := range homeOwnedTmpfsOpts(home) {
+	for _, opt := range homeOwnedTmpfsOpts(home, true) {
 		if !argValue(args, "--tmpfs", opt) {
 			t.Errorf("missing uid-owned home tmpfs %s: %v", opt, args)
 		}

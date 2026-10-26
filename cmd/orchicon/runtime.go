@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 )
 
@@ -87,10 +88,11 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 	}
 	log.Info("runtime engine resolved", "engine", eng.Name, "bin", eng.Bin)
 
+	baseImage := env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest")
 	d := &runtime.Daemon{
 		SocketPath:    socketPath,
 		Engine:        eng,
-		Image:         env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest"),
+		Image:         baseImage,
 		Images:        runtimeImagesAllowlist(env("ORCHICON_RUNTIME_IMAGES", "")),
 		UserID:        hostUID,
 		GroupID:       hostGID,
@@ -105,6 +107,22 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		SweepInterval: envDur("ORCHICON_RUNTIME_SWEEP_INTERVAL", 5*time.Minute),
 		Log:           log,
 	}
+
+	// PUBLISH THE BASE TAG THE RESOLVE CHAIN SHOULD FALL BACK TO.
+	//
+	// The scheduler's resolve chain (explicit item image -> project default -> base) ended at a
+	// placeholder, "orchicon-runtime:base", that matched no installed tag on any host: a release
+	// tags the base ghcr.io/beardedparrott/orchicon-runtime:latest and a dev host builds it as
+	// orchicon-runtime:local. An imageless work item therefore fell back to an image this daemon
+	// refuses at create time ("image not allowed: orchicon-runtime:base").
+	//
+	// THIS PROCESS IS THE ONLY ONE THAT KNOWS d.Image, so it is the only one that can repair the
+	// fallback. The direction matters when the daemon and the plane are separate processes: the
+	// scheduler applies the barrier from the environment (scheduler.UseDaemonBaseImage), so both
+	// halves agree in a split deployment as well as in-process. Setting it here too keeps a
+	// co-resident plane correct even if its env differs from the daemon's.
+	db.SetBaseRuntimeImage(baseImage)
+	log.Info("runtime base image published to the resolve chain", "base", db.RuntimeBaseImage())
 
 	// Platform-dependent stop signals: SIGINT+SIGTERM on Unix, os.Interrupt on Windows (signals_*.go).
 	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)

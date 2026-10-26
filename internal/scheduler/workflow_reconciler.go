@@ -105,6 +105,13 @@ type WorkflowReconciler struct {
 	// a semaphore slot, so tests can assert the concurrency bound. Nil in
 	// production.
 	dispatchOverlap func(inFlight int)
+
+	// baseImage is the resolved fallback for a run whose image is not otherwise
+	// determined: the base tag the runtime daemon on this host actually has
+	// (baseimage.go). Recorded at construction AND published into internal/db, so
+	// the value this reconciler reports for a run can never differ from the one the
+	// resolve chain elsewhere reads.
+	baseImage string
 }
 
 // RuntimeLifecycle creates/reaps the per-workflow runtime container and
@@ -228,7 +235,14 @@ func (r *WorkflowReconciler) runNeedsServe(ctx context.Context, tx pgx.Tx, tenan
 // runtime is the per-workflow runtime container lifecycle; nil disables
 // runtime containers.
 func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator, td TaskDispatcher, rt RecoveryTrigger, rl RuntimeLifecycle) *WorkflowReconciler {
-	return &WorkflowReconciler{pool: pool, log: log, policy: pe, taskDispatcher: td, recovery: rt, runtime: rl, warming: make(map[string]bool)}
+	// POINT THE RESOLVE CHAIN'S FALLBACK AT AN IMAGE THIS HOST ACTUALLY HAS, before
+	// this reconciler can resolve anything. Constructing the reconciler is the one
+	// moment that precedes every resolution, so the barrier belongs here rather than
+	// at each call site: a missed call site is a work item that silently keeps the
+	// unusable placeholder. See baseimage.go for the failure this removes.
+	base := UseDaemonBaseImage()
+	return &WorkflowReconciler{pool: pool, log: log, policy: pe, taskDispatcher: td, recovery: rt, runtime: rl,
+		warming: make(map[string]bool), baseImage: base}
 }
 
 // SetSequenceNotifier injects the callback that advances a sequence parent
@@ -1711,7 +1725,7 @@ func (r *WorkflowReconciler) dispatchInlineLimit(n int) int {
 func containerFailureReason(img string, retryErr, baseErr error) string {
 	const armNote = "the arm-site ensure attempt (autocommit) had already failed"
 	return fmt.Sprintf("runtime container could not be created: image %q -> %v; base %q -> %v (%s)",
-		img, retryErr, db.BaseRuntimeImage, errorOrNone(baseErr), armNote)
+		img, retryErr, db.RuntimeBaseImage(), errorOrNone(baseErr), armNote)
 }
 
 // errorOrNone renders an error for a diagnostic string, or a plain word when there was none. The
@@ -1811,9 +1825,14 @@ func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, ten
 	if !r.runtimeEnabled() {
 		return nil
 	}
+	// THE FALLBACK IS THE DAEMON'S OWN BASE TAG (db.RuntimeBaseImage), not the
+	// historical placeholder: falling back to a tag the daemon's allowlist refuses
+	// turned the base attempt into a guaranteed second failure ("image not allowed:
+	// orchicon-runtime:base") and hid the real one behind it.
+	baseImg := db.RuntimeBaseImage()
 	img := strings.TrimSpace(resolvedImage)
 	if img == "" || img == runtime.NoServeImage {
-		img = db.BaseRuntimeImage
+		img = baseImg
 	}
 	ftx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -1871,8 +1890,8 @@ func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, ten
 		return nil
 	}
 	var baseErr error
-	if img != db.BaseRuntimeImage {
-		try.RuntimeImage = db.BaseRuntimeImage
+	if img != baseImg {
+		try.RuntimeImage = baseImg
 		baseErr = r.runtime.EnsureForRun(ctx, try)
 		if baseErr == nil {
 			r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", retryErr)
@@ -3717,7 +3736,9 @@ func runEffectiveImage(ctx context.Context, tx pgx.Tx, tenantID string, wi db.Wo
 	if img := strings.TrimSpace(wi.RuntimeImage); img != "" {
 		return img
 	}
-	return db.BaseRuntimeImage
+	// The LIVE fallback (the daemon's own base tag), never the placeholder — see
+	// imageForRun for why the placeholder is not a resolvable image.
+	return db.RuntimeBaseImage()
 }
 
 // projectExecutionModeForPrompt returns the work item's EFFECTIVE execution
@@ -4276,16 +4297,16 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 // error, never on a missing default).
 func resolveProjectDefaultImage(ctx context.Context, tx pgx.Tx, tenantID, projectID string) string {
 	if strings.TrimSpace(projectID) == "" {
-		return db.BaseRuntimeImage
+		return db.RuntimeBaseImage()
 	}
 	p, err := db.GetProject(ctx, tx, tenantID, projectID)
 	if err != nil {
-		return db.BaseRuntimeImage
+		return db.RuntimeBaseImage()
 	}
 	if p.DefaultRuntimeImage != nil && strings.TrimSpace(*p.DefaultRuntimeImage) != "" {
 		return strings.TrimSpace(*p.DefaultRuntimeImage)
 	}
-	return db.BaseRuntimeImage
+	return db.RuntimeBaseImage()
 }
 
 // resolveImageFromValues applies the one-shot image agreement rule: all
@@ -5965,10 +5986,24 @@ func aggregateLoopDecisions(decisions []string, failureValue, successValue strin
 // longer selects a sentinel image. runtime.NoServeImage survives only as
 // the internal serve-skip marker for legacy rows, never as a freshly
 // persisted run.RuntimeImage when a container exists.
+//
+// IT READS db.RuntimeBaseImage(), NOT THE db.BaseRuntimeImage CONSTANT, because the
+// fallback has to be an image the runtime daemon's allowlist actually accepts. The
+// constant is the historical placeholder ("orchicon-runtime:base"), which matched no
+// installed tag on any host — a release tags the base ghcr.io/.../orchicon-runtime:
+// latest and a dev host builds it as orchicon-runtime:local. Resolving to it made
+// every imageless work item's LAST resort a tag the daemon refuses:
+//
+//	base "orchicon-runtime:base" -> image not allowed: orchicon-runtime:base
+//
+// db.RuntimeBaseImage() returns that same placeholder until the daemon publishes its
+// configured tag through UseDaemonBaseImage, and the daemon's tag thereafter. THIS IS
+// THE ONE PLACE the repair is applied: every leg of the chain funnels through here,
+// so a caller cannot hold a path to the raw constant.
 func imageForRun(resolved string, needsServe bool) string {
 	_ = needsServe
 	if strings.TrimSpace(resolved) == "" {
-		return db.BaseRuntimeImage
+		return db.RuntimeBaseImage()
 	}
 	return strings.TrimSpace(resolved)
 }

@@ -939,7 +939,7 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	// gets a writable, runtime-uid-owned directory at the same path instead of
 	// a host bind, plus its declared credential file read-only inside it.
 	for _, ph := range adapterPrivateHomes(d.HostHome, requestedKinds(req)...) {
-		args = append(args, "--tmpfs", tmpfsOwned(ph.dir, d.UserID, d.GroupID, d.HomeTmpfsSize))
+		args = append(args, "--tmpfs", d.tmpfsOwned(ph.dir, d.HomeTmpfsSize))
 		if ph.authFile != "" {
 			args = append(args, "-v", ph.authFile+":"+filepath.Join(ph.dir, filepath.Base(ph.authFile))+":ro")
 		}
@@ -996,7 +996,7 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 		{filepath.Join(d.HostHome, ".config"), ""},
 	}
 	for _, hd := range homeDirs {
-		args = append(args, "--tmpfs", tmpfsOwned(hd.path, d.UserID, d.GroupID, hd.size))
+		args = append(args, "--tmpfs", d.tmpfsOwned(hd.path, hd.size))
 	}
 	args = append(args, "-e", "HOME="+d.HostHome)
 	// Put every MOUNTED adapter CLI on PATH so the supervisor's
@@ -1027,13 +1027,54 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	return args
 }
 
-// tmpfsOwned renders the --tmpfs option string for a private, runtime-uid-owned
-// mount at path. uid/gid are explicit because OWNERSHIP IS THE POINT: a tmpfs
-// without them is root-owned, the runtime uid cannot write it, and that is
-// precisely the failure this exists to prevent. size == "" omits the limit,
-// which is right for the mount points that never hold file data.
-func tmpfsOwned(path string, uid, gid int, size string) string {
-	opt := fmt.Sprintf("%s:rw,uid=%d,gid=%d,mode=0755", path, uid, gid)
+// tmpfsOwned renders the --tmpfs option string for a private mount at path that
+// the RUNTIME UID can write, which is the entire point of emitting one: a tmpfs
+// left at the engine's default is root-owned, the runtime uid cannot write it,
+// and the supervisor's own home setup then fails behind a WARN nobody reads.
+//
+// THE OWNERSHIP MECHANISM IS PER ENGINE FAMILY, because the two engines do not
+// accept the same grammar. Measured, not assumed (podman 6.1.0, docker 29.7.2):
+//
+//	docker: --tmpfs /p:rw,uid=1000,gid=1000,mode=0755   -> accepted
+//	podman: --tmpfs /p:rw,uid=1000,gid=1000,mode=0755   -> "Error: unknown mount
+//	        option \"uid=1000\": invalid mount option", exit 125
+//	podman: --tmpfs /p:rw,mode=0755                     -> accepted
+//	podman: --mount type=tmpfs,...,uid=1000             -> "uid: invalid mount option"
+//
+// So podman takes `mode=` and REJECTS `uid=`/`gid=`, and `mode=` is the portable
+// intersection both engines honour. Docker keeps the precise ownership it always
+// had; podman gets the write access through the MODE instead.
+//
+// MODE=0777, NOT 0755 AND NOT 1777, and both halves were measured as uid 1000
+// under rootless `--userns=keep-id`:
+//
+//   - 0755 -> the supervisor cannot create $HOME/.local or $HOME/.config inside a
+//     root-owned directory: "touch: cannot touch '/tmp/mnt/probe': Permission
+//     denied".
+//   - 1777 (sticky) does permit the creation, but the sticky bit forbids DELETING
+//     any entry the caller does not own, and every entry here is created by the
+//     runtime uid inside a ROOT-owned directory — so a stale entry could never be
+//     replaced.
+//   - 0777 permits both. These mounts are private to one container for one run and
+//     every process inside runs as the same runtime uid, so there is no second
+//     user for a restrictive mode to protect against; the permissive mode IS the
+//     mechanism that replaces the ownership options podman will not take.
+//
+// THIS IS ONE CODE PATH ON LINUX, macOS AND WINDOWS. The ENGINE FAMILY decides
+// the grammar, never GOOS: on macOS and Windows podman runs inside its `podman
+// machine` VM and parses these options with the same podman code as Linux, so the
+// podman argv proved here is the correct one there too. Keying on GOOS would have
+// handed those hosts a grammar this bug already proved podman refuses.
+//
+// size == "" omits the limit, which is right for the mount points that never hold
+// file data.
+func (d *Daemon) tmpfsOwned(path, size string) string {
+	opt := path + ":rw"
+	if d.Engine.isPodman() {
+		opt += ",mode=0777"
+	} else {
+		opt += fmt.Sprintf(",uid=%d,gid=%d,mode=0755", d.UserID, d.GroupID)
+	}
 	if size != "" {
 		opt += ",size=" + size
 	}
