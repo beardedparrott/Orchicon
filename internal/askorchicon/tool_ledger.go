@@ -116,6 +116,67 @@ func (l *toolLedger) recordPermission(tool, target, verdict, detail, askID strin
 	})
 }
 
+// promoteRecordedAsk appends a FIRST-CLASS ask_user call when a tool result reports one.
+//
+// THE CALLER MUST HOLD l.mu. It runs after the real call has been recorded, so the transcript keeps
+// exactly what the adapter did — the `execute` wrapper stays visible — AND gains the ask the clients
+// render. Two entries, one story: this is not a rewrite of the transcript, it is the recognition that
+// the wrapped call produced an ask.
+//
+// THE ANSWER PATH NEEDS THIS TOO. A promoted ask was served by the MCP sidecar, which returns
+// immediately: it never entered the in-process pending registry, so ReplyPermissionAsk finds nothing
+// to apply. The card's answer is therefore delivered as the user's next MESSAGE (which is what the
+// tool's own contract says: "the user answers in their next message"). Without this entry there is no
+// card to answer at all — which is the reported bug — and with it the flow is coherent end to end.
+func (l *toolLedger) promoteRecordedAsk(output string) {
+	args := promotedAskArgs(output)
+	if args == "" {
+		return
+	}
+	// A result that IS the ask's own success is not itself a new call: the tool was invoked directly
+	// (the native bridge, or an adapter that calls it as ask_user), and the clients already find that
+	// call by name. Promoting it would render the same ask twice.
+	for i := len(l.calls) - 1; i >= 0; i-- {
+		if isAskToolName(l.calls[i].FunctionName) {
+			return
+		}
+	}
+	l.nextID++
+	callID := fmt.Sprintf("tc-%d", l.nextID)
+	l.calls = append(l.calls, toolCallEntry{
+		ID:           callID,
+		Type:         "function",
+		FunctionName: "orchicon_ask_user",
+		Arguments:    args,
+		// The issue time is the RESULT's arrival: the wrapped call's start was the wrapper, not the
+		// ask, and the card is anchored to when the question became askable.
+		IssuedAtUnixMs: ledgerNowMillis(),
+		resolved:       true,
+	})
+	// NO RESULT IS RECORDED FOR THE PROMOTED CALL, and that is what makes the card LIVE.
+	//
+	// askCardPlan renders an ask card when its arguments parse; a call that also has a RESULT renders
+	// as already ANSWERED. The wrapped call did complete — its result is what we just read the ask out
+	// of — but the QUESTION did not: nobody has answered it, and the model certainly has not. Storing
+	// the wrapper's output against this id would draw the card settled, with the tool's own JSON as
+	// the operator's "answer".
+	//
+	// So the promoted entry stays open, which is the truth, and ReplyPermissionAsk resolves it by
+	// delivering the operator's words as the conversation's next message.
+}
+
+// isAskToolName matches every spelling the ask tool is recorded under, including the MCP-qualified
+// one. THE QUALIFIED NAME WAS MISSING and is half of the claude report: a direct MCP call records
+// `mcp__orchicon__ask_user`, which neither client's predicate accepted.
+func isAskToolName(name string) bool {
+	switch name {
+	case "ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user":
+		return true
+	}
+	// A server may also qualify it with a different separator; the suffix is the stable part.
+	return strings.HasSuffix(name, "__ask_user") || name == "ask_user"
+}
+
 // recordStart logs a tool call ISSUED but not yet resolved (the tool_part
 // signal: Text carries only the tool name). The arguments are filled in when
 // the resolution arrives (recordResolve matches the last unresolved call for
@@ -187,6 +248,7 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 		Output:     output,
 		IsError:    status == "error",
 	})
+	l.promoteRecordedAsk(output)
 }
 
 // recordToolResolution backfills a resolved call's arguments and appends its
@@ -249,6 +311,7 @@ func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr b
 		Output:     truncateLedgerString(output, 8000),
 		IsError:    isErr,
 	})
+	l.promoteRecordedAsk(output)
 }
 
 // snapshot returns the ledger as (tool_calls, tool_results) JSON documents
