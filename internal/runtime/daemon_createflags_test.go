@@ -86,17 +86,17 @@ func TestCreateContainerFlagsPodman(t *testing.T) {
 		t.Errorf("createFlagArgs must not emit -v: %v", args)
 	}
 
-	// The full create argv's uid-owned home tmpfs entries survive unchanged
-	// (they are what make $HOME writable by the runtime uid).
+	// The full create argv's writable-home tmpfs entries survive unchanged: they are
+	// what make $HOME writable by the runtime uid, and under podman the writability
+	// comes from MODE (uid=/gid= are refused by the engine — see TestCreateHarness...).
 	full := append(args, d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"opencode"}, GitStrategy: "local"})...)
-	for _, opt := range homeOwnedTmpfsOpts(home) {
-		opt = strings.ReplaceAll(opt, "uid=0,gid=0", "uid=1000,gid=1000")
+	for _, opt := range homeOwnedTmpfsOpts(home, true) {
 		if strings.HasPrefix(opt, home+":") {
 			// $HOME itself carries the configured size; .local/.config never do.
 			opt += ",size=2g"
 		}
 		if !argValue(full, "--tmpfs", opt) {
-			t.Errorf("missing uid-owned home tmpfs %s: %v", opt, full)
+			t.Errorf("missing writable home tmpfs %s: %v", opt, full)
 		}
 	}
 }

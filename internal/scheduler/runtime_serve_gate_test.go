@@ -58,11 +58,22 @@ func TestImageForRun(t *testing.T) {
 	if got := imageForRun("orchicon-runtime:orchicon-dev", false); got != "orchicon-runtime:orchicon-dev" {
 		t.Errorf("imageForRun(serveless) = %q, want the resolved image (always-container)", got)
 	}
-	if got := imageForRun("", false); got != db.BaseRuntimeImage {
-		t.Errorf("imageForRun(empty, serveless) = %q, want base %q", got, db.BaseRuntimeImage)
+	// EMPTY RESOLVES TO THE LIVE FALLBACK, which is db.RuntimeBaseImage() — the base
+	// tag the runtime daemon on this host actually has. It used to be the
+	// db.BaseRuntimeImage CONSTANT ("orchicon-runtime:base"), a tag no host has, so
+	// this leg named an image the daemon refuses ("image not allowed"). The assertion
+	// is on the LIVE value because that is what makes the leg work; asserting the
+	// placeholder here would lock the defect back in.
+	if got := imageForRun("", false); got != db.RuntimeBaseImage() {
+		t.Errorf("imageForRun(empty, serveless) = %q, want the live fallback %q", got, db.RuntimeBaseImage())
 	}
-	if got := imageForRun("", true); got != db.BaseRuntimeImage {
-		t.Errorf("imageForRun(empty, needsServe) = %q, want base %q", got, db.BaseRuntimeImage)
+	if got := imageForRun("", true); got != db.RuntimeBaseImage() {
+		t.Errorf("imageForRun(empty, needsServe) = %q, want the live fallback %q", got, db.RuntimeBaseImage())
+	}
+	// …and the live fallback must never be the unusable placeholder.
+	if got := imageForRun("", true); got == db.BaseRuntimeImage {
+		t.Errorf("imageForRun(empty) resolved to the placeholder %q — that tag exists on no host "+
+			"and the daemon rejects it with `image not allowed`", got)
 	}
 	// The sentinel must not collide with any plausible real tag.
 	if strings.Contains(runtime.NoServeImage, "runtime:") || strings.Contains(runtime.NoServeImage, ":") {
