@@ -967,7 +967,9 @@ function AskOrchiconPage() {
         });
         if (res.applied) {
           // REMEMBER IT LOCALLY TOO — the card must never depend solely on the transcript catching up.
-          markAskSettled(askId, answer || choice);
+          // String(choice) because choice is the generated PermissionChoice ENUM, not a string: a
+          // question carries `answer` and an UNSPECIFIED choice, a permission carries the decision.
+          markAskSettled(askId, answer || String(choice));
           setStream(convId, (prev) => ({
             ...prev,
             asks: resolveAsk(prev.asks, askId, outcomeFromChoice(choice)),
