@@ -764,6 +764,11 @@ func (h *HostServe) seedAuth() error {
 			"live stores and delivered by environment instead", "data_dir", h.dataDir)
 		return nil
 	}
+	if h.authSource() == "" {
+		// NO KNOWN STORE: nothing to copy, and filepath.Join("", "auth.json") would be a
+		// RELATIVE path resolved against the plane's working directory.
+		return nil
+	}
 	src := filepath.Join(h.authSource(), "auth.json")
 	b, err := os.ReadFile(src)
 	if err != nil {
@@ -784,8 +789,13 @@ func (h *HostServe) seedAuth() error {
 }
 
 // authSource is the operator's real opencode data dir.
+//
+// IT ASKS THE RESOLVER, IT DOES NOT BUILD THE PATH. This function used to spell the XDG
+// layout out by hand, and on Windows that is not where the operator's opencode keeps its
+// store — so the serve warned about a directory it had invented while the credential
+// resolver looked somewhere else again. One resolver, one answer.
 func (h *HostServe) authSource() string {
-	return filepath.Join(h.operatorHome(), ".local", "share", "opencode")
+	return runtime.OpenCodeStoreDir(h.operatorHome())
 }
 
 // operatorUsesSQLiteStore reports whether the operator's opencode keeps credentials in the 2.x SQLite store

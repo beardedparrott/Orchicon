@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	goruntime "runtime"
+
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	_ "modernc.org/sqlite"
 )
@@ -17,7 +19,120 @@ import (
 // pool fingerprint hashes (hostfp.go) so a rotated key already invalidates a
 // warm container.
 func openCodeAuthPath(home string) string {
-	return filepath.Join(home, ".local", "share", "opencode", "auth.json")
+	return underStoreDir(OpenCodeStoreDir(home), "auth.json")
+}
+
+// underStoreDir joins a file onto a store dir, and returns "" when the dir is unknown.
+//
+// THE EMPTY CASE IS LOAD-BEARING: filepath.Join("", "auth.json") is the RELATIVE path
+// "auth.json", so a missing store would silently resolve against the PROCESS's working
+// directory instead. Every caller treats "" as "no store", which is the truth.
+func underStoreDir(dir, name string) string {
+	if strings.TrimSpace(dir) == "" {
+		return ""
+	}
+	return filepath.Join(dir, name)
+}
+
+// OpenCodeStoreDir is the directory the OPERATOR's own opencode keeps its credential
+// store in — resolved for this host, once, so that every reader agrees about it.
+//
+// IT IS NOT A CONSTANT, AND THAT WAS A WINDOWS BUG. This used to be
+// filepath.Join(home, ".local", "share", "opencode") on every platform: the XDG layout,
+// which is what opencode uses on Linux and macOS. On Windows the operator's own install
+// puts its store somewhere else entirely, so the resolver read a directory that does not
+// exist, delivered NO credentials (and reported nothing undeliverable, because it had
+// read nothing to judge), and the serve started with an empty data dir — leaving every
+// `opencode-go` model unauthenticated and every turn on it failing with "Model
+// unavailable" while the same key worked under the orchicon adapter.
+func OpenCodeStoreDir(home string) string {
+	return openCodeStoreDir(goruntime.GOOS, home, os.Getenv)
+}
+
+// openCodeStoreDir is the platform rule, free of process state so it can be tested for an
+// OS this build is not running on.
+func openCodeStoreDir(goos, home string, getenv func(string) string) string {
+	candidates := openCodeStoreCandidates(goos, home, getenv)
+	if len(candidates) == 0 {
+		return ""
+	}
+	// THE MOST RECENTLY WRITTEN STORE WINS. A host can hold more than one (a user who has
+	// used opencode under both layouts), and the one with the newest credential file is the
+	// one their sign-in just wrote — which is the same reasoning that decides between two
+	// provider ids sharing one variable.
+	best, bestAt := "", int64(-1)
+	for _, dir := range candidates {
+		if at, ok := storeWrittenAt(dir); ok && at > bestAt {
+			best, bestAt = dir, at
+		}
+	}
+	if best != "" {
+		return best
+	}
+	// NONE EXISTS: return the primary candidate so callers can still REPORT where they
+	// looked (the serve logs this path when it warns that a store was never found).
+	return candidates[0]
+}
+
+// openCodeStoreCandidates is every directory an opencode install may have used for its
+// data dir, most conventional first for the OS.
+//
+// THE WINDOWS ENTRIES ARE MEASURED FROM opencode'S OWN BUNDLE, which carries both
+// conventions: an xdg helper (`XDG_DATA_HOME || <home>/.local/share`) and the node
+// `env-paths` win32 branch (`%LOCALAPPDATA%\<name>\Data`, falling back to
+// `<home>\AppData\Local`). Guessing one of them is what produced the silent miss, so all
+// of them are probed and the store that actually exists decides.
+func openCodeStoreCandidates(goos, home string, getenv func(string) string) []string {
+	var out []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		for _, seen := range out {
+			if strings.EqualFold(seen, p) {
+				return
+			}
+		}
+		out = append(out, p)
+	}
+	if xdg := getenv("XDG_DATA_HOME"); xdg != "" {
+		add(filepath.Join(xdg, "opencode"))
+	}
+	if home != "" {
+		add(filepath.Join(home, ".local", "share", "opencode"))
+	}
+	if goos == "windows" {
+		bases := []string{getenv("LOCALAPPDATA"), getenv("APPDATA")}
+		if home != "" {
+			bases = append(bases, filepath.Join(home, "AppData", "Local"))
+		}
+		for _, base := range bases {
+			if base == "" {
+				continue
+			}
+			// env-paths puts a Data component on win32; older layouts did not.
+			add(filepath.Join(base, "opencode", "Data"))
+			add(filepath.Join(base, "opencode"))
+		}
+	}
+	return out
+}
+
+// storeWrittenAt reports whether dir holds an opencode credential store, and when its
+// newest credential file was written. Either layout counts: the 2.x database, the 1.x
+// auth.json, or both.
+func storeWrittenAt(dir string) (int64, bool) {
+	found, newest := false, int64(-1)
+	for _, name := range []string{"opencode.db", "auth.json"} {
+		if st, err := os.Stat(filepath.Join(dir, name)); err == nil && !st.IsDir() {
+			found = true
+			if at := st.ModTime().UnixMilli(); at > newest {
+				newest = at
+			}
+		}
+	}
+	return newest, found
 }
 
 // providerAPIKeyEnv maps an opencode PROVIDER ID to the environment variable
@@ -226,7 +341,7 @@ func adapterCredentialEnv(home string, kinds ...string) (env []string, unusable 
 // call as an Unauthorized, far from the cause. Hence: read both, and let the
 // database win, because where the two disagree the database is the live store.
 func openCodeDBPath(home string) string {
-	return filepath.Join(home, ".local", "share", "opencode", "opencode.db")
+	return underStoreDir(OpenCodeStoreDir(home), "opencode.db")
 }
 
 // credentialTableKeys reads the 2.x credential store as integration id -> secret.
