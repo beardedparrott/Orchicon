@@ -65,6 +65,9 @@ type HostServe struct {
 	dataDir  string
 	home     string
 	started  bool
+	// startedAt is when the CURRENT process was spawned, used to notice that the operator's
+	// credential store has been written since — see recycleIfCredentialsChanged.
+	startedAt time.Time
 	// profile is the permission profile this serve is built with. The zero
 	// value ("") normalizes to ProfileWorker, so a serve built by
 	// NewHostServe carries the worker sandbox; NewAskHostServe opts into
@@ -303,6 +306,71 @@ func (h *HostServe) Watch(ctx context.Context) {
 	}
 }
 
+// recycleIfCredentialsChanged recycles a RUNNING serve when the operator has signed in to a
+// provider since it was spawned.
+//
+// THE CALLER MUST HOLD startMu.
+//
+// THE ENVIRONMENT IS FIXED AT SPAWN, and provider credentials are delivered through it. So an
+// operator who signs into `opencode-go` while the plane is running cannot be helped by that serve:
+// it will keep failing every turn on that provider with "Model unavailable" until something else
+// restarts it, and NOTHING tells them why — the serve looks healthy, and the credential it lacks is
+// one the plane already knows how to deliver.
+//
+// MEASURED, on the Windows report: opencode-go was signed in at 14:43; the serve had started at
+// 14:25; every turn on that provider failed. Recycling it made it log "provider credentials
+// delivered by environment", providers=1, and the failures stopped. The manual fix was killing the
+// process — this does that automatically, at the demand point where a turn is about to need it.
+//
+// It is deliberately NOT done inside the health watchdog: a restart mid-turn is a visible session
+// break, and the demand point is early enough that no session is in flight.
+func (h *HostServe) recycleIfCredentialsChanged(ctx context.Context) {
+	if h.log == nil || h.home == "" {
+		return
+	}
+	h.mu.Lock()
+	started, ready := h.startedAt, h.started
+	h.mu.Unlock()
+	if !ready || started.IsZero() {
+		return
+	}
+	at, ok := credentialStoreWrittenAt(h.home)
+	if !ok || !credentialStoreIsNewer(at, started) {
+		return
+	}
+	h.log.Info("host opencode serve: the operator's credential store changed since this serve started — "+
+		"recycling it so the new credentials are delivered",
+		"store_written", at.UTC().Format(time.RFC3339), "serve_started", started.UTC().Format(time.RFC3339))
+	h.kill()
+}
+
+// credentialStoreIsNewer reports whether a store written at `written` postdates a serve started at
+// `started`, with a small allowance so a sign-in landing in the same second-ish as the spawn does
+// not recycle the serve on every demand forever.
+func credentialStoreIsNewer(written, started time.Time) bool {
+	return written.After(started.Add(2 * time.Second))
+}
+
+// credentialStoreWrittenAt is when the operator's opencode credential store was last written.
+// Reported as false when there is no store, which is the native-only host: nothing changed, so
+// nothing to recycle.
+func credentialStoreWrittenAt(home string) (time.Time, bool) {
+	dir := runtime.OpenCodeStoreDir(home)
+	if dir == "" {
+		return time.Time{}, false
+	}
+	var newest time.Time
+	found := false
+	for _, name := range []string{"opencode.db", "auth.json"} {
+		if st, err := os.Stat(filepath.Join(dir, name)); err == nil && !st.IsDir() {
+			if at := st.ModTime(); !found || at.After(newest) {
+				newest, found = at, true
+			}
+		}
+	}
+	return newest, found
+}
+
 // EnsureStarted starts the host serve ON FIRST DEMAND and arms its
 // supervision, or returns immediately when it is already up. This is the
 // demand-keyed entry point that makes the plane lazy (AC 2): a plane whose
@@ -325,6 +393,7 @@ func (h *HostServe) Watch(ctx context.Context) {
 func (h *HostServe) EnsureStarted(ctx context.Context) error {
 	h.startMu.Lock()
 	defer h.startMu.Unlock()
+	h.recycleIfCredentialsChanged(ctx)
 	if h.ready() {
 		return nil
 	}
@@ -630,6 +699,9 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	// would fail every turn on a 404 and name no endpoint.
 	h.client.setAPIShape(shapeForBinary(ctx, h.log, binary))
 	h.started = true
+	// WHEN THIS PROCESS WAS SPAWNED. The environment (and so the provider credentials) is fixed at
+	// spawn, so this is the clock a later sign-in has to beat to be noticed.
+	h.startedAt = time.Now()
 	h.mu.Unlock()
 
 	// REAP THE CHILD IN A GOROUTINE, AND LET ITS EXIT BE THE DEATH SIGNAL.
@@ -764,6 +836,11 @@ func (h *HostServe) seedAuth() error {
 			"live stores and delivered by environment instead", "data_dir", h.dataDir)
 		return nil
 	}
+	if h.authSource() == "" {
+		// NO KNOWN STORE: nothing to copy, and filepath.Join("", "auth.json") would be a
+		// RELATIVE path resolved against the plane's working directory.
+		return nil
+	}
 	src := filepath.Join(h.authSource(), "auth.json")
 	b, err := os.ReadFile(src)
 	if err != nil {
@@ -784,8 +861,13 @@ func (h *HostServe) seedAuth() error {
 }
 
 // authSource is the operator's real opencode data dir.
+//
+// IT ASKS THE RESOLVER, IT DOES NOT BUILD THE PATH. This function used to spell the XDG
+// layout out by hand, and on Windows that is not where the operator's opencode keeps its
+// store — so the serve warned about a directory it had invented while the credential
+// resolver looked somewhere else again. One resolver, one answer.
 func (h *HostServe) authSource() string {
-	return filepath.Join(h.operatorHome(), ".local", "share", "opencode")
+	return runtime.OpenCodeStoreDir(h.operatorHome())
 }
 
 // operatorUsesSQLiteStore reports whether the operator's opencode keeps credentials in the 2.x SQLite store
