@@ -1077,11 +1077,35 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// the adapters so a LOCAL-mode run never routes bash into (or creates)
 	// a container: the reconciler skipped EnsureForRun for it, so the lease
 	// does not exist and a container would be silently recreated on the
-	// opencode path. Best-effort: an unreadable item or project defaults to
-	// runtime (fail-open toward the container).
-	executionMode := db.ExecutionModeRuntime
-	if task.WorkflowRunID != "" {
-		if rtx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
+	// opencode path.
+	//
+	// IT IS RESOLVED UNCONDITIONALLY, AND THAT IS THE FIX. This value used to be
+	// assigned INSIDE `if task.WorkflowRunID != ""`, leaving the declaration's
+	// initialiser — db.ExecutionModeRuntime — in force for every execution with
+	// no bound workflow run. The adapter's routing gate is
+	// `m.ExecutionMode != db.ExecutionModeLocal` (opencode/adapter.go,
+	// runtimeContainerRouteEnabled), so an EMPTY field read as "runtime" and the
+	// opencode adapter happily created a container for a run that had been
+	// explicitly configured NOT to use one.
+	//
+	// Measured: a work item with execution_mode=local inside a runtime project
+	// produced `pool checkout: created fresh container` for its run, because the
+	// run-bound execution reached the adapter with ExecutionMode="" — the
+	// work-item override never consulted, since the resolve sat behind a
+	// condition that a Quick Work run can miss.
+	//
+	// The zero value of this field must therefore never be "runtime": it is a
+	// DECISION, so it is always computed. A read failure still degrades to
+	// runtime, which is now the resolver's own documented fail-open rather than
+	// this line's accidental default.
+	//
+	// ONE transaction serves both reads (the run row and the mode resolve), so
+	// moving the resolve out of the conditional above cannot double the
+	// per-dispatch connection cost.
+	executionMode := db.ExecutionModeRuntime // replaced by the resolver below; its own fail-open owns the default
+	if rtx, err := r.pool.BeginTenantTx(context.Background(), exec.TenantID); err == nil {
+		executionMode = executionModeFor(context.Background(), rtx.Tx, exec.TenantID, exec.TaskID, exec.ProjectID)
+		if task.WorkflowRunID != "" {
 			if run, gerr := db.GetWorkflowRun(context.Background(), rtx.Tx, exec.TenantID, task.WorkflowRunID); gerr == nil {
 				runtimeImage = run.RuntimeImage
 				worktreeStatus = run.WorktreeStatus
@@ -1093,7 +1117,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				// buildCompositePrompt at dispatch. This runtimeImage is
 				// only the adapter's container self-heal tag.
 			}
-			executionMode = executionModeFor(context.Background(), rtx.Tx, exec.TenantID, exec.TaskID, exec.ProjectID)
 			// D2: a parallel-branch child execution runs in the STEP RUN's
 			// OWN branch worktree — its cwd must be the branch worktree,
 			// not the run worktree. Resolve via the step run LINKED to this
@@ -1108,8 +1131,8 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 					worktreePath = sr.WorktreePath
 				}
 			}
-			_ = rtx.Rollback(context.Background())
 		}
+		_ = rtx.Rollback(context.Background())
 	}
 	// The execution working directory is the provisioned worktree path when
 	// the run has one (the worker starts already checked out on its branch
