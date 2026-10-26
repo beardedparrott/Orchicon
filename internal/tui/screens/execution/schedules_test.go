@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	tea "github.com/charmbracelet/bubbletea"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -305,6 +306,11 @@ func TestScheduleDeleteRemovesTheScheduleInFinished(t *testing.T) {
 	if up.GetRecurringSchedule() == nil {
 		t.Error("recurring_schedule must be cleared (an empty message, not nil)")
 	}
+	// THE OTHER CLOCK. A one-shot schedule is driven by scheduled_start_at, so a removal that
+	// leaves it set succeeds and the row returns — the operator's "deleting does nothing".
+	if !up.GetClearScheduledStartAt() {
+		t.Error("clear_scheduled_start_at is not set — a scheduled row would survive its own removal")
+	}
 }
 
 // A finished run with NO bound item has no schedule to remove, and says so rather than writing
@@ -442,5 +448,101 @@ func TestScheduleHintFollowsTheView(t *testing.T) {
 	}
 	if strings.Contains(fin, "cancel") {
 		t.Errorf("the finished hint still advertises cancel: %s", fin)
+	}
+}
+
+// A REMOVAL CLEARS THE WHOLE SCHEDULE AND PERSISTS — asserted against the plane's STORED row and a
+// re-query of the pane, not against the request or an optimistic list.
+//
+// REPRODUCED BEFORE THE FIX (acceptance criterion 1, case (c)): the RPC succeeded and the row came
+// back. The request carried only recurring_schedule/next_run_at + the run unbind, so
+// scheduled_start_at survived and the item stayed in the Schedules membership. This fixture is a
+// RECURRING item (the schedule the Schedules screen actually removes from history), whose cleared
+// state demotes it out of the scheduled/recurring sets.
+func TestScheduleRemovalPersistsAndLeavesTheSchedulesSet(t *testing.T) {
+	next := timestamppb.Now()
+	p := &fakePlane{
+		items: []*apiv1.WorkItem{{
+			Id: "wi-rec", Title: "Nightly", Status: apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING,
+			RecurringSchedule: &apiv1.RecurringSchedule{Frequency: "daily", Interval: 1},
+			NextRunAt:         next,
+			ScheduledStartAt:  timestamppb.Now(),
+			WorkflowRunId:     "run-rec",
+		}},
+		runs: []*apiv1.WorkflowRun{{
+			Id: "run-rec", WorkflowId: "wf-1", WorkItemId: "wi-rec",
+			Status:    apiv1.WorkflowRunStatus_WORKFLOW_RUN_STATUS_COMPLETED,
+			StartedAt: timestamppb.Now(),
+		}},
+		workflows: []*apiv1.Workflow{{Id: "wf-1", Name: "SDLC"}},
+	}
+	m := newModel(t, p)
+	m.Base.SelectSource(srcSchedules)
+	m.sched.scheduleView = schedFinished
+	items, _, err := m.fetchSchedules(context.Background(), "")
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	m.Base.LoadItems(srcSchedules, items, "")
+
+	acts := m.scheduleDeleteActions([]string{"run-rec"})
+	if len(acts) != 1 {
+		t.Fatalf("actions = %d, want the one remove-schedule", len(acts))
+	}
+	if err := acts[0].Do(context.Background()); err != nil {
+		t.Fatalf("remove schedule: %v", err)
+	}
+	// THE STORED ROW is what must change — a request assertion alone let the original bug ship.
+	stored := p.items[0]
+	if stored.GetRecurringSchedule() != nil || stored.GetNextRunAt() != nil {
+		t.Errorf("stored schedule survived the removal: recurring=%v next_run_at=%v",
+			stored.GetRecurringSchedule(), stored.GetNextRunAt())
+	}
+	if stored.GetScheduledStartAt() != nil {
+		t.Error("scheduled_start_at survived the removal — the row would be listed as upcoming again")
+	}
+	if stored.GetStatus() != apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING {
+		t.Errorf("stored status = %v, want pending (a cleared schedule is not recurring any more)", stored.GetStatus())
+	}
+	// AND A RE-QUERY does not bring it back into either schedule lens.
+	m.sched.scheduleView = schedUpcoming
+	for _, id := range fetchIDs(t, m) {
+		if id == "wi-rec" {
+			t.Fatal("the removed schedule is still listed under Upcoming after a refresh")
+		}
+	}
+}
+
+// ONE MARKED SCHEDULE ROW IS A TARGET, NOT A REFUSAL.
+//
+// REPRODUCED BEFORE THE FIX (case (a), the TUI): the operator marked a row and pressed the documented
+// chord `x`; the shared "one mark is not a bulk selection" guard refused and sent NO request, so on
+// the pane the delete looked broken. A single marked row must act on THAT row — never on the cursor's.
+func TestOneMarkedScheduleRowIsDeletedByTheChord(t *testing.T) {
+	p := schedPlane()
+	m := newModel(t, p)
+	m.Base.SelectSource(srcSchedules)
+	m.sched.scheduleView = schedUpcoming
+	rows, _, err := m.fetchSchedules(context.Background(), "")
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	m.Base.LoadItems(srcSchedules, rows, "")
+	if !m.Base.SelectItem(srcSchedules, "wi-sched") {
+		t.Fatal("fixture: cannot select the scheduled row")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+	if len(m.Base.MarkedIDs()) != 1 {
+		t.Fatalf("fixture: marks = %v, want one", m.Base.MarkedIDs())
+	}
+
+	if _, handled := m.handleActionKey(keySchedDelete); !handled {
+		t.Fatalf("x was not handled with one marked row (notice=%q)", m.Notice())
+	}
+	if !m.DialogOpen() {
+		t.Fatalf("one marked schedule must open its confirm, not refuse (notice=%q)", m.Notice())
+	}
+	if !strings.Contains(m.Open.Body, "Nightly") {
+		t.Errorf("the confirm does not name the marked row: %q", m.Open.Body)
 	}
 }

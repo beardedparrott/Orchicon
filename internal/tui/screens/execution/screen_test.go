@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 	tea "github.com/charmbracelet/bubbletea"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
@@ -129,6 +130,30 @@ func (p *fakePlane) UpdateWorkItem(_ context.Context, req *connect.Request[apiv1
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.updated = append(p.updated, req.Msg)
+	// APPLY the clear flags to the stored rows, so a test can re-query the pane and see the
+	// schedule actually gone rather than only observing the request that was sent. This mirrors
+	// the plane's clear semantics (internal/db/work_item.go) for the two fields a schedule
+	// removal touches: recurring_schedule/next_run_at and scheduled_start_at.
+	for _, it := range p.items {
+		if it.GetId() != req.Msg.GetId() {
+			continue
+		}
+		if req.Msg.GetRecurringSchedule() != nil && proto.Size(req.Msg.GetRecurringSchedule()) == 0 {
+			it.RecurringSchedule = nil
+			it.NextRunAt = nil
+			// The plane's final-state invariant: "recurring" is only valid while a schedule is
+			// present, so clearing it demotes the status (internal/workitem/service.go).
+			if it.GetStatus() == apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING {
+				it.Status = apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING
+			}
+		}
+		if req.Msg.GetClearScheduledStartAt() {
+			it.ScheduledStartAt = nil
+		}
+		if req.Msg.GetStatus() != apiv1.WorkItemStatus_WORK_ITEM_STATUS_UNSPECIFIED {
+			it.Status = req.Msg.GetStatus()
+		}
+	}
 	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: &apiv1.WorkItem{Id: req.Msg.GetId()}}), nil
 }
 

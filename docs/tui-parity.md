@@ -60,7 +60,7 @@ whole areas to "use the web GUI".
 | `/workflows/$id/runs/$runId` | Workflow run detail | **exists** | Execution (runs) | Detail + step runs body (status per step) + failure diagnosis for a failed run (failed/blocked steps and the linked failed executions' error messages); live Execution detail pane. **Mutations:** `RetryFailedWorkflowRun` (Confirm) · `ForceProgressWorkflowRun` (Confirm) |
 | `/executions` | Executions | **exists** | Execution | Live list + detail. **Mutations:** `CancelExecution` (Confirm, reason recorded) · `SendExecutionMessage` (interject form) — both reconcile the list. |
 | `/executions/$id` | Execution detail | **exists** | Execution | Live session view (Stream widget, scroll preserved) + diff pane. **Mutations:** `CancelExecution` · `SendExecutionMessage`. |
-| `/schedules` | Schedules | **exists** | Automation | Same surface as `/recurring-items` (recurring work items); create/edit/pause/delete landed. |
+| `/schedules` | Schedules | **exists** | Automation | upcoming / running / finished lenses (`v`). **Mutations:** `x` cancels an upcoming/running schedule; on a finished run it removes the schedule from the run's bound work item (confirm) and refuses by name when the run has none; `g` jumps to the run. Create/edit/pause remain GUI-only (Automation → Recurring Items). |
 
 ## Automation
 
