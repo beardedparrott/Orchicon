@@ -70,6 +70,12 @@ type AskOption struct {
 // on the transport and must not reuse this non-blocking model, even though it
 // shares the card rendering.
 type ParsedAsk struct {
+	// ID is the ASK's identity: the recorded tool call's id, which is what ReplyPermissionAsk
+	// addresses. It is carried on the card because ANSWERING IS A REPLY, not a message — see
+	// Controller.AnswerQuestion. Without it a recorded card could only be answered by sending the
+	// label as an ordinary next message, which leaves the awaiting marker in the transcript and
+	// the card open for ever in every other client.
+	ID         string
 	Question   string
 	Options    []AskOption
 	AllowOther bool
@@ -206,18 +212,20 @@ func parseAskUserCall(calls []*apiv1.ToolCall, results []*apiv1.ToolResult) *Par
 			// false statement the readable path avoids.
 			if result.GetIsError() {
 				return &ParsedAsk{
+					ID:          c.GetId(),
 					Question:    "(this clarifying question's arguments could not be read)",
 					Refused:     true,
 					RefusalText: strings.TrimSpace(result.GetOutput()),
 				}
 			}
 			return &ParsedAsk{
+				ID:         c.GetId(),
 				Question:   "(this clarifying question's arguments could not be read)",
 				Answered:   true,
 				AnswerText: strings.TrimSpace(result.GetOutput()),
 			}
 		}
-		ask := &ParsedAsk{Question: strings.TrimSpace(in.Question), AllowOther: in.AllowOther}
+		ask := &ParsedAsk{ID: c.GetId(), Question: strings.TrimSpace(in.Question), AllowOther: in.AllowOther}
 		for _, o := range in.Options {
 			if strings.TrimSpace(o.Label) == "" {
 				continue

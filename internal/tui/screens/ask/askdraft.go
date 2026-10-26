@@ -82,6 +82,15 @@ func (m *Model) handleAskDraftKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		}
 		a.Drafting = false
 		a.Draft = ""
+		// THE FREE-TEXT ROW ANSWERS THE SAME WAY THE OPTIONS DO — a REPLY addressed to the ask, not an
+		// ordinary message. Otherwise the operator's own words would settle nothing: the awaiting marker
+		// would survive, and the card would come back open on the next reload while the answer sat beside
+		// it as a message. A card with no id keeps the send as a degraded fallback.
+		if strings.TrimSpace(a.ID) != "" {
+			if h, ok := m.Shell().(askReplyHost); ok {
+				return tea.Batch(h.AskReply(a.ID, text), m.repaint()), true
+			}
+		}
 		h, ok := m.consentHost()
 		if !ok {
 			return m.repaint(), true

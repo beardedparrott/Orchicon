@@ -26,6 +26,10 @@ type stubHost struct {
 	store       chat.PermissionStore
 	storeOK     bool
 	revoked     []string
+	// asked records every AskReply the screen issued — the REPLY path a RECORDED card answers
+	// through. It is separate from sent so a test can tell "answered the ask" from "sent a message",
+	// which is exactly the distinction the recorded card got wrong.
+	asked []askReply
 	// repaints counts the RepaintTranscript calls the screen made. repaint() returns nil for a host that
 	// does not implement the hook, so WITHOUT this a test cannot tell "the row asked for a repaint" from
 	// "the row forgot to" — and forgetting is the difference between a paste that shows and one that
@@ -35,6 +39,16 @@ type stubHost struct {
 
 // RepaintTranscript mirrors the production host: the ask screen asks it to redraw the transcript, which is
 // where the card (and its input row) is drawn.
+// askReply is one AskReply the screen issued: the ask it addressed and the words it carried.
+type askReply struct{ id, answer string }
+
+// AskReply mirrors the production host: it replies to the ask through ReplyPermissionAsk, which is
+// the ONLY thing that clears the awaiting marker — the card's durable state.
+func (s *stubHost) AskReply(askID, answer string) tea.Cmd {
+	s.asked = append(s.asked, askReply{id: askID, answer: answer})
+	return func() tea.Msg { return nil }
+}
+
 func (s *stubHost) RepaintTranscript() tea.Cmd {
 	s.repaints++
 	return func() tea.Msg { return nil }

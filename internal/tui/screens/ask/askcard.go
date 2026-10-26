@@ -38,6 +38,13 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
+// askReplyHost is the shell surface a RECORDED card needs to answer: the reply RPC, addressed by the
+// ask's id. Separate from consentHost because it is a different operation — a consent card replies to a
+// PAUSED turn, a recorded card settles a transcript marker and delivers the answer as the next turn.
+type askReplyHost interface {
+	AskReply(askID, answer string) tea.Cmd
+}
+
 // SyncAskCard adopts the RECORDED ask card that currently holds the cursor, from the items the shell
 // hands the screen on every wake (app.go onChatWake -> RenderTranscript).
 //
@@ -211,8 +218,21 @@ func (m *Model) confirmAskCard() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	// THE TURN IS OVER, so the answer is the operator's NEXT MESSAGE (Controller.AnswerQuestion → Send).
-	// ConsentSend IS that funnel — the same one a click and the free-text row use — so all three ways of
-	// answering one card end in the same place.
+	// THE ANSWER IS A REPLY, THROUGH THE ASK'S OWN ID.
+	//
+	// It used to go out as ConsentSend — an ordinary next message — which LOOKS equivalent from the
+	// terminal and is not: the transcript keeps the awaiting marker, so the card is still open to every
+	// other client and to a reload, and nothing durable records what was answered. That is the whole of
+	// "I answer it and it comes back". AskReply goes through ReplyPermissionAsk, which replaces the
+	// marker AND delivers the answer as the conversation's next turn.
+	//
+	// A card with NO id (a row recorded before the field existed) falls back to the send, so a degraded
+	// answer beats a dead card.
+	if strings.TrimSpace(a.ID) == "" {
+		return tea.Batch(h.ConsentSend(label), m.repaint())
+	}
+	if h, ok := m.Shell().(askReplyHost); ok {
+		return tea.Batch(h.AskReply(a.ID, label), m.repaint())
+	}
 	return tea.Batch(h.ConsentSend(label), m.repaint())
 }

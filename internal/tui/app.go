@@ -4132,6 +4132,39 @@ func (m *App) reArmAskDraftClaim() {
 // opening the input on the wrong one would put the operator's answer on a question they did not
 // click. False when the item is gone, already answered, or never offered free text — so a click
 // resolved against a stale layout opens nothing rather than something wrong.
+// askIDForKey returns the ASK ID (the recorded tool call's id) for a recorded card, by the item key
+// the click resolved to. Empty when the item is gone, is not a recorded card, or predates the field.
+//
+// BY KEY, because a transcript can hold more than one unanswered question and a reply addressed to
+// the wrong ask would settle the wrong card.
+func (s *chatStore) askIDForKey(convID, key string) string {
+	if s == nil || key == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindAsk || it.Key != key || it.Ask == nil {
+			continue
+		}
+		return it.Ask.ID
+	}
+	return ""
+}
+
+// AskReply answers a RECORDED card through the reply RPC — the same call the GUI makes
+// (askOrchiconClient.replyPermissionAsk). It is the host half of the recorded card's keys and its
+// free-text row, so the keyboard, a click, and the GUI all settle the card the same way: by
+// replacing the awaiting marker in the transcript, which is the card's only durable state.
+func (m *App) AskReply(askID, answer string) tea.Cmd {
+	if m.chat == nil || strings.TrimSpace(askID) == "" {
+		return nil
+	}
+	return m.chat.ReplyPermissionAsk(m.chatConvID, askID,
+		apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED, answer)
+}
+
 // selectAskRow moves a RECORDED card's cursor to the row the operator just CLICKED.
 //
 // IT EXISTS SO THE TWO WAYS OF CHOOSING AGREE. The cursor lives on the item (chat.ParsedAsk.Sel), so

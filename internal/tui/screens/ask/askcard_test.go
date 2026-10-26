@@ -254,3 +254,91 @@ func TestTheFreeTextRowOutranksTheCursor(t *testing.T) {
 		t.Fatal("an arrow while typing into Other must not move the card's cursor")
 	}
 }
+
+// TestEnterAnswersTheAskRatherThanSendingAMessage pins that Enter ANSWERS the ask rather than sending a
+// message.
+//
+// THE DEFECT THIS PINS, and it is the whole of "I answer it and it asks again": answering a RECORDED
+// card used to go out as ConsentSend — an ordinary next message. The transcript's awaiting marker was
+// therefore never cleared, so the card was still open to every other client and came back on the next
+// reload, while the operator's answer sat beside it as a message. The marker IS the card's state.
+//
+// The answer must be a REPLY addressed to the ask's id, and it must NOT also send a message (that would
+// deliver the answer twice: once as the reply's turn, once as a message).
+func TestEnterAnswersTheAskRatherThanSendingAMessage(t *testing.T) {
+	m, h := newTestModel(t)
+	card := pendingCard()
+	card.Ask.ID = "tc-2" // the recorded tool call's id — what ReplyPermissionAsk addresses
+	m.RenderTranscript([]chat.ChatItem{card}, chat.Conversation{}, false)
+
+	m.Update(tea.KeyMsg{Type: tea.KeyDown})  // highlight "main"
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // answer it
+
+	if len(h.asked) != 1 {
+		t.Fatalf("AskReply called %d times, want exactly 1 — the card must answer its ASK", len(h.asked))
+	}
+	if h.asked[0].id != "tc-2" {
+		t.Fatalf("replied to ask %q, want tc-2 — a reply addressed to the wrong id settles the wrong "+
+			"card, or nothing at all", h.asked[0].id)
+	}
+	if h.asked[0].answer != "main" {
+		t.Fatalf("answer = %q, want the highlighted row", h.asked[0].answer)
+	}
+	if len(h.sent) != 0 {
+		t.Fatalf("sent %v as a message — the answer must travel as the REPLY, or the awaiting marker "+
+			"survives and the card comes back open", h.sent)
+	}
+}
+
+// TestACardWithNoIDStillAnswers — the degraded path, kept deliberately.
+//
+// A row recorded before ParsedAsk carried its id has nothing to address a reply to, so the old
+// send-the-label path is the only thing that can work. A degraded answer beats a card that cannot be
+// answered at all — and the failure mode of dropping this fallback is a silently dead card.
+func TestACardWithNoIDStillAnswers(t *testing.T) {
+	m, h := newTestModel(t)
+	card := pendingCard() // no ID set
+	m.RenderTranscript([]chat.ChatItem{card}, chat.Conversation{}, false)
+
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(h.asked) != 0 {
+		t.Fatalf("AskReply called with no id (%v) — a reply needs an ask to address", h.asked)
+	}
+	if len(h.sent) != 1 || h.sent[0] != "develop" {
+		t.Fatalf("sent = %v, want the label as a message: a card with no id can only be answered this way",
+			h.sent)
+	}
+}
+
+// TestTheFreeTextRowAlsoReplies — Other must settle the card the same way the options do, or the
+// operator's own words would leave the marker standing while their answer went out as a message.
+func TestTheFreeTextRowAlsoReplies(t *testing.T) {
+	m, h := newTestModel(t)
+	items := []chat.ChatItem{recordedCard()}
+	items[0].Ask.ID = "tc-7"
+	m.RenderTranscript(items, chat.Conversation{}, false)
+
+	m.Update(tea.KeyMsg{Type: tea.KeyDown})  // -> main
+	m.Update(tea.KeyMsg{Type: tea.KeyDown})  // -> Other
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // opens the input
+	if !items[0].Ask.Drafting {
+		t.Fatal("precondition: Enter on Other opens the free-text row")
+	}
+	// THE WAKE THAT FOLLOWS THE REPAINT, reproduced: opening the row returns a repaint, the shell then
+	// re-renders the transcript, and SyncAskDraft is what ADOPTS the item's ParsedAsk so the keys have
+	// somewhere to land. Without it the screen holds no draft and every keystroke falls through.
+	m.RenderTranscript(items, chat.Conversation{}, false)
+	typeInto(m, "release-candidate")
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // submits it
+
+	if len(h.asked) != 1 || h.asked[0].answer != "release-candidate" {
+		t.Fatalf("AskReply = %v, want one reply carrying the typed words", h.asked)
+	}
+	if h.asked[0].id != "tc-7" {
+		t.Fatalf("replied to %q, want tc-7", h.asked[0].id)
+	}
+	if len(h.sent) != 0 {
+		t.Fatalf("sent %v as a message — the typed answer must be the REPLY", h.sent)
+	}
+}
