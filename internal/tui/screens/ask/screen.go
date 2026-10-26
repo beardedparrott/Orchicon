@@ -48,6 +48,15 @@ type Model struct {
 	// same reason consentDeferred is one.
 	draftDeferred string
 
+	// askCard is the adopted CURSOR CARD — the same *chat.ParsedAsk the transcript item holds, so the
+	// keys here move exactly the highlight renderAskCardSpans draws (see askcard.go). It is a DIFFERENT
+	// card from draft above: draft is that card's free-text row while it is open, this is the card's
+	// ordinary pending state with a cursor. askCardKey is the item's key (the claim and the deferral are
+	// keyed on it), and askCardDeferred is the key whose claim the operator released.
+	askCard         *chat.ParsedAsk
+	askCardKey      string
+	askCardDeferred string
+
 	// ov is the open list overlay (/grants, /permissions, add-rule). The screen
 	// owns its keys while it is up (ClaimsKeys).
 	ov *askOverlay
@@ -177,6 +186,9 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		// decision key can never be read as a screen action. The shell's
 		// input-modal gate (router.go) already handed the key here verbatim.
 		if cmd, handled := m.handleConsentKey(msg); handled {
+			return m, cmd
+		}
+		if cmd, handled := m.handleAskCardKey(msg); handled {
 			return m, cmd
 		}
 		// The same for a RECORDED card's open free-text row: it is an input the operator is
@@ -390,6 +402,9 @@ func (m *Model) RenderTranscript(items []chat.ChatItem, live chat.Conversation, 
 	// (see askdraft.go).
 	m.SyncTranscriptConsent(items)
 	m.SyncAskDraft(items)
+	// AND THE RECORDED CARD'S CURSOR, from the same items and on the same wake — so a card that has been
+	// answered, or that left the transcript entirely, gives the keyboard back here and nowhere else.
+	m.SyncAskCard(items)
 	m.metaMu.Lock()
 	title, fields := m.metaTitle, append([]screenkit.Field{}, m.metaFields...)
 	m.metaMu.Unlock()

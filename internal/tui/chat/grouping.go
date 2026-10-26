@@ -110,6 +110,22 @@ type ParsedAsk struct {
 	// read and write the SAME object by construction. Mutated on the tea loop only.
 	Drafting bool
 	Draft    string
+
+	// Sel is the HIGHLIGHTED ROW — the recorded card's cursor, the twin of ConsentState.Sel.
+	//
+	// REPORTED: "It works but in the TUI the highlight bar is gone. Looks fine the gui." then, when
+	// asked which bar, "This already works with the orchicon adapter. It should mimic that."
+	//
+	// They were naming a real split, not a colour. An ask served by the NATIVE bridge is a pending
+	// ask: it enters the consent registry and the transcript draws it as a KindConsent card, which
+	// has Sel, ↑/↓, Enter and a ▸ bar. An ask served over MCP is recorded and its turn is over, so
+	// it is drawn by renderAskCardSpans as a KindAsk card — which had NO cursor at all, so its rows
+	// were inert text beside the identical-looking card that behaves properly. One question, two
+	// cards, and only one of them answerable from the keyboard.
+	//
+	// On the item, mutated on the tea loop only, for exactly the reason Drafting is: the renderer
+	// and the key handler must read and write the same object.
+	Sel int
 }
 
 // isAskUserCall reports whether a recorded tool call is the clarifying question

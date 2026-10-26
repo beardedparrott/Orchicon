@@ -1514,6 +1514,12 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 				}
 				return m, nil
 			}
+			// A CLICK ON A ROW IS THE OPERATOR ACTING ON THE CARD, so the card takes the keyboard back
+			// and its cursor lands on the row they clicked — the same rule the permission card follows
+			// (ReArmConsentClaim). Without this, a card deferred by ctrl+g or by typing would answer the
+			// click and leave ↑/↓ dead until something else re-armed it.
+			m.chatStore.selectAskRow(m.chatConvID, key, label)
+			m.reArmAskCardClaim()
 			return m, m.chat.AnswerQuestion(m.chatConvID, label)
 		}
 	}

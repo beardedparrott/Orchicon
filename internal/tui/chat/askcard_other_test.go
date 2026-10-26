@@ -59,8 +59,10 @@ func TestTheRecordedCardOffersAFreeTextRow(t *testing.T) {
 		t.Fatalf("OptionAt(the free-text row) = (%q, %v), want %q", got, ok, ConsentOther)
 	}
 	// THE FOOTER NAMES IT AS A ROW, since it is one now: it used to send the operator to the
-	// composer to type what the card can take itself.
-	if !strings.Contains(out, "click Other") {
+	// composer to type what the card can take itself. A row reached by the cursor names the KEY, not
+	// just the click, because the cursor can now land on it (Sel == len(Options)).
+	flat := strings.Join(strings.Fields(out), " ")
+	if !strings.Contains(flat, "Other: reply in your own words") {
 		t.Errorf("the card's hint must say the row exists, got:\n%s", out)
 	}
 }

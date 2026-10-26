@@ -894,16 +894,19 @@ func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 		}
 		return theme.ListMeta.Render(truncateRow("answered · "+answered, maxWidth)) + "\n", nil
 	}
-	// THE FOOTER PROMISES ONLY WHAT WORKS. The clarifying question is answerable
-	// by CLICK (transcriptAskOptionFrameRow → AnswerQuestion → Send); it has no
-	// keyboard cursor, unlike the permission card, whose footer advertises
-	// up/down + enter. Telling the operator to press keys that do nothing is
-	// worse than saying nothing.
-	footer := "click an option to answer"
+	// THE FOOTER PROMISES ONLY WHAT WORKS. The clarifying question is answerable by KEY (↑/↓ + Enter, see
+	// askcard.go) AND by click (transcriptAskOptionFrameRow → AnswerQuestion → Send). It used to promise
+	// only the click, because only the click worked — and the operator's report was the cost of that gap:
+	// the card had no cursor, so it sat beside a permission card that did, looking broken.
+	//
+	// "esc hands back the keyboard" rather than "esc dismisses": a question is not a permission, and
+	// Escape must never silently record a refusal of something the operator was only thinking about.
+	// Escape RELEASES the keys so they can type, and the card stays answerable.
+	footer := "↑/↓ select · enter answer · click also answers · esc hands back the keyboard"
 	if a.AllowOther {
 		// The free-text row is a ROW now, so the footer names it as one. It keeps the words "reply in
 		// your own words" because that is still exactly what the row is for.
-		footer = "click an option · or click Other to reply in your own words"
+		footer = "↑/↓ select · enter answer · Other: reply in your own words · esc hands back the keyboard"
 	}
 	spec := kit2.CardSpec{
 		Title:  "Orchicon asks",
@@ -918,7 +921,11 @@ func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 			// WITH it, not sit beside it as unrelated prose.
 			text += " — " + o.Description
 		}
-		spec.Lines = append(spec.Lines, kit2.CardLine{Text: text})
+		// THE ▸ BAR IS THE CARD'S CURSOR, drawn from the item's Sel exactly as the consent card draws
+		// its own. kit2's selected form only changes the PREFIX (" ▸ " for "   ", the same three
+		// cells) and the row style, so the wrapped line count — and therefore every click span below —
+		// is identical whether a row is highlighted or not.
+		spec.Lines = append(spec.Lines, kit2.CardLine{Text: text, Selected: i == a.Sel})
 	}
 
 	// THE FREE-TEXT ROW, WHICH THIS CARD USED TO NOT HAVE AT ALL.
@@ -932,13 +939,18 @@ func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 	// it opens the same input the consent card does.
 	//
 	// IT IS NOT NUMBERED, unlike the options above: the numbers are the model's canned answers,
-	// and "5. Other" would read as one more of them.
+	// and "5. Other" would read as one more of them. It IS the last ROW though, so the cursor can
+	// reach it — Sel == len(a.Options) is the Other row — and it highlights whether it was reached
+	// by the keyboard or opened by a click.
 	labels := make([]string, 0, len(a.Options)+1)
 	for _, o := range a.Options {
 		labels = append(labels, o.Label)
 	}
 	if a.AllowOther {
-		spec.Lines = append(spec.Lines, kit2.CardLine{Text: ConsentOther, Selected: a.Drafting})
+		spec.Lines = append(spec.Lines, kit2.CardLine{
+			Text:     ConsentOther,
+			Selected: a.Drafting || a.Sel == len(a.Options),
+		})
 		spec.ShowInput = a.Drafting
 		spec.Input = a.Draft
 		labels = append(labels, ConsentOther)

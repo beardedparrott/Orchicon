@@ -96,9 +96,18 @@ func TestEscOnTheFreeTextRowKeepsTheQuestion(t *testing.T) {
 	if items[0].Ask.Answered {
 		t.Fatal("esc must not answer the question — the row is an input, not a decision")
 	}
-	// AND THE CARD IS STILL ANSWERABLE: its options still resolve, so nothing was thrown away.
+	// AND THE CARD IS STILL ANSWERABLE FROM THE KEYBOARD, which is a change this test has to state
+	// rather than assume. It used to assert that a closed row RELEASED the keys, because the card had no
+	// cursor and there was nothing for the keys to do. The card has one now (askcard.go), so closing the
+	// free-text row puts the operator back on the OPTIONS — the permission card's exact behaviour — and
+	// a second Esc is what releases.
+	if !m.ClaimsKeys() {
+		t.Fatal("closing the free-text row must return the operator to the card's OPTIONS, not to the " +
+			"composer — the cursor is back on the list and ↑/↓ must move it")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.ClaimsKeys() {
-		t.Fatal("a closed row must release the keys")
+		t.Fatal("a second esc, now on the options, must hand the keyboard back")
 	}
 }
 

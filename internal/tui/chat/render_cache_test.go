@@ -113,6 +113,11 @@ func itemMutations() []mutation {
 		// missing from it.
 		{"ask drafting", func(i []ChatItem) { i[8].Ask.Drafting = true }},
 		{"ask draft text", func(i []ChatItem) { i[8].Ask.Draft = "seed.sql" }},
+		// THE CURSOR. It is drawn (the ▸ bar and the row style), and the whole point of it is that it
+		// MOVES — which the cache is exactly what could stop: a fingerprint that ignored Sel would move
+		// the cursor in the item and serve the operator a cached frame with the bar still where it was,
+		// which reads as arrow keys that do nothing.
+		{"ask selection", func(i []ChatItem) { i[8].Ask.Sel = 1 }},
 		{"consent ask id", func(i []ChatItem) { i[9].Consent.Ask.ID = "c-2" }},
 		{"consent conversation", func(i []ChatItem) { i[9].Consent.Ask.ConvID = "conv-2" }},
 		{"consent tool", func(i []ChatItem) { i[9].Consent.Ask.Tool = "write" }},
