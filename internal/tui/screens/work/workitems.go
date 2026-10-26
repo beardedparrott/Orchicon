@@ -5,9 +5,10 @@ package work
 //
 //   - CreateWorkItem (title / kind / parent / description / acceptance
 //     criteria / priority / budgets / context window / workflow / runtime
-//     image / context files / auto-start),
+//     image / execution mode / context files / auto-start),
 //   - UpdateWorkItem for every mutable field, including status + priority,
-//     the workflow binding, the schedule (scheduled_start_at) and
+//     the workflow binding, the execution-mode OVERRIDE (set or cleared — see
+//     itemExecutionModeInherit), the schedule (scheduled_start_at) and
 //     auto_start_workflow,
 //   - AssignWorker / UnassignWorker,
 //   - ReorderWorkItems (the ONLY mutation of sequence order),
@@ -98,6 +99,83 @@ func statusOptions() []kit2.Option {
 	}
 }
 
+// itemExecutionModeInherit is the THIRD choice an ITEM has and a project does not: "no override,
+// follow the project". It is a non-empty token ON PURPOSE — kit2.NewForm seeds f.Values[name] only
+// when Initial != "" (kit2/form.go:265-268), so a bare "" would leave the field ABSENT from the
+// value map: the edit form would open blank and submit blank, and "inherit" could not be told apart
+// from "not seeded".
+const itemExecutionModeInherit = "inherit"
+
+// itemExecutionModeOptions is the ITEM-side vocabulary: inherit / local / runtime.
+//
+// THREE options, where the project form has two — and that difference is deliberate rather than an
+// oversight: a project cannot inherit from itself, an item can and normally does. The local/runtime
+// pair is NOT retyped here; it is read from the project-side table (executionModeOptions) so the two
+// surfaces cannot drift into two vocabularies. Only the trailing parenthetical default is dropped,
+// because for an ITEM the default is inherit, not local.
+func itemExecutionModeOptions(inherited apiv1.ExecutionMode) []kit2.Option {
+	label := "inherit — from the project"
+	if s := executionModeString(inherited); s != "" {
+		// The inherited mode is STATED where the form knows it — the same shape the GUI's select
+		// uses ("Inherit from project (<mode>)", ExecutionModeSelect.tsx:86-102) — so "inherit" is
+		// an answer instead of an unknowable blank.
+		label = "inherit from project (" + s + ")"
+	}
+	opts := make([]kit2.Option, 0, 3)
+	opts = append(opts, kit2.Option{Value: itemExecutionModeInherit, Label: label})
+	descriptions := strings.NewReplacer(" (default)", "", " (opt-in)", "")
+	for _, o := range executionModeOptions() {
+		opts = append(opts, kit2.Option{Value: o.Value, Label: descriptions.Replace(o.Label)})
+	}
+	return opts
+}
+
+// itemExecutionModeField is the edit form's seed: the item's stored OVERRIDE, or "inherit" when it
+// has none.
+//
+// IT READS GetExecutionMode AND NOT GetEffectiveExecutionMode. The override is what is being edited;
+// the effective mode is the ANSWER (item -> project -> tenant default, resolved once in
+// db.EffectiveExecutionMode) and belongs in the detail pane. Seeding from the effective mode would
+// PIN every inheriting item to its project's current mode on the next save — and would make an
+// untouched save manufacture an override the operator never chose.
+func itemExecutionModeField(w *apiv1.WorkItem) string {
+	if s := executionModeString(w.GetExecutionMode()); s != "" {
+		return s
+	}
+	return itemExecutionModeInherit
+}
+
+// executionModeDetail renders a work item's execution mode for the DETAIL pane.
+//
+// It shows the EFFECTIVE mode, because that is the question the pane answers ("where will this run?"),
+// and names the override beside it so "inherit" is legible: an item that inherits shows the mode it
+// resolves to, and an item that overrides shows both halves. GetEffectiveExecutionMode is populated
+// on every single-item read (Get/Create/Update) and is never unset there, so a missing value means
+// the read was list-shaped or came from an older plane — rendered as the tenant default (local, see
+// db.DefaultExecutionMode) rather than as the blank this field exists to remove.
+func executionModeDetail(w *apiv1.WorkItem) string {
+	eff := executionModeString(w.GetEffectiveExecutionMode())
+	if eff == "" {
+		eff = "local"
+	}
+	if ov := executionModeString(w.GetExecutionMode()); ov != "" {
+		return eff + " (item override: " + ov + ")"
+	}
+	return eff + " (inherited from the project)"
+}
+
+// projectExecutionMode is a listed project's mode, for the inherit label. UNSPECIFIED when the
+// project is not in the list (an edit opened before any project load), which the option builder
+// renders as the unqualified "inherit — from the project" rather than inventing a mode.
+func (m *Model) projectExecutionMode(id string) apiv1.ExecutionMode {
+	for _, p := range m.projects {
+		if p.ID == id {
+			return p.Mode
+		}
+	}
+	return apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED
+}
+
 func kindFromName(v string) apiv1.WorkItemKind {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "epic":
@@ -182,7 +260,7 @@ func (m *Model) prepCreateItem() tea.Cmd {
 			return msg
 		}
 		for _, p := range pr.Msg.GetProjects() {
-			msg.projects = append(msg.projects, projectOpt{ID: p.GetId(), Name: p.GetName()})
+			msg.projects = append(msg.projects, projectOpt{ID: p.GetId(), Name: p.GetName(), Mode: p.GetExecutionMode()})
 		}
 		if wr, err := cl.Workflows.ListWorkflows(ctx, connect.NewRequest(&apiv1.ListWorkflowsRequest{PageSize: 100})); err == nil {
 			for _, w := range wr.Msg.GetWorkflows() {
@@ -224,6 +302,16 @@ func (m *Model) prepEditItem(mode string) tea.Cmd {
 			return itemFormMsg{mode: mode, err: err}
 		}
 		msg := itemFormMsg{mode: mode, item: resp.Msg.GetWorkItem()}
+		// The EXECUTION-MODE field's inherit option names the mode it inherits FROM, and GetWorkItem
+		// does not carry the project's mode — so the edit form needs the project list too. Only for
+		// the edit form: the status editor has no execution-mode field and must not pay for a list.
+		if mode == formEditItem {
+			if pr, err := cl.Projects.ListProjects(ctx, connect.NewRequest(&apiv1.ListProjectsRequest{PageSize: 100})); err == nil {
+				for _, p := range pr.Msg.GetProjects() {
+					msg.projects = append(msg.projects, projectOpt{ID: p.GetId(), Name: p.GetName(), Mode: p.GetExecutionMode()})
+				}
+			}
+		}
 		// The edit form's pickers need the same option lists as the create form.
 		if wr, err := cl.Workflows.ListWorkflows(ctx, connect.NewRequest(&apiv1.ListWorkflowsRequest{PageSize: 100})); err == nil {
 			for _, w := range wr.Msg.GetWorkflows() {
@@ -406,6 +494,11 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "context_window", Label: "Context window", Kind: kit2.KNumber, Initial: "0", Validate: validateNonNegativeInt},
 		kit2.FieldSpec{Name: "workflow", Label: "Workflow", Kind: kit2.KPicker, Options: wfOpts, Initial: ""},
 		kit2.FieldSpec{Name: "runtime_image", Label: "Runtime image", Kind: kit2.KPicker, Options: m.images, Placeholder: "type to search images"},
+		// WHERE THIS ITEM'S EXECUTIONS RUN — the per-item override of the project's mode. Three
+		// choices because an item can INHERIT (the default); see itemExecutionModeOptions.
+		kit2.FieldSpec{Name: "execution_mode", Label: "Execution mode", Kind: kit2.KSelect,
+			Options: itemExecutionModeOptions(m.projectExecutionMode(initialProject)),
+			Initial: itemExecutionModeInherit},
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Placeholder: "/abs/path/a.go,/abs/dir"},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
 	)
@@ -435,6 +528,13 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 			for i := range f.Specs {
 				if f.Specs[i].Name == "parent" {
 					f.Specs[i].Options = opts
+				}
+				// The inherit option names the mode it inherits FROM, so it is re-read when the
+				// project changes — otherwise the form would state one project's mode while the
+				// request lands the item in another. The VALUE is untouched: it is still "inherit",
+				// and only the label that explains it moves.
+				if f.Specs[i].Name == "execution_mode" {
+					f.Specs[i].Options = itemExecutionModeOptions(m.projectExecutionMode(value))
 				}
 			}
 			if cur := f.Values["parent"]; cur != "" && !hasOption(opts, cur) {
@@ -493,6 +593,17 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 		kit2.FieldSpec{Name: "runtime_image", Label: "Runtime image", Kind: kit2.KPicker,
 			Options: pickerOptsWithCurrent(m.images, w.GetRuntimeImage(), "image "),
 			Initial: w.GetRuntimeImage()},
+		// THE EXECUTION-MODE OVERRIDE, SEEDED FROM THE ITEM — the same rule as the two reference
+		// pickers above, and for the same reason: Initial: is the only thing that populates the value
+		// map, so an unseeded select would open blank AND submit blank. Here the blank has a second,
+		// worse meaning — "inherit" is spelled clear_execution_mode on the wire, so a form that could
+		// not tell "inherit" from "unseeded" could not express "put this back to inherit" at all.
+		//
+		// Seeded from GetExecutionMode (the OVERRIDE), never the effective mode: see
+		// itemExecutionModeField.
+		kit2.FieldSpec{Name: "execution_mode", Label: "Execution mode", Kind: kit2.KSelect,
+			Options: itemExecutionModeOptions(m.projectExecutionMode(w.GetProjectId())),
+			Initial: itemExecutionModeField(w)},
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Initial: strings.Join(w.GetContextFiles(), ",")},
 		// A DAY AND A TIME, chosen from ONE modal calendar + clock — never typed, never a preset.
 		//
@@ -608,8 +719,13 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 				ContextWindow:      int32(atoiOr(v["context_window"], 0)),
 				WorkflowId:         strings.TrimSpace(v["workflow"]),
 				RuntimeImage:       strings.TrimSpace(v["runtime_image"]),
-				ContextFiles:       splitList(v["context_files"]),
-				AutoStartWorkflow:  boolPtr(v["auto_start"] == "true"),
+				// The create field is NON-optional and UNSPECIFIED *is* inherit
+				// (work_item_service.proto:186-190), so "inherit" needs no separate spelling here:
+				// executionModeEnum maps it to EXECUTION_MODE_UNSPECIFIED, which is exactly what the
+				// server reads as "no override".
+				ExecutionMode:     executionModeEnum(v["execution_mode"]),
+				ContextFiles:      splitList(v["context_files"]),
+				AutoStartWorkflow: boolPtr(v["auto_start"] == "true"),
 			}
 			name := "create work item " + strconv.Quote(req.GetTitle())
 			return m.Mutate(mutate.Request{
@@ -662,6 +778,22 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 			}
 			if req.ScheduledStartAt == nil {
 				req.ClearScheduledStartAt = true
+			}
+			// THE EXECUTION-MODE OVERRIDE IS SENT AS EITHER A VALUE OR AN EXPLICIT CLEAR — both
+			// halves, exactly as the GUI sends them (frontend/src/routes/work-items_.$id.tsx:388-389).
+			//
+			// edit execution_mode is `optional`, so UNSET MEANS UNCHANGED and there would be no way
+			// to remove an override: choosing "inherit" sets clear_execution_mode, which the proto
+			// names as the ONLY path back to inheriting. Sending only the clear would wipe a
+			// legitimate new value on every save; sending only the enum would make an override
+			// permanent. They are never both set: CLEAR WINS server-side
+			// (work_item_service.proto:295-300), and a request that says two things at once is one
+			// whose outcome the caller had to guess.
+			if v["execution_mode"] == itemExecutionModeInherit {
+				req.ClearExecutionMode = true
+			} else {
+				mode := executionModeEnum(v["execution_mode"])
+				req.ExecutionMode = &mode
 			}
 			name := "save work item " + strconv.Quote(title)
 			return m.Mutate(mutate.Request{
