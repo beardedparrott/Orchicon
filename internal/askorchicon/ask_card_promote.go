@@ -3,33 +3,22 @@ package askorchicon
 // ask_card_promote.go — RECOGNISE AN ASK FROM ITS RESULT, NOT FROM THE CALL'S NAME.
 //
 // REPORTED: "I tried an ask conversation with both opencode and claude adapters. Both say they sent a
-// card, but no actual card appeared." The reporter added the decisive clue — "I know ask cards used to
-// work" — and it was right: nothing in this pipeline regressed. The MODELS' CALLING STYLE did.
+// card, but no actual card appeared. I know ask cards used to work."
 //
-// Both clients render a question card from the TRANSCRIPT: they look for a persisted tool call whose
-// function name is `ask_user` or `orchicon_ask_user` (GUI: isAskUserToolCall in AskCard.tsx; TUI: the
-// same predicate in internal/tui/chat/grouping.go). That works on the native bridge, which calls the
-// tool directly.
+// Both halves were true and they are consistent: nothing in this pipeline regressed — the adapters'
+// CALLING STYLE did. Both clients render a question card from the TRANSCRIPT, matching a tool call named
+// ask_user/orchicon_ask_user, which is exactly what the native bridge records. The MCP-served adapters
+// never record that name. Measured in this deployment's own transcript table:
 //
-// THE MCP ADAPTERS REACH IT INDIRECTLY, and the recorded name is never the ask's:
-//
-//	opencode  function_name "execute" with the call inside a JavaScript body —
+//	opencode  function_name "execute", the call inside a JavaScript body —
 //	          const r = await tools.orchicon.ask_user({ question: "…", options: […] });
-//	claude    the MCP-qualified name mcp__orchicon__ask_user, which the predicate does not accept.
+//	claude    function_name "mcp__orchicon__ask_user", the MCP-qualified spelling.
 //
-// Measured in this deployment's own transcript table: the opencode attempt that "sent a card" was
-// recorded as ONE tool call, function_name "execute", and its result contains
+// The ask DID execute — opencode's result is {"recorded": true, "question": …, "options": […]} — which
+// is why the model truthfully reported having sent a card. Nothing surfaced it.
 //
-//	{"recorded": true, "question": "Ask-card test: …", "options": [ … ], "allow_other": true}
-//
-// So the ask DID execute — the model was not hallucinating — and nothing ever surfaced it.
-//
-// THE FIX READS THE RESULT. The tool's return value is its own declaration that an ask was recorded,
-// and it carries every field the card needs. Detecting on that instead of on the caller's name is
-// what makes one change cover every adapter and every nesting depth: opencode's JS sandbox, claude's
-// MCP-qualified name, a future adapter that wraps tools differently, and the native direct call all
-// produce the same result payload. Parsing JavaScript to recover the arguments would be fragile and
-// adapter-specific; the result is already structured JSON.
+// So detection reads the RESULT, which is the tool's own declaration that an ask was recorded and which
+// carries every field the card needs. That makes ONE rule cover every adapter and every nesting depth.
 
 import (
 	"encoding/json"
@@ -39,8 +28,31 @@ import (
 // askUserResultArgument is the tool's own acknowledgement, and the anchor for detection.
 const askUserResultArgument = "recorded"
 
-// promotedAskArgs returns the ask arguments carried by a tool RESULT, or "" when the result is not a
-// recorded ask.
+// AskAwaitingAnswerMarker is the output of a promoted ask's result while it is UNANSWERED.
+//
+// A PROMOTED ASK MUST HAVE A RESULT, and this is the crux of two reports that looked unrelated:
+//
+//	opencode  "the card goes away before I can click on it and it says 'You answered … — tool call
+//	           aborted — the turn ended before this tool returned a result'"
+//	claude    "Question … was dismissed — no answer sent"
+//
+// Both are the ledger repairing a call that has no result: sanitizeAssistantToolLedger appends
+// abortedToolResultOutput to EVERY unresolved call at turn end, because a provider rejects an assistant
+// tool_calls message whose ids have no results. So an ask that is legitimately still open was written
+// off as aborted, and the clients — which settle a card as soon as its call HAS a result — drew it
+// settled. The card existed; the repair killed it.
+//
+// The promoted call therefore carries a result IMMEDIATELY, so nothing needs repairing, but that result
+// says "no answer yet". The clients read the marker as STILL OPEN, and the reply replaces it with the
+// operator's words.
+const AskAwaitingAnswerMarker = "__orchicon_ask_awaiting_answer__"
+
+// IsAwaitingAnswer reports whether a recorded ask result means "asked, not yet answered".
+func IsAwaitingAnswer(output string) bool {
+	return strings.TrimSpace(output) == AskAwaitingAnswerMarker
+}
+
+// promotedAskArgs returns the ask arguments carried by a tool RESULT, or "" when it is not a recorded ask.
 //
 // It requires all three of: `recorded: true`, a non-empty `question`, and the result parsing as the
 // tool's documented shape. A model quoting the tool's description, or an error mentioning it, cannot
@@ -60,14 +72,13 @@ func promotedAskArgs(output string) string {
 
 // askArgsFromJSON decodes one JSON document, RECURSING INTO STRING VALUES.
 //
-// THE RECURSION IS THE POINT, not a nicety. opencode's sandbox returns its tool output WRAPPED — the
-// ask sits as an escaped STRING inside an array:
+// THE RECURSION IS THE POINT. opencode's sandbox returns its tool output WRAPPED — the ask sits as an
+// escaped STRING inside an array:
 //
-//	[{"text":"{\n  \"recorded\": true, …}","type":"text"}]
+//	[{"text":"{\\n  \\"recorded\\": true, …}","type":"text"}]
 //
 // A bracket scanner that respects strings will not see inside that (correctly — it IS one string), so
-// the first version of this found nothing against the real payload. Trying each string value as JSON
-// reaches it without a special case per wrapper dialect.
+// the first version of this found nothing against the real payload.
 func askArgsFromJSON(doc string) string {
 	var generic any
 	if err := json.Unmarshal([]byte(doc), &generic); err != nil {
@@ -77,7 +88,7 @@ func askArgsFromJSON(doc string) string {
 }
 
 // askArgsFromValue walks a decoded value looking for the recorded-ask payload. depth bounds the
-// recursion: real wrappers nest one or two levels, and a bound keeps a pathological payload cheap.
+// recursion: real wrappers nest one or two levels.
 func askArgsFromValue(v any, depth int) string {
 	if depth > 4 {
 		return ""
@@ -110,7 +121,6 @@ func askArgsFromValue(v any, depth int) string {
 			}
 		}
 	case string:
-		// A wrapped payload: the string IS JSON. Try it.
 		trimmed := strings.TrimSpace(val)
 		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
 			if got := askArgsFromJSON(trimmed); got != "" {
@@ -126,13 +136,10 @@ func boolOf(v any) bool {
 	return b
 }
 
-// jsonCandidates yields every embedded JSON document in s, outermost first, without a parser for the
-// caller's wrapper dialect: each '{' or '[' starts a candidate that must both begin and end a valid
-// document.
+// jsonCandidates yields every embedded JSON document in s, outermost first.
 //
-// Bounded on purpose. A tool output is capped before it reaches here (truncateLedgerString, 8000
-// bytes), and this walks at most that many characters a fixed number of times, so a pathological
-// output cannot turn into quadratic work.
+// Bounded on purpose: a tool output is capped before it reaches here (truncateLedgerString, 8000 bytes),
+// and this walks at most that many characters a fixed number of times.
 func jsonCandidates(s string) []string {
 	var out []string
 	for i := 0; i < len(s); i++ {
@@ -150,10 +157,6 @@ func jsonCandidates(s string) []string {
 }
 
 // balancedJSON returns the JSON document starting at s[0] (a '{' or '['), or "" when there is none.
-//
-// It counts brackets and respects strings/escapes, which is all that is needed to find the end of an
-// embedded document. It does NOT validate the contents — the caller unmarshals, which is the real
-// check.
 func balancedJSON(s string) string {
 	if s == "" || (s[0] != '{' && s[0] != '[') {
 		return ""

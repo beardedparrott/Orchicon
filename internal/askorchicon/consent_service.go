@@ -52,20 +52,19 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 	if !ok {
 		// A PROMOTED ASK IS ANSWERED BY CONTINUING THE CONVERSATION.
 		//
-		// Reported: "I tried an ask conversation with both opencode and claude adapters. Both say they
-		// sent a card, but no actual card appeared." On an MCP-served adapter the ask tool runs in the
-		// sidecar and RETURNS IMMEDIATELY — it never enters this process's pending registry, because it
-		// is a different process. The card the operator answers is therefore derived from the
-		// transcript (see tool_ledger.promoteRecordedAsk), and there is nothing here to "apply" a
-		// decision to.
-		//
-		// THAT IS NOT AN EXPIRED ASK, and reporting it as one threw the answer away: the card settled
-		// as expired and the operator's words were lost. The tool's own contract says what to do
-		// instead — "The question is recorded… the user answers in their next message" — so the answer
-		// becomes the next message. That is the same shape as the native path from the model's point of
-		// view: it asked, and it now receives a turn carrying the operator's reply.
-		if req.Msg.Answer != "" && s.promotedAskOpen(ctx, tenantID, convID, askID) {
+		// On an MCP-served adapter the ask tool runs in the sidecar and returns immediately: it never
+		// enters this process's registry, so there is nothing here to apply a decision to. Reporting
+		// that as "expired" threw the operator's answer away AND left the card open forever.
+		if msgID, awaiting, found := s.findPromotedAsk(ctx, tenantID, convID, askID); found && awaiting {
 			answer := strings.TrimSpace(req.Msg.Answer)
+			if answer == "" {
+				return nil, connect.NewError(connect.CodeInvalidArgument,
+					errors.New("answer must not be empty for a clarifying question"))
+			}
+			// SETTLE THE CARD FIRST, so the transcript records the answer even if the turn fails.
+			if rerr := s.recordPromotedAnswer(ctx, tenantID, msgID, askID, answer); rerr != nil {
+				s.log.Warn("ask orchicon: could not record the answer against its card", "ask", askID, "error", rerr)
+			}
 			if _, _, _, terr := s.startConversationTurn(ctx, tenantID, convID, answer, nil); terr != nil {
 				return nil, connect.NewError(connect.CodeInternal,
 					fmt.Errorf("deliver the answer to the asked question: %w", terr))

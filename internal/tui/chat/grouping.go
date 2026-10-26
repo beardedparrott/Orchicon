@@ -70,6 +70,12 @@ type AskOption struct {
 // on the transport and must not reuse this non-blocking model, even though it
 // shares the card rendering.
 type ParsedAsk struct {
+	// ID is the ASK's identity: the recorded tool call's id, which is what ReplyPermissionAsk
+	// addresses. It is carried on the card because ANSWERING IS A REPLY, not a message — see
+	// Controller.AnswerQuestion. Without it a recorded card could only be answered by sending the
+	// label as an ordinary next message, which leaves the awaiting marker in the transcript and
+	// the card open for ever in every other client.
+	ID         string
 	Question   string
 	Options    []AskOption
 	AllowOther bool
@@ -110,6 +116,22 @@ type ParsedAsk struct {
 	// read and write the SAME object by construction. Mutated on the tea loop only.
 	Drafting bool
 	Draft    string
+
+	// Sel is the HIGHLIGHTED ROW — the recorded card's cursor, the twin of ConsentState.Sel.
+	//
+	// REPORTED: "It works but in the TUI the highlight bar is gone. Looks fine the gui." then, when
+	// asked which bar, "This already works with the orchicon adapter. It should mimic that."
+	//
+	// They were naming a real split, not a colour. An ask served by the NATIVE bridge is a pending
+	// ask: it enters the consent registry and the transcript draws it as a KindConsent card, which
+	// has Sel, ↑/↓, Enter and a ▸ bar. An ask served over MCP is recorded and its turn is over, so
+	// it is drawn by renderAskCardSpans as a KindAsk card — which had NO cursor at all, so its rows
+	// were inert text beside the identical-looking card that behaves properly. One question, two
+	// cards, and only one of them answerable from the keyboard.
+	//
+	// On the item, mutated on the tea loop only, for exactly the reason Drafting is: the renderer
+	// and the key handler must read and write the same object.
+	Sel int
 }
 
 // isAskUserCall reports whether a recorded tool call is the clarifying question
@@ -134,6 +156,13 @@ func isAskUserCall(functionName string) bool {
 // parseAskUserCall parses the FIRST recorded ask_user call on a message into a
 // card's content, and reports whether it has been ANSWERED.
 //
+// IsAwaitingAskAnswer mirrors askorchicon.AskAwaitingAnswerMarker — the output a promoted ask carries
+// while nobody has answered it. Declared here rather than imported because internal/tui must not depend
+// on the plane's package graph; the string is a wire value either way.
+func IsAwaitingAskAnswer(output string) bool {
+	return strings.TrimSpace(output) == "__orchicon_ask_awaiting_answer__"
+}
+
 // results is the message's tool results: a call that has one has been answered, and
 // its output IS the operator's answer. See ParsedAsk.Answered for why the card's
 // settled state is read from the result rather than inferred from a later message.
@@ -183,18 +212,20 @@ func parseAskUserCall(calls []*apiv1.ToolCall, results []*apiv1.ToolResult) *Par
 			// false statement the readable path avoids.
 			if result.GetIsError() {
 				return &ParsedAsk{
+					ID:          c.GetId(),
 					Question:    "(this clarifying question's arguments could not be read)",
 					Refused:     true,
 					RefusalText: strings.TrimSpace(result.GetOutput()),
 				}
 			}
 			return &ParsedAsk{
+				ID:         c.GetId(),
 				Question:   "(this clarifying question's arguments could not be read)",
 				Answered:   true,
 				AnswerText: strings.TrimSpace(result.GetOutput()),
 			}
 		}
-		ask := &ParsedAsk{Question: strings.TrimSpace(in.Question), AllowOther: in.AllowOther}
+		ask := &ParsedAsk{ID: c.GetId(), Question: strings.TrimSpace(in.Question), AllowOther: in.AllowOther}
 		for _, o := range in.Options {
 			if strings.TrimSpace(o.Label) == "" {
 				continue
@@ -207,7 +238,13 @@ func parseAskUserCall(calls []*apiv1.ToolCall, results []*apiv1.ToolResult) *Par
 			// (it never reached a card, so the operator never saw it and never said anything); rendering that as
 			// "answered · <internal error>" records a decision they did not make. `is_error` is the fact that
 			// separates the two, and it is the only one reliable here — the message text is prose.
-			if result.GetIsError() {
+			// THE AWAITING MARKER IS NOT AN ANSWER. A promoted (MCP-served) ask carries a result the
+			// moment it is recorded, because the ledger repairs any unresolved call at turn end with
+			// "tool call aborted" — which settled the card seconds after it appeared. That result says
+			// "no answer yet", and the card must stay OPEN on it.
+			if IsAwaitingAskAnswer(result.GetOutput()) {
+				// leave Answered false: the operator has not replied
+			} else if result.GetIsError() {
 				ask.Refused = true
 				ask.RefusalText = strings.TrimSpace(result.GetOutput())
 			} else {

@@ -4132,6 +4132,84 @@ func (m *App) reArmAskDraftClaim() {
 // opening the input on the wrong one would put the operator's answer on a question they did not
 // click. False when the item is gone, already answered, or never offered free text — so a click
 // resolved against a stale layout opens nothing rather than something wrong.
+// askIDForKey returns the ASK ID (the recorded tool call's id) for a recorded card, by the item key
+// the click resolved to. Empty when the item is gone, is not a recorded card, or predates the field.
+//
+// BY KEY, because a transcript can hold more than one unanswered question and a reply addressed to
+// the wrong ask would settle the wrong card.
+func (s *chatStore) askIDForKey(convID, key string) string {
+	if s == nil || key == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindAsk || it.Key != key || it.Ask == nil {
+			continue
+		}
+		return it.Ask.ID
+	}
+	return ""
+}
+
+// AskReply answers a RECORDED card through the reply RPC — the same call the GUI makes
+// (askOrchiconClient.replyPermissionAsk). It is the host half of the recorded card's keys and its
+// free-text row, so the keyboard, a click, and the GUI all settle the card the same way: by
+// replacing the awaiting marker in the transcript, which is the card's only durable state.
+func (m *App) AskReply(askID, answer string) tea.Cmd {
+	if m.chat == nil || strings.TrimSpace(askID) == "" {
+		return nil
+	}
+	return m.chat.ReplyPermissionAsk(m.chatConvID, askID,
+		apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED, answer)
+}
+
+// selectAskRow moves a RECORDED card's cursor to the row the operator just CLICKED.
+//
+// IT EXISTS SO THE TWO WAYS OF CHOOSING AGREE. The cursor lives on the item (chat.ParsedAsk.Sel), so
+// without this a click would send its label and leave the highlight on whatever row the keys last moved
+// to — the card would then show a cursor pointing at an answer the operator did not give, which is worse
+// than no cursor at all. By key, not by "the newest card", for the same reason beginAskDraft is: a
+// transcript can hold more than one unanswered question.
+func (s *chatStore) selectAskRow(convID, key, label string) {
+	if s == nil || key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindAsk || it.Key != key || it.Ask == nil {
+			continue
+		}
+		for j, o := range it.Ask.Options {
+			if o.Label == label {
+				it.Ask.Sel = j
+				return
+			}
+		}
+		if it.Ask.AllowOther {
+			// The Other row sits immediately after the options (see renderAskCardSpans).
+			it.Ask.Sel = len(it.Ask.Options)
+		}
+		return
+	}
+}
+
+// reArmAskCardClaim hands the keyboard back to a RECORDED card's cursor after a click on one of its rows
+// — the mirror of reArmAskDraftClaim, and the same reason: the click is the operator acting ON the card,
+// so a claim released by ctrl+g or by typing is re-armed.
+func (m *App) reArmAskCardClaim() {
+	s := m.screens[TabAsk]
+	if s == nil {
+		return
+	}
+	if c, ok := s.(interface{ ReArmAskCardClaim() }); ok {
+		c.ReArmAskCardClaim()
+	}
+}
+
 func (s *chatStore) beginAskDraft(convID, key string) bool {
 	if s == nil || key == "" {
 		return false

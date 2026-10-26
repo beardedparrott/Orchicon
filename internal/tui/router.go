@@ -1514,7 +1514,15 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 				}
 				return m, nil
 			}
-			return m, m.chat.AnswerQuestion(m.chatConvID, label)
+			// A CLICK ON A ROW IS THE OPERATOR ACTING ON THE CARD, so the card takes the keyboard back
+			// and its cursor lands on the row they clicked — the same rule the permission card follows
+			// (ReArmConsentClaim). Without this, a card deferred by ctrl+g or by typing would answer the
+			// click and leave ↑/↓ dead until something else re-armed it.
+			m.chatStore.selectAskRow(m.chatConvID, key, label)
+			m.reArmAskCardClaim()
+			// THE ASK ID IS WHAT MAKES THIS A REPLY. See Controller.AnswerQuestion: without it the
+			// answer is just a message and the awaiting marker — the card's state — is never cleared.
+			return m, m.chat.AnswerQuestion(m.chatConvID, m.chatStore.askIDForKey(m.chatConvID, key), label)
 		}
 	}
 	// THE DIFF RAIL OWNS THE WHEEL IN ITS OWN COLUMNS.

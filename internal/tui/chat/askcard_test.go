@@ -100,3 +100,53 @@ func TestParseAskUserCallToleratesMalformedArguments(t *testing.T) {
 		t.Error("a non-ask tool call must not produce a card")
 	}
 }
+
+// TestTheAwaitingMarkerKeepsTheCardOpen — the TUI half of the "card goes away / card never goes away"
+// pair.
+//
+// A promoted (MCP-served) ask carries a result the moment it is recorded, because the ledger repairs any
+// unresolved call at turn end with "tool call aborted". That result is the awaiting marker, and the card
+// must stay OPEN on it — otherwise it settles seconds after appearing. Any OTHER result is an answer and
+// settles it, which is what stops a card sticking once the operator replies.
+func TestTheAwaitingMarkerKeepsTheCardOpen(t *testing.T) {
+	args := `{"question":"Pick a colour","options":[{"label":"Blue"}],"allow_other":true}`
+	call := &apiv1.ToolCall{Id: "tc-2", FunctionName: "orchicon_ask_user", Arguments: args}
+
+	open := parseAskUserCall([]*apiv1.ToolCall{call}, []*apiv1.ToolResult{{
+		ToolCallId: "tc-2", Output: "__orchicon_ask_awaiting_answer__",
+	}})
+	if open == nil {
+		t.Fatal("the awaiting marker produced no card at all")
+	}
+	if open.Answered {
+		t.Error("the awaiting marker settled the card — the operator never replied, and a settled card " +
+			"is one they cannot click")
+	}
+
+	answered := parseAskUserCall([]*apiv1.ToolCall{call}, []*apiv1.ToolResult{{
+		ToolCallId: "tc-2", Output: "Blue",
+	}})
+	if answered == nil || !answered.Answered || answered.AnswerText != "Blue" {
+		t.Errorf("a real answer did not settle the card: %+v", answered)
+	}
+}
+
+// TestTheMCPQualifiedSpellingIsRecognised — the claude half of the report. A tool reached over MCP is
+// recorded as `mcp__orchicon__ask_user`, and a predicate that lists only the bare names makes a direct
+// MCP call invisible here while the native bridge keeps working.
+func TestTheMCPQualifiedSpellingIsRecognised(t *testing.T) {
+	args := `{"question":"Pick a colour","options":[{"label":"Blue"}]}`
+	for _, name := range []string{"ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user", "mcp__other__ask_user"} {
+		got := parseAskUserCall([]*apiv1.ToolCall{{
+			Id: "tc-9", FunctionName: name, Arguments: args,
+		}}, nil)
+		if got == nil {
+			t.Errorf("function name %q produced no card — an MCP-served ask is recorded under its "+
+				"qualified name, so the card never renders for that adapter", name)
+		}
+	}
+	// An ordinary tool must not be mistaken for an ask.
+	if got := parseAskUserCall([]*apiv1.ToolCall{{Id: "tc-9", FunctionName: "execute", Arguments: args}}, nil); got != nil {
+		t.Errorf("an `execute` call was treated as an ask (%q)", got.Question)
+	}
+}

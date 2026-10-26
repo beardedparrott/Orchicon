@@ -128,23 +128,43 @@ func (l *toolLedger) recordPermission(tool, target, verdict, detail, askID strin
 // to apply. The card's answer is therefore delivered as the user's next MESSAGE (which is what the
 // tool's own contract says: "the user answers in their next message"). Without this entry there is no
 // card to answer at all — which is the reported bug — and with it the flow is coherent end to end.
-func (l *toolLedger) promoteRecordedAsk(output string) {
+func (l *toolLedger) promoteRecordedAsk(callID, output string) {
 	args := promotedAskArgs(output)
 	if args == "" {
 		return
 	}
-	// A result that IS the ask's own success is not itself a new call: the tool was invoked directly
-	// (the native bridge, or an adapter that calls it as ask_user), and the clients already find that
-	// call by name. Promoting it would render the same ask twice.
+	// THE ACKNOWLEDGEMENT IS NEVER THE ANSWER — including when the call is ALREADY the ask.
+	//
+	// REPORTED (claude): "it never actually pops up for Claude adapter." claude calls the tool by its
+	// MCP-qualified name, so the call needed no promotion — and this function returned at the guard
+	// below, leaving the tool's own `{"recorded":true,…}` payload in the RESULT slot. Every client reads
+	// a result as an answer, so the card was drawn settled from its first frame with the tool's JSON as
+	// the reply, and never appeared as a card at all.
+	//
+	// Promotion is not the point; RECOGNISING THE PAYLOAD is. When the call that produced this result is
+	// itself the ask, the acknowledgement is replaced IN PLACE by the awaiting marker — so the card is
+	// open on the very id the operator's answer will settle, and no second call is invented.
+	if idx := l.callIndex(callID); idx >= 0 && isAskToolName(l.calls[idx].FunctionName) {
+		l.setResultOutput(callID, AskAwaitingAnswerMarker)
+		return
+	}
+	// A WRAPPED ask (opencode's `execute`) needs a first-class call of its own, because a client finds an
+	// ask by NAME. An ask for the SAME question already recorded means this result is being seen twice
+	// (the adapter re-announced the call), and promoting it again would draw the question twice.
 	for i := len(l.calls) - 1; i >= 0; i-- {
-		if isAskToolName(l.calls[i].FunctionName) {
+		if !isAskToolName(l.calls[i].FunctionName) {
+			continue
+		}
+		if l.calls[i].Arguments == args {
 			return
 		}
 	}
 	l.nextID++
-	callID := fmt.Sprintf("tc-%d", l.nextID)
+	// NOT `callID`: that is the parameter naming the WRAPPED call this promotion came from, and
+	// reusing it here would silently attribute the await to the wrong call.
+	promotedID := fmt.Sprintf("tc-%d", l.nextID)
 	l.calls = append(l.calls, toolCallEntry{
-		ID:           callID,
+		ID:           promotedID,
 		Type:         "function",
 		FunctionName: "orchicon_ask_user",
 		Arguments:    args,
@@ -153,16 +173,49 @@ func (l *toolLedger) promoteRecordedAsk(output string) {
 		IssuedAtUnixMs: ledgerNowMillis(),
 		resolved:       true,
 	})
-	// NO RESULT IS RECORDED FOR THE PROMOTED CALL, and that is what makes the card LIVE.
+	// THE RESULT IS THE AWAITING MARKER: not the wrapper's output, and NOT NOTHING.
 	//
-	// askCardPlan renders an ask card when its arguments parse; a call that also has a RESULT renders
-	// as already ANSWERED. The wrapped call did complete — its result is what we just read the ask out
-	// of — but the QUESTION did not: nobody has answered it, and the model certainly has not. Storing
-	// the wrapper's output against this id would draw the card settled, with the tool's own JSON as
-	// the operator's "answer".
+	// Nothing is what the first attempt did, and it is why the card vanished seconds after appearing:
+	// sanitizeAssistantToolLedger appends abortedToolResultOutput to every UNRESOLVED call at turn end
+	// (a provider rejects a tool_calls message whose ids have no results), so a legitimately open ask was
+	// written off as "tool call aborted — the turn ended before this tool returned a result", and the
+	// clients — which settle a card as soon as its call HAS a result — drew it settled.
 	//
-	// So the promoted entry stays open, which is the truth, and ReplyPermissionAsk resolves it by
-	// delivering the operator's words as the conversation's next message.
+	// The wrapper's output would be wrong the other way: it would render the tool's own JSON as the
+	// operator's answer.
+	//
+	// The marker satisfies both. The call HAS a result, so the repair has nothing to add; the clients
+	// read it as UNANSWERED, so the card stays live; and the reply replaces it with the operator's words.
+	l.results = append(l.results, toolResultEntry{
+		ToolCallID: promotedID,
+		Output:     AskAwaitingAnswerMarker,
+	})
+}
+
+// callIndex returns the position of the call with this id, or -1. THE CALLER MUST HOLD l.mu.
+func (l *toolLedger) callIndex(callID string) int {
+	if callID == "" {
+		return -1
+	}
+	for i := range l.calls {
+		if l.calls[i].ID == callID {
+			return i
+		}
+	}
+	return -1
+}
+
+// setResultOutput rewrites the output of an existing result, or appends one when the call has none.
+// THE CALLER MUST HOLD l.mu. It exists so the awaiting marker can replace a recorded-ask
+// acknowledgement without disturbing the call, its arguments or its issue time.
+func (l *toolLedger) setResultOutput(callID, output string) {
+	for i := range l.results {
+		if l.results[i].ToolCallID == callID {
+			l.results[i].Output = output
+			return
+		}
+	}
+	l.results = append(l.results, toolResultEntry{ToolCallID: callID, Output: output})
 }
 
 // isAskToolName matches every spelling the ask tool is recorded under, including the MCP-qualified
@@ -213,6 +266,18 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 	argsJSON := truncateLedgerString(marshalLedgerValue(state["input"]), 4000)
 	output := truncateLedgerString(stringifyLedgerOutput(state["output"]), 8000)
 
+	// AN ASK THAT RETURNED NOTHING IS NOT AN ANSWERED ASK.
+	//
+	// claude emits a completed part for the ask carrying an EMPTY output ahead of the real one, and
+	// recording it resolved the call. The real result then had no unresolved call to land on, so it
+	// synthesized a DUPLICATE ask and left the first one holding an empty answer. Measured in this
+	// deployment's own transcript: tc-3 ask_user output "", tc-4 ask_user output {"recorded":true,…}.
+	// The clients read the first call and drew "dismissed — no answer sent". An ask has nothing to say
+	// until it is answered, so an empty output is not a resolution and must not be recorded as one.
+	if isAskToolName(tool) && strings.TrimSpace(output) == "" {
+		return
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	callID := ""
@@ -248,7 +313,7 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 		Output:     output,
 		IsError:    status == "error",
 	})
-	l.promoteRecordedAsk(output)
+	l.promoteRecordedAsk(callID, output)
 }
 
 // recordToolResolution backfills a resolved call's arguments and appends its
@@ -262,6 +327,12 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 // which adapter produced it.
 func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr bool) {
 	if l == nil || tool == "" {
+		return
+	}
+	// AN ASK THAT RETURNED NOTHING IS NOT AN ANSWERED ASK — the typed-transport twin of the rule in
+	// recordResolve, and the one claude actually takes. It resolves the same duplicate-and-empty-result
+	// failure that made claude's card render as a settled "no answer sent" record from its first frame.
+	if isAskToolName(tool) && strings.TrimSpace(output) == "" {
 		return
 	}
 	l.mu.Lock()
@@ -311,7 +382,7 @@ func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr b
 		Output:     truncateLedgerString(output, 8000),
 		IsError:    isErr,
 	})
-	l.promoteRecordedAsk(output)
+	l.promoteRecordedAsk(callID, output)
 }
 
 // snapshot returns the ledger as (tool_calls, tool_results) JSON documents

@@ -1182,14 +1182,35 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 	return items
 }
 
-// AnswerQuestion answers a recorded clarifying question by sending the chosen
-// option's LABEL as a normal user message — the SAME path every other message
-// takes (Send). There is deliberately no rendezvous and no separate reply
-// channel: the tool RECORDED the question and the turn already completed, so the
-// answer is simply the next message. (A CONSENT ask is different: it is
-// genuinely blocking on the transport and must not be answered this way.)
-func (c *Controller) AnswerQuestion(convID, label string) tea.Cmd {
-	return c.Send(convID, label, "")
+// AnswerQuestion answers a recorded clarifying question.
+//
+// IT IS A REPLY, NOT A MESSAGE — and that was the defect.
+//
+// The recorded (MCP-served) ask carries the awaiting marker as its tool RESULT so the card can stay
+// open, and ReplyPermissionAsk is the ONE thing that replaces that marker with the operator's words.
+// This function used to send the label as an ordinary next message instead, which looks equivalent
+// from the terminal — a user message appears and the model answers it — and is not:
+//
+//	the transcript still holds the AWAITING MARKER, so the card is still "open" to every client
+//	and to a reload; the answer exists only as a message beside it
+//	findPromotedAsk/recordPromotedAnswer never run, so nothing durable records what was answered
+//
+// That is what "answers the question but it comes back" is: the marker is the card's state, and
+// nothing had ever cleared it. On the MCP adapters (claude, opencode) EVERY answer took this path,
+// so a recorded card could never be settled by the keyboard or a click — only by the GUI's own
+// reply RPC, which the TUI has had since permission cards needed it.
+//
+// askID is the recorded call's id, read from the card (ParsedAsk.ID). When it is EMPTY the card came
+// from a row recorded before this field existed, and the old send-the-label path is kept as a
+// fallback: a degraded answer is better than a dead card.
+func (c *Controller) AnswerQuestion(convID, askID, label string) tea.Cmd {
+	if strings.TrimSpace(askID) == "" {
+		return c.Send(convID, label, "")
+	}
+	// UNSPECIFIED is the choice for a QUESTION: its outcome is the operator's words, not a grant
+	// decision. The reply delivers the answer as the conversation's next turn, which is what the
+	// tool's own contract promises.
+	return c.ReplyPermissionAsk(convID, askID, apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED, label)
 }
 
 // Send dispatches a turn: InterjectConversationTurn when the

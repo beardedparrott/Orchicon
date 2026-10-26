@@ -87,6 +87,15 @@ func (m *Model) ClaimsKeys() bool {
 	if m.draft != nil && m.draft.Drafting && m.draftKey != m.draftDeferred {
 		return true
 	}
+	// A PENDING RECORDED CARD CLAIMS ITS CURSOR KEYS TOO, so ↑/↓ and Enter answer it — the same claim the
+	// permission card makes, for the card drawn by the other renderer (see askcard.go). Without it the
+	// card's rows were inert text beside an identical-looking card that answered from the keyboard.
+	//
+	// IT YIELDS TO EVERYTHING ABOVE: an overlay, an open free-text row and a live consent card all
+	// outrank it, because each of them is a surface the operator is already typing into or deciding.
+	if m.askCardClaims() {
+		return true
+	}
 	if m.consent == nil {
 		return false
 	}
@@ -163,6 +172,12 @@ func (m *Model) DropKeyClaim() {
 	// text; a click on its Other row claims the keys back (ReArmAskDraftClaim).
 	if m.draft != nil && m.draft.Drafting {
 		m.draftDeferred = m.draftKey
+	}
+	// THE RECORDED CARD'S CURSOR YIELDS THE SAME WAY, and for the same reason: ctrl+g is the advertised
+	// route to the composer and must never be blocked by a card. Nothing is decided or discarded — the
+	// card keeps its cursor and stays answerable (a click re-arms it through ReArmAskCardClaim).
+	if m.askCard != nil && !m.askCard.Answered && !m.askCard.Refused {
+		m.askCardDeferred = m.askCardKey
 	}
 	// The overlay is a genuine dismissal: it is a local picker, and leaving it open on an
 	// unfocused screen is what the release exists to prevent.

@@ -72,25 +72,47 @@ describe("AskCard wiring (clarifying-question card)", () => {
     expect(card).toMatch(/BLOCKING/);
   });
 
-  it("the transcript renders the recorded ask_user call as the card", () => {
-    expect(route).toContain(
-      'import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard"',
-    );
-    expect(route).toContain("isAskUserToolCall(c.functionName)");
-    expect(route).toContain("parseAskUserArgs(askCall.arguments)");
+  it("the transcript renders the recorded ask_user call as ONE card, from askCardOf", () => {
+    // ASSERTED AS SYMBOLS, NOT AS ONE LINE OF FORMATTING. The card's imports legitimately grew
+    // (isAwaitingAnswer joined them when a promoted ask's result began carrying the awaiting marker),
+    // and the previous assertion pinned the exact single-line form — so a correct change broke the test
+    // rather than the behaviour it exists to protect.
+    for (const symbol of ["AskCard", "isAskUserToolCall", "parseAskUserArgs"]) {
+      expect(route).toContain(symbol);
+    }
+    expect(route).toMatch(/from "@\/components\/ask\/AskCard"/);
     expect(route).toContain("<AskCard");
+    // ONE SOURCE OF TRUTH FOR WHICH CALL IS DRAWN AND WHETHER IT IS ANSWERED.
+    //
+    // This used to assert the route's own INLINE derivation (`parseAskUserArgs(askCall.arguments)`,
+    // `const askAnswered =`), and that copy had already drifted from askCardOf in both of the ways
+    // that mattered: it took the FIRST ask-named call (claude records one twice, and the first is a
+    // phantom with an empty result) and it treated ANY result as an answer (an empty one and the
+    // awaiting marker are both "still open"). Pinning the copy is what let the two disagree.
+    expect(route).toContain("const askCard = askCardOf(message);");
+    expect(route).toContain("answered={askCard.answered}");
+    expect(route).not.toContain("const askAnswered =");
   });
 
-  it("selecting an option answers the PAUSED turn through the reply RPC", () => {
-    expect(route).toContain("onSelectOption={handleSendMessage}");
-    // THE CARD'S SETTLED STATE COMES FROM THE ASK'S OWN RESULT, not from "a later
-    // message exists". The old test asserted exactly that heuristic
-    // (`answered={block.message.id !== lastMessageId}`), which the pause made
-    // permanently false: the answer now arrives as the ask_user TOOL RESULT and
-    // nothing follows the message, so the card never settled — the operator's "the
-    // Orchicon asks card does not go away when you select something".
-    expect(route).toContain("const askAnswered =");
-    expect(route).toContain("answered={askAnswered}");
+  it("selecting an option ANSWERS THE ASK through the reply RPC", () => {
+    // THE ANSWER IS A REPLY ADDRESSED TO THE ASK, NOT A MESSAGE — and this test used to assert the
+    // opposite while being named after the right thing: `onSelectOption={handleSendMessage}` sent the
+    // label as an ordinary next turn, which leaves the awaiting marker (the card's only durable state)
+    // untouched. The card then stayed open in every other client and came back on the next reload:
+    // "I answer it and it asks again".
+    //
+    // Every card site must therefore route through handleAskDecision — the consent card's own reply
+    // path — with the ask's id and an UNSPECIFIED choice (a question's outcome is content, not a grant).
+    const replySites = route.match(/void handleAskDecision\(/g) ?? [];
+    expect(replySites.length).toBeGreaterThanOrEqual(3);
+    expect(route).toContain("PermissionChoice.UNSPECIFIED");
+    // The plain send must survive ONLY as the fallback for a card with no id (a row recorded before
+    // ParsedAsk carried one). A bare `onSelect={handleSendMessage}` would be the bug, so it must not
+    // appear at all.
+    expect(route).not.toContain("onSelect={handleSendMessage}");
+    expect(route).not.toContain("onSelectOption={handleSendMessage}");
+    // The idle path: no id ⇒ send. Named so the fallback cannot be dropped silently.
+    expect(route).toMatch(/\?\s*void handleAskDecision\(/);
   });
 });
 

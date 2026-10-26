@@ -1,4 +1,5 @@
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
+import { StatusBadge } from "@/routes/runtime-images";
 import { useMemo, useState } from "react";
 import { ArrowLeft, Download, Hammer, Trash2, Save, XCircle } from "lucide-react";
 
@@ -201,6 +202,15 @@ function RuntimeImageDetailPage() {
             <p className="text-sm text-muted-foreground">
               <code className="rounded bg-muted px-1">{img.tag || "no tag"}</code>{" "}
               · base <code className="rounded bg-muted px-1">{img.baseImageRef}</code>
+              {/* THE STATUS IS ON THIS PAGE TOO, and its absence was half of the reported
+                  confusion: "it just says stock and the deploy button is still lit up and
+                  clickable". Deploying changed the row and nothing visible said so — only the
+                  log moved — so the operator could not tell whether it had worked. The badge is
+                  the same component and vocabulary the list uses, so one glance answers whether
+                  the image is ready, still to be downloaded, or failed. */}
+              <span className="ml-2 inline-flex items-center align-middle">
+                <StatusBadge status={img.status} />
+              </span>
               {img.source === "stock" && (
                 <span className="ml-2 rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800">
                   stock

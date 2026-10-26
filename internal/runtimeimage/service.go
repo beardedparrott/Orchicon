@@ -51,7 +51,11 @@ type Service struct {
 	pool *db.Pool
 	log  *slog.Logger
 	rt   *runtime.Client // nil in headless (no daemon)
-	base string          // resolved base image ref from the daemon (cached at first Images call)
+	// presentFn reports whether a tag exists locally. A SEAM, defaulting to the daemon probe, so the
+	// two ordering/presence RULES can be tested without a container engine — the same pattern this
+	// package already uses for client construction. Nil means "ask the daemon".
+	presentFn func(ctx context.Context, ref string) (bool, error)
+	base      string // resolved base image ref from the daemon (cached at first Images call)
 	apiv1connect.UnimplementedRuntimeImageServiceHandler
 }
 
@@ -194,6 +198,20 @@ func (s *Service) ListRuntimeImages(ctx context.Context, req *connect.Request[ap
 	if req.Msg.Status != nil {
 		status = req.Msg.Status.String()
 	}
+	// THE CATALOGUE IS RECONCILED ON EVERY PAGE LOAD, and this is that page load for all three clients.
+	//
+	// REPORTED: "I think we need to make the runtime image page pull every runtime image record that is
+	// available in our repo and if they don't exist (been deleted) add them in a non-downloaded state. This
+	// should happen upon launching the runtime images page in the web, desktop or TUI pages."
+	//
+	// The web page, the desktop app and the TUI all draw themselves from THIS call, so reconciling here is
+	// what makes "on launch" true for all three at once — three client-side reconcile calls would be three
+	// chances to disagree. It only CREATES missing rows (see EnsureCatalogRows): it cannot change the status
+	// of a row that exists, so a read cannot corrupt what the operator has.
+	//
+	// Best-effort by design: a reconcile failure must never take the page down with it, so it is logged and
+	// the list proceeds.
+	EnsureCatalogRows(ctx, s.pool, s.log)
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -311,6 +329,29 @@ func (s *Service) UpdateRuntimeImage(ctx context.Context, req *connect.Request[a
 	return connect.NewResponse(&apiv1.UpdateRuntimeImageResponse{RuntimeImage: toProto(row)}), nil
 }
 
+// deleteUndownloadsInsteadOfDeleting reports whether a delete must PRESERVE the row and remove only the
+// image. It is the whole shape of the operation, as a pure predicate, so the policy is testable without a
+// database or an engine — the same seam decideSeedAction uses.
+//
+//	a stock row   the CATALOGUE entry: this build ships that variant and can re-fetch it at any time, so
+//	              the row is derived state and deleting it loses nothing that cannot come back. Its
+//	              image is the artifact the operator asked to have removed, so that goes.
+//	any other row the operator's OWN spec: nothing could reconstruct it, so it is deleted outright.
+func deleteUndownloadsInsteadOfDeleting(source string) bool { return source == "stock" }
+
+// removesLocalImage reports whether a delete must also drop the local image.
+//
+// IT USED TO HAVE TWO EXEMPTIONS AND BOTH WERE WRONG.
+//
+//	source == "stock"   skipped the rmi, so the operator's "delete" removed the catalogue entry and KEPT
+//	                    the artifact — the inverse of what the button says.
+//	tag == base         kept the substrate alive for the variants that derive FROM it. True only at BUILD
+//	                    time: a built image stands alone, the base is a published tag that re-fetches, and
+//	                    the Deploy path already refuses a variant whose base is missing and names it. An
+//	                    exemption that makes a delete silently ignore what it was told to delete is worse
+//	                    than the recovery it was protecting against.
+func removesLocalImage(source, tag string) bool { return tag != "" }
+
 func (s *Service) DeleteRuntimeImage(ctx context.Context, req *connect.Request[apiv1.DeleteRuntimeImageRequest]) (*connect.Response[apiv1.DeleteRuntimeImageResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -337,26 +378,62 @@ func (s *Service) DeleteRuntimeImage(ctx context.Context, req *connect.Request[a
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("cannot delete image: an active workflow run uses it"))
 	}
-	if err := db.DeleteRuntimeImage(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("runtime image not found"))
+	// A CATALOGUE ROW IS NOT DELETED — IT IS UNDOWNLOADED.
+	//
+	// REPORTED: "I saw there was a delete command in the runtime images section. It did remove them from
+	// the console, and then on restart they came back. … the delete button should definitely delete them
+	// off of someone's computer if it doesn't now. That way, the records will always remain on what is
+	// available to users, and they can choose whether or not they want them downloaded."
+	//
+	// That is exactly right, and the old behaviour was the INVERSE of it on both counts:
+	//
+	//	gone from the console  the ROW was deleted — the catalogue entry, the one thing that must survive
+	//	still on the disk      the image was NOT removed for a stock row (the rmi at the end skipped it), so
+	//	                      the delete destroyed what should have stayed and kept what it was told to remove
+	//
+	// A stock row is a CATALOGUE entry: this build ships that variant and can re-fetch it from the registry
+	// at any time, so the row is derived state. Its IMAGE is the local artifact, and removing that is the
+	// button's whole job. So the image always goes, and the row is left `absent` — the state that draws
+	// "Not downloaded" and the Fetch button, which is how the operator chooses whether to download it again.
+	//
+	// A tenant-authored row has no published counterpart to re-seed from, so it really is deleted: its spec
+	// is the user's own and nothing could reconstruct it.
+	if deleteUndownloadsInsteadOfDeleting(row.Source) {
+		absent := RuntimeImageStatusAbsent
+		unbuilt := 0
+		if _, err := db.UpdateRuntimeImage(ctx, ttx.Tx, tenantID, row.ID, row.Version,
+			db.UpdateRuntimeImageFields{Status: &absent, BuiltVersion: &unbuilt, StatusOnly: true}); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.deleted", "runtime_image", row.ID,
-		audit.Snapshot(runtimeImageAuditSnapshot(row)), nil); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.deleted: %w", err))
+		if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.undownloaded", "runtime_image", row.ID,
+			audit.Snapshot(runtimeImageAuditSnapshot(row)), nil); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.undownloaded: %w", err))
+		}
+	} else {
+		if err := db.DeleteRuntimeImage(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound, errors.New("runtime image not found"))
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.deleted", "runtime_image", row.ID,
+			audit.Snapshot(runtimeImageAuditSnapshot(row)), nil); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.deleted: %w", err))
+		}
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// Remove the local docker image (best-effort — the daemon may be
-	// absent or the image may already be gone). Canned (stock) rows and
-	// the daemon's configured base image are exempt: deleting a canned row
-	// just removes the spec (the seeder re-creates it on the next boot and
-	// keeps the pristine container.sh image), and the base image is the
-	// substrate every other image derives from — it must never be removed.
-	if s.rt != nil && row.Tag != "" && row.Source != "stock" && row.Tag != s.ensureBase(ctx) {
+	// THE LOCAL IMAGE IS ALWAYS REMOVED — that is what "delete it off my computer" means, and skipping it
+	// for stock rows is what made the button feel like a no-op on the disk while it quietly destroyed the
+	// catalogue entry instead. Best-effort by design (the daemon may be absent, or the image already gone):
+	// the row has already moved to `absent`, which is the durable half of this operation.
+	//
+	// The base image is no longer exempt. It used to be, because every variant derives FROM it — but that is
+	// only true at BUILD time, a built image stands alone, and the base is a published tag that re-fetches
+	// like any other. The Deploy path already refuses to build a variant whose base is missing, and says so
+	// by name, so removing it is visible rather than mysterious.
+	if s.rt != nil && removesLocalImage(row.Source, row.Tag) {
 		if err := s.rt.RemoveImage(context.Background(), row.Tag); err != nil {
 			s.log.Warn("runtime image docker rmi failed", "tag", row.Tag, "error", err)
 		}
@@ -408,6 +485,10 @@ func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[ap
 	if strings.TrimSpace(row.Tag) == "" {
 		return connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("runtime image has no tag to fetch"))
+	}
+	// THE ORDERING RULE, before any work: a variant cannot be fetched before the base it derives from.
+	if err := s.requireBasePresent(ctx, row); err != nil {
+		return err
 	}
 
 	// FETCH IS NOT ALWAYS A PULL, and getting that wrong is the reported bug:
@@ -685,6 +766,76 @@ func isRegistryRef(tag string) bool {
 	return strings.ContainsAny(first, ".:")
 }
 
+// alreadyBuilt decides whether a Deploy can skip its build, and why not when it cannot.
+//
+// IT IS A PURE FUNCTION SO THE DECISION IS TESTABLE. buildCore needs a database transaction and a
+// daemon, which means the RULE — "the row says built AND the engine has it" — would otherwise only be
+// exercised by an operator hitting the bug. The second return is the reason, so the log line says which
+// of the two halves failed instead of a bare "rebuilding".
+func alreadyBuilt(dbSaysBuilt, present bool, probeErr error) (bool, string) {
+	if !dbSaysBuilt {
+		return false, "the row does not record a current build"
+	}
+	if probeErr != nil {
+		// A daemon that cannot answer is a reason to TRY the build, never to claim success.
+		return false, "the local presence of the image could not be confirmed"
+	}
+	if !present {
+		// THE REPORTED CASE: "runtime image already up to date (spec version 1) — skipping rebuild"
+		// while nothing was on the host.
+		return false, "the image is not present on this host"
+	}
+	return true, ""
+}
+
+// imagePresent reports whether ref exists locally, through the seam when one is installed.
+func (s *Service) imagePresent(ctx context.Context, ref string) (bool, error) {
+	if s.presentFn != nil {
+		return s.presentFn(ctx, ref)
+	}
+	if s.rt == nil {
+		return false, errors.New("no runtime daemon")
+	}
+	return s.rt.ImagePresent(ctx, ref)
+}
+
+// requireBasePresent enforces the one ordering rule these images have: THE BASE COMES FIRST.
+//
+// REPORTED: "images are downloading now, however, they fail unless you download the base image first.
+// I think we should prevent the download of the other images until the base is downloaded first and say
+// so."
+//
+// The dependency is structural, not a preference: every variant's Dockerfile derives FROM the base, so
+// fetching one first can only fail — and it fails LATE, inside the engine, with an error about a tag
+// rather than about the thing the operator has to do:
+//
+//	creating build container: short-name "orchicon-runtime:local" did not resolve to an alias
+//
+// Refusing up front converts that into one sentence naming the action, and it is FailedPrecondition
+// because the caller must change what they do. The base itself is exempt, which is what makes the
+// ordering possible at all.
+func (s *Service) requireBasePresent(ctx context.Context, row db.RuntimeImageRow) error {
+	if s.rt == nil && s.presentFn == nil {
+		return nil // no daemon: the caller's own check reports that
+	}
+	base := s.ensureBase(ctx)
+	if base == "" || strings.EqualFold(strings.TrimSpace(row.Tag), strings.TrimSpace(base)) {
+		return nil // this IS the base, or the daemon cannot name one
+	}
+	present, err := s.imagePresent(ctx, base)
+	if err != nil {
+		// CANNOT TELL IS NOT ABSENT. A probe failure falls through to the build, which reports a real
+		// reason instead of inventing a base-missing story.
+		return nil
+	}
+	if present {
+		return nil
+	}
+	return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+		"%s builds FROM the base image %s, which is not on this host yet — download %s first, then %s",
+		row.Tag, base, base, row.Tag))
+}
+
 // recordFetchOutcome writes the row state a fetch leaves behind: ready at the
 // current spec version on success (clearing stale failure fields), untouched on
 // failure except for the error message. Returns the row as persisted.
@@ -815,13 +966,44 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 		return row, 1, connect.NewError(connect.CodeFailedPrecondition, errors.New("image is already building"))
 	}
 
+	// THE SAME RULE ON THE BUILD PATH. Deploy builds from the base too, so a variant deployed before
+	// the base fails identically — and this is the path the operator's "I tried to deploy orchicon-dev
+	// and the base image" actually took.
+	if berr := s.requireBasePresent(ctx, row); berr != nil {
+		_ = ttx.Rollback(ctx)
+		return row, 1, berr
+	}
+
 	// Rebuild gate: when the row is ready and records the CURRENT spec
 	// version as already built, the local docker image is exactly what the
 	// spec describes — re-deploying is a no-op (no docker build, no prune).
 	// This is the acceptance-criteria mechanism for custom images: the
 	// version is the change signal, and the image is only rebuilt (and only
 	// pruned) when a spec edit bumped it past built_version.
-	if row.Status == "ready" && row.Tag != "" && row.BuiltVersion == row.Version {
+	// THE GATE MUST ASK THE ENGINE, NOT ONLY THE DATABASE.
+	//
+	// REPORTED: "When I tried to deploy orchicon-dev and the base image, I got 'runtime image already
+	// up to date (spec version 1) — skipping rebuild' but it just says stock and the deploy button is
+	// still lit up and clickable."
+	//
+	// This compared row.Status and built_version — two facts the DATABASE holds — and never asked
+	// whether the image is actually ON this host. Those diverge exactly when it matters: a row seeded
+	// from the catalog records a version with no image behind it, and an image removed or pruned leaves
+	// the row pristine. In both cases Deploy said "up to date" and did nothing.
+	var (
+		present  bool
+		probeErr error
+	)
+	dbSaysBuilt := row.Status == "ready" && row.Tag != "" && row.BuiltVersion == row.Version
+	if dbSaysBuilt {
+		present, probeErr = s.imagePresent(ctx, row.Tag)
+	}
+	upToDate, why := alreadyBuilt(dbSaysBuilt, present, probeErr)
+	if !upToDate && dbSaysBuilt {
+		s.log.Info("runtime image: rebuilding despite the row claiming to be built — "+why,
+			"id", row.ID, "tag", row.Tag, "version", row.Version)
+	}
+	if upToDate {
 		_ = ttx.Rollback(ctx)
 		s.log.Info("runtime image already up to date (spec version) — skipping rebuild",
 			"id", row.ID, "tag", row.Tag, "version", row.Version)

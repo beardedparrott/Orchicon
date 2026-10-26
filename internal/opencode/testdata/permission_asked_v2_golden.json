@@ -1,0 +1,10 @@
+{
+  "_comment": "The raw properties object of the `permission.asked` bus event emitted by a REAL opencode 2.0.27 serve, CAPTURED LIVE — not read out of a binary. Obtained by POSTing /api/session/:sessionID/permission {\"action\":\"edit\",\"resources\":[\"/tmp/orchicon-perm-probe2.txt\"]} and reading the event off /api/event. THE SHAPE IS DIFFERENT FROM 1.x and that difference was the reported bug: the class is `action` (1.x: `permission`), the paths are `resources` (1.x: `patterns` + `metadata.filepath`), and there is NO `metadata`, NO `tool`/{messageID,callID} reference and no `title`. Every 1.x candidate key missed, so the card rendered its no-noun fallback ('use the tool') with no path, and keyed on the scope directory an Ask conversation does not have — which printed as '.'.",
+  "_captured": "LIVE from opencode 2.0.27 (serve pid on 127.0.0.1:36823), 2026-10-26.",
+  "id": "per_1793a3eb4001yqAd5PQxpMQCAM",
+  "sessionID": "ses_e86cca7e1ffejkAS2REWZSyp6q",
+  "action": "edit",
+  "resources": [
+    "/tmp/orchicon-perm-probe2.txt"
+  ]
+}

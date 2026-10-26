@@ -110,7 +110,13 @@ import {
   TranscriptSearchBar,
 } from "@/components/chat";
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
-import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard";
+import {
+  AskCard,
+  isAskUserToolCall,
+  askIsAnswered,
+  pickAskCall,
+  parseAskUserArgs,
+} from "@/components/ask/AskCard";
 import { ConsentAskCard } from "@/components/ask/AskCard";
 import {
   applyAskChunk,
@@ -961,6 +967,10 @@ function AskOrchiconPage() {
           answer,
         });
         if (res.applied) {
+          // REMEMBER IT LOCALLY TOO — the card must never depend solely on the transcript catching up.
+          // String(choice) because choice is the generated PermissionChoice ENUM, not a string: a
+          // question carries `answer` and an UNSPECIFIED choice, a permission carries the decision.
+          markAskSettled(askId, answer || String(choice));
           setStream(convId, (prev) => ({
             ...prev,
             asks: resolveAsk(prev.asks, askId, outcomeFromChoice(choice)),
@@ -2368,7 +2378,22 @@ function AskOrchiconPage() {
                           <MessageBubble
                             message={block.message}
                             onRetry={handleRetry}
-                            onSelectOption={handleSendMessage}
+                            // ANSWERING A RECORDED CARD IS A REPLY, not a message. It goes through the
+                            // SAME handler the consent card uses (handleAskDecision →
+                            // replyPermissionAsk), because only that replaces the awaiting marker — the
+                            // card's only durable state. Sending the label as an ordinary message left
+                            // the marker in place, so the card stayed open to every other client and
+                            // came back on the next reload: "I answer it and it asks again".
+                            onSelectOption={(label, askId) =>
+                              askId
+                                ? void handleAskDecision(
+                                    activeConvId!,
+                                    askId,
+                                    PermissionChoice.UNSPECIFIED,
+                                    label,
+                                  )
+                                : handleSendMessage(label)
+                            }
                             highlight={searchQuery}
                             // The in-flight row's card is drawn after the live text instead (see
                             // liftedCard): inside this row it would be stranded mid-reply.
@@ -2461,7 +2486,19 @@ function AskOrchiconPage() {
                       answered={liftedCard.answered}
                       answer={liftedCard.answer}
                       error={liftedCard.error}
-                      onSelect={handleSendMessage}
+                      // THE SAME REPLY PATH AS EVERY OTHER ASK CARD — see the in-row card above.
+                      // The lifted copy is the one the operator actually clicks during a live turn,
+                      // so leaving it on the plain send would have been the one place the bug stayed.
+                      onSelect={(label) =>
+                        liftedCard.id
+                          ? void handleAskDecision(
+                              activeConvId!,
+                              liftedCard.id,
+                              PermissionChoice.UNSPECIFIED,
+                              label,
+                            )
+                          : handleSendMessage(label)
+                      }
                     />
                   </div>
                 )}
@@ -2841,20 +2878,89 @@ function AskOrchiconPage() {
  * So the caller lifts the card out of the row and emits it after the live text, which is where the operator
  * expects it (the newest thing, the thing being asked of them). The row keeps its prose and its reasoning.
  */
+/**
+ * SETTLED ASKS — the client's OWN memory of what it has answered.
+ *
+ * A card's settled state otherwise comes only from its transcript result, i.e. from a SERVER write. That
+ * is what made an earlier attempt worse than the bug it fixed: when the write did not land — the ask fell
+ * outside the lookup window, the turn failed, the request raced a refresh — the card stayed OPEN for ever
+ * and the operator could not clear it.
+ *
+ * So the answer is also recorded HERE, in memory, the moment the operator gives it. The card clears
+ * immediately and stays cleared for this session; the transcript remains the durable record and takes
+ * over as soon as it catches up (a reload shows the answered card, because the server did record it).
+ * Neither source can strand the operator: local state cannot be missing, and the server cannot be
+ * outrun by a refresh.
+ */
+const settledAsks = new Map<string, string>();
+
+function markAskSettled(askId: string, answer: string) {
+  settledAsks.set(askId, answer);
+}
+
+function settledAnswerOf(askId: string): string | undefined {
+  return settledAsks.get(askId);
+}
+
 function askCardOf(message: ChatMessage) {
-  const call = (message.toolCalls ?? []).find((c) => isAskUserToolCall(c.functionName));
+  const asks = (message.toolCalls ?? []).filter((c) => isAskUserToolCall(c.functionName));
+  if (asks.length === 0) return null;
+  const resultOf = (id: string) =>
+    (message.toolResults ?? []).find((r) => r.toolCallId === id);
+
+  // ONE CARD PER MESSAGE, AND IT MUST BE THE OPEN ONE.
+  //
+  // REPORTED: "it never actually pops up for Claude adapter." claude's adapter announces an ask TWICE
+  // (a tool_part and then its completion), so one turn can carry two ask calls — and this took the
+  // FIRST, which was the phantom, recorded with an EMPTY result. "Has a result" then read as
+  // "answered", with nothing as the answer, so the card was drawn as the settled line
+  //
+  //   Question "…" was dismissed — no answer sent
+  //
+  // from its very first frame — never a card at all. Measured on this deployment's own transcript row
+  // for claude:
+  //
+  //   tc-3  ask_user  output ""                        ← used to be chosen
+  //   tc-4  ask_user  output {"recorded":true,…}       ← the real one
+  //
+  // The card to draw is the call that is STILL AWAITING; a settled one is history and renders as its
+  // own record. A locally settled id comes first so an answered card can never re-open on the wrong
+  // call, and a parseable payload before a phantom, so a malformed duplicate cannot blank the question.
+  const call = pickAskCall(
+    asks,
+    resultOf,
+    (id) => settledAnswerOf(id) !== undefined,
+  );
   if (!call) return null;
+
+  // LOCAL SETTLE WINS, so a card the operator has answered can never be re-drawn as pending.
+  const local = settledAnswerOf(call.id);
+  if (local !== undefined) {
+    return {
+      id: call.id,
+      question: parseAskUserArgs(call.arguments)?.question ?? "",
+      options: parseAskUserArgs(call.arguments)?.options ?? [],
+      allowOther: parseAskUserArgs(call.arguments)?.allowOther,
+      answered: true,
+      answer: local,
+      error: undefined,
+    };
+  }
   const parsed = parseAskUserArgs(call.arguments);
-  const result = (message.toolResults ?? []).find((r) => r.toolCallId === call.id);
+  const result = resultOf(call.id);
+  const said = (result?.output ?? "").trim();
   const plan = askCardPlan(true, !!parsed, !!result);
   if (!plan.render) return null;
+  // A RESULT WHOSE OUTPUT IS THE AWAITING MARKER IS NOT AN ANSWER, and NEITHER IS AN EMPTY ONE.
+  // askIsAnswered owns that rule, with the two shipped failures it exists to prevent.
+  const answered = askIsAnswered(result);
   return {
     id: call.id,
     question: parsed?.question ?? "",
     options: parsed?.options ?? [],
     allowOther: parsed?.allowOther,
-    answered: !!result,
-    answer: result?.output ?? "",
+    answered,
+    answer: answered ? said : "",
     error: plan.error,
   };
 }
@@ -2871,7 +2977,12 @@ function MessageBubble({
   onRetry?: () => void;
   // onSelectOption sends a clicked clarifying-question option as the answer to the
   // PAUSED turn (it goes over the reply RPC as the ask_user tool result).
-  onSelectOption?: (label: string) => void;
+  // onSelectOption answers a RECORDED clarifying question. It carries the ASK'S ID because the
+  // answer is a REPLY to that ask, not an ordinary next message: only ReplyPermissionAsk replaces
+  // the awaiting marker that IS the card's state. Sending the label as a message leaves the marker
+  // in place, so the card stays open in every other client and comes back on the next reload —
+  // which is what "I answer it and it asks again" was.
+  onSelectOption?: (label: string, askId: string) => void;
   // highlight is the active in-transcript search query. It is threaded to the bubbles so a match is
   // marked WHERE IT IS: the filter already answers "which message", and on a long reply the operator
   // needs "which line". Empty (no search) renders exactly as before.
@@ -2941,38 +3052,13 @@ function MessageBubble({
   const reasoning = ("reasoning" in message ? (message as { reasoning?: string[] }).reasoning : undefined) as string[] | undefined;
   const hasReasoning = Array.isArray(reasoning) && reasoning.length > 0;
 
-  // A recorded ask_user call renders as the clarifying-question card. It is
-  // interactive only while NOT answered; selecting an option sends its label as the
-  // answer to the PAUSED turn.
-  const askCall = (message.toolCalls ?? []).find((c) =>
-    isAskUserToolCall(c.functionName),
-  );
-  const askParsed = askCall ? parseAskUserArgs(askCall.arguments) : null;
-  // ANSWERED IS READ FROM THE ASK'S OWN RESULT, not from a later message.
-  //
-  // It used to be `answered={message.id !== lastMessageId}` — "a later message
-  // exists" — which was right while answering SENT the choice as the next user
-  // message. With ask_user made BLOCKING the answer arrives as the TOOL RESULT and
-  // nothing follows the message, so that test stayed false forever and the card never
-  // settled. The operator: "the Orchicon asks card does not go away in the TUI or the
-  // GUI when you select something."
-  //
-  // The result is the ask's own outcome — server truth — rather than an inference from
-  // what happened afterwards.
-  const askResult = askCall
-    ? (message.toolResults ?? []).find((r) => r.toolCallId === askCall.id)
-    : undefined;
-  const askAnswered = !!askResult;
-  // WHETHER TO DRAW AT ALL, and whether to draw as an error. The distinction is the reported bug: a
-  // call recorded but NOT YET RESOLVED carries a placeholder `{}` for its arguments, and for
-  // `ask_user` that state lasts as long as the question is open (the call BLOCKS) — so the
-  // transcript held an unparseable card for the whole time the operator was looking at the real
-  // one. See askCardPlan.
-  const askPlan = askCardPlan(!!askCall, !!askParsed, !!askResult);
-  // The answer ITSELF, so the settled record can state it. It is the ask's own tool result —
-  // server truth, present in the persisted transcript — rather than a guess from a later
-  // message, which is the same rule that fixed "answered" in the first place.
-  const askAnswer = askResult?.output ?? "";
+  // THE CARD COMES FROM ONE PLACE. `askCardOf` owns every rule — which of the message's ask calls
+  // to draw (claude announces one twice, and the FIRST is a phantom with an empty result), whether
+  // it is answered (a result is not an answer: an empty one and the awaiting marker are both "still
+  // open"), and whether to draw at all. This block used to re-derive all of it inline, and the copy
+  // had already drifted: it took the first ask call and treated any result as an answer, which is
+  // exactly the pair of defects that made the card settle itself on arrival or never appear.
+  const askCard = askCardOf(message);
 
   return (
     <>
@@ -2996,15 +3082,15 @@ function MessageBubble({
           of a bunch of other text you sent. That is not intuitive. It should be at
           the bottom (newest/recent)." The TUI emits its card last for the same
           reason (chat.conversationItems), so the two clients read the same way. */}
-      {askCall && askPlan.render && !cardLifted && (
+      {askCard && !cardLifted && (
         <AskCard
-          question={askParsed?.question ?? ""}
-          options={askParsed?.options ?? []}
-          allowOther={askParsed?.allowOther}
-          answered={askAnswered}
-          answer={askAnswer}
-          error={askPlan.error}
-          onSelect={onSelectOption}
+          question={askCard.question}
+          options={askCard.options}
+          allowOther={askCard.allowOther}
+          answered={askCard.answered}
+          answer={askCard.answer}
+          error={askCard.error}
+          onSelect={(label) => onSelectOption?.(label, askCard.id)}
         />
       )}
     </>

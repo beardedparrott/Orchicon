@@ -171,26 +171,75 @@ daemon_is_stale() {
 # daemon's OWN argv (basename "orchicon", then exactly "runtime-daemon") rather
 # than its command TEXT, so a shell whose command line merely mentions the daemon
 # never matches itself.
-daemon_pid() {
-  if command -v pgrep >/dev/null 2>&1; then
-    pgrep -f 'orchicon runtime-daemon' | head -1 || true
+# pid_is_daemon reports whether pid is REALLY the runtime daemon: argv[0] is the orchicon binary and
+# argv[1] is exactly "runtime-daemon".
+#
+# THE MATCH IS ON ARGV, NOT ON COMMAND TEXT, and that is a correctness requirement rather than
+# strictness. `pgrep -f 'orchicon runtime-daemon'` matches any process whose command line merely
+# CONTAINS that string — including a shell running `make runtime-stop`, an editor with the file open,
+# or a `bash -c` that happens to mention it. Measured while adding daemon-refresh: four pids matched,
+# ONE was the daemon, and the other three were the invoking shell. A stop built on that kills whatever
+# it finds first, which is how `make runtime-stop` could kill an unrelated process and then report the
+# daemon "still running" because it had killed the wrong one.
+pid_is_daemon() {
+  local pid="$1" cmdfile="/proc/$1/cmdline"
+  if [ -r "$cmdfile" ]; then
+    local first second
+    first="$(tr '\0' '\n' <"$cmdfile" 2>/dev/null | sed -n '1p' || true)"
+    case "${first##*/}" in orchicon) ;; *) return 1 ;; esac
+    second="$(tr '\0' '\n' <"$cmdfile" 2>/dev/null | sed -n '2p' || true)"
+    [ "$second" = "runtime-daemon" ]
+    return $?
+  fi
+  # No /proc (macOS): verify through ps. `args=` is the argv joined by spaces, so the first two tokens
+  # are the ones this rule is about.
+  local args
+  args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+  [ -n "$args" ] || return 1
+  set -- $args
+  [ "$#" -ge 2 ] || return 1
+  case "${1##*/}" in orchicon) ;; *) return 1 ;; esac
+  [ "$2" = "runtime-daemon" ]
+}
+
+# daemon_pids prints EVERY live runtime daemon. Plural on purpose: more than one can exist, and when
+# two do, the SECOND one steals the socket — ListenAndServe removes the path before binding it — so
+# the first becomes an orphan that still holds containers and leases while serving nothing. A stop
+# that handled one pid would leave exactly that orphan behind.
+#
+# Zombies are excluded: a killed daemon whose parent has not reaped it still appears in /proc, and
+# counting it makes a successful stop look like a failed one.
+daemon_pids() {
+  local d pid
+  if [ -d /proc ]; then
+    for d in /proc/[0-9]*; do
+      pid="${d#/proc/}"
+      [ "$pid" = "$$" ] && continue
+      # A pid can vanish between the glob and the read; silence that race rather than printing
+      # "/proc/NNN/cmdline: No such file or directory" into a rebuild's output.
+      [ -r "$d/stat" ] || continue
+      [ "$(awk '{print $3}' "$d/stat" 2>/dev/null)" = "Z" ] && continue
+      pid_is_daemon "$pid" && printf '%s\n' "$pid"
+    done
     return 0
   fi
-  local d pid first second
-  for d in /proc/[0-9]*; do
-    pid="${d#/proc/}"
+  for pid in $(pgrep -f 'orchicon runtime-daemon' 2>/dev/null || true); do
     [ "$pid" = "$$" ] && continue
-    first="$(tr '\0' '\n' <"$d/cmdline" 2>/dev/null | sed -n '1p' || true)"
-    case "$first" in
-      */orchicon|orchicon) ;;
-      *) continue ;;
-    esac
-    second="$(tr '\0' '\n' <"$d/cmdline" 2>/dev/null | sed -n '2p' || true)"
-    [ "$second" = "runtime-daemon" ] || continue
-    printf '%s\n' "$pid"
-    return 0
+    pid_is_daemon "$pid" && printf '%s\n' "$pid"
   done
   return 0
+}
+
+# daemon_pid prints the first live daemon (empty when none). Kept for callers that need one.
+#
+# THE LIST IS CONSUMED BEFORE IT IS SLICED. `daemon_pids | head -1` lets head close the pipe while the
+# producer is still writing, so the producer dies of SIGPIPE — and under this script's
+# `set -o pipefail` that becomes the FUNCTION's exit status, killing `make runtime-stop` with 141 while
+# the daemon was never touched. Measured exactly that way.
+daemon_pid() {
+  local all
+  all="$(daemon_pids || true)"
+  printf '%s\n' "$all" | sed -n '1p'
 }
 
 cmd_daemon_start() {
@@ -243,20 +292,73 @@ cmd_daemon_start() {
 }
 
 cmd_daemon_stop() {
-  local pid
-  pid="$(daemon_pid)"
-  if [ -z "$pid" ]; then
+  local pids
+  pids="$(daemon_pids || true)"
+  if [ -z "$pids" ]; then
     log_dim "no runtime daemon is running"
     return 0
   fi
-  log "stopping runtime daemon (pid $pid)"
-  kill "$pid" 2>/dev/null || true
-  local _i
+  # EVERY daemon, not just the first. Two can be alive at once because ListenAndServe removes the
+  # socket path before binding it, so a second daemon takes the socket over and the first becomes an
+  # orphan that still holds containers and leases while serving nothing. Stopping one and declaring
+  # success is what leaves that orphan behind — and it is also what made a stop report the daemon
+  # "still running after 10s" when it had merely killed a different pid.
+  local pid
+  for pid in $pids; do
+    log "stopping runtime daemon (pid $pid)"
+    kill "$pid" 2>/dev/null || true
+  done
+  local _i remaining
   for _i in $(seq 1 40); do
-    [ -z "$(daemon_pid)" ] && { log "runtime daemon stopped"; return 0; }
+    remaining="$(daemon_pids || true)"
+    [ -z "$remaining" ] && { log "runtime daemon stopped"; return 0; }
     sleep 0.25
   done
-  die "runtime daemon (pid $pid) is still running after 10s — kill it manually"
+  die "runtime daemon(s) $(echo $remaining) still running after 10s — kill them manually"
+}
+
+# cmd_daemon_refresh restarts the daemon ONLY when it is running and STALE, and does nothing
+# otherwise. It is what a rebuild calls, so the two facts that cost us a debugging session stop
+# recurring: a rebuild that leaves the daemon on a deleted inode, and a rebuild that cycles a daemon
+# nobody changed.
+#
+# WHY NOT ALWAYS `daemon-stop` + `daemon-start`, which is what the report suggested. Stopping
+# unconditionally discards the warm container pool and interrupts any in-flight lease — and the daemon
+# is HOST-WIDE (one per machine, shared by dev, prod and test), so a `make rebuild-dev` would disturb a
+# prod run for no reason. daemon_is_stale already answers the only question that matters: is the daemon
+# serving the binary we just built?
+#
+# THE NO-OPS, each deliberate:
+#   not healthy        nothing to refresh, and a REBUILD must not START a daemon the operator did not
+#                      have — that is an installer's job, not a build's.
+#   healthy and fresh  the common case; say so and move on.
+cmd_daemon_refresh() {
+  if ! daemon_healthy; then
+    log_dim "runtime daemon not running — nothing to refresh"
+    return 0
+  fi
+  if ! daemon_is_stale; then
+    log_dim "runtime daemon already serving bin/orchicon — left running"
+    return 0
+  fi
+  log "runtime daemon is serving a STALE binary — restarting it on bin/orchicon"
+
+  # REUSE THE STOP, IN A SUBSHELL. cmd_daemon_stop owns the kill/wait/diagnose sequence; a second copy
+  # is how the two would come to disagree about what "stopped" means. The subshell is because it
+  # `die`s when a daemon will not go: right for `make runtime-stop` (the operator asked it to stop, so
+  # failing to stop IS the answer) and wrong for a REBUILD, whose other work has already succeeded and
+  # which must not be failed by a stubborn host process.
+  ( cmd_daemon_stop ) || true
+
+  # TRUST THE SOCKET, NOT AN EXIT CODE. Measured while writing this: a stop reported success while the
+  # old daemon was still going away, and re-asking the socket is the only claim that means anything.
+  if daemon_healthy; then
+    log "WARNING: the runtime daemon is still answering after a stop attempt"
+    log_dim "  it may still be serving the previous binary; clear it by hand:"
+    log_dim "    make runtime-stop && make runtime-daemon"
+    return 0
+  fi
+  cmd_daemon_start
 }
 
 cmd_daemon_status() {
@@ -276,6 +378,7 @@ cmd_daemon_status() {
 case "${1:-help}" in
   build)         cmd_build ;;
   daemon-start)  cmd_daemon_start ;;
+  daemon-refresh) cmd_daemon_refresh ;;
   daemon-stop)   cmd_daemon_stop ;;
   daemon-status) cmd_daemon_status ;;
   help|-h|--help|"") usage 0 ;;

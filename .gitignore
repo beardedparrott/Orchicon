@@ -6,6 +6,15 @@
 *.test
 *.out
 bin/
+# A SYMLINK NAMED `bin` IS NOT MATCHED BY `bin/` — the pattern matches a DIRECTORY, and a symlink is a
+# file. So a worktree that links bin/ somewhere (to reach build output without rebuilding) silently
+# commits that link, and `git checkout` then replaces every checkout's bin/ with it. When the link
+# points at the repo's own bin it is a LOOP, and the next `make build` dies with
+#
+#	mkdir: cannot stat 'bin': Too many levels of symbolic links
+#
+# Measured: exactly that, from one `ln -sfn "$PWD/bin" bin` in a worktree.
+/bin
 vendor/
 go.work
 go.work.sum

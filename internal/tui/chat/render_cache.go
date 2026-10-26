@@ -231,6 +231,11 @@ func renderSig(it ChatItem) uint64 {
 		// of the drawn card.
 		flag(a.Drafting)
 		str(a.Draft)
+		// THE CURSOR IS PART OF THE PICTURE, or moving it repaints nothing. The highlight is a
+		// RENDERED property of this card (see renderAskCardSpans), and this fingerprint is what
+		// decides whether the cached string is drawn again — so a cursor left out of it would move
+		// in the item and never on the screen, which reads as arrow keys that do nothing.
+		num(int64(a.Sel))
 		for _, o := range a.Options {
 			str(o.Label)
 			str(o.Description)

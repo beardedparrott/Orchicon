@@ -97,6 +97,85 @@ export function parseAskUserArgs(
  * question this card renders (tolerating the `orchicon_` MCP-style prefix the
  * model may emit).
  */
+/** ASK_AWAITING_ANSWER_MARKER mirrors askorchicon.AskAwaitingAnswerMarker.
+ *
+ *  A promoted (MCP-served) ask is recorded WITH a result immediately, because the ledger requires every
+ *  tool call to have one — an unresolved call is repaired at turn end with "tool call aborted", which is
+ *  what killed the card seconds after it appeared. That result says "no answer yet"; THIS is how the
+ *  client tells it apart from a real answer.
+ */
+export const ASK_AWAITING_ANSWER_MARKER = "__orchicon_ask_awaiting_answer__";
+
+export function isAwaitingAnswer(output: string): boolean {
+  return output.trim() === ASK_AWAITING_ANSWER_MARKER;
+}
+
+/**
+ * pickAskCall chooses WHICH recorded ask call a message's single card renders.
+ *
+ * ONE CARD PER MESSAGE IS NOT THE SAME AS THE FIRST CALL PER MESSAGE. An adapter may announce an ask
+ * twice (claude emits a tool_part and then its completion), so a turn can legitimately carry TWO
+ * ask-named calls — and choosing the first draws the phantom.
+ *
+ * MEASURED on this deployment's own transcript row for claude:
+ *
+ *   tc-3  ask_user  output ""                      ← the first, and the phantom
+ *   tc-4  ask_user  output {"recorded":true,…}     ← the one that carries the question's fate
+ *
+ * The old code took `find(...)` — the FIRST — saw it had a result, and read "has a result" as
+ * "answered", with nothing as the answer. So the card was drawn as the settled record
+ *
+ *   Question "…" was dismissed — no answer sent
+ *
+ * from its first frame, and the operator's report was exactly that: "it never actually pops up for
+ * Claude adapter."
+ *
+ * So preference is by MEANING, not by position:
+ *
+ *   1. a call this client already settled — an answered card must never re-open on another call;
+ *   2. a call still AWAITING an answer — that is the one asking the operator something;
+ *   3. a call with a parseable payload — an unreadable duplicate must not blank the question;
+ *   4. the last call — the most recently announced, the best remaining guess.
+ */
+export function pickAskCall<T extends { id: string; arguments: string }>(
+  asks: T[],
+  resultOf: (id: string) => { output: string } | undefined,
+  isLocallySettled: (id: string) => boolean,
+): T | null {
+  if (asks.length === 0) return null;
+  return (
+    asks.find((c) => isLocallySettled(c.id)) ??
+    asks.find((c) => {
+      const r = resultOf(c.id);
+      return !!r && isAwaitingAnswer(r.output ?? "");
+    }) ??
+    asks.find((c) => !!parseAskUserArgs(c.arguments)) ??
+    asks[asks.length - 1]
+  );
+}
+
+/**
+ * askIsAnswered reports whether an ask call's recorded result IS an answer.
+ *
+ * "HAS A RESULT" IS NOT "WAS ANSWERED", and both halves of that mistake were shipped:
+ *
+ *   empty output   the call never said anything. claude's phantom ask call carries exactly this, and
+ *                  reading it as an answer is what printed "dismissed — no answer sent" over a
+ *                  question nobody had been shown.
+ *   the marker     the awaiting sentinel the ledger writes so a promoted ask has a result at all (the
+ *                  turn-end repair turns an unresolved call into "tool call aborted", which settles a
+ *                  card the operator is still reading).
+ *
+ * Everything else is the operator's words, or the server's record of their absence.
+ */
+export function askIsAnswered(
+  result: { output: string } | undefined,
+): boolean {
+  if (!result) return false;
+  const said = (result.output ?? "").trim();
+  return said !== "" && !isAwaitingAnswer(said);
+}
+
 export function isAskUserToolCall(functionName: string): boolean {
   // THE MCP-QUALIFIED NAME IS A REAL SPELLING, not a defensive extra.
   //
@@ -109,6 +188,10 @@ export function isAskUserToolCall(functionName: string): boolean {
   //
   // The suffix test covers any server prefix, because the prefix names the SERVER and the tool is what
   // matters.
+  // THE MCP-QUALIFIED SPELLINGS ARE REAL, not defensive extras. A tool reached over MCP is recorded
+  // under its qualified name (`mcp__orchicon__ask_user`), which is how the claude adapter calls it —
+  // so a predicate listing only the bare names makes a direct MCP call invisible while the native
+  // bridge keeps working. That is why this "used to work" and then did not.
   return (
     functionName === "ask_user" ||
     functionName === "orchicon_ask_user" ||

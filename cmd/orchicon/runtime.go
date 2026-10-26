@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -121,12 +122,25 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 // source is readable (its inode is alive), the copy is made before any
 // cleanup can run.
 func copySelf(src, dst string) error {
-	if st, err := os.Stat(dst); err == nil {
-		if si, serr := os.Stat(src); serr == nil && !si.ModTime().After(st.ModTime()) {
-			return nil // copy is current
-		}
-		_ = os.Remove(dst)
+	// CURRENT MEANS IDENTICAL BY CONTENT, NOT BY TIMESTAMP.
+	//
+	// This compared ModTime and returned early when src was not NEWER than dst. That is wrong in a way
+	// that hides for days: bin/orchicon is rebuilt by every `make build`, but its mtime can be OLDER
+	// than the copy — a `git checkout` or `cp -p` preserves timestamps, a clock can move backwards
+	// between a build and a start, and a restored file carries its original time. When that happens
+	// the copy is SKIPPED, the daemon keeps bind-mounting the previous binary into every runtime
+	// container, and RESTARTING DOES NOT HELP: the restart calls this again and skips again.
+	//
+	// Measured on a real host: the stable copy was 13 bytes larger than bin/orchicon and older-copy
+	// mtime won, so `make runtime-daemon` reported success while the daemon served a binary that no
+	// longer existed on disk. The daemon was eight days stale and every restart had "succeeded".
+	//
+	// Comparing content costs one read of a ~100 MB file at daemon start — once per daemon, not per
+	// container — and it is the only check that answers the question being asked.
+	if sameFile(src, dst) {
+		return nil
 	}
+	_ = os.Remove(dst)
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -141,6 +155,47 @@ func copySelf(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+// sameFile reports whether two files have identical content. A size mismatch short-circuits; equal
+// sizes are compared byte for byte.
+//
+// It is the replacement for the mtime comparison above, and it is deliberately content-based: the
+// question is "is the daemon running the binary that is on disk NOW", and only the bytes answer it.
+func sameFile(a, b string) bool {
+	ai, aerr := os.Stat(a)
+	bi, berr := os.Stat(b)
+	if aerr != nil || berr != nil {
+		return false
+	}
+	if ai.Size() != bi.Size() {
+		return false
+	}
+	af, aerr := os.Open(a)
+	if aerr != nil {
+		return false
+	}
+	defer af.Close()
+	bf, berr := os.Open(b)
+	if berr != nil {
+		return false
+	}
+	defer bf.Close()
+	const chunk = 1 << 20
+	abuf := make([]byte, chunk)
+	bbuf := make([]byte, chunk)
+	for {
+		an, aerr := io.ReadFull(af, abuf)
+		bn, berr := io.ReadFull(bf, bbuf)
+		if an != bn || !bytes.Equal(abuf[:an], bbuf[:bn]) {
+			return false
+		}
+		if aerr != nil || berr != nil {
+			// EOF on both is the success case; anything else is a short/errored read.
+			return (aerr == io.EOF || aerr == io.ErrUnexpectedEOF) &&
+				(berr == io.EOF || berr == io.ErrUnexpectedEOF)
+		}
+	}
 }
 
 // runRuntimeSupervisor runs the in-container PID-1 dispatch loop.

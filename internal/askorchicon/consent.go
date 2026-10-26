@@ -348,8 +348,27 @@ func extractAskAction(evt scheduler.SessionEvent) askAction {
 		return askAction{Key: ""}
 	}
 	a := askAction{
-		Tool:   detailString(d, "permission", "tool", "title"),
-		CallID: detailString(d, "callID", "callId", "call_id"),
+		// `action` IS opencode 2.x's SPELLING OF `permission`, AND ITS ABSENCE WAS THE WHOLE CARD BUG.
+		//
+		// REPORTED: "there is a bug with the opencode permissions cards. No matter what the directory. It
+		// seems to only print . and not the path." The card read
+		//
+		//	use the tool
+		//	· .
+		//
+		// MEASURED, not inferred — a permission request created against a live opencode 2.0.27 serve and
+		// read off its own event bus:
+		//
+		//	{"id":"per_…","sessionID":"ses_…","action":"edit","resources":["/tmp/orchicon-perm-probe2.txt"]}
+		//
+		// The 1.x vocabulary this code was written against (`permission`, `patterns`, `metadata.filepath`,
+		// `tool.callID`) is GONE in 2.x: the class is `action` and the paths are `resources`. So every
+		// candidate below missed, the action resolved to nothing, the card fell back to the
+		// no-noun verb ("use the tool"), and — because a target-less ask keys on the SCOPE directory,
+		// which an Ask conversation does not have — the directory printed as ".". The one ask that DID
+		// work was raised by the claude adapter, which supplies typed fields and never takes this path.
+		Tool:   detailString(d, "permission", "action", "tool", "title"),
+		CallID: detailString(d, "callID", "callId", "call_id", "partID", "requestID"),
 	}
 	// The REAL schema nests the tool call under `tool` ({messageID, callID}) and
 	// has no top-level callID, so the flat candidates above never match a live
@@ -375,7 +394,10 @@ func extractAskAction(evt scheduler.SessionEvent) askAction {
 		a.Command = detailString(meta, "command")
 	}
 	if len(a.Targets) == 0 {
-		a.Targets = realTargets(detailStrings(d, "patterns", "pattern"))
+		// `resources` IS 2.x'S SPELLING OF `patterns` — see the measured payload above. `realTargets` drops
+		// the wildcard an MCP/host-suite ask ships (`["*"]`), so that case still (correctly) resolves to no
+		// target and fails closed to a card rather than claiming to know a path it was never told.
+		a.Targets = realTargets(detailStrings(d, "resources", "patterns", "pattern"))
 	}
 	// The correlated tool-call args (see internal/opencode toolCallIndex) are
 	// the ONLY detail an MCP / host-suite ask has: such an ask ships
@@ -1848,6 +1870,20 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	grantDir := a.Key
 	if blocking != nil && blocking.key != "" {
 		grantDir = blocking.key
+	}
+	// AN ASK WE COULD NOT RESOLVE HAS NO DIRECTORY TO NAME, so it must not name one.
+	//
+	// The reported card read `· .` — a path that means nothing to an operator, offered as the scope of a
+	// "never ask again" grant. It came from here: a target-less ask keys on the SCOPE directory, an Ask
+	// conversation has no project so that scope is empty, and filepath.Clean("") is ".". So the card
+	// promised a grant covering "." and the operator could not tell what they were allowing.
+	//
+	// Blanking it is the honest answer AND the safe one: grantStore refuses a blank directory, so the
+	// session row becomes "there is no directory to grant" instead of a grant that would cover the
+	// serve's own cwd. It applies only to the unresolved case — an ask that named a target keeps the
+	// directory its target lives in, which is the scope that actually silences the next ask.
+	if !resolved {
+		grantDir = ""
 	}
 	ask = &pendingAsk{
 		AskID:          evt.PermissionID,
