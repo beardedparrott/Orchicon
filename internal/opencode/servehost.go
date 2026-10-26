@@ -588,6 +588,20 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	} else if len(unusable) > 0 {
 		h.log.Warn("host opencode serve: signed-in providers cannot be delivered through the environment — "+
 			"turns on them will fail to authenticate", "undeliverable", strings.Join(unusable, ","))
+	} else if credentialGapIsReportable(len(pairs), len(unusable), h.operatorHasCredentialStore()) {
+		// NOTHING DELIVERED, BUT THE OPERATOR HAS A STORE — that combination used to be completely silent, and
+		// the silence is what made the reported incident take weeks to find: a resolver pointed at the wrong
+		// directory reads nothing, reports nothing undeliverable (there was nothing to judge), and the serve
+		// starts looking exactly like a host that never signed in to opencode. The operator's only symptom was
+		// an expired-key error at the model call, with no line anywhere naming credentials as the cause.
+		//
+		// So the one case that means "we looked and found nothing although there IS something to find" is now
+		// loud. A store that is absent stays quiet: that is the native-only host, and warning there would train
+		// the reader to ignore the line that matters.
+		h.log.Warn("host opencode serve: the operator HAS an opencode credential store but NOTHING was resolved "+
+			"from it — the serve will authenticate with whatever its own fresh data dir contains, or with "+
+			"nothing at all. A path bug in the resolver looks exactly like this.",
+			"store", h.authSource())
 	}
 	env = g.Apply(env)
 	env = setEnvKV(env, "XDG_DATA_HOME", h.dataDir)
@@ -660,7 +674,61 @@ func (h *HostServe) credentialEnv() ([]string, []string) {
 	if h.dataDir == "" {
 		return nil, nil
 	}
-	return credentialResolver(h.authSource(), adapter.DefaultAdapterKind)
+	// THE OPERATOR'S HOME DIRECTORY, NOT THEIR OPENCODE DATA DIRECTORY.
+	//
+	// REPORTED: "When using the opencode adapter and then using opencode-go as the provider, I get … This
+	// API key has expired … That same API key works just fine using the orchicon adapter. Something is not
+	// picking up the API key still."
+	//
+	// It was picking up nothing at all. The resolver takes HOME and appends `.local/share/opencode/…`
+	// itself (openCodeDBPath/openCodeAuthPath), and this call passed authSource() — which ALREADY IS
+	// `~/.local/share/opencode`. Every lookup therefore composed a path that cannot exist:
+	//
+	//	passed   ~/.local/share/opencode
+	//	looked   ~/.local/share/opencode/.local/share/opencode/opencode.db   ← never there
+	//
+	// Both stores missed, so no variables were emitted, no `unusable` ids were recorded either (nothing was
+	// read to judge), and the whole delivery was SILENT — which is why there is no "provider credentials
+	// delivered" line in the plane log and why this looked like the key was simply not being read.
+	//
+	// The serve then started with no credential in its environment and fell back to opencode's own store,
+	// where the operator's `opencode` integration still holds the key they expired weeks ago. Measured on
+	// that host: the `opencode` integration answers 401 api_key_expired while `opencode-go` — the one they
+	// rotated, and the one the most-recently-updated rule selects — answers 200 on both zen endpoints.
+	//
+	// So one wrong directory produced the entire reported symptom: the right key was in the store the whole
+	// time, and the resolver that knows how to choose it was never pointed at it.
+	return credentialResolver(h.operatorHome(), adapter.DefaultAdapterKind)
+}
+
+// credentialGapIsReportable answers whether "resolved nothing" must be REPORTED rather than passed over.
+//
+// It is a decision, so it is a function: the pair that matters is EMPTY RESOLUTION + PRESENT STORE, which is
+// the fingerprint of looking in the wrong place. Either fact alone is unremarkable — a host with no opencode
+// has no store and nothing to deliver, and a host with a store normally resolves something.
+func credentialGapIsReportable(pairs, unusable int, storePresent bool) bool {
+	return pairs == 0 && unusable == 0 && storePresent
+}
+
+// operatorHasCredentialStore reports whether the operator's opencode keeps credentials ANYWHERE we know how to
+// read — the 2.x SQLite store or the 1.x auth.json. Used only to tell "nothing to deliver" apart from "we
+// failed to find what is there".
+func (h *HostServe) operatorHasCredentialStore() bool {
+	if operatorUsesSQLiteStore(h.authSource()) {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(h.authSource(), "auth.json"))
+	return err == nil
+}
+
+// operatorHome is the operator's home directory — the base the credential resolver appends
+// `.local/share/opencode` to. Split out so credentialEnv and authSource cannot disagree about it again.
+func (h *HostServe) operatorHome() string {
+	if h.home != "" {
+		return h.home
+	}
+	home, _ := os.UserHomeDir()
+	return home
 }
 
 // seedAuth gives the serve a credential store it can read, on the versions that keep credentials in a FILE.
@@ -717,11 +785,7 @@ func (h *HostServe) seedAuth() error {
 
 // authSource is the operator's real opencode data dir.
 func (h *HostServe) authSource() string {
-	if h.home != "" {
-		return filepath.Join(h.home, ".local", "share", "opencode")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "opencode")
+	return filepath.Join(h.operatorHome(), ".local", "share", "opencode")
 }
 
 // operatorUsesSQLiteStore reports whether the operator's opencode keeps credentials in the 2.x SQLite store

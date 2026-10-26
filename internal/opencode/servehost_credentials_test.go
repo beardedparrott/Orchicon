@@ -18,6 +18,7 @@ package opencode
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -27,9 +28,7 @@ func TestTheHostServeIsGivenProviderCredentials(t *testing.T) {
 	orig := credentialResolver
 	t.Cleanup(func() { credentialResolver = orig })
 
-	var askedHome string
 	credentialResolver = func(home string, kinds ...string) ([]string, []string) {
-		askedHome = home
 		return []string{"OPENCODE_API_KEY=fresh-key", "OPENROUTER_API_KEY=other"}, []string{"ollama-cloud"}
 	}
 
@@ -43,11 +42,36 @@ func TestTheHostServeIsGivenProviderCredentials(t *testing.T) {
 	if len(unusable) != 1 || unusable[0] != "ollama-cloud" {
 		t.Errorf("unusable = %v, want the undeliverable ids so the gap is reportable", unusable)
 	}
-	// IT RESOLVES FROM THE OPERATOR'S REAL DATA HOME, not the serve's private one — the private dir holds the
-	// auth.json COPY that is the whole problem.
-	if !strings.Contains(askedHome, ".local/share/opencode") || strings.Contains(askedHome, "serve-data") {
-		t.Errorf("credentials resolved from %q; they must come from the operator's real opencode data home "+
-			"(the source of the SQLite store), not from this serve's private copy", askedHome)
+	// IT RESOLVES FROM THE OPERATOR'S HOME, not their opencode DATA DIR and not the serve's private one.
+	//
+	// THIS ASSERTION USED TO CHECK THE OPPOSITE, and it is why the bug shipped: it required the passed value
+	// to CONTAIN ".local/share/opencode" — which is exactly what authSource() returns, and exactly the wrong
+	// argument. The resolver appends that suffix itself, so the lookup composed
+	// `<data>/.local/share/opencode/opencode.db`, found nothing, and delivered no credentials at all.
+	//
+	// A CONTAINS CHECK CANNOT SEE THAT, so this one is functional: it asserts the value the resolver is
+	// given is the base that composes onto a REAL store. A non-existent path is the failure mode, and it is
+	// invisible to any assertion that only inspects the string's shape.
+	h2 := NewHostServe(nil, "/tmp/serve-data", t.TempDir())
+	var resolvedBase string
+	credentialResolver = func(home string, kinds ...string) ([]string, []string) {
+		resolvedBase = home
+		return nil, nil
+	}
+	if _, _ = h2.credentialEnv(); resolvedBase == "" {
+		t.Fatal("the resolver was never called")
+	}
+	if filepath.Base(resolvedBase) == "opencode" || strings.Contains(resolvedBase, "/.local/share/opencode") {
+		t.Errorf("credentials resolved for %q — that is the opencode DATA dir, and the resolver appends "+
+			".local/share/opencode to whatever it is given, so every store path it builds is doubled and "+
+			"cannot exist. It must be given the operator's HOME.", resolvedBase)
+	}
+	if resolvedBase != h2.operatorHome() {
+		t.Errorf("resolver given %q, want the operator home %q", resolvedBase, h2.operatorHome())
+	}
+	// And the private data dir is never the source: it holds the auth.json copy that is the whole problem.
+	if strings.Contains(resolvedBase, "serve-data") {
+		t.Errorf("credentials resolved from the serve's private dir (%q)", resolvedBase)
 	}
 }
 
@@ -92,9 +116,20 @@ func TestTheEnvironmentReachesTheSpawn(t *testing.T) {
 	if app < 0 || spawn < 0 || app > spawn {
 		t.Error("the credentials are not applied before the serve is spawned")
 	}
-	// AND THE SAME SOURCE as the served data — the operator's real home.
-	if !strings.Contains(src, "return credentialResolver(h.authSource(), adapter.DefaultAdapterKind)") {
-		t.Error("credentialEnv no longer resolves from authSource() with the default adapter kind")
+	// AND THE CALL MUST PASS THE OPERATOR'S HOME, NOT THE OPENCODE DATA DIR.
+	//
+	// THIS ASSERTION USED TO REQUIRE `credentialResolver(h.authSource(), …)` — it pinned the BUG. The
+	// resolver appends `.local/share/opencode` itself, so passing authSource() (which already IS that dir)
+	// makes every store path it builds non-existent, and the delivery is silently empty. Spelling out the
+	// correct call here keeps the two halves from drifting apart again, since the stubbed tests cannot see
+	// which directory was passed.
+	if !strings.Contains(src, "return credentialResolver(h.operatorHome(), adapter.DefaultAdapterKind)") {
+		t.Error("credentialEnv must resolve from the operator's HOME (the resolver appends " +
+			".local/share/opencode itself); passing the data dir doubles the suffix and finds nothing")
+	}
+	if strings.Contains(src, "credentialResolver(h.authSource()") {
+		t.Error("credentialEnv passes authSource() — that is the opencode DATA dir, and it doubles the " +
+			"store path the resolver builds")
 	}
 }
 
