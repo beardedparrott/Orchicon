@@ -33,6 +33,97 @@ const cannedTenant = "tnt_dev"
 // rebuilt.
 const cannedSeedMarker = "orchicon.seed"
 
+// stockSlug is a variant's stable row identity. It is the KEY the catalogue is reconciled by: the row is
+// found by slug, never by tag, so a variant that is known by two tags (a local build and the published
+// one) stays ONE row.
+func stockSlug(v stockVariant) string { return "stock-" + v.Variant }
+
+// EnsureCatalogRows re-creates any MISSING published catalogue row, in the not-downloaded state.
+//
+// REPORTED: "I think we need to make the runtime image page pull every runtime image record that is
+// available in our repo and if they don't exist (been deleted) add them in a non-downloaded state. This
+// should happen upon launching the runtime images page in the web, desktop or TUI pages."
+//
+// IT ONLY CREATES WHAT IS ABSENT AND NEVER TOUCHES A ROW THAT EXISTS. That is what makes it safe to call
+// on a READ path: a page load cannot flip a ready row to absent, cannot start a build, cannot change a
+// tag, and cannot roll a seed forward. Seeding proper — tags, local presence, roll-forward — stays at
+// boot in SeedCannedImages; this is only the part that has to survive a delete.
+//
+// It is called from ListRuntimeImages, which is the ONE seam every client goes through: the web page, the
+// desktop app and the TUI all list images to draw themselves, so the catalogue cannot be correct in one
+// and stale in another.
+func EnsureCatalogRows(ctx context.Context, pool *db.Pool, log *slog.Logger) {
+	if pool == nil {
+		return
+	}
+	base := firstPublishedTag()
+	for _, tag := range publishedStockTags() {
+		variant, ok := resolveVariant(tag, base)
+		if !ok {
+			continue
+		}
+		content, err := assets.RuntimeImageTemplatesFS.ReadFile(variant.File)
+		if err != nil {
+			if log != nil {
+				log.Warn("catalogue reconcile: read template failed", "variant", variant.Variant, "error", err)
+			}
+			continue
+		}
+		ttx, err := pool.BeginTenantTx(ctx, cannedTenant)
+		if err != nil {
+			return
+		}
+		_, _, err = stockRowForVariant(ctx, ttx.Tx, variant, tag, log)
+		if err == nil {
+			// The row exists. LEAVE IT ALONE — its status is the operator's business, not a page load's.
+			_ = ttx.Rollback(ctx)
+			continue
+		}
+		if !errors.Is(err, db.ErrNotFound) {
+			_ = ttx.Rollback(ctx)
+			continue
+		}
+		if _, err := db.CreateRuntimeImage(ctx, ttx.Tx, cannedRowRow(variant, tag, content, base)); err != nil {
+			_ = ttx.Rollback(ctx)
+			if log != nil {
+				log.Warn("catalogue reconcile: create row failed", "tag", tag, "error", err)
+			}
+			continue
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			if log != nil {
+				log.Warn("catalogue reconcile: commit failed", "tag", tag, "error", err)
+			}
+			continue
+		}
+		if log != nil {
+			log.Info("catalogue row restored as not-downloaded", "tag", tag)
+		}
+	}
+}
+
+// cannedRowRow is the row a shipped variant is created with: source='stock', the pristine template plus
+// its seed marker, and the NOT-DOWNLOADED status, because a row created by a reconcile has no local image
+// behind it by definition.
+func cannedRowRow(v stockVariant, ref string, content []byte, baseRef string) db.RuntimeImageRow {
+	return db.RuntimeImageRow{
+		ID:                 db.NewID(),
+		TenantID:           cannedTenant,
+		Name:               v.Name,
+		Slug:               stockSlug(v),
+		Description:        v.Desc,
+		BaseImageRef:       baseRef,
+		AptPackages:        []byte("[]"),
+		Toolchains:         []byte("[]"),
+		Env:                []byte("{}"),
+		DockerfileOverride: string(content) + fmt.Sprintf("# %s=%s\n", cannedSeedMarker, seedVersion(content)),
+		Tag:                ref,
+		Status:             RuntimeImageStatusAbsent,
+		Source:             "stock",
+		Version:            1,
+	}
+}
+
 // stockVariants are the shipped runtime-image templates, in build order
 // (base first; :gui/:dev derive FROM it). The daemon reports them via the
 // ORCHICON_RUNTIME_IMAGE / ORCHICON_RUNTIME_IMAGES allowlist. Indexes are
@@ -148,13 +239,42 @@ func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *
 		infos[i.Ref] = i
 	}
 	svc := &Service{pool: pool, log: log, rt: rt}
+	covered := map[string]bool{} // stock slugs the daemon already reported
 	for _, ref := range imgs.Images {
 		variant, ok := resolveVariant(ref, imgs.Default)
 		if !ok {
 			continue // operator-added daemon-only image; no shipped template to seed
 		}
+		covered[stockSlug(variant)] = true
 		if err := seedOneCannedImage(ctx, svc, ref, variant, infos[ref], imgs.Default); err != nil {
 			log.Warn("canned runtime image seed failed", "tag", ref, "error", err)
+		}
+	}
+	// THEN THE PUBLISHED CATALOGUE FILLS THE GAPS.
+	//
+	// REPORTED: "I think we need to make the runtime image page pull every runtime image record that is
+	// available in our repo and if they don't exist (been deleted) add them in a non-downloaded state."
+	//
+	// The catalogue used to be derived ENTIRELY from what the daemon reported, and the daemon reports what
+	// is on THIS host's disk. So the set of rows the page showed was a function of local disk state: an
+	// image nobody had downloaded had no row at all (nothing to fetch), and a row whose image stayed local
+	// re-materialised on every boot — which is precisely the operator's "it did remove them from the
+	// console, and then on restart they came back".
+	//
+	// The published variants are COMPILE-TIME facts (stockVariants + release.yml), so they are the floor of
+	// the catalogue and local presence is the separate axis that decides READY vs NOT DOWNLOADED. Seeding
+	// them AFTER the daemon loop — and only for variants the daemon did not cover — keeps the daemon's own
+	// evidence authoritative, so this can never contradict a present image.
+	base := firstPublishedTag()
+	for _, tag := range publishedStockTags() {
+		variant, ok := resolveVariant(tag, base)
+		if !ok || covered[stockSlug(variant)] {
+			continue
+		}
+		// An all-empty ImageInfo means "no local evidence" — the row keeps built_version stale, so the
+		// presence check reports it as not downloaded and the fetch button appears.
+		if err := seedOneCannedImage(ctx, svc, tag, variant, runtime.ImageInfo{}, base); err != nil {
+			log.Warn("canned runtime image seed failed", "tag", tag, "error", err)
 		}
 	}
 	return nil
@@ -281,7 +401,7 @@ func resolveVariant(ref, defaultRef string) (stockVariant, bool) {
 // (so nothing has to move), else the most-built one, so the row that records real work is the one
 // kept.
 func stockRowForVariant(ctx context.Context, tx pgx.Tx, variant stockVariant, ref string, log *slog.Logger) (db.RuntimeImageRow, int, error) {
-	slug := fmt.Sprintf("stock-%s", variant.Variant)
+	slug := stockSlug(variant)
 	rows, err := db.ListRuntimeImages(ctx, tx, db.RuntimeImageFilter{TenantID: cannedTenant, Source: "stock"})
 	if err != nil {
 		return db.RuntimeImageRow{}, 0, err
@@ -380,7 +500,7 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 			ID:                 db.NewID(),
 			TenantID:           cannedTenant,
 			Name:               variant.Name,
-			Slug:               fmt.Sprintf("stock-%s", variant.Variant),
+			Slug:               stockSlug(variant),
 			Description:        variant.Desc,
 			BaseImageRef:       defaultRef,
 			AptPackages:        []byte("[]"),

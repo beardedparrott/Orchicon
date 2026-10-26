@@ -198,6 +198,20 @@ func (s *Service) ListRuntimeImages(ctx context.Context, req *connect.Request[ap
 	if req.Msg.Status != nil {
 		status = req.Msg.Status.String()
 	}
+	// THE CATALOGUE IS RECONCILED ON EVERY PAGE LOAD, and this is that page load for all three clients.
+	//
+	// REPORTED: "I think we need to make the runtime image page pull every runtime image record that is
+	// available in our repo and if they don't exist (been deleted) add them in a non-downloaded state. This
+	// should happen upon launching the runtime images page in the web, desktop or TUI pages."
+	//
+	// The web page, the desktop app and the TUI all draw themselves from THIS call, so reconciling here is
+	// what makes "on launch" true for all three at once — three client-side reconcile calls would be three
+	// chances to disagree. It only CREATES missing rows (see EnsureCatalogRows): it cannot change the status
+	// of a row that exists, so a read cannot corrupt what the operator has.
+	//
+	// Best-effort by design: a reconcile failure must never take the page down with it, so it is logged and
+	// the list proceeds.
+	EnsureCatalogRows(ctx, s.pool, s.log)
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -315,6 +329,29 @@ func (s *Service) UpdateRuntimeImage(ctx context.Context, req *connect.Request[a
 	return connect.NewResponse(&apiv1.UpdateRuntimeImageResponse{RuntimeImage: toProto(row)}), nil
 }
 
+// deleteUndownloadsInsteadOfDeleting reports whether a delete must PRESERVE the row and remove only the
+// image. It is the whole shape of the operation, as a pure predicate, so the policy is testable without a
+// database or an engine — the same seam decideSeedAction uses.
+//
+//	a stock row   the CATALOGUE entry: this build ships that variant and can re-fetch it at any time, so
+//	              the row is derived state and deleting it loses nothing that cannot come back. Its
+//	              image is the artifact the operator asked to have removed, so that goes.
+//	any other row the operator's OWN spec: nothing could reconstruct it, so it is deleted outright.
+func deleteUndownloadsInsteadOfDeleting(source string) bool { return source == "stock" }
+
+// removesLocalImage reports whether a delete must also drop the local image.
+//
+// IT USED TO HAVE TWO EXEMPTIONS AND BOTH WERE WRONG.
+//
+//	source == "stock"   skipped the rmi, so the operator's "delete" removed the catalogue entry and KEPT
+//	                    the artifact — the inverse of what the button says.
+//	tag == base         kept the substrate alive for the variants that derive FROM it. True only at BUILD
+//	                    time: a built image stands alone, the base is a published tag that re-fetches, and
+//	                    the Deploy path already refuses a variant whose base is missing and names it. An
+//	                    exemption that makes a delete silently ignore what it was told to delete is worse
+//	                    than the recovery it was protecting against.
+func removesLocalImage(source, tag string) bool { return tag != "" }
+
 func (s *Service) DeleteRuntimeImage(ctx context.Context, req *connect.Request[apiv1.DeleteRuntimeImageRequest]) (*connect.Response[apiv1.DeleteRuntimeImageResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -341,26 +378,62 @@ func (s *Service) DeleteRuntimeImage(ctx context.Context, req *connect.Request[a
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("cannot delete image: an active workflow run uses it"))
 	}
-	if err := db.DeleteRuntimeImage(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("runtime image not found"))
+	// A CATALOGUE ROW IS NOT DELETED — IT IS UNDOWNLOADED.
+	//
+	// REPORTED: "I saw there was a delete command in the runtime images section. It did remove them from
+	// the console, and then on restart they came back. … the delete button should definitely delete them
+	// off of someone's computer if it doesn't now. That way, the records will always remain on what is
+	// available to users, and they can choose whether or not they want them downloaded."
+	//
+	// That is exactly right, and the old behaviour was the INVERSE of it on both counts:
+	//
+	//	gone from the console  the ROW was deleted — the catalogue entry, the one thing that must survive
+	//	still on the disk      the image was NOT removed for a stock row (the rmi at the end skipped it), so
+	//	                      the delete destroyed what should have stayed and kept what it was told to remove
+	//
+	// A stock row is a CATALOGUE entry: this build ships that variant and can re-fetch it from the registry
+	// at any time, so the row is derived state. Its IMAGE is the local artifact, and removing that is the
+	// button's whole job. So the image always goes, and the row is left `absent` — the state that draws
+	// "Not downloaded" and the Fetch button, which is how the operator chooses whether to download it again.
+	//
+	// A tenant-authored row has no published counterpart to re-seed from, so it really is deleted: its spec
+	// is the user's own and nothing could reconstruct it.
+	if deleteUndownloadsInsteadOfDeleting(row.Source) {
+		absent := RuntimeImageStatusAbsent
+		unbuilt := 0
+		if _, err := db.UpdateRuntimeImage(ctx, ttx.Tx, tenantID, row.ID, row.Version,
+			db.UpdateRuntimeImageFields{Status: &absent, BuiltVersion: &unbuilt, StatusOnly: true}); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.deleted", "runtime_image", row.ID,
-		audit.Snapshot(runtimeImageAuditSnapshot(row)), nil); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.deleted: %w", err))
+		if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.undownloaded", "runtime_image", row.ID,
+			audit.Snapshot(runtimeImageAuditSnapshot(row)), nil); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.undownloaded: %w", err))
+		}
+	} else {
+		if err := db.DeleteRuntimeImage(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound, errors.New("runtime image not found"))
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		if err := recordAudit(ctx, ttx.Tx, tenantID, "runtime_image.deleted", "runtime_image", row.ID,
+			audit.Snapshot(runtimeImageAuditSnapshot(row)), nil); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit runtime_image.deleted: %w", err))
+		}
 	}
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// Remove the local docker image (best-effort — the daemon may be
-	// absent or the image may already be gone). Canned (stock) rows and
-	// the daemon's configured base image are exempt: deleting a canned row
-	// just removes the spec (the seeder re-creates it on the next boot and
-	// keeps the pristine container.sh image), and the base image is the
-	// substrate every other image derives from — it must never be removed.
-	if s.rt != nil && row.Tag != "" && row.Source != "stock" && row.Tag != s.ensureBase(ctx) {
+	// THE LOCAL IMAGE IS ALWAYS REMOVED — that is what "delete it off my computer" means, and skipping it
+	// for stock rows is what made the button feel like a no-op on the disk while it quietly destroyed the
+	// catalogue entry instead. Best-effort by design (the daemon may be absent, or the image already gone):
+	// the row has already moved to `absent`, which is the durable half of this operation.
+	//
+	// The base image is no longer exempt. It used to be, because every variant derives FROM it — but that is
+	// only true at BUILD time, a built image stands alone, and the base is a published tag that re-fetches
+	// like any other. The Deploy path already refuses to build a variant whose base is missing, and says so
+	// by name, so removing it is visible rather than mysterious.
+	if s.rt != nil && removesLocalImage(row.Source, row.Tag) {
 		if err := s.rt.RemoveImage(context.Background(), row.Tag); err != nil {
 			s.log.Warn("runtime image docker rmi failed", "tag", row.Tag, "error", err)
 		}
