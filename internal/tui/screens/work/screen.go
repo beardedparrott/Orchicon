@@ -42,7 +42,14 @@ const (
 )
 
 // projectOpt / workflowOpt are the create form's select options.
-type projectOpt struct{ ID, Name string }
+type projectOpt struct {
+	ID, Name string
+	// Mode is the project's execution mode, carried so the work-item form can say WHAT an
+	// inheriting item inherits — the GUI's "Inherit from project (<mode>)". Without it the
+	// inherit option can only say "from the project", which is the blank this field exists to
+	// remove.
+	Mode apiv1.ExecutionMode
+}
 type workflowOpt struct{ ID, Name string }
 
 // Model is the Work screen.
@@ -693,6 +700,12 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			kit2.Field{Key: "budgets", Value: w.GetBudgets()},
 			kit2.Field{Key: "context window", Value: screenkit.FmtInt(int(w.GetContextWindow()))},
 			kit2.Field{Key: "runtime image", Value: w.GetRuntimeImage()},
+			// WHERE THIS ITEM'S EXECUTIONS RUN — the EFFECTIVE mode (item override -> project ->
+			// tenant default, resolved server-side in db.EffectiveExecutionMode), because that is
+			// the question the pane answers. The override is named beside it, so an inheriting item
+			// shows its resolved mode instead of a blank and an overridden one shows what it
+			// overrode: "inherit" is legible only when both halves are visible.
+			kit2.Field{Key: "execution mode", Value: executionModeDetail(w)},
 			kit2.Field{Key: "workflow", Value: named(m.names.workflowName(w.GetWorkflowId()), w.GetWorkflowId())},
 			// A workflow RUN has no name of its own — it is not a named entity — so it gets
 			// the GUI's rendering: a shortened id, not the 26-character ULID, and not an
