@@ -622,6 +622,13 @@ func (m *Model) bulkScheduleDelete(ids []string) []kit2.Action {
 				}
 			}
 			if failed > 0 {
+				// NAME THE CAUSE, not just a count: "3 failed" left the operator unable to tell a
+				// permission error from the finished view's unbound-run rows (which have no schedule
+				// to remove by definition). The unbound count comes from the resolution above.
+				if missing > 0 {
+					return fmt.Errorf("%s %d of %d — %d row(s) have no bound work item, so they have no schedule to remove (%d other failure(s))",
+						verb+"d", n-failed, n, missing, failed-missing)
+				}
 				return fmt.Errorf("%s %d of %d — %d failed", verb+"d", n-failed, n, failed)
 			}
 			return nil
@@ -641,19 +648,27 @@ func (m *Model) rpcCancelScheduled(ctx context.Context, itemID string) error {
 
 // rpcRemoveSchedule clears a work item's schedule WITHOUT touching its status.
 //
-// The three fields must move together, which is why this is one UpdateWorkItem and not three:
+// The fields must move together, which is why this is one UpdateWorkItem and not several:
 // clearing recurring_schedule and the run binding while auto_start_workflow stays true would let
 // the backend re-fire a fresh run immediately (the same rule the GUI's useRemoveSchedule
 // documents).
+//
+// CLEAR_SCHEDULED_START_AT IS PART OF THE REMOVAL. A Schedules row is driven by TWO clocks: a
+// recurring item by next_run_at, and a one-shot by scheduled_start_at. Clearing only the recurring
+// half left scheduled_start_at (and status=scheduled) intact, so the RPC succeeded and the row
+// came straight back on the next refresh — the operator's "deleting a schedule does nothing". The
+// proto already carries the explicit clear (update_work_item_request.clear_scheduled_start_at);
+// this is the same contract the work-item edit form uses for an emptied date.
 func (m *Model) rpcRemoveSchedule(ctx context.Context, itemID string) error {
 	if m.cl == nil || m.cl.WorkItems == nil {
 		return errors.New("no work-item client")
 	}
 	_, err := m.cl.WorkItems.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
-		Id:                itemID,
-		RecurringSchedule: &apiv1.RecurringSchedule{},
-		WorkflowRunId:     strPtr(""),
-		AutoStartWorkflow: boolPtr(false),
+		Id:                    itemID,
+		RecurringSchedule:     &apiv1.RecurringSchedule{},
+		ClearScheduledStartAt: true,
+		WorkflowRunId:         strPtr(""),
+		AutoStartWorkflow:     boolPtr(false),
 	}))
 	return err
 }
