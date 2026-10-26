@@ -11,6 +11,7 @@ package askorchicon
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 )
@@ -81,7 +82,13 @@ func (s *Service) findPromotedAsk(ctx context.Context, tenantID, convID, askID s
 		if r.ToolCallID == askID {
 			// A result exists. It is awaiting an answer only if it is the marker; anything else means
 			// it has been answered already and must not be answered twice.
-			return id, IsAwaitingAnswer(r.Output), true
+			//
+			// AN EMPTY RESULT IS NOT AN ANSWER, AND IT IS THE OLD-ROW CASE. claude's transcripts recorded
+			// before this fix carry a DUPLICATE ask whose first call holds "" — the phantom the client now
+			// correctly declines to treat as answered, and which it will therefore draw as an open card.
+			// Refusing the reply here would make that card permanently unanswerable: drawn as a question,
+			// dead when clicked. Nothing was said, so nobody answered it.
+			return id, IsAwaitingAnswer(r.Output) || strings.TrimSpace(r.Output) == "", true
 		}
 	}
 	// No result at all: a promoted ask always gets the marker, so this is an ask recorded before the

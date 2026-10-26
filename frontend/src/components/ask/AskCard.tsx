@@ -110,6 +110,72 @@ export function isAwaitingAnswer(output: string): boolean {
   return output.trim() === ASK_AWAITING_ANSWER_MARKER;
 }
 
+/**
+ * pickAskCall chooses WHICH recorded ask call a message's single card renders.
+ *
+ * ONE CARD PER MESSAGE IS NOT THE SAME AS THE FIRST CALL PER MESSAGE. An adapter may announce an ask
+ * twice (claude emits a tool_part and then its completion), so a turn can legitimately carry TWO
+ * ask-named calls — and choosing the first draws the phantom.
+ *
+ * MEASURED on this deployment's own transcript row for claude:
+ *
+ *   tc-3  ask_user  output ""                      ← the first, and the phantom
+ *   tc-4  ask_user  output {"recorded":true,…}     ← the one that carries the question's fate
+ *
+ * The old code took `find(...)` — the FIRST — saw it had a result, and read "has a result" as
+ * "answered", with nothing as the answer. So the card was drawn as the settled record
+ *
+ *   Question "…" was dismissed — no answer sent
+ *
+ * from its first frame, and the operator's report was exactly that: "it never actually pops up for
+ * Claude adapter."
+ *
+ * So preference is by MEANING, not by position:
+ *
+ *   1. a call this client already settled — an answered card must never re-open on another call;
+ *   2. a call still AWAITING an answer — that is the one asking the operator something;
+ *   3. a call with a parseable payload — an unreadable duplicate must not blank the question;
+ *   4. the last call — the most recently announced, the best remaining guess.
+ */
+export function pickAskCall<T extends { id: string; arguments: string }>(
+  asks: T[],
+  resultOf: (id: string) => { output: string } | undefined,
+  isLocallySettled: (id: string) => boolean,
+): T | null {
+  if (asks.length === 0) return null;
+  return (
+    asks.find((c) => isLocallySettled(c.id)) ??
+    asks.find((c) => {
+      const r = resultOf(c.id);
+      return !!r && isAwaitingAnswer(r.output ?? "");
+    }) ??
+    asks.find((c) => !!parseAskUserArgs(c.arguments)) ??
+    asks[asks.length - 1]
+  );
+}
+
+/**
+ * askIsAnswered reports whether an ask call's recorded result IS an answer.
+ *
+ * "HAS A RESULT" IS NOT "WAS ANSWERED", and both halves of that mistake were shipped:
+ *
+ *   empty output   the call never said anything. claude's phantom ask call carries exactly this, and
+ *                  reading it as an answer is what printed "dismissed — no answer sent" over a
+ *                  question nobody had been shown.
+ *   the marker     the awaiting sentinel the ledger writes so a promoted ask has a result at all (the
+ *                  turn-end repair turns an unresolved call into "tool call aborted", which settles a
+ *                  card the operator is still reading).
+ *
+ * Everything else is the operator's words, or the server's record of their absence.
+ */
+export function askIsAnswered(
+  result: { output: string } | undefined,
+): boolean {
+  if (!result) return false;
+  const said = (result.output ?? "").trim();
+  return said !== "" && !isAwaitingAnswer(said);
+}
+
 export function isAskUserToolCall(functionName: string): boolean {
   // THE MCP-QUALIFIED NAME IS A REAL SPELLING, not a defensive extra.
   //

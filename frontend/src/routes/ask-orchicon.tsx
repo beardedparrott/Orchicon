@@ -113,7 +113,8 @@ import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-stor
 import {
   AskCard,
   isAskUserToolCall,
-  isAwaitingAnswer,
+  askIsAnswered,
+  pickAskCall,
   parseAskUserArgs,
 } from "@/components/ask/AskCard";
 import { ConsentAskCard } from "@/components/ask/AskCard";
@@ -2875,8 +2876,36 @@ function settledAnswerOf(askId: string): string | undefined {
 }
 
 function askCardOf(message: ChatMessage) {
-  const call = (message.toolCalls ?? []).find((c) => isAskUserToolCall(c.functionName));
+  const asks = (message.toolCalls ?? []).filter((c) => isAskUserToolCall(c.functionName));
+  if (asks.length === 0) return null;
+  const resultOf = (id: string) =>
+    (message.toolResults ?? []).find((r) => r.toolCallId === id);
+
+  // ONE CARD PER MESSAGE, AND IT MUST BE THE OPEN ONE.
+  //
+  // REPORTED: "it never actually pops up for Claude adapter." claude's adapter announces an ask TWICE
+  // (a tool_part and then its completion), so one turn can carry two ask calls — and this took the
+  // FIRST, which was the phantom, recorded with an EMPTY result. "Has a result" then read as
+  // "answered", with nothing as the answer, so the card was drawn as the settled line
+  //
+  //   Question "…" was dismissed — no answer sent
+  //
+  // from its very first frame — never a card at all. Measured on this deployment's own transcript row
+  // for claude:
+  //
+  //   tc-3  ask_user  output ""                        ← used to be chosen
+  //   tc-4  ask_user  output {"recorded":true,…}       ← the real one
+  //
+  // The card to draw is the call that is STILL AWAITING; a settled one is history and renders as its
+  // own record. A locally settled id comes first so an answered card can never re-open on the wrong
+  // call, and a parseable payload before a phantom, so a malformed duplicate cannot blank the question.
+  const call = pickAskCall(
+    asks,
+    resultOf,
+    (id) => settledAnswerOf(id) !== undefined,
+  );
   if (!call) return null;
+
   // LOCAL SETTLE WINS, so a card the operator has answered can never be re-drawn as pending.
   const local = settledAnswerOf(call.id);
   if (local !== undefined) {
@@ -2891,23 +2920,20 @@ function askCardOf(message: ChatMessage) {
     };
   }
   const parsed = parseAskUserArgs(call.arguments);
-  const result = (message.toolResults ?? []).find((r) => r.toolCallId === call.id);
+  const result = resultOf(call.id);
+  const said = (result?.output ?? "").trim();
   const plan = askCardPlan(true, !!parsed, !!result);
   if (!plan.render) return null;
+  // A RESULT WHOSE OUTPUT IS THE AWAITING MARKER IS NOT AN ANSWER, and NEITHER IS AN EMPTY ONE.
+  // askIsAnswered owns that rule, with the two shipped failures it exists to prevent.
+  const answered = askIsAnswered(result);
   return {
     id: call.id,
     question: parsed?.question ?? "",
     options: parsed?.options ?? [],
     allowOther: parsed?.allowOther,
-    // A RESULT WHOSE OUTPUT IS THE AWAITING MARKER IS NOT AN ANSWER. A promoted (MCP-served) ask always
-    // has a result, because the ledger repairs any unresolved call at turn end with "tool call aborted"
-    // — so `!!result` alone drew every ask as already settled, which is the reported "the card goes away
-    // before I can click it".
-    answered: !!result && !isAwaitingAnswer(result.output ?? ""),
-    answer:
-      result && !isAwaitingAnswer(result.output ?? "")
-        ? (result.output ?? "")
-        : "",
+    answered,
+    answer: answered ? said : "",
     error: plan.error,
   };
 }
