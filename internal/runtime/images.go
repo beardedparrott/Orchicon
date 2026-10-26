@@ -232,7 +232,7 @@ func (d *Daemon) validateBuild(req BuildRequest) error {
 // injected — the base-inclusion guarantee is enforced here, not documented.
 func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRequest) {
 	w.Header().Set("X-Accel-Buffering", "no")
-	df := rewriteDockerfileBase(req.Dockerfile, d.Image, req.SpecVersion)
+	df := rewriteDockerfileForBuild(req.Dockerfile, d.Image, req.Tag, req.SpecVersion)
 
 	// Build context: a temp dir under the daemon's writable area holding
 	// just the generated Dockerfile. Nothing else is copied in.
@@ -495,6 +495,18 @@ func (d *Daemon) handleImageInspect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ImageInspect{Exists: true, SpecVersion: strings.TrimSpace(out)})
 }
 
+// rewriteDockerfileBase forces the image to derive from the runtime base, so the base-inclusion
+// guarantee holds for every custom image.
+//
+// SELF-REFERENCE IS THE ONE CASE IT MUST NOT REWRITE. When the caller is building the BASE ITSELF
+// (req.Base == req.Tag), prepending `FROM <base>` produces `FROM orchicon-runtime:local` inside the
+// build of orchicon-runtime:local — a build that depends on its own output. On a host that has never
+// built it, that is a pull of a short name, and with no containers-registries.conf it fails as:
+//
+//	creating build container: short-name "orchicon-runtime:local" did not resolve to an alias
+//
+// which is what the operator saw when "deploying the base image". The BASE is the one image that
+// derives from the DISTRIBUTION base recorded in its own Dockerfile, so it keeps that FROM.
 func rewriteDockerfileBase(dockerfile, base string, specVersion int) string {
 	var body []string
 	for _, line := range strings.Split(dockerfile, "\n") {
@@ -511,5 +523,22 @@ func rewriteDockerfileBase(dockerfile, base string, specVersion int) string {
 		fmt.Fprintf(&sb, "LABEL org.orchicon.runtime.spec-version=%d\n", specVersion)
 	}
 	sb.WriteString(strings.Join(body, "\n"))
+	return sb.String()
+}
+
+// rewriteDockerfileForBuild is rewriteDockerfileBase with the self-reference case handled: when the
+// image being built IS the base, the Dockerfile keeps its own FROM (and gets the labels).
+func rewriteDockerfileForBuild(dockerfile, base, tag string, specVersion int) string {
+	if !strings.EqualFold(strings.TrimSpace(base), strings.TrimSpace(tag)) {
+		return rewriteDockerfileBase(dockerfile, base, specVersion)
+	}
+	// The base builds from ITS OWN FROM, with the same labels the rewrite would have added.
+	var sb strings.Builder
+	sb.WriteString(strings.TrimSpace(dockerfile))
+	sb.WriteString("\n")
+	fmt.Fprintf(&sb, "LABEL %s=true\n", baseImageLabel)
+	if specVersion > 0 {
+		fmt.Fprintf(&sb, "LABEL org.orchicon.runtime.spec-version=%d\n", specVersion)
+	}
 	return sb.String()
 }
