@@ -116,6 +116,14 @@ type ParsedAsk struct {
 // this client renders (tolerating the orchicon_ MCP-style prefix the model may
 // emit — the native registry is keyed bare, the opencode path prefixed).
 func isAskUserCall(functionName string) bool {
+	// THE MCP-QUALIFIED NAME IS A REAL SPELLING. A tool reached over MCP is recorded under its
+	// qualified name (`mcp__orchicon__ask_user`), which is how the claude adapter calls it — so a
+	// predicate listing only the bare spellings makes a direct MCP call invisible while the native
+	// bridge keeps working. The two clients must agree about the same transcript, or one shows a card
+	// the other does not.
+	if strings.HasSuffix(functionName, "__ask_user") {
+		return true
+	}
 	return functionName == "ask_user" || functionName == "orchicon_ask_user"
 }
 

@@ -98,7 +98,23 @@ export function parseAskUserArgs(
  * model may emit).
  */
 export function isAskUserToolCall(functionName: string): boolean {
-  return functionName === "ask_user" || functionName === "orchicon_ask_user";
+  // THE MCP-QUALIFIED NAME IS A REAL SPELLING, not a defensive extra.
+  //
+  // REPORTED: "I tried an ask conversation with both opencode and claude adapters. Both say they sent a
+  // card, but no actual card appeared." A tool reached over MCP is recorded under its QUALIFIED name —
+  // `mcp__orchicon__ask_user` — and the claude adapter calls it exactly that way. The predicate listed
+  // only the two bare spellings, so a direct MCP call was invisible here while the native bridge (which
+  // calls it bare) kept working. That is why this used to work and then did not: nothing in this
+  // pipeline changed, the adapters' calling style did.
+  //
+  // The suffix test covers any server prefix, because the prefix names the SERVER and the tool is what
+  // matters.
+  return (
+    functionName === "ask_user" ||
+    functionName === "orchicon_ask_user" ||
+    functionName === "mcp__orchicon__ask_user" ||
+    functionName.endsWith("__ask_user")
+  );
 }
 
 // --- the shared shell -----------------------------------------------------
