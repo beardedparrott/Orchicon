@@ -134,6 +134,13 @@ func isAskUserCall(functionName string) bool {
 // parseAskUserCall parses the FIRST recorded ask_user call on a message into a
 // card's content, and reports whether it has been ANSWERED.
 //
+// IsAwaitingAskAnswer mirrors askorchicon.AskAwaitingAnswerMarker — the output a promoted ask carries
+// while nobody has answered it. Declared here rather than imported because internal/tui must not depend
+// on the plane's package graph; the string is a wire value either way.
+func IsAwaitingAskAnswer(output string) bool {
+	return strings.TrimSpace(output) == "__orchicon_ask_awaiting_answer__"
+}
+
 // results is the message's tool results: a call that has one has been answered, and
 // its output IS the operator's answer. See ParsedAsk.Answered for why the card's
 // settled state is read from the result rather than inferred from a later message.
@@ -207,7 +214,13 @@ func parseAskUserCall(calls []*apiv1.ToolCall, results []*apiv1.ToolResult) *Par
 			// (it never reached a card, so the operator never saw it and never said anything); rendering that as
 			// "answered · <internal error>" records a decision they did not make. `is_error` is the fact that
 			// separates the two, and it is the only one reliable here — the message text is prose.
-			if result.GetIsError() {
+			// THE AWAITING MARKER IS NOT AN ANSWER. A promoted (MCP-served) ask carries a result the
+			// moment it is recorded, because the ledger repairs any unresolved call at turn end with
+			// "tool call aborted" — which settled the card seconds after it appeared. That result says
+			// "no answer yet", and the card must stay OPEN on it.
+			if IsAwaitingAskAnswer(result.GetOutput()) {
+				// leave Answered false: the operator has not replied
+			} else if result.GetIsError() {
 				ask.Refused = true
 				ask.RefusalText = strings.TrimSpace(result.GetOutput())
 			} else {

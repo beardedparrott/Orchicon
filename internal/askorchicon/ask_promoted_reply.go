@@ -2,137 +2,136 @@ package askorchicon
 
 // ask_promoted_reply.go — answering a card that came from an MCP-served ask.
 //
-// The tool runs in the `orchicon mcp` SIDECAR, which returns immediately: the ask never enters this
+// The ask tool runs in the `orchicon mcp` SIDECAR, which returns immediately: the ask never enters this
 // process's in-memory pending registry, so ReplyPermissionAsk finds nothing to apply. The card is
 // derived from the transcript instead (tool_ledger.promoteRecordedAsk), and the answer is delivered as
-// the conversation's next message — which is what the tool's own contract promises.
+// the conversation's next message — which is what the tool's own contract promises: "the question is
+// recorded … the user answers in their next message".
 
 import (
 	"context"
 	"encoding/json"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// promotedAskOpen reports whether askID names an UNANSWERED ask_user call in this conversation's
-// transcript — i.e. a card that came from a promoted (MCP-served) ask rather than from the in-process
-// pending registry.
+// findPromotedAsk locates an ask by ID in the conversation's transcript and reports whether it is still
+// awaiting an answer, plus the row it lives on.
 //
-// IT IS THE AUTHORISATION CHECK AS WELL AS THE LOOKUP. Answering is only allowed for an id that is
-// genuinely an open ask in THIS conversation and tenant; anything else stays "expired". Without that,
-// a caller could pass any id and inject a message into a conversation by claiming it was an answer.
-func (s *Service) promotedAskOpen(ctx context.Context, tenantID, convID, askID string) bool {
+// IT QUERIES BY ID, NOT BY SCANNING A WINDOW — and that is the fix for the card that would not go away.
+// The first version read the newest 200 rows; once the ask fell outside that window the lookup returned
+// nothing, ReplyPermissionAsk answered "expired", the server never replaced the awaiting marker, and the
+// card stayed open FOREVER. A settle path that can silently stop finding its own ask is a card that
+// sticks, so the lookup is a jsonb containment match on the id — exact, and independent of how long the
+// conversation is.
+func (s *Service) findPromotedAsk(ctx context.Context, tenantID, convID, askID string) (msgID string, awaiting bool, ok bool) {
 	if s.pool == nil || askID == "" {
-		return false
+		return "", false, false
 	}
-	rows, err := s.messagesWithTools(ctx, tenantID, convID)
-	if err != nil {
-		return false
-	}
-	for _, m := range rows {
-		answered := make(map[string]bool, len(m.toolResults))
-		for _, r := range m.toolResults {
-			answered[r.toolCallID] = true
-		}
-		for _, c := range m.toolCalls {
-			if c.id != askID {
-				continue
-			}
-			// The id must be an ask call (any spelling, including MCP-qualified)…
-			if !isAskToolName(c.functionName) {
-				return false
-			}
-			// …and it must still be OPEN: a call with a result has been answered.
-			return !answered[c.id]
-		}
-	}
-	return false
-}
-
-// messagesWithTools reads the most recent transcript rows carrying tool calls, with their results, so
-// an ask id can be resolved against what the transcript actually holds.
-//
-// BOUNDED, because this runs on a reply: the newest page is more than enough — an open ask is by
-// definition recent, and the alternative (scan every message a long conversation ever had) would make
-// answering a card cost more than the rest of the turn.
-func (s *Service) messagesWithTools(ctx context.Context, tenantID, convID string) ([]askLedgerRow, error) {
 	tx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		return nil, err
+		return "", false, false
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	return listToolCallsAndResults(ctx, tx.Tx, tenantID, convID, 200)
-}
 
-// askLedgerRow is the pair of tool columns for one transcript row.
-type askLedgerRow struct {
-	toolCalls   []askLedgerCall
-	toolResults []askLedgerResult
-}
-
-type askLedgerCall struct {
-	id           string
-	functionName string
-}
-
-type askLedgerResult struct {
-	toolCallID string
-}
-
-// listToolCallsAndResults reads the pair of tool columns for the newest limit rows.
-func listToolCallsAndResults(ctx context.Context, tx pgx.Tx, tenantID, convID string, limit int) ([]askLedgerRow, error) {
-	rows, err := tx.Query(ctx, `
-		select coalesce(tool_calls, '[]'::jsonb), coalesce(tool_results, '[]'::jsonb)
+	var (
+		id      string
+		raw     []byte
+		results []byte
+	)
+	// tool_calls @> '[{"id":"<askID>"}]' is an exact match on the array element's id — no LIKE, no
+	// substring, and no dependence on ordering or recency.
+	err = tx.Tx.QueryRow(ctx, `
+		select id, coalesce(tool_calls, '[]'::jsonb), coalesce(tool_results, '[]'::jsonb)
 		  from ask_orchicon_messages
-		 where tenant_id = $1 and conversation_id = $2
+		 where tenant_id = $1
+		   and conversation_id = $2
+		   and tool_calls @> jsonb_build_array(jsonb_build_object('id', $3::text))
 		 order by created_at desc
-		 limit $3`, tenantID, convID, limit)
+		 limit 1`, tenantID, convID, askID).Scan(&id, &raw, &results)
 	if err != nil {
-		return nil, err
+		return "", false, false
 	}
-	defer rows.Close()
-	var out []askLedgerRow
-	for rows.Next() {
-		var calls, results []byte
-		if err := rows.Scan(&calls, &results); err != nil {
-			return nil, err
-		}
-		out = append(out, askLedgerRow{
-			toolCalls:   decodeAskLedgerCalls(calls),
-			toolResults: decodeAskLedgerResults(results),
-		})
-	}
-	return out, rows.Err()
-}
 
-// decodeLedgerCalls pulls just the identity fields out of a stored tool_calls column. Unknown shapes
-// yield nothing — this is a lookup, never a read-path failure.
-func decodeAskLedgerCalls(raw []byte) []askLedgerCall {
-	var rows []struct {
+	var calls []struct {
 		ID           string `json:"id"`
 		FunctionName string `json:"function_name"`
 	}
-	if err := json.Unmarshal(raw, &rows); err != nil {
-		return nil
+	if err := json.Unmarshal(raw, &calls); err != nil {
+		return "", false, false
 	}
-	out := make([]askLedgerCall, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, askLedgerCall{id: r.ID, functionName: r.FunctionName})
+	isAsk := false
+	for _, c := range calls {
+		if c.ID == askID && isAskToolName(c.FunctionName) {
+			isAsk = true
+			break
+		}
 	}
-	return out
+	if !isAsk {
+		// The id belongs to some OTHER tool: it is not an ask this endpoint may answer.
+		return "", false, false
+	}
+
+	var rs []struct {
+		ToolCallID string `json:"tool_call_id"`
+		Output     string `json:"output"`
+	}
+	_ = json.Unmarshal(results, &rs)
+	for _, r := range rs {
+		if r.ToolCallID == askID {
+			// A result exists. It is awaiting an answer only if it is the marker; anything else means
+			// it has been answered already and must not be answered twice.
+			return id, IsAwaitingAnswer(r.Output), true
+		}
+	}
+	// No result at all: a promoted ask always gets the marker, so this is an ask recorded before the
+	// marker existed. Treat it as awaiting — the operator is looking at a card, so let them answer it.
+	return id, true, true
 }
 
-// decodeLedgerResults pulls the call ids a row's results answer.
-func decodeAskLedgerResults(raw []byte) []askLedgerResult {
-	var rows []struct {
-		ToolCallID string `json:"tool_call_id"`
+// recordPromotedAnswer replaces the awaiting marker with the operator's words, so the transcript records
+// the answer and the card settles for every client — including a reload.
+func (s *Service) recordPromotedAnswer(ctx context.Context, tenantID, msgID, askID, answer string) error {
+	tx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return err
 	}
-	if err := json.Unmarshal(raw, &rows); err != nil {
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var raw []byte
+	if err := tx.Tx.QueryRow(ctx,
+		`select coalesce(tool_results, '[]'::jsonb) from ask_orchicon_messages where tenant_id = $1 and id = $2`,
+		tenantID, msgID).Scan(&raw); err != nil {
+		return err
+	}
+	var results []struct {
+		ToolCallID string `json:"tool_call_id"`
+		Output     string `json:"output"`
+		IsError    bool   `json:"is_error"`
+	}
+	if err := json.Unmarshal(raw, &results); err != nil {
+		return err
+	}
+	changed := false
+	for i := range results {
+		if results[i].ToolCallID == askID && IsAwaitingAnswer(results[i].Output) {
+			results[i].Output = answer
+			changed = true
+		}
+	}
+	if !changed {
 		return nil
 	}
-	out := make([]askLedgerResult, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, askLedgerResult{toolCallID: r.ToolCallID})
+	out, err := json.Marshal(results)
+	if err != nil {
+		return err
 	}
-	return out
+	if _, err := tx.Tx.Exec(ctx,
+		`update ask_orchicon_messages set tool_results = $3::jsonb where tenant_id = $1 and id = $2`,
+		tenantID, msgID, string(out)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
+
+var _ = db.NewID // keep the db import meaningful if the helpers above are the only users

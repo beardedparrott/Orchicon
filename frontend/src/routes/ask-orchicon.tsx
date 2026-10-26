@@ -110,7 +110,12 @@ import {
   TranscriptSearchBar,
 } from "@/components/chat";
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
-import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard";
+import {
+  AskCard,
+  isAskUserToolCall,
+  isAwaitingAnswer,
+  parseAskUserArgs,
+} from "@/components/ask/AskCard";
 import { ConsentAskCard } from "@/components/ask/AskCard";
 import {
   applyAskChunk,
@@ -961,6 +966,8 @@ function AskOrchiconPage() {
           answer,
         });
         if (res.applied) {
+          // REMEMBER IT LOCALLY TOO — the card must never depend solely on the transcript catching up.
+          markAskSettled(askId, answer || choice);
           setStream(convId, (prev) => ({
             ...prev,
             asks: resolveAsk(prev.asks, askId, outcomeFromChoice(choice)),
@@ -2841,9 +2848,46 @@ function AskOrchiconPage() {
  * So the caller lifts the card out of the row and emits it after the live text, which is where the operator
  * expects it (the newest thing, the thing being asked of them). The row keeps its prose and its reasoning.
  */
+/**
+ * SETTLED ASKS — the client's OWN memory of what it has answered.
+ *
+ * A card's settled state otherwise comes only from its transcript result, i.e. from a SERVER write. That
+ * is what made an earlier attempt worse than the bug it fixed: when the write did not land — the ask fell
+ * outside the lookup window, the turn failed, the request raced a refresh — the card stayed OPEN for ever
+ * and the operator could not clear it.
+ *
+ * So the answer is also recorded HERE, in memory, the moment the operator gives it. The card clears
+ * immediately and stays cleared for this session; the transcript remains the durable record and takes
+ * over as soon as it catches up (a reload shows the answered card, because the server did record it).
+ * Neither source can strand the operator: local state cannot be missing, and the server cannot be
+ * outrun by a refresh.
+ */
+const settledAsks = new Map<string, string>();
+
+function markAskSettled(askId: string, answer: string) {
+  settledAsks.set(askId, answer);
+}
+
+function settledAnswerOf(askId: string): string | undefined {
+  return settledAsks.get(askId);
+}
+
 function askCardOf(message: ChatMessage) {
   const call = (message.toolCalls ?? []).find((c) => isAskUserToolCall(c.functionName));
   if (!call) return null;
+  // LOCAL SETTLE WINS, so a card the operator has answered can never be re-drawn as pending.
+  const local = settledAnswerOf(call.id);
+  if (local !== undefined) {
+    return {
+      id: call.id,
+      question: parseAskUserArgs(call.arguments)?.question ?? "",
+      options: parseAskUserArgs(call.arguments)?.options ?? [],
+      allowOther: parseAskUserArgs(call.arguments)?.allowOther,
+      answered: true,
+      answer: local,
+      error: undefined,
+    };
+  }
   const parsed = parseAskUserArgs(call.arguments);
   const result = (message.toolResults ?? []).find((r) => r.toolCallId === call.id);
   const plan = askCardPlan(true, !!parsed, !!result);
@@ -2853,8 +2897,15 @@ function askCardOf(message: ChatMessage) {
     question: parsed?.question ?? "",
     options: parsed?.options ?? [],
     allowOther: parsed?.allowOther,
-    answered: !!result,
-    answer: result?.output ?? "",
+    // A RESULT WHOSE OUTPUT IS THE AWAITING MARKER IS NOT AN ANSWER. A promoted (MCP-served) ask always
+    // has a result, because the ledger repairs any unresolved call at turn end with "tool call aborted"
+    // — so `!!result` alone drew every ask as already settled, which is the reported "the card goes away
+    // before I can click it".
+    answered: !!result && !isAwaitingAnswer(result.output ?? ""),
+    answer:
+      result && !isAwaitingAnswer(result.output ?? "")
+        ? (result.output ?? "")
+        : "",
     error: plan.error,
   };
 }

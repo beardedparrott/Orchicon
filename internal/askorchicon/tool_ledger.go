@@ -153,16 +153,23 @@ func (l *toolLedger) promoteRecordedAsk(output string) {
 		IssuedAtUnixMs: ledgerNowMillis(),
 		resolved:       true,
 	})
-	// NO RESULT IS RECORDED FOR THE PROMOTED CALL, and that is what makes the card LIVE.
+	// THE RESULT IS THE AWAITING MARKER: not the wrapper's output, and NOT NOTHING.
 	//
-	// askCardPlan renders an ask card when its arguments parse; a call that also has a RESULT renders
-	// as already ANSWERED. The wrapped call did complete — its result is what we just read the ask out
-	// of — but the QUESTION did not: nobody has answered it, and the model certainly has not. Storing
-	// the wrapper's output against this id would draw the card settled, with the tool's own JSON as
-	// the operator's "answer".
+	// Nothing is what the first attempt did, and it is why the card vanished seconds after appearing:
+	// sanitizeAssistantToolLedger appends abortedToolResultOutput to every UNRESOLVED call at turn end
+	// (a provider rejects a tool_calls message whose ids have no results), so a legitimately open ask was
+	// written off as "tool call aborted — the turn ended before this tool returned a result", and the
+	// clients — which settle a card as soon as its call HAS a result — drew it settled.
 	//
-	// So the promoted entry stays open, which is the truth, and ReplyPermissionAsk resolves it by
-	// delivering the operator's words as the conversation's next message.
+	// The wrapper's output would be wrong the other way: it would render the tool's own JSON as the
+	// operator's answer.
+	//
+	// The marker satisfies both. The call HAS a result, so the repair has nothing to add; the clients
+	// read it as UNANSWERED, so the card stays live; and the reply replaces it with the operator's words.
+	l.results = append(l.results, toolResultEntry{
+		ToolCallID: callID,
+		Output:     AskAwaitingAnswerMarker,
+	})
 }
 
 // isAskToolName matches every spelling the ask tool is recorded under, including the MCP-qualified

@@ -97,6 +97,19 @@ export function parseAskUserArgs(
  * question this card renders (tolerating the `orchicon_` MCP-style prefix the
  * model may emit).
  */
+/** ASK_AWAITING_ANSWER_MARKER mirrors askorchicon.AskAwaitingAnswerMarker.
+ *
+ *  A promoted (MCP-served) ask is recorded WITH a result immediately, because the ledger requires every
+ *  tool call to have one — an unresolved call is repaired at turn end with "tool call aborted", which is
+ *  what killed the card seconds after it appeared. That result says "no answer yet"; THIS is how the
+ *  client tells it apart from a real answer.
+ */
+export const ASK_AWAITING_ANSWER_MARKER = "__orchicon_ask_awaiting_answer__";
+
+export function isAwaitingAnswer(output: string): boolean {
+  return output.trim() === ASK_AWAITING_ANSWER_MARKER;
+}
+
 export function isAskUserToolCall(functionName: string): boolean {
   // THE MCP-QUALIFIED NAME IS A REAL SPELLING, not a defensive extra.
   //
@@ -109,6 +122,10 @@ export function isAskUserToolCall(functionName: string): boolean {
   //
   // The suffix test covers any server prefix, because the prefix names the SERVER and the tool is what
   // matters.
+  // THE MCP-QUALIFIED SPELLINGS ARE REAL, not defensive extras. A tool reached over MCP is recorded
+  // under its qualified name (`mcp__orchicon__ask_user`), which is how the claude adapter calls it —
+  // so a predicate listing only the bare names makes a direct MCP call invisible while the native
+  // bridge keeps working. That is why this "used to work" and then did not.
   return (
     functionName === "ask_user" ||
     functionName === "orchicon_ask_user" ||

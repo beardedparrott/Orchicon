@@ -73,9 +73,14 @@ describe("AskCard wiring (clarifying-question card)", () => {
   });
 
   it("the transcript renders the recorded ask_user call as the card", () => {
-    expect(route).toContain(
-      'import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard"',
-    );
+    // ASSERTED AS SYMBOLS, NOT AS ONE LINE OF FORMATTING. The card's imports legitimately grew
+    // (isAwaitingAnswer joined them when a promoted ask's result began carrying the awaiting marker),
+    // and the previous assertion pinned the exact single-line form — so a correct change broke the test
+    // rather than the behaviour it exists to protect.
+    for (const symbol of ["AskCard", "isAskUserToolCall", "parseAskUserArgs"]) {
+      expect(route).toContain(symbol);
+    }
+    expect(route).toMatch(/from "@\/components\/ask\/AskCard"/);
     expect(route).toContain("isAskUserToolCall(c.functionName)");
     expect(route).toContain("parseAskUserArgs(askCall.arguments)");
     expect(route).toContain("<AskCard");
