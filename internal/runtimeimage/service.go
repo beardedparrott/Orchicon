@@ -51,7 +51,11 @@ type Service struct {
 	pool *db.Pool
 	log  *slog.Logger
 	rt   *runtime.Client // nil in headless (no daemon)
-	base string          // resolved base image ref from the daemon (cached at first Images call)
+	// presentFn reports whether a tag exists locally. A SEAM, defaulting to the daemon probe, so the
+	// two ordering/presence RULES can be tested without a container engine — the same pattern this
+	// package already uses for client construction. Nil means "ask the daemon".
+	presentFn func(ctx context.Context, ref string) (bool, error)
+	base      string // resolved base image ref from the daemon (cached at first Images call)
 	apiv1connect.UnimplementedRuntimeImageServiceHandler
 }
 
@@ -409,6 +413,10 @@ func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[ap
 		return connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("runtime image has no tag to fetch"))
 	}
+	// THE ORDERING RULE, before any work: a variant cannot be fetched before the base it derives from.
+	if err := s.requireBasePresent(ctx, row); err != nil {
+		return err
+	}
 
 	// FETCH IS NOT ALWAYS A PULL, and getting that wrong is the reported bug:
 	//
@@ -685,6 +693,76 @@ func isRegistryRef(tag string) bool {
 	return strings.ContainsAny(first, ".:")
 }
 
+// alreadyBuilt decides whether a Deploy can skip its build, and why not when it cannot.
+//
+// IT IS A PURE FUNCTION SO THE DECISION IS TESTABLE. buildCore needs a database transaction and a
+// daemon, which means the RULE — "the row says built AND the engine has it" — would otherwise only be
+// exercised by an operator hitting the bug. The second return is the reason, so the log line says which
+// of the two halves failed instead of a bare "rebuilding".
+func alreadyBuilt(dbSaysBuilt, present bool, probeErr error) (bool, string) {
+	if !dbSaysBuilt {
+		return false, "the row does not record a current build"
+	}
+	if probeErr != nil {
+		// A daemon that cannot answer is a reason to TRY the build, never to claim success.
+		return false, "the local presence of the image could not be confirmed"
+	}
+	if !present {
+		// THE REPORTED CASE: "runtime image already up to date (spec version 1) — skipping rebuild"
+		// while nothing was on the host.
+		return false, "the image is not present on this host"
+	}
+	return true, ""
+}
+
+// imagePresent reports whether ref exists locally, through the seam when one is installed.
+func (s *Service) imagePresent(ctx context.Context, ref string) (bool, error) {
+	if s.presentFn != nil {
+		return s.presentFn(ctx, ref)
+	}
+	if s.rt == nil {
+		return false, errors.New("no runtime daemon")
+	}
+	return s.rt.ImagePresent(ctx, ref)
+}
+
+// requireBasePresent enforces the one ordering rule these images have: THE BASE COMES FIRST.
+//
+// REPORTED: "images are downloading now, however, they fail unless you download the base image first.
+// I think we should prevent the download of the other images until the base is downloaded first and say
+// so."
+//
+// The dependency is structural, not a preference: every variant's Dockerfile derives FROM the base, so
+// fetching one first can only fail — and it fails LATE, inside the engine, with an error about a tag
+// rather than about the thing the operator has to do:
+//
+//	creating build container: short-name "orchicon-runtime:local" did not resolve to an alias
+//
+// Refusing up front converts that into one sentence naming the action, and it is FailedPrecondition
+// because the caller must change what they do. The base itself is exempt, which is what makes the
+// ordering possible at all.
+func (s *Service) requireBasePresent(ctx context.Context, row db.RuntimeImageRow) error {
+	if s.rt == nil && s.presentFn == nil {
+		return nil // no daemon: the caller's own check reports that
+	}
+	base := s.ensureBase(ctx)
+	if base == "" || strings.EqualFold(strings.TrimSpace(row.Tag), strings.TrimSpace(base)) {
+		return nil // this IS the base, or the daemon cannot name one
+	}
+	present, err := s.imagePresent(ctx, base)
+	if err != nil {
+		// CANNOT TELL IS NOT ABSENT. A probe failure falls through to the build, which reports a real
+		// reason instead of inventing a base-missing story.
+		return nil
+	}
+	if present {
+		return nil
+	}
+	return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+		"%s builds FROM the base image %s, which is not on this host yet — download %s first, then %s",
+		row.Tag, base, base, row.Tag))
+}
+
 // recordFetchOutcome writes the row state a fetch leaves behind: ready at the
 // current spec version on success (clearing stale failure fields), untouched on
 // failure except for the error message. Returns the row as persisted.
@@ -815,13 +893,44 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 		return row, 1, connect.NewError(connect.CodeFailedPrecondition, errors.New("image is already building"))
 	}
 
+	// THE SAME RULE ON THE BUILD PATH. Deploy builds from the base too, so a variant deployed before
+	// the base fails identically — and this is the path the operator's "I tried to deploy orchicon-dev
+	// and the base image" actually took.
+	if berr := s.requireBasePresent(ctx, row); berr != nil {
+		_ = ttx.Rollback(ctx)
+		return row, 1, berr
+	}
+
 	// Rebuild gate: when the row is ready and records the CURRENT spec
 	// version as already built, the local docker image is exactly what the
 	// spec describes — re-deploying is a no-op (no docker build, no prune).
 	// This is the acceptance-criteria mechanism for custom images: the
 	// version is the change signal, and the image is only rebuilt (and only
 	// pruned) when a spec edit bumped it past built_version.
-	if row.Status == "ready" && row.Tag != "" && row.BuiltVersion == row.Version {
+	// THE GATE MUST ASK THE ENGINE, NOT ONLY THE DATABASE.
+	//
+	// REPORTED: "When I tried to deploy orchicon-dev and the base image, I got 'runtime image already
+	// up to date (spec version 1) — skipping rebuild' but it just says stock and the deploy button is
+	// still lit up and clickable."
+	//
+	// This compared row.Status and built_version — two facts the DATABASE holds — and never asked
+	// whether the image is actually ON this host. Those diverge exactly when it matters: a row seeded
+	// from the catalog records a version with no image behind it, and an image removed or pruned leaves
+	// the row pristine. In both cases Deploy said "up to date" and did nothing.
+	var (
+		present  bool
+		probeErr error
+	)
+	dbSaysBuilt := row.Status == "ready" && row.Tag != "" && row.BuiltVersion == row.Version
+	if dbSaysBuilt {
+		present, probeErr = s.imagePresent(ctx, row.Tag)
+	}
+	upToDate, why := alreadyBuilt(dbSaysBuilt, present, probeErr)
+	if !upToDate && dbSaysBuilt {
+		s.log.Info("runtime image: rebuilding despite the row claiming to be built — "+why,
+			"id", row.ID, "tag", row.Tag, "version", row.Version)
+	}
+	if upToDate {
 		_ = ttx.Rollback(ctx)
 		s.log.Info("runtime image already up to date (spec version) — skipping rebuild",
 			"id", row.ID, "tag", row.Tag, "version", row.Version)

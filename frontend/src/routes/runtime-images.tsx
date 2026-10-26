@@ -50,7 +50,7 @@ const STATUS_STYLES: Record<number, string> = {
   5: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200",
 };
 
-function StatusBadge({ status }: { status: number }) {
+export function StatusBadge({ status }: { status: number }) {
   const Icon =
     status === 2 ? (
       <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />
