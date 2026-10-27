@@ -40,6 +40,11 @@ func wedgeBridge() *NativeBridge {
 // that motivated it.
 func TestIsOversizePromptErrorMatchesRealProviderPhrasings(t *testing.T) {
 	cases := []string{
+		// THE OPERATOR'S OWN REPORT, VERBATIM — the DeepSeek free model on the Windows
+		// plane. It is the most important case in this list because it is the one that
+		// reached a human: the free tier's window is small, so it is hit routinely rather
+		// than on a freak 1M-token session.
+		`turn failed: Your request resulted in more tokens than this model's maximum context length allows. Please reduce the length of the messages or run compaction.`,
 		`orchicon bridge: start Ask turn: provider status 400 400 Bad Request: {"error":{"message":"This model's maximum context length is 1048576 tokens. However, you requested 1049352 tokens (1016584 in the messages)"}}`,
 		`provider status 400: context_length_exceeded`,
 		`anthropic: prompt is too long: 210000 tokens > 200000 maximum`,
@@ -55,9 +60,27 @@ func TestIsOversizePromptErrorMatchesRealProviderPhrasings(t *testing.T) {
 		`request body too large`,
 	}
 	for _, c := range cases {
-		if !isOversizePromptError(errors.New(c)) {
+		if !IsOversizePromptError(errors.New(c)) {
 			t.Errorf("must be recognised as an oversize-prompt error: %s", c)
 		}
+	}
+}
+
+// TestIsOversizePromptMessageSharesTheOneList pins the seam the second wire
+// depends on: a caller holding only a MESSAGE (the opencode serve's session.error)
+// classifies against the SAME signature list, so the 413 and context-window
+// phrasings cannot drift into two lists that disagree.
+func TestIsOversizePromptMessageSharesTheOneList(t *testing.T) {
+	for _, c := range OversizePromptSignatures {
+		if !IsOversizePromptMessage("prefix " + c + " suffix") {
+			t.Errorf("signature %q must classify through the message form", c)
+		}
+	}
+	if IsOversizePromptMessage("") {
+		t.Error("an empty message must not be an oversize-prompt error")
+	}
+	if IsOversizePromptMessage("provider status 401 unauthorized") {
+		t.Error("an unrelated message must not be an oversize-prompt error")
 	}
 }
 
@@ -77,11 +100,11 @@ func TestIsOversizePromptErrorIgnoresUnrelatedErrors(t *testing.T) {
 		"the entity was not found",
 	}
 	for _, c := range cases {
-		if isOversizePromptError(errors.New(c)) {
+		if IsOversizePromptError(errors.New(c)) {
 			t.Errorf("must NOT be treated as an oversize-prompt error: %s", c)
 		}
 	}
-	if isOversizePromptError(nil) {
+	if IsOversizePromptError(nil) {
 		t.Error("nil error must not be an oversize-prompt error")
 	}
 }
@@ -270,7 +293,7 @@ func TestStartTurnRetriesBoundedAndSurfacesOriginalError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the turn to fail when every stage is refused")
 	}
-	if !isOversizePromptError(err) {
+	if !IsOversizePromptError(err) {
 		t.Errorf("the ORIGINAL oversize-prompt error must surface, got: %v", err)
 	}
 	// Bounded: 1 initial + 1 retry = 2 calls, never unbounded. The SECOND
