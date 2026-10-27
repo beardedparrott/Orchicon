@@ -2153,7 +2153,7 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 				s.log.Warn("ask orchicon turn hit the context limit — compacting and retrying the turn",
 					"conversation", c.convID, "session", sid, "model", c.modelRef, "error", res.err)
 				contextLimitRetried = true
-				if compacted, detail := s.compactAfterContextLimit(ctx, c.tenantID, c.convID, sid, c.modelRef); compacted {
+				if compacted, detail := s.compactAfterContextLimit(ctx, c.tenantID, c.convID, sid, c.modelRef, c.client); compacted {
 					s.log.Info("ask orchicon context-limit compaction done — re-dispatching the turn",
 						"conversation", c.convID, "session", sid, "detail", detail)
 					// EVERYTHING THE ATTEMPT ACCUMULATED MUST BE DROPPED, or the retry

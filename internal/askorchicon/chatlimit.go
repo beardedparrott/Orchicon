@@ -86,13 +86,13 @@ const contextLimitReason = "context_limit"
 // LOSSY, and the marker in the transcript is how an operator learns why the
 // assistant stopped remembering. That record must accompany the collapse, not
 // depend on the retry afterwards succeeding.
-func (s *Service) compactAfterContextLimit(ctx context.Context, tenantID, convID, sessionID, modelRef string) (ok bool, detail string) {
-	// Reuse the turn's own resolution so compaction reaches the SAME adapter
-	// object that failed, rather than a lookalike resolved under a different
-	// model_ref fallback.
-	client, err := s.resolveChatClient(convID, modelRef)
-	if err != nil {
-		return false, err.Error()
+func (s *Service) compactAfterContextLimit(ctx context.Context, tenantID, convID, sessionID, modelRef string, client scheduler.ChatTurnClient) (ok bool, detail string) {
+	// THE TURN'S OWN CLIENT, passed in rather than resolved again. Resolving would be a second
+	// adapter lookup that could in principle answer differently from the one that just failed, and
+	// a resolution failure here would abandon a recovery that is standing on the failing turn's own
+	// handle. The caller already has the right object.
+	if client == nil {
+		return false, "no chat client for this conversation"
 	}
 	compactor, isCompactor := client.(scheduler.ChatCompactor)
 	if !isCompactor {
