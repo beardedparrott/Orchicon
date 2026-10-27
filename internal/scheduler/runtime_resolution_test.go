@@ -165,11 +165,16 @@ func TestResolutionChain(t *testing.T) {
 	if got := resolveProjectDefaultImage(ctx, ttx.Tx, approvalTestTenant, p.ID); got != "orchicon-runtime:orchicon-dev" {
 		t.Errorf("project leg = %q, want dev default", got)
 	}
-	if got := resolveProjectDefaultImage(ctx, ttx.Tx, approvalTestTenant, "prj_missing"); got != db.BaseRuntimeImage {
-		t.Errorf("missing project leg = %q, want base", got)
+	// THE LIVE FALLBACK, not the placeholder constant. Before #849 the chain returned
+	// db.BaseRuntimeImage ("orchicon-runtime:base"), a tag no host has — the daemon rejected
+	// it with "image not allowed", which is the defect #849 fixed. The fallback is now the
+	// base tag the daemon actually has (db.RuntimeBaseImage()), so asserting the placeholder
+	// here would lock that defect back in.
+	if got := resolveProjectDefaultImage(ctx, ttx.Tx, approvalTestTenant, "prj_missing"); got != db.RuntimeBaseImage() {
+		t.Errorf("missing project leg = %q, want the live fallback %q", got, db.RuntimeBaseImage())
 	}
-	if got := resolveProjectDefaultImage(ctx, ttx.Tx, approvalTestTenant, ""); got != db.BaseRuntimeImage {
-		t.Errorf("empty project leg = %q, want base", got)
+	if got := resolveProjectDefaultImage(ctx, ttx.Tx, approvalTestTenant, ""); got != db.RuntimeBaseImage() {
+		t.Errorf("empty project leg = %q, want the live fallback %q", got, db.RuntimeBaseImage())
 	}
 	// Agreement leg: all-empty -> "", single -> image, conflict -> error.
 	if got, err := resolveImageFromValues(nil); err != nil || got != "" {

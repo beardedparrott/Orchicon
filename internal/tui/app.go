@@ -1864,6 +1864,12 @@ func (m *App) refreshComposerHint() {
 	// end of this function is what re-applies the layout). Deriving it from the controller's live state
 	// means the advertised chord cannot outlive the reply it stops.
 	m.dock.SetReplyInFlight(m.chat != nil && m.chatConvID != "" && m.chat.IsStreaming(m.chatConvID))
+	// THE RUN'S STOP IS DERIVED HERE TOO, and for the same reason: the composer must advertise the
+	// chord that stops the thing the operator is looking at, and it must stop advertising it the
+	// moment the run ends. A screen that owns a running row exposes StopRunHint(); a screen that does
+	// not, contributes nothing rather than a dead key.
+	m.dock.SetStopRunHint(m.stopRunHint())
+	m.dock.SetAbortRunHint(m.abortRunHint())
 	ctx := ""
 	// AN APP-LEVEL MODAL OWNS THE KEYBOARD TOO, so it must win over the screen's hint for the same
 	// reason an in-screen form does — and it is checked FIRST, because while the modal is up the screen
@@ -6422,4 +6428,40 @@ func (m *App) runAskOverlay(kind string) tea.Cmd {
 		return tea.Batch(cmd, m.loadConsentGrants(m.chatConvID))
 	}
 	return cmd
+}
+
+// stopRunHint asks the ACTIVE screen whether it is showing something stop­pable, and
+// returns the chord to advertise.
+//
+// IT IS A PROBE RATHER THAN A FIELD ON EVERY SCREEN, so screens opt in with one small
+// method and the composer never advertises a chord for a pane that has none. Today only
+// the Work pane answers (a RUNNING work item); the Executions pane's own hint line
+// already names its cancel, so it needs no second surface here.
+func (m *App) stopRunHint() string {
+	s := m.screens[m.active]
+	if s == nil {
+		return ""
+	}
+	if h, ok := s.(interface{ StopRunHint() string }); ok {
+		return h.StopRunHint()
+	}
+	return ""
+}
+
+// abortRunHint is the same probe for the RUN-level abort, which the Execution screen
+// answers while the Runs pane holds a live run.
+//
+// IT IS A SEPARATE PROBE FROM stopRunHint BECAUSE THEY ARE SEPARATE GESTURES. "stop
+// execution" ends one worker; "abort run" ends the run (AbortWorkflow). Collapsing them
+// into one hint is how the operator came to ask why the abort command was not in the
+// composer at all — the row said "stop" and they reasonably read it as the run.
+func (m *App) abortRunHint() string {
+	s := m.screens[m.active]
+	if s == nil {
+		return ""
+	}
+	if h, ok := s.(interface{ AbortRunHint() string }); ok {
+		return h.AbortRunHint()
+	}
+	return ""
 }

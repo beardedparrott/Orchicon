@@ -920,9 +920,23 @@ function WorkItemDetailPage() {
                 <RuntimeImageSelect
                   value={editRuntimeImage}
                   onChange={setEditRuntimeImage}
+                  // THE DRAFT MODE, so switching to local disables the picker BEFORE the
+                  // save — the operator sees the consequence as they make the choice, and
+                  // the form cannot submit an image for a run that will have no container.
+                  mode={
+                    editExecutionMode === "inherit"
+                      ? executionModeValueOf(projects?.find((p) => p.id === editProjectId))
+                      : editExecutionMode
+                  }
                 />
               ) : (
-                item.runtimeImage || "default (base image)"
+                item.runtimeImage ||
+                  (effectiveExecutionModeOf(
+                    item,
+                    executionModeValueOf(projects?.find((p) => p.id === item.projectId)),
+                  ) === "local"
+                    ? "No image — local run"
+                    : "Default (base image)")
               )}
             </CardTitle>
           </CardHeader>

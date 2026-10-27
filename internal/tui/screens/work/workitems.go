@@ -855,7 +855,27 @@ func (m *Model) itemActions() []kit2.Action {
 			},
 		}}
 	}
+	// A RUNNING ITEM CAN BE STOPPED HERE, WITHOUT finding its execution first.
+	//
+	// THE GAP THIS CLOSES. The only cancel in the TUI lived on the Executions
+	// pane, bound to `c`, and it is described on that pane's own hint line. An
+	// operator watching a RUNNING row on the Work pane — where a run is actually
+	// started, and where its status pill says "running" — had no way to stop it:
+	// no chord on this pane, and nothing on the composer's affordance row naming
+	// one. Reported while trying to stop a run that had escalated to a container.
+	//
+	// It cancels the item's LIVE execution through the same RPC the Executions
+	// pane uses (CancelExecution), because that is what "stop this run" means:
+	// cancelling the work item alone would leave the worker executing.
 	return []kit2.Action{
+		{
+			Label: "stop execution", Key: keyStopRun, Danger: true, Source: srcWorkItems,
+			Confirm: "Stop the running EXECUTION for " + title + "?\n" +
+				"The worker stops and in-flight tool calls are abandoned (the reason is recorded as " +
+				strconv.Quote(cancelReason) + ").\n" +
+				"This does NOT end the workflow run — to abort the run itself, use the Runs pane (" + "S" + ").",
+			Do: func(ctx context.Context) error { return m.rpcStopRun(ctx, id) },
+		},
 		{
 			Label: "toggle auto-start", Key: "y", Source: srcWorkItems,
 			Do: func(ctx context.Context) error { return m.rpcToggleAutoStart(ctx, id) },
@@ -897,6 +917,58 @@ func (m *Model) itemActions() []kit2.Action {
 			},
 		},
 	}
+}
+
+// keyStopRun is the pane's stop-execution chord.
+//
+// NAMED HONESTLY. It was first labelled "stop run", which oversold it: it calls
+// CancelExecution, so it stops the WORKER while the run keeps running — and on a run
+// with no live execution it cannot act at all. Aborting the RUN is AbortWorkflow, and
+// that lives on the Runs pane (keyAbortRun) where a run is the unit of the row. `c` belongs to the Executions pane's own
+// cancel, and this pane already uses a/e/s/y/d/n/m/v/b/O/R — `x` is free here and
+// is the mnemonic operators reach for; kit2.DeleteChord (ctrl+x) stays the delete.
+const keyStopRun = "x"
+
+// cancelReason is the audit reason recorded on a TUI-initiated stop, matching the
+// Executions pane's wording so one trail describes both entry points.
+const cancelReason = "cancelled from the orch TUI"
+
+// rpcStopRun cancels the item's LIVE execution.
+//
+// IT RESOLVES THE EXECUTION RATHER THAN CANCELLING THE ITEM. Cancelling the work
+// item is a status change; the worker keeps running and keeps spending. The
+// operator's intent for "stop" is the execution, so this lists the item's
+// executions, picks the newest one that is still running, and cancels it.
+//
+// NOTHING RUNNING IS A NAMED OUTCOME, not a silent success: a chord that appears
+// to do nothing is indistinguishable from a broken one — the failure mode this
+// TUI has paid for repeatedly.
+func (m *Model) rpcStopRun(ctx context.Context, id string) error {
+	if m.cl == nil || m.cl.Executions == nil {
+		return fmt.Errorf("no execution client — cannot stop the run")
+	}
+	resp, err := m.cl.Executions.ListExecutions(ctx, connect.NewRequest(&apiv1.ListExecutionsRequest{
+		TaskId: &id,
+	}))
+	if err != nil {
+		return err
+	}
+	var live *apiv1.WorkerExecution
+	for _, e := range resp.Msg.GetExecutions() {
+		if e.GetStatus() == apiv1.ExecutionStatus_EXECUTION_STATUS_RUNNING {
+			if live == nil || e.GetStartedAt().AsTime().After(live.GetStartedAt().AsTime()) {
+				live = e
+			}
+		}
+	}
+	if live == nil {
+		return fmt.Errorf("no running execution for this item — nothing to stop")
+	}
+	_, err = m.cl.Executions.CancelExecution(ctx, connect.NewRequest(&apiv1.CancelExecutionRequest{
+		Id:     live.GetId(),
+		Reason: cancelReason,
+	}))
+	return err
 }
 
 // rpcToggleAutoStart flips auto_start_workflow from the item's real value.

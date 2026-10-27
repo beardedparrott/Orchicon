@@ -1645,7 +1645,17 @@ func (m *Model) HintLine() string {
 			return theme.HintText.Render("R: restore · /: search · enter: detail · " +
 				"v: view (archive ⇄ tree) · o/O: collapse · ↑↓: move")
 		}
-		return theme.HintText.Render("n: new · /: search · e: edit · s: status · y: auto-start · +/-: move step · " +
+		// THE STOP CHORD IS ADVERTISED ONLY WHEN THERE IS SOMETHING TO STOP.
+		//
+		// A hint that names a chord which does nothing is worse than a shorter hint:
+		// it teaches the operator that the row is unreliable. So `x: stop run` appears
+		// on a RUNNING row and nowhere else — derived from the selected item's status,
+		// which is the same state the pill on that row shows.
+		stop := ""
+		if it, ok := m.ActiveItem(); ok && itemIsRunning(it) {
+			stop = keyStopRun + ": stop execution · "
+		}
+		return theme.HintText.Render(stop + "n: new · /: search · e: edit · s: status · y: auto-start · +/-: move step · " +
 			"a: archive · " + kit2.DeleteChord + ": delete · " + keyBulkSet + ": set workflow & image (space marks 2+) · " +
 			"v: view (tree ⇄ archive) · o/O: collapse · enter: detail")
 	}
@@ -1672,3 +1682,24 @@ func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDet
 // context engine.
 func (m *Model) ActiveSourceName() string           { return m.Base.ActiveSourceName() }
 func (m *Model) ActiveItem() (screenkit.Item, bool) { return m.Base.ActiveItem() }
+
+// itemIsRunning reports whether the pane's selected row is an item whose run is
+// live. The row's Meta carries the status pill (views.go workItemMeta), which is
+// the same string the row draws, so the hint and the row can never disagree.
+func itemIsRunning(it screenkit.Item) bool {
+	return strings.Contains(it.Meta, statusPill(apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING))
+}
+
+// StopRunHint reports the chord that stops the focused row's run, or "" when the
+// focused row is not running. It is the composer's probe (see App.stopRunHint): the
+// answer is derived from the same row state the hint line and the status pill use, so
+// the three can never disagree about whether there is something to stop.
+func (m *Model) StopRunHint() string {
+	if m.ActiveSourceName() != srcWorkItems {
+		return ""
+	}
+	if it, ok := m.ActiveItem(); ok && itemIsRunning(it) {
+		return keyStopRun + " stop execution"
+	}
+	return ""
+}

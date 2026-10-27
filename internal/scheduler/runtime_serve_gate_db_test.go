@@ -120,8 +120,10 @@ func TestNativeOnlyRunSkipsServeGate(t *testing.T) {
 	if got.Status != domain.WorkflowRunRunning {
 		t.Fatalf("run status = %q, want running (run failed at the serve gate)", got.Status)
 	}
-	if got.RuntimeImage != db.BaseRuntimeImage {
-		t.Errorf("runtime_image = %q, want base %q (always-container: resolved image, never the sentinel)", got.RuntimeImage, db.BaseRuntimeImage)
+	// The LIVE fallback (#849): the chain no longer returns the placeholder constant, so the
+	// stamped image is the daemon's real base tag.
+	if got.RuntimeImage != db.RuntimeBaseImage() {
+		t.Errorf("runtime_image = %q, want the live fallback %q (always-container: resolved image, never the sentinel)", got.RuntimeImage, db.RuntimeBaseImage())
 	}
 	if !got.RuntimeReady {
 		t.Error("runtime_ready = false, want true (native-only run must not gate)")

@@ -544,6 +544,15 @@ function ProjectDetailPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="default-runtime-image">Default runtime image</Label>
+                {draftExecutionMode === "local" ? (
+                  // MODE-AWARE, matching the work item's picker. A local project's runs execute
+                  // on the host, so there is no container to give an image to; showing an
+                  // "Inherit base (…)" select here invites an operator to configure something
+                  // that can never apply, and it reads as though a container IS used.
+                  <div className="w-full rounded-xl glass-input px-3 py-1.5 text-sm opacity-70">
+                    No image — local runs execute on the host, not in a container
+                  </div>
+                ) : (
                 <select
                   id="default-runtime-image"
                   disabled={!editing}
@@ -561,6 +570,7 @@ function ProjectDetailPage() {
                     <option value={draftDefaultImage}>{draftDefaultImage} (current)</option>
                   )}
                 </select>
+                )}
                 {/* THE PICKER CAN ONLY OFFER WHAT THE DAEMON ALREADY KNOWS, so an image nobody has
                     fetched is invisible here — you cannot select it, so you never learn it is
                     missing, so you never fetch it. This link breaks that loop and is always visible,
@@ -608,7 +618,11 @@ function ProjectDetailPage() {
               </Button>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Current: {draftDefaultImage || `inherit (${defaultImageHint})`} · {draftExecutionMode}
+                Current:{" "}
+                {draftExecutionMode === "local"
+                  ? "no image (local)"
+                  : draftDefaultImage || `inherit (${defaultImageHint})`}{" "}
+                · {draftExecutionMode}
               </p>
             )}
             {selectedImageRow?.status === RuntimeImageStatus.ABSENT && (

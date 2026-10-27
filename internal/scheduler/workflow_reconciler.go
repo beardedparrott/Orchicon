@@ -333,6 +333,15 @@ func (r *WorkflowReconciler) scanRuns(ctx context.Context, tenantID string) erro
 			r.log.Warn("workflow run reconcile failed", "run", run.ID, "error", err)
 		}
 	}
+	// THEN THE TERMINAL RUNS, WHICH THE LOOP ABOVE CANNOT REACH.
+	//
+	// ListPendingWorkflowRuns returns non-terminal runs only, so the
+	// reap-on-terminal branch inside reconcileRun is unreachable for a run that
+	// was terminalised elsewhere (AbortWorkflow, StopSequence) — which is why an
+	// aborted run leaked its container. Sweeping here, on the same pass, keeps
+	// one scan responsible for the whole runtime lifecycle. See
+	// runtime_reap_sweep.go for the evidence and the rejected alternatives.
+	r.sweepTerminalRunContainers(ctx, tenantID)
 	return nil
 }
 
@@ -3717,9 +3726,26 @@ func runExecutionMode(ctx context.Context, tx pgx.Tx, tenantID string, run db.Wo
 // point would be wrong — which is why both call THIS, and why the adapter also
 // verifies the remainder before trimming (see session_run.go).
 func (r *WorkflowReconciler) agentPromptFor(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow) string {
-	return db.AgentSystemPrompt(worker,
-		runEffectiveImage(ctx, tx, tenantID, wi),
-		projectExecutionModeForPrompt(ctx, tx, tenantID, wi))
+	mode := projectExecutionModeForPrompt(ctx, tx, tenantID, wi)
+	// A LOCAL RUN IS TOLD NOTHING ABOUT AN IMAGE, because it has no container.
+	//
+	// The image is still resolved and stamped on the run row (resolveRuntimeImage
+	// reads the item/project and the arm writes imageForRun), so passing it here
+	// made the worker's environment block describe a container the run is
+	// explicitly configured never to create. An operator who sets a LOCAL-mode
+	// item while leaving runtime_image populated (the create form's default does
+	// not clear it) then reads a prompt claiming a container image — the honest
+	// prompt block disagreeing with where the work actually runs, which is the
+	// one thing that block exists to prevent.
+	//
+	// The IMAGE FIELD STAYS STORED: it is the fallback for a later runtime-mode
+	// save, and clearing it on a local save would silently discard the operator's
+	// selection. It is only the PROMPT that must not claim it.
+	image := runEffectiveImage(ctx, tx, tenantID, wi)
+	if mode == db.ExecutionModeLocal {
+		image = ""
+	}
+	return db.AgentSystemPrompt(worker, image, mode)
 }
 
 // runEffectiveImage returns the run row's RuntimeImage for workflow-bound

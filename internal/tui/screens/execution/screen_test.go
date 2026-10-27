@@ -39,6 +39,10 @@ type fakePlane struct {
 	messages []*apiv1.SendExecutionMessageRequest
 	retries  []string
 	forced   []string
+	// aborted records AbortWorkflow run ids. It is SEPARATE from `cancel` on purpose: the
+	// whole point of the abort action is that it ends the RUN, while cancel stops one
+	// EXECUTION — a test that conflated them could not tell which gesture ran.
+	aborted []string
 
 	// --- name resolution (names.go) ---
 	//
@@ -162,6 +166,15 @@ func (p *fakePlane) ListWorkflows(context.Context, *connect.Request[apiv1.ListWo
 	defer p.mu.Unlock()
 	p.workflowListCalls++
 	return connect.NewResponse(&apiv1.ListWorkflowsResponse{Workflows: p.workflows}), nil
+}
+
+// AbortWorkflow records the abort. It mirrors the server's terminal-state refusal, so a
+// test cannot pass by aborting a run the plane would reject.
+func (p *fakePlane) AbortWorkflow(_ context.Context, req *connect.Request[apiv1.AbortWorkflowRequest]) (*connect.Response[apiv1.AbortWorkflowResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.aborted = append(p.aborted, req.Msg.GetRunId())
+	return connect.NewResponse(&apiv1.AbortWorkflowResponse{}), nil
 }
 
 func (p *fakePlane) ListWorkflowRuns(_ context.Context, req *connect.Request[apiv1.ListWorkflowRunsRequest]) (*connect.Response[apiv1.ListWorkflowRunsResponse], error) {

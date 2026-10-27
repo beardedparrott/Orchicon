@@ -1801,3 +1801,66 @@ func ListTerminalStepRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID 
 	}
 	return out, rows.Err()
 }
+
+// ListTerminalRunsWithRuntimeEvidence returns TERMINAL runs whose runtime
+// container may still be leased, oldest first, capped at limit.
+//
+// WHY IT EXISTS: a run terminalised OUTSIDE the reconciler leaks its
+// container. The reconcile-path reaper only fires for a run the scan returns,
+// and the scan returns non-terminal runs only (ListPendingWorkflowRuns:
+// pending/running/paused) — so by the time a run is `aborted` the branch that
+// reaps it is unreachable. Observed: an aborted run's container stayed `running`
+// on the host while the completed run beside it was returned to the pool
+// ("pool release: resetting run container" appeared for one and not the other).
+//
+// THE PREDICATE. A run can hold a container ONLY if a container was ever
+// created for it, and the durable evidence of that is runtime_ready (the arm
+// gate flips it for runtime-mode runs and for serve-less ones; it stays false
+// only when no container path was taken) or a concrete runtime_image. Both are
+// cheap columns — no engine call — so the sweep is tenant-scoped and bounded
+// without touching the daemon for runs that never had a container.
+//
+// IT IS NOT THE EXISTING PRUNED-BRANCH QUERY. That one is worktree-specific
+// (worktree_status='pruned' AND worktree_branch <> ”); its predicate says
+// nothing about containers, and a run whose worktree was never provisioned
+// would never appear in it.
+func ListTerminalRunsWithRuntimeEvidence(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
+	if limit <= 0 {
+		limit = 16
+	}
+	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
+		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
+		runtime_ready, worktree_status, worktree_path, worktree_branch,
+			version, started_at, ended_at, created_at, updated_at
+		FROM workflow_runs
+		WHERE tenant_id = $1
+		  AND status IN ('completed', 'failed', 'aborted')
+		  AND (runtime_ready = true OR runtime_image <> '')
+		ORDER BY ended_at ASC NULLS LAST, created_at ASC
+		LIMIT $2`
+	rows, err := tx.Query(ctx, q, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list terminal runs with runtime evidence: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowRunRow
+	for rows.Next() {
+		var r WorkflowRunRow
+		var wiID *string
+		if err := rows.Scan(
+			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
+			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.Version, &r.StartedAt, &r.EndedAt,
+			&r.CreatedAt, &r.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan terminal run (runtime evidence): %w", err)
+		}
+		if wiID != nil {
+			r.WorkItemID = *wiID
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

@@ -47,6 +47,10 @@ const (
 // cancelReason is the audit reason recorded on a TUI-initiated cancel.
 const cancelReason = "cancelled from the orch TUI"
 
+// abortReason is the audit reason recorded on a TUI-initiated run abort, mirroring the
+// GUI's "user clicked Stop".
+const abortReason = "aborted from the orch TUI"
+
 // Write chords (matched by name in handleActionKey).
 //
 // The worker CRUD chords deliberately AVOID d/D: the shell's global routes run
@@ -58,7 +62,12 @@ const (
 	keyInterject     = "i"
 	keyRetryRun      = "t"
 	keyForceProgress = "p"
-	keySetModel      = "m"
+	// keyAbortRun aborts a LIVE run. `c` on this screen is the EXECUTION cancel (a different
+	// gesture on a different pane); this one ends the RUN — status → aborted, its in-flight
+	// step runs failed and its running executions terminated — which is what makes a wedged
+	// run terminal and lets the runtime sweep collect its container.
+	keyAbortRun = "S"
+	keySetModel = "m"
 	// keyBulkSetModel sets the model for EVERY marked worker at once — the TUI's counterpart to the
 	// GUI's BulkChangeWorkerModelDialog, and the one thing a per-worker form cannot do (you cannot edit
 	// ten forms at once).
@@ -362,6 +371,29 @@ func (m *Model) actionsForSelection() []kit2.Action {
 					"the reconciler advances the DAG. It is a manual escape hatch for a run wedged " +
 					"\"running\" — a step that never actually finished will be recorded as succeeded.",
 				Do: func(ctx context.Context) error { return m.rpcForceProgressRun(ctx, id) },
+			})
+		}
+		// ABORT THE RUN — the TUI counterpart of the GUI's "Stop <run>" button
+		// (frontend/src/routes/workflows_.$id.tsx, shown only while `latestRunActive`).
+		//
+		// IT WAS MISSING ENTIRELY. The TUI had no AbortWorkflow caller: `c` on the Executions
+		// pane cancels an EXECUTION (the worker stops, the run keeps running), and `delete`
+		// below removes the row. Neither ends a live run, so a run wedged `running` — no
+		// step dispatching, no execution to cancel — could not be terminalised from the TUI
+		// at all, and nothing would reap its runtime container either (the sweep looks at
+		// TERMINAL runs). Reported as "I didn't see the abort workflow run command in the
+		// TUI" after the operator had to reach for the GUI to stop a stuck fixture.
+		//
+		// Offered only on a RUNNING row, like the GUI: aborting a finished run is a refusal
+		// the server would only echo back.
+		if meta == "running" {
+			acts = append(acts, kit2.Action{
+				Label: "abort run", Key: keyAbortRun, Danger: true, Source: srcRuns,
+				Confirm: "Abort run " + id + "?\n" +
+					"The run goes to ABORTED, its in-flight step runs fail and any running worker " +
+					"executions are terminated. Unlike delete, the run and its history are KEPT; " +
+					"its runtime container is reaped on the next reconcile pass.",
+				Do: func(ctx context.Context) error { return m.rpcAbortRun(ctx, id) },
 			})
 		}
 		// THE DELETE. Offered for EVERY run, live or finished — the server aborts a running one through
@@ -1199,6 +1231,24 @@ func (m *Model) rpcRetryFailedRun(ctx context.Context, runID string) error {
 	return err
 }
 
+// rpcAbortRun ends a LIVE run through AbortWorkflow — the same RPC the GUI's Stop button
+// uses (useAbortWorkflow -> workflowClient.abortWorkflow).
+//
+// IT IS NOT CancelExecution. That stops one worker; the run stays running, keeps its
+// container, and a run with no live execution cannot be stopped at all. "Abort" is the
+// gesture that makes the RUN terminal, which is also what lets the reconcile sweep reap
+// its container.
+func (m *Model) rpcAbortRun(ctx context.Context, runID string) error {
+	if m.cl == nil || m.cl.Workflows == nil {
+		return errors.New("no workflow client — cannot abort the run")
+	}
+	_, err := m.cl.Workflows.AbortWorkflow(ctx, connect.NewRequest(&apiv1.AbortWorkflowRequest{
+		RunId:  runID,
+		Reason: abortReason,
+	}))
+	return err
+}
+
 func (m *Model) rpcForceProgressRun(ctx context.Context, runID string) error {
 	_, err := m.cl.Workflows.ForceProgressWorkflowRun(ctx, connect.NewRequest(&apiv1.ForceProgressWorkflowRunRequest{RunId: runID}))
 	return err
@@ -1287,6 +1337,18 @@ func (m *Model) HintLine() string {
 				theme.DetailKey.Render("·") + " esc: clear " + theme.DetailKey.Render("·") +
 				" space: mark · ←/→: pane · r: refresh")
 		}
+		// THE ABORT CHORD IS ADVERTISED ON A LIVE RUN, AND ONLY THERE.
+		//
+		// The GUI has always had "Stop <run>" on the workflow page; the TUI had no
+		// AbortWorkflow caller at all, so a run wedged `running` could not be ended from the
+		// terminal — the operator had to reach for the GUI. A chord that only appears when it
+		// can work is the rule this row follows everywhere else (see the Work pane's stop).
+		if m.runIsLive() {
+			return theme.HintText.Render(keyAbortRun + ": abort run (confirm) " + theme.DetailKey.Render("·") +
+				" t: retry failed run " + theme.DetailKey.Render("·") +
+				" p: force-progress (confirm) " + theme.DetailKey.Render("·") +
+				" " + keyDelete + ": delete (confirm) · space: mark for bulk · enter: step runs + diagnosis · r: refresh")
+		}
 		return theme.HintText.Render("t: retry failed run (confirm) " + theme.DetailKey.Render("·") +
 			" p: force-progress wedged run (confirm) " + theme.DetailKey.Render("·") +
 			" " + keyDelete + ": delete (confirm) · space: mark for bulk · enter: step runs + diagnosis · r: refresh")
@@ -1348,4 +1410,31 @@ func (m *Model) HintLine() string {
 // the cursor.
 func (m *Model) markHint(n int) string {
 	return fmt.Sprintf("%d marked", n) + " " + theme.DetailKey.Render("·") + " "
+}
+
+// runIsLive reports whether the RUNS pane's focused row is a live run — the same meta
+// the row draws and the same test the action list uses, so the hint can never advertise
+// the abort chord on a run it would refuse.
+func (m *Model) runIsLive() bool {
+	it, ok := m.ActiveItem()
+	if !ok {
+		return false
+	}
+	return strings.ToLower(it.Meta) == "running"
+}
+
+// AbortRunHint is the composer's probe for the ABORT chord: the run-level gesture, named
+// only while the Runs pane holds a live run.
+//
+// IT ANSWERS FOR THE RUNS PANE ONLY. The Executions pane's `c` and the Work pane's `x`
+// stop an EXECUTION; neither aborts a run, so advertising the abort chord there would
+// point at a key those panes do not own.
+func (m *Model) AbortRunHint() string {
+	if m.ActiveSourceName() != srcRuns {
+		return ""
+	}
+	if m.runIsLive() {
+		return keyAbortRun + " abort run"
+	}
+	return ""
 }
