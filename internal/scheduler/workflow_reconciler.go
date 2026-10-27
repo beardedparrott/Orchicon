@@ -333,6 +333,15 @@ func (r *WorkflowReconciler) scanRuns(ctx context.Context, tenantID string) erro
 			r.log.Warn("workflow run reconcile failed", "run", run.ID, "error", err)
 		}
 	}
+	// THEN THE TERMINAL RUNS, WHICH THE LOOP ABOVE CANNOT REACH.
+	//
+	// ListPendingWorkflowRuns returns non-terminal runs only, so the
+	// reap-on-terminal branch inside reconcileRun is unreachable for a run that
+	// was terminalised elsewhere (AbortWorkflow, StopSequence) — which is why an
+	// aborted run leaked its container. Sweeping here, on the same pass, keeps
+	// one scan responsible for the whole runtime lifecycle. See
+	// runtime_reap_sweep.go for the evidence and the rejected alternatives.
+	r.sweepTerminalRunContainers(ctx, tenantID)
 	return nil
 }
 

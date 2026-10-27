@@ -959,6 +959,30 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		}
 		fields.ExecutionMode = v
 	}
+	// A LOCAL OVERRIDE CLEARS THE RUNTIME IMAGE, because a local run has no
+	// container to put it in.
+	//
+	// WHY THIS IS DONE SERVER-SIDE RATHER THAN IN EACH CLIENT. A stale image on a
+	// local item is not merely dead weight: it is what made the last local-mode
+	// smoke run LOOK containerised (the run still carried and stamped
+	// orchicon-runtime:orchicon-dev while executing in-process), and it silently
+	// becomes live again the moment the item is flipped back to runtime — so an
+	// operator who chose local, then later chose "runtime", runs on an image they
+	// picked for a different decision and have long since forgotten. Clearing on
+	// the transition makes the item say what is true: local mode, no image.
+	//
+	// THE REQUEST'S OWN IMAGE STILL WINS. The order matters: an operator who
+	// selects local AND picks an image in the same save is expressing an intent
+	// for the next runtime switch, not a contradiction — so the explicit value is
+	// applied after this clear and survives.
+	//
+	// ABSENT EXECUTION_MODE MEANS UNCHANGED, so this only fires on an EXPLICIT
+	// local (the field-mask semantics the rest of this request follows); an
+	// ordinary edit of a local item cannot silently wipe an image the operator set
+	// deliberately.
+	if msg.ExecutionMode != nil && fields.ExecutionMode != nil && *fields.ExecutionMode == db.ExecutionModeLocal {
+		fields.ClearRuntimeImage = true
+	}
 	if msg.RuntimeImage != nil {
 		v := strings.TrimSpace(*msg.RuntimeImage)
 		if v == "" && s.runtimeImageFn != nil {
@@ -966,6 +990,8 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			v = s.runtimeImageFn(ctx)
 		}
 		fields.RuntimeImage = &v
+		// An explicit image on the same request overrides the clear: see above.
+		fields.ClearRuntimeImage = false
 	}
 	if msg.ContextFiles != nil {
 		paths := msg.ContextFiles.Files

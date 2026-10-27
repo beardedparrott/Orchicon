@@ -68,6 +68,9 @@ type fakePlane struct {
 	restored    []string
 	reorders    []*apiv1.ReorderWorkItemsRequest
 	assigned    []*apiv1.AssignWorkerRequest
+	// cancelled records CancelExecution ids, so a test can prove "stop the run"
+	// reaches the EXECUTION and not merely the work item's status.
+	cancelled []string
 	unassigned  []string
 	projCreated []*apiv1.CreateProjectRequest
 	projUpdated []*apiv1.UpdateProjectRequest
@@ -413,6 +416,26 @@ func (p *fakePlane) UnassignWorker(_ context.Context, req *connect.Request[apiv1
 	p.unassigned = append(p.unassigned, req.Msg.GetId())
 	w.AssignedWorkerRef = ""
 	return connect.NewResponse(&apiv1.UnassignWorkerResponse{WorkItem: w}), nil
+}
+
+// CancelExecution records the cancellation. It mirrors the server's refusal for an
+// unknown id, so a test cannot pass by cancelling an execution that does not exist.
+func (p *fakePlane) CancelExecution(_ context.Context, req *connect.Request[apiv1.CancelExecutionRequest]) (*connect.Response[apiv1.CancelExecutionResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	found := false
+	for _, e := range p.execs {
+		if e.GetId() == req.Msg.GetId() {
+			found = true
+			e.Status = apiv1.ExecutionStatus_EXECUTION_STATUS_TERMINATED
+			break
+		}
+	}
+	if !found {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("execution not found"))
+	}
+	p.cancelled = append(p.cancelled, req.Msg.GetId())
+	return connect.NewResponse(&apiv1.CancelExecutionResponse{}), nil
 }
 
 // ---------- ProjectService ----------

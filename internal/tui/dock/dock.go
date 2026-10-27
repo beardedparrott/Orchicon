@@ -107,9 +107,21 @@ type Model struct {
 	// the agent mid flight". It is DERIVED from the chat controller's own streaming state by the shell
 	// (SetReplyInFlight), so the row cannot advertise a dead key after the reply ends.
 	replyInFlight bool
-	Err           string // inline error strip (themed red)
-	Width         int
-	Height        int // allocated rows (set by the shell)
+	// stopRunHint, when non-empty, is the ACTIVE SCREEN's stop chord — advertised while
+	// the operator is looking at a running item/run, so the composer names the key that
+	// stops it.
+	//
+	// IT EXISTS BECAUSE THE STOP CONTROL WAS INVISIBLE WHERE IT WAS NEEDED. A run started
+	// from the Work pane can only be stopped from the Executions pane (`c` there), and the
+	// composer's row named `ctrl+y` — which stops the REPLY, not the run. An operator
+	// trying to stop a worker had to already know to go to another pane and press `c`; the
+	// report was simply "we don't have an abort button or shortcut guidance in the
+	// composer". Derived by the shell from the focused row (SetStopRunHint), never
+	// assumed, so it cannot outlive the run it stops.
+	stopRunHint string
+	Err         string // inline error strip (themed red)
+	Width       int
+	Height      int // allocated rows (set by the shell)
 	// viewportRows is the WHOLE terminal height, set by the shell each layout. The
 	// composer's growth ceiling is derived from it (maxInputRows) rather than being a
 	// constant, because how tall the composer may get depends on how much screen there
@@ -1238,6 +1250,11 @@ func (m *Model) Hint() string {
 	if m.replyInFlight {
 		parts = append(parts, "ctrl+y stop")
 	}
+	// THE RUN'S STOP COMES BEFORE THE REPLY'S, because when both are live the RUN is what the
+	// operator is trying to interrupt — and `ctrl+y` would only abort the chat turn.
+	if s := strings.TrimSpace(m.stopRunHint); s != "" {
+		parts = append(parts, s)
+	}
 	parts = append(parts, "ctrl+d diff")
 	if s := strings.TrimSpace(m.Context); s != "" {
 		parts = append(parts, s)
@@ -1248,6 +1265,11 @@ func (m *Model) Hint() string {
 
 // SetContext sets the active screen's shortcut list for the affordance row.
 func (m *Model) SetContext(s string) { m.Context = s }
+
+// SetStopRunHint advertises the active screen's "stop the running item" chord on the
+// affordance row. Empty clears it (no run in view), which is what keeps the row honest:
+// the shell derives it every refresh from the focused row's live status.
+func (m *Model) SetStopRunHint(s string) { m.stopRunHint = strings.TrimSpace(s) }
 
 // View renders the composer as a bordered box: the context chip, the input
 // rows (the "❯ " prompt on the first), the notice/error strip, and the

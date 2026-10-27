@@ -661,6 +661,13 @@ type UpdateWorkItemFields struct {
 	// and next_run_at = NULL. Used when status changes to non-recurring
 	// or when the kind switches to a non-schedulable kind.
 	ClearRecurringSchedule bool
+	// ClearRuntimeImage, when true, sets runtime_image = ''. Used when an
+	// item's execution_mode is set to LOCAL: a local run has no container,
+	// so a stored image is dead weight that misdescribes the item and
+	// silently becomes live again on the next switch back to runtime.
+	// An explicit RuntimeImage in the same update WINS over this (the
+	// service applies the clear first, then the value).
+	ClearRuntimeImage bool
 	// RecurringEnabled toggles the recurrence on/off flag. nil = unchanged
 	// (field-mask semantics). Setting false pauses the recurrence while
 	// preserving the schedule + next_run_at; setting true resumes it.
@@ -790,6 +797,9 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		q += fmt.Sprintf(`, auto_start_workflow = $%d`, setIdx)
 		args = append(args, *f.AutoStartWorkflow)
 		setIdx++
+	}
+	if f.ClearRuntimeImage {
+		q += `, runtime_image = ''`
 	}
 	if f.RuntimeImage != nil {
 		q += fmt.Sprintf(`, runtime_image = $%d`, setIdx)
