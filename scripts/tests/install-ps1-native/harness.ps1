@@ -872,6 +872,43 @@ if ($env:ORCHICON_TEST_MSI_BASE_URL) {
     "ORCHICON_TEST_MSI_BASE_URL is not set. run.sh normally serves the fixture; without it the MSI preference — the DEFAULT path on Windows, and the arm that crashed in the field — is untested."
 }
 
+
+Say ""
+Say "[26] upgrade detection (parity with the shell installer's section 12)"
+
+# THE INSTALLER IS ALSO THE UPDATER on Windows, and the four decisions must match the POSIX
+# installer's exactly — a platform that behaved differently would be its own support burden.
+# These assert the REAL functions from install.ps1, dot-sourced into this scope.
+$vg = Get-Command Test-VersionGreater -ErrorAction SilentlyContinue
+Check "the installer defines a version comparator" ($null -ne $vg) `
+  "without one the installer cannot tell an upgrade from a downgrade"
+if ($vg) {
+  Check "a higher version compares higher" (Test-VersionGreater "v10.0.0" "v9.0.0") "numeric, not lexicographic"
+  Check "a pre-release sorts below its release" (-not (Test-VersionGreater "v0.0.1-pre" "v0.0.1")) "v0.0.1-pre < v0.0.1"
+  Check "equal versions are not greater" (-not (Test-VersionGreater "v1.2.3" "v1.2.3")) "same version is not an upgrade"
+  # The classic lexicographic trap: "1.10" must beat "1.9", which a string compare gets wrong.
+  Check "1.10.0 beats 1.9.0 (the lexicographic trap)" (Test-VersionGreater "v1.10.0" "v1.9.0") "1.10 > 1.9"
+}
+
+# The refusal text must exist in the installer's source: a downgrade has to FAIL LOUDLY with the
+# reason, not quietly move the binary backwards (migrations are forward-only).
+$ps1 = Get-Content -Raw -LiteralPath $Installer
+Check "the installer refuses a downgrade and names the reason" `
+  (($ps1 -match 'Downgrades are not supported') -and ($ps1 -match 'migrations are forward-only')) `
+  "a silent downgrade can leave a schema the older binary cannot read"
+
+# The no-op must be a REAL no-op, and the backup must be offered rather than taken: a backup at
+# every upgrade would leave a multi-GB artifact on every machine.
+Check "an already-current install is a no-op that says so" ($ps1 -match 'is already installed - nothing to do') `
+  "re-running the updater must not disturb a healthy install"
+Check "the upgrade offers the backup command to the operator" ($ps1 -match 'orchicon db backup') `
+  "the operator decides whether to keep a copy"
+Check "no backup is created automatically on upgrade" (-not ($ps1 -match '&\s*\$exe\s+db\s+backup')) `
+  "auto-backup would accumulate large artifacts on every host"
+Check "the running plane is stopped before the binary is replaced" `
+  ($ps1 -match '(?s)Upgrading Orchicon.*?Stop-InstancePlane') `
+  "Windows cannot copy over an exe a process holds, so this is required for the swap to succeed"
+
 Say ""
 if ($Fail.Count -eq 0) { Say "RESULT: all assertions passed" }
 else { Say ("RESULT: {0} assertion(s) FAILED: {1}" -f $Fail.Count, ($Fail -join '; ')) }

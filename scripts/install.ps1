@@ -926,6 +926,53 @@ function Ask-Instance {
     Write-Info "acting on instance: $script:Instance"
 }
 
+
+# --- upgrade detection (parity with scripts/install.sh, section 12 of the harness) ---
+#
+# THE INSTALLER IS ALSO THE UPDATER. Re-running the documented command must decide for
+# itself whether this is a fresh install, an upgrade, or nothing to do — the operator should
+# not have to remember a flag. The rules are IDENTICAL to the shell installer's, deliberately:
+# both are release-facing and a platform that behaved differently would be its own support
+# burden.
+#
+# THERE IS NO DOWNGRADE. `-Version vOLD` can still pin an older release on purpose, but when
+# the INSTALLED binary is NEWER than the release being installed we refuse: migrations are
+# forward-only (`orchicon serve` runs them on boot), so moving the binary backwards can leave
+# a schema it cannot read.
+
+# Get-InstalledVersion prints the version of the installed orchicon.exe, or "" when absent.
+# A binary that cannot run (wrong arch, corrupted) counts as NOT installed — the caller then
+# does a fresh install, which is the recovery an operator wants.
+function Get-InstalledVersion {
+    $exe = Join-Path $InstallDir "orchicon.exe"
+    if (-not (Test-Path -LiteralPath $exe)) { return "" }
+    try {
+        $out = ((& $exe version 2>$null | Out-String)).Trim()
+        if ($out -match '([vV][0-9]+\.[0-9]+\.[0-9]+[^\s]*)') { return $Matches[1] }
+    } catch { }
+    return ""
+}
+
+# Test-VersionGreater returns $true when $A is a HIGHER semver than $B. Compares the numeric
+# triple and ignores any pre-release suffix — enough to tell "newer release" from "older" and
+# never mis-orders on a suffix (the shell installer's version_gt mirrors this).
+function Test-VersionGreater {
+    param([string]$A, [string]$B)
+    if (-not $A -or -not $B) { return $false }
+    $an = ($A -replace '^[vV]', '') -split '-' | Select-Object -First 1
+    $bn = ($B -replace '^[vV]', '') -split '-' | Select-Object -First 1
+    $ap = $an -split '\.'
+    $bp = $bn -split '\.'
+    for ($i = 0; $i -lt 3; $i++) {
+        $x = 0; $y = 0
+        if ($i -lt $ap.Count) { [void][int]::TryParse($ap[$i], [ref]$x) }
+        if ($i -lt $bp.Count) { [void][int]::TryParse($bp[$i], [ref]$y) }
+        if ($x -gt $y) { return $true }
+        if ($x -lt $y) { return $false }
+    }
+    return $false
+}
+
 # --- The verbs that only take things down -----------------------------------
 # ALL NATIVE NOW. These used to be bash payloads shipped into the distro, which
 # meant -ForceClean's `rm -rf` ran against a DIFFERENT filesystem from the one the
@@ -1128,7 +1175,47 @@ function Ask-Instance {
         if (-not $Version) { Stop-Install "could not determine the latest version — api.github.com returned no tag" }
     }
 
-    Write-Info "installing Orchicon $Version for windows/$arch (native)"
+    # WHAT IS THIS RUN? Decided BEFORE anything is downloaded or stopped, so "current" and
+    # "downgrade" can exit without touching the installed binary. Mirrors the shell
+    # installer's upgrade_decision exactly — one contract, two platforms.
+    $haveVersion = Get-InstalledVersion
+    if ($haveVersion) {
+        if (Test-VersionGreater $haveVersion $Version) {
+            Write-Err "the installed Orchicon ($haveVersion) is NEWER than $Version."
+            Write-Host "  Downgrades are not supported: database migrations are forward-only, so an older" -ForegroundColor DarkGray
+            Write-Host "  binary can meet a schema it cannot read. Re-run without -Version to install the" -ForegroundColor DarkGray
+            Write-Host "  latest, or use -ForceClean to wipe this instance's data and start again." -ForegroundColor DarkGray
+            throw "refusing to downgrade $haveVersion to $Version"
+        }
+        if ($haveVersion -eq $Version) {
+            Write-Ok "Orchicon $Version is already installed - nothing to do."
+            Write-Host "  binary: $(Join-Path $InstallDir 'orchicon.exe')" -ForegroundColor DarkGray
+            # A no-op must be a REAL no-op: nothing stopped, nothing downloaded, nothing restarted.
+            return
+        }
+        Write-Host ""
+        Write-Host "Upgrading Orchicon $haveVersion -> $Version" -ForegroundColor White
+        # A PAUSE, NOT AN AUTOMATIC BACKUP — the same reasoning as the shell installer:
+        # a backup at every upgrade would leave a multi-GB artifact on every machine, and
+        # almost none would ever be used. The operator is told the command instead.
+        Write-Host "  Your data (database, blob store, runtime state) is preserved across an upgrade." -ForegroundColor DarkGray
+        Write-Host "  To keep a restorable copy first:  orchicon db backup" -ForegroundColor DarkGray
+        Write-Host ""
+        if (-not $Yes) {
+            $answer = $null
+            try { $answer = Read-Host "  Continue with the upgrade? [Y/n]" } catch { $answer = $null }
+            if ($answer -and $answer.Trim().ToLower().StartsWith("n")) {
+                Write-Warn "upgrade cancelled - nothing changed"
+                return
+            }
+        }
+        # STOP THE RUNNING INSTANCE BEFORE ITS BINARY IS REPLACED. On Windows the swap is a
+        # Copy-Item over a file a running process holds, which fails outright — so this is not
+        # just hygiene here, it is required for the copy to succeed.
+        if (Stop-InstancePlane) { Write-Ok "stopped the $script:Instance plane and its host services" }
+    } else {
+        Write-Info "installing Orchicon $Version for windows/$arch (native)"
+    }
 
     # --- Build download URL -----------------------------------------------------
     # THE NATIVE WINDOWS ARTIFACT: the release matrix builds windows/amd64 as a ZIP
