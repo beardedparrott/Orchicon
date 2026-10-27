@@ -1869,6 +1869,7 @@ func (m *App) refreshComposerHint() {
 	// moment the run ends. A screen that owns a running row exposes StopRunHint(); a screen that does
 	// not, contributes nothing rather than a dead key.
 	m.dock.SetStopRunHint(m.stopRunHint())
+	m.dock.SetAbortRunHint(m.abortRunHint())
 	ctx := ""
 	// AN APP-LEVEL MODAL OWNS THE KEYBOARD TOO, so it must win over the screen's hint for the same
 	// reason an in-screen form does — and it is checked FIRST, because while the modal is up the screen
@@ -6443,6 +6444,24 @@ func (m *App) stopRunHint() string {
 	}
 	if h, ok := s.(interface{ StopRunHint() string }); ok {
 		return h.StopRunHint()
+	}
+	return ""
+}
+
+// abortRunHint is the same probe for the RUN-level abort, which the Execution screen
+// answers while the Runs pane holds a live run.
+//
+// IT IS A SEPARATE PROBE FROM stopRunHint BECAUSE THEY ARE SEPARATE GESTURES. "stop
+// execution" ends one worker; "abort run" ends the run (AbortWorkflow). Collapsing them
+// into one hint is how the operator came to ask why the abort command was not in the
+// composer at all — the row said "stop" and they reasonably read it as the run.
+func (m *App) abortRunHint() string {
+	s := m.screens[m.active]
+	if s == nil {
+		return ""
+	}
+	if h, ok := s.(interface{ AbortRunHint() string }); ok {
+		return h.AbortRunHint()
 	}
 	return ""
 }

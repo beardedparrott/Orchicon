@@ -119,9 +119,13 @@ type Model struct {
 	// composer". Derived by the shell from the focused row (SetStopRunHint), never
 	// assumed, so it cannot outlive the run it stops.
 	stopRunHint string
-	Err         string // inline error strip (themed red)
-	Width       int
-	Height      int // allocated rows (set by the shell)
+	// abortRunHint is the RUN-level abort chord (AbortWorkflow), advertised while the
+	// active screen holds a live run. Distinct from stopRunHint: that one ends an
+	// execution, this one ends the run.
+	abortRunHint string
+	Err          string // inline error strip (themed red)
+	Width        int
+	Height       int // allocated rows (set by the shell)
 	// viewportRows is the WHOLE terminal height, set by the shell each layout. The
 	// composer's growth ceiling is derived from it (maxInputRows) rather than being a
 	// constant, because how tall the composer may get depends on how much screen there
@@ -1255,6 +1259,9 @@ func (m *Model) Hint() string {
 	if s := strings.TrimSpace(m.stopRunHint); s != "" {
 		parts = append(parts, s)
 	}
+	if s := strings.TrimSpace(m.abortRunHint); s != "" {
+		parts = append(parts, s)
+	}
 	parts = append(parts, "ctrl+d diff")
 	if s := strings.TrimSpace(m.Context); s != "" {
 		parts = append(parts, s)
@@ -1270,6 +1277,10 @@ func (m *Model) SetContext(s string) { m.Context = s }
 // affordance row. Empty clears it (no run in view), which is what keeps the row honest:
 // the shell derives it every refresh from the focused row's live status.
 func (m *Model) SetStopRunHint(s string) { m.stopRunHint = strings.TrimSpace(s) }
+
+// SetAbortRunHint advertises the active screen's run-abort chord (AbortWorkflow). Empty
+// clears it. Set by the shell from the focused row, so it cannot outlive the live run.
+func (m *Model) SetAbortRunHint(s string) { m.abortRunHint = strings.TrimSpace(s) }
 
 // View renders the composer as a bordered box: the context chip, the input
 // rows (the "❯ " prompt on the first), the notice/error strip, and the

@@ -737,9 +737,11 @@ func (m *Model) itemActions() []kit2.Action {
 	// cancelling the work item alone would leave the worker executing.
 	return []kit2.Action{
 		{
-			Label: "stop run", Key: keyStopRun, Danger: true, Source: srcWorkItems,
-			Confirm: "Stop the running execution for " + title + "?\n" +
-				"In-flight tool calls are abandoned; the reason is recorded as " + strconv.Quote(cancelReason) + ".",
+			Label: "stop execution", Key: keyStopRun, Danger: true, Source: srcWorkItems,
+			Confirm: "Stop the running EXECUTION for " + title + "?\n" +
+				"The worker stops and in-flight tool calls are abandoned (the reason is recorded as " +
+				strconv.Quote(cancelReason) + ").\n" +
+				"This does NOT end the workflow run — to abort the run itself, use the Runs pane (" + "S" + ").",
 			Do: func(ctx context.Context) error { return m.rpcStopRun(ctx, id) },
 		},
 		{
@@ -785,7 +787,12 @@ func (m *Model) itemActions() []kit2.Action {
 	}
 }
 
-// keyStopRun is the pane's stop chord. `c` belongs to the Executions pane's own
+// keyStopRun is the pane's stop-execution chord.
+//
+// NAMED HONESTLY. It was first labelled "stop run", which oversold it: it calls
+// CancelExecution, so it stops the WORKER while the run keeps running — and on a run
+// with no live execution it cannot act at all. Aborting the RUN is AbortWorkflow, and
+// that lives on the Runs pane (keyAbortRun) where a run is the unit of the row. `c` belongs to the Executions pane's own
 // cancel, and this pane already uses a/e/s/y/d/n/m/v/b/O/R — `x` is free here and
 // is the mnemonic operators reach for; kit2.DeleteChord (ctrl+x) stays the delete.
 const keyStopRun = "x"

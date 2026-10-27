@@ -1640,7 +1640,7 @@ func (m *Model) HintLine() string {
 		// which is the same state the pill on that row shows.
 		stop := ""
 		if it, ok := m.ActiveItem(); ok && itemIsRunning(it) {
-			stop = keyStopRun + ": stop run · "
+			stop = keyStopRun + ": stop execution · "
 		}
 		return theme.HintText.Render(stop + "n: new · /: search · e: edit · s: status · y: auto-start · +/-: move step · " +
 			"a: archive · " + kit2.DeleteChord + ": delete · " + keyBulkSet + ": set workflow & image (space marks 2+) · " +
@@ -1686,7 +1686,7 @@ func (m *Model) StopRunHint() string {
 		return ""
 	}
 	if it, ok := m.ActiveItem(); ok && itemIsRunning(it) {
-		return keyStopRun + " stop run"
+		return keyStopRun + " stop execution"
 	}
 	return ""
 }

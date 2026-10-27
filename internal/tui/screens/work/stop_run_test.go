@@ -55,7 +55,7 @@ func TestStopRunIsOfferedOnARunningItem(t *testing.T) {
 	_, m := runningPlane(t)
 	found := false
 	for _, a := range m.itemActions() {
-		if a.Key == keyStopRun && strings.Contains(a.Label, "stop") {
+		if a.Key == keyStopRun && strings.Contains(a.Label, "stop execution") {
 			found = true
 			if !a.Danger {
 				t.Error("stopping a run must be marked dangerous — it abandons in-flight tool calls")
@@ -119,15 +119,15 @@ func TestStopRunWithNothingRunningSaysSo(t *testing.T) {
 // appears on a running row and disappears otherwise.
 func TestStopHintIsAdvertisedOnlyWhileRunning(t *testing.T) {
 	_, running := runningPlane(t)
-	if got := running.StopRunHint(); !strings.Contains(got, keyStopRun+" stop run") {
+	if got := running.StopRunHint(); !strings.Contains(got, keyStopRun+" stop execution") {
 		t.Errorf("StopRunHint() on a RUNNING item = %q, want it to name %q — the composer had no stop "+
 			"guidance at all, which is what the operator reported", got, keyStopRun)
 	}
 	// ASSERT THE SEGMENT, NOT THE BARE KEY. keyStopRun is "x", which is a substring of the
 	// unrelated "ctrl+x: delete" — a Contains(hint, "x") check would pass on a row that
 	// advertises nothing (it did, on the first run of this test).
-	if !strings.Contains(running.HintLine(), keyStopRun+": stop run") {
-		t.Errorf("the pane's hint line does not name %q on a running row: %q", keyStopRun+": stop run", running.HintLine())
+	if !strings.Contains(running.HintLine(), keyStopRun+": stop execution") {
+		t.Errorf("the pane's hint line does not name %q on a running row: %q", keyStopRun+": stop execution", running.HintLine())
 	}
 
 	// A non-running row advertises nothing.
@@ -153,7 +153,7 @@ func TestStopHintIsAdvertisedOnlyWhileRunning(t *testing.T) {
 		t.Errorf("StopRunHint() on a PENDING item = %q, want empty — advertising a chord that does "+
 			"nothing is how a hint row stops being trusted", got)
 	}
-	if strings.Contains(m.HintLine(), keyStopRun+": stop run") {
+	if strings.Contains(m.HintLine(), keyStopRun+": stop execution") {
 		t.Errorf("the hint line names the stop chord on a non-running row: %q", m.HintLine())
 	}
 }
