@@ -2184,6 +2184,11 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	// to the rail.
 	m.askPane = askPaneConversation
 	m.syncAskPaneFocus()
+	// THE HIGHLIGHT MUST FOLLOW WHAT WAS JUST OPENED. Every route into a conversation lands
+	// here, and convSel is never otherwise derived from chatConvID — so without this the rail
+	// keeps pointing at whatever row the cursor happened to be on while the transcript shows a
+	// different conversation. See railSyncSelectionToOpenConversation.
+	m.railSyncSelectionToOpenConversation()
 	m.chat.SetActive(id)
 	// DECLARE THE PANE'S CONTENT. The transcript is pushed by the shell for this conversation, so
 	// nothing else would ever set the detail id — and the shell's chat repaint is guarded on it, so a

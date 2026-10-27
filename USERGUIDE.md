@@ -333,12 +333,81 @@ curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.4.0
 # Uninstall
 curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
 
-# Clean upgrade (preserves data)
-curl -fsSL https://orchicon.dev/install | bash -s -- --clean
-
 # Force clean and reinstall (destroys all data)
 curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 ```
+
+---
+
+## 1a. Upgrading
+
+**Upgrading is the same command as installing.** Re-run it:
+
+```bash
+curl -fsSL https://orchicon.dev/install | bash
+```
+
+On Windows:
+
+```powershell
+irm https://orchicon.dev/install.ps1 | iex
+```
+
+It works out what you mean and does the right thing — there is no upgrade flag to
+remember:
+
+| What it finds | What it does |
+|---|---|
+| **No Orchicon installed** | Installs it. |
+| **Already on the latest version** | Says so and changes nothing — no download, no restart. |
+| **An older version** | **Upgrades**: stops the running plane, replaces the binary, restarts, and waits for the plane to answer `/healthz` before reporting success. |
+| **A *newer* version than the release** | **Refuses**, naming both versions. |
+
+### Your data is preserved
+
+An upgrade replaces the **binaries**. It does not touch your database, blob store,
+runtime state, projects or work items. Database migrations run automatically when the
+plane starts, so the schema moves forward with the binary.
+
+### Keep a copy first, if you want one
+
+The installer **does not** take an automatic backup — that would leave a multi-gigabyte
+file on your disk at every upgrade, and almost none would ever be used. It prints the
+command instead, and the decision is yours:
+
+```bash
+orchicon db backup     # writes a timestamped .sql file
+orchicon db list       # see what you have
+orchicon db prune      # remove old ones
+```
+
+Worth doing before a **major** version jump, or before upgrading a production instance.
+
+### Verify it worked
+
+```bash
+orchicon version       # the installed version
+orchicon status        # the plane and its services
+curl -s localhost:8080/healthz
+```
+
+### Downgrades are not supported
+
+`--version v0.4.0` still pins a specific release, but you **cannot** install a version
+older than the one you have — the installer refuses and names both versions.
+
+The reason is not policy: **database migrations are forward-only.** An older binary can
+meet a schema it does not understand, and the failure would be silent and confusing
+rather than loud. If you genuinely need to go backwards, `--force-clean` wipes this
+instance's data and starts fresh — which is why keeping a backup first matters.
+
+### If an upgrade goes wrong
+
+1. The installer tells you the check that failed; the plane's own log is at
+   `~/.local/share/orchicon-dev/serve/logs/orchicon.log` (per instance).
+2. `orchicon install` is idempotent — re-running it converges a half-finished instance.
+3. Still stuck: `--force-clean` for this instance (destroys its data), or restore your
+   `orchicon db backup` file with `orchicon db restore`.
 
 ### What gets installed
 
