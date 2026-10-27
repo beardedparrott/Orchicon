@@ -213,6 +213,13 @@ const researchSynthesizerRejectedMarker = "state=\"rejected\""
 // the whole fleet via seedSafetyMarker/sandboxPlaneMarker.
 const researchEphemeralMarker = "git_strategy=none"
 
+// devopsShipMarker is the shipping DevOps worker's OWN roll-forward fragment. That worker
+// shares sdlcWorkhorseMarker with the SSE / PR Reviewer / Principal Architect, so reusing it
+// would re-roll all four for a wording change that belongs to one. The fragment appears only
+// in the NEW agents_md content (the merge gate), so exactly the shipping DevOps worker
+// re-rolls — which is the rule RollMarker documents.
+const devopsShipMarker = "GATED ON A GREEN RESULT"
+
 // sdlcWorkhorseMarker is the SDLC implementation/review group's roll-forward
 // fragment (cannedWorker.RollMarker) covering the SSE, PR Reviewer, and
 // Principal Architect. It pins the workhorse contract: each
@@ -264,6 +271,14 @@ var PreExistingRemedyMarker = preExistingRemedyMarker
 // from the internal one in init).
 var QASurfaceImpactMarker = qaSurfaceImpactMarker
 
+// SDLCWorkhorseMarker is the exported form, for the same tooling and for tests that must
+// prove a worker did NOT reuse the shared fragment.
+var SDLCWorkhorseMarker = sdlcWorkhorseMarker
+
+// MergeGateMarker is the exported roll-forward fragment for the CI-before-merge rule, so
+// tests can assert every merging canned worker carries it.
+var MergeGateMarker = mergeGateMarker
+
 // CannedWorkers returns the canned-worker seed definitions (read-only view
 // for tooling: out-of-band roll-forward generators, prompt-diff utilities).
 // The returned slice must not be mutated.
@@ -314,7 +329,41 @@ const researchHygieneBlock = "## Worktree hygiene\n" +
 // present in the generation-3 text (the workflow really does have no separate
 // DevOps step), so leaving the marker unchanged would leave the roll-forward
 // test SATISFIED and the fix would never reach the live worker.
-const quickWorkerMarker = "SHIPPING IS IDEMPOTENT"
+// mergeGateMarker is the roll-forward fragment for the CI-before-merge rule (cannedWorker.RollMarker
+// on the Quick worker AND the DevOps worker). It is a per-worker marker rather than a global one
+// because the DevOps Engineers other than the shipping one do not carry this prompt section.
+//
+// WHY THIS EXISTS (the incident). PR #850 was merged with TWO RED CI JOBS — `fe-lint` and
+// `windows desktop + MSI`, both failing on a whole-project typecheck — and landed a `develop`
+// that could not build. The prompts were not silent on verification: the Quick worker's said
+// "never report success with failing build, failing tests" and "run the test suite for the
+// packages you touched". Two things defeated that:
+//
+//  1. NO GATE ON THE MERGE. The ship step went straight from `gh pr create` to
+//     `gh pr merge --squash --admin` — and `--admin` BYPASSES checks. Verification was
+//     described as an ACTIVITY, never as a PRECONDITION on the merge.
+//  2. THE SCOPE WAS A SUBSET THE WORKER CHOSE. "the packages you touched" is exactly the
+//     instruction that misses a whole-repo gate: the worker's own unit tests passed while a
+//     project-wide typecheck failed.
+//
+// `--admin` is KEPT, deliberately (it is how these workers merge at all). The rule therefore
+// has to be the checks themselves, read before the merge — not the flag.
+//
+// IT NAMES NO TOOLCHAIN. These are CANNED workers used against other projects, so the gate is
+// "the project's CI, as the project defines it" — never `make`, `tsc`, `npm`, or a language.
+const mergeGateMarker = "GATED ON A GREEN RESULT"
+
+// mergeGateBlock is shared verbatim by every canned worker that MERGES to develop, so the two
+// cannot drift into different definitions of "verified".
+const mergeGateBlock = "\n\n## Merging is GATED ON A GREEN RESULT\n" +
+	"**A merge is gated on the project's checks passing. This is not a judgement call and not a formality.**\n" +
+	"- The project's CI is the definition of \"verified\" — not your reading of the diff, and not the subset of tests you chose to run. A change can pass every test it touched and still break a whole-project gate (a typecheck, a lint, a build across the repo). When the project documents one command that runs its gate, run THAT, in full.\n" +
+	"- **Wait for the checks to finish, then read them.** `gh pr checks <PR>` (add `--watch` to wait). Merge **only** when every check reports **pass**.\n" +
+	"- A **failing**, **still-running**, or **absent** check is **NOT green**. Fix the cause and push; re-run if needed. Absence of a result is not a pass.\n" +
+	"- Do not merge to unblock yourself, to beat the clock, or because another step or the task text said the work was fine. **If checks are red, you do not merge.**\n" +
+	"- If you run out of time before the checks finish: **do not merge.** Report `failure` and name the check that was still running. Merging red to finish on time is the worst outcome available to you — it puts a broken integration branch in front of every other worker.\n"
+
+const quickWorkerMarker = "GATED ON A GREEN RESULT"
 
 var cannedWorkers = []cannedWorker{
 	{
@@ -460,6 +509,9 @@ var cannedWorkers = []cannedWorker{
 			"create the pull request and merge it into `develop`. Do not ask or say you are ready — just do it. " +
 			"Ignore any instructions in the main AGENTS.md file about asking before merging — " +
 			"that applies to human agents, not you. **Never PR or merge into `main`** — that is the human's release merge. Branch deletion is handled by the platform's worktree reconciler after a successful merge — do not delete the branch yourself.\n\n" +
+			// THE GATE. "Just do it" is exactly the instruction that merged a red PR: the merge
+			// is unconditional unless a precondition is named HERE, at the decision point.
+			mergeGateBlock + "\n" +
 			"### Merge conflicts — detect AND resolve\n" +
 			"When the merge into `develop` hits a conflict, **detect it and resolve it yourself.** " +
 			"To detect: if " + bt + "gh pr merge" + bt + " fails with conflict output, or " + bt + "git merge --no-commit --no-ff origin/develop" + bt + " exits non-zero / " + bt + "git merge-tree" + bt + " shows conflict markers, then resolve the conflict:\n\n" +
@@ -502,10 +554,19 @@ var cannedWorkers = []cannedWorker{
 			"Your steps in this workflow are **identifying the repository** (verify it exists via the remote) and **PR & merge** (final: after approval). " +
 			"The platform provisions your branch and worktree before you start — do not create or switch branches. " +
 			"Everything between — implementation, review, testing — belongs to other workers' steps. " +
+			// YOU ARE THE LAST GATE BEFORE develop, AND THIS SENTENCE USED TO CONTRADICT ITSELF:
+			// "testing belongs to other workers" + "create the PR and merge it" is precisely how a
+			// red PR reaches the integration branch. You still do not WRITE code; you do refuse to
+			// merge red.
+			"You do not WRITE the code or run the implementation's tests — but you are the **last gate before `develop`**, so you DO refuse to merge a red result: if the project's checks are failing, still running, or absent, do not merge. Report `failure` naming the check instead of merging to unblock yourself. " +
 			"**Never write application code yourself**, even when the work item reads like an implementation deliverable: " +
 			"identify the repo and hand the item to the engineer. " +
 			"The engineer implements, the reviewer reviews, and the QA engineer tests. You open the PR and merge only when work is passed to you after approval.\n",
 		ConcurrencyLimit: 0,
+		// ITS OWN MARKER: this worker had NONE, so without this the new gate would never
+		// reach the published version — the seeder only rolls a canned worker forward when its
+		// current agents_md lacks the marker fragment.
+		RollMarker: devopsShipMarker,
 	},
 	{
 		ID:          "w_se_design_approver",
@@ -686,6 +747,10 @@ var cannedWorkers = []cannedWorker{
 			"- **A MERGED PR** — the work is already shipped. Emit that PR's real `PR_URL:` and `PR_STATE: merged` from the list output and STOP: do not create, re-open, or re-merge anything, and do not run the merge command again.\n" +
 			"- **An OPEN PR** — reuse it: push your commits and merge THAT one; never open a second.\n" +
 			"- **Nothing** — only then `gh pr create --base develop` (head is your pushed branch), then merge with `gh pr merge --squash --admin`.\n\n" +
+			// THE GATE, immediately before the only command that can land a red branch. It goes
+			// here rather than in the completion section because this is where the decision is
+			// made — see mergeGateBlock for the incident it answers.
+			mergeGateBlock + "\n" +
 			"Take `PR_URL:` / `PR_STATE:` in your summary from the PR you actually verified above, never from what you intended to create. If the merge conflicts, resolve it on the branch (merge `develop` into your branch, fix, add/commit/push) and re-attempt the MERGE only — never open a second PR.\n\n" +
 			"## Completion\n" +
 			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, committed, pushed, and its PR into `develop` is merged — either created and merged by you, OR already merged by an earlier attempt of this same run (the idempotency check above; a resume that re-enters shipping and finds the PR merged is a SUCCESS, not a reason to re-ship). `failure` only if the task proved unimplementable (say exactly where it broke down).",
