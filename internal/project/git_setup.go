@@ -59,6 +59,16 @@ type GitSetupReport struct {
 	Skipped string
 	// Err is the failure that stopped setup, if any. Setup is best-effort: the project still exists.
 	Err error
+	// GitMissing means git itself is not installed on the host running this control plane, so NOTHING could be
+	// checked. It is separate from Err because the operator's action is completely different — install git (or
+	// point the plane at the host that has it) rather than fix a repository. On Windows this is the realistic
+	// case: git lives inside WSL, while `orchicon serve` may be running on the native host.
+	GitMissing bool
+	// Warning is a condition that will NOT stop this project being created but WILL stop its runs doing what
+	// the chosen strategy promises — today, a repository with no `origin` under the `local` or `pr` strategy.
+	// It is reported loudly (see the service) rather than logged, because a silent warning here becomes a
+	// push failure at the end of a run, which is where the operator has least context.
+	Warning string
 }
 
 // Summary renders the report for a log line or an operator-facing message.
@@ -72,9 +82,16 @@ func (r GitSetupReport) Summary() string {
 		}
 		return "git setup found nothing to do"
 	default:
-		return strings.Join(r.Done, "; ")
+		out := strings.Join(r.Done, "; ")
+		if r.Warning != "" {
+			out += " — " + r.Warning
+		}
+		return out
 	}
 }
+
+// Loud reports whether this outcome must reach the operator in the transcript, not just the log.
+func (r GitSetupReport) Loud() bool { return r.Err != nil || r.GitMissing || r.Warning != "" }
 
 // bootstrapIdentity is the identity used for the FIRST commit of a repository that had none.
 //
@@ -103,6 +120,17 @@ func EnsureGitState(ctx context.Context, dir, strategy string) GitSetupReport {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return GitSetupReport{Skipped: "the project has no directory yet"}
+	}
+	// GIT IS REQUIRED FOR EVERYTHING BELOW, so it is checked ONCE here rather than surfacing as a generic error
+	// from whichever command happened to run first. The distinction matters to the operator: "git is not
+	// installed" is fixed by installing git, while "could not initialise the repository" sends them looking at
+	// the directory. On Windows the realistic shape is git present inside WSL but absent from the native host
+	// that `orchicon serve` is running on.
+	if _, err := exec.LookPath("git"); err != nil {
+		return GitSetupReport{GitMissing: true, Err: fmt.Errorf(
+			"git is not installed on the host running this control plane, so this project's repository could "+
+				"not be checked or prepared — install git on that host (on Windows that is the native host "+
+				"running orchicon, not the WSL distro), then re-save the project: %w", err)}
 	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		// NOT AN ERROR FOR THE PROJECT — the directory may be on a share this plane cannot see. Say what is
@@ -164,24 +192,121 @@ func EnsureGitState(ctx context.Context, dir, strategy string) GitSetupReport {
 		rep.Needed = true
 	}
 
-	// A BRANCH NAME IS PART OF THE STATE, not cosmetics: provisioning cuts branches from a resolved base, and a
-	// repo left on an unborn or detached HEAD has nothing to resolve (see worktree_baseref.go). A repo that
-	// already has a named branch is untouched.
-	if _, err := gitOut(ctx, dir, "symbolic-ref", "--short", "HEAD"); err != nil {
-		// Detached HEAD with a commit: name the default branch so a base ref exists. The name matches
-		// baseRefCandidates' preferred entry so every existing project's behaviour is consistent.
-		if err := gitRun(ctx, dir, "symbolic-ref", "HEAD", "refs/heads/develop"); err != nil {
-			rep.Err = fmt.Errorf("name the default branch: %w", err)
-			return rep
+	// THE INTEGRATION BRANCH MUST EXIST, and this is the step the first version of this file got wrong.
+	//
+	// `git init` puts the bootstrap commit on git's own DEFAULT branch — `master` on a host with no
+	// `init.defaultBranch`, `main` where it is set — while every git rule this platform injects into a worker's
+	// prompt, and every canned worker, names `develop` as where work lands. The old code only named a branch
+	// when HEAD was DETACHED, which on the normal fresh-repository path never happens: the repo was already on
+	// `master`, so the one case that needed the branch was the one case that did not get it.
+	//
+	// So the sequence below sets the repo's default FIRST (so a future `git init` in this directory agrees),
+	// ensures the integration branch EXISTS, and puts the fresh repository ON it. A repository that already has
+	// the branch is untouched — including one whose current branch is something else entirely, because that is
+	// the operator's choice, not ours to rewrite.
+	//
+	// WHAT IT WILL NOT DO: rewrite an existing branch. If the operator is on `trunk`, they stay on `trunk`; the
+	// integration branch exists for runs to be cut from and land on, which does not require changing their HEAD.
+	if err := ensureIntegrationBranch(ctx, dir, rep.Needed); err != nil {
+		rep.Err = err
+		return rep
+	}
+	if branch, err := integrationBranchNow(ctx, dir); err == nil && branch == integrationBranchName {
+		if rep.Needed {
+			rep.Done = append(rep.Done, "put the repository on "+integrationBranchName)
 		}
-		rep.Done = append(rep.Done, "put HEAD on a named branch (develop)")
-		rep.Needed = true
+	}
+
+	// ---- the remote check: loud, because its absence breaks what the strategy PROMISES ----
+	//
+	// `local` means "push branch only" and `pr` means "push + PR" (db/project.go). BOTH need an `origin`, and
+	// without one the run does its work and then cannot deliver it — the failure lands at the END of a run,
+	// where the operator has least context. This file will not invent a remote (that would mean guessing a
+	// URL), so it says so instead, while they are looking at the project.
+	//
+	// Reported for the `none` strategy too? No: an ephemeral run keeps no branch, so it needs no remote, and
+	// warning about one would be noise on a strategy that is working as designed.
+	if !hasRemote(ctx, dir, "origin") {
+		rep.Warning = fmt.Sprintf(
+			"this repository has no `origin` remote, so the %q strategy cannot push the run's branch (or open a "+
+				"PR) when work is done — add one (git remote add origin <url>) or choose the %q strategy, which "+
+				"keeps no branch and needs no remote", strategy, "none")
 	}
 
 	if !rep.Needed {
 		rep.Skipped = "the repository is already usable for git-backed runs"
 	}
 	return rep
+}
+
+// integrationBranchName is where git-backed work LANDS. It is the same name every injected git rule and every
+// canned worker already assumes, which is exactly why setup must ensure it exists rather than trusting git's
+// default.
+const integrationBranchName = "develop"
+
+// ensureIntegrationBranch makes the repository's default and the integration branch correct.
+//
+// createdSomething says whether this setup run has ALREADY changed the repository. That is what distinguishes a
+// FRESH repository (which should end up ON the integration branch) from an existing one (whose current branch is
+// the operator's and must be left alone).
+func ensureIntegrationBranch(ctx context.Context, dir string, createdSomething bool) error {
+	// The repo's own default, so this directory's next `git init` — and any reconciliation by git — agrees.
+	if err := gitRun(ctx, dir, "config", "init.defaultBranch", integrationBranchName); err != nil {
+		return fmt.Errorf("set the repository's default branch: %w", err)
+	}
+	exists, err := branchCommitExists(ctx, dir, integrationBranchName)
+	if err != nil {
+		return fmt.Errorf("look for the integration branch: %w", err)
+	}
+	if !exists {
+		if err := gitRun(ctx, dir, "branch", integrationBranchName); err != nil {
+			return fmt.Errorf("create the integration branch %s: %w", integrationBranchName, err)
+		}
+	}
+	// A fresh repository is put onto it. An EXISTING repository keeps whatever branch the operator chose — the
+	// integration branch is there for runs to be cut from, which does not require moving their HEAD.
+	if createdSomething {
+		if err := gitRun(ctx, dir, "symbolic-ref", "HEAD", "refs/heads/"+integrationBranchName); err != nil {
+			return fmt.Errorf("switch the new repository to %s: %w", integrationBranchName, err)
+		}
+	}
+	return nil
+}
+
+// integrationBranchNow reports the branch HEAD is on ("" when detached).
+func integrationBranchNow(ctx context.Context, dir string) (string, error) {
+	out, err := gitOut(ctx, dir, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// branchCommitExists reports whether a local branch exists AND has a commit.
+func branchCommitExists(ctx context.Context, dir, branch string) (bool, error) {
+	out, err := gitOut(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	if err != nil {
+		// --quiet exits non-zero with NO output when the ref is absent; that is the answer, not a failure.
+		if strings.TrimSpace(out) == "" {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// hasRemote reports whether the repository has a remote under that name with at least one URL.
+func hasRemote(ctx context.Context, dir, name string) bool {
+	out, err := gitOut(ctx, dir, "remote")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == name {
+			return true
+		}
+	}
+	return false
 }
 
 // isRepo reports whether dir is inside a git work tree.
