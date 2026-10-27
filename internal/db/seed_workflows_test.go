@@ -141,3 +141,114 @@ func TestSeedAutomationResearchWorkflow(t *testing.T) {
 		t.Errorf("steps missing End step")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// QUICK WORK INHERITS ITS GIT STRATEGY — it does not pin PR.
+//
+// REPORTED: "change the seed for the Quick Work workflow to say 'inherit' as opposed to PR
+// mode so people aren't stuck with that mode and it's driven from their project."
+//
+// The pin was load-bearing and wrong: a workflow-level strategy BEATS the project
+// (db.effectiveGitStrategyValue — workflow wins over project), so every install carried a
+// template that forced PR mode no matter what the operator configured.
+//
+// The half that is easy to miss: seeding "" only fixes FRESH installs. The seeder's
+// propagation only ever wrote a value when the seed PINNED one, so an existing host kept
+// "pr" forever — which is exactly the machine that reported this. UnpinGitStrategy exists
+// for that, and these tests assert both halves.
+// ---------------------------------------------------------------------------
+
+// cannedWorkflowByName returns a canned workflow definition by name.
+func cannedWorkflowByName(t *testing.T, name string) db.CannedWorkflowView {
+	t.Helper()
+	for _, w := range db.CannedWorkflowViews() {
+		if w.Name == name {
+			return w
+		}
+	}
+	t.Fatalf("no canned workflow named %q", name)
+	return db.CannedWorkflowView{}
+}
+
+// TestQuickWorkSeedDoesNotPinAGitStrategy: the seed must INHERIT.
+func TestQuickWorkSeedDoesNotPinAGitStrategy(t *testing.T) {
+	w := cannedWorkflowByName(t, "Quick Work")
+	if w.GitStrategy != "" {
+		t.Errorf("Quick Work pins git_strategy=%q — an empty value means INHERIT, so the bound "+
+			"project decides. A pin here overrides the operator's own project setting, which is "+
+			"what left them stuck in PR mode.", w.GitStrategy)
+	}
+}
+
+// TestQuickWorkSeedUnpinsAnExistingPin: seeding "" is not enough — a host that already has
+// "pr" stored must be cleared back to NULL, or the fix reaches fresh installs only.
+func TestQuickWorkSeedUnpinsAnExistingPin(t *testing.T) {
+	w := cannedWorkflowByName(t, "Quick Work")
+	if !w.UnpinGitStrategy {
+		t.Fatal("Quick Work does not set UnpinGitStrategy, so an EXISTING install that was " +
+			"seeded with \"pr\" keeps it forever — the seeder only writes when the seed pins a " +
+			"value, and this machine is the one that reported the problem")
+	}
+}
+
+// TestNoCannedWorkflowPinsAGitStrategy is the rule rather than the instance: a canned
+// template is shared by every project, so pinning a strategy on one overrides whatever the
+// operator configured. If a future workflow genuinely needs a pin, this test is where that
+// decision gets argued.
+func TestNoCannedWorkflowPinsAGitStrategy(t *testing.T) {
+	for _, w := range db.CannedWorkflowViews() {
+		if w.GitStrategy != "" {
+			t.Errorf("canned workflow %q pins git_strategy=%q — a shared template must inherit "+
+				"the bound project's strategy, or every install is forced into one operator's "+
+				"per-workflow choice", w.Name, w.GitStrategy)
+		}
+	}
+}
+
+// TestUnpinClearsAStoredStrategyDB proves the propagation against a REAL row: seed a workflow
+// pinned to "pr", run the seeder, and assert the pin is gone and the project now decides.
+func TestUnpinClearsAStoredStrategyDB(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+	const tenant = "tnt_dev" // SeedDevWorkflows is tenant-fixed
+
+	if err := db.SeedDevWorkflows(ctx, pool); err != nil {
+		t.Fatalf("seed workflows: %v", err)
+	}
+
+	// A row that some earlier release pinned to "pr" — the state of a real, existing install.
+	ttx, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const qwID = "01M1ERHNCNF38MP3SEV1GTH26G"
+	if _, err := ttx.Tx.Exec(ctx,
+		`UPDATE workflows SET git_strategy = 'pr' WHERE id = $1 AND tenant_id = $2`,
+		qwID, tenant); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-seed — this is what a boot does.
+	if err := db.SeedDevWorkflows(ctx, pool); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+
+	ttx2, err := pool.BeginTenantTx(ctx, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ttx2.Rollback(ctx)
+	var stored *string
+	if err := ttx2.Tx.QueryRow(ctx,
+		`SELECT git_strategy FROM workflows WHERE id = $1 AND tenant_id = $2`,
+		qwID, tenant).Scan(&stored); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if stored != nil {
+		t.Fatalf("after re-seeding, Quick Work still stores git_strategy=%q — an existing install "+
+			"stays pinned to PR mode and the operator is stuck with exactly what was reported", *stored)
+	}
+}
