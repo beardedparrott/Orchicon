@@ -971,15 +971,34 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 	// picked for a different decision and have long since forgotten. Clearing on
 	// the transition makes the item say what is true: local mode, no image.
 	//
-	// THE REQUEST'S OWN IMAGE STILL WINS. The order matters: an operator who
-	// selects local AND picks an image in the same save is expressing an intent
-	// for the next runtime switch, not a contradiction — so the explicit value is
-	// applied after this clear and survives.
+	// LOCAL AND AN IMAGE IN THE SAME REQUEST IS NOT A CONTRADICTION TO RESOLVE —
+	// LOCAL WINS, ALWAYS.
 	//
-	// ABSENT EXECUTION_MODE MEANS UNCHANGED, so this only fires on an EXPLICIT
-	// local (the field-mask semantics the rest of this request follows); an
-	// ordinary edit of a local item cannot silently wipe an image the operator set
-	// deliberately.
+	// The first version of this kept the request's own image ("an explicit image
+	// wins"), reasoning that an operator selecting local AND picking an image was
+	// expressing an intent for the next switch back to runtime. That reasoning is
+	// unsound on the wire, and it made the clear a no-op in the GUI:
+	//
+	//   the GUI's image input is PREFILLED from the item and is NOT cleared when
+	//   the operator changes the execution-mode select, and it saves with
+	//   `runtimeImage: editRuntimeImage || undefined` — so switching to local sent
+	//   BOTH, the carve-out matched, and the field survived. Reported: "I set the
+	//   work item to runtime and then back to local and it did not flip the runtime
+	//   image field to nothing."
+	//
+	// "Deliberately chose an image AND local" and "the form round-tripped the value
+	// it was seeded with" are INDISTINGUISHABLE in the request, so no carve-out can
+	// honour the first without defeating the second — which is the one that matters,
+	// because it is what every GUI save of a local item looks like.
+	//
+	// The cost of always clearing is small and recoverable: an operator who meant to
+	// pre-stage an image for a later runtime switch picks it again when they switch.
+	// The cost of NOT clearing is the defect above — an item that claims a local run
+	// while carrying the image it will silently use next time.
+	//
+	// ABSENT EXECUTION_MODE STILL MEANS UNCHANGED (the field-mask semantics the rest
+	// of this request follows), so this fires only on an EXPLICIT local and an
+	// ordinary edit of a local item still cannot wipe anything.
 	if msg.ExecutionMode != nil && fields.ExecutionMode != nil && *fields.ExecutionMode == db.ExecutionModeLocal {
 		fields.ClearRuntimeImage = true
 	}
@@ -990,8 +1009,11 @@ func (s *Service) UpdateWorkItem(ctx context.Context, req *connect.Request[apiv1
 			v = s.runtimeImageFn(ctx)
 		}
 		fields.RuntimeImage = &v
-		// An explicit image on the same request overrides the clear: see above.
-		fields.ClearRuntimeImage = false
+		if fields.ClearRuntimeImage {
+			// LOCAL WINS: drop the image field so the clear is not defeated by a value
+			// the client merely round-tripped. See the block above.
+			fields.RuntimeImage = nil
+		}
 	}
 	if msg.ContextFiles != nil {
 		paths := msg.ContextFiles.Files
