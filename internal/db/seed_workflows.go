@@ -18,10 +18,27 @@ type cannedWorkflow struct {
 	VersionNote string
 	StepsJSON   string // JSON array of step objects
 	// GitStrategy pins the workflows row's git_strategy (local|pr|none).
-	// Empty = NULL (inherit the effective strategy). The Quick Work template
-	// pins "pr" so the run ends with a PR merged into develop (Quick SWE
-	// pushes, DevOps opens + merges).
+	// Empty = NULL = INHERIT the effective strategy (project -> default), which is what
+	// every canned workflow now does.
+	//
+	// QUICK WORK USED TO PIN "pr", AND IT IS THE REASON THIS FIELD IS EMPTY EVERYWHERE.
+	// A pinned strategy BEATS the project (db.effectiveGitStrategyValue: workflow wins over
+	// project), so every install carried a template that forced PR mode regardless of what
+	// the operator had configured — reported on Windows as being "stuck with that mode".
+	// An allowlist entry that overrides the operator's own project setting is a trap, not a
+	// default: inherit means the project decides, which is what "driven from their project"
+	// has to mean.
 	GitStrategy string
+
+	// UnpinGitStrategy, when true, CLEARS a previously pinned git_strategy on an existing
+	// row (sets it back to NULL/inherit).
+	//
+	// SEEDING "" IS NOT ENOUGH ON ITS OWN, and this is the subtle half: the propagation
+	// below only runs `UPDATE … SET git_strategy` when the seed PINS a value, so a workflow
+	// that has already been installed keeps whatever it was created with. Without this flag
+	// the Quick Work fix would apply to fresh installs only — and every existing host,
+	// including the one that reported the problem, would stay pinned to "pr" forever.
+	UnpinGitStrategy bool
 }
 
 var cannedWorkflows = []cannedWorkflow{
@@ -77,13 +94,38 @@ var cannedWorkflows = []cannedWorkflow{
 		ID:          "01M1ERHNCNF38MP3SEV1GTH26G",
 		VersionID:   "wfv_quick_work_v1",
 		Name:        "Quick Work",
-		VersionNote: "Merge-autonomy fast path (git_strategy=pr): the all-in-one Quick Software Engineer implements, verifies green, commits to the run branch, pushes to origin, and opens + merges the PR into develop, then End. There is no separate DevOps step — the Quick worker owns PR creation + merge (PR_URL + PR_STATE), so the run ends merged with fully autonomous handoff.",
-		GitStrategy: "pr",
+		VersionNote: "Merge-autonomy fast path (git_strategy=INHERIT — the bound PROJECT decides local/pr/none): the all-in-one Quick Software Engineer implements, verifies green, commits to the run branch, pushes to origin, then ships according to that strategy. There is no separate DevOps step — the Quick worker owns PR creation + merge (PR_URL + PR_STATE) when the strategy is pr, so the run ends merged with fully autonomous handoff.",
+		GitStrategy: "",
+		UnpinGitStrategy: true,
 		StepsJSON: `[
   {"id":"step-quick","ref":"01M1ERH9921YS9S1QWGZV8D1VM","kind":"task","name":"Quick Software Engineer","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","depends_on":[],"position_x":73.66668701171875,"position_y":28.75,"worker_version":0,"gate_policy_ref":""},
   {"id":"step-end","ref":"","kind":"end","name":"End","config":"{}","depends_on":["step-quick"],"position_x":366.4761407515862,"position_y":43.75,"worker_version":0,"gate_policy_ref":""}
 ]`,
 	},
+}
+
+// CannedWorkflows returns the canned-workflow seed definitions (read-only view for tooling
+// and tests), mirroring CannedWorkers. The returned slice must not be mutated.
+func CannedWorkflows() []cannedWorkflow { return cannedWorkflows }
+
+// CannedWorkflowView is the exported read-only shape of a canned workflow seed.
+type CannedWorkflowView struct {
+	ID               string
+	Name             string
+	GitStrategy      string
+	UnpinGitStrategy bool
+}
+
+// CannedWorkflowViews is the exported, fully-typed view for external test packages.
+func CannedWorkflowViews() []CannedWorkflowView {
+	out := make([]CannedWorkflowView, 0, len(cannedWorkflows))
+	for _, w := range cannedWorkflows {
+		out = append(out, CannedWorkflowView{
+			ID: w.ID, Name: w.Name,
+			GitStrategy: w.GitStrategy, UnpinGitStrategy: w.UnpinGitStrategy,
+		})
+	}
+	return out
 }
 
 // retiredCannedWorkflow is a template that was once seeded as canned but
@@ -292,6 +334,23 @@ func seedWorkflow(ctx context.Context, ttx *TenantTx, w cannedWorkflow) error {
 				)
 				if err != nil {
 					return fmt.Errorf("update seed workflow git_strategy: %w", err)
+				}
+			} else if w.UnpinGitStrategy {
+				// A SEED THAT NO LONGER PINS MUST BE ABLE TO UNDO A PIN IT ONCE SET.
+				//
+				// The branch above only ever WRITES a value, so removing a pin from the seed
+				// left every existing install carrying the old value — the fix would apply to
+				// fresh installs only and the reporting host would stay stuck. This clears it
+				// back to NULL so the project decides, which is what inherit means
+				// (db.effectiveGitStrategyValue: an empty workflow strategy falls through to
+				// the project).
+				_, err = ttx.Exec(ctx,
+					`UPDATE workflows SET git_strategy = NULL, updated_at = now()
+					 WHERE id = $1 AND tenant_id = 'tnt_dev' AND git_strategy IS NOT NULL`,
+					w.ID,
+				)
+				if err != nil {
+					return fmt.Errorf("unpin seed workflow git_strategy: %w", err)
 				}
 			}
 		}

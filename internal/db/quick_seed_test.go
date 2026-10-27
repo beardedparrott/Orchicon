@@ -112,8 +112,19 @@ func TestQuickWorkflowSeedDefinition(t *testing.T) {
 	if w.VersionID != "wfv_quick_work_v1" {
 		t.Errorf("VersionID = %q, want wfv_quick_work_v1", w.VersionID)
 	}
-	if w.GitStrategy != "pr" {
-		t.Errorf("GitStrategy = %q, want pr (merge autonomy: the all-in-one Quick SWE implements, pushes, AND opens + merges the PR)", w.GitStrategy)
+	// INHERIT, NOT A PIN. This asserted "pr" for merge autonomy, and that was the defect:
+	// a workflow-level strategy BEATS the project (db.effectiveGitStrategyValue), so the
+	// canned template forced PR mode on every install no matter what the operator configured
+	// — reported on Windows as being stuck in it. Empty = NULL = the bound project decides.
+	// The merge-autonomy behaviour is unchanged where the project asks for it; it is now just
+	// the project's call rather than the template's.
+	if w.GitStrategy != "" {
+		t.Errorf("GitStrategy = %q, want \"\" (INHERIT: the bound project decides local/pr/none; "+
+			"a pin here overrides the operator's own project setting)", w.GitStrategy)
+	}
+	if !w.UnpinGitStrategy {
+		t.Error("UnpinGitStrategy = false, want true — an install seeded with the old \"pr\" pin " +
+			"must be cleared on re-seed, or the fix reaches fresh installs only")
 	}
 	var steps []map[string]any
 	if err := json.Unmarshal([]byte(w.StepsJSON), &steps); err != nil {
