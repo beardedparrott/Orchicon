@@ -530,6 +530,12 @@ synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
 no-operator-paths: ## CI gate: no real person's home directory in any tracked file (code, comments, docs, fixtures)
 	scripts/check_no_operator_paths.sh
 
+# A RELEASE IS THE ONE BUILD WHOSE SOURCE MUST BE EXACT. Building from a dirty tree stamps vcs.modified=true,
+# so the binary at commit X does not contain commit X — bug reports cite a revision that lacks the code under
+# test and git bisect cannot work. This refuses rather than warns; see the script's header for the full case.
+release-src-check: ## Refuse a release from a dirty tree (pass tag= to also require HEAD == that tag)
+	scripts/check_release_source_clean.sh $(tag)
+
 adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image layers (ADR-0003/0005)
 	go test ./internal/runtime/ -run 'TestAdapterCLINeverBaked' -count=1 -v
 

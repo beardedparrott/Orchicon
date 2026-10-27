@@ -116,6 +116,10 @@ jobs:
           # shipping. TestReleaseWorkflowPackagesTheWindowsZip asserts this wiring.
     steps:
       - uses: actions/checkout@v4
+        with:
+          # FULL HISTORY, not a shallow clone. The source check below has to see the tag's commit, and
+          # `git rev-parse <tag>^{commit}` cannot compare against history the checkout does not have.
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -125,8 +129,27 @@ jobs:
         with:
           node-version: '22'
 
+      # REFUSE A RELEASE WHOSE SOURCE IS NOT EXACTLY THE REVISION IT NAMES.
+      #
+      # A build from a dirty tree stamps vcs.modified=true, so the binary at commit X does not contain commit
+      # X: bug reports cite a revision that lacks the code under test and git bisect cannot work. This runs
+      # BEFORE the build — an artifact that cannot be reproduced should not be produced at all — and it also
+      # requires HEAD to be the release tag, because a clean tree at the wrong commit reproduces just as
+      # falsely. See scripts/check_release_source_clean.sh.
+      - name: Verify the release source is reproducible
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: scripts/check_release_source_clean.sh "${ORCHICON_VERSION}"
+
       - name: Build frontend
         run: cd frontend && npm ci && npm run build
+
+      # THE BUILD ITSELF MUST NOT DIRTY THE TREE. npm ci + the frontend build are the realistic ways a
+      # "clean checkout" stops being clean (a lockfile rewrite, a generated wailsjs tree), so this re-checks
+      # AFTER them: the first check proves the checkout was clean, this one proves the binary is still built
+      # from it.
+      - name: Verify the build did not dirty the tree
+        run: scripts/check_release_source_clean.sh
 
       - name: Build binary
         env:
