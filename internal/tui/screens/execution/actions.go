@@ -975,6 +975,18 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 	// above warns about.
 	if len(m.Base.MarkedIDs()) > 0 && kstr == m.paneDeleteChord() {
 		n, k := len(m.Base.MarkedIDs()), len(m.markableIDs())
+		// ONE MARK IS NOT A BULK SELECTION, BUT ON THE SCHEDULES PANE IT IS STILL A TARGET.
+		//
+		// The refusal below exists so a mark never silently RETARGETS onto the cursor row. On the
+		// Schedules pane the per-row delete IS the operation, so a single marked schedule must be
+		// acted on as that row: refusing it made the operator's one marked row do nothing at all
+		// ("deleting schedules … seems to no longer work"). Acting on the MARKED id keeps the
+		// original rule intact — the confirm still names the marked row, never the cursor's.
+		if m.ActiveSourceName() == srcSchedules && k == 1 {
+			if acts := m.scheduleDeleteActions(m.markableIDs()); len(acts) > 0 {
+				return m.openAction(acts[0]), true
+			}
+		}
 		if k < kit2.BulkThreshold {
 			if k < n {
 				return m.refuse(fmt.Sprintf("%d rows are marked but only %d can be deleted here — a "+

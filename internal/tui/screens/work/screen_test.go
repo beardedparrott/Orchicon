@@ -56,9 +56,9 @@ type fakePlane struct {
 	imgOrder  []string
 	nextID    int
 
-	created     []*apiv1.CreateWorkItemRequest
-	updated     []*apiv1.UpdateWorkItemRequest
-	deleted     []string
+	created []*apiv1.CreateWorkItemRequest
+	updated []*apiv1.UpdateWorkItemRequest
+	deleted []string
 	// hardDeleted records HardDeleteWorkItem calls. It is separate from `deleted`
 	// because the two are DIFFERENT gestures — `deleted` is the soft delete (status →
 	// cancelled), `hardDeleted` is the GUI's permanent Delete, which is what the TUI's
@@ -204,7 +204,31 @@ func (p *fakePlane) CreateWorkItem(_ context.Context, req *connect.Request[apiv1
 		AutoStartWorkflow:  boolPtr(req.Msg.GetAutoStartWorkflow()),
 		CreatedAt:          timestamppb.Now(),
 	})
+	// The EXECUTION-MODE OVERRIDE is stored the way the column stores it: a present enum is an
+	// override, EXECUTION_MODE_UNSPECIFIED (the create field's "inherit") is NULL. A fake that wrote
+	// the zero value as an override would let a test "prove" inherit while the item carried one.
+	if mode := req.Msg.GetExecutionMode(); mode != apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED {
+		w.ExecutionMode = mode.Enum()
+	}
+	p.resolveEffectiveMode(w)
 	return connect.NewResponse(&apiv1.CreateWorkItemResponse{WorkItem: w}), nil
+}
+
+// resolveEffectiveMode mirrors db.EffectiveExecutionMode: item override -> project mode -> tenant
+// default (local). The detail pane renders THIS, so the fake has to resolve it or the round-trip test
+// would be asserting against a field nothing ever writes.
+func (p *fakePlane) resolveEffectiveMode(w *apiv1.WorkItem) {
+	if mode := w.GetExecutionMode(); mode != apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED {
+		w.EffectiveExecutionMode = mode
+		return
+	}
+	if pr, ok := p.projects[w.GetProjectId()]; ok {
+		if mode := pr.GetExecutionMode(); mode != apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED {
+			w.EffectiveExecutionMode = mode
+			return
+		}
+	}
+	w.EffectiveExecutionMode = apiv1.ExecutionMode_EXECUTION_MODE_LOCAL
 }
 
 func (p *fakePlane) GetWorkItem(_ context.Context, req *connect.Request[apiv1.GetWorkItemRequest]) (*connect.Response[apiv1.GetWorkItemResponse], error) {
@@ -214,6 +238,10 @@ func (p *fakePlane) GetWorkItem(_ context.Context, req *connect.Request[apiv1.Ge
 	if !ok {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
 	}
+	// A SINGLE-ITEM read carries the RESOLVED mode (work_item.pb.go: effective_execution_mode is
+	// populated on Get/Create/Update), and the detail pane renders it — so the fake resolves it on
+	// read, exactly where the server does, instead of leaving a field only the tests could fill.
+	p.resolveEffectiveMode(w)
 	return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: w}), nil
 }
 
@@ -293,6 +321,17 @@ func (p *fakePlane) UpdateWorkItem(_ context.Context, req *connect.Request[apiv1
 	if m.ScheduledStartAt != nil {
 		w.ScheduledStartAt = m.GetScheduledStartAt()
 	}
+	// THE EXECUTION-MODE OVERRIDE, BOTH HALVES, WITH CLEAR WINS — the server's rule
+	// (work_item_service.proto:295-300), not a shortcut. An ABSENT execution_mode means UNCHANGED, so
+	// a fake that only honoured the enum would make "remove the override" unassertable; and a fake
+	// that applied them in the other order would pass a request the plane treats differently.
+	// clear_execution_mode writes NULL (the column's only "inherit" representation).
+	if m.GetClearExecutionMode() {
+		w.ExecutionMode = nil
+	} else if m.ExecutionMode != nil {
+		w.ExecutionMode = m.GetExecutionMode().Enum()
+	}
+	p.resolveEffectiveMode(w)
 	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: w}), nil
 }
 
@@ -329,7 +368,7 @@ func (p *fakePlane) HardDeleteWorkItem(_ context.Context, req *connect.Request[a
 	}
 	if w.GetStatus() == apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-				errors.New("an idea must be dismissed, not deleted"))
+			errors.New("an idea must be dismissed, not deleted"))
 	}
 	p.hardDeleted = append(p.hardDeleted, req.Msg.GetId())
 	delete(p.items, req.Msg.GetId())

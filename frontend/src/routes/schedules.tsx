@@ -126,6 +126,18 @@ function SchedulesPage() {
   const hasProjects = projects && projects.length > 0;
   const cancelScheduled = useDeleteWorkItem(projectId);
   const removeSchedule = useRemoveSchedule(projectId);
+  // One cached read for the per-row removal's title and status. The views
+  // already request this list (same key, no extra request); having it here
+  // lets a single-row removal name the row it is about and lets a bulk
+  // removal return a SCHEDULED/RECURRING item to PENDING.
+  const { data: listItems } = useListWorkItems(projectId, {
+    refetchInterval: 5_000,
+  });
+  const itemsById = useMemo(() => {
+    const m = new Map<string, WorkItemProto>();
+    for (const i of listItems ?? []) m.set(i.id, i);
+    return m;
+  }, [listItems]);
 
   const goView = (nextView: "upcoming" | "running" | "history") => {
     navigate({ search: (prev) => ({ ...prev, view: nextView }) });
@@ -166,17 +178,22 @@ function SchedulesPage() {
     setSelected(new Set());
   };
 
-  const handleRemoveSchedule = () => {
-    if (selected.size === 0) return;
-    const count = selected.size;
+  const handleRemoveSchedule = (ids: string[] = Array.from(selected)) => {
+    if (ids.length === 0) return;
+    const count = ids.length;
+    const one = count === 1 ? itemsById.get(ids[0]) : undefined;
     if (
       !window.confirm(
-        `Remove ${count} schedule${count === 1 ? "" : "s"}? The work items will remain unchanged.`,
+        count === 1
+          ? `Remove the schedule from "${one?.title ?? ids[0]}"? The work item itself is unchanged — its recurring and scheduled start are cleared.`
+          : `Remove ${count} schedules? The work items will remain unchanged.`,
       )
     ) {
       return;
     }
-    Array.from(selected).forEach((id) => removeSchedule.mutate(id));
+    ids.forEach((id) =>
+      removeSchedule.mutate({ id, status: itemsById.get(id)?.status }),
+    );
     setSelected(new Set());
   };
 
@@ -300,28 +317,34 @@ function SchedulesPage() {
           <option value="desc">Desc</option>
         </select>
 
-        {selected.size > 0 &&
-          (view === "history" ? (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={handleRemoveSchedule}
-              disabled={removeSchedule.isPending}
-            >
-              <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
-              Remove {selected.size} schedule{selected.size === 1 ? "" : "s"}
-            </Button>
-          ) : (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={handleCancelSelected}
-              disabled={cancelScheduled.isPending}
-            >
-              <Ban aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
-              Cancel {selected.size} selected
-            </Button>
-          ))}
+        {selected.size > 0 && (
+          <>
+            {/* Upcoming and History rows carry a schedule; Running rows are
+                in flight, where the destructive act is the cancel. */}
+            {(view === "history" || view === "upcoming") && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => handleRemoveSchedule()}
+                disabled={removeSchedule.isPending}
+              >
+                <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+                Remove {selected.size} schedule{selected.size === 1 ? "" : "s"}
+              </Button>
+            )}
+            {view !== "history" && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleCancelSelected}
+                disabled={cancelScheduled.isPending}
+              >
+                <Ban aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+                Cancel {selected.size} selected
+              </Button>
+            )}
+          </>
+        )}
       </div>
 
       {!hasProjects && (
@@ -346,6 +369,8 @@ function SchedulesPage() {
           selected={selected}
           onToggleSelect={toggleSelect}
           onToggleSelectAll={toggleSelectAll}
+          onRemove={handleRemoveSchedule}
+          removing={removeSchedule.isPending}
         />
       )}
 
@@ -373,6 +398,8 @@ function SchedulesPage() {
           selected={selected}
           onToggleSelect={toggleSelect}
           onToggleSelectAll={toggleSelectAll}
+          onRemove={handleRemoveSchedule}
+          removing={removeSchedule.isPending}
         />
       )}
     </div>
@@ -393,6 +420,12 @@ function UpcomingView({
   selected,
   onToggleSelect,
   onToggleSelectAll,
+  // DECLARED IN THE PROP TYPE AND THEREFORE MUST BE DESTRUCTURED. Their absence was a
+  // hard TS2304 at the two pass-through sites below: the props were typed, the parent
+  // passed them, and nothing bound them here — so `tsc -b` failed and `make fe-typecheck`
+  // (the only gate that can see a type error) went red on develop.
+  onRemove,
+  removing,
 }: {
   projectId: string;
   search: string;
@@ -403,6 +436,8 @@ function UpcomingView({
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: (items: WorkItemProto[]) => void;
+  onRemove: (ids: string[]) => void;
+  removing: boolean;
 }) {
   const {
     data: scheduled,
@@ -536,6 +571,8 @@ function UpcomingView({
           projects={projects}
           selected={selected}
           onToggleSelect={onToggleSelect}
+          onRemove={onRemove}
+          removing={removing}
           parentIds={parentIds}
         />
       ))}
@@ -674,6 +711,8 @@ function AgendaGroup({
   projects,
   selected,
   onToggleSelect,
+  onRemove,
+  removing,
   parentIds,
 }: {
   group: { key: string; label: string; items: WorkItemProto[] };
@@ -682,6 +721,8 @@ function AgendaGroup({
   projects?: Project[];
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
+  onRemove: (ids: string[]) => void;
+  removing: boolean;
   parentIds: Set<string>;
 }) {
   return (
@@ -725,6 +766,8 @@ function AgendaGroup({
                   projects={projects}
                   selected={selected.has(item.id)}
                   onToggleSelect={onToggleSelect}
+                  onRemove={onRemove}
+                  removing={removing}
                   isSequenceParent={parentIds.has(item.id)}
                 />
               </div>
@@ -742,6 +785,8 @@ function ScheduleCard({
   projects,
   selected,
   onToggleSelect,
+  onRemove,
+  removing,
   isSequenceParent,
 }: {
   item: WorkItemProto;
@@ -749,6 +794,8 @@ function ScheduleCard({
   projects?: Project[];
   selected: boolean;
   onToggleSelect: (id: string) => void;
+  onRemove: (ids: string[]) => void;
+  removing: boolean;
   isSequenceParent: boolean;
 }) {
   const projectName = projects?.find((p) => p.id === item.projectId)?.name;
@@ -800,6 +847,21 @@ function ScheduleCard({
           </CardContent>
         </Card>
       </Link>
+      {/* THE ROW-LEVEL REMOVE. The bulk gesture (tick, then the bar button)
+          was the ONLY way to remove one schedule — an operator clicking the
+          row got a navigation and no delete at all. This is the same
+          destructive affordance the row offers elsewhere in the GUI. */}
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-label={`Remove schedule from ${item.title}`}
+        title="Remove schedule"
+        disabled={removing}
+        onClick={() => onRemove([item.id])}
+        className="shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+      >
+        <Trash2 aria-hidden="true" className="h-4 w-4" />
+      </Button>
     </div>
   );
 }
@@ -1032,6 +1094,9 @@ function HistoryView({
   selected,
   onToggleSelect,
   onToggleSelectAll,
+  // Same omission as UpcomingView above — typed, passed, never bound.
+  onRemove,
+  removing,
 }: {
   projectId: string;
   search: string;
@@ -1041,6 +1106,8 @@ function HistoryView({
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: (items: WorkItemProto[]) => void;
+  onRemove: (ids: string[]) => void;
+  removing: boolean;
 }) {
   // History is run-driven: enumerate the tenant's workflow runs for the
   // selected scope (project, or all projects when empty) ordered by each
@@ -1183,6 +1250,8 @@ function HistoryView({
                 projects={projects}
                 selected={run.workItemId ? selected.has(run.workItemId) : false}
                 onToggleSelect={onToggleSelect}
+                onRemove={onRemove}
+                removing={removing}
               />
             </div>
           </li>
@@ -1199,6 +1268,8 @@ function HistoryCard({
   projects,
   selected,
   onToggleSelect,
+  onRemove,
+  removing,
 }: {
   run: WorkflowRun;
   item?: WorkItemProto;
@@ -1206,6 +1277,8 @@ function HistoryCard({
   projects?: Project[];
   selected: boolean;
   onToggleSelect: (id: string) => void;
+  onRemove: (ids: string[]) => void;
+  removing: boolean;
 }) {
   const projectName = projects?.find((p) => p.id === run.projectId)?.name;
   const ranAt = historyRunRanAt(run);
@@ -1264,6 +1337,19 @@ function HistoryCard({
           </CardContent>
         </Card>
       </Link>
+      {itemId && (
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={`Remove schedule from ${title}`}
+          title="Remove schedule"
+          disabled={removing}
+          onClick={() => onRemove([itemId])}
+          className="shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+        >
+          <Trash2 aria-hidden="true" className="h-4 w-4" />
+        </Button>
+      )}
     </div>
   );
 }
