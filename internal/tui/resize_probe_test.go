@@ -40,10 +40,10 @@ func TestSizeProbeDropsAnUnchangedSize(t *testing.T) {
 // TestSizeProbeForwardsARealChange pins the case the probe exists for: a window drag.
 func TestSizeProbeForwardsARealChange(t *testing.T) {
 	cases := []struct {
-		name                   string
-		probe                  terminalSizeProbeMsg
-		currentW, currentH     int
-		wantW, wantH           int
+		name               string
+		probe              terminalSizeProbeMsg
+		currentW, currentH int
+		wantW, wantH       int
 	}{
 		{"wider", terminalSizeProbeMsg{width: 140, height: 40}, 120, 40, 140, 40},
 		{"taller", terminalSizeProbeMsg{width: 120, height: 50}, 120, 40, 120, 50},

@@ -2592,19 +2592,7 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 		// handled in dispatch (App-level sizing)
 		return m, nil
 	}
-	// THE TERMINAL-SIZE PROBE (resize_probe.go). On Windows bubbletea's own resize event is a console input
-	// event, and the input path that makes bracketed paste and Shift+Enter work is the one that bypasses it —
-	// so the shell re-derives the size on its own cheap chain. An UNCHANGED size is dropped here, because the
-	// renderer repaints on every WindowSizeMsg and the probe is a quarter-second poll.
-	if probe, ok := msg.(terminalSizeProbeMsg); ok {
-		if wm := windowSizeFromProbe(probe, m.width, m.height); wm != nil {
-			return m.dispatch(wm)
-		}
-		return m, nil
-	}
-	if _, ok := msg.(sizeProbeTickMsg); ok {
-		return m.handleSizeProbeTick()
-	}
+
 	if m.diffOpen && m.diffPane != nil {
 		if consumed, cmd := m.diffMsg(msg); consumed {
 			return m, cmd
