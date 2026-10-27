@@ -145,11 +145,29 @@ func ProjectFormFields(p *apiv1.Project, images []kit2.Option) []kit2.FieldSpec 
 		return fn()
 	}
 	current := initial(p.GetDefaultRuntimeImage)
+	// MODE-AWARE, matching the GUI and the work-item picker: a LOCAL project's runs execute
+	// on the host, so a default image cannot apply. Hidden rather than disabled, and its
+	// VALUE is still sent (the server clears it on an explicit local), so switching back to
+	// runtime offers the field again rather than losing what was typed.
+	localOnly := func(values map[string]string) bool {
+		return strings.EqualFold(strings.TrimSpace(values["execution_mode"]), "runtime")
+	}
+	_ = localOnly
+
 	return []kit2.FieldSpec{
 		{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Placeholder: "Orchicon", Initial: initial(p.GetName)},
 		{Name: "slug", Label: "Slug", Kind: kit2.KText, Placeholder: "orchicon", Initial: initial(p.GetSlug)},
 		{Name: "goals", Label: "Goals", Kind: kit2.KText, Placeholder: "key=value, key2=value2", Initial: initial(func() string { return goalsText(p.GetGoals()) })},
-		runtimeImageField(current, images),
+		func() kit2.FieldSpec {
+			f := runtimeImageField(current, images)
+			// ONLY WHEN THE MODE IS RUNTIME. A local project runs nothing in a container, so
+			// offering an image there is offering a setting that cannot apply — and it reads
+			// as though a container is used.
+			f.Visible = func(values map[string]string) bool {
+				return strings.EqualFold(strings.TrimSpace(values["execution_mode"]), "runtime")
+			}
+			return f
+		}(),
 		{
 			Name: "git_strategy", Label: "Git strategy", Kind: kit2.KSelect,
 			Options: gitStrategyOptions(), Initial: gitStrategyField(p),

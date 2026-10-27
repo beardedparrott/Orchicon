@@ -288,7 +288,18 @@ function NewWorkItemPage() {
 
             <div className="space-y-2">
               <Label htmlFor="runtimeImage">Runtime image</Label>
-              <RuntimeImageSelect value={runtimeImage} onChange={setRuntimeImage} />
+              <RuntimeImageSelect
+                value={runtimeImage}
+                onChange={setRuntimeImage}
+                // The mode this NEW item will actually have: an explicit override, else the
+                // chosen project's. Same rule as the detail page, so the form cannot offer an
+                // image for a run that will not have a container.
+                mode={
+                  executionMode === "inherit"
+                    ? protoToExecutionMode(selectedProject?.executionMode)
+                    : executionMode
+                }
+              />
               <p className="text-xs text-muted-foreground">
                 The container image workers run in for this item&apos;s
                 workflow. Defaults to the base image.

@@ -263,7 +263,28 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.MaxConcurrentRuns = &limit
 	}
-	if msg.DefaultRuntimeImage != nil {
+	// SETTING A PROJECT TO LOCAL CLEARS ITS DEFAULT RUNTIME IMAGE — the same rule the work
+	// item follows, and for the same reason: a local run executes on the host, so a
+	// project-level image is a setting that cannot apply. Leaving it stored makes the
+	// project claim a container default it will never use, and it silently becomes live
+	// again on the next switch back to runtime.
+	//
+	// LOCAL WINS over an image in the same request, because the GUI's picker is prefilled
+	// from the row and rounds the value back on every save — see the work-item handler
+	// (internal/workitem/service.go) where this exact shape defeated the clear. The
+	// difference here is that the clear is expressed as an EMPTY STRING, which is what
+	// "no image" already means for this column.
+	clearImageForLocal := false
+	if msg.ExecutionMode != nil {
+		if m, merr := executionModeFromProto(*msg.ExecutionMode, ""); merr == nil && m == db.ExecutionModeLocal {
+			clearImageForLocal = true
+		}
+	}
+	if clearImageForLocal {
+		empty := ""
+		fields.DefaultRuntimeImage = &empty
+	}
+	if msg.DefaultRuntimeImage != nil && !clearImageForLocal {
 		v := strings.TrimSpace(*msg.DefaultRuntimeImage)
 		fields.DefaultRuntimeImage = &v
 	}
