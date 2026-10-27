@@ -827,7 +827,18 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 				return r.recordReady(ctx, tenantID, runID, path, branch)
 			}
 		}
-		return r.markFailed(ctx, tenantID, runID, fmt.Sprintf("git worktree add: %v", perr))
+		// WHAT GIT ACTUALLY SAID, plus every input the attempt used. `exit status 128` alone named none of
+		// them (see worktree_giterror.go), and the base ref / branch / directory are exactly the values a bad
+		// default-branch resolution or a surprising cwd corrupts on Windows.
+		reason := worktreeProvisionError(perr, strategy, branch, base, projectDir)
+		// AND LEAVE NOTHING BEHIND. A failed add can leave a stray branch and a half-built directory; the
+		// next attempt then meets an "already exists" the failure record does not explain.
+		if leftovers := r.cleanupFailedProvision(ctx, projectDir, path, branch, strategy != "none"); len(leftovers) > 0 {
+			r.log.Warn("worktree: failure cleanup left artifacts", "run", runID, "path", path, "branch", branch,
+				"leftovers", leftovers)
+			reason += " (cleanup could not remove: " + strings.Join(leftovers, ", ") + ")"
+		}
+		return r.markFailed(ctx, tenantID, runID, reason)
 	}
 
 	if err := r.recordReady(ctx, tenantID, runID, path, branch); err != nil {
@@ -981,7 +992,13 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 				return r.recordStepReady(ctx, tenantID, stepRunID, path, branch)
 			}
 		}
-		return r.markStepFailed(ctx, tenantID, stepRunID, fmt.Sprintf("git worktree add: %v", perr))
+		reason := worktreeProvisionError(perr, strategy, branch, base, projectDir)
+		if leftovers := r.cleanupFailedProvision(ctx, projectDir, path, branch, strategy != "none"); len(leftovers) > 0 {
+			r.log.Warn("worktree: failure cleanup left artifacts", "step_run", stepRunID, "path", path, "branch", branch,
+				"leftovers", leftovers)
+			reason += " (cleanup could not remove: " + strings.Join(leftovers, ", ") + ")"
+		}
+		return r.markStepFailed(ctx, tenantID, stepRunID, reason)
 	}
 
 	return r.recordStepReady(ctx, tenantID, stepRunID, path, branch)
@@ -1479,9 +1496,12 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitCmdTimeout)
 	defer cancel()
 	cmd := procwin.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	// CombinedOutput is the point: git writes the sentence that names a fatal failure — `fatal: invalid
+	// reference`, `fatal: not a git repository`, an auth prompt rejected — to stderr, and a caller that
+	// only receives an error value cannot tell one exit-128 cause from another.
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return string(out), err
+		return string(out), gitError(dir, args, string(out), err)
 	}
 	return string(out), nil
 }
@@ -1895,30 +1915,45 @@ func (r *WorktreeReconciler) removeWorktree(ctx context.Context, projectDir, pat
 	return nil
 }
 
-// resolveBaseRef picks the deterministic base for the new branch: local
-// `develop`, else `origin/develop`, else the remote default branch, else
-// the project dir's currently checked-out branch. It never hard-fails over
-// a missing base — the ultimate fallback is "" which makes `git worktree
-// add` start the branch at HEAD.
-func (r *WorktreeReconciler) resolveBaseRef(ctx context.Context, projectDir string) string {
-	for _, ref := range []string{"develop", "origin/develop"} {
-		if _, err := runGit(ctx, projectDir, "rev-parse", "--verify", "--quiet", ref); err == nil {
-			return ref
+// cleanupFailedProvision removes what a FAILED `git worktree add` may have left behind.
+//
+// git is not atomic here. A `worktree add` can create the branch ref and then fail to populate the directory
+// (a permissions problem, a bad base ref discovered late, a killed process), leaving BOTH a stray branch and a
+// half-built directory. When that combines with the recorded `exit status 128` — which named neither — the next
+// attempt met an "already exists" it could not explain, and the branch showed up in `git branch` as though the
+// run had done work.
+//
+// EVERY STEP IS INDEPENDENT AND BEST-EFFORT, deliberately: cleanup must never turn one failure into two, and it
+// must never be the reason a real error is not recorded. The caller logs what it could not remove.
+//
+// WHAT IT DOES NOT DO: touch a registered worktree that is not empty of our own bookkeeping. `removeWorktree`
+// is tried first so git unregisters the metadata properly; the directory removal afterwards only clears what
+// git already agreed was ours.
+func (r *WorktreeReconciler) cleanupFailedProvision(ctx context.Context, projectDir, path, branch string, named bool) []string {
+	var leftovers []string
+	if path != "" {
+		// Registered worktree first (git must drop its metadata), then any directory git left behind.
+		if _, err := runGit(ctx, projectDir, "worktree", "remove", "--force", path); err != nil {
+			if rmErr := r.removeWorktreeArtifact(path); rmErr != nil {
+				leftovers = append(leftovers, "worktree directory "+path+" ("+rmErr.Error()+")")
+			}
+		}
+		if _, err := runGit(ctx, projectDir, "worktree", "prune"); err != nil {
+			leftovers = append(leftovers, "worktree prune")
 		}
 	}
-	if out, err := runGit(ctx, projectDir, "symbolic-ref", "refs/remotes/origin/HEAD"); err == nil {
-		ref := strings.TrimSpace(out)
-		ref = strings.TrimPrefix(ref, "refs/remotes/")
-		if ref != "" {
-			return ref
+	// ONLY A BRANCH THIS ATTEMPT CREATED, and never a protected one. A detached (`none`) run creates no
+	// branch at all, and a branch that already existed belongs to an earlier run.
+	if named && branch != "" && !isProtectedBranch(branch) {
+		if _, err := runGit(ctx, projectDir, "branch", "-D", branch); err != nil {
+			// `-D` on a branch that was never created fails here; that is the common case and is not a
+			// leftover worth reporting.
+			if exists := r.branchExists(ctx, projectDir, branch); exists {
+				leftovers = append(leftovers, "branch "+branch)
+			}
 		}
 	}
-	if out, err := runGit(ctx, projectDir, "symbolic-ref", "--short", "HEAD"); err == nil {
-		if ref := strings.TrimSpace(out); ref != "" {
-			return ref
-		}
-	}
-	return ""
+	return leftovers
 }
 
 // branchExists reports whether a local branch ref exists in the repo.
