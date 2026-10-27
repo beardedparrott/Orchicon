@@ -420,6 +420,12 @@ function UpcomingView({
   selected,
   onToggleSelect,
   onToggleSelectAll,
+  // DECLARED IN THE PROP TYPE AND THEREFORE MUST BE DESTRUCTURED. Their absence was a
+  // hard TS2304 at the two pass-through sites below: the props were typed, the parent
+  // passed them, and nothing bound them here — so `tsc -b` failed and `make fe-typecheck`
+  // (the only gate that can see a type error) went red on develop.
+  onRemove,
+  removing,
 }: {
   projectId: string;
   search: string;
@@ -1088,6 +1094,9 @@ function HistoryView({
   selected,
   onToggleSelect,
   onToggleSelectAll,
+  // Same omission as UpcomingView above — typed, passed, never bound.
+  onRemove,
+  removing,
 }: {
   projectId: string;
   search: string;
