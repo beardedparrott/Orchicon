@@ -958,3 +958,109 @@ func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// THE MERGE GATE — canned workers must not land a red PR on develop.
+//
+// THE INCIDENT. PR #850 merged with TWO RED CI JOBS (fe-lint, windows desktop + MSI,
+// both failing a whole-project typecheck) and left `develop` unable to build. The
+// prompts were not silent about verification — the Quick worker's said "never report
+// success with failing build, failing tests" — but two things defeated it:
+//
+//   1. NO PRECONDITION ON THE MERGE. The ship step ran `gh pr create` then straight to
+//      `gh pr merge --squash --admin`, and `--admin` BYPASSES checks. Verification was an
+//      ACTIVITY, never a gate on the command that lands the branch.
+//   2. THE SCOPE WAS THE WORKER'S OWN CHOICE ("the packages you touched"), which is
+//      exactly the subset that misses a whole-repo gate.
+//
+// These tests pin the gate's presence and its stack-agnosticism: they are CANNED workers
+// and must never name one project's toolchain.
+// ---------------------------------------------------------------------------
+
+// cannedSeedByName returns a canned worker's NAME, its RollMarker, and its persisted
+// agents_md, read through the exported tooling view (this is an external test package).
+func cannedSeedByName(t *testing.T, name string) (string, string, string) {
+	t.Helper()
+	for i := range db.CannedWorkers() {
+		w := db.CannedWorkers()[i]
+		if w.Name == name {
+			return w.Name, w.RollMarker, db.SeedAgentsMD(&w)
+		}
+	}
+	t.Fatalf("no canned worker named %q", name)
+	return "", "", ""
+}
+
+// TestEveryMergingCannedWorkerCarriesTheMergeGate: a worker that MERGES into develop must
+// carry the gate. Both of the ones that do are asserted, so adding a third without the
+// gate is a visible omission rather than a silent one.
+func TestEveryMergingCannedWorkerCarriesTheMergeGate(t *testing.T) {
+	for _, name := range []string{"Quick Software Engineer", "DevOps Engineer"} {
+		_, _, md := cannedSeedByName(t, name)
+		if !strings.Contains(md, db.MergeGateMarker) {
+			t.Errorf("%s: agents_md carries no merge gate (%q) — a worker that merges into "+
+				"develop without a check precondition is how a red PR lands on the integration "+
+				"branch", name, db.MergeGateMarker)
+		}
+		// The gate must be a PRECONDITION, not a suggestion: the words that make it
+		// non-optional are the ones that matter.
+		for _, required := range []string{"do not merge", "still-running"} {
+			if !strings.Contains(md, required) {
+				t.Errorf("%s: the merge gate does not say %q — a gate that does not forbid "+
+					"merging on a pending or red check is not a gate", name, required)
+			}
+		}
+	}
+}
+
+// TestMergeGateNamesNoToolchain: these are CANNED workers used against arbitrary
+// projects. Naming this repo's toolchain (make, tsc, npm, node_modules) would make the
+// rule wrong everywhere else — the gate must point at "the project's CI".
+func TestMergeGateNamesNoToolchain(t *testing.T) {
+	_, _, quickMD := cannedSeedByName(t, "Quick Software Engineer")
+	for _, banned := range []string{"tsc", "npm", "node_modules", "make fe", "go test", "yarn", "pnpm"} {
+		if strings.Contains(quickMD, banned) {
+			t.Errorf("the merge gate names %q — canned workers run against OTHER projects, so "+
+				"the gate must describe the project's own checks, not one repo's toolchain", banned)
+		}
+	}
+	// And it must actually point at the project's definition of verified.
+	if !strings.Contains(quickMD, "project's CI") {
+		t.Errorf("the merge gate does not name the project's CI as the definition of verified")
+	}
+}
+
+// TestShippingDevOpsWorkerHasItsOwnRollMarker: the shipping DevOps worker shares
+// sdlcWorkhorseMarker with the SSE / Reviewer / Architect. Without a marker of its OWN,
+// a wording change either re-rolls four workers or — if it had no marker at all, which was
+// the case — never reaches the published version.
+func TestShippingDevOpsWorkerHasItsOwnRollMarker(t *testing.T) {
+	_, marker, md := cannedSeedByName(t, "DevOps Engineer")
+	if marker == "" {
+		t.Fatal("the shipping DevOps worker has NO RollMarker — the seeder only rolls a canned " +
+			"worker forward when its agents_md lacks the fragment, so this gate would never reach " +
+			"the published version")
+	}
+	if marker == db.SDLCWorkhorseMarker {
+		t.Errorf("the shipping DevOps worker reuses sdlcWorkhorseMarker, so this change would " +
+			"re-roll the SSE / Reviewer / Architect too")
+	}
+	if !strings.Contains(md, marker) {
+		t.Errorf("its RollMarker %q does not appear in its own agents_md, so the roll-forward "+
+			"check can never be satisfied and it would re-roll on every boot", marker)
+	}
+}
+
+// TestQuickWorkerRollsForwardToTheGate: the Quick worker's marker must be the NEW fragment,
+// or workers already carrying the old one are never updated.
+func TestQuickWorkerRollsForwardToTheGate(t *testing.T) {
+	_, marker, md := cannedSeedByName(t, "Quick Software Engineer")
+	if !strings.Contains(md, marker) {
+		t.Errorf("the Quick worker's RollMarker %q is absent from its agents_md — the seeder "+
+			"would never consider it up to date (and would re-roll it every boot)", marker)
+	}
+	if marker == "SHIPPING IS IDEMPOTENT" {
+		t.Error("the Quick worker's marker still pins the OLD generation, so published versions " +
+			"carrying that fragment would never receive this gate")
+	}
+}
