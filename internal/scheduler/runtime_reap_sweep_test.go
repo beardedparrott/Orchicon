@@ -55,11 +55,12 @@ func TestTheSweepReapsEveryTerminalRunItFinds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ttx.Rollback(ctx)
-	prj := mkModeProject(t, ctx, ttx.Tx, "prj_sweep_a", "sweep-a", db.ExecutionModeRuntime)
+	sfx := db.NewID()[:10]
+	prj := mkModeProject(t, ctx, ttx.Tx, "prj_sweep_a_"+sfx, "sweep-a-"+sfx, db.ExecutionModeRuntime)
 
 	var want []string
 	for _, st := range []string{domain.WorkflowRunAborted, domain.WorkflowRunFailed, domain.WorkflowRunCompleted} {
-		id := "run_sweep_" + st
+		id := "run_sweep_" + st + "_" + sfx
 		if _, err := db.CreateWorkflowRun(ctx, ttx.Tx, db.WorkflowRunRow{
 			ID: id, TenantID: tenant, WorkflowID: "wf-sweep", WorkflowVersion: 1,
 			ProjectID: prj.ID, Status: st, RuntimeImage: "orchicon-runtime:orchicon-dev",
@@ -104,9 +105,10 @@ func TestSweepSkipsRunsWithNoRuntimeEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ttx.Rollback(ctx)
-	prj := mkModeProject(t, ctx, ttx.Tx, "prj_sweep_b", "sweep-b", db.ExecutionModeLocal)
+	sfx := db.NewID()[:10]
+	prj := mkModeProject(t, ctx, ttx.Tx, "prj_sweep_b_"+sfx, "sweep-b-"+sfx, db.ExecutionModeLocal)
 
-	const localRun = "run_sweep_local_only"
+	localRun := "run_sweep_local_only_" + sfx
 	if _, err := db.CreateWorkflowRun(ctx, ttx.Tx, db.WorkflowRunRow{
 		ID: localRun, TenantID: tenant, WorkflowID: "wf-sweep", WorkflowVersion: 1,
 		ProjectID: prj.ID, Status: domain.WorkflowRunCompleted,
