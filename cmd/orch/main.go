@@ -38,7 +38,6 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 	"github.com/beardedparrott/orchicon/internal/tui/connection"
-	"github.com/beardedparrott/orchicon/internal/tui/input"
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
@@ -513,14 +512,11 @@ func runShell(profile *config.Profile, opts ...tui.AppOption) (bool, error) {
 	app.SwitchTo(tui.TabAsk)
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion(),
 		tea.WithReportFocus(),
-		// THE TERMINAL'S KEY VOCABULARY IS WIDER THAN THE LIBRARY'S, and the failure is
-		// silent: a sequence bubbletea cannot decode is not rejected, it is read as ordinary
-		// characters, so the symptom is litter typed into whatever field has focus. Two
-		// spellings are adapted here — Shift+Enter (which bubbletea splits into alt+O then M,
-		// making the composer type "OM") and the SS3 form of Home/End, which a laptop's
-		// fn+Left/Right emits and which bubbletea splits into alt+O then the letter, making
-		// the composer type "OH" and "OF". See internal/tui/input.
-		tea.WithInput(input.TranslateTerminalKeys(os.Stdin)))
+		// THE PROGRAM INPUT IS PLATFORM-SPECIFIC, and on Windows it is not merely decorated stdin: bubbletea
+		// picks its whole input PATH by comparing the reader's fd to stdin's, and the path that stdin lands
+		// on there cannot report Shift+Enter and disables bracketed paste. See input_other.go /
+		// input_windows.go for each platform's answer, and internal/tui/input for the byte rewrites.
+		tea.WithInput(programInput()))
 	_, err = prog.Run()
 	if err != nil {
 		return false, err

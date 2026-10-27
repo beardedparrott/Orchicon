@@ -220,4 +220,18 @@ func (m *App) refreshBlocked() bool {
 // refreshPeriod is the window's live period. It is a VARIABLE only so a test can shorten it: a test
 // that had to wait the real five seconds would make the suite slower than the feature is worth, and
 // the timing is not what is under test (the re-arm, the generation and the guards are).
+//
+// IT IS DELIBERATELY NOT SHORTENED ON WINDOWS, even though the shell also polls the terminal SIZE there
+// (resize_probe.go). This tick re-reads the ACTIVE VIEW — real queries against the plane — so making it a
+// quarter-second poll to serve a resize probe would multiply backend load to serve a cosmetic need. The
+// probe has its own cheap chain instead.
+
+// refreshPeriod is the window's live period. It is a VARIABLE only so a test can shorten it: a test
+// that had to wait the real five seconds would make the suite slower than the feature is worth, and
+// the timing is not what is under test (the re-arm, the generation and the guards are).
+//
+// IT IS DELIBERATELY NOT SHORTENED ON WINDOWS, even though the shell also polls the terminal SIZE there
+// (resize_probe.go). This tick re-reads the ACTIVE VIEW — real queries against the plane — so making it a
+// quarter-second poll to serve a resize probe would multiply backend load to serve a cosmetic need. The
+// probe has its own cheap chain instead.
 var refreshPeriod = refreshInterval
