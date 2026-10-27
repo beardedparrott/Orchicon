@@ -40,10 +40,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # Placeholder and service-account names. Matched against the WHOLE user-name component.
-# ops2 / ops-other / operations are NOT separate users: they are the prefix-SIBLINGS of the placeholder
-# /home/ops, used by protectedpath tests to prove that a boundary check does not treat /home/ops-other as
-# being inside /home/ops. Allowing them is the correct reading — they belong to nobody and exist to test
-# the very logic that keeps one directory out of another.
+# ops2 / ops-other / operations are NOT separate users: they are the prefix-SIBLINGS of the `ops`
+# placeholder home, used by protectedpath tests to prove a boundary check does not treat one directory as
+# being inside another that merely shares its prefix. Allowing them is the correct reading: they belong
+# to nobody, and they exist to test the very logic that keeps one directory out of another.
+#
+# (This header cannot spell such a path literally — the gate scans its own source too, which is the
+# behaviour you want: a file that explains the rule is not exempt from it.)
 #
 # Single/double-letter names (u, x) are the codebase's existing convention for a throwaway home in an
 # escaping or env test; op-user and O'Brien exist for the two quoting shapes that actually bite (a
