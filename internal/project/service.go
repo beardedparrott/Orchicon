@@ -839,23 +839,52 @@ func executionModeFromProto(v apiv1.ExecutionMode, unset string) (string, error)
 // on every single save, which is noise in a stream whose value is that everything in it means something.
 func (s *Service) ensureProjectGitState(ctx context.Context, proj db.ProjectRow) {
 	rep := EnsureGitState(ctx, proj.ProjectDir, proj.GitStrategy)
-	if rep.Err != nil {
+
+	// THE LOG ALWAYS GETS THE DETAIL. It is the durable diagnostic — the transcript notice below is capped to a
+	// sentence so it stays readable in a conversation.
+	switch {
+	case rep.GitMissing:
+		s.log.Error("project: git is not installed on the control-plane host — nothing about this project's "+
+			"repository could be checked, and its git-backed runs cannot start",
+			"id", proj.ID, "project_dir", proj.ProjectDir, "strategy", proj.GitStrategy, "error", rep.Err)
+	case rep.Err != nil:
 		s.log.Warn("project: git setup could not complete — the project was saved, and its git-backed runs "+
 			"will fail until the repository is usable",
+			"id", proj.ID, "project_dir", proj.ProjectDir, "strategy", proj.GitStrategy, "error", rep.Err)
+	case rep.Warning != "":
+		s.log.Warn("project: git setup left a condition that breaks what this strategy promises",
 			"id", proj.ID, "project_dir", proj.ProjectDir, "strategy", proj.GitStrategy,
-			"error", rep.Err)
-		return
-	}
-	if !rep.Needed {
+			"warning", rep.Warning, "done", rep.Done)
+	case rep.Needed:
+		s.log.Info("project: git state set up for git-backed runs",
+			"id", proj.ID, "project_dir", proj.ProjectDir, "strategy", proj.GitStrategy, "done", rep.Done)
+	default:
 		s.log.Debug("project: git state already usable", "id", proj.ID, "detail", rep.Skipped)
 		return
 	}
-	s.log.Info("project: git state set up for git-backed runs",
-		"id", proj.ID, "project_dir", proj.ProjectDir, "strategy", proj.GitStrategy,
-		"done", rep.Done)
 
-	// Report it durably, advisory: the setup has already happened, so a failed event write must not fail a save
-	// that succeeded. The string is a complete sentence on purpose — this is what the operator sees.
+	// AND THE OPERATOR IS TOLD, IN THE TRANSCRIPT, WHENEVER IT MATTERS.
+	//
+	// Loud() is exactly the set of outcomes they must act on: a host without git, a setup that failed, or a
+	// warning that the chosen strategy cannot deliver what it promises. Reporting only to the log was the defect
+	// this whole PR set out to fix — a condition named in a file nobody reads, discovered instead as a failure
+	// at the end of a run.
+	//
+	// Advisory write, own transaction: the change it describes is already committed, so a failed notice must
+	// never fail a save that succeeded.
+	if rep.Loud() {
+		msg := "Git setup for this project could not finish, and its git-backed runs will not work as chosen: " +
+			rep.Summary()
+		if err := s.enqueueProjectNotice(ctx, proj, msg); err != nil {
+			s.log.Warn("project: git setup notice was not recorded — the outcome stands, but the project's event "+
+				"stream will not show it", "id", proj.ID, "error", err)
+		}
+		return
+	}
+	if !rep.Needed {
+		return
+	}
+	// A successful setup is reported too — but as the ordinary, informational record it is.
 	msg := "Git setup for this project: " + rep.Summary()
 	if err := s.enqueueProjectNotice(ctx, proj, msg); err != nil {
 		s.log.Warn("project: git setup notice was not recorded — the setup stands, but the project's event "+
