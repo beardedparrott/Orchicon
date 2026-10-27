@@ -743,6 +743,131 @@ else
   say "  (skipped: no desktop AppImage is published for linux/${BUILD_GOARCH})"
 fi
 
+
+# --- 12. THE INSTALLER IS ALSO THE UPDATER, AND IT DECIDES WHICH IT IS ------------
+#
+# Re-running the documented one-liner IS how Orchicon is updated, so the script must work out
+# for itself whether this is a fresh install, an upgrade, or nothing to do — the operator
+# should never have to remember a flag. Three outcomes are asserted here against the REAL
+# script, because getting this wrong is how an updater either re-installs over a healthy
+# instance or refuses to move forward.
+say ""
+say "12. upgrade detection"
+
+# Its own install dir per case, so the decisions cannot contaminate one another.
+U1="${WORK}/upg-installed"; U2="${WORK}/upg-empty"
+mkdir -p "${U1}" "${U2}"
+
+# An "already installed" binary is a SCRIPT here, not the real artifact: the decision only
+# asks `orchicon version`, so a stub is the honest fixture and keeps this section fast.
+cat > "${U1}/orchicon" <<STUB
+#!/usr/bin/env bash
+echo "orchicon ${VERSION}"
+STUB
+chmod +x "${U1}/orchicon"
+
+# (a) SAME version installed -> nothing to do, and NOTHING is downloaded or stopped.
+ULOG="${WORK}/upg-current.log"
+set +e
+ORCHICON_INSTALL_BASE_URL="${BASE}" bash "${INSTALLER}" \
+  --version "${VERSION}" --install-dir "${U1}" --instance test --no-setup >"${ULOG}" 2>&1
+URC=$?
+set -e
+check "re-running on the SAME version exits 0" "$([ "${URC}" -eq 0 ] && echo 1 || echo 0)" 
+if grep -qi "already installed" "${ULOG}"; then
+  ok "it reports that the version is already installed (no silent re-download)"
+else
+  bad "it reports that the version is already installed"
+  sed 's/^/      /' "${ULOG}" | tail -10
+fi
+if grep -q "\${ASSET}.tar.gz" "${ULOG}"; then
+  bad "an already-current install must NOT download the artifact (it did)"
+else
+  ok "an already-current install downloads nothing"
+fi
+# The stub must survive untouched: a no-op means no-op.
+if grep -q "orchicon ${VERSION}" "${U1}/orchicon"; then
+  ok "the installed binary was left alone"
+else
+  bad "the installed binary was left alone"
+fi
+
+# (b) A NEWER version installed -> REFUSE. Downgrades are unsupported because migrations are
+# forward-only, so this must fail loudly rather than quietly moving the binary backwards.
+U2LOG="${WORK}/upg-downgrade.log"
+cat > "${U2}/orchicon" <<STUB2
+#!/usr/bin/env bash
+echo "orchicon v99.99.99"
+STUB2
+chmod +x "${U2}/orchicon"
+set +e
+ORCHICON_INSTALL_BASE_URL="${BASE}" bash "${INSTALLER}" \
+  --version "${VERSION}" --install-dir "${U2}" --instance test --no-setup >"${U2LOG}" 2>&1
+URC2=$?
+set -e
+check "installing an OLDER release over a newer install is refused (non-zero exit)" \
+  "$([ "${URC2}" -ne 0 ] && echo 1 || echo 0)"
+if grep -qi "downgrade" "${U2LOG}"; then
+  ok "the refusal names it as a downgrade, with the reason"
+else
+  bad "the refusal names it as a downgrade"
+  sed 's/^/      /' "${U2LOG}" | tail -10
+fi
+if grep -q "v99.99.99" "${U2}/orchicon"; then
+  ok "the newer installed binary was NOT replaced"
+else
+  bad "the newer installed binary was NOT replaced (a refused downgrade still overwrote it)"
+fi
+
+# (c) FRESH -> it says it is installing, and does not claim to be upgrading.
+U3="${WORK}/upg-fresh"
+FLOG="${WORK}/upg-fresh.log"
+set +e
+ORCHICON_INSTALL_BASE_URL="${BASE}" bash "${INSTALLER}" \
+  --version "${VERSION}" --install-dir "${U3}" --instance test --no-setup >"${FLOG}" 2>&1
+FRC=$?
+set -e
+check "a fresh install into an empty dir exits 0" "$([ "${FRC}" -eq 0 ] && echo 1 || echo 0)"
+if grep -qi "upgrading" "${FLOG}"; then
+  bad "a fresh install must not claim to be an upgrade"
+else
+  ok "a fresh install does not claim to be an upgrade"
+fi
+
+# (d) The upgrade path offers the backup COMMAND but does not take a backup itself: leaving a
+# multi-GB artifact on every machine at every upgrade is the habit this deliberately avoids.
+UPG="${WORK}/upg-upgrade"
+mkdir -p "${UPG}"
+# STRICTLY OLDER than the served version (v0.0.0-installpath), so this is a real upgrade
+# and not the downgrade case above. (v0.0.1 would be NEWER, which is why this fixture first
+# reported a refusal — the assertion was right and the number was wrong.)
+cat > "${UPG}/orchicon" <<STUB3
+#!/usr/bin/env bash
+echo "orchicon v0.0.0"
+STUB3
+chmod +x "${UPG}/orchicon"
+GLOG="${WORK}/upg-upgrade.log"
+set +e
+ORCHICON_INSTALL_BASE_URL="${BASE}" bash "${INSTALLER}" \
+  --version "${VERSION}" --install-dir "${UPG}" --instance test --no-setup --yes >"${GLOG}" 2>&1
+set -e
+if grep -qi "upgrading" "${GLOG}"; then
+  ok "an older install is upgraded (and says so)"
+else
+  bad "an older install is upgraded (and says so)"
+  sed 's/^/      /' "${GLOG}" | tail -10
+fi
+if grep -q "orchicon db backup" "${GLOG}"; then
+  ok "the upgrade names the backup command for the operator to use first"
+else
+  bad "the upgrade names the backup command for the operator to use first"
+fi
+if grep -qi "^Created: orchicon-backup" "${GLOG}"; then
+  bad "the upgrade must NOT create a backup automatically (it would leave a large artifact on every host)"
+else
+  ok "no backup is created automatically"
+fi
+
 say ""
 say ""
 if [ "${FAIL}" -eq 0 ]; then

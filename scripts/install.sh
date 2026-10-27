@@ -49,6 +49,10 @@ INSTANCE_EXPLICIT=false  # set when --instance was passed, which SKIPS the insta
 BINARY_HELD_ELSEWHERE=false  # set when a kill declined to touch another instance's process
 CLEAN=false
 FORCE_CLEAN=false
+# SKIP_SWAP is set by the upgrade decision when the installed binary is already the release
+# being installed: nothing is downloaded or replaced, but the setup step still converges the
+# instance (see the `current` case in main).
+SKIP_SWAP=false
 DRY_RUN=false
 SETUP=true
 INSTALL_ORCH=true  # orch = the thin remote TUI client (skippable via --no-orch)
@@ -1009,7 +1013,62 @@ main() {
       | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')"
     [ -n "$VERSION" ] || die "could not determine latest version"
   fi
-  info "installing Orchicon ${B}${VERSION}${X} for ${os}/${arch}"
+  # WHAT IS THIS RUN? DECIDED BEFORE ANYTHING IS DOWNLOADED OR STOPPED.
+  #
+  # The installer is also the updater, so it must say which of the four things it is doing
+  # rather than silently re-downloading. Ordering matters: the decision needs $VERSION, which
+  # is resolved above, and it must come BEFORE the swap so "current" and "downgrade" can exit
+  # without touching the installed binary.
+  local decision; decision="$(upgrade_decision)"
+  case "$decision" in
+    current)
+      # ALREADY CURRENT: skip the download and the swap, but still run the setup step.
+      #
+      # IT MUST NOT `return` EARLY. `orchicon install` is what converges an instance — it
+      # starts missing host services and the plane — so short-circuiting here would turn a
+      # re-run into a no-op that leaves a stopped instance stopped. The point of skipping is
+      # "do not re-download and do not restart a healthy plane", not "do nothing at all".
+      ok "Orchicon ${B}${VERSION}${X} is already installed — skipping the download and the binary swap."
+      echo -e "  ${D}binary: ${INSTALL_DIR}/orchicon${X}"
+      SKIP_SWAP=true
+      ;;
+    downgrade)
+      local have; have="$(installed_version)"
+      err "the installed Orchicon (${B}${have}${X}) is NEWER than ${B}${VERSION}${X}."
+      echo -e "  ${D}Downgrades are not supported: database migrations are forward-only, so an older" >&2
+      echo -e "  binary can meet a schema it cannot read. Re-run without --version to install the" >&2
+      echo -e "  latest, or use --force-clean to wipe this instance's data and start again.${X}" >&2
+      exit 1
+      ;;
+    upgrade)
+      local have; have="$(installed_version)"
+      echo ""
+      echo -e "${B}Upgrading Orchicon${X} ${have} ${D}→${X} ${VERSION}"
+      # A PAUSE, NOT AN AUTOMATIC BACKUP. Backing up here would leave a multi-GB artifact on
+      # every machine at every upgrade — measured on a dev host, four backups of 0.3-3GB each,
+      # ~9GB total — and almost none of them would ever be used. The operator is told the exact
+      # command instead, so the decision to keep a copy is theirs.
+      echo -e "  ${D}Your data (database, blob store, runtime state) is preserved across an upgrade.${X}"
+      echo -e "  ${D}To keep a restorable copy first:  ${B}orchicon db backup${X}"
+      echo ""
+      if [ "$DRY_RUN" = true ]; then
+        info "would upgrade ${have} → ${VERSION} and restart this instance"
+        return 0
+      fi
+      # STOP THE RUNNING INSTANCE BEFORE ITS BINARY IS REPLACED.
+      if [ "$ASSUME_YES" != true ] && [ -t 0 ]; then
+        printf '  Continue with the upgrade? [Y/n] '
+        local answer; read -r answer || answer=""
+        case "$answer" in
+          [nN]*) warn "upgrade cancelled — nothing changed"; return 0 ;;
+        esac
+      fi
+      stop_before_swap
+      ;;
+    fresh)
+      info "installing Orchicon ${B}${VERSION}${X} for ${os}/${arch}"
+      ;;
+  esac
 
   # Build download URL. Release assets follow the naming convention:
   #   orchicon_<version>_<os>_<arch>.tar.gz
@@ -1029,7 +1088,11 @@ main() {
   # died with "download failed" — a report of what WOULD happen that could not be produced for a version
   # that would not install, and a network side effect in a flag whose whole contract is "change nothing".
   # Found by running it.
-  if [ "$DRY_RUN" = true ]; then
+  if [ "$SKIP_SWAP" = true ]; then
+    # ALREADY CURRENT: no download, no extract, no move. The setup step below still runs, so a
+    # re-run converges an instance instead of being inert.
+    :
+  elif [ "$DRY_RUN" = true ]; then
     info "would download ${D}${url}${X}"
     info "would extract it and install ${B}${INSTALL_DIR}/orchicon${X}"
   else
@@ -1050,7 +1113,15 @@ main() {
   fi
 
   # Move binary
+  #
+  # THE SWAP IS THE SWAP: extract+move is exactly what SKIP_SWAP suppresses. Gating only the
+  # DOWNLOAD left this block running against an empty temp dir and dying with "could not find
+  # orchicon binary in archive" — the binary it looked for was never fetched because we already
+  # had it. One guard, both halves.
   local bin="$INSTALL_DIR/orchicon"
+  if [ "$SKIP_SWAP" = true ]; then
+    :
+  else
   info "installing to ${B}${bin}${X}"
   if [ "$DRY_RUN" = false ]; then
     # The release archives may wrap the binary in a top-level
@@ -1074,6 +1145,7 @@ main() {
       ok "cleared the macOS quarantine bit on ${bin}"
     fi
   fi
+  fi  # end SKIP_SWAP guard
 
   # Companion install: orch (the thin remote TUI client) rides in the
   # same archive. Optional via --no-orch; failure is a warning, not fatal
@@ -1264,6 +1336,81 @@ GUIDANCE
 
   echo ""
   echo -e "${B}Documentation:${X} ${D}https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}#readme${X}"
+}
+
+
+# --- upgrade detection -------------------------------------------------------
+#
+# ONE COMMAND, THREE OUTCOMES. Re-running the installer is how Orchicon is updated, and it
+# must decide for itself whether this is a fresh install, an upgrade, or nothing to do —
+# the operator should not have to remember a flag. `--clean`/`--force-clean` remain the
+# explicit verbs for "replace anyway" and "replace and destroy", and are unchanged.
+#
+# THERE IS NO DOWNGRADE. `--version vOLD` can still pin an older release deliberately, but
+# when the INSTALLED binary is NEWER than the release being installed we refuse: migrations
+# are forward-only (cmd/orchicon/serve.go runs them on boot), so moving the binary backwards
+# can leave a schema it cannot read. Failing loudly with the two versions named is the honest
+# answer; silently "upgrading" to something older is not.
+
+# installed_version prints the version of the binary at $INSTALL_DIR/orchicon, or "" when
+# there is none. `version` is the only subcommand guaranteed cheap and side-effect free.
+installed_version() {
+  local bin="$INSTALL_DIR/orchicon"
+  [ -x "$bin" ] || { printf ''; return 0; }
+  # A binary that cannot run (wrong arch, corrupted) is treated as NOT installed: the caller
+  # then does a fresh install, which is the recovery an operator wants anyway.
+  "$bin" version 2>/dev/null | sed -nE 's/.*([vV][0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*).*/\1/p' | head -1
+}
+
+# version_gt returns 0 when $1 is a HIGHER semver than $2, else 1. Deliberately small: it
+# compares the numeric triple and ignores any pre-release/build suffix, which is enough to
+# distinguish "newer release" from "older release" and never mis-orders on a suffix.
+version_gt() {
+  # NO ARRAYS AND NO HERE-STRINGS, deliberately. macOS ships bash 3.2, where `local -a` is
+  # unreliable and `<<<` is absent in /bin/sh. This parses with plain parameter expansion, so
+  # it behaves identically on the bash 5 a Linux host has and the bash 3.2 macOS does — and the
+  # cross-platform suite runs it under the shell it finds, not the one this host happens to have.
+  local a b
+  a="$(printf '%s' "${1#v}" | sed 's/-.*$//')"
+  b="$(printf '%s' "${2#v}" | sed 's/-.*$//')"
+  [ -n "$a" ] && [ -n "$b" ] || return 1
+  local i x y
+  i=1
+  while [ "$i" -le 3 ]; do
+    x="$(printf '%s' "$a" | cut -d. -f"$i")"
+    y="$(printf '%s' "$b" | cut -d. -f"$i")"
+    [ -n "$x" ] || x=0
+    [ -n "$y" ] || y=0
+    case "$x$y" in *[!0-9]*) return 1 ;; esac
+    if [ "$x" -gt "$y" ]; then return 0; fi
+    if [ "$x" -lt "$y" ]; then return 1; fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# upgrade_decision prints one of: fresh | current | downgrade | upgrade
+upgrade_decision() {
+  local have; have="$(installed_version)"
+  if [ -z "$have" ]; then printf 'fresh'; return 0; fi
+  if version_gt "$have" "$VERSION"; then printf 'downgrade'; return 0; fi
+  if [ "$have" = "$VERSION" ]; then printf 'current'; return 0; fi
+  printf 'upgrade'
+}
+
+# stop_before_swap takes down the plane that runs the INSTALLED binary, so replacing that
+# file cannot leave a process serving from a deleted inode.
+#
+# THIS IS THE UPGRADE-SPECIFIC HAZARD and it is not theoretical: the codebase has a
+# documented case of a daemon running 8d19h from a deleted inode while the plane beside it
+# had been rebuilt. On a FRESH install there is nothing running from that path, so this is a
+# no-op; on an upgrade it is the difference between a clean swap and a confusing one.
+stop_before_swap() {
+  if ! command -v "$INSTALL_DIR/orchicon" >/dev/null 2>&1 && [ ! -x "$INSTALL_DIR/orchicon" ]; then
+    return 0
+  fi
+  info "stopping the running instance before replacing its binary…"
+  stop_installed_plane
 }
 
 # --- Run --------------------------------------------------------------------
