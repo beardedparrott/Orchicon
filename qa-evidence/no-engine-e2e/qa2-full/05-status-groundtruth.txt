@@ -45,13 +45,13 @@ process table:
   47	postgres: autovacuum launcher                                                                                                                                        
   48	postgres: logical replication launcher                                                                                                                               
   53	nats-server -js -p 4222 -sd /var/lib/orchicon-sandbox/nats 
-  91797	/usr/lib/postgresql/15/bin/postgres -D /home/beardedparrott/.local/share/orchicon-dev/postgres -p 15432 -c listen_addresses=localhost -c unix_socket_directories=/home/beardedparrott/.local/share/orchicon-dev 
+  91797	/usr/lib/postgresql/15/bin/postgres -D <data-dir>/orchicon-dev/postgres -p 15432 -c listen_addresses=localhost -c unix_socket_directories=<data-dir>/orchicon-dev 
   91798	postgres: checkpointer                                                                                                                                                                                          
   91799	postgres: background writer                                                                                                                                                                                     
   91801	postgres: walwriter                                                                                                                                                                                             
   91802	postgres: autovacuum launcher                                                                                                                                                                                   
   91803	postgres: logical replication launcher                                                                                                                                                                          
-  91808	/usr/local/bin/nats-server -js -sd /home/beardedparrott/.local/share/orchicon-dev/nats -p 14222 -m 8222 
+  91808	/usr/local/bin/nats-server -js -sd <data-dir>/orchicon-dev/nats -p 14222 -m 8222 
 services status:
   services for dev: up (postgres 127.0.0.1:15432, nats 127.0.0.1:14222, supervisor running)
     DSN: postgres://orchicon:orchicon@localhost:15432/orchicon?sslmode=disable

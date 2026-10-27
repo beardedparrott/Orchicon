@@ -311,7 +311,7 @@ func (d *ModelDiscoverer) refresh(ctx context.Context) ([]*apiv1.OpenCodeModel, 
 // re-boots a location, and `opencode models` short-circuits to an empty list when its request lands in
 // that window. opencode's own log shows the eviction and the re-boot:
 //
-//	"location services evicted"   directory=/home/beardedparrott
+//	"location services evicted"   directory=<the host home directory>
 //	"location services booted"    durationMs=23
 //
 // and the CLI is otherwise perfectly reliable: 20 consecutive runs returned 18,648 bytes in ~65ms

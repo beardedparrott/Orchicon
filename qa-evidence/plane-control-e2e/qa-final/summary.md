@@ -1,6 +1,6 @@
 # Plane control across TUI / desktop app / CLI — harness run 20261018T084212Z
 
-- instance: `dev` (data dir `/home/beardedparrott/.local/share/orchicon-dev`, ports `none recorded`)
+- instance: `dev` (data dir `<data-dir>/orchicon-dev`, ports `none recorded`)
 - two-instance pair: `dev` + `prod`
 - binary under test: `/tmp/orchicon/plane-control-e2e/install/orchicon` (a copy in a scratch install dir, never the worktree's build)
 - passes: 5   failures: 0   skips: 1   blocked: 13

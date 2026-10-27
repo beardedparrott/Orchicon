@@ -27,7 +27,7 @@
 date:      2026-10-17T16:52:34Z
 host:      Linux 26fd589386f6 7.2.0-1-cachyos #1 SMP PREEMPT_DYNAMIC Thu, 20 Aug 2026 06:06:30 +0000 x86_64 GNU/Linux
 hostname:  26fd589386f6
-repo:      /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M55C4TG8BMKRR7TGCQ9C9T0F
+repo:      <repo>/.orchicon-worktrees/01M55C4TG8BMKRR7TGCQ9C9T0F
 marker:    RUNTIME-E2E-20261017T165234Z-2268
 engines:   none found (GOOD — this is the claim being proven)
 wanted:    podman
@@ -50,7 +50,7 @@ held now (must be empty):
   8080 HELD
 disk:
   Filesystem     1048576-blocks   Used Available Capacity Mounted on
-  /dev/nvme0n1p7         597952 395102    185666      69% /home/beardedparrott/projects/Orchicon
+  /dev/nvme0n1p7         597952 395102    185666      69% <repo>
 ```
 
 ## failures — each names the file that owns it (AC10)

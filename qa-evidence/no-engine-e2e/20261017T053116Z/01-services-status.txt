@@ -1,1 +1,1 @@
-env: '/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M544QJBKJ7BWX5HCMVRJHD4C/bin/orchicon': No such file or directory
+env: '<repo>/.orchicon-worktrees/01M544QJBKJ7BWX5HCMVRJHD4C/bin/orchicon': No such file or directory

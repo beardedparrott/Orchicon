@@ -1,5 +1,5 @@
 
-$ go -C /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J build -o /tmp/orchicon/plane-control-e2e/install/orchicon ./cmd/orchicon
+$ go -C <repo>/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J build -o /tmp/orchicon/plane-control-e2e/install/orchicon ./cmd/orchicon
 [exit 0]
 
 
@@ -10,7 +10,7 @@ orchicon dev (commit=none built=unknown go=go1.26.4 linux/amd64)
 $ /tmp/orchicon/plane-control-e2e/install/orchicon version
 [exit 0]
 orchicon dev (commit=none built=unknown go=go1.26.4 linux/amd64)
-orchicon dev (commit=none built=unknown go=go1.26.4 linux/amd64)  (invalid host: no port record at /home/beardedparrott/.local/share/orchicon-dev/ports.json — the instance was never installed on this host)
+orchicon dev (commit=none built=unknown go=go1.26.4 linux/amd64)  (invalid host: no port record at <data-dir>/orchicon-dev/ports.json — the instance was never installed on this host)
   (invalid host: same — nothing to read back)
   (invalid host: no port record, so nothing to check)
   (blocked: grep 'internal/planecontrol' over internal/tui and cmd/orch matches nothing; cmd/orch/main.go:3 says the TUI carries zero control-plane — owner TUI task)
@@ -19,5 +19,5 @@ orchicon dev (commit=none built=unknown go=go1.26.4 linux/amd64)  (invalid host:
 
 $ /tmp/orchicon/plane-control-e2e/install/orchicon plane status dev
 [exit 0]
-instance dev: no plane PID file (nothing running, or no PID recorded) — data dir /home/beardedparrott/.local/share/orchicon-dev
-instance dev: no plane PID file (nothing running, or no PID recorded) — data dir /home/beardedparrott/.local/share/orchicon-dev  baseline plane status logged above (the CLI's own report — never the proof)
+instance dev: no plane PID file (nothing running, or no PID recorded) — data dir <data-dir>/orchicon-dev
+instance dev: no plane PID file (nothing running, or no PID recorded) — data dir <data-dir>/orchicon-dev  baseline plane status logged above (the CLI's own report — never the proof)

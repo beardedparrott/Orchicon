@@ -5,4 +5,4 @@ rc=2
 bash: line 1: docker: command not found
 make: *** [Makefile:415: clean-docker] Error 127
 rc2=2
-/home/beardedparrott/.local/share/e2e-sentinel
+<data-dir>/e2e-sentinel

@@ -32,7 +32,7 @@ import (
 func ledgerTestHistory(n int) ([]Message, string, string, string) {
 	const (
 		entityID = "01M33R5RDSENCVRFVZ588N9NRG"
-		path     = "/home/beardedparrott/projects/Orchicon/internal/askorchicon/chat.go"
+		path     = "/srv/orchicon/internal/askorchicon/chat.go"
 		commit   = "c0a80e54"
 	)
 	hist := make([]Message, 0, n)

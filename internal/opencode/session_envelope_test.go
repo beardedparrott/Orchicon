@@ -24,7 +24,7 @@ import (
 )
 
 // realV2SessionCreate is a verbatim v2 response, trimmed to the fields we read.
-const realV2SessionCreate = `{"data":{"id":"ses_ed2afaab3ffe9GPiW4pzVdo55d","projectID":"83a434b2df6c6fee704afb31255c959079e613b9","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1791761601870,"updated":1791761601870},"title":"orchicon-probe","location":{"directory":"/home/beardedparrott"}}}`
+const realV2SessionCreate = `{"data":{"id":"ses_ed2afaab3ffe9GPiW4pzVdo55d","projectID":"83a434b2df6c6fee704afb31255c959079e613b9","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1791761601870,"updated":1791761601870},"title":"orchicon-probe","location":{"directory":"/srv/orchicon"}}}`
 
 // realV2Info is a verbatim v2 /api/info body — NOT enveloped, which is the whole reason the decoder
 // must tolerate an absent envelope.
