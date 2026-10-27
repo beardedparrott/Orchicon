@@ -49,7 +49,7 @@ Evidence directories for this QA pass:
   - `make fe-install` → `npm error code ENOSPC … no space left on device, write` (`step-0.log`)
   - `make build` → `compile: writing output: write $WORK/b657/_pkg_.a: no space left on device`
     (`run2/step-1.log`)
-  - `make migrate` → `write /home/beardedparrott/.cache/go-build/d2/…: no space left on device`
+  - `make migrate` → `write <home>/.cache/go-build/d2/…: no space left on device`
     (`20261017T053116Z/step-2.log`)
   After `go clean -cache` (freed 1.3 GB) and relocating `GOCACHE`, `GOTMPDIR` and the npm cache
   to `/tmp` (`run2`), the build still hits `ENOSPC`: `GOMODCACHE` is 686 MB and lives on `$HOME`,
@@ -141,7 +141,7 @@ make: *** [Makefile:415: clean-docker] Error 127
 rc=2
 … (second run identical)
 rc2=2
-/home/beardedparrott/.local/share/e2e-sentinel   # sentinel intact: nothing was pruned
+<data-dir>/e2e-sentinel   # sentinel intact: nothing was pruned
 ```
 
 It destroys nothing (the sentinel survives), but it is **not** a clean no-op: it fails twice with

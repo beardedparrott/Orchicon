@@ -10,7 +10,7 @@ package api
 //
 //	WARN "ask file edit ledger git reconciliation failed"
 //	     conversation="01M57YEE75ETXRJXB90YP88BRE"      <- the session in question
-//	     dir="/home/beardedparrott/projects/Orchicon"    <- THE PLANE'S CWD
+//	     dir="<the directory the plane was started from>"  <- THE PLANE'S CWD
 //
 // Every one of those failures (7 of them, 100%) was against the plane's cwd and
 // never a session's own tree. askBaseDir() returned os.Getwd() — the directory the

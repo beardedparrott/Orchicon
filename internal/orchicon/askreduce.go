@@ -65,11 +65,19 @@ const (
 	textPartCapChars = 4000
 )
 
-// oversizePromptSignatures are the provider AND transport phrasings that mean
+// OversizePromptSignatures are the provider AND transport phrasings that mean
 // "this prompt was rejected for being too big". There is no shared error type
-// across the native wires, so detection is textual and deliberately
+// across the wires, so detection is textual and deliberately
 // conservative: a MISS simply means no reduction is attempted (the turn fails
 // exactly as it does today), never that a healthy turn is mangled.
+//
+// EXPORTED BECAUSE IT IS THE PLATFORM'S ONE ANSWER TO THIS QUESTION, and the
+// second wire must not grow its own copy. A session-ful adapter (opencode) never
+// sees this text in its own error types: it arrives as a serve `session.error`
+// message and is forwarded verbatim, so the Ask service classifies it with THIS
+// list rather than a parallel one (askorchicon/chatlimit.go). Two lists would
+// drift, and the family that would drift first is the 413 one below — the
+// hard-won one.
 //
 // TWO DIFFERENT LIMITS, ONE REMEDY. A model context-window overflow and a
 // transport body cap are NOT the same limit and must not be conflated — but the
@@ -97,7 +105,7 @@ const (
 // the provider-status formatter (provider.go: "provider status %d %s: %s"), and
 // it is included alongside the human phrases because a gateway body is often
 // bare HTML with no JSON error object at all.
-var oversizePromptSignatures = []string{
+var OversizePromptSignatures = []string{
 	// The MODEL's context window.
 	"maximum context length",
 	"context length exceeded",
@@ -113,16 +121,31 @@ var oversizePromptSignatures = []string{
 	"request body too large",
 }
 
-// isOversizePromptError reports whether err is a prompt rejected for its SIZE —
+// IsOversizePromptError reports whether err is a prompt rejected for its SIZE —
 // either the model's context window or a transport/CDN body limit (413). Both
-// are answered by the same remedy; see oversizePromptSignatures.
-func isOversizePromptError(err error) bool {
+// are answered by the same remedy; see OversizePromptSignatures.
+//
+// It classifies an ERROR VALUE. Adapters that receive the failure as an already-
+// formatted MESSAGE (the opencode serve's session.error) use
+// IsOversizePromptMessage, which is the same test over the same list.
+func IsOversizePromptError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	for _, sig := range oversizePromptSignatures {
-		if strings.Contains(msg, sig) {
+	return IsOversizePromptMessage(err.Error())
+}
+
+// IsOversizePromptMessage is IsOversizePromptError for a bare message string —
+// the shape a serve session.error arrives in. It exists so a caller holding only
+// text classifies it against the SAME list rather than keeping a shorter one of
+// its own, which is how the 413 phrasings would eventually be lost.
+func IsOversizePromptMessage(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	lower := strings.ToLower(msg)
+	for _, sig := range OversizePromptSignatures {
+		if strings.Contains(lower, sig) {
 			return true
 		}
 	}
@@ -295,7 +318,7 @@ func conversationBytes(history []Message) int {
 // provider accepted.
 func (b *NativeBridge) startTurnWithContextRecovery(turnCtx context.Context, prov Provider, req *TurnRequest, sessionID string) (TurnStream, error) {
 	stream, err := prov.StreamTurn(turnCtx, *req)
-	if err == nil || !isOversizePromptError(err) {
+	if err == nil || !IsOversizePromptError(err) {
 		return stream, err
 	}
 	firstErr := err
@@ -317,7 +340,7 @@ func (b *NativeBridge) startTurnWithContextRecovery(turnCtx context.Context, pro
 		if stream, err = prov.StreamTurn(turnCtx, *req); err == nil {
 			return stream, nil
 		}
-		if !isOversizePromptError(err) {
+		if !IsOversizePromptError(err) {
 			return nil, err
 		}
 	}

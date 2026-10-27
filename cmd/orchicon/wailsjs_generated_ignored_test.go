@@ -5,7 +5,7 @@ package main
 // THE BUG THIS PINS, from the operator's own rebuild:
 //
 //	$ make rebuild-dev
-//	/home/beardedparrott/projects/Orchicon/frontend/wailsjs/go/models.ts
+//	<repo>/frontend/wailsjs/go/models.ts
 //	   1:8   error  ES2015 module syntax is preferred over namespaces  @typescript-eslint/no-namespace
 //	  11:32  error  Unexpected any. Specify a different type           @typescript-eslint/no-explicit-any
 //	  ... (72 problems, 16 errors) ...

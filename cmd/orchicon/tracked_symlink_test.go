@@ -5,7 +5,7 @@ package main
 // THE DEFECT THIS EXISTS FOR. f109d2235 (PR #820) committed `frontend/node_modules` as a git symlink whose
 // content was an ABSOLUTE PATH on the author's machine:
 //
-//     /home/beardedparrott/projects/Orchicon/frontend/node_modules
+//     <repo>/frontend/node_modules
 //
 // `.gitignore` said `node_modules/` — a trailing slash matches a DIRECTORY only, so a SYMLINK named
 // node_modules was not ignored and `git add -A` swept it in. The consequences, in order of how they were

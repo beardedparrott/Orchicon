@@ -527,6 +527,15 @@ services-status: ## Show this instance's local services state and its DSN
 synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
 	scripts/check_no_synth_data.sh
 
+no-operator-paths: ## CI gate: no real person's home directory in any tracked file (code, comments, docs, fixtures)
+	scripts/check_no_operator_paths.sh
+
+# A RELEASE IS THE ONE BUILD WHOSE SOURCE MUST BE EXACT. Building from a dirty tree stamps vcs.modified=true,
+# so the binary at commit X does not contain commit X — bug reports cite a revision that lacks the code under
+# test and git bisect cannot work. This refuses rather than warns; see the script's header for the full case.
+release-src-check: ## Refuse a release from a dirty tree (pass tag= to also require HEAD == that tag)
+	scripts/check_release_source_clean.sh $(tag)
+
 adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image layers (ADR-0003/0005)
 	go test ./internal/runtime/ -run 'TestAdapterCLINeverBaked' -count=1 -v
 
@@ -1587,7 +1596,7 @@ cross-compile: ## Compile the shipped binaries for every release platform plus w
 # plane-control-e2e-assertions-test, published-archive-e2e-assertions-test and desktop-e2e-assertions-test.
 # They are independent, so neither side may be dropped — a gate quietly retired by a merge conflict is the
 # worst possible outcome for a file whose whole purpose is to catch what nobody looked at.
-CI_GO_GATES := lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test disk-report-test version-tag-match
+CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test disk-report-test version-tag-match
 
 ci-go-base: $(CI_GO_GATES) ## The Go gate WITHOUT cross-compile (CI runs that as a parallel job)
 

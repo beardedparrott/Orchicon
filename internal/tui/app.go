@@ -2493,6 +2493,11 @@ func (m *App) Init() tea.Cmd {
 	if c := m.drainStaged(); c != nil {
 		cmds = append(cmds, c)
 	}
+	// THE SIZE PROBE'S CHAIN (resize_probe.go). Nil wherever the platform delivers its own resize events,
+	// which is every platform but Windows — so this appends nothing on Linux/macOS.
+	if c := sizeProbeTickCmd(); c != nil {
+		cmds = append(cmds, c)
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -2587,6 +2592,7 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 		// handled in dispatch (App-level sizing)
 		return m, nil
 	}
+
 	if m.diffOpen && m.diffPane != nil {
 		if consumed, cmd := m.diffMsg(msg); consumed {
 			return m, cmd

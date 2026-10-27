@@ -696,21 +696,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			reapRuntime = true
 			return nil
 		}
+		armImage, armReady := armRuntimeColumns(runLocalMode, resolved, needsServe, r.runtimeEnabled())
 		updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
-			Status: strPtr(domain.WorkflowRunRunning),
-			// The runtime-serve readiness gate: false when a runtime daemon
-			// is wired AND the run actually needs a serve (any step
-			// resolves to a serve-dependent adapter kind). Serve-less
-			// (native-only) runs flip the gate immediately below — they
-			// still get a container (always-container), they just don't
-			// wait for the opencode serve probe they never use. Local-mode
-			// runs are ready immediately (no container, no serve).
-			RuntimeReady: boolPtr(runLocalMode || !needsServe || !r.runtimeEnabled()),
-			// Always-container: the run carries the resolved image
-			// (explicit -> project default -> base), never the no-serve
-			// sentinel. needsServe selects only the gate above, not the
-			// image.
-			RuntimeImage: strPtr(imageForRun(resolved, needsServe)),
+			Status:       strPtr(domain.WorkflowRunRunning),
+			RuntimeReady: armReady,
+			RuntimeImage: strPtr(armImage),
 		})
 		if err != nil {
 			return fmt.Errorf("transition run to running: %w", err)
@@ -6026,6 +6016,41 @@ func aggregateLoopDecisions(decisions []string, failureValue, successValue strin
 // configured tag through UseDaemonBaseImage, and the daemon's tag thereafter. THIS IS
 // THE ONE PLACE the repair is applied: every leg of the chain funnels through here,
 // so a caller cannot hold a path to the raw constant.
+// armRuntimeColumns decides what a run start RECORDS in the two runtime columns.
+//
+// THE DEFECT THIS ENCODES. The arm wrote RuntimeImage = the RESOLVED image and RuntimeReady = true even for a
+// LOCAL-mode run, and a local run never starts a container at all (shouldEnsureRunFor is false). The
+// operator's own run therefore displayed:
+//
+//	ExecutionMode (project) : "local"
+//	RuntimeImage  (run)     : "ghcr.io/beardedparrott/orchicon-runtime:latest"
+//	RuntimeReady  (run)     : true
+//
+// while all three of the tenant's images read Status: absent. It asserted readiness of an image that was not
+// present, and it sent the diagnosis of a failing Windows run toward a container theory for several rounds —
+// where the real question was whether the project's directory existed.
+//
+// So the value a run CARRIES is the value it USES, and the two notions the old code conflated are now separate
+// by construction:
+//
+//	resolved for this run -> what this run will actually run in. Empty for local. Recorded here.
+//	inherited for display -> what the project/tenant WOULD use if this were a runtime run. Not this run's,
+//	                         and never written onto it.
+//
+// ready is a POINTER so local mode can leave the column untouched rather than assert either value: the ready
+// gate has one owner, the gate-clearing block in the reconcile pass, which records "nothing to wait for" as its
+// own decision. Writing true here would be a second owner claiming a readiness this pass never established;
+// writing false would arm a gate the same pass must clear, for a container that will never exist.
+func armRuntimeColumns(runLocalMode bool, resolved string, needsServe, runtimeEnabled bool) (image string, ready *bool) {
+	if runLocalMode {
+		return "", nil // no container: no image to name, and nothing to be "ready"
+	}
+	// The runtime-serve readiness gate: false when a runtime daemon is wired AND the run actually needs a
+	// serve. Serve-less (native-only) runs flip the gate immediately — they still get a container
+	// (always-container), they just do not wait for the opencode serve probe they never use.
+	return imageForRun(resolved, needsServe), boolPtr(!needsServe || !runtimeEnabled)
+}
+
 func imageForRun(resolved string, needsServe bool) string {
 	_ = needsServe
 	if strings.TrimSpace(resolved) == "" {

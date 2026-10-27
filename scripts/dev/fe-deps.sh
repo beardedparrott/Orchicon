@@ -3,7 +3,7 @@
 #
 # THE BUG THIS EXISTS FOR. `frontend/node_modules` was a SYMLINK POINTING AT ITSELF:
 #
-#     node_modules -> /home/beardedparrott/projects/Orchicon/frontend/node_modules
+#     node_modules -> <repo>/frontend/node_modules
 #
 # Every path under it therefore failed with ELOOP, `tsc -b` died, npm exited 216, and `make rebuild-dev`
 # reported only:

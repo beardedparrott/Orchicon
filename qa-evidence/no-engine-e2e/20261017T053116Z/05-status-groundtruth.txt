@@ -24,13 +24,13 @@ process table:
   21386	postgres: orchicon orchicon 127.0.0.1(59518) idle                                                                                                                    
   21387	postgres: orchicon orchicon 127.0.0.1(59520) idle                                                                                                                    
   22952	/tmp/go-build3077001607/b001/exe/orchicon container 
-  22983	/usr/lib/postgresql/15/bin/postgres -D /home/beardedparrott/.local/share/orchicon-dev/postgres -p 15432 -c listen_addresses=localhost -c unix_socket_directories=/home/beardedparrott/.local/share/orchicon-dev 
+  22983	/usr/lib/postgresql/15/bin/postgres -D <data-dir>/orchicon-dev/postgres -p 15432 -c listen_addresses=localhost -c unix_socket_directories=<data-dir>/orchicon-dev 
   22984	postgres: checkpointer                                                                                                                                                                                          
   22985	postgres: background writer                                                                                                                                                                                     
   22987	postgres: walwriter                                                                                                                                                                                             
   22988	postgres: autovacuum launcher                                                                                                                                                                                   
   22989	postgres: logical replication launcher                                                                                                                                                                          
-  22994	/usr/local/bin/nats-server -js -sd /home/beardedparrott/.local/share/orchicon-dev/nats -p 14222 -m 8222 
+  22994	/usr/local/bin/nats-server -js -sd <data-dir>/orchicon-dev/nats -p 14222 -m 8222 
   27451	/tmp/go-build1225416422/b001/exe/orchicon 
   28880	/tmp/go-build3999714861/b001/exe/orchicon 
   28889	postgres: orchicon orchicon 127.0.0.1(57548) idle                                                                                                                                                               

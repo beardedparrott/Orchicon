@@ -495,6 +495,19 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 	if cmd, ok := m.pasteKey(msg); ok {
 		return m, cmd
 	}
+	// THE TERMINAL-SIZE PROBE (resize_probe.go). On Windows bubbletea's resize event is a console INPUT event,
+	// and the input path that makes bracketed paste and Shift+Enter work is the one that bypasses it — so the
+	// shell re-derives the size on its own cheap chain. An UNCHANGED size is dropped here: the renderer
+	// repaints on every WindowSizeMsg, and this probe is a quarter-second poll.
+	if probe, ok := msg.(terminalSizeProbeMsg); ok {
+		if wm := windowSizeFromProbe(probe, m.width, m.height); wm != nil {
+			return m.dispatch(wm)
+		}
+		return m, nil
+	}
+	if _, ok := msg.(sizeProbeTickMsg); ok {
+		return m.handleSizeProbeTick()
+	}
 	// PLANE STATE AND LIFECYCLE RESULTS land here, in the one message funnel, so a probe or a verb can
 	// never be handled twice (or by a screen that does not own the plane).
 	if pm, ok := msg.(planeStateMsg); ok {

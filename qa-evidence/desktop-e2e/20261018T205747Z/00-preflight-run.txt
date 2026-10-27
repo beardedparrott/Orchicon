@@ -1,10 +1,10 @@
 
 [1;36m== step 0 — the validity precondition (nothing proven if any of this fails)[0m
-  [2mevidence: /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M58CK5RRRMC1KYKNHHEKDK6S/qa-evidence/desktop-e2e/20261018T205747Z/step-0.log[0m
+  [2mevidence: <repo>/qa-evidence/desktop-e2e/20261018T205747Z/step-0.log[0m
   [32mPASS[0m the harness passes its own offline honesty gate
   [31mFAIL[0m RUN INVALID: a plane is already answering http://127.0.0.1:8080/healthz — this run cannot prove the no-plane offline state
 
 RUN INVALID: a plane is already answering http://127.0.0.1:8080/healthz — this run cannot prove the no-plane offline state
 
-evidence: /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M58CK5RRRMC1KYKNHHEKDK6S/qa-evidence/desktop-e2e/20261018T205747Z
+evidence: <repo>/qa-evidence/desktop-e2e/20261018T205747Z
 defects:  0

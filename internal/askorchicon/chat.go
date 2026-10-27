@@ -2108,6 +2108,14 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 	// bounded by askReattachAttemptBudget so a session that did not survive a serve restart fails in
 	// ~30s rather than retrying silently for the whole reply window. See the budget's own comment.
 	reattaches := 0
+	// contextLimitRetried reports whether this turn has ALREADY spent its one
+	// context-limit retry (chatlimit.go). One, not a loop: a second compaction of an
+	// already-compacted conversation would cost the same detail and prove nothing,
+	// and looping against a hard limit is how a turn burns its whole reply window
+	// failing slowly. Deliberately per TURN and not per attempt — the retry itself
+	// re-enters this loop, and every later attempt on a conversation that still does
+	// not fit must reach the operator rather than compact again.
+	contextLimitRetried := false
 
 	for {
 		res := s.runOneTurnAttempt(ctx, window, c, sid, system, recreated)
@@ -2129,6 +2137,38 @@ func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpt
 		case turnCollected:
 			return res.text, reasoning, sid, nil
 		case turnFailed:
+			// CONTEXT-LIMIT RECOVERY (chatlimit.go). A session-ful adapter never
+			// compacts on its own, so before this a conversation that reached its
+			// window failed every turn and told the operator to "run compaction" —
+			// a command the plane could run for itself. Compact, then re-dispatch
+			// the SAME user message on the compacted session.
+			//
+			// HIDE THE ERROR ONLY WHEN IT WORKED. If the compaction happened and the
+			// retry answers, this failure is not reported at all: the transcript's
+			// durable system-role notice is the one visible trace the collapse leaves,
+			// and a red bubble over a turn that succeeded is a lie about the turn. The
+			// error stays in the log. Everything that did NOT recover falls through to
+			// the original failure below, unchanged, because it names the real limit.
+			if !contextLimitRetried && isContextLimitFailure(res.err) {
+				s.log.Warn("ask orchicon turn hit the context limit — compacting and retrying the turn",
+					"conversation", c.convID, "session", sid, "model", c.modelRef, "error", res.err)
+				contextLimitRetried = true
+				if compacted, detail := s.compactAfterContextLimit(ctx, c.tenantID, c.convID, sid, c.modelRef, c.client); compacted {
+					s.log.Info("ask orchicon context-limit compaction done — re-dispatching the turn",
+						"conversation", c.convID, "session", sid, "detail", detail)
+					// EVERYTHING THE ATTEMPT ACCUMULATED MUST BE DROPPED, or the retry
+					// would hand back the abandoned attempt's work as this turn's THINKING:
+					// `reasoning` already absorbed res.reasoning above, and the live tool
+					// ledger still holds the calls that attempt recorded. The turn's reply
+					// is res.text, held by the caller, so it is untouched.
+					reasoning = nil
+					c.ledger = newToolLedger()
+					continue
+				} else {
+					s.log.Warn("ask orchicon context-limit compaction could not recover the turn — reporting the original failure",
+						"conversation", c.convID, "session", sid, "reason", detail)
+				}
+			}
 			return res.text, reasoning, sid, res.err
 		case turnRecreated:
 			sid = res.newSid

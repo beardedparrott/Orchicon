@@ -1,5 +1,5 @@
 PLAN (nothing executed)
-  evidence dir: /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M58CK5RRRMC1KYKNHHEKDK6S/qa-evidence/desktop-e2e/20261018T210648Z
+  evidence dir: <repo>/qa-evidence/desktop-e2e/20261018T210648Z
   platform:     linux   instance: dev   control port: 8080
   artifact:     <none — will look for an installed package> (auto)
 

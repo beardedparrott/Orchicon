@@ -346,22 +346,48 @@ func readClipboardImage(current []attachment) (attachment, error) {
 // semantics differ: an image read must produce NOTHING when the clipboard holds text (so the caller can fall
 // back), whereas a text read must produce the text.
 func clipboardTextCommand() []string {
-	switch runtime.GOOS {
+	return clipboardTextCommandFor(runtime.GOOS, os.Getenv("WAYLAND_DISPLAY"), hasBinary)
+}
+
+// clipboardTextCommandFor is clipboardTextCommand's decision, with the platform, the Wayland hint and the
+// PATH probe injected.
+//
+// IT EXISTS SO THE WINDOWS CASE CAN BE TESTED FROM LINUX. The bug this closes was a MISSING BRANCH rather
+// than wrong logic — clipboardTextCommand had no "windows" arm at all, so every text paste on a Windows
+// box answered "no clipboard reader on this machine" — and a missing branch is exactly the kind of defect
+// that survives a hand-test on the platform that already worked. Splitting the decision out lets the whole
+// table be asserted on any host.
+func clipboardTextCommandFor(goos, wayland string, has func(string) bool) []string {
+	switch goos {
 	case "darwin":
-		if hasBinary("pbpaste") {
+		if has("pbpaste") {
 			return []string{"pbpaste"}
 		}
 	case "linux":
-		if os.Getenv("WAYLAND_DISPLAY") != "" && hasBinary("wl-paste") {
+		if wayland != "" && has("wl-paste") {
 			// -n trims the trailing newline these tools append, so a pasted sentence does not arrive with a
 			// stray blank line in the composer.
 			return []string{"wl-paste", "-n"}
 		}
-		if hasBinary("xclip") {
+		if has("xclip") {
 			return []string{"xclip", "-selection", "clipboard", "-o"}
 		}
-		if hasBinary("xsel") {
+		if has("xsel") {
 			return []string{"xsel", "--clipboard", "--output"}
+		}
+	case "windows":
+		// NO SEPARATE HELPER TO PROBE FOR: the reader is PowerShell, which is present on every supported
+		// Windows. A Windows 7-era box would have to spell it powershell.exe; the project's floor is well
+		// above that, and "pwsh" is deliberately NOT the choice — PowerShell 7 is an optional install and
+		// its absence would be a silent P0 on the one platform this branch exists for.
+		//
+		// -NoProfile IS FOR CORRECTNESS, NOT SPEED: anything a user profile prints lands on STDOUT and
+		// therefore becomes part of the "pasted" text — a prompt banner would be pasted into their message.
+		// -STA is REQUIRED: Get-Clipboard needs a single-threaded apartment and fails outright under MTA.
+		// -Raw asks for the clipboard's text as ONE string; without it the cmdlet splits on the clipboard's
+		// line breaks and the result is joined with newlines, which is the shape that then types as Enter.
+		return []string{
+			"powershell", "-NoProfile", "-STA", "-NoLogo", "-Command", "Get-Clipboard -Raw",
 		}
 	}
 	return nil
@@ -407,6 +433,11 @@ func clipboardHelperHint() string {
 			return "wl-clipboard (wl-paste)"
 		}
 		return "xclip or xsel"
+	case "windows":
+		// The text reader is PowerShell and needs no install, so the only thing that can be missing here is
+		// the IMAGE path — which has no Windows reader yet. Say that plainly rather than sending the
+		// operator off to install a Unix tool that does not exist for their platform.
+		return "nothing for text (PowerShell is used) — images have no Windows clipboard reader yet, so use the file picker"
 	}
 	return "a platform clipboard tool"
 }

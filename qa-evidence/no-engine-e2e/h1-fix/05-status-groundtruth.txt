@@ -4,13 +4,13 @@ ports listening:  pg=15432:0 nats=14222:0 control=18080:0   (0=LISTENing)
 pid owning control port: 137159
 pid owning pg port:      123448
 process table:
-  123448	/usr/lib/postgresql/15/bin/postgres -D /home/beardedparrott/.local/share/orchicon-dev/postgres -p 15432 -c listen_addresses=localhost -c unix_socket_directories=/home/beardedparrott/.local/share/orchicon-dev 
+  123448	/usr/lib/postgresql/15/bin/postgres -D <data-dir>/orchicon-dev/postgres -p 15432 -c listen_addresses=localhost -c unix_socket_directories=<data-dir>/orchicon-dev 
   123449	postgres: checkpointer                                                                                                                                                                                          
   123450	postgres: background writer                                                                                                                                                                                     
   123452	postgres: walwriter                                                                                                                                                                                             
   123453	postgres: autovacuum launcher                                                                                                                                                                                   
   123454	postgres: logical replication launcher                                                                                                                                                                          
-  123459	/usr/local/bin/nats-server -js -sd /home/beardedparrott/.local/share/orchicon-dev/nats -p 14222 -m 8222 
+  123459	/usr/local/bin/nats-server -js -sd <data-dir>/orchicon-dev/nats -p 14222 -m 8222 
   137168	postgres: orchicon orchicon 127.0.0.1(34866) idle                                                                                                                                                               
   137169	postgres: orchicon orchicon 127.0.0.1(34870) idle                                                                                                                                                               
   137170	postgres: orchicon orchicon 127.0.0.1(34878) idle                                                                                                                                                               

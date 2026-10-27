@@ -1,5 +1,5 @@
 
-$ go -C /home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J test ./internal/api -run TestAPISurfaceDidNotGrow|TestProtoDeclaresNoLifecycleService -count=1 -v
+$ go -C <repo>/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J test ./internal/api -run TestAPISurfaceDidNotGrow|TestProtoDeclaresNoLifecycleService -count=1 -v
 [exit 0]
 === RUN   TestAPISurfaceDidNotGrow
 --- PASS: TestAPISurfaceDidNotGrow (0.00s)
@@ -14,12 +14,12 @@ ok  	github.com/beardedparrott/orchicon/internal/api	0.011s
 PASS
 ok  	github.com/beardedparrott/orchicon/internal/api	0.011s
 control matches:
-/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J/frontend/src/components/ui/toast.tsx
-/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J/frontend/src/components/ui/toaster.tsx
-/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J/frontend/src/main.tsx
+<repo>/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J/frontend/src/components/ui/toast.tsx
+<repo>/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J/frontend/src/components/ui/toaster.tsx
+<repo>/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J/frontend/src/main.tsx
 lifecycle-shaped matches (must be empty):
 
 prose mentions (recorded, not a control):
-/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J/frontend/src/routes/settings.tsx:770:              Fails executions whose runtime process is gone (plane restart, lost
-  OBSERVATION: the words 'plane <verb>' appear in prose help text (/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J/frontend/src/routes/settings.tsx:770:              Fails executions whose runtime process is gone (plane restart, lost) — a sentence, not a lifecycle control; the tripwire above is identifier-shaped on purpose
+<repo>/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J/frontend/src/routes/settings.tsx:770:              Fails executions whose runtime process is gone (plane restart, lost
+  OBSERVATION: the words 'plane <verb>' appear in prose help text (<repo>/.orchicon-worktrees/01M571SDB6T3FSVNN1PQ897K1J/frontend/src/routes/settings.tsx:770:              Fails executions whose runtime process is gone (plane restart, lost) — a sentence, not a lifecycle control; the tripwire above is identifier-shaped on purpose
   (skip: needs a browser on the plane's origin: open a tab, stop the plane from the TUI, attach 09-webapp-offline.png + 09-webapp-console.txt)

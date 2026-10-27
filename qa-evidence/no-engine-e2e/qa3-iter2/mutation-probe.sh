@@ -2,7 +2,7 @@
 # QA's OWN mutation probe (independent of the repo's gate): does the real
 # harness gate the vacuity class, or only the repo's test of it?
 set -uo pipefail
-WT=/home/beardedparrott/projects/Orchicon/.orchicon-worktrees/01M544QJBKJ7BWX5HCMVRJHD4C
+WT=<repo>/.orchicon-worktrees/01M544QJBKJ7BWX5HCMVRJHD4C
 . "$WT/scripts/no-engine-e2e.sh" >/dev/null 2>&1
 EVIDENCE=/tmp/orchicon/probe/ev; mkdir -p "$EVIDENCE"; : >"$EVIDENCE/results.tsv"
 CURRENT_STEP=4

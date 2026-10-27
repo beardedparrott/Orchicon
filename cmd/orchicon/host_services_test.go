@@ -908,11 +908,11 @@ func TestEmbeddedConfigsParseWithAWindowsDataDir(t *testing.T) {
 	// Every quoting shape that bites: backslashes (the reported case), an apostrophe in the home
 	// directory, a space, and a UNC path.
 	dirs := map[string]string{
-		"windows":          `C:\Users\justi\.local\share\orchicon-dev`,
+		"windows":          `C:\Users\op-user\.local\share\orchicon-dev`,
 		"windows-spaces":   `C:\Users\Some User\AppData\Local\orchicon`,
 		"windows-quote":    `C:\Users\O'Brien\.local\share\orchicon-dev`,
 		"unc":              `\\server\share\orchicon`,
-		"posix":            `/home/justi/.local/share/orchicon-dev`,
+		"posix":            `/home/op-user/.local/share/orchicon-dev`,
 		"posix-with-quote": `/home/O'Brien/.local/share/orchicon-dev`,
 	}
 	for name, dataDir := range dirs {
@@ -1005,7 +1005,7 @@ func TestEmbeddedConfigsParseWithAWindowsDataDir(t *testing.T) {
 // and a quote is doubled because that is single-quoted YAML's one escape.
 func TestApplyConfigTokensEscapesOnlyTheQuote(t *testing.T) {
 	tokens := map[string]string{
-		"@DATA_DIR@":       `/home/justi/.local/share/orchicon-dev`,
+		"@DATA_DIR@":       `/home/op-user/.local/share/orchicon-dev`,
 		"@LOKI_HTTP_PORT@": "3100",
 		"@QUOTED_DIR@":     `/home/O'Brien/x`,
 	}
@@ -1013,7 +1013,7 @@ func TestApplyConfigTokensEscapesOnlyTheQuote(t *testing.T) {
 	body := "a: '@DATA_DIR@/loki'\nb: @LOKI_HTTP_PORT@\nc: '@QUOTED_DIR@'"
 	got := applyConfigTokens(keys, body, tokens)
 
-	want := "a: '/home/justi/.local/share/orchicon-dev/loki'\nb: 3100\nc: '/home/O''Brien/x'"
+	want := "a: '/home/op-user/.local/share/orchicon-dev/loki'\nb: 3100\nc: '/home/O''Brien/x'"
 	if got != want {
 		t.Errorf("applyConfigTokens mismatch:\n got: %s\nwant: %s", got, want)
 	}

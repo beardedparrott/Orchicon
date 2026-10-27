@@ -15,7 +15,7 @@ The gate builds its own disposable plane in-process (`diffE2EPlane`), so it need
 only the built binary and a pty. From the repo root:
 
 ```sh
-PROJ=/home/beardedparrott/projects/Orchicon   # the canonical project dir
+PROJ="$PWD"   # the canonical project dir (a checkout root, wherever yours lives)
 mkdir -p /var/tmp/orchicon/home /var/tmp/orchicon/gocache /var/tmp/orchicon/gotmp
 export HOME=/var/tmp/orchicon/home
 export GOMODCACHE=$PROJ/.dev/mod GOCACHE=/var/tmp/orchicon/gocache GOTMPDIR=/var/tmp/orchicon/gotmp

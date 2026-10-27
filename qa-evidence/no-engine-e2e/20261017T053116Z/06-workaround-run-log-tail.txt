@@ -12,5 +12,5 @@ npm error errno -28
 npm error nospc ENOSPC: no space left on device, write
 npm error nospc There appears to be insufficient space on your system to finish.
 npm error nospc Clear up some disk space and try again.
-npm error A complete log of this run can be found in: /home/beardedparrott/.npm/_logs/2026-10-17T05_31_23_169Z-debug-0.log
+npm error A complete log of this run can be found in: <home>/.npm/_logs/2026-10-17T05_31_23_169Z-debug-0.log
 make: *** [Makefile:575: fe-build] Error 228
