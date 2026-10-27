@@ -45,7 +45,18 @@ func (s *Service) CompactConversation(ctx context.Context, req *connect.Request[
 			errors.New("a turn is in flight — stop it or wait for it to finish before compacting"))
 	}
 
-	conv, err := s.loadConversationRow(ctx, tenantID, req.Msg.ConversationId)
+	return s.compactConversationForTurn(ctx, tenantID, req.Msg.ConversationId, req.Msg.Reason)
+}
+
+// compactConversationForTurn is the shared compaction core: the manual RPC above
+// and the reactive context-limit recovery (chatlimit.go) both run THROUGH it, so a
+// compaction is the same operation — same adapter resolution, same audit row, same
+// transcript notice — however it was triggered.
+//
+// reason is recorded verbatim, so it must be one of the vocabulary's values:
+// "manual", "pressure", "context_limit" (see scheduler.AskCompactNotice).
+func (s *Service) compactConversationForTurn(ctx context.Context, tenantID, convID, reason string) (*connect.Response[apiv1.CompactConversationResponse], error) {
+	conv, err := s.loadConversationRow(ctx, tenantID, convID)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +71,7 @@ func (s *Service) CompactConversation(ctx context.Context, req *connect.Request[
 	// operator needs compaction most (a long conversation about to overflow).
 	modelRef := s.modelRefOrFallback(ctx, tenantID, conv.ModelRef)
 	kind := adapter.AdapterKind(modelRef)
-	client, err := s.resolveChatClient(req.Msg.ConversationId, modelRef)
+	client, err := s.resolveChatClient(convID, modelRef)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
@@ -74,29 +85,29 @@ func (s *Service) CompactConversation(ctx context.Context, req *connect.Request[
 	}
 
 	res, err := compactor.CompactConversationSession(ctx, scheduler.CompactConversationOpts{
-		ConversationID: req.Msg.ConversationId,
+		ConversationID: convID,
 		SessionID:      conv.SessionID,
 		ModelRef:       modelRef,
-		Reason:         req.Msg.Reason,
+		Reason:         reason,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	s.auditCompaction(ctx, tenantID, req.Msg.ConversationId, req.Msg.Reason, res)
+	s.auditCompaction(ctx, tenantID, convID, reason, res)
 
 	// AND LEAVE A MARK IN THE TRANSCRIPT. The audit trail answers "what ran"; this
 	// answers the operator's actual question — "why does the assistant no longer
 	// remember what we said earlier" — in the place they are looking when they ask
 	// it. Advisory: the compaction has already happened, so a failure to record it is
 	// logged and never fails the RPC.
-	reason := req.Msg.Reason
-	if strings.TrimSpace(reason) == "" {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
 		reason = "manual"
 	}
 	if res.Compacted {
 		if err := s.RecordCompactionNotice(ctx, scheduler.AskCompactNotice{
-			ConversationID: req.Msg.ConversationId,
+			ConversationID: convID,
 			SessionID:      conv.SessionID,
 			Reason:         reason,
 			Detail:         res.Detail,
@@ -105,14 +116,14 @@ func (s *Service) CompactConversation(ctx context.Context, req *connect.Request[
 			TokensAfter:    res.TokensAfter,
 		}); err != nil {
 			s.log.Warn("ask orchicon: compaction notice was not recorded — the compaction stands, but the transcript will not show it",
-				"conversation", req.Msg.ConversationId, "error", err)
+				"conversation", convID, "error", err)
 		}
 	}
 
 	s.log.Info("ask orchicon: conversation compaction",
-		"conversation", req.Msg.ConversationId,
+		"conversation", convID,
 		"adapter", kind,
-		"reason", req.Msg.Reason,
+		"reason", reason,
 		"compacted", res.Compacted,
 		"detail", res.Detail)
 
