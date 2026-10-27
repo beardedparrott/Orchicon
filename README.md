@@ -174,15 +174,22 @@ full walkthrough is in [USERGUIDE.md §3 — The two clients](USERGUIDE.md#3-the
 # Install a specific version
 curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.4.5
 
+# Upgrade — the same command as installing
+curl -fsSL https://orchicon.dev/install | bash
+
 # Uninstall
 curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
-
-# Clean upgrade (preserves data)
-curl -fsSL https://orchicon.dev/install | bash -s -- --clean
 
 # Force clean and reinstall (destroys all data)
 curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 ```
+
+**Upgrading is just the install command re-run.** It detects what it is doing — install,
+upgrade, or nothing to do — and an upgrade preserves your data while waiting for the plane
+to come back healthy. It will **not** downgrade: migrations are forward-only, so installing
+an older release than the one you have is refused by name. Back up first if you want to
+(`orchicon db backup`) — that is deliberately your call, not an automatic multi-GB artifact
+on every upgrade. See [USERGUIDE.md §Upgrading](USERGUIDE.md#1a-upgrading).
 
 After installation, verify with `orchicon version`. The full stack runs
 on this host — see [ARCHITECTURE.md §One shape](ARCHITECTURE.md).

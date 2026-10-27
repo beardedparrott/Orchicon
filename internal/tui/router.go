@@ -1831,6 +1831,12 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	case chatConvCreatedMsg:
 		m.askMode = askConversations // a session now exists: show it
 		m.chatConvID = msg.convID
+		// A SEND THAT CREATES A CONVERSATION OPENS IT — and this path sets chatConvID
+		// directly, without going through OpenAskConversation. Without this resync the rail's
+		// highlight stayed on the PREVIOUS conversation while the brand-new one was on screen,
+		// which is the reported confusion in its most obvious form: "the highlighted bar on
+		// the conversation is not always in sync with the current conversation on the screen".
+		m.railSyncSelectionToOpenConversation()
 		// The send landed: settle the composer's "sending …" ack (set by the dock when
 		// Enter fired) so it cannot linger as a stale promise. Guarded, like every other
 		// settle, so a connection banner that arrived while the create was in flight is
