@@ -128,6 +128,7 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
+	s.ensureProjectGitState(ctx, created)
 	s.log.Info("project created", "id", created.ID, "tenant", tenantID, "slug", slug)
 	return connect.NewResponse(&apiv1.CreateProjectResponse{Project: rowToProto(created)}), nil
 }
@@ -387,6 +388,10 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
+	// A SAVED PROJECT IS RE-CHECKED, not only a new one. The git state can go wrong after creation — a repo
+	// deleted, a directory moved onto a drive this plane cannot reach, a strategy switched from none to pr —
+	// and the moment the operator is looking at the project form is the moment they can act on it.
+	s.ensureProjectGitState(ctx, updated)
 	s.log.Info("project updated", "id", updated.ID, "version", updated.Version)
 	// Project dir / context files changed → refresh the container mount
 	// manifest immediately (the periodic writer is a safety net).
@@ -820,4 +825,96 @@ func executionModeFromProto(v apiv1.ExecutionMode, unset string) (string, error)
 		}
 	}
 	return "", errors.New(db.ExecutionModeInvalidMsg)
+}
+
+// ensureProjectGitState runs the git-state setup for a saved project and REPORTS what it did.
+//
+// BEST-EFFORT BY CONTRACT, and the reason is in the ordering: this runs AFTER the project's transaction has
+// committed. A project whose directory is on an unreachable share, or whose host has no git, must still be
+// creatable — refusing the save would leave the operator unable to record the project at all, when the useful
+// response is to keep it and tell them what to fix. The report reaches them two ways: the log line here, and
+// the project's own event stream when the setup actually corrected something.
+//
+// A git event is only emitted when git state was CHANGED. A healthy project would otherwise emit a no-op event
+// on every single save, which is noise in a stream whose value is that everything in it means something.
+func (s *Service) ensureProjectGitState(ctx context.Context, proj db.ProjectRow) {
+	rep := EnsureGitState(ctx, proj.ProjectDir, proj.GitStrategy)
+	if rep.Err != nil {
+		s.log.Warn("project: git setup could not complete — the project was saved, and its git-backed runs "+
+			"will fail until the repository is usable",
+			"id", proj.ID, "project_dir", proj.ProjectDir, "strategy", proj.GitStrategy,
+			"error", rep.Err)
+		return
+	}
+	if !rep.Needed {
+		s.log.Debug("project: git state already usable", "id", proj.ID, "detail", rep.Skipped)
+		return
+	}
+	s.log.Info("project: git state set up for git-backed runs",
+		"id", proj.ID, "project_dir", proj.ProjectDir, "strategy", proj.GitStrategy,
+		"done", rep.Done)
+
+	// Report it durably, advisory: the setup has already happened, so a failed event write must not fail a save
+	// that succeeded. The string is a complete sentence on purpose — this is what the operator sees.
+	msg := "Git setup for this project: " + rep.Summary()
+	if err := s.enqueueProjectNotice(ctx, proj, msg); err != nil {
+		s.log.Warn("project: git setup notice was not recorded — the setup stands, but the project's event "+
+			"stream will not show it", "id", proj.ID, "error", err)
+	}
+}
+
+// enqueueProjectNotice writes one project-scoped event carrying a notice, in its own transaction.
+//
+// Its own transaction for the same reason the audit is: the change it describes is already committed, so it must
+// not be able to roll anything back.
+//
+// THE NOTICE TEXT RIDES BOTH. The event carries it under "notice" so a live watcher can display it without
+// re-reading the project, and the audit row carries it as "detail" so the record survives without a subscriber.
+// Both, because they answer different questions and one of them is routinely absent (nothing is subscribed, or
+// the operator is reading the audit trail hours later).
+func (s *Service) enqueueProjectNotice(ctx context.Context, proj db.ProjectRow, msg string) error {
+	tenantID := proj.TenantID
+	if tenantID == "" || proj.ID == "" {
+		return nil
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	defer ttx.Rollback(ctx)
+	if err := enqueueProjectEventWithNotice(ctx, ttx.Tx, "project.git_setup", proj, msg); err != nil {
+		return err
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.git_setup", "project", proj.ID, nil,
+		audit.Snapshot(map[string]any{"detail": msg})); err != nil {
+		return err
+	}
+	return ttx.Commit(ctx)
+}
+
+// enqueueProjectEventWithNotice is enqueueProjectEvent with an extra top-level "notice" field in the payload,
+// for events whose whole content is something the operator needs to read.
+func enqueueProjectEventWithNotice(ctx context.Context, tx pgx.Tx, eventType string, p db.ProjectRow, notice string) error {
+	payload, err := buildEventPayload(eventType, p)
+	if err != nil {
+		return err
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return err
+	}
+	envelope["notice"] = notice
+	payload, err = json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	return db.EnqueueOutbox(ctx, tx, db.OutboxRow{
+		TenantID:      p.TenantID,
+		EventType:     eventType,
+		AggregateType: "project",
+		AggregateID:   p.ID,
+		AggregateVer:  p.Version,
+		Payload:       payload,
+		OccurredAt:    time.Now().UTC(),
+	})
 }
