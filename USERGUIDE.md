@@ -915,7 +915,7 @@ different mode no longer applies.
 
 | Control | What it does |
 |---|---|
-| **Send** | Send the message. Enter sends; Shift+Enter inserts a newline. |
+| **Send** | Send the message. Enter sends; `ctrl+j` inserts a newline (`alt+enter` on Linux/macOS). See *Newline chords by platform* below. |
 | **Stop** | Abort the in-flight reply. The turn stops generating immediately and the session stays alive for your next message. |
 | **Compact** | Summarize the conversation history to free context. Disabled, with the reason shown, when there is no conversation or a turn is in flight. |
 | **Project pill** | Choose the **project (workspace)** this conversation belongs to. Before a conversation exists it sets the project the new chat is created in; on an open conversation it moves it, the same action as the sidebar's "move to project". It falls back to whatever project the sidebar is scoped to, so the two controls cannot disagree. |
@@ -2027,8 +2027,24 @@ advertises the chord whenever there is a split on screen.
 ### The composer
 
 - Type and press **Enter** to send.
-- **`shift+enter`** or **`alt+enter`** inserts a newline (a trailing `\` then Enter
-  does the same, if you prefer).
+- **`ctrl+j`** inserts a newline (Windows), **`alt+enter`** on Linux/macOS — or a
+  trailing `\` then Enter, in every mode. Shift+Enter works only on terminals that
+  report it distinctly; see *Newline chords by platform* below.
+#### Newline chords by platform
+
+A terminal does not deliver every chord to the program running inside it, and the ones that get through differ by
+platform. That is why the composer's newline chord is chosen per platform rather than being one fixed key:
+
+| Platform | Newline chord | Why |
+|---|---|---|
+| **Windows** (native console) | **`ctrl+j`** | `alt+enter` is Windows Terminal's *toggle fullscreen* — the terminal consumes it before orch sees it. `shift+enter` is not reported distinctly: the console hands orch a bare Enter, which sends. `ctrl+j` arrives as a normal control key and is unbound in the terminal. |
+| **Linux / macOS** | **`alt+enter`** | Delivered normally, and `shift+enter` works in terminals that emit a distinct sequence for it (e.g. Konsole). |
+| Any | **`ctrl+j`**, **`alt+enter`**, or `\` then Enter | All three are accepted wherever they reach the program, so no setting can leave you without a working chord. |
+
+If `alt+enter` closes or resizes your window, or hides your tab bar, your terminal has claimed that key — use
+`ctrl+j`. You can set the preference explicitly per profile with `newline` in your orch config
+(`ctrl+j`, `alt+enter`, `backslash-enter`, or `both`).
+
 - **`ctrl+a`** takes the whole composer in one gesture: it **copies what you have
   typed to the clipboard** and clears the way for the next keystroke to replace it.
   Use it to grab a draft, or to throw one away and start again.
