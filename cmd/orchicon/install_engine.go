@@ -152,8 +152,10 @@ func resolveContainerEngine() (bool, error) {
 	// 2. ABSENT → OPT-IN PROVISIONING (AC2). The command is always printed; the prompt goes
 	// to the controlling terminal and a run with no terminal prints and declines, so a piped
 	// install can never install a VM image silently.
-	if e.Name == containerengine.EngineNone {
-		installPhase("no container engine found — podman can be installed for you")
+	// provisionPodman is the ONE provisioning rung, used from two places: nothing detected at
+	// all (below), and an engine that was detected but cannot run a container (step 5).
+	provisionPodman := func(why string) (containerengine.Engine, error) {
+		installPhase(why)
 		var confirm func(string) bool
 		if tty, owned := promptTerminal(); tty != nil {
 			if owned {
@@ -162,6 +164,13 @@ func resolveContainerEngine() (bool, error) {
 			confirm = func(q string) bool { return askEngineInstall(tty, tty, q) }
 		}
 		prov, perr := containerengine.Provision(context.Background(), p, os.Stdout, confirm)
+		if perr != nil {
+			return containerengine.Engine{Name: containerengine.EngineNone}, perr
+		}
+		return prov, nil
+	}
+	if e.Name == containerengine.EngineNone {
+		prov, perr := provisionPodman("no container engine found — podman can be installed for you")
 		if perr != nil {
 			if errors.Is(perr, containerengine.ErrDeclined) {
 				return unavailable("podman is not installed: %s", declinedReason(perr))
@@ -195,8 +204,59 @@ func resolveContainerEngine() (bool, error) {
 	// this install is allowed to claim runtime containers.
 	installPhase("verifying the container engine — running a trivial container")
 	verifyImage := strings.TrimSpace(os.Getenv("ORCHICON_ENGINE_VERIFY_IMAGE"))
-	if err := containerengine.Verify(context.Background(), p, e, verifyImage, 0); err != nil {
-		return unavailable("%v", err)
+	if verr := containerengine.Verify(context.Background(), p, e, verifyImage, 0); verr != nil {
+		// AN ENGINE THAT WAS DETECTED BUT CANNOT RUN A CONTAINER IS NOT AN ENGINE THIS INSTALL CAN
+		// USE — AND IT MUST NOT STOP PODMAN BEING INSTALLED.
+		//
+		// Detect returns the FIRST engine it finds, podman then docker, and a docker CLI whose
+		// daemon is dead is still "found". So this rung was a dead end on the commonest Windows
+		// machine there is: Docker Desktop installed, its service not running. MEASURED on the
+		// operator's host, verbatim:
+		//
+		//	== checking the container engine
+		//	== checking the podman machine                       <- "not applicable": not podman
+		//	== verifying the container engine — running a trivial container
+		//	orchicon: the container engine is installed but cannot run a container: failed to
+		//	          connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine
+		//
+		// …and podman was NEVER OFFERED, because provisioning is gated on "nothing detected". The
+		// install then had no usable engine, so it started no runtime daemon, and every container
+		// fetch failed on a socket that would never exist. Reinstalling changed nothing, because
+		// the same dead docker was detected every time.
+		//
+		// SO A FAILED VERIFY FALLS THROUGH TO PROVISIONING, once. Only for a non-podman engine:
+		// podman failing to verify is podman being broken, which provisioning cannot repair (it
+		// would install what is already installed), and the original error is the honest report.
+		if e.Name != containerengine.EnginePodman {
+			fmt.Fprintf(os.Stdout, "orchicon: %s is installed but cannot run a container\n", e.Name)
+			prov, perr := provisionPodman("installing podman instead — it needs no pre-existing daemon")
+			if perr == nil {
+				e = prov
+				if v, verr2 := containerengine.Version(p, e); verr2 == nil {
+					e = v
+				}
+				st.Engine, st.Bin, st.Version = e.Name, e.Bin, e.Version
+				if err := containerengine.CheckMinimum(p, e); err != nil {
+					return unavailable("%v", err)
+				}
+				installPhase("checking the podman machine")
+				ms, merr := containerengine.EnsureMachine(context.Background(), p, e, os.Stdout)
+				st.Machine = ms
+				if merr != nil {
+					return unavailable("%v", merr)
+				}
+				installPhase("verifying podman — running a trivial container")
+				if perr2 := containerengine.Verify(context.Background(), p, e, verifyImage, 0); perr2 != nil {
+					return unavailable("%v", perr2)
+				}
+			} else {
+				// PROVISIONING DID NOT RESCUE IT. Report the ORIGINAL failure, which names the
+				// engine the operator actually has, and add why podman was not the answer.
+				return unavailable("%v (podman could not be installed instead: %s)", verr, provisionDecline(perr))
+			}
+		} else {
+			return unavailable("%v", verr)
+		}
 	}
 
 	// 6. READY.
@@ -258,4 +318,16 @@ func describeEngineStatus(st containerengine.Status) string {
 	// anything, so the operator would read "install succeeded" and discover the gap as a socket error later.
 	return "unavailable — the container engine was not detected, so there are no runtime containers and no " +
 		"runtime daemon; re-run with -Containers to provision one"
+}
+
+// provisionDecline renders a provisioning failure for appending to another message, keeping the
+// operator-facing sentence and dropping the sentinel prefix.
+func provisionDecline(err error) string {
+	if err == nil {
+		return "unknown reason"
+	}
+	if errors.Is(err, containerengine.ErrDeclined) {
+		return declinedReason(err)
+	}
+	return err.Error()
 }
