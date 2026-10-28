@@ -163,7 +163,7 @@ func resolveContainerEngine() (bool, error) {
 			}
 			confirm = func(q string) bool { return askEngineInstall(tty, tty, q) }
 		}
-		prov, perr := containerengine.Provision(context.Background(), p, os.Stdout, confirm)
+		prov, perr := containerengine.ProvisionEngine(context.Background(), p, os.Stdout, confirm, containerengine.EnginePodman)
 		if perr != nil {
 			return containerengine.Engine{Name: containerengine.EngineNone}, perr
 		}
@@ -230,7 +230,22 @@ func resolveContainerEngine() (bool, error) {
 		if e.Name != containerengine.EnginePodman {
 			fmt.Fprintf(os.Stdout, "orchicon: %s is installed but cannot run a container\n", e.Name)
 			prov, perr := provisionPodman("installing podman instead — it needs no pre-existing daemon")
+			// PROVISIONING RETURNING IS NOT PODMAN BEING USABLE.
+			//
+			// ProvisionEngine reports what it INSTALLED, and a package manager commits to the registry — not to
+			// this process's PATH — so the binary is often not resolvable yet (WaitForBinary handles that).
+			// Continuing on the OLD engine here is exactly the measured failure: "checking the podman machine"
+			// and "verifying podman" both ran against docker, and the error named docker's pipe while the log
+			// claimed podman. So the identity is CHECKED rather than assumed.
+			if perr == nil && prov.Name != containerengine.EnginePodman {
+				perr = fmt.Errorf("provisioning did not produce podman (got %q)", prov.Name)
+			}
 			if perr == nil {
+				if re, ok := (containerengine.Engine{Name: containerengine.EngineNone}).WaitForBinary(p); ok {
+					prov = re
+				} else if re, ok := prov.WaitForBinary(p); ok {
+					prov = re
+				}
 				e = prov
 				if v, verr2 := containerengine.Version(p, e); verr2 == nil {
 					e = v

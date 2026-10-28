@@ -97,8 +97,17 @@ func TestProvisioningRungIsShared(t *testing.T) {
 		t.Errorf("provisionPodman is CALLED from %d place(s), want 2 — the absent-engine rung and the "+
 			"broken-engine rung", n)
 	}
-	if n := strings.Count(src, "containerengine.Provision("); n != 1 {
-		t.Errorf("containerengine.Provision is called from %d places; the two rungs must share ONE "+
-			"call, or they can drift in prompting and in reported reasons", n)
+	// ONE provisioning CALL, and it must NAME the engine: a caller that lets the library decide which engine to
+	// install gets back whatever was detected — which is how "installing podman instead" installed nothing.
+	if n := strings.Count(src, "containerengine.Provision("); n != 0 {
+		t.Errorf("containerengine.Provision is called from %d place(s); the rungs must demand podman "+
+			"explicitly, or a detected-but-broken engine is returned unchanged and nothing is installed", n)
+	}
+	if n := strings.Count(src, "containerengine.ProvisionEngine("); n != 1 {
+		t.Errorf("containerengine.ProvisionEngine is called from %d place(s), want 1", n)
+	}
+	if !strings.Contains(src, "containerengine.ProvisionEngine(context.Background(), p, os.Stdout, confirm, containerengine.EnginePodman)") {
+		t.Error("the provisioning call must DEMAND podman — ProvisionEngine's EngineNone means 'whatever is " +
+			"missing', which a detected-but-broken docker is not")
 	}
 }

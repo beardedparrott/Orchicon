@@ -162,15 +162,58 @@ func planInstall(p Probe, e Engine) (InstallPlan, error) {
 // which is the same posture cmd/orchicon/install_ports.go takes for the port prompt. That is
 // what makes a piped install safe — it can never install a VM image silently.
 func Provision(ctx context.Context, p Probe, out io.Writer, confirm func(string) bool) (Engine, error) {
+	return ProvisionEngine(ctx, p, out, confirm, EngineNone)
+}
+
+// ProvisionEngine installs ONE named engine, or (want == EngineNone) whatever is missing.
+//
+// WHY THE PARAMETER EXISTS, and it is a measured bug rather than an abstraction. A caller that has just found
+// an engine DETECTED BUT UNUSABLE — a docker CLI whose daemon is dead, the commonest Windows machine there is
+// — needs to install PODMAN. It used to call Provision, whose very first act is:
+//
+//	e, err := Detect(p)
+//	if e.Name != EngineNone {
+//	    return e, nil          // <- docker is detected, so: install nothing, return docker
+//	}
+//
+// So the install printed "installing podman instead", called this, got docker straight back, and verified
+// docker again — reporting the SAME failure. Measured on the operator's host:
+//
+//	orchicon: docker is installed but cannot run a container
+//	== installing podman instead — it needs no pre-existing daemon
+//	== checking the podman machine
+//	== verifying podman — running a trivial container
+//	orchicon: ...failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine
+//
+// Podman was never mentioned in the verification failure because podman was never installed.
+//
+// want == EngineNone keeps the original "install whatever is absent" behaviour, so an install with NO engine
+// is unaffected.
+func ProvisionEngine(ctx context.Context, p Probe, out io.Writer, confirm func(string) bool, want Name) (Engine, error) {
 	if out == nil {
 		out = io.Discard
 	}
 	e, err := Detect(p)
-	if e.Name != EngineNone {
+	// WHEN A SPECIFIC ENGINE IS DEMANDED, THE DETECTED ONE IS NOT AN ANSWER. Provision it even though something
+	// else exists — that is the whole point.
+	if want != EngineNone {
+		if e.Name == want {
+			return e, nil
+		}
+		// Fall through with e reset so planInstall plans for the ABSENT case.
+		e = Engine{Name: EngineNone}
+		if err != nil {
+			// A detection ERROR (not merely "nothing found") still matters for planning.
+			err = nil
+		}
+	} else if e.Name != EngineNone {
 		return e, nil
 	}
 	if err != nil {
 		return Engine{Name: EngineNone}, err
+	}
+	if want != EngineNone {
+		e.Name = want
 	}
 
 	switch strings.ToLower(strings.TrimSpace(p.getenv(ProvisionEnv))) {
