@@ -1630,6 +1630,7 @@ Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running t
         $prevInteractive = $env:ORCHICON_INSTALL_INTERACTIVE
         $prevInstance    = $env:ORCHICON_INSTANCE
         $prevAssumeYes   = $env:ORCHICON_ASSUME_YES
+        $prevProvision   = $env:ORCHICON_PROVISION_ENGINE
         try {
             if ($Yes) {
                 $env:ORCHICON_INSTALL_INTERACTIVE = $null
@@ -1637,6 +1638,21 @@ Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running t
             } else {
                 $env:ORCHICON_INSTALL_INTERACTIVE = "1"
                 $env:ORCHICON_ASSUME_YES = $null
+            }
+            # -Containers IS THE CONSENT. Asking again for the thing the operator just asked
+            # for is not a safeguard, it is the step that silently declines: under the
+            # documented `irm https://orchicon.dev/install.ps1 | iex`, PowerShell's own stdin
+            # is the HTTP body, so the child (`& $exe install`) inherits a PIPE rather than a
+            # console — promptTerminal() then refuses to prompt (deliberately: it must not
+            # read a pipe) and podman is never installed. The operator chose containers, so
+            # this env var settles it before any prompt exists.
+            #
+            # ORCHICON_PROVISION_ENGINE=0 (an explicit refusal) still wins: it is a hard "do
+            # not install anything on my machine", and Provision checks that first.
+            if ($script:ContainerOptIn) {
+                $env:ORCHICON_PROVISION_ENGINE = "1"
+            } else {
+                $env:ORCHICON_PROVISION_ENGINE = $prevProvision
             }
             $env:ORCHICON_INSTANCE = $script:Instance
             & $exe install
@@ -1648,6 +1664,7 @@ Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running t
             $env:ORCHICON_INSTALL_INTERACTIVE = $prevInteractive
             $env:ORCHICON_INSTANCE = $prevInstance
             $env:ORCHICON_ASSUME_YES = $prevAssumeYes
+            $env:ORCHICON_PROVISION_ENGINE = $prevProvision
         }
         if ($setupExit -eq 0) {
             Write-Ok "Install complete — Orchicon is running."

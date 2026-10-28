@@ -131,6 +131,23 @@ func resolveContainerEngine() (bool, error) {
 	if err != nil {
 		return unavailable("no container engine: %v", err)
 	}
+	// A BRAND-NEW ENGINE INSTALL IS NOT ON THIS PROCESS'S PATH YET.
+	//
+	// winget/brew/npm commit their changes to the REGISTRY (or the shell profile), not to the environment of the
+	// process that ran them. So the first detect after installing podman reports "none" and every later rung
+	// fails on a host where podman is, in fact, installed — the operator ends up with no engine recorded, no
+	// runtime daemon (install.go skips it when no engine is available), and a container fetch that fails with a
+	// socket error, having done nothing wrong.
+	//
+	// The narrowing is deliberate: only a fast re-probe, and only when the binary has appeared at its
+	// CONVENTIONAL location too, so a winget stub that happens to be on PATH cannot masquerade as a working
+	// engine. If it is still not there, we fall through to the normal "no engine" path.
+	if e.Name == containerengine.EngineNone {
+		if re, ok := e.WaitForBinary(p); ok {
+			e = re
+			installPhase("container engine found after install")
+		}
+	}
 
 	// 2. ABSENT → OPT-IN PROVISIONING (AC2). The command is always printed; the prompt goes
 	// to the controlling terminal and a run with no terminal prints and declines, so a piped
@@ -205,7 +222,12 @@ func askEngineInstall(r io.Reader, out io.Writer, question string) bool {
 	fmt.Fprintf(out, "%s [Y/n]: ", question)
 	line, err := bufio.NewReader(r).ReadString('\n')
 	if err != nil && strings.TrimSpace(line) == "" {
+		// SAY SO. This used to print a bare newline, so an EOF (a terminal that closed, a stream that is not a
+		// terminal after all) turned "install podman?" into a silent NO — and the operator's only clue was a
+		// container fetch failing much later. A prompt that could not be answered is a fact worth reading.
 		fmt.Fprintln(out)
+		fmt.Fprintln(out, "orchicon: no answer was read — NOT installing podman (containers stay unavailable).")
+		fmt.Fprintln(out, "orchicon: re-run with -Containers to provision it without being asked.")
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
@@ -232,5 +254,8 @@ func describeEngineStatus(st containerengine.Status) string {
 	if st.Reason != "" {
 		return "unavailable — " + st.Reason
 	}
-	return "unavailable — no container engine"
+	// NO REASON RECORDED BUT NOT AVAILABLE is the silent case this summary exists to prevent: nothing decided
+	// anything, so the operator would read "install succeeded" and discover the gap as a socket error later.
+	return "unavailable — the container engine was not detected, so there are no runtime containers and no " +
+		"runtime daemon; re-run with -Containers to provision one"
 }

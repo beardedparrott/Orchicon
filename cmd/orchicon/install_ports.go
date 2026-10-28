@@ -407,6 +407,17 @@ func promptTerminal() (*os.File, bool) {
 	if isCharDevice(os.Stdin) {
 		return os.Stdin, false
 	}
+	// WINDOWS, AFTER `irm … | iex`: stdin IS A PIPE (it is the downloaded script), while the console the
+	// operator is looking at exists and is reachable through CONIN$. Refusing to prompt there meant EVERY
+	// question silently took its default under the documented one-liner — including "install podman?", whose
+	// default is no — so containers were never provisioned on a machine where the operator had asked for them.
+	//
+	// CONIN$ is the console's input device, the same handle console_windows.go's reattachConsoleIO opens. It is
+	// not read when stdin is a pipe for safety: we only reach here when stdin is NOT a character device, so
+	// there is no piped input to steal.
+	if in, err := openConsoleInput(); err == nil {
+		return in, true
+	}
 	return nil, false
 }
 

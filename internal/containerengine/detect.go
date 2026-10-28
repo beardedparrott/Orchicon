@@ -131,6 +131,16 @@ func (p Probe) getenv(k string) string {
 	return os.Getenv(k)
 }
 
+// sleep is the Probe's injected wait, so a poll is testable without real time passing. Falls back to
+// time.Sleep when the caller did not inject one, which is the production shape.
+func (p Probe) sleep(d time.Duration) {
+	if p.Sleep != nil {
+		p.Sleep(d)
+		return
+	}
+	time.Sleep(d)
+}
+
 func (p Probe) lookPath(name string) (string, error) {
 	if p.LookPath != nil {
 		return p.LookPath(name)
@@ -391,4 +401,66 @@ func Inspect(ctx context.Context, p Probe) Status {
 	st.Available = true
 	st.State = StateReady
 	return st
+}
+
+// WaitForBinary re-probes for an engine that may have just been INSTALLED.
+//
+// IT EXISTS BECAUSE AN INSTALL DOES NOT UPDATE THIS PROCESS'S PATH. winget, brew and npm write their result to
+// the registry / shell profile; the environment block of the process that invoked them is untouched, and a child
+// inherits its parent's. Measured shape of the failure: `winget install RedHat.Podman` succeeds, `podman --version`
+// works in a NEW shell, and the installer — which is still the old process — reports "no container engine" and
+// therefore starts no runtime daemon. The operator sees a successful install and a container fetch that fails on a
+// socket that will never exist.
+//
+// The probe is deliberately NARROW: a short window, and a hit only when `podman` resolves through PATH *and* sits
+// at one of its conventional locations. A winget App Execution Alias, or a stub that briefly appears on PATH while
+// the real install is still committing, therefore cannot be mistaken for a usable engine.
+func (e Engine) WaitForBinary(p Probe) (Engine, bool) {
+	if e.Name != EngineNone {
+		return e, false
+	}
+	return e.WaitForBinaryWithin(p, engineProbeWindow)
+}
+
+// WaitForBinaryWithin is WaitForBinary with an explicit budget, so a caller (and a test) can bound it without
+// depending on the package's default window.
+func (e Engine) WaitForBinaryWithin(p Probe, window time.Duration) (Engine, bool) {
+	if e.Name != EngineNone {
+		return e, false
+	}
+	deadline := time.Now().Add(window)
+	for {
+		if bin, ok := find(p, EnginePodman); ok {
+			if conventional := isConventionalInstall(p, EnginePodman, bin); conventional {
+				return Engine{Name: EnginePodman, Bin: bin}, true
+			}
+		}
+		if time.Now().After(deadline) {
+			return Engine{Name: EngineNone}, false
+		}
+		p.sleep(engineProbeInterval)
+	}
+}
+
+const (
+	// engineProbeWindow bounds the wait. Long enough for a package manager to finish committing, short enough
+	// that a genuinely absent engine costs the operator nothing noticeable.
+	engineProbeWindow = 45 * time.Second
+	// engineProbeInterval is how often the probe looks.
+	engineProbeInterval = 1500 * time.Millisecond
+)
+
+// isConventionalInstall reports whether bin is one of the engine's own conventional paths.
+//
+// `podman` ON PATH IS NOT EVIDENCE ENOUGH: winget installs App Execution Aliases that live in
+// %LOCALAPPDATA%\Microsoft\WindowsApps and forward elsewhere, and a half-finished install can leave a name
+// resolvable before the binary works. Requiring the conventional location as well keeps the probe honest.
+func isConventionalInstall(p Probe, name Name, bin string) bool {
+	cleanBin := filepath.Clean(bin)
+	for _, cand := range conventionalPaths(p.goos())[name] {
+		if filepath.Clean(cand) == cleanBin {
+			return true
+		}
+	}
+	return false
 }
