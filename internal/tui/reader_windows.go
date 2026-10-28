@@ -43,8 +43,18 @@ package tui
 //   - the renderer's ESC[?2004h bracketed-paste enable now has an input side, so a paste arrives as ONE
 //     KeyMsg with Paste set — the dock already renders that verbatim (dock.go, "bracketed paste ... never
 //     send"), so a pasted block stops sending itself;
-//   - the ESC O M rewrite in internal/tui/input finally runs, so Shift+Enter newlines;
-//   - the SS3 Home/End rewrite runs too, closing the "OH"/"OF" litter on Windows.
+//   - the SS3 Home/End rewrite in internal/tui/input finally runs, closing the "OH"/"OF" litter on Windows;
+//   - the ESC O M rewrite runs too — but SEE THE CORRECTION BELOW, because on Windows Terminal it has nothing
+//     to match.
+//
+// CORRECTION, from the operator's test of this very change: SHIFT+ENTER STILL SENDS ON WINDOWS. The byte path
+// was necessary and is working (bracketed paste and the SS3 rewrite are both live), but the ESC O M sequence it
+// rewrites is what Konsole-family terminals send for keypad-Enter — WINDOWS TERMINAL DOES NOT SEND IT for
+// Shift+Enter at all, so there is nothing to rewrite and the key arrives as a plain CR. Likewise `alt+enter` is
+// Windows Terminal's toggleFullscreen, consumed before orch sees it. Neither is recoverable from inside the
+// program, which is why the composer's Windows newline chord is ctrl+j instead (see dock.NewlineCtrlJ). This
+// comment is corrected rather than deleted so the next person does not "fix" Shift+Enter a third time by
+// re-tracing a path that was already right.
 //
 // AND THE REWRITES STAY ON, which is why the decorator is applied HERE rather than in cmd/orch. The Windows
 // reader is a different file from os.Stdin, so the argument that made the decorator bypassable on Windows

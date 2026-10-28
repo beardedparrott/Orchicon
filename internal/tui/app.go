@@ -139,6 +139,11 @@ const (
 
 // App is the root model.
 type App struct {
+	// deadNewlineChord records that the profile's configured newline chord cannot be delivered on this
+	// platform and was replaced by the platform default. Reported once at startup so the operator learns WHY
+	// their keyboard behaves differently here instead of concluding the chord is broken (see applyProfile).
+	deadNewlineChord string
+
 	clients *client.Clients
 	profile *config.Profile
 	reg     *subs.Registry
@@ -849,7 +854,22 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 	// workspace? — stays exactly answerable.
 	m.projectScope = projectScopeAll
 	if profile != nil && profile.Newline != "" {
-		m.dock.Newlines = dock.ParseNewlineMode(profile.Newline)
+		// A PROFILE CAN CARRY A CHORD THIS PLATFORM CANNOT DELIVER — the common case being a profile saved on
+		// Linux with `newline = "alt+enter"`, opened on Windows where alt+enter is Windows Terminal's
+		// toggleFullscreen. Assigning it blindly leaves the operator with NO working newline chord and a hint
+		// naming a key that resizes their window. So the assignment is checked, not just defaulted, and a dead
+		// chord is replaced by the platform default with the reason recorded rather than silently swapped.
+		//
+		// The shell is where this belongs: the dock owns the chord, config owns the setting, and only the shell
+		// sees both — which is why the refusal lives here instead of inside either of them.
+		nl := dock.ParseNewlineMode(profile.Newline)
+		if !dock.ChordReachesOrch(nl) {
+			def := dock.DefaultNewlineMode()
+			m.deadNewlineChord = string(nl) + " does not reach orch on this platform (the terminal consumes it), " +
+				"so the newline chord has been set to " + string(def)
+			nl = def
+		}
+		m.dock.Newlines = nl
 	}
 	// A PASTE THAT IS A FILE PATH ATTACHES THE FILE. The dock offers every bracketed paste here before
 	// inserting it, and this is the shell's answer: a path resolves to a real attachable file and becomes a
@@ -2502,6 +2522,13 @@ func (m *App) Init() tea.Cmd {
 	// which is every platform but Windows — so this appends nothing on Linux/macOS.
 	if c := sizeProbeTickCmd(); c != nil {
 		cmds = append(cmds, c)
+	}
+	// TELL THE OPERATOR IF THEIR CONFIGURED NEWLINE CHORD COULD NOT BE USED (applyProfile). Said once, at
+	// startup, because the alternative is a keyboard that behaves differently from their other machine with no
+	// explanation — and the most likely reading of that is "the chord is broken", which is what cost several
+	// rounds here already.
+	if m.deadNewlineChord != "" {
+		m.dock.SetNotice(m.deadNewlineChord)
 	}
 	return tea.Batch(cmds...)
 }

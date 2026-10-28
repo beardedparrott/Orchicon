@@ -70,11 +70,19 @@ type Profile struct {
 	// inert rather than guessing a period.
 	TokenExpiresIn     int64
 	InsecureSkipVerify bool // TLS skip-verify for self-signed dev instances
-	// Newline is the chat dock's newline-insertion chord: alt+enter
-	// (default) | backslash-enter | both. bubbletea v1.3.10 has no kitty
-	// keyboard protocol support, so Shift+Enter cannot be enabled
-	// programmatically; CSI-u shift+enter is accepted when the terminal
-	// emits it anyway.
+	// Newline is the chat dock's newline-insertion chord: ctrl+j | alt+enter | backslash-enter | both.
+	//
+	// THE DEFAULT IS PER PLATFORM, because the chords available are decided by what the HOST delivers, not by
+	// preference: alt+enter on Linux/macOS (delivered normally), ctrl+j on Windows, where Windows Terminal binds
+	// alt+enter to toggleFullscreen and the console hands Shift+Enter to the program as a bare Enter. A profile
+	// carrying a chord this platform cannot deliver is refused at startup in favour of the platform default, and
+	// the operator is told why (see tui.applyProfile) — so a config written on one machine can be opened on
+	// another without silently leaving them with no newline chord.
+	//
+	// SHIFT+ENTER IS NOT A VALUE HERE, deliberately. It is not a setting we can honour: bubbletea v1.3.10 has no
+	// kitty/CSI-u keyboard-protocol support, so the only way it can arrive is a terminal that emits the old
+	// keypad-Enter sequence (ESC O M — Konsole does; Windows Terminal does not), and that is rewritten to a
+	// newline as input is read (internal/tui/input) regardless of this setting.
 	Newline string
 	// Theme selects the TUI palette. The TUI owns its palette set (see
 	// internal/tui/theme): the generated families, the hand-written community ports, and the transparent

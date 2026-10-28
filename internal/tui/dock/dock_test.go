@@ -183,7 +183,7 @@ func TestParseNewlineMode(t *testing.T) {
 	if ParseNewlineMode("alt+enter") != NewlineAltEnter {
 		t.Fatal("alt+enter")
 	}
-	if ParseNewlineMode("garbage") != NewlineAltEnter {
+	if ParseNewlineMode("garbage") != DefaultNewlineMode() {
 		t.Fatal("default must be alt+enter")
 	}
 }
