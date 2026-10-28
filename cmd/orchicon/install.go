@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"github.com/beardedparrott/orchicon/internal/instancectl"
 	"github.com/beardedparrott/orchicon/internal/version"
@@ -12,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -279,7 +279,7 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 	// host when present (below), which is what keeps the images redistributable,
 	// but that is a capability rather than a requirement.
 	if adapterCLIPresent("opencode") {
-		fmt.Println("orchicon: opencode found on this host — optional, and it will be used as a runtime when a model ref asks for it")
+		reportAdapterCLI("opencode")
 	} else {
 		fmt.Println("orchicon: no external adapter CLI found — the built-in engine will run sessions (nothing to install)")
 	}
@@ -966,15 +966,60 @@ func installOrchLauncherFrom(exe, installDir string) {
 // into the containers (see the mount list above), so its absence costs the operator
 // only that capability, never the install.
 func adapterCLIPresent(name string) bool {
-	if _, err := exec.LookPath(name); err == nil {
-		return true
+	cands := adapterCandidates(name)
+	return len(cands) > 0
+}
+
+// adapterCandidates is EVERY place the adapter was found, with provenance — the surface that makes discovery
+// visible instead of magic.
+//
+// IT REPLACES A BARE BOOL, and the reason is a reported experience: an operator who has the CLI installed and
+// working in their shell was told it was not found, with no way to see WHERE we looked or WHAT we would run.
+// A list answers both questions, and it is the only form that can tell them two installs exist.
+//
+// Returns nil when nothing was found (an empty list is normal — an adapter is optional).
+func adapterCandidates(name string) []adapter.Candidate {
+	home, _ := os.UserHomeDir()
+	return adapter.Candidates(adapter.HostGOOS(), home, name, os.Getenv)
+}
+
+// reportAdapterCLI prints what was found, and is DELIBERATELY CHATTY about ambiguity.
+//
+// ONE INSTALL names the path. TWO OR MORE is the case that must never be silent: different installs are
+// different versions and possibly different credentials, so the operator needs to see both and choose — a
+// silent pick is how a session signs in as the wrong account. It does not refuse the install (the adapter is
+// optional and a container can still run), it makes the choice visible.
+func reportAdapterCLI(name string) {
+	cands := adapterCandidates(name)
+	switch {
+	case len(cands) == 0:
+		return // optional, and nothing to say
+	case len(cands) == 1:
+		c := cands[0]
+		fmt.Printf("orchicon: %s found on this host at %s (%s) — optional, and it will be used as a runtime "+
+			"when a model ref asks for it\n", name, c.Path, c.Source)
+		if !c.ContainerOK {
+			fmt.Printf("orchicon:   NOTE: runtime containers cannot use that binary — %s\n", c.Why)
+		}
+	default:
+		fmt.Printf("orchicon: %s is installed %d times; Orchicon will use the first:\n", name, len(cands))
+		for i, c := range cands {
+			mark := " "
+			if i == 0 {
+				mark = "*"
+			}
+			fmt.Printf("orchicon:   %s %s (%s)%s\n", mark, c.Path, c.Source, containerNote(c))
+		}
+		fmt.Printf("orchicon:   to choose another, set %s to the one you want\n", adapter.BinEnv(name))
 	}
-	home, herr := os.UserHomeDir()
-	if herr != nil {
-		return false
+}
+
+// containerNote renders the container-usable half for the listing, empty when there is nothing to say.
+func containerNote(c adapter.Candidate) string {
+	if c.ContainerOK {
+		return ""
 	}
-	st, err := os.Stat(filepath.Join(home, "."+name, "bin", name))
-	return err == nil && !st.IsDir()
+	return " — NOT usable in runtime containers (Linux containers cannot execute it)"
 }
 
 // ensureInstallDaemon starts the runtime daemon if its socket is not

@@ -168,6 +168,13 @@ func TestAdapterHostMountsConditional(t *testing.T) {
 		t.Errorf("empty home must contribute no adapter mounts, got %v", got)
 	}
 	// Missing install: nothing (probe-gated, mirroring the original os.Stat).
+	//
+	// THE PATH MUST BE EMPTIED TOO, and that is a behaviour change rather than a test workaround: the resolver
+	// now ASKS THE OS's PATH (internal/adapter discovery) after the known install lists, so "absent" is only
+	// true of the fake HOME unless PATH is empty as well. On a machine that HAS opencode installed — a CI box or
+	// a developer's — the old assertion was testing the world, not the code. Emptying PATH states the
+	// precondition it always meant.
+	t.Setenv("PATH", t.TempDir())
 	if got := adapterHostMounts(t.TempDir(), "opencode"); len(got) != 0 {
 		t.Errorf("absent install must contribute no adapter mounts, got %v", got)
 	}

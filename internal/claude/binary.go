@@ -22,6 +22,7 @@ package claude
 // preferring it fixes the credential question at the same time.
 
 import (
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -83,6 +84,14 @@ func claudeBinaryPathFor(goos string, getenv func(string) string) string {
 		candidates = append(candidates, filepath.Join(append([]string{home}, claudeDefaultRelativePath...)...))
 	}
 	candidates = append(candidates, claudeWindowsCandidates(goos, getenv)...)
+	// THE AGNOSTIC ANSWER, AFTER the known shapes and BEFORE the bare-name fallback: ask the OS's PATH — read
+	// from its SOURCE, not this process's snapshot — so an install by any means we did not anticipate
+	// (Chocolatey, nix, a portable zip) is found rather than reported missing. This is the half that makes the
+	// resolver adapt to the machine instead of requiring the machine to match our list.
+	//
+	// It cannot offer a shim: internal/adapter's discovery filters .cmd/.bat/.ps1 itself, for the same reason
+	// the check below exists.
+	candidates = append(candidates, adapter.DiscoverKind(goos, home, adapter.KindClaude, getenv)...)
 	for _, cand := range candidates {
 		// A candidate must EXIST and be a regular file, and must never be a shell SHIM: Go cannot execute
 		// a .cmd/.bat/.ps1, so resolving one moves the failure to the first dispatch.
