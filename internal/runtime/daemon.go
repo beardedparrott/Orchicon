@@ -722,6 +722,19 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	if image == "" {
 		image = d.Image
 	}
+	// AN UNRUNNABLE ADAPTER IS REFUSED HERE, BEFORE THE CONTAINER EXISTS.
+	//
+	// A Windows .exe resolves perfectly on this host and cannot execute inside a Debian container. Creating
+	// the container anyway means it starts, the supervisor runs, and the first session spawn fails inside
+	// the container with an exec-format error that points at nothing the operator did. Reported from the
+	// host's own adapter installs, both of which are Windows artifacts.
+	//
+	// The refusal names the remedy per kind, because "not installed" and "installed but the wrong binary"
+	// call for different actions.
+	if problems := CheckAdaptersForContainer(d.HostHome, requestedKinds(req)...); len(problems) > 0 {
+		return nil, fmt.Errorf("cannot run this workflow's adapter inside a Linux runtime container: %s",
+			strings.Join(problems, "; "))
+	}
 	args := d.createFlagArgs(name, req)
 	// -v <src>:<dst>[:ro] — preserved byte-identically for both engines here.
 	//

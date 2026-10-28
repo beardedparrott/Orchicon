@@ -420,3 +420,85 @@ func TestClaudeLauncherSymlinkTargetMounted(t *testing.T) {
 		t.Fatalf("the claude install root %s is not among the mounted dirs %v", root, srcs)
 	}
 }
+
+// --- the container half: an unrunnable adapter must be refused, not started ------------------------
+
+// TestAnUnrunnableAdapterIsRefusedBeforeTheContainerExists pins the failure this whole change exists to
+// prevent the SILENT version of: a Windows .exe resolves on the host, gets mounted, goes on the container's
+// PATH, and the container starts — then the first session spawn dies inside it with an exec-format error that
+// points at nothing the operator did.
+func TestAnUnrunnableAdapterIsRefusedBeforeTheContainerExists(t *testing.T) {
+	home := t.TempDir()
+	// A Windows-shaped install: the exact shape the operator's host has.
+	dir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "claude.exe"), []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ORCHICON_CLAUDE_BIN", filepath.Join(dir, "claude.exe"))
+
+	problems := CheckAdaptersForContainer(home, "claude")
+	if len(problems) != 1 {
+		t.Fatalf("problems = %v, want exactly one refusal for the unrunnable claude", problems)
+	}
+	for _, want := range []string{"claude", "Windows executable", "Linux"} {
+		if !strings.Contains(problems[0], want) {
+			t.Errorf("the refusal must name %q — it is the operator's only pointer to the remedy; got: %s",
+				want, problems[0])
+		}
+	}
+}
+
+// TestANativeAdapterBinaryIsNotRefused is the working case: an adapter built for the container's kernel.
+func TestANativeAdapterBinaryIsNotRefused(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".opencode", "bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "opencode"), []byte("ELF"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if problems := CheckAdaptersForContainer(home, "opencode"); len(problems) != 0 {
+		t.Fatalf("a native adapter was refused: %v", problems)
+	}
+}
+
+// TestNoHomeConfiguredRefusesNothing keeps a supported shape working: a daemon with no HostHome mounts no
+// adapter at all, so a container it creates simply runs without one.
+func TestNoHomeConfiguredRefusesNothing(t *testing.T) {
+	if problems := CheckAdaptersForContainer("", "opencode", "claude"); len(problems) != 0 {
+		t.Fatalf("a daemon with no host home refused container creation: %v — it mounts no adapter, so it "+
+			"has nothing to judge", problems)
+	}
+}
+
+// TestTheContainerPathFollowsTheResolver is the agreement this change is FOR: the directory handed to the
+// container's PATH must be the directory the plane actually resolved the adapter to, not a hardcoded one.
+func TestTheContainerPathFollowsTheResolver(t *testing.T) {
+	home := t.TempDir()
+	// An install the OLD table did not know about: npm's node_modules, which is where the operator's
+	// opencode really lives.
+	bin := filepath.Join(home, "custom", "opencode")
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, []byte("ELF"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ORCHICON_OPENCODE_BIN", bin)
+
+	dirs := adapterBinDirs(home, "opencode")
+	if len(dirs) == 0 || dirs[0] != filepath.Dir(bin) {
+		t.Fatalf("adapterBinDirs = %v, want %q first — the container's PATH must name where the adapter "+
+			"actually is, or it cannot find what the plane found", dirs, filepath.Dir(bin))
+	}
+	// AND IT IS MOUNTED, or the PATH entry points at a directory the container cannot see.
+	mounts := adapterHostMounts(home, "opencode")
+	want := "-v " + filepath.Dir(bin) + ":" + filepath.Dir(bin) + ":ro"
+	if !strings.Contains(strings.Join(mounts, " "), want) {
+		t.Errorf("the resolved directory is not mounted; mounts = %v, want to contain %q", mounts, want)
+	}
+}
