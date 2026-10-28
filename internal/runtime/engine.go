@@ -3,9 +3,11 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -72,7 +74,7 @@ func (m *EngineMissingError) Error() string {
 	case m.Name == enginePodman:
 		b.WriteString("    Fedora/RHEL:    sudo dnf install podman\n")
 		b.WriteString("    Debian/Ubuntu:  sudo apt-get install podman\n")
-		b.WriteString("    Windows:        winget install --id RedHat.Podman  (then: podman machine init)\n")
+		b.WriteString("    Windows:        winget install --id RedHat.Podman\n")
 		fmt.Fprintf(&b, "  Or use Docker instead: %s=docker\n", EnvEngine)
 	case m.Name == engineDocker:
 		b.WriteString("    Fedora/RHEL:    sudo dnf install docker-ce && sudo systemctl enable --now docker\n")
@@ -110,11 +112,54 @@ func ResolveEngine(requested string) (Engine, error) {
 		return Engine{}, fmt.Errorf("unknown runtime engine %q: %s accepts %q or %q (leave it unset for %q)",
 			requested, EnvEngine, enginePodman, engineDocker, DefaultEngineName())
 	}
-	bin, err := exec.LookPath(name)
+	bin, err := lookupEngine(name)
 	if err != nil {
 		return Engine{Name: name, Bin: name}, &EngineMissingError{Name: name, Requested: requested, Err: err}
 	}
 	return Engine{Name: name, Bin: bin}, nil
+}
+
+// lookupEngine finds an engine executable, and it does NOT use this process's PATH alone.
+//
+// THE THIRD INSTANCE OF THE SAME BUG, and this one broke the daemon. `orchicon install` runs `winget install
+// RedHat.Podman`, and winget commits to the REGISTRY — not to the environment of the process that ran it, and
+// not to any child it spawns afterwards. The install then starts the runtime daemon with its own (stale) PATH,
+// the daemon's ResolveEngine does exec.LookPath("podman"), fails, and exits:
+//
+//	starting runtime daemon …
+//	waiting for the runtime daemon to answer /v1/health …
+//	error: runtime daemon did not become ready
+//
+// Which is EXACTLY the report. WaitForBinary fixed the installer's ladder; the daemon has its own resolution and
+// got nothing.
+//
+// SO THE PATH IS REFRESHED FROM THE OS (internal/adapter reads the registry on Windows and /etc/paths on POSIX),
+// and each candidate directory is checked directly. The process PATH is tried FIRST, because it is free and it
+// is what a normally-started daemon has.
+func lookupEngine(name string) (string, error) {
+	if bin, err := exec.LookPath(name); err == nil {
+		return bin, nil
+	}
+	exts := []string{""}
+	if runtime.GOOS == "windows" {
+		// PATHEXT's own default order, so a `podman.exe` (or the rarer `.cmd`, which an engine never is) resolves
+		// the way the shell would. Listed explicitly rather than parsed from the environment: this runs before
+		// anything else can be trusted to have a complete environment.
+		exts = []string{".exe", ".cmd", ".bat", ""}
+	}
+	var tried []string
+	for _, dir := range adapter.FreshPathDirs() {
+		for _, ext := range exts {
+			cand := filepath.Join(dir, name+ext)
+			tried = append(tried, cand)
+			if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+				return cand, nil
+			}
+		}
+	}
+	// Report the OS-level search honestly: a NotFound that names only `$PATH` hides that we looked in the
+	// refreshed list too, which is the difference between "you have not installed it" and "we cannot see it".
+	return "", fmt.Errorf("not found on PATH or in the system PATH list (%d entries checked)", len(tried))
 }
 
 // ResolveEngineFromEnv resolves the engine from the environment: EnvEngine first,
