@@ -103,11 +103,18 @@ func TestProvisioningRungIsShared(t *testing.T) {
 		t.Errorf("containerengine.Provision is called from %d place(s); the rungs must demand podman "+
 			"explicitly, or a detected-but-broken engine is returned unchanged and nothing is installed", n)
 	}
-	if n := strings.Count(src, "containerengine.ProvisionEngine("); n != 1 {
-		t.Errorf("containerengine.ProvisionEngine is called from %d place(s), want 1", n)
+	// AND IT MUST BE THE UNATTENDED FORM. The install never asks: the operator asked for containers by running
+	// it, and a prompt is the step that hung — it was written to a handle nobody could read, so the console
+	// showed a stopped cursor and pressing Enter was the only way forward.
+	if n := strings.Count(src, "containerengine.ProvisionEngineUnattended("); n != 1 {
+		t.Errorf("containerengine.ProvisionEngineUnattended is called from %d place(s), want 1", n)
 	}
-	if !strings.Contains(src, "containerengine.ProvisionEngine(context.Background(), p, os.Stdout, confirm, containerengine.EnginePodman)") {
-		t.Error("the provisioning call must DEMAND podman — ProvisionEngine's EngineNone means 'whatever is " +
-			"missing', which a detected-but-broken docker is not")
+	if !strings.Contains(src, "containerengine.ProvisionEngineUnattended(context.Background(), p, os.Stdout, containerengine.EnginePodman)") {
+		t.Error("the provisioning call must DEMAND podman — the unattended form's absence of a prompt is " +
+			"only acceptable because the ENGINE is named explicitly")
+	}
+	if strings.Contains(src, "askEngineInstall") || strings.Contains(src, "readYesNo") {
+		t.Error("the install still carries a prompt helper — there is no question to ask, and a dead prompt " +
+			"is how this appeared as a hang")
 	}
 }

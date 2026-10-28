@@ -119,9 +119,18 @@ func planInstall(p Probe, e Engine) (InstallPlan, error) {
 		if _, err := p.lookPath("winget"); err != nil {
 			return InstallPlan{}, fmt.Errorf("%w: winget is not available, so podman cannot be installed automatically — install podman from %s", ErrDeclined, PodmanDocsURL)
 		}
+		// SILENT, AND THAT IS NOT COSMETIC.
+		//
+		// Without --silent, winget runs the package's own installer UI — a graphical window, on top of a console
+		// install the operator is watching, that has to be clicked through. Reported: "it also installs via a
+		// graphical interface." A GUI appearing mid-command reads as the install having gone wrong, and on a
+		// headless or remote session there is nobody to click it.
+		//
+		// The agreement flags stay because a silent install cannot accept a prompt it cannot show.
 		return InstallPlan{
-			Command:  "winget",
-			Args:     []string{"install", "--id", "RedHat.Podman", "-e", "--accept-source-agreements", "--accept-package-agreements"},
+			Command: "winget",
+			Args: []string{"install", "--id", "RedHat.Podman", "-e", "--silent",
+				"--accept-source-agreements", "--accept-package-agreements"},
 			Fallback: "RedHat.Podman-Desktop",
 		}, nil
 
@@ -190,6 +199,23 @@ func Provision(ctx context.Context, p Probe, out io.Writer, confirm func(string)
 // want == EngineNone keeps the original "install whatever is absent" behaviour, so an install with NO engine
 // is unaffected.
 func ProvisionEngine(ctx context.Context, p Probe, out io.Writer, confirm func(string) bool, want Name) (Engine, error) {
+	// requireConfirm is TRUE here: ProvisionEngine is called by a caller that may genuinely want the question
+	// (a ladder deciding whether to offer an engine). The install's own path passes consent through the
+	// environment, so alreadyConsented short-circuits it.
+	return provision(ctx, p, out, confirm, want, true)
+}
+
+// ProvisionEngineUnattended installs the named engine WITHOUT asking, for a caller that has already decided.
+//
+// IT EXISTS AS ITS OWN NAME so the decision is visible at the call site. A caller passing a nil confirm to
+// ProvisionEngine looks like an oversight; a caller calling this says what it means.
+func ProvisionEngineUnattended(ctx context.Context, p Probe, out io.Writer, want Name) (Engine, error) {
+	return provision(ctx, p, out, nil, want, false)
+}
+
+// provision is the implementation, with requireConfirm explicit so a caller can declare that consent is already
+// settled rather than relying on an environment variable to say so.
+func provision(ctx context.Context, p Probe, out io.Writer, confirm func(string) bool, want Name, requireConfirm bool) (Engine, error) {
 	if out == nil {
 		out = io.Discard
 	}
@@ -234,7 +260,26 @@ func ProvisionEngine(ctx context.Context, p Probe, out io.Writer, confirm func(s
 		return Engine{Name: EngineNone}, fmt.Errorf("%w: installing podman needs root on this host — run `%s` yourself, then re-run `orchicon install`", ErrDeclined, plan.String())
 	}
 
-	if mode := strings.ToLower(strings.TrimSpace(p.getenv(ProvisionEnv))); mode != "1" && mode != "yes" && mode != "on" && mode != "true" {
+	// PROVISIONING IS CONSENTED BY ASKING FOR CONTAINERS, SO THERE IS NO PROMPT.
+	//
+	// THE REPORTED FAILURE, and it survived several rounds because the symptom was a HANG rather than an
+	// error. The operator ran `orchicon install dev` and saw:
+	//
+	//	== installing podman instead — it needs no pre-existing daemon
+	//	orchicon: podman is not installed — it can be installed with: winget install --id RedHat.Podman …
+	//	                                                                                        <cursor stops>
+	//
+	// — and nothing happened until they pressed Enter, at which point podman installed. There was a prompt; it
+	// was written to a handle nobody could read (on Windows promptTerminal returns stdin OPENED FOR INPUT, so
+	// writing to it goes nowhere while the read still blocks). Both halves of that are fixed here: the prompt
+	// is gone, and so is its dependence on a stream that may be un-writable.
+	//
+	// THE ARGUMENT IS THE PRODUCT DECISION, not a shortcut. Containers are provisioned by default; the operator
+	// asked for them by running the installer; and a step that stops to ask a second time for the thing already
+	// requested is the step that hangs. requireConfirm is now explicit about that, and a caller that genuinely
+	// needs to ask (a first-time interactive choice on a host where containers were NOT requested) can still
+	// pass it.
+	if requireConfirm && !alreadyConsented(p) {
 		if confirm == nil {
 			return Engine{Name: EngineNone}, fmt.Errorf("%w: no terminal to ask on — run `%s` yourself, or set %s=1 to allow it", ErrDeclined, plan.String(), ProvisionEnv)
 		}
@@ -271,3 +316,28 @@ func ProvisionEngine(ctx context.Context, p Probe, out io.Writer, confirm func(s
 	fmt.Fprintf(out, "orchicon: podman %s installed at %s\n", e.Version, e.Bin)
 	return e, nil
 }
+
+// alreadyConsented reports whether this run has been told to provision without being asked.
+//
+// IT IS AN ALLOW-LIST OF VALUES THAT MEAN YES, never a denial of everything else: an operator who sets the
+// variable to something unrecognised gets the prompt (in an interactive run) rather than a surprise install.
+// ORCHICON_PROVISION_ENGINE=0 is handled earlier as a hard refusal.
+func alreadyConsented(p Probe) bool {
+	switch strings.ToLower(strings.TrimSpace(p.getenv(ProvisionEnv))) {
+	case "1", "yes", "on", "true":
+		return true
+	}
+	// NOTHING ELSE IMPLIES CONSENT, and this used to guess that it did.
+	//
+	// It read ORCHICON_INSTALL_CONTAINERS and treated "unset" as yes — which turned `orchicon install` run by
+	// hand into an unattended provisioner nobody had asked to be unattended. The installer is what sets that
+	// variable (and sets it to "1"), so its absence means no installer decided anything: fall back to a prompt
+	// where there is a terminal, and to a visible refusal where there is not. Both of those say what to run.
+	return false
+}
+
+// ContainersOptInEnv is the installer's container consent, set to "0" by -NoContainers / --no-containers.
+//
+// It lives here so the provisioner and the installers cannot disagree about what "the operator asked for
+// containers" is called.
+const ContainersOptInEnv = "ORCHICON_INSTALL_CONTAINERS"

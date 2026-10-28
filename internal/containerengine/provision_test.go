@@ -239,3 +239,58 @@ func TestProvisionMarkersTheInstall(t *testing.T) {
 		t.Fatal("the marker must be removed when provisioning finishes (or fails)")
 	}
 }
+
+// TestUnattendedProvisionNeverReads is the reported hang, pinned.
+//
+// The operator ran `orchicon install dev` and saw:
+//
+//	orchicon: podman is not installed — it can be installed with: winget install --id RedHat.Podman …
+//	                                                                                     <cursor stops>
+//
+// …and nothing happened until they pressed Enter. There WAS a prompt; it was written to a handle nobody could
+// read (on Windows promptTerminal returns stdin open for INPUT), so the text went nowhere while the read
+// blocked. Making the message prettier could never fix that.
+//
+// So the guarantee is now structural: the unattended entry point takes NO confirm func, which means there is
+// nothing to call and nothing to block on. This test would fail to compile if a prompt were reintroduced.
+func TestUnattendedProvisionNeverReads(t *testing.T) {
+	ran := false
+	// THE POST-INSTALL RESOLUTION IS PART OF THE CONTRACT: provisioning now re-detects, because a package manager
+	// commits to the registry rather than to this process's PATH. A probe whose PATH never gains podman correctly
+	// reports "reported success but no podman binary is on PATH" — so this fake gains it, the way a real host
+	// does once the registry is read.
+	bins := map[string]string{"winget": `C:\winget.exe`}
+	p := testProbe("windows", nil, bins, func(bin string, args []string) (string, error) {
+		ran = true
+		bins["podman"] = `C:\podman.exe`
+		return "installed", nil
+	})
+	var out bytes.Buffer
+	// NOTE the signature: no confirm argument can be passed, so no prompt can be shown.
+	if _, err := ProvisionEngineUnattended(context.Background(), p, &out, EnginePodman); err != nil {
+		t.Fatalf("unattended provision must not need consent: %v", err)
+	}
+	if !ran {
+		t.Fatal("the install command never ran — it should run with no question asked")
+	}
+	// AND IT SAID WHAT IT WAS DOING, because silence is the other way an install looks hung.
+	if !strings.Contains(out.String(), "winget install") {
+		t.Errorf("the command must be printed before it runs, so a slow install is not a silent one:\n%s", out.String())
+	}
+}
+
+// TestWindowsWingetIsSilent pins --silent: without it winget runs the package's own GUI, which on a console
+// install reads as a failure and on a remote session has nobody to click it.
+func TestWindowsWingetIsSilent(t *testing.T) {
+	p := testProbe("windows", nil, map[string]string{"winget": `C:\winget.exe`}, nil)
+	plan, err := planInstall(p, Engine{Name: EngineNone})
+	if err != nil {
+		t.Fatalf("planInstall: %v", err)
+	}
+	joined := strings.Join(append([]string{plan.Command}, plan.Args...), " ")
+	for _, want := range []string{"--silent", "--accept-source-agreements", "--accept-package-agreements"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the winget plan is missing %q: %s", want, joined)
+		}
+	}
+}

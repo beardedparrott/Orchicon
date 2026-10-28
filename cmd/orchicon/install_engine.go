@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"github.com/beardedparrott/orchicon/internal/containerengine"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -156,31 +154,19 @@ func resolveContainerEngine() (bool, error) {
 	// all (below), and an engine that was detected but cannot run a container (step 5).
 	provisionPodman := func(why string) (containerengine.Engine, error) {
 		installPhase(why)
-		// ASK ON ITS OWN LINE, AND SAY THAT WE ARE WAITING.
+		// THERE IS NO PROMPT ANY MORE, AND THAT IS THE FIX.
 		//
-		// REPORTED: "it was stuck at this prompt until I hit enter. Nowhere in that prompt does it make it
-		// obvious that is what you have to do. It looks like the installer crashed/hung."
+		// The reported symptom was a cursor stopping with nothing on screen: "it was stuck at this prompt until
+		// I hit enter. Nowhere in that prompt does it make it obvious that is what you have to do. It looks like
+		// the installer crashed/hung." The prompt existed, but it was written to the handle promptTerminal
+		// returns — which on Windows is stdin OPENED FOR INPUT, so the text went nowhere while the read still
+		// blocked. Prettifying the message could not fix that: a prompt cannot be shown through a stream that is
+		// not writable.
 		//
-		// The question used to be appended directly to the `winget install …` sentence, so the last thing on
-		// screen read as finished output and the cursor simply stopped. Three fixes, all of them about being
-		// legible: a blank line before the question, the question on its own line, and an explicit note that
-		// the install is waiting for a keypress.
-		var confirm func(string) bool
-		if tty, owned := promptTerminal(); tty != nil {
-			if owned {
-				defer tty.Close()
-			}
-			confirm = func(q string) bool {
-				fmt.Fprintln(tty)
-				fmt.Fprintf(tty, "%s [Y/n]: ", q)
-				ok := readYesNo(tty)
-				if !ok {
-					fmt.Fprintln(tty, "orchicon: not installing podman — runtime containers stay unavailable")
-				}
-				return ok
-			}
-		}
-		prov, perr := containerengine.ProvisionEngine(context.Background(), p, os.Stdout, confirm, containerengine.EnginePodman)
+		// So the question is gone: ProvisionEngineUnattended takes no confirm func, so there is nothing to read
+		// and nothing to wait for. The operator asked for containers by running the installer; asking again is
+		// the step that hangs.
+		prov, perr := containerengine.ProvisionEngineUnattended(context.Background(), p, os.Stdout, containerengine.EnginePodman)
 		if perr != nil {
 			return containerengine.Engine{Name: containerengine.EngineNone}, perr
 		}
@@ -306,29 +292,6 @@ func declinedReason(err error) string {
 	return msg
 }
 
-// askEngineInstall is the opt-in question for installing podman. It lives here (rather than
-// reusing askInstallPort) because the answer is yes/no, and because the SAFE default for a
-// broken terminal is NO: an EOF with no content takes the refusal, so an unattended install
-// never installs an engine it could not ask about.
-func askEngineInstall(r io.Reader, out io.Writer, question string) bool {
-	fmt.Fprintf(out, "%s [Y/n]: ", question)
-	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && strings.TrimSpace(line) == "" {
-		// SAY SO. This used to print a bare newline, so an EOF (a terminal that closed, a stream that is not a
-		// terminal after all) turned "install podman?" into a silent NO — and the operator's only clue was a
-		// container fetch failing much later. A prompt that could not be answered is a fact worth reading.
-		fmt.Fprintln(out)
-		fmt.Fprintln(out, "orchicon: no answer was read — NOT installing podman (containers stay unavailable).")
-		fmt.Fprintln(out, "orchicon: re-run with -Containers to provision it without being asked.")
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "", "y", "yes":
-		return true
-	}
-	return false
-}
-
 // describeEngineStatus renders the availability decision as ONE line for the install summary:
 // ready (with the version and the machine state), provisioning, or unavailable WITH the
 // reason. A bare "unavailable" is exactly the "green but broken" summary this repo removes.
@@ -362,18 +325,4 @@ func provisionDecline(err error) string {
 		return declinedReason(err)
 	}
 	return err.Error()
-}
-
-// readYesNo reads one answer from r. An empty line is YES (the prompt's own default), and an unreadable stream
-// is NO — a closed or non-terminal stdin must never be read as consent.
-func readYesNo(r io.Reader) bool {
-	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && strings.TrimSpace(line) == "" {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "", "y", "yes":
-		return true
-	}
-	return false
 }
