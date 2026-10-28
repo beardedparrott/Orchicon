@@ -333,10 +333,28 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 	// as the DEFAULT — pressing ENTER keeps it, which is what makes an unattended run and an
 	// answered run agree. promptOut is used rather than stdout so the question lands on the
 	// terminal even when stdout is captured.
-	if tty != nil && !flags.NonInteractive {
+	// AN INSTANCE THAT IS ALREADY SET UP IS NOT ASKED ABOUT AGAIN.
+	//
+	// REPORTED: the MSI runs `orchicon install`, and then the operator ran `orchicon install` themselves and was
+	// taken through the whole interrogation a second time — "this should have happened automatically with the
+	// install that gets kicked off with the MSI. Not sure how many people are going to want to do a second
+	// install after another. It doesn't make logical sense."
+	//
+	// So a run whose instance ALREADY has host state (a data dir with this instance's KEK) and is already
+	// answering skips the questions and keeps the recorded decisions. It is the same principle as ports being
+	// record-first: an answered install stays answered.
+	//
+	// It does NOT skip the WORK — the install still converges what is there (an engine installed since the last
+	// run is picked up, a stopped service is started). It skips only the ASKING, which is what a second
+	// invocation has no business doing.
+	alreadySetUp := instanceAlreadyProvisioned(instance)
+	if tty != nil && !flags.NonInteractive && !alreadySetUp {
 		if chosen, ok := askInstance(tty, instance); ok {
 			instance = chosen
 		}
+	} else if alreadySetUp && tty != nil {
+		fmt.Printf("orchicon: instance %q is already installed — keeping its recorded ports and settings "+
+			"(pass --reconfigure to be asked again)\n", instance)
 	}
 	// THE PROMPT GOES TO A STREAM THAT CAN BE WRITTEN, WHICH IS NOT ALWAYS THE ONE WE READ.
 	//
@@ -1435,4 +1453,19 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 		fmt.Println("  Open the UI, log in with the dev IdP, and create a workflow —")
 		fmt.Println("  every execution runs IN-PROCESS on this host (no runtime container).")
 	}
+}
+
+// instanceAlreadyProvisioned reports whether an instance has already been set up on this host: it has host state
+// (its data dir carries a KEK) AND a recorded port set. Both are needed — a KEK alone could be a half-finished
+// first run, and a port record alone could be a stale one from an instance since wiped.
+func instanceAlreadyProvisioned(instance string) bool {
+	dir, err := hostDataDir(instance)
+	if err != nil || dir == "" {
+		return false
+	}
+	if _, err := os.Stat(dir + string(os.PathSeparator) + "secrets" + string(os.PathSeparator) + "kek"); err != nil {
+		return false
+	}
+	ports, perr := readResolvedPorts(instance)
+	return perr == nil && len(ports) > 0
 }

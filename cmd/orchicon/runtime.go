@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"io"
 	"log/slog"
 	"os"
@@ -87,6 +88,28 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		return err
 	}
 	log.Info("runtime engine resolved", "engine", eng.Name, "bin", eng.Bin)
+
+	// THE MACHINE IS THE DAEMON'S BUSINESS TOO, not only the installer's.
+	//
+	// On Windows and macOS a container engine of this kind runs containers inside a VM, and that VM must be
+	// created and started before a single container can be. The installer does this (EnsureMachine), which is
+	// why an install ends with a working engine — but a daemon started LATER has no such guarantee: after a
+	// reboot, after `podman machine stop`, or when the operator started the daemon by hand. The failure then is
+	// not "no engine"; it is every container create failing for a reason the daemon never mentions.
+	//
+	// Best-effort and NON-FATAL, deliberately: a machine that will not start is reported and the daemon still
+	// serves, exactly as an unavailable engine does. `podman machine init --now` and `machine start` need no
+	// elevation, so this repairs the common cases itself rather than asking.
+	if eng.Name == "podman" {
+		// The two Engine types are different packages' views of the same fact; pass the resolved binary across.
+		ce := containerengine.Engine{Name: containerengine.EnginePodman, Bin: eng.Bin}
+		if ms, merr := containerengine.EnsureMachine(context.Background(), containerengine.DefaultProbe(), ce, os.Stdout); merr != nil {
+			log.Warn("runtime daemon: the podman machine is not usable — containers will fail until it is",
+				"error", merr, "state", ms)
+		} else {
+			log.Info("runtime daemon: podman machine ready", "state", ms)
+		}
+	}
 
 	baseImage := env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest")
 	d := &runtime.Daemon{

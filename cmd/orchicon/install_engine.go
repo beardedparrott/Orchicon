@@ -156,12 +156,29 @@ func resolveContainerEngine() (bool, error) {
 	// all (below), and an engine that was detected but cannot run a container (step 5).
 	provisionPodman := func(why string) (containerengine.Engine, error) {
 		installPhase(why)
+		// ASK ON ITS OWN LINE, AND SAY THAT WE ARE WAITING.
+		//
+		// REPORTED: "it was stuck at this prompt until I hit enter. Nowhere in that prompt does it make it
+		// obvious that is what you have to do. It looks like the installer crashed/hung."
+		//
+		// The question used to be appended directly to the `winget install …` sentence, so the last thing on
+		// screen read as finished output and the cursor simply stopped. Three fixes, all of them about being
+		// legible: a blank line before the question, the question on its own line, and an explicit note that
+		// the install is waiting for a keypress.
 		var confirm func(string) bool
 		if tty, owned := promptTerminal(); tty != nil {
 			if owned {
 				defer tty.Close()
 			}
-			confirm = func(q string) bool { return askEngineInstall(tty, tty, q) }
+			confirm = func(q string) bool {
+				fmt.Fprintln(tty)
+				fmt.Fprintf(tty, "%s [Y/n]: ", q)
+				ok := readYesNo(tty)
+				if !ok {
+					fmt.Fprintln(tty, "orchicon: not installing podman — runtime containers stay unavailable")
+				}
+				return ok
+			}
 		}
 		prov, perr := containerengine.ProvisionEngine(context.Background(), p, os.Stdout, confirm, containerengine.EnginePodman)
 		if perr != nil {
@@ -345,4 +362,18 @@ func provisionDecline(err error) string {
 		return declinedReason(err)
 	}
 	return err.Error()
+}
+
+// readYesNo reads one answer from r. An empty line is YES (the prompt's own default), and an unreadable stream
+// is NO — a closed or non-terminal stdin must never be read as consent.
+func readYesNo(r io.Reader) bool {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
+		return true
+	}
+	return false
 }

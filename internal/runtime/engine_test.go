@@ -10,6 +10,7 @@ package runtime
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -308,5 +309,42 @@ func TestIsAbsentOutputBothEngines(t *testing.T) {
 				t.Errorf("%s: IsAbsentOutput(%q) = true, want false", eng.name(), out)
 			}
 		}
+	}
+}
+
+// TestEngineResolutionRefreshesTheSystemPath is the third instance of the stale-PATH bug, and the one that broke
+// the daemon.
+//
+// The reported log:
+//
+//	error: runtime engine "podman" not found on PATH.
+//
+// ...after `orchicon install` had just installed podman. winget commits to the REGISTRY, not to the environment
+// of the process that ran it — nor to any child it spawns — so the daemon it started could not see podman and
+// exited, and every container fetch then failed on a socket nobody was serving.
+//
+// The store cannot be read on a test host, so this pins the SHAPE: resolution must consult more than
+// exec.LookPath, and its failure must say how many entries it checked rather than implying $PATH was all.
+func TestEngineResolutionRefreshesTheSystemPath(t *testing.T) {
+	src, err := os.ReadFile("engine.go")
+	if err != nil {
+		t.Fatalf("read engine.go: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		"func lookupEngine(",
+		"adapter.FreshPathDirs()",
+		"entries checked",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("engine resolution is missing %q — a daemon started after a package-manager install "+
+				"cannot see the engine, exits, and leaves a socket nobody serves", want)
+		}
+	}
+	// And the old single-step resolution must be gone, or the refresh is dead code.
+	if strings.Contains(body, `bin, err := exec.LookPath(name)
+	if err != nil {
+		return Engine{Name: name, Bin: name}, &EngineMissingError`) {
+		t.Error("ResolveEngine still resolves from exec.LookPath alone")
 	}
 }
