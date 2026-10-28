@@ -199,6 +199,11 @@ func TestAgentEnvClaudePathPrefix(t *testing.T) {
 		}
 	}
 	t.Setenv("HOME", home)
+	// THE TEST'S SUBJECT IS THE KNOWN BIN DIRS, so PATH must not contribute any of its own. The resolver now
+	// asks the OS's PATH after the known lists, which on a machine that HAS an adapter installed would add the
+	// real ~/.local/bin — and this test would then be measuring the host rather than the rule it exists to pin.
+	// (The rule itself is unchanged: only DEMANDED kinds prefix PATH, stat-filtered and sorted.)
+	t.Setenv("PATH", t.TempDir())
 
 	pathOf := func(env []string) string {
 		for _, kv := range env {

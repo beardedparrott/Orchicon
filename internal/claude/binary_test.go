@@ -46,6 +46,22 @@ func TestClaudeBinaryPath(t *testing.T) {
 	t.Run("no install falls back to the bare name", func(t *testing.T) {
 		t.Setenv(ClaudeBinEnv, "")
 		t.Setenv("HOME", t.TempDir()) // empty home
+		// THE PATH MUST BE EMPTIED TOO, and that is a behaviour change worth pinning rather than a test
+		// workaround. Resolution now ASKS THE OS's PATH (internal/adapter's discovery), so on a machine that
+		// HAS claude installed — like a CI runner or a developer's box — "no install" was only true of the
+		// FAKE home. Emptying PATH is what makes the precondition real, and asserting the bare fallback from
+		// there is what keeps a PATH-only machine working.
+		prev, had := os.LookupEnv("PATH")
+		if err := os.Setenv("PATH", t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if had {
+				_ = os.Setenv("PATH", prev)
+			} else {
+				_ = os.Unsetenv("PATH")
+			}
+		})
 		if got := ClaudeBinaryPath(); got != "claude" {
 			t.Fatalf("ClaudeBinaryPath() = %q, want the bare fallback so a PATH-only machine still works", got)
 		}

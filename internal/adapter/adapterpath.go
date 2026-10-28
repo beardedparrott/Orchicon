@@ -204,6 +204,28 @@ func winGetPackagePrefix(kind string) string {
 // IT RETURNS THE HOST PATH. Whether that path is usable INSIDE a container is a different question, answered
 // by ContainerUsable — a Windows .exe is a perfectly good host adapter and cannot run in a Debian container.
 func ResolveBinary(goos, home, kind string, getenv func(string) string) string {
+	// THE FULL ORDER: an explicit override, then what the OS's PATH reports, then the known-install lists.
+	// Discovery is tried FIRST after the override because it is the agnostic answer — it covers Chocolatey,
+	// nix, a portable zip, anything the OS knows — and the lists are the fallback for an install no PATH
+	// entry mentions.
+	if p := ResolveBinaryDeclared(goos, home, kind, getenv); p != "" {
+		return p
+	}
+	if home == "" {
+		return ""
+	}
+	for _, p := range DiscoverKind(goos, home, kind, getenv) {
+		return p
+	}
+	return ""
+}
+
+// ResolveBinaryDeclared is the OVERRIDE-plus-known-lists resolver, without discovery.
+//
+// It exists because two callers need different halves: the container MSM derivation wants the KNOWN install (it
+// is mounting a directory), while host resolution wants everything. Keeping them one function would make the
+// mount code perform a PATH search per create for an answer it does not use.
+func ResolveBinaryDeclared(goos, home, kind string, getenv func(string) string) string {
 	env := func(k string) string {
 		if getenv == nil {
 			return ""
@@ -215,6 +237,25 @@ func ResolveBinary(goos, home, kind string, getenv func(string) string) string {
 			return v
 		}
 	}
+	p, _ := resolveKnownInner(goos, home, kind, getenv)
+	return p
+}
+
+// resolveKnown is the known-install probe, ignoring the override (which the candidate set reports separately so
+// its provenance is its own).
+func resolveKnown(home, kind, goos string, getenv func(string) string) string {
+	p, _ := resolveKnownInner(goos, home, kind, getenv)
+	// If the override named the same file, it is not a separate "known" hit.
+	if e := BinEnv(kind); e != "" && getenv != nil {
+		if v := strings.TrimSpace(getenv(e)); v != "" && v == p {
+			return ""
+		}
+	}
+	return p
+}
+
+// resolveKnownInner is the candidate-list search: declared dir, conventional dirs, WinGet packages.
+func resolveKnownInner(goos, home, kind string, getenv func(string) string) (string, bool) {
 	// NO HOME MEANS NO ADAPTER, not "whatever this process happens to reach".
 	//
 	// Every candidate below is derived from the caller's home, and an empty one would make the ORCHICON_*_BIN
@@ -223,7 +264,7 @@ func ResolveBinary(goos, home, kind string, getenv func(string) string) string {
 	// daemon with no home configured mounts no adapter — so an adapter found here would be mounted nowhere
 	// and reported as present.
 	if strings.TrimSpace(home) == "" {
-		return ""
+		return "", false
 	}
 	var candidates []string
 	if dir := declaredBinDir(home, kind); dir != "" {
@@ -253,10 +294,10 @@ func ResolveBinary(goos, home, kind string, getenv func(string) string) string {
 			continue
 		}
 		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
-			return cand
+			return cand, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // exesIn returns the executables in dir whose stem is the kind or the kind followed by "-".

@@ -443,6 +443,19 @@ func resolveOpenCodeBinaryFor(goos string, getenv func(string) string, registryD
 			return cand, nil
 		}
 	}
+	// THE AGNOSTIC LAST RESORT: ask the OS's own PATH — from its SOURCE, which is what the loop above reads on
+	// Windows — and let Go's LookPath apply the platform's extension rules, because internal/adapter owns that
+	// search now and both adapters read it. This covers an install by ANY means we did not anticipate
+	// (Chocolatey, nix, a portable zip): the point is to meet the tool where it is rather than require it to
+	// match our list.
+	//
+	// LAST, because everything above is a KNOWN layout and a known layout is the better answer when both match
+	// — and it never yields a shim, which discovery filters itself.
+	if home, herr := os.UserHomeDir(); herr == nil {
+		if hits := adapter.DiscoverKind(goos, home, adapter.DefaultAdapterKind, getenv); len(hits) > 0 {
+			return hits[0], nil
+		}
+	}
 	return "", fmt.Errorf("opencode binary not found on PATH or in any known install location (%s)%s%s (install it as your user, never with sudo: curl -fsSL https://opencode.ai/install | bash; set %s to point at an existing install; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev)",
 		strings.Join(openCodeRelCandidates, ", "), misplacedOpenCodeHintFor(goos, getenv), foundElsewhereHintFor(goos, getenv), OpenCodeBinEnv)
 }
