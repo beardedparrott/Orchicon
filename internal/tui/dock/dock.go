@@ -1151,6 +1151,10 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			}
 			return true, m.pasteCmd(k)
 		case k.Type == tea.KeyCtrlJ && (m.Newlines == NewlineCtrlJ || m.Newlines == NewlineBoth):
+			// NOTE: this branch is reached only when the key still HAS its ctrl+j identity here. On Windows the
+			// console decoder reports Ctrl+J as its CHARACTER (a rune), not as KeyCtrlJ — see the rune arm far
+			// below — which is why the same chord is ALSO recognised by its rune there. Two recognisers, one
+			// control character, documented so neither looks redundant.
 			// CTRL+J AS A NEWLINE CHORD (see NewlineCtrlJ for why this chord and not the obvious two).
 			//
 			// THIS BRANCH MUST COME BEFORE THE enterKey ARMS. enterKey deliberately treats ctrl+j as Enter —
@@ -1169,6 +1173,22 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 				return true, nil
 			}
 			return true, m.requestSend()
+		case isCtrlJRune(k) && (m.Newlines == NewlineCtrlJ || m.Newlines == NewlineBoth):
+			// CTRL+J AS A CHARACTER, which is HOW WINDOWS DELIVERS IT.
+			//
+			// The Windows console does not hand the program a key code; it hands it the character the chord
+			// produced. Ctrl+J produces 0x0A (LF), so bubbletea's Windows decoder builds a KeyMsg of type
+			// KeyRunes carrying "\n" — NOT KeyCtrlJ and NOT KeyEnter. Reaching the dock as a rune, the old
+			// branching here inserted NO newline and did not send either… except the textarea, which treats a
+			// pasted newline as a line break. The observable result was the operator's: ctrl+j "still submitted
+			// enter instead of a newline".
+			//
+			// The test in the dock's own package could never have caught this. It builds KeyMsg{Type: KeyCtrlJ}
+			// directly — the value the ANSI byte path produces — so it proved the branch works, not that the
+			// chord can be recognised on the platform it was written for. This arm and its siblings are the
+			// reminder: a key test that constructs the message it expects is testing the branch, not the key.
+			m.insertNewline("ctrl+j")
+			return true, nil
 		case enterKey(k):
 			// NOTHING here may silently swallow a send. The composer's own hint
 			// documents the contract as "enter send · alt+enter newline", so any
@@ -1283,6 +1303,25 @@ func (m *Model) pasteCmd(k tea.KeyMsg) tea.Cmd {
 // and "my Enter key does nothing" is a far worse failure than losing a chord
 // nobody can invoke through the UI. (KeyCtrlM is the same value as KeyEnter, so the
 // first case already covers it.)
+// isCtrlJRune reports whether a key message IS Ctrl+J arriving as a CHARACTER rather than a key code.
+//
+// WHY BOTH FORMS EXIST. The control character for Ctrl+J is LF (0x0A), and how that reaches bubbletea depends
+// entirely on the input path:
+//
+//   - the ANSI BYTE reader (Linux, macOS, and any terminal streaming bytes) decodes 0x0A to KeyCtrlJ;
+//   - the WINDOWS CONSOLE reader — which is the path in use whenever CONIN$ is opened — reads the key record and
+//     reports the character it produced, so the same chord arrives as KeyRunes("\n"). It is not reported as
+//     KeyEnter either, because the console's VK_RETURN arm is what maps to KeyEnter and Ctrl+J is not VK_RETURN.
+//
+// A composer that only knew the first form therefore had a newline chord that worked on Linux and macOS and did
+// nothing on Windows — while the hint told the operator to press it.
+//
+// IT IS DELIBERATELY NARROW. Only a rune message whose text is EXACTLY "\n" qualifies: a plain Enter arrives as
+// KeyEnter (a different Type), so this cannot swallow a send, and a multi-character paste is not a chord.
+func isCtrlJRune(k tea.KeyMsg) bool {
+	return k.Type == tea.KeyRunes && len(k.Runes) == 1 && k.Runes[0] == '\n'
+}
+
 func enterKey(k tea.KeyMsg) bool {
 	switch k.Type {
 	case tea.KeyEnter, tea.KeyCtrlJ:

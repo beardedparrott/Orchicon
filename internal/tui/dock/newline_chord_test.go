@@ -197,3 +197,88 @@ func TestOnlyAltEnterIsLostOnWindows(t *testing.T) {
 		t.Error("alt+enter was accepted on Windows, but the terminal consumes it")
 	}
 }
+
+// --- HOW WINDOWS ACTUALLY DELIVERS IT --------------------------------------------------------------
+
+// windowsCtrlJ is the Ctrl+J key message the WINDOWS CONSOLE reader produces, and it is not KeyCtrlJ.
+//
+// The console reports the CHARACTER a chord produced, not a key code: Ctrl+J produces LF (0x0A), so the message
+// arrives as KeyRunes("\n"). The ANSI byte reader — Linux, macOS — decodes the same character to KeyCtrlJ
+// instead. Same keystroke, two message shapes, decided by the input path.
+func windowsCtrlJ() tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("\n")}
+}
+
+// TestCtrlJAsWindowsDeliversIt is the test the earlier change was missing, and the operator found the gap the
+// only way it can be found: by pressing the key.
+//
+// "I did try ctrl+J already and it still submitted enter instead of a newline."
+//
+// The previous test built KeyMsg{Type: KeyCtrlJ} — the ANSI path's shape — so it proved the BRANCH works rather
+// than that the chord is recognised on the platform it was written for. A key test that constructs the message it
+// expects can only ever agree with itself.
+func TestCtrlJAsWindowsDeliversIt(t *testing.T) {
+	m := New()
+	m.Focus()
+	m.Newlines = NewlineCtrlJ
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("one")})
+
+	// The Windows shape.
+	m.Update(windowsCtrlJ())
+
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("two")})
+
+	if got := m.Value(); got != "one\ntwo" {
+		t.Fatalf("value = %q, want \"one\\ntwo\" — on Windows ctrl+j arrives as a RUNE (LF), not as KeyCtrlJ, "+
+			"so a branch that only matches KeyCtrlJ does nothing for the operator", got)
+	}
+	if s := m.SendRequest(); s != "" {
+		t.Fatalf("ctrl+j (Windows shape) SENT %q — this is the operator's exact report", s)
+	}
+}
+
+// TestBothDeliveryShapesWork keeps the ANSI platforms working, so the fix cannot be a swap.
+func TestBothDeliveryShapesWork(t *testing.T) {
+	for name, key := range map[string]tea.KeyMsg{
+		"ansi (KeyCtrlJ)":    {Type: tea.KeyCtrlJ},
+		"windows (runes LF)": windowsCtrlJ(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := New()
+			m.Focus()
+			m.Newlines = NewlineCtrlJ
+			m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+			m.Update(key)
+			if m.Value() != "a\n" {
+				t.Errorf("value = %q, want a newline inserted", m.Value())
+			}
+			if s := m.SendRequest(); s != "" {
+				t.Errorf("the chord sent %q instead of newlineing", s)
+			}
+		})
+	}
+}
+
+// TestTheRuneArmCannotSwallowASend is the safety property, and the reason the rune match is exactly one LF:
+// a plain Enter must still send, in every newline mode, however it is spelled.
+func TestTheRuneArmCannotSwallowASend(t *testing.T) {
+	for _, mode := range []NewlineMode{NewlineCtrlJ, NewlineAltEnter, NewlineBoth, NewlineBackslashEnter} {
+		m := New()
+		m.Focus()
+		m.Newlines = mode
+		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("send me")})
+		// Enter as the console delivers it (KeyEnter), which must remain a SEND.
+		m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if got := m.SendRequest(); got != "send me" {
+			t.Errorf("mode %q: Enter did not send (got %q)", mode, got)
+		}
+	}
+	// And a multi-rune "paste" is not a chord: it must not be mistaken for one.
+	m := New()
+	m.Focus()
+	m.Newlines = NewlineCtrlJ
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\nb")})
+	if s := m.SendRequest(); s != "" {
+		t.Errorf("a multi-rune message was treated as a chord and sent %q", s)
+	}
+}
