@@ -378,6 +378,34 @@ func adapterHostMounts(home string, kinds ...string) []string {
 		return nil
 	}
 	var args []string
+	// THE RESOLVED BINARY'S DIRECTORY, MOUNTED AT ITS OWN ABSOLUTE PATH — the mount half of the same fix as
+	// adapterBinDirs. Without it the container's PATH names a directory that was never mounted, which is the
+	// "installed but the container cannot find it" failure in its container form.
+	//
+	// A WINDOWS PATH IS REFUSED HERE rather than mounted uselessly: the container is Linux, so a PE
+	// executable on its PATH is a directory it can list and not execute. The refusal is reported by
+	// CheckAdaptersForContainer, which the daemon calls, so the operator gets one actionable sentence
+	// instead of a container that starts and then cannot spawn its adapter.
+	for _, kind := range kinds {
+		bin := adapter.ResolveBinary(adapter.HostGOOS(), home, kind, os.Getenv)
+		if bin == "" {
+			continue
+		}
+		if ok, _ := adapter.ContainerUsable(bin, "linux"); !ok {
+			continue
+		}
+		dir := filepath.Dir(bin)
+		// SKIP WHEN THE DECLARED TABLE ALREADY MOUNTS IT. The declared dirs are mounted below, and a second
+		// `-v` of the same pair is not harmless noise: it doubles the argv, and the mount tests read that
+		// argv as the contract. So this adds a mount only for an install the table does not know about —
+		// which is the case it exists for.
+		if alreadyDeclaredMounts(bin, home, kind) {
+			continue
+		}
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			args = append(args, "-v", dir+":"+dir+":ro")
+		}
+	}
 	for _, kind := range kinds {
 		installs, declared := adapterInstalls(home, kind)
 		if !declared {
@@ -465,13 +493,29 @@ func adapterPrivateHomes(home string, kinds ...string) []privateHome {
 // CLI needs. Derived from the same install table the mounts come from, so a
 // mounted launcher is always reachable by name.
 func adapterBinDirs(home, kind string) []string {
+	// THE RESOLVED BINARY'S DIRECTORY COMES FIRST, and it is the whole point of this change.
+	//
+	// This used to return ONE hardcoded directory per kind, which the container's PATH was then built from.
+	// Meanwhile each adapter's own host resolver had learned about Windows install locations — npm's
+	// node_modules, WinGet's package directories — so the plane could RUN an adapter the container could not
+	// FIND. Two lists, two answers, and the container is where the disagreement surfaced.
+	//
+	// internal/adapter owns the candidate list BOTH sides now read (it imports neither adapter package, so
+	// there is no cycle), and this asks it where the binary actually is.
+	var dirs []string
+	if bin := adapter.ResolveBinary(adapter.HostGOOS(), home, kind, os.Getenv); bin != "" {
+		dirs = append(dirs, filepath.Dir(bin))
+	}
+	// THE DECLARED DIRECTORY IS KEPT AS A FALLBACK, for a container whose mounts already carry an adapter
+	// installed at the documented location (a baked image, an operator's own Linux install) even though this
+	// host has none to resolve.
 	switch normalizedKind(kind) {
 	case adapter.DefaultAdapterKind:
-		return []string{filepath.Join(home, ".opencode", "bin")}
+		dirs = append(dirs, filepath.Join(home, ".opencode", "bin"))
 	case adapter.KindClaude:
-		return []string{filepath.Join(home, ".local", "bin")}
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
 	}
-	return nil
+	return dirs
 }
 
 // adapterPathPrefix returns the EXISTING bin dirs of the demanded kinds,
@@ -499,4 +543,76 @@ func adapterPathPrefix(home string, kinds ...string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// CheckAdaptersForContainer reports, for the run's demanded adapter kinds, any adapter that CANNOT execute
+// inside a runtime container — and says why for each.
+//
+// THIS IS THE ONE PLACE THE OPERATOR HEARS ABOUT IT. A container created with an unrunnable adapter does not
+// fail at create: it starts, the supervisor runs, and the FIRST session spawn dies with whatever the kernel
+// says about a PE file — inside the container, minutes later, with nothing pointing back at the mount. The
+// daemon calls this before it creates the container so the failure lands where the operator can act on it.
+//
+// AN EMPTY RESULT MEANS EVERYTHING IS FINE. A kind with NO adapter resolved at all is reported too: "not
+// installed" and "installed but the wrong binary" have different remedies (install it, versus install the
+// LINUX build), and conflating them is how the operator ends up installing something twice.
+func CheckAdaptersForContainer(home string, kinds ...string) []string {
+	// NO HOME CONFIGURED MEANS NO ADAPTER IS MOUNTED, so there is nothing to judge.
+	//
+	// Every adapter mount this daemon makes is derived from HostHome (standardHostMountArgs returns nil
+	// without one). Reporting "no binary resolved" there would refuse container creation on a host whose
+	// container simply runs without an adapter CLI — which is a supported shape, not a fault. The check only
+	// means something when there IS a home whose contents are being handed to the container.
+	if strings.TrimSpace(home) == "" {
+		return nil
+	}
+	var problems []string
+	for _, kind := range kinds {
+		bin := adapter.ResolveBinary(adapter.HostGOOS(), home, kind, os.Getenv)
+		if bin == "" {
+			// NOT INSTALLED is a different remedy from THE WRONG KIND OF BINARY, and only the second is a
+			// container problem: an absent adapter may simply be unused by this workflow's sessions.
+			continue
+		}
+		if ok, why := adapter.ContainerUsable(bin, "linux"); !ok {
+			problems = append(problems, kind+": "+why)
+		}
+	}
+	return problems
+}
+
+// alreadyDeclaredMounts reports whether the install table already makes this BINARY reachable, so the
+// resolved directory does not produce a duplicate `-v`.
+//
+// IT MATCHES THE BINARY, NOT ONLY THE DIRECTORY, and that distinction is the claude case: its table mounts
+// the LAUNCHER FILE (~/.local/bin/claude, a symlink into the install root) rather than its directory, so a
+// directory-only comparison adds a second mount of the same thing and doubles the argv. Either form means the
+// container can already reach the binary, which is all this asks.
+func alreadyDeclaredMounts(bin, home, kind string) bool {
+	installs, ok := adapterInstalls(home, kind)
+	if !ok {
+		return false
+	}
+	cleanBin := filepath.Clean(bin)
+	cleanDir := filepath.Dir(cleanBin)
+	for _, in := range installs {
+		src := in.mount
+		if src == "" {
+			src = in.probe
+		}
+		if src == "" || in.private {
+			continue
+		}
+		cleanSrc := filepath.Clean(src)
+		// The declared source is the binary itself, the directory holding it, OR an ANCESTOR of it. The
+		// third case is the opencode table: it mounts the ~/.opencode ROOT, so a binary resolved at
+		// ~/.opencode/bin/opencode is already inside a mounted tree and a second mount adds nothing.
+		if cleanSrc == cleanBin || cleanSrc == cleanDir {
+			return true
+		}
+		if rel, err := filepath.Rel(cleanSrc, cleanBin); err == nil && !strings.HasPrefix(rel, "..") {
+			return true
+		}
+	}
+	return false
 }
