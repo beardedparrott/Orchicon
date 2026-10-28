@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -34,20 +35,111 @@ func NewClient(socketPath, instance string) *Client {
 		var d net.Dialer
 		return d.DialContext(ctx, "unix", socketPath)
 	}
+	transport := &http.Transport{
+		DialContext:           dial,
+		MaxIdleConns:          4,
+		IdleConnTimeout:       30 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second,
+	}
 	return &Client{
 		socketPath: socketPath,
 		instance:   instance,
 		hc: &http.Client{
-			Transport: &http.Transport{
-				DialContext:           dial,
-				MaxIdleConns:          4,
-				IdleConnTimeout:       30 * time.Second,
-				ResponseHeaderTimeout: 120 * time.Second,
-			},
-			Timeout: 0, // exec streams are long-lived
+			// EVERY method on this client goes through hc.Do, so this wrapper is the ONE place a
+			// transport-level failure can be explained instead of reported raw (see unreachableTransport).
+			Transport: &unreachableTransport{inner: transport, socketPath: socketPath},
+			Timeout:   0, // exec streams are long-lived
 		},
 	}
 }
+
+// NoDaemonOnThisHost is the diagnosis for a control plane constructed WITHOUT a runtime client — the headless
+// / no-daemon configuration, which on a native Windows host is the only configuration.
+//
+// It is an exported sentence rather than an error VALUE because the same answer is needed by more than one
+// surface (the image service's precondition, and anything else that offers a container operation), and two
+// phrasings of the same condition is how a UI ends up contradicting its own logs.
+const NoDaemonOnThisHost = "this host has no workflow runtime daemon: runtime images are FETCHED and BUILT " +
+	"over a Unix socket by a daemon that runs this platform's per-run Linux containers, and a Windows host has " +
+	"neither. The plane, its projects and git-backed work all run here; fetching or building runtime images " +
+	"requires Linux (WSL2 with a container engine, or a Linux host)."
+
+// unreachableTransport turns a failed DIAL into a diagnosis, and only a failed dial.
+//
+// THE REPORT IT EXISTS FOR, from the Windows plane:
+//
+//	Post "http://runtime/v1/images/pull?ref=ghcr.io/.../orchicon-runtime:latest":
+//	dial unix C:\Users\<user>\AppData\Local\Temp\orchicon-runtime\runtime.sock:
+//	connect: No connection could be made because the target machine actively refused it.
+//
+// Every part of that is true and none of it is the ANSWER: the url says `http://runtime` (a placeholder host the
+// dialer ignores), the path is a Unix socket on a platform whose console cannot serve one, and nothing says the
+// host has no runtime daemon at all. The operator is left to infer that fetching an image requires a Linux
+// container engine they were never told about.
+//
+// WHY A TRANSPORT AND NOT A CHECK PER METHOD. The client has ten methods and all of them go through hc.Do, so a
+// guard here covers every one of them — including any added later — with a single explanation. A per-method
+// check would be the fifth-thing-to-update problem this codebase already has scars from.
+//
+// IT ONLY REPLACES DIAL FAILURES. A request that connected and then failed (a 500 from a live daemon, a broken
+// stream) passes through untouched: those are the daemon's own answers and it already reports them in its own
+// vocabulary (see readError).
+type unreachableTransport struct {
+	inner      http.RoundTripper
+	socketPath string
+}
+
+// noDaemonNote is the diagnosis appended to a failed dial.
+//
+// IT NAMES THE PLATFORM FACT FIRST, because that is what the operator cannot infer: a runtime daemon speaks over
+// a Unix socket and runs the workflow RUNTIME CONTAINERS, so a Windows host has none — git, the project and the
+// plane all work, and only runs that need a container are unavailable. Then the two things they might do about
+// it. It does not say "this is a bug": it is a supported configuration, just an invisible one.
+const noDaemonNote = "the workflow runtime daemon is not running on this host. It speaks over a Unix socket " +
+	"(ORCHICON_RUNTIME_SOCKET) and manages the per-run Linux containers, so a Windows host has none: the plane, " +
+	"its projects and git-backed work all run there, but fetching or building runtime IMAGES requires Linux " +
+	"(WSL2 with a container engine, or a Linux host). If a daemon SHOULD be running here, check that " +
+	"ORCHICON_RUNTIME_SOCKET points at its socket"
+
+func (t *unreachableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.inner.RoundTrip(req)
+	if err == nil || !isDialFailure(err) {
+		return resp, err
+	}
+	return resp, &DaemonUnreachableError{SocketPath: t.socketPath, Err: err}
+}
+
+// isDialFailure reports whether err is a failure to ESTABLISH the connection, rather than a failure of the
+// request once established.
+//
+// net.OpError with Op "dial" is what a refused Unix socket, a missing socket file and a permission denial all
+// produce on every platform (on Windows the message wraps a WSAEACCES/ECONNREFUSED underneath). Anything with a
+// different Op had a live connection and is NOT a daemon-missing case, so it is left alone.
+func isDialFailure(err error) bool {
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) {
+		return false
+	}
+	return opErr.Op == "dial"
+}
+
+// DaemonUnreachableError is "there is no runtime daemon to talk to", with the socket and the reason.
+//
+// It is a TYPE rather than a formatted error so a caller can ask the question programmatically (errors.As) —
+// which is the difference between a UI that says "this host has no runtime" and one that prints a dial string.
+type DaemonUnreachableError struct {
+	SocketPath string
+	Err        error
+}
+
+// Error renders the diagnosis, keeping the ORIGINAL failure so nothing is lost for someone who needs the raw
+// detail (a permissions problem on a Linux host is a different fix from a missing daemon).
+func (e *DaemonUnreachableError) Error() string {
+	return fmt.Sprintf("cannot reach the workflow runtime daemon at %s (%v) — %s", e.SocketPath, e.Err, noDaemonNote)
+}
+
+// Unwrap exposes the dial failure, so errors.Is(err, syscall.ECONNREFUSED) and friends still work.
+func (e *DaemonUnreachableError) Unwrap() error { return e.Err }
 
 // Create ensures a runtime container exists for the workflow.
 func (c *Client) Create(ctx context.Context, req CreateRequest) (*CreateResponse, error) {
