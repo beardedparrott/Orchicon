@@ -635,7 +635,7 @@ function Uninstall-DesktopApp {
 #
 # The body is NOT a function, deliberately: `return` still ends a mode (-Uninstall,
 # -DryRun) while try/catch introduces no new scope, so everything the body sets stays
-# readable in the catch — which the footer needs ($script:Distro, $InstallDir).
+# readable in the catch — which the footer needs ($InstallDir, $script:ContainerOptIn).
 $script:ExitCode = 0
 try {
     # Start the transcript FIRST, so everything below is in it. Skipped for a dry
@@ -1529,7 +1529,7 @@ Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running t
             Write-Host "    · this instance's host services (postgres, nats) print their own reason above"
             Write-Host "    · the instance log: $(Join-Path (Get-InstanceStateDir) 'serve\logs\orchicon.log')"
             if ($script:ContainerOptIn) {
-                Write-Host "    · the container substrate: wsl -d $script:Distro -e bash -lc 'uname -r'" -ForegroundColor DarkGray
+                Write-Host "    · containers: re-run 'orchicon.exe install' — it reports the engine's own reason" -ForegroundColor DarkGray
             }
             # A non-zero outcome for a wrapper: the binaries are in place, the stack is not.
             $script:ExitCode = 1
@@ -1578,8 +1578,8 @@ Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running t
     if ($InstallDir -and (Test-Path -LiteralPath (Join-Path $InstallDir "orchicon.exe"))) {
         Write-Host ('    Setup only:  & "' + (Join-Path $InstallDir 'orchicon.exe') + '" install') -ForegroundColor Cyan
     }
-    if ($script:ContainerOptIn -and $script:Distro) {
-        Write-Host "    Containers:  wsl -d $script:Distro -e bash -lc 'uname -r'" -ForegroundColor Cyan
+    if ($script:ContainerOptIn) {
+        Write-Host "    Containers:  orchicon.exe runtime-daemon --help   (the engine is the setup's: podman + its machine)" -ForegroundColor Cyan
     }
     if ($script:LogPath) {
         Write-Host ""

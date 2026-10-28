@@ -452,8 +452,11 @@ Check "-Help documents -RemoveBinary" ($src11 -match '-RemoveBinary')
 Check "-Help documents -NoContainers" ($src11 -match '-NoContainers') `
   "containers are the default, so the escape hatch is what has to be discoverable"
 Check "-Help still explains -Containers (now a no-op, not an error)" ($src11 -match '-Containers')
-Check "the destructive verbs are native, with no helper process between them and the filesystem" `
-  (-not ($uninstallSrc -match 'Invoke-WslBash|wsl \b|\bbash\b')) `
+# THE POINT IS THAT NO PROCESS IS INVOKED, not that the WORD never appears: a prose sentence mentioning bash
+# would satisfy a bare word match while proving nothing, and the first version of this assertion failed on
+# exactly that. So it looks for the thing that would actually be a helper call.
+Check "the destructive verbs invoke no helper process" `
+  (-not ($uninstallSrc -match 'Invoke-WslBash|\bwsl(\.exe)?\s+-|&\s*bash\b|\|\s*bash\b')) `
   "a payload that ran in a distro could not touch the native install dir it claimed to clean"
 
 # --- 16. THE CONNECTION INFO READS THE RECORD, IT DOES NOT GUESS --------------
