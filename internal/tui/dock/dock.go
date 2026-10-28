@@ -4,13 +4,20 @@
 // notice/error strip, and a persistent affordance row (what Enter does,
 // the newline chord, how to open the command palette) are rendered. The
 // dock also owns bracketed-paste handling, the configurable newline keys
-// (alt+enter default, leading-backslash+enter alternative), and the draft
-// buffer (restored after a failed send).
+// (ctrl+j on Windows, alt+enter elsewhere, leading-backslash+enter always), and
+// the draft buffer (restored after a failed send).
 //
-// SHIFT+ENTER IS NOT HANDLED HERE, because it never arrives here as a key. Its
-// handling lives one layer down, in internal/tui/input: the sequence a terminal
-// sends for it is rewritten to the alt+enter chord as input is read, so the
-// branch below is what actually runs.
+// SHIFT+ENTER IS NOT HANDLED HERE, because on the platforms where it fails it never
+// arrives here as a key — and on the one where it merely needs decoding, it is
+// handled a layer down: internal/tui/input rewrites the terminal's keypad-Enter
+// sequence (ESC O M, what Konsole sends) to the newline chord as input is read.
+//
+// ITS ABSENCE ON WINDOWS IS NOT A MISSING DECODE, and this is worth stating so it is
+// not "fixed" a third time. Windows Terminal emits no distinct sequence for
+// Shift+Enter, and the console decoder maps VK_RETURN to KeyEnter reading only Alt —
+// Shift is never consulted. Nothing an application receives says "shift". That is
+// why the Windows default is ctrl+j (see NewlineCtrlJ) rather than an attempt to
+// recover the chord.
 //
 // THE PREMISE OF AN EARLIER COMMENT HERE WAS WRONG. It claimed Shift+Enter cannot
 // be told apart from Enter at all, because a legacy terminal encodes the Ctrl and
@@ -84,10 +91,50 @@ func ParseNewlineMode(s string) NewlineMode {
 	case NewlineBoth, "all":
 		return NewlineBoth
 	default:
-		// AN UNRECOGNISED VALUE FALLS BACK TO THE PLATFORM DEFAULT, not to alt+enter. On Windows alt+enter is
-		// consumed by the terminal, so silently choosing it there would make an unset/typo'd config produce a
-		// chord that cannot work — the same "documented but dead" failure this whole change is about.
+		// AN UNRECOGNISED VALUE FALLS BACK TO THE PLATFORM DEFAULT, not to alt+enter.
 		return DefaultNewlineMode()
+	}
+}
+
+// ChordReachesOrch reports whether a newline mode's chord can actually be DELIVERED on this platform.
+//
+// IT EXISTS SO THE SHELL CAN REFUSE TO ASSIGN A DEAD CHORD, rather than merely defaulting away from one. The
+// distinction matters because of a case that exists in the wild: a profile saved on Linux carries
+// `newline = "alt+enter"`, and the same profile opened on Windows would otherwise activate a chord Windows
+// Terminal has already claimed (toggleFullscreen) — leaving the operator with no newline chord at all and a hint
+// naming a key that resizes their window. A default is not enough for that; the assignment itself must be
+// checked.
+//
+// ParseNewlineMode stays LITERAL about what it was given (it does not silently swap values here) precisely so
+// this question can be asked about the operator's actual setting. Config review belongs to the shell, which sees
+// both the dock and the config.
+func ChordReachesOrch(mode NewlineMode) bool { return chordReachesOrchFor(mode, runtime.GOOS) }
+
+// chordReachesOrchFor is ChordReachesOrch's decision, with the platform injected so it is testable from any host.
+//
+// PER CHORD ON WINDOWS, not "everything except alt+enter", because the two chords fail for DIFFERENT reasons and
+// only one of them is a terminal binding:
+//
+//   - alt+enter: Windows Terminal binds it to toggleFullscreen. Claimed by the terminal.
+//   - shift+enter: not claimable by the terminal at all. The Windows console decoder maps VK_RETURN to KeyEnter
+//     reading ONLY Alt — it never consults Shift — so no terminal binding can make it arrive distinct. (The
+//     backslash chord needs Shift too, for its backslash, but that shift produces a RUNE, which is decoded
+//     normally, so the chord itself works.)
+//   - ctrl+j: delivered on both input paths and unbound in the terminal, so it always reaches the program.
+func chordReachesOrchFor(mode NewlineMode, goos string) bool {
+	if goos != "windows" {
+		return true
+	}
+	switch mode {
+	case NewlineCtrlJ:
+		return true
+	case NewlineAltEnter, NewlineBoth:
+		// NewlineBoth's FIRST named chord is ctrl+j, so it still yields a working chord on Windows; but the mode
+		// as a value is not the recommended one there, and mentioning alt+enter in the hint would mislead.
+		return mode == NewlineBoth
+	default:
+		// backslash-enter.
+		return true
 	}
 }
 

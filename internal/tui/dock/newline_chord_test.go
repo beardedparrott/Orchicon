@@ -151,3 +151,49 @@ func TestOtherModesAreUnaffected(t *testing.T) {
 		}
 	}
 }
+
+// --- a profile written on another platform ----------------------------------------------------------
+
+// TestADeadChordIsRefusedPerPlatform pins the cross-platform case, which defaulting alone does NOT cover.
+//
+// A profile saved on Linux carries `newline = "alt+enter"`. Opened on Windows that setting would activate a chord
+// Windows Terminal has already claimed (toggleFullscreen), leaving the operator with NO working newline chord and
+// a hint naming a key that resizes their window. The shell therefore asks ChordReachesOrch before assigning it.
+func TestADeadChordIsRefusedPerPlatform(t *testing.T) {
+	cases := []struct {
+		mode NewlineMode
+		goos string
+		want bool
+		why  string
+	}{
+		// Windows: only the terminal-independent chords get through.
+		{NewlineAltEnter, "windows", false, "alt+enter is Windows Terminal's toggleFullscreen"},
+		{NewlineCtrlJ, "windows", true, "ctrl+j is delivered on both input paths and unbound"},
+		{NewlineBackslashEnter, "windows", true, "its Shift produces a rune, which IS decoded normally"},
+		{NewlineBoth, "windows", true, "its first chord is ctrl+j, so a working chord remains"},
+		// Every chord is delivered elsewhere, so nothing may be refused there — refusing would fight a config
+		// the operator can see working on that platform.
+		{NewlineAltEnter, "linux", true, "delivered normally"},
+		{NewlineAltEnter, "darwin", true, "delivered normally"},
+		{NewlineCtrlJ, "linux", true, "delivered normally"},
+		{NewlineBackslashEnter, "darwin", true, "delivered normally"},
+	}
+	for _, c := range cases {
+		if got := chordReachesOrchFor(c.mode, c.goos); got != c.want {
+			t.Errorf("chordReachesOrchFor(%q, %q) = %v, want %v (%s)", c.mode, c.goos, got, c.want, c.why)
+		}
+	}
+}
+
+// TestOnlyAltEnterIsLostOnWindows is the precise claim, so the refusal above cannot be over-broad by accident:
+// exactly one mode is undeliverable there, and naming it keeps the reason honest.
+func TestOnlyAltEnterIsLostOnWindows(t *testing.T) {
+	for _, mode := range []NewlineMode{NewlineCtrlJ, NewlineBackslashEnter, NewlineBoth} {
+		if !chordReachesOrchFor(mode, "windows") {
+			t.Errorf("%q was refused on Windows — over-broad refusals fight configs that DO work there", mode)
+		}
+	}
+	if chordReachesOrchFor(NewlineAltEnter, "windows") {
+		t.Error("alt+enter was accepted on Windows, but the terminal consumes it")
+	}
+}
