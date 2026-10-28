@@ -392,10 +392,22 @@ Check "nothing INSPECTS Docker Desktop any more" `
 Check "the three-cause report is gone with it" `
   (-not ($code11 -match 'no docker CLI at all|WSL Integration|not enabled for THIS distro')) `
   "that report described a requirement that no longer exists"
-# Criterion 5: the native artifact, never the linux one.
-Check "the asset is the windows zip" `
-  (($code11 -match 'orchicon_\$\{versionNum\}_windows_\$\{arch\}\.zip') -and (-not ($code11 -match '_linux_'))) `
+# Criterion 5: the INSTALLED BINARY is the native one, never the linux one.
+#
+# IT CANNOT BE "no _linux_ string anywhere", which is what this used to assert. The
+# installer now ALSO fetches `orchicon_<ver>_linux_amd64.tar.gz` — deliberately, under
+# `-Containers` — because a runtime container is a Linux container and runs
+# `orchicon runtime-supervisor`, so it needs a Linux binary the Windows executable cannot
+# substitute for (internal/runtime/exe_resolve.go). The original intent is intact and worth
+# stating precisely: what goes on PATH, and what `orchicon version` is verified against, must
+# be the WINDOWS build. A linux asset must never be installed AS `orchicon.exe`.
+Check "the executable installed as orchicon.exe is the windows zip's" `
+  (($code11 -match 'orchicon_\$\{versionNum\}_windows_\$\{arch\}\.zip') -and
+   ($code11 -match 'Copy-Item -LiteralPath \$foundExe\.FullName -Destination \$exe')) `
   "a linux asset on the native path is an install that cannot run"
+Check "the linux binary, when fetched, is installed under a DISTINCT name" `
+  ($code11 -match 'orchicon-linux-amd64') `
+  "the container binary must never overwrite orchicon.exe; the resolver looks for this name beside the daemon"
 
 # --- 12. THE SCRIPT MUST REACH THE GUEST AS WRITTEN -------------------------
 # The container opt-in still carries a multi-line bash probe into a distro, and Windows PowerShell
