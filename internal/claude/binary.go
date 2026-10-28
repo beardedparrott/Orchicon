@@ -24,6 +24,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -51,15 +52,54 @@ var claudeDefaultRelativePath = []string{".local", "bin", "claude"}
 //
 // A candidate must EXIST and be a regular file; anything else falls through
 // rather than spawning a path that cannot run.
-func ClaudeBinaryPath() string {
-	if v := strings.TrimSpace(os.Getenv(ClaudeBinEnv)); v != "" {
+func ClaudeBinaryPath() string { return claudeBinaryPathFor(runtime.GOOS, os.Getenv) }
+
+// claudeBinaryPathFor is ClaudeBinaryPath with the platform and environment injected, matching
+// opencode's resolver and for the same reason: this is now platform-SPECIFIC behaviour, and a path that
+// can only be checked on Windows is a path that a Linux gate will never check.
+//
+// THE CANDIDATE LIST IS PLATFORM-AWARE. On POSIX it is the single `$HOME/.local/bin/claude` it always was.
+// On Windows it is the conventional install locations — WinGet's content-addressed package directory
+// (where the operator's own `claude.exe` was), %LOCALAPPDATA%\Programs, %ProgramFiles% — plus the POSIX
+// shape, because PATH alone cannot be relied on: the plane is a long-lived detached process and its PATH
+// is the one it STARTED with, so an install that happened afterwards is invisible to it.
+func claudeBinaryPathFor(goos string, getenv func(string) string) string {
+	env := func(k string) string {
+		if getenv == nil {
+			return ""
+		}
+		return strings.TrimSpace(getenv(k))
+	}
+	if v := env(ClaudeBinEnv); v != "" {
 		return v
 	}
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		cand := filepath.Join(append([]string{home}, claudeDefaultRelativePath...)...)
+	home := env("HOME")
+	if home == "" && getenv != nil {
+		// Windows has no HOME; USERPROFILE is the equivalent, and os.UserHomeDir uses it internally.
+		home = env("USERPROFILE")
+	}
+	var candidates []string
+	if home != "" {
+		candidates = append(candidates, filepath.Join(append([]string{home}, claudeDefaultRelativePath...)...))
+	}
+	candidates = append(candidates, claudeWindowsCandidates(goos, getenv)...)
+	for _, cand := range candidates {
+		// A candidate must EXIST and be a regular file, and must never be a shell SHIM: Go cannot execute
+		// a .cmd/.bat/.ps1, so resolving one moves the failure to the first dispatch.
+		if strings.EqualFold(filepath.Ext(cand), ".cmd") ||
+			strings.EqualFold(filepath.Ext(cand), ".bat") ||
+			strings.EqualFold(filepath.Ext(cand), ".ps1") {
+			continue
+		}
 		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
 			return cand
 		}
 	}
+	// The bare name is the last resort: a machine with the CLI only on PATH still works exactly as before.
+	// The hint, when a shim exists, is what makes "not found" honest — the caller reports it.
 	return "claude"
 }
+
+// ClaudeMissingHint explains a "claude was not found" outcome when a SHIM is present, so the operator is
+// not told to install something they already installed. Empty when there is nothing to add.
+func ClaudeMissingHint() string { return claudeShimHint(runtime.GOOS, os.Getenv) }
