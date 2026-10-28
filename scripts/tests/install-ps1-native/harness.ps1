@@ -8,22 +8,24 @@ param(
 )
 # Asserts how scripts/install.ps1 behaves as the NATIVE Windows installer. It loads the
 # installer's functions via the AST (the installer itself is never executed in-process) and
-# runs them against a wsl.exe double plus a release-archive double on $StubBin. See run.sh for
-# what is real here and what is emulated. Exits non-zero if any assertion fails.
+# runs them against a release-archive double on $StubBin, with a wsl.exe double present only so
+# "was wsl touched?" can be asserted as a FACT. See run.sh for what is real here and what is
+# emulated. Exits non-zero if any assertion fails.
 #
 # WHAT CHANGED WITH THE NATIVE REWRITE, and why this suite is no longer only about encoding:
 # the installer used to run the whole stack inside WSL2, so its contract was "everything
 # reaches the distro intact". It now installs orchicon.exe and runs `orchicon install` as a
-# native Windows process, so its contract is: it installs the NATIVE artifact, it never touches
-# WSL unless containers were asked for, it tells a human-is-present setup apart from an
-# unattended one, and it reads the ports the install RECORDED instead of guessing them.
+# native Windows process, so its contract is: it installs the NATIVE artifact, it NEVER touches
+# WSL in any install shape (the container engine brings its own Linux VM), it tells a
+# human-is-present setup apart from an unattended one, and it reads the ports the install RECORDED
+# instead of guessing them.
 #
 # It ALSO pins the DEFAULT install path: an MSI is preferred when one is published, and that arm
 # sits behind an availability probe, so run.sh serves a fixture MSI to reach it. Every other case
 # forces the zip, which is how the MSI arm shipped unexercised — and then crashed on the first
 # Windows run with a null scratch directory.
-# The wsl.exe encoding assertions are still here — the container opt-in still carries scripts
-# into a distro — and the deny-list now covers podman as well as docker.
+# The wsl.exe double is still here, and its call log is still switched on — not because anything
+# should talk to it, but so that "nothing did" is asserted rather than assumed.
 $ErrorActionPreference = "Stop"
 $ConsoleEncoding = [System.Text.Encoding]::GetEncoding($ConsoleCodePage)
 [Console]::OutputEncoding = $ConsoleEncoding      # the host decode Windows PS 5.1 performs
@@ -87,66 +89,32 @@ if ($errors.Count) {
 }
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
 Invoke-Expression (($funcs | ForEach-Object { $_.Extent.Text }) -join "`n`n")
-$bashSrc = ($funcs | Where-Object Name -eq 'Invoke-WslBash').Extent.Text
-Say ("installer parses clean; {0} functions; Invoke-WslBash passes -e: {1}" -f $funcs.Count, (Yes ($bashSrc -match '(?m)-e')))
+Say ("installer parses clean; {0} functions" -f $funcs.Count)
 
-# --- 1. the distro name, captured by the installer's OWN statement ----------
-$namesStmt = $ast.FindAll({ param($n)
-  $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Extent.Text -match '^\s*\$names\s*=' }, $true)[0]
-Invoke-Expression $namesStmt.Extent.Text
-Say ""
-Say "[1] distro-name capture"
-Say ("    captured: '{0}'  (array={1}, count={2})" -f (CP ($names -join '')), ($names -is [array]), $names.Count)
-Check "captured name is the distro, exactly" (Eq ($names -join '') 'Ubuntu') (CP ($names -join ''))
-Check "the installer's own fallback (`$names[0]) is the name, not its first character" (Eq ([string]$names[0]) 'Ubuntu') ("got '" + (CP ([string]$names[0])) + "'")
-
-# --- 2/3. both resolution paths -------------------------------------------
-$script:Distro = ""
-Ensure-Wsl -Soft | Out-Null
-Say ""
-Say "[2] Ensure-Wsl, default distro marked with a '*' in the verbose listing"
-Check "resolves the distro via the verbose listing" (Eq $script:Distro 'Ubuntu') (CP $script:Distro)
-
-$env:EMU_NO_DEFAULT = "1"
-$script:Distro = ""
-try { Ensure-Wsl -Soft | Out-Null } finally { Remove-Item Env:EMU_NO_DEFAULT -ErrorAction SilentlyContinue }
-Say "[3] Ensure-Wsl, no '*' default marker (falls back to the quiet listing)"
-Check "falls back to a real name" (Eq $script:Distro 'Ubuntu') (CP $script:Distro)
-
-# --- 5. non-ASCII from the distro (UTF-8 passthrough) ----------------------
-$script:Distro = 'Ubuntu'
-$cn = '已安装 完成'
-$got = ((Invoke-WslBash "printf '%s\n' '$cn'") -join "`n").Trim()
-Say ""
-Say "[5] non-ASCII printed by the distro"
-Check "round-trips exactly (no mojibake)" (Eq $got $cn) ("want '$cn' got '" + (CP $got) + "'")
-
-# --- 6. wsl's OWN localized message ---------------------------------------
-$script:Distro = 'NoSuchDistro'
-$got2 = ((Invoke-WslBash "true") -join "`n").Trim()
-$want = "没有名为 'NoSuchDistro' 的发行版。"
-Say "[6] wsl's own message (this is the 'it printed an error in Chinese' report)"
-Check "round-trips exactly (no mojibake)" (Eq $got2 $want) ("want '$want' got '" + (CP $got2) + "'")
-
-# --- 7. nothing leaks into the operator's session (`irm | iex`) ------------
-Remove-Item Env:WSL_UTF8 -ErrorAction SilentlyContinue
-[Console]::OutputEncoding = $ConsoleEncoding
-$encBefore = [Console]::OutputEncoding.CodePage
-Invoke-WslBash "true" | Out-Null
-Say ""
-Say "[7] session hygiene"
-Check "no WSL_UTF8 left set" ($null -eq $env:WSL_UTF8)
-Check "console codepage restored" ([Console]::OutputEncoding.CodePage -eq $encBefore) ("$encBefore -> " + [Console]::OutputEncoding.CodePage)
-
-# --- 8. $LASTEXITCODE must survive the capture wrapper --------------------
-$script:Distro = 'Ubuntu'; Invoke-WslBash "true" | Out-Null; $rcOk = $LASTEXITCODE
-$script:Distro = 'NoSuchDistro'; Invoke-WslBash "true" | Out-Null; $rcBad = $LASTEXITCODE
-$script:Distro = 'Ubuntu'; Invoke-WslBash "exit 7" | Out-Null; $rcSeven = $LASTEXITCODE
-Say ""
-Say "[8] `$LASTEXITCODE propagation"
-Check "success is 0" ($rcOk -eq 0) "exit=$rcOk"
-Check "an unknown distro is 1" ($rcBad -eq 1) "exit=$rcBad"
-Check "a failing script's own code propagates" ($rcSeven -eq 7) "exit=$rcSeven"
+# --- 1..8 WERE THE WSL TRANSPORT, AND ARE DELETED WITH IT --------------------
+#
+# EIGHT SECTIONS STOOD HERE and they were among the most valuable in this file: distro-name capture
+# across wsl's UTF-16 output, both resolution paths, non-ASCII passthrough, wsl's own localized
+# messages, session hygiene (WSL_UTF8, the console codepage), $LASTEXITCODE propagation through the
+# capture wrapper, and a throwing child that must not take the operator's session down.
+#
+# THEY TESTED A SUBSYSTEM THAT NO LONGER EXISTS. install.ps1 opens no shell in a WSL distro any
+# more — runtime containers go through `podman machine`, which podman creates and owns — so every
+# one of those assertions was exercising deleted code. Deleting them is not a coverage loss; it is
+# the coverage of a requirement that was retired.
+#
+# WHAT WOULD BE A LOSS is the knowledge. If a WSL path ever returns, these three failures return
+# with it and each cost a round of wrong diagnosis:
+#
+#   1. Windows PowerShell 5.1 does NOT escape embedded double quotes when it flattens an argument
+#      into a native command line, so wsl.exe ate them as argument delimiters and the guest ran a
+#      DIFFERENT PROGRAM (a quoted `mktemp` assignment arrived as a bare `-d)`).
+#   2. `wsl` re-parses the command unless `-e` is passed, which was the other half of the same bug.
+#   3. wsl.exe emits UTF-16LE when redirected, so output arrives as NUL-separated glyph soup unless
+#      WSL_UTF8=1 is set; a distro name then truncates at the first NUL and every later call fails.
+#
+# The fix for all three was a base64 payload (an alphabet with no quote, space or metacharacter) plus
+# `-e` plus WSL_UTF8=1. That reasoning survives in install.ps1's note where the code used to be.
 
 # --- 9. THE REPORTED CRASH: a failed install must not take the session --------
 # The install is normally started as `irm … | iex`, which runs the installer's text
@@ -272,68 +240,16 @@ $logText = if (Test-Path $logPath) { Get-Content -Raw $logPath } else { "" }
 Check "the run leaves a transcript where it was asked to" ((Test-Path $logPath) -and ($logText -match "Orchicon was not installed")) "the log is the evidence a closed window used to take with it"
 Check "the transcript's path is printed on the way past" ($logged.Text -match [regex]::Escape($logPath))
 
-# --- 10. THE OTHER REPORTED FAILURE: the long step must STREAM ---------------
-# TWO MECHANISMS now, and both are pinned:
+# --- 10. THE LONG STEP MUST NOT BE CAPTURED --------------------------------
 #
-#   * the SETUP is a BARE native invocation (`& $exe install`), because a directly-invoked
-#     native child inherits the console. Capturing it would buffer the progress AND the port
-#     prompt, and a buffered prompt is a permanent hang. Asserted on the AST and proved to bite
-#     by mutating a copy into a capture and requiring FAIL.
-#   * the CONTAINER substrate probe still uses Invoke-WslBashLive, and this is the difference it
-#     makes: watch a CHILD from here and look for the guest's first line WHILE IT IS STILL
-#     RUNNING. Capture-and-replay cannot pass that, so the same guest is also run through
-#     Invoke-WslBash and required to FAIL it.
-$driver = Join-Path $Work "stream-driver.ps1"
-[System.IO.File]::WriteAllText($driver, @'
-param([string]$Installer, [string]$Mode)
-$t = $null; $e = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $Installer).Path, [ref]$t, [ref]$e)
-$funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
-Invoke-Expression (($funcs | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine)
-$script:Distro = "Ubuntu"
-$guest = "echo STREAM-MARKER; sleep 4; echo LATE-MARKER"
-if ($Mode -eq "capture") { $out = Invoke-WslBash $guest; Write-Output ("CAPTURE-RETURNED captured-lines=" + (@($out).Count)) }
-else { Invoke-WslBashLive $guest; Write-Output "LIVE-RETURNED" }
-'@, [System.Text.Encoding]::UTF8)
-
-function Measure-Streaming {
-  param([string]$Mode)
-  $out = Join-Path $Work "stream-$Mode.out"
-  Remove-Item $out -ErrorAction SilentlyContinue
-  # Its stdin is PINNED for the same reason the installer child's is: a child that inherits a
-  # terminal and then reads it blocks for ever, and the operator sees silence.
-  $inFile = Join-Path $Work "stream-in.txt"
-  [System.IO.File]::WriteAllText($inFile, "")
-  $p = Start-Process -FilePath $PwshExe -PassThru -RedirectStandardOutput $out -RedirectStandardInput $inFile `
-    -ArgumentList @("-NoProfile", "-File", $driver, "-Installer", $Installer, "-Mode", $Mode)
-  $early = $false
-  $deadline = (Get-Date).AddSeconds(25)
-  while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 150
-    $txt = ""
-    if (Test-Path $out) { try { $txt = [System.IO.File]::ReadAllText($out) } catch { $txt = "" } }
-    if ($txt -match "STREAM-MARKER") { $early = -not $p.HasExited; break }
-    if ($p.HasExited) { break }
-  }
-  [void](Wait-ProcessBounded -Process $p -What "the streaming child")
-  $text = ""
-  $drain = (Get-Date).AddSeconds(10)
-  while ((Get-Date) -lt $drain) {
-    if (Test-Path $out) { try { $text = [System.IO.File]::ReadAllText($out) } catch { $text = "" } }
-    if ($text -match "RETURNED") { break }
-    Start-Sleep -Milliseconds 100
-  }
-  return [pscustomobject]@{ Early = $early; Text = $text }
-}
-
-Say ""
-Say "[10] the long/interactive steps stream (the 'hanging with no progress' report)"
-$liveRes = Measure-Streaming -Mode "live"
-Check "the live path shows the guest's first line WHILE it is still running" $liveRes.Early ("early=" + $liveRes.Early)
-Check "the live path shows the guest's output in full" (($liveRes.Text -match "LATE-MARKER") -and ($liveRes.Text -match "LIVE-RETURNED"))
-$capRes = Measure-Streaming -Mode "capture"
-Check "the capturing path buffers — which is why the setup must not use it" ($capRes.Early -eq $false) ("early=" + $capRes.Early)
-Check "the capturing path did run the guest, and captured both its lines" (($capRes.Text -match "captured-lines=2") -and ($capRes.Text -match "CAPTURE-RETURNED")) "the output is held until the end — which is why nothing was visible"
+# THIS SECTION USED TO PIN TWO MECHANISMS. One is gone: it watched a WSL child stream its output and
+# required a CAPTURING helper to buffer instead, which kept the substrate probe from looking hung. The
+# substrate probe is deleted, so that half tested nothing.
+#
+# THE SURVIVING MECHANISM IS THE ONE THAT MATTERS: the SETUP is a BARE native invocation
+# (`& $exe install`), because a directly-invoked native child inherits the console. Capturing it would
+# buffer the progress AND the port prompt, and a buffered prompt is a permanent hang. Asserted on the
+# AST and proved to bite by mutating a copy into a capture and requiring FAIL.
 
 # The setup invocation itself: a bare statement, never assigned and never piped. A single
 # CommandAst `& $exe install` whose parent chain reaches the try-block directly is the shape;
@@ -409,55 +325,26 @@ Check "the linux binary, when fetched, is installed under a DISTINCT name" `
   ($code11 -match 'orchicon-linux-amd64') `
   "the container binary must never overwrite orchicon.exe; the resolver looks for this name beside the daemon"
 
-# --- 12. THE SCRIPT MUST REACH THE GUEST AS WRITTEN -------------------------
-# The container opt-in still carries a multi-line bash probe into a distro, and Windows PowerShell
-# 5.1 does not escape embedded quotes when it builds a native command line — so wsl.exe ate every
-# quote as an argument delimiter and the guest ran a DIFFERENT PROGRAM. Measured on a real Windows
-# box, a quoted `mktemp` assignment arrived as a bare `-d)` and the install died with "unexpected
-# EOF while looking for matching )". The transport is base64, whose alphabet has no quote.
+# --- 12. NO SCRIPT TRANSPORT, BECAUSE NOTHING CARRIES A SCRIPT --------------
 #
-# TWO ASSERTIONS: the guest RECEIVES the script byte-identical (a real round trip), and the
-# command handed to wsl contains no double quote at all (the hazard itself).
+# THIS SECTION PROVED A REAL BUG AND IS DELETED ANYWAY, which is worth explaining rather than
+# leaving as a gap. It round-tripped a bash script into a WSL distro and asserted it arrived
+# BYTE-IDENTICAL — because Windows PowerShell 5.1 does not escape embedded double quotes when it
+# flattens an argument into a native command line, so wsl.exe had been eating them and the guest ran
+# a different program. A quoted `mktemp` assignment arrived as a bare `-d)`.
+#
+# With the WSL path deleted there is no script to transport and no guest to reach, so the assertion
+# could only be kept by keeping the code it tests. Instead of that, the INVARIANT is kept in a form
+# that still bites: this installer must hand no bash script to any external program at all. If a
+# future change reintroduces one, that is the moment to reinstate the byte-identity proof — and the
+# failure modes to guard are recorded above, in install.ps1 and in this file's history.
 Say ""
-Say "[12] the script reaches the guest as written"
-
-$record = Join-Path $Work "received-script.txt"
-$prevRecord = $env:EMU_RECORD
-$env:EMU_RECORD = $record
-try {
-  # Quotes, command substitution, a quoted pipeline, an apostrophe — the shapes the real probe uses
-  # and that a quote-eating transport destroys.
-  $original = @'
-set -euo pipefail
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-echo "found: $TMP" | grep -q . || true
-'@
-  $script:Distro = "Ubuntu"
-  Invoke-WslBashLive $original | Out-Null
-} finally {
-  if ($null -eq $prevRecord) { Remove-Item Env:EMU_RECORD -ErrorAction SilentlyContinue }
-  else { $env:EMU_RECORD = $prevRecord }
-}
-$expected = $original -replace "`r`n", "`n"
-$received = if (Test-Path $record) { [System.IO.File]::ReadAllText($record) } else { "" }
-Check "the guest receives the script BYTE-IDENTICAL to what was written" `
-  ([string]::Equals($received, $expected, [System.StringComparison]::Ordinal)) `
-  ("received " + $received.Length + " chars, expected " + $expected.Length)
-Check "its double quotes survive (the exact thing 5.1 stripped)" `
-  ($received -match [regex]::Escape('TMP="$(mktemp -d)"'))
-$liveCode = Code (($funcs | Where-Object Name -eq "Invoke-WslBashLive").Extent.Text)
-$capCode = Code (($funcs | Where-Object Name -eq "Invoke-WslBash").Extent.Text)
-$builder = ($funcs | Where-Object Name -eq "WslBashArgs").Extent.Text
-Check 'both helpers build their argv through the ONE builder (WslBashArgs)' `
-  (($liveCode -match 'WslBashArgs \$Script') -and ($capCode -match 'WslBashArgs \$Script')) `
-  'a second, hand-built argv is how the transport drifted before'
-Check 'neither helper passes the script inline as an argument' `
-  (($liveCode -notmatch '"\s*,\s*\$Script') -and ($capCode -notmatch '"\s*,\s*\$Script')) `
-  'an inline `bash -lc $Script` puts the quotes back on the command line'
-Check 'the builder encodes the script (base64) rather than passing it raw' `
-  ($builder -match 'ConvertTo-BashPayload' -and $builder -match 'base64 -d') `
-  'the payload alphabet is the reason nothing can be mangled in transit'
+Say "[12] no script transport (nothing hands a bash script to an external program)"
+$code12 = Code (Get-Content -Raw $Installer)
+Check "the installer carries no bash payload encoder" (-not ($code12 -match 'ConvertTo-BashPayload|base64 -d')) `
+  "an encoder would mean a script is being transported again"
+Check "and no wsl argv builder" (-not ($code12 -match 'function WslBashArgs|function Invoke-WslBash')) `
+  "these helpers exist only to run a script in a distro"
 
 # --- 13. -Instance MUST SCOPE EVERYTHING, AND REFUSE AN UNKNOWN NAME --------
 # Every assertion CLEARS ORCHICON_INSTANCE first: the variable is inherited from whatever plane is
@@ -559,10 +446,18 @@ Check "-RemoveBinary gates the stop on CONSENT and declining changes nothing" `
 Check "-RemoveBinary honours -DryRun" `
   ($uninstallSrc -match 'would remove \$exePath and \$orchPath') "a dry run that removes something is worse than no dry run"
 Check "-Help documents -RemoveBinary" ($src11 -match '-RemoveBinary')
-Check "-Help documents -Containers" ($src11 -match '-Containers')
-Check "no bash payloads remain for the destructive verbs (they were filesystem-local to the distro)" `
-  (-not ($uninstallSrc -match 'Invoke-WslBash \$removeBinaryScript|Invoke-WslBash \$uninstallScript|Invoke-WslBash \$cleanScript')) `
-  "a payload that ran in the distro could not touch the native install dir it claimed to clean"
+# THE DOCUMENTED FLAG IS NOW THE OPT-OUT. Containers are the default, so -Help must name -NoContainers;
+# -Containers survives only as an accepted no-op for commands already in the wild, and is still listed so a
+# reader who types it finds out what it does now.
+Check "-Help documents -NoContainers" ($src11 -match '-NoContainers') `
+  "containers are the default, so the escape hatch is what has to be discoverable"
+Check "-Help still explains -Containers (now a no-op, not an error)" ($src11 -match '-Containers')
+# THE POINT IS THAT NO PROCESS IS INVOKED, not that the WORD never appears: a prose sentence mentioning bash
+# would satisfy a bare word match while proving nothing, and the first version of this assertion failed on
+# exactly that. So it looks for the thing that would actually be a helper call.
+Check "the destructive verbs invoke no helper process" `
+  (-not ($uninstallSrc -match 'Invoke-WslBash|\bwsl(\.exe)?\s+-|&\s*bash\b|\|\s*bash\b')) `
+  "a payload that ran in a distro could not touch the native install dir it claimed to clean"
 
 # --- 16. THE CONNECTION INFO READS THE RECORD, IT DOES NOT GUESS --------------
 # Reported from a real Windows install: the operator answered 3001 for a published port, `orchicon
@@ -733,14 +628,19 @@ Check "and the deny-list covers podman, the engine the install provisions first"
   "guarding only docker left the real hazard open"
 
 
-# --- 22. A PLAIN INSTALL NEVER TOUCHES WSL ----------------------------------
+# --- 22. THE INSTALLER NEVER RUNS WSL, IN EITHER DIRECTION -------------------
 # Criterion 1 in an assertion: on a clean Windows 11 box with no WSL and no Docker, the installer
 # installs the NATIVE binaries and brings up a plane. This host cannot boot Windows, so the proxy is
 # BEHAVIOURAL and exact: run the whole install path against the archive double with the wsl double's
-# call log switched on, and require that wsl was never invoked. A "does it still work" test that
-# quietly called `wsl --list` first would fail here.
+# call log switched on, and require that wsl was never invoked.
+#
+# IT USED TO BE TWO ASSERTIONS — "plain never runs wsl" and "-Containers does" — because containers
+# were opt-in and a window into a distro was how they were set up. That window is deleted: runtime
+# containers go through `podman machine`, which podman creates and owns, so NO install shape runs
+# wsl. The operator caught this the hard way: "Why is a default install running WSL? I thought we
+# discussed that podman didn't need WSL." A default run demanding a distro was the bug.
 Say ""
-Say "[22] the native path never runs wsl"
+Say "[22] the installer never runs wsl (no install shape does any more)"
 
 $native = Invoke-InstallRun
 Say ("    exit code: " + (($native.Text -split "`n" | Where-Object { $_ -match '^EXITCODE=' }) -join ' '))
@@ -751,23 +651,19 @@ Check "it installed orchicon.exe and orch.exe into the install dir" `
 Check "it extracted the release archive RECURSIVELY (the archive wraps a directory)" `
   ((Test-Path (Join-Path $native.InstallDir "orchicon.exe")) -and ($native.Text -notmatch 'did not contain orchicon.exe')) `
   "a flat lookup misses every real release"
-# CONTAINERS ARE THE DEFAULT NOW, SO THE ASSERTIONS ARE THE OTHER WAY ROUND.
-#
-# The product decision: "I want container support out of the box. People shouldn't need to pass a
-# parameter… It should install by default and be running and ready to go." So a DEFAULT run reaches
-# the substrate, and -NoContainers is the direction that has to be explicit. What must stay true is
-# that the two directions are distinguishable — a default that silently did neither would pass a
-# weaker test than this.
+# NEITHER DIRECTION MAY REACH WSL. Containers are provisioned by default, so the engine is the
+# setup's job (`orchicon install` -> winget -> `podman machine init --now`), and -NoContainers skips
+# even that. What the installer must do in both cases is the same: leave WSL alone entirely.
 $defCalls = if (Test-Path $native.CallLog) { (Get-Content -Raw $native.CallLog).Trim() } else { "" }
-Check "a DEFAULT install provisions the container substrate" ($defCalls -match '--list') `
-  ("wsl calls on a default run: " + (($defCalls -split "`n") -join ' | '))
-Check "and it says what it found" ($native.Text -match 'WSL2 substrate ready|using WSL distro') `
-  "the default path has to say something about what it did"
+Check "a DEFAULT install never invokes wsl" (-not $defCalls) `
+  ("wsl was called on a default run with: " + $defCalls)
+Check "and it says the engine is the setup step's job, not a distro's" `
+  ($native.Text -match 'container engine: provisioned by the setup step|containers: skipped') `
+  ("got: " + (($native.Text -split "`n" | Where-Object { $_ -match 'container' }) -join ' / '))
 
-# THE OPT-OUT: a host that must stay engine-free skips the substrate entirely.
 $noContainers = Invoke-InstallRun -Extra @{ ORCHICON_INSTALL_CONTAINERS = "0" }
 $noCalls = if (Test-Path $noContainers.CallLog) { (Get-Content -Raw $noContainers.CallLog).Trim() } else { "" }
-Check "-NoContainers / ORCHICON_INSTALL_CONTAINERS=0 skips the substrate" (-not $noCalls) `
+Check "-NoContainers / ORCHICON_INSTALL_CONTAINERS=0 also never invokes wsl" (-not $noCalls) `
   ("wsl was called on an opt-out run: " + $noCalls)
 Check "and the opt-out does not fail the install" ($noContainers.Text -match 'Install complete') `
   ("got: " + (($noContainers.Text -split "`n" | Where-Object { $_ -match 'complete|failed|✗' }) -join ' / '))

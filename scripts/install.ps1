@@ -29,11 +29,11 @@
 # WSL integration" report it used to print described a requirement that no
 # longer exists.
 #
-# WSL2 IS A SUBSTRATE, NOT A REQUIREMENT. It is provisioned only when the
-# operator gets containers BY DEFAULT, because a workflow's runtime
-# container is the one thing that needs a Linux substrate. The detection and
-# provisioning logic below is unchanged; only its caller is now conditional. A
-# plain install never runs `wsl` and works on a machine that has none.
+# THIS SCRIPT NEVER TOUCHES WSL. Runtime containers reach the container engine
+# through `podman machine`, which podman creates and owns, so a Windows host needs
+# no distro of its own and `wsl --install` is not a step in this install. The WSL
+# detection and script-transport logic that used to live here went with the
+# WSL-first architecture it served — see the note where it was.
 #
 # -Desktop IS THE ONE THING THIS SCRIPT INSTALLS THAT IS NOT A HOST BINARY OF THE
 # STACK, and it is worth being precise about it: the Orchicon desktop app IS a
@@ -120,8 +120,7 @@ Set-StrictMode -Version 1.0
 
 $GitHubOwner = "beardedparrott"
 $GitHubRepo = "Orchicon"
-$script:Distro = ""
-$script:WslPresent = $false
+# (The WSL distro/state fields that used to live here are gone with the WSL path.)
 # INITIALISED, not merely assigned-on-use. Under Set-StrictMode (above) reading an unassigned
 # variable is an error, and the transcript state is only set when a transcript is actually
 # started — so every run with ORCHICON_INSTALL_LOG=off used to read it unset. Found by turning
@@ -161,9 +160,9 @@ Policy, `msiexec /qn`) can use it, and carrying the desktop app and its shortcut
 The MSI is per-user and needs no elevation. -Yes and -NoSetup deliberately keep the
 zip path, because an MSI's wizard cannot be driven unattended.
 
-WSL2 and Docker Desktop are NOT required. WSL2 is provisioned only when you opt
-into containers (the default): a workflow's runtime container needs a Linux
-substrate, and nothing else does.
+WSL2 and Docker Desktop are NOT required. Container support IS installed by
+default (podman, whose machine brings its own Linux VM), so no WSL distro of your
+own is needed — this installer never runs `wsl`.
 
 Options:
   -Version <tag>      Install a specific version (e.g. v0.1.173). Default: latest.
@@ -178,10 +177,8 @@ Options:
                       pass this only on a host that must stay engine-free (locked-down,
                       policy-managed, a CI guest). ORCHICON_INSTALL_CONTAINERS=0 does the same.
   -Containers        (accepted, no longer needed) Containers are the default; kept so existing
-                      commands keep working. Was: Also provision the WSL2 substrate the engine needs,
-                      so a workflow can run a runtime container. Off by default: a
-                      plain install needs no WSL at all, and `orchicon install`
-                      provisions the engine itself (podman first, then docker).
+                      commands keep working. The engine (podman) is provisioned by
+                      `orchicon install`, which also creates and starts its machine.
   -NoSetup            Install the binary only — do NOT start the host services, the
                       runtime daemon, or the plane.
   -Desktop            ALSO install the desktop app (a GUI client for this plane).
@@ -297,225 +294,49 @@ function Stop-InstallLog {
     $script:LogStarted = $false
 }
 
-# wsl.exe writes UTF-16LE when its output is redirected. Decoded on a non-Unicode
-# console codepage that produces garbage: a localized wsl message renders as glyph
-# soup, and a distro name arrives with NUL bytes between its characters
-# ("U`0b`0u`0n`0t`0u"). The NULs are invisible when printed, but the name then
-# truncates at the first NUL when it is handed back to `wsl -d <name>`, so every
-# later call fails with "no distribution with the supplied name".
+# --- NOTHING HERE TALKS TO WSL -----------------------------------------------
 #
-# Stripping the NULs recovers an ASCII name, but it cannot recover non-ASCII text:
-# by the time PowerShell hands us the string the bytes are already gone. So the
-# capture is made deterministic instead — WSL_UTF8=1 makes wsl.exe emit UTF-8
-# rather than UTF-16LE (supported since WSL 0.64.0, 2022: the same release that
-# added --exec), and the distro's own output is UTF-8 as well, so decoding the
-# capture as UTF-8 is correct for BOTH streams. Clear-WslNul stays as the fallback
-# for WSL older than 0.64, and for anything that still writes UTF-16.
-function Clear-WslNul {
-    param($Lines)
-    @($Lines | ForEach-Object { [string]$_ -replace "`0", '' })
-}
+# A WHOLE TRANSPORT LAYER USED TO LIVE HERE, AND IT IS DELETED, NOT PARKED: Invoke-WslCapture,
+# Clear-WslNul, ConvertTo-BashPayload, WslBashArgs, Invoke-WslBash and Invoke-WslBashLive —
+# ~120 lines whose only job was carrying a bash script into a user's WSL distro and decoding
+# what came back.
+#
+# It was load-bearing and hard-won. Windows PowerShell 5.1 does not escape embedded double
+# quotes when it flattens an argument into a native command line, so wsl.exe ate every quote as
+# an argument delimiter and the guest ran a DIFFERENT PROGRAM: a quoted `mktemp` assignment
+# arrived as a bare `-d)` and the install died with "unexpected EOF while looking for matching
+# )". The fix was a base64 payload whose alphabet has no quote, no space and no metacharacter,
+# plus `-e` so wsl stops re-parsing, plus WSL_UTF8=1 so wsl's UTF-16LE output does not arrive as
+# NUL-separated glyph soup. That is why the code was careful, and it is exactly why keeping it
+# "just in case" would be wrong: a future agent would find a sophisticated, tested transport
+# and reasonably conclude something must use it.
+#
+# NOTHING DOES. The plane runs as native Windows processes and runtime containers go through
+# `podman machine`, which podman creates and owns. This installer never opens a shell in a WSL
+# distro, so the transport, the encoding fix and the argv builder all went with the requirement
+# that produced them.
+#
+# IF WSL EVER COMES BACK, READ THE PARAGRAPH ABOVE FIRST — the three failures it names (quote
+# stripping, wsl re-parsing, UTF-16 output) will each come back too, and they are recorded in the
+# native harness's history rather than in code that no longer runs.
 
-# Run wsl.exe and return its output with a known encoding. $LASTEXITCODE is left
-# holding wsl's exit code: only a native command sets it, and neither the console
-# properties nor Clear-WslNul below are native commands.
-function Invoke-WslCapture {
-    param([string[]]$WslArgs, [switch]$Quiet)
-    $prevEncoding = [Console]::OutputEncoding
-    $prevUtf8 = $env:WSL_UTF8
-    # On Windows PowerShell 5.1, `2>&1` turns native stderr into ErrorRecords
-    # which the script-level "Stop" preference would treat as terminating.
-    # Scope "Continue" locally so wsl's chatter/errors never abort us here.
-    $ErrorActionPreference = "Continue"
-    $env:WSL_UTF8 = "1"
-    try {
-        # Best-effort: a host that refuses the console-encoding change still gets
-        # the NUL fix from WSL_UTF8 alone.
-        try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
-        $out = if ($Quiet) { & wsl @WslArgs 2>$null } else { & wsl @WslArgs 2>&1 }
-    } finally {
-        # Restore both: this script runs via `irm | iex` and must not leave the
-        # operator's session on a different console encoding than it found it.
-        try { [Console]::OutputEncoding = $prevEncoding } catch { }
-        $env:WSL_UTF8 = $prevUtf8
-    }
-    return (Clear-WslNul $out)
-}
-
-# --- Script transport -------------------------------------------------------
+# --- WSL IS NOT PART OF THIS INSTALLER ANY MORE ------------------------------
 #
-# ConvertTo-BashPayload encodes a script for the trip into the distro.
+# THIS FILE USED TO PROVISION A WSL DISTRO, because the first architecture ran the whole
+# stack inside one. It does not any more: the plane is native Windows processes, and runtime
+# containers go through `podman machine`, which podman creates and owns
+# (internal/containerengine/ensure.go: "FIXES a stopped or absent podman MACHINE (macOS,
+# Windows) … `podman machine init --now` needs no elevation"). WSL is podman's business
+# there, not an operator prerequisite and not something this installer detects.
 #
-# THIS IS THE FIX FOR A BUG THAT SURVIVED TWO WRONG DIAGNOSES, so the mechanism is worth stating exactly.
-# Windows PowerShell 5.1 does NOT escape embedded double quotes when it flattens an argument into a
-# native command line, so wsl.exe consumed every quote in a script as an ARGUMENT DELIMITER and dropped it
-# before bash saw anything. The guest then ran a different program from the one we wrote - measured on a
-# real Windows box, a TMP assignment with a quoted command substitution arrived as a bare `-d)` and the
-# install died with "unexpected EOF while looking for matching )".
+# REMOVED RATHER THAN KEPT DORMANT. Ensure-Wsl, Install-ContainersSubstrate and their helpers
+# were unreachable while containers were opt-in, which is why nobody noticed that making
+# containers the DEFAULT would make every Windows install demand a distro the platform does
+# not use — the operator's report: "Why is a default install running WSL? I thought we
+# discussed that podman didn't need WSL." A dead branch that a flag can revive is a trap.
 #
-# EVERY script-carrying path here has quotes in it, and every one of them was broken on 5.1, whichever
-# helper ran it. Only the container opt-in carries a script into the distro now, which makes the transport
-# SMALLER but not less load-bearing: the substrate probe has the same quoting hazards.
-#
-# Base64's alphabet (A-Za-z0-9+/=) contains no quote, no backslash, no space and no shell metacharacter,
-# so the payload cannot be mangled in transit and needs no escaping at either end. Line endings are
-# normalised to LF first: these scripts are authored on Windows, and a carriage return on every line
-# would reach bash as a literal CR inside commands.
-function ConvertTo-BashPayload {
-    param([string]$Script)
-    $lf = $Script -replace "`r`n", "`n" -replace "`r", "`n"
-    return [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($lf))
-}
-
-# WslBashArgs builds the wsl argv that runs $Script inside the target distro.
-#
-# ONE PLACE BUILDS IT, so the capturing and streaming helpers cannot drift in how they hand the guest its
-# program - which is exactly the divergence that hid the real bug for two rounds.
-#
-# `-e` IS STILL REQUIRED, for the other half of the same problem: without it wsl re-parses the command
-# through the distro's default shell, which expands $VARS as empty before the target bash sees them.
-# `-e` protects the command from the DISTRO's shell; the encoding protects the script from WINDOWS
-# POWERSHELL. Both are needed.
-#
-# THE EXIT CODE SURVIVES THE PIPE: without `pipefail` a pipeline reports its LAST command's status, and
-# `bash` is last, so the script's own exit code is what reaches $LASTEXITCODE.
-function WslBashArgs {
-    param([string]$Script)
-    $guest = "printf %s " + (ConvertTo-BashPayload $Script) + " | base64 -d | bash"
-    if ($script:Distro) {
-        return @("-d", $script:Distro, "-e", "bash", "-lc", $guest)
-    }
-    return @("-e", "bash", "-lc", $guest)
-}
-
-# Run a bash script inside the target WSL distro. The script's output is the
-# function's output; $LASTEXITCODE carries its exit code (PowerShell sets it
-# automatically after the native `wsl` call, so callers read it afterwards).
-function Invoke-WslBash {
-    param([string]$Script)
-    return (Invoke-WslCapture -WslArgs (WslBashArgs $Script))
-}
-
-# Run a bash script inside the target WSL distro with its output STREAMED to this
-# console AS IT IS PRODUCED, instead of captured and replayed when it finishes.
-#
-# WHY THIS STILL EXISTS, now that the setup step is a native call: the container
-# opt-in boots the WSL2 substrate, and the FIRST start of a distro is minutes of
-# output (it boots a VM). Captured, that is indistinguishable from a hang — which
-# is the report this was written for, and it applies just as much to the substrate
-# probe as it did to the install itself.
-#
-# TWO DELIBERATE DETAILS, both of which are why this is a separate function rather
-# than a switch on the capturing one:
-#
-#   * NO `2>&1`. On Windows PowerShell 5.1 that turns the child's stderr into
-#     ErrorRecords, which the script-level "Stop" preference then treats as
-#     terminating. Left alone, stderr goes straight to this console, which is what a
-#     streaming caller wants anyway.
-#   * $ErrorActionPreference is scoped "Continue", so wsl's own chatter (a distro
-#     notice, a version warning) cannot abort the install mid-stream.
-#
-# $LASTEXITCODE is set by the native call and read by the caller, exactly as with
-# Invoke-WslBash. Call it as a STATEMENT: its output belongs on the console, and
-# assigning it would buffer the very thing this exists to stream.
-function Invoke-WslBashLive {
-    param([string]$Script)
-    $prevEncoding = [Console]::OutputEncoding
-    $prevUtf8 = $env:WSL_UTF8
-    $ErrorActionPreference = "Continue"
-    $env:WSL_UTF8 = "1"
-    try {
-        try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
-        # SPLAT A VARIABLE: PowerShell cannot splat an inline expression, and `& wsl $WslArgs` would
-        # hand wsl the whole ARRAY as a single argument.
-        $WslArgs = WslBashArgs $Script
-        & wsl @WslArgs
-    } finally {
-        try { [Console]::OutputEncoding = $prevEncoding } catch { }
-        $env:WSL_UTF8 = $prevUtf8
-    }
-}
-
-# --- WSL2 provisioning (CONTAINER OPT-IN ONLY) ------------------------------
-#
-# Detects WSL + a Linux distro and stores it in $script:Distro. Halts with clear
-# next steps when WSL2 or a distro is missing. With -Soft, returns $false instead
-# of halting, which is what the container opt-in uses so it can phrase the failure
-# in terms of containers rather than in terms of the install.
-#
-# THIS IS THE ONLY PATH THAT RUNS `wsl`, AND IT IS SKIPPED BY -NoContainers
-# (see Install-ContainersSubstrate). A plain install never calls it, which is what
-# makes a machine with no WSL and no container engine a SUPPORTED configuration
-# rather than a documented workaround.
-function Ensure-Wsl {
-    param([switch]$Soft)
-
-    # Already resolved for this run — don't re-detect or re-print.
-    if ($script:Distro) { return $true }
-
-    $wsl = Get-Command "wsl" -ErrorAction SilentlyContinue
-    if ($null -eq $wsl) {
-        if ($Soft) { return $false }
-        Write-Err "WSL is not installed — and containers were requested."
-        Write-Host ""
-        Write-Host "Next steps (run from an elevated PowerShell, then reboot):" -ForegroundColor Yellow
-        Write-Host "  1. wsl --install"
-        Write-Host "  2. Reboot, then re-run:  irm https://orchicon.dev/install.ps1 | iex"
-        Write-Host "  (or pass -NoContainers to install without runtime containers.)" -ForegroundColor DarkGray
-        Stop-Install
-    }
-    $script:WslPresent = $true
-
-    # If WSL2's kernel/virtualization is missing, this prints guidance and
-    # returns non-zero. A distro already on WSL2 makes it redundant, so a
-    # failure here is non-fatal.
-    if (-not $DryRun) {
-        & wsl --set-default-version 2 2>$null | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warn "could not set WSL2 as the default version — if your distro is already WSL2 this is fine"
-        }
-    }
-
-    # List distros. The quiet listing may include a header on older WSL
-    # versions; filter those out.
-    # `@(...)` wraps the WHOLE pipeline, not just the capture: with one distro
-    # installed this leaves a bare string, and `$names[0]` on a string is its first
-    # CHARACTER — the fallback below would then pick "U" out of "Ubuntu".
-    $names = @(Invoke-WslCapture -WslArgs @("--list", "--quiet") -Quiet |
-        Where-Object { $_ -and $_ -notmatch "no installed distributions" -and $_ -notmatch "Windows Subsystem" })
-    if ($names.Count -eq 0) {
-        if ($Soft) { return $false }
-        Write-Err "WSL is installed but has no Linux distribution — and containers were requested."
-        Write-Host ""
-        Write-Host "Next steps:" -ForegroundColor Yellow
-        Write-Host "  1. wsl --install -d Ubuntu   (or: wsl --install)"
-        Write-Host "  2. Complete first-run setup (create a Linux user + password)."
-        Write-Host "  3. Re-run:  irm https://orchicon.dev/install.ps1 | iex"
-        Write-Host "  (or pass -NoContainers to install without runtime containers.)" -ForegroundColor DarkGray
-        Stop-Install
-    }
-
-    # Prefer the default distro (marked with `*` in `wsl --list --verbose`).
-    $verbose = Invoke-WslCapture -WslArgs @("--list", "--verbose") -Quiet
-    $defaultLine = $verbose | Where-Object { $_ -match '^\s*\*' } | Select-Object -First 1
-    if ($defaultLine -and $defaultLine -match '^\s*\*\s*(\S+)\s+\S+\s+(\d+)') {
-        $script:Distro = $Matches[1]
-        if ($Matches[2] -ne "2") {
-            if ($Soft) { return $false }
-            Write-Err "The default distro '$script:Distro' is WSL1 — containers need WSL2."
-            Write-Host ""
-            Write-Host "Next steps:" -ForegroundColor Yellow
-            Write-Host "  1. wsl --set-version $script:Distro 2"
-            Write-Host "  2. Re-run:  irm https://orchicon.dev/install.ps1 | iex"
-            Stop-Install
-        }
-    } else {
-        $script:Distro = $names[0]
-    }
-
-    Write-Ok "using WSL distro: $script:Distro"
-    return $true
-}
+# The container-engine DIAGNOSIS that used to live beside it is also gone; that lives in
+# internal/containerengine now (see the note below), so a wrapper copy could only disagree.
 
 # --- THE CONTAINER-ENGINE DIAGNOSIS USED TO LIVE HERE, AND IS GONE -----------
 #
@@ -696,36 +517,24 @@ function Write-PathHint {
     }
 }
 
-# --- The container opt-in ---------------------------------------------------
-# WSL2 IS A SUBSTRATE, NOT A REQUIREMENT, so this is the ONLY caller of Ensure-Wsl
-# on the install path. It reuses the existing detection/provisioning logic rather
-# than re-implementing it, and phrases every failure in terms of WHAT WAS ASKED FOR
-# (containers) rather than in terms of the install — because the install can and
-# does proceed without this.
-function Install-ContainersSubstrate {
-    if (-not (Ensure-Wsl -Soft)) {
-        Stop-Install "containers are provisioned by default and need the Linux substrate the container engine runs in, but WSL2 with a Linux distribution is not available. Run 'wsl --install' from an elevated PowerShell, reboot, then re-run this installer — or pass -NoContainers to install without runtime containers. Nothing else about the platform needs WSL."
-    }
-    Write-Info "checking the WSL2 substrate the container engine will run on…"
-    # STREAMED, not captured: the first start of a distro boots a VM and can take
-    # minutes, and its progress is the only evidence that anything is happening.
-    $probe = @'
-set +e
-if [ -r /etc/os-release ]; then . /etc/os-release; fi
-echo "distro:  ${PRETTY_NAME:-unknown}"
-echo "kernel:  $(uname -r)"
-if command -v podman >/dev/null 2>&1; then
-  echo "engine:  podman $(podman --version 2>/dev/null | sed 's/^podman version //')"
-elif command -v docker >/dev/null 2>&1; then
-  echo "engine:  docker $(docker --version 2>/dev/null)"
-else
-  echo "engine:  none inside the distro yet — 'orchicon install' offers to provision podman"
-fi
-exit 0
-'@
-    Invoke-WslBashLive $probe
-    Write-Ok "containers: WSL2 substrate ready on '$script:Distro'"
-}
+# --- The container engine ----------------------------------------------------
+# IT IS PROVISIONED BY `orchicon install`, NOT HERE. This file used to carry a
+# window into a user's WSL distro (Install-ContainersSubstrate -> Ensure-Wsl -> a
+# bash probe inside `wsl -d <distro>`) because the FIRST architecture ran the stack
+# in a distro. That architecture is gone: the plane is native, and the engine path
+# runs containers through `podman machine`, which podman creates and owns
+# (internal/containerengine/ensure.go). WSL is podman's implementation detail there,
+# not something this installer detects, provisions, or asks the operator for.
+#
+# The step was REMOVED rather than kept dormant, and the reason is this very bug: it
+# was unreachable while containers were opt-in, so nobody noticed that making them
+# the default would make EVERY Windows install demand a distro the platform does not
+# use. A dead branch that a flag can revive is a trap, not a fallback.
+#
+# What a container host actually gets, all from `orchicon install`:
+#   detect -> offer to install podman (winget) -> `podman machine init --now` ->
+#   run a trivial container to PROVE it works. That last rung is the only one that
+#   answers "can this host run our work", which is why nothing here duplicates it.
 
 # --- Desktop app (Windows side) ---------------------------------------------
 #
@@ -826,7 +635,7 @@ function Uninstall-DesktopApp {
 #
 # The body is NOT a function, deliberately: `return` still ends a mode (-Uninstall,
 # -DryRun) while try/catch introduces no new scope, so everything the body sets stays
-# readable in the catch — which the footer needs ($script:Distro, $InstallDir).
+# readable in the catch — which the footer needs ($InstallDir, $script:ContainerOptIn).
 $script:ExitCode = 0
 try {
     # Start the transcript FIRST, so everything below is in it. Skipped for a dry
@@ -1164,15 +973,31 @@ function Test-VersionGreater {
         default   { Stop-Install "unsupported architecture: $env:PROCESSOR_ARCHITECTURE (expected AMD64 or ARM64)" }
     }
 
-    # --- WSL2, ONLY WHEN CONTAINERS WERE ASKED FOR ------------------------------
-    # The prerequisites come BEFORE the instance question, so the operator is never
-    # asked to choose a stack that cannot be created.
+    # --- THE CONTAINER ENGINE IS PROVISIONED BY THE SETUP, NOT HERE ----------------
+    #
+    # THIS BLOCK USED TO CALL Install-ContainersSubstrate, WHICH ASKED FOR A USER-INSTALLED WSL DISTRO. That
+    # is the WSL-FIRST architecture and it is dead: the engine path does not use a distro of ours at all. It
+    # uses `podman machine`, which podman creates and owns (internal/containerengine/ensure.go: "FIXES a
+    # stopped or absent podman MACHINE (macOS, Windows) … `podman machine init --now` needs no elevation").
+    # WSL is podman's own implementation detail there, not something the operator installs or we detect.
+    #
+    # Reported by the operator as a BUG I introduced: "Why is a default install running WSL? I thought we
+    # discussed that podman didn't need WSL and we were going to drop that pathway?" Correct — and it only
+    # surfaced because containers became the default, so a dead branch that used to be opt-in started running
+    # on every machine. A host with no WSL at all gets working containers; a host whose podman wants a
+    # distro gets it from podman.
+    #
+    # SO THE SUBSTRATE STEP IS GONE, NOT QUIETENED. `orchicon install` (step 3 below) detects the engine,
+    # offers to install podman, creates/starts its machine, and PROVES it by running a trivial container —
+    # which is the only check that answers "can this host run our work".
     if ($script:ContainerOptIn) {
         if ($DryRun) {
-            Write-Info "would provision/verify the container engine (podman) and the WSL2 substrate it runs in, and stream their state (pass -NoContainers to skip)"
+            Write-Info "would provision/verify the container engine (podman) — the setup installs it and starts its own machine (pass -NoContainers to skip)"
         } else {
-            Install-ContainersSubstrate
+            Write-Info "container engine: provisioned by the setup step below (podman; no WSL install needed)"
         }
+    } else {
+        Write-Info "containers: skipped (-NoContainers)"
     }
 
     # A PLAIN INSTALL ASKS WHICH INSTANCE — and it asks HERE, after the prerequisites, not before them.
@@ -1704,7 +1529,7 @@ Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running t
             Write-Host "    · this instance's host services (postgres, nats) print their own reason above"
             Write-Host "    · the instance log: $(Join-Path (Get-InstanceStateDir) 'serve\logs\orchicon.log')"
             if ($script:ContainerOptIn) {
-                Write-Host "    · the container substrate: wsl -d $script:Distro -e bash -lc 'uname -r'" -ForegroundColor DarkGray
+                Write-Host "    · containers: re-run 'orchicon.exe install' — it reports the engine's own reason" -ForegroundColor DarkGray
             }
             # A non-zero outcome for a wrapper: the binaries are in place, the stack is not.
             $script:ExitCode = 1
@@ -1753,8 +1578,8 @@ Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running t
     if ($InstallDir -and (Test-Path -LiteralPath (Join-Path $InstallDir "orchicon.exe"))) {
         Write-Host ('    Setup only:  & "' + (Join-Path $InstallDir 'orchicon.exe') + '" install') -ForegroundColor Cyan
     }
-    if ($script:ContainerOptIn -and $script:Distro) {
-        Write-Host "    Containers:  wsl -d $script:Distro -e bash -lc 'uname -r'" -ForegroundColor Cyan
+    if ($script:ContainerOptIn) {
+        Write-Host "    Containers:  orchicon.exe runtime-daemon --help   (the engine is the setup's: podman + its machine)" -ForegroundColor Cyan
     }
     if ($script:LogPath) {
         Write-Host ""
