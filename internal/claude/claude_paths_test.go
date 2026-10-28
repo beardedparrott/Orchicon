@@ -178,3 +178,44 @@ func TestClaudePathIsAbsoluteWhenResolved(t *testing.T) {
 	}
 	_ = runtime.GOOS
 }
+
+// TestClaudeResolvesAnAliasLauncher covers the seam the operator named: "no matter where they are
+// instead of hardcoding stuff".
+//
+// An MSIX/alias install puts its launcher in an alias directory under a name we cannot enumerate ahead of
+// time — the operator's own resolution was `…\WinGet\Packages\Anthropic.ClaudeCode_…\claude.exe`, one
+// directory shape away from `WinGet\Links\claude-<something>.exe`. The scan tolerates that; a fixed name
+// probe cannot.
+func TestClaudeResolvesAnAliasLauncher(t *testing.T) {
+	env := newFakeWindowsEnv(t)
+	links := filepath.Join(env.root, "AppData", "Local", "Microsoft", "WinGet", "Links")
+	if err := os.MkdirAll(links, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(links, "claude-code.exe")
+	if err := os.WriteFile(want, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A decoy in the same directory that must NOT be chosen: wrong prefix.
+	if err := os.WriteFile(filepath.Join(links, "claudette.exe"), []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeBinaryPathFor("windows", env.getenv); got != want {
+		t.Fatalf("ClaudeBinaryPath = %q, want the alias launcher %q", got, want)
+	}
+}
+
+// TestTheAliasScanIgnoresNonExecutables pins the bound: the scan is a name-set filter, not "take the first
+// file in the directory".
+func TestTheAliasScanIgnoresNonExecutables(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"claude.txt", "claude.cmd", "claude.ps1", "notes.exe", "CLAUDE-REAL.EXE"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := claudeExesIn(dir)
+	if len(got) != 1 || !strings.HasSuffix(strings.ToLower(got[0]), "claude-real.exe") {
+		t.Fatalf("claudeExesIn = %v, want exactly the claude-*.exe (case-insensitive, .exe only)", got)
+	}
+}

@@ -28,6 +28,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -64,10 +65,17 @@ func claudeWindowsCandidates(goos string, getenv func(string) string) []string {
 	out = append(out, join(env("LOCALAPPDATA"), "Programs", "claude"))
 	out = append(out, join(env("ProgramFiles"), "Claude"))
 	out = append(out, join(env("ProgramFiles(x86)"), "Claude"))
+	// DIRECTORIES WHOSE CONTENTS ARE SCANNED, not probed for one fixed name. A fixed name assumes the
+	// install layout we guessed — which is exactly the assumption that produced "installed but not
+	// found". An alias/MSIX-style install puts its launcher in one of these with a name we cannot
+	// enumerate ahead of time, so the scan is bounded by an explicit name set instead.
+	for _, dir := range claudeAliasDirs(env) {
+		out = append(out, claudeExesIn(dir)...)
+	}
 	// A Unix-style layout on Windows still resolves (WSL users, a portable install).
 	if home := env("USERPROFILE"); home != "" {
-		out = append(out, filepath.Join(home, ".local", "bin", "claude")+"")
-		out = append(out, filepath.Join(home, ".claude", "local", "claude")+"")
+		out = append(out, filepath.Join(home, ".local", "bin", "claude"))
+		out = append(out, filepath.Join(home, ".claude", "local", "claude"))
 	}
 	// Drop the empties so a missing variable cannot contribute a relative path.
 	kept := out[:0]
@@ -167,4 +175,57 @@ func claudeShimHint(goos string, getenv func(string) string) string {
 		}
 	}
 	return ""
+}
+
+// claudeAliasDirs are the directories whose CONTENTS are scanned for an executable, rather than probed
+// for one fixed file name.
+//
+// WHY A SCAN. A fixed file name assumes the install is the layout we guessed, and that assumption is what
+// produced "installed but not found" in the first place. An MSIX/alias-style install (which is what a
+// `Get-Command claude` resolving into an AppData package path looks like) can name its launcher something
+// we cannot enumerate ahead of time. The scan is BOUNDED — a small explicit directory list and an explicit
+// name set — so it stays deterministic rather than hunting the filesystem.
+func claudeAliasDirs(env func(string) string) []string {
+	var dirs []string
+	if root := env("LOCALAPPDATA"); root != "" {
+		dirs = append(dirs,
+			filepath.Join(root, "Microsoft", "WinGet", "Links"),
+			filepath.Join(root, "Microsoft", "WindowsApps"),
+		)
+	}
+	if pf := env("ProgramFiles"); pf != "" {
+		dirs = append(dirs, filepath.Join(pf, "Claude"))
+	}
+	if pf := env("ProgramFiles(x86)"); pf != "" {
+		dirs = append(dirs, filepath.Join(pf, "Claude"))
+	}
+	return dirs
+}
+
+// claudeExesIn returns the executables in dir named claude or claude-<something>.
+//
+// ONLY .exe: a shim is never a candidate (the file header explains why Go cannot run one). SORTED, so a
+// machine with two installs resolves the same one every time instead of depending on directory order.
+func claudeExesIn(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		if !strings.HasSuffix(name, ".exe") {
+			continue
+		}
+		stem := strings.TrimSuffix(name, ".exe")
+		if stem != "claude" && !strings.HasPrefix(stem, "claude-") {
+			continue
+		}
+		out = append(out, filepath.Join(dir, e.Name()))
+	}
+	sort.Strings(out)
+	return out
 }
