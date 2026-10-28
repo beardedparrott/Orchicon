@@ -103,6 +103,11 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		Memory:        env("ORCHICON_RUNTIME_MEMORY", "4g"),
 		TmpfsSize:     env("ORCHICON_RUNTIME_TMPFS", "2g"),
 		HomeTmpfsSize: env("ORCHICON_RUNTIME_HOME_TMPFS", "2g"),
+		// PATH MAPPING (internal/runtime/pathmap.go). On Windows the engine runs in a Linux VM whose shared
+		// filesystem is /mnt/<drive>/..., so a project at C:\projects\app must reach the engine as
+		// /mnt/c/projects/app or the container cannot see the tree it is meant to work on. Identity on Linux and
+		// macOS, so this is a no-op everywhere it already worked.
+		Paths:         runtime.NewPathMapperFromEnv(runtime.GOOS()),
 		MaxAge:        envDur("ORCHICON_RUNTIME_MAX_AGE", 24*time.Hour),
 		SweepInterval: envDur("ORCHICON_RUNTIME_SWEEP_INTERVAL", 5*time.Minute),
 		Log:           log,

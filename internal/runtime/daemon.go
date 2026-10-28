@@ -35,6 +35,12 @@ import (
 // plane cannot use the daemon to create arbitrary containers, mount
 // arbitrary paths, or run arbitrary binaries.
 type Daemon struct {
+	// Paths expresses host paths the way the ENGINE'S VM sees them (pathmap.go). Nil means identity, which is
+	// correct on Linux. On Windows the engine runs in a WSL-backed machine and the filesystem it shares is
+	// addressed as /mnt/c/..., so every path handed to it must be mapped or the container cannot see its own
+	// project directory.
+	Paths *PathMapper
+
 	SocketPath string
 	// Engine is the container engine this daemon drives (podman by default,
 	// docker supported). Its identity and resolved binary live in one place
@@ -717,7 +723,10 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// than hidden: on an SELinux-enforcing host (Fedora/RHEL default) rootless
 	// podman denies access to these unrelabelled binds until that slice lands.
 	// Nothing about it is docker-specific, so no engine branch is needed now.
-	args = append(args, mountArgv(req.Mounts)...)
+	// MAPPED, NOT PASSED THROUGH. On Windows the engine is inside a Linux VM whose shared filesystem is
+	// /mnt/<drive>/..., so `C:\projects\app` would be a source it cannot resolve (pathmap.go, and podman's
+	// own machine-init docs). Identity on Linux, so this is a no-op for every existing host.
+	args = append(args, mountArgv(mapMounts(d.Paths, req.Mounts))...)
 	// Standard host-home mounts. The ADAPTER installs (opencode
 	// config/auth/CLI today) are CONDITIONAL on the run's boot profile
 	// (AC 1/AC 3): a native-only run mounts nothing opencode-related, so the
@@ -752,7 +761,8 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	if st, err := os.Stat(d.ExePath); err != nil || st.IsDir() {
 		return nil, fmt.Errorf("runtime daemon executable %s missing — cannot create runtime container: the orchicon binary is bind-mounted into every runtime container, never baked", d.ExePath)
 	}
-	args = append(args, "-v", d.ExePath+":/usr/local/bin/orchicon:ro")
+	// SOURCE mapped (the VM must resolve it), DEST already a guest path.
+	args = append(args, "-v", d.Paths.Map(d.ExePath)+":/usr/local/bin/orchicon:ro")
 	args = append(args, image, "orchicon", "runtime-supervisor")
 
 	// Create the container, retrying past name conflicts. A container that was
@@ -934,14 +944,18 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	// Adapter installs — mounted ONLY when the run's boot profile demands
 	// the kind. A native-only run gets none: the host's model config and
 	// provider auth never leak into a container that cannot use them.
-	args = append(args, adapterHostMounts(d.HostHome, requestedKinds(req)...)...)
+	args = append(args, mapMountArgv(d.Paths, adapterHostMounts(d.HostHome, requestedKinds(req)...))...)
 	// PRIVATE adapter directories: a demand whose install is declared private
 	// gets a writable, runtime-uid-owned directory at the same path instead of
 	// a host bind, plus its declared credential file read-only inside it.
 	for _, ph := range adapterPrivateHomes(d.HostHome, requestedKinds(req)...) {
 		args = append(args, "--tmpfs", d.tmpfsOwned(ph.dir, d.HomeTmpfsSize))
 		if ph.authFile != "" {
-			args = append(args, "-v", ph.authFile+":"+filepath.Join(ph.dir, filepath.Base(ph.authFile))+":ro")
+			// THE SOURCE IS A HOST PATH THE ENGINE MUST RESOLVE; the destination is already a guest path
+			// (ph.dir lives under the host home, so it is mapped too — see mapMountArgv). os.Stat above ran
+			// against the real host path, which is why only the ARGS are mapped.
+			args = append(args, "-v", d.Paths.Map(ph.authFile)+":"+
+				d.Paths.Map(filepath.Join(ph.dir, filepath.Base(ph.authFile)))+":ro")
 		}
 	}
 	// Git identity/credential + push-capable GH_TOKEN are gated on the run's
@@ -953,7 +967,8 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	if req.GitStrategy != "none" {
 		for _, f := range []string{".gitconfig", ".git-credentials"} {
 			if st, err := os.Stat(filepath.Join(d.HostHome, f)); err == nil && !st.IsDir() {
-				args = append(args, "-v", filepath.Join(d.HostHome, f)+":"+filepath.Join(d.HostHome, f)+":ro")
+				hp := filepath.Join(d.HostHome, f)
+				args = append(args, "-v", d.Paths.Map(hp)+":"+d.Paths.Map(hp)+":ro")
 			}
 		}
 		// GitHub CLI auth + state (read-only — PR/merge workers run
@@ -961,10 +976,12 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 		// reports "not authenticated" inside the container even though the
 		// operator is logged in on the host.
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".config", "gh")); err == nil && st.IsDir() {
-			args = append(args, "-v", filepath.Join(d.HostHome, ".config", "gh")+":"+filepath.Join(d.HostHome, ".config", "gh")+":ro")
+			hp := filepath.Join(d.HostHome, ".config", "gh")
+			args = append(args, "-v", d.Paths.Map(hp)+":"+d.Paths.Map(hp)+":ro")
 		}
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".local", "share", "gh")); err == nil && st.IsDir() {
-			args = append(args, "-v", filepath.Join(d.HostHome, ".local", "share", "gh")+":"+filepath.Join(d.HostHome, ".local", "share", "gh")+":ro")
+			hp := filepath.Join(d.HostHome, ".local", "share", "gh")
+			args = append(args, "-v", d.Paths.Map(hp)+":"+d.Paths.Map(hp)+":ro")
 		}
 		// The operator's gh token often lives in the OS keyring, which is NOT
 		// available inside containers — hosts.yml alone has no token, so `gh`
