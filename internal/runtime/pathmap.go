@@ -223,6 +223,38 @@ func (m *PathMapper) mountDestDir(hostPath string) string {
 	return m.Map(filepath.Dir(hostPath))
 }
 
+// withinAllowedRootsIn reports whether path is inside one of the allowed roots, COMPARING IN THE ENGINE'S VIEW.
+//
+// THE BUG THIS FIXES. The allowlist is a security boundary and it was checked against the HOST form of the path
+// (`C:\projects\app`) while the mount handed to the engine is the GUEST form (`/mnt/c/projects/app`). Two ways
+// that goes wrong, both silent:
+//
+//   - the roots are the documented default `%USERPROFILE%\projects` and the project is on `C:\projects`, so the
+//     check correctly refuses — but the operator already saw the fetch succeed, and the refusal names a path they
+//     never typed;
+//   - worse, on Windows a host path and a guest path have no string relationship, so `strings.HasPrefix` can
+//     never match a mapped mount against a host root. Every container create would be refused on Windows once
+//     mapping was added, no matter how the roots were configured.
+//
+// So BOTH sides are mapped before comparing: the path being checked, and each configured root. On Linux and macOS
+// the mapping is identity, so this is exactly the old comparison.
+func (d *Daemon) withinAllowedRootsIn(path string) bool {
+	if d == nil {
+		return false
+	}
+	if len(d.AllowedRoots) == 0 {
+		return false
+	}
+	guest := d.Paths.Map(path)
+	for _, root := range d.AllowedRoots {
+		r := filepath.Clean(d.Paths.Map(root))
+		if guest == r || strings.HasPrefix(guest, r+"/") || strings.HasPrefix(guest, r+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
 // mapMountArgv rewrites the SOURCE side of an already-built `-v src:dst[:opts]` argv block.
 //
 // adapterHostMounts and friends return finished `-v` argument pairs, because they are the one declaration the

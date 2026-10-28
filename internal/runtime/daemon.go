@@ -633,8 +633,13 @@ func (d *Daemon) validateCreate(req CreateRequest) error {
 		if err != nil {
 			return fmt.Errorf("bad mount source: %w", err)
 		}
-		if !d.withinAllowedRoots(abs) {
-			return fmt.Errorf("mount source outside allowed roots: %s", abs)
+		// CHECKED IN THE ENGINE'S VIEW (withinAllowedRootsIn): on Windows the host path and the guest path have no
+		// string relationship, so comparing the host form against host roots refuses every mount once mapping is
+		// on. The error names BOTH forms, because the operator configured the one and the engine got the other.
+		if !d.withinAllowedRootsIn(abs) {
+			return fmt.Errorf("mount source outside allowed roots: %s (as the container engine sees it: %s; "+
+				"allowed roots: %s — see ORCHICON_RUNTIME_ALLOWED_ROOTS)",
+				abs, d.Paths.Map(abs), strings.Join(d.AllowedRoots, ", "))
 		}
 		if m.Dest == "" {
 			return fmt.Errorf("mount dest required")

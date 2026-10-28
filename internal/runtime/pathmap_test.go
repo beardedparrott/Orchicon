@@ -221,3 +221,57 @@ func TestMappingIsIdempotent(t *testing.T) {
 		t.Errorf("mapping twice changed the path: %q -> %q", once, twice)
 	}
 }
+
+// --- the security boundary, in the engine's view ---------------------------------------------------
+
+// TestAllowedRootsAreCheckedInTheEnginesView pins the bug mapping would otherwise introduce.
+//
+// The allowlist is a boundary, and it was compared in the HOST form while the mount handed to the engine is in
+// the GUEST form. On Windows those share no prefix at all, so every mapped mount would be refused no matter how
+// the roots were configured — a silent regression that only appears on the platform being fixed.
+func TestAllowedRootsAreCheckedInTheEnginesView(t *testing.T) {
+	d := &Daemon{
+		AllowedRoots: []string{`C:\projects`},
+		Paths:        NewPathMapper("windows", "wsl"),
+	}
+	for _, p := range []string{`C:\projects\app`, `C:\projects\app\.orchicon-worktrees\r1`} {
+		if !d.withinAllowedRootsIn(p) {
+			t.Errorf("%s is inside the configured root but was refused — the check is comparing host form "+
+				"against guest form, which can never match on Windows", p)
+		}
+	}
+	for _, p := range []string{`C:\elsewhere\app`, `D:\projects\app`} {
+		if d.withinAllowedRootsIn(p) {
+			t.Errorf("%s is OUTSIDE the configured root and must be refused", p)
+		}
+	}
+}
+
+// TestAllowedRootsUnchangedOnLinux is the regression guard for the boundary: identity mapping must reproduce the
+// old comparison exactly, including the sibling-prefix case.
+func TestAllowedRootsUnchangedOnLinux(t *testing.T) {
+	d := &Daemon{AllowedRoots: []string{"/home/op/projects"}, Paths: NewPathMapper("linux", "")}
+	if !d.withinAllowedRootsIn("/home/op/projects/app") {
+		t.Error("a path inside the root was refused on linux")
+	}
+	if !d.withinAllowedRootsIn("/home/op/projects") {
+		t.Error("the root itself must be allowed")
+	}
+	// A SIBLING sharing the prefix is NOT inside it — the boundary must not be a bare string prefix.
+	if d.withinAllowedRootsIn("/home/op/projects-other/app") {
+		t.Error("a sibling sharing the name prefix was allowed — that is a boundary escape")
+	}
+	// An empty allowlist refuses everything (fail closed).
+	if (&Daemon{Paths: NewPathMapper("linux", "")}).withinAllowedRootsIn("/home/op/projects/app") {
+		t.Error("an empty allowlist must fail closed")
+	}
+}
+
+// TestAllowedRootListedInGuestFormStillMatches covers the operator who configures the /mnt form directly, which
+// is what the daemon's own logging will suggest on Windows.
+func TestAllowedRootListedInGuestFormStillMatches(t *testing.T) {
+	d := &Daemon{AllowedRoots: []string{"/mnt/c/projects"}, Paths: NewPathMapper("windows", "wsl")}
+	if !d.withinAllowedRootsIn(`C:\projects\app`) {
+		t.Error("a root configured in guest form must still match a host-form path")
+	}
+}
