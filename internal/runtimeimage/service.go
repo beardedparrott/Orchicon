@@ -486,6 +486,19 @@ func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[ap
 		return connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("runtime image has no tag to fetch"))
 	}
+	// NO DAEMON ON THIS HOST IS A PRECONDITION, NOT A FAILED FETCH.
+	//
+	// Fetching and building runtime images happens on the workflow runtime daemon, over a Unix socket. A host
+	// without one — a native Windows plane, which has no Unix sockets and runs no per-run Linux containers —
+	// could previously only find that out by attempting the fetch and reading a raw dial error naming a path
+	// under %TEMP%. That is a supported configuration reported as a crash.
+	//
+	// Reported as FailedPrecondition with the diagnosis, which is what the operator can act on: it tells them
+	// this host has no runtime and why, rather than handing them an address that will never exist. The CRUD and
+	// list paths are unaffected, which is the point — the images are still visible and editable here.
+	if s.rt == nil {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New(runtime.NoDaemonOnThisHost))
+	}
 	// THE ORDERING RULE, before any work: a variant cannot be fetched before the base it derives from.
 	if err := s.requireBasePresent(ctx, row); err != nil {
 		return err
