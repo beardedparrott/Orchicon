@@ -83,7 +83,7 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 > curl -fsSL https://opencode.ai/install | bash
 > ```
 >
-> That writes `~/.opencode/bin/opencode`, the one location both the plane and its runtime containers can use. `sudo npm i -g` writes to `/usr/local/bin`, which no container mounts — the binary works in your shell and every execution fails to find it. **On Windows, install it inside WSL**, not on the Windows side: the stack runs in a WSL2 distro and a Windows `opencode.exe` is reachable through interop but unusable by the plane. See [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli) for the full rules.
+> That writes `~/.opencode/bin/opencode`, the one location both the plane and its runtime containers can use. `sudo npm i -g` writes to `/usr/local/bin`, which no container mounts — the binary works in your shell and every execution fails to find it. **On Windows, install it as your own user on Windows itself** — the plane is a native Windows process (see [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli)). If you opted into runtime *containers* (`-Containers`), a workflow that runs inside one also needs the CLI in the Linux substrate the container runs in; that case is covered in the same section. See [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli) for the full rules.
 >
 > `orchicon install` no longer requires it. A plane whose model refs need no adapter never probes for the binary, never starts a serve, and never mounts it into a container — see [ARCHITECTURE.md](ARCHITECTURE.md).
 

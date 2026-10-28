@@ -68,6 +68,9 @@ environment variables, troubleshooting), see [`ARCHITECTURE.md`](./ARCHITECTURE.
   workflows run each worker step in a disposable container. Orchicon detects an engine, offers to
   install Podman when one is missing, and runs without one entirely (the plane and its database
   run as your own user's processes; see *Which shape you get*).
+  On **Windows and macOS** podman runs those Linux containers inside a VM it manages itself, so
+  no Linux install of your own is involved — see
+  [Runtime containers on Windows](#runtime-containers-on-windows).
 - **curl** + **tar** (for one-liner install)
 - **buf** and **atlas** (install via `make tools`)
 - *(optional)* an adapter CLI — only if you want to dispatch work to an external
@@ -128,10 +131,24 @@ opencode resolves to a path the runtime containers cannot see — workflow-run e
 Windows itself (see
 [One-line install (Windows PowerShell)](#one-line-install-windows-powershell--native)):
 the plane is a Windows process of your user, so install the CLI as your own user and
-put it on your `PATH` — a Windows `opencode.exe` is the right thing to install. If you
-opted into runtime containers (`-Containers`), a workflow that runs *in* a container
-still needs the CLI inside the Linux substrate, where the `~/.opencode/bin` rule above
-applies as written.
+put it on your `PATH` — a Windows `opencode.exe` is the right thing to install.
+
+**Runtime containers on Windows: what actually happens.** A runtime container is a
+*Linux* container, and on Windows the engine (podman) runs it inside a Linux VM that
+podman manages for you — you do **not** install or manage WSL yourself, and you do not
+need a distro of your own. The container mounts the plane's adapter install from the
+host, so the path the plane sees (`C:\Users\you\.opencode`) reaches the container as
+its WSL equivalent (`/mnt/c/Users/you/.opencode`); Orchicon does that translation.
+Two consequences worth knowing up front:
+
+- the container also needs a **Linux** `orchicon` binary, which the installer places
+  beside the Windows one automatically — that is what `-Containers` downloads;
+- the adapter CLI mounted into the container must be the **Linux** build. If workflow
+  runs fail to find `opencode`, install the Linux build where the container can see it
+  rather than the Windows `.exe`.
+
+See [Runtime containers on Windows](#runtime-containers-on-windows) for the full story,
+including how to check the engine and what to do when it is not ready.
 
 **If you install it while the plane is already running**, note that the discovery
 of OpenCode's models and MCP servers happens **at plane startup**. A plane that
@@ -205,14 +222,15 @@ Docker Desktop**. What it does:
    (`%USERPROFILE%\.local\share\orchicon-<instance>\ports.json`), never from a constant, so
    the number printed is the one that is actually bound.
 
-**WSL2 is needed only for containers.** Pass `-Containers` (or set
-`ORCHICON_INSTALL_CONTAINERS=1`) and the installer provisions and verifies the WSL2
-substrate a workflow's *runtime container* runs in — using the same detection and
-provisioning logic the WSL-first installer had. A plain install never runs `wsl` and works
-on a machine that has none. The container engine itself is provisioned and diagnosed by
-`orchicon install` (podman first, then docker — see the container-engine ADR); this script
-no longer probes for a Docker Desktop install, and the three-cause "no CLI / no daemon / no
-WSL integration" report is gone with the requirement it described.
+**WSL2 is needed only for containers, and even then only underneath podman.** Pass
+`-Containers` (or set `ORCHICON_INSTALL_CONTAINERS=1`) and the installer additionally
+downloads the **linux/amd64 orchicon binary** a runtime container executes, placing it
+beside the Windows binaries as `orchicon-linux-amd64` — a Windows executable cannot run
+inside a Linux container, so the container needs its own. The engine itself (podman
+first, then docker) and the Linux VM it runs in are provisioned by `orchicon install`,
+which creates and starts podman's own machine. A plain install never runs `wsl` and works
+on a machine that has none, and **you do not manage a distro for this** — see
+[Runtime containers on Windows](#runtime-containers-on-windows).
 
 **Ports are record-first.** The port questions are asked once per instance. A *second*
 install for the same instance reuses the recorded ports and asks nothing. A genuine
@@ -536,6 +554,77 @@ podman run --rm -v orchicon_postgres-data:/src alpine tar cf - -C /src . | tar x
 
 (The `orchicon container` verb is gone: the supervisor that owns the host services is internal to
 `orchicon install`/`start`/`services`, and there is no supported way to run an instance in a container.)
+
+### Runtime containers on Windows
+
+A workflow step can run in its own **runtime container**. On Linux and macOS that is
+straightforward: an engine (podman preferred) is present or installable, and it runs the
+container directly. Windows has one extra fact to know, and getting it wrong is the
+difference between containers working and every run failing.
+
+#### Containers are Linux — and podman brings the Linux
+
+From podman's own manual (`podman-machine.1`): *"Podman on MacOS and Windows requires a
+virtual machine. This is because containers are Linux … containers do not run on any
+other OS because containers' core functionality are tied to the Linux kernel."*
+
+So on Windows, podman runs a **Linux VM that podman manages for you**. In practice:
+
+- **You do not install WSL yourself, and you do not need a distro of your own.**
+  podman's default provider on Windows *is* WSL — it creates and owns a private
+  `podman-machine-default`. Nothing about your Ubuntu/Debian setup is involved, and
+  `wsl --install` is not a step you have to perform for Orchicon.
+- **`orchicon install` provisions the engine for you.** It detects podman, offers to
+  install it, creates or starts the machine, and then *proves* it by running a trivial
+  container — it will not claim containers are ready on the strength of a binary
+  existing.
+- **The plane itself is a native Windows process.** It needs no VM and no WSL; only the
+  container path involves Linux.
+
+#### The two things Orchicon adapts for you
+
+1. **Paths.** Windows addresses a file as `C:\Users\you\projects\app`; the container
+   sees the same file at `/mnt/c/Users/you/projects/app`. Orchicon translates the mount
+   paths it hands the engine, on both sides of every bind mount, and it checks the
+   mount-source allowlist in that same translated form. Nothing needs configuring.
+2. **A Linux `orchicon` binary.** The container runs `orchicon runtime-supervisor`, and
+   the daemon bind-mounts that binary in rather than baking it into the image — which
+   means a **Windows executable cannot be used**, because a Linux container cannot run it.
+   When you install with containers (`-Containers`), the installer downloads the
+   matching `linux/amd64` build and places it beside the Windows binaries as
+   `orchicon-linux-amd64`. If you install podman later, place that file there yourself or
+   point `ORCHICON_RUNTIME_CONTAINER_EXE` at it, then restart the runtime daemon.
+
+#### Checking it
+
+```powershell
+podman machine list          # the VM exists and is running
+podman run --rm alpine echo ok   # the engine can actually run a container
+orchicon runtime-daemon --help   # the daemon's own view, once installed
+```
+
+If a run fails with *"runtime containers need a linux/amd64 orchicon binary"*, the
+Linux build is missing — re-run the installer with `-Containers`.
+
+#### If you would rather not have a VM on Windows
+
+You can run the **whole plane inside a WSL distro** instead. Everything is Linux there,
+so there is no path translation and no second binary — but the plane, its database and
+its host services then live in the distro, which is a different trade-off, not a smaller
+one. Either shape is supported; the native plane is the default.
+
+#### Settings worth knowing
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `ORCHICON_RUNTIME_CONTAINER_EXE` | the Linux binary mounted into runtime containers | `orchicon-linux-amd64` beside the daemon |
+| `ORCHICON_RUNTIME_PATH_MODE` | `wsl`, `windows-share`, or `identity` — overrides how paths are expressed to the engine | `wsl` on Windows, `identity` elsewhere |
+| `ORCHICON_RUNTIME_ALLOWED_ROOTS` | comma-separated roots a run may mount | the user's `projects` directory |
+| `ORCHICON_RUNTIME_SOCKET` | where the daemon's socket lives | a path under the temp dir |
+
+`windows-share` is for a podman machine using the **hyperv** provider, which resolves
+volumes on the server side and needs the Windows form rather than `/mnt`. Everything else
+can be left alone.
 
 ### Build from source
 

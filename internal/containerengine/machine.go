@@ -55,10 +55,15 @@ func MachineStatus(ctx context.Context, p Probe, e Engine) (MachineState, string
 	switch p.goos() {
 	case "darwin", "windows":
 	default:
-		// Linux: containers talk to the kernel; `podman machine` does not exist. This is the
-		// path the Windows WSL installer takes too (scripts/install.ps1 installs the LINUX
-		// binary inside the distro, so GOOS is linux there) — keying on GOOS gets both right
-		// with no build tag and no special case.
+		// Linux: containers talk to the kernel and `podman machine` does not exist.
+		//
+		// CORRECTED COMMENT. This used to add that "the Windows WSL installer takes this path too,
+		// because install.ps1 installs the LINUX binary inside the distro, so GOOS is linux there".
+		// That described the WSL-FIRST installer, which is gone: Windows now installs a native
+		// orchicon.exe (GOOS=windows), which therefore takes the `podman machine` branch above —
+		// which is what a Windows host needs, since podman's default provider there is wsl and the
+		// machine must be created and started. The old text sent a reader looking for WSL distro
+		// management that does not exist any more.
 		return MachineNotApplicable, "", nil
 	}
 
