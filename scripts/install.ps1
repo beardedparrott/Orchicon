@@ -30,7 +30,7 @@
 # longer exists.
 #
 # WSL2 IS A SUBSTRATE, NOT A REQUIREMENT. It is provisioned only when the
-# operator OPTS INTO CONTAINERS (-Containers), because a workflow's runtime
+# operator gets containers BY DEFAULT, because a workflow's runtime
 # container is the one thing that needs a Linux substrate. The detection and
 # provisioning logic below is unchanged; only its caller is now conditional. A
 # plain install never runs `wsl` and works on a machine that has none.
@@ -45,7 +45,7 @@
 # Options:
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Version v0.2.0
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -InstallDir "D:\tools\Orchicon"
-#   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Containers
+#   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -NoContainers   # engine-free host
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -NoSetup
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -NoVerify
 #   & ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Uninstall
@@ -80,7 +80,13 @@
 param(
     [string]$Version = "",
     [string]$InstallDir = "",
+    # ACCEPTED, AND NO LONGER MEANS ANYTHING POSITIVE: containers are the default now, so this
+    # switch exists only so a script or a documented command that passes it keeps working. It is
+    # deliberately not an error — silently breaking a command someone copied is worse than
+    # accepting a redundant flag.
     [switch]$Containers,
+    # THE OPT-OUT. For a host that must stay engine-free (locked-down, policy-managed, a CI guest).
+    [switch]$NoContainers,
     [switch]$Uninstall,
     [switch]$Clean,
     [switch]$ForceClean,
@@ -122,10 +128,21 @@ $script:WslPresent = $false
 # strict mode on: six harness assertions failed on exactly this.
 $script:LogStarted = $false
 $script:LogPath = ""
-# THE CONTAINER OPT-IN, resolved once. -Containers is the documented switch; the
-# environment form exists because the documented invocation is `irm … | iex`, and
-# an env var is easier to set in a script than a switch on an iex'd scriptblock.
-$script:ContainerOptIn = [bool]($Containers -or $env:ORCHICON_INSTALL_CONTAINERS -eq "1")
+# CONTAINERS ARE ON BY DEFAULT, AND THE OPT-OUT IS THE DIRECTION THAT HAS TO BE EXPLICIT.
+#
+# The product decision, in the operator's words: "I want container support out of the box.
+# People shouldn't need to pass a parameter… People like to be spoon fed. It should install by
+# default and be running and ready to go."
+#
+# That is the right default for a different reason too: execution MODE is a per-project and
+# per-work-item setting the operator switches at will. A host that never provisioned the engine
+# cannot honour a switch to container mode — it can only fail later, when a run needs a
+# container the host cannot make. Provisioning at install is what makes the switch real.
+#
+# -NoContainers (or ORCHICON_INSTALL_CONTAINERS=0) opts out for a host that must stay
+# engine-free: a locked-down desktop, a policy-managed machine, a CI guest. Everything else
+# installs the engine and gets containers ready.
+$script:ContainerOptIn = -not ([bool]$NoContainers -or $env:ORCHICON_INSTALL_CONTAINERS -eq "0")
 
 if ($Help) {
     Write-Host @"
@@ -145,7 +162,7 @@ The MSI is per-user and needs no elevation. -Yes and -NoSetup deliberately keep 
 zip path, because an MSI's wizard cannot be driven unattended.
 
 WSL2 and Docker Desktop are NOT required. WSL2 is provisioned only when you opt
-into containers (-Containers): a workflow's runtime container needs a Linux
+into containers (the default): a workflow's runtime container needs a Linux
 substrate, and nothing else does.
 
 Options:
@@ -156,7 +173,12 @@ Options:
                       -Clean/-ForceClean/-Uninstall.
   -InstallDir <dir>   Where to put orchicon.exe and orch.exe
                       (default: %LOCALAPPDATA%\Programs\Orchicon).
-  -Containers         Also provision the WSL2 substrate the container engine needs,
+  -NoContainers       Skip the container engine (podman) and its Linux substrate entirely.
+                      Containers are provisioned BY DEFAULT, so a run that needs one just works;
+                      pass this only on a host that must stay engine-free (locked-down,
+                      policy-managed, a CI guest). ORCHICON_INSTALL_CONTAINERS=0 does the same.
+  -Containers        (accepted, no longer needed) Containers are the default; kept so existing
+                      commands keep working. Was: Also provision the WSL2 substrate the engine needs,
                       so a workflow can run a runtime container. Off by default: a
                       plain install needs no WSL at all, and `orchicon install`
                       provisions the engine itself (podman first, then docker).
@@ -421,7 +443,7 @@ function Invoke-WslBashLive {
 # of halting, which is what the container opt-in uses so it can phrase the failure
 # in terms of containers rather than in terms of the install.
 #
-# THIS IS THE ONLY PATH THAT RUNS `wsl`, AND IT IS ONLY REACHED FROM -Containers
+# THIS IS THE ONLY PATH THAT RUNS `wsl`, AND IT IS SKIPPED BY -NoContainers
 # (see Install-ContainersSubstrate). A plain install never calls it, which is what
 # makes a machine with no WSL and no container engine a SUPPORTED configuration
 # rather than a documented workaround.
@@ -439,7 +461,7 @@ function Ensure-Wsl {
         Write-Host "Next steps (run from an elevated PowerShell, then reboot):" -ForegroundColor Yellow
         Write-Host "  1. wsl --install"
         Write-Host "  2. Reboot, then re-run:  irm https://orchicon.dev/install.ps1 | iex"
-        Write-Host "  (or drop -Containers: a plain install needs no WSL at all.)" -ForegroundColor DarkGray
+        Write-Host "  (or pass -NoContainers to install without runtime containers.)" -ForegroundColor DarkGray
         Stop-Install
     }
     $script:WslPresent = $true
@@ -469,7 +491,7 @@ function Ensure-Wsl {
         Write-Host "  1. wsl --install -d Ubuntu   (or: wsl --install)"
         Write-Host "  2. Complete first-run setup (create a Linux user + password)."
         Write-Host "  3. Re-run:  irm https://orchicon.dev/install.ps1 | iex"
-        Write-Host "  (or drop -Containers: a plain install needs no WSL at all.)" -ForegroundColor DarkGray
+        Write-Host "  (or pass -NoContainers to install without runtime containers.)" -ForegroundColor DarkGray
         Stop-Install
     }
 
@@ -682,7 +704,7 @@ function Write-PathHint {
 # does proceed without this.
 function Install-ContainersSubstrate {
     if (-not (Ensure-Wsl -Soft)) {
-        Stop-Install "containers were requested (-Containers), but WSL2 with a Linux distribution is not available. Run 'wsl --install' from an elevated PowerShell, reboot, then re-run this installer — or drop -Containers, which needs no WSL at all."
+        Stop-Install "containers are provisioned by default and need the Linux substrate the container engine runs in, but WSL2 with a Linux distribution is not available. Run 'wsl --install' from an elevated PowerShell, reboot, then re-run this installer — or pass -NoContainers to install without runtime containers. Nothing else about the platform needs WSL."
     }
     Write-Info "checking the WSL2 substrate the container engine will run on…"
     # STREAMED, not captured: the first start of a distro boots a VM and can take
@@ -1147,7 +1169,7 @@ function Test-VersionGreater {
     # asked to choose a stack that cannot be created.
     if ($script:ContainerOptIn) {
         if ($DryRun) {
-            Write-Info "-Containers: would provision/verify the WSL2 substrate (reusing the existing detection) and stream its state"
+            Write-Info "would provision/verify the container engine (podman) and the WSL2 substrate it runs in, and stream their state (pass -NoContainers to skip)"
         } else {
             Install-ContainersSubstrate
         }
@@ -1241,7 +1263,7 @@ function Test-VersionGreater {
         Write-Host "  1. download ${asset}(or the MSI, when this release publishes one)"
         Write-Host "  2. extract orchicon.exe and orch.exe, install them into $InstallDir"
         if ($script:ContainerOptIn) {
-            Write-Host "  3. provision/verify the WSL2 substrate the container engine needs (-Containers)"
+            Write-Host "  3. provision/verify the container engine (podman) and the WSL2 substrate it needs"
         }
         if (-not $NoSetup) {
             Write-Host "  4. run 'orchicon.exe install' (acquire host binaries, start the runtime daemon, launch this instance's plane; no image is pulled unless one is chosen)"
@@ -1682,7 +1704,7 @@ Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running t
             Write-Host "    · this instance's host services (postgres, nats) print their own reason above"
             Write-Host "    · the instance log: $(Join-Path (Get-InstanceStateDir) 'serve\logs\orchicon.log')"
             if ($script:ContainerOptIn) {
-                Write-Host "    · containers only (-Containers): wsl -d $script:Distro -e bash -lc 'uname -r'" -ForegroundColor DarkGray
+                Write-Host "    · the container substrate: wsl -d $script:Distro -e bash -lc 'uname -r'" -ForegroundColor DarkGray
             }
             # A non-zero outcome for a wrapper: the binaries are in place, the stack is not.
             $script:ExitCode = 1

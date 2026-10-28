@@ -118,6 +118,11 @@ while [ $# -gt 0 ]; do
     --force-clean|--nuke|-f) FORCE_CLEAN=true; shift ;;
     --dry-run)         DRY_RUN=true; shift ;;
     --no-setup)        SETUP=false; shift ;;
+    # CONTAINERS ARE PROVISIONED BY DEFAULT; this opts a host out. Mirrors install.ps1's
+    # -NoContainers / ORCHICON_INSTALL_CONTAINERS=0 so the two installers cannot disagree about
+    # what a default install does. It matters most where podman needs root: there, provisioning
+    # still PRINTS the command and declines rather than escalating on its own.
+    --no-containers)   export ORCHICON_INSTALL_CONTAINERS=0; shift ;;
     --no-orch)         INSTALL_ORCH=false; shift ;;
     --desktop)         DESKTOP=yes; shift ;;
     --no-desktop)      DESKTOP=no; shift ;;
@@ -151,6 +156,11 @@ Options:
     --remove-binary      Just the orchicon and orch executables. Every instance's state is
                          left alone. If something is running off them it ASKS before stopping
                          it, and declining changes nothing. ASKS WHICH INSTANCE.
+    --no-containers      Install NO container engine. Containers are provisioned BY DEFAULT
+                         (podman plus the Linux substrate it runs in), so a project or work
+                         item can switch to container mode and just work. Pass this only on a
+                         host that must stay engine-free. Runtime IMAGES are never downloaded
+                         by default either way.
     --yes, -y            Answer the prompts affirmatively, for non-interactive use. That
                          includes the optional runtime images (it answers: all of them).
     --clean              Stop THIS instance's plane and host services, remove the old Orchicon
@@ -226,6 +236,17 @@ export ORCHICON_INSTANCE="$INSTANCE"
 # arrives. Without it --yes answered the shell's questions and then left the Go runtime-image prompt
 # waiting for a terminal in exactly the non-interactive runs --yes exists for.
 if [ "$ASSUME_YES" = true ]; then export ORCHICON_ASSUME_YES=1; fi
+# CONTAINER SUPPORT IS PART OF A DEFAULT INSTALL, so the engine is provisioned here rather than
+# left to a prompt the documented `curl … | bash` invocation cannot answer (bash's stdin is the
+# script). Explicit refusals still win: ORCHICON_INSTALL_CONTAINERS=0 (--no-containers) sets
+# ORCHICON_PROVISION_ENGINE=0, and an operator's own ORCHICON_PROVISION_ENGINE is never
+# overridden — this only fills in the DEFAULT.
+if [ "${ORCHICON_INSTALL_CONTAINERS:-1}" = "0" ]; then
+  : "${ORCHICON_PROVISION_ENGINE:=0}"
+else
+  : "${ORCHICON_PROVISION_ENGINE:=1}"
+fi
+export ORCHICON_PROVISION_ENGINE
 
 # --- Prompts, and what each instance currently has --------------------------
 #
