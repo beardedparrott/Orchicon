@@ -751,16 +751,26 @@ Check "it installed orchicon.exe and orch.exe into the install dir" `
 Check "it extracted the release archive RECURSIVELY (the archive wraps a directory)" `
   ((Test-Path (Join-Path $native.InstallDir "orchicon.exe")) -and ($native.Text -notmatch 'did not contain orchicon.exe')) `
   "a flat lookup misses every real release"
-$wslCalls = if (Test-Path $native.CallLog) { (Get-Content -Raw $native.CallLog).Trim() } else { "" }
-Check "wsl was NEVER invoked on the native path" (-not $wslCalls) ("wsl was called with: " + $wslCalls) 
-Check "and the installer says no WSL is needed for a plain install" (-not ($native.Text -match 'WSL is not installed')) `
-  "a plain install must not even mention a substrate it does not use"
-# THE OTHER DIRECTION: -Containers DOES reach the substrate, so the previous assertion is about the
-# opt-in rather than about wsl being unreachable from this file.
-$containers = Invoke-InstallRun -Extra @{ ORCHICON_INSTALL_CONTAINERS = "1" }
-$contCalls = if (Test-Path $containers.CallLog) { (Get-Content -Raw $containers.CallLog).Trim() } else { "" }
-Check "-Containers DOES provision the substrate (the logic was reused, not deleted)" ($contCalls -match '--list') ("wsl calls: " + (($contCalls -split "`n") -join ' | '))
-Check "and it reports the substrate it found" ($containers.Text -match 'WSL2 substrate ready|using WSL distro') "the opt-in has to say something about what it did"
+# CONTAINERS ARE THE DEFAULT NOW, SO THE ASSERTIONS ARE THE OTHER WAY ROUND.
+#
+# The product decision: "I want container support out of the box. People shouldn't need to pass a
+# parameter… It should install by default and be running and ready to go." So a DEFAULT run reaches
+# the substrate, and -NoContainers is the direction that has to be explicit. What must stay true is
+# that the two directions are distinguishable — a default that silently did neither would pass a
+# weaker test than this.
+$defCalls = if (Test-Path $native.CallLog) { (Get-Content -Raw $native.CallLog).Trim() } else { "" }
+Check "a DEFAULT install provisions the container substrate" ($defCalls -match '--list') `
+  ("wsl calls on a default run: " + (($defCalls -split "`n") -join ' | '))
+Check "and it says what it found" ($native.Text -match 'WSL2 substrate ready|using WSL distro') `
+  "the default path has to say something about what it did"
+
+# THE OPT-OUT: a host that must stay engine-free skips the substrate entirely.
+$noContainers = Invoke-InstallRun -Extra @{ ORCHICON_INSTALL_CONTAINERS = "0" }
+$noCalls = if (Test-Path $noContainers.CallLog) { (Get-Content -Raw $noContainers.CallLog).Trim() } else { "" }
+Check "-NoContainers / ORCHICON_INSTALL_CONTAINERS=0 skips the substrate" (-not $noCalls) `
+  ("wsl was called on an opt-out run: " + $noCalls)
+Check "and the opt-out does not fail the install" ($noContainers.Text -match 'Install complete') `
+  ("got: " + (($noContainers.Text -split "`n" | Where-Object { $_ -match 'complete|failed|✗' }) -join ' / '))
 
 # --- 23. AN ELEVATED SHELL GETS THE ACTIONABLE MESSAGE ----------------------
 # Postgres refuses to run as Administrator. The install would otherwise acquire host binaries, start a

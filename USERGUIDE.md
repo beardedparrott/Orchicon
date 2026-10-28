@@ -142,7 +142,7 @@ its WSL equivalent (`/mnt/c/Users/you/.opencode`); Orchicon does that translatio
 Two consequences worth knowing up front:
 
 - the container also needs a **Linux** `orchicon` binary, which the installer places
-  beside the Windows one automatically — that is what `-Containers` downloads;
+  beside the Windows one automatically as part of a default install;
 - the adapter CLI mounted into the container must be the **Linux** build. If workflow
   runs fail to find `opencode`, install the Linux build where the container can see it
   rather than the Windows `.exe`.
@@ -223,14 +223,19 @@ Docker Desktop**. What it does:
    the number printed is the one that is actually bound.
 
 **WSL2 is needed only for containers, and even then only underneath podman.** Pass
-`-Containers` (or set `ORCHICON_INSTALL_CONTAINERS=1`) and the installer additionally
-downloads the **linux/amd64 orchicon binary** a runtime container executes, placing it
-beside the Windows binaries as `orchicon-linux-amd64` — a Windows executable cannot run
-inside a Linux container, so the container needs its own. The engine itself (podman
-first, then docker) and the Linux VM it runs in are provisioned by `orchicon install`,
-which creates and starts podman's own machine. A plain install never runs `wsl` and works
-on a machine that has none, and **you do not manage a distro for this** — see
-[Runtime containers on Windows](#runtime-containers-on-windows).
+**Container support is part of a default install — but no image is.** The ENGINE (podman and
+the Linux VM it runs in) is provisioned for you, so switching a project or work item to
+container mode simply works. IMAGES are content, and they are not fetched until you choose
+them: the install offers them (defaulting to none) and the **Runtime Images** page fetches
+them later. The installer downloads the
+**linux/amd64 orchicon binary** a runtime container executes, placing it beside the
+Windows binaries as `orchicon-linux-amd64` — a Windows executable cannot run inside a
+Linux container, so the container needs its own. The engine itself (podman first, then
+docker) and the Linux VM it runs in are provisioned by `orchicon install`, which creates
+and starts podman's own machine. **You do not manage a distro for this**, and you pass no
+flag: it is ready when the install finishes — see
+[Runtime containers on Windows](#runtime-containers-on-windows). Use `-NoContainers` only
+on a host that must stay engine-free.
 
 **Ports are record-first.** The port questions are asked once per instance. A *second*
 install for the same instance reuses the recorded ports and asks nothing. A genuine
@@ -251,7 +256,7 @@ prints the exact command that resumes it — a re-run is idempotent.
 **Prerequisites:**
 
 - **Windows 10 21H2+ / Windows 11.** Nothing else for a native install: no WSL2 distro and
-  no Docker Desktop. (`-Containers` additionally needs WSL2 with a Linux distro; the
+  no Docker Desktop. (Runtime containers are provisioned by default and need WSL2 with a Linux distro as podman's substrate; the
   installer guides through `wsl --install` from an elevated shell plus a reboot if it is
   missing.)
 - *(optional)* an adapter CLI such as OpenCode, installed **on the Windows side** as your
@@ -273,7 +278,7 @@ Windows↔WSL path translation layer, so enter a path that filesystem can resolv
 work runs in a container.
 
 **Options** (PowerShell form): `-Version`, `-Instance dev|test|prod`, `-InstallDir`,
-`-Containers`, `-NoSetup`, `-Yes`, `-Uninstall`, `-RemoveBinary`, `-Purge`, `-Clean`,
+`-NoContainers`, `-NoSetup`, `-Yes`, `-Uninstall`, `-RemoveBinary`, `-Purge`, `-Clean`,
 `-ForceClean`, `-DryRun`, `-Help`.
 
   > **Windows is covered by an offline harness, not by a full install.** The harness
@@ -282,7 +287,7 @@ work runs in a container.
   > version-reporting `orchicon.exe` double, and runs the failure paths inside a child
   > PowerShell. It pins exactly what a Windows-only regression hides in: the archive is
   > extracted **recursively** (the release wraps a directory), a plain install never invokes
-  > `wsl`, `-Containers` still provisions the substrate, the interactive setup is the **only**
+  > `wsl`, the default still provisions the substrate, the interactive setup is the **only**
   > invocation that claims a human is present, the printed ports come from the record rather
   > than a constant, and an elevated shell is refused with the Postgres message. Its
   > `wsl.exe`/`podman` doubles refuse every mutating engine verb, so a guest that reaches an
@@ -590,7 +595,7 @@ So on Windows, podman runs a **Linux VM that podman manages for you**. In practi
 2. **A Linux `orchicon` binary.** The container runs `orchicon runtime-supervisor`, and
    the daemon bind-mounts that binary in rather than baking it into the image — which
    means a **Windows executable cannot be used**, because a Linux container cannot run it.
-   When you install with containers (`-Containers`), the installer downloads the
+   A default install downloads the
    matching `linux/amd64` build and places it beside the Windows binaries as
    `orchicon-linux-amd64`. If you install podman later, place that file there yourself or
    point `ORCHICON_RUNTIME_CONTAINER_EXE` at it, then restart the runtime daemon.
@@ -604,7 +609,7 @@ orchicon runtime-daemon --help   # the daemon's own view, once installed
 ```
 
 If a run fails with *"runtime containers need a linux/amd64 orchicon binary"*, the
-Linux build is missing — re-run the installer with `-Containers`.
+Linux build is missing — re-run the installer (containers are provisioned by default).
 
 #### If you would rather not have a VM on Windows
 
@@ -1890,7 +1895,7 @@ configuration:
 **A note on Windows.** The plane, its host services and the runtime daemon run
 **natively** on Windows, as host processes of your own user (see §1). What is still
 Linux-only is the *runtime container* layer: a workflow that runs in a container needs
-the WSL2 substrate, which the installer provisions when you opt in with `-Containers`.
+the WSL2 substrate, which a default install provisions for you.
 
 ### 11.4 Admin
 

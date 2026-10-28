@@ -83,7 +83,7 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 > curl -fsSL https://opencode.ai/install | bash
 > ```
 >
-> That writes `~/.opencode/bin/opencode`, the one location both the plane and its runtime containers can use. `sudo npm i -g` writes to `/usr/local/bin`, which no container mounts — the binary works in your shell and every execution fails to find it. **On Windows, install it as your own user on Windows itself** — the plane is a native Windows process (see [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli)). If you opted into runtime *containers* (`-Containers`), a workflow that runs inside one also needs the CLI in the Linux substrate the container runs in; that case is covered in the same section. See [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli) for the full rules.
+> That writes `~/.opencode/bin/opencode`, the one location both the plane and its runtime containers can use. `sudo npm i -g` writes to `/usr/local/bin`, which no container mounts — the binary works in your shell and every execution fails to find it. **On Windows, install it as your own user on Windows itself** — the plane is a native Windows process (see [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli)). Runtime *containers* are provisioned by default, and a workflow that runs inside one also needs the CLI in the Linux substrate the container runs in; that case is covered in the same section. See [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli) for the full rules.
 >
 > `orchicon install` no longer requires it. A plane whose model refs need no adapter never probes for the binary, never starts a serve, and never mounts it into a container — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -91,8 +91,8 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 # Windows (PowerShell) — NATIVE: installs orchicon.exe + orch.exe, no WSL2 or Docker required
 irm https://orchicon.dev/install.ps1 | iex
 
-# ...and only if you also want a workflow's runtime CONTAINER (this provisions the WSL2 substrate):
-& ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -Containers
+# ...and only on a host that must stay engine-free (containers are provisioned by default):
+& ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -NoContainers
 ```
 
 ### Windows
@@ -101,14 +101,14 @@ irm https://orchicon.dev/install.ps1 | iex
 irm https://orchicon.dev/install.ps1 | iex
 ```
 
-Orchicon runs on Windows as **native processes of the user who installs it**: `install.ps1` places `orchicon.exe` and `orch.exe` in `%LOCALAPPDATA%\Programs\Orchicon`, adds that directory to your **user** `PATH`, and runs the one-command setup there. **WSL2 is needed only for a workflow's runtime container**, which the installer provisions when you ask for it (`-Containers`); a plain install never runs `wsl` and works on a machine that has none.
+Orchicon runs on Windows as **native processes of the user who installs it**: `install.ps1` places `orchicon.exe` and `orch.exe` in `%LOCALAPPDATA%\Programs\Orchicon`, adds that directory to your **user** `PATH`, and runs the one-command setup there. **Container support is installed by default and ready to use** — the installer provisions podman and the Linux substrate it runs in, so switching a project or work item to container mode simply works. No image is downloaded until you choose one (the install offers them, defaulting to none; the Runtime Images page fetches them later). Pass `-NoContainers` on a host that must stay engine-free.
 
 The installer never closes your PowerShell window: a failure prints what failed and the next steps, then returns to the prompt with your session intact. The long steps (binary acquisition, stack setup) stream their output as they run, the setup step asks about host ports (ENTER accepts each default), and the full log lands in `%TEMP%`. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation).
 
 > **Windows SmartScreen.** The installer downloads `orchicon.exe` itself, so the binary it installs carries no mark-of-the-web and runs without a prompt. If you instead downloaded the **zip in a browser**, Windows marks that archive and SmartScreen warns *"Windows protected your PC"* the first time you run the extracted `orchicon.exe`: click **More info → Run anyway**, or clear the mark on the archive **before extracting it** with `Unblock-File -LiteralPath .\orchicon_<version>_windows_amd64.zip`. Neither step changes a Windows security setting — every other unsigned download on the machine stays blocked. A **saved** `install.ps1` (right-click → "Save link as") can be marked the same way: `Unblock-File -LiteralPath .\install.ps1`. The documented `irm https://orchicon.dev/install.ps1 | iex` writes no file at all and trips nothing.
 
 Prerequisites:
-- **Windows 10 21H2+ / Windows 11.** A native install needs no WSL2 distro and no Docker Desktop. `-Containers` additionally needs WSL2 with a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
+- **Windows 10 21H2+ / Windows 11.** A native install needs no WSL2 distro and no Docker Desktop for the plane itself. Runtime **containers** are provisioned by default and need WSL2 with a Linux distro as podman's substrate (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you); `-NoContainers` skips all of it.
 - A **container engine is optional**: the plane and its services run as host processes, so nothing needs Docker. An engine is only used for a workflow's *runtime container*, and only if you opt in.
 
 Project directories are entered in the UI as **host paths** — with a native install that stays the Windows path (`C:\Users\you\projects\Foo`), not a `/mnt/c/…` translation. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
