@@ -1484,6 +1484,59 @@ function Test-VersionGreater {
         foreach ($f in $installed) { try { & /bin/chmod 0755 $f | Out-Null } catch { } }
     }
 
+    # --- THE LINUX BINARY THE RUNTIME CONTAINER RUNS ------------------------------
+    #
+    # A runtime container is a LINUX container: it runs `orchicon runtime-supervisor`, and the
+    # daemon bind-mounts the binary in rather than baking it into the image. On a Windows host
+    # the daemon's own executable is a PE file, so the container's supervisor cannot start
+    # without a linux/amd64 build placed beside it (internal/runtime/exe_resolve.go looks for
+    # exactly this name).
+    #
+    # FETCHED ONLY WHEN CONTAINERS WERE ASKED FOR, and never fatal. A plain install needs no
+    # Linux binary, and a failed download must not fail an install whose plane works perfectly
+    # without containers — it is reported, with the remedy, and the install continues.
+    if ($script:ContainerOptIn) {
+        $linuxAsset = "orchicon_${versionNum}_linux_amd64.tar.gz"
+        $linuxUrl = "$baseUrl/$Version/$linuxAsset"
+        if ($env:ORCHICON_INSTALL_LINUX_ARCHIVE) {
+            $linuxArchive = $env:ORCHICON_INSTALL_LINUX_ARCHIVE
+            Write-Info "using the linux runtime binary archive at $linuxArchive"
+        } else {
+            $linuxArchive = Join-Path $tmpdir $linuxAsset
+            Write-Info "downloading the linux runtime binary (the runtime container runs it)…"
+            try {
+                Invoke-WebRequest -Uri $linuxUrl -OutFile $linuxArchive -UseBasicParsing
+            } catch {
+                $linuxArchive = $null
+                Write-Warn "could not download $linuxAsset — runtime CONTAINERS will not start on this host"
+                Write-Warn "  (everything else works; re-run this installer with -Containers to retry)"
+            }
+        }
+        if ($linuxArchive) {
+            # tar is present on Windows 10 1803+ as tar.exe; fall back to wsl's tar only if needed.
+            $linuxExtract = Join-Path $tmpdir "linux"
+            New-Item -ItemType Directory -Path $linuxExtract -Force | Out-Null
+            $untarred = $false
+            try {
+                & tar -xzf $linuxArchive -C $linuxExtract 2>$null
+                if ($LASTEXITCODE -eq 0) { $untarred = $true }
+            } catch { }
+            $foundLinux = $null
+            if ($untarred) {
+                $foundLinux = Get-ChildItem -Path $linuxExtract -Filter "orchicon" -Recurse -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -eq "orchicon" } | Select-Object -First 1
+            }
+            if ($foundLinux) {
+                $linuxExe = Join-Path $InstallDir "orchicon-linux-amd64"
+                Copy-Item -LiteralPath $foundLinux.FullName -Destination $linuxExe -Force
+                Write-Ok "linux runtime binary installed: $linuxExe"
+            } else {
+                Write-Warn "the linux archive did not contain an orchicon binary — runtime CONTAINERS will not start"
+                Write-Warn "  place a linux/amd64 build at $(Join-Path $InstallDir 'orchicon-linux-amd64') and restart the runtime daemon"
+            }
+        }
+    }
+
     Remove-Item -Path $tmpdir -Recurse -Force -ErrorAction SilentlyContinue
 
     # --- Verify ----------------------------------------------------------------
