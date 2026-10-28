@@ -35,6 +35,13 @@ import (
 // plane cannot use the daemon to create arbitrary containers, mount
 // arbitrary paths, or run arbitrary binaries.
 type Daemon struct {
+	// ContainerExe is the executable bind-mounted into runtime containers at /usr/local/bin/orchicon.
+	//
+	// DISTINCT FROM ExePath ON WINDOWS. The container is Linux and runs `orchicon runtime-supervisor`, so it needs
+	// a linux/amd64 binary; on a Linux host that is ExePath itself, but on Windows ExePath is a PE file the
+	// container cannot execute (see exe_resolve.go). Empty means "use ExePath", which keeps a Linux daemon
+	// exactly as it was.
+	ContainerExe string
 	// Paths expresses host paths the way the ENGINE'S VM sees them (pathmap.go). Nil means identity, which is
 	// correct on Linux. On Windows the engine runs in a WSL-backed machine and the filesystem it shares is
 	// addressed as /mnt/c/..., so every path handed to it must be mapped or the container cannot see its own
@@ -755,14 +762,21 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// failure an operator would have to dig out of container logs. Fail the
 	// create with a clear error when the executable cannot be mounted
 	// instead of silently skipping.
-	if d.ExePath == "" {
-		return nil, fmt.Errorf("runtime daemon executable path unavailable (os.Executable failed) — cannot create runtime container: the orchicon binary is bind-mounted into every runtime container, never baked")
+	// THE CONTAINER BINARY, which is not necessarily this daemon's own executable: the container is Linux, and on
+	// Windows the daemon's own file is a PE image a Linux container cannot run (exe_resolve.go). Empty keeps a
+	// Linux daemon — where the two ARE the same file — exactly as it was.
+	containerExe := d.ContainerExe
+	if containerExe == "" {
+		containerExe = d.ExePath
 	}
-	if st, err := os.Stat(d.ExePath); err != nil || st.IsDir() {
-		return nil, fmt.Errorf("runtime daemon executable %s missing — cannot create runtime container: the orchicon binary is bind-mounted into every runtime container, never baked", d.ExePath)
+	if containerExe == "" {
+		return nil, fmt.Errorf("runtime container executable path unavailable (os.Executable failed) — cannot create runtime container: the orchicon binary is bind-mounted into every runtime container, never baked")
+	}
+	if st, err := os.Stat(containerExe); err != nil || st.IsDir() {
+		return nil, fmt.Errorf("runtime container executable %s missing — cannot create runtime container: the orchicon binary is bind-mounted into every runtime container, never baked", containerExe)
 	}
 	// SOURCE mapped (the VM must resolve it), DEST already a guest path.
-	args = append(args, "-v", d.Paths.Map(d.ExePath)+":/usr/local/bin/orchicon:ro")
+	args = append(args, "-v", d.Paths.Map(containerExe)+":/usr/local/bin/orchicon:ro")
 	args = append(args, image, "orchicon", "runtime-supervisor")
 
 	// Create the container, retrying past name conflicts. A container that was
