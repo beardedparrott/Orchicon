@@ -13,6 +13,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -35,6 +36,12 @@ type installFlags struct {
 	// because the handover used to live in the wizard's Finish page and could not be made to work there —
 	// see install_desktop.go for the three attempts and why the fact belongs to the installer.
 	LaunchDesktop bool
+	// LauncherOnly retries the companion `orch` launcher and nothing else. It exists because the launcher is
+	// the ONE part of an install that can fail on Windows while the plane is perfectly healthy (os.Symlink
+	// needs SeCreateSymbolicLinkPrivilege), and telling an operator to re-run a six-minute full install to
+	// recover a 20 MB copy would be a poor trade. The summary names this flag when the launcher is missing,
+	// so it has to exist.
+	LauncherOnly bool
 }
 
 // parseInstallFlags extracts the wizard's flags and returns the argv with them removed, so the
@@ -90,6 +97,11 @@ func parseInstallFlags(args []string) (installFlags, []string, error) {
 			// A PLAIN SWITCH, not a value: "after a healthy install, open the app" is a yes/no, and a value
 			// form invites the empty-argument hazard this parser already documents elsewhere.
 			out.LaunchDesktop = true
+
+		case arg == "--install-launcher" || arg == "-install-launcher":
+			// CONSUMED, like --console and for the same reason: `rest` reaches parseInstanceTarget, which
+			// rejects every flag it does not know, so leaving this in would exit with `unknown flag`.
+			out.LauncherOnly = true
 
 		case arg == "--console" || arg == "-console":
 			// CONSUMED, NOT PASSED THROUGH.
@@ -161,4 +173,26 @@ func hasNonInteractiveFlag(args []string) bool {
 		}
 	}
 	return false
+}
+
+// hasLauncherOnlyFlag peeks for --install-launcher WITHOUT consuming anything.
+//
+// Same shape and same reason as hasConsoleFlag: the decision it feeds — "should I relaunch into a console?" — is
+// made before the full parse, and parsing twice would mean two error paths for one malformed flag.
+func hasLauncherOnlyFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--install-launcher" || a == "-install-launcher" {
+			return true
+		}
+	}
+	return false
+}
+
+// exeSuffix returns the platform's executable suffix, so a message can name `orch.exe` on Windows and `orch`
+// everywhere else instead of printing one and meaning the other.
+func exeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
 }
