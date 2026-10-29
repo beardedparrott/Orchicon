@@ -38,19 +38,63 @@ var (
 func daemonPool(ctx context.Context, log *slog.Logger) (*db.Pool, error) {
 	daemonPoolOnce.Do(func() {
 		daemonCfg = config.Default()
-		cfg := daemonCfg
-		if cfg.PostgresDSN == "" {
+		// THE DSN MUST BE THE PLANE'S, NOT THE DEFAULT ONE.
+		//
+		// config.Default() reads ORCHICON_POSTGRES_DSN and falls back to localhost:5432. The daemon does not
+		// get that variable: it is started by `orchicon install` with the install's environment, and
+		// internal/planecontrol builds the PLANE's DSN from the instance's RESOLVED port. On an instance
+		// configured for any other port, the default would point the daemon at a database that is not there —
+		// and the only symptom would be project directories silently failing to appear in the mount allowlist,
+		// i.e. exactly the "mount source outside allowed roots" refusal this whole change exists to remove.
+		//
+		// It reads the instance's OWN record, through the same accessor the rest of the CLI uses, so there is
+		// one answer to "which database is this instance's".
+		daemonCfg.PostgresDSN = instancePostgresDSN(daemonCfg.PostgresDSN)
+		if daemonCfg.PostgresDSN == "" {
 			daemonPoolErr = fmt.Errorf("no postgres DSN configured — cannot read project directories for the mount allowlist")
 			return
 		}
-		daemonPoolInst, daemonPoolErr = db.Open(ctx, cfg.PostgresDSN)
+		daemonPoolInst, daemonPoolErr = db.Open(ctx, daemonCfg.PostgresDSN)
 		if daemonPoolErr != nil && log != nil {
 			log.Warn("runtime daemon: could not open the database to read project directories; "+
 				"mounts are limited to ORCHICON_RUNTIME_ALLOWED_ROOTS until it is reachable",
-				"error", daemonPoolErr)
+				"error", daemonPoolErr, "dsn_host", redactDSN(daemonCfg.PostgresDSN))
 		}
 	})
 	return daemonPoolInst, daemonPoolErr
+}
+
+// instancePostgresDSN is the DSN for THIS instance's database: the instance's recorded port if there is one,
+// otherwise the configured/default value.
+//
+// IT MIRRORS planeEnv (internal/planecontrol/env.go), which builds the plane's DSN from the same record. That
+// duplication is deliberate and narrow: the daemon is a SEPARATE PROCESS that the plane does not configure, so
+// it has to derive the same answer from the same source rather than being told. If a future change moves where
+// the port is recorded, both readers move together — which is why this calls the CLI's accessor rather than
+// spelling out a path.
+func instancePostgresDSN(fallback string) string {
+	inst := env("ORCHICON_INSTANCE", "dev")
+	ports, err := readResolvedPorts(inst)
+	if err != nil {
+		return fallback
+	}
+	port := ports["ORCHICON_POSTGRES_PORT"]
+	if port <= 0 {
+		return fallback
+	}
+	return fmt.Sprintf("postgres://orchicon:orchicon@localhost:%d/orchicon?sslmode=disable", port)
+}
+
+// redactDSN keeps the host and database of a DSN and drops any credential, so an error context can name the
+// database it failed to reach without putting a password in a log file.
+func redactDSN(dsn string) string {
+	if i := strings.Index(dsn, "://"); i >= 0 {
+		rest := dsn[i+3:]
+		if at := strings.Index(rest, "@"); at >= 0 {
+			return dsn[:i+3] + "***@" + rest[at+1:]
+		}
+	}
+	return dsn
 }
 
 // projectDirRoots reads the active projects' directories, for the runtime daemon's mount allowlist.

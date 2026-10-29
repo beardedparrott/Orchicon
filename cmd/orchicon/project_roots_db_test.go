@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -157,5 +158,30 @@ func TestProjectDirRootsIgnoresARelativeDir(t *testing.T) {
 			t.Fatal("a RELATIVE project_dir was returned as a mount root — it would resolve against the " +
 				"daemon's working directory, which is not a boundary anyone can reason about")
 		}
+	}
+}
+
+// TestInstancePostgresDSNUsesTheInstancesRecord is the "works on a real install" guard.
+//
+// The daemon is started by `orchicon install` and does NOT receive ORCHICON_POSTGRES_DSN; the plane's DSN is
+// built from the instance's RESOLVED port. So config.Default()'s localhost:5432 is right only for a default
+// install — on any other port the daemon would look for the database in the wrong place and the only symptom
+// would be project directories quietly missing from the mount allowlist.
+func TestInstancePostgresDSNUsesTheInstancesRecord(t *testing.T) {
+	if _, err := readResolvedPorts(env("ORCHICON_INSTANCE", "dev")); err != nil {
+		t.Skipf("no resolved-ports record for this instance (%v) — nothing to assert against", err)
+	}
+	got := instancePostgresDSN("postgres://fallback@localhost:1/x")
+	if got == "postgres://fallback@localhost:1/x" {
+		t.Fatal("the daemon fell back to the DEFAULT DSN even though this instance records a port — on a " +
+			"non-default port that points at a database that is not there, and the only symptom is the " +
+			"mount refusal this change exists to remove")
+	}
+	if !strings.Contains(got, "/orchicon?") {
+		t.Fatalf("unexpected DSN shape: %q", got)
+	}
+	// No credential may reach a log line.
+	if strings.Contains(redactDSN(got), "orchicon:orchicon@") {
+		t.Fatalf("redactDSN leaked the credential: %q", redactDSN(got))
 	}
 }
