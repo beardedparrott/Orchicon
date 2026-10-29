@@ -185,7 +185,10 @@ func runInstall(args []string, log *slog.Logger) error {
 	//     --non-interactive   ask nothing (unchanged meaning)
 	//     --console           I am not attached to a console; give me my own and detach onto it
 	// A plain `orchicon install` in a terminal still relaunches into its own console as before.
-	wantConsole := !hasNonInteractiveFlag(args) || hasConsoleFlag(args)
+	// A LAUNCHER-ONLY RUN MUST NOT OPEN A WINDOW. It asks nothing and takes a second; relaunching it into a
+	// console would hand the operator a window that flashes and disappears, which is the exact failure class this
+	// whole path has been fighting. Peeked rather than parsed because this decision precedes the parse.
+	wantConsole := (!hasNonInteractiveFlag(args) || hasConsoleFlag(args)) && !hasLauncherOnlyFlag(args)
 	if wantConsole && ensureInteractiveConsole(interactiveAllowed) {
 		log.Info("orchicon install: relaunched in its own console")
 		return nil
@@ -220,6 +223,18 @@ func runInstall(args []string, log *slog.Logger) error {
 	// installed (or REPAIRED) `dev` while the operator believed they had chosen prod. The
 	// installer's own `--instance` flag worked, which made the binary's silence worse: the
 	// flag existed one layer up and did nothing here.
+	if flags.LauncherOnly {
+		// THE ESCAPE HATCH FOR THE ONE FAILURE THAT LEAVES A HEALTHY PLANE. Everything else in an install is
+		// convergent and idempotent, but the launcher can be missing for a reason nothing else shares (Windows
+		// symlink privilege), and re-running the whole multi-minute install to recover a file copy is not a
+		// reasonable thing to ask. Returns after placing it — no ports, no engine, no services.
+		l := installOrchLauncher(env("ORCHICON_INSTALL_DIR", defaultInstallDir()))
+		if !l.Installed {
+			return fmt.Errorf("the orch launcher could not be installed: %s", l.Problem)
+		}
+		fmt.Printf("orch launcher installed at %s (%s)\n", l.Path, l.Method)
+		return nil
+	}
 	instance, err := parseInstanceTarget(args, env("ORCHICON_INSTANCE", "dev"))
 	if err != nil {
 		return err
@@ -824,9 +839,12 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 	// remote TUI client). Non-fatal: a missing sibling binary or a clobber
 	// guard only warns.
 	installDir := env("ORCHICON_INSTALL_DIR", defaultInstallDir())
-	installOrchLauncher(installDir)
+	// THE OUTCOME IS CARRIED INTO THE SUMMARY, not discarded. This is the seam the "orch launcher: ..." lie came
+	// through: the installer knew the launcher was not placed, printed a warning nobody could see behind the
+	// banner, and then reported success in the box below.
+	launcher := installOrchLauncher(installDir)
 
-	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, ports, containersUsed, healthy, engineStatus)
+	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, launcher, ports, containersUsed, healthy, engineStatus)
 
 	// THE HANDOVER, AND IT HAPPENS HERE BECAUSE THE FACT IS KNOWN HERE.
 	//
@@ -918,81 +936,190 @@ func defaultInstallDir() string {
 	return filepath.Join(home, ".local", "bin")
 }
 
-// installOrchLauncher symlinks the sibling `orch` binary (next to the
-// running executable) into installDir. Idempotent: an existing symlink we
-// own is refreshed in place; a pre-existing regular file is warned + skipped
-// unless ORCHICON_FORCE_LAUNCHER=1 replaces it; a missing sibling binary is
-// a non-fatal warning.
-func installOrchLauncher(installDir string) {
-	exe, err := os.Executable()
-	if err != nil {
-		fmt.Printf("warning: could not locate the running executable to find the sibling orch binary: %v\n", err)
-		return
-	}
-	installOrchLauncherFrom(exe, installDir)
+// orchLauncher is WHAT HAPPENED when the companion launcher was installed.
+//
+// IT EXISTS BECAUSE THE SUMMARY USED TO LIE. installOrchLauncherFrom only printed; the summary then
+// announced "<installDir>/orch (remote TUI client)" unconditionally. On Windows os.Symlink needs
+// SeCreateSymbolicLinkPrivilege — which a non-elevated account without Developer Mode does NOT have — so on a
+// stock Windows box the launcher was NEVER created and the summary claimed it was. Reported from a real
+// machine, where the operator had no `orch` and a summary telling them they did:
+//
+//	warning: could not symlink orch launcher: A required privilege is not held by the client.
+//	  orch launcher: C:\Users\justi\.local\bin/orch (remote TUI client)
+//
+// An installer that reports something it did not do is worse than one that fails, because the failure is the
+// thing the operator needed. So the outcome is a VALUE the summary renders, not a print the summary ignores.
+type orchLauncher struct {
+	// Path is where the launcher was placed (or would have been). Empty only when the install dir could not be
+	// resolved, in which case there is nothing to report.
+	Path string
+	// Installed is true when a launcher that will actually run is at Path.
+	Installed bool
+	// Method is "symlink", "copy", or "" — how it got there, so the summary can say "copied" on Windows rather
+	// than implying a symlink exists.
+	Method string
+	// Problem is why it is not installed, in one line, or "" when it is.
+	Problem string
 }
 
-// installOrchLauncherFrom symlinks the sibling `orch` binary next to the
-// given executable path into installDir. Split out so tests can pass a
-// controlled executable path (os.Executable() is not redirectable).
-func installOrchLauncherFrom(exe, installDir string) {
+// installOrchLauncher places the sibling `orch` binary (next to the running executable) into installDir.
+func installOrchLauncher(installDir string) orchLauncher {
+	exe, err := os.Executable()
+	if err != nil {
+		return orchLauncher{Problem: fmt.Sprintf("could not locate the running executable to find the sibling orch binary: %v", err)}
+	}
+	return installOrchLauncherFrom(exe, installDir)
+}
+
+// installOrchLauncherFrom places the sibling `orch` binary next to the given executable path into installDir.
+// Split out so tests can pass a controlled executable path (os.Executable() is not redirectable).
+//
+// TWO MECHANISMS, AND WINDOWS NEEDS THE SECOND ONE. A symlink is preferred on POSIX because a reinstall
+// refreshes it in place. Windows refuses os.Symlink without SeCreateSymbolicLinkPrivilege, so there a COPY is
+// the only mechanism that works for an ordinary account — and a copy is exactly what the PowerShell installer
+// already does (scripts/install.ps1 copies orch.exe into the install dir). Falling back to it removes the
+// installer's hidden dependency on Developer Mode, which nobody would guess from a "could not symlink" warning.
+//
+// THE CLOBBER GUARD IS UNCHANGED AND STILL MATTERS: an existing launcher that this install does not own is left
+// alone with a warning unless ORCHICON_FORCE_LAUNCHER=1, because installing must never relocate someone else's
+// launcher (a build-dir install used to hijack a release install's ~/.local/bin/orch).
+func installOrchLauncherFrom(exe, installDir string) orchLauncher {
 	sibling := filepath.Join(filepath.Dir(exe), "orch")
 	if runtime.GOOS == "windows" {
 		sibling += ".exe"
-	}
-	if _, err := os.Stat(sibling); err != nil {
-		fmt.Printf("warning: sibling orch binary not found next to %s — skipping launcher install (build with `make build` to produce bin/orch)\n", exe)
-		return
-	}
-	if err := os.MkdirAll(installDir, 0o755); err != nil {
-		fmt.Printf("warning: could not create install dir %s: %v\n", installDir, err)
-		return
 	}
 	link := filepath.Join(installDir, "orch")
 	if runtime.GOOS == "windows" {
 		link += ".exe"
 	}
+	out := orchLauncher{Path: link}
+	if _, err := os.Stat(sibling); err != nil {
+		out.Problem = fmt.Sprintf("the sibling orch binary is not next to %s", exe)
+		fmt.Printf("warning: sibling orch binary not found next to %s — skipping launcher install (build with `make build` to produce bin/orch)\n", exe)
+		return out
+	}
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		out.Problem = fmt.Sprintf("could not create install dir %s: %v", installDir, err)
+		fmt.Printf("warning: %s\n", out.Problem)
+		return out
+	}
 	// An existing path at the launcher location.
 	//
-	// A SYMLINK POINTING ELSEWHERE IS NOT OURS TO REPOINT, and that was a real bug
-	// caught in the wild: `orchicon install` run from a build directory refreshed
-	// the symlink to point at ITS OWN sibling, silently hijacking a launcher that
-	// another install — or a development checkout — had put there. The operator
-	// then ran `orch` and got a binary they never chose, with the thing they DID
-	// choose quietly detached.
+	// A LAUNCHER POINTING ELSEWHERE IS NOT OURS TO REPOINT, and that was a real bug caught in the wild:
+	// `orchicon install` run from a build directory refreshed the symlink to point at ITS OWN sibling, silently
+	// hijacking a launcher that another install — or a development checkout — had put there. The operator then
+	// ran `orch` and got a binary they never chose, with the thing they DID choose quietly detached.
 	//
-	// So only a symlink already pointing at OUR sibling is treated as ours, and is
-	// then a no-op. Anything else — a foreign symlink, a regular file — is left
-	// alone with a warning, and ORCHICON_FORCE_LAUNCHER=1 is the explicit opt-in to
-	// replace it. Installing must never relocate someone else's launcher.
+	// So only an artefact that is already ours is treated as a no-op refresh. Anything else — a foreign symlink,
+	// a foreign file — is left alone with a warning, and ORCHICON_FORCE_LAUNCHER=1 is the explicit opt-in to
+	// replace it.
 	if st, err := os.Lstat(link); err == nil {
-		if st.Mode()&os.ModeSymlink != 0 {
+		force := os.Getenv("ORCHICON_FORCE_LAUNCHER") == "1"
+		switch {
+		case st.Mode()&os.ModeSymlink != 0:
 			target, _ := os.Readlink(link)
-			if target == sibling {
+			if resolvesTo(target, sibling) {
+				out.Installed, out.Method = true, "symlink"
 				fmt.Printf("orch launcher already installed: %s\n", link)
-				return
+				return out
 			}
-			if os.Getenv("ORCHICON_FORCE_LAUNCHER") != "1" {
-				fmt.Printf("warning: %s is a symlink to %s, not to this install's %s — leaving it alone (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", link, target, sibling)
-				return
-			}
-			fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
-			_ = os.Remove(link)
-		} else {
-			// A regular file (or other non-symlink) occupies the path.
-			if os.Getenv("ORCHICON_FORCE_LAUNCHER") != "1" {
-				fmt.Printf("warning: %s exists and is not an orch symlink — skipping (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", link)
-				return
+			if !force {
+				out.Problem = fmt.Sprintf("%s is a symlink to %s, not to this install's %s", link, target, sibling)
+				fmt.Printf("warning: %s — leaving it alone (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", out.Problem)
+				return out
 			}
 			fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
-			_ = os.Remove(link)
+		case runtime.GOOS == "windows" && isOurCopy(link, sibling):
+			// A COPY WE MADE on a previous install. Without this arm every reinstall would hit the foreign-file
+			// guard below and refuse to refresh our own launcher — the second-install-must-converge rule.
+			fmt.Printf("refreshing the copied orch launcher at %s\n", link)
+		default:
+			if !force {
+				out.Problem = fmt.Sprintf("%s exists and was not placed there by this install", link)
+				fmt.Printf("warning: %s — skipping (set ORCHICON_FORCE_LAUNCHER=1 to replace)\n", out.Problem)
+				return out
+			}
+			fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
 		}
+		_ = os.Remove(link)
 	}
-	if err := os.Symlink(sibling, link); err != nil {
-		fmt.Printf("warning: could not symlink orch launcher: %v\n", err)
-		return
+
+	// THE SYMLINK FIRST, BECAUSE IT IS THE ONE THAT REFRESHES ITSELF.
+	if err := os.Symlink(sibling, link); err == nil {
+		out.Installed, out.Method = true, "symlink"
+		fmt.Printf("orch launcher installed: %s → %s\n", link, sibling)
+		return out
+	} else if runtime.GOOS != "windows" {
+		// On POSIX a failed symlink is a real failure (permissions, read-only dir) and a copy would be a
+		// different promise than the one the docs make. Report it.
+		out.Problem = fmt.Sprintf("could not symlink orch launcher: %v", err)
+		fmt.Printf("warning: %s\n", out.Problem)
+		return out
+	} else {
+		// WINDOWS: the expected path for an ordinary account (no SeCreateSymbolicLinkPrivilege). Fall back to a
+		// copy, which is what scripts/install.ps1 does, and say so — the mechanism changed, the promise did not.
+		if cerr := copyLauncher(sibling, link); cerr != nil {
+			out.Problem = fmt.Sprintf("could not place the orch launcher at %s: %v", link, cerr)
+			fmt.Printf("warning: %s\n", out.Problem)
+			return out
+		}
+		out.Installed, out.Method = true, "copy"
+		fmt.Printf("orch launcher installed: %s (copied — Windows symlinks need an elevated or Developer Mode shell)\n", link)
+		return out
 	}
-	fmt.Printf("orch launcher installed: %s → %s\n", link, sibling)
+}
+
+// resolvesTo reports whether a launcher's recorded symlink TARGET names the same file as sibling.
+//
+// filepath.Clean alone is not enough — it compares STRINGS, so a target recorded as "./orch", or reached through
+// a symlinked parent directory, or differing only in case on a case-insensitive volume, would read as foreign and
+// our own launcher would be refused as if someone else owned it. os.Stat resolves all of that. The cleaned-string
+// compare stays as a fast path and as the answer when either side cannot be stat'd, which is never worse than the
+// string compare it replaces.
+//
+// NOT runtime.go's sameFile: that one answers "identical CONTENT" and is used to decide whether a running daemon
+// matches the binary on disk. This one answers "the same file OBJECT", which is the question a symlink asks.
+func resolvesTo(target, sibling string) bool {
+	if filepath.Clean(target) == filepath.Clean(sibling) {
+		return true
+	}
+	ti, terr := os.Stat(target)
+	si, serr := os.Stat(sibling)
+	if terr != nil || serr != nil {
+		return false
+	}
+	return os.SameFile(ti, si)
+}
+
+// isOurCopy reports whether path is a copy of sibling that THIS installer placed there.
+//
+// IT CANNOT BE A PERFECT TEST, AND PRETENDING OTHERWISE WOULD BE WORSE THAN THE LIMIT. A copy carries no record of
+// its origin, so "ours" is decided by what an installer's own artefact necessarily has: the same file NAME, and
+// byte-identical CONTENT to the sibling it would be refreshed from. The content compare is runtime.go's sameFile,
+// so this inherits its size short-circuit and chunked read rather than reinventing a weaker check. A file that
+// matches both is, by construction, the same binary.
+//
+// The alternative — treating every regular file as foreign — breaks the one rule a second install must obey:
+// converge what is there. That is not hypothetical: a reinstall refused to refresh the launcher it had itself
+// copied, which is the bug this arm prevents.
+func isOurCopy(path, sibling string) bool {
+	return filepath.Base(path) == filepath.Base(sibling) && sameFile(path, sibling)
+}
+
+// copyLauncher copies src to dst, replacing dst, and marks the result executable.
+//
+// MODE 0o755 IS NOT COSMETIC ON POSIX: a copy without the execute bit is a launcher that exists and cannot run,
+// which is the same user-facing outcome as no launcher at all but much harder to notice. Windows ignores the
+// mode, so this costs nothing there.
+func copyLauncher(src, dst string) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, b, 0o755); err != nil {
+		return err
+	}
+	return os.Chmod(dst, 0o755)
 }
 
 // adapterCLIPresent reports whether an adapter CLI is installed on the host
@@ -1365,7 +1492,7 @@ func containerExists(name string) (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, ports map[string]int, containersUsed, healthy bool, engine containerengine.Status) {
+func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, launcher orchLauncher, ports map[string]int, containersUsed, healthy bool, engine containerengine.Status) {
 	// WHERE THE SERVICES RUN follows from the shape and the host: a host-resident plane has its services as
 	// host processes when there is no engine to put them in a container, and in the instance container when
 	// there is.
@@ -1460,10 +1587,41 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 		fmt.Printf("  Data: volume %s (preserved across restarts)\n", dataVolume)
 	}
 	fmt.Println()
-	fmt.Printf("  orch launcher: %s/orch (remote TUI client)\n", installDir)
+	// THE LAUNCHER LINE REPORTS WHAT HAPPENED, NOT WHAT WAS ATTEMPTED.
+	//
+	// It used to print "<installDir>/orch (remote TUI client)" UNCONDITIONALLY. On Windows that line was a lie:
+	// os.Symlink needs SeCreateSymbolicLinkPrivilege, an ordinary account has none, and the operator was left
+	// with no launcher and a summary naming one. Two independent claims are made here — that the file is there,
+	// and that it is on PATH — so both are answered from the outcome and from the real PATH, never assumed.
+	if launcher.Installed {
+		fmt.Printf("  orch launcher: %s (remote TUI client, %s)\n", launcher.Path, launcher.Method)
+	} else if launcher.Path != "" {
+		fmt.Printf("  orch launcher: NOT installed — %s\n", launcher.Problem)
+		fmt.Printf("    The plane itself is up and complete; only the `orch` TUI client is missing.\n")
+		// THE REMEDY NAMES THE THING THAT ACTUALLY STANDS IN THE WAY, per platform. On Windows it is the
+		// symlink privilege, and an ELEVATED shell does not help — the install refuses one for a good reason
+		// (Postgres will not run as Administrator). Saying "run it non-elevated" to a POSIX user would be
+		// nonsense, and saying "by hand" to a Windows user without naming WHICH files is barely better.
+		if runtime.GOOS == "windows" {
+			fmt.Printf("    Retry just the launcher with `orchicon install --install-launcher` from a NON-elevated\n")
+			fmt.Printf("    shell (do not use \"Run as administrator\" — Postgres will not run elevated), or copy\n")
+			fmt.Printf("    orch%s from beside orchicon%s into %s yourself.\n", exeSuffix(), exeSuffix(), installDir)
+		} else {
+			fmt.Printf("    Retry just the launcher with `orchicon install --install-launcher`, or copy\n")
+			fmt.Printf("    orch%s from beside orchicon%s into %s yourself.\n", exeSuffix(), exeSuffix(), installDir)
+		}
+	}
+	// THE PATH ADVICE MUST MATCH THE SHELL IT LANDS IN. "export PATH=..." is POSIX; on Windows the user is in
+	// PowerShell, where it is a syntax error. Naming the wrong command is how a correct install produces a
+	// broken setup.
 	if !dirOnPath(installDir) {
-		fmt.Printf("  %s is not on your PATH — add it to your shell profile:\n", installDir)
-		fmt.Printf("    export PATH=\"$PATH:%s\"\n", installDir)
+		if runtime.GOOS == "windows" {
+			fmt.Printf("  %s is not on your PATH — add it to your user PATH (then open a NEW terminal):\n", installDir)
+			fmt.Printf("    [Environment]::SetEnvironmentVariable(\"Path\", \"$([Environment]::GetEnvironmentVariable('Path','User'));%s\", \"User\")\n", installDir)
+		} else {
+			fmt.Printf("  %s is not on your PATH — add it to your shell profile:\n", installDir)
+			fmt.Printf("    export PATH=\"$PATH:%s\"\n", installDir)
+		}
 	}
 	fmt.Println()
 	if containersUsed {

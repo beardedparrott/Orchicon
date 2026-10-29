@@ -311,8 +311,15 @@ func describeEngineStatus(st containerengine.Status) string {
 	}
 	// NO REASON RECORDED BUT NOT AVAILABLE is the silent case this summary exists to prevent: nothing decided
 	// anything, so the operator would read "install succeeded" and discover the gap as a socket error later.
+	//
+	// IT USED TO SAY "re-run with -Containers", WHICH IS NOT A THING ANY MORE. Containers became the default and
+	// -Containers was reduced to an inert no-op, so the one instruction this line gave was to pass a flag that
+	// does nothing — the operator would re-run, get the same summary, and have no idea why. A remedy has to name
+	// something that exists; ORCHICON_CONTAINER_ENGINE=podman is what makes "not detected" FATAL (resolveContainerEngine's
+	// pin), so a host that genuinely cannot find the engine gets its reason instead of this generic line.
 	return "unavailable — the container engine was not detected, so there are no runtime containers and no " +
-		"runtime daemon; re-run with -Containers to provision one"
+		"runtime daemon. Re-run `orchicon install` (containers are provisioned by default), or set " +
+		"ORCHICON_CONTAINER_ENGINE=podman to make a missing engine an error that names the cause"
 }
 
 // provisionDecline renders a provisioning failure for appending to another message, keeping the
