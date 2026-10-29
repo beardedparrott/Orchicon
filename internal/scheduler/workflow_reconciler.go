@@ -753,7 +753,16 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// This converts the old dispatch-time race (a cold-starting serve
 	// failing the first execution's 30s window) into a deterministic
 	// run-start check.
-	if run.Status == domain.WorkflowRunRunning && !run.RuntimeReady {
+	// THE CONDITION IS "THE GATE IS CLOSED", NOT "THE RUN IS RUNNING". Local mode needed the second half
+	// removed, and the reason is a real hang rather than tidiness: a local run ARMS with runtime_ready untouched
+	// (armRuntimeColumns: no container, no readiness), so it is still false here — and if it is also not yet
+	// running, the original `Status == running` test skipped the block entirely and the column was never
+	// flipped. The run then sat at pending for ever, waiting on a container probe local mode never runs.
+	//
+	// MEASURED on a real Windows host: a local work item stalled at pending with zero executions and no error
+	// surfaced. Anything below that reloads state uses `run` as this pass sees it, so the widened condition is
+	// safe for every status.
+	if !run.RuntimeReady {
 		// Always-container: EVERY runtime-mode run gets a container.
 		// needsServe selects only the opencode serve PROBE, never the
 		// container. Serve-less (native-only) runs flip the gate here —
@@ -771,12 +780,18 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			needsServeGate = false
 		}
 		if !needsServeGate {
-			if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
+			updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
 				RuntimeReady: boolPtr(true),
-			}); err != nil {
+			})
+			if err != nil {
 				return fmt.Errorf("clear runtime gate (serve-less run): %w", err)
 			}
 			run.RuntimeReady = true
+			// THE VERSION MUST MOVE WITH THE ROW. UpdateWorkflowRun is optimistic-concurrency
+			// (`WHERE version = $3`) and bumps it; keeping the pre-update value in `run` made the
+			// NEXT update in this same pass a guaranteed ErrNotFound. That is the reported Windows
+			// hot loop, and it lived in exactly this omission.
+			run.Version = updated.Version
 		}
 		if r.runtimeEnabled() && !run.RuntimeReady {
 			// Local mode never enters the container path: no EnsureForRun,
@@ -803,15 +818,43 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 			return nil
 		}
-		// No runtime configured (headless): the gate is moot — flip it so
+		// No runtime configured (headless) OR local mode: the gate is moot — flip it so
 		// progression proceeds immediately. Covers runs created before the
 		// runtime_ready migration (default false).
-		if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
-			RuntimeReady: boolPtr(true),
-		}); err != nil {
-			return fmt.Errorf("clear runtime gate (headless): %w", err)
+		//
+		// LOCAL MODE ARRIVES HERE TOO, AND THAT USED TO BE AN INFINITE HOT LOOP. The first
+		// UpdateWorkflowRun above (the needsServeGate arm) fires for a local run when there is no
+		// container engine — on Windows without one, r.runtimeEnabled() is false, so
+		// needsServeGate collapses to false and the gate is flipped there. This second update then
+		// ran with the SAME run.Version, but the first had already committed version+1. The
+		// optimistic-concurrency WHERE clause therefore matched nothing:
+		//
+		//     error="clear runtime gate (headless): db: not found"
+		//
+		// — and ErrNotFound is a plain error, so the reconciler retried. MEASURED by an operator on
+		// Windows: that message repeated every ~200ms for 22 minutes (5552 times), the run frozen at
+		// pending with zero executions and NOTHING shown in the UI. A configuration state was
+		// converted into an unbounded retry loop.
+		//
+		// TWO FIXES, and both matter: the stale version is a bug on its own (any code path that
+		// updates a row twice in one pass would hit it), and the idempotent early return makes the
+		// second write unnecessary rather than merely correct.
+		// GUARD THE WRITE, DO NOT RETURN FROM THE PASS. An early `return nil` here looked tidier and was
+		// WRONG: it skips the pass's Commit, so the deferred Rollback discards the gate clear that the branch
+		// above just made — leaving runtime_ready false and the run parked, which is the very hang this
+		// assembly exists to remove. The condition is only "is there anything left to write".
+		if !run.RuntimeReady {
+			updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
+				RuntimeReady: boolPtr(true),
+			})
+			if err != nil {
+				return fmt.Errorf("clear runtime gate (headless): %w", err)
+			}
+			// CARRY THE VERSION FORWARD. A later update in this same pass must use the version the
+			// database now holds, and leaving the stale one in `run` is what made this assembly fail.
+			run.RuntimeReady = true
+			run.Version = updated.Version
 		}
-		run.RuntimeReady = true
 	}
 
 	// stepRuns + runByID are built inside the outer-progress loop so
@@ -6043,7 +6086,12 @@ func aggregateLoopDecisions(decisions []string, failureValue, successValue strin
 // writing false would arm a gate the same pass must clear, for a container that will never exist.
 func armRuntimeColumns(runLocalMode bool, resolved string, needsServe, runtimeEnabled bool) (image string, ready *bool) {
 	if runLocalMode {
-		return "", nil // no container: no image to name, and nothing to be "ready"
+		// NO CONTAINER: no image to name, and no readiness to assert.
+		//
+		// The nil is deliberate and has ONE owner on the other side: the pass's gate-clearing block flips
+		// runtime_ready for a local run. Two writers for one column is how they disagree, and the disagreement
+		// that mattered was this arm writing false — see the gate block's note.
+		return "", nil
 	}
 	// The runtime-serve readiness gate: false when a runtime daemon is wired AND the run actually needs a
 	// serve. Serve-less (native-only) runs flip the gate immediately — they still get a container

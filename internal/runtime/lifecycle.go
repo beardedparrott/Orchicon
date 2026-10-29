@@ -1171,11 +1171,56 @@ func (l *Lifecycle) Adopt(ctx context.Context) error {
 		if run.RuntimeImage == runtimeNoServeImage {
 			continue // legacy no-serve row: no container to adopt
 		}
+		// A LOCAL-MODE RUN HAS NO CONTAINER TO ADOPT, and asking for one both fails and MISLEADS.
+		//
+		// REPORTED from Windows, exactly:
+		//
+		//	msg="adopt: ensure runtime failed" error="...runtime daemon: mount source outside allowed
+		//	    roots: C:\projects\weatherapp ..."
+		//
+		// for a run whose project was execution_mode=local. The run had not asked for a container; this
+		// boot-time sweep asked on its behalf, could not mount the project, and logged a warning that
+		// reads as a container misconfiguration rather than "a local run was wrongly treated as
+		// containerised". It sent an operator hunting a mount-policy problem that did not exist.
+		//
+		// THE RECONCILER ALREADY GETS THIS RIGHT (shouldEnsureRunFor / runLocalMode), and adopt is the
+		// path that disagreed with it. One rule, both callers.
+		if l.runIsLocal(ctx, run) {
+			continue
+		}
 		if err := l.EnsureForRun(ctx, run); err != nil {
 			l.log.Warn("adopt: ensure runtime failed", "run", run.ID, "error", err)
 		}
 	}
 	return nil
+}
+
+// runIsLocal reports whether a run's EFFECTIVE execution mode is local, so the boot-time adopt sweep does
+// not containerise a run that explicitly opted out.
+//
+// THE RESOLUTION IS THE ONE THE RECONCILER USES (work-item override → project → tenant default, via
+// db.EffectiveExecutionMode), NOT a second opinion: a local run must mean the same thing everywhere, and two
+// resolvers is how the container path and the in-process path start disagreeing about which runs they own.
+//
+// ANY ERROR MEANS "NOT LOCAL" — the fail-open direction the reconciler documents: an unreadable mode degrades
+// toward the container, never toward silently executing on the host.
+func (l *Lifecycle) runIsLocal(ctx context.Context, run db.WorkflowRunRow) bool {
+	if l.pool == nil {
+		return false
+	}
+	ttx, err := l.pool.BeginTenantTx(ctx, devTenantID)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = ttx.Rollback(ctx) }()
+
+	var itemMode *string
+	if strings.TrimSpace(run.WorkItemID) != "" {
+		if w, werr := db.GetWorkItem(ctx, ttx.Tx, devTenantID, run.WorkItemID); werr == nil {
+			itemMode = w.ExecutionMode
+		}
+	}
+	return db.EffectiveExecutionMode(ctx, ttx.Tx, devTenantID, itemMode, run.ProjectID) == db.ExecutionModeLocal
 }
 
 // agentModelForServe renders a worker's model ref in the `provider/model` form an
