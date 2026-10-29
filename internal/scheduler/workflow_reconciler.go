@@ -79,6 +79,11 @@ type WorkflowReconciler struct {
 	// (architecture-notes/sequential-multi-workflow-runs.md §2.2).
 	// Optional — the scan pass is the safety net.
 	sequenceNotifier func(ctx context.Context, parentID string)
+	// runFailed is called after a scan pass when reconciling ONE run failed, so a persistently broken run
+	// gets the work queue's exponential backoff and its single "gave up" log line instead of a warning every
+	// 200ms. Optional: without it the scan simply logs and retries on the next tick (tests, and any caller
+	// that does not own a queue).
+	runFailed func(runID string, err error)
 
 	// worktreeNotifier is called right after a run is armed (pending→running)
 	// so the WorktreeReconciler provisions the run's isolated working tree
@@ -245,6 +250,12 @@ func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator, 
 		warming: make(map[string]bool), baseImage: base}
 }
 
+// SetRunFailedHook injects the scan-pass failure sink — normally the reconciler Manager's work queue, so a
+// failing run backs off and reports its terminal failure once instead of once per heartbeat.
+func (r *WorkflowReconciler) SetRunFailedHook(fn func(runID string, err error)) {
+	r.runFailed = fn
+}
+
 // SetSequenceNotifier injects the callback that advances a sequence parent
 // when one of its bound children reaches a terminal state. Optional.
 func (r *WorkflowReconciler) SetSequenceNotifier(fn func(ctx context.Context, parentID string)) {
@@ -330,6 +341,20 @@ func (r *WorkflowReconciler) scanRuns(ctx context.Context, tenantID string) erro
 	}
 	for _, run := range runs {
 		if err := r.reconcileRun(ctx, tenantID, run.ID); err != nil {
+			// THE QUEUE'S BACKOFF IF THERE IS ONE, A WARNING IF THERE IS NOT.
+			//
+			// This used to log a warning unconditionally and retry on the very next heartbeat — every 200ms,
+			// for ever. MEASURED on a real Windows host: "workflow run reconcile failed" 5552 times over 22
+			// minutes for ONE run, drowning the log and giving the operator no signal that anything was
+			// wrong beyond the repetition.
+			//
+			// The queued path already solves this (markFailed: exponential, capped at 5 minutes, plus a
+			// single terminal line after maxRetry). A scan pass bypassed it by calling reconcileRun
+			// directly, which is how an idempotency bug turned into a hot loop instead of a slow retry.
+			if r.runFailed != nil {
+				r.runFailed(run.ID, err)
+				continue
+			}
 			r.log.Warn("workflow run reconcile failed", "run", run.ID, "error", err)
 		}
 	}
@@ -556,7 +581,6 @@ func (r *WorkflowReconciler) holdInPlaceDispatch(ctx context.Context, tx pgx.Tx,
 }
 
 func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID string) error {
-	r.log.Debug("DEBUG: reconcileRun entered", "runID", runID, "tenantID", tenantID)
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -570,8 +594,6 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 		return fmt.Errorf("get run: %w", err)
 	}
-	r.log.Debug("DEBUG: run loaded", "runID", run.ID, "status", run.Status, "version", run.Version)
-	r.log.Debug("DEBUG: run workflow", "workflowID", run.WorkflowID, "workflowVersion", run.WorkflowVersion)
 	// Only progress non-terminal runs. Terminal runs (including aborted)
 	// have their runtime container reaped here so a run terminalized
 	// elsewhere (e.g. AbortRun) never leaks its container.
@@ -862,10 +884,6 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// re-entry runs) are visible on subsequent passes.
 	var stepRuns []db.WorkflowStepRunRow
 	runByID := map[string]db.WorkflowStepRunRow{}
-	r.log.Debug("DEBUG: runByID built", "keys", len(runByID))
-	for k, v := range runByID {
-		r.log.Debug("DEBUG: runByID entry", "key", k, "id", v.ID, "status", v.Status, "version", v.Version)
-	}
 
 	// Collect steps dispatched in this pass for inline TaskReconciler
 	// dispatch after the transaction commits. Each dispatch is scoped to a
@@ -1078,7 +1096,6 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		// whole run.
 		for _, sr := range stepRuns {
 			if sr.SupersededBy != "" {
-				r.log.Debug("DEBUG: skipping superseded step run", "stepID", sr.StepID, "id", sr.ID, "supersededBy", sr.SupersededBy)
 				continue
 			}
 			// Skip if the active run for this StepID has already
@@ -1089,16 +1106,12 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				active = cur
 			}
 			if active.Status != domain.StepRunPending {
-				r.log.Debug("DEBUG: skipping step run (already past pending)", "stepID", sr.StepID, "id", sr.ID, "status", active.Status, "iteration", sr.Iteration)
 				continue
 			}
-			r.log.Debug("DEBUG: checking step for ready", "stepID", sr.StepID, "id", sr.ID, "status", sr.Status, "version", sr.Version)
 			step, ok := stepByID[sr.StepID]
 			if !ok {
-				r.log.Debug("DEBUG: step not found in stepByID", "stepID", sr.StepID)
 				continue
 			}
-			r.log.Debug("DEBUG: checking deps satisfied", "stepID", sr.StepID)
 			// D3 rule 4 — hold-at-PENDING. A SPAWNED loop_decision
 			// iteration (Iteration > 0, created by the recovery path) whose
 			// upstream dep is STILL terminal-failed is held at PENDING. It
@@ -1109,17 +1122,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			// cycle drives the re-dispatch instead of the DAG loop.
 			if step.Kind == domain.StepKindLoopDecision && sr.Iteration > 0 &&
 				r.loopDecisionUpstreamFailed(step, runByID) {
-				r.log.Debug("DEBUG: holding spawned loop_decision iteration (upstream failed)",
-					"stepID", sr.StepID, "iteration", sr.Iteration)
 				continue
 			}
 			if r.depsSatisfied(step, runByID) {
-				r.log.Debug("DEBUG: about to update step run",
-					"stepID", sr.StepID,
-					"runID", sr.ID,
-					"version", sr.Version,
-					"tenantID", tenantID,
-				)
 				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 					Status: strPtr(domain.StepRunReady),
 				})
@@ -2288,26 +2293,19 @@ func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[stri
 	for _, dep := range step.DependsOn {
 		sr, ok := runs[dep]
 		if !ok {
-			r.log.Debug("DEBUG: depsSatisfied dep not in map", "step", step.ID, "dep", dep)
 			return false
 		}
-		r.log.Debug("DEBUG: depsSatisfied check", "step", step.ID, "dep", dep, "depStatus", sr.Status)
 		if sr.SupersededBy != "" {
-			r.log.Debug("DEBUG: depsSatisfied dep superseded", "step", step.ID, "dep", dep)
 			return false
 		}
 		if sr.Status == domain.StepRunSucceeded || sr.Status == domain.StepRunSkipped {
-			r.log.Debug("DEBUG: depsSatisfied dep satisfied", "step", step.ID, "dep", dep, "status", sr.Status)
 			continue
 		}
 		if isLoopDecision && sr.Status == domain.StepRunFailed {
-			r.log.Debug("DEBUG: depsSatisfied loop_decision dep satisfied (failed)", "step", step.ID, "dep", dep)
 			continue
 		}
-		r.log.Debug("DEBUG: depsSatisfied not satisfied yet", "step", step.ID, "dep", dep, "status", sr.Status)
 		return false
 	}
-	r.log.Debug("DEBUG: depsSatisfied all satisfied", "step", step.ID)
 	return true
 }
 

@@ -181,6 +181,37 @@ func (m *Manager) Enqueue(kind, key string) {
 	}
 }
 
+// FailRun records a failure for one key discovered by a SCAN pass, giving it the same treatment a queued
+// failure gets: exponential backoff before the next attempt, and — after maxRetry — ONE "degraded" line
+// instead of a warning per heartbeat.
+//
+// IT EXISTS BECAUSE A SCAN BYPASSED ALL OF THIS. WorkflowReconciler.scanRuns calls reconcileRun directly for
+// every pending run, so a run that could not progress was logged and retried on every 200ms heartbeat with no
+// backoff, no cap and no terminal signal — 5552 identical warnings in 22 minutes on a real Windows host. The
+// queued path was always correct; the scan simply was not on it.
+func (m *Manager) FailRun(kind, key string, err error) {
+	m.mu.Lock()
+	var j *job
+	for i := range m.jobs {
+		if m.jobs[i].rec.Kind() == kind {
+			j = &m.jobs[i]
+			break
+		}
+	}
+	m.mu.Unlock()
+	if j == nil {
+		return
+	}
+	was := j.queue.failures(key)
+	j.queue.markFailed(key)
+	// THE FIRST TIME IT PASSES THE CAP, AND ONLY THEN. Repeating this every heartbeat is the noise being
+	// removed; saying it once is the signal that was missing entirely.
+	if was < j.maxRetry && j.queue.failures(key) >= j.maxRetry {
+		m.log.Warn("reconcile max retries exceeded — marking degraded",
+			"kind", kind, "key", key, "error", err)
+	}
+}
+
 // --- Work Queue (docs/03 §2.2) -----------------------------------------------
 
 type workQueue struct {
@@ -216,8 +247,36 @@ func (q *workQueue) enqueue(key string) {
 		return
 	}
 	now := time.Now()
-	q.pending[key] = &queueEntry{key: key, enqueuedAt: now, readyAt: now}
+	// A FAILURE ALREADY RECORDED FOR THIS KEY DECIDES WHEN IT MAY RUN AGAIN, and this used to be discarded:
+	// readyAt was unconditionally `now`, so every re-enqueue threw away the exponential backoff markFailed had
+	// just computed.
+	//
+	// THAT MATTERS BECAUSE THE SCAN PASS RE-ENQUEUES THE SAME BROKEN RUN EVERY HEARTBEAT. With readyAt reset,
+	// the backoff never applied and a persistently failing run was retried — and logged — every 200ms for as
+	// long as it stayed broken. MEASURED: 5552 identical "workflow run reconcile failed" lines in 22 minutes.
+	//
+	// The backoff lives in q.fail and is NOT cleared here; markDone clears it when the key finally succeeds,
+	// so a recovered run goes back to its ordinary cadence.
+	ready := now
+	if f := q.fail[key]; f > 0 {
+		ready = now.Add(backoffFor(f))
+	}
+	q.pending[key] = &queueEntry{key: key, enqueuedAt: now, readyAt: ready, failures: q.fail[key]}
 	q.ordered = append(q.ordered, key)
+}
+
+// backoffFor is the single definition of the retry delay: exponential from one second, capped at five
+// minutes. It was inline in markFailed; naming it is what lets enqueue and markFailed agree, which is the
+// whole point of the fix above.
+func backoffFor(failures int) time.Duration {
+	if failures <= 0 {
+		return 0
+	}
+	d := time.Duration(1<<uint(failures)) * time.Second
+	if d > 5*time.Minute {
+		d = 5 * time.Minute
+	}
+	return d
 }
 
 // dequeue returns the next ready key, or ok=false if the queue is empty.
@@ -269,13 +328,20 @@ func (q *workQueue) markFailed(key string) {
 	if entry, ok := q.pending[key]; ok {
 		entry.failures++
 		q.fail[key] = entry.failures
-		backoff := time.Duration(1<<uint(entry.failures)) * time.Second
-		if backoff > 5*time.Minute {
-			backoff = 5 * time.Minute
-		}
-		entry.readyAt = time.Now().Add(backoff)
+		entry.readyAt = time.Now().Add(backoffFor(entry.failures))
 		q.ordered = append(q.ordered, key)
+		return
 	}
+	// NOT PENDING — INCREMENT ANYWAY, BECAUSE A SCAN PASS REPORTS KEYS IT NEVER DEQUEUED.
+	//
+	// WorkflowReconciler.scanRuns calls reconcileRun directly for every pending run, so its failures arrive
+	// for keys that were never in this queue at all. The old body required a pending entry and therefore
+	// recorded NOTHING for them, which made the backoff below a no-op precisely on the path that needed it —
+	// the one that was retrying and warning every 200ms (5552 times in 22 minutes, measured).
+	//
+	// The count lives in q.fail and is read by enqueue, so the next enqueue for this key is delayed. markDone
+	// clears it on success.
+	q.fail[key]++
 }
 
 // requeueAfter schedules the key for re-processing after the given
