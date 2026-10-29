@@ -72,3 +72,51 @@ func TestTheMSICustomActionPassesConsole(t *testing.T) {
 		t.Errorf("the MSI's install action must stay non-interactive: %s", strings.TrimSpace(line))
 	}
 }
+
+// TestConsoleFlagSurvivesTheWholeParse is the regression that broke the MSI's install.
+//
+// The two parsers do different jobs: parseInstallFlags extracts the WIZARD's flags and hands the remainder to
+// parseInstanceTarget, which deliberately REJECTS any flag it does not know. So `--console` left in `rest` made
+// the install exit immediately with
+//
+//	unknown flag "--console"
+//
+// — the reported "it pops up and then closes immediately". Testing that hasConsoleFlag saw the flag was never
+// enough; the flag has to be CONSUMED, and that is what this pins.
+func TestConsoleFlagSurvivesTheWholeParse(t *testing.T) {
+	// The MSI's exact command line, minus the exe name.
+	args := []string{"--non-interactive", "--console", "--instance", "dev", "--launch-desktop"}
+
+	flags, rest, err := parseInstallFlags(args)
+	if err != nil {
+		t.Fatalf("parseInstallFlags: %v", err)
+	}
+	if !flags.WantsConsole {
+		t.Error("--console was not recorded — the flag was acted on by a PEEK, but the parse must also consume it")
+	}
+	if !flags.NonInteractive {
+		t.Error("--non-interactive was not recorded")
+	}
+	for _, a := range rest {
+		if a == "--console" || a == "-console" {
+			t.Fatalf("--console survived into the remainder, which goes to parseInstanceTarget — that parser "+
+				"rejects unknown flags, so the install exits instantly: rest=%v", rest)
+		}
+	}
+	// THE PROOF: the remainder must be ACCEPTABLE to the instance parser.
+	if _, err := parseInstanceTarget(rest, "dev"); err != nil {
+		t.Fatalf("the install's own argv is rejected downstream: %v\nrest=%v", err, rest)
+	}
+}
+
+// TestAnUnknownFlagIsStillRejected keeps the strictness this fix works around: consuming --console must not make
+// the parser permissive in general, because a wizard answer that gets dropped installs something nobody chose.
+func TestAnUnknownFlagIsStillRejected(t *testing.T) {
+	_, rest, perr := parseInstallFlags([]string{"--nonsense-flag", "--instance", "dev"})
+	if perr != nil {
+		return // rejected at the first parser: also fine
+	}
+	if _, err := parseInstanceTarget(rest, "dev"); err == nil {
+		t.Fatalf("an unknown flag reached the instance parser and was accepted: rest=%v", rest)
+	}
+}
