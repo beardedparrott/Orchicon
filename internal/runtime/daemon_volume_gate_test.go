@@ -14,6 +14,7 @@ package runtime
 // file pins the gate explicitly and pins the ARGV it must produce.
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ func TestValidateCreateRejectsNamedVolumes(t *testing.T) {
 	d := &Daemon{AllowedRoots: []string{root}, Image: "orchicon-runtime:local"}
 
 	for _, src := range []string{"orchicon-data", "./relative/path", "named-volume:/x"} {
-		err := d.validateCreate(CreateRequest{
+		err := d.validateCreate(context.Background(), CreateRequest{
 			WorkflowID: "wf-1",
 			Mounts:     []MountSpec{{Source: src, Dest: "/work"}},
 		})
@@ -42,7 +43,7 @@ func TestValidateCreateRejectsNamedVolumes(t *testing.T) {
 	}
 
 	// A genuine bind under an allowed root still passes.
-	if err := d.validateCreate(CreateRequest{
+	if err := d.validateCreate(context.Background(), CreateRequest{
 		WorkflowID: "wf-1",
 		Mounts:     []MountSpec{{Source: filepath.Join(root, "proj"), Dest: "/work"}},
 	}); err != nil {

@@ -13,6 +13,7 @@ package runtime
 // engine seam (Daemon.engineFn) so no container engine is needed.
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -123,7 +124,7 @@ func TestCreateGateRejectsAnImageWithoutTheMarker(t *testing.T) {
 				engineConsulted = true
 				return fn(args...)
 			}
-			err := d.validateCreate(CreateRequest{WorkflowID: "wf-gate", Image: c.image})
+			err := d.validateCreate(context.Background(), CreateRequest{WorkflowID: "wf-gate", Image: c.image})
 			if c.wantErr == "" {
 				if err != nil {
 					t.Fatalf("gate must ALLOW %q, got error: %v (engine calls: %v)", c.image, err, *calls)

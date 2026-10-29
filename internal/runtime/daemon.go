@@ -59,6 +59,19 @@ type Daemon struct {
 	GroupID      int      // host gid
 	HostHome     string   // host user home, mounted as the container HOME
 	AllowedRoots []string // host prefixes a project mount may be under
+	// AllowedRootsSource, when set, supplies the roots to ADD to AllowedRoots on every check — the
+	// project directories this plane knows about.
+	//
+	// IT IS A SOURCE, NOT A STARTUP LIST, because "a project's directory is allowed" has to become true the
+	// moment the project_dir is SET. A list captured at daemon start would silently refuse a project created
+	// a minute later, which is the same class of bug this whole area keeps producing: a capability that
+	// depends on when something was configured rather than on what is configured.
+	//
+	// Read per check rather than cached, for the same reason. The lookup is one indexed query against a
+	// handful of rows, and create is not a hot path — a container is built in seconds.
+	//
+	// A nil source means "operator roots only", which is the previous behaviour exactly.
+	AllowedRootsSource func(ctx context.Context) ([]string, error)
 	// ExePath is the daemon's own executable, bind-mounted read-only into
 	// every runtime container at /usr/local/bin/orchicon so the container can
 	// exec `orchicon runtime-supervisor` / `runtime-client` without the
@@ -330,7 +343,7 @@ func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "bad request: "+err.Error())
 			return
 		}
-		if err := d.validateCreate(req); err != nil {
+		if err := d.validateCreate(r.Context(), req); err != nil {
 			httpError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -600,7 +613,7 @@ func mountArgv(mounts []MountSpec) []string {
 
 // validateCreate enforces the daemon's security policy: image allowlist,
 // mount-source allowlist, argv allowlist.
-func (d *Daemon) validateCreate(req CreateRequest) error {
+func (d *Daemon) validateCreate(ctx context.Context, req CreateRequest) error {
 	if req.WorkflowID == "" {
 		return fmt.Errorf("workflow_id required")
 	}
@@ -636,10 +649,12 @@ func (d *Daemon) validateCreate(req CreateRequest) error {
 		// CHECKED IN THE ENGINE'S VIEW (withinAllowedRootsIn): on Windows the host path and the guest path have no
 		// string relationship, so comparing the host form against host roots refuses every mount once mapping is
 		// on. The error names BOTH forms, because the operator configured the one and the engine got the other.
-		if !d.withinAllowedRootsIn(abs) {
+		roots := d.effectiveAllowedRoots(ctx)
+		if !withinRootsIn(d.Paths, abs, roots) {
 			return fmt.Errorf("mount source outside allowed roots: %s (as the container engine sees it: %s; "+
-				"allowed roots: %s — see ORCHICON_RUNTIME_ALLOWED_ROOTS)",
-				abs, d.Paths.Map(abs), strings.Join(d.AllowedRoots, ", "))
+				"allowed roots: %s — a PROJECT's own project_dir is always allowed, and "+
+				"ORCHICON_RUNTIME_ALLOWED_ROOTS adds more)",
+				abs, d.Paths.Map(abs), strings.Join(roots, ", "))
 		}
 		if m.Dest == "" {
 			return fmt.Errorf("mount dest required")
@@ -676,17 +691,44 @@ func validWorkflowID(id string) bool {
 	return true
 }
 
-func (d *Daemon) withinAllowedRoots(path string) bool {
-	if len(d.AllowedRoots) == 0 {
-		return false
+// effectiveAllowedRoots is the allowlist for THIS create: the operator's configured roots PLUS every project
+// directory this plane knows about.
+//
+// WHY PROJECT DIRECTORIES ARE ALLOWED AT ALL. A runtime container exists to work on a project, and the project
+// says where that is. Requiring it to live under %USERPROFILE%\projects is an arbitrary restriction with a real
+// cost — an operator with their work on D:\ or C:\projects had to move the tree or discover an environment
+// variable before anything would run:
+//
+//	mount source outside allowed roots: C:\projects\weatherapp
+//	    (as the container engine sees it: /mnt/c/projects/weatherapp; allowed roots: C:\Users\justi\projects)
+//
+// The engine's own document that log quotes from says the default list is a CONVENIENCE, not a policy. The
+// policy that matters is "this plane may only mount trees it was told to work on", and a project_dir is
+// precisely that.
+//
+// IT IS NOT UNLIMITED ACCESS. Only directories of projects that EXIST and are ACTIVE are added; a project that
+// is archived, deleted, or never created contributes nothing. So the allowlist remains a statement about what
+// this plane has been asked to work on, which is the boundary that was meant.
+//
+// IT FAILS CLOSED. If the source cannot be read, its roots are simply absent — never "allow everything", and
+// never a silent success. The operator roots still apply, so a transient database problem degrades to the old
+// behaviour rather than widening anything.
+func (d *Daemon) effectiveAllowedRoots(ctx context.Context) []string {
+	roots := append([]string(nil), d.AllowedRoots...)
+	if d.AllowedRootsSource == nil {
+		return roots
 	}
-	for _, root := range d.AllowedRoots {
-		r := filepath.Clean(root)
-		if path == r || strings.HasPrefix(path, r+string(os.PathSeparator)) {
-			return true
+	extra, err := d.AllowedRootsSource(ctx)
+	if err != nil {
+		// LOUD BUT NOT FATAL. A container create is about to be refused for a reason the operator cannot see
+		// if this stays silent; it is not fatal because the configured roots may still cover the mount.
+		if d.Log != nil {
+			d.Log.Warn("runtime daemon: could not read the project directories to allow — using the configured roots only",
+				"error", err)
 		}
+		return roots
 	}
-	return false
+	return append(roots, extra...)
 }
 
 // createContainer creates a runtime container with the given pool-managed

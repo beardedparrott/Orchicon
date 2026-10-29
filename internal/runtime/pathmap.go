@@ -242,12 +242,26 @@ func (d *Daemon) withinAllowedRootsIn(path string) bool {
 	if d == nil {
 		return false
 	}
-	if len(d.AllowedRoots) == 0 {
+	return withinRootsIn(d.Paths, path, d.AllowedRoots)
+}
+
+// withinRootsIn is the ONE comparison, over an explicit root set.
+//
+// IT TAKES ROOTS RATHER THAN READING d.AllowedRoots because the set is no longer fixed: the daemon allows the
+// operator's configured roots AND every project directory the plane knows about (effectiveAllowedRoots). Two
+// copies of this logic — one for a fixed list, one for the dynamic set — is how the two would start disagreeing
+// about a mount the engine accepts.
+//
+// BOTH SIDES ARE MAPPED, which is the part that matters on Windows: a host path and a guest path have no string
+// relationship there, so `C:\projects\app` must be compared as `/mnt/c/projects/app` against roots mapped the
+// same way. On Linux and macOS the mapping is identity, so this is the plain comparison.
+func withinRootsIn(m *PathMapper, path string, roots []string) bool {
+	if len(roots) == 0 {
 		return false
 	}
-	guest := d.Paths.Map(path)
-	for _, root := range d.AllowedRoots {
-		r := filepath.Clean(d.Paths.Map(root))
+	guest := m.Map(path)
+	for _, root := range roots {
+		r := filepath.Clean(m.Map(root))
 		if guest == r || strings.HasPrefix(guest, r+"/") || strings.HasPrefix(guest, r+string(os.PathSeparator)) {
 			return true
 		}
