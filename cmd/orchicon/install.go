@@ -1365,26 +1365,46 @@ func imagePresent(img string) bool {
 	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
-// runtimeVariantRef returns the registry ref for a derived runtime image variant
-// (:gui or :dev) at the requested tag.
+// runtimeVariantRef returns the registry ref for a derived runtime image variant (:gui or :dev) at the requested
+// tag. It is THE ONE implementation, shared by the installer's image prompt (install_runtime_images.go) and the
+// runtime daemon's allowlist (runtime.go).
 //
-// THE SHAPE MIRRORS THE RELEASE WORKFLOW EXACTLY, and the installer previously
-// got it wrong. release.yml publishes, for a release:
+// RELEASE TAGS DO NOT GET A "-latest", and this is the third place the same bug has had to be fixed. The reason
+// it kept returning is that the rule lived in three implementations; the two that were fixed are
+// internal/runtimeimage/seed.go (whose catalog documents the identical failure) and here. The one that was MISSED
+// was the daemon's allowlist — which is the producer that actually decides the tag a seeded catalogue row carries,
+// so it is the one that mattered.
 //
-//	<base>:gui-<version>   and the FLOATING   <base>:gui
-//	<base>:dev-<version>   and the FLOATING   <base>:dev
+// release.yml publishes, for a release:
 //
-// so the floating tag DROPS the version rather than becoming "-latest". The
-// installer built "<suffix>-<tag>", which for the default tag "latest" produced
-// ":gui-latest" — published by nothing, which aborted every fresh install at the
-// image pull. TestRuntimeVariantRefMatchesReleaseWorkflow pins this against
-// release.yml so the two cannot drift again.
-func runtimeVariantRef(suffix, imageTag string) string {
-	const base = "ghcr.io/beardedparrott/orchicon-runtime"
+//	<repo>:gui-<version>   and the FLOATING   <repo>:gui
+//	<repo>:dev-<version>   and the FLOATING   <repo>:dev
+//
+// so the floating variant tags DROP the version rather than becoming "-latest". Building "<variant>-<tag>"
+// instead produced ":gui-latest" and ":dev-latest", which nothing publishes, and a fetch failed with exactly
+// what an operator reported:
+//
+//	Error: unable to copy from source docker://ghcr.io/beardedparrott/orchicon-runtime:dev-latest:
+//	reading manifest dev-latest in ghcr.io/beardedparrott/orchicon-runtime: manifest unknown
+//
+// An explicitly-named, non-release tag keeps the "<variant>-<tag>" spelling, which is what a locally-built tag
+// uses. TestRuntimeVariantRefMatchesReleaseWorkflow pins this against release.yml so the two cannot drift again.
+func runtimeVariantRef(variant, imageTag string) string {
+	return runtimeVariantRefIn(runtimeImageRepo, variant, imageTag)
+}
+
+// runtimeImageRepo is the DEFAULT published repository. It is a default, not a constant of the system: a host may
+// point ORCHICON_RUNTIME_IMAGE at a mirror, and the variant tags must follow that repository rather than silently
+// naming ghcr.io. That is why the rule below is parameterised by repo and this is only the two-argument shorthand.
+const runtimeImageRepo = "ghcr.io/beardedparrott/orchicon-runtime"
+
+// runtimeVariantRefIn is THE rule, for a given repository: a release tag has no variant prefix beyond the
+// variant's own name, and an explicitly-named tag keeps "<variant>-<tag>".
+func runtimeVariantRefIn(repo, variant, imageTag string) string {
 	if imageTag == "" || imageTag == "latest" {
-		return base + ":" + suffix
+		return repo + ":" + variant
 	}
-	return base + ":" + suffix + "-" + imageTag
+	return repo + ":" + variant + "-" + imageTag
 }
 
 // ensureImage makes the local copy of ref CURRENT, pulling it.
