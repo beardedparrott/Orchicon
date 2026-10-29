@@ -308,6 +308,17 @@
          Impersonate="yes": it runs AS THE INSTALLING USER. Everything it starts (the plane,
          postgres, nats) must belong to that user.
 
+         AND THE CONSOLE FLAG IS LOAD-BEARING, NOT DECORATION. Return="asyncNoWait" means this action
+         returns immediately, so the wizard finishes and exits while the install is still working, and
+         without a console of its own the install DIES with the console it was sharing. Reported exactly:
+         "it runs through the entire install and then closes out at the window at the end."
+
+         The two flags say different things and neither implies the other: "non-interactive" means ask
+         nothing, "console" means give me my own window so I survive, and so the operator can watch.
+         Removing the console flag reintroduces a silent death at the last step of the wizard. (This
+         comment deliberately spells neither flag with its leading dashes: two hyphens in a row are
+         illegal inside an XML comment, which is how an earlier version of this note broke the build.)
+
          SKIPSETUP=1 remains the unattended opt-out (binaries only), and the Burn bundle
          passes it because the bundle gives the operator its own UI. -->
     <CustomAction Id="LaunchSetup"
@@ -315,7 +326,7 @@
                   Execute="immediate"
                   Impersonate="yes"
                   Return="asyncNoWait"
-                  ExeCommand="install --non-interactive --instance dev --launch-desktop" />
+                  ExeCommand="install --non-interactive --console --instance dev --launch-desktop" />
 
     <!-- ===================== THE UNINSTALL ==============================
          AN UNINSTALL MUST TAKE THE SERVICES WITH IT, and until now it took nothing: LaunchSetup is

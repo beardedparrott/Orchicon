@@ -164,8 +164,29 @@ func runInstall(args []string, log *slog.Logger) error {
 	// A NON-INTERACTIVE RUN NEVER RELAUNCHES FOR A CONSOLE. It has nothing to ask, so opening a
 	// window would be the one thing it must not do — that is the "brought up the script and asked
 	// me everything again" report, and it is why this precedes the relaunch.
-	wantConsole := !hasNonInteractiveFlag(args)
-	if wantConsole && ensureInteractiveConsole(true) {
+	// A RUN THAT MUST OUTLIVE ITS PARENT ASKS FOR A CONSOLE OF ITS OWN.
+	//
+	// `interactiveAllowed` is what the relaunched child will see: it must keep answering nothing when the
+	// caller said --non-interactive. A console is a place to PRINT, not an invitation to ask.
+	interactiveAllowed := !hasNonInteractiveFlag(args)
+	//
+	// THE MSI'S INSTALL WAS DYING WITH THE WIZARD. Its custom action is
+	//     install --non-interactive --instance dev --launch-desktop
+	// with Return="asyncNoWait", so the wizard finishes and exits immediately while this install is still
+	// downloading host binaries — and the child dies with the console it was sharing. Reported, exactly:
+	// "it runs through the entire install and then closes out at the window at the end."
+	//
+	// --non-interactive used to imply NO console at all, which conflated two different needs: "never ask a
+	// question" and "do not open a window". The MSI run needs the second: an install with nobody asking still
+	// has minutes of work to do, and the console is what keeps it alive after the wizard goes. It also gives the
+	// operator something to watch instead of a wizard that vanishes.
+	//
+	// The two requirements are therefore separate flags, and neither implies the other:
+	//     --non-interactive   ask nothing (unchanged meaning)
+	//     --console           I am not attached to a console; give me my own and detach onto it
+	// A plain `orchicon install` in a terminal still relaunches into its own console as before.
+	wantConsole := !hasNonInteractiveFlag(args) || hasConsoleFlag(args)
+	if wantConsole && ensureInteractiveConsole(interactiveAllowed) {
 		log.Info("orchicon install: relaunched in its own console")
 		return nil
 	}
