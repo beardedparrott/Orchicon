@@ -334,13 +334,31 @@ func runtimeImagesAllowlist(csv string) []string {
 	if csv != "" {
 		return splitCSV(csv)
 	}
-	// Default base tag is "<repo>:<tag>"; variants tag as
-	// "<repo>:<variant>-<tag>" (e.g. "orchicon-runtime:gui-latest").
+	// THE VARIANT TAGS COME FROM runtimeVariantRef, NOT FROM A LOCAL CONCATENATION — and the difference is a
+	// reported bug, not tidiness.
+	//
+	// This built "<repo>:<variant>-<tag>", which for the default tag "latest" produced ":gui-latest" and
+	// ":dev-latest". NOTHING PUBLISHES THOSE. release.yml pushes ":gui" and ":dev" (floating) alongside
+	// ":gui-<version>" and ":dev-<version>", so the floating tag drops the version instead of becoming "-latest".
+	//
+	// THE BLAST RADIUS WAS BIGGER THAN THE ALLOWLIST. This value is the daemon's Images list, and the catalogue
+	// seeder reconciles each stock row's TAG to whatever the daemon reports — so this line decided the tag the
+	// operator's row carried, and a fetch pulled it and failed:
+	//
+	//	Error: unable to copy from source docker://ghcr.io/beardedparrott/orchicon-runtime:dev-latest:
+	//	reading manifest dev-latest in ghcr.io/beardedparrott/orchicon-runtime: manifest unknown
+	//
+	// It was already fixed in internal/runtimeimage/seed.go and in install.go's runtimeVariantRef; this copy was
+	// missed because the rule had THREE homes. Now it has one, and this is a call into it.
 	img := env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest")
+	// LastIndex, NOT Cut: a repository can carry a PORT, and "localhost:5000/orchicon-runtime:dev" has two
+	// colons. Cutting at the first one would make the tag "5000/orchicon-runtime:dev" and build garbage from it.
+	// (The previous code used LastIndex for exactly this reason and the reason was worth keeping.)
 	colon := strings.LastIndex(img, ":")
 	if colon <= 0 {
 		return nil
 	}
 	repo, tag := img[:colon], img[colon+1:]
-	return []string{repo + ":gui-" + tag, repo + ":dev-" + tag}
+	// THE REPOSITORY COMES FROM THE ENV VAR, so a mirror keeps working; only the TAG RULE is shared.
+	return []string{runtimeVariantRefIn(repo, "gui", tag), runtimeVariantRefIn(repo, "dev", tag)}
 }

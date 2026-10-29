@@ -68,9 +68,9 @@ func TestServicesHealthNamesEveryDeadComponent(t *testing.T) {
 		"ORCHICON_POSTGRES_PORT":     5432,
 		"ORCHICON_NATS_MONITOR_PORT": serveOK(t),
 		"ORCHICON_TEMPO_PORT":        serveOK(t),
-		"ORCHICON_LOKI_PORT":         closedPort(t),
+		"ORCHICON_LOKI_PORT":         deadServicePort(t),
 		"ORCHICON_VM_PORT":           serveOK(t),
-		"ORCHICON_OTEL_HEALTH_PORT":  closedPort(t),
+		"ORCHICON_OTEL_HEALTH_PORT":  deadServicePort(t),
 	}
 	t.Setenv(telemetryEnv, "embedded")
 
@@ -232,8 +232,17 @@ func writeFakePgIsReady(t *testing.T, exitCode int) string {
 	return dir
 }
 
-// closedPort returns a port with nothing listening on it: the honest way to model a child that is
-// dead, rather than a port that merely refuses on some platforms and hangs on others.
+// closedPort returns a port with NOTHING listening on it: the honest way to model a child that is dead,
+// rather than a port that merely refuses on some platforms and hangs on others.
+//
+// IT RELEASES THE PORT, and that is what its callers need: this is the helper for "ask who owns this port and
+// find nobody", so a listener of our own would make the answer wrong. (That is a real constraint, not a
+// preference — lookupPortOwners reads LISTEN sockets with lsof, so a held port reports the test process as the
+// owner and TestReportPortOwnerStaysQuietWhenThePortIsFree correctly fails.)
+//
+// A CALLER THAT ONLY NEEDS "NOTHING ANSWERS" SHOULD USE deadServicePort INSTEAD. Releasing the number puts it
+// back in the ephemeral pool, where a later "any free port" request can be handed it — which is exactly how a
+// test that declared Loki dead ended up with Loki answering.
 func closedPort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -245,6 +254,45 @@ func closedPort(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return port
+}
+
+// deadServicePort returns a port that NOTHING CAN OCCUPY AND NOTHING ANSWERS on, for the whole test.
+//
+// IT EXISTS BECAUSE closedPort IS UNSAFE FOR THIS QUESTION, and the failure it caused was a CI failure of the
+// whole go-ci gate:
+//
+//	services_health_test.go:92: loki and otel-collector are unreachable, so both must be reported down;
+//	                            got map[otel-collector:true]
+//
+// The mechanism, confirmed by experiment: closedPort releases an ephemeral port, and a subsequent serveOK(t)
+// asks the kernel for "any free port", which is entitled to hand back the very number just released. When it
+// does, the component the test declared DEAD answers 200 and is reported up.
+//
+// TWO PROPERTIES ARE NEEDED, AND THEY PULL IN OPPOSITE DIRECTIONS:
+//
+//  1. THE PORT MUST STAY RESERVED, so no other listener in the test can be given it.
+//  2. A DIAL MUST FAIL FAST. Left merely unaccepted, the connection sits in the backlog and the probe waits out
+//     its full 3s timeout — this test took 18 SECONDS that way, and a slow test is a test somebody skips.
+//
+// Accepting and immediately closing satisfies both: the listener holds the number for the test's lifetime, and
+// the peer sees a reset at once, which is how a crash-looped child actually behaves.
+func deadServicePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return // Cleanup closed the listener
+			}
+			_ = c.Close()
+		}
+	}()
+	return l.Addr().(*net.TCPAddr).Port
 }
 
 // THE PORTS RECORD MUST BE COMPLETE, AND "COMPLETE" MEANS EVERY PORT THE INSTANCE BINDS.
