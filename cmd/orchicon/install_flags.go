@@ -28,6 +28,9 @@ type installFlags struct {
 	// NonInteractive says "everything has already been decided; do not ask". The WINDOWS WIZARD
 	// sets it, because it has just collected every answer on its own pages.
 	NonInteractive bool
+	// WantsConsole records --console: give this install its own console and detach onto it. Set so the flag is
+	// visible to a caller, and CONSUMED here so it never reaches the instance parser (see the arm's note).
+	WantsConsole bool
 	// LaunchDesktop opens the desktop app once the control plane is confirmed healthy. The MSI sets it,
 	// because the handover used to live in the wizard's Finish page and could not be made to work there —
 	// see install_desktop.go for the three attempts and why the fact belongs to the installer.
@@ -87,6 +90,19 @@ func parseInstallFlags(args []string) (installFlags, []string, error) {
 			// A PLAIN SWITCH, not a value: "after a healthy install, open the app" is a yes/no, and a value
 			// form invites the empty-argument hazard this parser already documents elsewhere.
 			out.LaunchDesktop = true
+
+		case arg == "--console" || arg == "-console":
+			// CONSUMED, NOT PASSED THROUGH.
+			//
+			// The console decision is made BEFORE this parse (hasConsoleFlag peeks at the raw argv), so this
+			// arm exists for one reason: to keep the flag out of `rest`. `rest` goes to parseInstanceTarget,
+			// which DELIBERATELY REJECTS any unknown flag — so leaving `--console` in it made the install
+			// exit instantly with `unknown flag "--console"`, which is exactly the reported "it pops up and
+			// then closes immediately".
+			//
+			// A flag this parser has already acted on is not an unknown flag downstream. It is recorded in
+			// out so a caller can see it, and removed so nothing downstream has to know about it.
+			out.WantsConsole = true
 
 		case arg == "--non-interactive" || arg == "-non-interactive":
 			// THE WIZARD ANSWERED EVERYTHING, SO THERE IS NOTHING LEFT TO ASK.
