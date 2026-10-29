@@ -19,6 +19,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
 // TestLauncherOutcomeIsReportedNotAssumed is the lie itself.
@@ -193,5 +195,39 @@ func TestLauncherProblemIsWhatTheSummaryPrints(t *testing.T) {
 	got := installOrchLauncherFrom(exe, filepath.Join(dir, "install"))
 	if got.Installed || got.Problem == "" {
 		t.Fatalf("want not-installed WITH a problem, got installed=%v problem=%q", got.Installed, got.Problem)
+	}
+}
+
+// TestSummaryReportsTheLauncherItActuallyInstalled is the OUTWARD-FACING claim, in both directions: the box a
+// person reads must name the launcher when it is there, and must NOT name it when it is not.
+//
+// This is the assertion the whole change exists for. Everything above tests the decision; this tests what the
+// decision turns into on screen, which is the only part an operator ever sees.
+func TestSummaryReportsTheLauncherItActuallyInstalled(t *testing.T) {
+	summary := func(l orchLauncher) string {
+		return captureStdout(t, func() {
+			printInstallInfo("dev", residencyHost, "n", "v", "/tmp/s", "http://localhost:8080/healthz",
+				"img", "/home/u/.local/bin", l, map[string]int{}, false, true, containerengine.Status{})
+		})
+	}
+
+	present := summary(orchLauncher{Path: "/home/u/.local/bin/orch", Installed: true, Method: "copy"})
+	if !strings.Contains(present, "orch launcher: /home/u/.local/bin/orch (remote TUI client, copy)") {
+		t.Fatalf("a launcher that WAS installed is not named, with its mechanism:\n%s", present)
+	}
+	if strings.Contains(present, "NOT installed") {
+		t.Fatalf("the summary says a present launcher is missing:\n%s", present)
+	}
+
+	// THE REPORTED BUG, verbatim: the launcher could not be placed and the summary named it anyway.
+	missing := summary(orchLauncher{Path: "/home/u/.local/bin/orch", Problem: "could not place it"})
+	if strings.Contains(missing, "orch launcher: /home/u/.local/bin/orch (remote TUI client") {
+		t.Fatalf("the summary claimed a launcher that was not installed:\n%s", missing)
+	}
+	if !strings.Contains(missing, "NOT installed") {
+		t.Fatalf("the summary did not say the launcher is missing:\n%s", missing)
+	}
+	if !strings.Contains(missing, "could not place it") {
+		t.Fatalf("the summary did not carry the reason, so the operator has a gap and no cause:\n%s", missing)
 	}
 }
