@@ -110,14 +110,26 @@ func planInstall(p Probe, e Engine) (InstallPlan, error) {
 
 	switch p.goos() {
 	case "darwin":
-		if _, err := p.lookPath("brew"); err != nil {
-			return InstallPlan{}, fmt.Errorf("%w: Homebrew is not on PATH, so podman cannot be installed automatically — install Homebrew (https://brew.sh) or podman itself (%s)", ErrDeclined, PodmanDocsURL)
+		brew, ok := locatePackageManager(p, "brew")
+		if !ok {
+			return InstallPlan{}, fmt.Errorf("%w: Homebrew was not found, so podman cannot be installed automatically — install Homebrew (https://brew.sh) or podman itself (%s)", ErrDeclined, PodmanDocsURL)
 		}
-		return InstallPlan{Command: "brew", Args: []string{"install", "podman"}}, nil
+		return InstallPlan{Command: brew, Args: []string{"install", "podman"}}, nil
 
 	case "windows":
-		if _, err := p.lookPath("winget"); err != nil {
-			return InstallPlan{}, fmt.Errorf("%w: winget is not available, so podman cannot be installed automatically — install podman from %s", ErrDeclined, PodmanDocsURL)
+		// WINGET IS LOOKED FOR IN ITS CONVENTIONAL LOCATIONS TOO, and that is the fix for a reported bug rather
+		// than a tidy-up. It used to be `p.lookPath("winget")` and nothing else. Launched by the Windows MSI's
+		// custom action, this process does not carry %LOCALAPPDATA%\Microsoft\WindowsApps on its PATH, so the
+		// install concluded "winget is not available" and SKIPPED podman entirely — measured, from a real box:
+		//
+		//	orchicon: the container engine is installed but cannot run a container: ... (podman could not be
+		//	installed instead: winget is not available, so podman cannot be installed automatically)
+		//
+		// Run by hand in PowerShell the same install provisioned podman every time, because PowerShell resolves
+		// App Execution Aliases itself. The capability must not depend on who launched us.
+		winget, ok := locatePackageManager(p, "winget")
+		if !ok {
+			return InstallPlan{}, fmt.Errorf("%w: winget was not found (not on PATH, and not at %%LOCALAPPDATA%%\\Microsoft\\WindowsApps), so podman cannot be installed automatically — install the App Installer (winget) or podman itself from %s", ErrDeclined, PodmanDocsURL)
 		}
 		// SILENT, AND THAT IS NOT COSMETIC.
 		//
@@ -128,7 +140,9 @@ func planInstall(p Probe, e Engine) (InstallPlan, error) {
 		//
 		// The agreement flags stay because a silent install cannot accept a prompt it cannot show.
 		return InstallPlan{
-			Command: "winget",
+			// THE RESOLVED PATH, not the bare name. The child inherits this process's PATH — the very PATH that
+			// did not find winget — so a bare "winget" would fail to start even now that we know where it is.
+			Command: winget,
 			Args: []string{"install", "--id", "RedHat.Podman", "-e", "--silent",
 				"--accept-source-agreements", "--accept-package-agreements"},
 			Fallback: "RedHat.Podman-Desktop",
@@ -148,11 +162,14 @@ func planInstall(p Probe, e Engine) (InstallPlan, error) {
 			{"pacman", []string{"-S", "--noconfirm", "podman"}, false},
 			{"apk", []string{"add", "podman"}, false},
 		} {
-			if _, err := p.lookPath(cand.bin); err == nil {
-				return InstallPlan{Command: cand.bin, Args: cand.args, NeedsRoot: cand.needsRoot}, nil
+			// THE SAME RULE AS WINDOWS. A minimal image can install a package manager somewhere that is not on
+			// this process's PATH (a service-manager environment is the usual way), and concluding "no supported
+			// package manager" on a host that has dnf at /usr/bin/dnf is the same defect in a different costume.
+			if bin, ok := locatePackageManager(p, cand.bin); ok {
+				return InstallPlan{Command: bin, Args: cand.args, NeedsRoot: cand.needsRoot}, nil
 			}
 		}
-		return InstallPlan{}, fmt.Errorf("%w: no supported package manager (dnf, apt-get, zypper, pacman, apk) was found — install podman from %s", ErrDeclined, PodmanDocsURL)
+		return InstallPlan{}, fmt.Errorf("%w: no supported package manager (dnf, apt-get, zypper, pacman, apk) was found anywhere — install podman from %s", ErrDeclined, PodmanDocsURL)
 	}
 
 	return InstallPlan{}, fmt.Errorf("%w: no supported installer for %s — install podman from %s", ErrDeclined, p.goos(), PodmanDocsURL)
@@ -305,8 +322,23 @@ func provision(ctx context.Context, p Probe, out io.Writer, confirm func(string)
 	if err != nil {
 		return Engine{Name: EngineNone}, err
 	}
+	// A FRESH INSTALL IS NOT ON THIS PROCESS'S PATH YET, so the re-detect above can legitimately say "none".
+	//
+	// winget and brew commit to the REGISTRY (or the shell profile), not to the environment of the process that
+	// ran them, so the value we just watched install can be invisible to the very next probe. Concluding
+	// "reported success but no podman binary is on PATH" from that is how a working install gets reported as a
+	// failure and the operator is sent to open a new shell for nothing.
+	//
+	// WaitForBinary re-probes for a bounded window and only trusts a CONVENTIONAL location, so a winget stub
+	// that appears early cannot masquerade as a working engine (see isConventionalInstall).
 	if e.Name == EngineNone {
-		return Engine{Name: EngineNone}, fmt.Errorf("%w: the installer reported success but no podman binary is on PATH — open a new shell (PATH is usually reloaded by the shell profile) and re-run `orchicon install`", ErrDeclined)
+		if re, ok := e.WaitForBinary(p); ok {
+			fmt.Fprintf(out, "orchicon: podman appeared at %s after the install (PATH is refreshed at logon)\n", re.Bin)
+			e = re
+		}
+	}
+	if e.Name == EngineNone {
+		return Engine{Name: EngineNone}, fmt.Errorf("%w: the installer reported success but no podman binary was found — it may be installed somewhere this shell cannot see. Open a NEW terminal and re-run `orchicon install`", ErrDeclined)
 	}
 	// The version is a separate client call (Detect stays execution-free), and the "installed"
 	// line is much more useful with it — so ask once, here.

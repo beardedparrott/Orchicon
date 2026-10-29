@@ -165,16 +165,29 @@ func (p Probe) isRoot() bool {
 // conventionalPaths are the install locations a package manager or a GUI app uses that
 // a non-login PATH may miss (a double-clicked app bundle inherits none of the shell's
 // profile). Checked with Stat only, so detection stays a probe and never runs a binary.
-func conventionalPaths(goos string) map[Name][]string {
-	progFiles := os.Getenv("ProgramFiles")
+//
+// IT TAKES THE PROBE'S ENVIRONMENT, NOT THIS PROCESS'S. It used os.Getenv directly, which had two
+// consequences: the locations could not be exercised by a test (a Probe carries Getenv precisely so the OS
+// boundary is replaceable — every other resolver in this package honours it), and with an EMPTY environment it
+// produced a RELATIVE candidate (`AppData\Local/Programs\Podman\podman.exe`, joined from an empty
+// %USERPROFILE%), which then resolved against the working directory. Measured while adding the installer
+// fallback; the empty-environment case is a probe-only artifact, and the untestability was the real cost.
+func conventionalPaths(p Probe) map[Name][]string {
+	progFiles := p.getenv("ProgramFiles")
 	if progFiles == "" {
 		progFiles = `C:\Program Files`
 	}
-	localAppData := os.Getenv("LOCALAPPDATA")
+	localAppData := p.getenv("LOCALAPPDATA")
 	if localAppData == "" {
-		localAppData = filepath.Join(os.Getenv("USERPROFILE"), `AppData\Local`)
+		localAppData = p.getenv("USERPROFILE")
+		if localAppData == "" {
+			// NO RELATIVE PATH, EVER. An unresolvable %LOCALAPPDATA% must yield NO candidate rather than one
+			// that silently means "somewhere under the current directory".
+			return conventionalPathsWithoutLocalAppData(p.goos(), progFiles)
+		}
+		localAppData = filepath.Join(localAppData, `AppData\Local`)
 	}
-	switch goos {
+	switch p.goos() {
 	case "darwin":
 		return map[Name][]string{
 			EnginePodman: {
@@ -198,6 +211,90 @@ func conventionalPaths(goos string) map[Name][]string {
 			EngineDocker: {"/usr/bin/docker", "/usr/local/bin/docker"},
 		}
 	}
+}
+
+// conventionalPathsWithoutLocalAppData is the table MINUS the entries that need %LOCALAPPDATA%.
+//
+// It exists so an unresolvable %LOCALAPPDATA% yields FEWER candidates instead of a relative one. The entries
+// that survive are all built from %ProgramFiles% or an absolute POSIX path, so they cannot depend on where the
+// process happens to be.
+func conventionalPathsWithoutLocalAppData(goos, progFiles string) map[Name][]string {
+	switch goos {
+	case "darwin":
+		return map[Name][]string{
+			EnginePodman: {"/opt/homebrew/bin/podman", "/usr/local/bin/podman"},
+			EngineDocker: {"/usr/local/bin/docker"},
+		}
+	case "windows":
+		return map[Name][]string{
+			EnginePodman: {filepath.Join(progFiles, `RedHat\Podman\podman.exe`)},
+			EngineDocker: {filepath.Join(progFiles, `Docker\Docker\resources\bin\docker.exe`)},
+		}
+	default:
+		return map[Name][]string{
+			EnginePodman: {"/usr/bin/podman", "/usr/local/bin/podman"},
+			EngineDocker: {"/usr/bin/docker", "/usr/local/bin/docker"},
+		}
+	}
+}
+
+// packageManagerPaths are the places each installer program lives when PATH does not say so.
+//
+// IT IS THE SAME IDEA AS conventionalPaths, FOR THE OTHER HALF OF THE INSTALL. The engine half already worked
+// this way; the installer half did not, and that asymmetry is the reported bug (see locateFile). A Windows
+// `winget` is an App Execution Alias under %LOCALAPPDATA%\Microsoft\WindowsApps — a directory that IS on a
+// normal user's PATH but is NOT on the PATH of a process launched by an installer custom action.
+//
+// KEPT SEPARATE FROM conventionalPaths ON PURPOSE: that map is keyed by engine Name and feeds Detect, whose
+// contract is "is an ENGINE available" and which must never learn about package managers. These are not engines.
+func packageManagerPaths(p Probe) map[string][]string {
+	progFiles := p.getenv("ProgramFiles")
+	if progFiles == "" {
+		progFiles = `C:\Program Files`
+	}
+	localAppData := p.getenv("LOCALAPPDATA")
+	if localAppData == "" {
+		localAppData = p.getenv("USERPROFILE")
+		if localAppData != "" {
+			localAppData = filepath.Join(localAppData, `AppData\Local`)
+		}
+	}
+	switch p.goos() {
+	case "darwin":
+		return map[string][]string{
+			"brew": {"/opt/homebrew/bin/brew", "/usr/local/bin/brew"},
+		}
+	case "windows":
+		winget := []string{
+			filepath.Join(progFiles, `WindowsApps\winget.exe`),
+			filepath.Join(progFiles, `WindowsApps\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\winget.exe`),
+		}
+		// USER FIRST: a per-user winget is what an unelevated install gets. PREPENDED ONLY WHEN %LOCALAPPDATA%
+		// RESOLVED — joining onto an empty base yields a RELATIVE path, which would resolve against the working
+		// directory and could match anything. A candidate that might be wrong is worse than one fewer candidate:
+		// the machine-wide entries below still cover the ordinary case.
+		if localAppData != "" {
+			winget = append([]string{filepath.Join(localAppData, `Microsoft\WindowsApps\winget.exe`)}, winget...)
+		}
+		return map[string][]string{"winget": winget}
+	default:
+		return map[string][]string{
+			"dnf":  {"/usr/bin/dnf"},
+			// BOTH NAMES, because planInstall asks for "apt-get" and a host may have only "apt" (or a busybox-ish
+			// image may have neither). Keyed by the name the PLAN uses, with the other as a candidate for it.
+			"apt-get": {"/usr/bin/apt-get", "/usr/bin/apt"},
+			"apt":     {"/usr/bin/apt", "/usr/bin/apt-get"},
+			"yum":  {"/usr/bin/yum"},
+			"zypper": {"/usr/bin/zypper"},
+			"pacman": {"/usr/bin/pacman"},
+			"apk":    {"/sbin/apk", "/usr/bin/apk"},
+		}
+	}
+}
+
+// locatePackageManager is locateFile for an INSTALLER program, with its own location table.
+func locatePackageManager(p Probe, name string) (string, bool) {
+	return locateFile(p, name, packageManagerPaths(p)[name])
 }
 
 // Detect resolves the engine. Order: explicit pin → podman on PATH → podman in the
@@ -235,17 +332,39 @@ func Detect(p Probe) (Engine, error) {
 	return Engine{Name: EngineNone}, nil
 }
 
-// find looks up one engine on PATH, then in its conventional locations.
-func find(p Probe, name Name) (string, bool) {
-	if bin, err := p.lookPath(string(name)); err == nil && bin != "" {
+// locateFile answers "where is this program, REALLY" — PATH first, then the places the platform puts it that a
+// process's inherited PATH may not carry.
+//
+// THIS EXISTS BECAUSE ENGINES AND INSTALLERS HAD TWO DIFFERENT ANSWERS. find() (the engine resolver) already
+// searched conventional locations; planInstall (the winget/brew/dnf resolver) asked lookPath and NOTHING else.
+// So on a Windows box where winget is installed but its directory is not in the PATH this process inherited, an
+// install concluded "winget is not available, so podman cannot be installed automatically" — while the very same
+// run had just found the opencode adapter, because internal/adapter's resolver knows about
+// %LOCALAPPDATA%\Microsoft\WindowsApps and %APPDATA%\npm.
+//
+// MEASURED, and the reason this file changed: launched by the MSI's custom action, `orchicon install` reported
+// "winget is not available" and SKIPPED the podman install entirely. Run by hand in PowerShell it installed
+// podman every time — because PowerShell resolves App Execution Aliases itself and this process cannot. A
+// capability that depends on WHO LAUNCHED US is a bug, not a configuration.
+//
+// PATH is still searched FIRST, so an operator's own choice of binary wins, exactly as it does today.
+func locateFile(p Probe, name string, conventional []string) (string, bool) {
+	if bin, err := p.lookPath(name); err == nil && bin != "" {
 		return bin, true
 	}
-	for _, cand := range conventionalPaths(p.goos())[name] {
+	for _, cand := range conventional {
+		// A DIRECTORY IS NOT A PROGRAM. On Windows this is load-bearing: an App Execution Alias is a
+		// ZERO-BYTE reparse point, and an interrupted install can leave a directory of that name behind.
 		if fi, err := p.stat(cand); err == nil && !fi.IsDir() {
 			return cand, true
 		}
 	}
 	return "", false
+}
+
+// find looks up one engine on PATH, then in its conventional locations.
+func find(p Probe, name Name) (string, bool) {
+	return locateFile(p, string(name), conventionalPaths(p)[name])
 }
 
 // Version attaches the engine's version, and it is a SEPARATE call on purpose.
@@ -457,7 +576,7 @@ const (
 // resolvable before the binary works. Requiring the conventional location as well keeps the probe honest.
 func isConventionalInstall(p Probe, name Name, bin string) bool {
 	cleanBin := filepath.Clean(bin)
-	for _, cand := range conventionalPaths(p.goos())[name] {
+	for _, cand := range conventionalPaths(p)[name] {
 		if filepath.Clean(cand) == cleanBin {
 			return true
 		}

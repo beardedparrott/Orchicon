@@ -64,7 +64,9 @@ func TestWaitForBinaryFindsAFreshlyInstalledEngine(t *testing.T) {
 		t.Skip("waits on the probe window")
 	}
 	goos := runtime.GOOS
-	conventional := conventionalPaths(goos)[EnginePodman]
+	// conventionalPaths now reads the PROBE's environment, so it resolves the same locations the code under
+	// test will — rather than this process's, which a test controls only by accident.
+	conventional := conventionalPaths(testProbe(goos, nil, nil, nil))[EnginePodman]
 	if len(conventional) == 0 {
 		t.Skipf("no conventional podman path on %s", goos)
 	}
