@@ -1007,6 +1007,14 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			s.rcmgr.Enqueue("worktree", runID)
 		}
 	})
+	// Wire the scan-pass failure sink: a run the scan cannot progress must back off like any other failed
+	// key, not retry — and log — on every 200ms heartbeat. Without this the scan retries immediately and
+	// without limit; with it, a persistently broken run degrades to one line plus a five-minute cadence.
+	workflowRec.SetRunFailedHook(func(runID string, err error) {
+		if s.rcmgr != nil {
+			s.rcmgr.FailRun("workflow", runID, err)
+		}
+	})
 
 	// Seed in-process adapter registrations (opencode + the native
 	// orchicon session engine) so the TaskReconciler can find a ready

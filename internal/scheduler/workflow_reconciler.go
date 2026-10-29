@@ -79,6 +79,11 @@ type WorkflowReconciler struct {
 	// (architecture-notes/sequential-multi-workflow-runs.md §2.2).
 	// Optional — the scan pass is the safety net.
 	sequenceNotifier func(ctx context.Context, parentID string)
+	// runFailed is called after a scan pass when reconciling ONE run failed, so a persistently broken run
+	// gets the work queue's exponential backoff and its single "gave up" log line instead of a warning every
+	// 200ms. Optional: without it the scan simply logs and retries on the next tick (tests, and any caller
+	// that does not own a queue).
+	runFailed func(runID string, err error)
 
 	// worktreeNotifier is called right after a run is armed (pending→running)
 	// so the WorktreeReconciler provisions the run's isolated working tree
@@ -245,6 +250,12 @@ func NewWorkflowReconciler(pool *db.Pool, log *slog.Logger, pe PolicyEvaluator, 
 		warming: make(map[string]bool), baseImage: base}
 }
 
+// SetRunFailedHook injects the scan-pass failure sink — normally the reconciler Manager's work queue, so a
+// failing run backs off and reports its terminal failure once instead of once per heartbeat.
+func (r *WorkflowReconciler) SetRunFailedHook(fn func(runID string, err error)) {
+	r.runFailed = fn
+}
+
 // SetSequenceNotifier injects the callback that advances a sequence parent
 // when one of its bound children reaches a terminal state. Optional.
 func (r *WorkflowReconciler) SetSequenceNotifier(fn func(ctx context.Context, parentID string)) {
@@ -330,6 +341,20 @@ func (r *WorkflowReconciler) scanRuns(ctx context.Context, tenantID string) erro
 	}
 	for _, run := range runs {
 		if err := r.reconcileRun(ctx, tenantID, run.ID); err != nil {
+			// THE QUEUE'S BACKOFF IF THERE IS ONE, A WARNING IF THERE IS NOT.
+			//
+			// This used to log a warning unconditionally and retry on the very next heartbeat — every 200ms,
+			// for ever. MEASURED on a real Windows host: "workflow run reconcile failed" 5552 times over 22
+			// minutes for ONE run, drowning the log and giving the operator no signal that anything was
+			// wrong beyond the repetition.
+			//
+			// The queued path already solves this (markFailed: exponential, capped at 5 minutes, plus a
+			// single terminal line after maxRetry). A scan pass bypassed it by calling reconcileRun
+			// directly, which is how an idempotency bug turned into a hot loop instead of a slow retry.
+			if r.runFailed != nil {
+				r.runFailed(run.ID, err)
+				continue
+			}
 			r.log.Warn("workflow run reconcile failed", "run", run.ID, "error", err)
 		}
 	}
@@ -556,7 +581,6 @@ func (r *WorkflowReconciler) holdInPlaceDispatch(ctx context.Context, tx pgx.Tx,
 }
 
 func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID string) error {
-	r.log.Debug("DEBUG: reconcileRun entered", "runID", runID, "tenantID", tenantID)
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -570,8 +594,6 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 		return fmt.Errorf("get run: %w", err)
 	}
-	r.log.Debug("DEBUG: run loaded", "runID", run.ID, "status", run.Status, "version", run.Version)
-	r.log.Debug("DEBUG: run workflow", "workflowID", run.WorkflowID, "workflowVersion", run.WorkflowVersion)
 	// Only progress non-terminal runs. Terminal runs (including aborted)
 	// have their runtime container reaped here so a run terminalized
 	// elsewhere (e.g. AbortRun) never leaks its container.
@@ -753,7 +775,16 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// This converts the old dispatch-time race (a cold-starting serve
 	// failing the first execution's 30s window) into a deterministic
 	// run-start check.
-	if run.Status == domain.WorkflowRunRunning && !run.RuntimeReady {
+	// THE CONDITION IS "THE GATE IS CLOSED", NOT "THE RUN IS RUNNING". Local mode needed the second half
+	// removed, and the reason is a real hang rather than tidiness: a local run ARMS with runtime_ready untouched
+	// (armRuntimeColumns: no container, no readiness), so it is still false here — and if it is also not yet
+	// running, the original `Status == running` test skipped the block entirely and the column was never
+	// flipped. The run then sat at pending for ever, waiting on a container probe local mode never runs.
+	//
+	// MEASURED on a real Windows host: a local work item stalled at pending with zero executions and no error
+	// surfaced. Anything below that reloads state uses `run` as this pass sees it, so the widened condition is
+	// safe for every status.
+	if !run.RuntimeReady {
 		// Always-container: EVERY runtime-mode run gets a container.
 		// needsServe selects only the opencode serve PROBE, never the
 		// container. Serve-less (native-only) runs flip the gate here —
@@ -771,12 +802,18 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			needsServeGate = false
 		}
 		if !needsServeGate {
-			if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
+			updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
 				RuntimeReady: boolPtr(true),
-			}); err != nil {
+			})
+			if err != nil {
 				return fmt.Errorf("clear runtime gate (serve-less run): %w", err)
 			}
 			run.RuntimeReady = true
+			// THE VERSION MUST MOVE WITH THE ROW. UpdateWorkflowRun is optimistic-concurrency
+			// (`WHERE version = $3`) and bumps it; keeping the pre-update value in `run` made the
+			// NEXT update in this same pass a guaranteed ErrNotFound. That is the reported Windows
+			// hot loop, and it lived in exactly this omission.
+			run.Version = updated.Version
 		}
 		if r.runtimeEnabled() && !run.RuntimeReady {
 			// Local mode never enters the container path: no EnsureForRun,
@@ -803,15 +840,43 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 			return nil
 		}
-		// No runtime configured (headless): the gate is moot — flip it so
+		// No runtime configured (headless) OR local mode: the gate is moot — flip it so
 		// progression proceeds immediately. Covers runs created before the
 		// runtime_ready migration (default false).
-		if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
-			RuntimeReady: boolPtr(true),
-		}); err != nil {
-			return fmt.Errorf("clear runtime gate (headless): %w", err)
+		//
+		// LOCAL MODE ARRIVES HERE TOO, AND THAT USED TO BE AN INFINITE HOT LOOP. The first
+		// UpdateWorkflowRun above (the needsServeGate arm) fires for a local run when there is no
+		// container engine — on Windows without one, r.runtimeEnabled() is false, so
+		// needsServeGate collapses to false and the gate is flipped there. This second update then
+		// ran with the SAME run.Version, but the first had already committed version+1. The
+		// optimistic-concurrency WHERE clause therefore matched nothing:
+		//
+		//     error="clear runtime gate (headless): db: not found"
+		//
+		// — and ErrNotFound is a plain error, so the reconciler retried. MEASURED by an operator on
+		// Windows: that message repeated every ~200ms for 22 minutes (5552 times), the run frozen at
+		// pending with zero executions and NOTHING shown in the UI. A configuration state was
+		// converted into an unbounded retry loop.
+		//
+		// TWO FIXES, and both matter: the stale version is a bug on its own (any code path that
+		// updates a row twice in one pass would hit it), and the idempotent early return makes the
+		// second write unnecessary rather than merely correct.
+		// GUARD THE WRITE, DO NOT RETURN FROM THE PASS. An early `return nil` here looked tidier and was
+		// WRONG: it skips the pass's Commit, so the deferred Rollback discards the gate clear that the branch
+		// above just made — leaving runtime_ready false and the run parked, which is the very hang this
+		// assembly exists to remove. The condition is only "is there anything left to write".
+		if !run.RuntimeReady {
+			updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
+				RuntimeReady: boolPtr(true),
+			})
+			if err != nil {
+				return fmt.Errorf("clear runtime gate (headless): %w", err)
+			}
+			// CARRY THE VERSION FORWARD. A later update in this same pass must use the version the
+			// database now holds, and leaving the stale one in `run` is what made this assembly fail.
+			run.RuntimeReady = true
+			run.Version = updated.Version
 		}
-		run.RuntimeReady = true
 	}
 
 	// stepRuns + runByID are built inside the outer-progress loop so
@@ -819,10 +884,6 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// re-entry runs) are visible on subsequent passes.
 	var stepRuns []db.WorkflowStepRunRow
 	runByID := map[string]db.WorkflowStepRunRow{}
-	r.log.Debug("DEBUG: runByID built", "keys", len(runByID))
-	for k, v := range runByID {
-		r.log.Debug("DEBUG: runByID entry", "key", k, "id", v.ID, "status", v.Status, "version", v.Version)
-	}
 
 	// Collect steps dispatched in this pass for inline TaskReconciler
 	// dispatch after the transaction commits. Each dispatch is scoped to a
@@ -1035,7 +1096,6 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		// whole run.
 		for _, sr := range stepRuns {
 			if sr.SupersededBy != "" {
-				r.log.Debug("DEBUG: skipping superseded step run", "stepID", sr.StepID, "id", sr.ID, "supersededBy", sr.SupersededBy)
 				continue
 			}
 			// Skip if the active run for this StepID has already
@@ -1046,16 +1106,12 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				active = cur
 			}
 			if active.Status != domain.StepRunPending {
-				r.log.Debug("DEBUG: skipping step run (already past pending)", "stepID", sr.StepID, "id", sr.ID, "status", active.Status, "iteration", sr.Iteration)
 				continue
 			}
-			r.log.Debug("DEBUG: checking step for ready", "stepID", sr.StepID, "id", sr.ID, "status", sr.Status, "version", sr.Version)
 			step, ok := stepByID[sr.StepID]
 			if !ok {
-				r.log.Debug("DEBUG: step not found in stepByID", "stepID", sr.StepID)
 				continue
 			}
-			r.log.Debug("DEBUG: checking deps satisfied", "stepID", sr.StepID)
 			// D3 rule 4 — hold-at-PENDING. A SPAWNED loop_decision
 			// iteration (Iteration > 0, created by the recovery path) whose
 			// upstream dep is STILL terminal-failed is held at PENDING. It
@@ -1066,17 +1122,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			// cycle drives the re-dispatch instead of the DAG loop.
 			if step.Kind == domain.StepKindLoopDecision && sr.Iteration > 0 &&
 				r.loopDecisionUpstreamFailed(step, runByID) {
-				r.log.Debug("DEBUG: holding spawned loop_decision iteration (upstream failed)",
-					"stepID", sr.StepID, "iteration", sr.Iteration)
 				continue
 			}
 			if r.depsSatisfied(step, runByID) {
-				r.log.Debug("DEBUG: about to update step run",
-					"stepID", sr.StepID,
-					"runID", sr.ID,
-					"version", sr.Version,
-					"tenantID", tenantID,
-				)
 				updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 					Status: strPtr(domain.StepRunReady),
 				})
@@ -2245,26 +2293,19 @@ func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[stri
 	for _, dep := range step.DependsOn {
 		sr, ok := runs[dep]
 		if !ok {
-			r.log.Debug("DEBUG: depsSatisfied dep not in map", "step", step.ID, "dep", dep)
 			return false
 		}
-		r.log.Debug("DEBUG: depsSatisfied check", "step", step.ID, "dep", dep, "depStatus", sr.Status)
 		if sr.SupersededBy != "" {
-			r.log.Debug("DEBUG: depsSatisfied dep superseded", "step", step.ID, "dep", dep)
 			return false
 		}
 		if sr.Status == domain.StepRunSucceeded || sr.Status == domain.StepRunSkipped {
-			r.log.Debug("DEBUG: depsSatisfied dep satisfied", "step", step.ID, "dep", dep, "status", sr.Status)
 			continue
 		}
 		if isLoopDecision && sr.Status == domain.StepRunFailed {
-			r.log.Debug("DEBUG: depsSatisfied loop_decision dep satisfied (failed)", "step", step.ID, "dep", dep)
 			continue
 		}
-		r.log.Debug("DEBUG: depsSatisfied not satisfied yet", "step", step.ID, "dep", dep, "status", sr.Status)
 		return false
 	}
-	r.log.Debug("DEBUG: depsSatisfied all satisfied", "step", step.ID)
 	return true
 }
 
@@ -6043,7 +6084,12 @@ func aggregateLoopDecisions(decisions []string, failureValue, successValue strin
 // writing false would arm a gate the same pass must clear, for a container that will never exist.
 func armRuntimeColumns(runLocalMode bool, resolved string, needsServe, runtimeEnabled bool) (image string, ready *bool) {
 	if runLocalMode {
-		return "", nil // no container: no image to name, and nothing to be "ready"
+		// NO CONTAINER: no image to name, and no readiness to assert.
+		//
+		// The nil is deliberate and has ONE owner on the other side: the pass's gate-clearing block flips
+		// runtime_ready for a local run. Two writers for one column is how they disagree, and the disagreement
+		// that mattered was this arm writing false — see the gate block's note.
+		return "", nil
 	}
 	// The runtime-serve readiness gate: false when a runtime daemon is wired AND the run actually needs a
 	// serve. Serve-less (native-only) runs flip the gate immediately — they still get a container
