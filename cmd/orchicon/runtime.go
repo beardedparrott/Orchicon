@@ -4,18 +4,171 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/config"
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 )
+
+// daemonPool lazily opens (and memoises) the runtime daemon's database handle.
+//
+// LAZY, because the daemon must still START when the database is not yet up — the plane starts the daemon and
+// the database in either order, and a daemon that refused to boot would turn a transient ordering problem into
+// a dead runtime. It is opened on the first container create, by which time the plane is serving.
+//
+// ONE HANDLE, MEMOISED: create is per-run and mostly serial, so a pool per call would be churn. A FAILED open
+// is NOT memoised — the next create tries again, which is what makes the daemon self-heal across a database
+// restart rather than staying broken until someone restarts it.
+var (
+	daemonPoolOnce sync.Once
+	daemonPoolInst *db.Pool
+	daemonPoolErr  error
+	daemonCfg      config.Config
+)
+
+func daemonPool(ctx context.Context, log *slog.Logger) (*db.Pool, error) {
+	daemonPoolOnce.Do(func() {
+		daemonCfg = config.Default()
+		// THE DSN MUST BE THE PLANE'S, NOT THE DEFAULT ONE.
+		//
+		// config.Default() reads ORCHICON_POSTGRES_DSN and falls back to localhost:5432. The daemon does not
+		// get that variable: it is started by `orchicon install` with the install's environment, and
+		// internal/planecontrol builds the PLANE's DSN from the instance's RESOLVED port. On an instance
+		// configured for any other port, the default would point the daemon at a database that is not there —
+		// and the only symptom would be project directories silently failing to appear in the mount allowlist,
+		// i.e. exactly the "mount source outside allowed roots" refusal this whole change exists to remove.
+		//
+		// It reads the instance's OWN record, through the same accessor the rest of the CLI uses, so there is
+		// one answer to "which database is this instance's".
+		daemonCfg.PostgresDSN = instancePostgresDSN(daemonCfg.PostgresDSN)
+		if daemonCfg.PostgresDSN == "" {
+			daemonPoolErr = fmt.Errorf("no postgres DSN configured — cannot read project directories for the mount allowlist")
+			return
+		}
+		daemonPoolInst, daemonPoolErr = db.Open(ctx, daemonCfg.PostgresDSN)
+		if daemonPoolErr != nil && log != nil {
+			log.Warn("runtime daemon: could not open the database to read project directories; "+
+				"mounts are limited to ORCHICON_RUNTIME_ALLOWED_ROOTS until it is reachable",
+				"error", daemonPoolErr, "dsn_host", redactDSN(daemonCfg.PostgresDSN))
+		}
+	})
+	return daemonPoolInst, daemonPoolErr
+}
+
+// instancePostgresDSN is the DSN for THIS instance's database: the instance's recorded port if there is one,
+// otherwise the configured/default value.
+//
+// IT MIRRORS planeEnv (internal/planecontrol/env.go), which builds the plane's DSN from the same record. That
+// duplication is deliberate and narrow: the daemon is a SEPARATE PROCESS that the plane does not configure, so
+// it has to derive the same answer from the same source rather than being told. If a future change moves where
+// the port is recorded, both readers move together — which is why this calls the CLI's accessor rather than
+// spelling out a path.
+func instancePostgresDSN(fallback string) string {
+	inst := env("ORCHICON_INSTANCE", "dev")
+	ports, err := readResolvedPorts(inst)
+	if err != nil {
+		return fallback
+	}
+	port := ports["ORCHICON_POSTGRES_PORT"]
+	if port <= 0 {
+		return fallback
+	}
+	return fmt.Sprintf("postgres://orchicon:orchicon@localhost:%d/orchicon?sslmode=disable", port)
+}
+
+// redactDSN keeps the host and database of a DSN and drops any credential, so an error context can name the
+// database it failed to reach without putting a password in a log file.
+func redactDSN(dsn string) string {
+	if i := strings.Index(dsn, "://"); i >= 0 {
+		rest := dsn[i+3:]
+		if at := strings.Index(rest, "@"); at >= 0 {
+			return dsn[:i+3] + "***@" + rest[at+1:]
+		}
+	}
+	return dsn
+}
+
+// projectDirRoots reads the active projects' directories, for the runtime daemon's mount allowlist.
+//
+// WHY THE DAEMON READS THE DATABASE FOR THIS. It already depends on nothing else from the plane, and the
+// alternative — the plane pushing project dirs to the daemon — would need a new channel and a reconciliation
+// path for something that is a single query. The daemon's process already has the DSN in its environment.
+//
+// "AS SOON AS A project_dir IS SET" IS THE REQUIREMENT, so this is called PER CREATE rather than once at
+// start-up: a project created (or repointed) a minute ago must be mountable now, not after the next restart.
+// The query is a handful of rows over an indexed column, against a container build measured in seconds.
+//
+// FAIL-CLOSED, ALWAYS. An unreadable database returns an ERROR and the caller falls back to the configured
+// roots — never to "allow everything". A daemon that widened its own security boundary because Postgres was
+// briefly unavailable would be worse than one that refused a mount.
+func projectDirRoots(ctx context.Context, pool *db.Pool, tenantID string, log *slog.Logger) ([]string, error) {
+	if pool == nil {
+		return nil, nil
+	}
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = ttx.Rollback(ctx) }()
+
+	// ONE QUERY, NO PAGINATION, NO STATUS FILTER — and both of those are corrections.
+	//
+	// NO STATUS FILTER: an earlier version asked only for status='active'. That would have refused the tree of
+	// a nested or paused project that still holds runs — and the plane itself does NOT gate on status when it
+	// resolves a project_dir (internal/scheduler/reconciler.go reads `SELECT project_dir FROM projects WHERE id
+	// = $1` with no status predicate). A mount gate stricter than the dispatch path refuses containers for runs
+	// the plane is perfectly willing to start, which is a bug wearing a security badge. The daemon mounts what
+	// the plane told it to work on; if a project is archived AND idle, nothing asks for its container anyway.
+	//
+	// NO PAGINATION: ListProjects caps PageSize at 1000 and SILENTLY RESETS anything larger to 100. Asking for
+	// 1000 therefore looks right and quietly omits every project past the thousandth — a boundary that shrinks
+	// with success. This reads the column directly, so the answer is complete at any tenant size.
+	//
+	// DISTINCT because a subproject may share its parent's directory: one root is enough, and a duplicate would
+	// grow the allowlist for nothing.
+	rows, err := ttx.Tx.Query(ctx, `
+		SELECT DISTINCT project_dir
+		FROM projects
+		WHERE tenant_id = $1
+		  AND project_dir IS NOT NULL
+		  AND project_dir <> ''`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var dir string
+		if err := rows.Scan(&dir); err != nil {
+			return nil, err
+		}
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		// A RELATIVE project_dir cannot be allowed: it would resolve against whatever working directory the
+		// daemon happens to hold, which is not a boundary anyone can reason about.
+		if !filepath.IsAbs(dir) {
+			if log != nil {
+				log.Warn("runtime daemon: ignoring a project with a RELATIVE project_dir — only absolute "+
+					"directories can be mount roots", "project_dir", dir)
+			}
+			continue
+		}
+		out = append(out, filepath.Clean(dir))
+	}
+	return out, rows.Err()
+}
 
 // runRuntimeDaemon runs the host-side runtime orchestrator (`orchicon
 // runtime-daemon`). It owns the container engine (podman by default) and serves
@@ -121,6 +274,16 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		GroupID:       hostGID,
 		HostHome:      hostHome,
 		AllowedRoots:  allowedRoots,
+		// EVERY ACTIVE PROJECT'S project_dir IS MOUNTABLE, read live so a directory set a moment ago works
+		// now. The daemon opens its own pool lazily on the first create; if the database is unreachable the
+		// source returns an error and the configured roots still apply (fail-closed, never fail-open).
+		AllowedRootsSource: func(ctx context.Context) ([]string, error) {
+			pool, perr := daemonPool(ctx, log)
+			if perr != nil {
+				return nil, perr
+			}
+			return projectDirRoots(ctx, pool, daemonCfg.DeploymentTenantID, log)
+		},
 		ExePath:       exePath,
 		CPUs:          env("ORCHICON_RUNTIME_CPUS", "4"),
 		Memory:        env("ORCHICON_RUNTIME_MEMORY", "4g"),
