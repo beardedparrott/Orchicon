@@ -121,6 +121,23 @@ func parseInstallFlags(args []string) (installFlags, []string, error) {
 // It exists because the decision it feeds — "should I relaunch into a console?" — has to be made
 // BEFORE the full parse, and doing the full parse twice would mean two error paths for the same
 // malformed flag. A peek is the smaller thing to get right.
+// hasConsoleFlag reports whether the caller asked for a console of its own WITHOUT asking for interactivity.
+//
+// It exists because the two were conflated. `--non-interactive` meant both "ask nothing" and "open no window",
+// and the Windows MSI needs the first while depending on the second: its custom action returns immediately, so
+// the install must survive the wizard's exit, and a console is what keeps it alive (and gives the operator
+// something to watch instead of a wizard that vanishes).
+//
+// A plain `orchicon install` in a terminal does not need it — it inherits a console and relaunches anyway.
+func hasConsoleFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--console" || a == "-console" {
+			return true
+		}
+	}
+	return false
+}
+
 func hasNonInteractiveFlag(args []string) bool {
 	for _, a := range args {
 		if a == "--non-interactive" || a == "-non-interactive" {
