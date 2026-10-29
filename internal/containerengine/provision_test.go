@@ -23,8 +23,11 @@ func TestPlanInstallPerGOOS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("darwin plan: %v", err)
 	}
-	if plan.String() != "brew install podman" {
-		t.Fatalf("darwin plan: %q", plan.String())
+	// THE RESOLVED PATH IS THE COMMAND, AND THAT IS THE POINT OF THE CHANGE. The child inherits THIS process's
+	// PATH — the same one that just failed to find brew — so a bare "brew" would not start. The assertion used to
+	// demand the bare name, which is exactly the assumption that broke the MSI's install on Windows.
+	if plan.Command != "/fake/brew" || plan.String() != "/fake/brew install podman" {
+		t.Fatalf("darwin plan must run the RESOLVED brew: %q", plan.String())
 	}
 
 	windows := testProbe("windows", nil, bins, noRun)
@@ -32,7 +35,7 @@ func TestPlanInstallPerGOOS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("windows plan: %v", err)
 	}
-	if plan.Command != "winget" || !strings.Contains(plan.String(), "RedHat.Podman") {
+	if plan.Command != "/fake/winget" || !strings.Contains(plan.String(), "RedHat.Podman") {
 		t.Fatalf("windows plan: %q", plan.String())
 	}
 	if plan.Fallback == "" {
@@ -44,7 +47,7 @@ func TestPlanInstallPerGOOS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("linux plan: %v", err)
 	}
-	if plan.Command != "apt-get" || !plan.NeedsRoot {
+	if plan.Command != "/fake/apt-get" || !plan.NeedsRoot {
 		t.Fatalf("linux plan: %q needsRoot=%v", plan.String(), plan.NeedsRoot)
 	}
 	if !strings.HasPrefix(plan.String(), "sudo ") {
@@ -136,7 +139,7 @@ func TestProvisionRootRequirementIsReported(t *testing.T) {
 	if !errors.Is(err, ErrDeclined) {
 		t.Fatalf("want ErrDeclined, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "sudo dnf install -y podman") {
+	if !strings.Contains(err.Error(), "sudo /fake/dnf install -y podman") {
 		t.Fatalf("the message must carry the exact command to run: %v", err)
 	}
 }
@@ -148,7 +151,7 @@ func TestProvisionInstallsThenDetects(t *testing.T) {
 	installed := false
 	run := func(bin string, args []string) (string, error) {
 		switch bin {
-		case "brew":
+		case "/fake/brew":
 			installed = true
 			return "", nil
 		case fakePodman:
@@ -177,7 +180,7 @@ func TestProvisionInstallsThenDetects(t *testing.T) {
 	if e.Name != EnginePodman || e.Version != "5.2.1" {
 		t.Fatalf("want podman 5.2.1 after install, got %+v", e)
 	}
-	if !strings.Contains(out.String(), "running: brew install podman") {
+	if !strings.Contains(out.String(), "running: /fake/brew install podman") {
 		t.Fatalf("the action must be visible:\n%s", out.String())
 	}
 }
@@ -206,7 +209,7 @@ func TestProvisionMarkersTheInstall(t *testing.T) {
 	var p Probe
 	p = testProbe("darwin", map[string]string{"ORCHICON_DATA_DIR": dir, ProvisionEnv: "1"}, nil, func(bin string, args []string) (string, error) {
 		switch bin {
-		case "brew":
+		case "/fake/brew":
 			// The installer runs WHILE the marker exists.
 			sawMarker = IsProvisioning(p)
 			podInstalled = true
@@ -274,7 +277,7 @@ func TestUnattendedProvisionNeverReads(t *testing.T) {
 		t.Fatal("the install command never ran — it should run with no question asked")
 	}
 	// AND IT SAID WHAT IT WAS DOING, because silence is the other way an install looks hung.
-	if !strings.Contains(out.String(), "winget install") {
+	if !strings.Contains(out.String(), "install") || !strings.Contains(out.String(), "RedHat.Podman") {
 		t.Errorf("the command must be printed before it runs, so a slow install is not a silent one:\n%s", out.String())
 	}
 }
