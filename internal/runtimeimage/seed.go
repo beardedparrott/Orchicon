@@ -73,9 +73,28 @@ func EnsureCatalogRows(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 		if err != nil {
 			return
 		}
-		_, _, err = stockRowForVariant(ctx, ttx.Tx, variant, tag, log)
+		_, removed, err := stockRowForVariant(ctx, ttx.Tx, variant, tag, log)
 		if err == nil {
-			// The row exists. LEAVE IT ALONE — its status is the operator's business, not a page load's.
+			// THE ROW EXISTS. Its STATUS is the operator's business and a page load never touches it — but a
+			// collapsed DUPLICATE is not status, it is a second row for one variant, and the deletes
+			// stockRowForVariant just staged must be COMMITTED or the collapse is discarded with the
+			// transaction.
+			//
+			// MEASURED: that rollback is why a long-lived instance kept showing `stock-dev` twice — the
+			// boot seeder would have cleaned it, but an instance that is not re-seeded only ever ran this
+			// read path, which found the duplicate, staged its removal, and rolled it back on the next line.
+			if removed > 0 {
+				if cerr := ttx.Commit(ctx); cerr != nil {
+					if log != nil {
+						log.Warn("catalogue reconcile: commit duplicate collapse failed",
+							"variant", variant.Variant, "error", cerr)
+					}
+				} else if log != nil {
+					log.Info("catalogue reconcile: collapsed duplicate rows for a variant",
+						"variant", variant.Variant, "removed", removed)
+				}
+				continue
+			}
 			_ = ttx.Rollback(ctx)
 			continue
 		}
