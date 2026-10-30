@@ -221,7 +221,53 @@
       <ComponentGroupRef Id="DesktopComponents" />
     </Feature>
 
+    <!-- ===================== PATH =====================
+         THE INSTALL DIRECTORY GOES ON THE USER'S PATH, and until now the MSI was the one installer that did
+         not do it.
+
+         `scripts/install.ps1` has always added it (Write-PathHint, the Windows equivalent of the shell
+         installer's ~/.bashrc hint). The MSI wrote no <Environment> element at all — verified, not assumed —
+         and no Go code writes the user PATH either (the registry reads in internal/adapter and
+         internal/opencode are all READS). So a machine whose FIRST and ONLY install was the MSI got
+         `orchicon.exe` in a directory that no shell resolved: `orchicon` in a new terminal answered
+         "not recognized", and the documented one-liners silently did nothing.
+
+         WHY IT LOOKED FINE FOR A LONG TIME: both installers target the SAME directory
+         (%LOCALAPPDATA%\Programs\Orchicon), so anyone who had ever run install.ps1 — or the documented
+         `irm ... | iex` — had the entry already. The gap only bites a machine that started from the MSI.
+
+         THE SHAPE IS THE STANDARD PER-USER ONE, and each attribute is load-bearing:
+
+           (no Root attribute on <Environment>)  WiX v4+ REMOVED Root from Environment: the value is written
+                                  under the USER hive by virtue of the component's directory being under
+                                  LocalAppDataFolder. A machine PATH would need admin and would modify a
+                                  machine other users share, which Scope="perUser" explicitly avoids.
+           Part="last"            APPEND rather than overwrite. System32 and the rest of the inherited PATH
+                                  must keep precedence, and this package has no business reordering them.
+           Action="set"           NOT create-or-set: "set" is idempotent, and a reinstall must not append a
+                                  second copy. (Part controls WHERE an existing value is modified, not
+                                  whether a new one is created, so this is the right pairing.)
+           Name="PATH" Permanent="no"
+                                  "PATH" is the value Windows reads; the name is not free-form. Permanent="no"
+                                  means Windows Installer removes the entry on uninstall instead of leaving a
+                                  dangling directory behind — the same reason the instance record is a
+                                  component rather than a loose registry write.
+
+         IT IS IN THE CLI FEATURE because PATH without orchicon.exe would be worse than neither. -->
     <ComponentGroup Id="CliComponents" Directory="INSTALLFOLDER">
+      <Component Id="PathEntry" Guid="*">
+        <!-- KeyPath on the registry VALUE: a component needs exactly one, and this component's job is the
+             PATH entry. The directory already exists because INSTALLFOLDER contains the files. -->
+        <RegistryValue Root="HKCU" Key="Software\Orchicon\Setup" Name="PathEntry" Type="integer"
+                       Value="1" KeyPath="yes" />
+        <Environment Id="OrchiconOnPath"
+                     Name="PATH"
+                     Value="[INSTALLFOLDER]"
+                     Part="last"
+                     Action="set"
+                     System="no"
+                     Permanent="no" />
+      </Component>
       <!-- KeyPath on the FILE (not the directory): per-user installs cannot use a
            directory as a key path, and a registry key path would add state to
            clean up for no benefit. -->

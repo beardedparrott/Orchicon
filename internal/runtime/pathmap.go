@@ -29,6 +29,7 @@ package runtime
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	stdruntime "runtime"
 	"strings"
@@ -255,18 +256,60 @@ func (d *Daemon) withinAllowedRootsIn(path string) bool {
 // BOTH SIDES ARE MAPPED, which is the part that matters on Windows: a host path and a guest path have no string
 // relationship there, so `C:\projects\app` must be compared as `/mnt/c/projects/app` against roots mapped the
 // same way. On Linux and macOS the mapping is identity, so this is the plain comparison.
-func withinRootsIn(m *PathMapper, path string, roots []string) bool {
+func withinRootsIn(m *PathMapper, hostPath string, roots []string) bool {
 	if len(roots) == 0 {
 		return false
 	}
-	guest := m.Map(path)
+	// BOTH SIDES GO THROUGH THE SAME TWO STEPS, IN THE SAME ORDER: normalise as a HOST path, then map to the
+	// ENGINE's form. Doing them in the other order, or normalising only one side, is the bug this replaces.
+	guest := guestForm(m, hostPath)
 	for _, root := range roots {
-		r := filepath.Clean(m.Map(root))
-		if guest == r || strings.HasPrefix(guest, r+"/") || strings.HasPrefix(guest, r+string(os.PathSeparator)) {
+		r := guestForm(m, root)
+		if guest == r || strings.HasPrefix(guest, r+"/") {
 			return true
 		}
 	}
 	return false
+}
+
+// guestForm is ONE path's engine-side form, normalised correctly for the OS it is ABOUT rather than the OS the
+// binary happens to be running on.
+//
+// THE BUG THIS FIXES IS WINDOWS-ONLY AND MY OWN. This function used to be
+//
+//	filepath.Clean(m.Map(root))     // root side: cleaned, guest form
+//	m.Map(path)                     // path side: NEVER cleaned
+//
+// On Windows, filepath.Clean applies WINDOWS rules to a GUEST path: `/mnt/c/projects/weatherapp` has no drive
+// letter, so Clean treats it as drive-RELATIVE and rewrites the separators, giving
+// `\mnt\c\projects\weatherapp`. The path side stayed `/mnt/c/projects/weatherapp`. The two could never be
+// equal, and `HasPrefix(guest, "\mnt\...")` could never match either — so EVERY mount was refused on Windows
+// while both sides were correct in their own terms. MEASURED, from the operator's own log, with the project
+// directory plainly present in the allowlist it printed:
+//
+//	mount source outside allowed roots: C:\projects\weatherapp
+//	    (as the container engine sees it: /mnt/c/projects/weatherapp;
+//	     allowed roots: C:\Users\justi\projects, C:\projects\weatherapp ...)
+//
+// No value of ORCHICON_RUNTIME_ALLOWED_ROOTS could have fixed it, including C:\.
+//
+// THE RULE: a HOST path is normalised with filepath (whose rules are the host's, correctly); a GUEST path is
+// normalised with `path`, which is slash-only by definition. Clean before mapping, and never clean after —
+// the guest form belongs to a Linux VM and must be evaluated by Linux path rules whatever platform reads it.
+func guestForm(m *PathMapper, hostPath string) string {
+	if hostPath == "" {
+		return ""
+	}
+	// 1. Host normalisation, with the HOST's rules. This is the only place filepath is correct.
+	clean := filepath.Clean(hostPath)
+	// 2. Map into the engine's namespace. Identity on Linux/macOS, so nothing below changes there.
+	mapped := m.Map(clean)
+	if m == nil || m.mode != PathModeWSL {
+		return mapped
+	}
+	// 3. GUEST normalisation — slash semantics only. path.Clean cannot turn "/mnt/c/x" into "\mnt\c\x",
+	// because it has no notion of a platform separator.
+	return path.Clean(mapped)
 }
 
 // mapMountArgv rewrites the SOURCE side of an already-built `-v src:dst[:opts]` argv block.
