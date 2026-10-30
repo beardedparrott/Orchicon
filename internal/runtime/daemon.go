@@ -1079,7 +1079,7 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// Wait for the in-container supervisor socket to answer pings. The
 	// supervisor starts immediately; opencode/lazy deps are not required
 	// for readiness.
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(supervisorReadyWindow)
 	for time.Now().Before(deadline) {
 		if d.pingRuntime(name) {
 			resp := &CreateResponse{Name: name, Running: true}
@@ -1133,7 +1133,63 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return nil, fmt.Errorf("runtime %s started but supervisor socket not ready", name)
+	// A TIMEOUT WITH NO CAUSE IS THE REPORTED COMPLAINT. The container started and the supervisor never
+	// answered, and all the operator got was "supervisor socket not ready" — which names the symptom and
+	// nothing else. MEASURED on Windows: the supervisor was a PE binary the Linux container could not exec,
+	// so it died instantly with `exec format error`, and that fact was only visible in
+	// `podman logs <container>`.
+	//
+	// The exec bits that matter are cheap to collect here: the container's state (and exit code, when it has
+	// already exited), plus the LAST lines of its output. That turns an opaque 30-second timeout into a
+	// diagnosis the operator can act on — and it is what makes the entrypoint class of bug self-evident
+	// instead of a round trip.
+	return nil, fmt.Errorf("runtime %s started but its supervisor never answered within %s%s",
+		name, supervisorReadyWindow, d.supervisorFailureDetail(name))
+}
+
+// supervisorFailureDetail is the WHY behind a supervisor readiness timeout, appended to the error.
+//
+// It never guesses. Each fact is one engine call, and anything that cannot be read contributes nothing —
+// a diagnostic that invents a cause is worse than a bare timeout, because it sends the operator after the
+// wrong thing.
+func (d *Daemon) supervisorFailureDetail(name string) string {
+	var b strings.Builder
+	if out, err := d.engine("inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", name); err == nil {
+		if f := strings.Fields(strings.TrimSpace(out)); len(f) > 0 {
+			b.WriteString("; container state: " + f[0])
+			if len(f) > 1 && f[1] != "0" {
+				b.WriteString(" (exit " + f[1] + ")")
+			}
+		}
+	}
+	// The last few lines of the container's own output. The failure that motivated this — exec format
+	// error on a PE entrypoint — appears ONLY here, because the process died before it could log anything
+	// of its own.
+	if out, err := d.engine("logs", "--tail", "5", name); err == nil {
+		if line := firstNonEmptyLine(out); line != "" {
+			b.WriteString("; last output: " + line)
+		}
+	}
+	if b.Len() == 0 {
+		return "" // nothing readable: say nothing rather than invent a cause
+	}
+	return b.String()
+}
+
+// supervisorReadyWindow is the readiness budget, named so the error can state it.
+const supervisorReadyWindow = 30 * time.Second
+
+// firstNonEmptyLine returns the first non-blank line of s, trimmed, or "".
+//
+// LOCAL ON PURPOSE. internal/containerengine has a firstLine, but this package does not import that one for
+// a diagnostic helper — and a one-line dependency is not worth the coupling.
+func firstNonEmptyLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // createFlagArgs is the engine-flag prefix of a runtime create: identity,
