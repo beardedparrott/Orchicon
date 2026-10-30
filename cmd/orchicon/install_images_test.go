@@ -1,50 +1,30 @@
 package main
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
 
-// TestRuntimeVariantRefMatchesReleaseWorkflow is the cross-file agreement gate
-// for the runtime image variants.
+// TestRuntimeVariantRefMatchesReleaseWorkflow used to be the cross-file agreement gate between the installer's
+// variant refs and what release.yml publishes. That contract is GONE, deliberately.
 //
-// This is the bug that broke `orchicon install` on every fresh host: the refs
-// were built as "<suffix>-<tag>", so the DEFAULT tag "latest" produced
-// ":gui-latest" — a tag release.yml never publishes — and the installer aborted
-// at the image pull before creating anything. The registry publishes
-// "<suffix>-<version>" plus a FLOATING ":gui"/":dev".
+// The variants are no longer published — they carry third-party adapter CLIs, so release.yml pushes the base
+// alone and the installer BUILDS them from the template embedded in the binary. runtimeVariantRef is therefore
+// no longer what the installer uses for them (it uses localVariantTag), and asserting it against release.yml
+// would demand the workflow publish something it must not.
 //
-// release.yml is parsed rather than trusted, so a change to the published tag
-// convention fails here instead of on a new user's machine.
-func TestRuntimeVariantRefMatchesReleaseWorkflow(t *testing.T) {
-	src, err := os.ReadFile("../../.github/workflows/release.yml")
-	if err != nil {
-		t.Fatalf("read release.yml: %v", err)
-	}
-	wf := string(src)
-
-	// The publisher must still create the pinned AND the floating tag for each
-	// variant; without both, one of the installer's two shapes is wrong.
-	for _, want := range []string{
-		"ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}",
-		"ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}",
-		"docker tag \"ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}\" ghcr.io/beardedparrott/orchicon-runtime:gui",
-		"docker tag \"ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}\" ghcr.io/beardedparrott/orchicon-runtime:dev",
-	} {
-		if !strings.Contains(wf, want) {
-			t.Errorf("release.yml no longer publishes %q — the installer's variant refs would drift from the registry", want)
-		}
-	}
-
-	// The floating ref the installer builds for the default tag.
+// The agreement that replaced it lives in TestInstallImageRefsAgreeWithThePublishPolicy, which checks the real
+// routing: published => a pushed registry ref, unpublished => a local name WITH a build context. This test
+// keeps only the half that is still runtimeVariantRef's job — that a registry ref it builds is well-formed.
+func TestRuntimeVariantRefIsAWellFormedRegistryRef(t *testing.T) {
 	for _, suffix := range []string{"gui", "dev"} {
 		got := runtimeVariantRef(suffix, "latest")
 		want := "ghcr.io/beardedparrott/orchicon-runtime:" + suffix
 		if got != want {
-			t.Errorf("runtimeVariantRef(%q, \"latest\") = %q, want %q (the floating tag; NOT %q)", suffix, got, want, want+"-latest")
+			t.Errorf("runtimeVariantRef(%q, \"latest\") = %q, want %q (the floating tag; NOT %q)",
+				suffix, got, want, want+"-latest")
 		}
-		// An empty tag must behave as the default — an operator who sets
+	// An empty tag must behave as the default — an operator who sets
 		// ORCHICON_IMAGE_TAG="" must not get a dangling ref.
 		if got := runtimeVariantRef(suffix, ""); got != want {
 			t.Errorf("runtimeVariantRef(%q, \"\") = %q, want %q", suffix, got, want)

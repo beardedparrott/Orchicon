@@ -136,6 +136,10 @@ type RuntimeImage struct {
 	FailedStep      string `protobuf:"bytes,21,opt,name=failed_step,json=failedStep,proto3" json:"failed_step,omitempty"`
 	LogTail         string `protobuf:"bytes,22,opt,name=log_tail,json=logTail,proto3" json:"log_tail,omitempty"`
 	FailureCategory string `protobuf:"bytes,23,opt,name=failure_category,json=failureCategory,proto3" json:"failure_category,omitempty"`
+	// Install the runtime CLI adapters (opencode, Claude Code) into the GENERATED Dockerfile. Default true:
+	// an image nobody can run work with is not what "create a runtime image" means. Ignored when
+	// dockerfile_override is set — an operator who wrote their own Dockerfile has taken the decision.
+	IncludeAdapters bool `protobuf:"varint,24,opt,name=include_adapters,json=includeAdapters,proto3" json:"include_adapters,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -331,11 +335,18 @@ func (x *RuntimeImage) GetFailureCategory() string {
 	return ""
 }
 
+func (x *RuntimeImage) GetIncludeAdapters() bool {
+	if x != nil {
+		return x.IncludeAdapters
+	}
+	return false
+}
+
 var File_orchicon_api_v1_runtime_image_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_runtime_image_proto_rawDesc = "" +
 	"\n" +
-	"#orchicon/api/v1/runtime_image.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8e\x06\n" +
+	"#orchicon/api/v1/runtime_image.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb9\x06\n" +
 	"\fRuntimeImage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -365,7 +376,8 @@ const file_orchicon_api_v1_runtime_image_proto_rawDesc = "" +
 	"\vfailed_step\x18\x15 \x01(\tR\n" +
 	"failedStep\x12\x19\n" +
 	"\blog_tail\x18\x16 \x01(\tR\alogTail\x12)\n" +
-	"\x10failure_category\x18\x17 \x01(\tR\x0ffailureCategory*\xdf\x01\n" +
+	"\x10failure_category\x18\x17 \x01(\tR\x0ffailureCategory\x12)\n" +
+	"\x10include_adapters\x18\x18 \x01(\bR\x0fincludeAdapters*\xdf\x01\n" +
 	"\x12RuntimeImageStatus\x12$\n" +
 	" RUNTIME_IMAGE_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aRUNTIME_IMAGE_STATUS_DRAFT\x10\x01\x12!\n" +

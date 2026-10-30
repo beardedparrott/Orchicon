@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	assets "github.com/beardedparrott/orchicon"
 )
 
 // runtimeImageChoice is one runtime image the install may fetch, with the size
@@ -16,31 +18,41 @@ import (
 type runtimeImageChoice struct {
 	Variant string
 	Ref     string
-	Label   string
+	// Published says whether Ref names something in a REGISTRY (pull) or a LOCAL tag this host builds from
+	// its embedded template. The fetch below routes on it, so the two kinds cannot be confused.
+	Published bool
+	// BuildContext is the directory `docker build` runs from for an unpublished variant. The variants need
+	// none of their own files (the Dockerfile arrives on stdin), but docker still requires a context.
+	BuildContext string
+	Label        string
 	// SizeBytes is the approximate download size, used ONLY to render the
 	// prompt. The variants differ by an order of magnitude, so "do you want
 	// runtime images" is not an answerable question without them.
 	SizeBytes int64
 }
 
-// installRuntimeImageChoices lists the runtime images an install can offer,
-// base first (every other variant derives FROM it).
+// installRuntimeImageChoices lists the runtime images an install can offer, base first (every other variant
+// derives FROM it).
 //
-// EVERY ENTRY HERE MUST EXIST IN THE REGISTRY. A variant is offered by TAG, so an entry whose tag the release
-// pipeline never publishes is a pull that can only fail — and it failed loudly on every single install:
+// ONLY THE BASE IS A REGISTRY REF, AND THAT IS THE POINT NOW RATHER THAN AN ACCIDENT. The variants carry
+// third-party adapter CLIs (opencode, Claude Code); an image Orchicon builds and serves would be Orchicon
+// DISTRIBUTING them, so release.yml publishes the base alone. A variant is therefore offered at its LOCAL tag
+// and BUILT from the template embedded in this binary — on the operator's machine, for their own use.
 //
-//	pull ghcr.io/beardedparrott/orchicon-runtime:web-research: manifest unknown
-//	(web-research is optional — continuing; it can be fetched later from the Runtime Images page)
-//
-// release.yml publishes base, gui-<ver>/gui and dev-<ver>/dev and NOTHING else, and `scripts/runtime.sh build`
-// builds exactly those three locally. "web-research" was offered anyway (and "fetched later" could never
-// work either, because the tag does not exist). Removed rather than warned about: a warning on every install
-// trains operators to ignore warnings, and this one named a failure that was never actionable.
+// THIS USED TO SAY "EVERY ENTRY HERE MUST EXIST IN THE REGISTRY", and it was right at the time: a variant
+// offered by a tag nothing publishes was a pull that could only fail with "manifest unknown". The invariant
+// survives, restated — every entry must be OBTAINABLE, by pull if it is published and by BUILD if it is not.
+// Published and the routing in ensureInstallRuntimeImages are what keep those two in step.
 func installRuntimeImageChoices(imageTag string) []runtimeImageChoice {
 	return []runtimeImageChoice{
-		{Variant: "base", Ref: "ghcr.io/beardedparrott/orchicon-runtime:" + imageTag, Label: "runtime base", SizeBytes: 1_000_000_000},
-		{Variant: "gui", Ref: runtimeVariantRef("gui", imageTag), Label: "runtime GUI (+150 MB)", SizeBytes: 150_000_000},
-		{Variant: "dev", Ref: runtimeVariantRef("dev", imageTag), Label: "runtime dev (+1.5-2.5 GB)", SizeBytes: 2_000_000_000},
+		{Variant: "base", Ref: "ghcr.io/beardedparrott/orchicon-runtime:" + imageTag, Published: true,
+			Label: "runtime base", SizeBytes: 1_000_000_000},
+		{Variant: "gui", Ref: localVariantTag(localRepoName(runtimeImageRepo), "gui"), Published: false,
+			BuildContext: runtimeImageBuildContext("gui"),
+			Label:        "runtime GUI (+150 MB, built locally)", SizeBytes: 150_000_000},
+		{Variant: "dev", Ref: localVariantTag(localRepoName(runtimeImageRepo), "dev"), Published: false,
+			BuildContext: runtimeImageBuildContext("dev"),
+			Label:        "runtime dev (+1.5-2.5 GB, built locally)", SizeBytes: 2_000_000_000},
 	}
 }
 
@@ -297,6 +309,66 @@ func resolveInstallRuntimeImages(promptOut io.Writer, answerIn io.Reader, imageT
 	return out, nil
 }
 
+// runtimeImageTemplate is the shipped Dockerfile for a variant, as embedded in this binary.
+//
+// THE INSTALLER BUILDS FROM THE EMBEDDED TEMPLATE, not from a registry. Only the base is published; the
+// variants carry third-party adapter CLIs (opencode, Claude Code) and an image Orchicon builds and serves
+// would be Orchicon DISTRIBUTING them. Built here, on the operator's machine, for their own licensed use —
+// that is the operator installing for themselves, which is not distribution and is the same line this
+// project already draws for host-installed adapters.
+func runtimeImageTemplate(variant string) (dockerfile string, baseImage string, err error) {
+	file := map[string]string{
+		"gui": "deploy/runtime/Dockerfile.gui",
+		"dev": "deploy/runtime/Dockerfile.dev",
+	}[variant]
+	if file == "" {
+		return "", "", fmt.Errorf("%q is not a locally-built variant", variant)
+	}
+	b, err := assets.RuntimeImageTemplatesFS.ReadFile(file)
+	if err != nil {
+		return "", "", fmt.Errorf("read the embedded %s template: %w", file, err)
+	}
+	return string(b), "ghcr.io/beardedparrott/orchicon-runtime:" + env("ORCHICON_IMAGE_TAG", "latest"), nil
+}
+
+// ensureRuntimeImageVariant makes a variant image present LOCALLY, by building it from its shipped template
+// when it is not there.
+//
+// IT CANNOT PULL. Nothing publishes these tags any more, so a pull could only fail with "manifest unknown" —
+// the failure an operator already reported once. Routing on "is there anything to pull" is therefore not a
+// choice this function makes: a variant is a local name, and a local name is built.
+//
+// A build is minutes, not seconds, and that is the honest cost of not distributing an image containing
+// someone else's CLI. It is announced before it starts, for the same reason every other long step in this
+// installer is: a silent minute is indistinguishable from a hang.
+func ensureRuntimeImageVariant(variant, ref, buildContext string) error {
+	if imagePresent(ref) {
+		fmt.Printf("image %s is already built on this host\n", ref)
+		return nil
+	}
+	dockerfile, baseImage, err := runtimeImageTemplate(variant)
+	if err != nil {
+		return err
+	}
+	// THE BASE MUST BE PRESENT FIRST, and this is structural: a variant's Dockerfile is
+	// `FROM ${BASE_IMAGE}`. Building without it fails late, inside the engine, with a tag error that names
+	// nothing the operator can act on.
+	if !imagePresent(baseImage) {
+		return fmt.Errorf("%s builds FROM %s, which is not on this host yet — fetch the base image first", ref, baseImage)
+	}
+	fmt.Printf("building %s from its shipped template (this takes a few minutes; it is not a download)\n", ref)
+	// THE DOCKERFILE GOES IN ON STDIN, so nothing is written to disk and no path has to be plausible in a
+	// temp directory. `-f -` is docker's documented "read the Dockerfile from stdin".
+	cmd := engineCommand("build", "-f", "-", "-t", ref, "--build-arg", "BASE_IMAGE="+baseImage, buildContext)
+	cmd.Stdin = strings.NewReader(dockerfile)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build %s: %w", ref, err)
+	}
+	fmt.Printf("built %s\n", ref)
+	return nil
+}
 // ensureInstallRuntimeImages downloads the chosen runtime images. Failures
 // WARN per image and never fail the install: a declined or failed image leaves
 // a fully working plane in local mode, which is exactly the state an install
@@ -307,8 +379,20 @@ func ensureInstallRuntimeImages(choices []runtimeImageChoice, out io.Writer) {
 		return
 	}
 	for _, c := range choices {
-		fmt.Fprintf(out, "  fetching %s (%s)...\n", c.Ref, humanSize(c.SizeBytes))
-		if err := ensureImage(c.Ref); err != nil {
+		verb := "fetching"
+		if !c.Published {
+			verb = "preparing"
+		}
+		fmt.Fprintf(out, "  %s %s (%s)...\n", verb, c.Ref, humanSize(c.SizeBytes))
+		var ferr error
+		if c.Published {
+			ferr = ensureImage(c.Ref)
+		} else {
+			// BUILT, NOT PULLED. `podman pull orchicon-runtime:dev` fails — a short name with no registry
+			// behind it — and nothing publishes it any more. The template is embedded in THIS binary.
+			ferr = ensureRuntimeImageVariant(c.Variant, c.Ref, c.BuildContext)
+		}
+		if err := ferr; err != nil {
 			fmt.Fprintf(out, "  warning: %v\n", err)
 			fmt.Fprintf(out, "  (%s is optional — continuing; it can be fetched later from the Runtime Images page)\n", c.Variant)
 		}
@@ -333,4 +417,20 @@ func selectionIndexes(picked []runtimeImageChoice) string {
 		return "none"
 	}
 	return strings.Join(parts, ",")
+}
+
+// runtimeImageBuildContext is the directory `docker build` runs from for an unpublished variant.
+//
+// THE VARIANTS NEED NO FILES OF THEIR OWN — their Dockerfile arrives on stdin — but docker still requires a
+// context directory, and it must exist on every platform. It is created under the same per-instance runtime
+// socket dir the rest of the runtime plumbing uses, so an install leaves nothing behind in the working
+// directory and Windows does not need a POSIX-looking path.
+func runtimeImageBuildContext(variant string) string {
+	dir := filepath.Join(os.TempDir(), "orchicon-runtime-build", variant)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		// A build with a context that does not exist fails inside the engine with a path error. Falling back
+		// to the working directory keeps the build possible and the failure honest if even that is unusable.
+		return "."
+	}
+	return dir
 }

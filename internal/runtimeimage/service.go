@@ -135,6 +135,15 @@ func (s *Service) CreateRuntimeImage(ctx context.Context, req *connect.Request[a
 
 	base := s.ensureBase(ctx)
 
+	// INCLUDE ADAPTERS DEFAULTS TO TRUE, and the defaulting is here rather than in the schema because a
+	// caller that predates this field cannot express "unset" — it sends false. Reading that as "no adapters"
+	// would give every older client exactly the image this field exists to prevent: one that cannot run
+	// work. An explicit false from a client that DOES know about the field is honoured.
+	includeAdapters := true
+	if m.IncludeAdapters != nil {
+		includeAdapters = *m.IncludeAdapters
+	}
+
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -151,6 +160,7 @@ func (s *Service) CreateRuntimeImage(ctx context.Context, req *connect.Request[a
 		AptPackages:        apt,
 		Toolchains:         toolchains,
 		Env:                envJSON,
+		IncludeAdapters:    includeAdapters,
 		DockerfileOverride: override,
 		Tag:                tag,
 		Status:             "draft",
@@ -273,6 +283,12 @@ func (s *Service) UpdateRuntimeImage(ctx context.Context, req *connect.Request[a
 			return nil, err
 		}
 		f.Env = &v
+	}
+	// ABSENT MEANS LEAVE UNCHANGED, which is what `optional` is for on a PATCH. Unlike create there is no
+	// "older client sent false" hazard here: a client that does not know the field omits it entirely.
+	if m.IncludeAdapters != nil {
+		v := *m.IncludeAdapters
+		f.IncludeAdapters = &v
 	}
 	if m.DockerfileOverride != nil {
 		v, err := bound(*m.DockerfileOverride, maxDockerfileLen)
@@ -1487,6 +1503,31 @@ func (s *Service) GetStockImageTemplate(ctx context.Context, req *connect.Reques
 // RE-writes it to its own base anyway (defense in depth), and injects
 // the runtime-base label. The root/chown wrapper keeps the rootfs
 // writable by the non-root runtime user.
+
+// adapterInstallBlock is the Dockerfile fragment that installs the runtime CLI adapters into a generated
+// image, or "" when the row has them switched off.
+//
+// IT MIRRORS THE SHIPPED VARIANTS DELIBERATELY. deploy/runtime/Dockerfile.gui and Dockerfile.dev carry the
+// same two packages with the same rationale, and the two must not drift: a custom image and a stock image
+// that disagree about which adapters exist is how "it works on :dev but not on my image" happens.
+//
+// THE PACKAGE NAMES ARE VERIFIED AGAINST THE npm REGISTRY, not guessed: @opencode/cli (2.x; "opencode-ai"
+// is the 1.x line and provides the same `opencode` bin) and @anthropic-ai/claude-code (bin: claude).
+//
+// Versions are pinnable, because a rebuild months later silently changing the adapter is a behaviour
+// change in the thing that drives the operator's work.
+func adapterInstallBlock(row db.RuntimeImageRow) string {
+	if !row.IncludeAdapters {
+		return ""
+	}
+	return "ARG ORCHICON_OPENCODE_VERSION=latest\n" +
+		"ARG ORCHICON_CLAUDE_VERSION=latest\n" +
+		"RUN npm install -g \\\n" +
+		"      \"@opencode/cli@${ORCHICON_OPENCODE_VERSION}\" \\\n" +
+		"      \"@anthropic-ai/claude-code@${ORCHICON_CLAUDE_VERSION}\" \\\n" +
+		" && chown -R 1000:1000 /usr/local/lib/node_modules /usr/local/bin 2>/dev/null || true\n"
+}
+
 func generatedDockerfile(row db.RuntimeImageRow, base string) string {
 	if strings.TrimSpace(row.DockerfileOverride) != "" {
 		return row.DockerfileOverride
@@ -1513,6 +1554,23 @@ func generatedDockerfile(row db.RuntimeImageRow, base string) string {
 	for k, v := range envMap {
 		fmt.Fprintf(&sb, "ENV %s=%s\n", k, v)
 	}
+	// RUNTIME CLI ADAPTERS COME LAST, AFTER THE ROW'S OWN BUILD TOOLS — order is load-bearing.
+	//
+	// A row's apt packages and toolchain lines are what the operator came to specify; the adapters are
+	// infrastructure the image needs in order to run any work at all. Installing them FIRST would also mean
+	// a later toolchain line that replaces or removes node/npm silently takes them with it, and the failure
+	// would surface at the first session spawn rather than at the Dockerfile that caused it.
+	//
+	// ON BY DEFAULT, because REPORTED AS A DESIGN GAP rather than a bug: an operator creating a runtime
+	// image in the console got a perfectly good toolchain image with no adapter in it, sent work to it, and
+	// found out when the first session could not spawn — with the reason buried in a container log. Nobody
+	// creating "a runtime image" is asking for one that cannot run work.
+	//
+	// ON BY DEFAULT RATHER THAN ALWAYS, because a container that runs no adapter CLI is a supported shape (a
+	// shell-only toolchain, a build image). The field is PERSISTED, so switching it off is a decision rather
+	// than an omission. A row with a dockerfile_override gets nothing here: writing your own Dockerfile is a
+	// decision too, and second-guessing it would be worse than trusting it.
+	sb.WriteString(adapterInstallBlock(row))
 	sb.WriteString("RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true\n")
 	sb.WriteString("USER orchicon\n")
 	sb.WriteString("WORKDIR /home/orchicon\n")

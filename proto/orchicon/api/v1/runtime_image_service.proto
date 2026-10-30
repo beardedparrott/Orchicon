@@ -71,6 +71,9 @@ message CreateRuntimeImageRequest {
   string env = 7; // JSON object
   string dockerfile_override = 8; // empty = generate from structured fields
   string tag = 9; // optional; defaults to "<slug>:latest"
+  // Absent means TRUE — the safe default for a caller that predates this field, and the one that produces an
+  // image that can actually run work. Use an explicit wrapper to ask for false.
+  optional bool include_adapters = 10;
 }
 
 message CreateRuntimeImageResponse {
@@ -108,7 +111,8 @@ message UpdateRuntimeImageRequest {
   optional string env = 7;
   optional string dockerfile_override = 8;
   optional string tag = 9;
-  int32 version = 10; // optimistic concurrency
+  optional bool include_adapters = 10; // absent = leave unchanged
+  int32 version = 11; // optimistic concurrency
 }
 
 message UpdateRuntimeImageResponse {

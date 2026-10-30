@@ -128,7 +128,12 @@ func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 		filepath.Join(home, ".config", "gh") + ":" + filepath.Join(home, ".config", "gh") + ":ro",
 		filepath.Join(home, ".local", "share", "gh") + ":" + filepath.Join(home, ".local", "share", "gh") + ":ro",
 	}
+	// THE PREFIX IS ABSENT FOR AN IMAGE-SUPPLIED KIND NOW — claude/opencode are installed in the image, so a
+	// host bin dir would SHADOW them (this PATH is prepended, ahead of /usr/local/bin). The expectation below
+	// is therefore "the prefix appears only when the operator named a binary", asserted in the dedicated case
+	// at the end.
 	adapterPATH := filepath.Join(home, ".opencode", "bin") + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	_ = adapterPATH
 
 	cases := []struct {
 		name        string
@@ -172,8 +177,11 @@ func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 					t.Errorf("missing uid-owned home tmpfs %s: %v", opt, args)
 				}
 			}
-			if got := envValue(args, "PATH", adapterPATH); got != c.wantAdapter {
-				t.Errorf("adapter PATH prefix present=%v, want %v (args %v)", got, c.wantAdapter, args)
+			// THE IMAGE'S ADAPTER IS NOT SHADOWED. opencode is installed in the shipped images, so its host
+			// bin dir must NOT be prepended — the container's own /usr/local/bin copy is the one that runs.
+			if got := envValue(args, "PATH", adapterPATH); got {
+				t.Errorf("the host adapter bin dir was prepended for an IMAGE-SUPPLIED kind — that shadows the "+
+					"in-image adapter and puts the container back on the host's binary (args %v)", args)
 			}
 		})
 	}
@@ -280,9 +288,10 @@ func claudeAdapterMounts(home string) []string {
 	p := func(parts ...string) string {
 		return filepath.Join(append([]string{home}, parts...)...)
 	}
+	// NO READ-WRITE HOST BIND. ~/.claude and ~/.claude.json are PRIVATE per container (a writable tmpfs at
+	// the same path), so concurrent runs cannot write into one tree on the operator's machine. Only the
+	// CLI launcher and install root remain host binds, read-only.
 	return []string{
-		p(".claude") + ":" + p(".claude") + ":rw",
-		p(".claude.json") + ":" + p(".claude.json") + ":rw",
 		p(".local", "bin", "claude") + ":" + p(".local", "bin", "claude") + ":ro",
 		p(".local", "share", "claude") + ":" + p(".local", "share", "claude") + ":ro",
 	}
@@ -316,8 +325,15 @@ func TestStandardHostMountArgsClaudeRWAndPath(t *testing.T) {
 		args := d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"claude"}, GitStrategy: "local"})
 		assertMounts(t, args, claudeAdapterMounts(home), true)
 		assertMounts(t, args, opencodeAdapterMounts(home), false)
-		if !envValue(args, "PATH", clPATH) {
-			t.Errorf("claude-only PATH must be %q, args %v", clPATH, args)
+		// THE WRITABLE HOME IS STILL DELIVERED — as a private tmpfs, not a host bind.
+		if !argValue(args, "--tmpfs", home+"/.claude:rw,mode=0777") {
+			t.Errorf("claude's config/transcript home has no private writable mount — the CLI would fail to "+
+				"write its session state (args %v)", args)
+		}
+		// NO HOST PREFIX: claude is installed in the shipped image, and this PATH is PREPENDED — a host bin
+		// dir here would shadow it and put the container back on the host's binary.
+		if envValue(args, "PATH", clPATH) {
+			t.Errorf("claude is IMAGE-SUPPLIED, so its host bin dir must not be prepended (args %v)", args)
 		}
 	})
 
@@ -325,8 +341,8 @@ func TestStandardHostMountArgsClaudeRWAndPath(t *testing.T) {
 		args := d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"opencode"}, GitStrategy: "local"})
 		assertMounts(t, args, claudeAdapterMounts(home), false)
 		assertMounts(t, args, opencodeAdapterMounts(home), true)
-		if !envValue(args, "PATH", ocPATH) {
-			t.Errorf("opencode-only PATH must stay %q, args %v", ocPATH, args)
+		if envValue(args, "PATH", ocPATH) {
+			t.Errorf("opencode is IMAGE-SUPPLIED, so its host bin dir must not be prepended (args %v)", args)
 		}
 	})
 
@@ -334,8 +350,8 @@ func TestStandardHostMountArgsClaudeRWAndPath(t *testing.T) {
 		args := d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"opencode", "claude"}, GitStrategy: "local"})
 		assertMounts(t, args, claudeAdapterMounts(home), true)
 		assertMounts(t, args, opencodeAdapterMounts(home), true)
-		if !envValue(args, "PATH", bothPATH) {
-			t.Errorf("mixed PATH must be %q, args %v", bothPATH, args)
+		if envValue(args, "PATH", bothPATH) {
+			t.Errorf("both kinds are IMAGE-SUPPLIED, so neither host bin dir may be prepended (args %v)", args)
 		}
 	})
 }

@@ -42,11 +42,19 @@ func TestClaudeAuthFailureClassifiesAuthErrors(t *testing.T) {
 	}
 }
 
-// TestClaudeAuthRequiredMessageActionable pins the message contents the
-// acceptance criteria require: it must name the host-side remedy (run
-// `claude` and sign in) and the ANTHROPIC_API_KEY fallback.
+// TestClaudeAuthRequiredMessageActionable pins the message contents: the host-side remedy (run `claude` and
+// sign in), the ANTHROPIC_API_KEY fallback, AND the container-mode explanation.
+//
+// THE LAST PART WAS A REPORTED GAP. An operator in container mode was told to "sign in on the host, then
+// re-run" — accurate, but it said nothing about the credential being MOUNTED into the container, so a
+// host-side sign-in looked like it had done nothing, and the obvious next guess (sign in inside the
+// container) is not possible and is not something we may do for them.
 func TestClaudeAuthRequiredMessageActionable(t *testing.T) {
-	for _, want := range []string{"not authenticated", "host", "claude", "ANTHROPIC_API_KEY"} {
+	for _, want := range []string{
+		"not authenticated", "host", "claude", "ANTHROPIC_API_KEY",
+		// The container-mode half.
+		"container", "mounted", "never signs in for you",
+	} {
 		if !strings.Contains(ClaudeAuthRequiredMessage, want) {
 			t.Errorf("ClaudeAuthRequiredMessage %q is missing %q", ClaudeAuthRequiredMessage, want)
 		}

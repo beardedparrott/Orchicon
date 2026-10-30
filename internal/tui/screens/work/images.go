@@ -68,6 +68,9 @@ func (m *Model) newImageCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "apt_packages", Label: "Apt packages", Kind: kit2.KJSON, Placeholder: `["libgl1","git-lfs"]`, Validate: validateJSON},
 		kit2.FieldSpec{Name: "toolchains", Label: "Toolchains", Kind: kit2.KJSON, Placeholder: `["mise install go@1.23"]`, Validate: validateJSON},
 		kit2.FieldSpec{Name: "env", Label: "Env", Kind: kit2.KJSON, Placeholder: `{"GOFLAGS":"-mod=mod"}`, Validate: validateJSON},
+		// ON by default: an image with no adapter cannot run a session at all, and nobody creating "a runtime
+		// image" is asking for that. Ignored when a Dockerfile override is supplied.
+		kit2.FieldSpec{Name: "include_adapters", Label: "Install runtime CLI adapters (opencode + Claude Code)", Kind: kit2.KCheckbox, Initial: "true"},
 		kit2.FieldSpec{Name: "dockerfile_override", Label: "Dockerfile override", Kind: kit2.KTextArea, Placeholder: "empty = generate from the fields above", NoPreview: true},
 		kit2.FieldSpec{Name: "tag", Label: "Tag", Kind: kit2.KText, Placeholder: "empty = <slug>:latest"},
 	)
@@ -84,6 +87,7 @@ func (m *Model) newImageEditForm(img *apiv1.RuntimeImage) *kit2.Form {
 		kit2.FieldSpec{Name: "apt_packages", Label: "Apt packages", Kind: kit2.KJSON, Initial: img.GetAptPackages(), Validate: validateJSON},
 		kit2.FieldSpec{Name: "toolchains", Label: "Toolchains", Kind: kit2.KJSON, Initial: img.GetToolchains(), Validate: validateJSON},
 		kit2.FieldSpec{Name: "env", Label: "Env", Kind: kit2.KJSON, Initial: img.GetEnv(), Validate: validateJSON},
+		kit2.FieldSpec{Name: "include_adapters", Label: "Install runtime CLI adapters (opencode + Claude Code)", Kind: kit2.KCheckbox, Initial: boolStr(img.GetIncludeAdapters())},
 		kit2.FieldSpec{Name: "dockerfile_override", Label: "Dockerfile override", Kind: kit2.KTextArea, Initial: img.GetDockerfileOverride(), NoPreview: true},
 		kit2.FieldSpec{Name: "tag", Label: "Tag", Kind: kit2.KText, Initial: img.GetTag()},
 	)
@@ -105,6 +109,7 @@ func (m *Model) wireImageForm(f *kit2.Form, mode string, cur *apiv1.RuntimeImage
 				AptPackages:        strings.TrimSpace(v["apt_packages"]),
 				Toolchains:         strings.TrimSpace(v["toolchains"]),
 				Env:                strings.TrimSpace(v["env"]),
+				IncludeAdapters:    boolPtr(v["include_adapters"] == "true"),
 				DockerfileOverride: v["dockerfile_override"],
 				Tag:                strings.TrimSpace(v["tag"]),
 			}
@@ -132,6 +137,7 @@ func (m *Model) wireImageForm(f *kit2.Form, mode string, cur *apiv1.RuntimeImage
 				AptPackages:        strPtr(strings.TrimSpace(v["apt_packages"])),
 				Toolchains:         strPtr(strings.TrimSpace(v["toolchains"])),
 				Env:                strPtr(strings.TrimSpace(v["env"])),
+				IncludeAdapters:    boolPtr(v["include_adapters"] == "true"),
 				DockerfileOverride: strPtr(v["dockerfile_override"]),
 				Tag:                strPtr(strings.TrimSpace(v["tag"])),
 			}

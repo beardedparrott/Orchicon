@@ -10,13 +10,32 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
-// TestAdapterCLINeverBaked is the ADAPTER-NEUTRAL IMAGE INVARIANT guard
-// (AC 6): no image built from this repo's Dockerfiles may BAKE an adapter
-// CLI. The invariant is already true by design — deploy/runtime/Dockerfile
-// and deploy/container/Dockerfile deliberately bind-MOUNT the operator's
-// host adapter installs at runtime (license redistributability: Claude
-// Code's terms forbid bundling it) — and this guard makes a silent
-// regression impossible.
+// TestAdapterCLINeverBaked guards the ADAPTER-NEUTRAL IMAGE INVARIANT for
+// PUBLISHED images: an image Orchicon BUILDS AND SERVES may never bake a
+// third-party adapter CLI. Such an image is Orchicon DISTRIBUTING that CLI,
+// and distributing someone else's binary is the thing to avoid.
+//
+// IT NO LONGER BANS BAKING IN THE LOCALLY-BUILT VARIANTS, and that narrowing is
+// the point of this revision rather than a relaxation. A file under
+// deploy/runtime/ that release.yml never builds is a TEMPLATE: it is embedded
+// in the orchicon binary and served read-only by the Runtime Images page, and
+// the OPERATOR builds it on their own machine, for their own licensed use,
+// under their own credentials. Nothing about that is distribution, so the reason
+// the original guard cited — "Claude Code's terms forbid bundling it" — does not
+// reach it.
+//
+// The distinction is enforced rather than asserted: PUBLISHED_DOCKERFILES below
+// is checked against release.yml, so a template that GRADUATES into a published
+// image fails this test until someone decides about it deliberately. That is the
+// regression the original guard existed to catch, kept intact.
+//
+// WHY BAKING IS NEEDED AT ALL, recorded so the next reader does not undo it: a
+// bind-mount hands the container a host PATH, and executing it requires the
+// binary to be native to the container. A Windows host mounts
+// C:\...\opencode.exe, which a Linux kernel cannot exec, and Claude's adapter
+// speaks stdio to a process the supervisor spawns — so there is nothing to dial
+// instead. In-image install is what makes container mode work identically on
+// Windows, macOS and Linux.
 //
 // Two properties make it regression-proof rather than a snapshot:
 //
@@ -85,10 +104,21 @@ func TestAdapterCLINeverBaked(t *testing.T) {
 		t.Fatal("no bake needles derived from the catalog — the guard would pass vacuously")
 	}
 
-	// (b) Layer scan: Dockerfiles ONLY.
-	files := dockerfilesUnder(t, filepath.Join("..", "..", "deploy"))
-	if len(files) < 3 {
-		t.Fatalf("guard found only %d Dockerfile(s) under deploy/ (%v) — the discovery walk is broken and the guard would pass vacuously", len(files), files)
+	// (b) Layer scan: Dockerfiles ONLY, and only the PUBLISHED ones.
+	all := dockerfilesUnder(t, filepath.Join("..", "..", "deploy"))
+	if len(all) < 3 {
+		t.Fatalf("guard found only %d Dockerfile(s) under deploy/ (%v) — the discovery walk is broken and the guard would pass vacuously", len(all), all)
+	}
+	published := publishedDockerfiles(t)
+	files := make([]string, 0, len(all))
+	for _, f := range all {
+		if published[filepath.Clean(f)] {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		t.Fatal("no PUBLISHED Dockerfile was found to scan — the invariant would pass vacuously. " +
+			"release.yml must build at least the base image.")
 	}
 	scanned := 0
 	for _, f := range files {
@@ -106,7 +136,40 @@ func TestAdapterCLINeverBaked(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("scanned %d Dockerfile(s) for %d adapter needle(s) across %d catalog kind(s)", scanned, len(needles), len(kinds))
+	t.Logf("scanned %d PUBLISHED Dockerfile(s) of %d for %d adapter needle(s) across %d catalog kind(s)",
+		scanned, len(all), len(needles), len(kinds))
+}
+
+// publishedDockerfiles returns the Dockerfiles release.yml actually BUILDS — the set the invariant
+// applies to.
+//
+// IT IS DERIVED FROM THE WORKFLOW, not hardcoded, because the boundary between "a template the operator
+// builds" and "an image we distribute" IS the publish step. Hardcoding the list would let a template
+// graduate into a published image with this guard still passing, which is precisely the regression it
+// exists to prevent.
+func publishedDockerfiles(t *testing.T) map[string]bool {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release.yml: %v — the published/unpublished split cannot be established, so the "+
+			"invariant cannot be scoped honestly", err)
+	}
+	out := map[string]bool{}
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.Contains(line, "docker build ") {
+			continue
+		}
+		for _, field := range strings.Fields(line) {
+			if strings.HasPrefix(field, "deploy/") && strings.Contains(field, "Dockerfile") {
+				out[filepath.Clean(filepath.Join("..", "..", field))] = true
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("release.yml builds no Dockerfile under deploy/ — the guard cannot tell published from " +
+			"template and would silently scan nothing")
+	}
+	return out
 }
 
 // adapterBakeNeedles derives the forbidden substrings for one adapter kind

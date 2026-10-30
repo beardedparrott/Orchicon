@@ -28,23 +28,47 @@ import (
 // created a row whose only possible action was a guaranteed failure.
 func TestPublishedStockTagsAreTheRegistrysOwn(t *testing.T) {
 	got := publishedStockTags()
-	want := []string{
-		"ghcr.io/beardedparrott/orchicon-runtime:latest",
-		"ghcr.io/beardedparrott/orchicon-runtime:gui",
-		"ghcr.io/beardedparrott/orchicon-runtime:dev",
-	}
+	// THE BASE ALONE, AND THAT IS NOW THE CONTRACT. release.yml used to push ":gui" and ":dev" too;
+	// it no longer does, because those images carry third-party adapter CLIs and an image Orchicon
+	// builds and serves is Orchicon distributing them. Names that exist in the registry, still — there
+	// is simply one of them.
+	want := []string{"ghcr.io/beardedparrott/orchicon-runtime:latest"}
 	if len(got) != len(want) {
-		t.Fatalf("publishedStockTags() = %v, want %v", got, want)
+		t.Fatalf("publishedStockTags() = %v, want %v (the variants are BUILT locally, see LocalTag)", got, want)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("tag %d = %q, want %q — these are the tags release.yml pushes", i, got[i], want[i])
-		}
+	if got[0] != want[0] {
+		t.Errorf("tag = %q, want %q", got[0], want[0])
 	}
 	// NO INVENTED SUFFIXES. "-latest" on a variant produced three tags that do not exist.
 	for _, tag := range got {
 		if strings.HasSuffix(tag, "-latest") && tag != PublishedStockBase {
 			t.Errorf("tag %q carries a -latest suffix; only the BASE is published at :latest", tag)
+		}
+	}
+}
+
+// TestUnpublishedVariantsAreBuiltLocallyNotPulled is the routing half of not publishing them.
+//
+// A variant's tag must NOT be a registry reference, because FetchRuntimeImage routes on exactly that:
+// a registry ref is PULLED, anything else is BUILT from the shipped template. If a local tag carried a
+// registry prefix, every fetch of a variant would try to pull something nothing publishes — the
+// reported "manifest unknown" failure, reintroduced by a naming detail.
+func TestUnpublishedVariantsAreBuiltLocallyNotPulled(t *testing.T) {
+	for _, v := range stockVariants {
+		tag := v.CatalogTag("ghcr.io/beardedparrott/orchicon-runtime")
+		if _, published := v.PublishedTag("ghcr.io/beardedparrott/orchicon-runtime"); published {
+			if !isRegistryRef(tag) {
+				t.Errorf("%s is published, so its tag %q must be a registry ref (it is PULLED)", v.Variant, tag)
+			}
+			continue
+		}
+		if isRegistryRef(tag) {
+			t.Errorf("%s is NOT published, so its tag %q must be a LOCAL name — a registry ref would be "+
+				"PULLED, and nothing publishes it", v.Variant, tag)
+		}
+		// And it must still identify the variant, or resolveVariant cannot map a row back to it.
+		if _, ok := resolveVariant(tag, PublishedStockBase); !ok {
+			t.Errorf("local tag %q does not resolve to its variant", tag)
 		}
 	}
 }

@@ -57,7 +57,7 @@ func EnsureCatalogRows(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 		return
 	}
 	base := firstPublishedTag()
-	for _, tag := range publishedStockTags() {
+	for _, tag := range catalogStockTags() {
 		variant, ok := resolveVariant(tag, base)
 		if !ok {
 			continue
@@ -136,16 +136,56 @@ type stockVariant struct {
 }
 
 // PublishedTag returns the registry tag this variant is actually published at, and false when it is
-// NOT published (web-research today): release.yml pushes ":latest" for the base and ":<variant>" for
-// the others, plus per-version tags this catalog does not need.
+// NOT published.
+//
+// BASE ONLY, AND THE OTHERS ARE DELIBERATELY NOT PUBLISHED. release.yml used to push ":latest", ":gui"
+// and ":dev"; it now pushes the base alone. The reason is not size or speed — it is that the variants
+// carry third-party adapter CLIs (opencode, claude), and an image Orchicon builds and serves is Orchicon
+// DISTRIBUTING them. Built on the operator's machine from a shipped template instead, the operator
+// installs for themselves, which is the same line this project already draws for host-installed
+// adapters.
+//
+// A variant with no published tag is not "missing" — see LocalTag, which is where it lives instead.
 func (v stockVariant) PublishedTag(repo string) (string, bool) {
-	switch v.Variant {
-	case stockVariants[0].Variant:
+	if v.Variant == stockVariants[0].Variant {
 		return repo + ":latest", true
-	case "gui", "dev":
-		return repo + ":" + v.Variant, true
 	}
 	return "", false
+}
+
+// LocalTag is the tag an unpublished variant is fetched at: BUILT on this host from the shipped
+// template, never pulled.
+//
+// THE NAME MATTERS, and it is the same class of mistake this file has already recorded twice. It must be
+// a SHORT NAME (no registry, no owner) so that FetchRuntimeImage's isRegistryRef routes it to BUILD
+// rather than PULL — that routing is what makes "fetch" mean the right thing per row. And it must be
+// distinct from the daemon's base tag, or the catalogue would carry two rows for one artifact.
+//
+// The local repository is the published one, minus its registry prefix: "ghcr.io/org/orchicon-runtime"
+// becomes "orchicon-runtime", so a locally-built variant is "orchicon-runtime:dev". That keeps the
+// family legible in `podman images` while removing every suggestion that something is being downloaded.
+func (v stockVariant) LocalTag(repo string) string {
+	repo = strings.TrimSpace(repo)
+	if i := strings.LastIndexByte(repo, '/'); i >= 0 {
+		repo = repo[i+1:]
+	}
+	if repo == "" {
+		repo = "orchicon-runtime"
+	}
+	if v.Variant == stockVariants[0].Variant {
+		return repo + ":latest"
+	}
+	return repo + ":" + v.Variant
+}
+
+// CatalogTag is where this variant lives FOR THIS HOST: its published ref when it has one, else its local
+// build tag. Everything that seeds, reconciles or restores a catalogue row asks this, so the two states
+// cannot drift.
+func (v stockVariant) CatalogTag(repo string) string {
+	if tag, ok := v.PublishedTag(repo); ok {
+		return tag
+	}
+	return v.LocalTag(repo)
 }
 
 // TagSuffix is the "<variant>-" segment a published tag carries before the version, matching the
@@ -266,7 +306,7 @@ func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *
 	// them AFTER the daemon loop — and only for variants the daemon did not cover — keeps the daemon's own
 	// evidence authoritative, so this can never contradict a present image.
 	base := firstPublishedTag()
-	for _, tag := range publishedStockTags() {
+	for _, tag := range catalogStockTags() {
 		variant, ok := resolveVariant(tag, base)
 		if !ok || covered[stockSlug(variant)] {
 			continue
@@ -286,7 +326,7 @@ func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *
 func seedPublishedCatalog(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *runtime.Client) error {
 	svc := &Service{pool: pool, log: log, rt: rt}
 	base := firstPublishedTag()
-	for _, tag := range publishedStockTags() {
+	for _, tag := range catalogStockTags() {
 		variant, ok := resolveVariant(tag, base)
 		if !ok {
 			continue
@@ -321,6 +361,22 @@ func firstPublishedTag() string {
 		return PublishedStockBase
 	}
 	return tags[0]
+}
+
+// catalogStockTags lists the tag every shipped variant lives at on THIS host, base first: the published
+// ref for the base, and a local build tag for the variants that are no longer published.
+//
+// IT REPLACES publishedStockTags AT EVERY CATALOGUE CALL SITE. publishedStockTags answered "what is
+// released", and once the variants stopped being released that answer became "the base only" — which
+// silently DELETED gui/dev/web-research from the catalogue. The question the catalogue actually asks is
+// "what can this host end up with", so that is now the question it gets.
+func catalogStockTags() []string {
+	repo, _ := splitImageRef(PublishedStockBase)
+	out := make([]string, 0, len(stockVariants))
+	for _, v := range stockVariants {
+		out = append(out, v.CatalogTag(repo))
+	}
+	return out
 }
 
 // publishedStockTags lists the released tag for every variant that IS actually published, base first.

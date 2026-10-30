@@ -23,6 +23,9 @@ type RuntimeImageRow struct {
 	Env                []byte // jsonb
 	DockerfileOverride string
 	Tag                string
+	// IncludeAdapters installs the runtime CLI adapters (opencode, Claude Code) into a GENERATED image.
+	// Default true: an image nobody can run work with is not what "create a runtime image" means.
+	IncludeAdapters    bool
 	Status             string
 	BuildLog           string
 	Error              string
@@ -46,14 +49,14 @@ type RuntimeImageFilter struct {
 }
 
 const runtimeImageCols = `id, tenant_id, name, slug, description, base_image_ref,
-	apt_packages, toolchains, env, dockerfile_override, tag, status, build_log, error,
+	apt_packages, toolchains, env, include_adapters, dockerfile_override, tag, status, build_log, error,
 	failure_reason, failed_step, log_tail, failure_category,
 	version, built_version, source, created_at, updated_at`
 
 func scanRuntimeImage(row pgx.Row) (RuntimeImageRow, error) {
 	var r RuntimeImageRow
 	err := row.Scan(&r.ID, &r.TenantID, &r.Name, &r.Slug, &r.Description, &r.BaseImageRef,
-		&r.AptPackages, &r.Toolchains, &r.Env, &r.DockerfileOverride, &r.Tag, &r.Status,
+		&r.AptPackages, &r.Toolchains, &r.Env, &r.IncludeAdapters, &r.DockerfileOverride, &r.Tag, &r.Status,
 		&r.BuildLog, &r.Error, &r.FailureReason, &r.FailedStep, &r.LogTail, &r.FailureCategory,
 		&r.Version, &r.BuiltVersion, &r.Source, &r.CreatedAt, &r.UpdatedAt)
 	return r, err
@@ -68,12 +71,12 @@ func CreateRuntimeImage(ctx context.Context, tx pgx.Tx, r RuntimeImageRow) (Runt
 	}
 	q := `INSERT INTO runtime_images
 		(id, tenant_id, name, slug, description, base_image_ref,
-		 apt_packages, toolchains, env, dockerfile_override, tag, status,
+		 apt_packages, toolchains, env, include_adapters, dockerfile_override, tag, status,
 		 build_log, error, version, source)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1,$15)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,1,$16)
 		RETURNING ` + runtimeImageCols
 	return scanRuntimeImage(tx.QueryRow(ctx, q, r.ID, r.TenantID, r.Name, r.Slug, r.Description,
-		r.BaseImageRef, r.AptPackages, r.Toolchains, r.Env, r.DockerfileOverride, r.Tag,
+		r.BaseImageRef, r.AptPackages, r.Toolchains, r.Env, r.IncludeAdapters, r.DockerfileOverride, r.Tag,
 		r.Status, r.BuildLog, r.Error, r.Source))
 }
 
@@ -166,6 +169,7 @@ type UpdateRuntimeImageFields struct {
 	Description        *string
 	AptPackages        *[]byte
 	Toolchains         *[]byte
+	IncludeAdapters    *bool
 	Env                *[]byte
 	DockerfileOverride *string
 	Tag                *string
@@ -201,6 +205,9 @@ func UpdateRuntimeImage(ctx context.Context, tx pgx.Tx, tenantID, id string, ver
 	}
 	if f.AptPackages != nil {
 		add("apt_packages", *f.AptPackages)
+	}
+	if f.IncludeAdapters != nil {
+		add("include_adapters", *f.IncludeAdapters)
 	}
 	if f.Toolchains != nil {
 		add("toolchains", *f.Toolchains)

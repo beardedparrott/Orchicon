@@ -41,8 +41,11 @@ type CreateRuntimeImageRequest struct {
 	Env                string                 `protobuf:"bytes,7,opt,name=env,proto3" json:"env,omitempty"`                                                         // JSON object
 	DockerfileOverride string                 `protobuf:"bytes,8,opt,name=dockerfile_override,json=dockerfileOverride,proto3" json:"dockerfile_override,omitempty"` // empty = generate from structured fields
 	Tag                string                 `protobuf:"bytes,9,opt,name=tag,proto3" json:"tag,omitempty"`                                                         // optional; defaults to "<slug>:latest"
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Absent means TRUE — the safe default for a caller that predates this field, and the one that produces an
+	// image that can actually run work. Use an explicit wrapper to ask for false.
+	IncludeAdapters *bool `protobuf:"varint,10,opt,name=include_adapters,json=includeAdapters,proto3,oneof" json:"include_adapters,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CreateRuntimeImageRequest) Reset() {
@@ -136,6 +139,13 @@ func (x *CreateRuntimeImageRequest) GetTag() string {
 		return x.Tag
 	}
 	return ""
+}
+
+func (x *CreateRuntimeImageRequest) GetIncludeAdapters() bool {
+	if x != nil && x.IncludeAdapters != nil {
+		return *x.IncludeAdapters
+	}
+	return false
 }
 
 type CreateRuntimeImageResponse struct {
@@ -409,7 +419,8 @@ type UpdateRuntimeImageRequest struct {
 	Env                *string                `protobuf:"bytes,7,opt,name=env,proto3,oneof" json:"env,omitempty"`
 	DockerfileOverride *string                `protobuf:"bytes,8,opt,name=dockerfile_override,json=dockerfileOverride,proto3,oneof" json:"dockerfile_override,omitempty"`
 	Tag                *string                `protobuf:"bytes,9,opt,name=tag,proto3,oneof" json:"tag,omitempty"`
-	Version            int32                  `protobuf:"varint,10,opt,name=version,proto3" json:"version,omitempty"` // optimistic concurrency
+	IncludeAdapters    *bool                  `protobuf:"varint,10,opt,name=include_adapters,json=includeAdapters,proto3,oneof" json:"include_adapters,omitempty"` // absent = leave unchanged
+	Version            int32                  `protobuf:"varint,11,opt,name=version,proto3" json:"version,omitempty"`                                              // optimistic concurrency
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -505,6 +516,13 @@ func (x *UpdateRuntimeImageRequest) GetTag() string {
 		return *x.Tag
 	}
 	return ""
+}
+
+func (x *UpdateRuntimeImageRequest) GetIncludeAdapters() bool {
+	if x != nil && x.IncludeAdapters != nil {
+		return *x.IncludeAdapters
+	}
+	return false
 }
 
 func (x *UpdateRuntimeImageRequest) GetVersion() int32 {
@@ -1342,7 +1360,7 @@ var File_orchicon_api_v1_runtime_image_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_runtime_image_service_proto_rawDesc = "" +
 	"\n" +
-	"+orchicon/api/v1/runtime_image_service.proto\x12\x0forchicon.api.v1\x1a#orchicon/api/v1/runtime_image.proto\"\x9a\x02\n" +
+	"+orchicon/api/v1/runtime_image_service.proto\x12\x0forchicon.api.v1\x1a#orchicon/api/v1/runtime_image.proto\"\xdf\x02\n" +
 	"\x19CreateRuntimeImageRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -1354,7 +1372,10 @@ const file_orchicon_api_v1_runtime_image_service_proto_rawDesc = "" +
 	"toolchains\x12\x10\n" +
 	"\x03env\x18\a \x01(\tR\x03env\x12/\n" +
 	"\x13dockerfile_override\x18\b \x01(\tR\x12dockerfileOverride\x12\x10\n" +
-	"\x03tag\x18\t \x01(\tR\x03tag\"`\n" +
+	"\x03tag\x18\t \x01(\tR\x03tag\x12.\n" +
+	"\x10include_adapters\x18\n" +
+	" \x01(\bH\x00R\x0fincludeAdapters\x88\x01\x01B\x13\n" +
+	"\x11_include_adapters\"`\n" +
 	"\x1aCreateRuntimeImageResponse\x12B\n" +
 	"\rruntime_image\x18\x01 \x01(\v2\x1d.orchicon.api.v1.RuntimeImageR\fruntimeImage\"(\n" +
 	"\x16GetRuntimeImageRequest\x12\x0e\n" +
@@ -1371,7 +1392,7 @@ const file_orchicon_api_v1_runtime_image_service_proto_rawDesc = "" +
 	"\a_status\"\x89\x01\n" +
 	"\x19ListRuntimeImagesResponse\x12D\n" +
 	"\x0eruntime_images\x18\x01 \x03(\v2\x1d.orchicon.api.v1.RuntimeImageR\rruntimeImages\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xb9\x03\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xfe\x03\n" +
 	"\x19UpdateRuntimeImageRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x17\n" +
@@ -1383,9 +1404,10 @@ const file_orchicon_api_v1_runtime_image_service_proto_rawDesc = "" +
 	"toolchains\x88\x01\x01\x12\x15\n" +
 	"\x03env\x18\a \x01(\tH\x05R\x03env\x88\x01\x01\x124\n" +
 	"\x13dockerfile_override\x18\b \x01(\tH\x06R\x12dockerfileOverride\x88\x01\x01\x12\x15\n" +
-	"\x03tag\x18\t \x01(\tH\aR\x03tag\x88\x01\x01\x12\x18\n" +
-	"\aversion\x18\n" +
-	" \x01(\x05R\aversionB\a\n" +
+	"\x03tag\x18\t \x01(\tH\aR\x03tag\x88\x01\x01\x12.\n" +
+	"\x10include_adapters\x18\n" +
+	" \x01(\bH\bR\x0fincludeAdapters\x88\x01\x01\x12\x18\n" +
+	"\aversion\x18\v \x01(\x05R\aversionB\a\n" +
 	"\x05_nameB\a\n" +
 	"\x05_slugB\x0e\n" +
 	"\f_descriptionB\x0f\n" +
@@ -1393,7 +1415,8 @@ const file_orchicon_api_v1_runtime_image_service_proto_rawDesc = "" +
 	"\v_toolchainsB\x06\n" +
 	"\x04_envB\x16\n" +
 	"\x14_dockerfile_overrideB\x06\n" +
-	"\x04_tag\"`\n" +
+	"\x04_tagB\x13\n" +
+	"\x11_include_adapters\"`\n" +
 	"\x1aUpdateRuntimeImageResponse\x12B\n" +
 	"\rruntime_image\x18\x01 \x01(\v2\x1d.orchicon.api.v1.RuntimeImageR\fruntimeImage\"+\n" +
 	"\x19DeleteRuntimeImageRequest\x12\x0e\n" +
@@ -1544,6 +1567,7 @@ func file_orchicon_api_v1_runtime_image_service_proto_init() {
 		return
 	}
 	file_orchicon_api_v1_runtime_image_proto_init()
+	file_orchicon_api_v1_runtime_image_service_proto_msgTypes[0].OneofWrappers = []any{}
 	file_orchicon_api_v1_runtime_image_service_proto_msgTypes[4].OneofWrappers = []any{}
 	file_orchicon_api_v1_runtime_image_service_proto_msgTypes[6].OneofWrappers = []any{}
 	type x struct{}

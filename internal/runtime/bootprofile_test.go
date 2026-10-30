@@ -317,31 +317,46 @@ func claudeMountHome(t *testing.T) (home, launcher, versionedBinary string) {
 	return home, launcher, versionedBinary
 }
 
-// TestAdapterHostMountsClaudeRW asserts the EXACT -v arg strings for claude:
-// the config home and ~/.claude.json are READ-WRITE (a session writes its
-// transcript tree), while the CLI launcher and the install root stay
-// READ-ONLY. It also pins the regression direction: the rw concept must never
-// leak to another adapter kind.
+// TestAdapterHostMountsClaudeRW asserts the EXACT -v arg strings for claude.
+//
+// IT USED TO ASSERT TWO READ-WRITE HOST BINDS (~/.claude and ~/.claude.json), and that was the bug: every
+// concurrent container wrote into the SAME directories on the operator's machine, interleaving session state
+// and letting one run read another's transcripts. Both are now PRIVATE per container — a writable,
+// runtime-uid-owned directory at the same container path, with only the credential file bound read-only
+// inside it — so the host tree is never written by a container at all.
+//
+// The CLI launcher and install root stay READ-ONLY host binds (executing the image's adapter does not need
+// them, but an operator who named a host binary still gets it).
 func TestAdapterHostMountsClaudeRW(t *testing.T) {
 	home, _, _ := claudeMountHome(t)
 	want := []string{
-		"-v", filepath.Join(home, ".claude") + ":" + filepath.Join(home, ".claude") + ":rw",
-		"-v", filepath.Join(home, ".claude.json") + ":" + filepath.Join(home, ".claude.json") + ":rw",
 		"-v", filepath.Join(home, ".local", "bin", "claude") + ":" + filepath.Join(home, ".local", "bin", "claude") + ":ro",
 		"-v", filepath.Join(home, ".local", "share", "claude") + ":" + filepath.Join(home, ".local", "share", "claude") + ":ro",
 	}
 	if got := adapterHostMounts(home, "claude"); !reflect.DeepEqual(got, want) {
 		t.Errorf("claude mounts =\n%v\nwant\n%v", got, want)
 	}
-	// Exactly two RW mounts — nothing else is writable.
-	rw := 0
+	// NOTHING the container can write may be a host bind: that is the whole fix.
 	for _, a := range adapterHostMounts(home, "claude") {
 		if strings.HasSuffix(a, ":rw") {
-			rw++
+			t.Errorf("mount %q is READ-WRITE on the host — concurrent containers would share one writable "+
+				"tree; the config/transcript home must be PRIVATE per container", a)
 		}
 	}
-	if rw != 2 {
-		t.Errorf("expected exactly 2 read-write claude mounts, got %d", rw)
+	// The credential is still delivered: private installs bind their authFile read-only inside the copy.
+	priv := adapterPrivateHomes(home, "claude")
+	if len(priv) == 0 {
+		t.Fatal("claude has no private install — its config/transcript home must be private per container")
+	}
+	foundAuth := false
+	for _, ph := range priv {
+		if ph.authFile != "" {
+			foundAuth = true
+		}
+	}
+	if !foundAuth {
+		t.Error("no private install declares an authFile — a private home with no credential would give the " +
+			"container an unauthenticated claude")
 	}
 
 	// Regression: an opencode install is still mounted read-only everywhere.
@@ -430,31 +445,56 @@ func TestClaudeLauncherSymlinkTargetMounted(t *testing.T) {
 
 // --- the container half: an unrunnable adapter must be refused, not started ------------------------
 
-// TestAnUnrunnableAdapterIsRefusedBeforeTheContainerExists pins the failure this whole change exists to
-// prevent the SILENT version of: a Windows .exe resolves on the host, gets mounted, goes on the container's
-// PATH, and the container starts — then the first session spawn dies inside it with an exec-format error that
-// points at nothing the operator did.
-func TestAnUnrunnableAdapterIsRefusedBeforeTheContainerExists(t *testing.T) {
+// TestAnUnrunnableHostAdapterIsFineWhenTheImageSuppliesIt is the WINDOWS CONTAINER-MODE CASE, and it reverses
+// the test that stood here.
+//
+// The old test demanded a refusal whenever the host's adapter was a Windows .exe. That was right while the host
+// mount was the only source. Once the image installs the adapters, the host's binary format stops being the
+// question — and leaving the refusal in place made EVERY container create on Windows fail before the in-image
+// adapter could be reached, which is the whole feature being unavailable on the platform it was built for.
+func TestAnUnrunnableHostAdapterIsFineWhenTheImageSuppliesIt(t *testing.T) {
 	home := t.TempDir()
-	// A Windows-shaped install: the exact shape the operator's host has.
 	dir := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A Windows-shaped install: the exact shape the operator's host has.
 	if err := os.WriteFile(filepath.Join(dir, "claude.exe"), []byte("MZ"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("ORCHICON_CLAUDE_BIN", filepath.Join(dir, "claude.exe"))
 
-	problems := CheckAdaptersForContainer(home, "claude")
+	if problems := CheckAdaptersForContainer(home, "claude"); len(problems) != 0 {
+		t.Fatalf("problems = %v, want NONE — the image supplies claude, so the host's .exe is irrelevant "+
+			"and refusing here is what made container mode impossible on Windows", problems)
+	}
+}
+
+// TestTheRefusalStillFiresWhenTheImageCannotCoverTheKind keeps the guard doing its real job.
+//
+// The rule is "the image supplies it, OR the host contributes a runnable binary, OR refuse". opencode and
+// claude are image-supplied, so the FIRST arm covers them and the refusal cannot fire — which is exactly why
+// the guard must be exercised through the decision function rather than only through its shipped inputs.
+// Otherwise the day the image stops installing an adapter, this check silently stops refusing anything.
+func TestTheRefusalStillFiresWhenTheImageCannotCoverTheKind(t *testing.T) {
+	problems := containerAdapterProblems(func(kind string) (string, error) { return "/host/thing.exe", nil },
+		func(string) (imageAdapterKind, bool) { return imageAdapterKind{}, false }, "claude")
 	if len(problems) != 1 {
-		t.Fatalf("problems = %v, want exactly one refusal for the unrunnable claude", problems)
+		t.Fatalf("problems = %v, want exactly one refusal — nothing supplies the kind and the host's binary "+
+			"is a PE", problems)
 	}
 	for _, want := range []string{"claude", "Windows executable", "Linux"} {
 		if !strings.Contains(problems[0], want) {
 			t.Errorf("the refusal must name %q — it is the operator's only pointer to the remedy; got: %s",
 				want, problems[0])
 		}
+	}
+	// And the same inputs WITH an image that supplies the kind must refuse nothing. This is the pair that
+	// makes the rule legible: identical host, different image, opposite answers.
+	if got := containerAdapterProblems(func(kind string) (string, error) { return "/host/thing.exe", nil },
+		func(kind string) (imageAdapterKind, bool) { return imageAdapterKind{kind: kind, bin: kind}, true },
+		"claude"); len(got) != 0 {
+		t.Fatalf("problems = %v, want none — the image supplies the kind, so the host's PE is irrelevant", got)
 	}
 }
 

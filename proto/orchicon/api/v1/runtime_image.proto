@@ -67,4 +67,8 @@ message RuntimeImage {
   string failed_step = 21;
   string log_tail = 22;
   string failure_category = 23;
+  // Install the runtime CLI adapters (opencode, Claude Code) into the GENERATED Dockerfile. Default true:
+  // an image nobody can run work with is not what "create a runtime image" means. Ignored when
+  // dockerfile_override is set — an operator who wrote their own Dockerfile has taken the decision.
+  bool include_adapters = 24;
 }

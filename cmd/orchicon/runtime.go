@@ -521,7 +521,43 @@ func runtimeImagesAllowlist(csv string) []string {
 	if colon <= 0 {
 		return nil
 	}
-	repo, tag := img[:colon], img[colon+1:]
-	// THE REPOSITORY COMES FROM THE ENV VAR, so a mirror keeps working; only the TAG RULE is shared.
-	return []string{runtimeVariantRefIn(repo, "gui", tag), runtimeVariantRefIn(repo, "dev", tag)}
+	repo := img[:colon]
+
+	// THE VARIANTS ARE LOCAL BUILDS NOW, SO THE ALLOWLIST NAMES THEIR LOCAL TAGS.
+	//
+	// This used to emit `runtimeVariantRefIn(repo, "gui", tag)` — "<repo>:gui-<tag>", a REGISTRY ref — because
+	// the variants were published. They are not any more: they carry third-party adapter CLIs, so release.yml
+	// pushes the base alone and the variants are built on the operator's machine from the embedded templates.
+	//
+	// EMITTING A REGISTRY REF HERE WAS THE SUBTLE HALF OF THE OLD BUG. This value is the daemon's Images list,
+	// and the catalogue seeder RECONCILES each stock row's tag to whatever the daemon reports — so a registry
+	// ref here would make every variant row a registry ref, `isRegistryRef` would route the fetch to PULL, and
+	// every fetch would fail with "manifest unknown" all over again. The allowlist therefore has to name the
+	// same tags the catalogue builds: a SHORT NAME, no registry, no owner.
+	//
+	// The rule has ONE home — localVariantTag, shared with internal/runtimeimage's LocalTag — because the last
+	// time this rule lived in three places, two of them were fixed and this one was missed.
+	repo = localRepoName(repo)
+	return []string{localVariantTag(repo, "gui"), localVariantTag(repo, "dev")}
+}
+
+// localVariantTag is the tag a locally-built variant is addressed by: "<repo>:<variant>", a SHORT NAME.
+//
+// THE SHORT NAME IS LOAD-BEARING, not stylistic. internal/runtimeimage routes a fetch on isRegistryRef: a
+// registry ref is PULLED, anything else is BUILT. A variant that carried "ghcr.io/..." would be pulled from a
+// repository that no longer publishes it.
+func localVariantTag(repo, variant string) string { return repo + ":" + variant }
+
+// localRepoName strips the registry prefix and any owner, leaving the bare repository name:
+// "ghcr.io/beardedparrott/orchicon-runtime" -> "orchicon-runtime". A short name cannot be pulled by
+// accident, which is the property every caller here depends on.
+func localRepoName(repo string) string {
+	repo = strings.TrimSpace(repo)
+	if i := strings.LastIndexByte(repo, '/'); i >= 0 {
+		repo = repo[i+1:]
+	}
+	if repo == "" {
+		return "orchicon-runtime"
+	}
+	return repo
 }
