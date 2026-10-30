@@ -673,7 +673,8 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	// maps to exactly one slow provision vs scan-queued. The status is
 	// re-read AFTER the row commit, so it is durable truth.
 	start := time.Now()
-	defer func() { r.logProvisionOutcome(ctx, tenantID, runID, start) }()
+	stages := newStageTimer()
+	defer func() { r.logProvisionOutcome(ctx, tenantID, runID, start, stages) }()
 	// Phase 1 — read the run (short transaction, released before git work).
 	run, err := r.loadRun(ctx, tenantID, runID)
 	if err != nil {
@@ -728,6 +729,8 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 			fmt.Sprintf("project dir %s is not a git work tree", projectDir))
 	}
 
+	stages.mark("project")
+
 	path := filepath.Join(projectDir, worktreeDirName, runID)
 	// For a `none` (ephemeral) run, NO named branch is created — the
 	// worktree is detached HEAD, so "no branch retained" is structural
@@ -743,12 +746,14 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	// Resolve the base ref up front so the container-adopt path (Phase 3,
 	// case 2) can create the run worktree without re-entering Phase 4.
 	base := r.resolveBaseRef(ctx, projectDir)
+	stages.mark("base")
 
 	// Phase 3 — converge against what git actually has at the expected path.
 	existing, err := r.worktreeAt(ctx, projectDir, path)
 	if err != nil {
 		return fmt.Errorf("worktree: list worktrees: %w", err)
 	}
+	stages.mark("list")
 	if existing != nil {
 		if existing.branch == branch {
 			return r.recordReady(ctx, tenantID, runID, path, branch)
@@ -1303,7 +1308,7 @@ func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run 
 // attempt with the run's post-commit worktree_status, so a future
 // slow-dispatch report attributes to exactly one slow provision (long
 // duration_ms + terminal outcome) vs scan-queued (no line / pending).
-func (r *WorktreeReconciler) logProvisionOutcome(ctx context.Context, tenantID, runID string, start time.Time) {
+func (r *WorktreeReconciler) logProvisionOutcome(ctx context.Context, tenantID, runID string, start time.Time, stages *stageTimer) {
 	status := "unknown"
 	if cur, err := r.loadRun(ctx, tenantID, runID); err == nil {
 		status = cur.WorktreeStatus
@@ -1311,8 +1316,12 @@ func (r *WorktreeReconciler) logProvisionOutcome(ctx context.Context, tenantID, 
 			status = "missing"
 		}
 	}
+	// THE STAGE BREAKDOWN IS THE POINT. "duration_ms" alone made a reported 65-second provision
+	// unattributable; `stages` names which phase spent the time, so the next one is diagnosable from the log
+	// rather than by guessing at causes from outside.
 	r.log.Info("worktree: provision", "run", runID,
 		"duration_ms", time.Since(start).Milliseconds(),
+		"stages", stages.String(),
 		"worktree_status", status)
 }
 
@@ -1489,6 +1498,75 @@ func (r *WorktreeReconciler) slugSource(ctx context.Context, tenantID string, ru
 // runGit runs a git command in dir with argv-only arguments and a bounded
 // timeout. It returns the combined output. An exec/exit error is returned
 // alongside so callers can distinguish "no git" from a git failure.
+
+// stageTimer accumulates how long each PHASE of a provision took.
+//
+// IT EXISTS BECAUSE A BARE DURATION IS NOT DIAGNOSABLE. An operator reported "worktree provision took 65,677 ms
+// this run vs ~350-500ms previously" — a 130x regression with nothing to attribute it to: the log gave one
+// number for six phases that shell out to git. Guessing at the cause from outside (a missing origin, a network
+// probe, a large repo) was unproductive precisely because the artifact did not say.
+//
+// Marks are recorded in ORDER and rendered as `name=duration` pairs on the existing provision line, so a slow
+// run names its own stage without a new log level or a second line to correlate.
+type stageTimer struct {
+	last  time.Time
+	marks []stageMark
+}
+
+type stageMark struct {
+	name string
+	d    time.Duration
+}
+
+func newStageTimer() *stageTimer { return &stageTimer{last: time.Now()} }
+
+// mark closes the current stage and names it. Consecutive marks attribute the time BETWEEN them, so the
+// caller marks phase boundaries rather than measuring each phase individually.
+func (s *stageTimer) mark(name string) {
+	if s == nil {
+		return
+	}
+	now := time.Now()
+	s.marks = append(s.marks, stageMark{name: name, d: now.Sub(s.last)})
+	s.last = now
+}
+
+// String renders the marks for a log field: "resolve=12ms base=1ms add=65200ms".
+func (s *stageTimer) String() string {
+	if s == nil || len(s.marks) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, m := range s.marks {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(m.name)
+		b.WriteByte('=')
+		b.WriteString(m.d.Round(time.Millisecond).String())
+	}
+	return b.String()
+}
+// hasOriginRemote reports whether this repository has an `origin` remote configured at all.
+//
+// IT EXISTS TO STOP ASKING THE IMPOSSIBLE. Every remote-touching operation in this file — `remote show
+// origin`, `fetch origin develop`, `ls-remote origin`, `push origin --delete` — is asked of a repository
+// that may have no remote at all, and on such a repository each one fails with
+//
+//	fatal: 'origin' does not appear to be a git repository
+//
+// MEASURED on a real Windows host: that message repeated through every run's provision and prune, and
+// `fetch origin develop` plus the remote-branch-gone probe were both attempted per prune. Each fails in
+// milliseconds when origin is absent, so this is not by itself the 65-second provision — but it is pure
+// noise in the log an operator reads while diagnosing one, and it hides the failures that matter.
+//
+// `remote get-url` is the cheapest question that answers it: local, no network, no output parsing. It is a
+// per-call check rather than a cached one on purpose — it costs single-digit milliseconds and a cache is
+// one more thing that can go stale when a remote is added mid-session.
+func (r *WorktreeReconciler) hasOriginRemote(ctx context.Context, projectDir string) bool {
+	_, err := runGit(ctx, projectDir, "remote", "get-url", "origin")
+	return err == nil
+}
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", fmt.Errorf("git not available on control-plane host: %w", err)
@@ -2053,9 +2131,14 @@ func (r *WorktreeReconciler) currentBranch(ctx context.Context, projectDir strin
 // to fix). A failed fetch falls through to the local refs — conservative:
 // never delete on uncertainty. The reconciler never deletes unmerged work.
 func (r *WorktreeReconciler) branchMergedIntoBase(ctx context.Context, projectDir, branch string) bool {
-	if _, err := runGit(ctx, projectDir, "fetch", "origin", "develop"); err != nil {
-		r.log.Warn("worktree: fetch origin develop failed; merge gate uses local refs",
-			"branch", branch, "error", err)
+	// NO ORIGIN, NO FETCH — and no warning about it. A repository without a remote is a supported shape
+	// (a local-only project), so asking git to fetch from a remote that does not exist produced a WARN on
+	// every prune naming a failure nobody can act on.
+	if r.hasOriginRemote(ctx, projectDir) {
+		if _, err := runGit(ctx, projectDir, "fetch", "origin", "develop"); err != nil {
+			r.log.Warn("worktree: fetch origin develop failed; merge gate uses local refs",
+				"branch", branch, "error", err)
+		}
 	}
 	for _, ref := range []string{"develop", "origin/develop"} {
 		if _, err := runGit(ctx, projectDir, "merge-base", "--is-ancestor", branch, ref); err == nil {
@@ -2264,6 +2347,12 @@ func (r *WorktreeReconciler) commitDate(ctx context.Context, projectDir, ref str
 // unsuccessful probe — a weaker signal than pr_state, so it must never
 // delete on doubt.
 func (r *WorktreeReconciler) remoteBranchRefGone(ctx context.Context, projectDir, branch string) bool {
+	// A REPOSITORY WITH NO ORIGIN HAS NO REMOTE BRANCH TO BE GONE, and asking git to prune a remote that
+	// does not exist logged a WARN per prune. Fail-closed is unchanged: "cannot tell" still returns false,
+	// so no branch is ever deleted on an unanswered probe.
+	if !r.hasOriginRemote(ctx, projectDir) {
+		return false
+	}
 	if _, err := runGit(ctx, projectDir, "fetch", "--prune", "origin"); err != nil {
 		r.log.Warn("worktree: remote-branch-gone probe fetch failed; keeping branch",
 			"branch", branch, "error", err)
@@ -2290,6 +2379,12 @@ func (r *WorktreeReconciler) remoteBranchRefGone(ctx context.Context, projectDir
 func (r *WorktreeReconciler) branchRemoteExists(ctx context.Context, projectDir, branch string) (bool, bool) {
 	if branch == "" {
 		return false, true
+	}
+	// THE SAME ANSWER AS A FAILED PROBE, WITHOUT THE FAILED PROBE. No origin means the remote ref cannot
+	// exist, which is exactly what determined=false means to the caller — reached by a local check instead of
+	// a doomed `ls-remote` and the WARN it logged on every prune.
+	if !r.hasOriginRemote(ctx, projectDir) {
+		return false, false
 	}
 	out, err := runGit(ctx, projectDir, "ls-remote", "--heads", "origin", branch)
 	if err != nil {

@@ -149,6 +149,12 @@ func (r *WorktreeReconciler) refIsCommit(ctx context.Context, projectDir, ref st
 // failure to reach the remote (offline, no credentials) is not an error here: it is simply the next step of
 // the chain's turn, and the attempts list records it.
 func (r *WorktreeReconciler) remoteHeadBranch(ctx context.Context, projectDir string) string {
+	// ASKING A REMOTE THAT DOES NOT EXIST IS A WASTED ROUND TRIP. `remote show` reaches the remote when
+	// origin is configured, and this resolver runs on EVERY provision — so on a local-only repository it was
+	// a doomed attempt per run. A cheap local pre-check first.
+	if !r.hasOriginRemote(ctx, projectDir) {
+		return ""
+	}
 	out, err := runGit(ctx, projectDir, "remote", "show", "origin")
 	if err != nil {
 		return ""
