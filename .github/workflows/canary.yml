@@ -410,7 +410,26 @@ jobs:
   # develop-buildable half, and it is stated plainly in README-WINDOWS.txt's macOS sibling.
   desktop-macos:
     name: Desktop — macOS (.app, UNSIGNED canary)
-    runs-on: macos-14
+    # NOT macos-14: GitHub retires the macOS 14 runner images on **2 November 2026** and runs SCHEDULED
+    # BROWNOUTS that deliberately fail any job still using the label. The canary's first failure was exactly
+    # that, and the annotation GitHub attached to the job says so verbatim:
+    #
+    #   "This job failed because of a scheduled macOS 14 runner image brownout. macOS 14 runner images will
+    #    be retired on November 2, 2026."
+    #
+    # (https://github.com/actions/runner-images/issues/13518 — brownouts Oct 31 14:00→Nov 1 00:00 UTC and
+    # Nov 1 14:00→Nov 2 00:00 UTC, then the label is terminated with an error.)
+    #
+    # PINNED TO macos-26, NOT macos-latest. `-latest` never browns out, but it MOVES on GitHub's schedule —
+    # macOS-latest is currently macos-26 and GitHub has announced it changes again in June 2026 — so a
+    # release would silently get a different Xcode and SDK with no commit to blame. Pinning means the host
+    # changes when this file changes, and the deprecation notice still gives ~4 months' warning.
+    #
+    # ARCH NOTE: macos-26 is ARM64 and the retiring macos-14 was x64, so this is a change of build HOST as
+    # well as OS. That is fine here by design — `wails build -platform darwin/universal` cross-compiles and
+    # lipos both slices — but it is stated rather than glossed: if it ever fails it will be a cgo/WebKit link
+    # error naming arm64, and the x64 label for the same OS is `macos-26-intel`.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
