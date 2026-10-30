@@ -212,13 +212,51 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 	// and every workflow-run execution with "no opencode serve available".
 	// Copying once at startup means the mounted binary is never the file a
 	// cleanup target; a rebuilt + restarted daemon refreshes the copy.
+	// WHICH BINARY THE CONTAINER RUNS IS A SEPARATE QUESTION FROM WHICH ONE IS RUNNING HERE.
+	//
+	// On Linux they are the same file, so the self-copy below is the whole story. On Windows they are NOT: the
+	// daemon is a PE executable and the runtime container is a Linux container, so mounting the host binary as
+	// the entrypoint gives `exec format error` and the supervisor never opens its socket. The operator then
+	// sees "supervisor socket not ready" — a readiness timeout with no cause — while the run sits pending.
+	//
+	// MEASURED, from a Windows host: the mounted file began `MZ\x90\x00\x03\x00`, i.e. the Windows build of
+	// orchicon, 96.7 MiB, bind-mounted at /usr/local/bin/orchicon. ResolveContainerExe was written for exactly
+	// this and HAD NO CALLER, which is why the resolver, its sibling-name list and the installer all existed
+	// while the daemon still mounted the host's own executable.
+	containerExe, cerr := runtime.ResolveContainerExe(runtime.GOOS(), exePath,
+		os.Getenv(runtime.ContainerExeEnv))
+	if cerr != nil {
+		// NOT FATAL HERE, DELIBERATELY: the daemon still serves local-mode work, and a host with no container
+		// binary is a supported shape. It is recorded and REPORTED rather than swallowed, and the create path
+		// refuses with this same reason so the operator never gets a mystery readiness timeout instead.
+		log.Warn("runtime daemon: no linux orchicon binary for runtime containers — container creates will be refused",
+			"error", cerr, "env", runtime.ContainerExeEnv)
+		containerExe = ""
+	}
+
 	if exePath != "" {
 		stableExe := filepath.Join(filepath.Dir(socketPath), "orchicon")
 		if err := os.MkdirAll(filepath.Dir(stableExe), 0o755); err == nil {
-			if cerr := copySelf(exePath, stableExe); cerr != nil {
-				log.Warn("daemon self-copy failed — runtime containers may break after make clean", "error", cerr)
+			// COPY THE RIGHT FILE. On Windows exePath is the PE; copying it to the stable path and then
+			// mounting that is precisely the reported failure. The self-copy exists so a `make clean` cannot
+			// break the mounted file, so it must copy whichever binary will actually be mounted.
+			src := exePath
+			if containerExe != "" {
+				src = containerExe
+			}
+			if cerr := copySelf(src, stableExe); cerr != nil {
+				log.Warn("daemon self-copy failed — runtime containers may break after make clean", "error", cerr,
+					"source", src)
 			} else {
-				exePath = stableExe
+				// ONLY REPLACE THE MOUNTED BINARY WHEN IT IS THIS HOST'S OWN. When the container runs a
+				// separate linux build, the stable copy is a copy OF THAT BUILD and exePath (the daemon's own
+				// executable, used for other things) must stay pointing at the real daemon file.
+				if containerExe == "" || containerExe == exePath {
+					exePath = stableExe
+				}
+				if containerExe != "" && containerExe != exePath {
+					containerExe = stableExe
+				}
 			}
 		} else {
 			log.Warn("daemon self-copy dir", "error", err)
@@ -285,6 +323,11 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 			return projectDirRoots(ctx, pool, daemonCfg.DeploymentTenantID, log)
 		},
 		ExePath:       exePath,
+		// WHICH FILE THE CONTAINER RUNS — resolved above, never the daemon's own executable on Windows.
+		ContainerExe: containerExe,
+		// ON A HOST WHOSE OWN BINARY THE CONTAINER CANNOT RUN, an empty ContainerExe must REFUSE rather than
+		// fall back. Set from the same fact the resolver used, so the two cannot disagree.
+		ContainerExeRequired: runtime.GOOS() == "windows" || runtime.GOOS() == "darwin",
 		CPUs:          env("ORCHICON_RUNTIME_CPUS", "4"),
 		Memory:        env("ORCHICON_RUNTIME_MEMORY", "4g"),
 		TmpfsSize:     env("ORCHICON_RUNTIME_TMPFS", "2g"),
