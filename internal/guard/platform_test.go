@@ -6,7 +6,7 @@ package guard
 //
 //	create conversation session: host opencode serve unavailable — Ask chat transport is disabled:
 //	host serve guard: guard: symlink sudo: symlink guard
-//	C:\Users\justi\AppData\Local\Temp\orchicon-guard-706398431\sudo: A required privilege is not held
+//	C:\Users\operator\AppData\Local\Temp\orchicon-guard-706398431\sudo: A required privilege is not held
 //	by the client.
 //
 // "Why is there a sudo in windows?" — there is none; it is a SYMLINK named `sudo`, the guard's

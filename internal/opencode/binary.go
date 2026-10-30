@@ -155,7 +155,7 @@ func openCodePlatformCandidates(goos string, getenv func(string) string) []strin
 	// WHERE AN NPM GLOBAL INSTALL ACTUALLY PUTS THE EXECUTABLE. This is the case that was still
 	// failing after the first pass, reported with the operator's own install path:
 	//
-	//	"Opencode is currently installed here C:\Users\justi\AppData\Roaming\npm\opencode.ps1"
+	//	"Opencode is currently installed here C:\Users\operator\AppData\Roaming\npm\opencode.ps1"
 	//
 	// THAT PATH IS A SHIM, NOT A BINARY, and on Windows npm makes three of them (`opencode`,
 	// `opencode.cmd`, `opencode.ps1`) — never an `.exe`. So the directory above yielded shims only,
@@ -291,7 +291,7 @@ func lookupEnvFold(getenv func(string) string, name string) string {
 // `node_modules/opencode-ai/bin/opencode.exe`. Their real install is `@opencode/cli`, so the guess
 // missed a 246 MB executable that was sitting right there:
 //
-//	C:\Users\justi\AppData\Roaming\npm\node_modules\@opencode\cli\bin\opencode.exe
+//	C:\Users\operator\AppData\Roaming\npm\node_modules\@opencode\cli\bin\opencode.exe
 //
 // GUESSING A PACKAGE NAME IS THE WRONG SHAPE OF ANSWER, because the name is not this plane's to know:
 // it has already changed once, it is scoped, and a distributor could publish it under anything. The
@@ -579,7 +579,7 @@ func foundElsewhereHintFor(goos string, getenv func(string) string) string {
 			continue // a real executable here would have resolved; this is for the shims
 		}
 		// NAME THE REAL EXECUTABLE, not just the problem. The operator supplied their own shim path
-		// ("C:\Users\justi\AppData\Roaming\npm\opencode.ps1"), which means the useful answer is
+		// ("C:\Users\operator\AppData\Roaming\npm\opencode.ps1"), which means the useful answer is
 		// where the binary that shim stands for lives — one level down, in node_modules — and why it
 		// might be missing even though the shim is there.
 		real := filepath.Join(filepath.Dir(p), "node_modules", "opencode-ai", "bin", "opencode.exe")

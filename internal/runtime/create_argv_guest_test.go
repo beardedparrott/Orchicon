@@ -202,7 +202,7 @@ func TestEveryPathTakingFlagIsGuestified(t *testing.T) {
 	m := NewPathMapper("windows", "wsl")
 	for _, flag := range pathTakingFlags {
 		t.Run(flag, func(t *testing.T) {
-			argv := []string{"create", "--name", "c1", flag, `C:\Users\justi\.local\share\opencode:rw,size=2g`, "img"}
+			argv := []string{"create", "--name", "c1", flag, `C:\Users\operator\.local\share\opencode:rw,size=2g`, "img"}
 			out, err := guestifyCreateArgv(m, argv)
 			if err != nil {
 				t.Fatalf("%s %s was not made engine-visible: %v", flag, argv[4], err)
@@ -222,20 +222,20 @@ func TestEveryPathTakingFlagIsGuestified(t *testing.T) {
 // TestTheReportedTmpfsIsFixed is the exact argument from the report, verbatim.
 func TestTheReportedTmpfsIsFixed(t *testing.T) {
 	m := NewPathMapper("windows", "wsl")
-	out, err := guestifyTmpfsSpec(m, `C:\Users\justi\.local\share\opencode:rw,mode=0777,size=2g`)
+	out, err := guestifyTmpfsSpec(m, `C:\Users\operator\.local\share\opencode:rw,mode=0777,size=2g`)
 	if err != nil {
 		t.Fatalf("guestifyTmpfsSpec: %v", err)
 	}
 	// podman parses --tmpfs as DEST[:OPTIONS]; the dest must be a guest path and the options must survive.
 	dest, opts, _ := strings.Cut(out, ":")
-	if dest != "/mnt/c/Users/justi/.local/share/opencode" {
+	if dest != "/mnt/c/Users/operator/.local/share/opencode" {
 		t.Fatalf("dest = %q, want the WSL mount form", dest)
 	}
 	if !strings.Contains(opts, "mode=0777") || !strings.Contains(opts, "size=2g") {
 		t.Fatalf("the tmpfs options were lost: %q", opts)
 	}
 	// And the old form is exactly what the engine rejects.
-	if d, _, _ := strings.Cut(`C:\Users\justi\.local\share\opencode:rw,mode=0777`, ":"); d != "C" {
+	if d, _, _ := strings.Cut(`C:\Users\operator\.local\share\opencode:rw,mode=0777`, ":"); d != "C" {
 		t.Fatal("test is not modelling podman's split")
 	}
 }
@@ -247,10 +247,10 @@ func TestEveryPathFlagInARealisticArgvIsGuarded(t *testing.T) {
 	argv := []string{
 		"create", "--name", "orchicon-runtime-x", "--user", "1000:1000",
 		"-v", `/mnt/c/projects/weatherapp:/mnt/c/projects/weatherapp`,
-		"-v", `/mnt/c/Users/justi/.config/opencode:/mnt/c/Users/justi/.config/opencode:ro`,
-		"--tmpfs", `C:\Users\justi\.local\share\opencode:rw,mode=0777,size=2g`,
-		"--tmpfs", `/mnt/c/Users/justi:rw,mode=0777,size=2g`,
-		"-e", "HOME=/mnt/c/Users/justi",
+		"-v", `/mnt/c/Users/operator/.config/opencode:/mnt/c/Users/operator/.config/opencode:ro`,
+		"--tmpfs", `C:\Users\operator\.local\share\opencode:rw,mode=0777,size=2g`,
+		"--tmpfs", `/mnt/c/Users/operator:rw,mode=0777,size=2g`,
+		"-e", "HOME=/mnt/c/Users/operator",
 		"image", "orchicon", "runtime-supervisor",
 	}
 	out, err := guestifyCreateArgv(m, argv)
@@ -269,7 +269,7 @@ func TestEveryPathFlagInARealisticArgvIsGuarded(t *testing.T) {
 		}
 	}
 	// The env value is NOT a path flag and must be untouched.
-	if !containsStr(out, "HOME=/mnt/c/Users/justi") {
+	if !containsStr(out, "HOME=/mnt/c/Users/operator") {
 		t.Errorf("an -e value was rewritten: %v", out)
 	}
 }

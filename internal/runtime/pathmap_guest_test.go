@@ -6,7 +6,7 @@ package runtime
 //
 //	mount source outside allowed roots: C:\projects\weatherapp
 //	    (as the container engine sees it: /mnt/c/projects/weatherapp;
-//	     allowed roots: C:\Users\justi\projects, C:\projects\weatherapp — a PROJECT's own project_dir is
+//	     allowed roots: C:\Users\operator\projects, C:\projects\weatherapp — a PROJECT's own project_dir is
 //	     always allowed, and ORCHICON_RUNTIME_ALLOWED_ROOTS adds more)
 //
 // The path WAS in the list. The comparison still failed, and no value of ORCHICON_RUNTIME_ALLOWED_ROOTS could
@@ -66,7 +66,7 @@ func TestTheSameDirectoryYieldsTheSameGuestForm(t *testing.T) {
 func TestAllowlistMatchesTheSameFormsItPrints(t *testing.T) {
 	m := NewPathMapper("windows", "wsl")
 	projectDir := `C:\projects\weatherapp`
-	roots := []string{`C:\Users\justi\projects`, projectDir}
+	roots := []string{`C:\Users\operator\projects`, projectDir}
 
 	if !withinRootsIn(m, projectDir, roots) {
 		t.Fatalf("the mount source %q was REFUSED even though %q is in the allowlist %v.\n"+

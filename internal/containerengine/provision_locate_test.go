@@ -46,10 +46,10 @@ func probeWithFiles(goos string, env map[string]string, files []string, bins map
 // TestWingetIsFoundWhereWindowsPutsIt is THE reported case: winget is present at its conventional location and
 // absent from PATH, which is the state an MSI-launched install runs in.
 func TestWingetIsFoundWhereWindowsPutsIt(t *testing.T) {
-	localAppData := `C:\Users\justi\AppData\Local`
+	localAppData := `C:\Users\operator\AppData\Local`
 	winget := filepath.Join(localAppData, `Microsoft\WindowsApps\winget.exe`)
 
-	env := map[string]string{"LOCALAPPDATA": localAppData, "USERPROFILE": `C:\Users\justi`}
+	env := map[string]string{"LOCALAPPDATA": localAppData, "USERPROFILE": `C:\Users\operator`}
 	p := probeWithFiles("windows", env, []string{winget},
 		// PATH says NOTHING — this is the whole point: LookPath finds no winget.
 		map[string]string{},
@@ -119,7 +119,7 @@ func TestBrewAndPackageManagersUseTheirConventionalPaths(t *testing.T) {
 // TestPathStillWinsOverTheConventionalLocation keeps the operator in charge: if they have a binary on PATH, that
 // is the one that runs — the conventional search is a FALLBACK, never an override.
 func TestPathStillWinsOverTheConventionalLocation(t *testing.T) {
-	localAppData := `C:\Users\justi\AppData\Local`
+	localAppData := `C:\Users\operator\AppData\Local`
 	conventional := filepath.Join(localAppData, `Microsoft\WindowsApps\winget.exe`)
 	onPath := `D:\tools\winget.exe`
 
@@ -142,7 +142,7 @@ func TestPathStillWinsOverTheConventionalLocation(t *testing.T) {
 // SUCCESSFUL install can still say "no podman". Concluding failure from that sends the operator to open a new
 // shell for an install that worked. Provision must re-probe, and must then use the engine it found.
 func TestProvisionWaitsForTheBinaryItJustInstalled(t *testing.T) {
-	localAppData := `C:\Users\justi\AppData\Local`
+	localAppData := `C:\Users\operator\AppData\Local`
 	winget := filepath.Join(localAppData, `Microsoft\WindowsApps\winget.exe`)
 	podman := filepath.Join(`C:\Program Files`, `RedHat\Podman\podman.exe`)
 

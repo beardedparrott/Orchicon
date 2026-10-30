@@ -652,7 +652,7 @@ func guestifyCreateArgv(m *PathMapper, argv []string) ([]string, error) {
 			// --tmpfs IS A PATH-TAKING FLAG TOO, and leaving it out is what the SECOND reported failure
 			// was:
 			//
-			//	--tmpfs C:\Users\justi\.local\share\opencode:rw,mode=0777,size=2g
+			//	--tmpfs C:\Users\operator\.local\share\opencode:rw,mode=0777,size=2g
 			//	→ Error: invalid container path "C", must be an absolute path
 			//
 			// podman parses --tmpfs as DEST[:OPTIONS], so the drive-letter colon splits it exactly as a
@@ -854,7 +854,7 @@ func validWorkflowID(id string) bool {
 // variable before anything would run:
 //
 //	mount source outside allowed roots: C:\projects\weatherapp
-//	    (as the container engine sees it: /mnt/c/projects/weatherapp; allowed roots: C:\Users\justi\projects)
+//	    (as the container engine sees it: /mnt/c/projects/weatherapp; allowed roots: C:\Users\operator\projects)
 //
 // The engine's own document that log quotes from says the default list is a CONVENIENCE, not a policy. The
 // policy that matters is "this plane may only mount trees it was told to work on", and a project_dir is
@@ -1200,7 +1200,7 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	for _, ph := range adapterPrivateHomes(d.HostHome, requestedKinds(req)...) {
 		// MAPPED, LIKE EVERY OTHER PATH THIS FUNCTION EMITS. This was the ONE host-form argument left in the
 		// argv — every -v beside it was already /mnt/c/... — so the reported failure was a lone `--tmpfs
-		// C:\Users\justi\.local\share\opencode:...`, which podman reads as the container path "C".
+		// C:\Users\operator\.local\share\opencode:...`, which podman reads as the container path "C".
 		//
 		// It was invisible for the same reason the whole class is: on Linux the mapping is identity, so an
 		// unmapped tmpfs is byte-identical to a correct one.
@@ -1281,7 +1281,7 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	// ENGINE, which lives in a Linux VM on Windows and macOS — so they need the /mnt/c/... form exactly as
 	// every bind does. This block used the RAW HOST PATH and was never exercised on Windows because the
 	// adapter refusal killed the create first (see CheckAdaptersForContainer); once that is fixed it would
-	// have tried `--tmpfs C:\Users\justi:...`, which the engine rejects, and `HOME=C:\Users\justi`,
+	// have tried `--tmpfs C:\Users\operator:...`, which the engine rejects, and `HOME=C:\Users\operator`,
 	// which no Linux process can mkdir into.
 	homeDirs := []struct {
 		path string

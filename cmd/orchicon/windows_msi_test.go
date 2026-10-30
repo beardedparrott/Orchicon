@@ -1047,7 +1047,7 @@ func TestMSILicensePageCarriesOurLicenseText(t *testing.T) {
 //
 // THE REPORT: the installer finished and opened a console saying
 //
-//	'C:\Users\justi\AppData\Local\Programs\Orchicon\orchicon-setup.cmd"  "dev" "'
+//	'C:\Users\operator\AppData\Local\Programs\Orchicon\orchicon-setup.cmd"  "dev" "'
 //	is not recognized as an internal or external command
 //
 // The action used to end with  "[#SetupCmdFile]" "[INSTANCE]" "[RUNTIMEIMAGES]".

@@ -6,7 +6,7 @@ package runtime
 //
 //	mount source outside allowed roots: C:\projects\weatherapp
 //	    (as the container engine sees it: /mnt/c/projects/weatherapp;
-//	     allowed roots: C:\Users\justi\projects)
+//	     allowed roots: C:\Users\operator\projects)
 //
 // The engine was right and the policy was arbitrary: a runtime container exists to work on a project, and the
 // project says where it is. Requiring it to live under the user's home is a restriction with no security
@@ -29,7 +29,7 @@ func TestAProjectDirIsMountableWithoutBeingConfigured(t *testing.T) {
 	// A Windows-shaped daemon: the project is on C:, the configured root is elsewhere in the user profile.
 	d := &Daemon{
 		Paths:        NewPathMapper("windows", "wsl"),
-		AllowedRoots: []string{`C:\Users\justi\projects`},
+		AllowedRoots: []string{`C:\Users\operator\projects`},
 		AllowedRootsSource: func(context.Context) ([]string, error) {
 			return []string{`C:\projects\weatherapp`}, nil
 		},
@@ -50,7 +50,7 @@ func TestProjectRootsAreReadLive(t *testing.T) {
 	var projectDirs []string
 	d := &Daemon{
 		Paths:        NewPathMapper("windows", "wsl"),
-		AllowedRoots: []string{`C:\Users\justi\projects`},
+		AllowedRoots: []string{`C:\Users\operator\projects`},
 		AllowedRootsSource: func(context.Context) ([]string, error) {
 			return projectDirs, nil // read on every call, like the real source
 		},
@@ -72,13 +72,13 @@ func TestProjectRootsAreReadLive(t *testing.T) {
 func TestTheSourceFailsClosed(t *testing.T) {
 	d := &Daemon{
 		Paths:        NewPathMapper("windows", "wsl"),
-		AllowedRoots: []string{`C:\Users\justi\projects`},
+		AllowedRoots: []string{`C:\Users\operator\projects`},
 		AllowedRootsSource: func(context.Context) ([]string, error) {
 			return []string{`C:\everything`}, errors.New("database is down")
 		},
 	}
 	got := d.effectiveAllowedRoots(context.Background())
-	if len(got) != 1 || filepath.Clean(got[0]) != filepath.Clean(`C:\Users\justi\projects`) {
+	if len(got) != 1 || filepath.Clean(got[0]) != filepath.Clean(`C:\Users\operator\projects`) {
 		t.Fatalf("a failing source must fall back to EXACTLY the configured roots, got %v", got)
 	}
 }

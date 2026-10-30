@@ -289,7 +289,7 @@ func withinRootsIn(m *PathMapper, hostPath string, roots []string) bool {
 //
 //	mount source outside allowed roots: C:\projects\weatherapp
 //	    (as the container engine sees it: /mnt/c/projects/weatherapp;
-//	     allowed roots: C:\Users\justi\projects, C:\projects\weatherapp ...)
+//	     allowed roots: C:\Users\operator\projects, C:\projects\weatherapp ...)
 //
 // No value of ORCHICON_RUNTIME_ALLOWED_ROOTS could have fixed it, including C:\.
 //

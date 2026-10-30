@@ -26,9 +26,9 @@ func winEnv(m map[string]string) func(string) string {
 
 func TestWindowsCandidatesHaveAnExtensionAndCoverThePerUserInstalls(t *testing.T) {
 	env := winEnv(map[string]string{
-		"USERPROFILE":       `C:\Users\justi`,
-		"LOCALAPPDATA":      `C:\Users\justi\AppData\Local`,
-		"APPDATA":           `C:\Users\justi\AppData\Roaming`,
+		"USERPROFILE":       `C:\Users\operator`,
+		"LOCALAPPDATA":      `C:\Users\operator\AppData\Local`,
+		"APPDATA":           `C:\Users\operator\AppData\Roaming`,
 		"ProgramFiles":      `C:\Program Files`,
 		"ProgramFiles(x86)": `C:\Program Files (x86)`,
 	})
@@ -47,10 +47,10 @@ func TestWindowsCandidatesHaveAnExtensionAndCoverThePerUserInstalls(t *testing.T
 
 	// The per-user locations, which is what a desktop machine has: no elevation needed.
 	for _, want := range []string{
-		filepath.Join(`C:\Users\justi`, ".opencode", "bin", "opencode.exe"),
-		filepath.Join(`C:\Users\justi\AppData\Local`, "Programs", "opencode", "opencode.exe"),
-		filepath.Join(`C:\Users\justi`, "scoop", "shims", "opencode.exe"),
-		filepath.Join(`C:\Users\justi\AppData\Local`, "Microsoft", "WinGet", "Links", "opencode.exe"),
+		filepath.Join(`C:\Users\operator`, ".opencode", "bin", "opencode.exe"),
+		filepath.Join(`C:\Users\operator\AppData\Local`, "Programs", "opencode", "opencode.exe"),
+		filepath.Join(`C:\Users\operator`, "scoop", "shims", "opencode.exe"),
+		filepath.Join(`C:\Users\operator\AppData\Local`, "Microsoft", "WinGet", "Links", "opencode.exe"),
 	} {
 		found := false
 		for _, c := range got {
@@ -92,7 +92,7 @@ func TestTheShimIsReportedRatherThanResolved(t *testing.T) {
 	// .cmd directly. Resolving it would make discovery start offering models while the first dispatch dies
 	// somewhere else — the exact failure mode binary.go exists to prevent. So the shim must be REPORTED, and
 	// never returned as a resolution.
-	env := winEnv(map[string]string{"APPDATA": `C:\Users\justi\AppData\Roaming`})
+	env := winEnv(map[string]string{"APPDATA": `C:\Users\operator\AppData\Roaming`})
 	shims := openCodeShimCandidates("windows", env)
 	if len(shims) == 0 {
 		t.Fatal("no shim candidates — the 'but I installed it' hint could never fire")
