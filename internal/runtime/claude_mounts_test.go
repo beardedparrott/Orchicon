@@ -97,9 +97,12 @@ func TestAdapterInstallsClaudeFindable(t *testing.T) {
 	}
 }
 
-// TestAdapterHostMountsReadWriteSplit asserts the exact -v strings: the
-// config/transcript home is RW (claude writes its JSONL there), every other
-// install stays RO.
+// TestAdapterHostMountsReadWriteSplit asserts that NO host bind is writable, and that the writable state the
+// CLI needs is delivered as a PRIVATE per-container directory instead.
+//
+// The config/transcript home WAS a read-write host bind, which meant every concurrent container wrote into one
+// tree on the operator's machine. Private per container is the fix: the CLI still gets a writable
+// ~/.claude (a tmpfs of its own, uid-owned), and the host's copy is never touched by a container.
 func TestAdapterHostMountsReadWriteSplit(t *testing.T) {
 	home := claudeHome(t)
 	args := adapterHostMounts(home, adapter.KindClaude)
@@ -108,9 +111,15 @@ func TestAdapterHostMountsReadWriteSplit(t *testing.T) {
 		filepath.Join(home, ".claude") + ":" + filepath.Join(home, ".claude") + ":rw",
 		filepath.Join(home, ".claude.json") + ":" + filepath.Join(home, ".claude.json") + ":rw",
 	} {
-		if !strings.Contains(joined, rw) {
-			t.Errorf("missing rw mount %q (args: %v)", rw, args)
+		if strings.Contains(joined, rw) {
+			t.Errorf("STILL a read-write HOST bind %q — concurrent containers would share one writable tree "+
+				"(args: %v)", rw, args)
 		}
+	}
+	// The writable home must still EXIST for the CLI — as a private, uid-owned mount.
+	priv := adapterPrivateHomes(home, adapter.KindClaude)
+	if len(priv) == 0 {
+		t.Fatalf("claude has no private install: its config/transcript home must be writable per container")
 	}
 	for _, ro := range []string{
 		filepath.Join(home, ".local", "share", "claude") + ":" + filepath.Join(home, ".local", "share", "claude") + ":ro",
@@ -142,14 +151,30 @@ func TestAdapterBakeNeedlesClaudeBenign(t *testing.T) {
 	}
 }
 
-// TestAdapterPathPrefixPerKind asserts PATH comes from the demanded kind's
-// mounted bin dir, filtered to EXISTING dirs (never an absent host dir).
+// TestAdapterPathPrefixPerKind asserts PATH comes from the demanded kind's mounted bin dir, filtered to
+// EXISTING dirs (never an absent host dir) — EXCEPT for a kind the image supplies.
+//
+// THAT EXCEPTION IS THE POINT. The prefix is PREPENDED to the container's PATH, ahead of /usr/local/bin where
+// an npm-installed adapter lives, so leaving a discovered host dir in it would shadow the image's adapter:
+// the image install would be dead weight, two hosts on one image could run different adapter versions, and
+// the container would still depend on the host for something it no longer needs.
+//
+// The operator's EXPLICIT choice still wins: ORCHICON_*_BIN naming a path is a decision, so that case keeps
+// the host dir — asserted below, because an escape hatch nobody tests is an escape hatch that stops working.
 func TestAdapterPathPrefixPerKind(t *testing.T) {
 	home := claudeHome(t)
+	if dirs := adapterPathPrefix(home, adapter.KindClaude); len(dirs) != 0 {
+		t.Fatalf("adapterPathPrefix(claude) = %v, want NONE — the image supplies claude, so a host bin dir "+
+			"would shadow it", dirs)
+	}
+	// ...unless the operator named a binary, which is a deliberate choice.
+	t.Setenv(adapter.BinEnv(adapter.KindClaude), filepath.Join(home, ".local", "bin", "claude"))
 	dirs := adapterPathPrefix(home, adapter.KindClaude)
 	if len(dirs) != 1 || dirs[0] != filepath.Join(home, ".local", "bin") {
-		t.Fatalf("adapterPathPrefix(claude) = %v", dirs)
+		t.Fatalf("with %s set, adapterPathPrefix(claude) = %v, want the host dir — an explicit choice must "+
+			"not be overridden by the image", adapter.BinEnv(adapter.KindClaude), dirs)
 	}
+	t.Setenv(adapter.BinEnv(adapter.KindClaude), "")
 	if got := adapterPathPrefix(home, "orchicon"); len(got) != 0 {
 		t.Fatalf("native adapter must contribute no bin dir, got %v", got)
 	}

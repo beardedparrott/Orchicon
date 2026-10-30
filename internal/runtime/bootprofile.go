@@ -256,12 +256,25 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 	case adapter.KindClaude:
 		return adapterClass{
 			installs: []adapterInstall{
-				// The config/transcript home: the CLI writes
-				// ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl at run time,
-				// so these two MUST be read-write. NOT fingerprinted (they change
-				// every session and would churn the warm pool).
-				{probe: join(".claude"), dir: true, rw: true},
-				{probe: join(".claude.json"), rw: true},
+				// THE TRANSCRIPT HOME IS PRIVATE PER CONTAINER, AND THAT IS A CORRECTNESS FIX.
+				//
+				// ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl is written at run time, so it must be
+				// writable — but it was BIND-MOUNTED from the host, which means every concurrent container
+				// wrote into the SAME directory on the operator's machine. Two runs at once interleaved their
+				// session state in one tree, and each was free to read the other's transcripts.
+				//
+				// Private + auth-file is the same shape opencode already uses (see adapterInstall.private for
+				// the full reasoning): the container gets its OWN writable copy at the same path, with only
+				// the credential bound read-only inside it. The host's tree is never written by a container.
+				{probe: join(".claude"), dir: true, private: true,
+					// authFile is RELATIVE TO THE PROBE DIR (see adapterPrivateHomes, which joins it onto
+					// in.probe) — opencode's "auth.json" is the same shape.
+					authFile: ".credentials.json"},
+				// ~/.claude.json is the CLI's own config, written on start and on settings changes. It was
+				// rw bind-mounted, which is the same shared-write hazard across concurrent runs; private is
+				// right for it too. Deliberately NOT an authFile source: the credential lives in
+				// .claude/.credentials.json, and sharing two writable config files buys nothing.
+				{probe: join(".claude.json"), private: true},
 				// The launcher is a SYMLINK into the install root below, mounted
 				// at its IDENTICAL absolute host path so the link resolves. Mount
 				// it WITHOUT the install root and the link dangles in-container.
@@ -529,6 +542,20 @@ func adapterPathPrefix(home string, kinds ...string) []string {
 	seen := make(map[string]struct{})
 	var out []string
 	for _, kind := range kinds {
+		// THE IMAGE'S ADAPTER WINS, SO ITS DIRECTORY IS NOT SHADOWED.
+		//
+		// The PATH this returns is PREPENDED to the container's, ahead of /usr/local/bin — which is exactly
+		// where an npm-installed adapter lives. Leaving a host bin dir in the prefix for a kind the image
+		// supplies would make the container run the OPERATOR'S adapter instead of the image's: the image
+		// install would be dead weight, two hosts on the same image could run different adapter versions,
+		// and the container would still depend on the host in the way it no longer needs to.
+		//
+		// THE ESCAPE HATCH IS EXPLICIT. ORCHICON_OPENCODE_BIN / ORCHICON_CLAUDE_BIN naming a path means the
+		// operator has CHOSEN a specific build — that is a decision to honour, so the host dir is kept. An
+		// ordinary discovered install is not a decision, and the image wins.
+		if _, inImage := imageSuppliesAdapter(kind); inImage && strings.TrimSpace(os.Getenv(adapter.BinEnv(kind))) == "" {
+			continue
+		}
 		for _, dir := range adapterBinDirs(home, kind) {
 			if _, ok := seen[dir]; ok {
 				continue
@@ -545,6 +572,103 @@ func adapterPathPrefix(home string, kinds ...string) []string {
 	return out
 }
 
+// imageAdapterKind is one adapter kind the RUNTIME IMAGE supplies itself.
+//
+// THE SOURCE OF THIS KNOWLEDGE MATTERS. It is not a guess about what an image happens to contain: the stock
+// variants install the adapters in their Dockerfiles (deploy/runtime/Dockerfile.gui and .dev, the npm block
+// near the end), and a generated custom image does the same by default (internal/runtimeimage's
+// adapterInstallBlock, driven by the include_adapters column). So "the image supplies it" is a property of how
+// THIS PRODUCT builds its images, declared here once.
+//
+// WHY HAVING IT CHANGES ANYTHING. Before, the container's adapter could only come from the HOST, bind-mounted
+// in — which is why the daemon refused a Windows host outright (a .exe cannot run in a Linux container) and
+// why the host's PATH had to shadow everything. With the adapter in the image, the container is
+// self-contained: the host contributes CREDENTIALS, not the binary.
+type imageAdapterKind struct {
+	// kind is the adapter kind (adapter.DefaultAdapterKind, adapter.KindClaude, ...).
+	kind string
+	// bin is the executable NAME the image installs on PATH.
+	bin string
+}
+
+// imageAdapters is the set the shipped images install, keyed by kind.
+//
+// KEEP IN STEP WITH deploy/runtime/Dockerfile.{gui,dev} AND internal/runtimeimage.adapterInstallBlock. Those
+// three are the same promise stated in three formats, and the mount-never-bake guard already pins the other
+// direction (no adapter in a PUBLISHED image), so the two lists cannot silently diverge in the way that
+// matters most.
+var imageAdapters = []imageAdapterKind{
+	{kind: adapter.DefaultAdapterKind, bin: "opencode"},
+	{kind: adapter.KindClaude, bin: "claude"},
+}
+
+// imageSuppliesAdapter reports whether the image for THIS request provides the kind itself.
+//
+// THE REQUEST'S IMAGE DECIDES, and it can only be known from the row that built it — so the answer is
+// CONSERVATIVE by design: a kind is treated as image-supplied unless the request proves otherwise, and the
+// one proof available is that the operator demanded a kind the shipped set does not name. Refusing to start a
+// container on a guess would recreate the very failure this exists to remove, so the fallback is the
+// mount path below, which still works whenever the host can contribute a runnable binary.
+func imageSuppliesAdapter(kind string) (imageAdapterKind, bool) {
+	for _, a := range imageAdapters {
+		if a.kind == kind {
+			return a, true
+		}
+	}
+	return imageAdapterKind{}, false
+}
+
+// CheckAdaptersForContainer reports, for the run's demanded adapter kinds, any kind that CANNOT be served in
+// the container by ANY route — the image, or a mountable host install — and says why.
+//
+// IT USED TO REPORT "the host's adapter is a Windows executable", and that refusal was correct while the host
+// mount was the ONLY source: the container would start and the first session spawn would fail on an exec
+// format nothing pointed at. It became a hard stop for every container create once the image started shipping
+// the adapter, because the host's binary format stopped being the question.
+//
+// THE RULE NOW, in order:
+//
+//  1. THE IMAGE SUPPLIES IT -> fine, whatever the host has. The host may still contribute credentials; its
+//     binary being a PE is irrelevant, and on Windows that is the difference between container mode working
+//     and not working at all.
+//  2. NOT IN THE IMAGE, but the host has a runnable (Linux) binary -> fine, it is bind-mounted as before.
+//  3. NEITHER -> a real problem, reported per kind with the two remedies.
+//
+// A kind with NO host adapter at all is still not an error on its own: an absent adapter may simply be unused
+// by a workflow whose steps do not resolve to it, and "not installed" has a different remedy from "the wrong
+// kind of binary".
+func CheckAdaptersForContainerWith(home string, kinds ...string) []string {
+	if strings.TrimSpace(home) == "" {
+		// NO HOME CONFIGURED MEANS NO ADAPTER IS MOUNTED, so there is nothing to judge.
+		return nil
+	}
+	return containerAdapterProblems(func(kind string) (string, error) {
+		return adapter.ResolveBinary(adapter.HostGOOS(), home, kind, os.Getenv), nil
+	}, imageSuppliesAdapter, kinds...)
+}
+
+// containerAdapterProblems is the DECISION, with its two inputs injected so both arms are reachable in a test.
+//
+// The shipped inputs make the refusal unreachable — every kind the product ships is image-supplied — so a
+// guard that could only be exercised through them would stop refusing anything the day an adapter left the
+// image, silently. resolveBin returning an error is treated as "cannot judge", which is not a refusal.
+func containerAdapterProblems(resolveBin func(kind string) (string, error),
+	imageSupplies func(kind string) (imageAdapterKind, bool), kinds ...string) []string {
+	var problems []string
+	for _, kind := range kinds {
+		if _, ok := imageSupplies(kind); ok {
+			continue // (1) the image has it
+		}
+		bin, err := resolveBin(kind)
+		if err != nil || bin == "" {
+			continue // absent or unjudgeable, and either may be intentional — see the note above
+		}
+		if ok, why := adapter.ContainerUsable(bin, "linux"); !ok {
+			problems = append(problems, kind+": "+why)
+		}
+	}
+	return problems
+}
 // CheckAdaptersForContainer reports, for the run's demanded adapter kinds, any adapter that CANNOT execute
 // inside a runtime container — and says why for each.
 //
@@ -557,28 +681,9 @@ func adapterPathPrefix(home string, kinds ...string) []string {
 // installed" and "installed but the wrong binary" have different remedies (install it, versus install the
 // LINUX build), and conflating them is how the operator ends up installing something twice.
 func CheckAdaptersForContainer(home string, kinds ...string) []string {
-	// NO HOME CONFIGURED MEANS NO ADAPTER IS MOUNTED, so there is nothing to judge.
-	//
-	// Every adapter mount this daemon makes is derived from HostHome (standardHostMountArgs returns nil
-	// without one). Reporting "no binary resolved" there would refuse container creation on a host whose
-	// container simply runs without an adapter CLI — which is a supported shape, not a fault. The check only
-	// means something when there IS a home whose contents are being handed to the container.
-	if strings.TrimSpace(home) == "" {
-		return nil
-	}
-	var problems []string
-	for _, kind := range kinds {
-		bin := adapter.ResolveBinary(adapter.HostGOOS(), home, kind, os.Getenv)
-		if bin == "" {
-			// NOT INSTALLED is a different remedy from THE WRONG KIND OF BINARY, and only the second is a
-			// container problem: an absent adapter may simply be unused by this workflow's sessions.
-			continue
-		}
-		if ok, why := adapter.ContainerUsable(bin, "linux"); !ok {
-			problems = append(problems, kind+": "+why)
-		}
-	}
-	return problems
+	// DELEGATES to the image-aware check. Kept as a name because callers and tests reference it, but the
+	// judgement behind it is now "can ANY route serve this kind", not "is the host's binary Linux".
+	return CheckAdaptersForContainerWith(home, kinds...)
 }
 
 // alreadyDeclaredMounts reports whether the install table already makes this BINARY reachable, so the

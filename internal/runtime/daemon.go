@@ -773,7 +773,7 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	//
 	// The refusal names the remedy per kind, because "not installed" and "installed but the wrong binary"
 	// call for different actions.
-	if problems := CheckAdaptersForContainer(d.HostHome, requestedKinds(req)...); len(problems) > 0 {
+	if problems := CheckAdaptersForContainerWith(d.HostHome, requestedKinds(req)...); len(problems) > 0 {
 		return nil, fmt.Errorf("cannot run this workflow's adapter inside a Linux runtime container: %s",
 			strings.Join(problems, "; "))
 	}
@@ -1078,18 +1078,24 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	// nobody read. `.local` and `.config` need their OWN entry because a bind's
 	// intermediate parent is created root-owned even INSIDE a uid-owned $HOME —
 	// mounting $HOME alone was measured NOT to fix it.
+	// THE HOME PATHS ARE GUEST PATHS, AND THEY MUST BE MAPPED. `--tmpfs` and `HOME=` are consumed by the
+	// ENGINE, which lives in a Linux VM on Windows and macOS — so they need the /mnt/c/... form exactly as
+	// every bind does. This block used the RAW HOST PATH and was never exercised on Windows because the
+	// adapter refusal killed the create first (see CheckAdaptersForContainer); once that is fixed it would
+	// have tried `--tmpfs C:\Users\justi:...`, which the engine rejects, and `HOME=C:\Users\justi`,
+	// which no Linux process can mkdir into.
 	homeDirs := []struct {
 		path string
 		size string
 	}{
-		{d.HostHome, d.HomeTmpfsSize},
-		{filepath.Join(d.HostHome, ".local"), ""},
-		{filepath.Join(d.HostHome, ".config"), ""},
+		{d.Paths.Map(d.HostHome), d.HomeTmpfsSize},
+		{d.Paths.Map(filepath.Join(d.HostHome, ".local")), ""},
+		{d.Paths.Map(filepath.Join(d.HostHome, ".config")), ""},
 	}
 	for _, hd := range homeDirs {
 		args = append(args, "--tmpfs", d.tmpfsOwned(hd.path, hd.size))
 	}
-	args = append(args, "-e", "HOME="+d.HostHome)
+	args = append(args, "-e", "HOME="+d.Paths.Map(d.HostHome))
 	// Put every MOUNTED adapter CLI on PATH so the supervisor's
 	// procwin.Command("opencode", ...) / procwin.Command("claude", ...) resolves
 	// it. Per-kind (not just the default kind), and ONLY for a demanded

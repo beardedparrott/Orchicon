@@ -20,7 +20,12 @@ import "strings"
 // ClaudeAuthRequiredMessage is the single actionable auth-failure string for
 // the claude adapter kind. It names the exact host-side remedy so the operator
 // is never left guessing.
-const ClaudeAuthRequiredMessage = "Claude is not authenticated on the host — run `claude` and sign in on the host, or set ANTHROPIC_API_KEY on the host, then re-run"
+const ClaudeAuthRequiredMessage = "Claude is not authenticated on the host — run `claude` and sign in on the host, " +
+	"or set ANTHROPIC_API_KEY on the host, then re-run. " +
+	"Orchicon never signs in for you and stores no Anthropic credential of its own; in CONTAINER mode the " +
+	"credential you create on the host (~/.claude, or the API key) is mounted into the runtime container, " +
+	"so signing in on the host is all that is needed — there is no separate sign-in inside the container, " +
+	"and none is possible."
 
 // claudeAuthSignals are the case-insensitive substrings that mark a
 // claude-CLI / transport failure as an AUTHENTICATION failure. They are

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -199,11 +200,8 @@ func TestAgentEnvClaudePathPrefix(t *testing.T) {
 		}
 	}
 	t.Setenv("HOME", home)
-	// THE TEST'S SUBJECT IS THE KNOWN BIN DIRS, so PATH must not contribute any of its own. The resolver now
-	// asks the OS's PATH after the known lists, which on a machine that HAS an adapter installed would add the
-	// real ~/.local/bin — and this test would then be measuring the host rather than the rule it exists to pin.
-	// (The rule itself is unchanged: only DEMANDED kinds prefix PATH, stat-filtered and sorted.)
 	t.Setenv("PATH", t.TempDir())
+	sep := string(os.PathListSeparator)
 
 	pathOf := func(env []string) string {
 		for _, kv := range env {
@@ -213,30 +211,30 @@ func TestAgentEnvClaudePathPrefix(t *testing.T) {
 		}
 		return ""
 	}
-	sep := string(os.PathListSeparator)
 
-	// Both kinds demanded: both dirs prefix PATH (sorted → .local/bin before
-	// .opencode/bin).
+	// THE IMAGE SUPPLIES BOTH KINDS, so NEITHER host bin dir may prefix the child PATH. The prefix is
+	// prepended, ahead of the image's own /usr/local/bin, so leaving a host dir here is what shadowed the
+	// in-image adapter — the container would silently run the operator's binary instead of the image's.
 	t.Setenv("ORCHICON_ADAPTER_KINDS", "opencode,claude")
 	got := pathOf(agentEnv(AgentRequest{}))
-	if !strings.HasPrefix(got, clBin+sep+ocBin+sep) {
-		t.Fatalf("both demanded kinds must prefix the child PATH (sorted), got %q", got)
+	if strings.Contains(got, clBin) || strings.Contains(got, ocBin) {
+		t.Fatalf("an IMAGE-SUPPLIED kind must not put a host bin dir on the child PATH, got %q", got)
 	}
 
-	// Only claude demanded: the opencode dir must NOT appear even though it
-	// exists on this host — per-kind, never default-kind-only.
-	t.Setenv("ORCHICON_ADAPTER_KINDS", "claude")
+	// AN OPERATOR WHO NAMED A BINARY IS A DECISION, and must still win — otherwise the documented escape
+	// hatch (ORCHICON_*_BIN) stops working the moment the image ships an adapter.
+	t.Setenv(adapter.BinEnv(adapter.KindClaude), filepath.Join(clBin, "claude"))
 	got = pathOf(agentEnv(AgentRequest{}))
 	if !strings.HasPrefix(got, clBin+sep) {
-		t.Fatalf("claude-only child PATH must start with %q, got %q", clBin, got)
+		t.Fatalf("with %s set the child PATH must start with %q, got %q",
+			adapter.BinEnv(adapter.KindClaude), clBin, got)
 	}
 	if strings.Contains(got, ocBin) {
-		t.Fatalf("a kind that was not demanded must not appear on the child PATH: %q", got)
+		t.Fatalf("a kind that was not explicitly chosen must not appear on the child PATH: %q", got)
 	}
+	t.Setenv(adapter.BinEnv(adapter.KindClaude), "")
 
-	// No demanded kinds (e.g. a daemon predating the env var): no adapter
-	// prefix at all, so an older daemon can never point PATH at a dir it did
-	// not mount.
+	// No demanded kinds: no adapter prefix at all.
 	t.Setenv("ORCHICON_ADAPTER_KINDS", "")
 	got = pathOf(agentEnv(AgentRequest{}))
 	if strings.Contains(got, ocBin) || strings.Contains(got, clBin) {
