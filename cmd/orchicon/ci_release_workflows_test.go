@@ -1150,7 +1150,19 @@ func TestMacOSSigningJobRunsOnAMacOSRunner(t *testing.T) {
 			"downloaded macOS binary runnable without the quarantine override, and it must be designed now " +
 			"even while it is dormant")
 	}
-	for _, want := range []string{"runs-on: macos-14", "MACOS_SIGNING_ENABLED", "notarytool", "stapler"} {
+	// THE RUNNER IS ASSERTED BY KIND, NOT BY VERSION. It used to demand the literal "runs-on: macos-14",
+	// which is a guard that fails for the WRONG REASON the moment the image is updated — and images are
+	// retired on a schedule (GitHub retires macOS 14 on 2 November 2026 and browns it out beforehand,
+	// failing jobs that still use the label). The property that actually matters is that this job runs on
+	// SOME macOS runner: `codesign` and `notarytool` are macOS-only, so any other host fails.
+	//
+	// HARDCODING THE VERSION HERE IS HOW A GUARD BECOMES AN OBSTACLE. The same retirement would have
+	// happened for macOS 15 or 26; this assertion is now indifferent to which one we are on.
+	if !strings.Contains(signing.body, "runs-on: macos-") {
+		t.Errorf("the sign-macos job does not run on a macOS runner:\n`codesign`/`notarytool` are "+
+			"macOS-only, so any other host fails. Body:\n%s", signing.body)
+	}
+	for _, want := range []string{"MACOS_SIGNING_ENABLED", "notarytool", "stapler"} {
 		if !strings.Contains(signing.body, want) {
 			t.Errorf("the sign-macos job no longer contains %q", want)
 		}
