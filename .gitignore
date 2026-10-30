@@ -165,3 +165,8 @@ frontend/wailsjs/
 # even though `*.log` above is ignored: they hold the exact commands, exit codes and
 # verbatim /healthz output that AC11 asks for. Scoped to qa-evidence/ only.
 !qa-evidence/**/*.log
+
+# Local agent skills. Working notes that a person curates for their OWN agents — failure modes worth
+# not repeating, with the evidence that makes them stick. Ignored because they are operator-local
+# context, not product source: the project's shipped documentation lives in docs/.
+skills/
