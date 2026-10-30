@@ -247,7 +247,14 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 		return
 	}
 
-	cmd := procwin.Command(d.engineBin(), "build", "-t", req.Tag, ctxDir)
+	// THE BUILD CONTEXT IS A HOST PATH THE ENGINE MUST RESOLVE, so it is mapped into the engine's view — and
+	// `cmd.Dir` stays the HOST path, because this process (not the engine) changes directory.
+	//
+	// FOUND BY AUDIT, NOT BY A REPORT. Every other engine call in this package passes refs or names; this one
+	// and the create argv are the only two that hand over a filesystem path. On Windows the context is
+	// `C:\Users\…\Temp\orchicon-build-…`, which inside the podman machine is `/mnt/c/Users/…` — so an unmapped
+	// context would have failed the FIRST custom-image build on Windows with a path the operator never typed.
+	cmd := procwin.Command(d.engineBin(), "build", "-t", req.Tag, d.Paths.Map(ctxDir))
 	cmd.Dir = ctxDir
 	code, started := d.streamCommand(w, r, req.Tag, "build", cmd)
 	if !started || code != 0 {

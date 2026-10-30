@@ -186,3 +186,115 @@ func TestTheCreatePathSweepsItsArgv(t *testing.T) {
 			"failure said only `invalid container path \"C\"` with no way to see which argument was wrong")
 	}
 }
+
+// pathTakingFlags is EVERY create flag whose argument is a path. A new mount-ish flag added to the argv
+// builder must be added here, and the tests below then cover it for free.
+//
+// THIS LIST IS THE POINT. The first sweep covered `-v` only, and the reported failure was a `--tmpfs`: every
+// volume argument in that argv was already in guest form, so the guard that was supposed to make a producer
+// unable to slip looked straight past the one argument still in host form. Enumerating the flags is what turns
+// "we fixed the one we saw" into "the class is closed".
+var pathTakingFlags = []string{"-v", "--volume", "--tmpfs"}
+
+// TestEveryPathTakingFlagIsGuestified is the table-driven assertion, over the flag list rather than the call
+// sites.
+func TestEveryPathTakingFlagIsGuestified(t *testing.T) {
+	m := NewPathMapper("windows", "wsl")
+	for _, flag := range pathTakingFlags {
+		t.Run(flag, func(t *testing.T) {
+			argv := []string{"create", "--name", "c1", flag, `C:\Users\justi\.local\share\opencode:rw,size=2g`, "img"}
+			out, err := guestifyCreateArgv(m, argv)
+			if err != nil {
+				t.Fatalf("%s %s was not made engine-visible: %v", flag, argv[4], err)
+			}
+			got := out[4]
+			if hasDriveLetter(got) || strings.ContainsRune(got, '\\') {
+				t.Fatalf("%s argument %q still holds a Windows path — the engine splits on ':' and reads the "+
+					"drive letter as the container path", flag, got)
+			}
+			if !strings.HasPrefix(got, "/mnt/c/") {
+				t.Fatalf("%s argument %q is not the engine-visible form", flag, got)
+			}
+		})
+	}
+}
+
+// TestTheReportedTmpfsIsFixed is the exact argument from the report, verbatim.
+func TestTheReportedTmpfsIsFixed(t *testing.T) {
+	m := NewPathMapper("windows", "wsl")
+	out, err := guestifyTmpfsSpec(m, `C:\Users\justi\.local\share\opencode:rw,mode=0777,size=2g`)
+	if err != nil {
+		t.Fatalf("guestifyTmpfsSpec: %v", err)
+	}
+	// podman parses --tmpfs as DEST[:OPTIONS]; the dest must be a guest path and the options must survive.
+	dest, opts, _ := strings.Cut(out, ":")
+	if dest != "/mnt/c/Users/justi/.local/share/opencode" {
+		t.Fatalf("dest = %q, want the WSL mount form", dest)
+	}
+	if !strings.Contains(opts, "mode=0777") || !strings.Contains(opts, "size=2g") {
+		t.Fatalf("the tmpfs options were lost: %q", opts)
+	}
+	// And the old form is exactly what the engine rejects.
+	if d, _, _ := strings.Cut(`C:\Users\justi\.local\share\opencode:rw,mode=0777`, ":"); d != "C" {
+		t.Fatal("test is not modelling podman's split")
+	}
+}
+
+// TestEveryPathFlagInARealisticArgvIsGuarded runs the sweep over a vector shaped like the reported one, so the
+// interaction (many already-mapped args, one not) is covered rather than each flag in isolation.
+func TestEveryPathFlagInARealisticArgvIsGuarded(t *testing.T) {
+	m := NewPathMapper("windows", "wsl")
+	argv := []string{
+		"create", "--name", "orchicon-runtime-x", "--user", "1000:1000",
+		"-v", `/mnt/c/projects/weatherapp:/mnt/c/projects/weatherapp`,
+		"-v", `/mnt/c/Users/justi/.config/opencode:/mnt/c/Users/justi/.config/opencode:ro`,
+		"--tmpfs", `C:\Users\justi\.local\share\opencode:rw,mode=0777,size=2g`,
+		"--tmpfs", `/mnt/c/Users/justi:rw,mode=0777,size=2g`,
+		"-e", "HOME=/mnt/c/Users/justi",
+		"image", "orchicon", "runtime-supervisor",
+	}
+	out, err := guestifyCreateArgv(m, argv)
+	if err != nil {
+		t.Fatalf("guestifyCreateArgv: %v", err)
+	}
+	for i, a := range out {
+		if i == 0 {
+			continue
+		}
+		switch out[i-1] {
+		case "-v", "--volume", "--tmpfs":
+			if hasDriveLetter(a) || strings.ContainsRune(a, '\\') {
+				t.Errorf("%s %q survived the sweep", out[i-1], a)
+			}
+		}
+	}
+	// The env value is NOT a path flag and must be untouched.
+	if !containsStr(out, "HOME=/mnt/c/Users/justi") {
+		t.Errorf("an -e value was rewritten: %v", out)
+	}
+}
+
+// TestDedupeMountsKeepsTheFirst pins the fix for the duplicate project bind in the reported argv.
+//
+// Not fatal, but pure noise in the vector an operator reads while debugging — and a duplicate here means the
+// list is assembled from more than one place, so the NEXT duplicate could be two different SOURCES for one
+// destination, which the engine resolves by order.
+func TestDedupeMountsKeepsTheFirst(t *testing.T) {
+	mounts := []MountSpec{
+		{Source: "/p", Dest: "/p"},
+		{Source: "/p", Dest: "/p"},           // the reported duplicate
+		{Source: "/p/ctx", Dest: "/p/ctx"},   // distinct
+		{Source: "/p", Dest: "/p", RO: true}, // same pair: a set is on (source, dest)
+	}
+	got := dedupeMounts(mounts)
+	if len(got) != 2 {
+		t.Fatalf("dedupeMounts = %v, want 2 entries", got)
+	}
+	if got[0].Source != "/p" || got[1].Source != "/p/ctx" {
+		t.Fatalf("order not preserved: %v", got)
+	}
+	// FIRST WINS, so the intended (writable) mount survives rather than being replaced by a later read-only one.
+	if got[0].RO {
+		t.Error("the later read-only entry replaced the first — the engine would mount it read-only")
+	}
+}
