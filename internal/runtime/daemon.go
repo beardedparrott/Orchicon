@@ -611,6 +611,113 @@ func mountArgv(mounts []MountSpec) []string {
 	return out
 }
 
+// guestifyCreateArgv makes EVERY host path in a create argv engine-visible, and reports any that could not
+// be — the last line of defence before `podman create` / `docker create` sees the vector.
+//
+// WHY A FINAL PASS RATHER THAN TRUSTING EACH PRODUCER. Every mount builder in this package is SUPPOSED to map
+// (mountArgv via mapMounts, mapMountArgv for the adapter block, d.Paths.Map for the exe and git mounts) — but
+// "supposed to" is what produced the reported failure:
+//
+//	create runtime orchicon-runtime-e93bfb9…: Error: invalid container path "C", must be an absolute path
+//
+// podman splits a volume spec on ":", so `-v C:\projects\weatherapp:...` is read as source="C",
+// dest="\projects\weatherapp", and the drive letter alone reaches the container-path validator. Exit 125, no
+// container, and nothing in the log saying which argument was malformed.
+//
+// A producer that forgets to map is easy to add and impossible to notice, because on Linux the mapping is
+// identity — every test here passes and only Windows breaks. So the argv is swept ONCE at the boundary. On
+// Linux this is a cheap no-op (identity mapper); on Windows it is the difference between working and not.
+//
+// IT REFUSES RATHER THAN GUESSING. A create argument that still holds a drive-letter path after mapping means
+// something upstream is broken in a way this function cannot infer the intent of, so it returns an error naming
+// the argument instead of silently shipping a mount the engine will misparse.
+func guestifyCreateArgv(m *PathMapper, argv []string) ([]string, error) {
+	if len(argv) == 0 {
+		return argv, nil
+	}
+	out := make([]string, len(argv))
+	copy(out, argv)
+	for i, a := range out {
+		if i == 0 || out[i-1] != "-v" {
+			continue
+		}
+		fixed, err := guestifyMountSpec(m, a)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = fixed
+	}
+	return out, nil
+}
+
+// guestifyMountSpec maps BOTH fields of one `src:dst[:opts]` that are still host paths.
+//
+// IT IS IDEMPOTENT, which is what lets it run after producers that already mapped: a value already in guest form
+// has no drive letter, so there is nothing to rewrite.
+func guestifyMountSpec(m *PathMapper, spec string) (string, error) {
+	rest := spec
+	opts := ""
+	// The options suffix is the LAST ":"-separated field when it is a known flag set (ro/rw/z/Z and friends).
+	if i := strings.LastIndex(rest, ":"); i >= 0 {
+		if tail := rest[i+1:]; isMountOpts(tail) {
+			opts = rest[i:]
+			rest = rest[:i]
+		}
+	}
+	// The destination starts at the first colon that is NOT a drive letter; see mapMountSpecString.
+	split := -1
+	for j := 0; j < len(rest); j++ {
+		if rest[j] != ':' {
+			continue
+		}
+		if j == 1 && len(rest) > 2 && (rest[2] == '\\' || rest[2] == '/') {
+			continue // a drive letter, not the separator
+		}
+		split = j
+		break
+	}
+	if split < 0 {
+		return spec, nil // not a src:dst pair; leave it exactly as written
+	}
+	src, dst := rest[:split], rest[split+1:]
+	src = m.Map(src)
+	dst = m.Map(dst)
+	// A DRIVE LETTER SURVIVING THE MAP IS A BUG UPSTREAM, and shipping it would hand the engine exactly the
+	// argument that failed. Name it.
+	if hasDriveLetter(src) || hasDriveLetter(dst) {
+		return "", fmt.Errorf("create argument %q still holds a Windows path after mapping (source=%q "+
+			"destination=%q): the engine would split it on ':' and read the drive letter as the container path", spec, src, dst)
+	}
+	return src + ":" + dst + opts, nil
+}
+
+// isMountOpts reports whether a trailing field is a mount option list rather than part of a path.
+func isMountOpts(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, o := range strings.Split(s, ",") {
+		switch strings.ToLower(strings.TrimSpace(o)) {
+		case "ro", "rw", "z", "z,ro", "z,rw", "ro,z", "rw,z", "copy", "nocopy", "private", "shared", "slave",
+			"rprivate", "rshared", "rslave", "delegated", "cached", "consistent", "U":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// hasDriveLetter reports whether p begins with a Windows drive prefix ("C:\", "C:/", "C:").
+func hasDriveLetter(p string) bool {
+	if len(p) < 2 {
+		return false
+	}
+	c := p[0]
+	if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) || p[1] != ':' {
+		return false
+	}
+	return len(p) == 2 || p[2] == '\\' || p[2] == '/'
+}
 // validateCreate enforces the daemon's security policy: image allowlist,
 // mount-source allowlist, argv allowlist.
 func (d *Daemon) validateCreate(ctx context.Context, req CreateRequest) error {
@@ -852,6 +959,15 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// turns a recoverable clash into a failed create and silently churns
 	// containers. Remove any leftover and retry — the remove-before-create is
 	// also what keeps the pristine-reset guarantee honest.
+	// THE LAST LINE OF DEFENCE ON PATHS. Every producer above is supposed to map, and on Linux identity hides
+	// any that forgets — so the whole argv is swept once, here, where the engine is about to see it.
+	args, gerr := guestifyCreateArgv(d.Paths, args)
+	if gerr != nil {
+		// THE ARGV IS IN THE MESSAGE. The reported failure named only "invalid container path \"C\"" and left
+		// the operator (and the next agent) to guess which argument was malformed, because the create argv was
+		// never logged anywhere. That omission is the reason this class of bug takes a round trip to diagnose.
+		return nil, fmt.Errorf("create runtime %s: %w\n  engine argv: %s", name, gerr, describeCreateArgv(args))
+	}
 	var out string
 	var err error
 	created := false
@@ -863,7 +979,8 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 			break
 		}
 		if !nameInUse(out, tokens) {
-			return nil, fmt.Errorf("create runtime %s: %s: %w", name, out, err)
+			return nil, fmt.Errorf("create runtime %s: %s: %w\n  engine argv: %s",
+				name, out, err, describeCreateArgv(args))
 		}
 		d.Log.Warn("runtime create conflict — removing stale container and retrying",
 			"name", name, "attempt", attempt+1, "engine", d.Engine.EngineNameForError())
@@ -871,7 +988,8 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		time.Sleep(500 * time.Millisecond)
 	}
 	if !created {
-		return nil, fmt.Errorf("create runtime %s: %s: %w", name, out, err)
+		return nil, fmt.Errorf("create runtime %s: %s: %w\n  engine argv: %s",
+			name, out, err, describeCreateArgv(args))
 	}
 
 	// Wait for the in-container supervisor socket to answer pings. The
@@ -1643,4 +1761,33 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func httpError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// describeCreateArgv renders a create argv for an error message: one argument per line, REDACTED.
+//
+// REDACTION IS NOT OPTIONAL. This vector carries `-e KEY=VALUE` entries — the operator's GH_TOKEN and any
+// tenant secret the plane injected — so the whole point of logging it would be undone by printing it raw. Only
+// the VALUE of an `-e`/`--env` argument is withheld; the mount arguments, which are what a path bug involves,
+// are printed in full.
+func describeCreateArgv(argv []string) string {
+	var b strings.Builder
+	for i, a := range argv {
+		if i > 0 {
+			b.WriteString("\n  ")
+		}
+		if i > 0 && (argv[i-1] == "-e" || argv[i-1] == "--env") {
+			b.WriteString(redactEnvArg(a))
+			continue
+		}
+		b.WriteString(a)
+	}
+	return b.String()
+}
+
+// redactEnvArg keeps an `-e KEY=VALUE` argument's KEY and withholds the value.
+func redactEnvArg(a string) string {
+	if i := strings.IndexByte(a, '='); i > 0 {
+		return a[:i+1] + "<redacted>"
+	}
+	return a
 }
