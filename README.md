@@ -352,13 +352,40 @@ happened to be in.**
 #### Which DSN to use
 
 DB-backed tests **skip** when `ORCHICON_TEST_DSN` is unset, so the default `make test` is safe by
-omission. To actually exercise them, use the DEV instance's database:
+omission. To actually exercise them, point the variable at a database **no plane is serving**.
+
+> **Do not point it at the dev instance's own database while the dev plane is running.** That used to be
+> this document's advice, and it was wrong: the plane's reconcilers scan the same pending/running rows the
+> tests create, so the two converge on one row and `db: version conflict` fails 3–5 tests per run, varying
+> run to run. It also accumulates real test rows in your dev instance — measured at **1,576 project rows**
+> in one session. CI never sees this because its database has no plane attached.
+
+Two ways to get a usable target, both deliberate:
 
 ```bash
-# the dev instance (services container on 5432) — the correct target for tests
+# 1. A SEPARATE DATABASE on the dev cluster — nothing else serves it, so nothing races you.
+createdb -h localhost -p 5432 -U orchicon orchicon_test
+export ORCHICON_TEST_DSN="postgres://orchicon:orchicon@localhost:5432/orchicon_test?sslmode=disable"
+make test
+
+# 2. Or stop the dev plane for the duration of the run.
+orchicon stop dev
 export ORCHICON_TEST_DSN="postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"
 make test
 ```
+
+**And `db.Open` now refuses the live case mechanically**, from a test binary only, with the remedy in the
+message:
+
+```
+db: REFUSING to open a database a RUNNING plane is serving, from a test binary.
+  instance "dev" is live on that database (answered /healthz), so its reconcilers and this test are
+  converging on the same rows — which is the `db: version conflict` flakiness, not a bug in the test.
+```
+
+The comparison is `host:port/database` with loopback spellings normalised, so a **separate database on the
+same cluster is allowed** (`orchicon_test`), and a genuinely remote database is never guessed at.
+`ORCHICON_TEST_ALLOW_SHARED_DB=1` is the deliberate opt-out.
 
 Note the dev plane publishes on **5432** and production runs as a host process on **5433**. They are one
 port apart and both are "localhost" — which is exactly how the incident above was able to happen.

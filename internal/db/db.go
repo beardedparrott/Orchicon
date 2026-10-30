@@ -29,6 +29,13 @@ func Open(ctx context.Context, dsn string) (*Pool, error) {
 	if err := guardAgainstProdDSN(dsn); err != nil {
 		return nil, err
 	}
+	// AND IT MAY NOT OPEN ONE A RUNNING PLANE IS SERVING EITHER — not only a prod-labelled one. The README tells
+	// operators to point ORCHICON_TEST_DSN at the DEV instance's database, which on a workstation is the database
+	// the live dev plane's reconcilers are actively scanning; the two converge on the same rows and produce
+	// `db: version conflict` failures that look like test bugs. See testguard.go.
+	if err := guardAgainstLivePlaneDSN(dsn); err != nil {
+		return nil, err
+	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: parse dsn: %w", err)
