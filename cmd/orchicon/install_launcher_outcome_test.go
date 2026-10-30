@@ -5,7 +5,7 @@ package main
 // Reported from a real non-elevated Windows box, where the install finished healthy and the summary said:
 //
 //	warning: could not symlink orch launcher: A required privilege is not held by the client.
-//	  orch launcher: C:\Users\justi\.local\bin/orch (remote TUI client)
+//	  orch launcher: C:\Users\operator\.local\bin/orch (remote TUI client)
 //
 // The warning was true and the summary was false, and the summary is what a person reads. os.Symlink needs
 // SeCreateSymbolicLinkPrivilege, which an ordinary account without Developer Mode has not, so on stock Windows

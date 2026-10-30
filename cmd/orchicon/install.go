@@ -945,7 +945,7 @@ func defaultInstallDir() string {
 // machine, where the operator had no `orch` and a summary telling them they did:
 //
 //	warning: could not symlink orch launcher: A required privilege is not held by the client.
-//	  orch launcher: C:\Users\justi\.local\bin/orch (remote TUI client)
+//	  orch launcher: C:\Users\operator\.local\bin/orch (remote TUI client)
 //
 // An installer that reports something it did not do is worse than one that fails, because the failure is the
 // thing the operator needed. So the outcome is a VALUE the summary renders, not a print the summary ignores.

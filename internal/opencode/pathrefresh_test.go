@@ -234,7 +234,7 @@ func TestResolutionRecoversWithoutARestartAfterAnInstall(t *testing.T) {
 
 // TestAnNpmGlobalInstallResolvesToTheRealBinary — the second report, with the operator's own path.
 //
-//	"Opencode is currently installed here C:\Users\justi\AppData\Roaming\npm\opencode.ps1"
+//	"Opencode is currently installed here C:\Users\operator\AppData\Roaming\npm\opencode.ps1"
 //
 // That is npm's SHIM. On Windows npm makes three per bin entry (`opencode`, `opencode.cmd`,
 // `opencode.ps1`) and never an `.exe`, so the directory above yields shims only — and a shim is
@@ -347,7 +347,7 @@ func mustWrite(t *testing.T, path, body string) {
 //
 // This is the case that survived the first fix, quoted with the operator's own path:
 //
-//	"Opencode is currently installed here C:\Users\justi\AppData\Roaming\npm\opencode.ps1"
+//	"Opencode is currently installed here C:\Users\operator\AppData\Roaming\npm\opencode.ps1"
 //
 // `(Get-Command opencode).Source` returns exactly that — a shim — so using it as the answer would
 // resolve something Go cannot launch. The binary the shim wraps is deterministic though:
@@ -492,13 +492,13 @@ func TestTheShimRuleAloneFindsAnInstallInAnUnusualPrefix(t *testing.T) {
 // TestTheShimIsParsedForItsTargetNotGuessed is the third and final iteration of this bug, and the
 // shims below are COPIED VERBATIM from the machine that reported it.
 //
-//	"Opencode is currently installed here C:\Users\justi\AppData\Roaming\npm\opencode.ps1"
+//	"Opencode is currently installed here C:\Users\operator\AppData\Roaming\npm\opencode.ps1"
 //
 // The second fix assumed the npm package was `opencode-ai` and probed
 // `node_modules/opencode-ai/bin/opencode.exe`. Their real install is `@opencode/cli`, so the guess
 // missed a 246 MB executable sitting at
 //
-//	C:\Users\justi\AppData\Roaming\npm\node_modules\@opencode\cli\bin\opencode.exe
+//	C:\Users\operator\AppData\Roaming\npm\node_modules\@opencode\cli\bin\opencode.exe
 //
 // GUESSING THE PACKAGE NAME IS THE WRONG SHAPE. The name is not the plane's to know: it is scoped,
 // it has already changed once in the wild, and a distributor could publish it under anything. The

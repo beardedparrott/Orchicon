@@ -423,15 +423,24 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 		if gerr == nil {
 			projectDir = project.ProjectDir
 			if projectDir != "" {
-				req.Mounts = append(req.Mounts, MountSpec{Source: projectDir, Dest: projectDir})
+				// ONCE. The reported argv carried the project bind TWICE:
+				//
+				//	-v /mnt/c/projects/weatherapp:/mnt/c/projects/weatherapp
+				//	-v /mnt/c/projects/weatherapp:/mnt/c/projects/weatherapp
+				//
+				// which is not fatal but is pure noise in the vector an operator has to read to debug
+				// anything — and a duplicate here means the mount list is assembled from more than one
+				// place, so the NEXT duplicate could be two different sources for one destination, which
+				// the engine resolves by ORDER. dedupeMounts makes the list a set, keeping the first.
+				req.Mounts = dedupeMounts(append(req.Mounts, MountSpec{Source: projectDir, Dest: projectDir}))
 				req.ProjectDir = projectDir
 			}
 			// Project context files/directories outside project_dir.
-			req.Mounts = append(req.Mounts, contextMounts(project.ContextFiles, projectDir)...)
+			req.Mounts = dedupeMounts(append(req.Mounts, contextMounts(project.ContextFiles, projectDir)...))
 			// The run's bound work item's context files/directories.
 			if run.WorkItemID != "" {
 				if wi, werr := db.GetWorkItem(ctx, ttx.Tx, run.TenantID, run.WorkItemID); werr == nil {
-					req.Mounts = append(req.Mounts, contextMounts(wi.ContextFiles, projectDir)...)
+					req.Mounts = dedupeMounts(append(req.Mounts, contextMounts(wi.ContextFiles, projectDir)...))
 				}
 			}
 		}
@@ -1244,4 +1253,30 @@ func agentModelForServe(modelRef string) string {
 		return ""
 	}
 	return provider + "/" + model
+}
+
+// dedupeMounts removes duplicate bind specs, keeping the FIRST occurrence of each (source, destination) pair.
+//
+// It exists because the mount list is assembled from several places — the project dir, the project's context
+// files, the bound work item's context files — and a path can legitimately appear in more than one of them. The
+// reported argv carried the project bind twice, which the engine tolerates but which makes the vector harder to
+// read at exactly the moment someone is debugging it.
+//
+// FIRST WINS, deliberately: earlier entries come from the more specific source (the project itself), and the
+// engine resolves duplicate destinations by order, so keeping the first keeps the intended mount.
+func dedupeMounts(in []MountSpec) []MountSpec {
+	if len(in) < 2 {
+		return in
+	}
+	seen := make(map[MountSpec]struct{}, len(in))
+	out := in[:0]
+	for _, m := range in {
+		key := MountSpec{Source: m.Source, Dest: m.Dest}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, m)
+	}
+	return out
 }

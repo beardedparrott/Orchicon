@@ -6,8 +6,8 @@ package runtime
 // relationship: a bind is mapped by mapMountArgv, but `--tmpfs` and `-e HOME=` go straight into argv and were
 // NOT mapped. Measured consequence once the Windows adapter refusal was removed: the daemon would have emitted
 //
-//	--tmpfs C:\Users\justi:rw,...
-//	-e HOME=C:\Users\justi
+//	--tmpfs C:\Users\operator:rw,...
+//	-e HOME=C:\Users\operator
 //
 // — the first rejected by the engine as a malformed tmpfs, the second naming a directory no Linux process can
 // resolve, so every adapter CLI exits at boot on `EACCES mkdir $HOME/.local/state`.
@@ -24,9 +24,9 @@ import (
 
 // TestHomeEnvIsAGuestPath is the Windows-shaped case, asserted without a Windows host.
 func TestHomeEnvIsAGuestPath(t *testing.T) {
-	// A WSL-mode mapper turns C:\Users\justi into /mnt/c/Users/justi, which is what the container can use.
+	// A WSL-mode mapper turns C:\Users\operator into /mnt/c/Users/operator, which is what the container can use.
 	m := NewPathMapper("windows", "wsl")
-	d := &Daemon{HostHome: `C:\Users\justi`, Paths: m, HomeTmpfsSize: "2g", UserID: 1000, GroupID: 1000}
+	d := &Daemon{HostHome: `C:\Users\operator`, Paths: m, HomeTmpfsSize: "2g", UserID: 1000, GroupID: 1000}
 
 	args := d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"claude"}, GitStrategy: "none"})
 	home := envLookup(args, "HOME")

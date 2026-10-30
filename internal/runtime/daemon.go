@@ -638,16 +638,63 @@ func guestifyCreateArgv(m *PathMapper, argv []string) ([]string, error) {
 	out := make([]string, len(argv))
 	copy(out, argv)
 	for i, a := range out {
-		if i == 0 || out[i-1] != "-v" {
+		if i == 0 {
 			continue
 		}
-		fixed, err := guestifyMountSpec(m, a)
-		if err != nil {
-			return nil, err
+		switch out[i-1] {
+		case "-v", "--volume":
+			fixed, err := guestifyMountSpec(m, a)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = fixed
+		case "--tmpfs":
+			// --tmpfs IS A PATH-TAKING FLAG TOO, and leaving it out is what the SECOND reported failure
+			// was:
+			//
+			//	--tmpfs C:\Users\operator\.local\share\opencode:rw,mode=0777,size=2g
+			//	→ Error: invalid container path "C", must be an absolute path
+			//
+			// podman parses --tmpfs as DEST[:OPTIONS], so the drive-letter colon splits it exactly as a
+			// volume spec does. The first version of this sweep covered `-v` only, and every -v in that argv
+			// was already /mnt/c/... — so the ONE remaining host-form argument was a tmpfs, and the guard
+			// that was supposed to make a producer unable to slip looked straight past it.
+			fixed, err := guestifyTmpfsSpec(m, a)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = fixed
 		}
-		out[i] = fixed
 	}
 	return out, nil
+}
+
+// guestifyTmpfsSpec maps the DEST of a `dest[:opts]` tmpfs value, and verifies nothing host-form survives.
+//
+// A tmpfs has no source side, so this is simpler than a volume spec — but the failure is identical, because
+// the drive-letter colon is a field separator to the engine either way.
+func guestifyTmpfsSpec(m *PathMapper, spec string) (string, error) {
+	dest := spec
+	opts := ""
+	// THE SEPARATOR IS THE FIRST COLON THAT IS NOT A DRIVE LETTER. `C:\Users\x:rw` has a colon of its own at
+	// index 1, and splitting there yields dest="C" — which is precisely the malformed argument the engine
+	// rejects, so a naive Index would reproduce the bug inside its own fix.
+	for j := 0; j < len(spec); j++ {
+		if spec[j] != ':' {
+			continue
+		}
+		if j == 1 && len(spec) > 2 && (spec[2] == '\\' || spec[2] == '/') {
+			continue // a drive letter, not the separator
+		}
+		dest, opts = spec[:j], spec[j:]
+		break
+	}
+	dest = m.Map(dest)
+	if hasDriveLetter(dest) || strings.ContainsRune(dest, '\\') {
+		return "", fmt.Errorf("--tmpfs argument %q still holds a Windows path after mapping (dest=%q): the "+
+			"engine would split it on ':' and read the drive letter as the container path", spec, dest)
+	}
+	return dest + opts, nil
 }
 
 // guestifyMountSpec maps BOTH fields of one `src:dst[:opts]` that are still host paths.
@@ -807,7 +854,7 @@ func validWorkflowID(id string) bool {
 // variable before anything would run:
 //
 //	mount source outside allowed roots: C:\projects\weatherapp
-//	    (as the container engine sees it: /mnt/c/projects/weatherapp; allowed roots: C:\Users\justi\projects)
+//	    (as the container engine sees it: /mnt/c/projects/weatherapp; allowed roots: C:\Users\operator\projects)
 //
 // The engine's own document that log quotes from says the default list is a CONVENIENCE, not a policy. The
 // policy that matters is "this plane may only mount trees it was told to work on", and a project_dir is
@@ -846,6 +893,16 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	if d.createFn != nil {
 		return d.createFn(name, req)
 	}
+
+	// ProjectDir IS A CONTAINER PATH, NOT A HOST PATH. It travels into the supervisor as JSON and is used there
+	// as the serve's working directory AND its safety-guard root, so a host form reaching it would make the
+	// in-container serve look in a directory that cannot exist:
+	//
+	//	req.ProjectDir = "C:\projects\weatherapp"   →   the container's cwd does not exist
+	//
+	// Nothing has failed on it yet only because creation was failing earlier for other reasons; it is mapped
+	// HERE, before anything reads it, so every forwarding path below is correct by the time it matters.
+	req.ProjectDir = d.Paths.Map(req.ProjectDir)
 	// Fast, ACTIONABLE auth preflight: a claude-demanding run on a host with
 	// no reachable Claude credential must fail with the exact sign-in command,
 	// never silently start a container whose sessions then hang or fail with a
@@ -1141,7 +1198,13 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	// gets a writable, runtime-uid-owned directory at the same path instead of
 	// a host bind, plus its declared credential file read-only inside it.
 	for _, ph := range adapterPrivateHomes(d.HostHome, requestedKinds(req)...) {
-		args = append(args, "--tmpfs", d.tmpfsOwned(ph.dir, d.HomeTmpfsSize))
+		// MAPPED, LIKE EVERY OTHER PATH THIS FUNCTION EMITS. This was the ONE host-form argument left in the
+		// argv — every -v beside it was already /mnt/c/... — so the reported failure was a lone `--tmpfs
+		// C:\Users\operator\.local\share\opencode:...`, which podman reads as the container path "C".
+		//
+		// It was invisible for the same reason the whole class is: on Linux the mapping is identity, so an
+		// unmapped tmpfs is byte-identical to a correct one.
+		args = append(args, "--tmpfs", d.tmpfsOwned(d.Paths.Map(ph.dir), d.HomeTmpfsSize))
 		if ph.authFile != "" {
 			// THE SOURCE IS A HOST PATH THE ENGINE MUST RESOLVE; the destination is already a guest path
 			// (ph.dir lives under the host home, so it is mapped too — see mapMountArgv). os.Stat above ran
@@ -1196,11 +1259,29 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	// nobody read. `.local` and `.config` need their OWN entry because a bind's
 	// intermediate parent is created root-owned even INSIDE a uid-owned $HOME —
 	// mounting $HOME alone was measured NOT to fix it.
+	// A TMPFS ON THE PARENT OF A BIND-MOUNTED CHILD WAS REPORTED AS A SHADOWING HAZARD. IT IS NOT ONE —
+	// MEASURED, not reasoned about, with the engine this actually runs on:
+	//
+	//	$ podman run -v /h/.config/opencode:/h/.config/opencode:ro --tmpfs /h/.config:rw,mode=0777 …
+	//	$ mount | grep /h/.config
+	//	  tmpfs on /h/.config            type tmpfs (rw,mode=777)
+	//	  tmpfs on /h/.config/opencode   type tmpfs (ro)      <- the bind, still there
+	//	$ cat /h/.config/opencode/opencode.json
+	//	  {"cfg":"present"}                                   <- readable
+	//
+	// and the REVERSED order gives the same result, so it is not "podman happens to apply the deeper path
+	// last by luck" — a bind over a tmpfs-covered directory mounts independently of the tmpfs on its parent,
+	// in either order.
+	//
+	// RECORDED BECAUSE THE HAZARD IS PLAUSIBLE and will be suggested again. The entries are also load-bearing
+	// — they exist so the RUNTIME UID can create its own state under a home whose parents the engine creates
+	// root-owned — so removing them to "avoid" a shadow would break the writable home for no gain.
+	//
 	// THE HOME PATHS ARE GUEST PATHS, AND THEY MUST BE MAPPED. `--tmpfs` and `HOME=` are consumed by the
 	// ENGINE, which lives in a Linux VM on Windows and macOS — so they need the /mnt/c/... form exactly as
 	// every bind does. This block used the RAW HOST PATH and was never exercised on Windows because the
 	// adapter refusal killed the create first (see CheckAdaptersForContainer); once that is fixed it would
-	// have tried `--tmpfs C:\Users\justi:...`, which the engine rejects, and `HOME=C:\Users\justi`,
+	// have tried `--tmpfs C:\Users\operator:...`, which the engine rejects, and `HOME=C:\Users\operator`,
 	// which no Linux process can mkdir into.
 	homeDirs := []struct {
 		path string
@@ -1283,7 +1364,15 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 //
 // size == "" omits the limit, which is right for the mount points that never hold
 // file data.
+// tmpfsOwned renders a `--tmpfs` value whose path the RUNTIME UID can write.
+//
+// THE PATH IS MAPPED HERE, IN THE ONE BUILDER, so every caller is correct by construction. It was not, and that
+// is exactly how the reported failure happened: the opencode private data home was the ONE argument left in
+// host form in a vector where every -v was already /mnt/c/…, so podman read `--tmpfs C:\…:rw` as the container
+// path "C" and refused the create. A per-call-site mapping is a rule someone can forget; a mapping inside the
+// only builder of that flag is a rule nobody has to remember.
 func (d *Daemon) tmpfsOwned(path, size string) string {
+	path = d.Paths.Map(path)
 	opt := path + ":rw"
 	if d.Engine.isPodman() {
 		opt += ",mode=0777"
