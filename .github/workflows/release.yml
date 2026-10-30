@@ -401,18 +401,28 @@ jobs:
       # org.orchicon.runtime.version label identify the build inputs. The
       # :gui variant (headless GUI libs) is built FROM the base so the label
       # + chown model are inherited.
-      - name: Build runtime image
+      # THE BASE ONLY. The gui/dev variants are NOT built or pushed here any more.
+      #
+      # THEY CARRY THIRD-PARTY ADAPTER CLIs. An image this workflow builds and serves to every operator
+      # is Orchicon DISTRIBUTING opencode and Claude Code; built on the operator's own machine from the
+      # template embedded in the binary, the operator installs for themselves, under their own licence
+      # and credentials. That is the same line the project already draws for host-installed adapters,
+      # and it is why the base — which carries no adapter — is the one artifact published.
+      #
+      # The variants remain first-class: their Dockerfiles ship embedded (assets.go, RuntimeImageTemplatesFS),
+      # the catalogue seeds them with LOCAL build tags (internal/runtimeimage LocalTag), and
+      # FetchRuntimeImage BUILDS rather than pulls them (it routes on isRegistryRef).
+      #
+      # DO NOT RE-ADD THE VARIANT PUSHES without reading that routing first: a variant whose tag is a
+      # registry ref is PULLED, so publishing one and building it are mutually exclusive by design.
+      - name: Build runtime image (base only)
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
           docker build --label "org.orchicon.runtime.version=${ORCHICON_VERSION}" -f deploy/runtime/Dockerfile -t "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" deploy/runtime
           docker tag "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:latest
-          docker build --label "org.orchicon.runtime.version=${ORCHICON_VERSION}-gui" --build-arg "BASE_IMAGE=ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" -f deploy/runtime/Dockerfile.gui -t "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}" deploy/runtime
-          docker tag "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:gui
-          docker build --label "org.orchicon.runtime.version=${ORCHICON_VERSION}-dev" --build-arg "BASE_IMAGE=ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" -f deploy/runtime/Dockerfile.dev -t "ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}" deploy/runtime
-          docker tag "ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:dev
 
-      - name: Push runtime image
+      - name: Push runtime image (base only)
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
@@ -420,10 +430,6 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker push "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}"
           docker push ghcr.io/beardedparrott/orchicon-runtime:latest
-          docker push "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}"
-          docker push ghcr.io/beardedparrott/orchicon-runtime:gui
-          docker push "ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}"
-          docker push ghcr.io/beardedparrott/orchicon-runtime:dev
 
   desktop-linux:
     name: Desktop — Linux (.deb + AppImage)

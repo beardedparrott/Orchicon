@@ -41,9 +41,25 @@ RUNTIME_CONTEXT="$ROOT/deploy/runtime"
 SOCKET_DIR="${ORCHICON_RUNTIME_SOCKET_DIR:-/tmp/orchicon-runtime}"
 SOCKET="${ORCHICON_RUNTIME_SOCKET:-$SOCKET_DIR/runtime.sock}"
 DAEMON_LOG="${ORCHICON_RUNTIME_DAEMON_LOG:-/tmp/orchicon-runtime-daemon.log}"
+# THE VARIANT TAG NAMES ARE THE CATALOGUE'S, and they are ONE set across the tree.
+#
+# These used to be "orchicon-runtime:local-gui" and "orchicon-runtime:orchicon-dev" while the daemon's
+# allowlist emitted ":gui-<tag>"/":dev-<tag>" and the catalogue's local tags are ":gui"/":dev" — three
+# spellings for two images. The consequence was not cosmetic: a developer who ran this script and a
+# developer who fetched from the Runtime Images page got DIFFERENT images for the same variant, and the
+# daemon's allowlist matched neither. The variant is the identity; the tag is how it is addressed, and
+# there is one spelling of it now:
+#
+#   base  orchicon-runtime:local
+#   gui   orchicon-runtime:gui
+#   dev   orchicon-runtime:dev
+#
+# The base keeps ":local" deliberately: it is the LOCALLY-BUILT base on a dev host, and the daemon's
+# ORCHICON_RUNTIME_IMAGE points at it. The catalogue's published base is the ghcr ref, and the two are
+# different artifacts by design.
 BASE_IMAGE="${ORCHICON_RUNTIME_IMAGE:-orchicon-runtime:local}"
-GUI_IMAGE="${ORCHICON_RUNTIME_GUI_IMAGE:-orchicon-runtime:local-gui}"
-DEV_IMAGE="${ORCHICON_RUNTIME_DEV_IMAGE:-orchicon-runtime:orchicon-dev}"
+GUI_IMAGE="${ORCHICON_RUNTIME_GUI_IMAGE:-orchicon-runtime:gui}"
+DEV_IMAGE="${ORCHICON_RUNTIME_DEV_IMAGE:-orchicon-runtime:dev}"
 
 log()     { printf '==> %s\n' "$*"; }
 log_dim() { printf '    %s\n' "$*"; }

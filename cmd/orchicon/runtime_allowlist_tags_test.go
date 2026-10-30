@@ -46,10 +46,21 @@ func TestAllowlistNeverNamesALatestVariantTag(t *testing.T) {
 	}
 }
 
-// TestAllowlistFollowsTheReleaseWorkflow reads release.yml and checks the allowlist against what is actually
-// pushed, so the two cannot drift again. A build that offers an image nobody publishes is a build whose fetch
-// button is a guaranteed failure.
-func TestAllowlistFollowsTheReleaseWorkflow(t *testing.T) {
+// TestAllowlistAgreesWithThePublishPolicy is the cross-file contract, INVERTED from what it used to assert.
+//
+// It used to demand that every tag the allowlist names is one release.yml PUSHES. That was right while the
+// variants were published. They are not: the variants carry third-party adapter CLIs, so release.yml pushes the
+// base alone and the variants are built on the operator's machine.
+//
+// The invariant that actually matters is now an agreement between two questions:
+//
+//	what is PUBLISHED   -> a registry ref, PULLED
+//	what is NOT         -> a local name, BUILT
+//
+// So a tag the allowlist names must either be pushed by release.yml OR be a local name. What must never happen
+// is a variant named as a REGISTRY ref while nothing publishes it — that is the "manifest unknown" failure an
+// operator already reported.
+func TestAllowlistAgreesWithThePublishPolicy(t *testing.T) {
 	b, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {
 		t.Skipf("release workflow not readable here: %v", err)
@@ -60,8 +71,6 @@ func TestAllowlistFollowsTheReleaseWorkflow(t *testing.T) {
 		if !strings.HasPrefix(line, "docker push ") {
 			continue
 		}
-		// Record the TAG portion of every pushed ref (the part after the final colon), with any
-		// ${ORCHICON_VERSION} left as-is: a per-version tag is not what the allowlist names.
 		ref := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "docker push ")), `"`)
 		if i := strings.LastIndex(ref, ":"); i > 0 {
 			pushed[ref[i+1:]] = true
@@ -79,9 +88,21 @@ func TestAllowlistFollowsTheReleaseWorkflow(t *testing.T) {
 			t.Fatalf("ref %q has no tag", ref)
 		}
 		tag := ref[i+1:]
+		local := !strings.Contains(ref[:i], "/")
+
+		if local {
+			// A LOCAL name is BUILT. It must not also be published under a registry ref, because then the
+			// same variant would exist twice and the catalogue would reconcile the row to whichever the
+			// daemon happened to report.
+			if pushed[tag] {
+				t.Errorf("the allowlist names the LOCAL tag %q, but release.yml also pushes a tag %q — one "+
+					"variant would exist as both a pull and a build", ref, tag)
+			}
+			continue
+		}
 		if !pushed[tag] {
-			t.Errorf("the allowlist names %q but release.yml never pushes the tag %q — published tags are %v",
-				ref, tag, keysOf(pushed))
+			t.Errorf("the allowlist names %q, a REGISTRY ref, but release.yml never pushes the tag %q — every "+
+				"fetch would fail with \"manifest unknown\". Published tags are %v", ref, tag, keysOf(pushed))
 		}
 	}
 }
@@ -94,26 +115,44 @@ func keysOf(m map[string]bool) []string {
 	return out
 }
 
-// TestAllowlistHonoursAMirror keeps a private registry working: the repository comes from ORCHICON_RUNTIME_IMAGE,
-// and only the TAG RULE is shared. Hardcoding ghcr.io here would silently ignore the operator's mirror and hand
-// them refs in someone else's namespace.
-func TestAllowlistHonoursAMirror(t *testing.T) {
-	t.Setenv("ORCHICON_RUNTIME_IMAGES", "")
-	t.Setenv("ORCHICON_RUNTIME_IMAGE", "registry.internal:5000/mirror/orchicon-runtime:latest")
+// TestAllowlistNamesLocalVariantTags is the routing guarantee, and it reverses an earlier expectation
+// deliberately.
+//
+// The variants used to be published, so the allowlist emitted "<repo>:gui-<tag>". They are not published any
+// more — they carry third-party adapter CLIs — so RELEASE publishes the base alone and the variants are BUILT
+// on the operator's machine. The allowlist therefore has to name their LOCAL tags.
+//
+// THIS IS NOT COSMETIC: the catalogue seeder reconciles each stock row's tag to whatever the daemon reports,
+// and FetchRuntimeImage routes on isRegistryRef — registry ref means PULL. A registry ref here would make every
+// variant row something to pull from a repository that no longer publishes it, i.e. "manifest unknown" again.
+func TestAllowlistNamesLocalVariantTags(t *testing.T) {
+	for _, image := range []string{
+		"",                                                      // the default
+		"ghcr.io/beardedparrott/orchicon-runtime:latest",        // explicit
+		"registry.internal:5000/mirror/orchicon-runtime:latest", // a mirror with a PORT
+	} {
+		t.Setenv("ORCHICON_RUNTIME_IMAGES", "")
+		t.Setenv("ORCHICON_RUNTIME_IMAGE", image)
 
-	refs := runtimeImagesAllowlist("")
-	if len(refs) != 2 {
-		t.Fatalf("want 2 variant refs, got %v", refs)
-	}
-	for _, ref := range refs {
-		if !strings.HasPrefix(ref, "registry.internal:5000/mirror/orchicon-runtime:") {
-			t.Errorf("ref %q does not follow the mirrored repository — a PORT in the registry host must not be "+
-				"mistaken for the tag separator", ref)
+		refs := runtimeImagesAllowlist("")
+		if len(refs) != 2 {
+			t.Fatalf("image %q: want 2 variant refs, got %v", image, refs)
 		}
-	}
-	if refs[0] != "registry.internal:5000/mirror/orchicon-runtime:gui" ||
-		refs[1] != "registry.internal:5000/mirror/orchicon-runtime:dev" {
-		t.Errorf("wrong variant refs for a mirror: %v", refs)
+		for _, ref := range refs {
+			// A registry ref is "host/path:tag"; a local one is "name:tag". The distinguishing feature is
+			// the SLASH before the first colon, which is exactly what internal/runtimeimage's
+			// isRegistryRef tests for.
+			name := ref[:strings.LastIndex(ref, ":")]
+			if strings.Contains(name, "/") {
+				t.Errorf("image %q: the allowlist names %q, which is a REGISTRY reference — the fetch would "+
+					"PULL it, and nothing publishes the variants any more", image, ref)
+			}
+		}
+		// And the PORT in a mirror must not be mistaken for the tag separator.
+		if refs[0] != "orchicon-runtime:gui" || refs[1] != "orchicon-runtime:dev" {
+			t.Errorf("image %q: got %v, want the local names [orchicon-runtime:gui orchicon-runtime:dev]",
+				image, refs)
+		}
 	}
 }
 
@@ -125,14 +164,15 @@ func TestAllowlistKeepsAnExplicitCSV(t *testing.T) {
 	}
 }
 
-// TestAllowlistNonReleaseTagKeepsTheVariantPrefix pins the half that was ALREADY right: a locally-built tag like
-// "local" or a version is spelled "<variant>-<tag>", and must not be collapsed.
-func TestAllowlistNonReleaseTagKeepsTheVariantPrefix(t *testing.T) {
-	t.Setenv("ORCHICON_RUNTIME_IMAGES", "")
-	t.Setenv("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:local")
-	refs := runtimeImagesAllowlist("")
-	want := []string{"ghcr.io/beardedparrott/orchicon-runtime:gui-local", "ghcr.io/beardedparrott/orchicon-runtime:dev-local"}
-	if len(refs) != 2 || refs[0] != want[0] || refs[1] != want[1] {
-		t.Fatalf("got %v, want %v", refs, want)
+// TestAllowlistIsTheSameWhateverTheTag is the consequence of the change above: the variant names no longer
+// depend on the base's tag at all, because they are local builds rather than release artefacts.
+func TestAllowlistIsTheSameWhateverTheTag(t *testing.T) {
+	for _, tag := range []string{"latest", "local", "v0.5.44", ""} {
+		t.Setenv("ORCHICON_RUNTIME_IMAGES", "")
+		t.Setenv("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:"+tag)
+		refs := runtimeImagesAllowlist("")
+		if len(refs) != 2 || refs[0] != "orchicon-runtime:gui" || refs[1] != "orchicon-runtime:dev" {
+			t.Errorf("tag %q: got %v, want [orchicon-runtime:gui orchicon-runtime:dev]", tag, refs)
+		}
 	}
 }

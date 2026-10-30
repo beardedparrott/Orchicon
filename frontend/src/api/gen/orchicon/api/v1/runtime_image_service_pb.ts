@@ -75,6 +75,14 @@ export class CreateRuntimeImageRequest extends Message<CreateRuntimeImageRequest
    */
   tag = "";
 
+  /**
+   * Absent means TRUE — the safe default for a caller that predates this field, and the one that produces an
+   * image that can actually run work. Use an explicit wrapper to ask for false.
+   *
+   * @generated from field: optional bool include_adapters = 10;
+   */
+  includeAdapters?: boolean;
+
   constructor(data?: PartialMessage<CreateRuntimeImageRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -92,6 +100,7 @@ export class CreateRuntimeImageRequest extends Message<CreateRuntimeImageRequest
     { no: 7, name: "env", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 8, name: "dockerfile_override", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 9, name: "tag", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 10, name: "include_adapters", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateRuntimeImageRequest {
@@ -378,9 +387,16 @@ export class UpdateRuntimeImageRequest extends Message<UpdateRuntimeImageRequest
   tag?: string;
 
   /**
+   * absent = leave unchanged
+   *
+   * @generated from field: optional bool include_adapters = 10;
+   */
+  includeAdapters?: boolean;
+
+  /**
    * optimistic concurrency
    *
-   * @generated from field: int32 version = 10;
+   * @generated from field: int32 version = 11;
    */
   version = 0;
 
@@ -401,7 +417,8 @@ export class UpdateRuntimeImageRequest extends Message<UpdateRuntimeImageRequest
     { no: 7, name: "env", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 8, name: "dockerfile_override", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 9, name: "tag", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
-    { no: 10, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 10, name: "include_adapters", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
+    { no: 11, name: "version", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateRuntimeImageRequest {

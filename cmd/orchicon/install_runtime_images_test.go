@@ -101,19 +101,47 @@ func variantTag(v string) string {
 	return v
 }
 
-// TestInstallImageRefsStillAgreeWithReleaseWorkflow keeps the installer's
-// variant refs pinned to what release.yml actually publishes, now that the
-// install PULLS ONLY WHAT WAS ASKED FOR (AC 16 — the previous premise, "the
-// install always pulls", is gone; the refs must still agree).
-func TestInstallImageRefsStillAgreeWithReleaseWorkflow(t *testing.T) {
+// TestInstallImageRefsAgreeWithThePublishPolicy is the installer's half of the publish/build split.
+//
+// It used to assert that release.yml publishes the gui and dev variant tags, because the install PULLED them.
+// It does not any more: those images carry third-party adapter CLIs, so release.yml publishes the base alone
+// and the installer BUILDS the variants from the template embedded in the binary.
+//
+// So the assertion inverts. What must hold now is that each choice is OBTAINABLE by the route it names:
+// a published choice is a registry ref that release.yml actually pushes, and an unpublished one is a LOCAL
+// name with a build context — never a registry ref nothing publishes, which is the "manifest unknown" failure
+// an operator reported.
+func TestInstallImageRefsAgreeWithThePublishPolicy(t *testing.T) {
 	src, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {
 		t.Fatalf("read release.yml: %v", err)
 	}
 	wf := string(src)
-	for _, variant := range []string{"gui", "dev"} {
-		if !strings.Contains(wf, "ghcr.io/beardedparrott/orchicon-runtime:"+variant+"-${ORCHICON_VERSION}") {
-			t.Errorf("release.yml no longer publishes the %s variant tag", variant)
+
+	choices := installRuntimeImageChoices("latest")
+	if len(choices) == 0 {
+		t.Fatal("no install image choices")
+	}
+	// The base must be first: every variant derives FROM it, and the prompt says so.
+	if choices[0].Variant != "base" || !choices[0].Published {
+		t.Fatalf("the first choice must be the published base, got %+v", choices[0])
+	}
+	for _, c := range choices {
+		isRegistry := strings.Contains(c.Ref[:strings.LastIndex(c.Ref, ":")], "/")
+		switch {
+		case c.Published && !isRegistry:
+			t.Errorf("%s is marked published but %q is a LOCAL name — it would be built, and the published "+
+				"image never used", c.Variant, c.Ref)
+		case !c.Published && isRegistry:
+			t.Errorf("%s is marked unpublished but %q is a REGISTRY ref — the fetch would pull something "+
+				"nothing publishes", c.Variant, c.Ref)
+		case !c.Published && c.BuildContext == "":
+			t.Errorf("%s is built locally but names no build context", c.Variant)
+		case c.Published:
+			tag := c.Ref[strings.LastIndex(c.Ref, ":")+1:]
+			if !strings.Contains(wf, "orchicon-runtime:"+tag) {
+				t.Errorf("%s is published at %q, but release.yml never pushes that tag", c.Variant, tag)
+			}
 		}
 	}
 }

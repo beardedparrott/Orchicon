@@ -93,21 +93,28 @@ func TestACatalogRowIsNotDownloadedAndIsNotUserDiverged(t *testing.T) {
 // disagree about what the catalogue IS.
 func TestTheCatalogIsTheSameSetWhicheverPathSeedsIt(t *testing.T) {
 	base := firstPublishedTag()
-	published := map[string]bool{}
-	for _, tag := range publishedStockTags() {
+	//
+	// THE QUESTION IS "WHAT CAN THIS HOST END UP WITH", NOT "WHAT IS PUBLISHED". Those were the same
+	// question while every variant was released; now only the base is published and the variants are
+	// BUILT here, so enumerating the published set would report the catalogue as missing gui and dev —
+	// which is what this assertion caught when the split landed.
+	catalogued := map[string]bool{}
+	for _, tag := range catalogStockTags() {
 		v, ok := resolveVariant(tag, base)
 		if !ok {
-			t.Fatalf("published tag %q does not resolve to a shipped variant", tag)
+			t.Fatalf("catalogue tag %q does not resolve to a shipped variant", tag)
 		}
-		published[stockSlug(v)] = true
+		catalogued[stockSlug(v)] = true
 	}
-	// web-research has a shipped template but NO published tag, so it is not in the downloadable
-	// catalogue: seeding it would create a row whose only possible action is a guaranteed failure.
-	if published["stock-web-research"] {
-		t.Error("web-research is not published by release.yml, so it must not be in the fetched catalogue")
+	// WEB-RESEARCH IS IN, and that reverses an earlier decision deliberately. It used to be excluded
+	// because it was never released, so a fetch could only fail — but it is buildable from its shipped
+	// template, and building locally IS the model now. Excluding it would be the same defect as excluding
+	// gui and dev: a shipped template nobody can use.
+	if !catalogued["stock-web-research"] {
+		t.Error("web-research has a shipped template and can be built locally, so it belongs in the catalogue")
 	}
 	for _, want := range []string{"stock-base", "stock-gui", "stock-dev"} {
-		if !published[want] {
+		if !catalogued[want] {
 			t.Errorf("%q is missing from the catalogue — the page would not offer it at all", want)
 		}
 	}

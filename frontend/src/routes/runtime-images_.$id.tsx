@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { BuildLogViewer } from "@/components/BuildLogViewer";
 import { RuntimeImageFailureAlert } from "@/components/RuntimeImageFailureAlert";
+import { generateDockerfile, parseList } from "@/lib/runtimeImageDockerfile";
 import { Route as rootRoute } from "@/routes/__root";
 import type { RuntimeImage as RuntimeImageProto } from "@/api/gen/orchicon/api/v1/runtime_image_pb";
 
@@ -37,9 +38,6 @@ export const Route = createRoute({
   component: RuntimeImageDetailPage,
 });
 
-function parseList(s: string): string[] {
-  return s.split("\n").map((x) => x.trim()).filter(Boolean);
-}
 
 function parseEnv(s: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -67,6 +65,7 @@ function RuntimeImageDetailPage() {
   const [description, setDescription] = useState("");
   const [apt, setApt] = useState("");
   const [toolchains, setToolchains] = useState("");
+  const [includeAdapters, setIncludeAdapters] = useState(true);
   const [env, setEnv] = useState("");
   const [tag, setTag] = useState("");
   const [advanced, setAdvanced] = useState(false);
@@ -88,6 +87,7 @@ function RuntimeImageDetailPage() {
       toolchains: toolArr.join("\n"),
       env: Object.entries(envObj).map(([k, v]) => `${k}=${v}`).join("\n"),
       tag: img.tag,
+      includeAdapters: img.includeAdapters,
       advanced: !!img.dockerfileOverride,
       dockerfileOverride: img.dockerfileOverride || "",
     };
@@ -95,8 +95,8 @@ function RuntimeImageDetailPage() {
 
   const preview = useMemo(() => {
     if (advanced) return dockerfileOverride;
-    return generateDockerfile(img?.baseImageRef || "", apt, toolchains, env);
-  }, [advanced, dockerfileOverride, img?.baseImageRef, apt, toolchains, env]);
+    return generateDockerfile(img?.baseImageRef || "", apt, toolchains, env, includeAdapters);
+  }, [advanced, dockerfileOverride, img?.baseImageRef, apt, toolchains, env, includeAdapters]);
 
   const startEdit = () => {
     if (!draft) return;
@@ -107,6 +107,7 @@ function RuntimeImageDetailPage() {
     setToolchains(draft.toolchains);
     setEnv(draft.env);
     setTag(draft.tag);
+    setIncludeAdapters(draft.includeAdapters);
     setAdvanced(draft.advanced);
     setDockerfileOverride(draft.dockerfileOverride);
     setEditMode(true);
@@ -125,6 +126,7 @@ function RuntimeImageDetailPage() {
         toolchains: JSON.stringify(parseList(toolchains)),
         env: JSON.stringify(parseEnv(env)),
         dockerfileOverride: advanced ? dockerfileOverride : "",
+        includeAdapters,
         tag,
         version: img.version,
       });
@@ -305,7 +307,7 @@ function RuntimeImageDetailPage() {
             </CardHeader>
             <CardContent>
               <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs">
-                {d.dockerfileOverride || generateDockerfile(img.baseImageRef, d.apt, d.toolchains, d.env)}
+                {d.dockerfileOverride || generateDockerfile(img.baseImageRef, d.apt, d.toolchains, d.env, d.includeAdapters)}
               </pre>
             </CardContent>
           </Card>
@@ -431,23 +433,3 @@ function statusLabel(status: RuntimeImageProto["status"]): string {
   }
 }
 
-function generateDockerfile(base: string, apt: string, toolchains: string, env: string): string {
-  const aptList = parseList(apt);
-  const toolList = parseList(toolchains);
-  const envPairs = parseList(env);
-  const lines: string[] = [`FROM ${base}`, "USER root"];
-  if (aptList.length > 0) {
-    lines.push("RUN apt-get update && apt-get install -y --no-install-recommends \\");
-    aptList.forEach((p, i) => lines.push(`      ${p} ${i < aptList.length - 1 ? "\\" : ""}`));
-    lines.push("      && rm -rf /var/lib/apt/lists/*");
-  }
-  for (const t of toolList) lines.push(`RUN ${t}`);
-  for (const e of envPairs) {
-    const i = e.indexOf("=");
-    if (i > 0) lines.push(`ENV ${e.slice(0, i)}=${e.slice(i + 1)}`);
-  }
-  lines.push("RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true");
-  lines.push("USER orchicon");
-  lines.push("WORKDIR /home/orchicon");
-  return lines.join("\n");
-}

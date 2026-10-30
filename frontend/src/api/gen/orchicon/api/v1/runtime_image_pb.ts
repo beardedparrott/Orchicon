@@ -235,6 +235,15 @@ export class RuntimeImage extends Message<RuntimeImage> {
    */
   failureCategory = "";
 
+  /**
+   * Install the runtime CLI adapters (opencode, Claude Code) into the GENERATED Dockerfile. Default true:
+   * an image nobody can run work with is not what "create a runtime image" means. Ignored when
+   * dockerfile_override is set — an operator who wrote their own Dockerfile has taken the decision.
+   *
+   * @generated from field: bool include_adapters = 24;
+   */
+  includeAdapters = false;
+
   constructor(data?: PartialMessage<RuntimeImage>) {
     super();
     proto3.util.initPartial(data, this);
@@ -266,6 +275,7 @@ export class RuntimeImage extends Message<RuntimeImage> {
     { no: 21, name: "failed_step", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 22, name: "log_tail", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 23, name: "failure_category", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 24, name: "include_adapters", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RuntimeImage {
