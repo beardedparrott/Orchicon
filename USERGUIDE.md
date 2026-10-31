@@ -227,10 +227,12 @@ Docker Desktop**. What it does:
 the Linux VM it runs in) is provisioned for you, so switching a project or work item to
 container mode simply works. IMAGES are content, and they are not fetched until you choose
 them: the install offers them (defaulting to none) and the **Runtime Images** page fetches
-them later. The installer downloads the
-**linux/amd64 orchicon binary** a runtime container executes, placing it in the data
-directory as `%LOCALAPPDATA%\orchicon\bin\orchicon-linux-amd64` — a Windows executable
-cannot run inside a Linux container, so the container needs its own. The install ends by **stating whether
+them later. **The installer's own archive carries the linux/amd64 orchicon binary** a
+runtime container executes, and the installer places it at
+`%LOCALAPPDATA%\orchicon\bin\orchicon-linux-amd64` — a Windows executable cannot run
+inside a Linux container, so the container needs its own. It comes from the same build as
+`orchicon.exe`, so the two can never be different versions, and there is no second download
+to fail. A local build gets the same file from `make build`. The install ends by **stating whether
 container execution is ready** and, if it is not, the exact path to place the file at. The engine itself (podman first, then
 docker) and the Linux VM it runs in are provisioned by `orchicon install`, which creates
 and starts podman's own machine. **You do not manage a distro for this**, and you pass no
@@ -596,15 +598,14 @@ So on Windows, podman runs a **Linux VM that podman manages for you**. In practi
 2. **A Linux `orchicon` binary.** The container runs `orchicon runtime-supervisor`, and
    the daemon bind-mounts that binary in rather than baking it into the image — which
    means a **Windows executable cannot be used**, because a Linux container cannot run it.
-   A default install downloads the
-   matching `linux/amd64` build into `<data dir>/bin` (`%LOCALAPPDATA%\orchicon\bin` on
-   Windows) as `orchicon-linux-amd64`. The daemon looks, in order, at
-   `ORCHICON_RUNTIME_CONTAINER_EXE`, beside its own executable, then `<data dir>/bin`. The
-   data dir is the durable one and the only one that works when the daemon was started from
-   somewhere other than the install directory — a locally built `bin\orchicon.exe`, for
-   instance, or a daemon an earlier install left running. It is also where to put the file
-   yourself if you installed from the MSI, which does not download it. macOS needs the same
-   file for the same reason, and `install.sh` fetches it there too.
+   The release archive for Windows and macOS **carries** that build as
+   `orchicon-linux-amd64`, produced from the same commit, and the installer places it at
+   `<data dir>/bin` (`%LOCALAPPDATA%\orchicon\bin` on Windows). Building from source
+   instead of installing? `make build` cross-compiles it into `bin/` for you. The daemon
+   looks, in order, at `ORCHICON_RUNTIME_CONTAINER_EXE`, beside its own executable, then
+   `<data dir>/bin` — the last being the one that works no matter where the daemon was
+   started, which is what a locally built `bin\orchicon.exe` needs. macOS needs the same
+   file for the same reason, and `install.sh` takes it from the archive there too.
 
    If the install reports *container execution: NOT READY*, nothing else is affected —
    the engine, the plane and every non-container workflow are installed and working.

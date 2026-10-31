@@ -1361,59 +1361,77 @@ function Test-VersionGreater {
     # Linux binary, and a failed download must not fail an install whose plane works perfectly
     # without containers — it is reported, with the remedy, and the install continues.
     if ($script:ContainerOptIn) {
-        $linuxAsset = "orchicon_${versionNum}_linux_amd64.tar.gz"
-        $linuxUrl = "$baseUrl/$Version/$linuxAsset"
         # THE DATA DIR, NOT THE INSTALL DIR. The daemon looks beside its own executable and then
         # here; a daemon started earlier from somewhere else (a locally built bin\orchicon.exe) never
         # looks in InstallDir, and an install that already has a live daemon does not restart it.
-        $linuxBinDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "orchicon\bin" } else { Join-Path $InstallDir "bin" }
+        # ORCHICON_DATA_DIR WINS, because the daemon reads it too — writing to a different directory
+        # than the daemon searches would be the same failure with a different path in it.
+        $dataRoot = if ($env:ORCHICON_DATA_DIR) { $env:ORCHICON_DATA_DIR }
+                    elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "orchicon" }
+                    else { $InstallDir }
+        $linuxBinDir = Join-Path $dataRoot "bin"
         $linuxDest = Join-Path $linuxBinDir "orchicon-linux-amd64"
-        if ($env:ORCHICON_INSTALL_LINUX_ARCHIVE) {
-            $linuxArchive = $env:ORCHICON_INSTALL_LINUX_ARCHIVE
-            Write-Info "using the linux runtime binary archive at $linuxArchive"
+        New-Item -ItemType Directory -Path $linuxBinDir -Force | Out-Null
+
+        # IT IS IN THE ARCHIVE WE ALREADY HAVE. A second download of a second asset was the design
+        # that kept failing — silent, and free to drift from this binary's version. The archive ships
+        # it from the same commit, so there is nothing to fetch and nothing to mismatch.
+        $foundLinux = Get-ChildItem -Path $extractDir -Filter "orchicon-linux-amd64*" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq "orchicon-linux-amd64" } | Select-Object -First 1
+        if ($foundLinux) {
+            Copy-Item -LiteralPath $foundLinux.FullName -Destination $linuxDest -Force
+            if (Test-IsElfBinary $linuxDest) {
+                $script:ContainerBinary = $linuxDest
+                Write-Ok "linux runtime binary installed: $linuxDest"
+            } else {
+                Remove-Item -LiteralPath $linuxDest -Force -ErrorAction SilentlyContinue
+                Write-Warn "the runtime binary in the archive is not a linux/amd64 executable, so it was removed"
+            }
         } else {
+            Write-Warn "this release's archive does not carry orchicon-linux-amd64 (an older release?)"
+        }
+
+        # NOT IN THE ARCHIVE: try the separately published asset, which is how pre-this-change
+        # releases shipped it. Kept so an older version can still be installed with containers.
+        if (-not $script:ContainerBinary) {
+            $linuxAsset = "orchicon_${versionNum}_linux_amd64.tar.gz"
+            $linuxUrl = "$baseUrl/$Version/$linuxAsset"
             $linuxArchive = Join-Path $tmpdir $linuxAsset
-            Write-Info "downloading the linux runtime binary (the runtime container runs it)…"
+            Write-Info "fetching the linux runtime binary from the release…"
+            $fetched = $false
             try {
                 Invoke-WebRequest -Uri $linuxUrl -OutFile $linuxArchive -UseBasicParsing
+                $fetched = $true
             } catch {
-                $linuxArchive = $null
                 Write-Warn "could not download the linux runtime binary from:"
                 Write-Warn "  $linuxUrl"
                 Write-Warn "  $($_.Exception.Message)"
             }
-        }
-        if ($linuxArchive) {
-            # tar is present on Windows 10 1803+ as tar.exe; no WSL needed.
-            $linuxExtract = Join-Path $tmpdir "linux"
-            New-Item -ItemType Directory -Path $linuxExtract -Force | Out-Null
-            $untarred = $false
-            try {
-                & tar -xzf $linuxArchive -C $linuxExtract 2>$null
-                if ($LASTEXITCODE -eq 0) { $untarred = $true }
-            } catch { }
-            $foundLinux = $null
-            if ($untarred) {
-                $foundLinux = Get-ChildItem -Path $linuxExtract -Filter "orchicon" -Recurse -File -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -eq "orchicon" } | Select-Object -First 1
-            }
-            if ($foundLinux) {
-                New-Item -ItemType Directory -Path $linuxBinDir -Force | Out-Null
-                Copy-Item -LiteralPath $foundLinux.FullName -Destination $linuxDest -Force
-                if (Test-IsElfBinary $linuxDest) {
-                    $script:ContainerBinary = $linuxDest
-                    Write-Ok "linux runtime binary installed: $linuxDest"
-                } else {
-                    # A wrong or truncated download must not be left where the daemon will mount it.
-                    Remove-Item -LiteralPath $linuxDest -Force -ErrorAction SilentlyContinue
-                    Write-Warn "the downloaded runtime binary is not a linux/amd64 executable, so it was removed:"
-                    Write-Warn "  $linuxDest"
+            if ($fetched) {
+                $linuxExtract = Join-Path $tmpdir "linux"
+                New-Item -ItemType Directory -Path $linuxExtract -Force | Out-Null
+                $untarred = $false
+                try {
+                    & tar -xzf $linuxArchive -C $linuxExtract 2>$null
+                    if ($LASTEXITCODE -eq 0) { $untarred = $true }
+                } catch { }
+                if ($untarred) {
+                    $old = Get-ChildItem -Path $linuxExtract -Filter "orchicon" -Recurse -File -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -eq "orchicon" } | Select-Object -First 1
+                    if ($old) {
+                        Copy-Item -LiteralPath $old.FullName -Destination $linuxDest -Force
+                        if (Test-IsElfBinary $linuxDest) {
+                            $script:ContainerBinary = $linuxDest
+                            Write-Ok "linux runtime binary installed: $linuxDest"
+                        } else {
+                            Remove-Item -LiteralPath $linuxDest -Force -ErrorAction SilentlyContinue
+                            Write-Warn "the downloaded runtime binary is not a linux/amd64 executable, so it was removed"
+                        }
+                    }
                 }
-            } else {
-                Write-Warn "the linux archive did not contain an orchicon binary:"
-                Write-Warn "  $linuxArchive"
             }
         }
+
         # THE VERDICT, SAID ONCE. A missing container binary is not a warning among warnings: it
         # decides whether container execution works on this host at all.
         if ($script:ContainerBinary) {
@@ -1421,7 +1439,7 @@ function Test-VersionGreater {
         } else {
             Write-Warn "container execution: NOT READY — this host has no linux/amd64 orchicon binary, so"
             Write-Warn "  runtime containers cannot start. Everything else works. To fix it, either re-run"
-            Write-Warn "  this installer with containers enabled, or place a linux build at:"
+            Write-Warn "  this installer, or place a linux build at:"
             Write-Warn "    $linuxDest"
             Write-Warn "  or point ORCHICON_RUNTIME_CONTAINER_EXE at one, then restart the runtime daemon."
         }

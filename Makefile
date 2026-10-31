@@ -275,6 +275,16 @@ build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orch ./cmd/orch
+	@# THE LINUX CONTAINER BINARY, BESIDE THE BINARY THAT WILL MOUNT IT. A runtime container is Linux
+	@# and runs `orchicon runtime-supervisor`, so a daemon built on Windows or macOS needs a
+	@# linux/amd64 build to put in it — and the daemon looks beside its own executable first. Without
+	@# this, a locally built daemon refuses every container create while an installed one works, which
+	@# is a difference nobody would guess.
+	@if [ "$$(uname -s)" != "Linux" ]; then \
+	  echo "==> cross-compiling the linux container binary"; \
+	  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" \
+	    -o $(BIN_DIR)/orchicon-linux-amd64 ./cmd/orchicon; \
+	fi
 
 # run STARTS THIS INSTANCE'S LOCAL SERVICES FIRST (the `services` prerequisite),
 # so it works on a host with no container engine and no Postgres installed:
