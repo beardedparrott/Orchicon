@@ -348,6 +348,12 @@ esac
 exit 0
 ORCHICON_EXE
 install -m 0755 "${FIXTURE}/build/orchicon_0.0.0_windows_amd64/orchicon.exe" "${FIXTURE}/build/orchicon_0.0.0_windows_amd64/orch.exe"
+# THE LINUX CONTAINER BINARY SHIPS IN THE ARCHIVE. A runtime container is Linux and runs
+# `orchicon runtime-supervisor`, so a Windows host's archive carries a linux/amd64 build from the same
+# commit. The fixture carries one WITH THE ELF MAGIC, so the installer's format check is exercised
+# against the real shape instead of a file it must reject.
+printf '\177ELF\002\001\001\000' > "${FIXTURE}/build/orchicon_0.0.0_windows_amd64/orchicon-linux-amd64"
+chmod 0755 "${FIXTURE}/build/orchicon_0.0.0_windows_amd64/orchicon-linux-amd64"
 python3 - "${FIXTURE}" <<'FIXTURE_ZIP'
 import os, sys, zipfile
 root = sys.argv[1]

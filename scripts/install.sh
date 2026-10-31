@@ -1040,35 +1040,51 @@ install_container_binary() {
     CONTAINER_BIN_WHY="declined (--no-containers)"
     return 0
   fi
-  local asset="orchicon_${VERSION#v}_linux_amd64.tar.gz"
-  local url="${ASSET_BASE_URL}/${VERSION}/${asset}"
-  local dest="${INSTALL_DIR}/orchicon-linux-amd64"
+  # ORCHICON_DATA_DIR WINS, because the daemon reads it too — writing to a different directory than
+  # the daemon searches would be the same failure with a different path in it.
+  local data_root="${ORCHICON_DATA_DIR:-${INSTALL_DIR}}"
+  local dest="${data_root}/bin/orchicon-linux-amd64"
+  mkdir -p "${data_root}/bin" 2>/dev/null || true
   if [ "$DRY_RUN" = true ]; then
     CONTAINER_BIN_RESULT="skipped"
-    CONTAINER_BIN_WHY="dry run — it would be downloaded from ${url}"
+    CONTAINER_BIN_WHY="dry run — it would come from the release archive"
     return 0
   fi
 
-  local work; work="$(mktemp -d)"
-  local archive="${work}/${asset}"
-  local why=""
-  if ! curl -fsSL -o "$archive" "$url" 2>/dev/null; then
-    why="could not download ${url}"
-  fi
-  if [ -z "$why" ] && ! tar -xzf "$archive" -C "$work" 2>/dev/null; then
-    why="could not unpack ${asset}"
-  fi
+  # IT IS IN THE ARCHIVE WE ALREADY EXTRACTED. Fetching it as a second asset was the design that kept
+  # failing — silent, and free to drift from the daemon's version. The archive carries it from the
+  # same commit, so there is nothing extra to download and nothing to mismatch.
   local found=""
-  if [ -z "$why" ]; then
-    found="$(find "$work" -type f -name orchicon -perm -u+x 2>/dev/null | head -1)"
-    [ -n "$found" ] || why="${asset} did not contain an orchicon binary"
+  local entry
+  entry="$(find "$tmpdir" -type f -name orchicon-linux-amd64 2>/dev/null | head -1)"
+  if [ -n "$entry" ]; then
+    found="$entry"
   fi
-  # THE FORMAT CHECK IS THE POINT: the daemon refuses a non-ELF entrypoint, so a truncated download
-  # or an HTML error page must be caught here rather than at the first container create.
+
+  local work=""
+  local why=""
+  if [ -z "$found" ]; then
+    # NOT IN THE ARCHIVE: the separately published asset, which is how earlier releases shipped it.
+    local asset="orchicon_${VERSION#v}_linux_amd64.tar.gz"
+    local url="${ASSET_BASE_URL}/${VERSION}/${asset}"
+    work="$(mktemp -d)"
+    local archive="${work}/${asset}"
+    if ! curl -fsSL -o "$archive" "$url" 2>/dev/null; then
+      why="could not download ${url}"
+    elif ! tar -xzf "$archive" -C "$work" 2>/dev/null; then
+      why="could not unpack ${asset}"
+    else
+      found="$(find "$work" -type f -name orchicon 2>/dev/null | head -1)"
+      [ -n "$found" ] || why="${asset} did not contain an orchicon binary"
+    fi
+  fi
+
+  # THE FORMAT CHECK IS THE POINT: the daemon refuses a non-ELF entrypoint, so a truncated download or
+  # an HTML error page must be caught here rather than at the first container create.
   if [ -z "$why" ]; then
     local magic
     magic="$(od -An -tx1 -N4 "$found" 2>/dev/null | tr -d ' \n')"
-    [ "$magic" = "7f454c46" ] || why="the downloaded runtime binary is not a linux/amd64 executable"
+    [ "$magic" = "7f454c46" ] || why="the runtime binary is not a linux/amd64 executable"
   fi
   if [ -z "$why" ]; then
     if cp "$found" "$dest" 2>/dev/null; then
@@ -1077,13 +1093,12 @@ install_container_binary() {
       why="could not write ${dest}"
     fi
   fi
+  [ -n "$work" ] && rm -rf "$work"
   if [ -n "$why" ]; then
     CONTAINER_BIN_RESULT="unavailable"
     CONTAINER_BIN_WHY="$why"
-    rm -rf "$work"
     return 0
   fi
-  rm -rf "$work"
   CONTAINER_BIN_RESULT="installed"
   CONTAINER_BIN_WHY="$dest"
 }

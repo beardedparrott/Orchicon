@@ -179,6 +179,18 @@ jobs:
           mkdir -p "$ASSET"
           cp "orchicon${EXT}" "$ASSET/"
           cp "orch${EXT}" "$ASSET/"
+          # THE LINUX BINARY A RUNTIME CONTAINER RUNS, SHIPPED WITH THE BUILD THAT NEEDS IT.
+          #
+          # A runtime container is a LINUX container running `orchicon runtime-supervisor`, so on a
+          # host whose own executable is a PE (Windows) or a Mach-O (macOS) the daemon needs a
+          # linux/amd64 build to mount. Fetching it as a SEPARATE release asset was the design that
+          # kept failing: a second download that could fail silently, and a version that could drift
+          # from the daemon. Built HERE, from the same commit with the same ldflags, it cannot drift
+          # and needs no second network request.
+          if [ "${{ matrix.os }}" != "linux" ]; then
+            GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o orchicon-linux-amd64 ./cmd/orchicon
+            cp orchicon-linux-amd64 "$ASSET/"
+          fi
           cp README.md "$ASSET/" 2>/dev/null || true
           cp LICENSE "$ASSET/" 2>/dev/null || true
           if [ "${{ matrix.archive }}" = "tar.gz" ]; then

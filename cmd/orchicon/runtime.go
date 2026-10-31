@@ -35,6 +35,16 @@ var (
 	daemonCfg      config.Config
 )
 
+// daemonDataDir is the state dir this process reports as its data dir, resolved EAGERLY.
+//
+// IT MUST NOT COME FROM daemonCfg. That variable is filled in by daemonPool's sync.Once — i.e. the
+// first time the database is opened — which has not happened yet when this daemon is constructed. Every
+// read of daemonCfg.DataDir at construction time therefore saw the ZERO value, and two things silently
+// lost their data dir: the container-binary search fell back to "beside the executable" only, and the
+// refusal it produced printed the literal placeholder "<data dir>" instead of a path an operator could
+// use. config.Default() is a pure function of the environment, so calling it here is free.
+func daemonDataDir() string { return config.Default().DataDir }
+
 func daemonPool(ctx context.Context, log *slog.Logger) (*db.Pool, error) {
 	daemonPoolOnce.Do(func() {
 		daemonCfg = config.Default()
@@ -224,7 +234,7 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 	// this and HAD NO CALLER, which is why the resolver, its sibling-name list and the installer all existed
 	// while the daemon still mounted the host's own executable.
 	containerExe, cerr := runtime.ResolveContainerExe(runtime.GOOS(), exePath,
-		os.Getenv(runtime.ContainerExeEnv), daemonCfg.DataDir)
+		os.Getenv(runtime.ContainerExeEnv), daemonDataDir())
 	if cerr != nil {
 		// NOT FATAL HERE, DELIBERATELY: the daemon still serves local-mode work, and a host with no container
 		// binary is a supported shape. It is recorded and REPORTED rather than swallowed, and the create path
@@ -327,7 +337,7 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		ContainerExe: containerExe,
 		// WHERE A DURABLE LINUX BINARY WOULD GO, so a refusal names a path that survives a temp cleaner
 		// instead of the %TEMP% self-copy this process mounts from.
-		ContainerExeDataDir: daemonCfg.DataDir,
+		ContainerExeDataDir: daemonDataDir(),
 		// ON A HOST WHOSE OWN BINARY THE CONTAINER CANNOT RUN, an empty ContainerExe must REFUSE rather than
 		// fall back. Set from the same fact the resolver used, so the two cannot disagree.
 		ContainerExeRequired: runtime.GOOS() == "windows" || runtime.GOOS() == "darwin",

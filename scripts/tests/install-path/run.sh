@@ -115,6 +115,13 @@ PKG="${WORK}/pkg/${VERSION}"
 mkdir -p "${PKG}/${ASSET_DIR}"
 cp "${STAGE}/orchicon" "${PKG}/${ASSET_DIR}/"
 [ -f "${STAGE}/orch" ] && cp "${STAGE}/orch" "${PKG}/${ASSET_DIR}/"
+# THE ARCHIVE CARRIES THE LINUX CONTAINER BINARY, as the release workflow now does for every
+# non-Linux platform: a runtime container is Linux and runs `orchicon runtime-supervisor`, so a host
+# whose own binary is a Mach-O needs that build to mount. The fixture ships it so the packaging shape
+# under test is the shape that ships, not an older one.
+if [ "${TARGET_OS}" != "linux" ]; then
+  ( cd "${REPO_ROOT}" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0       go build -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${VERSION}"       -o "${PKG}/${ASSET_DIR}/orchicon-linux-amd64" ./cmd/orchicon ) 2>>"${WORK}/build.log"
+fi
 ( cd "${PKG}" && tar -czf "${ASSET}.tar.gz" "${ASSET_DIR}" )
 # THE RELEASE PUBLISHES SHA256SUMS WITH THE ARCHIVES, so the harness serves one too — without it the
 # installer would (correctly) report that nothing was published and skip verification, and the verified
