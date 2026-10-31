@@ -383,6 +383,10 @@ jobs:
           mkdir -p bin
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon.exe ./cmd/orchicon
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orch.exe ./cmd/orch
+          # THE LINUX BINARY THE RUNTIME CONTAINER RUNS. Built HERE, in the same step and with the
+          # same flags as the exe above it, so the daemon and the supervisor it mounts are the same
+          # build by construction — a Linux container cannot execute the Windows binary.
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon-linux-amd64 ./cmd/orchicon
       - name: Install the WiX CLI
         shell: pwsh
         run: |
@@ -414,6 +418,8 @@ jobs:
           $null = New-Item -ItemType Directory -Force -Path $src, dist/desktop
           Copy-Item bin/orchicon.exe $src/
           Copy-Item bin/orch.exe $src/
+          # THE CONTAINER'S BINARY, beside orchicon.exe — the daemon's first search location.
+          Copy-Item bin/orchicon-linux-amd64 $src/
           Copy-Item cmd/orchicon-desktop/build/bin/orchicon-desktop.exe $src/
           Copy-Item deploy/desktop/windows/README-WINDOWS.txt $src/
           Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
@@ -513,12 +519,23 @@ jobs:
           # NO orchicon-setup.cmd ANY MORE: the setup is now run DIRECTLY from the installed
           # orchicon.exe by the LaunchSetup custom action (FileRef + "install --instance …"), so
           # the wrapper script is gone and asserting it would assert a file that must not exist.
-          foreach ($f in @('orchicon.exe','orch.exe','orchicon-desktop.exe','README-WINDOWS.txt')) {
+          # orchicon-linux-amd64 IS THE ONE FILE AN MSI INSTALL USED TO HAVE NO ROUTE TO. It is the
+          # binary a runtime container executes; without it every container create refuses, which is
+          # what four rounds of this bug were. It must be BESIDE orchicon.exe (the runtime daemon's
+          # first search location) and it must BE A LINUX ELF — a Windows binary under that name
+          # installs perfectly and dies on `exec format error` inside the container.
+          foreach ($f in @('orchicon.exe','orch.exe','orchicon-desktop.exe','README-WINDOWS.txt','orchicon-linux-amd64')) {
             if (-not (Test-Path -LiteralPath (Join-Path $dir $f))) {
               Get-ChildItem $dir | ForEach-Object { Write-Host "  present: $($_.Name)" }
               throw "$f is MISSING from $dir — the payload did not land"
             }
           }
+          $elf = Join-Path $dir 'orchicon-linux-amd64'
+          $magic = [System.IO.File]::ReadAllBytes($elf)[0..3]
+          if (-not ($magic[0] -eq 0x7f -and $magic[1] -eq 0x45 -and $magic[2] -eq 0x4c -and $magic[3] -eq 0x46)) {
+            throw "$elf is not an ELF image (magic $($magic -join ' ')) — a runtime container cannot execute it"
+          }
+          Write-Host "container binary installed beside orchicon.exe and is a linux/amd64 ELF"
           # ${dir} BRACED, NOT $dir:. PowerShell parses "$dir:" as a SCOPE/DRIVE-qualified
           # variable and fails to parse the whole script — so this was a PARSER error, and the
           # install never ran at all. It is a silent-by-inspection trap: $env: and $script: are

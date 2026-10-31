@@ -91,6 +91,7 @@ func TestMSICarriesEveryShippedBinary(t *testing.T) {
 		{`Source="$(var.SourceDir)\orchicon.exe"`, "the control plane, the CLI and the setup step itself"},
 		{`Source="$(var.SourceDir)\orch.exe"`, "the TUI — without it the package has no remote client"},
 		{`Source="$(var.SourceDir)\orchicon-desktop.exe"`, "the desktop app the MSI exists to deploy"},
+		{`Source="$(var.SourceDir)\orchicon-linux-amd64"`, "the binary a runtime container executes — without it an MSI install can never start one"},
 	} {
 		if !strings.Contains(body, want.src) {
 			t.Errorf("Orchicon.wxs has no component with %s (%s).\n"+
@@ -98,6 +99,95 @@ func TestMSICarriesEveryShippedBinary(t *testing.T) {
 				"missing that piece — no error, no warning, just a product that cannot do its job.\n"+
 				"(Matched on Source=, not the filename: every one of these is also named in prose.)",
 				want.src, want.why)
+		}
+	}
+}
+
+// TestMSICarriesTheContainerBinaryBesideTheExe — WHERE the file goes is the whole fix.
+//
+// The daemon searches, in order, ORCHICON_RUNTIME_CONTAINER_EXE, then beside its OWN executable, then
+// <data dir>/bin (internal/runtime/exe_resolve.go). The daemon the MSI starts runs out of INSTALLFOLDER,
+// so a binary installed there needs no configuration at all. A component grouped anywhere else — or one
+// whose File lands in a different directory — would install cleanly and be invisible to the daemon, which
+// is the failure this whole class of bug is made of.
+func TestMSICarriesTheContainerBinaryBesideTheExe(t *testing.T) {
+	body := readMSIFile(t, wxs())
+
+	// The component must sit inside CliComponents, which declares Directory="INSTALLFOLDER".
+	start := strings.Index(body, `<ComponentGroup Id="CliComponents"`)
+	if start < 0 {
+		t.Fatal("Orchicon.wxs has no CliComponents group")
+	}
+	group := body[start:]
+	if end := strings.Index(group[1:], "</ComponentGroup>"); end >= 0 {
+		group = group[:end+1]
+	}
+	if !strings.Contains(group, `Id="LinuxContainerExe"`) {
+		t.Fatal("the linux container binary is not a component in CliComponents, so it lands somewhere " +
+			"other than INSTALLFOLDER — the daemon would not find it beside its own executable")
+	}
+
+	// And it must be reachable from a Feature, or MSI never installs it.
+	if !strings.Contains(body, `<ComponentGroupRef Id="CliComponents" />`) {
+		t.Error("CliComponents is not referenced by a Feature, so its files are never installed")
+	}
+}
+
+// TestCIVerifiesTheInstalledContainerBinary — the MSI job INSTALLS the package and checks the payload by
+// name, which makes it the only place the whole change is proven end to end on real Windows. Binding
+// proves the file is in the package; only an install proves it lands where the daemon looks, and only a
+// magic check proves it is something a Linux kernel can execute.
+func TestCIVerifiesTheInstalledContainerBinary(t *testing.T) {
+	src := readMSIFile(t, filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+
+	// SCOPED TO THE INSTALLED-PAYLOAD LIST, not to the file at large. The name appears three times in
+	// this workflow (build, stage, verify), so a whole-file Contains passes even with the VERIFICATION
+	// deleted — measured: removing it from the foreach left this test green.
+	listStart := strings.Index(src, "foreach ($f in @(")
+	if listStart < 0 {
+		t.Fatal("ci.yml has no installed-payload file list to assert against")
+	}
+	list := src[listStart:]
+	if end := strings.Index(list, "))"); end > 0 {
+		list = list[:end]
+	}
+	if !strings.Contains(list, "'orchicon-linux-amd64'") {
+		t.Error("ci.yml installs the MSI but does not assert orchicon-linux-amd64 is in the INSTALLED " +
+			"payload — a package missing it installs cleanly and cannot start a container")
+	}
+	if !strings.Contains(src, "0x7f") {
+		t.Error("ci.yml does not check the installed container binary's ELF magic. A Windows binary " +
+			"under that name satisfies a filename check and dies on `exec format error` in the container, " +
+			"which is a run-time failure six steps away from the packaging mistake")
+	}
+}
+
+// TestEveryMSIBuildSiteStagesTheContainerBinary — a staging step that only exists in ONE workflow is a
+// release that ships the file and a canary that does not, or the reverse, and the difference is invisible
+// until someone installs from the one that forgot.
+//
+// Four sites build this MSI. `wix build` fails at BIND time on a missing Source file, so a forgotten copy is
+// caught on windows-latest — six minutes away, in a job most changes never touch. This check is the local,
+// immediate half of the same guard.
+func TestEveryMSIBuildSiteStagesTheContainerBinary(t *testing.T) {
+	for _, site := range []struct{ what, path string }{
+		{"the Makefile", filepath.Join("..", "..", "Makefile")},
+		{"ci.yml", filepath.Join("..", "..", ".github", "workflows", "ci.yml")},
+		{"release.yml", filepath.Join("..", "..", ".github", "workflows", "release.yml")},
+		{"canary.yml", filepath.Join("..", "..", ".github", "workflows", "canary.yml")},
+	} {
+		src := readMSIFile(t, site.path)
+		if !strings.Contains(src, "orchicon-linux-amd64") {
+			t.Errorf("%s never mentions orchicon-linux-amd64, so the MSI it builds cannot carry the "+
+				"binary a runtime container executes — and an MSI install has no other route to it.", site.what)
+			continue
+		}
+		// IT MUST BE A LINUX BUILD. Copying the Windows exe under that name would satisfy a filename
+		// check and produce a container that dies on `exec format error`.
+		if !strings.Contains(src, "GOOS=linux GOARCH=amd64") {
+			t.Errorf("%s stages orchicon-linux-amd64 without a GOOS=linux GOARCH=amd64 build — a "+
+				"Windows binary under that name is refused by the daemon's ELF check, and if it were "+
+				"not, the container's supervisor would die on exec format error.", site.what)
 		}
 	}
 }

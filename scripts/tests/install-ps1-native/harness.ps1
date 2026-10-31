@@ -618,16 +618,36 @@ $doublePath = Join-Path $StubBin "wsl"
 function Invoke-DoubleExit {
   param([string]$Guest)
   $o = Join-Path $Work ("dbl-" + [guid]::NewGuid().ToString("N"))
-  $inFile = "$o.in"; $outFile = "$o.out"; $errFile = "$o.err"
-  [System.IO.File]::WriteAllText($inFile, "")
-  # THE GUEST IS QUOTED, and that is not cosmetic. `Start-Process -ArgumentList` joins its array and
-  # RE-SPLITS on whitespace, so an unquoted multi-word guest arrives as several arguments and the
-  # double's `guest="${!#}"` sees only the LAST WORD — measured: "orchicon install" arrived as
-  # `install`, slipped the gate, and the real binary actually STARTED a plane here.
-  $q = '"' + $Guest + '"'
-  $p = Start-Process -FilePath $doublePath -PassThru `
-    -ArgumentList @("-e", "bash", "-lc", $q) `
-    -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+  $outFile = "$o.out"; $errFile = "$o.err"
+  # THE GUEST TRAVELS IN A FILE AND THE DOUBLE IS RUN BY A WRAPPER SCRIPT, WHICH IS THE ONLY SHAPE
+  # THAT SURVIVES ALL THREE HAZARDS AT ONCE:
+  #
+  #  1. `-ArgumentList` JOINS ITS ARRAY AND RE-SPLITS ON WHITESPACE, so a multi-word guest arrives as
+  #     several arguments and the double's `guest="${!#}"` sees only the LAST WORD — measured once:
+  #     "orchicon install" arrived as `install`, slipped the gate, and the real binary STARTED A PLANE.
+  #     A file carries the text byte-exactly and `$(cat ...)` re-materialises it as ONE argument.
+  #  2. `-RedirectStandardInput` ON UNIX RELAYS THE FILE THROUGH A PIPE. Every guest here exits without
+  #     reading stdin ($inFile was always empty), so pwsh's write hits EPIPE and throws "Broken pipe",
+  #     killing the harness before it writes its report. THIS FAILED THIS GATE THREE TIMES, locally and
+  #     on CI, and was misread as a flake each time: the reported symptom was "harness produced no
+  #     report (rc=1)" with nothing about what was being tested. `</dev/null` gives a real empty stdin
+  #     with no pipe to break.
+  #  3. THE BOUNDED WAIT IS KEPT. `timeout` is not portable to macOS (no gtimeout by default), so the
+  #     wrapper is started through Start-Process and Wait-ProcessBounded exactly as before — only the
+  #     two broken redirections are gone.
+  #
+  # Note the INPUT redirect of the child installer run above is NOT the same case and is NOT removed:
+  # there the file's content is the operator's answers to Read-Host, and a child that always reads them
+  # is what makes its stdin meaningful.
+  $guestFile = "$o.guest"; $wrapper = "$o.sh"
+  [System.IO.File]::WriteAllText($guestFile, $Guest)
+  # $1 = the double, $2 = the guest file, $3/$4 = output and error. Paths come from the caller rather
+  # than being interpolated, so no quoting rule has to be right.
+  [System.IO.File]::WriteAllText($wrapper,
+    "#!/usr/bin/env bash" + "`n" +
+    'exec "$1" -e bash -lc "$(cat "$2")" </dev/null >"$3" 2>"$4"' + "`n")
+  $p = Start-Process -FilePath "bash" -PassThru `
+    -ArgumentList @($wrapper, $doublePath, $guestFile, $outFile, $errFile)
   [void](Wait-ProcessBounded -Process $p -What "the double under test")
   return $p.ExitCode
 }

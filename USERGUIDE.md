@@ -598,17 +598,21 @@ So on Windows, podman runs a **Linux VM that podman manages for you**. In practi
 2. **A Linux `orchicon` binary.** The container runs `orchicon runtime-supervisor`, and
    the daemon bind-mounts that binary in rather than baking it into the image — which
    means a **Windows executable cannot be used**, because a Linux container cannot run it.
-   The release archive for Windows and macOS **carries** that build as
-   `orchicon-linux-amd64`, produced from the same commit, and the installer places it at
-   `<data dir>/bin` (`%LOCALAPPDATA%\orchicon\bin` on Windows). Building from source
-   instead of installing? `make build` cross-compiles it into `bin/` for you. The daemon
-   looks, in order, at `ORCHICON_RUNTIME_CONTAINER_EXE`, beside its own executable, then
-   `<data dir>/bin` — the last being the one that works no matter where the daemon was
-   started, which is what a locally built `bin\orchicon.exe` needs. macOS needs the same
-   file for the same reason, and `install.sh` takes it from the archive there too.
+   **Every install route provisions it**, from the same commit as the daemon:
+   the release archive for Windows and macOS carries it as `orchicon-linux-amd64` and
+   `install.ps1`/`install.sh` place it at `<data dir>/bin`
+   (`%LOCALAPPDATA%\orchicon\bin` on Windows); the **MSI ships it too** and puts it
+   beside `orchicon.exe`; and `make build` cross-compiles it into `bin/` for a local
+   build. The daemon looks, in order, at `ORCHICON_RUNTIME_CONTAINER_EXE`, beside its own
+   executable, then `<data dir>/bin` — the last being the one that works no matter where
+   the daemon was started, which is what a locally built `bin\orchicon.exe` needs. macOS
+   needs the same file for the same reason, and `install.sh` takes it from the archive
+   there too.
 
    If the install reports *container execution: NOT READY*, nothing else is affected —
-   the engine, the plane and every non-container workflow are installed and working.
+   the engine, the plane and every non-container workflow are installed and working. That
+   line is printed by every route, including the MSI (which prints it from the
+   `orchicon install` its final step runs).
 
 #### Checking it
 

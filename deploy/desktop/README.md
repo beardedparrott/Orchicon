@@ -53,7 +53,22 @@ What it deliberately does **not** do, each for a measured reason:
 - **It does not bundle the service binaries.** Those are 542 MB (otelcol-contrib 293,
   loki 105, tempo 74, postgres 34, victoria-metrics 24, nats 16) and would version-lock
   to the installer. `orchicon install` acquires them at setup, exactly as the one-line
-  `install.ps1` does. The MSI is ~200 MB.
+  `install.ps1` does.
+- **It DOES bundle `orchicon-linux-amd64`** (~100 MB uncompressed — the single biggest
+  thing in the package, and the reason it roughly doubles). That is the binary a runtime
+  container executes, and it is not a third-party service: it is the same program as
+  `orchicon.exe`, built from the same commit in the same job. A Windows executable cannot
+  be PID 1 of a Linux container, so without it an MSI install can never run one — and
+  unlike the service binaries there is nothing for setup to acquire it from, which is why
+  the MSI carried none for four releases and every MSI install failed at container create.
+  It is installed beside `orchicon.exe`, which is the runtime daemon's first search
+  location (`internal/runtime/exe_resolve.go`).
+
+  The size is felt by every Windows route at once, because they all carry this file now:
+  the MSI, the Burn bundle (`Compressed="yes"`, so it embeds the MSI) and the portable zip.
+  The alternative — fetching it during setup — is the design that failed repeatedly: a
+  second download that only warned when it failed, and a version free to drift from the
+  daemon that mounts it.
 - **It does not run the setup as an MSI dialog sequence.** An MSI custom action has no
   console, so `installIsInteractive()` is false and any prompt writes into nothing and
   blocks for ever. Setup runs `orchicon install` in a real console launched from the

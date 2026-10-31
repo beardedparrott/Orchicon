@@ -277,6 +277,26 @@
       <Component Id="OrchExe" Guid="*">
         <File Id="OrchExeFile" Source="$(var.SourceDir)\orch.exe" KeyPath="yes" />
       </Component>
+      <!-- ===================== THE LINUX BINARY A RUNTIME CONTAINER RUNS =====================
+           A runtime container is a LINUX container whose PID 1 is `orchicon runtime-supervisor`, so
+           the daemon bind-mounts an executable the kernel inside it can run. On Windows the daemon's
+           own file is a PE and cannot be that file (internal/runtime/exe_resolve.go). The daemon
+           therefore needs a linux/amd64 build, and this package supplies it.
+
+           IT SITS BESIDE orchicon.exe ON PURPOSE. That is the daemon's FIRST search location, and the
+           daemon the MSI starts runs from this directory, so an MSI install needs no configuration,
+           no environment variable and no second download.
+
+           WHY THIS ONE IS IN THE PACKAGE WHEN THE SERVICE BINARIES ARE NOT (see the header: 542 MB of
+           otelcol/loki/tempo/postgres/VM/nats): those are third-party services `orchicon install`
+           acquires at setup time, and bundling them would version-lock them to this installer. This is
+           the same program as orchicon.exe, 100 MB, and without it an MSI install has NO route to
+           container execution at all — the MSI downloads nothing, and the refusal it produced named a
+           path no installer had created. It is built from the same commit in the same job, so the
+           daemon and the supervisor it mounts can never be different versions. -->
+      <Component Id="LinuxContainerExe" Guid="*">
+        <File Id="LinuxContainerExeFile" Source="$(var.SourceDir)\orchicon-linux-amd64" KeyPath="yes" />
+      </Component>
       <Component Id="ReadmeFile" Guid="*">
         <File Id="ReadmeTxtFile" Source="$(var.SourceDir)\README-WINDOWS.txt" KeyPath="yes" />
       </Component>
