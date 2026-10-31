@@ -17,11 +17,12 @@ import (
 // frames and streams its stdout/stderr events back live, so a session can
 // span multiple turns on ONE subprocess.
 type StdioRequest struct {
-	Argv       []string `json:"argv"`
-	Env        []string `json:"env,omitempty"`
-	Cwd        string   `json:"cwd,omitempty"`
-	ProjectDir string   `json:"project_dir,omitempty"`
-	ExecID     string   `json:"exec_id,omitempty"`
+	Argv []string `json:"argv"`
+	Env  []string `json:"env,omitempty"`
+	// HOST paths; converted at the one boundary (hostpaths.go).
+	Cwd        string `json:"cwd,omitempty" orchicon:"hostpath"`
+	ProjectDir string `json:"project_dir,omitempty" orchicon:"hostpath"`
+	ExecID     string `json:"exec_id,omitempty"`
 }
 
 // StdioSession is one live duplex streaming child. Events() yields the

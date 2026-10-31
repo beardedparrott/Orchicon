@@ -168,7 +168,8 @@ type CreateRequest struct {
 	// daemon starts the serve, publishes its port on the host loopback,
 	// and returns ServePort/ServePassword in the response.
 	ServeConfig string `json:"serve_config,omitempty"`
-	ProjectDir  string `json:"project_dir,omitempty"`
+	// HOST path; converted before anything reads it (hostpaths.go).
+	ProjectDir string `json:"project_dir,omitempty" orchicon:"hostpath"`
 	// Secrets are tenant secrets to inject as container env at create time.
 	// Decrypted plane-side, never stored in image; same pattern as GH_TOKEN.
 	Secrets map[string]string `json:"secrets,omitempty"`
@@ -420,10 +421,11 @@ func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 // native transport). Command/Env/Cwd ride the supervisor's AgentRequest
 // "exec" shape; ProjectDir scopes the execution-guard shim.
 type ExecRequest struct {
-	Command    string   `json:"command"`
-	Env        []string `json:"env,omitempty"`
-	Cwd        string   `json:"cwd,omitempty"`
-	ProjectDir string   `json:"project_dir,omitempty"`
+	Command string   `json:"command"`
+	Env     []string `json:"env,omitempty"`
+	// HOST paths; converted at the one boundary (hostpaths.go).
+	Cwd        string `json:"cwd,omitempty" orchicon:"hostpath"`
+	ProjectDir string `json:"project_dir,omitempty" orchicon:"hostpath"`
 }
 
 // ExecResult is the terminal result of an exec: collected stdout/stderr
@@ -463,6 +465,10 @@ func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID
 		httpError(w, http.StatusNotFound, "no runtime container leased for run "+runID)
 		return
 	}
+	// EVERY HOST PATH ON THE REQUEST IS CONVERTED HERE, BEFORE IT BECOMES A CONTAINER COMMAND.
+	// Cwd un-mapped is the reported failure: a Linux container cannot chdir to C:\... , and a process that
+	// treats such a path as relative litters the mount with a literal directory of that name (hostpaths.go).
+	mapHostPathFields(d.Paths, &req)
 	reqJSON, err := json.Marshal(AgentRequest{
 		Cmd:        "exec",
 		Argv:       []string{"bash", "-c", req.Command},
@@ -531,6 +537,8 @@ func (d *Daemon) handleRuntimeStdio(w http.ResponseWriter, r *http.Request, runI
 		httpError(w, http.StatusBadRequest, "stdio argv required")
 		return
 	}
+	// Same boundary as exec: the claude adapter's cwd is a host path too.
+	mapHostPathFields(d.Paths, &req)
 	first, err := json.Marshal(AgentRequest{
 		Cmd:        "stdio",
 		Argv:       req.Argv,
@@ -919,7 +927,7 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	//
 	// Nothing has failed on it yet only because creation was failing earlier for other reasons; it is mapped
 	// HERE, before anything reads it, so every forwarding path below is correct by the time it matters.
-	req.ProjectDir = d.Paths.Map(req.ProjectDir)
+	mapHostPathFields(d.Paths, &req)
 	// Fast, ACTIONABLE auth preflight: a claude-demanding run on a host with
 	// no reachable Claude credential must fail with the exact sign-in command,
 	// never silently start a container whose sessions then hang or fail with a
@@ -1291,6 +1299,19 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	// gets a writable, runtime-uid-owned directory at the same path instead of
 	// a host bind, plus its declared credential file read-only inside it.
 	for _, ph := range adapterPrivateHomes(d.HostHome, requestedKinds(req)...) {
+		// A PRIVATE FILE IS CONFIG, NOT A HOME. It cannot be tmpfs'd (tmpfs takes a directory, and masking
+		// its parent would hide everything else there), so it is bound READ-WRITE from the host at the
+		// identical absolute path.
+		//
+		// WRITABLE IS DELIBERATE AND IS THE REPORTED REQUIREMENT: the CLI rewrites ~/.claude.json on start
+		// and on settings changes, so a read-only bind leaves it unable to persist and — for a config the
+		// CLI insists on owning — unable to run. The cost is that concurrent containers share this one file,
+		// which is acceptable for CONFIG in a way it is not for the credential (see the credential bind
+		// below): config is last-writer-wins with no secret in it.
+		if ph.isFile {
+			args = append(args, "-v", d.Paths.Map(ph.dir)+":"+d.Paths.Map(ph.dir)+":rw")
+			continue
+		}
 		// MAPPED, LIKE EVERY OTHER PATH THIS FUNCTION EMITS. This was the ONE host-form argument left in the
 		// argv — every -v beside it was already /mnt/c/... — so the reported failure was a lone `--tmpfs
 		// C:\Users\operator\.local\share\opencode:...`, which podman reads as the container path "C".
@@ -1302,8 +1323,17 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 			// THE SOURCE IS A HOST PATH THE ENGINE MUST RESOLVE; the destination is already a guest path
 			// (ph.dir lives under the host home, so it is mapped too — see mapMountArgv). os.Stat above ran
 			// against the real host path, which is why only the ARGS are mapped.
+			// WRITABLE ONLY WHEN THE ADAPTER DECLARES IT NEEDS TO BE (adapterInstall.authWritable).
+			// opencode only reads its auth.json, so a read-only bind there keeps a worker from modifying the
+			// operator's credential. The Claude Code CLI rewrites .credentials.json on token refresh, and a
+			// read-only bind turns that into EACCES inside the container — the adapter then exits 1 with no
+			// terminal result message and never reaches the API.
+			mode := ":ro"
+			if ph.authWritable {
+				mode = ":rw"
+			}
 			args = append(args, "-v", d.Paths.Map(ph.authFile)+":"+
-				d.Paths.Map(filepath.Join(ph.dir, filepath.Base(ph.authFile)))+":ro")
+				d.Paths.Map(filepath.Join(ph.dir, filepath.Base(ph.authFile)))+mode)
 		}
 	}
 	// Git identity/credential + push-capable GH_TOKEN are gated on the run's
