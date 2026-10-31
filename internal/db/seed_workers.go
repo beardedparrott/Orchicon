@@ -2,8 +2,11 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -63,11 +66,55 @@ const seedMarkerComment = "\n<!-- " + seedSafetyMarker + " -->\n"
 // duplicating them in every composite prompt (the whole point of the prompt
 // overhead reduction).
 func seedAgentsMD(w cannedWorker) string {
+	return seedAgentsMDBase(w) + cannedSeedFingerprintMarker(w)
+}
+
+// seedAgentsMDBase is seedAgentsMD WITHOUT the fingerprint comment — the text the fingerprint is computed over.
+//
+// IT MUST NOT BE THE MARKER-BEARING FORM. The first version of this hashed seedAgentsMD, which appends the
+// marker, which hashes seedAgentsMD: infinite recursion, caught immediately by the stack overflowing in the
+// test. The fingerprint therefore covers the CONTENT and the marker carries it.
+func seedAgentsMDBase(w cannedWorker) string {
 	md := w.AgentsMD
 	if i := strings.Index(md, safetyBlock); i >= 0 {
 		md = md[:i] + seedMarkerComment + md[i+len(safetyBlock):]
 	}
 	return md
+}
+
+// cannedSeedFingerprint is a short digest of EVERY field the seeder syncs onto a canned worker's version.
+//
+// WHY THIS EXISTS. The roll-forward used to be keyed on hand-written marker STRINGS — seedSafetyMarker,
+// sandboxPlaneMarker, and per-worker RollMarkers like "GATED ON A GREEN RESULT". A marker is a presence check,
+// so it can only detect a change someone INVENTED A NEW MARKER for. That works for a wording change that
+// happens to touch a marker, and silently fails for every other edit: the marker is still in the stored text,
+// needSync is false, and the new prompt never reaches a worker that already exists.
+//
+// MEASURED, on the change this guards: the Quick Software Engineer's shipping section was rewritten to be
+// mode-aware (commit-only for a local-strategy project, push + PR only when there is a remote). Its RollMarker
+// is a static phrase the edit left untouched, so the seeder saw nothing to do and the fix was dead on every
+// install made before it. A test of the prompt text cannot catch that — the source is right, the delivery was
+// not.
+//
+// So the key is the CONTENT. Any edit to a canned worker's role, skills, behavior, agents_md or concurrency
+// rolls one new published version on the next boot and is then idempotent, with no marker to remember.
+//
+// IT DOES REPLACE A LOCAL EDIT to a canned worker when the seed changes. That is the same rule the markers
+// already applied (the seed is the source of truth for seed-managed workers), and the sync logs it; an
+// operator who wants a permanent customisation should create their own worker.
+func cannedSeedFingerprint(w cannedWorker) string {
+	h := sha256.New()
+	for _, part := range []string{w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMDBase(w), strconv.Itoa(w.ConcurrencyLimit)} {
+		_, _ = h.Write([]byte(part))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// cannedSeedFingerprintMarker renders the fingerprint as an HTML comment, which markdown renders to nothing —
+// so it is a roll-forward key without being visible in any prompt a worker reads.
+func cannedSeedFingerprintMarker(w cannedWorker) string {
+	return "\n<!-- orchicon.seed-fingerprint=" + cannedSeedFingerprint(w) + " -->\n"
 }
 
 // sandboxPlaneBlock is the per-worker instruction explaining the runtime
@@ -386,7 +433,7 @@ var cannedWorkers = []cannedWorker{
 			"3. **Chunk discipline (stall-critical, never skip)**: never produce a file in one giant generation — scaffold first, then extend section by section across tool calls; same for edits. A single turn emitting hundreds of lines trips the stall detector or gets truncated mid-stream; both kill the execution and destroy all your context.\n" +
 			"4. **Build + run the focused tests after each meaningful chunk** — fix failures immediately, while context is fresh. Bugs found downstream cost a full extra cycle you do not have.\n" +
 			"5. **Pre-existing failures are yours to remedy (autonomous)**: a test that fails WITHOUT your change is still a failure in the suite you are shipping — \"pre-existing\" is a root cause to chase, not an excuse. You own the decision and execute it: fix the underlying cause (the default), or — only when your investigation proves the test no longer protects anything needed — remove or correct it yourself and say so. Never leave the suite red and never merely note the failure: record what you found and what you decided as a `FACTS LEARNED:` line so downstream steps inherit it.\n" +
-			"6. **Before finishing**: run the project's test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch and push to origin; verify `git status --porcelain` is clean (modulo gitignored scratch). Downstream steps run in pristine sibling worktrees and only see committed + pushed work — uncommitted changes are invisible and cause loops.\n\n" +
+			"6. **Before finishing**: run the project's test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch; push to origin when the project has a remote (a `git_strategy=local` project integrates locally — `## Git discipline` states which case this run is). Verify `git status --porcelain` is clean (modulo gitignored scratch). Downstream steps run in pristine sibling worktrees and only see committed + pushed work — uncommitted changes are invisible and cause loops.\n\n" +
 			"## Completion\n" +
 			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green (pre-existing failures remedied by you, per step 5), and pushed; `failure` only if the plan itself proved unimplementable (say exactly where it broke down).",
 		BudgetOverrides:  []byte(`{"wall_clock_seconds":3600}`),
@@ -716,14 +763,18 @@ var cannedWorkers = []cannedWorker{
 	// no plane channel), and model selection stays user-owned (blank seed
 	// model_ref inherits the tenant default).
 	{
-		ID:          "01M1ERH9921YS9S1QWGZV8D1VM",
-		Name:        "Quick Software Engineer",
-		Slug:        "quick-software-engineer",
-		Description: "An all-in-one software engineer for the Quick Work path: implements the work item, verifies the build and tests are green, commits to the run branch, pushes to origin, and opens + merges the PR into develop — the complete end-to-end single-step worker.",
-		Purpose:     "Implements and ships the work item end to end in a single step — code, build, test, commit, push, and create + merge the PR into develop.",
+		ID:   "01M1ERH9921YS9S1QWGZV8D1VM",
+		Name: "Quick Software Engineer",
+		Slug: "quick-software-engineer",
+		// THE PROFILE FIELDS TRAVEL INTO THE PROMPT TOO (WorkerIdentityBlock emits Role/Skills/Behavior/
+		// AGENTS.md), so a header that asserts "push and merge the PR" contradicts the mode-aware shipping
+		// section below on a project with no remote — and the worker reads both. Stated per git strategy
+		// instead, in the same words the delivery block uses.
+		Description: "An all-in-one software engineer for the Quick Work path: implements the work item, verifies the build and tests are green, commits to the run branch, and ships it per the project's git strategy — push + PR + merge when there is a remote, the commit and its SHA when the project integrates locally.",
+		Purpose:     "Implements and ships the work item end to end in a single step — code, build, test, commit, then ship by the project's git strategy (PR when there is a remote; otherwise the commit is the hand-off).",
 		Role:        cannedWorkerIdentity + "You are a workhorse with one goal: complete the task. You are time-boxed. Every minute and every tool call must move the deliverable.",
 		Skills:      "Full-stack implementation (Go, TypeScript, React, SQL) • Build & test verification • Git • GitHub • PR management • GitHub CLI",
-		Behavior:    "Own the task end to end: implement, verify green, commit to the run branch, push to origin, then open a PR into develop and merge it. You do not hand off PR work to a separate DevOps step — there is none; you are the whole pipeline.",
+		Behavior:    "Own the task end to end: implement, verify green, commit to the run branch, then ship it by the project's git strategy. With a remote, that means push, open the PR into develop and merge it; with no remote (`git_strategy=local`), the commit plus its SHA is the completed hand-off and `gh`/`git push` must not be attempted. You do not hand off to a separate DevOps step — there is none; you are the whole pipeline.",
 		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Hard time-box: 30 minutes\n" +
 			"You have 30 minutes of wall clock to finish. Work in scope order; skip anything the acceptance criteria don't require. When the box nears its end, land what you have — a green build with partial scope beats an unshipped complete change.\n\n" +
@@ -733,7 +784,7 @@ var cannedWorkers = []cannedWorker{
 			"1. **Read the task + acceptance criteria first** (`.orchicon/<run_id>/facts_learned`, `summary`, `issues`) — established facts are not re-derived; start writing code within the first few minutes.\n" +
 			"2. **Implement incrementally**: scaffold first, then extend section by section — never one giant generation. Handle errors and edge cases; write tests alongside implementation.\n" +
 			"3. **Build + run the focused tests after each meaningful chunk** — fix failures immediately. A test that already fails without your change is still a red suite you are shipping: fix the cause by default, or remove/correct the test only when your investigation proves it no longer protects anything needed. Record the decision as a `FACTS LEARNED:` line.\n" +
-			"4. **Before finishing**: run the test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch and push to origin; verify `git status --porcelain` is clean (modulo gitignored scratch). You are a push-only implementer — later steps see only committed + pushed work.\n\n" +
+			"4. **Before finishing**: run the test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch; push to origin when the project has a remote (a `git_strategy=local` project integrates locally — `## Git discipline` states which case this run is). Verify `git status --porcelain` is clean (modulo gitignored scratch). You are a push-only implementer — later steps see only committed + pushed work.\n\n" +
 			"## Notes cleanup (before push)\n" +
 			"Before pushing, delete any leftover files inside `architecture-notes/` and `design-notes/` in the project's project_dir (delete the FILES, not the directories; `git rm` tracked ones). Nothing makes these directories ignored — this platform only writes `01*/` to .gitignore — so delete what YOU created and do not assume a leftover is safely untracked; it would land in the PR.\n\n" +
 			"## Branch discipline\n" +
@@ -928,6 +979,31 @@ var retiredCannedWorkers = []string{
 // quietly (the user's customized worker keeps the slug).
 var errSeedSkipWorker = errors.New("canned worker skipped (slug owned by a customized worker)")
 
+// cannedSeedNeedsSync reports whether this canned worker's current PUBLISHED version must be re-synced from
+// the seed.
+//
+// Split out of seedWorker so the decision is testable without a database: it is the mechanism that decides
+// whether a prompt change ever reaches a worker, and it silently failed once already (see
+// cannedSeedFingerprint).
+//
+// A DRAFT current version is never synced here — the promote block owns publishing it, so re-syncing would
+// race that path.
+func cannedSeedNeedsSync(w cannedWorker, storedAgentsMD string, draftCurrent bool) bool {
+	if draftCurrent {
+		return false
+	}
+	// The content key first: it covers every synced field, so it is the one that catches an ordinary edit.
+	if !strings.Contains(storedAgentsMD, "orchicon.seed-fingerprint="+cannedSeedFingerprint(w)) {
+		return true
+	}
+	// The legacy markers stay: they also detect a stored version whose content was TRUNCATED or edited to drop
+	// the safety contract, which the fingerprint alone would not (the digest still matches if the fingerprint
+	// line survives an edit elsewhere).
+	return !strings.Contains(storedAgentsMD, seedSafetyMarker) ||
+		!strings.Contains(storedAgentsMD, sandboxPlaneMarker) ||
+		(w.RollMarker != "" && !strings.Contains(storedAgentsMD, w.RollMarker))
+}
+
 func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// Resolve the worker to sync against. Prefer the canned ID; if it is
 	// free but a user-created worker already owns the canned slug (e.g. the
@@ -1067,10 +1143,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// further changes are made. A DRAFT current version is never synced
 	// here — the promote block below owns publishing it (converges on
 	// the next boot's marker check).
-	needSync := verErr == nil && !draftCurrent &&
-		(!strings.Contains(curAgents, seedSafetyMarker) ||
-			!strings.Contains(curAgents, sandboxPlaneMarker) ||
-			(w.RollMarker != "" && !strings.Contains(curAgents, w.RollMarker)))
+	needSync := verErr == nil && cannedSeedNeedsSync(w, curAgents, draftCurrent)
 
 	if needSync {
 		// Every statement below is checked: a swallowed error poisons
