@@ -108,6 +108,14 @@ func newSession(b *Bridge, execID, tenantID string, manifest scheduler.Execution
 
 // run spawns the single subprocess and drives it to a terminal turn.
 func (s *session) run(ctx context.Context) error {
+	// THE HOOK MUST BE ABLE TO RUN BEFORE ANYTHING ELSE HAPPENS. Without it no tool call is gated, every
+	// gated tool falls back to claude's own prompt, and in a `-p` session that prompt is a TERMINAL DENIAL —
+	// which the operator sees as a worker reporting a permission wall it cannot get past, not as a broken
+	// hook. Fail here instead, with the cause named (see PreflightHookExecutable).
+	if err := PreflightHookExecutable(s.inContainer()); err != nil {
+		s.finish(ctx, false, err.Error(), err)
+		return err
+	}
 	argv := s.argv()
 	// The child's environment carries the project boundary the PreToolUse hook
 	// reads, and — on the LOCAL transport — the OS-level execution guard shim on

@@ -2,7 +2,10 @@ package claude
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/neverallow"
@@ -59,6 +62,59 @@ const ProjectDirEnv = "ORCHICON_CLAUDE_PROJECT_DIR"
 
 // HookBinFallback is used when neither the env var nor os.Executable() resolves.
 const HookBinFallback = "orchicon"
+
+// PreflightHookExecutable proves the PreToolUse hook can actually RUN, and reports the consequence when it
+// cannot.
+//
+// THE HOOK IS THE AUTHORITY FOR EVERY GATED TOOL IN A WORKER SESSION, and nothing checked that it would
+// launch. When it does not, the session degrades in a way that looks like a permission WALL rather than a
+// broken hook: no allow verdict arrives, so each tool falls through to claude's own permission flow, whose
+// ask cannot be answered in a `-p` session and therefore becomes a TERMINAL DENIAL. The operator recorded
+// exactly that — a worker reporting that it was refused, waiting for "an approval that no human can give in
+// this run", for `git merge --ff-only` among other commands, while this package's own decideBash ALLOWS
+// those commands (measured).
+//
+// So the failure to launch is what must be loud, and it must happen BEFORE the session starts rather than as
+// sixty inexplicable refusals inside it. Failing the launch is the honest outcome: a claude worker whose
+// boundary cannot be enforced is not a worker that should run.
+//
+// IN CONTAINER MODE the binary is a path inside the container image, which this process cannot stat — the
+// daemon guarantees it by bind-mounting itself there and refusing to create the container otherwise, so only
+// the form is checked.
+func PreflightHookExecutable(isContainer bool) error {
+	bin := strings.TrimSpace(HookBinaryFor(isContainer))
+	if bin == "" {
+		return fmt.Errorf("claude worker: the permission hook binary could not be resolved, so no tool call " +
+			"could be gated. Set " + HookBinEnv + " to an absolute orchicon path")
+	}
+	if isContainer {
+		if !strings.HasPrefix(bin, "/") {
+			return fmt.Errorf("claude worker: the permission hook path %q is not absolute — inside a runtime "+
+				"container the hook must be the daemon's bind-mounted binary (%s)", bin, HookBinaryContainerPath)
+		}
+		return nil
+	}
+	// LOCAL MODE: a bare name is resolved on PATH, and an absent one means the hook command will fail every
+	// time. LookPath is the same resolution the CLI's hook command performs.
+	if !filepath.IsAbs(bin) {
+		resolved, err := exec.LookPath(bin)
+		if err != nil {
+			return fmt.Errorf("claude worker: the permission hook binary %q is not on PATH, so every gated "+
+				"tool call would be refused as an unanswerable prompt. Set %s to an absolute orchicon path",
+				bin, HookBinEnv)
+		}
+		bin = resolved
+	}
+	st, err := os.Stat(bin)
+	if err != nil {
+		return fmt.Errorf("claude worker: the permission hook binary %s is not readable (%w), so every gated "+
+			"tool call would be refused as an unanswerable prompt", bin, err)
+	}
+	if st.IsDir() {
+		return fmt.Errorf("claude worker: the permission hook path %s is a directory, not an executable", bin)
+	}
+	return nil
+}
 
 // TodoToolsEnv is the ENV TOGGLE that puts claude's todo/task-tracking tool
 // family (TodoWrite, TaskCreate/TaskUpdate/TaskList/TaskGet) back into the
