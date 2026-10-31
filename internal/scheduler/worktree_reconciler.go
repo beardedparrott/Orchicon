@@ -756,8 +756,22 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	stages.mark("list")
 	if existing != nil {
 		if existing.branch == branch {
-			return r.recordReady(ctx, tenantID, runID, path, branch)
+			// THE REGISTRATION IS NOT THE DIRECTORY. git keeps .git/worktrees/<id> after the working
+			// directory is deleted, so `worktree list` reports an entry that does not exist — and this branch
+			// used to record it READY on that evidence alone. Prune the stale registration and fall through to
+			// Phase 4, which creates the tree for real.
+			if fi, serr := os.Stat(path); serr == nil && fi.IsDir() {
+				return r.recordReady(ctx, tenantID, runID, path, branch)
+			}
+			r.log.Warn("worktree: git lists a worktree whose directory is missing — pruning and recreating",
+				"run", runID, "path", path, "branch", branch)
+			if rerr := r.removeWorktree(ctx, projectDir, path); rerr != nil {
+				return fmt.Errorf("worktree: prune stale registration at %s: %w", path, rerr)
+			}
+			existing = nil
 		}
+	}
+	if existing != nil {
 		// A foreign worktree occupies our path (e.g. a crashed partial
 		// create, or the run's slug source changed). Never destroy a
 		// registered worktree we can't prove is ours — but when the row
@@ -2450,6 +2464,19 @@ func (r *WorktreeReconciler) fastForwardBranch(ctx context.Context, projectDir, 
 // run that terminalized mid-provision is not spuriously touched (the
 // worktree still exists for the cleanup companion to reap).
 func (r *WorktreeReconciler) recordReady(ctx context.Context, tenantID, runID, path, branch string) error {
+	// A WORKTREE THAT IS NOT THERE IS NOT READY.
+	//
+	// REPORTED: a run recorded WorktreePath=<path> / WorktreeStatus="ready" for a directory that did not
+	// exist, and every bash call then died `chdir`-ing into it. `git worktree list` reported the entry
+	// because the ADMIN record under .git/worktrees/<id> survived after the directory was deleted — a
+	// registration git will list and the filesystem will not have. Recording that as ready is what turned a
+	// missing directory into a whole run's worth of "no such file or directory".
+	//
+	// This is the ONE place the row is written, so the check here covers every provisioning path.
+	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
+		return fmt.Errorf("worktree: refusing to record %s as ready — it is not a directory on disk (%v). "+
+			"git may still list it; the registration is stale and provisioning must recreate it", path, err)
+	}
 	// Retry on optimistic-lock version conflicts (ErrNotFound from WHERE version=...).
 	// Two parallel step completions racing on the same run can both read v3,
 	// one wins v3->v4, the other gets 0 rows. Re-read and retry instead of
