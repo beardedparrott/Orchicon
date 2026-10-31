@@ -83,6 +83,10 @@ DESKTOP=auto
 # skipped     — this host declined it (headless, --no-desktop) or it was a dry run
 DESKTOP_RESULT=""
 DESKTOP_RESULT_WHY=""
+# CONTAINER_BIN_RESULT — the linux/amd64 binary a runtime container runs. Linux needs none (the
+# daemon's own executable IS it); macOS does, because a Mach-O cannot run inside a Linux container.
+CONTAINER_BIN_RESULT=""
+CONTAINER_BIN_WHY=""
 VERIFY_CHECKSUM=true  # verify the download against the release's SHA256SUMS (disable with --no-verify)
 
 # --- Colors -----------------------------------------------------------------
@@ -1014,6 +1018,76 @@ do_clean() {
   echo ""
 }
 
+# --- The container binary (macOS only) --------------------------------------
+
+# install_container_binary places the linux/amd64 build a runtime container runs.
+#
+# A runtime container is a LINUX container running `orchicon runtime-supervisor`, and the daemon
+# bind-mounts the binary in rather than baking it into the image. On Linux the daemon's own file IS
+# that binary, so there is nothing to do. On macOS it is a Mach-O, which the container cannot exec
+# (internal/runtime/exe_resolve.go), so it has to be fetched.
+#
+# NON-FATAL, mirroring install.ps1: a host with no container binary still has a working plane, and a
+# failed download must not fail an install. The outcome is recorded and stated in the summary.
+install_container_binary() {
+  if [ "$os" != "darwin" ]; then
+    CONTAINER_BIN_RESULT="not-needed"
+    CONTAINER_BIN_WHY="this host's own binary is the container binary"
+    return 0
+  fi
+  if [ "${ORCHICON_INSTALL_CONTAINERS:-1}" = "0" ]; then
+    CONTAINER_BIN_RESULT="skipped"
+    CONTAINER_BIN_WHY="declined (--no-containers)"
+    return 0
+  fi
+  local asset="orchicon_${VERSION#v}_linux_amd64.tar.gz"
+  local url="${ASSET_BASE_URL}/${VERSION}/${asset}"
+  local dest="${INSTALL_DIR}/orchicon-linux-amd64"
+  if [ "$DRY_RUN" = true ]; then
+    CONTAINER_BIN_RESULT="skipped"
+    CONTAINER_BIN_WHY="dry run — it would be downloaded from ${url}"
+    return 0
+  fi
+
+  local work; work="$(mktemp -d)"
+  local archive="${work}/${asset}"
+  local why=""
+  if ! curl -fsSL -o "$archive" "$url" 2>/dev/null; then
+    why="could not download ${url}"
+  fi
+  if [ -z "$why" ] && ! tar -xzf "$archive" -C "$work" 2>/dev/null; then
+    why="could not unpack ${asset}"
+  fi
+  local found=""
+  if [ -z "$why" ]; then
+    found="$(find "$work" -type f -name orchicon -perm -u+x 2>/dev/null | head -1)"
+    [ -n "$found" ] || why="${asset} did not contain an orchicon binary"
+  fi
+  # THE FORMAT CHECK IS THE POINT: the daemon refuses a non-ELF entrypoint, so a truncated download
+  # or an HTML error page must be caught here rather than at the first container create.
+  if [ -z "$why" ]; then
+    local magic
+    magic="$(od -An -tx1 -N4 "$found" 2>/dev/null | tr -d ' \n')"
+    [ "$magic" = "7f454c46" ] || why="the downloaded runtime binary is not a linux/amd64 executable"
+  fi
+  if [ -z "$why" ]; then
+    if cp "$found" "$dest" 2>/dev/null; then
+      chmod +x "$dest" 2>/dev/null || true
+    else
+      why="could not write ${dest}"
+    fi
+  fi
+  if [ -n "$why" ]; then
+    CONTAINER_BIN_RESULT="unavailable"
+    CONTAINER_BIN_WHY="$why"
+    rm -rf "$work"
+    return 0
+  fi
+  rm -rf "$work"
+  CONTAINER_BIN_RESULT="installed"
+  CONTAINER_BIN_WHY="$dest"
+}
+
 # --- Main install -----------------------------------------------------------
 main() {
   # ASK WHICH INSTANCE BEFORE INSTALLING, so the operator knows which stack they are creating. `dev` is
@@ -1184,6 +1258,8 @@ main() {
     fi
   fi
 
+  install_container_binary
+
   # THE DESKTOP APP. Installed whenever the host could run it (see desktop_wanted). Every path
   # that does NOT install it records WHY in DESKTOP_RESULT/DESKTOP_RESULT_WHY, and the summary at
   # the end of the run states the outcome — the app is one of the three things this installer
@@ -1305,6 +1381,22 @@ GUIDANCE
         echo -e "  ${D}Build it from this tree: make desktop-build   (then ./bin/orchicon-desktop)${X}"
       fi
       echo -e "  ${D}Desktop app: https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${VERSION}${X}"
+      ;;
+  esac
+
+  # SAY WHETHER CONTAINER EXECUTION CAN WORK HERE. A missing container binary is not a footnote: it
+  # decides whether a runtime-mode run can start at all, and it used to be discovered only when a
+  # container create failed.
+  case "$CONTAINER_BIN_RESULT" in
+    installed)
+      info "Container runtime binary: ${CONTAINER_BIN_WHY}"
+      ;;
+    unavailable)
+      echo ""
+      warn "Container runtime binary: NOT INSTALLED — ${CONTAINER_BIN_WHY}"
+      warn "  Everything else is installed and works. Runtime containers cannot start until a"
+      warn "  linux/amd64 build is available; place one at ${INSTALL_DIR}/orchicon-linux-amd64"
+      warn "  or point ORCHICON_RUNTIME_CONTAINER_EXE at one, then restart the runtime daemon."
       ;;
   esac
 

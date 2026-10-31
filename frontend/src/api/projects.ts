@@ -8,7 +8,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { projectClient } from "@/api/clients";
-import { CreateProjectRequest, ExecutionMode, UpdateProjectRequest } from "@/api/gen/orchicon/api/v1/project_pb";
+import {
+  ContextFiles,
+  CreateProjectRequest,
+  ExecutionMode,
+  GoalFields,
+  UpdateProjectRequest,
+} from "@/api/gen/orchicon/api/v1/project_pb";
 import type { GoalField, Project, ProjectStatus } from "@/api/gen/orchicon/api/v1/project_pb";
 import { gitStrategyToProto } from "@/components/GitStrategySelect";
 import type { GitStrategy as GitStrategyName, GitStrategyNullable } from "@/components/GitStrategySelect";
@@ -47,54 +53,8 @@ export function useListProjects(opts?: { search?: string; status?: ProjectStatus
 export function useUpdateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: {
-      id: string;
-      name?: string;
-      slug?: string;
-      goals?: { fields: GoalField[] };
-      maxConcurrentRuns?: number;
-      gitStrategy?: string;
-      git_strategy?: string;
-      defaultRuntimeImage?: string;
-      default_runtime_image?: string;
-      executionMode?: string | number;
-      execution_mode?: string | number;
-      projectDir?: string;
-      project_dir?: string;
-      // skillFiles is the project's skill-file path selection (absolute
-      // paths to skill artifacts). It is an `optional ContextFiles` on the
-      // wire, so sending it REPLACES the list (an empty array clears).
-      skillFiles?: string[];
-    }) => {
-      const raw = input as {
-        gitStrategy?: string;
-        git_strategy?: string;
-        defaultRuntimeImage?: string;
-        default_runtime_image?: string;
-        executionMode?: string | number;
-        execution_mode?: string | number;
-        projectDir?: string;
-        project_dir?: string;
-      };
-      const protoVal = raw.gitStrategy ?? raw.git_strategy;
-      const enumVal = protoVal ? gitStrategyToProto(protoVal as GitStrategyName | GitStrategyNullable) : undefined;
-      const imgVal = raw.defaultRuntimeImage ?? raw.default_runtime_image;
-      const execRaw = raw.executionMode ?? raw.execution_mode;
-      const execVal = executionModeToProto(execRaw);
-      const dirVal = raw.projectDir ?? raw.project_dir;
-      const payload = new UpdateProjectRequest({ id: input.id });
-      if (input.name !== undefined) { payload.name = input.name; }
-      if (input.slug !== undefined) { payload.slug = input.slug; }
-      if (input.goals !== undefined) { payload.goals = input.goals as unknown as UpdateProjectRequest["goals"]; }
-      if (input.maxConcurrentRuns !== undefined) { payload.maxConcurrentRuns = input.maxConcurrentRuns; }
-      if (enumVal !== undefined) { payload.gitStrategy = enumVal; }
-      if (imgVal !== undefined) { payload.defaultRuntimeImage = imgVal; }
-      if (execVal !== undefined) { payload.executionMode = execVal; }
-      if (dirVal !== undefined) { payload.projectDir = dirVal; }
-      if (input.skillFiles !== undefined) {
-        payload.skillFiles = { files: input.skillFiles } as UpdateProjectRequest["skillFiles"];
-      }
-      const res = await projectClient.updateProject(payload);
+    mutationFn: async (input: UpdateProjectInput) => {
+      const res = await projectClient.updateProject(buildUpdateProjectRequest(input));
       return res.project as Project;
     },
     onSuccess: (project) => {
@@ -102,6 +62,57 @@ export function useUpdateProject() {
       qc.invalidateQueries({ queryKey: projectKeys.detail(project.id) });
     },
   });
+}
+
+// UpdateProjectInput is a partial update: undefined = unchanged, an empty
+// defaultRuntimeImage/skillFiles = clear.
+export interface UpdateProjectInput {
+  id: string;
+  name?: string;
+  slug?: string;
+  goals?: { fields: GoalField[] };
+  maxConcurrentRuns?: number;
+  gitStrategy?: string;
+  git_strategy?: string;
+  defaultRuntimeImage?: string;
+  default_runtime_image?: string;
+  executionMode?: string | number;
+  execution_mode?: string | number;
+  projectDir?: string;
+  project_dir?: string;
+  // skillFiles is the project's skill-file path selection (absolute paths to
+  // skill artifacts). It is an `optional ContextFiles` on the wire, so sending
+  // it REPLACES the list (an empty array clears).
+  skillFiles?: string[];
+}
+
+// buildUpdateProjectRequest builds the update payload.
+//
+// MESSAGE-TYPED FIELDS MUST BE CONSTRUCTED, NOT ASSIGNED. protobuf-es v1 encodes
+// a member by calling its own toJson(), so assigning a plain object here throws
+// `cannot encode field ... toJson is not a function` and the request never
+// leaves the browser. Passing a plain object to the CLIENT works (it runs
+// initPartial); building the message ourselves bypasses that. A scalar or enum
+// assignment is fine, which is why only goals/skill_files had this bug.
+export function buildUpdateProjectRequest(input: UpdateProjectInput): UpdateProjectRequest {
+  const protoVal = input.gitStrategy ?? input.git_strategy;
+  const enumVal = protoVal
+    ? gitStrategyToProto(protoVal as GitStrategyName | GitStrategyNullable)
+    : undefined;
+  const imgVal = input.defaultRuntimeImage ?? input.default_runtime_image;
+  const execVal = executionModeToProto(input.executionMode ?? input.execution_mode);
+  const dirVal = input.projectDir ?? input.project_dir;
+  const payload = new UpdateProjectRequest({ id: input.id });
+  if (input.name !== undefined) { payload.name = input.name; }
+  if (input.slug !== undefined) { payload.slug = input.slug; }
+  if (input.goals !== undefined) { payload.goals = new GoalFields({ fields: input.goals.fields }); }
+  if (input.maxConcurrentRuns !== undefined) { payload.maxConcurrentRuns = input.maxConcurrentRuns; }
+  if (enumVal !== undefined) { payload.gitStrategy = enumVal; }
+  if (imgVal !== undefined) { payload.defaultRuntimeImage = imgVal; }
+  if (execVal !== undefined) { payload.executionMode = execVal; }
+  if (dirVal !== undefined) { payload.projectDir = dirVal; }
+  if (input.skillFiles !== undefined) { payload.skillFiles = new ContextFiles({ files: input.skillFiles }); }
+  return payload;
 }
 
 // executionModeToProto maps UI strings ("runtime" | "local") or proto

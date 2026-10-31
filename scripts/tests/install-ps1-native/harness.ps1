@@ -325,6 +325,24 @@ Check "the linux binary, when fetched, is installed under a DISTINCT name" `
   ($code11 -match 'orchicon-linux-amd64') `
   "the container binary must never overwrite orchicon.exe; the resolver looks for this name beside the daemon"
 
+# --- 11b. THE CONTAINER BINARY IS VERIFIED, NOT JUST DOWNLOADED -------------
+#
+# REPORTED from a Windows host where container mode refused to start: there was no linux
+# binary beside the daemon, and the install had said nothing an operator would notice. Three
+# failures are possible and each is now decidable at install time rather than at run time.
+Check "the fetched linux binary is checked for the ELF magic before it is kept" `
+  (($code11 -match 'function Test-IsElfBinary') -and ($code11 -match 'Test-IsElfBinary \$linuxDest')) `
+  "a truncated download or an HTML error page must not be left where the daemon mounts it"
+Check "a binary that is not ELF is REMOVED, not left in place" `
+  ($code11 -match '(?s)Test-IsElfBinary \$linuxDest.*?Remove-Item -LiteralPath \$linuxDest -Force') `
+  "the daemon refuses a non-ELF entrypoint; leaving the file makes the next failure look unrelated"
+Check "the install ends with a container verdict in BOTH outcomes" `
+  (($code11 -match 'container execution: ready') -and ($code11 -match 'container execution: NOT READY')) `
+  "a missing container binary is not one warning among many — it decides whether container execution works here"
+Check "a failed download names the URL it tried" `
+  ($code11 -match 'could not download the linux runtime binary from:') `
+  "an operator cannot fix a download they cannot see the address of"
+
 # --- 12. NO SCRIPT TRANSPORT, BECAUSE NOTHING CARRIES A SCRIPT --------------
 #
 # THIS SECTION PROVED A REAL BUG AND IS DELETED ANYWAY, which is worth explaining rather than

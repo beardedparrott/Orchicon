@@ -505,6 +505,12 @@ func readError(r io.Reader) error {
 	var e map[string]string
 	if err := json.Unmarshal(body, &e); err == nil {
 		if msg, ok := e["error"]; ok && msg != "" {
+			// A CODE the retry loop must respect: a host with no linux container binary will not
+			// produce one on the next attempt, so the caller stops instead of re-reading this
+			// refusal for the whole serve-gate window (exe_resolve.go).
+			if e["code"] == ContainerBinaryErrCode {
+				return fmt.Errorf("runtime daemon: %s: %w", msg, ErrNoContainerBinary)
+			}
 			return fmt.Errorf("runtime daemon: %s", msg)
 		}
 	}

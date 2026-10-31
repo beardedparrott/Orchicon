@@ -142,6 +142,9 @@ $script:LogPath = ""
 # engine-free: a locked-down desktop, a policy-managed machine, a CI guest. Everything else
 # installs the engine and gets containers ready.
 $script:ContainerOptIn = -not ([bool]$NoContainers -or $env:ORCHICON_INSTALL_CONTAINERS -eq "0")
+# The linux/amd64 binary a runtime container runs, set when one is installed. Reported as a verdict
+# at the end of the install: without it, container execution cannot work on this host.
+$script:ContainerBinary = $null
 
 if ($Help) {
     Write-Host @"
@@ -231,6 +234,21 @@ A full log of the run is written to %TEMP% (path printed when the run starts).
 function Write-Info { param([string]$msg) Write-Host "▸ $msg" -ForegroundColor Cyan }
 function Write-Ok   { param([string]$msg) Write-Host "✓ $msg" -ForegroundColor Green }
 function Write-Warn { param([string]$msg) Write-Host "! $msg" -ForegroundColor Yellow }
+
+# Test-IsElfBinary reports whether a file starts with the ELF magic.
+# The daemon refuses anything else as a container entrypoint, so checking here turns a
+# wrong or truncated download into an install-time message instead of a failed run.
+function Test-IsElfBinary {
+    param([string]$Path)
+    try {
+        $fs = [System.IO.File]::OpenRead($Path)
+        try {
+            $buf = New-Object byte[] 4
+            if ($fs.Read($buf, 0, 4) -lt 4) { return $false }
+            return ($buf[0] -eq 0x7f -and $buf[1] -eq 0x45 -and $buf[2] -eq 0x4c -and $buf[3] -eq 0x46)
+        } finally { $fs.Dispose() }
+    } catch { return $false }
+}
 function Write-Err  { param([string]$msg) Write-Host "✗ $msg" -ForegroundColor Red }
 
 # --- HALT SEMANTICS ---------------------------------------------------------
@@ -1345,6 +1363,7 @@ function Test-VersionGreater {
     if ($script:ContainerOptIn) {
         $linuxAsset = "orchicon_${versionNum}_linux_amd64.tar.gz"
         $linuxUrl = "$baseUrl/$Version/$linuxAsset"
+        $linuxDest = Join-Path $InstallDir "orchicon-linux-amd64"
         if ($env:ORCHICON_INSTALL_LINUX_ARCHIVE) {
             $linuxArchive = $env:ORCHICON_INSTALL_LINUX_ARCHIVE
             Write-Info "using the linux runtime binary archive at $linuxArchive"
@@ -1355,12 +1374,13 @@ function Test-VersionGreater {
                 Invoke-WebRequest -Uri $linuxUrl -OutFile $linuxArchive -UseBasicParsing
             } catch {
                 $linuxArchive = $null
-                Write-Warn "could not download $linuxAsset — runtime CONTAINERS will not start on this host"
-                Write-Warn "  (everything else works; re-run this installer with -Containers to retry)"
+                Write-Warn "could not download the linux runtime binary from:"
+                Write-Warn "  $linuxUrl"
+                Write-Warn "  $($_.Exception.Message)"
             }
         }
         if ($linuxArchive) {
-            # tar is present on Windows 10 1803+ as tar.exe; fall back to wsl's tar only if needed.
+            # tar is present on Windows 10 1803+ as tar.exe; no WSL needed.
             $linuxExtract = Join-Path $tmpdir "linux"
             New-Item -ItemType Directory -Path $linuxExtract -Force | Out-Null
             $untarred = $false
@@ -1374,13 +1394,31 @@ function Test-VersionGreater {
                     Where-Object { $_.Name -eq "orchicon" } | Select-Object -First 1
             }
             if ($foundLinux) {
-                $linuxExe = Join-Path $InstallDir "orchicon-linux-amd64"
-                Copy-Item -LiteralPath $foundLinux.FullName -Destination $linuxExe -Force
-                Write-Ok "linux runtime binary installed: $linuxExe"
+                Copy-Item -LiteralPath $foundLinux.FullName -Destination $linuxDest -Force
+                if (Test-IsElfBinary $linuxDest) {
+                    $script:ContainerBinary = $linuxDest
+                    Write-Ok "linux runtime binary installed: $linuxDest"
+                } else {
+                    # A wrong or truncated download must not be left where the daemon will mount it.
+                    Remove-Item -LiteralPath $linuxDest -Force -ErrorAction SilentlyContinue
+                    Write-Warn "the downloaded runtime binary is not a linux/amd64 executable, so it was removed:"
+                    Write-Warn "  $linuxDest"
+                }
             } else {
-                Write-Warn "the linux archive did not contain an orchicon binary — runtime CONTAINERS will not start"
-                Write-Warn "  place a linux/amd64 build at $(Join-Path $InstallDir 'orchicon-linux-amd64') and restart the runtime daemon"
+                Write-Warn "the linux archive did not contain an orchicon binary:"
+                Write-Warn "  $linuxArchive"
             }
+        }
+        # THE VERDICT, SAID ONCE. A missing container binary is not a warning among warnings: it
+        # decides whether container execution works on this host at all.
+        if ($script:ContainerBinary) {
+            Write-Ok "container execution: ready ($script:ContainerBinary)"
+        } else {
+            Write-Warn "container execution: NOT READY — this host has no linux/amd64 orchicon binary, so"
+            Write-Warn "  runtime containers cannot start. Everything else works. To fix it, either re-run"
+            Write-Warn "  this installer with containers enabled, or place a linux build at:"
+            Write-Warn "    $linuxDest"
+            Write-Warn "  or point ORCHICON_RUNTIME_CONTAINER_EXE at one, then restart the runtime daemon."
         }
     }
 

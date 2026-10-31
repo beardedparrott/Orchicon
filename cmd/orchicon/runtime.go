@@ -224,7 +224,7 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 	// this and HAD NO CALLER, which is why the resolver, its sibling-name list and the installer all existed
 	// while the daemon still mounted the host's own executable.
 	containerExe, cerr := runtime.ResolveContainerExe(runtime.GOOS(), exePath,
-		os.Getenv(runtime.ContainerExeEnv))
+		os.Getenv(runtime.ContainerExeEnv), daemonCfg.DataDir)
 	if cerr != nil {
 		// NOT FATAL HERE, DELIBERATELY: the daemon still serves local-mode work, and a host with no container
 		// binary is a supported shape. It is recorded and REPORTED rather than swallowed, and the create path
@@ -325,6 +325,9 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		ExePath:       exePath,
 		// WHICH FILE THE CONTAINER RUNS — resolved above, never the daemon's own executable on Windows.
 		ContainerExe: containerExe,
+		// WHERE A DURABLE LINUX BINARY WOULD GO, so a refusal names a path that survives a temp cleaner
+		// instead of the %TEMP% self-copy this process mounts from.
+		ContainerExeDataDir: daemonCfg.DataDir,
 		// ON A HOST WHOSE OWN BINARY THE CONTAINER CANNOT RUN, an empty ContainerExe must REFUSE rather than
 		// fall back. Set from the same fact the resolver used, so the two cannot disagree.
 		ContainerExeRequired: runtime.GOOS() == "windows" || runtime.GOOS() == "darwin",
