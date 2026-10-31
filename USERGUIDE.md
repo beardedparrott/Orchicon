@@ -230,7 +230,8 @@ them: the install offers them (defaulting to none) and the **Runtime Images** pa
 them later. The installer downloads the
 **linux/amd64 orchicon binary** a runtime container executes, placing it beside the
 Windows binaries as `orchicon-linux-amd64` — a Windows executable cannot run inside a
-Linux container, so the container needs its own. The engine itself (podman first, then
+Linux container, so the container needs its own. The install ends by **stating whether
+container execution is ready** and, if it is not, the exact path to place the file at. The engine itself (podman first, then
 docker) and the Linux VM it runs in are provisioned by `orchicon install`, which creates
 and starts podman's own machine. **You do not manage a distro for this**, and you pass no
 flag: it is ready when the install finishes — see
@@ -597,8 +598,14 @@ So on Windows, podman runs a **Linux VM that podman manages for you**. In practi
    means a **Windows executable cannot be used**, because a Linux container cannot run it.
    A default install downloads the
    matching `linux/amd64` build and places it beside the Windows binaries as
-   `orchicon-linux-amd64`. If you install podman later, place that file there yourself or
-   point `ORCHICON_RUNTIME_CONTAINER_EXE` at it, then restart the runtime daemon.
+   `orchicon-linux-amd64`. The daemon looks, in order, at `ORCHICON_RUNTIME_CONTAINER_EXE`,
+   beside its own executable, then `<data dir>/bin` (`%LOCALAPPDATA%\orchicon\bin` on
+   Windows) — the last of which is the durable place for a binary you supply yourself, and
+   the one to use if you installed from the MSI, which does not download it. macOS needs
+   the same file for the same reason, and `install.sh` fetches it there too.
+
+   If the install reports *container execution: NOT READY*, nothing else is affected —
+   the engine, the plane and every non-container workflow are installed and working.
 
 #### Checking it
 
@@ -622,7 +629,7 @@ one. Either shape is supported; the native plane is the default.
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `ORCHICON_RUNTIME_CONTAINER_EXE` | the Linux binary mounted into runtime containers | `orchicon-linux-amd64` beside the daemon |
+| `ORCHICON_RUNTIME_CONTAINER_EXE` | the Linux binary mounted into runtime containers | first `orchicon-linux-amd64` found: beside the daemon, then `<data dir>/bin` |
 | `ORCHICON_RUNTIME_PATH_MODE` | `wsl`, `windows-share`, or `identity` — overrides how paths are expressed to the engine | `wsl` on Windows, `identity` elsewhere |
 | `ORCHICON_RUNTIME_ALLOWED_ROOTS` | comma-separated roots a run may mount | the user's `projects` directory |
 | `ORCHICON_RUNTIME_SOCKET` | where the daemon's socket lives | a path under the temp dir |

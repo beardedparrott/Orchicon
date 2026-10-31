@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"io"
@@ -35,6 +36,9 @@ import (
 // plane cannot use the daemon to create arbitrary containers, mount
 // arbitrary paths, or run arbitrary binaries.
 type Daemon struct {
+	// ContainerExeDataDir is the daemon's state dir, used only to NAME a durable location in the refusal's
+	// remedy (exe_resolve.go). Never the daemon's own path: on Windows that is the %TEMP% self-copy.
+	ContainerExeDataDir string
 	// ContainerExeRequired says this host's own executable CANNOT be the container's entrypoint, so an empty
 	// ContainerExe is a refusal rather than a fallback.
 	//
@@ -362,6 +366,12 @@ func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 		d.pool.sweepPreRestartOrphans(instanceID(req.InstanceID))
 		resp, err := d.pool.checkout(r.Context(), req.WorkflowID, req)
 		if err != nil {
+			// A MISSING CONTAINER BINARY IS NOT A TRANSIENT FAILURE. Tag it so the caller can stop
+			// retrying instead of re-reading the same refusal once every two seconds (exe_resolve.go).
+			if errors.Is(err, ErrNoContainerBinary) {
+				httpErrorCode(w, http.StatusInternalServerError, err.Error(), ContainerBinaryErrCode)
+				return
+			}
 			httpError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1006,9 +1016,9 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	containerExe := d.ContainerExe
 	if containerExe == "" {
 		if d.ContainerExeRequired {
-			return nil, fmt.Errorf("cannot create a runtime container: no linux/amd64 orchicon binary is "+
-				"available for the container's entrypoint, and this host's own executable is a %s binary a "+
-				"Linux container cannot run. %s", hostBinaryKind(), containerExeRemedy(d.ExePath))
+			return nil, fmt.Errorf("%w: no linux/amd64 orchicon binary is available for the container's "+
+				"entrypoint, and this host's own executable is a %s binary a Linux container cannot run. %s",
+				ErrNoContainerBinary, binaryKind(GOOS()), containerExeRemedy(d.ContainerExeDataDir))
 		}
 		containerExe = d.ExePath
 	}
@@ -1022,9 +1032,9 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// path is the reported failure arriving by another route (a stale copy, a misconfigured override), and
 	// catching it here turns a 30-second readiness timeout into one sentence.
 	if d.ContainerExeRequired && !isELFFile(containerExe) {
-		return nil, fmt.Errorf("cannot create a runtime container: %s is not a linux/amd64 binary (a Linux "+
-			"container cannot execute it, so its supervisor would die on exec format error). %s",
-			containerExe, containerExeRemedy(d.ExePath))
+		return nil, fmt.Errorf("%w: %s is not a linux/amd64 binary (a Linux container cannot execute it, so "+
+			"its supervisor would die on exec format error). %s",
+			ErrNoContainerBinary, containerExe, containerExeRemedy(d.ContainerExeDataDir))
 	}
 	// SOURCE mapped (the VM must resolve it), DEST already a guest path.
 	args = append(args, "-v", d.Paths.Map(containerExe)+":/usr/local/bin/orchicon:ro")
@@ -1933,6 +1943,12 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func httpError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// httpErrorCode is httpError plus a machine-readable reason, for the failures a retry cannot fix. The body keeps
+// its "error" key so every existing reader still works; "code" is additive.
+func httpErrorCode(w http.ResponseWriter, code int, msg, errCode string) {
+	writeJSON(w, code, map[string]string{"error": msg, "code": errCode})
 }
 
 // describeCreateArgv renders a create argv for an error message: one argument per line, REDACTED.

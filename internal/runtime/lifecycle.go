@@ -1052,6 +1052,13 @@ func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow, ne
 			}
 			lastErr = fmt.Errorf("serve %s not usable yet (plane %s: %v)", base, resp.PlaneURL, planeOK)
 		} else if cerr != nil {
+			// A MISSING CONTAINER BINARY IS NOT GOING TO APPEAR. The loop exists for a serve that is
+			// still starting; a host with no linux binary to mount fails identically every two seconds
+			// for the whole window, and the operator reads sixty copies of one refusal. Return at once.
+			if errors.Is(cerr, ErrNoContainerBinary) {
+				return fmt.Errorf("runtime container cannot be created for run %s and retrying cannot fix "+
+					"it: %w", run.ID, cerr)
+			}
 			lastErr = cerr
 		} else {
 			lastErr = fmt.Errorf("serve not yet published")

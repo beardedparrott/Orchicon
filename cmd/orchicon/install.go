@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/containerengine"
 	"github.com/beardedparrott/orchicon/internal/instancectl"
+	workruntime "github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/version"
 	"io"
 	"log/slog"
@@ -578,6 +580,9 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 	// The daemon exists for PER-WORKFLOW RUNTIME CONTAINERS — the one feature this host has no
 	// engine for. Without an engine there is nothing it could do, so its absence is a
 	// DEGRADATION TO REPORT, never a reason to refuse to install.
+	installPhase("checking the container binary")
+	reportContainerBinary()
+
 	installPhase("starting the runtime daemon")
 	if err := ensureInstallDaemon(socketDir); err != nil {
 		// THE DAEMON IS OPTIONAL WHENEVER CONTAINERS ARE UNAVAILABLE — AND "AN ENGINE IS INSTALLED" IS NOT
@@ -1191,6 +1196,28 @@ func containerNote(c adapter.Candidate) string {
 // ensureInstallDaemon starts the runtime daemon if its socket is not
 // healthy. The daemon owns the Docker socket and spawns per-workflow
 // runtime containers; the supervisor container mounts its socket dir.
+// reportContainerBinary says whether container execution can work on this host, and never fails the install.
+//
+// A runtime container is Linux and runs the orchicon binary INSIDE it, so a host whose own executable is a PE
+// (Windows) or a Mach-O (macOS) needs a linux/amd64 build for the daemon to mount. install.ps1 fetches that
+// file; this command does not, and the MSI runs THIS command — so an MSI install would otherwise reach a failed
+// container create with no idea why. Saying it here makes every install path state the same fact.
+func reportContainerBinary() {
+	if runtime.GOOS == "linux" {
+		fmt.Println("container execution: ready (this host's own binary is the container's)")
+		return
+	}
+	self, _ := os.Executable()
+	resolved, err := workruntime.ResolveContainerExe(runtime.GOOS, self, os.Getenv(workruntime.ContainerExeEnv),
+		config.Default().DataDir)
+	if err != nil {
+		fmt.Println("container execution: NOT READY — a Linux container needs a linux/amd64 orchicon binary")
+		fmt.Printf("  %v\n", err)
+		return
+	}
+	fmt.Printf("container execution: ready (%s)\n", resolved)
+}
+
 func ensureInstallDaemon(socketDir string) error {
 	socketPath := filepath.Join(socketDir, "runtime.sock")
 	// HEALTHY IS NOT THE SAME AS CURRENT.
