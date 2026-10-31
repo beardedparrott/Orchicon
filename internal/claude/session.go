@@ -40,6 +40,11 @@ type session struct {
 
 	model    string
 	resumeID string
+
+	// stderrRing holds the LAST stderr lines the CLI emitted. Drained continuously, not at failure time: a
+	// fatal message is the LAST line, and the previously-on-demand drain took the FIRST 512 bytes. See
+	// stderrRing in stderrtail.go.
+	stderrRing *stderrRing
 	proc     ProcSession
 
 	// mapper owns the whole stream-event → ExecutionCallbacks fan-out plus
@@ -140,6 +145,13 @@ func (s *session) run(ctx context.Context) error {
 	}
 	s.proc = p
 	defer func() { _ = p.Close() }()
+	// DRAIN STDERR FROM THE FIRST MOMENT. Two reasons, both measured in the reported failure:
+	//   1. the channel is buffered at 64 and the pump BLOCKS once it is full, so an undrained stderr eventually
+	//      stalls the child's own writes;
+	//   2. a diagnostic needs the LAST lines — a missing-credential error is printed at exit, not at start —
+	//      and draining on demand at the end loses them.
+	s.stderrRing = startStderrDrain(p.Stderr())
+	defer s.stderrRing.stop()
 
 	s.cbs.OnStarted(ctx, s.execID)
 	if err := p.WriteTurn(s.initialTurnPayload()); err != nil {
@@ -353,31 +365,20 @@ func (s *session) isFinished() bool {
 	return s.finished
 }
 
+// stderrTail renders the LAST stderr lines the CLI emitted, for a failure message.
+//
+// IT SAYS SO WHEN THERE WAS NONE ("no stderr was emitted"), because silence is ambiguous: the operator could
+// not tell whether the CLI printed nothing or the adapter failed to capture it, and that ambiguity is what
+// made the reported 0-token failure un-diagnosable.
 func (s *session) stderrTail() string {
-	if s.proc == nil {
+	if s.stderrRing == nil {
 		return ""
 	}
-	var b strings.Builder
-	ch := s.proc.Stderr()
-	for {
-		select {
-		case line, ok := <-ch:
-			if !ok {
-				goto done
-			}
-			if b.Len() < 512 {
-				b.WriteString(string(line))
-				b.WriteString(" ")
-			}
-		case <-time.After(50 * time.Millisecond):
-			goto done
-		}
+	lines := s.stderrRing.last()
+	if len(lines) == 0 {
+		return "; the CLI emitted no stderr at all before exiting"
 	}
-done:
-	if b.Len() == 0 {
-		return ""
-	}
-	return "; stderr: " + b.String()
+	return "; stderr: " + strings.Join(lines, " ")
 }
 
 // argv builds the claude command line. Model is bound ONCE here (there is no
