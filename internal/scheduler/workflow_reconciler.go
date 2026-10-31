@@ -2204,9 +2204,36 @@ func (r *WorkflowReconciler) buildRunNarrative(ctx context.Context, tx pgx.Tx, t
 //     cannot bloat the column; the caller still validates via the API
 //     boundary when a human edits it later.
 func (r *WorkflowReconciler) buildAcceptanceReview(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, stepRuns []db.WorkflowStepRunRow, finalStatus string) string {
+	// A REVIEW IS ABOUT THIS RUN. Recoveries were listed by WORK ITEM alone, so a second run on the same item
+	// was shown the FIRST run's recoveries — reported as "run X's acceptance review listed recoveries from run
+	// Y (the previous run)", and its Results blob was the previous run's narrative. A review that describes
+	// another run is worse than no review: it reads as authoritative and points the operator at a cause that
+	// belongs to a different attempt.
+	//
+	// Recoveries have no run id, so the scope comes from the executions that DO: the set of execution ids this
+	// run produced, intersected with each recovery's FailedExecutionID.
 	var recoveries []db.RecoveryExecutionRow
-	if recs, err := db.ListRecoveries(ctx, tx, db.ListRecoveriesFilter{TenantID: tenantID, TaskID: run.WorkItemID}); err == nil {
-		recoveries = recs
+	if recs, err := db.ListRecoveries(ctx, tx, db.ListRecoveriesFilter{
+		TenantID: tenantID, TaskID: run.WorkItemID, PageSize: 1000,
+	}); err == nil {
+		ownExecs := map[string]struct{}{}
+		if execs, eerr := db.ListExecutions(ctx, tx, db.ListExecutionsFilter{
+			TenantID: tenantID, WorkflowRunID: run.ID, PageSize: 1000,
+		}); eerr == nil {
+			for _, e := range execs {
+				ownExecs[e.ID] = struct{}{}
+			}
+		}
+		for _, rec := range recs {
+			if _, mine := ownExecs[rec.FailedExecutionID]; mine {
+				recoveries = append(recoveries, rec)
+			}
+		}
+		if len(ownExecs) == 0 {
+			// No executions found for this run (an early failure, or a read problem): showing NOTHING is the
+			// honest answer. Showing another run's recoveries is what this fix removes.
+			recoveries = nil
+		}
 	}
 	return formatAcceptanceReview(run, stepRuns, recoveries, finalStatus)
 }

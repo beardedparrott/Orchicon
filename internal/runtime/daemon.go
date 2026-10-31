@@ -915,6 +915,25 @@ func (d *Daemon) effectiveAllowedRoots(ctx context.Context) []string {
 // state. Container creation is serialized with createMu so concurrent
 // checkouts/resets cannot race `run` on the same name.
 func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateResponse, error) {
+	resp, err := d.createContainerInner(name, req)
+	if err != nil {
+		// THE DAEMON MUST RECORD ITS OWN FAILURES.
+		//
+		// REPORTED: a failed base-image container create appeared in the PLANE log and had no entry at all in
+		// runtime-daemon.log — which is where the argv is built, and therefore the one log an operator would
+		// look at. The argv was added to the returned ERROR earlier, which only helps a caller that surfaces
+		// it; the daemon's own record is what survives a run that never reports back.
+		//
+		// One wrapper rather than a log line per return: this function has a dozen refusal paths, and a
+		// per-path line is a line someone forgets.
+		d.Log.Error("runtime container create failed", "name", name, "image", req.Image,
+			"error", err, "engine", d.Engine.EngineNameForError())
+	}
+	return resp, err
+}
+
+// createContainerInner is createContainer's body, kept separate so the failure of ANY path is logged once.
+func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateResponse, error) {
 	if d.createFn != nil {
 		return d.createFn(name, req)
 	}

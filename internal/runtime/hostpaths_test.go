@@ -133,7 +133,7 @@ func TestBothContainerHandlersMapTheRequest(t *testing.T) {
 			"the stdio handler and createContainer. A boundary that does not convert lets a host path into "+
 			"the container.", got)
 	}
-	for _, fn := range []string{"handleRuntimeExec", "handleRuntimeStdio", "createContainer"} {
+	for _, fn := range []string{"handleRuntimeExec", "handleRuntimeStdio", "createContainerInner"} {
 		i := strings.Index(src, "func (d *Daemon) "+fn+"(")
 		if i < 0 {
 			t.Errorf("%s is missing from daemon.go", fn)
