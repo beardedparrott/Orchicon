@@ -328,8 +328,32 @@ func contextFilesFromJSON(data []byte) ([]string, error) {
 
 // listDirectory returns the immediate children of a directory path.
 // Skips entries that fail to stat (permission denied, deleted, etc.).
+//
+// subpath IS NOT ALWAYS RELATIVE-ONLY IN PRACTICE. Entries carry an ABSOLUTE Path, and the
+// picker echoes that path straight back to expand a directory, so this is regularly handed an
+// absolute path inside rootDir. Joining it blindly doubled the root
+// (filepath.Join("/p", "/p/skills") == "/p/p/skills") and the expansion failed with a stat on a
+// path that never existed. ResolveWithin is the one shared containment path: it accepts an
+// absolute path inside the root and a relative one, and rejects ".."/symlink escapes that the
+// previous bare Join allowed.
 func listDirectory(rootDir string, relPath string) (string, string, []*apiv1.FileTreeEntry, error) {
-	fullPath := filepath.Join(rootDir, relPath)
+	absRoot, err := filepath.Abs(rootDir)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("resolve project_dir %q: %w", rootDir, err)
+	}
+	subpath := strings.TrimSpace(relPath)
+	fullPath := absRoot
+	if subpath != "" {
+		fullPath, err = contextfiles.ResolveWithin(absRoot, subpath)
+		if err != nil {
+			return "", "", nil, err
+		}
+		rel, rerr := filepath.Rel(absRoot, fullPath)
+		if rerr != nil {
+			return "", "", nil, fmt.Errorf("list %q: %w", subpath, rerr)
+		}
+		subpath = rel
+	}
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("stat %q: %w", fullPath, err)
@@ -337,9 +361,9 @@ func listDirectory(rootDir string, relPath string) (string, string, []*apiv1.Fil
 	if !info.IsDir() {
 		return "", "", nil, fmt.Errorf("%q is not a directory", fullPath)
 	}
-	dirName := filepath.Base(fullPath)
-	if relPath == "" {
-		dirName = filepath.Base(rootDir)
+	dirName := filepath.Base(absRoot)
+	if subpath != "" {
+		dirName = filepath.Base(fullPath)
 	}
 	osEntries, err := os.ReadDir(fullPath)
 	if err != nil {
@@ -350,11 +374,7 @@ func listDirectory(rootDir string, relPath string) (string, string, []*apiv1.Fil
 		if len(out) >= maxDirEntries {
 			break
 		}
-		childRel := e.Name()
-		if relPath != "" {
-			childRel = filepath.Join(relPath, e.Name())
-		}
-		abs := filepath.Join(rootDir, childRel)
+		abs := filepath.Join(fullPath, e.Name())
 		childInfo, err := os.Stat(abs)
 		if err != nil {
 			continue
@@ -365,7 +385,7 @@ func listDirectory(rootDir string, relPath string) (string, string, []*apiv1.Fil
 			IsDir: childInfo.IsDir(),
 		})
 	}
-	return relPath, dirName, out, nil
+	return subpath, dirName, out, nil
 }
 
 // rowToProto maps a db.ProjectRow to the generated proto Project type.
