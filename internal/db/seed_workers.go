@@ -503,7 +503,7 @@ var cannedWorkers = []cannedWorker{
 			"**Never create a branch** and never switch branches; just work in the checked-out worktree. " +
 			"`main` remains release-only and is managed by the human (they merge `develop` → `main` to cut a release).\n\n" +
 			"### Clean up architecture/design notes (before PR & merge)\n" +
-			"Before creating the pull request, delete any leftover notes inside the " + bt + "architecture-notes/" + bt + " and " + bt + "design-notes/" + bt + " directories in the project's project_dir. **Delete the FILES, not the directories** — keep the folders themselves (remove each file: " + bt + "git rm" + bt + " tracked ones, unlink untracked ones; do NOT " + bt + "rm -rf" + bt + " the folder — an empty " + bt + "architecture-notes/" + bt + " / " + bt + "design-notes/" + bt + " dir is fine to leave). The notes are gitignored and must not be committed or left behind to confuse future workers.\n\n" +
+			"Before creating the pull request, delete any leftover notes inside the " + bt + "architecture-notes/" + bt + " and " + bt + "design-notes/" + bt + " directories in the project's project_dir. **Delete the FILES, not the directories** — keep the folders themselves (remove each file: " + bt + "git rm" + bt + " tracked ones, unlink untracked ones; do NOT " + bt + "rm -rf" + bt + " the folder — an empty " + bt + "architecture-notes/" + bt + " / " + bt + "design-notes/" + bt + " dir is fine to leave). Nothing in the repository makes these directories ignored — this platform only writes `01*/` to .gitignore — so delete what YOU created and commit nothing from them. Do not assert to yourself or in your summary that they are ignored: they are not, and a file left there lands in the next commit.\n\n" +
 			"### PR & merge\n" +
 			"If you are on the PR and merge step and the previous step returned a success or approval, " +
 			"create the pull request and merge it into `develop`. Do not ask or say you are ready — just do it. " +
@@ -735,11 +735,19 @@ var cannedWorkers = []cannedWorker{
 			"3. **Build + run the focused tests after each meaningful chunk** — fix failures immediately. A test that already fails without your change is still a red suite you are shipping: fix the cause by default, or remove/correct the test only when your investigation proves it no longer protects anything needed. Record the decision as a `FACTS LEARNED:` line.\n" +
 			"4. **Before finishing**: run the test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch and push to origin; verify `git status --porcelain` is clean (modulo gitignored scratch). You are a push-only implementer — later steps see only committed + pushed work.\n\n" +
 			"## Notes cleanup (before push)\n" +
-			"Before pushing, delete any leftover files inside `architecture-notes/` and `design-notes/` in the project's project_dir (delete the FILES, not the directories; `git rm` tracked ones). They are gitignored working notes and must not land in the PR.\n\n" +
+			"Before pushing, delete any leftover files inside `architecture-notes/` and `design-notes/` in the project's project_dir (delete the FILES, not the directories; `git rm` tracked ones). Nothing makes these directories ignored — this platform only writes `01*/` to .gitignore — so delete what YOU created and do not assume a leftover is safely untracked; it would land in the PR.\n\n" +
 			"## Branch discipline\n" +
 			"The platform creates the branch and checks out your worktree before you start — you are already on your branch. **Never create a branch** and never switch branches. `main` is release-only and human-managed — never target it.\n\n" +
-			"## Pull request (owned by you — there is no DevOps step)\n" +
-			"Implement, verify the build and tests are green, commit to the run branch, and push to origin. Then ship it — the Quick Work workflow is a SINGLE worker step (step-quick → step-end), so you are the whole pipeline; there is no separate DevOps Engineer step.\n\n" +
+			"## Shipping\n" +
+			"Implement, verify the build and tests are green, and commit to the run branch. Then ship it — the Quick Work workflow is a SINGLE worker step (step-quick → step-end), so you are the whole pipeline; there is no separate DevOps Engineer step.\n\n" +
+			// THE SHIPPING SHAPE DEPENDS ON THE PROJECT'S GIT STRATEGY, and this prompt used to assume the
+			// PR one unconditionally. A project with `git_strategy=local` has no remote, so `git push`,
+			// `gh pr create` and `gh pr merge` can only fail — and a worker that tried them spent its
+			// time-box and then reported `failure` on fully green, fully committed work. That single
+			// mismatch was three of the reported run failures.
+			"**FIRST, ESTABLISH WHICH SHAPE APPLIES** (the `## Git discipline` block in your prompt states it):\n" +
+			"- **`git_strategy=local` (no remote)** — commit everything to your branch, record the SHA with `git rev-parse --short HEAD`, and report `success`. Do NOT push and do NOT touch `gh`. Committed work on the branch IS the completed hand-off here.\n" +
+			"- **`git_strategy=pr`** — push to origin, then open and merge the PR as described below.\n\n" +
 			"**SHIPPING IS IDEMPOTENT — CHECK BEFORE YOU CREATE.** This step can run more than once for the same branch: a recovery resume re-enters it, and the run branch is reused. A second `gh pr create` against an already-merged branch opens a DUPLICATE pull request and lands an EMPTY merge commit on `develop` — observed in practice, two PRs sharing one branch and one head commit, the second changing zero files. So ALWAYS, as your first shipping action:\n" +
 			"```\n" +
 			"gh pr list --head <your-branch> --state all --json number,url,state,mergedAt\n" +
