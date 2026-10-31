@@ -1381,6 +1381,11 @@ desktop-package-windows: ## Produce the Windows MSI (Windows host with the WiX C
 	@mkdir -p $(MSI_SRC_DIR)
 	cp -f $(BIN_DIR)/orchicon.exe $(MSI_SRC_DIR)/
 	cp -f $(BIN_DIR)/orch.exe $(MSI_SRC_DIR)/
+	@# THE BINARY A RUNTIME CONTAINER RUNS. Built from THIS tree rather than copied, because it is not
+	@# something `make build` leaves on Windows unless it cross-compiled it: a runtime container is a
+	@# LINUX container and cannot execute orchicon.exe, so the daemon mounts this (exe_resolve.go).
+	@# Same ldflags as the exe beside it, so the two can never be different builds.
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(LDFLAGS) -o $(MSI_SRC_DIR)/orchicon-linux-amd64 ./cmd/orchicon
 	cp -f $(DESKTOP_PROJECT)/build/bin/orchicon-desktop.exe $(MSI_SRC_DIR)/
 	cp -f deploy/desktop/windows/README-WINDOWS.txt $(MSI_SRC_DIR)/
 	cp -f deploy/desktop/windows/LICENSE.rtf $(MSI_SRC_DIR)/

@@ -383,6 +383,10 @@ jobs:
           mkdir -p bin
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon.exe ./cmd/orchicon
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orch.exe ./cmd/orch
+          # THE LINUX BINARY THE RUNTIME CONTAINER RUNS. Built HERE, in the same step and with the
+          # same flags as the exe above it, so the daemon and the supervisor it mounts are the same
+          # build by construction — a Linux container cannot execute the Windows binary.
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon-linux-amd64 ./cmd/orchicon
       - name: Install the WiX CLI
         shell: pwsh
         run: |
@@ -414,6 +418,8 @@ jobs:
           $null = New-Item -ItemType Directory -Force -Path $src, dist/desktop
           Copy-Item bin/orchicon.exe $src/
           Copy-Item bin/orch.exe $src/
+          # THE CONTAINER'S BINARY, beside orchicon.exe — the daemon's first search location.
+          Copy-Item bin/orchicon-linux-amd64 $src/
           Copy-Item cmd/orchicon-desktop/build/bin/orchicon-desktop.exe $src/
           Copy-Item deploy/desktop/windows/README-WINDOWS.txt $src/
           Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
