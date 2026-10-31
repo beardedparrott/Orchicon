@@ -168,6 +168,19 @@ func safeResolve(b Base, rel string, writable bool) (string, error) {
 		}
 		return filepath.Join(b.Worktree, clean), nil
 	}
+	// THE WORKTREE MUST EXIST, OR THE SHELL AND THE FILE TOOLS DISAGREE ABOUT WHERE "HERE" IS.
+	//
+	// REPORTED in container mode: every `bash` call died `chdir`-ing into the run's worktree, while
+	// batch_read/batch_write/glob happily resolved against the READ-ONLY extra root — the real project
+	// checkout. So a worker could read the shared tree it was supposed to be isolated from, and the only
+	// signal that its own tree was missing was a bash error it might have worked around.
+	//
+	// Failing here makes the two agree: if the run's directory is gone, every tool that would work in it says
+	// so, in the same terms. AllowAnyPath (the interactive suite) is exempt and returns above.
+	if fi, err := os.Stat(b.Worktree); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("the run's working directory %s does not exist (%v) — nothing here can be read "+
+			"or written until it is provisioned", b.Worktree, err)
+	}
 	roots := []string{filepath.Clean(b.Worktree)}
 	if b.ScratchDir != "" {
 		roots = append(roots, filepath.Clean(b.ScratchDir))

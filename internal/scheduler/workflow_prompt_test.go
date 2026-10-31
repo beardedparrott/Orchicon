@@ -380,7 +380,12 @@ func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
 	// Simulate a git-backed run: worktree_status=ready, a recorded branch,
 	// and a project dir. The block is keyed purely on these params, so a
 	// direct call with the params set exercises the git path.
-	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj", db.DefaultGitStrategy)
+	// THE PR ARM OF THE STRATEGY, named explicitly. This test used db.DefaultGitStrategy, which is "local" —
+	// and the ownership contract belongs to the arm that actually has a PR. A local-strategy project has no
+	// remote, so telling its worker who owns the PR was the reported failure: it tried `gh pr create`, could
+	// not succeed, and reported failure on green work. The block now branches, so this asserts the PR arm and
+	// TestLocalStrategyNeverInstructsAnImpossiblePush asserts the other.
+	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj", "pr")
 	for _, want := range []string{
 		"## Git discipline",
 		"`feat/my-branch`",

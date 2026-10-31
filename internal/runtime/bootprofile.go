@@ -140,9 +140,22 @@ type adapterInstall struct {
 	// run without either failure.
 	private bool
 	// authFile is the file inside a PRIVATE install's host directory that is
-	// bind-mounted read-only into the container's private copy of it. Empty
-	// means no file is shared (the container's copy is entirely its own).
+	// bind-mounted into the container's private copy of it. Empty means no file
+	// is shared (the container's copy is entirely its own).
 	authFile string
+	// authWritable mounts authFile READ-WRITE instead of read-only.
+	//
+	// IT IS A PER-ADAPTER FACT, NOT A GLOBAL RELAXATION. opencode only READS its
+	// auth.json, so read-only is correct for it and keeps every worker from being
+	// able to modify the operator's credential. The Claude Code CLI REWRITES
+	// .credentials.json when the OAuth token refreshes, so read-only turns a refresh
+	// into EACCES inside the container and the adapter dies before it reaches the
+	// API — reported as six executions, 0 tokens, ~280ms each.
+	//
+	// THE PRICE IS REAL AND IS ACCEPTED DELIBERATELY: a refresh inside a container
+	// writes back to the operator's real credential, so concurrent local and
+	// container use share one rotating session.
+	authWritable bool
 	// fingerprint lists the sub-trees of this install whose change must
 	// invalidate a WARM pooled container. Empty = not fingerprinted
 	// (config/transcript homes change every session and must never churn
@@ -269,7 +282,11 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 				{probe: join(".claude"), dir: true, private: true,
 					// authFile is RELATIVE TO THE PROBE DIR (see adapterPrivateHomes, which joins it onto
 					// in.probe) — opencode's "auth.json" is the same shape.
-					authFile: ".credentials.json"},
+					//
+					// authWritable because THIS CLI REFRESHES ITS OWN TOKEN. Read-only was tried and is what
+					// the container died on: the refresh cannot write, and the adapter exits 1 without a
+					// terminal result message.
+					authFile: ".credentials.json", authWritable: true},
 				// ~/.claude.json is the CLI's own config, written on start and on settings changes. It was
 				// rw bind-mounted, which is the same shared-write hazard across concurrent runs; private is
 				// right for it too. Deliberately NOT an authFile source: the credential lives in
@@ -464,6 +481,17 @@ func adapterHostMounts(home string, kinds ...string) []string {
 type privateHome struct {
 	dir      string
 	authFile string
+	// authWritable propagates adapterInstall.authWritable to the argv builder.
+	authWritable bool
+	// isFile marks a private install that is a REGULAR FILE rather than a directory (~/.claude.json).
+	//
+	// IT IS NOT A DETAIL. adapterPrivateHomes used to require st.IsDir(), so a private FILE was silently
+	// dropped from the mount set entirely: ~/.claude.json was declared private in this very table and never
+	// reached a container. The claude adapter then started, found no config, and exited 1 with no output —
+	// reported as six executions, 0 tokens, ~280ms each, "claude session exited without a terminal result
+	// message". A PROBE THAT PASSES THE os.Stat BUT FAILS THE IsDir BELOW IS A SILENT NO-OP, which is why
+	// the distinction is carried explicitly instead of being inferred again.
+	isFile bool
 }
 
 // adapterPrivateHomes returns the private homes a demanded kind contributes,
@@ -486,10 +514,16 @@ func adapterPrivateHomes(home string, kinds ...string) []privateHome {
 				continue
 			}
 			st, err := os.Stat(in.probe)
-			if err != nil || !st.IsDir() {
+			if err != nil {
 				continue
 			}
-			ph := privateHome{dir: in.probe}
+			// A PRIVATE FILE IS DECLARED AND MUST BE MOUNTED. Skipping it was the silent drop described on
+			// privateHome.isFile.
+			if !st.IsDir() {
+				out = append(out, privateHome{dir: in.probe, isFile: true})
+				continue
+			}
+			ph := privateHome{dir: in.probe, authWritable: in.authWritable}
 			if in.authFile != "" {
 				af := filepath.Join(in.probe, in.authFile)
 				if ast, aerr := os.Stat(af); aerr == nil && !ast.IsDir() {

@@ -1936,13 +1936,30 @@ func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, ten
 	if retryErr == nil {
 		return nil
 	}
+	// THE BASE-IMAGE FALLBACK IS NOT ATTEMPTED WHEN IT STRUCTURALLY CANNOT WORK.
+	//
+	// REPORTED: `podman ps` showed TWO containers per run — the `:dev` one that works and a
+	// `ghcr.io/…:latest` base one that cannot — because this fallback created a second container with an
+	// image the bake guard FORBIDS from carrying an adapter CLI. In that container `opencode serve` (or the
+	// claude binary) has nothing to execute, so it exits 1, and the operator is handed a bare `exit status 1`
+	// as the reason the run failed.
+	//
+	// So the fallback now applies only where the base image could genuinely serve: a run that demands no
+	// image-supplied adapter. A native ("orchicon") run is exactly that case — its binary is bind-mounted out
+	// of the daemon, not baked — and it keeps the fallback.
 	var baseErr error
 	if img != baseImg {
-		try.RuntimeImage = baseImg
-		baseErr = r.runtime.EnsureForRun(ctx, try)
-		if baseErr == nil {
-			r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", retryErr)
-			return nil
+		if kinds := r.runImageSuppliedKinds(ctx, ftx.Tx, tenantID, cur.ID); len(kinds) > 0 {
+			r.log.Warn("workflow runtime: not falling back to the base image — it cannot carry the adapter "+
+				"this run dispatches to, so the fallback would create a second container that cannot start its "+
+				"adapter", "run", cur.ID, "resolved", img, "kinds", kinds, "error", retryErr)
+		} else {
+			try.RuntimeImage = baseImg
+			baseErr = r.runtime.EnsureForRun(ctx, try)
+			if baseErr == nil {
+				r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", retryErr)
+				return nil
+			}
 		}
 	}
 	reason := containerFailureReason(img, retryErr, baseErr)
@@ -1953,6 +1970,39 @@ func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, ten
 		return fmt.Errorf("commit fail-at-start: %w", cerr)
 	}
 	return nil
+}
+
+// runImageSuppliedKinds returns the adapter kinds this run dispatches to whose CLI must come FROM THE IMAGE.
+//
+// The published base image deliberately bakes no adapter CLI (the daemon bind-mounts the host installs, and
+// the bake guard forbids an adapter in a PUBLISHED image), so swapping to it cannot fix a failure caused by a
+// missing adapter — it can only produce a second container whose serve exits 1. The native kind is excluded
+// on purpose: its binary is the daemon's own, mounted at /usr/local/bin/orchicon, so the base image CAN run a
+// native step and keeps the fallback.
+func (r *WorkflowReconciler) runImageSuppliedKinds(ctx context.Context, tx pgx.Tx, tenantID, runID string) []string {
+	cur, err := db.GetWorkflowRun(ctx, tx, tenantID, runID)
+	if err != nil {
+		return nil
+	}
+	ver, err := db.GetWorkflowVersion(ctx, tx, tenantID, cur.WorkflowID, cur.WorkflowVersion)
+	if err != nil {
+		// A read failure must not silently ENABLE the fallback it was meant to suppress, but nor may it fail a
+		// run over a diagnostic: treat it as "unknown" and leave the fallback as it was before this change.
+		return nil
+	}
+	steps, err := workflow.ParseSteps(ver.Steps)
+	if err != nil {
+		return nil
+	}
+	res := adapter.ResolveRunSteps(ctx, tx, tenantID, steps)
+	var out []string
+	for _, k := range adapter.AdapterDemandSet(res.ModelRefs()...).Kinds() {
+		if k == adapter.NativeAdapterKind {
+			continue
+		}
+		out = append(out, k)
+	}
+	return out
 }
 
 // runtimeImageAbsentReason reports the fail-fast reason when the run's runtime
@@ -2154,9 +2204,36 @@ func (r *WorkflowReconciler) buildRunNarrative(ctx context.Context, tx pgx.Tx, t
 //     cannot bloat the column; the caller still validates via the API
 //     boundary when a human edits it later.
 func (r *WorkflowReconciler) buildAcceptanceReview(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, stepRuns []db.WorkflowStepRunRow, finalStatus string) string {
+	// A REVIEW IS ABOUT THIS RUN. Recoveries were listed by WORK ITEM alone, so a second run on the same item
+	// was shown the FIRST run's recoveries — reported as "run X's acceptance review listed recoveries from run
+	// Y (the previous run)", and its Results blob was the previous run's narrative. A review that describes
+	// another run is worse than no review: it reads as authoritative and points the operator at a cause that
+	// belongs to a different attempt.
+	//
+	// Recoveries have no run id, so the scope comes from the executions that DO: the set of execution ids this
+	// run produced, intersected with each recovery's FailedExecutionID.
 	var recoveries []db.RecoveryExecutionRow
-	if recs, err := db.ListRecoveries(ctx, tx, db.ListRecoveriesFilter{TenantID: tenantID, TaskID: run.WorkItemID}); err == nil {
-		recoveries = recs
+	if recs, err := db.ListRecoveries(ctx, tx, db.ListRecoveriesFilter{
+		TenantID: tenantID, TaskID: run.WorkItemID, PageSize: 1000,
+	}); err == nil {
+		ownExecs := map[string]struct{}{}
+		if execs, eerr := db.ListExecutions(ctx, tx, db.ListExecutionsFilter{
+			TenantID: tenantID, WorkflowRunID: run.ID, PageSize: 1000,
+		}); eerr == nil {
+			for _, e := range execs {
+				ownExecs[e.ID] = struct{}{}
+			}
+		}
+		for _, rec := range recs {
+			if _, mine := ownExecs[rec.FailedExecutionID]; mine {
+				recoveries = append(recoveries, rec)
+			}
+		}
+		if len(ownExecs) == 0 {
+			// No executions found for this run (an early failure, or a read problem): showing NOTHING is the
+			// honest answer. Showing another run's recoveries is what this fix removes.
+			recoveries = nil
+		}
 	}
 	return formatAcceptanceReview(run, stepRuns, recoveries, finalStatus)
 }

@@ -234,11 +234,37 @@ func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy st
 			"- Do **not** create a branch, commit a branch, or push anything to origin. Work directly in the detached run worktree; leave the tree clean and report via the `ORCHICON WORKER SUMMARY:` contract.\n\n"
 	}
 	if worktreeStatus == domain.WorktreeReady && worktreeBranch != "" {
-		return "\n## Git discipline\n" +
-			"- This run is git-backed and works on the branch `" + worktreeBranch + "` recorded for it.\n" +
-			"- Work on a branch created off `develop` (the integration branch where all work lands). **NEVER** commit to, push to, or open a PR into `main` or `develop` directly.\n" +
-			"- Use the branch recorded for this run (`" + worktreeBranch + "`); do not create a new branch unless the previous work was on `main`.\n" +
-			"- **PR / merge ownership is defined by YOUR workflow's step contract** — the role text and AGENTS.md in this prompt name who opens the PR and merges into `develop` (some paths are single-step all-in-one workers that open + merge their own PR; others hand off to a dedicated DevOps step). Follow that contract; this block only fixes the branch discipline.\n\n"
+		var sb strings.Builder
+		sb.WriteString("\n## Git discipline\n")
+		sb.WriteString("- This run is git-backed and works on the branch `" + worktreeBranch + "` recorded for it.\n")
+		sb.WriteString("- Work on a branch created off `develop` (the integration branch where all work lands). **NEVER** commit to, push to, or open a PR into `main` or `develop` directly.\n")
+		sb.WriteString("- Use the branch recorded for this run (`" + worktreeBranch + "`); do not create a new branch unless the previous work was on `main`.\n")
+		// COMMIT-ALWAYS. Neither canned prompt stated it, so whether a run left work uncommitted was the
+		// worker's own judgement — and only committed work is visible to a later step, which runs in a
+		// pristine sibling worktree.
+		// §7.4 — SAY WHERE "HERE" IS. Two reported workers inferred that the shell and the file tools disagreed
+		// about the working directory and stopped rather than write into the shared checkout. That was the right
+		// call under ambiguity; stating it removes the ambiguity. The exact path is not interpolated because the
+		// prefix is cache-shared across runs — the RULE is what a worker needs.
+		sb.WriteString("- **Your working directory is this run's worktree** — a sibling of the project directory under `.orchicon-worktrees/<run-id>`. Relative paths in every tool resolve against it and `pwd` prints it. It is YOURS: it is not the shared checkout, and a sibling run's worktree is not yours to write to.\n")
+		sb.WriteString("- **Commit everything in scope before you finish.** `git status --porcelain` must be clean when you report, apart from files your project's `.gitignore` covers. Uncommitted work is invisible to every later step and to the operator.\n")
+		if gitStrategy == "local" {
+			// LOCAL INTEGRATION: THERE IS NO REMOTE, SO THERE IS NOTHING TO PUSH TO.
+			//
+			// A canned prompt that hardcoded `git push` + `gh pr create` + `gh pr merge` told every worker to
+			// perform three operations this project cannot support, and a worker that tried them burned its
+			// time-box and then reported `failure` on fully green, fully committed work — three times in one
+			// reported session, which was the single largest source of noise in it.
+			sb.WriteString("- **This project integrates LOCALLY (`git_strategy=local`): there is no git remote.** Do NOT run `git push`, `gh pr create`, `gh pr list`, `gh pr checks` or `gh pr merge` — they cannot succeed here, and spending your time-box on them turns a green result into a reported failure.\n")
+			sb.WriteString("- Ship by **committing to the branch** and reporting `success` with the commit SHA (`git rev-parse --short HEAD`). That IS the completed hand-off in this mode; the operator integrates from the branch.\n")
+		} else {
+			sb.WriteString("- **PR / merge ownership is defined by YOUR workflow's step contract** — the role text and AGENTS.md in this prompt name who opens the PR and merges into `develop` (some paths are single-step all-in-one workers that open + merge their own PR; others hand off to a dedicated DevOps step). Follow that contract; this block only fixes the branch discipline.\n")
+			// THE PUSH IS IMPOSSIBLE IN A CONTAINER WITHOUT A CREDENTIAL, and a GitHub MCP gives API access
+			// rather than git credentials — two separable problems the onboarding text used to conflate.
+			sb.WriteString("- `gh` may be unauthenticated inside a runtime container (its credential file is deliberately not mounted). If a GitHub MCP server is available, use it for PR operations; it does not give `git push` a remote or HTTPS credentials, so push with `git` and treat the two as separate steps.\n")
+		}
+		sb.WriteString("\n")
+		return sb.String()
 	}
 	// Non-repo (or not-yet-git-backed) run: work in place, no branch.
 	if projectDir != "" {

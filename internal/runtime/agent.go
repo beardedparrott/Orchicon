@@ -58,8 +58,10 @@ type AgentRequest struct {
 	// (AC 2). Empty → the default adapter kind (opencode).
 	AdapterKind string   `json:"adapter_kind,omitempty"`
 	Env         []string `json:"env,omitempty"`
-	Cwd         string   `json:"cwd,omitempty"`
-	ProjectDir  string   `json:"project_dir,omitempty"`
+	// Cwd and ProjectDir are HOST paths until mapHostPathFields converts them (hostpaths.go). The tag is the
+	// registry: a path field without it is the shape of the reported chdir failure.
+	Cwd        string `json:"cwd,omitempty" orchicon:"hostpath"`
+	ProjectDir string `json:"project_dir,omitempty" orchicon:"hostpath"`
 }
 
 // AgentEvent is one JSON-lines record the supervisor or the image-build

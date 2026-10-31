@@ -113,6 +113,11 @@ var deterministicStopErrorPatterns = []string{
 	"image pull failed",                  // image pull failure
 	"failed_to_start",                    // execution failed before the model even ran
 	"no provider",                        // provider unresolved
+	// THE REPORTED SIGNATURE, AND IT MATCHED NOTHING HERE BEFORE. Reported: six executions, 0 tokens each,
+	// ~280ms apart, every one "claude session exited without a terminal result message (exit code 1)". The
+	// adapter CLI never reached the model — a launch/credential failure — so resuming it five times could
+	// only reproduce it, and did.
+	"exited without a terminal result message",
 }
 
 // isDeterministicStopError reports whether a failed execution's error is a
@@ -131,6 +136,48 @@ func isDeterministicStopError(errText string) bool {
 		}
 	}
 	return false
+}
+
+// recoveryStrategyFor resolves the strategy, adding the evidence-based stop: a failure whose text is IDENTICAL
+// to the previous execution's is not retried, whatever it says. Patterns name known causes; this catches a new
+// one on its first repetition rather than after its fifth.
+func recoveryStrategyFor(ctx context.Context, tx pgx.Tx, tenantID, taskID, failedExecID string,
+	exec *db.ExecutionRow, kind string) string {
+	if stoppedIdenticallyBefore(ctx, tx, tenantID, taskID, failedExecID) {
+		return RecoveryStrategyStop
+	}
+	return strategyForFailure(exec, kind)
+}
+
+// stoppedIdenticallyBefore reports whether the PREVIOUS execution of this task failed with the same error text.
+//
+// PATTERNS CANNOT KEEP UP, so this is the evidence-based half of the stop-class decision. The credential
+// failure that looped six times carried "claude session exited without a terminal result message" — a sentence
+// no pattern list anticipated, because it is a SYMPTOM with no cause in it. But a resume that produced the
+// identical sentence is proof that resuming did not help: whatever the cause, it did not change.
+//
+// Deliberately conservative: it compares only the IMMEDIATELY previous execution (not a chain), it requires a
+// non-empty message on both sides, and a read failure answers false so recovery proceeds exactly as before.
+func stoppedIdenticallyBefore(ctx context.Context, tx pgx.Tx, tenantID string, taskID, failedExecID string) bool {
+	execs, err := db.ListExecutions(ctx, tx, db.ListExecutionsFilter{
+		TenantID: tenantID, TaskID: taskID, PageSize: 2, SortBy: "created_at", SortOrder: "desc",
+	})
+	if err != nil || len(execs) < 2 {
+		return false
+	}
+	cur, prev := execs[0], execs[1]
+	if cur.ID != failedExecID {
+		return false
+	}
+	a, b := normaliseFailureText(cur.ErrorMessage), normaliseFailureText(prev.ErrorMessage)
+	return a != "" && a == b
+}
+
+// normaliseFailureText makes two failure messages comparable: lowercased, whitespace collapsed. Timestamps and
+// ids inside a message would otherwise make every repetition look different, which is exactly the noise this
+// check exists to see through — but nothing here strips so much that two different causes could compare equal.
+func normaliseFailureText(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
 }
 
 // effectiveStrategy resolves the recovery strategy for a failed execution.
@@ -450,7 +497,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		TriggerReason:      triggerReason,
 		Level:              level,
 		Status:             domain.RecoveryPending,
-		Strategy:           strategyForFailure(&exec, task.Kind), // PR C + WI-4 stop-class override
+		Strategy:           recoveryStrategyFor(ctx, ttx.Tx, tenantID, taskID, failedExecID, &exec, task.Kind),
 		ResumptionPath:     resumptionPath,
 		BudgetTokensLimit:  budgetTokensLimit,
 		BudgetCostLimitUSD: budgetCostLimit,

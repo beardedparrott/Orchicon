@@ -401,3 +401,87 @@ func TestClaudeCreatePreflightFailsActionably(t *testing.T) {
 		}
 	}
 }
+
+// TestStandardHostMountArgsClaudePrivateHomeAndConfig pins the claude arm, which had TWO silent drops.
+//
+// REPORTED: the claude adapter in a runtime container produced SIX executions, 0 tokens each, ~280ms apart,
+// every one dying with "claude session exited without a terminal result message (exit code 1)". The adapter
+// binary ran — it did not fail on exec format — so the CLI started and gave up immediately.
+//
+// TWO CAUSES, both in this mount set:
+//
+//  1. ~/.claude.json IS A FILE, and adapterPrivateHomes required st.IsDir(). A private install that is not a
+//     directory was SKIPPED WITHOUT A WORD, so a declaration in this very table never reached a container.
+//     The CLI found no config and exited.
+//  2. The credential was bound READ-ONLY. This CLI REWRITES .credentials.json when its OAuth token refreshes,
+//     so a refresh inside the container is EACCES and the session dies before its first API call.
+//
+// opencode's credential stays read-only — it only reads auth.json — which is why the write-back is a
+// per-adapter declaration (adapterInstall.authWritable) rather than a blanket relaxation.
+func TestStandardHostMountArgsClaudePrivateHomeAndConfig(t *testing.T) {
+	home, d := bootProfileTestHome(t)
+	// The claude installs the table declares.
+	mustMkdir := func(parts ...string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(append([]string{home}, parts...)...), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite := func(parts ...string) {
+		t.Helper()
+		p := filepath.Join(append([]string{home}, parts...)...)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustMkdir(".claude")
+	mustWrite(".claude", ".credentials.json")
+	mustWrite(".claude.json")
+	mustMkdir(".local", "bin")
+	mustWrite(".local", "bin", "claude")
+
+	args := d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"claude"}, GitStrategy: "local"})
+
+	// 1. THE PRIVATE FILE IS MOUNTED, writable. Absent is the reported 0-token exit.
+	cfg := filepath.Join(home, ".claude.json")
+	if !argValue(args, "-v", cfg+":"+cfg+":rw") {
+		t.Errorf("~/.claude.json is NOT mounted — a private FILE install was dropped from the mount set, which "+
+			"is why the claude CLI started and exited 1 with no output: %v", args)
+	}
+
+	// 2. THE CREDENTIAL IS WRITABLE, because this CLI refreshes it.
+	cred := filepath.Join(home, ".claude", ".credentials.json")
+	if !argValue(args, "-v", cred+":"+cred+":rw") {
+		t.Errorf("the claude credential must be READ-WRITE so an OAuth token refresh can write back; "+
+			"read-only makes the refresh EACCES and kills the session before its first API call: %v", args)
+	}
+	if argValue(args, "-v", cred+":"+cred+":ro") {
+		t.Errorf("the claude credential is still read-only: %v", args)
+	}
+
+	// 3. The transcript home stays PRIVATE (a writable copy), so concurrent runs never share one tree.
+	if !argValue(args, "--tmpfs", opencodePrivateDataHome(home, true)) && !containsTmpfs(args, filepath.Join(home, ".claude")) {
+		t.Errorf("~/.claude must be a private writable directory, not a bind of the host's tree: %v", args)
+	}
+	if argValue(args, "-v", filepath.Join(home, ".claude")+":"+filepath.Join(home, ".claude")+":rw") {
+		t.Errorf("~/.claude is bind-mounted from the host — concurrent runs would interleave their session "+
+			"state in one tree: %v", args)
+	}
+}
+
+// containsTmpfs reports whether args carries a --tmpfs whose path component matches want.
+func containsTmpfs(args []string, want string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] != "--tmpfs" {
+			continue
+		}
+		p, _, _ := strings.Cut(args[i+1], ":")
+		if p == want {
+			return true
+		}
+	}
+	return false
+}
