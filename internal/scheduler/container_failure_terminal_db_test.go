@@ -42,7 +42,33 @@ func (u *unavailableLifecycle) EnsureServing(context.Context, db.WorkflowRunRow,
 	return errors.New(u.reason)
 }
 
+// TestContainerCreateFailureFailsTheRunOnceAndVisibly covers BOTH container-create failure classes
+// reported from Windows, because they arrive by different routes:
+//
+//   - the allowlist refusal (checked in validateCreate, before any container exists);
+//   - a SUPERVISOR-READINESS TIMEOUT — the container starts, its entrypoint cannot exec, the socket never
+//     appears, and create returns "started but supervisor socket not ready".
+//
+// The second is the one an operator saw leave a run wedged at pending with zero executions, so it is
+// asserted here rather than assumed to follow the first.
 func TestContainerCreateFailureFailsTheRunOnceAndVisibly(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason string
+	}{
+		{"allowlist refusal", `runtime daemon: mount source outside allowed roots: C:\projects\weatherapp`},
+		{"supervisor readiness timeout",
+			`ensure runtime for run 01M6780HARZNHYFK8903XB94VR: runtime daemon: runtime ` +
+				`orchicon-runtime-ce766de73f118916-9e6867821c93 started but supervisor socket not ready`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testContainerCreateFailure(t, tc.reason)
+		})
+	}
+}
+
+func testContainerCreateFailure(t *testing.T, failureReason string) {
+	t.Helper()
 	ctx := context.Background()
 	pool := approvalTestPool(t)
 
@@ -110,7 +136,7 @@ func TestContainerCreateFailureFailsTheRunOnceAndVisibly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lc := &unavailableLifecycle{reason: "runtime daemon: mount source outside allowed roots: C:\\projects\\weatherapp"}
+	lc := &unavailableLifecycle{reason: failureReason}
 	r := &WorkflowReconciler{
 		pool: pool, runtime: lc,
 		log: slog.New(slog.DiscardHandler), warming: map[string]bool{},
@@ -156,7 +182,7 @@ func TestContainerCreateFailureFailsTheRunOnceAndVisibly(t *testing.T) {
 		t.Errorf("work item status = %q, want failed", wi.Status)
 	}
 	carried := string(wi.Results) + string(wi.AcceptanceReview)
-	if !strings.Contains(carried, "mount source outside allowed roots") {
+	if !strings.Contains(carried, reasonFragment(failureReason)) {
 		t.Errorf("the reason did not reach the work item. A failed run that does not say WHY is the black box "+
 			"this coverage exists to prevent.\nresults=%s\nreview=%s", wi.Results, wi.AcceptanceReview)
 	}
@@ -170,5 +196,21 @@ func TestContainerCreateFailureFailsTheRunOnceAndVisibly(t *testing.T) {
 	if lc.creates != before {
 		t.Errorf("a container create was re-attempted on an already-failed run (%d -> %d) — a terminal run "+
 			"must not be retried", before, lc.creates)
+	}
+}
+
+// reasonFragment picks the part of a failure reason that must reach the work item.
+//
+// The point of the assertion is that the CAUSE travels, not that the whole sentence does — the reason is
+// wrapped as it moves through ensure→create→failover, and demanding an exact match would fail on
+// formatting rather than on the thing being tested.
+func reasonFragment(reason string) string {
+	switch {
+	case strings.Contains(reason, "supervisor socket not ready"):
+		return "supervisor socket not ready"
+	case strings.Contains(reason, "mount source outside allowed roots"):
+		return "mount source outside allowed roots"
+	default:
+		return reason
 	}
 }

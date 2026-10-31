@@ -35,8 +35,16 @@ package db
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
+	"time"
+
+	// THE LAYERING TRADE IS ACCEPTED DELIBERATELY. A storage package reading plane state is a smell, but
+	// planecontrol imports only the standard library, so there is no cycle — and the alternative is
+	// duplicating the state-dir and port-record layout here, which is the kind of second implementation that
+	// drifts. The guard is worth one import.
+	"github.com/beardedparrott/orchicon/internal/planecontrol"
 )
 
 // allowProdEnv is the explicit opt-in. Set it to "1" to run a DB-backed test against a database the guard would
@@ -116,6 +124,147 @@ func guardAgainstProdDSN(dsn string) error {
 	}
 
 	return guardRefusal(false, dsn, ambientInstance, ambientDSN)
+}
+
+// guardAgainstLivePlaneDSN refuses a test-binary Open of a database a RUNNING plane is serving, whether or not
+// that plane is labelled prod.
+//
+// THE GAP THIS CLOSES. The guard above answers "is this the PRODUCTION database", and the README answers "which
+// DSN should I use" with "the DEV instance's database". Those two together left the commonest local case
+// completely unprotected: a developer with the dev plane running points ORCHICON_TEST_DSN at
+// localhost:5432/orchicon — which IS the database that plane's own reconcilers are serving — and the two sets of
+// reconcilers converge on the same rows.
+//
+// MEASURED on a real workstation: the scheduler suite failed 3-5 tests per run, varying run to run, with
+//
+//	park task blocked: db: version conflict
+//	fail sequence ancestor: db: version conflict
+//	precondition: parent should be failed (halted), got "running"
+//
+// — every one an optimistic-concurrency collision with the live plane, which scans the same pending/running rows
+// the test just created. CI never sees it because CI's database has no plane attached. The same session also
+// found 1,576 project rows of accumulated test residue in that live database.
+//
+// HOW IT DECIDES, and each condition is required so this cannot refuse legitimate work:
+//
+//  1. the DSN names the SAME database an instance's plane opens — compared as host:port/database, so a SEPARATE
+//     database on the same cluster (orchicon_test) is untouched;
+//  2. that instance's plane is ALIVE — polled at its own /healthz, the same question the desktop asks;
+//  3. the instance is one this host has a port record for, so an unrelated DSN is never guessed at.
+//
+// The escape hatch is separate from the prod one, because the decision is different: this is "I know a plane is
+// up and I want to run against it anyway", not "this database happens to be labelled prod".
+func guardAgainstLivePlaneDSN(dsn string) error {
+	if !isTestBinary() || os.Getenv(allowSharedPlaneEnv) == "1" {
+		return nil
+	}
+	target, ok := dsnTarget(dsn)
+	if !ok {
+		return nil
+	}
+	for _, name := range []string{strings.TrimSpace(os.Getenv(instanceEnv)), "dev", "prod"} {
+		if name == "" {
+			continue
+		}
+		if served := livePlaneTargetFn(name); served != "" && sameDatabaseTarget(served, target) {
+			return fmt.Errorf("db: REFUSING to open a database a RUNNING plane is serving, from a test binary.\n"+
+				"  opening: %s\n"+
+				"  instance %q is live on that database (answered /healthz), so its reconcilers and this test "+
+				"are converging on the same rows — which is the `db: version conflict` flakiness, not a bug in "+
+				"the test.\n"+
+				"  Two ways forward, both deliberate: stop that plane for the duration of the run, or point "+
+				"ORCHICON_TEST_DSN at a database no plane serves (a separate database on the same cluster is "+
+				"fine — this guard compares host:port/database). Set %s=1 to run against it anyway.",
+				redactDSN(dsn), name, allowSharedPlaneEnv)
+		}
+	}
+	return nil
+}
+
+// livePlaneTargetFn is the DETECTION SEAM, so the guard has coverage on a CI host with no plane rather than only
+// on a developer's workstation — the same reason `isTestBinary` is built on a `flagLookup` seam. Tests replace it
+// to drive both branch outcomes without a running plane.
+var livePlaneTargetFn = livePlaneTarget
+
+// livePlaneTarget returns the "host:port/database" an instance's plane opens WHEN THAT PLANE IS RUNNING, or ""
+// when the instance has no port record or its plane does not answer.
+//
+// The database name and host are the ones planeEnv builds for the plane itself
+// (internal/planecontrol/env.go: `postgres://orchicon:orchicon@localhost:<port>/orchicon`). They are spelled here
+// rather than derived because that DSN is what the plane is HANDED, and it is a fixed shape — but the PORT comes
+// from the instance's own record, so a non-default install is honoured.
+func livePlaneTarget(instance string) string {
+	ports, err := planecontrol.ReadPorts(instance)
+	if err != nil {
+		return ""
+	}
+	pgPort := ports["ORCHICON_POSTGRES_PORT"]
+	controlPort := ports["ORCHICON_CONTROL_PORT"]
+	if pgPort <= 0 || controlPort <= 0 {
+		return ""
+	}
+	if !planeAnswers(controlPort) {
+		return ""
+	}
+	return fmt.Sprintf("localhost:%d/orchicon", pgPort)
+}
+
+// planeAnswers asks the plane's own readiness endpoint, bounded tightly: this runs once per test-binary Open and
+// must never be the reason a suite is slow.
+func planeAnswers(controlPort int) bool {
+	c := &http.Client{Timeout: 400 * time.Millisecond}
+	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", controlPort))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode == http.StatusOK
+}
+
+// allowSharedPlaneEnv is the deliberate opt-out for running DB-backed tests against a live plane's database.
+const allowSharedPlaneEnv = "ORCHICON_TEST_ALLOW_SHARED_DB"
+// sameDatabaseTarget compares two "host:port/database" targets, treating every LOOPBACK SPELLING as the same host.
+//
+// IT IS NOT A COSMETIC NORMALISATION. The plane is handed `localhost`; an operator's ORCHICON_TEST_DSN very
+// commonly says `127.0.0.1` (that is what the README's own example and most copy-pasted DSNs use). Compared as
+// raw strings those two never match, so the guard silently did nothing on the exact workstation it was written
+// for — found by running it, not by reading it.
+func sameDatabaseTarget(a, b string) bool {
+	ah, ap, ad, ok := splitDatabaseTarget(a)
+	bh, bp, bd, bok := splitDatabaseTarget(b)
+	if !ok || !bok {
+		return false
+	}
+	return loopbackEquivalent(ah, bh) && ap == bp && ad == bd
+}
+
+// splitDatabaseTarget splits "host:port/database" into its three parts.
+func splitDatabaseTarget(t string) (host, port, database string, ok bool) {
+	slash := strings.LastIndex(t, "/")
+	if slash < 0 {
+		return "", "", "", false
+	}
+	hostPort, database := t[:slash], t[slash+1:]
+	colon := strings.LastIndex(hostPort, ":")
+	if colon < 0 {
+		return "", "", "", false
+	}
+	return hostPort[:colon], hostPort[colon+1:], database, database != ""
+}
+
+// loopbackEquivalent reports whether two hosts both name the local machine.
+//
+// `localhost`, `127.0.0.1` and `::1` are the same database to a test; anything else is a different host and must
+// never be treated as equivalent, because the guard would then refuse a genuinely remote database.
+func loopbackEquivalent(a, b string) bool {
+	if strings.EqualFold(a, b) {
+		return true
+	}
+	loop := func(h string) bool {
+		h = strings.ToLower(strings.TrimSpace(h))
+		return h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]"
+	}
+	return loop(a) && loop(b)
 }
 
 // guardRefusal builds the one refusal message, so both reasons read the same way and redact the same way.

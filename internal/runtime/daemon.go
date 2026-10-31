@@ -35,6 +35,13 @@ import (
 // plane cannot use the daemon to create arbitrary containers, mount
 // arbitrary paths, or run arbitrary binaries.
 type Daemon struct {
+	// ContainerExeRequired says this host's own executable CANNOT be the container's entrypoint, so an empty
+	// ContainerExe is a refusal rather than a fallback.
+	//
+	// TRUE ON WINDOWS, where the daemon is a PE file and the container is Linux. The daemon sets it from
+	// runtime.ResolveContainerExe's result, so the rule lives in one place and the create path enforces it
+	// instead of discovering it as a readiness timeout.
+	ContainerExeRequired bool
 	// ContainerExe is the executable bind-mounted into runtime containers at /usr/local/bin/orchicon.
 	//
 	// DISTINCT FROM ExePath ON WINDOWS. The container is Linux and runs `orchicon runtime-supervisor`, so it needs
@@ -989,8 +996,20 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// THE CONTAINER BINARY, which is not necessarily this daemon's own executable: the container is Linux, and on
 	// Windows the daemon's own file is a PE image a Linux container cannot run (exe_resolve.go). Empty keeps a
 	// Linux daemon — where the two ARE the same file — exactly as it was.
+	// THE FALLBACK USED TO BE HARMLESS AND IS NOW A TRAP. `d.ExePath` is the DAEMON'S OWN executable, which on
+	// Windows is a PE file — mounting it as the entrypoint gives `exec format error`, the supervisor dies, its
+	// socket never appears, and the operator gets "supervisor socket not ready" with no cause. MEASURED: the
+	// mounted file began `MZ\x90\x00\x03\x00`, 96.7 MiB, the Windows build.
+	//
+	// So there is NO fallback to the host binary when the host platform is not the container's. An empty
+	// ContainerExe on such a host is a REFUSAL with the reason and the remedy, not a mount that cannot work.
 	containerExe := d.ContainerExe
 	if containerExe == "" {
+		if d.ContainerExeRequired {
+			return nil, fmt.Errorf("cannot create a runtime container: no linux/amd64 orchicon binary is "+
+				"available for the container's entrypoint, and this host's own executable is a %s binary a "+
+				"Linux container cannot run. %s", hostBinaryKind(), containerExeRemedy(d.ExePath))
+		}
 		containerExe = d.ExePath
 	}
 	if containerExe == "" {
@@ -998,6 +1017,14 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	}
 	if st, err := os.Stat(containerExe); err != nil || st.IsDir() {
 		return nil, fmt.Errorf("runtime container executable %s missing — cannot create runtime container: the orchicon binary is bind-mounted into every runtime container, never baked", containerExe)
+	}
+	// AND WHEN THE DAEMON KNOWS IT NEEDS A LINUX BINARY, IT DOES NOT TRUST THE RESOLUTION BLINDLY: a PE at this
+	// path is the reported failure arriving by another route (a stale copy, a misconfigured override), and
+	// catching it here turns a 30-second readiness timeout into one sentence.
+	if d.ContainerExeRequired && !isELFFile(containerExe) {
+		return nil, fmt.Errorf("cannot create a runtime container: %s is not a linux/amd64 binary (a Linux "+
+			"container cannot execute it, so its supervisor would die on exec format error). %s",
+			containerExe, containerExeRemedy(d.ExePath))
 	}
 	// SOURCE mapped (the VM must resolve it), DEST already a guest path.
 	args = append(args, "-v", d.Paths.Map(containerExe)+":/usr/local/bin/orchicon:ro")
@@ -1052,7 +1079,7 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 	// Wait for the in-container supervisor socket to answer pings. The
 	// supervisor starts immediately; opencode/lazy deps are not required
 	// for readiness.
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(supervisorReadyWindow)
 	for time.Now().Before(deadline) {
 		if d.pingRuntime(name) {
 			resp := &CreateResponse{Name: name, Running: true}
@@ -1106,7 +1133,63 @@ func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateRespons
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return nil, fmt.Errorf("runtime %s started but supervisor socket not ready", name)
+	// A TIMEOUT WITH NO CAUSE IS THE REPORTED COMPLAINT. The container started and the supervisor never
+	// answered, and all the operator got was "supervisor socket not ready" — which names the symptom and
+	// nothing else. MEASURED on Windows: the supervisor was a PE binary the Linux container could not exec,
+	// so it died instantly with `exec format error`, and that fact was only visible in
+	// `podman logs <container>`.
+	//
+	// The exec bits that matter are cheap to collect here: the container's state (and exit code, when it has
+	// already exited), plus the LAST lines of its output. That turns an opaque 30-second timeout into a
+	// diagnosis the operator can act on — and it is what makes the entrypoint class of bug self-evident
+	// instead of a round trip.
+	return nil, fmt.Errorf("runtime %s started but its supervisor never answered within %s%s",
+		name, supervisorReadyWindow, d.supervisorFailureDetail(name))
+}
+
+// supervisorFailureDetail is the WHY behind a supervisor readiness timeout, appended to the error.
+//
+// It never guesses. Each fact is one engine call, and anything that cannot be read contributes nothing —
+// a diagnostic that invents a cause is worse than a bare timeout, because it sends the operator after the
+// wrong thing.
+func (d *Daemon) supervisorFailureDetail(name string) string {
+	var b strings.Builder
+	if out, err := d.engine("inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", name); err == nil {
+		if f := strings.Fields(strings.TrimSpace(out)); len(f) > 0 {
+			b.WriteString("; container state: " + f[0])
+			if len(f) > 1 && f[1] != "0" {
+				b.WriteString(" (exit " + f[1] + ")")
+			}
+		}
+	}
+	// The last few lines of the container's own output. The failure that motivated this — exec format
+	// error on a PE entrypoint — appears ONLY here, because the process died before it could log anything
+	// of its own.
+	if out, err := d.engine("logs", "--tail", "5", name); err == nil {
+		if line := firstNonEmptyLine(out); line != "" {
+			b.WriteString("; last output: " + line)
+		}
+	}
+	if b.Len() == 0 {
+		return "" // nothing readable: say nothing rather than invent a cause
+	}
+	return b.String()
+}
+
+// supervisorReadyWindow is the readiness budget, named so the error can state it.
+const supervisorReadyWindow = 30 * time.Second
+
+// firstNonEmptyLine returns the first non-blank line of s, trimmed, or "".
+//
+// LOCAL ON PURPOSE. internal/containerengine has a firstLine, but this package does not import that one for
+// a diagnostic helper — and a one-line dependency is not worth the coupling.
+func firstNonEmptyLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // createFlagArgs is the engine-flag prefix of a runtime create: identity,

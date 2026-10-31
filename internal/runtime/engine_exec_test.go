@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDaemonExecutesTheResolvedEngineBinary installs a fake `podman` ahead of
@@ -27,9 +28,7 @@ func TestDaemonExecutesTheResolvedEngineBinary(t *testing.T) {
 	logPath := filepath.Join(dir, "argv.log")
 	shim := filepath.Join(dir, "podman")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + logPath + "\necho fake-podman-ran\n"
-	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
+	writeExecutableShim(t, shim, script)
 
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(EnvEngine, "")
@@ -81,4 +80,40 @@ func TestZeroDaemonNeverExecsAnEmptyBinary(t *testing.T) {
 	if got := d.Engine.NameInUseTokens(); len(got) == 0 {
 		t.Error("a zero Engine must still supply the default engine's retry tokens")
 	}
+}
+
+// writeExecutableShim writes an executable script and waits until the kernel will actually exec it.
+//
+// A PLAIN os.WriteFile FOLLOWED IMMEDIATELY BY exec IS A RACE, and it produced a real CI failure:
+//
+//	d.engine must exec the resolved binary: fork/exec …/podman: text file busy
+//
+// ETXTBSY means the file is still open for writing somewhere — on Linux, a concurrent fork inherits the
+// writer's open descriptor for an instant, so the child that execs can collide with the descriptor the
+// parent just closed. Under a full-suite run (hundreds of parallel writers and forks) this fires
+// occasionally; in isolation it never does, which is exactly why it reached CI rather than a laptop.
+//
+// The fix is to make the write and the exec causally ordered rather than merely sequential: close, then
+// confirm the file is readable and executable by STAT, and retry the write+stat a bounded number of times.
+// Cheap, and it cannot mask a genuine failure — if the file is never execable the test still fails, with
+// the last error.
+func writeExecutableShim(t *testing.T, path, script string) {
+	t.Helper()
+	const attempts = 20
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			lastErr = err
+			time.Sleep(time.Duration(i) * time.Millisecond)
+			continue
+		}
+		// Stat forces the close to be visible and confirms the mode took.
+		if fi, err := os.Stat(path); err != nil || fi.Mode().Perm()&0o100 == 0 {
+			lastErr = err
+			time.Sleep(time.Duration(i) * time.Millisecond)
+			continue
+		}
+		return
+	}
+	t.Fatalf("could not write an executable shim at %s after %d attempts: %v", path, attempts, lastErr)
 }

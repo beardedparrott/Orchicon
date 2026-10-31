@@ -15,6 +15,7 @@ package runtime
 // itself is pinned rather than described.
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -296,5 +297,43 @@ func TestDedupeMountsKeepsTheFirst(t *testing.T) {
 	// FIRST WINS, so the intended (writable) mount survives rather than being replaced by a later read-only one.
 	if got[0].RO {
 		t.Error("the later read-only entry replaced the first — the engine would mount it read-only")
+	}
+}
+
+// TestSupervisorTimeoutReportsWhyItTimedOut is the reported complaint, as a test.
+//
+// The operator's log line was "started but supervisor socket not ready" — a symptom with no cause. On
+// Windows the actual cause (a PE entrypoint the container could not exec) was visible ONLY in
+// `podman logs`, so the failure cost a round trip to diagnose. The error now carries the container's state
+// and the last line of its own output, which is where an exec failure appears.
+func TestSupervisorTimeoutReportsWhyItTimedOut(t *testing.T) {
+	var calls [][]string
+	d := &Daemon{
+		Paths: NewPathMapper("linux", ""),
+		engineFn: func(args ...string) (string, error) {
+			calls = append(calls, args)
+			switch args[0] {
+			case "inspect":
+				return "exited 126\n", nil // 126 = cannot execute
+			case "logs":
+				return "exec /usr/local/bin/orchicon: exec format error\nrun 1 of 1\n", nil
+			}
+			return "", nil
+		},
+	}
+	detail := d.supervisorFailureDetail("orchicon-runtime-x")
+
+	for _, want := range []string{"exited", "126", "exec format error"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("the timeout detail must carry %q so the cause is visible in the LOG, not only in "+
+				"`podman logs`; got: %q", want, detail)
+		}
+	}
+	// It must not invent anything when nothing is readable.
+	quiet := &Daemon{Paths: NewPathMapper("linux", ""), engineFn: func(args ...string) (string, error) {
+		return "", fmt.Errorf("no such container")
+	}}
+	if got := quiet.supervisorFailureDetail("gone"); got != "" {
+		t.Errorf("nothing readable must produce NO detail rather than a guessed cause; got %q", got)
 	}
 }

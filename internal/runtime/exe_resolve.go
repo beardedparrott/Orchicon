@@ -19,7 +19,9 @@ package runtime
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"runtime"
 	"path/filepath"
 	"strings"
 )
@@ -75,4 +77,45 @@ func ResolveContainerExe(goos, hostExe, override string) (string, error) {
 		"cannot start without one — re-run the Orchicon installer with containers enabled (`install.ps1 "+
 		"-Containers`), or place a linux build at one of those names and set %s to it",
 		hostExe, strings.Join(containerExeSiblingNames, ", "), ContainerExeEnv)
+}
+
+// hostBinaryKind names the host executable's format for an error message.
+func hostBinaryKind() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "Windows PE"
+	case "darwin":
+		return "macOS Mach-O"
+	default:
+		return runtime.GOOS
+	}
+}
+
+// containerExeRemedy is the actionable half of the refusal: what to obtain and where to put it.
+func containerExeRemedy(hostExe string) string {
+	where := "beside the orchicon executable"
+	if hostExe != "" {
+		where = "beside " + hostExe
+	}
+	return fmt.Sprintf("Place a linux/amd64 orchicon build %s (named %s), or point %s at one. "+
+		"`install.ps1` downloads it automatically when containers are enabled",
+		where, strings.Join(containerExeSiblingNames, " / "), ContainerExeEnv)
+}
+
+// isELFFile reports whether path begins with the ELF magic. It is the cheap, format-level check that catches a
+// PE (or a Mach-O) reaching the container entrypoint, which is the failure this file exists to prevent.
+//
+// It reads FOUR BYTES, so it is safe to call on a hot path and cannot be fooled by a filename: an override
+// pointing at a stray copy of the Windows build is caught here rather than in a readiness timeout.
+func isELFFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	return magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F'
 }
