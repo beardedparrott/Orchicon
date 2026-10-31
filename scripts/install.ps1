@@ -1363,7 +1363,11 @@ function Test-VersionGreater {
     if ($script:ContainerOptIn) {
         $linuxAsset = "orchicon_${versionNum}_linux_amd64.tar.gz"
         $linuxUrl = "$baseUrl/$Version/$linuxAsset"
-        $linuxDest = Join-Path $InstallDir "orchicon-linux-amd64"
+        # THE DATA DIR, NOT THE INSTALL DIR. The daemon looks beside its own executable and then
+        # here; a daemon started earlier from somewhere else (a locally built bin\orchicon.exe) never
+        # looks in InstallDir, and an install that already has a live daemon does not restart it.
+        $linuxBinDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "orchicon\bin" } else { Join-Path $InstallDir "bin" }
+        $linuxDest = Join-Path $linuxBinDir "orchicon-linux-amd64"
         if ($env:ORCHICON_INSTALL_LINUX_ARCHIVE) {
             $linuxArchive = $env:ORCHICON_INSTALL_LINUX_ARCHIVE
             Write-Info "using the linux runtime binary archive at $linuxArchive"
@@ -1394,6 +1398,7 @@ function Test-VersionGreater {
                     Where-Object { $_.Name -eq "orchicon" } | Select-Object -First 1
             }
             if ($foundLinux) {
+                New-Item -ItemType Directory -Path $linuxBinDir -Force | Out-Null
                 Copy-Item -LiteralPath $foundLinux.FullName -Destination $linuxDest -Force
                 if (Test-IsElfBinary $linuxDest) {
                     $script:ContainerBinary = $linuxDest

@@ -330,6 +330,9 @@ Check "the linux binary, when fetched, is installed under a DISTINCT name" `
 # REPORTED from a Windows host where container mode refused to start: there was no linux
 # binary beside the daemon, and the install had said nothing an operator would notice. Three
 # failures are possible and each is now decidable at install time rather than at run time.
+Check "the container binary is installed in the DATA DIR, where a daemon finds it wherever it was started" `
+  ($code11 -match 'orchicon\\bin') `
+  "beside the exe is not enough: an already-running daemon is not restarted, and a locally built one lives elsewhere"
 Check "the fetched linux binary is checked for the ELF magic before it is kept" `
   (($code11 -match 'function Test-IsElfBinary') -and ($code11 -match 'Test-IsElfBinary \$linuxDest')) `
   "a truncated download or an HTML error page must not be left where the daemon mounts it"
