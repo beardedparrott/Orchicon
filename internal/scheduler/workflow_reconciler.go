@@ -1936,13 +1936,30 @@ func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, ten
 	if retryErr == nil {
 		return nil
 	}
+	// THE BASE-IMAGE FALLBACK IS NOT ATTEMPTED WHEN IT STRUCTURALLY CANNOT WORK.
+	//
+	// REPORTED: `podman ps` showed TWO containers per run — the `:dev` one that works and a
+	// `ghcr.io/…:latest` base one that cannot — because this fallback created a second container with an
+	// image the bake guard FORBIDS from carrying an adapter CLI. In that container `opencode serve` (or the
+	// claude binary) has nothing to execute, so it exits 1, and the operator is handed a bare `exit status 1`
+	// as the reason the run failed.
+	//
+	// So the fallback now applies only where the base image could genuinely serve: a run that demands no
+	// image-supplied adapter. A native ("orchicon") run is exactly that case — its binary is bind-mounted out
+	// of the daemon, not baked — and it keeps the fallback.
 	var baseErr error
 	if img != baseImg {
-		try.RuntimeImage = baseImg
-		baseErr = r.runtime.EnsureForRun(ctx, try)
-		if baseErr == nil {
-			r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", retryErr)
-			return nil
+		if kinds := r.runImageSuppliedKinds(ctx, ftx.Tx, tenantID, cur.ID); len(kinds) > 0 {
+			r.log.Warn("workflow runtime: not falling back to the base image — it cannot carry the adapter "+
+				"this run dispatches to, so the fallback would create a second container that cannot start its "+
+				"adapter", "run", cur.ID, "resolved", img, "kinds", kinds, "error", retryErr)
+		} else {
+			try.RuntimeImage = baseImg
+			baseErr = r.runtime.EnsureForRun(ctx, try)
+			if baseErr == nil {
+				r.log.Warn("workflow runtime fell back to base image", "run", cur.ID, "resolved", img, "error", retryErr)
+				return nil
+			}
 		}
 	}
 	reason := containerFailureReason(img, retryErr, baseErr)
@@ -1953,6 +1970,39 @@ func (r *WorkflowReconciler) ensureRunContainerFailover(ctx context.Context, ten
 		return fmt.Errorf("commit fail-at-start: %w", cerr)
 	}
 	return nil
+}
+
+// runImageSuppliedKinds returns the adapter kinds this run dispatches to whose CLI must come FROM THE IMAGE.
+//
+// The published base image deliberately bakes no adapter CLI (the daemon bind-mounts the host installs, and
+// the bake guard forbids an adapter in a PUBLISHED image), so swapping to it cannot fix a failure caused by a
+// missing adapter — it can only produce a second container whose serve exits 1. The native kind is excluded
+// on purpose: its binary is the daemon's own, mounted at /usr/local/bin/orchicon, so the base image CAN run a
+// native step and keeps the fallback.
+func (r *WorkflowReconciler) runImageSuppliedKinds(ctx context.Context, tx pgx.Tx, tenantID, runID string) []string {
+	cur, err := db.GetWorkflowRun(ctx, tx, tenantID, runID)
+	if err != nil {
+		return nil
+	}
+	ver, err := db.GetWorkflowVersion(ctx, tx, tenantID, cur.WorkflowID, cur.WorkflowVersion)
+	if err != nil {
+		// A read failure must not silently ENABLE the fallback it was meant to suppress, but nor may it fail a
+		// run over a diagnostic: treat it as "unknown" and leave the fallback as it was before this change.
+		return nil
+	}
+	steps, err := workflow.ParseSteps(ver.Steps)
+	if err != nil {
+		return nil
+	}
+	res := adapter.ResolveRunSteps(ctx, tx, tenantID, steps)
+	var out []string
+	for _, k := range adapter.AdapterDemandSet(res.ModelRefs()...).Kinds() {
+		if k == adapter.NativeAdapterKind {
+			continue
+		}
+		out = append(out, k)
+	}
+	return out
 }
 
 // runtimeImageAbsentReason reports the fail-fast reason when the run's runtime

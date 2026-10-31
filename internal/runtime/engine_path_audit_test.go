@@ -157,10 +157,13 @@ func TestProjectDirIsMappedBeforeTheContainerSeesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(b)
-	mapAt := strings.Index(src, "req.ProjectDir = d.Paths.Map(req.ProjectDir)")
+	// THE WALKER IS THE MAPPING NOW. It converts every field tagged orchicon:"hostpath" — ProjectDir, and the
+	// Cwd beside it that this audit previously could not see. Asserting the CALL rather than the literal line
+	// keeps this test valid as the set of path fields grows, which is the whole point of the tag.
+	mapAt := strings.Index(src, "mapHostPathFields(d.Paths, &req)")
 	if mapAt < 0 {
-		t.Fatal("req.ProjectDir is never mapped — the in-container supervisor would be handed a Windows path " +
-			"as its working directory and safety-guard root")
+		t.Fatal("createContainer never maps the request's host paths — the in-container supervisor would be " +
+			"handed a Windows path as its working directory and safety-guard root")
 	}
 	// It must happen at the TOP of create, before the argv is built and before any request is forwarded.
 	argvAt := strings.Index(src, "args = append(args, mountArgv(mapMounts")
