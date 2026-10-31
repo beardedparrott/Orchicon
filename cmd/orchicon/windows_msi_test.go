@@ -133,6 +133,35 @@ func TestMSICarriesTheContainerBinaryBesideTheExe(t *testing.T) {
 	}
 }
 
+// TestCIVerifiesTheInstalledContainerBinary — the MSI job INSTALLS the package and checks the payload by
+// name, which makes it the only place the whole change is proven end to end on real Windows. Binding
+// proves the file is in the package; only an install proves it lands where the daemon looks, and only a
+// magic check proves it is something a Linux kernel can execute.
+func TestCIVerifiesTheInstalledContainerBinary(t *testing.T) {
+	src := readMSIFile(t, filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+
+	// SCOPED TO THE INSTALLED-PAYLOAD LIST, not to the file at large. The name appears three times in
+	// this workflow (build, stage, verify), so a whole-file Contains passes even with the VERIFICATION
+	// deleted — measured: removing it from the foreach left this test green.
+	listStart := strings.Index(src, "foreach ($f in @(")
+	if listStart < 0 {
+		t.Fatal("ci.yml has no installed-payload file list to assert against")
+	}
+	list := src[listStart:]
+	if end := strings.Index(list, "))"); end > 0 {
+		list = list[:end]
+	}
+	if !strings.Contains(list, "'orchicon-linux-amd64'") {
+		t.Error("ci.yml installs the MSI but does not assert orchicon-linux-amd64 is in the INSTALLED " +
+			"payload — a package missing it installs cleanly and cannot start a container")
+	}
+	if !strings.Contains(src, "0x7f") {
+		t.Error("ci.yml does not check the installed container binary's ELF magic. A Windows binary " +
+			"under that name satisfies a filename check and dies on `exec format error` in the container, " +
+			"which is a run-time failure six steps away from the packaging mistake")
+	}
+}
+
 // TestEveryMSIBuildSiteStagesTheContainerBinary — a staging step that only exists in ONE workflow is a
 // release that ships the file and a canary that does not, or the reverse, and the difference is invisible
 // until someone installs from the one that forgot.
