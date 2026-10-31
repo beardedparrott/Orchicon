@@ -75,7 +75,18 @@ type WorkflowRunRow struct {
 	WorkItemID      string // bound work item id; empty for one-shot runs
 	BoundWorkerRef  []byte // jsonb; reserved for future use
 	RuntimeImage    string // resolved runtime container image tag at run start
-	RuntimeReady    bool   // runtime-serve readiness gate: executions dispatch only once true
+	// RuntimeReady is the RUNTIME GATE, NOT A LIVE TRANSPORT.
+	//
+	// True means "whatever had to be ready for this run's transport is satisfied, so executions may
+	// dispatch" — which for a LOCAL run is trivially true and says nothing at all about a container. It was
+	// read during a live diagnosis as "an execution transport is running", which it never meant, and the
+	// wrong inference cost a round trip.
+	//
+	// THE TRANSPORT IS WHATEVER RuntimeImage AND THE EFFECTIVE EXECUTION MODE SAY, and the mode is resolved
+	// per dispatch (db.EffectiveExecutionMode: the work item's own override wins over its project). A local
+	// run has an empty RuntimeImage and no container; a runtime run names one. Do not infer either from this
+	// field.
+	RuntimeReady bool // runtime-serve readiness gate: executions dispatch only once true
 	WorktreeStatus  string // WorktreeReconciler provisioning state (pending/ready/skipped/failed/pruned)
 	WorktreePath    string // isolated working tree path (git-backed runs)
 	WorktreeBranch  string // deterministic branch created for the run

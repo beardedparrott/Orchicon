@@ -242,6 +242,11 @@ func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy st
 		// COMMIT-ALWAYS. Neither canned prompt stated it, so whether a run left work uncommitted was the
 		// worker's own judgement — and only committed work is visible to a later step, which runs in a
 		// pristine sibling worktree.
+		// §7.4 — SAY WHERE "HERE" IS. Two reported workers inferred that the shell and the file tools disagreed
+		// about the working directory and stopped rather than write into the shared checkout. That was the right
+		// call under ambiguity; stating it removes the ambiguity. The exact path is not interpolated because the
+		// prefix is cache-shared across runs — the RULE is what a worker needs.
+		sb.WriteString("- **Your working directory is this run's worktree** — a sibling of the project directory under `.orchicon-worktrees/<run-id>`. Relative paths in every tool resolve against it and `pwd` prints it. It is YOURS: it is not the shared checkout, and a sibling run's worktree is not yours to write to.\n")
 		sb.WriteString("- **Commit everything in scope before you finish.** `git status --porcelain` must be clean when you report, apart from files your project's `.gitignore` covers. Uncommitted work is invisible to every later step and to the operator.\n")
 		if gitStrategy == "local" {
 			// LOCAL INTEGRATION: THERE IS NO REMOTE, SO THERE IS NOTHING TO PUSH TO.
