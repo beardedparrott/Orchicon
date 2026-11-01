@@ -1577,3 +1577,98 @@ func agentConfigProtoToRow(p *apiv1.AgentConfig) db.AgentConfigRow {
 		AgentsMD:     p.AgentsMd,
 	}
 }
+
+// DeleteConversationMessage removes one message, or that message and everything after it, and RECYCLES the
+// conversation's model session.
+//
+// THE SESSION RESET IS THE WHOLE FEATURE, not a detail. A turn is CONTINUED on the stored session id
+// (SendTurnMessage(..., conv.SessionID, ...)), so the provider's context is the LIVE SESSION, not the rows in
+// this database. Deleting rows alone would remove the message from the transcript the operator sees while
+// leaving it fully present in what the model is reasoning about — the worst possible outcome, because the
+// screen would say it is gone. Clearing session_id makes the next turn start a fresh session, which replays
+// the (now truncated) history from the database, and the deleted text is gone from both.
+//
+// A TURN IN FLIGHT IS REFUSED. The collector writes the assistant reply as the turn proceeds (UpsertMessage),
+// so deleting a row underneath it would either resurrect the message or persist a reply to something the
+// operator just removed. One message per conversation would already refuse a second send; this refuses the
+// delete instead, with the action the operator can take.
+func (s *Service) DeleteConversationMessage(ctx context.Context, req *connect.Request[apiv1.DeleteConversationMessageRequest]) (*connect.Response[apiv1.DeleteConversationMessageResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.ConversationId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("conversation_id must not be empty"))
+	}
+	if req.Msg.MessageId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message_id must not be empty"))
+	}
+	switch req.Msg.Mode {
+	case apiv1.MessageDeleteMode_MESSAGE_DELETE_MODE_ONLY,
+		apiv1.MessageDeleteMode_MESSAGE_DELETE_MODE_AND_FOLLOWING:
+	default:
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("mode must be ONLY or AND_FOLLOWING"))
+	}
+	if _, running := s.turns.get(req.Msg.ConversationId); running {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("a reply is still in progress for this conversation — stop it (or wait) before removing messages"))
+	}
+
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	conv, err := db.GetConversation(ctx, ttx.Tx, tenantID, req.Msg.ConversationId)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("conversation not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// THE MESSAGE MUST BELONG TO THIS CONVERSATION. Without this the handler would be a deletion primitive over
+	// any row in the tenant that the caller can name, which is a wider authority than the operator asked for.
+	owned, err := db.MessageBelongsToConversation(ctx, ttx.Tx, tenantID, req.Msg.ConversationId, req.Msg.MessageId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if !owned {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("message not found in this conversation"))
+	}
+
+	var deleted int64
+	if req.Msg.Mode == apiv1.MessageDeleteMode_MESSAGE_DELETE_MODE_AND_FOLLOWING {
+		deleted, err = db.DeleteMessagesFrom(ctx, ttx.Tx, tenantID, req.Msg.ConversationId, req.Msg.MessageId)
+	} else {
+		deleted, err = db.DeleteMessage(ctx, ttx.Tx, tenantID, req.Msg.ConversationId, req.Msg.MessageId)
+	}
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("message not found in this conversation"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// THE RESET, unconditionally — even when deleted is 0. A no-op deletion still leaves the operator certain
+	// they removed something; recycling costs one replayed history and guarantees the transcript and the
+	// model's context agree.
+	hadSession := strings.TrimSpace(conv.SessionID) != ""
+	if hadSession {
+		if err := db.UpdateConversationSessionID(ctx, ttx.Tx, tenantID, req.Msg.ConversationId, ""); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	s.log.Info("conversation messages removed",
+		"conversation", req.Msg.ConversationId, "message", req.Msg.MessageId,
+		"mode", req.Msg.Mode.String(), "deleted", deleted, "session_reset", hadSession)
+	return connect.NewResponse(&apiv1.DeleteConversationMessageResponse{
+		DeletedCount: int32(deleted),
+		SessionReset: hadSession,
+	}), nil
+}

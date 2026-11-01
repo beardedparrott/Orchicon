@@ -18,6 +18,40 @@ import { Category, CategoryAssignment } from "./category_pb.js";
 import { ModelCapabilities } from "./ai_gateway_pb.js";
 
 /**
+ * MessageDeleteMode selects how much of a conversation a deletion removes.
+ *
+ * @generated from enum orchicon.api.v1.MessageDeleteMode
+ */
+export enum MessageDeleteMode {
+  /**
+   * @generated from enum value: MESSAGE_DELETE_MODE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * ONLY removes exactly the named message. This is UNDO. A later message is never invalidated by an earlier
+   * one being forgotten, so the rest of the conversation is untouched — including the assistant reply this
+   * message produced, which the replay path repairs rather than deleting on the operator's behalf.
+   *
+   * @generated from enum value: MESSAGE_DELETE_MODE_ONLY = 1;
+   */
+  ONLY = 1,
+
+  /**
+   * AND_FOLLOWING removes the named message and every message after it. This is REVERT TO HERE.
+   *
+   * @generated from enum value: MESSAGE_DELETE_MODE_AND_FOLLOWING = 2;
+   */
+  AND_FOLLOWING = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(MessageDeleteMode)
+proto3.util.setEnumType(MessageDeleteMode, "orchicon.api.v1.MessageDeleteMode", [
+  { no: 0, name: "MESSAGE_DELETE_MODE_UNSPECIFIED" },
+  { no: 1, name: "MESSAGE_DELETE_MODE_ONLY" },
+  { no: 2, name: "MESSAGE_DELETE_MODE_AND_FOLLOWING" },
+]);
+
+/**
  * PermissionChoice is the operator's answer to one ask.
  *
  * @generated from enum orchicon.api.v1.PermissionChoice
@@ -983,6 +1017,106 @@ export class ListMessagesResponse extends Message<ListMessagesResponse> {
 
   static equals(a: ListMessagesResponse | PlainMessage<ListMessagesResponse> | undefined, b: ListMessagesResponse | PlainMessage<ListMessagesResponse> | undefined): boolean {
     return proto3.util.equals(ListMessagesResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteConversationMessageRequest
+ */
+export class DeleteConversationMessageRequest extends Message<DeleteConversationMessageRequest> {
+  /**
+   * @generated from field: string conversation_id = 1;
+   */
+  conversationId = "";
+
+  /**
+   * @generated from field: string message_id = 2;
+   */
+  messageId = "";
+
+  /**
+   * @generated from field: orchicon.api.v1.MessageDeleteMode mode = 3;
+   */
+  mode = MessageDeleteMode.UNSPECIFIED;
+
+  constructor(data?: PartialMessage<DeleteConversationMessageRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteConversationMessageRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "message_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "mode", kind: "enum", T: proto3.getEnumType(MessageDeleteMode) },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteConversationMessageRequest {
+    return new DeleteConversationMessageRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteConversationMessageRequest {
+    return new DeleteConversationMessageRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteConversationMessageRequest {
+    return new DeleteConversationMessageRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteConversationMessageRequest | PlainMessage<DeleteConversationMessageRequest> | undefined, b: DeleteConversationMessageRequest | PlainMessage<DeleteConversationMessageRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteConversationMessageRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.DeleteConversationMessageResponse
+ */
+export class DeleteConversationMessageResponse extends Message<DeleteConversationMessageResponse> {
+  /**
+   * deleted_count is how many rows were removed. Zero is a valid, non-error answer when the mode is ONLY and
+   * the row had already gone — a double-click must not read as a failure.
+   *
+   * @generated from field: int32 deleted_count = 1;
+   */
+  deletedCount = 0;
+
+  /**
+   * session_reset reports whether the conversation's live model session was recycled. THIS is what makes the
+   * removal take effect in the model's context: turns are CONTINUED on a stored session id, so without the
+   * reset the deleted text would still be in the provider's context while being absent from the transcript.
+   * False when there was no session to reset.
+   *
+   * @generated from field: bool session_reset = 2;
+   */
+  sessionReset = false;
+
+  constructor(data?: PartialMessage<DeleteConversationMessageResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.DeleteConversationMessageResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "deleted_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 2, name: "session_reset", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteConversationMessageResponse {
+    return new DeleteConversationMessageResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteConversationMessageResponse {
+    return new DeleteConversationMessageResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteConversationMessageResponse {
+    return new DeleteConversationMessageResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteConversationMessageResponse | PlainMessage<DeleteConversationMessageResponse> | undefined, b: DeleteConversationMessageResponse | PlainMessage<DeleteConversationMessageResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteConversationMessageResponse, a, b);
   }
 }
 

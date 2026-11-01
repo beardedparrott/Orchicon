@@ -93,6 +93,11 @@ service AskOrchiconService {
   // ListMessages returns messages for a conversation, ordered by
   // created_at ascending (oldest first).
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+  // DeleteConversationMessage removes ONE message (undo) or that message and everything after it (revert),
+  // and RECYCLES the conversation's model session so the removed text leaves the model's CONTEXT and not only
+  // the screen. The two modes are the operator's own two verbs: "undo it (remove it from the screen and
+  // context)" and "revert to that message removing anything that has come after it".
+  rpc DeleteConversationMessage(DeleteConversationMessageRequest) returns (DeleteConversationMessageResponse);
 
   // ChatStream sends a message (with optional attachments) to a
   // conversation and returns immediately with a TurnStarted ack carrying
@@ -360,6 +365,34 @@ message ListMessagesRequest {
 message ListMessagesResponse {
   repeated ChatMessage messages = 1;
   string next_page_token = 2;
+}
+
+// MessageDeleteMode selects how much of a conversation a deletion removes.
+enum MessageDeleteMode {
+  MESSAGE_DELETE_MODE_UNSPECIFIED = 0;
+  // ONLY removes exactly the named message. This is UNDO. A later message is never invalidated by an earlier
+  // one being forgotten, so the rest of the conversation is untouched — including the assistant reply this
+  // message produced, which the replay path repairs rather than deleting on the operator's behalf.
+  MESSAGE_DELETE_MODE_ONLY = 1;
+  // AND_FOLLOWING removes the named message and every message after it. This is REVERT TO HERE.
+  MESSAGE_DELETE_MODE_AND_FOLLOWING = 2;
+}
+
+message DeleteConversationMessageRequest {
+  string conversation_id = 1;
+  string message_id = 2;
+  MessageDeleteMode mode = 3;
+}
+
+message DeleteConversationMessageResponse {
+  // deleted_count is how many rows were removed. Zero is a valid, non-error answer when the mode is ONLY and
+  // the row had already gone — a double-click must not read as a failure.
+  int32 deleted_count = 1;
+  // session_reset reports whether the conversation's live model session was recycled. THIS is what makes the
+  // removal take effect in the model's context: turns are CONTINUED on a stored session id, so without the
+  // reset the deleted text would still be in the provider's context while being absent from the transcript.
+  // False when there was no session to reset.
+  bool session_reset = 2;
 }
 
 // --- Chat Streaming ---

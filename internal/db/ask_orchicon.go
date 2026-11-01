@@ -507,6 +507,72 @@ func ListMessages(ctx context.Context, tx pgx.Tx, tenantID, conversationID strin
 	return rows, nil
 }
 
+// MessageBelongsToConversation reports whether the message exists in that conversation for this tenant.
+//
+// It gates the deletion RPC: without it the handler would delete any message row the caller can NAME, which is
+// a wider authority than "edit my own transcript" and would cross conversations silently.
+func MessageBelongsToConversation(ctx context.Context, tx pgx.Tx, tenantID, conversationID, messageID string) (bool, error) {
+	const q = `SELECT 1 FROM ask_orchicon_messages WHERE tenant_id = $1 AND conversation_id = $2 AND id = $3`
+	var one int
+	if err := tx.QueryRow(ctx, q, tenantID, conversationID, messageID).Scan(&one); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("db: message lookup: %w", err)
+	}
+	return true, nil
+}
+
+// DeleteMessage deletes exactly ONE message row.
+//
+// THE "UNDO" HALF of the operator's request: "click on a user message and undo it (remove it from the screen
+// and context)". It removes one row and touches nothing else, which is deliberate — a later message in the
+// same conversation is not invalidated by an earlier one being forgotten.
+//
+// Consequence the caller must handle, not this function: removing a USER message leaves the assistant reply it
+// produced with no question in front of it. The replay path repairs that (see repairLeadingAssistant), because
+// a history that begins with an assistant turn is what a provider refuses.
+func DeleteMessage(ctx context.Context, tx pgx.Tx, tenantID, conversationID, messageID string) (int64, error) {
+	const q = `DELETE FROM ask_orchicon_messages WHERE tenant_id = $1 AND conversation_id = $2 AND id = $3`
+	tag, err := tx.Exec(ctx, q, tenantID, conversationID, messageID)
+	if err != nil {
+		return 0, fmt.Errorf("db: delete message: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// DeleteMessagesFrom deletes the named message AND every message after it.
+//
+// THE "REVERT" HALF: "revert to that message removing anything that has come after it".
+//
+// THE ORDERING IS (created_at, id), NOT id ALONE, AND THAT IS NOT PEDANTRY. Message ids are ULIDs produced by
+// ulid.MustNew with RANDOM entropy — they are NOT monotonic within a millisecond, so `id >= $3` would cut a
+// different set than the transcript shows. created_at is `now()`, also not unique. The client orders by
+// created_at, so the row-comparison below reproduces exactly what the operator is looking at, with id as the
+// tiebreak so the set is TOTAL rather than merely usually-right.
+//
+// The target row is read first for its own (created_at, id): the operator names a message, not a timestamp.
+func DeleteMessagesFrom(ctx context.Context, tx pgx.Tx, tenantID, conversationID, messageID string) (int64, error) {
+	const target = `SELECT created_at, id FROM ask_orchicon_messages
+		WHERE tenant_id = $1 AND conversation_id = $2 AND id = $3`
+	var at time.Time
+	var id string
+	if err := tx.QueryRow(ctx, target, tenantID, conversationID, messageID).Scan(&at, &id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("db: locate message: %w", err)
+	}
+	const q = `DELETE FROM ask_orchicon_messages
+		WHERE tenant_id = $1 AND conversation_id = $2
+		  AND (created_at, id) >= ($3, $4)`
+	tag, err := tx.Exec(ctx, q, tenantID, conversationID, at, id)
+	if err != nil {
+		return 0, fmt.Errorf("db: delete messages from: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // DeleteConversationMessages deletes all messages for a conversation.
 func DeleteConversationMessages(ctx context.Context, tx pgx.Tx, tenantID, conversationID string) error {
 	const q = `DELETE FROM ask_orchicon_messages WHERE tenant_id = $1 AND conversation_id = $2`

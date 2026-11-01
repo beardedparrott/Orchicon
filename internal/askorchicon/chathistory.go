@@ -137,8 +137,7 @@ func sanitizeHistoryRows(history []db.MessageRow) []db.MessageRow {
 	if len(history) == 0 {
 		return history
 	}
-	out := make([]db.MessageRow, len(history))
-	copy(out, history)
+	out := repairLeadingAssistant(history)
 	for i := range out {
 		if out[i].Role != "assistant" || len(out[i].ToolCalls) == 0 {
 			continue
@@ -147,6 +146,57 @@ func sanitizeHistoryRows(history []db.MessageRow) []db.MessageRow {
 		out[i].ToolCalls = calls
 		out[i].ToolResults = results
 	}
+	return out
+}
+
+// repairLeadingAssistant drops the assistant run that precedes the first user message.
+//
+// WHY THIS EXISTS NOW: "UNDO" REMOVES A USER MESSAGE AND LEAVES ITS REPLY. That is what the operator asked for —
+// one message, not the exchange — and it is the right behaviour for "forget that I asked this; keep what we
+// built afterwards". But a replayed history whose OLDEST turn is an assistant message has no question in front
+// of it, and providers reject that shape (the first non-system turn must be the user's). Before this the only
+// way a leading assistant could arise was a hand-edited database.
+//
+// IT DROPS FROM THE REPLAY, IT DOES NOT DELETE. The row stays on disk and in the transcript the operator is
+// looking at, so undoing a message never silently takes its reply with it. Only the replayed history is
+// trimmed, which is the smallest change that makes the request valid: the model sees the conversation from its
+// first surviving question.
+//
+// DIRECTION COMES FROM THE TIMESTAMPS AND NOTHING ELSE. The turn path hands this function DESC (ListMessages
+// is ORDER BY created_at DESC) and other readers hand it ASC, so index 0 is not reliably the oldest. Two
+// earlier versions got this wrong in instructive ways: comparing the two ends by (created_at, id) trimmed the
+// NEWEST replies whenever ids happened not to sort like time, and sorting indices by the same key did the same
+// for rows that share a timestamp. So:
+//
+//   - if the ends' timestamps DIFFER, that settles the direction outright;
+//   - if they do not (one row, a single transaction's rows, or fixtures with no clock), the slice is taken to
+//     be in the caller's intended order — ASCENDING, because that is what a chronological reader means and
+//     there is no evidence to contradict it.
+//
+// Guessing has a real cost here: the failure mode is the model quietly forgetting recent turns, which looks
+// like a model problem rather than a repair problem.
+func repairLeadingAssistant(history []db.MessageRow) []db.MessageRow {
+	if len(history) == 0 {
+		return history
+	}
+	ascending := true
+	if first, last := history[0], history[len(history)-1]; !first.CreatedAt.Equal(last.CreatedAt) {
+		ascending = first.CreatedAt.Before(last.CreatedAt)
+	}
+	dropped := 0
+	if ascending {
+		for dropped < len(history) && history[dropped].Role == "assistant" {
+			dropped++
+		}
+		out := make([]db.MessageRow, len(history)-dropped)
+		copy(out, history[dropped:])
+		return out
+	}
+	for dropped < len(history) && history[len(history)-1-dropped].Role == "assistant" {
+		dropped++
+	}
+	out := make([]db.MessageRow, len(history)-dropped)
+	copy(out, history[:len(history)-dropped])
 	return out
 }
 
