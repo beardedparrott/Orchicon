@@ -78,7 +78,7 @@ import { useGetSettings } from "@/api/settings";
 import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
 import { MessageActions } from "@/components/ask/MessageActions";
-import { MessageAction, modeForAction, type MessageActionValue } from "@/lib/ask-message-actions";
+import { MessageAction, modeForAction, restoresComposer, type MessageActionValue } from "@/lib/ask-message-actions";
 import { COMPACT_COMMAND, parseComposerCommand } from "@/lib/composer-command";
 import { bubbleKindFor } from "@/lib/ask-bubble";
 import {
@@ -1738,6 +1738,23 @@ function AskOrchiconPage() {
       if (!activeConvId) return;
       const res = await deleteMessage.mutateAsync({ messageId: message.id, mode: modeForAction(action) });
       const removed = action === MessageAction.Undo ? "Message removed" : "Conversation reverted";
+      // A REVERT HANDS THE MESSAGE BACK TO THE COMPOSER.
+      //
+      // The operator: "a revert should also put the message you selected back into the composer". Revert
+      // removes the message, so without this its text is gone from the interface entirely — the operator would
+      // have to retype a question they had already written, which is the one thing removing it should not cost.
+      // The composer is the natural home for it: the text comes back as a DRAFT, editable, and sending it starts
+      // the conversation again from exactly where it was cut.
+      //
+      // UNDO DOES NOT DO THIS, deliberately. Undo leaves the message's reply in place, so putting the question
+      // back in the composer would set up a duplicate — the transcript would already read as though it had been
+      // asked and answered.
+      //
+      // It reuses setRestoreDraft, the SAME path a failed send uses, so there is one "put this text back in the
+      // box" mechanism rather than a second one that could drift. token makes a repeated revert re-trigger.
+      if (restoresComposer(action)) {
+        setRestoreDraft({ convId: activeConvId, text: message.content, token: Date.now() });
+      }
       toast.success(
         res.sessionReset
           ? `${removed} and the model's context was reset for the next turn.`
@@ -1745,6 +1762,7 @@ function AskOrchiconPage() {
         { title: "Ask Orchicon" },
       );
     },
+    // setRestoreDraft is a useState setter (stable), so it is not listed; the rest are read inside.
     [activeConvId, deleteMessage, toast],
   );
 

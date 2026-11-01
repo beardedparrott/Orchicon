@@ -47,8 +47,10 @@ var msgMenuEntries = []msgMenuEntry{
 		Mode:   chat.MessageDeleteOnly,
 	},
 	{
-		Label:  "Revert to here",
-		Detail: "removes this message and everything after it",
+		Label: "Revert to here",
+		// The restore is stated ON THE ENTRY: it is the difference between a revert being destructive and being
+		// a "take that back and let me edit it" — and an operator should not have to discover it.
+		Detail: "removes this message and everything after it, and puts it back in the composer",
 		Mode:   chat.MessageDeleteAndFollowing,
 	},
 }
@@ -138,9 +140,28 @@ func (m *App) handleMsgMenuKey(k tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		entry := msgMenuEntries[*menu.armed]
+		// A REVERT HANDS THE MESSAGE BACK TO THE COMPOSER.
+		//
+		// Revert removes the message, so without this its text is gone from the interface entirely and the
+		// operator has to retype a question they had already written — the one cost removing it should not carry.
+		// The composer is the natural home: the text comes back as a DRAFT, editable, and sending it restarts the
+		// conversation from exactly where it was cut.
+		//
+		// UNDO DOES NOT DO THIS, deliberately. Undo leaves the reply in place, so restoring the question would
+		// set up a duplicate — the transcript would already read as asked and answered.
+		//
+		// Set BEFORE the delete is dispatched: the RPC is asynchronous and its failure must not lose the text.
+		// The operator can then retry revert, or edit and send it unchanged.
+		//
+		// It is inside the `m.chat != nil` arm because that IS the dispatch path — with no controller there is
+		// no deletion, so there is nothing to hand back, and touching the dock would be a side effect on a
+		// composer that is not in use.
 		m.closeMsgMenu()
 		if m.chat == nil {
 			return nil
+		}
+		if entry.Mode == chat.MessageDeleteAndFollowing {
+			m.dock.SetValue(menu.preview)
 		}
 		return m.chat.DeleteMessage(menu.conversationID, menu.messageID, entry.Mode)
 	}

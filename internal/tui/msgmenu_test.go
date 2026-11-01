@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
+	"github.com/beardedparrott/orchicon/internal/tui/dock"
 )
 
 func key(s string) tea.KeyMsg {
@@ -230,5 +231,56 @@ func TestASlashCommandWithNoMessageSaysSo(t *testing.T) {
 	}
 	if m.msgMenu != nil {
 		t.Error("the menu opened with no message to edit")
+	}
+}
+
+// TestRevertHandsTheMessageBackToTheComposer — the operator's addition to the feature.
+//
+// "a revert should also put the message you selected back into the composer". Revert REMOVES the message, so
+// without this its text is gone from the interface and the operator has to retype a question they had already
+// written — the one cost that removing it should not carry.
+//
+// The command is NOT executed here: it would call a nil client. What is asserted is the observable effect that
+// matters — the composer holds the message by the time the delete is dispatched.
+func TestRevertHandsTheMessageBackToTheComposer(t *testing.T) {
+	m := &App{}
+	m.chatConvID = "conv1"
+	m.chat = chat.NewController(nil)
+	// A REAL dock: a zero dock.Model panics on SetValue, and the composer is the thing under test here.
+	m.dock = dock.New()
+	m.openMsgMenu("conv1", "01MSG", "what is the weather in Paris?")
+	// Choose Revert: down, then arm, then confirm.
+	m.handleMsgMenuKey(key("down"))
+	m.handleMsgMenuKey(key("enter"))
+	if m.msgMenu == nil || m.msgMenu.armed == nil {
+		t.Fatal("revert was not armed")
+	}
+	if got := msgMenuEntries[*m.msgMenu.armed].Mode; got != chat.MessageDeleteAndFollowing {
+		t.Fatalf("armed %v, want the truncating mode", got)
+	}
+	_ = m.handleMsgMenuKey(key("enter"))
+	if got := m.dock.Value(); got != "what is the weather in Paris?" {
+		t.Errorf("the composer holds %q, want the reverted message — a revert must hand the text back so it can "+
+			"be re-sent without retyping it", got)
+	}
+}
+
+// TestUndoLeavesTheComposerAlone — the other half of the rule.
+//
+// Undo keeps the message's REPLY, so restoring the question would leave the transcript reading as though it had
+// been asked and answered while the composer offered it again. The asymmetry is deliberate.
+func TestUndoLeavesTheComposerAlone(t *testing.T) {
+	m := &App{}
+	m.chatConvID = "conv1"
+	m.chat = chat.NewController(nil)
+	m.dock = dock.New()
+	m.dock.SetValue("something I was typing")
+	m.openMsgMenu("conv1", "01MSG", "an older question")
+	// Undo is entry 0, so no arrow keys.
+	m.handleMsgMenuKey(key("enter"))
+	_ = m.handleMsgMenuKey(key("enter"))
+	if got := m.dock.Value(); got != "something I was typing" {
+		t.Errorf("undo changed the composer to %q — it must not touch it, and must not clobber a draft the "+
+			"operator is part-way through", got)
 	}
 }

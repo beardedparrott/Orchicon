@@ -1001,12 +1001,16 @@ You can take back something you said, in two ways that differ in **how much hist
 | Gesture | What it removes |
 |---|---|
 | **Undo this message** | Only that message. **Its reply stays** — so you can forget the question without losing the answer it produced. |
-| **Revert to here** | That message **and everything after it**, leaving the conversation ending at the turn before. |
+| **Revert to here** | That message **and everything after it**, leaving the conversation ending at the turn before — and its text goes **back into the composer**, ready to re-send. |
 
 **Reaching it:** in the GUI, the **ellipsis** beside a message and then one of the two
 items. In the TUI, **right-click** one of your own messages for the menu, or use
 `/undo` and `/revert`, which open the same menu on your most recent message with the
 matching entry already chosen.
+
+A **revert hands the message back to you**: its text lands in the composer as an editable
+draft, so you can adjust and re-send it without retyping. Undo does not do this — it leaves
+the message's reply in place, so putting the question back would set up a duplicate.
 
 **Both ask first**, because neither is undoable from the interface. Both actions also
 **reset the conversation's model session**, and that is the part you cannot see:

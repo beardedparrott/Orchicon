@@ -46,8 +46,24 @@ export function confirmationTitle(action: MessageActionValue): string {
   return isUndo(action) ? "Undo this message?" : "Revert to this message?";
 }
 
+/**
+ * restoresComposer reports whether this verb hands the message's text back to the composer.
+ *
+ * ONLY REVERT DOES. It removes the message, so without the restore the text is gone from the interface and the
+ * operator retypes a question they had already written. Undo leaves the REPLY in place, so restoring the question
+ * would set up a duplicate — the transcript would already read as asked and answered.
+ *
+ * It lives here, beside the verb→mode mapping, because it is the same kind of decision: a per-verb rule that a
+ * component must not re-derive. An inverted answer is silent — the text simply does not appear.
+ */
+export function restoresComposer(action: MessageActionValue): boolean {
+  return !isUndo(action);
+}
+
 export function confirmationBody(action: MessageActionValue): string {
   return isUndo(action)
     ? "This message is removed from the transcript and from the model's context. Its reply stays, and nothing else changes."
-    : "This message and everything after it are removed from the transcript and from the model's context. The conversation ends at the turn before it.";
+    : "This message and everything after it are removed from the transcript and from the model's context. " +
+        "The conversation ends at the turn before it, and this message's text goes back into the composer so " +
+        "you can send it again.";
 }

@@ -7,6 +7,7 @@ import {
   confirmationTitle,
   isUndo,
   modeForAction,
+  restoresComposer,
 } from "@/lib/ask-message-actions";
 
 // THE TWO VERBS DESTROY DIFFERENT AMOUNTS OF HISTORY.
@@ -55,5 +56,28 @@ describe("the confirmation says exactly how much is removed", () => {
     for (const action of [MessageAction.Undo, MessageAction.Revert]) {
       expect(confirmationBody(action)).toMatch(/model's context/i);
     }
+  });
+});
+
+// A REVERT HANDS THE TEXT BACK; AN UNDO DOES NOT.
+//
+// The operator: "a revert should also put the message you selected back into the composer". Revert removes the
+// message, so without the restore its text is gone from the interface entirely and they retype a question they
+// had already written. Undo keeps the reply, so restoring the question would leave the transcript reading as
+// asked and answered while the composer offered it again.
+//
+// An inverted answer is silent — the text simply does not appear — which is why the rule is a pure function with
+// a test rather than a condition inlined in a component the suite can only grep.
+describe("only a revert restores the composer", () => {
+  it("revert restores", () => {
+    expect(restoresComposer(MessageAction.Revert)).toBe(true);
+  });
+
+  it("undo does not", () => {
+    expect(restoresComposer(MessageAction.Undo)).toBe(false);
+  });
+
+  it("and the two are opposite, so one cannot stand in for the other", () => {
+    expect(restoresComposer(MessageAction.Undo)).not.toBe(restoresComposer(MessageAction.Revert));
   });
 });
