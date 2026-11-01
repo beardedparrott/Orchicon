@@ -60,11 +60,15 @@ func SessionIdentity(it ChatItem) string {
 // click on the operator's own message can copy that message. Lines rather than rows because the caller
 // knows its own wrapping — see kit2.Stream.LineAtRow, which answers the row half.
 type ItemSpan struct {
-	Kind  ItemKind
-	Key   string
-	Text  string // the item's copyable text ("" when there is nothing worth copying)
-	Line  int    // 0-based first line of this item in the body
-	Lines int    // how many body lines it occupies
+	Kind ItemKind
+	Key  string
+	// MessageID is the durable message this item came from, empty when it is not a persisted message. The
+	// per-message edit menu needs it: a click resolves to a SPAN, and the server must be told which MESSAGE to
+	// remove — a render key is not a message id.
+	MessageID string
+	Text      string // the item's copyable text ("" when there is nothing worth copying)
+	Line      int    // 0-based first line of this item in the body
+	Lines     int    // how many body lines it occupies
 	// Options is where an ask card's OPTION ROWS landed, in lines RELATIVE to Line, each with the label a
 	// click on it sends back as the next user message. It is the click geometry for the clarifying-question
 	// card, exactly as Code is for a block — the two exist for the same reason: the alternative (parsing the
@@ -207,7 +211,7 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 		lines := strings.Count(seg, "\n")
 		spans = append(spans, ItemSpan{
 			Kind: it.Kind, Key: it.Key, Text: copyTextFor(it), Line: lineIdx, Lines: lines,
-			Options: askOpts, Code: code,
+			Options: askOpts, Code: code, MessageID: it.MessageID,
 		})
 		lineIdx += lines
 		b.WriteString(seg)

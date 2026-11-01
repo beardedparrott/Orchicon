@@ -622,6 +622,50 @@ func (c *Controller) CompactConversation(id string) tea.Cmd {
 	}
 }
 
+// MessageDeleteMode mirrors the proto enum for callers that must not import the generated package's
+// constants by number.
+const (
+	// MessageDeleteOnly removes ONE message. It is the operator's "undo": the reply it produced stays, so
+	// forgetting the question need not lose the answer.
+	MessageDeleteOnly = apiv1.MessageDeleteMode_MESSAGE_DELETE_MODE_ONLY
+	// MessageDeleteAndFollowing removes that message and every message after it. The operator's "revert to
+	// here".
+	MessageDeleteAndFollowing = apiv1.MessageDeleteMode_MESSAGE_DELETE_MODE_AND_FOLLOWING
+)
+
+// DeleteMessage removes one message, or that message and everything after it.
+//
+// IT IS A SYNCHRONOUS RPC WITH NO TURN — like compaction, it rewrites the stored history and the caller
+// re-polls. The server also RECYCLES the conversation's model session, which is the half that makes the
+// removal real: turns are continued on a stored session id, so deleting rows alone would take the message off
+// the screen while leaving it in what the model reasons about. The response says whether that happened, so the
+// dock can report it rather than the operator assuming.
+//
+// The 20s deadline is the pure-CRUD class: this is two DELETEs and one UPDATE, and a busy wait here would read
+// as a hang.
+func (c *Controller) DeleteMessage(conversationID, messageID string, mode apiv1.MessageDeleteMode) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		resp, err := c.cl.Ask.DeleteConversationMessage(ctx, connect.NewRequest(&apiv1.DeleteConversationMessageRequest{
+			ConversationId: conversationID,
+			MessageId:      messageID,
+			Mode:           mode,
+		}))
+		if err != nil {
+			return ConversationMutatedMsg{Op: "remove", ID: conversationID, Err: err.Error()}
+		}
+		detail := "message removed"
+		if resp.Msg.GetDeletedCount() > 1 {
+			detail = fmt.Sprintf("%d messages removed", resp.Msg.GetDeletedCount())
+		}
+		if resp.Msg.GetSessionReset() {
+			detail += " — the model's context was reset for the next turn"
+		}
+		return ConversationMutatedMsg{Op: "remove", ID: conversationID, Detail: detail}
+	}
+}
+
 // compactionDetail renders a CompactConversationResponse for the dock notice:
 // the server's own detail line, plus the measured context sizes when it reported
 // them (0 means "unknown" and is omitted rather than shown as zero — the server
@@ -1165,10 +1209,11 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 		// normally no prose after it at all, and this ordering makes the card the
 		// bottom line either way.)
 		items = append(items, ChatItem{
-			Kind: kind,
-			Text: text,
-			At:   at,
-			Key:  "m-" + m.GetId(),
+			Kind:      kind,
+			Text:      text,
+			At:        at,
+			Key:       "m-" + m.GetId(),
+			MessageID: m.GetId(),
 		})
 		if ask := parseAskUserCall(m.GetToolCalls(), m.GetToolResults()); ask != nil {
 			items = append(items, ChatItem{

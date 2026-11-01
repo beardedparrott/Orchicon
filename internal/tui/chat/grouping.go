@@ -276,8 +276,14 @@ type ChatItem struct {
 	AdapterKind string // session
 	At          int64  // ms since epoch
 	Key         string
-	Live        bool
-	Phase       string
+	// MessageID is the DURABLE message id this item came from, or empty when it came from something else
+	// (a live stream fragment, a card, an artifact). It exists for the per-message edit menu, which must name
+	// a message to the server and cannot use Key: Key is a RENDER key — "m-<id>", "m-<id>-r3",
+	// "m-<id>-partial" — and parsing an id back out of a display key is the kind of coupling that breaks the
+	// first time a key format changes.
+	MessageID string
+	Live      bool
+	Phase     string
 
 	// Attachments are the markers for the files this message carried, in the operator's vocabulary
 	// ("[image]", "[file: notes.md]"). They are a DISPLAY field: the bytes belong to the request that sent

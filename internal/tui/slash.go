@@ -129,6 +129,44 @@ func buildSlashRegistry(m *App) *slashRegistry {
 	// composer-driven (UPDATES rows 296/300/303), so a bare letter there is TYPED. /grants is the
 	// session roll-up (revocable); /permissions is the persistent allow/deny list, deliberately NOT
 	// /policy — the GUI's /policies route is the Rego policy ENGINE, a different concept.
+	// 3. EDITING THE TRANSCRIPT — the keyboard route to the same menu the right-click opens.
+	//
+	// THE OPERATOR ASKED FOR "a slash command or two" alongside the mouse gesture. Both commands act on the MOST
+	// RECENT of the operator's own messages, which is the one a keyboard route can identify without asking; a
+	// specific message is reached by right-clicking it.
+	//
+	// NEITHER EXECUTES. They OPEN THE MENU WITH THE ENTRY ARMED, so the operator confirms once and every deletion
+	// goes through the one dispatch point in msgmenu.go. A command that deleted on Enter would be a second path
+	// to an irreversible act, and the second path is always the one that forgets the confirmation.
+	add(SlashCommand{
+		Name:  "/undo",
+		Usage: "/undo",
+		Desc:  "remove your most recent message (its reply stays) — confirms before acting",
+		Run: func(m *App, _ []string) tea.Cmd {
+			id, text, ok := m.lastEditableUserMessage()
+			if !ok {
+				m.dock.SetNotice("undo: no message of yours to remove in this conversation")
+				return nil
+			}
+			m.openMsgMenuArmed(m.chatConvID, id, text, chat.MessageDeleteOnly)
+			return nil
+		},
+	})
+	add(SlashCommand{
+		Name:    "/revert",
+		Aliases: []string{"/truncate"},
+		Usage:   "/revert",
+		Desc:    "remove your most recent message and everything after it — confirms before acting",
+		Run: func(m *App, _ []string) tea.Cmd {
+			id, text, ok := m.lastEditableUserMessage()
+			if !ok {
+				m.dock.SetNotice("revert: no message of yours to revert to in this conversation")
+				return nil
+			}
+			m.openMsgMenuArmed(m.chatConvID, id, text, chat.MessageDeleteAndFollowing)
+			return nil
+		},
+	})
 	add(SlashCommand{
 		Name:  "/grants",
 		Usage: "/grants",
