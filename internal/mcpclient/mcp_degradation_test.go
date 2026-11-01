@@ -13,11 +13,18 @@ package mcpclient
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+// quietMCPLogger is defined HERE rather than reusing testLogger, because testLogger lives in a file with a
+// !windows build tag and this file has none — so the Windows cross-compile could not see it, which is exactly
+// how the cross-compile gate caught this.
+func quietMCPLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 // deadSpec is a stdio server whose command cannot be executed. It is the "never started" shape, and it is
 // deliberately NOT a fixture that fails the handshake: exec failure is the case where cmd.Process is nil.
@@ -28,7 +35,7 @@ func deadSpec(id string) ServerSpec {
 // THE REPORTED LOSS, pinned: one dead server, one healthy one, and the healthy server's tools SURVIVE.
 func TestOneUnstartableServerDoesNotCostTheRestOfTheSurface(t *testing.T) {
 	good := stdioSpec("healthy")
-	m := NewManager(testLogger(t))
+	m := NewManager(quietMCPLogger())
 
 	defs, err := m.Start(context.Background(), []ServerSpec{deadSpec("broken"), good})
 	if err != nil {
@@ -54,7 +61,7 @@ func TestOneUnstartableServerDoesNotCostTheRestOfTheSurface(t *testing.T) {
 // ...AND THE FAILURE IS RECORDED, because a silently absent tool is indistinguishable from a platform
 // that does not have it.
 func TestAFailedServerIsReportedWithItsOwnDiagnosis(t *testing.T) {
-	m := NewManager(testLogger(t))
+	m := NewManager(quietMCPLogger())
 	if _, err := m.Start(context.Background(), []ServerSpec{deadSpec("broken"), stdioSpec("healthy")}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -83,7 +90,7 @@ func TestAFailedServerIsReportedWithItsOwnDiagnosis(t *testing.T) {
 
 // An empty surface IS an error — the one case a caller cannot continue past silently.
 func TestEveryServerFailingIsStillAnError(t *testing.T) {
-	m := NewManager(testLogger(t))
+	m := NewManager(quietMCPLogger())
 	t.Cleanup(func() { _ = m.Close() })
 
 	_, err := m.Start(context.Background(), []ServerSpec{deadSpec("broken-a"), deadSpec("broken-b")})
@@ -110,7 +117,7 @@ func TestAChildThatExitsIsReportedWithItsExitStatus(t *testing.T) {
 	if err != nil {
 		t.Skip("no sh on this host")
 	}
-	m := NewManager(testLogger(t))
+	m := NewManager(quietMCPLogger())
 	t.Cleanup(func() { _ = m.Close() })
 
 	spec := ServerSpec{ID: "exits", Type: TypeStdio, Command: []string{sh, "-c", "echo 'ImportError: no module named aseprite_mcp' >&2; exit 3"}}
