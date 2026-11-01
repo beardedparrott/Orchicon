@@ -96,11 +96,11 @@ func TestOrphanHelper(t *testing.T) {
 		fmt.Println("ERR", err)
 		return
 	}
-	if err := tr.Command.Start(); err != nil {
+	if err := tr.cmd.Start(); err != nil {
 		fmt.Println("ERR", err)
 		return
 	}
-	fmt.Println(tr.Command.Process.Pid)
+	fmt.Println(tr.cmd.Process.Pid)
 	// Keep stdin open so the fixture stays alive; we are SIGKILLed by the
 	// test, and PDEATHSIG then kills the fixture child.
 	for {

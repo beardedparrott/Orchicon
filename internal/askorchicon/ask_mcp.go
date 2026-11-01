@@ -55,12 +55,17 @@ type askMCPClient interface {
 // askMCPConnect is the client-construction seam: it builds a manager and connects
 // every spec. A var so a test can substitute a fake (the same test-seam pattern as
 // askFileRootResolve); production uses mcpclient.NewManager + Start.
-var askMCPConnect = func(ctx context.Context, log *slog.Logger, specs []mcpclient.ServerSpec) (askMCPClient, error) {
+//
+// IT RETURNS THE PER-SERVER FAILURES alongside the client. A server that will not start no longer costs
+// the conversation every OTHER server's tools (mcpclient.Manager.Start is per-spec tolerant), but the
+// caller must still SAY which tools are missing and why — an absent tool with no explanation is what made
+// a model conclude its whole MCP surface was unavailable and hand-write a bridge over stdio.
+var askMCPConnect = func(ctx context.Context, log *slog.Logger, specs []mcpclient.ServerSpec) (askMCPClient, []mcpclient.ServerFailure, error) {
 	mgr := mcpclient.NewManager(log)
 	if _, err := mgr.Start(ctx, specs); err != nil {
-		return nil, err
+		return nil, mgr.Failures(), err
 	}
-	return mgr, nil
+	return mgr, mgr.Failures(), nil
 }
 
 // askMCPEntry is one conversation's live MCP client.
@@ -193,7 +198,19 @@ func (s *Service) startAskMCPEntry(ctx context.Context, scope askmode.Conversati
 		// failure is scope-annotated exactly like a connect failure.
 		return nil, mcpclient.DescribeFailedServer(err, res.Servers)
 	}
-	mgr, err := askMCPConnect(context.WithoutCancel(ctx), s.log, specs)
+	mgr, failures, err := askMCPConnect(context.WithoutCancel(ctx), s.log, specs)
+	// REPORT THE PARTIAL FAILURE EVEN WHEN THE START SUCCEEDED. `err` is non-nil only when NO server
+	// started; a healthy conversation with one broken server reaches here with a nil error and a non-empty
+	// failure list, and that gap is exactly where the surface went unexplained.
+	if s.log != nil {
+		for _, f := range failures {
+			s.log.Warn("ask: an MCP server could not be started — ITS tools are absent this conversation, the rest of the surface is unaffected",
+				"conversation", scope.ConversationID,
+				"server", f.ServerID,
+				"transport", f.Transport,
+				"scope", mcpclient.DescribeFailedServer(f.Err, res.Servers))
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("ask mcp: connect: %w", mcpclient.DescribeFailedServer(err, res.Servers))
 	}

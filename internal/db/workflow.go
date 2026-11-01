@@ -1875,3 +1875,54 @@ func ListTerminalRunsWithRuntimeEvidence(ctx context.Context, tx pgx.Tx, tenantI
 	}
 	return out, rows.Err()
 }
+
+// ListCompletedRunsWithBranch returns COMPLETED runs that still record a worktree branch, oldest first.
+//
+// It is the candidate set for LOCAL INTEGRATION (internal/scheduler integrateLocalRuns): a run whose
+// project integrates locally has no remote, so nothing ever merges its branch into the integration branch
+// and its work sits on a branch nobody reads. The reconciler finishes the job the worker could not.
+//
+// NO "ALREADY INTEGRATED" FILTER, deliberately. Integration is a fact about GIT, not about this table, so
+// asking the table would mean introducing a second source of truth for it. Once a branch IS integrated the
+// caller's ancestry check is a no-op, and — because integration makes the branch provably merged — the
+// existing prune path then deletes the branch and marks the worktree pruned, which drops the row out of
+// this query entirely. The set is therefore self-cleaning rather than growing forever.
+func ListCompletedRunsWithBranch(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
+	if limit <= 0 {
+		limit = 16
+	}
+	const q = `SELECT r.id, r.tenant_id, r.workflow_id, r.workflow_version, r.project_id, r.status,
+		current_step, r.run_context, r.work_item_id, r.bound_worker_ref, r.runtime_image,
+		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch,
+			r.version, r.started_at, r.ended_at, r.created_at, r.updated_at
+		FROM workflow_runs r
+		WHERE r.tenant_id = $1 AND r.status = 'completed'
+		  AND r.worktree_branch <> '' AND r.worktree_status <> 'pruned'
+		ORDER BY r.ended_at ASC NULLS LAST, r.created_at ASC
+		LIMIT $2`
+	rows, err := tx.Query(ctx, q, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list completed runs with branch: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowRunRow
+	for rows.Next() {
+		var r WorkflowRunRow
+		var wiID *string
+		if err := rows.Scan(
+			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
+			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.Version, &r.StartedAt, &r.EndedAt,
+			&r.CreatedAt, &r.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan completed run with branch: %w", err)
+		}
+		if wiID != nil {
+			r.WorkItemID = *wiID
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

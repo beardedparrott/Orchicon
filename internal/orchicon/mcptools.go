@@ -118,7 +118,15 @@ func (b *NativeBridge) mcpResolveAndStart(ctx context.Context, exec db.Execution
 		return nil, mcpclient.DescribeFailedServer(err, res.Servers)
 	}
 	mgr := mcpclient.NewManager(b.log)
-	if _, merr := mgr.Start(sctx, specs); merr != nil {
+	_, merr := mgr.Start(sctx, specs)
+	// A PARTIAL START IS A SUCCESS WITH MISSING TOOLS, and the worker has to be told which: a silently
+	// absent tool reads as a platform that does not have it.
+	for _, f := range mgr.Failures() {
+		b.log.Warn("orchicon: an MCP server could not be started — ITS tools are absent this execution, the rest of the surface is unaffected",
+			"execution", exec.ID, "server", f.ServerID, "transport", f.Transport,
+			"scope", mcpclient.DescribeFailedServer(f.Err, res.Servers))
+	}
+	if merr != nil {
 		return nil, fmt.Errorf("orchicon bridge: MCP connect: %w", mcpclient.DescribeFailedServer(merr, res.Servers))
 	}
 	// Start blocks until the session's terminal result; Close runs at

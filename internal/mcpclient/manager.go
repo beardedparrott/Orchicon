@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -40,6 +41,30 @@ type Manager struct {
 	defs      []ToolDef              // cached discovery result (all servers)
 	started   bool
 	closed    bool
+	// failures records, per server, why it is NOT part of defs. ONE UNSTARTABLE SERVER MUST NOT COST
+	// THE REST OF THE SURFACE (see Start), so a failure is a recorded fact rather than an abort.
+	failures []ServerFailure
+}
+
+// ServerFailure is one server that could not be started, and why. It is the shape a caller reports to
+// the operator — the point of Start's per-spec tolerance is that this is a DIAGNOSTIC, not a
+// catastrophe.
+type ServerFailure struct {
+	// ServerID is the resolved definition id (the same id the provenance log names).
+	ServerID string
+	// Transport is "stdio" or "streamable-http".
+	Transport string
+	// Err is the failure, already carrying the server id and the phase that failed
+	// (spawn / connect / tool discovery).
+	Err error
+}
+
+// Error renders the failure for a log line without repeating the id twice.
+func (f ServerFailure) Error() string {
+	if f.Err == nil {
+		return f.ServerID + ": unknown failure"
+	}
+	return f.Err.Error()
 }
 
 // serverConn is one live connection: the go-sdk client + session + the
@@ -62,10 +87,22 @@ func NewManager(log *slog.Logger) *Manager {
 	return &Manager{log: log, conns: make(map[string]*serverConn)}
 }
 
-// Start lazily connects to every resolved server and discovers its tools.
-// It is called at session start (per-session lazy startup) and blocks
-// until discovery completes or a server fails. On failure the partial
-// connections are torn down and the error is returned (actionable).
+// Start lazily connects to every resolved server and discovers its tools. It is called at session
+// start (per-session lazy startup) and blocks until discovery completes.
+//
+// PER-SPEC FAILURE TOLERANCE, and it is the whole point of this function's shape.
+//
+// This used to abort the union on the FIRST server that would not start: it tore down every connection
+// it had built and returned that one error. Reported consequence — a conversation resolving TWO servers
+// (123 aseprite tools + 166 unity tools) received NEITHER, because one of them timed out. The model then
+// correctly observed that it had no MCP tools, correctly concluded the tools were unavailable, and spent
+// the session driving the server over a hand-written stdio bridge. 289 working tools were lost to 1
+// broken one, and nothing said so.
+//
+// So a failing server now costs only ITS OWN tools. Its failure is recorded in Failures() for the caller
+// to log and for the model to be told about, and the error is returned ONLY when the surface is genuinely
+// empty — no specs at all, or every spec failed — because that is the case a caller cannot continue past
+// silently.
 func (m *Manager) Start(ctx context.Context, specs []ServerSpec) ([]ToolDef, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -81,23 +118,51 @@ func (m *Manager) Start(ctx context.Context, specs []ServerSpec) ([]ToolDef, err
 	for _, spec := range specs {
 		conn, err := m.connectOne(ctx, spec)
 		if err != nil {
-			m.teardownLocked()
-			return nil, err
+			// RECORD, DO NOT ABORT. The next server may be perfectly healthy, and its tools are
+			// worth more than the tidy all-or-nothing failure this used to produce.
+			f := ServerFailure{ServerID: spec.ID, Transport: string(spec.TransportType()), Err: err}
+			m.failures = append(m.failures, f)
+			m.log.Warn("mcp: a server could not be started — its tools are absent from this session, the rest of the surface is unaffected",
+				"server", spec.ID, "transport", f.Transport, "error", err,
+				"started", len(m.connOrder), "failed", len(m.failures), "remaining", len(specs)-len(m.connOrder)-len(m.failures))
+			continue
 		}
 		m.conns[spec.ID] = conn
 		m.connOrder = append(m.connOrder, spec.ID)
 		defs = append(defs, conn.defs...)
+		m.log.Info("mcp: server started", "server", spec.ID, "tools", len(conn.defs))
 	}
 	m.defs = defs
+	// THE SURFACE IS EMPTY AND THAT IS NOT A PARTIAL FAILURE. Either nothing was configured (callers
+	// handle that before Start) or every configured server failed — in both cases a caller that keeps
+	// going would be running without any MCP tools it was promised, so say so.
+	if len(specs) > 0 && len(m.connOrder) == 0 {
+		return nil, fmt.Errorf("no MCP server could be started (%d failed): %w", len(m.failures), m.failures[0].Err)
+	}
 	return defs, nil
+}
+
+// Failures returns the servers that could not be started, in spec order. It is the report a caller logs
+// and, where it can, tells the model about: "these tools are missing and here is why" is actionable in a
+// way that an empty tool array is not.
+func (m *Manager) Failures() []ServerFailure {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]ServerFailure, len(m.failures))
+	copy(out, m.failures)
+	return out
 }
 
 // connectOne dials one server (connect + tools/list) under a timeout.
 func (m *Manager) connectOne(ctx context.Context, spec ServerSpec) (*serverConn, error) {
-	cctx, cancel := context.WithTimeout(ctx, connectTimeout(spec))
+	timeout := connectTimeout(spec)
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var transport mcp.Transport
+	// spawn is non-nil only for a stdio child: it carries the command and its captured stderr, which is
+	// what turns "context deadline exceeded" into a diagnosis (stdio_spawn.go).
+	var spawn *stdioSpawn
 	switch spec.TransportType() {
 	case TypeHTTP:
 		t, err := newHTTPTransport(spec)
@@ -106,32 +171,52 @@ func (m *Manager) connectOne(ctx context.Context, spec ServerSpec) (*serverConn,
 		}
 		transport = t
 	default:
-		t, err := newStdioTransport(spec)
+		sp, err := newStdioTransport(spec)
 		if err != nil {
 			return nil, err
 		}
-		transport = t
+		spawn = sp
+		transport = sp.transport
 	}
 
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "orchicon",
 		Version: "0.1.0",
 	}, nil)
+	started := time.Now()
 	session, err := client.Connect(cctx, transport, nil)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("mcp server %q: connect timed out after %s (%s transport): %w", spec.ID, connectTimeout(spec), spec.TransportType(), err)
+		// KILL THE CHILD WE JUST SPAWNED, because the SDK will not. mcp.connect returns the handshake
+		// error without closing the transport, so the only handle on a live child was being dropped here
+		// on every failed start — which is how a server was found still running 18 hours later. Killing it
+		// is both the leak fix and what makes the diagnosis below truthful (the child is gone either way).
+		if spawn != nil {
+			killStopsTheChild(spawn.cmd)
 		}
-		return nil, fmt.Errorf("mcp server %q: connect failed (%s transport): %w", spec.ID, spec.TransportType(), err)
+		elapsed := time.Since(started).Round(time.Millisecond)
+		detail := ""
+		if spawn != nil {
+			detail = truncateForError(spawn.diagnosis())
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("mcp server %q: connect timed out after %s (%s transport, waited %s)%s: %w",
+				spec.ID, timeout, spec.TransportType(), elapsed, detail, err)
+		}
+		return nil, fmt.Errorf("mcp server %q: connect failed after %s (%s transport)%s: %w",
+			spec.ID, elapsed, spec.TransportType(), detail, err)
 	}
 
 	res, err := session.ListTools(cctx, &mcp.ListToolsParams{})
 	if err != nil {
 		_ = session.Close()
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("mcp server %q: tool discovery timed out after %s: %w", spec.ID, connectTimeout(spec), err)
+		detail := ""
+		if spawn != nil {
+			detail = truncateForError(spawn.diagnosis())
 		}
-		return nil, fmt.Errorf("mcp server %q: tool discovery failed: %w", spec.ID, err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("mcp server %q: tool discovery timed out after %s%s: %w", spec.ID, timeout, detail, err)
+		}
+		return nil, fmt.Errorf("mcp server %q: tool discovery failed%s: %w", spec.ID, detail, err)
 	}
 
 	conn := &serverConn{spec: spec, client: client, session: session, toolName: make(map[string]string, len(res.Tools))}

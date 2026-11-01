@@ -541,6 +541,31 @@ var cannedWorkers = []cannedWorker{
 			"## Workflow\n\n" +
 			"### Verify, don't assume\n" +
 			"Every claim you make about the repository, branch, PR, or merge state MUST come from an actual " + bt + "git" + bt + "/" + bt + "gh" + bt + " command you ran. If a command fails, report the real error — never fabricate success or claim something exists/succeeded that you did not verify.\n\n" +
+			// GIT MODE FIRST. Everything below this block assumes a remote: it derives owner/repo from
+			// `git remote get-url origin`, verifies with `gh repo view`, creates a PR and merges it. On a
+			// `git_strategy=local` project NONE of those can succeed — there is no remote — so a worker that
+			// ran the flow spent its time-box on impossible commands and reported `failure` on green,
+			// committed work. The mode is established by ONE command before any of it is attempted.
+			"### Git mode — resolve this FIRST, before any git operation\n" +
+			"Run " + bt + "git remote -v" + bt + ".\n\n" +
+			"**REMOTE mode** — it printed at least one remote. Continue with *Identify the repository* and the " +
+			"GitHub flow below, unchanged.\n\n" +
+			"**LOCAL mode** — it printed nothing. There is no remote, so " + bt + "git remote get-url origin" + bt + ", " +
+			bt + "gh repo view" + bt + ", " + bt + "gh pr create" + bt + ", " + bt + "gh pr checks" + bt + ", " +
+			bt + "gh pr merge" + bt + " and " + bt + "git push origin" + bt + " CANNOT succeed. **Do not run them.** " +
+			"There is also no repository to identify, so skip every section below and do this instead:\n\n" +
+			"1. Confirm the run branch is green: run the project's test command in full. Refuse to merge on red, " +
+			"on a still-running check, or on an absent result — the same rule the PR merge gate applies. If it is " +
+			"red, report " + bt + "failure" + bt + " naming the failing test instead of merging.\n" +
+			"2. Confirm the tree is clean: " + bt + "git status --porcelain" + bt + " empty (modulo " + bt + ".orchicon/" + bt + ").\n" +
+			"3. **You do NOT merge.** The PLATFORM integrates your run branch into " + bt + "develop" + bt + " once the run " +
+			"completes. Do not " + bt + "git checkout develop" + bt + ", " + bt + "git merge" + bt + ", " + bt + "git push . HEAD:refs/heads/develop" + bt + " " +
+			"or any other ref move: " + bt + "develop" + bt + " is checked out in the operator's own working tree, so a worker " +
+			"that moves it either fails outright or leaves that tree's files stale against its own HEAD.\n" +
+			"4. Report " + bt + "success" + bt + " with the branch name and " + bt + "git rev-parse --short HEAD" + bt + ". Emit " + bt + "PR_URL:" + bt + " and " +
+			bt + "PR_STATE:" + bt + " **not at all** in this mode — there is no pull request, and a fabricated state is worse than " +
+			"an omitted field.\n\n" +
+			"**Never** merge into " + bt + "main" + bt + " or " + bt + "master" + bt + " in either mode — release-only, human-managed.\n\n" +
 			"### Identify the repository\n" +
 			"Derive the owner/repo from the git remote: `git remote get-url origin` (e.g. https://github.com/OWNER/REPO.git). " +
 			"**Always verify with an actual command — never assume the repo exists.** Run `gh repo view OWNER/REPO` (or `git ls-remote origin`). " +
@@ -774,7 +799,7 @@ var cannedWorkers = []cannedWorker{
 		Purpose:     "Implements and ships the work item end to end in a single step — code, build, test, commit, then ship by the project's git strategy (PR when there is a remote; otherwise the commit is the hand-off).",
 		Role:        cannedWorkerIdentity + "You are a workhorse with one goal: complete the task. You are time-boxed. Every minute and every tool call must move the deliverable.",
 		Skills:      "Full-stack implementation (Go, TypeScript, React, SQL) • Build & test verification • Git • GitHub • PR management • GitHub CLI",
-		Behavior:    "Own the task end to end: implement, verify green, commit to the run branch, then ship it by the project's git strategy. With a remote, that means push, open the PR into develop and merge it; with no remote (`git_strategy=local`), the commit plus its SHA is the completed hand-off and `gh`/`git push` must not be attempted. You do not hand off to a separate DevOps step — there is none; you are the whole pipeline.",
+		Behavior:    "Own the task end to end: implement, verify green, commit to the run branch, then ship it by the project's git strategy. With a remote, that means push, open the PR into develop and merge it; with no remote (`git_strategy=local`), a clean committed branch IS the completed hand-off — `gh`/`git push` must not be attempted, and the PLATFORM integrates that branch into `develop` after the run completes. You do not hand off to a separate DevOps step — there is none; you are the whole pipeline.",
 		AgentsMD: sandboxPlaneBlock + safetyBlock +
 			"## Hard time-box: 30 minutes\n" +
 			"You have 30 minutes of wall clock to finish. Work in scope order; skip anything the acceptance criteria don't require. When the box nears its end, land what you have — a green build with partial scope beats an unshipped complete change.\n\n" +
@@ -797,7 +822,7 @@ var cannedWorkers = []cannedWorker{
 			// time-box and then reported `failure` on fully green, fully committed work. That single
 			// mismatch was three of the reported run failures.
 			"**FIRST, ESTABLISH WHICH SHAPE APPLIES** (the `## Git discipline` block in your prompt states it):\n" +
-			"- **`git_strategy=local` (no remote)** — commit everything to your branch, record the SHA with `git rev-parse --short HEAD`, and report `success`. Do NOT push and do NOT touch `gh`. Committed work on the branch IS the completed hand-off here.\n" +
+			"- **`git_strategy=local` (no remote)** — commit everything to your branch, record the SHA with `git rev-parse --short HEAD`, and report `success`. Do NOT push, do NOT touch `gh`, and do NOT merge or move `develop` yourself: `develop` is checked out in the operator's own working tree, so a worker that moves it either fails or fights the platform. The platform integrates your branch into `develop` once the run completes — your hand-off is the clean, committed run branch.\n" +
 			"- **`git_strategy=pr`** — push to origin, then open and merge the PR as described below.\n\n" +
 			"**SHIPPING IS IDEMPOTENT — CHECK BEFORE YOU CREATE.** This step can run more than once for the same branch: a recovery resume re-enters it, and the run branch is reused. A second `gh pr create` against an already-merged branch opens a DUPLICATE pull request and lands an EMPTY merge commit on `develop` — observed in practice, two PRs sharing one branch and one head commit, the second changing zero files. So ALWAYS, as your first shipping action:\n" +
 			"```\n" +
