@@ -1510,6 +1510,69 @@ func (r *TaskReconciler) failNoWorkflow(ctx context.Context, tenantID string, ta
 // markFailedToStart transitions an execution to failed_to_start
 // (docs/03 §8: adapter unreachable mid-dispatch → failed_to_start, task
 // requeues with backoff).
+// markExecutionFailedToStart writes the failed_to_start terminal state, RE-READING the row for its current
+// version rather than trusting the snapshot the caller holds.
+//
+// THE BUG THIS FIXES. The call used `exec.Version` as the optimistic-concurrency key, taken before
+// `bridge.Start` ran. Start marks the execution RUNNING (and the health probe touches it), so by the time the
+// failure is recorded the version has moved — the UPDATE matches zero rows and returns
+// `db: not found`:
+//
+//	01:12:06.939 ERROR adapter start failed   execution=…
+//	01:12:06.940 ERROR mark failed_to_start   error="db: not found"
+//
+// REPORTED on every failure of a run, six times. The consequence is a PARTIAL write: the record carries the
+// start failure but never reaches failed_to_start, so the run's state is built on a row that disagrees with
+// what happened. `db: not found` is also the string that once caused a 22-minute hot loop in a different call
+// site, which is why it read as a regression.
+//
+// NOT AN UPSERT, deliberately: the row certainly EXISTS (this is a real execution), so treating a version
+// mismatch as "insert it" would be wrong. Re-read the current version and retry — bounded — and if the row has
+// already reached a TERMINAL state, leave it alone: something else recorded the outcome, and overwriting it
+// with failed_to_start would lose the real one.
+func (r *TaskReconciler) markExecutionFailedToStart(ctx context.Context, ttx *db.TenantTx, exec db.ExecutionRow, errorMessage string) error {
+	now := time.Now().UTC()
+	fields := db.UpdateExecutionFields{
+		Status:       strPtr(domain.ExecutionFailedToStart),
+		EndedAt:      &now,
+		ErrorMessage: &errorMessage,
+	}
+	version := exec.Version
+	for attempt := 0; attempt < 3; attempt++ {
+		cur, err := db.GetExecution(ctx, ttx.Tx, exec.TenantID, exec.ID)
+		if err != nil {
+			return err
+		}
+		if terminalExecutionStatus(cur.Status) {
+			// ALREADY DECIDED. Recording failed_to_start over a terminal row would rewrite history: the
+			// execution may have failed for a different, later-reported reason.
+			return nil
+		}
+		version = cur.Version
+		if _, uerr := db.UpdateExecution(ctx, ttx.Tx, exec.TenantID, exec.ID, version, fields); uerr != nil {
+			if errors.Is(uerr, db.ErrNotFound) {
+				// Lost a race with a concurrent writer: re-read and try again with the fresh version.
+				continue
+			}
+			return uerr
+		}
+		return nil
+	}
+	return fmt.Errorf("mark failed_to_start: version kept moving for execution %s (last seen %d)", exec.ID, version)
+}
+
+// terminalExecutionStatus reports whether an execution has already reached a terminal state.
+func terminalExecutionStatus(status string) bool {
+	// The terminal set this codebase actually writes (internal/domain/execution constants — there is no
+	// "cancelled"/"aborted" execution status, so naming one would not compile and asserting it would be wrong).
+	switch status {
+	case domain.ExecutionSucceeded, domain.ExecutionFailed, domain.ExecutionFailedToStart,
+		domain.ExecutionTerminated:
+		return true
+	}
+	return false
+}
+
 func (r *TaskReconciler) markFailedToStart(ctx context.Context, exec db.ExecutionRow, errorMessage string) {
 	ttx, err := r.pool.BeginTenantTx(ctx, exec.TenantID)
 	if err != nil {
@@ -1517,13 +1580,7 @@ func (r *TaskReconciler) markFailedToStart(ctx context.Context, exec db.Executio
 		return
 	}
 	defer ttx.Rollback(ctx)
-	now := time.Now().UTC()
-	_, err = db.UpdateExecution(ctx, ttx.Tx, exec.TenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
-		Status:       strPtr(domain.ExecutionFailedToStart),
-		EndedAt:      &now,
-		ErrorMessage: &errorMessage,
-	})
-	if err != nil {
+	if err := r.markExecutionFailedToStart(ctx, ttx, exec, errorMessage); err != nil {
 		r.log.Error("mark failed_to_start", "execution", exec.ID, "error", err)
 		return
 	}
@@ -1590,13 +1647,7 @@ func (r *TaskReconciler) markFailedToStartPermanent(ctx context.Context, exec db
 		return
 	}
 	defer ttx.Rollback(ctx)
-	now := time.Now().UTC()
-	_, err = db.UpdateExecution(ctx, ttx.Tx, exec.TenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
-		Status:       strPtr(domain.ExecutionFailedToStart),
-		EndedAt:      &now,
-		ErrorMessage: &errorMessage,
-	})
-	if err != nil {
+	if err := r.markExecutionFailedToStart(ctx, ttx, exec, errorMessage); err != nil {
 		r.log.Error("mark permanent failed_to_start", "execution", exec.ID, "error", err)
 		return
 	}
