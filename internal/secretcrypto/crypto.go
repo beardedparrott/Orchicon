@@ -98,6 +98,17 @@ func KEKPath(dataDir string) string {
 // a key that already encrypts stored secrets).
 func LoadOrCreateKEK(dataDir string) ([]byte, error) {
 	path := KEKPath(dataDir)
+	// A RELATIVE KEK PATH IS REFUSED, NOT RESOLVED. This is defence in depth behind config.Default's
+	// filepath.Abs: the instance KEK encrypts every stored tenant secret, so its LOCATION must never depend
+	// on the working directory of whichever process happens to load it. Measured harm: a worker on a
+	// container run found a `secrets/kek` in the WORKTREE root — a bind mount from the operator's repo —
+	// which is what a CWD-relative data dir produces when a process runs inside a mounted worktree.
+	//
+	// Refusing (rather than silently Abs()-ing) is deliberate: the caller passed a location, and a caller
+	// that cannot say where the key lives has a bug worth surfacing, not a guess worth making.
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("refusing to use the relative KEK path %q: the instance KEK must have an absolute location, or it lands in whatever directory the process's working directory happens to be — including a worker's bind-mounted worktree", path)
+	}
 	if data, err := os.ReadFile(path); err == nil {
 		if len(data) != 32 {
 			return nil, fmt.Errorf("existing KEK file %s is %d bytes, want 32 (do not delete or regenerate it — stored secrets are encrypted with it)", path, len(data))
