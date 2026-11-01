@@ -132,6 +132,12 @@ var _ orchicon.AskToolProvider = (*nativeAskTools)(nil)
 // state and the probe is only meaningful on the native Ask path).
 const askFileRootToolName = "ask_file_root"
 
+// askMCPToolsToolName is the SELF-CHECK tool: "which MCP tools am I offered in this turn?".
+//
+// IT IS ADAPTER-LOCAL for the same reason the probe is: the answer lives in the Service's live MCP client, which
+// the registry cannot reach. See tool_askmcptools.go for the session that needed it.
+const askMCPToolsToolName = "ask_mcp_tools"
+
 // askFileRootResolve is the pluggable boundary resolver behind both the
 // ask_file_root tool and every host-suite execution. Production resolves
 // via AskFileScopeFor (DB); tests stub it via askFileRootStub.
@@ -363,6 +369,21 @@ func (a *nativeAskTools) AskToolDefs(ctx context.Context) []orchicon.ToolDef {
 			ParamsJSON:  `{"type":"object"}`,
 		})
 	}
+	// THE SELF-CHECK, offered in every mode: a model that cannot tell "I do not have this" from "it is not
+	// configured" will work around a capability it actually has. That is not hypothetical — see
+	// tool_askmcptools.go's header for the session it cost.
+	if !have[askMCPToolsToolName] {
+		have[askMCPToolsToolName] = true
+		defs = append(defs, orchicon.ToolDef{
+			Name: askMCPToolsToolName,
+			Description: "Report the MCP tools MOUNTED IN THIS TURN: each server with its provenance and tool count, " +
+				"and every callable tool name. Use this — not list_mcp_servers, which reports DEFINITIONS — before " +
+				"concluding a capability is missing. A tool absent from this list is genuinely not offered; a tool " +
+				"listed under hosted_by_a_refused_mode exists but is withheld by the current mode. Never drive an MCP " +
+				"server through a shell: structured and binary results (images, files) are flattened to text.",
+			ParamsJSON: `{"type":"object"}`,
+		})
+	}
 	// Host suite defs: the SAME definitions the worker path serves
 	// (orchicon.HostTools.Defs(), arg shapes and all — one grammar).
 	for _, d := range askHostToolsForRoot(a.service, AskFileScope{}, askConversationFromContext(ctx)).Defs() {
@@ -443,6 +464,16 @@ func (a *nativeAskTools) ExecuteAskTool(ctx context.Context, name, argsJSON stri
 	// MCP client, so the same table governs the offer and the call.
 	if a.service.isAskMCPTool(ctx, name) {
 		return a.service.executeAskMCP(ctx, name, argsJSON)
+	}
+	// THE SELF-CHECK. Dispatched before the boundary probe because it is answered from the live MCP client, which
+	// only the Service holds — and because a model reaching for it is usually one step away from building a
+	// workaround it does not need.
+	if name == askMCPToolsToolName {
+		out, aerr := toolAskMCPTools(ctx, a.service)
+		if aerr != nil {
+			return "", aerr
+		}
+		return string(out), nil
 	}
 	// The boundary probe: names the project_dir the suite is scoped to AND whether that directory is this
 	// conversation's own project or only the tenant-wide anchor — the scope the consent layer keys on. The

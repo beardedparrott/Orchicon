@@ -169,6 +169,27 @@ func modeLabel(mode string) string {
 	return mode
 }
 
+// writeCapabilityHonestyBlock is the rule about an APPARENTLY MISSING CAPABILITY, written once for every mode
+// because the mistake it prevents is not mode-specific.
+//
+// THE SESSION THAT PROMPTED IT. A model concluded that its mcp__aseprite__* tools were unavailable — from a LIST
+// of definitions, which is a different question from "what am I offered" — and then spent the entire session
+// driving the MCP server over stdio JSON-RPC through bash. That flattens structured and binary results to text, so
+// every image came back as prose: blind drawing and two rejected drafts, for work the platform could have done
+// directly.
+//
+// The tools were mounted the whole time. What the model lacked was a rule saying "try it before you route around
+// it", and a tool that answers "what do I have" honestly (ask_mcp_tools).
+func writeCapabilityHonestyBlock(b *strings.Builder) {
+	b.WriteString(`
+## Capabilities: check, then act
+- **Before building a workaround for a capability you believe is missing, make ONE direct attempt at it.** An "unknown tool" error costs one tool call; a session built around a workaround costs the whole session.
+- **Absence from a ` + "`list_*`" + ` response is NOT evidence of absence.** A list reports what is DEFINED; what you can call in this turn is a different question. For MCP specifically, call ` + "`ask_mcp_tools`" + ` — it reports the servers and tool names MOUNTED IN THIS TURN, the mode that filters them, and (when nothing is offered) why. A tool named under ` + "`hosted_by_a_refused_mode`" + ` exists and is mounted; it is withheld by the current mode, so the fix is switching mode, not a workaround.
+- **Never route a tool call through a shell.** Driving an MCP server over stdio JSON-RPC via ` + "`bash`" + ` (or ` + "`curl`" + `) flattens structured and binary results — images, files, anything not text — into prose you then have to interpret. If a tool is genuinely unavailable, say so and name what you checked; do not hand-roll the transport and keep drawing blind.
+- The same rule holds for files and the platform: if ` + "`read`" + ` or an ` + "`orchicon_*`" + ` tool seems unavailable, retry it once before concluding anything from its absence in a summary.
+`)
+}
+
 // writeSessionContract states the no-budget truth POSITIVELY, in every mode.
 //
 // It exists because Ask conversations used to be told, in effect, that they were
@@ -178,6 +199,9 @@ func modeLabel(mode string) string {
 // session that has no budget at all. Guarded by
 // TestAskPromptDeclaresNoExecutionBudget.
 func writeSessionContract(b *strings.Builder) {
+	// The capability-honesty rule travels WITH the session contract: both are about how this session reasons
+	// about itself, and both apply to every mode identically. Called from here so a fourth mode cannot miss it.
+	writeCapabilityHonestyBlock(b)
 	b.WriteString(`
 ## Session contract
 This is a LIVE CONVERSATION, not a budgeted worker execution.
