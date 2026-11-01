@@ -87,8 +87,18 @@ const (
 	// defaultToolCallTimeout bounds one MCP tool call when the spec has no
 	// explicit Timeout.
 	defaultToolCallTimeout = 120 * time.Second
-	// defaultConnectTimeout bounds the lazy per-session connect/discovery.
-	defaultConnectTimeout = 15 * time.Second
+	// defaultConnectTimeout bounds the lazy per-session connect/discovery when the spec states none.
+	//
+	// RAISED FROM 15s, and the reason is that a false "timed out" is expensive in a way a slower success is
+	// not: a timeout used to cost the WHOLE MCP surface (one bad server aborted the union — see
+	// Manager.Start), and it reported itself as a bare "context deadline exceeded". A Python server pays
+	// interpreter start plus venv import before it can answer `initialize`, which is fast on a warm page
+	// cache and not on a cold one. 30s keeps session start snappy while giving an honest server room; the
+	// diagnostics in connectOne now distinguish "slow" from "dead", so a genuinely broken server still says
+	// so quickly.
+	//
+	// Overridable per spec (ServerSpec.Timeout) and per deployment (ORCHICON_MCP_CONNECT_TIMEOUT).
+	defaultConnectTimeout = 30 * time.Second
 )
 
 // ScopeKind addresses a resolution scope. RUN is run-shaped on purpose: its

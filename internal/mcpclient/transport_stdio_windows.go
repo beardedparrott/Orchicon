@@ -16,7 +16,7 @@ import (
 // boot-time /proc sweep which does not apply on windows either; stdio MCP
 // on windows is therefore best-effort (the session-end Close still kills
 // the child deterministically).
-func newStdioTransport(spec ServerSpec) (*mcp.CommandTransport, error) {
+func newStdioTransport(spec ServerSpec) (*stdioSpawn, error) {
 	argv := spec.Command
 	if len(argv) == 0 {
 		return nil, errUnconfiguredCommand(spec)
@@ -27,8 +27,17 @@ func newStdioTransport(spec ServerSpec) (*mcp.CommandTransport, error) {
 		"ORCHICON_MCP_STDIO=1",
 		"ORCHICON_MCP_SERVER_ID="+spec.ID,
 	)
+	cmd.Env = append(cmd.Env, planeIdentityEnv()...)
 	for k, v := range spec.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	return &mcp.CommandTransport{Command: cmd, TerminateDuration: 0}, nil
+	// CAPTURED FOR THE SAME REASON AS THE UNIX PATH (stdio_spawn.go): the go-sdk sets only stdin/stdout,
+	// so a child that dies on import used to write its traceback to nowhere.
+	stderr := newProcStderr()
+	cmd.Stderr = stderr
+	return &stdioSpawn{
+		cmd:       cmd,
+		stderr:    stderr,
+		transport: &mcp.CommandTransport{Command: cmd, TerminateDuration: 0},
+	}, nil
 }

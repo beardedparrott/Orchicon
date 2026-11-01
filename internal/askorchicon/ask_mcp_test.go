@@ -68,8 +68,9 @@ func (c *askMCPFakeClient) Close() error { c.closed = true; return nil }
 // stubAskMCPConnect installs fn as the client-construction seam for one test.
 func stubAskMCPConnect(fn func(ctx context.Context, specs []mcpclient.ServerSpec) (askMCPClient, error)) func() {
 	old := askMCPConnect
-	askMCPConnect = func(ctx context.Context, _ *slog.Logger, specs []mcpclient.ServerSpec) (askMCPClient, error) {
-		return fn(ctx, specs)
+	askMCPConnect = func(ctx context.Context, _ *slog.Logger, specs []mcpclient.ServerSpec) (askMCPClient, []mcpclient.ServerFailure, error) {
+		c, err := fn(ctx, specs)
+		return c, nil, err
 	}
 	return func() { askMCPConnect = old }
 }

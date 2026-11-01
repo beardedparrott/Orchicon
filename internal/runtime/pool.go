@@ -48,6 +48,21 @@ type daemonPool struct {
 	// instance per daemon lifetime rather than one per lease. See
 	// sweepPreRestartOrphans.
 	swept map[string]bool
+	// served records every instance this daemon has leased for. It is the scope of the LIVE orphan
+	// reconciliation: an instance is reconciled only once something has asked this daemon for a container,
+	// so a daemon never reaches into an instance it does not serve. See reconcileOrphans.
+	served map[string]bool
+	// untracked is the two-pass memory the live reconciliation needs: container name → when it was FIRST
+	// seen present-but-untracked. A container is reclaimable only once it has been untracked for the grace
+	// window, which is what keeps the sweep from deleting a container that is mid-create (a create that
+	// has not yet been recorded in entries looks exactly like an orphan).
+	untracked map[string]orphanCandidate
+}
+
+// orphanCandidate is one present-but-untracked container, remembered across reconciliation passes.
+type orphanCandidate struct {
+	instance string
+	since    time.Time
 }
 
 // poolEntry is the pool's bookkeeping for one container.
@@ -79,8 +94,10 @@ func newDaemonPool(d *Daemon) *daemonPool {
 		d:       d,
 		entries: make(map[string]*poolEntry),
 		clean:   make(map[string][]string),
-		leased:  make(map[string]string),
-		swept:   make(map[string]bool),
+		leased:    make(map[string]string),
+		swept:     make(map[string]bool),
+		served:    make(map[string]bool),
+		untracked: make(map[string]orphanCandidate),
 	}
 }
 
@@ -168,6 +185,20 @@ func (p *daemonPool) checkout(ctx context.Context, runID string, req CreateReque
 	if runID == "" {
 		return nil, fmt.Errorf("pool checkout: run id required")
 	}
+	// REMEMBER THAT THIS DAEMON SERVES THIS INSTANCE. It is the scope of the live orphan reconciliation:
+	// reconcileOrphans only ever lists instances recorded here, so a daemon can never reach into a sibling
+	// instance's containers (the hazard resetPool documents). Recorded before the lease work so a create
+	// that later fails still leaves the instance in scope — a failed create is exactly when a container is
+	// most likely to be left behind.
+	p.mu.Lock()
+	if p.served == nil {
+		p.served = make(map[string]bool)
+	}
+	if inst := instanceID(req.InstanceID); inst != "" {
+		p.served[inst] = true
+	}
+	p.mu.Unlock()
+
 	p.mu.Lock()
 	if name, ok := p.leased[runID]; ok {
 		ent := p.entries[name]
@@ -414,6 +445,10 @@ func (p *daemonPool) idleReap() {
 	// release) are reaped here so a leak can never outlive the staleness
 	// window — every live run renews within 30s.
 	p.reapStaleLeases()
+	// Third pass: containers the pool does not track at all. The pre-restart sweep covers what a PREVIOUS
+	// daemon left; this covers what stops being tracked while THIS one is up, which previously survived
+	// until the next restart.
+	p.reconcileOrphans()
 }
 
 // resetPool clears the in-memory pool at daemon start.
@@ -514,6 +549,106 @@ func (p *daemonPool) sweepPreRestartOrphans(instance string) {
 		p.d.Log.Info("pre-restart sweep: removing untracked container", "instance", instance, "container", n)
 		_ = p.d.removeContainer(n)
 	}
+}
+
+// reconcileOrphans is the LIVE half of container reconciliation: it removes containers belonging to an
+// instance this daemon serves that the pool does not track.
+//
+// WHY THIS EXISTS, and what it replaces. Reclamation used to happen in ONE place: sweepPreRestartOrphans,
+// which runs at most ONCE PER INSTANCE PER DAEMON LIFETIME. That covers the containers a previous daemon
+// left behind, and NOTHING after it — so a container that stopped being tracked while this daemon was up
+// (a lost lease, a reset that dropped the entry, a create whose bookkeeping was undone) lived until the
+// next daemon restart. Reported exactly that way: an orphan `orchicon-runtime-…` was only reclaimed when
+// the daemon was restarted, and in the meantime it held its published ports and its share of the host's
+// memory.
+//
+// TWO PASSES, NOT ONE. "Present in the engine but absent from entries" is also the state of a container
+// that is being created RIGHT NOW — `createContainer` is a subprocess call, and the entry is recorded only
+// after it returns. So a single-pass sweep can delete a container it is racing. A candidate is therefore
+// remembered on first sight and removed only after it has been untracked for the grace window; if it
+// becomes tracked in the meantime, the candidate is forgotten. That turns the old code's acknowledged
+// race into a non-event without needing the engine's creation timestamps.
+//
+// SCOPE. Only instances this daemon has leased for (served), because a daemon must never reach into
+// another instance's containers — the same hazard resetPool documents. An empty instance is never passed
+// to listRuntimes, because "" means "every instance on the host".
+func (p *daemonPool) reconcileOrphans() {
+	p.mu.Lock()
+	instances := make([]string, 0, len(p.served))
+	for inst := range p.served {
+		instances = append(instances, inst)
+	}
+	p.mu.Unlock()
+	if len(instances) == 0 {
+		return
+	}
+	grace := p.orphanGrace()
+	now := time.Now()
+	for _, instance := range instances {
+		names, err := p.d.listRuntimes(instance)
+		if err != nil {
+			// A failed listing is NOT evidence that containers are gone, so nothing is forgotten here —
+			// the next pass simply tries again.
+			p.d.Log.Warn("live sweep: list runtimes", "instance", instance, "error", err)
+			continue
+		}
+		present := make(map[string]bool, len(names))
+		var victims []string
+		p.mu.Lock()
+		for _, n := range names {
+			present[n] = true
+			if _, tracked := p.entries[n]; tracked {
+				// It became OURS between passes — forget the candidate.
+				delete(p.untracked, n)
+				continue
+			}
+			cand, seen := p.untracked[n]
+			if !seen {
+				p.untracked[n] = orphanCandidate{instance: instance, since: now}
+				continue
+			}
+			if now.Sub(cand.since) >= grace {
+				victims = append(victims, n)
+			}
+		}
+		// Forget candidates for this instance that are no longer present at all (removed by hand, or by
+		// another actor), so the map cannot grow without bound.
+		for n, cand := range p.untracked {
+			if cand.instance == instance && !present[n] {
+				delete(p.untracked, n)
+			}
+		}
+		p.mu.Unlock()
+
+		for _, n := range victims {
+			// Re-check immediately before the destructive call: a checkout in the meantime must win.
+			p.mu.Lock()
+			_, tracked := p.entries[n]
+			p.mu.Unlock()
+			if tracked {
+				continue
+			}
+			p.d.Log.Warn("live sweep: removing untracked container",
+				"instance", instance, "container", n, "grace", grace,
+				"hint", "present in the engine but not tracked by this daemon")
+			_ = p.d.removeContainer(n)
+			p.mu.Lock()
+			delete(p.untracked, n)
+			p.mu.Unlock()
+		}
+	}
+}
+
+// orphanGrace resolves ORCHICON_RUNTIME_ORPHAN_GRACE (default 2m): how long a container must be present
+// but untracked before the live sweep reclaims it.
+//
+// The default is well above the time a create takes (one engine subprocess), because being slow here costs
+// a container's memory for a couple of minutes while being fast risks deleting a live run's container.
+func (p *daemonPool) orphanGrace() time.Duration {
+	if v := p.d.envDuration("ORCHICON_RUNTIME_ORPHAN_GRACE"); v > 0 {
+		return v
+	}
+	return 2 * time.Minute
 }
 
 // poolIdleWindow resolves ORCHICON_RUNTIME_POOL_IDLE (default 10m).

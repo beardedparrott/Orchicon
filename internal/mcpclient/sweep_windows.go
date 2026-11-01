@@ -26,3 +26,11 @@ import (
 func SweepStaleChildren(_ context.Context, log *slog.Logger) {
 	_ = log
 }
+
+// processAlive is the Windows half of the ownership check in plane_identity.go.
+//
+// It reports false rather than probing, because there is no portable equivalent of `kill -0` here and
+// reporting false is the SAFE direction for this caller: the sweep that consumes it is itself a no-op on
+// Windows (see above), so nothing is ever reaped on the strength of this answer. Returning true would be a
+// claim the rest of the file cannot honour.
+func processAlive(_ int) bool { return false }

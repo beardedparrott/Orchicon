@@ -1,6 +1,8 @@
 package mcpclient
 
 import (
+	"strings"
+	"os"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -58,12 +60,36 @@ func newHTTPTransport(spec ServerSpec) (*mcp.StreamableClientTransport, error) {
 	}, nil
 }
 
+// connectTimeoutEnv overrides defaultConnectTimeout for a deployment whose servers need longer to start
+// (a Python server on a slow or cold filesystem is the measured case).
+const connectTimeoutEnv = "ORCHICON_MCP_CONNECT_TIMEOUT"
+
 // connectTimeout returns the context timeout for a lazy connect+discover.
+//
+// PRECEDENCE: the spec's own Timeout, then the deployment override, then the default. A spec that states a
+// timeout is an explicit per-server decision and outranks the deployment's blanket one.
 func connectTimeout(spec ServerSpec) time.Duration {
 	if spec.Timeout > 0 {
 		return spec.Timeout
 	}
+	if d := envConnectTimeout(); d > 0 {
+		return d
+	}
 	return defaultConnectTimeout
+}
+
+// envConnectTimeout reads connectTimeoutEnv, once per call. An unparseable value is ignored rather than
+// fatal: a typo in an optional tuning knob must not stop a plane from starting servers at all.
+func envConnectTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(connectTimeoutEnv))
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // toolTimeout returns the per-call timeout for a tool on this server.
