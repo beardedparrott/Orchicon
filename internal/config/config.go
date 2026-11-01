@@ -218,6 +218,21 @@ func Default() Config {
 	// `/var/lib/orchicon` and `/var/run/...` are not paths a Windows user can reach. Nothing else in Default()
 	// hardcodes a POSIX absolute — every other default is a relative path or an address.
 	dataDir := env("ORCHICON_DATA_DIR", defaultDataDir())
+	// A RELATIVE STATE DIR IS A LOCATION BUG, so it is resolved ONCE, here.
+	//
+	// THE REPORTED FAILURE: a worker on a container run found a `secrets/kek` file in the WORKTREE root — a
+	// directory bind-mounted from the operator's repo. The KEK's path is `filepath.Join(DataDir, "secrets",
+	// "kek")`, so the ONLY way it can land in a process's working directory is a relative DataDir. Every
+	// KEK write is therefore anchored to an absolute path at the single point the value is constructed,
+	// rather than depending on whatever CWD the process (plane, sandbox plane, or the binary run as an MCP
+	// server) happened to inherit.
+	//
+	// Abs is used rather than refusing a relative value because a relative state dir is legitimate in dev
+	// (BlobStoreDir has always defaulted to "./data/blobs"); what is not legitimate is letting its MEANING
+	// depend on the working directory of whichever process reads it.
+	if abs, aerr := filepath.Abs(dataDir); aerr == nil {
+		dataDir = abs
+	}
 	return Config{
 		HTTPAddr:           env("ORCHICON_HTTP_ADDR", ":8080"),
 		ExtraBind:          env("ORCHICON_HTTP_EXTRA_BIND", ""),

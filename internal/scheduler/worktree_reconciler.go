@@ -1111,10 +1111,16 @@ func (r *WorktreeReconciler) pruneStepRunOne(ctx context.Context, tenantID strin
 	} else if occupied, oerr := r.dirOccupied(path); oerr != nil {
 		return fmt.Errorf("worktree: inspect %s: %w", path, oerr)
 	} else if occupied {
-		if r.isOrchiconWorktreeArtifact(path) {
+		ours, perr := r.pruneWorktreeLeftover(ctx, projectDir, path)
+		if perr != nil {
+			return fmt.Errorf("worktree: inspect %s: %w", path, perr)
+		}
+		if ours {
 			if rerr := r.removeWorktreeArtifact(path); rerr != nil {
 				return fmt.Errorf("worktree: remove artifact at %s: %w", path, rerr)
 			}
+			r.log.Info("worktree: removed a leftover directory at the recorded worktree path",
+				"run", sr.WorkflowRunID, "step_run", sr.ID, "path", path)
 		} else {
 			r.log.Warn("worktree: refusing to remove non-worktree directory",
 				"run", sr.WorkflowRunID, "step_run", sr.ID, "path", path)
@@ -1257,10 +1263,16 @@ func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run 
 		// Not registered but the directory exists: only remove it when we
 		// can prove it is one of our worktree artifacts; never delete
 		// arbitrary user data.
-		if r.isOrchiconWorktreeArtifact(path) {
+		ours, perr := r.pruneWorktreeLeftover(ctx, projectDir, path)
+		if perr != nil {
+			return fmt.Errorf("worktree: inspect %s: %w", path, perr)
+		}
+		if ours {
 			if rerr := r.removeWorktreeArtifact(path); rerr != nil {
 				return fmt.Errorf("worktree: remove artifact at %s: %w", path, rerr)
 			}
+			r.log.Info("worktree: removed a leftover directory at the recorded worktree path",
+				"run", run.ID, "path", path)
 		} else {
 			r.log.Warn("worktree: refusing to remove non-worktree directory",
 				"run", run.ID, "path", path)
@@ -1781,6 +1793,31 @@ func (r *WorktreeReconciler) isOrchiconWorktreeArtifact(path string) bool {
 		return false
 	}
 	return strings.Contains(line, ".git"+string(filepath.Separator)+"worktrees")
+}
+
+// pruneWorktreeLeftover reports whether the directory at path is provably ours to delete during a
+// PRUNE.
+//
+// IT REUSES isOrchiconContainer RATHER THAN RE-DERIVING THE RULE. That predicate already answers exactly
+// this question — "a plain directory whose immediate children are all provably ours; an empty
+// run-namespaced container is ours vacuously" — and the PROVISION path already used it (phase 2/3 of
+// provisionRunWorktree). The PRUNE path was the one place still asking the narrower
+// isOrchiconWorktreeArtifact question, which requires a `.git` gitdir file and therefore fails for the two
+// most common leftovers: a worktree that was never fully created, and one whose admin data an earlier
+// `git worktree prune` already swept.
+//
+// REPORTED, and measured on a real install: an EMPTY directory sitting at the recorded worktree path, no
+// `.git` file, and "refusing to remove non-worktree directory" logged on every pass for a path this
+// reconciler itself had computed. Two predicates disagreeing about ownership is the defect; one predicate
+// is the fix.
+//
+// A directory holding anything NOT provably ours still fails the predicate and is still refused — deleting
+// user data is the one unrecoverable mistake available here.
+func (r *WorktreeReconciler) pruneWorktreeLeftover(ctx context.Context, projectDir, path string) (bool, error) {
+	if r.isOrchiconWorktreeArtifact(path) {
+		return true, nil
+	}
+	return r.isOrchiconContainer(ctx, projectDir, path)
 }
 
 // isOrchiconContainer reports whether path is a plain directory whose
