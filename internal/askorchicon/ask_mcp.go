@@ -153,6 +153,17 @@ func (s *Service) startAskMCPEntry(ctx context.Context, scope askmode.Conversati
 		// A REAL ANSWER, cached (see the entry's fingerprint field): this conversation
 		// resolves no servers. A later turn re-checks the fingerprint and only then
 		// spawns.
+		//
+		// SAID OUT LOUD, WITH THE DISABLED SET. An empty resolution has two very different causes — nothing is
+		// configured, or definitions EXIST but every one of them is disabled — and only the second is a
+		// misconfiguration an operator can fix. Naming the disabled ids turns "no MCP tools this turn" from a
+		// dead end into an action.
+		if s.log != nil {
+			s.log.Info("ask: MCP servers resolved to none",
+				"conversation", scope.ConversationID,
+				"project", scope.ProjectID,
+				"disabled", strings.Join(res.Disabled, ","))
+		}
 		return &askMCPEntry{projectID: scope.ProjectID, fingerprint: fp}, nil
 	}
 	// LOG WHAT WAS RESOLVED, WITH PROVENANCE, BEFORE the secret expansion below
@@ -283,6 +294,13 @@ func (s *Service) refreshAskMCP(ctx context.Context) {
 	}
 	scope, res, err := s.resolveAskMCPRaw(ctx)
 	if err != nil {
+		// LOGGED, because the consequence is a STALE CLIENT and an unfalsifiable failure: the model reports that
+		// it cannot call a tool, and nothing in the log says the refresh was what failed. The file's own header
+		// says the epic exists to eliminate exactly that.
+		if s.log != nil {
+			s.log.Warn("ask: MCP refresh could not resolve the conversation's scope — keeping the previous client",
+				"conversation", convID, "error", err)
+		}
 		return
 	}
 	fp := askMCPFingerprint(scope.ProjectID, res.Servers)
@@ -294,6 +312,12 @@ func (s *Service) refreshAskMCP(ctx context.Context) {
 	}
 	fresh, err := s.startAskMCPEntry(ctx, scope, res)
 	if err != nil {
+		// SAME REASON as the resolve failure above: the old client stays, so the tool surface silently stops
+		// matching the configuration and the only symptom is a model saying it cannot call something.
+		if s.log != nil {
+			s.log.Warn("ask: MCP refresh could not start the conversation's servers — keeping the previous client",
+				"conversation", convID, "servers", len(res.Servers), "error", err)
+		}
 		return
 	}
 	if ok && cur != nil && cur.mgr != nil {
@@ -323,9 +347,34 @@ func (s *Service) askMCPDefs(ctx context.Context) []mcpclient.ToolDef {
 		return nil
 	}
 	if entry == nil || entry.mgr == nil {
+		// A NIL ENTRY IS A REAL ANSWER AND USED TO BE SILENT. It means the conversation resolves no servers (see
+		// startAskMCPEntry's cached empty answer), which is indistinguishable at the model's end from "the servers
+		// are configured but their tools were dropped downstream" — so it is said out loud, once per turn.
+		if s.log != nil {
+			s.log.Info("ask: no MCP servers for this turn",
+				"conversation", askConversationFromContext(ctx), "project", askConversationProjectFromContext(ctx))
+		}
 		return nil
 	}
-	return entry.mgr.Defs()
+	defs := entry.mgr.Defs()
+	// HOW MANY TOOLS WERE ACTUALLY DISCOVERED.
+	//
+	// The resolution line above says what was CONFIGURED; this says what the client's tools/list returned. Without
+	// it, three very different failures are indistinguishable in the log:
+	//
+	//	started but tools/list returned 0     (the server is up and advertises nothing)
+	//	defs built but dropped downstream     (offered to nobody — the turn's tool array is where this shows)
+	//	offered fine                          (the model has them and still did not use them)
+	//
+	// REPORTED from a session that spent itself driving a server over bash: the log showed the servers
+	// registered and nothing about tools, so there was no way to tell which of those three it had been.
+	if s.log != nil {
+		s.log.Info("ask: MCP tool defs offered",
+			"conversation", askConversationFromContext(ctx),
+			"servers", len(entry.servers),
+			"tools", len(defs))
+	}
+	return defs
 }
 
 // isAskMCPTool reports whether name is one of THIS conversation's advertised MCP tools.

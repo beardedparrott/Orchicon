@@ -38,6 +38,12 @@ type compactMCPServer struct {
 	InstallResult   *mcpsettings.InstallResult `json:"install_result,omitempty"`
 	RequiredSecrets []string                   `json:"required_secrets,omitempty"`
 	HasSecretStored bool                       `json:"has_secret_stored"`
+	// OwnedBy says WHICH SCOPE supplies this definition — "conversation" or "project".
+	//
+	// WITHOUT IT THE ANSWER IS UNREADABLE. A conversation inherits its project's servers, so a list that mixes
+	// both without saying which is which cannot be checked against what the turn actually gets, and "is this
+	// mine or inherited?" is the question an operator asks when a tool is missing.
+	OwnedBy string `json:"owned_by"`
 }
 
 func compactServer(e mcpsettings.Entry) compactMCPServer {
@@ -60,7 +66,20 @@ func compactServer(e mcpsettings.Entry) compactMCPServer {
 		InstallResult:   &res,
 		RequiredSecrets: e.RequiredSecrets,
 		HasSecretStored: e.HasSecretStored,
+		OwnedBy:         ownerOf(e),
 	}
+}
+
+// ownerOf names the scope that supplies an entry. Entry's owner columns are mutually exclusive by construction
+// (exactly one is set), so this is a total function rather than a guess.
+func ownerOf(e mcpsettings.Entry) string {
+	if strings.TrimSpace(e.ConversationID) != "" {
+		return "conversation"
+	}
+	if strings.TrimSpace(e.ProjectID) != "" {
+		return "project"
+	}
+	return "tenant"
 }
 
 func toolListMCPServers(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
@@ -79,7 +98,31 @@ func toolListMCPServers(ctx context.Context, pool *db.Pool, args json.RawMessage
 	}
 	svc := mcpSvc(pool, nil)
 	tenantID := tenant.FromContext(ctx)
-	list, err := svc.ListForScope(ctx, tenantID, params.ProjectID, params.ConversationID)
+
+	// A CONVERSATION'S SCOPE INCLUDES ITS PROJECT, AND LEAVING THAT OUT MADE THIS TOOL LIE.
+	//
+	// The TURN resolves project ∪ conversation (mcpsettings.Resolver.resolveConversation →
+	// ListMCPServersByOwner with BOTH ids). This tool passed only the conversation, so the query's project arm
+	// matched nothing and it answered with the conversation's own rows alone — which for a conversation that
+	// inherits everything from its project is ZERO.
+	//
+	// REPORTED as the root cause of a whole wasted session: a model asked what MCP servers it had, was told
+	// none, concluded its aseprite tools were unavailable, and spent the session driving the server over stdio
+	// JSON-RPC through bash — flattening every image result to text, while the platform log for the same turns
+	// recorded two registered servers. The tool contradicted the runtime, and the model believed the tool.
+	//
+	// So a conversation_id is EXPANDED to its project here, through the conversation's own row — the same
+	// source the turn reads — rather than asking the caller to pass both and hoping it does.
+	projectID := strings.TrimSpace(params.ProjectID)
+	conversationID := strings.TrimSpace(params.ConversationID)
+	if conversationID != "" && projectID == "" {
+		if resolved, rerr := conversationProject(ctx, pool, tenantID, conversationID); rerr == nil {
+			projectID = resolved
+		}
+		// A failed lookup is NOT fatal: the conversation's own rows are still the right answer for the part of
+		// the scope that does not depend on the project.
+	}
+	list, err := svc.ListForScope(ctx, tenantID, projectID, conversationID)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +131,21 @@ func toolListMCPServers(ctx context.Context, pool *db.Pool, args json.RawMessage
 		out = append(out, compactServer(e))
 	}
 	return json.Marshal(newCompactList(out, "get_mcp_server"))
+}
+
+// conversationProject reads a conversation's project id, or "" when it has none. Best-effort by design: the
+// caller reports the conversation's own servers regardless.
+func conversationProject(ctx context.Context, pool *db.Pool, tenantID, conversationID string) (string, error) {
+	tx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	conv, err := db.GetConversation(ctx, tx.Tx, tenantID, conversationID)
+	if err != nil {
+		return "", err
+	}
+	return conv.ProjectID, nil
 }
 
 func toolGetMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
