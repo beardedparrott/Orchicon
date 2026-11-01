@@ -74,6 +74,9 @@ const (
 	// AskOrchiconServiceListMessagesProcedure is the fully-qualified name of the AskOrchiconService's
 	// ListMessages RPC.
 	AskOrchiconServiceListMessagesProcedure = "/orchicon.api.v1.AskOrchiconService/ListMessages"
+	// AskOrchiconServiceDeleteConversationMessageProcedure is the fully-qualified name of the
+	// AskOrchiconService's DeleteConversationMessage RPC.
+	AskOrchiconServiceDeleteConversationMessageProcedure = "/orchicon.api.v1.AskOrchiconService/DeleteConversationMessage"
 	// AskOrchiconServiceChatStreamProcedure is the fully-qualified name of the AskOrchiconService's
 	// ChatStream RPC.
 	AskOrchiconServiceChatStreamProcedure = "/orchicon.api.v1.AskOrchiconService/ChatStream"
@@ -182,6 +185,11 @@ type AskOrchiconServiceClient interface {
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
+	// DeleteConversationMessage removes ONE message (undo) or that message and everything after it (revert),
+	// and RECYCLES the conversation's model session so the removed text leaves the model's CONTEXT and not only
+	// the screen. The two modes are the operator's own two verbs: "undo it (remove it from the screen and
+	// context)" and "revert to that message removing anything that has come after it".
+	DeleteConversationMessage(context.Context, *connect.Request[v1.DeleteConversationMessageRequest]) (*connect.Response[v1.DeleteConversationMessageResponse], error)
 	// ChatStream sends a message (with optional attachments) to a
 	// conversation and returns immediately with a TurnStarted ack carrying
 	// the assistant message id under which the reply will be persisted. The
@@ -383,6 +391,12 @@ func NewAskOrchiconServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(askOrchiconServiceMethods.ByName("ListMessages")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteConversationMessage: connect.NewClient[v1.DeleteConversationMessageRequest, v1.DeleteConversationMessageResponse](
+			httpClient,
+			baseURL+AskOrchiconServiceDeleteConversationMessageProcedure,
+			connect.WithSchema(askOrchiconServiceMethods.ByName("DeleteConversationMessage")),
+			connect.WithClientOptions(opts...),
+		),
 		chatStream: connect.NewClient[v1.ChatStreamRequest, v1.ChatStreamResponse](
 			httpClient,
 			baseURL+AskOrchiconServiceChatStreamProcedure,
@@ -477,6 +491,7 @@ type askOrchiconServiceClient struct {
 	setConversationProject    *connect.Client[v1.SetConversationProjectRequest, v1.SetConversationProjectResponse]
 	setConversationSkillFiles *connect.Client[v1.SetConversationSkillFilesRequest, v1.SetConversationSkillFilesResponse]
 	listMessages              *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
+	deleteConversationMessage *connect.Client[v1.DeleteConversationMessageRequest, v1.DeleteConversationMessageResponse]
 	chatStream                *connect.Client[v1.ChatStreamRequest, v1.ChatStreamResponse]
 	abortConversationTurn     *connect.Client[v1.AbortConversationTurnRequest, v1.AbortConversationTurnResponse]
 	interjectConversationTurn *connect.Client[v1.InterjectConversationTurnRequest, v1.ChatStreamResponse]
@@ -545,6 +560,11 @@ func (c *askOrchiconServiceClient) SetConversationSkillFiles(ctx context.Context
 // ListMessages calls orchicon.api.v1.AskOrchiconService.ListMessages.
 func (c *askOrchiconServiceClient) ListMessages(ctx context.Context, req *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {
 	return c.listMessages.CallUnary(ctx, req)
+}
+
+// DeleteConversationMessage calls orchicon.api.v1.AskOrchiconService.DeleteConversationMessage.
+func (c *askOrchiconServiceClient) DeleteConversationMessage(ctx context.Context, req *connect.Request[v1.DeleteConversationMessageRequest]) (*connect.Response[v1.DeleteConversationMessageResponse], error) {
+	return c.deleteConversationMessage.CallUnary(ctx, req)
 }
 
 // ChatStream calls orchicon.api.v1.AskOrchiconService.ChatStream.
@@ -679,6 +699,11 @@ type AskOrchiconServiceHandler interface {
 	// ListMessages returns messages for a conversation, ordered by
 	// created_at ascending (oldest first).
 	ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error)
+	// DeleteConversationMessage removes ONE message (undo) or that message and everything after it (revert),
+	// and RECYCLES the conversation's model session so the removed text leaves the model's CONTEXT and not only
+	// the screen. The two modes are the operator's own two verbs: "undo it (remove it from the screen and
+	// context)" and "revert to that message removing anything that has come after it".
+	DeleteConversationMessage(context.Context, *connect.Request[v1.DeleteConversationMessageRequest]) (*connect.Response[v1.DeleteConversationMessageResponse], error)
 	// ChatStream sends a message (with optional attachments) to a
 	// conversation and returns immediately with a TurnStarted ack carrying
 	// the assistant message id under which the reply will be persisted. The
@@ -876,6 +901,12 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 		connect.WithSchema(askOrchiconServiceMethods.ByName("ListMessages")),
 		connect.WithHandlerOptions(opts...),
 	)
+	askOrchiconServiceDeleteConversationMessageHandler := connect.NewUnaryHandler(
+		AskOrchiconServiceDeleteConversationMessageProcedure,
+		svc.DeleteConversationMessage,
+		connect.WithSchema(askOrchiconServiceMethods.ByName("DeleteConversationMessage")),
+		connect.WithHandlerOptions(opts...),
+	)
 	askOrchiconServiceChatStreamHandler := connect.NewServerStreamHandler(
 		AskOrchiconServiceChatStreamProcedure,
 		svc.ChatStream,
@@ -978,6 +1009,8 @@ func NewAskOrchiconServiceHandler(svc AskOrchiconServiceHandler, opts ...connect
 			askOrchiconServiceSetConversationSkillFilesHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceListMessagesProcedure:
 			askOrchiconServiceListMessagesHandler.ServeHTTP(w, r)
+		case AskOrchiconServiceDeleteConversationMessageProcedure:
+			askOrchiconServiceDeleteConversationMessageHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceChatStreamProcedure:
 			askOrchiconServiceChatStreamHandler.ServeHTTP(w, r)
 		case AskOrchiconServiceAbortConversationTurnProcedure:
@@ -1055,6 +1088,10 @@ func (UnimplementedAskOrchiconServiceHandler) SetConversationSkillFiles(context.
 
 func (UnimplementedAskOrchiconServiceHandler) ListMessages(context.Context, *connect.Request[v1.ListMessagesRequest]) (*connect.Response[v1.ListMessagesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.ListMessages is not implemented"))
+}
+
+func (UnimplementedAskOrchiconServiceHandler) DeleteConversationMessage(context.Context, *connect.Request[v1.DeleteConversationMessageRequest]) (*connect.Response[v1.DeleteConversationMessageResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.AskOrchiconService.DeleteConversationMessage is not implemented"))
 }
 
 func (UnimplementedAskOrchiconServiceHandler) ChatStream(context.Context, *connect.Request[v1.ChatStreamRequest], *connect.ServerStream[v1.ChatStreamResponse]) error {

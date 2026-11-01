@@ -26,7 +26,13 @@ import (
 //
 // 239 -> 240: the native Telemetry page added TelemetryService.GetTelemetryReport (a read-only Postgres
 // report aggregate for the Reports view). Read-only query, not a lifecycle control.
-const generatedProcedures = 240
+//
+// 240 -> 241: AskOrchiconService.DeleteConversationMessage — the transcript edit an operator asked for
+// ("undo it ... and also revert to that message removing anything that has come after it"). It removes a
+// message, and RECYCLES the conversation's model session so the text leaves the model's context as well as
+// the screen. A transcript write on the Ask service, not a plane lifecycle control; the name tripwire below
+// re-checks that.
+const generatedProcedures = 241
 
 // lifecycleName matches a procedure or RPC that would put plane lifecycle control on the API.
 var lifecycleName = regexp.MustCompile(`(?i)(start|stop|restart|shutdown|lifecycle|status).*(plane|instance)|(plane|instance).*(start|stop|restart|shutdown|lifecycle)`)

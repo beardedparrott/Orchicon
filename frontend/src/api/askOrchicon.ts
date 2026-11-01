@@ -139,6 +139,48 @@ export function useUpdateConversationTitle() {
   });
 }
 
+/**
+ * MessageDeleteMode mirrors the proto enum, re-exported so a caller names the intent rather than a number.
+ *
+ * ONLY removes exactly the named message (the GUI's "Undo this message"); AND_FOLLOWING removes it and
+ * everything after it ("Revert to here"). The distinction is the operator's own wording, and the server
+ * enforces it — see the RPC's doc comment.
+ */
+export const MessageDeleteMode = {
+  ONLY: 1,
+  AND_FOLLOWING: 2,
+} as const;
+
+/**
+ * useDeleteConversationMessage removes one message, or that message and everything after it.
+ *
+ * THE SERVER ALSO RESETS THE CONVERSATION'S MODEL SESSION, and that is the half that matters: turns are
+ * CONTINUED on a stored session id, so removing rows alone would take the message off the screen while
+ * leaving it in what the model reasons about. The response reports whether a session was reset, so the
+ * caller can say so.
+ *
+ * A turn in flight is REFUSED by the server (the reply is being written as it streams), so the caller must
+ * not offer this while a turn is running.
+ */
+export function useDeleteConversationMessage(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { messageId: string; mode: number }) => {
+      return await askOrchiconClient.deleteConversationMessage({
+        conversationId,
+        messageId: input.messageId,
+        mode: input.mode as never,
+      });
+    },
+    onSuccess: () => {
+      // The transcript shrank and the conversation's session_id changed, so both are stale.
+      qc.invalidateQueries({ queryKey: askKeys.messages(conversationId) });
+      qc.invalidateQueries({ queryKey: askKeys.conversations });
+      qc.invalidateQueries({ queryKey: askKeys.conversation(conversationId) });
+    },
+  });
+}
+
 export function useCompactConversation() {
   const qc = useQueryClient();
   return useMutation({

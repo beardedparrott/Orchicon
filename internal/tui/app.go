@@ -172,8 +172,11 @@ type App struct {
 	// planeReprobeAt is when the last disconnect-driven re-probe was armed — planeReprobeCmd's cooldown.
 	planeReprobeAt time.Time
 	help           helpModel
-	routes         []KeyRoute
-	quitting       bool
+	// msgMenu is the per-message edit menu (undo / revert to here), opened by a RIGHT-CLICK on one of the
+	// operator's own messages. See msgmenu.go.
+	msgMenu  *msgMenu
+	routes   []KeyRoute
+	quitting bool
 	// launchDir is the directory the process was launched from — a FACT ABOUT THE
 	// PROCESS (os.Getwd), set by tui.WithLaunchDir and empty in tests and embedders.
 	//
@@ -2818,6 +2821,12 @@ func (m App) viewFrame() string {
 	if m.renameConv != nil {
 		base = m.renameConvView(base, w, h)
 	}
+	// THE MESSAGE EDIT MENU, drawn above the transcript it edits and centred by the same compositor every other
+	// overlay uses — so it cannot change the frame's row count, which is the overlay discipline this shell
+	// holds every layer to.
+	if m.msgMenu != nil {
+		base = m.overlayCentered(base, m.msgMenuView())
+	}
 	// THE CONVERSATION SCOPE MODAL IS DRAWN FIRST OF THE TWO, so a form raised FROM it lands ON TOP.
 	//
 	// THIS ORDER IS LOAD-BEARING, and getting it backwards is the operator's "none of the buttons
@@ -5177,6 +5186,58 @@ func (m *App) transcriptUserMessageAtFrameRow(frameRow int) (string, bool) {
 	return "", false
 }
 
+// transcriptUserMessageIDAtFrameRow is transcriptUserMessageAtFrameRow for the edit menu: it returns the
+// message's DURABLE ID as well as its text.
+//
+// A SEPARATE FUNCTION RATHER THAN A WIDER RETURN, because the two callers need different things and the copy
+// path must keep working for a span with no id (a live stream fragment has text and no durable message). Sharing
+// one signature would have made the copy gesture depend on a field it does not use.
+//
+// Same three coordinate spaces as its sibling — frame row → body row → body line → item — and the same rule that
+// only the operator's own messages qualify.
+func (m *App) transcriptUserMessageIDAtFrameRow(frameRow int) (string, string, bool) {
+	str := m.TranscriptStream(m.chatConvID)
+	if str == nil {
+		return "", "", false
+	}
+	line := str.LineAtRow(frameRow - m.transcriptBodyTopRow())
+	if line < 0 {
+		return "", "", false
+	}
+	for _, sp := range m.transcriptSpans[m.chatConvID] {
+		if sp.Kind != chat.KindUser || !sp.Contains(line) {
+			continue
+		}
+		// A SPAN WITH NO MESSAGE ID IS NOT EDITABLE: it is a live fragment, not a persisted row, and the server
+		// could not be told which message to remove. The menu simply does not open there.
+		if sp.MessageID == "" {
+			return "", "", false
+		}
+		return sp.MessageID, sp.Text, true
+	}
+	return "", "", false
+}
+
+// lastEditableUserMessage resolves the MOST RECENT of the operator's own messages, for the slash commands.
+//
+// The spans are in render order, so the last matching span is the newest. Only a span with a DURABLE message id
+// qualifies — a live stream fragment has text and no row, and the server could not be told which message to
+// remove.
+func (m *App) lastEditableUserMessage() (string, string, bool) {
+	if m.chatConvID == "" {
+		return "", "", false
+	}
+	spans := m.transcriptSpans[m.chatConvID]
+	for i := len(spans) - 1; i >= 0; i-- {
+		sp := spans[i]
+		if sp.Kind != chat.KindUser || sp.MessageID == "" || strings.TrimSpace(sp.Text) == "" {
+			continue
+		}
+		return sp.MessageID, sp.Text, true
+	}
+	return "", "", false
+}
+
 // composerTopRow is the frame row of the composer dock's FIRST line: the chrome, then the screen block, then
 // the slide-out strip, then the dock — the same order baseView paints them in.
 func (m *App) composerTopRow() int {
@@ -5505,6 +5566,19 @@ func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
 		// instead of the pre-compaction transcript.
 		if msg.ID == m.chatConvID && msg.Detail != "" {
 			m.dock.SetNotice("compact: " + msg.Detail)
+			return tea.Batch(m.chat.Poll(msg.ID), m.reloadConversations())
+		}
+		return m.reloadConversations()
+	}
+	if msg.Op == "remove" {
+		// A MESSAGE WAS REMOVED: the transcript the pane shows is now stale, so re-poll it. The server also
+		// recycled the conversation's model session, and the detail line says so — that is the half an operator
+		// cannot see, and leaving it unstated would let them believe the model still knows a message the
+		// transcript no longer holds.
+		if msg.Detail != "" {
+			m.dock.SetNotice("remove: " + msg.Detail)
+		}
+		if msg.ID == m.chatConvID && m.chat != nil {
 			return tea.Batch(m.chat.Poll(msg.ID), m.reloadConversations())
 		}
 		return m.reloadConversations()

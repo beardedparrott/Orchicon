@@ -636,6 +636,16 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// THE MESSAGE EDIT MENU OWNS EVERY KEY WHILE IT IS OPEN, and it is checked here, beside the other
+	// App-level overlays, because it is opened by a CLICK rather than a chord: a key that fell through to the
+	// composer would be typed into a message the operator is about to delete, and Enter would send it instead
+	// of confirming. Non-key messages still flow, so a live turn keeps updating behind the menu.
+	if m.msgMenuBlocksKeys() {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			return m, m.handleMsgMenuKey(k)
+		}
+		return m, nil
+	}
 	// A FORM'S OWN ANCILLARY MESSAGES OUTRANK THE FORM GUARD BELOW, and this is the ONE working example of
 	// why: the guard swallows EVERY non-key message while a form is open, so a message produced by that
 	// form's own submit is eaten before anything can act on it.
@@ -1491,6 +1501,23 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	//
 	// It copies through the SAME osc-52 path a drag-select uses (clipState.copyCmd), so the confirmation is
 	// the toast the operator already knows and there is no second copy mechanism to keep working.
+	// A RIGHT-CLICK ON THE OPERATOR'S OWN MESSAGE OPENS THE EDIT MENU.
+	//
+	// The operator asked for exactly this gesture: "right click for the TUI to bring up a popup menu to choose
+	// your option". It is checked BEFORE the left-click block below and named for its button, because the two
+	// gestures share a row and only the button tells them apart — left-click copies (the existing affordance),
+	// right-click edits.
+	//
+	// ONLY the operator's own messages, which is the same rule the copy gesture follows: the model's reply is a
+	// record of what it did, and an operator who could delete it could make the transcript disagree with the
+	// work. A right-click anywhere else falls through, so it does nothing rather than opening an empty menu.
+	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonRight &&
+		m.active == TabAsk && m.chatConvID != "" && !m.msgMenuBlocksKeys() {
+		if msgID, text, ok := m.transcriptUserMessageIDAtFrameRow(mo.Y); ok {
+			m.openMsgMenu(m.chatConvID, msgID, text)
+			return m, nil
+		}
+	}
 	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft && m.active == TabAsk && m.chatConvID != "" {
 		// A CODE BLOCK IS CHECKED FIRST, because it sits INSIDE a message: the message rule below would
 		// otherwise win and copy the whole message — band indent, prose and all — when the operator clicked

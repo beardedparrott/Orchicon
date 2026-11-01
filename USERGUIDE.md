@@ -994,6 +994,34 @@ the work itself, and dispatch it — depending on the **mode** you select.
   looking at a different conversation.
 - **Composer** (bottom) — the input, with a **project pill**, a mode dropdown and a **model chip**.
 
+### Editing the transcript: undo a message, or revert to it
+
+You can take back something you said, in two ways that differ in **how much history they remove**.
+
+| Gesture | What it removes |
+|---|---|
+| **Undo this message** | Only that message. **Its reply stays** — so you can forget the question without losing the answer it produced. |
+| **Revert to here** | That message **and everything after it**, leaving the conversation ending at the turn before. |
+
+**Reaching it:** in the GUI, the **ellipsis** beside a message and then one of the two
+items. In the TUI, **right-click** one of your own messages for the menu, or use
+`/undo` and `/revert`, which open the same menu on your most recent message with the
+matching entry already chosen.
+
+**Both ask first**, because neither is undoable from the interface. Both actions also
+**reset the conversation's model session**, and that is the part you cannot see:
+replies are continued inside a running model session, so removing a database row alone
+would take the message off the screen while leaving it in what the model is reasoning
+about. The reset makes the next turn replay the shortened history, so the text is gone
+from both places. A notice confirms it when it happens.
+
+Both are refused while a reply is in progress — the reply is being written as it
+streams, so there would be nothing coherent to delete underneath it. Stop the turn or
+wait for it to finish.
+
+Only **your own messages** can be edited. An assistant reply is the model's record of
+what it did, and deleting it would make the transcript disagree with the work.
+
 ### The three modes
 
 Mode is per-conversation, shown as a dropdown in the composer. All three share one

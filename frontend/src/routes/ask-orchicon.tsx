@@ -71,11 +71,14 @@ import {
   useSetConversationFullsend,
   useSetConversationProject,
   useCompactConversation,
+  useDeleteConversationMessage,
   askKeys,
 } from "@/api/askOrchicon";
 import { useGetSettings } from "@/api/settings";
 import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
+import { MessageActions } from "@/components/ask/MessageActions";
+import { MessageAction, modeForAction, type MessageActionValue } from "@/lib/ask-message-actions";
 import { COMPACT_COMMAND, parseComposerCommand } from "@/lib/composer-command";
 import { bubbleKindFor } from "@/lib/ask-bubble";
 import {
@@ -931,6 +934,7 @@ function AskOrchiconPage() {
   // conversations: the count then reads 0, which is how you know a scope is empty before clicking it.
   const { data: projects } = useListProjects();
   const deleteConv = useDeleteConversation();
+  const deleteMessage = useDeleteConversationMessage(activeConvId ?? "");
   const updateTitle = useUpdateConversationTitle();
   const abortTurn = useAbortConversationTurn();
   const setMode = useSetConversationMode();
@@ -1723,6 +1727,27 @@ function AskOrchiconPage() {
     [activeConvId, isStreaming, serverTurnInFlight, sendStreaming, interjectStreaming],
   );
 
+  // handleMessageAction performs the operator's two edit verbs on a user message.
+  //
+  // Both go through ONE mutation because both are the same server operation with a different mode, and both
+  // need the same two effects: the transcript shrinks AND the conversation's model session is recycled, which
+  // is what takes the text out of the model's context as well as off the screen. The response says whether a
+  // session was actually reset, so the operator is told what happened rather than left to assume.
+  const handleMessageAction = useCallback(
+    async (message: ChatMessage, action: MessageActionValue): Promise<void> => {
+      if (!activeConvId) return;
+      const res = await deleteMessage.mutateAsync({ messageId: message.id, mode: modeForAction(action) });
+      const removed = action === MessageAction.Undo ? "Message removed" : "Conversation reverted";
+      toast.success(
+        res.sessionReset
+          ? `${removed} and the model's context was reset for the next turn.`
+          : `${removed}.`,
+        { title: "Ask Orchicon" },
+      );
+    },
+    [activeConvId, deleteMessage, toast],
+  );
+
   const handleRetry = useCallback((): Promise<boolean> => {
     const lastUser = messages
       ?.slice()
@@ -2395,6 +2420,18 @@ function AskOrchiconPage() {
                                 : handleSendMessage(label)
                             }
                             highlight={searchQuery}
+                            // The per-message edit menu. Offered only when no turn is running: the server
+                            // refuses a delete then, because the reply is being written as it streams.
+                            messageActions={
+                              <MessageActions
+                                disabledReason={
+                                  isStreaming || serverTurnInFlight
+                                    ? "A reply is in progress — stop it or wait before removing messages"
+                                    : undefined
+                                }
+                                onAction={(action) => handleMessageAction(block.message, action)}
+                              />
+                            }
                             // The in-flight row's card is drawn after the live text instead (see
                             // liftedCard): inside this row it would be stranded mid-reply.
                             cardLifted={
@@ -2967,6 +3004,7 @@ function askCardOf(message: ChatMessage) {
 
 function MessageBubble({
   message,
+  messageActions,
   onRetry,
   onSelectOption,
   highlight = "",
@@ -2974,6 +3012,11 @@ function MessageBubble({
   proseLifted = false,
 }: {
   message: ChatMessage;
+  /**
+   * messageActions is the per-message edit menu, passed DOWN rather than built here: this bubble renders every
+   * role, and only a USER message can be undone — the assistant reply is the model's record of what it did.
+   */
+  messageActions?: React.ReactNode;
   onRetry?: () => void;
   // onSelectOption sends a clicked clarifying-question option as the answer to the
   // PAUSED turn (it goes over the reply RPC as the ask_user tool result).
@@ -3012,7 +3055,9 @@ function MessageBubble({
   const kind = bubbleKindFor(message);
 
   if (kind === "user") {
-    return <UserBubble text={message.content} source="you" highlight={highlight} />;
+    return (
+      <UserBubble text={message.content} source="you" highlight={highlight} actions={messageActions} />
+    );
   }
 
   if (kind === "notice") {
