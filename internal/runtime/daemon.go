@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -790,6 +791,7 @@ func hasDriveLetter(p string) bool {
 	}
 	return len(p) == 2 || p[2] == '\\' || p[2] == '/'
 }
+
 // validateCreate enforces the daemon's security policy: image allowlist,
 // mount-source allowlist, argv allowlist.
 func (d *Daemon) validateCreate(ctx context.Context, req CreateRequest) error {
@@ -1067,6 +1069,29 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 	args = append(args, "-v", d.Paths.Map(containerExe)+":/usr/local/bin/orchicon:ro")
 	args = append(args, image, "orchicon", "runtime-supervisor")
 
+	// THE RESOLVED ADAPTER SURFACE, SAID OUT LOUD AT CREATE TIME.
+	//
+	// REPORTED as the thing that would have settled a whole round trip in seconds: "have your agent confirm
+	// which function they added the claude mount to, and whether it runs for adp_claude_dev ... the absence of
+	// any .claude string in the log says the code path was never reached."
+	//
+	// IT COULD NOT SAY THAT, for two reasons, and both are fixed here:
+	//
+	//  1. the mounts are built by the DAEMON, and the operator was reading the PLANE log — a daemon-only string
+	//     can never appear there, so the scan was structurally incapable of finding it;
+	//  2. even in the right log, a SUCCESSFUL create logged only a COUNT (`workflow runtime ensured ... mounts=12`),
+	//     never a path.
+	//
+	// So: the boot profile and the adapter data dirs the container was built for are logged BEFORE the engine is
+	// called, on the success path as well as the failure path. A missing mount is then a one-line read rather
+	// than an inference from a string search.
+	if d.Log != nil {
+		d.Log.Info("runtime container: resolved adapter surface",
+			"container", name,
+			"image", image,
+			"boot_profile", strings.Join(requestedKinds(req), ","),
+			"adapter_mounts", strings.Join(describeAdapterMounts(d.HostHome, requestedKinds(req)...), ","))
+	}
 	// Create the container, retrying past name conflicts. A container that was
 	// just removed (an `rm -f` during a rebuild / orphan sweep) is still
 	// settling inside the ENGINE: `ps`/`inspect` already report it gone, but
@@ -2000,7 +2025,38 @@ func httpErrorCode(w http.ResponseWriter, code int, msg, errCode string) {
 	writeJSON(w, code, map[string]string{"error": msg, "code": errCode})
 }
 
-// describeCreateArgv renders a create argv for an error message: one argument per line, REDACTED.
+// describeAdapterMounts lists the HOST paths this create would mount for the demanded adapter kinds, so a missing
+// one is visible in the log rather than inferred from its absence in a string search.
+//
+// It reports the same two sources the mount builder uses — the declared installs and the private homes — through
+// the SAME functions, so the log and the argv cannot disagree about what was resolved. Paths only: no file
+// contents, no credential values.
+func describeAdapterMounts(home string, kinds ...string) []string {
+	if home == "" {
+		return nil
+	}
+	var out []string
+	for _, a := range adapterHostMounts(home, kinds...) {
+		// adapterHostMounts returns a flag/value list: keep the values that are mounts.
+		if strings.HasPrefix(a, "/") || (len(a) > 1 && a[1] == ':') {
+			out = append(out, a)
+		}
+	}
+	for _, ph := range adapterPrivateHomes(home, kinds...) {
+		if ph.isFile {
+			out = append(out, ph.dir)
+			continue
+		}
+		out = append(out, ph.dir)
+		if ph.authFile != "" {
+			out = append(out, ph.authFile)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// describeCreateArgv renders a create argv for an error message: one argument per line, REDACTED.// describeCreateArgv renders a create argv for an error message: one argument per line, REDACTED.
 //
 // REDACTION IS NOT OPTIONAL. This vector carries `-e KEY=VALUE` entries — the operator's GH_TOKEN and any
 // tenant secret the plane injected — so the whole point of logging it would be undone by printing it raw. Only
