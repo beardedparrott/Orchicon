@@ -168,6 +168,28 @@ var runtimeBinAllowlist = map[string]bool{
 	"sh":       true,
 }
 
+// guestArgv0Refusal is the single explanation for a refused argv[0], and it names the HOST-PATH case
+// explicitly because that case does not look like one from this side.
+//
+// THE REPORTED FAILURE. Claude is the only adapter on the duplex stdio transport, and it used to send
+// the operator's HOST install path. Here, inside a Linux container, filepath.Base splits on "/" only,
+// so the basename of `C:\Users\justi\...\claude.exe` is that WHOLE string — the refusal then read
+// "stdio argv[0] not allowlisted: C:\Users\justi\...\claude.exe", which is accurate and says nothing
+// about what to do. It is not a list-membership mistake to correct but a boundary violation to undo:
+// argv[0] crosses from the host into the container, so only a name the IMAGE provides can be exec'd.
+//
+// The wording matters more than usual here: this error is what the plane now surfaces verbatim (see
+// internal/claude exitCause), so it IS the operator's diagnostic.
+func guestArgv0Refusal(prefix, argv0, base string) string {
+	reason := prefix + " not allowlisted: " + base
+	if strings.ContainsRune(argv0, '\\') || strings.HasSuffix(strings.ToLower(argv0), ".exe") {
+		reason += " — argv[0] is a HOST path, not a name this container can exec. A container dispatch " +
+			"must send the binary the IMAGE provides (e.g. \"claude\"), never the operator's install path: " +
+			"the host path does not exist in here, and a non-POSIX one has no basename to allowlist."
+	}
+	return reason
+}
+
 // RunSupervisor runs the in-container dispatch loop as PID 1. It accepts
 // ping/serve/exec requests on socketPath: ping (readiness), serve (bring
 // up the container's opencode serve), exec (run one shell command with
@@ -581,7 +603,7 @@ func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
 		base = filepath.Base(req.Argv[0])
 	}
 	if base != "bash" && base != "sh" {
-		_ = enc.Encode(AgentEvent{Event: "error", Error: "exec argv[0] not allowlisted: " + base})
+		_ = enc.Encode(AgentEvent{Event: "error", Error: guestArgv0Refusal("exec argv[0]", req.Argv[0], base)})
 		return
 	}
 	cmd := procwin.Command(req.Argv[0], req.Argv[1:]...)
@@ -684,7 +706,7 @@ func (h *childRegistry) runStdio(dec *json.Decoder, enc *json.Encoder, req Agent
 	}
 	base := filepath.Base(req.Argv[0])
 	if !runtimeBinAllowlist[base] {
-		_ = enc.Encode(AgentEvent{Event: "error", Error: "stdio argv[0] not allowlisted: " + base})
+		_ = enc.Encode(AgentEvent{Event: "error", Error: guestArgv0Refusal("stdio argv[0]", req.Argv[0], base)})
 		return
 	}
 	// ONE active child per exec id: a second start is refused loudly (never
@@ -984,7 +1006,7 @@ func (h *childRegistry) startServeAgain(kind string, req AgentRequest) error {
 	}
 	base := filepath.Base(req.Argv[0])
 	if !runtimeBinAllowlist[base] {
-		return fmt.Errorf("argv[0] not allowlisted: %s", base)
+		return fmt.Errorf("%s", guestArgv0Refusal("argv[0]", req.Argv[0], base))
 	}
 
 	h.mu.Lock()

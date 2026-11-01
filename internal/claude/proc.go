@@ -3,6 +3,7 @@ package claude
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -41,6 +42,29 @@ type ProcSession interface {
 	Wait() (int, error)
 	// Close closes stdin then kills the child. Idempotent.
 	Close() error
+}
+
+// exitCause renders a TRANSPORT-level failure so it reaches the operator. It returns "" for an
+// ordinary non-zero exit, whose code the caller already reports.
+//
+// WHY IT EXISTS — the reported Windows failure. The supervisor answered the dispatch with a precise
+// refusal (`{event:"error", error:"stdio argv[0] not allowlisted: C:\\Users\\...\\claude.exe"}`)
+// because no child was ever spawned. containerProc stored it on the proc, and the session loop then did
+// `c, _ := p.Wait()` — DISCARDING it — and reported "exited without a terminal result message (exit
+// code 1); the CLI emitted no stderr at all before exiting". Every clause of that sentence was true and
+// the sentence still sent the investigation in the wrong direction: "the CLI emitted no stderr" reads
+// as a CLI problem, when the CLI had never started. A transport error is the one class of failure the
+// child cannot report for itself, so it must never be dropped here.
+func exitCause(err error) string {
+	if err == nil {
+		return ""
+	}
+	// A non-zero exit IS the child running. Its code is in the message; "exit status 1" adds nothing.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return ""
+	}
+	return "; transport: " + err.Error()
 }
 
 // procSpec is the spawn request the bridge hands to its proc factory.
