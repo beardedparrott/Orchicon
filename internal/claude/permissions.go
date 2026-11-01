@@ -320,6 +320,24 @@ func PermissionArgs(o PermissionOptions) ([]string, error) {
 // BuildSettings marshals the `--settings` document. Empty-string return means
 // "no settings" (only possible if marshalling failed, which cannot happen for
 // this shape); the error is the policy load failure, if any.
+// hookCommand renders the shell command claude runs for the PreToolUse hook.
+//
+// THE PATH MUST BE QUOTED, and this is a Windows defect that reads as a permissions defect. The command is
+// executed by a SHELL, so an unquoted path is split at its first space: `C:\Program Files\Orchicon\orchicon.exe
+// claude-hook` becomes `C:\Program` plus arguments, the hook never runs, and claude treats a FAILING
+// PreToolUse hook as a BLOCK. Every gated tool is then refused — reported as "Write/Edit permission was
+// denied for all project files", which points at the permission POLICY rather than at a broken command.
+//
+// It is silent in exactly the way that matters: PreflightHookExecutable checks that the FILE exists and is
+// executable, and a path with spaces satisfies that. The breakage only appears at shell-split time.
+//
+// Quoting is applied unconditionally rather than only when a space is present: it changes nothing for a path
+// without spaces, and a conditional would leave the next odd path (a quote character, a unicode space)
+// uncovered. The path never contains a double quote itself on either platform — an executable name cannot.
+func hookCommand(hookBin string) string {
+	return `"` + hookBin + `" claude-hook`
+}
+
 func BuildSettings(o PermissionOptions) (string, error) {
 	policyDeny, policyErr := policyDenyEntries(o.PolicyPath)
 
@@ -387,7 +405,7 @@ func BuildSettings(o PermissionOptions) (string, error) {
 			"matcher": HookToolMatcher,
 			"hooks": []map[string]any{{
 				"type":    "command",
-				"command": hookBin + " claude-hook",
+				"command": hookCommand(hookBin),
 			}},
 		}},
 	}
@@ -408,7 +426,7 @@ func BuildSettings(o PermissionOptions) (string, error) {
 			"matcher": askHookToolMatcher(),
 			"hooks": []map[string]any{{
 				"type":    "command",
-				"command": hookBin + " claude-hook",
+				"command": hookCommand(hookBin),
 				"timeout": AskHookTimeoutSeconds,
 			}},
 		}}
@@ -460,7 +478,15 @@ func SettingsHookBinary(settings string) string {
 	for _, m := range doc.Hooks.PreToolUse {
 		for _, h := range m.Hooks {
 			if h.Command != "" {
-				return strings.TrimSuffix(strings.TrimSpace(h.Command), " claude-hook")
+				// Unquote as well as untrim: hookCommand always quotes the binary path (a Windows install
+				// path contains spaces), so the raw command is `"<path>" claude-hook` and returning it with
+				// the quotes still on would break every caller that compares it to a path.
+				bin := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(h.Command), " claude-hook"))
+				// SHELL quoting, not Go quoting: strip one surrounding pair of double quotes. strconv.Unquote
+				// is the wrong tool here — a Windows path's backslashes are not valid Go escapes, so it
+				// fails and the quotes would survive.
+				bin = strings.TrimSuffix(strings.TrimPrefix(bin, `"`), `"`)
+				return bin
 			}
 		}
 	}

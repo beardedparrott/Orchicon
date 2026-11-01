@@ -293,10 +293,13 @@ func insideDir(child, root string) bool {
 	}
 	root = filepath.Clean(root)
 	child = filepath.Clean(child)
-	if child == root {
+	// PER-PLATFORM COMPARISON. Windows paths are case-insensitive, so a byte-wise prefix test refuses a
+	// write that is plainly inside the worktree whenever the drive-letter case differs between the recorded
+	// project_dir and the tool's own path. See pathcase_windows.go.
+	if pathEqual(child, root) {
 		return true
 	}
-	return strings.HasPrefix(child, root+string(filepath.Separator))
+	return pathHasPrefix(child, root+string(filepath.Separator))
 }
 
 // hasRunDirSegment reports whether some component of p is `.orchicon` with at
