@@ -41,6 +41,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -130,6 +131,10 @@ type WorktreeReconciler struct {
 	// unaffected). The reconciler manager drives Reconcile on a single
 	// goroutine, so no mutex guards this field.
 	lastSlowPass time.Time
+	// integrateMu serializes LOCAL INTEGRATION (local_integrate.go). The scan is a single goroutine today,
+	// so this is belt-and-braces — but two merges into one ref is a silent lost update, and the cost of
+	// making the property explicit is one uncontended lock.
+	integrateMu sync.Mutex
 }
 
 // NewWorktreeReconciler creates a WorktreeReconciler.
@@ -389,6 +394,11 @@ func (r *WorktreeReconciler) scanSlow(ctx context.Context, tenantID string) reco
 	// any terminal skipped run's shared checkout (ADR 2.2).
 	r.sweepOrphanDirs(ctx, tenantID, deadline)
 	r.sweepSkippedTerminalRuns(ctx, tenantID, deadline)
+	// LOCAL INTEGRATION: advance the integration branch for completed local-strategy runs, so their work
+	// lands instead of sitting on a run branch nobody reads. It runs LAST, after the prune and orphan
+	// sweeps, so a run whose branch this pass merges is deleted and pruned by the NEXT pass using the
+	// existing merged-branch gate rather than a special case here.
+	r.integrateLocalRuns(ctx, tenantID, deadline)
 	return reconciler.Result{}
 }
 

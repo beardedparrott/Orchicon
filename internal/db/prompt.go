@@ -256,7 +256,20 @@ func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy st
 			// time-box and then reported `failure` on fully green, fully committed work — three times in one
 			// reported session, which was the single largest source of noise in it.
 			sb.WriteString("- **This project integrates LOCALLY (`git_strategy=local`): there is no git remote.** Do NOT run `git push`, `gh pr create`, `gh pr list`, `gh pr checks` or `gh pr merge` — they cannot succeed here, and spending your time-box on them turns a green result into a reported failure.\n")
-			sb.WriteString("- Ship by **committing to the branch** and reporting `success` with the commit SHA (`git rev-parse --short HEAD`). That IS the completed hand-off in this mode; the operator integrates from the branch.\n")
+			// THE PLATFORM INTEGRATES, NOT THE WORKER — and not the operator either.
+			//
+			// This used to end at "the operator integrates from the branch", which left the work on a
+			// branch nobody reads: a commit sitting only on a run branch is unfinished. The reconciler now
+			// fast-forwards (or merges) `develop` from the run branch once the run completes
+			// (internal/scheduler/local_integrate.go), because three of the cases a worker cannot handle
+			// are structural: `develop` is checked out in the operator's own tree, two workers merging into
+			// one ref is a lost update, and a conflicted merge needs a human.
+			//
+			// SO THE WORKER IS TOLD TWO THINGS AND NOT THREE: commit everything, and do NOT touch
+			// `develop`. The second half matters because a worker that tries to merge it itself will either
+			// fail (the branch is checked out elsewhere) or race the reconciler.
+			sb.WriteString("- Ship by **committing everything to your run branch** and reporting `success` with the commit SHA (`git rev-parse --short HEAD`).\n")
+			sb.WriteString("- **Do NOT merge, and do NOT move `develop`.** The platform integrates your branch into `develop` after the run completes (`git push .`, `git checkout develop`, `git merge`, and `git branch` on `develop` will all fail or fight it — `develop` is checked out in the operator's own working tree). Your hand-off is a clean, committed run branch.\n")
 		} else {
 			sb.WriteString("- **PR / merge ownership is defined by YOUR workflow's step contract** — the role text and AGENTS.md in this prompt name who opens the PR and merges into `develop` (some paths are single-step all-in-one workers that open + merge their own PR; others hand off to a dedicated DevOps step). Follow that contract; this block only fixes the branch discipline.\n")
 			// THE PUSH IS IMPOSSIBLE IN A CONTAINER WITHOUT A CREDENTIAL, and a GitHub MCP gives API access
