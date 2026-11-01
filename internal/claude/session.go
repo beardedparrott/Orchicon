@@ -191,13 +191,25 @@ func (s *session) run(ctx context.Context) error {
 				// a bounded wait.
 				_ = p.Close()
 				code := 0
-				codeCh := make(chan int, 1)
-				go func() { c, _ := p.Wait(); codeCh <- c }()
+				var waitErr error
+				type waitResult struct {
+					code int
+					err  error
+				}
+				codeCh := make(chan waitResult, 1)
+				go func() {
+					c, e := p.Wait()
+					codeCh <- waitResult{c, e}
+				}()
 				select {
-				case code = <-codeCh:
+				case r := <-codeCh:
+					code, waitErr = r.code, r.err
 				case <-time.After(2 * time.Second):
 				}
-				msg := fmt.Sprintf("claude session exited without a terminal result message (exit code %d)%s", code, s.stderrTail())
+				// THE CAUSE THE PROC HOLDS COMES FIRST. A child that never spawned cannot write
+				// stderr, so without this the message blames the CLI for silence it never had a
+				// chance to break — see exitCause.
+				msg := fmt.Sprintf("claude session exited without a terminal result message (exit code %d)%s%s", code, exitCause(waitErr), s.stderrTail())
 				err := fmt.Errorf("%s", msg)
 				s.finish(ctx, false, msg, err)
 				return err
@@ -392,9 +404,10 @@ func (s *session) stderrTail() string {
 // TestNoBypassPermissionFlagIsEverEmitted fails if one is introduced.
 func (s *session) argv() []string {
 	argv := []string{
-		// NOT the bare name: see binary.go. A PATH that reaches a system
-		// install runs a CLI that rejects this argv outright.
-		ClaudeBinaryPath(), "-p",
+		// NOT the bare name on the HOST: see binary.go. A PATH that reaches a system
+		// install runs a CLI that rejects this argv outright. In a CONTAINER it must be
+		// the bare name, because the only install in there is the image's — see ClaudeBinaryFor.
+		ClaudeBinaryFor(s.inContainer()), "-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",

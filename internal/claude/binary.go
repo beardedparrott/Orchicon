@@ -33,6 +33,35 @@ import (
 // an install in an unusual place, mirroring ORCHICON_OPENCODE_BIN.
 const ClaudeBinEnv = "ORCHICON_CLAUDE_BIN"
 
+// ClaudeBinaryName is the claude CLI's name ON A CONTAINER'S PATH, and it is the value a
+// container dispatch must put in argv[0].
+//
+// THE TWO TRANSPORTS NEED DIFFERENT ANSWERS, and conflating them is the reported Windows failure.
+// Claude is the only adapter on the daemon's duplex STDIO transport, and it used to send
+// ClaudeBinaryPath() — a path on the OPERATOR'S HOST — into a Linux container. The supervisor refuses
+// any argv[0] whose basename is not in runtimeBinAllowlist (internal/runtime/agent.go runStdio), and
+// the container's filepath.Base splits on "/" only, so the basename of `C:\Users\...\claude.exe` is
+// that whole string. The request was refused before any child was spawned: 0 tokens, ~400ms, and
+// "the CLI emitted no stderr at all" — because there was no CLI.
+//
+// The image supplies the CLI (deploy/runtime/Dockerfile.dev installs @anthropic-ai/claude-code
+// globally), so the container's answer is the bare name and PATH does the rest — the same shape
+// HookBinaryFor already uses for the hook.
+const ClaudeBinaryName = "claude"
+
+// ClaudeBinaryFor returns the claude executable for a transport: the in-image name when the child
+// runs inside the run's runtime container, the resolved host install otherwise.
+//
+// Call this instead of ClaudeBinaryPath() anywhere a transport is known. The host path is MEANINGFUL
+// ONLY on the host: it names a Windows .exe (or a POSIX install) that a Linux container neither has
+// nor could execute.
+func ClaudeBinaryFor(isContainer bool) string {
+	if isContainer {
+		return ClaudeBinaryName
+	}
+	return ClaudeBinaryPath()
+}
+
 // claudeDefaultRelativePath is where the CLI's own installer puts itself, and
 // therefore where an operator's authenticated install lives.
 var claudeDefaultRelativePath = []string{".local", "bin", "claude"}
