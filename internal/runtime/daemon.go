@@ -1474,6 +1474,13 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 		// so a CHILD process gets the same bin dirs prepended.
 		args = append(args, "-e", "ORCHICON_ADAPTER_KINDS="+strings.Join(kinds, ","))
 	}
+	// TELL THE SUPERVISOR WHICH HOST PATHS ARE MOUNTED WHERE, so it can repoint the worktree `.git` pointers the
+	// plane provisioned on this side (gitdir.go). Derived from the SAME mount list createContainer is building,
+	// so the pairs cannot drift from what is actually mounted — and only for mounts whose host and guest forms
+	// DIFFER, which on Linux (identity mode) is none of them.
+	if mapping := gitdirMappingEnv(req.Mounts, d.Paths); mapping != "" {
+		args = append(args, "-e", mapping)
+	}
 	// Provider credentials for a demanded adapter, as ENVIRONMENT. This is the
 	// only channel opencode 1.x and 2.x BOTH honour — 2.x does not read
 	// auth.json at all — so no version branch is needed (adapterCredentialEnv).
@@ -2083,4 +2090,43 @@ func redactEnvArg(a string) string {
 		return a[:i+1] + "<redacted>"
 	}
 	return a
+}
+
+// gitdirMappingEnv renders the host|guest prefix pairs for the mounts whose two sides DIFFER.
+//
+// ONLY DIFFERING MOUNTS ARE EMITTED. In identity mode (Linux) host and guest are the same string, so this
+// returns "" and the supervisor does no rewriting at all — the fix is a no-op on the platform that never had the
+// bug, rather than a traversal that always finds nothing.
+func gitdirMappingEnv(mounts []MountSpec, m *PathMapper) string {
+	if m == nil || m.Mode() == PathModeIdentity {
+		return ""
+	}
+	var parts []string
+	seen := make(map[string]bool, len(mounts))
+	for _, ms := range mounts {
+		if ms.Source == "" || ms.Dest == "" {
+			continue
+		}
+		// THE HOST SIDE IS THE RAW SOURCE. createFlagArgs is given the UNMAPPED request (mapMounts runs later,
+		// when the argv is assembled), so Source is already the host form — mapping it here would produce the
+		// guest path on both sides and the pair would collapse. A caller that ever pre-maps is tolerated by
+		// reversing it first, so this cannot silently emit nothing.
+		host := strings.TrimRight(ms.Source, "/")
+		if back, ok := m.Unmap(host); ok {
+			host = strings.TrimRight(back, "/")
+		}
+		guest := strings.TrimRight(m.Map(ms.Dest), "/")
+		if host == "" || guest == "" || host == guest {
+			continue
+		}
+		if seen[guest] {
+			continue
+		}
+		seen[guest] = true
+		parts = append(parts, host+"|"+guest)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return envGitdirMaps + "=" + strings.Join(parts, ";")
 }

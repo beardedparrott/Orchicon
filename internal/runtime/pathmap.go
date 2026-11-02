@@ -183,6 +183,41 @@ func splitDrivePath(p string) (drive, rest string, ok bool) {
 	return string(c), rest, true
 }
 
+// Unmap is Map in reverse: a GUEST path becomes the HOST path it was mounted from.
+//
+// IT EXISTS FOR CONTENT THAT WAS WRITTEN BY THE HOST AND IS READ BY THE GUEST — the one case the argv/mount
+// mapping cannot reach, because the host form is inside a FILE rather than in a request field. A git worktree's
+// `.git` is exactly that: the plane runs `git worktree add <host path>`, and git writes the absolute host path
+// into the worktree's `.git` file. Inside the container that path does not exist, so the container's own Linux
+// git reports "not a git repository" even though git itself is present and correct.
+//
+// Only the WSL form is reversible, and only for an absolute `/mnt/<drive>/...` path. Anything else is returned
+// unchanged with ok=false, the same ref-usual discipline as Map: a path this cannot confidently translate must
+// not be silently mangled.
+func (m *PathMapper) Unmap(p string) (string, bool) {
+	if m == nil || m.mode != PathModeWSL {
+		return p, false
+	}
+	const prefix = "/mnt/"
+	if len(p) < len(prefix)+2 || !strings.HasPrefix(p, prefix) {
+		return p, false
+	}
+	drive := p[len(prefix)]
+	if drive < 'a' || drive > 'z' {
+		return p, false
+	}
+	rest := p[len(prefix)+1:]
+	// rest is now "/<...>" — the path after the drive letter.
+	if len(rest) == 0 || rest[0] != '/' {
+		return p, false
+	}
+	rest = rest[1:]
+	if rest == "" {
+		return strings.ToUpper(string(drive)) + ":\\", true
+	}
+	return strings.ToUpper(string(drive)) + ":\\" + strings.ReplaceAll(rest, "/", "\\"), true
+}
+
 // MapAll maps every path in a slice, preserving order and returning a NEW slice so the caller's request is not
 // mutated (the request may be retried, logged, or re-created from the same value).
 func (m *PathMapper) MapAll(paths []string) []string {
