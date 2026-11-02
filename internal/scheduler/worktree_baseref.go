@@ -175,3 +175,52 @@ func (r *WorktreeReconciler) remoteHeadBranch(ctx context.Context, projectDir st
 	}
 	return ""
 }
+
+// resolveBaseRefForProvisioning resolves the base a run branch is cut from, and REFUSES to hand back a base that
+// would give the worker an EMPTY worktree.
+//
+// WHY THIS EXISTS. resolveBaseRef returns "" for two very different situations — a legitimate DETACHED HEAD, and
+// a genuine resolution failure — and addWorktree treats "" as "start at HEAD". When HEAD is an unborn branch or
+// an empty root commit, that produces an EMPTY worktree. Reported exactly so: "a run was provisioned an empty
+// worktree — its branch was created at the empty root commit 558d52e while develop was already at f421a7c", and
+// the worker had to run `git reset --hard develop` before it could start.
+//
+// A worker that must repair its own provisioned state has been handed an unfinished hand-off, and a silent empty
+// worktree is the most expensive way to fail: the run consumes its budget discovering there is nothing there.
+//
+// It returns ok=false with a reason the caller can put on the run, rather than a base that cannot work. The
+// DETACHED-HEAD case stays legitimate — it is only refused when the tree it would check out is actually empty.
+func (r *WorktreeReconciler) resolveBaseRefForProvisioning(ctx context.Context, projectDir string) (string, bool, string) {
+	ref, how, err := r.resolveBaseRefWithProvenance(ctx, projectDir)
+	if err != nil {
+		return "", false, err.Error()
+	}
+	// "" means detached HEAD: legitimate, and the caller starts the branch at HEAD.
+	if empty, terr := r.baseTreeIsEmpty(ctx, projectDir, ref); terr != nil {
+		return "", false, fmt.Sprintf("could not read the tree of base %q: %v", ref, terr)
+	} else if empty {
+		label := ref
+		if label == "" {
+			label = "HEAD (detached)"
+		}
+		return "", false, fmt.Sprintf("the resolved base %q (from %s) has an EMPTY tree — a worktree cut from it "+
+			"would contain no files, so the run is refused rather than provisioned empty", label, how)
+	}
+	return ref, true, ""
+}
+
+// baseTreeIsEmpty reports whether the commit a base ref names has no entries.
+//
+// An EMPTY STRING MEANS HEAD, matching addWorktree's own convention — so the detached case is checked against the
+// commit it would actually check out.
+func (r *WorktreeReconciler) baseTreeIsEmpty(ctx context.Context, projectDir, ref string) (bool, error) {
+	target := ref
+	if strings.TrimSpace(target) == "" {
+		target = "HEAD"
+	}
+	out, err := runGit(ctx, projectDir, "ls-tree", "-z", target)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) == "", nil
+}

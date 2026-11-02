@@ -297,6 +297,20 @@ func (r *WorktreeReconciler) mainCheckoutRefreshReadiness(ctx context.Context, p
 	if err != nil {
 		return false, "git status could not be read"
 	}
+	if stale, why := staleCheckoutOnly(status); stale {
+		// THE TREE LAGS ITS OWN HEAD, WHICH IS NOT UNCOMMITTED WORK. Reported: "develop's ref is 066279b, but
+		// C:\projects\weatherapp contains only .git, .orchicon, .orchicon-worktrees — no src/, no index.html".
+		// A tree left behind by an earlier ref move reports every file HEAD has as DELETED, which the old check
+		// read as "uncommitted changes" and therefore refused to fix — so the staleness was permanent.
+		//
+		// Refreshing is safe here precisely because there is nothing to lose: every dirty entry is a file git
+		// already has at HEAD, absent from the working tree only because the tree is older. The moment there is
+		// a MODIFICATION or an UNTRACKED file — where real work lives — this does not apply and the tree is
+		// left alone. (`why` is carried for the log line.)
+		r.log.Info("worktree: the main checkout lags its own HEAD — refreshing is safe, nothing is uncommitted",
+			"repo", projectDir, "shape", why)
+		return true, ""
+	}
 	if strings.TrimSpace(status) != "" {
 		return false, "the operator's main checkout has UNCOMMITTED changes"
 	}
@@ -412,4 +426,47 @@ func (r *WorktreeReconciler) stampIntegrated(ctx context.Context, tenantID, runI
 	if err := ttx.Commit(ctx); err != nil {
 		r.log.Warn("worktree: local integration stamp: commit", "run", runID, "error", err)
 	}
+}
+
+// staleCheckoutOnly reports whether a `git status --porcelain` result consists ONLY of tracked files MISSING
+// from the working tree — the exact shape a ref that moved under its own checkout produces.
+//
+// WHAT IT REFUSES, and why the line is drawn there:
+//
+//   - `??` UNTRACKED — user data that exists nowhere else. Never touched.
+//   - ` M` / `MM` MODIFIED — a real edit, even if it happens to resemble a checkout shape. Never touched.
+//   - `A ` / `R ` / staged changes — an index that disagrees with HEAD on purpose. Never touched.
+//
+// WHAT IT ACCEPTS: every line is ` D` (deleted in the working tree) or `D ` on a path that HEAD still has. That
+// is unrecoverable-work-free by construction: the content is in git, and `git reset --hard` restores it.
+//
+// AN EMPTY STATUS IS NOT "STALE" — it is clean, and the caller handles it.
+func staleCheckoutOnly(status string) (bool, string) {
+	lines := strings.Split(strings.TrimRight(status, "\n"), "\n")
+	if len(lines) == 0 || strings.TrimSpace(status) == "" {
+		return false, ""
+	}
+	deleted := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if len(line) < 3 {
+			return false, ""
+		}
+		x, y := line[0], line[1]
+		switch {
+		case x == '?' && y == '?':
+			return false, "the working tree has untracked files"
+		case x == ' ' && y == 'D':
+			// Deleted in the working tree, present at HEAD: the stale shape.
+			deleted++
+		default:
+			return false, "the working tree has staged or modified changes"
+		}
+	}
+	if deleted == 0 {
+		return false, ""
+	}
+	return true, "tracked files missing from the working tree"
 }
