@@ -88,7 +88,7 @@ func TestLocalIntegrationFastForwardsTheIntegrationBranch(t *testing.T) {
 	if target != defaultIntegrationBranch {
 		t.Fatalf("integrationTarget = %q, want %q (the branch exists, so the convention wins)", target, defaultIntegrationBranch)
 	}
-	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha); err != nil {
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha, "test: move"); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
 	}
 
@@ -108,7 +108,7 @@ func TestLocalIntegrationMergesADivergedRunBranch(t *testing.T) {
 	h.commitOn(t, "run-second", "b.txt", "second\n")
 
 	// run-first lands first and advances develop.
-	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, first); err != nil {
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, first, "test: move"); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
 	}
 	// run-second was branched from the ORIGINAL commit, so it is now diverged.
@@ -172,7 +172,7 @@ func TestLocalIntegrationConflictLeavesBothBranchesUntouched(t *testing.T) {
 func TestLocalIntegrationIsIdempotent(t *testing.T) {
 	h := newIntegrateHarness(t)
 	sha := h.commitOn(t, "run-idem", "x.txt", "x\n")
-	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha); err != nil {
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha, "test: move"); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
 	}
 	before := h.head(t, defaultIntegrationBranch)
@@ -180,7 +180,7 @@ func TestLocalIntegrationIsIdempotent(t *testing.T) {
 	if !h.r.isAncestorOf(context.Background(), h.repo, "run-idem", defaultIntegrationBranch) {
 		t.Fatal("after integration the ancestry check does not report it integrated — the no-op gate is broken")
 	}
-	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha); err != nil {
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha, "test: move"); err != nil {
 		t.Fatalf("re-applying an already-integrated ref: %v", err)
 	}
 	if got := h.head(t, defaultIntegrationBranch); got != before {
@@ -201,7 +201,7 @@ func TestRefreshMainCheckoutHandlesCleanAndDirtyTrees(t *testing.T) {
 		t.Fatalf("a clean checkout on the integration branch was judged not refreshable (ready=%v reason=%q)",
 			ready, blockedBy)
 	}
-	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha); err != nil {
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha, "test: move"); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
 	}
 	// Before the refresh the file the ref now contains is NOT in the working tree — the reported symptom.
@@ -227,7 +227,7 @@ func TestRefreshMainCheckoutHandlesCleanAndDirtyTrees(t *testing.T) {
 		t.Fatalf("a DIRTY checkout was judged refreshable (ready=%v reason=%q)", ready2, blocked2)
 	}
 	sha2 := h.commitOn(t, "run-refresh-2", "second-new.txt", "content\n")
-	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha2); err != nil {
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha2, "test: move"); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
 	}
 	if err := h.r.refreshMainCheckout(context.Background(), h.repo, defaultIntegrationBranch, ready2, blocked2); err != nil {

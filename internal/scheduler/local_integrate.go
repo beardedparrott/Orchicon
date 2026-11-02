@@ -191,7 +191,8 @@ func (r *WorktreeReconciler) integrateLocalRun(ctx context.Context, tenantID str
 		if err != nil {
 			return err
 		}
-		if err := r.setBranchRef(ctx, projectDir, target, sha); err != nil {
+		if err := r.setBranchRef(ctx, projectDir, target, sha,
+			fmt.Sprintf("orchicon: local integration fast-forward of %s to run %s", target, run.ID)); err != nil {
 			return err
 		}
 		r.log.Info("worktree: local integration fast-forwarded the integration branch",
@@ -276,7 +277,8 @@ func (r *WorktreeReconciler) mergeRunBranchInScratch(ctx context.Context, projec
 	if err != nil {
 		return "", err
 	}
-	if err := r.setBranchRef(ctx, projectDir, target, tip); err != nil {
+	if err := r.setBranchRef(ctx, projectDir, target, tip,
+		fmt.Sprintf("orchicon: local integration merge of run %s into %s", runID, target)); err != nil {
 		return "", err
 	}
 	return tip, nil
@@ -356,7 +358,7 @@ func (r *WorktreeReconciler) isAncestorOf(ctx context.Context, projectDir, ances
 // setBranchRef moves a local branch ref WITHOUT touching any working tree, which is what makes it safe to
 // do while the main checkout has that branch checked out. Callers have already established the ancestry
 // relationship, so this cannot rewind a branch.
-func (r *WorktreeReconciler) setBranchRef(ctx context.Context, projectDir, branch, sha string) error {
+func (r *WorktreeReconciler) setBranchRef(ctx context.Context, projectDir, branch, sha, why string) error {
 	// A BRANCH MAY ONLY MOVE FORWARD. Callers already check ancestry, but the invariant belongs HERE: this is
 	// the only function in the platform that moves a branch ref without a working tree, and "never lose
 	// commits" should not depend on every future caller remembering to guard it.
@@ -372,7 +374,23 @@ func (r *WorktreeReconciler) setBranchRef(ctx context.Context, projectDir, branc
 				branch, short(current), short(sha), short(sha))
 		}
 	}
-	if _, err := runGit(ctx, projectDir, "update-ref", "refs/heads/"+branch, sha); err != nil {
+	// THE REFLOG MESSAGE IS THE ATTRIBUTION, and its absence cost five rounds of investigation.
+	//
+	// MEASURED, from the operator's own repository: `git reflog show develop` returned
+	//
+	//	066279b (develop) develop@{0}:
+	//	cb3af04           develop@{1}:
+	//	69845f3           develop@{2}:
+	//	f421a7c           develop@{3}:
+	//	558d52e (HEAD -> master) develop@{4}:
+	//
+	// Five moves, every message EMPTY — because `git update-ref` without `-m` writes a blank entry. That is the
+	// exact output of this function, and it made the moves UNATTRIBUTABLE: nothing in the repository could say
+	// whether a human, a worker, or the platform moved the branch, or which run did it. The investigation had to
+	// reconstruct the cause from mount tables and path mappers because the ref log said nothing.
+	//
+	// `-m` costs one argument and makes every future move self-describing.
+	if _, err := runGit(ctx, projectDir, "update-ref", "-m", why, "refs/heads/"+branch, sha); err != nil {
 		return fmt.Errorf("worktree: update %s to %s: %w", branch, short(sha), err)
 	}
 	return nil
