@@ -495,6 +495,14 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 	// opencode config, so the sidecar can run inside a DB-less runtime.
 	if wd := os.Getenv("ORCHICON_MCP_WORKTREE_DIR"); wd != "" {
 		pr := os.Getenv("ORCHICON_MCP_PROJECT_DIR")
+		// SAY SO WHEN THE PROJECT DIR IS UNUSABLE, BY NAME. Everything derived from it (the run-state todo
+		// dir) is silently disabled when it is not absolute, and an operator reading a log line that names
+		// the raw value can find the producer. Quietly degrading here is how a directory named after a
+		// carved-up path went unexplained.
+		if pr != "" && !filepath.IsAbs(pr) {
+			log.Warn("mcp sidecar: ORCHICON_MCP_PROJECT_DIR is NOT absolute — the run-state todo channel is disabled rather than creating .orchicon relative to the working directory",
+				"project_dir", pr, "worktree", wd)
+		}
 		// The run-state dir is where the todo snapshot the PLANE reads is written.
 		// Derived here from the same two vars the plane uses, so writer and reader
 		// agree by construction rather than by convention.

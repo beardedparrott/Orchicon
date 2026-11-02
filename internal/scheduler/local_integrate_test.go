@@ -74,24 +74,28 @@ func TestLocalIntegrationFastForwardsTheIntegrationBranch(t *testing.T) {
 	h := newIntegrateHarness(t)
 	sha := h.commitOn(t, "run-1", "feature.txt", "one\n")
 
-	if !h.r.isAncestorOf(context.Background(), h.repo, "run-1", integrationBranch) {
+	if !h.r.isAncestorOf(context.Background(), h.repo, "run-1", defaultIntegrationBranch) {
 		// precondition: the work is NOT integrated yet
 	} else {
 		t.Fatal("test setup: the run branch is already an ancestor")
 	}
 
-	// ensureIntegrationBranch then the fast-forward — the same two steps integrateLocalRun takes.
-	if err := h.r.ensureIntegrationBranch(context.Background(), h.repo); err != nil {
-		t.Fatalf("ensureIntegrationBranch: %v", err)
+	// The target must resolve from the repository, not be invented.
+	target, err := h.r.integrationTarget(context.Background(), h.repo)
+	if err != nil {
+		t.Fatalf("integrationTarget: %v", err)
 	}
-	if err := h.r.setBranchRef(context.Background(), h.repo, integrationBranch, sha); err != nil {
+	if target != defaultIntegrationBranch {
+		t.Fatalf("integrationTarget = %q, want %q (the branch exists, so the convention wins)", target, defaultIntegrationBranch)
+	}
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
 	}
 
-	if got := h.head(t, integrationBranch); got != sha {
+	if got := h.head(t, defaultIntegrationBranch); got != sha {
 		t.Fatalf("develop = %s, want the run branch tip %s — the work did not land", got, sha)
 	}
-	if !h.r.isAncestorOf(context.Background(), h.repo, "run-1", integrationBranch) {
+	if !h.r.isAncestorOf(context.Background(), h.repo, "run-1", defaultIntegrationBranch) {
 		t.Fatal("after integration the run branch is still not an ancestor of develop")
 	}
 }
@@ -104,22 +108,22 @@ func TestLocalIntegrationMergesADivergedRunBranch(t *testing.T) {
 	h.commitOn(t, "run-second", "b.txt", "second\n")
 
 	// run-first lands first and advances develop.
-	if err := h.r.setBranchRef(context.Background(), h.repo, integrationBranch, first); err != nil {
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, first); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
 	}
 	// run-second was branched from the ORIGINAL commit, so it is now diverged.
-	if h.r.isAncestorOf(context.Background(), h.repo, integrationBranch, "run-second") {
+	if h.r.isAncestorOf(context.Background(), h.repo, defaultIntegrationBranch, "run-second") {
 		t.Fatal("test setup: run-second should NOT be a descendant of the advanced develop")
 	}
 
-	merged, err := h.r.mergeRunBranchInScratch(context.Background(), h.repo, "run-second", "run-2-id")
+	merged, err := h.r.mergeRunBranchInScratch(context.Background(), h.repo, "run-second", "run-2-id", defaultIntegrationBranch)
 	if err != nil {
 		t.Fatalf("mergeRunBranchInScratch: %v", err)
 	}
 	if merged == "" {
 		t.Fatal("the merge reported a CONFLICT for two non-overlapping branches")
 	}
-	if got := h.head(t, integrationBranch); got != merged {
+	if got := h.head(t, defaultIntegrationBranch); got != merged {
 		t.Fatalf("develop = %s, want the merge commit %s", got, merged)
 	}
 	// BOTH sides' work must be present in the MERGED COMMIT. Checked against git, not the working tree:
@@ -142,16 +146,16 @@ func TestLocalIntegrationConflictLeavesBothBranchesUntouched(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	gitRun(t, h.repo, "commit", "-am", "develop changes README")
-	developBefore := h.head(t, integrationBranch)
+	developBefore := h.head(t, defaultIntegrationBranch)
 
-	merged, err := h.r.mergeRunBranchInScratch(context.Background(), h.repo, "run-conflict", "run-c-id")
+	merged, err := h.r.mergeRunBranchInScratch(context.Background(), h.repo, "run-conflict", "run-c-id", defaultIntegrationBranch)
 	if err != nil {
 		t.Fatalf("a conflict must be reported as a conflict, not an error: %v", err)
 	}
 	if merged != "" {
 		t.Fatalf("the merge returned commit %q for two conflicting branches", merged)
 	}
-	if got := h.head(t, integrationBranch); got != developBefore {
+	if got := h.head(t, defaultIntegrationBranch); got != developBefore {
 		t.Fatalf("develop moved to %s on a CONFLICT — nothing may be merged", got)
 	}
 	if got := h.head(t, "run-conflict"); got != conflicting {
@@ -168,18 +172,18 @@ func TestLocalIntegrationConflictLeavesBothBranchesUntouched(t *testing.T) {
 func TestLocalIntegrationIsIdempotent(t *testing.T) {
 	h := newIntegrateHarness(t)
 	sha := h.commitOn(t, "run-idem", "x.txt", "x\n")
-	if err := h.r.setBranchRef(context.Background(), h.repo, integrationBranch, sha); err != nil {
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
 	}
-	before := h.head(t, integrationBranch)
+	before := h.head(t, defaultIntegrationBranch)
 	// The ancestry check IS the idempotency key.
-	if !h.r.isAncestorOf(context.Background(), h.repo, "run-idem", integrationBranch) {
+	if !h.r.isAncestorOf(context.Background(), h.repo, "run-idem", defaultIntegrationBranch) {
 		t.Fatal("after integration the ancestry check does not report it integrated — the no-op gate is broken")
 	}
-	if err := h.r.setBranchRef(context.Background(), h.repo, integrationBranch, sha); err != nil {
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha); err != nil {
 		t.Fatalf("re-applying an already-integrated ref: %v", err)
 	}
-	if got := h.head(t, integrationBranch); got != before {
+	if got := h.head(t, defaultIntegrationBranch); got != before {
 		t.Fatalf("develop moved from %s to %s on a redundant integration", before, got)
 	}
 }
@@ -192,12 +196,12 @@ func TestRefreshMainCheckoutHandlesCleanAndDirtyTrees(t *testing.T) {
 
 	// READINESS IS READ BEFORE THE REF MOVES. Afterwards the index is stale by construction, so a check
 	// made then can never pass — that ordering is the bug this test found.
-	ready, blockedBy := h.r.mainCheckoutRefreshReadiness(context.Background(), h.repo)
+	ready, blockedBy := h.r.mainCheckoutRefreshReadiness(context.Background(), h.repo, defaultIntegrationBranch)
 	if !ready || blockedBy != "" {
 		t.Fatalf("a clean checkout on the integration branch was judged not refreshable (ready=%v reason=%q)",
 			ready, blockedBy)
 	}
-	if err := h.r.setBranchRef(context.Background(), h.repo, integrationBranch, sha); err != nil {
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
 	}
 	// Before the refresh the file the ref now contains is NOT in the working tree — the reported symptom.
@@ -205,7 +209,7 @@ func TestRefreshMainCheckoutHandlesCleanAndDirtyTrees(t *testing.T) {
 		t.Fatal("test premise wrong: the working tree already shows the new file")
 	}
 
-	if err := h.r.refreshMainCheckout(context.Background(), h.repo, ready, blockedBy); err != nil {
+	if err := h.r.refreshMainCheckout(context.Background(), h.repo, defaultIntegrationBranch, ready, blockedBy); err != nil {
 		t.Fatalf("refreshMainCheckout: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(h.repo, "brand-new.txt")); err != nil {
@@ -218,15 +222,15 @@ func TestRefreshMainCheckoutHandlesCleanAndDirtyTrees(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	// NOW the tree is dirty, so the next integration must refuse to refresh.
-	ready2, blocked2 := h.r.mainCheckoutRefreshReadiness(context.Background(), h.repo)
+	ready2, blocked2 := h.r.mainCheckoutRefreshReadiness(context.Background(), h.repo, defaultIntegrationBranch)
 	if ready2 || blocked2 == "" {
 		t.Fatalf("a DIRTY checkout was judged refreshable (ready=%v reason=%q)", ready2, blocked2)
 	}
 	sha2 := h.commitOn(t, "run-refresh-2", "second-new.txt", "content\n")
-	if err := h.r.setBranchRef(context.Background(), h.repo, integrationBranch, sha2); err != nil {
+	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha2); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
 	}
-	if err := h.r.refreshMainCheckout(context.Background(), h.repo, ready2, blocked2); err != nil {
+	if err := h.r.refreshMainCheckout(context.Background(), h.repo, defaultIntegrationBranch, ready2, blocked2); err != nil {
 		t.Fatalf("refreshMainCheckout (dirty): %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(h.repo, "uncommitted.txt")); err != nil {
@@ -238,10 +242,13 @@ func TestRefreshMainCheckoutHandlesCleanAndDirtyTrees(t *testing.T) {
 	}
 }
 
-// Creating the integration branch when the project has none keeps the existing history as the base.
-func TestEnsureIntegrationBranchBootstrapsAtHead(t *testing.T) {
+// RESOLVE, DO NOT INVENT. A trunk-based repository (no `develop`) must integrate onto its OWN default, and
+// a repository with no resolvable default must be REFUSED — the old code created `develop` at HEAD, which
+// silently forked the history into a branch the operator never asked for.
+func TestIntegrationTargetResolvesOrRefuses(t *testing.T) {
+	// A repo whose default is `main`, with no `develop`.
 	repo := t.TempDir()
-	gitRun(t, repo, "init", "-b", "main") // note: no develop
+	gitRun(t, repo, "init", "-b", "main")
 	gitRun(t, repo, "config", "user.email", "x@orchicon.dev")
 	gitRun(t, repo, "config", "user.name", "X")
 	if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte("x\n"), 0o644); err != nil {
@@ -249,14 +256,32 @@ func TestEnsureIntegrationBranchBootstrapsAtHead(t *testing.T) {
 	}
 	gitRun(t, repo, "add", ".")
 	gitRun(t, repo, "commit", "-m", "base")
-	head := strings.TrimSpace(gitRun(t, repo, "rev-parse", "HEAD"))
 
 	r := &WorktreeReconciler{log: quietSchedulerLogger()}
-	if err := r.ensureIntegrationBranch(context.Background(), repo); err != nil {
-		t.Fatalf("ensureIntegrationBranch: %v", err)
+	target, err := r.integrationTarget(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("integrationTarget on a trunk-based repo: %v", err)
 	}
-	if got := strings.TrimSpace(gitRun(t, repo, "rev-parse", integrationBranch)); got != head {
-		t.Fatalf("%s = %s, want the existing HEAD %s — bootstrapping must not adopt a run branch as the base",
-			integrationBranch, got, head)
+	if target != "main" {
+		t.Fatalf("integrationTarget = %q, want the repository's own default \"main\"", target)
+	}
+	// AND IT MUST NOT HAVE CREATED ANYTHING.
+	if strings.Contains(gitRun(t, repo, "branch", "--list"), defaultIntegrationBranch) {
+		t.Fatal("integrationTarget CREATED develop in a trunk-based repository — inventing a branch is worse " +
+			"than refusing, because it silently forks the history")
+	}
+}
+
+// A repository with no commits at all has no branch to resolve, so integration refuses rather than guessing.
+func TestIntegrationTargetRefusesAnUnresolvableRepository(t *testing.T) {
+	repo := t.TempDir()
+	gitRun(t, repo, "init", "-b", "main")
+
+	r := &WorktreeReconciler{log: quietSchedulerLogger()}
+	if _, err := r.integrationTarget(context.Background(), repo); err == nil {
+		t.Fatal("integrationTarget resolved a branch in a repository with no commits — it must refuse")
+	}
+	if strings.Contains(gitRun(t, repo, "branch", "--list"), defaultIntegrationBranch) {
+		t.Fatal("an unresolvable repository still had develop created in it")
 	}
 }

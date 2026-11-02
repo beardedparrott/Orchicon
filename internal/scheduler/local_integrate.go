@@ -34,9 +34,47 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// integrationBranch is where every run lands. It matches branchMergedIntoBase and the worker prompts, so
-// the three cannot disagree about the name of the integration branch.
-const integrationBranch = "develop"
+// defaultIntegrationBranch is the HISTORICAL convention: where every run used to land unconditionally.
+//
+// It is now only the PREFERRED candidate, never an assumption. A trunk-based repo (`main` only), a release
+// scheme (`release/x`) or an environment split (`dev`/`staging`) has an integration branch this name does not
+// match — and the old code did not merely get those wrong, it CREATED `develop` at HEAD and merged there,
+// silently forking a repository's history into a branch the operator never asked for. Inventing a branch is
+// worse than refusing.
+const defaultIntegrationBranch = "develop"
+
+// integrationTarget resolves the branch runs land on.
+//
+// ORDER:
+//  1. `develop` IF IT EXISTS — byte-identical to the previous behaviour for every repository that relies on
+//     the convention, and the name the worker prompts and branchMergedIntoBase use.
+//  2. OTHERWISE THE REPOSITORY'S OWN DEFAULT, via resolveBaseRefWithProvenance (origin/HEAD symref, then
+//     `remote show origin`, then the configured candidates, then HEAD). Using that chain is what makes
+//     INTEGRATION agree with PROVISIONING instead of contradicting it: the base a run branch was cut from is
+//     the branch it should land on.
+//  3. OTHERWISE REFUSE. A missing integration branch is reported, never created.
+func (r *WorktreeReconciler) integrationTarget(ctx context.Context, projectDir string) (string, error) {
+	if r.branchExists(ctx, projectDir, defaultIntegrationBranch) {
+		return defaultIntegrationBranch, nil
+	}
+	ref, how, err := r.resolveBaseRefWithProvenance(ctx, projectDir)
+	if err != nil || strings.TrimSpace(ref) == "" {
+		return "", fmt.Errorf("no integration branch: %q does not exist and the repository's default could not "+
+			"be resolved (%v) — refusing to create one", defaultIntegrationBranch, err)
+	}
+	name := strings.TrimPrefix(ref, "origin/")
+	if name == "" || name == "HEAD" {
+		return "", fmt.Errorf("no integration branch: %q does not exist and the resolved default %q is not a "+
+			"usable branch name", defaultIntegrationBranch, ref)
+	}
+	if !r.branchExists(ctx, projectDir, name) {
+		return "", fmt.Errorf("no integration branch: %q does not exist and the resolved default %q (from %s) "+
+			"has no LOCAL branch — refusing to create one", defaultIntegrationBranch, name, how)
+	}
+	r.log.Info("worktree: integration target resolved from the repository's default",
+		"branch", name, "source", how, "repo", projectDir)
+	return name, nil
+}
 
 // localIntegrationLimit bounds how many candidate runs one slow pass examines. The work is a couple of git
 // subprocesses per run, and the set is self-cleaning (see db.ListCompletedRunsWithBranch), so a small page
@@ -111,9 +149,20 @@ func (r *WorktreeReconciler) integrateLocalRun(ctx context.Context, tenantID str
 		r.stampIntegrated(ctx, tenantID, run.ID, "recorded branch does not exist")
 		return nil
 	}
+	// RESOLVE THE TARGET BEFORE ANY MUTATION, and REFUSE rather than invent one.
+	target, terr := r.integrationTarget(ctx, projectDir)
+	if terr != nil {
+		// NOT STAMPED: an unresolvable integration branch is a repository/configuration fact that CAN change
+		// without this platform acting — the operator creates the branch, or fixes origin/HEAD — so the next
+		// pass must try again. Logged on every pass for the same reason: silence is what hid this before.
+		r.log.Warn("worktree: local integration cannot run — the repository has no usable integration branch",
+			"run", run.ID, "branch", branch, "repo", projectDir, "error", terr)
+		return nil
+	}
+
 	// IDEMPOTENCY. Ancestry is the test, so "already integrated" needs no stored flag.
-	if r.isAncestorOf(ctx, projectDir, branch, integrationBranch) {
-		r.stampIntegrated(ctx, tenantID, run.ID, "already an ancestor of "+integrationBranch)
+	if r.isAncestorOf(ctx, projectDir, branch, target) {
+		r.stampIntegrated(ctx, tenantID, run.ID, "already an ancestor of "+target)
 		return nil
 	}
 
@@ -123,7 +172,7 @@ func (r *WorktreeReconciler) integrateLocalRun(ctx context.Context, tenantID str
 	defer r.integrateMu.Unlock()
 
 	// Re-check under the lock: a concurrent pass may have integrated it while we waited.
-	if r.isAncestorOf(ctx, projectDir, branch, integrationBranch) {
+	if r.isAncestorOf(ctx, projectDir, branch, target) {
 		return nil
 	}
 
@@ -133,34 +182,27 @@ func (r *WorktreeReconciler) integrateLocalRun(ctx context.Context, tenantID str
 	// difference for every file the merge brought in — a check made afterwards can never pass. Captured
 	// here, while the tree still describes the commit it is actually on, "clean" means what it should:
 	// the operator has no uncommitted work to lose.
-	readyToRefresh, refreshBlockedBy := r.mainCheckoutRefreshReadiness(ctx, projectDir)
-
-	// The integration branch must exist before anything can land on it. Creating it at the MAIN checkout's
-	// HEAD preserves the history that already exists there, rather than adopting the first run's branch as
-	// the base.
-	if err := r.ensureIntegrationBranch(ctx, projectDir); err != nil {
-		return err
-	}
+	readyToRefresh, refreshBlockedBy := r.mainCheckoutRefreshReadiness(ctx, projectDir, target)
 
 	// FAST-FORWARD when the integration branch is an ancestor of the run branch: the common case, and the
 	// only one that needs no merge commit.
-	if r.isAncestorOf(ctx, projectDir, integrationBranch, branch) {
+	if r.isAncestorOf(ctx, projectDir, target, branch) {
 		sha, err := r.revParse(ctx, projectDir, branch)
 		if err != nil {
 			return err
 		}
-		if err := r.setBranchRef(ctx, projectDir, integrationBranch, sha); err != nil {
+		if err := r.setBranchRef(ctx, projectDir, target, sha); err != nil {
 			return err
 		}
 		r.log.Info("worktree: local integration fast-forwarded the integration branch",
-			"run", run.ID, "branch", branch, "into", integrationBranch, "commit", short(sha))
+			"run", run.ID, "branch", branch, "into", target, "commit", short(sha))
 		r.stampIntegrated(ctx, tenantID, run.ID, "fast-forwarded to "+short(sha))
-		return r.refreshMainCheckout(ctx, projectDir, readyToRefresh, refreshBlockedBy)
+		return r.refreshMainCheckout(ctx, projectDir, target, readyToRefresh, refreshBlockedBy)
 	}
 
 	// DIVERGED: the integration branch has moved since this run branched. Merge the run branch in, in a
 	// SCRATCH WORKTREE, so the operator's checked-out tree is never the scene of a conflict.
-	merged, err := r.mergeRunBranchInScratch(ctx, projectDir, branch, run.ID)
+	merged, err := r.mergeRunBranchInScratch(ctx, projectDir, branch, run.ID, target)
 	if err != nil {
 		return err
 	}
@@ -173,13 +215,13 @@ func (r *WorktreeReconciler) integrateLocalRun(ctx context.Context, tenantID str
 		// strand the run permanently.
 		r.log.Warn("worktree: local integration hit a CONFLICT — nothing was merged and both branches are "+
 			"untouched; resolve it by hand, and the next pass will integrate it",
-			"run", run.ID, "branch", branch, "into", integrationBranch, "repo", projectDir)
+			"run", run.ID, "branch", branch, "into", target, "repo", projectDir)
 		return nil
 	}
 	r.log.Info("worktree: local integration merged the run branch",
-		"run", run.ID, "branch", branch, "into", integrationBranch, "commit", short(merged))
+		"run", run.ID, "branch", branch, "into", target, "commit", short(merged))
 	r.stampIntegrated(ctx, tenantID, run.ID, "merged as "+short(merged))
-	return r.refreshMainCheckout(ctx, projectDir, readyToRefresh, refreshBlockedBy)
+	return r.refreshMainCheckout(ctx, projectDir, target, readyToRefresh, refreshBlockedBy)
 }
 
 // runGitStrategy resolves the run's effective git strategy.
@@ -192,32 +234,14 @@ func (r *WorktreeReconciler) runGitStrategy(ctx context.Context, tenantID string
 	return db.EffectiveGitStrategy(ctx, ttx.Tx, tenantID, run.WorkflowID, run.ProjectID), nil
 }
 
-// ensureIntegrationBranch creates the integration branch at the main checkout's HEAD when it is missing.
-func (r *WorktreeReconciler) ensureIntegrationBranch(ctx context.Context, projectDir string) error {
-	if _, err := runGit(ctx, projectDir, "rev-parse", "--verify", "refs/heads/"+integrationBranch); err == nil {
-		return nil
-	}
-	head, err := r.revParse(ctx, projectDir, "HEAD")
-	if err != nil {
-		// A repository with no commits cannot host an integration branch yet, and the run branch is the
-		// only history that exists — adopt it so the run's work is not stranded.
-		return fmt.Errorf("worktree: cannot bootstrap %s (no HEAD commit): %w", integrationBranch, err)
-	}
-	if err := r.setBranchRef(ctx, projectDir, integrationBranch, head); err != nil {
-		return err
-	}
-	r.log.Info("worktree: created the integration branch", "branch", integrationBranch, "at", short(head))
-	return nil
-}
-
 // mergeRunBranchInScratch merges branch into the integration branch inside a throwaway worktree, returning
 // the resulting commit — or "" when the merge conflicted (aborted, nothing changed).
 //
 // A SCRATCH WORKTREE, not the main checkout, and not the run's worktree: the main checkout is the
 // operator's (a conflict there is a mess they did not ask for) and the run worktree belongs to the run
 // (merging into it would rewrite the very branch we are integrating).
-func (r *WorktreeReconciler) mergeRunBranchInScratch(ctx context.Context, projectDir, branch, runID string) (string, error) {
-	base, err := r.revParse(ctx, projectDir, integrationBranch)
+func (r *WorktreeReconciler) mergeRunBranchInScratch(ctx context.Context, projectDir, branch, runID, target string) (string, error) {
+	base, err := r.revParse(ctx, projectDir, target)
 	if err != nil {
 		return "", err
 	}
@@ -239,7 +263,7 @@ func (r *WorktreeReconciler) mergeRunBranchInScratch(ctx context.Context, projec
 		}
 	}()
 
-	msg := fmt.Sprintf("merge %s into %s (orchicon local integration, run %s)", branch, integrationBranch, runID)
+	msg := fmt.Sprintf("merge %s into %s (orchicon local integration, run %s)", branch, target, runID)
 	if _, merr := runGit(ctx, scratch, "merge", "--no-ff", "-m", msg, branch); merr != nil {
 		// ABORT so the scratch worktree holds no half-applied merge, then report "conflict" rather than an
 		// error: the branches are untouched and retrying cannot help until a human intervenes.
@@ -252,7 +276,7 @@ func (r *WorktreeReconciler) mergeRunBranchInScratch(ctx context.Context, projec
 	if err != nil {
 		return "", err
 	}
-	if err := r.setBranchRef(ctx, projectDir, integrationBranch, tip); err != nil {
+	if err := r.setBranchRef(ctx, projectDir, target, tip); err != nil {
 		return "", err
 	}
 	return tip, nil
@@ -263,8 +287,8 @@ func (r *WorktreeReconciler) mergeRunBranchInScratch(ctx context.Context, projec
 //
 // MUST BE CALLED BEFORE THE REF MOVES (see integrateLocalRun): once the ref advances, the index is stale by
 // construction and every file the integration brought in looks like a local modification.
-func (r *WorktreeReconciler) mainCheckoutRefreshReadiness(ctx context.Context, projectDir string) (bool, string) {
-	if cur := r.currentBranch(ctx, projectDir); cur != integrationBranch {
+func (r *WorktreeReconciler) mainCheckoutRefreshReadiness(ctx context.Context, projectDir, target string) (bool, string) {
+	if cur := r.currentBranch(ctx, projectDir); cur != target {
 		// The operator is not on the branch that moved, so its working tree is unaffected: nothing to do,
 		// and nothing to warn about.
 		return false, ""
@@ -289,23 +313,23 @@ func (r *WorktreeReconciler) mainCheckoutRefreshReadiness(ctx context.Context, p
 // Uncommitted work is NEVER touched. Destroying it to tidy up a ref is not a trade worth making, so a tree
 // that was dirty before the integration is left exactly as it was and the operator is told, with the
 // command that resolves it.
-func (r *WorktreeReconciler) refreshMainCheckout(ctx context.Context, projectDir string, ready bool, blockedBy string) error {
+func (r *WorktreeReconciler) refreshMainCheckout(ctx context.Context, projectDir, target string, ready bool, blockedBy string) error {
 	if blockedBy != "" {
 		r.log.Warn("worktree: the integration branch advanced but the main checkout was left alone — it is "+
 			"now stale relative to its own HEAD",
-			"repo", projectDir, "branch", integrationBranch, "reason", blockedBy,
-			"remedy", "commit or stash, then run: git reset --hard "+integrationBranch)
+			"repo", projectDir, "branch", target, "reason", blockedBy,
+			"remedy", "commit or stash, then run: git reset --hard "+target)
 		return nil
 	}
 	if !ready {
 		return nil // the operator is not on the integration branch
 	}
-	if _, err := runGit(ctx, projectDir, "reset", "--hard", integrationBranch); err != nil {
+	if _, err := runGit(ctx, projectDir, "reset", "--hard", target); err != nil {
 		r.log.Warn("worktree: could not refresh the main checkout after integration",
-			"repo", projectDir, "branch", integrationBranch, "error", err)
+			"repo", projectDir, "branch", target, "error", err)
 		return nil
 	}
-	r.log.Info("worktree: refreshed the main checkout to the integration branch", "repo", projectDir)
+	r.log.Info("worktree: refreshed the main checkout to the integration branch", "repo", projectDir, "branch", target)
 	return nil
 }
 
