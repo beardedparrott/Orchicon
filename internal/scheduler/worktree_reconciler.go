@@ -378,6 +378,18 @@ func sweepBudgetExpired(deadline time.Time) bool {
 // slowPassInterval (gated by scan) and each sweep loop observes a shared
 // wall-clock budget so one tick cannot stall dispatch.
 func (r *WorktreeReconciler) scanSlow(ctx context.Context, tenantID string) reconciler.Result {
+	// LOCAL INTEGRATION RUNS FIRST, ON ITS OWN BUDGET.
+	//
+	// This used to run LAST, sharing the one deadline the sweeps below consume. On a host where those
+	// sweeps are slow — three of them each shelling out to git per row — the 15s budget was spent before
+	// integration was reached, so it returned immediately on EVERY pass and nothing was ever merged.
+	// Measured consequence: a green, committed local-strategy run stayed un-integrated indefinitely while
+	// the reconciler reported itself healthy, and its prompt had told the worker the platform would merge.
+	//
+	// Its own deadline because it is work that must COMPLETE, not housekeeping that may be deferred:
+	// starving it costs a run's entire output. First, because every other sweep here is reclamation that
+	// benefits from this one having already made a branch merged.
+	r.integrateLocalRuns(ctx, tenantID, time.Now().Add(slowPassBudget))
 	deadline := time.Now().Add(slowPassBudget)
 	// Sweep orphaned branch refs: a COMPLETED run (or a step run of one)
 	// whose worktree was already pruned still records worktree_branch, but the
@@ -394,11 +406,6 @@ func (r *WorktreeReconciler) scanSlow(ctx context.Context, tenantID string) reco
 	// any terminal skipped run's shared checkout (ADR 2.2).
 	r.sweepOrphanDirs(ctx, tenantID, deadline)
 	r.sweepSkippedTerminalRuns(ctx, tenantID, deadline)
-	// LOCAL INTEGRATION: advance the integration branch for completed local-strategy runs, so their work
-	// lands instead of sitting on a run branch nobody reads. It runs LAST, after the prune and orphan
-	// sweeps, so a run whose branch this pass merges is deleted and pruned by the NEXT pass using the
-	// existing merged-branch gate rather than a special case here.
-	r.integrateLocalRuns(ctx, tenantID, deadline)
 	return reconciler.Result{}
 }
 
@@ -1583,6 +1590,7 @@ func (s *stageTimer) String() string {
 	}
 	return b.String()
 }
+
 // hasOriginRemote reports whether this repository has an `origin` remote configured at all.
 //
 // IT EXISTS TO STOP ASKING THE IMPOSSIBLE. Every remote-touching operation in this file — `remote show

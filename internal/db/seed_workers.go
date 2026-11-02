@@ -837,7 +837,23 @@ var cannedWorkers = []cannedWorker{
 			mergeGateBlock + "\n" +
 			"Take `PR_URL:` / `PR_STATE:` in your summary from the PR you actually verified above, never from what you intended to create. If the merge conflicts, resolve it on the branch (merge `develop` into your branch, fix, add/commit/push) and re-attempt the MERGE only — never open a second PR.\n\n" +
 			"## Completion\n" +
-			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, committed, pushed, and its PR into `develop` is merged — either created and merged by you, OR already merged by an earlier attempt of this same run (the idempotency check above; a resume that re-enters shipping and finds the PR merged is a SUCCESS, not a reason to re-ship). `failure` only if the task proved unimplementable (say exactly where it broke down).",
+			"**Never report success with a failing build or failing tests.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, committed, and SHIPPED — where \"shipped\" means the thing your `## Git discipline` block describes for this project. `failure` only if the task proved unimplementable (say exactly where it broke down).\n\n" +
+			// THE SUCCESS BAR HAD NO LOCAL FORM, and the gap was not cosmetic: it read as "PR merged into
+			// develop", so in a `git_strategy=local` project — which has no PR — a bare `success` was the
+			// only thing left to say, and it read as "merged" to everyone downstream while nothing had
+			// merged at all. Observed: a green, committed local run reported `success`, which was true,
+			// and was indistinguishable from a shipped one, which was not.
+			"**In `git_strategy=local` mode (no remote), `success` means:** the change is implemented, green, " +
+			"and COMMITTED TO THE RUN BRANCH. Your completion line must also state the branch you are " +
+			"leaving, its short SHA, and this exact line:\n" +
+			"```\nAWAITING PLATFORM INTEGRATION into develop at <short-sha>\n```\n" +
+			"**Never claim the work is on `develop`.** The platform integrates your branch AFTER your run " +
+			"ends, and you cannot observe that — a summary that says otherwise is a claim you have no way to " +
+			"verify, and it hides the case where integration never happened.\n\n" +
+			"In `git_strategy=pr` mode the bar is unchanged: pushed, with the PR into `develop` merged — either " +
+			"created and merged by you, OR already merged by an earlier attempt of this same run (the " +
+			"idempotency check above; a resume that re-enters shipping and finds the PR merged is a SUCCESS, " +
+			"not a reason to re-ship).",
 		BudgetOverrides:  []byte(`{"wall_clock_seconds":2400}`),
 		RollMarker:       quickWorkerMarker,
 		ConcurrencyLimit: 0,

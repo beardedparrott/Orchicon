@@ -86,15 +86,15 @@ type WorkflowRunRow struct {
 	// per dispatch (db.EffectiveExecutionMode: the work item's own override wins over its project). A local
 	// run has an empty RuntimeImage and no container; a runtime run names one. Do not infer either from this
 	// field.
-	RuntimeReady bool // runtime-serve readiness gate: executions dispatch only once true
-	WorktreeStatus  string // WorktreeReconciler provisioning state (pending/ready/skipped/failed/pruned)
-	WorktreePath    string // isolated working tree path (git-backed runs)
-	WorktreeBranch  string // deterministic branch created for the run
-	Version         int
-	StartedAt       *time.Time
-	EndedAt         *time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	RuntimeReady   bool   // runtime-serve readiness gate: executions dispatch only once true
+	WorktreeStatus string // WorktreeReconciler provisioning state (pending/ready/skipped/failed/pruned)
+	WorktreePath   string // isolated working tree path (git-backed runs)
+	WorktreeBranch string // deterministic branch created for the run
+	Version        int
+	StartedAt      *time.Time
+	EndedAt        *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // PrFromRunContext extracts the PR surface (pr_url, pr_state) that the
@@ -1882,11 +1882,13 @@ func ListTerminalRunsWithRuntimeEvidence(ctx context.Context, tx pgx.Tx, tenantI
 // project integrates locally has no remote, so nothing ever merges its branch into the integration branch
 // and its work sits on a branch nobody reads. The reconciler finishes the job the worker could not.
 //
-// NO "ALREADY INTEGRATED" FILTER, deliberately. Integration is a fact about GIT, not about this table, so
-// asking the table would mean introducing a second source of truth for it. Once a branch IS integrated the
-// caller's ancestry check is a no-op, and — because integration makes the branch provably merged — the
-// existing prune path then deletes the branch and marks the worktree pruned, which drops the row out of
-// this query entirely. The set is therefore self-cleaning rather than growing forever.
+// THE STAMP IS A FACT ABOUT THE RUN, not a duplicate of a fact about git. `local_integrated_at` in
+// run_context records "integration has dealt with this run", which git cannot answer: git can say whether a
+// branch is an ancestor, but not whether we have looked. Without it the candidate set would grow forever
+// with rows whose branch the orphan sweep already deleted, and the LIMIT would starve newer runs.
+//
+// The ancestry check inside the controller remains the IDEMPOTENCY key for the merge itself; the stamp only
+// decides whether the run is worth examining again.
 func ListCompletedRunsWithBranch(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
 	if limit <= 0 {
 		limit = 16
@@ -1897,7 +1899,17 @@ func ListCompletedRunsWithBranch(ctx context.Context, tx pgx.Tx, tenantID string
 			r.version, r.started_at, r.ended_at, r.created_at, r.updated_at
 		FROM workflow_runs r
 		WHERE r.tenant_id = $1 AND r.status = 'completed'
-		  AND r.worktree_branch <> '' AND r.worktree_status <> 'pruned'
+		  AND r.worktree_branch <> ''
+		  -- DELIBERATELY NO worktree_status FILTER. A completed run whose branch is NOT provably merged has
+		  -- its worktree pruned and its branch KEPT — markStepPruned runs unconditionally after a refused
+		  -- branch delete — so filtering on 'pruned' excluded exactly the runs integration exists for. That
+		  -- filter is why a green, committed run was never integrated.
+		  --
+		  -- TERMINATION IS THE STAMP, not the worktree state: local_integrated_at records that this run has
+		  -- been dealt with (merged, or found to have no branch left). Without it the set would keep growing
+		  -- with rows whose branch the orphan sweep already deleted, and the LIMIT would eventually starve
+		  -- newer runs behind ancient no-ops.
+		  AND NOT (r.run_context ? 'local_integrated_at')
 		ORDER BY r.ended_at ASC NULLS LAST, r.created_at ASC
 		LIMIT $2`
 	rows, err := tx.Query(ctx, q, tenantID, limit)

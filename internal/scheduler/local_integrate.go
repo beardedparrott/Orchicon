@@ -88,17 +88,32 @@ func (r *WorktreeReconciler) integrateLocalRun(ctx context.Context, tenantID str
 		return err
 	}
 	if strategy != "local" {
+		// Not this path's job — and it never will be, so stamp it rather than re-reading the project every
+		// pass for the rest of the instance's life.
+		r.stampIntegrated(ctx, tenantID, run.ID, "not a local-strategy project")
 		return nil
 	}
 	projectDir := r.lookupProjectDir(ctx, tenantID, run.ProjectID)
 	if projectDir == "" || !r.isInsideWorkTree(ctx, projectDir) {
-		return nil // not a git-backed project (or a main repo that cannot be resolved)
+		// Not a git-backed project (or a main repo that cannot be resolved). Nothing can land, and it will
+		// not resolve itself by being retried, so stamp with the reason instead of rescanning forever.
+		r.stampIntegrated(ctx, tenantID, run.ID, "project dir is not a git work tree")
+		return nil
 	}
 	if !r.branchExists(ctx, projectDir, branch) {
-		return nil // already gone — the branch was merged and pruned, or never created
+		// The branch is gone: already merged and deleted by the orphan sweep, or never created (a run whose
+		// provisioning failed). Either way there is nothing to integrate and nothing to wait for. SAID OUT
+		// LOUD, because "the branch this run recorded does not exist" is a finding an operator wants, not a
+		// silent no-op — the reported run 1 recorded a branch that was never created at all.
+		r.log.Warn("worktree: local integration found NO branch for a completed run — nothing to integrate",
+			"run", run.ID, "branch", branch, "repo", projectDir,
+			"hint", "the branch was already merged and swept, or the run never created it")
+		r.stampIntegrated(ctx, tenantID, run.ID, "recorded branch does not exist")
+		return nil
 	}
 	// IDEMPOTENCY. Ancestry is the test, so "already integrated" needs no stored flag.
 	if r.isAncestorOf(ctx, projectDir, branch, integrationBranch) {
+		r.stampIntegrated(ctx, tenantID, run.ID, "already an ancestor of "+integrationBranch)
 		return nil
 	}
 
@@ -139,6 +154,7 @@ func (r *WorktreeReconciler) integrateLocalRun(ctx context.Context, tenantID str
 		}
 		r.log.Info("worktree: local integration fast-forwarded the integration branch",
 			"run", run.ID, "branch", branch, "into", integrationBranch, "commit", short(sha))
+		r.stampIntegrated(ctx, tenantID, run.ID, "fast-forwarded to "+short(sha))
 		return r.refreshMainCheckout(ctx, projectDir, readyToRefresh, refreshBlockedBy)
 	}
 
@@ -152,13 +168,17 @@ func (r *WorktreeReconciler) integrateLocalRun(ctx context.Context, tenantID str
 		// A CONFLICT. A controller cannot resolve one SEMANTICALLY — it can only pick a side, which is
 		// worse than stopping. Both branches are left exactly as they are, nothing is committed, and the
 		// operator gets a line naming the run; a human decides.
+		// NOT STAMPED, deliberately: a conflict is the one outcome that CAN change without this platform
+		// doing anything, because a human resolving it makes the next pass succeed. Stamping here would
+		// strand the run permanently.
 		r.log.Warn("worktree: local integration hit a CONFLICT — nothing was merged and both branches are "+
-			"untouched; resolve it by hand",
+			"untouched; resolve it by hand, and the next pass will integrate it",
 			"run", run.ID, "branch", branch, "into", integrationBranch, "repo", projectDir)
 		return nil
 	}
 	r.log.Info("worktree: local integration merged the run branch",
 		"run", run.ID, "branch", branch, "into", integrationBranch, "commit", short(merged))
+	r.stampIntegrated(ctx, tenantID, run.ID, "merged as "+short(merged))
 	return r.refreshMainCheckout(ctx, projectDir, readyToRefresh, refreshBlockedBy)
 }
 
@@ -318,4 +338,39 @@ func short(sha string) string {
 		return sha[:7]
 	}
 	return sha
+}
+
+// integrationStampKey is the run_context key recording that local integration has dealt with a run.
+const integrationStampKey = "local_integrated_at"
+
+// stampIntegrated records that this run needs no further integration attention, so the candidate query stops
+// returning it. Best-effort: a failed stamp costs a re-examination next pass, which is a no-op — never the
+// other way round, so a failure here is logged and nothing else.
+func (r *WorktreeReconciler) stampIntegrated(ctx context.Context, tenantID, runID, why string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		r.log.Warn("worktree: local integration stamp: begin tx", "run", runID, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
+	if err != nil {
+		r.log.Warn("worktree: local integration stamp: read run", "run", runID, "error", err)
+		return
+	}
+	merged, ok := db.MergeRunContext(run.RunContext, map[string]any{
+		integrationStampKey:     time.Now().UTC().Format(time.RFC3339),
+		"local_integrated_note": why,
+	})
+	if !ok {
+		return
+	}
+	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version,
+		db.UpdateWorkflowRunFields{RunContext: &merged}); err != nil {
+		r.log.Warn("worktree: local integration stamp: write run", "run", runID, "error", err)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		r.log.Warn("worktree: local integration stamp: commit", "run", runID, "error", err)
+	}
 }
