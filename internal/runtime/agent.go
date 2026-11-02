@@ -89,6 +89,12 @@ type AgentEvent struct {
 	Skipped bool `json:"skipped,omitempty"`
 }
 
+// envGitdirMaps carries the host->guest project prefix pairs the supervisor repoints worktree `.git` pointers
+// with. Formatted "<host>|<guest>" joined by ';', because a Windows host path contains ':' and a POSIX guest
+// path cannot contain '|'. Emitted by the daemon from the SAME mounts it creates, so the pairs cannot drift
+// from what is actually mounted.
+const envGitdirMaps = "ORCHICON_GITDIR_MAPS"
+
 // DefaultAgentSocket is the in-container path of the supervisor's unix
 // socket. It lives under /tmp (tmpfs) so it is ephemeral like everything
 // else in the runtime container.
@@ -216,6 +222,22 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	}
 	defer l.Close()
 	log.Info("runtime supervisor listening", "socket", socketPath)
+
+	// REPOINT THE WORKTREES THE PLANE PROVISIONED. A git worktree's `.git` file records an ABSOLUTE path as the
+	// host's git wrote it; the project is then mounted here at a different (guest) path, so that pointer names a
+	// directory that does not exist in this namespace and git reports "not a git repository" — with git fully
+	// present and correct. See gitdir.go.
+	//
+	// Runs at START, once: the worktrees are provisioned before the container exists, so nothing can be created
+	// mid-life that this would miss, and it is idempotent if the container restarts.
+	if maps := parsePathMappings(os.Getenv(envGitdirMaps)); len(maps) > 0 {
+		for _, m := range maps {
+			if n := rewriteGuestGitdirs(m.Guest, []pathMapping{m}, log); n > 0 {
+				log.Info("gitdir rewrite: worktrees repointed for this container",
+					"root", m.Guest, "host_root", m.Host, "count", n)
+			}
+		}
+	}
 
 	// Reap orphaned children on exit so a container kill never leaves a
 	// stray opencode running inside.
