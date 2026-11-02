@@ -394,7 +394,7 @@ function SchedulesPage() {
           projects={projects}
           selected={selected}
           onToggleSelect={toggleSelect}
-          onToggleSelectAllRuns={(runIds) => setSelected(new Set(runIds))}
+          onToggleSelectAll={toggleSelectAll}
           onRemove={handleRemoveSchedule}
           removing={removeSchedule.isPending}
         />
@@ -423,7 +423,7 @@ function SchedulesPage() {
           projects={projects}
           selected={selected}
           onToggleSelect={toggleSelect}
-          onToggleSelectAll={toggleSelectAll}
+          onToggleSelectAllRuns={(runIds: string[]) => setSelected(new Set(runIds))}
           onRemove={handleRemoveSchedule}
           removing={removeSchedule.isPending}
         />
