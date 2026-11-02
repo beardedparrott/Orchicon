@@ -56,6 +56,14 @@ type ServerSpec struct {
 	// Timeout bounds each tool call against this server (and the connect
 	// handshake). Zero → defaultToolCallTimeout.
 	Timeout time.Duration `json:"-"`
+	// ProtocolVersion pins the MCP wire version this server speaks. Empty (or "auto") means "let the
+	// client negotiate", which sends the modern server/discover probe first — correct for a current
+	// server, fatal for a legacy one (see connectOne and mcp_legacy_protocol.go).
+	//
+	// An operator sets this to pin a KNOWN-OLD server. The auto-degrade makes that optional: it is an
+	// escape hatch for a server whose failure mode looks like a protocol mismatch but is not, and a way
+	// to skip the wasted first attempt once the version is known.
+	ProtocolVersion string `json:"-"`
 	// OnError selects the failure mode when the server is selected but
 	// unreachable/missing: "fail" (default — the session start fails
 	// actionably) or "degrade" (the session starts without this server's

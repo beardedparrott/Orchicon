@@ -280,6 +280,21 @@ export class MCPServer extends Message<MCPServer> {
    */
   conversationId = "";
 
+  /**
+   * protocol_version pins the MCP wire version this server speaks. Empty or
+   * "auto" lets the client negotiate, which sends the modern server/discover
+   * probe first — correct for a current server and FATAL for a legacy one: an
+   * older server does not know that method, fails validation and exits, and the
+   * connect then reports a timeout against a dead child. The client already
+   * degrades automatically (it retries once with the legacy handshake when a
+   * server fails the modern one), so this is an OPTIMISATION and an escape
+   * hatch: pinning it skips the wasted first attempt for a known-old server.
+   * Recognised value today: "2025-11-25" (the last version before the probe).
+   *
+   * @generated from field: string protocol_version = 19;
+   */
+  protocolVersion = "";
+
   constructor(data?: PartialMessage<MCPServer>) {
     super();
     proto3.util.initPartial(data, this);
@@ -306,6 +321,7 @@ export class MCPServer extends Message<MCPServer> {
     { no: 16, name: "updated_at", kind: "message", T: Timestamp },
     { no: 17, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 18, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 19, name: "protocol_version", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MCPServer {
@@ -887,6 +903,14 @@ export class MCPServerCreateRequest extends Message<MCPServerCreateRequest> {
    */
   conversationId = "";
 
+  /**
+   * protocol_version: empty/"auto" negotiates; "2025-11-25" pins the legacy
+   * handshake. See MCPServer.protocol_version.
+   *
+   * @generated from field: string protocol_version = 12;
+   */
+  protocolVersion = "";
+
   constructor(data?: PartialMessage<MCPServerCreateRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -906,6 +930,7 @@ export class MCPServerCreateRequest extends Message<MCPServerCreateRequest> {
     { no: 9, name: "catalog_slug", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 11, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 12, name: "protocol_version", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MCPServerCreateRequest {
@@ -1048,6 +1073,13 @@ export class MCPServerUpdateRequest extends Message<MCPServerUpdateRequest> {
    */
   conversationId = "";
 
+  /**
+   * optional so "not supplied" is distinct from "clear back to auto".
+   *
+   * @generated from field: optional string protocol_version = 16;
+   */
+  protocolVersion?: string;
+
   constructor(data?: PartialMessage<MCPServerUpdateRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1071,6 +1103,7 @@ export class MCPServerUpdateRequest extends Message<MCPServerUpdateRequest> {
     { no: 13, name: "catalog_slug", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
     { no: 14, name: "project_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 15, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 16, name: "protocol_version", kind: "scalar", T: 9 /* ScalarType.STRING */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MCPServerUpdateRequest {

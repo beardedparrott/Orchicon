@@ -239,8 +239,18 @@ type MCPServer struct {
 	// Owner: exactly one is non-empty (project XOR conversation).
 	ProjectId      string `protobuf:"bytes,17,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
 	ConversationId string `protobuf:"bytes,18,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// protocol_version pins the MCP wire version this server speaks. Empty or
+	// "auto" lets the client negotiate, which sends the modern server/discover
+	// probe first — correct for a current server and FATAL for a legacy one: an
+	// older server does not know that method, fails validation and exits, and the
+	// connect then reports a timeout against a dead child. The client already
+	// degrades automatically (it retries once with the legacy handshake when a
+	// server fails the modern one), so this is an OPTIMISATION and an escape
+	// hatch: pinning it skips the wasted first attempt for a known-old server.
+	// Recognised value today: "2025-11-25" (the last version before the probe).
+	ProtocolVersion string `protobuf:"bytes,19,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *MCPServer) Reset() {
@@ -395,6 +405,13 @@ func (x *MCPServer) GetProjectId() string {
 func (x *MCPServer) GetConversationId() string {
 	if x != nil {
 		return x.ConversationId
+	}
+	return ""
+}
+
+func (x *MCPServer) GetProtocolVersion() string {
+	if x != nil {
+		return x.ProtocolVersion
 	}
 	return ""
 }
@@ -985,8 +1002,11 @@ type MCPServerCreateRequest struct {
 	// Owner: exactly ONE of the two must be set (mcp_servers_owner_xor).
 	ProjectId      string `protobuf:"bytes,10,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
 	ConversationId string `protobuf:"bytes,11,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// protocol_version: empty/"auto" negotiates; "2025-11-25" pins the legacy
+	// handshake. See MCPServer.protocol_version.
+	ProtocolVersion string `protobuf:"bytes,12,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *MCPServerCreateRequest) Reset() {
@@ -1096,6 +1116,13 @@ func (x *MCPServerCreateRequest) GetConversationId() string {
 	return ""
 }
 
+func (x *MCPServerCreateRequest) GetProtocolVersion() string {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return ""
+}
+
 type MCPServerCreateResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Server        *MCPServer             `protobuf:"bytes,1,opt,name=server,proto3" json:"server,omitempty"`
@@ -1159,8 +1186,10 @@ type MCPServerUpdateRequest struct {
 	// (the scope is immutable after create).
 	ProjectId      string `protobuf:"bytes,14,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
 	ConversationId string `protobuf:"bytes,15,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// optional so "not supplied" is distinct from "clear back to auto".
+	ProtocolVersion *string `protobuf:"bytes,16,opt,name=protocol_version,json=protocolVersion,proto3,oneof" json:"protocol_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *MCPServerUpdateRequest) Reset() {
@@ -1294,6 +1323,13 @@ func (x *MCPServerUpdateRequest) GetProjectId() string {
 func (x *MCPServerUpdateRequest) GetConversationId() string {
 	if x != nil {
 		return x.ConversationId
+	}
+	return ""
+}
+
+func (x *MCPServerUpdateRequest) GetProtocolVersion() string {
+	if x != nil && x.ProtocolVersion != nil {
+		return *x.ProtocolVersion
 	}
 	return ""
 }
@@ -1842,7 +1878,7 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\acommand\x18\x02 \x01(\tR\acommand\x12\x0e\n" +
 	"\x02ok\x18\x03 \x01(\bR\x02ok\x12\x14\n" +
 	"\x05error\x18\x04 \x01(\tR\x05error\x12!\n" +
-	"\finstalled_at\x18\x05 \x01(\tR\vinstalledAt\"\x86\a\n" +
+	"\finstalled_at\x18\x05 \x01(\tR\vinstalledAt\"\xb1\a\n" +
 	"\tMCPServer\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12A\n" +
@@ -1865,7 +1901,8 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"updated_at\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x11 \x01(\tR\tprojectId\x12'\n" +
-	"\x0fconversation_id\x18\x12 \x01(\tR\x0econversationId\x1a6\n" +
+	"\x0fconversation_id\x18\x12 \x01(\tR\x0econversationId\x12)\n" +
+	"\x10protocol_version\x18\x13 \x01(\tR\x0fprotocolVersion\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
@@ -1910,7 +1947,7 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\x13MCPServerGetRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"J\n" +
 	"\x14MCPServerGetResponse\x122\n" +
-	"\x06server\x18\x01 \x01(\v2\x1a.orchicon.api.v1.MCPServerR\x06server\"\xbc\x04\n" +
+	"\x06server\x18\x01 \x01(\v2\x1a.orchicon.api.v1.MCPServerR\x06server\"\xe7\x04\n" +
 	"\x16MCPServerCreateRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12A\n" +
 	"\ttransport\x18\x02 \x01(\x0e2#.orchicon.api.v1.MCPServerTransportR\ttransport\x12\x18\n" +
@@ -1924,7 +1961,8 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\n" +
 	"project_id\x18\n" +
 	" \x01(\tR\tprojectId\x12'\n" +
-	"\x0fconversation_id\x18\v \x01(\tR\x0econversationId\x1a6\n" +
+	"\x0fconversation_id\x18\v \x01(\tR\x0econversationId\x12)\n" +
+	"\x10protocol_version\x18\f \x01(\tR\x0fprotocolVersion\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
@@ -1932,7 +1970,7 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"M\n" +
 	"\x17MCPServerCreateResponse\x122\n" +
-	"\x06server\x18\x01 \x01(\v2\x1a.orchicon.api.v1.MCPServerR\x06server\"\xe3\x06\n" +
+	"\x06server\x18\x01 \x01(\v2\x1a.orchicon.api.v1.MCPServerR\x06server\"\xa8\a\n" +
 	"\x16MCPServerUpdateRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12F\n" +
@@ -1951,7 +1989,8 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\fcatalog_slug\x18\r \x01(\tH\bR\vcatalogSlug\x88\x01\x01\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x0e \x01(\tR\tprojectId\x12'\n" +
-	"\x0fconversation_id\x18\x0f \x01(\tR\x0econversationId\x1a6\n" +
+	"\x0fconversation_id\x18\x0f \x01(\tR\x0econversationId\x12.\n" +
+	"\x10protocol_version\x18\x10 \x01(\tH\tR\x0fprotocolVersion\x88\x01\x01\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n" +
@@ -1969,7 +2008,8 @@ const file_orchicon_api_v1_mcp_server_proto_rawDesc = "" +
 	"\x10_replace_headersB\n" +
 	"\n" +
 	"\b_enabledB\x0f\n" +
-	"\r_catalog_slug\"M\n" +
+	"\r_catalog_slugB\x13\n" +
+	"\x11_protocol_version\"M\n" +
 	"\x17MCPServerUpdateResponse\x122\n" +
 	"\x06server\x18\x01 \x01(\v2\x1a.orchicon.api.v1.MCPServerR\x06server\"(\n" +
 	"\x16MCPServerDeleteRequest\x12\x0e\n" +

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -155,87 +154,7 @@ func (m *Manager) Failures() []ServerFailure {
 
 // connectOne dials one server (connect + tools/list) under a timeout.
 func (m *Manager) connectOne(ctx context.Context, spec ServerSpec) (*serverConn, error) {
-	timeout := connectTimeout(spec)
-	cctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	var transport mcp.Transport
-	// spawn is non-nil only for a stdio child: it carries the command and its captured stderr, which is
-	// what turns "context deadline exceeded" into a diagnosis (stdio_spawn.go).
-	var spawn *stdioSpawn
-	switch spec.TransportType() {
-	case TypeHTTP:
-		t, err := newHTTPTransport(spec)
-		if err != nil {
-			return nil, err
-		}
-		transport = t
-	default:
-		sp, err := newStdioTransport(spec)
-		if err != nil {
-			return nil, err
-		}
-		spawn = sp
-		transport = sp.transport
-	}
-
-	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "orchicon",
-		Version: "0.1.0",
-	}, nil)
-	started := time.Now()
-	session, err := client.Connect(cctx, transport, nil)
-	if err != nil {
-		// KILL THE CHILD WE JUST SPAWNED, because the SDK will not. mcp.connect returns the handshake
-		// error without closing the transport, so the only handle on a live child was being dropped here
-		// on every failed start — which is how a server was found still running 18 hours later. Killing it
-		// is both the leak fix and what makes the diagnosis below truthful (the child is gone either way).
-		if spawn != nil {
-			killStopsTheChild(spawn.cmd)
-		}
-		elapsed := time.Since(started).Round(time.Millisecond)
-		detail := ""
-		if spawn != nil {
-			detail = truncateForError(spawn.diagnosis())
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("mcp server %q: connect timed out after %s (%s transport, waited %s)%s: %w",
-				spec.ID, timeout, spec.TransportType(), elapsed, detail, err)
-		}
-		return nil, fmt.Errorf("mcp server %q: connect failed after %s (%s transport)%s: %w",
-			spec.ID, elapsed, spec.TransportType(), detail, err)
-	}
-
-	res, err := session.ListTools(cctx, &mcp.ListToolsParams{})
-	if err != nil {
-		_ = session.Close()
-		detail := ""
-		if spawn != nil {
-			detail = truncateForError(spawn.diagnosis())
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("mcp server %q: tool discovery timed out after %s%s: %w", spec.ID, timeout, detail, err)
-		}
-		return nil, fmt.Errorf("mcp server %q: tool discovery failed%s: %w", spec.ID, detail, err)
-	}
-
-	conn := &serverConn{spec: spec, client: client, session: session, toolName: make(map[string]string, len(res.Tools))}
-	for _, t := range res.Tools {
-		if t == nil || t.Name == "" {
-			continue
-		}
-		local := ToolName(spec.ID, t.Name)
-		conn.toolName[local] = t.Name
-		def := ToolDef{Name: local, Description: t.Description}
-		if t.InputSchema != nil {
-			schema, err := json.Marshal(t.InputSchema)
-			if err == nil {
-				def.ParamsJSON = string(schema)
-			}
-		}
-		conn.defs = append(conn.defs, def)
-	}
-	return conn, nil
+	return m.connectWithLegacyRetry(ctx, spec)
 }
 
 // Defs returns the discovered tool definitions (all servers), merged into

@@ -24,16 +24,20 @@ func mcpSvc(pool *db.Pool, kek []byte) *mcpsettings.Service {
 // Plaintext credentials never appear — env/header values may be ${SECRET_NAME}
 // references and has_secret_stored reports whether any required secret exists.
 type compactMCPServer struct {
-	ID              string                     `json:"id"`
-	Name            string                     `json:"name"`
-	Transport       string                     `json:"transport"`
-	Command         string                     `json:"command,omitempty"`
-	Args            []string                   `json:"args,omitempty"`
-	Env             map[string]string          `json:"env,omitempty"`
-	URL             string                     `json:"url,omitempty"`
-	Headers         map[string]string          `json:"headers,omitempty"`
-	Enabled         bool                       `json:"enabled"`
-	CatalogSlug     string                     `json:"catalog_slug,omitempty"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Transport   string            `json:"transport"`
+	Command     string            `json:"command,omitempty"`
+	Args        []string          `json:"args,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	URL         string            `json:"url,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Enabled     bool              `json:"enabled"`
+	CatalogSlug string            `json:"catalog_slug,omitempty"`
+	// ProtocolVersion is the operator's pin, "" meaning negotiate. SHOWN because it is the answer to the
+	// question an operator asks when a third-party server yields no tools: is the client speaking a version
+	// this server understands?
+	ProtocolVersion string                     `json:"protocol_version,omitempty"`
 	InstallStatus   string                     `json:"install_status"`
 	InstallResult   *mcpsettings.InstallResult `json:"install_result,omitempty"`
 	RequiredSecrets []string                   `json:"required_secrets,omitempty"`
@@ -62,6 +66,7 @@ func compactServer(e mcpsettings.Entry) compactMCPServer {
 		Headers:         e.Headers,
 		Enabled:         e.Enabled,
 		CatalogSlug:     e.CatalogSlug,
+		ProtocolVersion: e.ProtocolVersion,
 		InstallStatus:   e.InstallStatus,
 		InstallResult:   &res,
 		RequiredSecrets: e.RequiredSecrets,
@@ -169,17 +174,18 @@ func toolGetMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 
 func toolCreateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		Name           string            `json:"name"`
-		Transport      string            `json:"transport"`
-		Command        string            `json:"command"`
-		Args           []string          `json:"args"`
-		Env            map[string]string `json:"env"`
-		URL            string            `json:"url"`
-		Headers        map[string]string `json:"headers"`
-		Enabled        bool              `json:"enabled"`
-		CatalogSlug    string            `json:"catalog_slug"`
-		ProjectID      string            `json:"project_id"`
-		ConversationID string            `json:"conversation_id"`
+		Name            string            `json:"name"`
+		Transport       string            `json:"transport"`
+		Command         string            `json:"command"`
+		Args            []string          `json:"args"`
+		Env             map[string]string `json:"env"`
+		URL             string            `json:"url"`
+		Headers         map[string]string `json:"headers"`
+		Enabled         bool              `json:"enabled"`
+		CatalogSlug     string            `json:"catalog_slug"`
+		ProtocolVersion string            `json:"protocol_version"`
+		ProjectID       string            `json:"project_id"`
+		ConversationID  string            `json:"conversation_id"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -187,17 +193,18 @@ func toolCreateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessag
 	svc := mcpSvc(pool, nil)
 	tenantID := tenant.FromContext(ctx)
 	e, err := svc.Create(ctx, tenantID, mcpsettings.CreateInput{
-		Name:           params.Name,
-		ProjectID:      params.ProjectID,
-		ConversationID: params.ConversationID,
-		Transport:      params.Transport,
-		Command:        params.Command,
-		Args:           params.Args,
-		Env:            params.Env,
-		URL:            params.URL,
-		Headers:        params.Headers,
-		Enabled:        params.Enabled,
-		CatalogSlug:    params.CatalogSlug,
+		Name:            params.Name,
+		ProjectID:       params.ProjectID,
+		ConversationID:  params.ConversationID,
+		Transport:       params.Transport,
+		Command:         params.Command,
+		Args:            params.Args,
+		Env:             params.Env,
+		URL:             params.URL,
+		Headers:         params.Headers,
+		Enabled:         params.Enabled,
+		CatalogSlug:     params.CatalogSlug,
+		ProtocolVersion: params.ProtocolVersion,
 	})
 	if err != nil {
 		return nil, err
@@ -207,18 +214,19 @@ func toolCreateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessag
 
 func toolUpdateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		ID             string            `json:"id"`
-		Transport      *string           `json:"transport"`
-		Command        *string           `json:"command"`
-		Args           []string          `json:"args"`
-		ReplaceArgs    *bool             `json:"replace_args"`
-		Env            map[string]string `json:"env"`
-		ReplaceEnv     *bool             `json:"replace_env"`
-		URL            *string           `json:"url"`
-		Headers        map[string]string `json:"headers"`
-		ReplaceHeaders *bool             `json:"replace_headers"`
-		Enabled        *bool             `json:"enabled"`
-		CatalogSlug    *string           `json:"catalog_slug"`
+		ID              string            `json:"id"`
+		Transport       *string           `json:"transport"`
+		Command         *string           `json:"command"`
+		Args            []string          `json:"args"`
+		ReplaceArgs     *bool             `json:"replace_args"`
+		Env             map[string]string `json:"env"`
+		ReplaceEnv      *bool             `json:"replace_env"`
+		URL             *string           `json:"url"`
+		Headers         map[string]string `json:"headers"`
+		ReplaceHeaders  *bool             `json:"replace_headers"`
+		Enabled         *bool             `json:"enabled"`
+		CatalogSlug     *string           `json:"catalog_slug"`
+		ProtocolVersion *string           `json:"protocol_version"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -247,6 +255,7 @@ func toolUpdateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessag
 	}
 	in.Enabled = params.Enabled
 	in.CatalogSlug = params.CatalogSlug
+	in.ProtocolVersion = params.ProtocolVersion
 	e, err := svc.Update(ctx, tenantID, in)
 	if err != nil {
 		return nil, err

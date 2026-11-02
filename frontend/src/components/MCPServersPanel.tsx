@@ -113,6 +113,10 @@ interface FormState {
    *  request carries. Dropping it (which the panel used to do) left a catalog-added server with no
    *  declared keys and no Install control at all. */
   catalogSlug: string;
+  /** The operator's MCP protocol pin, "" meaning negotiate. Carried through create/edit so a known-old
+   *  server can skip the modern `server/discover` probe that kills it — the panel must not drop it, the
+   *  same way it must not drop catalogSlug. */
+  protocolVersion: string;
 }
 
 const emptyForm: FormState = {
@@ -125,6 +129,7 @@ const emptyForm: FormState = {
   headers: "",
   enabled: true,
   catalogSlug: "",
+  protocolVersion: "",
 };
 
 function parseKeyValue(input: string): Record<string, string> {
@@ -161,6 +166,7 @@ interface Row {
   env?: Record<string, string>;
   headers?: Record<string, string>;
   url?: string;
+  protocolVersion?: string;
   installStatus: number;
   hasSecretStored: boolean;
   installResult?: { ok?: boolean; error?: string } | null;
@@ -177,6 +183,7 @@ function ownedRow(s: {
   env?: Record<string, string>;
   headers?: Record<string, string>;
   url?: string;
+  protocolVersion?: string;
   installStatus: number;
   hasSecretStored?: boolean;
   installResult?: { ok?: boolean; error?: string } | null;
@@ -192,6 +199,7 @@ function ownedRow(s: {
     env: s.env,
     headers: s.headers,
     url: s.url,
+    protocolVersion: s.protocolVersion ?? "",
     installStatus: s.installStatus,
     hasSecretStored: !!s.hasSecretStored,
     installResult: s.installResult,
@@ -213,6 +221,7 @@ function inlineRow(s: InlineMCP): Row {
     env: s.env,
     headers: s.headers,
     url: stdio ? undefined : s.url,
+    protocolVersion: "",
     // An inline worker spec has no row, so it has no install status.
     installStatus: 0,
     hasSecretStored: false,
@@ -732,6 +741,9 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
           headers: parseKeyValue(form.headers),
           replaceHeaders: true,
           enabled: form.enabled,
+          // ALWAYS sent on edit. The RPC field is optional, so an omitted value means "leave it"; sending
+          // the form value unconditionally is what lets an operator CLEAR a bad pin by blanking the input.
+          protocolVersion: form.protocolVersion.trim(),
           projectId: scope.kind === "project" ? scope.projectId : "",
           conversationId: scope.kind === "conversation" ? scope.conversationId : "",
         });
@@ -749,6 +761,7 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
           // secrets-stored badge are all derived from it. Omitting it (as this panel used to) made a
           // catalog-added server indistinguishable from a hand-written one.
           catalogSlug: form.catalogSlug,
+          protocolVersion: form.protocolVersion.trim(),
           projectId: scope.kind === "project" ? scope.projectId : "",
           conversationId: scope.kind === "conversation" ? scope.conversationId : "",
         });
@@ -777,6 +790,7 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
       // The provenance survives an edit, so the credential control keeps offering the key this entry
       // DECLARES and the Install / secrets-stored affordances keep working.
       catalogSlug: r.catalogSlug,
+      protocolVersion: r.protocolVersion ?? "",
     });
     setShowForm(true);
   }
@@ -799,6 +813,7 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
         // default in the picker below, and what the create sends so the plane can derive the row's
         // required_secrets (and with them the Install control and the secrets-stored badge).
         catalogSlug: slug,
+        protocolVersion: "",
       });
       setEditingId(null);
       setShowForm(true);
@@ -880,6 +895,9 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
         headers,
         replaceHeaders: true,
         enabled: row.enabled,
+        // PROTOCOL VERSION IS DELIBERATELY OMITTED HERE. Attaching a credential must not touch it, and an
+        // omitted optional field means "leave the stored value" — sending it would require echoing a pin
+        // this dialog never showed the operator.
         // The owner echo is required on update — a differing echo is rejected.
         projectId: scope.kind === "project" ? scope.projectId : "",
         conversationId: scope.kind === "conversation" ? scope.conversationId : "",
@@ -1007,6 +1025,19 @@ export function MCPServersPanel({ scope, readOnly = false, inheritedFrom }: MCPS
                   placeholder="Env (KEY=VALUE per line — non-secret values; set credentials below)"
                   value={form.env}
                   onChange={(e) => setForm({ ...form, env: e.target.value })}
+                />
+                {/* THE PROTOCOL PIN, and it is here because a stdio server is the shape that breaks
+                 *  without it. The client otherwise negotiates with the MODERN protocol, which sends a
+                 *  `server/discover` probe before `initialize`; an older server does not know that method,
+                 *  fails validation and exits, and the connect then reports a timeout against a dead
+                 *  child. The client now degrades automatically, so this is optional — pinning it just
+                 *  skips the wasted first attempt for a server known to be old.
+                 *
+                 *  Left blank it means "negotiate", which is the right default for anything current. */}
+                <Input
+                  placeholder='MCP protocol version (blank = auto; e.g. 2025-11-25)'
+                  value={form.protocolVersion}
+                  onChange={(e) => setForm({ ...form, protocolVersion: e.target.value })}
                 />
               </>
             ) : (

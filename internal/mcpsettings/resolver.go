@@ -313,6 +313,9 @@ func specFromRow(r db.MCPServerRow) mcpclient.ServerSpec {
 		URL:     r.URL,
 		Headers: r.Headers,
 		Env:     r.Env,
+		// The operator's pin travels with the definition, so a known-old server can skip the modern
+		// handshake that would kill it. "" negotiates.
+		ProtocolVersion: r.ProtocolVersion,
 	}
 	switch r.Transport {
 	case TransportStreamable, "http":
