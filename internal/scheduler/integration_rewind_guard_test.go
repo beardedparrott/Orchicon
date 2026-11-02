@@ -43,7 +43,7 @@ func TestSetBranchRefRefusesARewind(t *testing.T) {
 	}
 
 	r := &WorktreeReconciler{log: quietSchedulerLogger()}
-	err := r.setBranchRef(context.Background(), repo, "develop", emptyRoot)
+	err := r.setBranchRef(context.Background(), repo, "develop", emptyRoot, "test: move")
 	if err == nil {
 		t.Fatal("setBranchRef MOVED develop to an unrelated root commit — every commit on the branch would be " +
 			"lost and the working tree would come back empty, while the run branches still held the work")
@@ -79,7 +79,7 @@ func TestSetBranchRefAllowsAFastForward(t *testing.T) {
 	gitRun(t, repo, "checkout", "develop")
 
 	r := &WorktreeReconciler{log: quietSchedulerLogger()}
-	if err := r.setBranchRef(context.Background(), repo, "develop", tip); err != nil {
+	if err := r.setBranchRef(context.Background(), repo, "develop", tip, "test: move"); err != nil {
 		t.Fatalf("setBranchRef refused a legitimate fast-forward: %v", err)
 	}
 	if got := strings.TrimSpace(gitRun(t, repo, "rev-parse", "develop")); got != tip {
@@ -101,7 +101,7 @@ func TestSetBranchRefMayCreateANewBranch(t *testing.T) {
 	head := strings.TrimSpace(gitRun(t, repo, "rev-parse", "HEAD"))
 
 	r := &WorktreeReconciler{log: quietSchedulerLogger()}
-	if err := r.setBranchRef(context.Background(), repo, "staging", head); err != nil {
+	if err := r.setBranchRef(context.Background(), repo, "staging", head, "test: move"); err != nil {
 		t.Fatalf("setBranchRef refused to create a branch that does not exist: %v", err)
 	}
 	if got := strings.TrimSpace(gitRun(t, repo, "rev-parse", "staging")); got != head {
