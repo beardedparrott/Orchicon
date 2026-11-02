@@ -164,8 +164,25 @@ const TodoSnapshotName = "todos.json"
 // RunStateDir returns the run-state directory for a run: <projectDir>/.orchicon/<runID>.
 // Empty when either input is empty — the caller then has no run-state channel
 // and must fall back.
+//
+// A RELATIVE projectDir IS REFUSED, NOT RESOLVED. This is the same rule
+// LoadOrCreateKEK follows, for the same reason and after the same class of
+// damage: a relative path is resolved against whatever working directory the
+// process happens to have, so the directory gets created in a place nobody
+// chose. Measured on a Windows install — a .orchicon/<runid>/todos.json tree
+// appeared under a directory literally named "C␺projects␼weatherapp" (U+F03A
+// for ':' and U+F05C for '\', i.e. a path carved into one component), because
+// the value handed to the MCP sidecar was not absolute and the sidecar's CWD
+// was the project root.
+//
+// Refusing costs a reported run-state channel (the todo panel falls back to the
+// transcript, and todowrite says so); silently resolving it costs a directory
+// full of garbage that outlives the run.
 func RunStateDir(projectDir, runID string) string {
 	if projectDir == "" || runID == "" {
+		return ""
+	}
+	if !filepath.IsAbs(projectDir) {
 		return ""
 	}
 	return filepath.Join(projectDir, ".orchicon", runID)

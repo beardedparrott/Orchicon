@@ -112,6 +112,12 @@ const entryCols = `rowid, title, body, tags, created_at, updated_at, execution_i
 // missing. It returns an error only when the file cannot be created or the
 // schema cannot be applied — never a silent in-memory fallback.
 func Open(projectDir string) (*Store, error) {
+	// A RELATIVE projectDir IS REFUSED — see worktree.RunStateDir for the same rule and the measured
+	// damage it prevents: a relative value resolves against the process's working directory, so the
+	// memory DB lands somewhere nobody chose instead of failing.
+	if !filepath.IsAbs(projectDir) {
+		return nil, fmt.Errorf("agentmemory: refusing a relative project dir %q — the memory DB must have an absolute location, or it is created under whatever directory the process happens to have", projectDir)
+	}
 	dir := filepath.Join(projectDir, ".orchicon")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("agentmemory: mkdir %s: %w", dir, err)
