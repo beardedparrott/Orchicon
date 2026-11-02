@@ -80,7 +80,9 @@ import {
   ACTIVE_RUNNING_STATUSES,
   historyRunRanAt,
   isHistoryRun,
+  itemHasSchedule,
   queuedSequenceChildren,
+  runToItemIdMap,
   upcomingSortTime,
 } from "@/lib/schedules-model";
 
@@ -139,6 +141,27 @@ function SchedulesPage() {
     return m;
   }, [listItems]);
 
+  // IDENTICAL PARAMS TO HistoryView's own query, deliberately: React Query keys on them, so this is the
+  // SAME cached request rather than a second one. If those params ever change, change both together.
+  const { data: runsForPage } = useListWorkflowRuns({
+    projectId: projectId || undefined,
+    sortBy: "started_at",
+    sortOrder,
+    pageSize: 1000,
+    refetchInterval: 30_000,
+  });
+
+  // HISTORY ROWS ARE PER RUN, AND THEIR SELECTION KEYS ARE RUN IDS — so a bulk action can arrive here
+  // carrying run ids rather than work item ids. This maps one to the other.
+  //
+  // The alternative was keying the checkbox by work item id, which is the reported bug: two runs of one
+  // item shared a key, so checking one checked both and they could not be recognised as separate records.
+  const runItemId = useMemo(() => runToItemIdMap(runsForPage ?? []), [runsForPage]);
+
+  // resolveRowKey maps a selection key to the WORK ITEM the schedule belongs to. Upcoming/running rows are
+  // already keyed by item id; history rows are keyed by run id.
+  const resolveRowKey = (key: string): string => runItemId.get(key) ?? key;
+
   const goView = (nextView: "upcoming" | "running" | "history") => {
     navigate({ search: (prev) => ({ ...prev, view: nextView }) });
   };
@@ -191,9 +214,12 @@ function SchedulesPage() {
     ) {
       return;
     }
-    ids.forEach((id) =>
-      removeSchedule.mutate({ id, status: itemsById.get(id)?.status }),
-    );
+    // TRANSLATE BEFORE ACTING: a selection key is a row key, and a history row's key is a RUN id. Two runs
+    // of one work item resolve to ONE item, and deduping after translation is what stops the same schedule
+    // being cleared twice.
+    for (const id of new Set(ids.map(resolveRowKey))) {
+      removeSchedule.mutate({ id, status: itemsById.get(id)?.status });
+    }
     setSelected(new Set());
   };
 
@@ -368,7 +394,7 @@ function SchedulesPage() {
           projects={projects}
           selected={selected}
           onToggleSelect={toggleSelect}
-          onToggleSelectAll={toggleSelectAll}
+          onToggleSelectAllRuns={(runIds) => setSelected(new Set(runIds))}
           onRemove={handleRemoveSchedule}
           removing={removeSchedule.isPending}
         />
@@ -1093,7 +1119,7 @@ function HistoryView({
   projects,
   selected,
   onToggleSelect,
-  onToggleSelectAll,
+  onToggleSelectAllRuns,
   // Same omission as UpcomingView above — typed, passed, never bound.
   onRemove,
   removing,
@@ -1105,7 +1131,8 @@ function HistoryView({
   projects?: Project[];
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
-  onToggleSelectAll: (items: WorkItemProto[]) => void;
+  /** Select-all over RUN keys, for this view's rows. */
+  onToggleSelectAllRuns: (runIds: string[]) => void;
   onRemove: (ids: string[]) => void;
   removing: boolean;
 }) {
@@ -1209,14 +1236,16 @@ function HistoryView({
       <div className="flex items-center gap-2 px-2 py-1">
         <input
           type="checkbox"
-          checked={selected.size === entries.length}
-          onChange={() => onToggleSelectAll(
-            entries
-              .map((r) => (r.workItemId ? itemsById.get(r.workItemId) : undefined))
-              .filter((i): i is WorkItemProto => !!i),
-          )}
+          checked={entries.length > 0 && selected.size === entries.length}
+          // SELECT-ALL OVER RUNS, because the rows are runs. It used to expand each run to its WORK ITEM, so
+          // the count and the checkboxes disagreed the moment an item had more than one run.
+          onChange={() =>
+            onToggleSelectAllRuns(
+              selected.size === entries.length ? [] : entries.map((r) => r.id),
+            )
+          }
           className="h-4 w-4 rounded border-input"
-          aria-label="Select all history items"
+          aria-label="Select all history runs"
         />
         <span aria-live="polite" className="text-xs text-muted-foreground">
           {selected.size > 0
@@ -1248,8 +1277,10 @@ function HistoryView({
                 item={run.workItemId ? itemsById.get(run.workItemId) : undefined}
                 workflow={workflowsById.get(run.workflowId)}
                 projects={projects}
-                selected={run.workItemId ? selected.has(run.workItemId) : false}
-                onToggleSelect={onToggleSelect}
+                // KEYED BY THE RUN, not the work item. Two runs of one item are two records, and keying
+                // them by the item made one checkbox check both — the reported symptom.
+                selected={selected.has(run.id)}
+                onToggleSelect={() => onToggleSelect(run.id)}
                 onRemove={onRemove}
                 removing={removing}
               />
@@ -1276,7 +1307,7 @@ function HistoryCard({
   workflow?: WorkflowProto;
   projects?: Project[];
   selected: boolean;
-  onToggleSelect: (id: string) => void;
+  onToggleSelect: () => void;
   onRemove: (ids: string[]) => void;
   removing: boolean;
 }) {
@@ -1291,7 +1322,7 @@ function HistoryCard({
       <input
         type="checkbox"
         checked={selected}
-        onChange={() => itemId && onToggleSelect(itemId)}
+        onChange={onToggleSelect}
         disabled={!itemId}
         className="h-4 w-4 shrink-0 rounded border-input"
         aria-label={`Select ${title}`}
@@ -1337,7 +1368,15 @@ function HistoryCard({
           </CardContent>
         </Card>
       </Link>
-      {itemId && (
+      {/* ONLY WHEN THERE IS A SCHEDULE LEFT TO REMOVE.
+       *
+       * A history row is a PAST run, and its work item has usually already consumed its schedule — so the
+       * button cleared nothing and the row stayed put, which read as "the delete button does nothing".
+       * Offering an action that cannot change anything is the defect; hiding it makes the absence visible.
+       *
+       * Removal still targets the WORK ITEM (a schedule belongs to the item, not to one run), while the
+       * checkbox above is per run. That asymmetry is deliberate: you select runs, you clear schedules. */}
+      {itemId && itemHasSchedule(item) && (
         <Button
           variant="ghost"
           size="sm"

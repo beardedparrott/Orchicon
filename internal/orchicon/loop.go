@@ -345,7 +345,7 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			return nil
 		}
 
-		text, finish, toolCalls, usage, streamErr := s.drain(ctx, callbacks, stream)
+		text, reasoning, finish, toolCalls, usage, streamErr := s.drain(ctx, callbacks, stream)
 		_ = stream.Close()
 		s.pm.observeStepFinish(usage)
 		// A completed turn is reply evidence ONLY when it carried content:
@@ -452,12 +452,15 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			// still replays the assistant turn), then append the same
 			// message to history so the provider sees the full turn.
 			if len(toolCalls) > 0 {
+				// The reasoning goes into the TRANSCRIPT too, not only into the live history: a resumed
+				// session rebuilds history from these parts, and a replay that drops the reasoning hits the
+				// same provider 400 on its first round.
 				if err := s.transcript.Append(TransToolCall, map[string]any{
-					"text": text, "tool_calls": toolCalls,
+					"text": text, "tool_calls": toolCalls, "reasoning": reasoning,
 				}); err != nil {
 					return err
 				}
-				s.appendAssistantToolUse(text, toolCalls)
+				s.appendAssistantToolUse(text, toolCalls, reasoning)
 				// First executed tool call = the session has demonstrably
 				// begun its work. The decision-signal gate arms from here
 				// (probe-startup guard, 2026-09-09: the probe fired 6s
@@ -864,7 +867,10 @@ func (s *Session) runLengthContinuation(ctx context.Context, callbacks scheduler
 // callbacks (no silent gaps). Returns the turn's accumulated assistant
 // text, the stop reason, the complete tool calls of the turn, the usage,
 // and any mid-stream error.
-func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallbacks, stream TurnStream) (string, StopReason, []ToolCall, Usage, error) {
+// drain consumes one round's stream and returns what the loop needs to record it. reasoning is the round's
+// thinking text: it is NOT optional decoration — a provider in thinking mode rejects the next request
+// unless it comes back on the assistant message (see appendAssistantToolUse).
+func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallbacks, stream TurnStream) (string, string, StopReason, []ToolCall, Usage, error) {
 	var text strings.Builder
 	var reasoning strings.Builder
 	var finish StopReason
@@ -875,7 +881,7 @@ func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallba
 	for {
 		ev, ok, err := stream.Next(ctx)
 		if err != nil {
-			return text.String(), finish, calls, usage, err
+			return text.String(), reasoning.String(), finish, calls, usage, err
 		}
 		if !ok {
 			break
@@ -926,13 +932,13 @@ func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallba
 			calls = append(calls, e)
 			s.countToolUse()
 		case StreamError:
-			return text.String(), finish, calls, usage, e.Err
+			return text.String(), reasoning.String(), finish, calls, usage, e.Err
 		case Finish:
 			finish = e.StopReason
 			usage = e.Usage
 		}
 	}
-	return text.String(), finish, calls, usage, nil
+	return text.String(), reasoning.String(), finish, calls, usage, nil
 }
 
 // hasToolNamed reports whether a tool definition list already carries a
@@ -1101,7 +1107,7 @@ type toolResult struct {
 // the accumulated text (if any) plus one ContentToolUse block per tool
 // call. This is the assistant tool_use message that MUST precede the tool
 // results in history (BUG-1 — provider parity).
-func (s *Session) appendAssistantToolUse(text string, calls []ToolCall) {
+func (s *Session) appendAssistantToolUse(text string, calls []ToolCall, reasoning string) {
 	msg := Message{Role: RoleAssistant}
 	if text != "" {
 		msg.Content = append(msg.Content, Content{Text: &text})
@@ -1109,6 +1115,28 @@ func (s *Session) appendAssistantToolUse(text string, calls []ToolCall) {
 	for _, c := range calls {
 		use := &ContentToolUse{ToolCallID: c.ToolCallID, Name: c.Name, ArgsJSON: c.ArgsJSON}
 		msg.Content = append(msg.Content, Content{ToolUse: use})
+	}
+	// THE REASONING MUST RIDE THE ASSISTANT MESSAGE, and omitting it is a hard provider failure.
+	//
+	// REPORTED: "provider stream failed: provider status 400 ... The reasoning_content in the thinking mode
+	// must be passed back to the API." DeepSeek's thinking mode requires an assistant message's reasoning
+	// back on the NEXT request. The Ask path (chatturn.go, appendAssistantTurn) had always carried it; this
+	// one — the WORKER loop — did not, so every second round of a worker turn went out without it.
+	//
+	// The existing repair path could not save it either: repairRequest(RepairReasoningContent) scans the
+	// messages for reasoning to replay and correctly finds NONE, because it was never stored. So the 400 was
+	// unrepairable by construction, not by misclassification.
+	//
+	// Attached to the FIRST content block, which is the shape chatturn.go uses. The OpenAI-compat
+	// serializer reads it from whichever block carries it (openaicompat.go), so a message with no text and
+	// only tool calls still replays correctly.
+	if r := strings.TrimSpace(reasoning); r != "" {
+		if len(msg.Content) == 0 {
+			// A round that produced ONLY reasoning still has to exist as a message for the provider to
+			// receive that reasoning back.
+			msg.Content = append(msg.Content, Content{Text: strPtrEmpty()})
+		}
+		msg.Content[0].Reasoning = &r
 	}
 	s.history = append(s.history, msg)
 }
@@ -1194,12 +1222,16 @@ func (s *Session) replay(evs []replayEvent) {
 			var d struct {
 				Text      string     `json:"text"`
 				ToolCalls []ToolCall `json:"tool_calls"`
+				// Reasoning is replayed too. Absent on parts written by an older build, which is why the
+				// field is optional rather than required — a resume of an old transcript simply has none,
+				// exactly as it did at the time, and the repair path handles that round.
+				Reasoning string `json:"reasoning,omitempty"`
 			}
 			_ = json.Unmarshal(e.Data, &d)
 			if d.Text != "" {
 				s.output.WriteString(d.Text)
 			}
-			s.appendAssistantToolUse(d.Text, d.ToolCalls)
+			s.appendAssistantToolUse(d.Text, d.ToolCalls, d.Reasoning)
 		case TransToolResult:
 			var d struct {
 				ToolCall ToolCall `json:"tool_call"`
