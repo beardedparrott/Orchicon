@@ -1,11 +1,11 @@
 package mcpclient
 
 import (
-	"strings"
-	"os"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"

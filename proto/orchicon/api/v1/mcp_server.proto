@@ -60,6 +60,16 @@ message MCPServer {
   // Owner: exactly one is non-empty (project XOR conversation).
   string project_id = 17;
   string conversation_id = 18;
+  // protocol_version pins the MCP wire version this server speaks. Empty or
+  // "auto" lets the client negotiate, which sends the modern server/discover
+  // probe first — correct for a current server and FATAL for a legacy one: an
+  // older server does not know that method, fails validation and exits, and the
+  // connect then reports a timeout against a dead child. The client already
+  // degrades automatically (it retries once with the legacy handshake when a
+  // server fails the modern one), so this is an OPTIMISATION and an escape
+  // hatch: pinning it skips the wasted first attempt for a known-old server.
+  // Recognised value today: "2025-11-25" (the last version before the probe).
+  string protocol_version = 19;
 }
 
 // MCPCatalogEnvVar is one default env var (or header) entry in the
@@ -137,6 +147,9 @@ message MCPServerCreateRequest {
   // Owner: exactly ONE of the two must be set (mcp_servers_owner_xor).
   string project_id = 10;
   string conversation_id = 11;
+  // protocol_version: empty/"auto" negotiates; "2025-11-25" pins the legacy
+  // handshake. See MCPServer.protocol_version.
+  string protocol_version = 12;
 }
 message MCPServerCreateResponse {
   MCPServer server = 1;
@@ -160,6 +173,8 @@ message MCPServerUpdateRequest {
   // (the scope is immutable after create).
   string project_id = 14;
   string conversation_id = 15;
+  // optional so "not supplied" is distinct from "clear back to auto".
+  optional string protocol_version = 16;
 }
 message MCPServerUpdateResponse {
   MCPServer server = 1;

@@ -20,27 +20,31 @@ import (
 // ownerless tenant-wide row referenced by a join table — selection IS
 // ownership.
 type MCPServerRow struct {
-	ID             string
-	TenantID       string
-	Name           string
-	Transport      string // "stdio" | "streamable-http"
-	Command        string
-	Args           []string
-	Env            map[string]string
-	URL            string
-	Headers        map[string]string
-	Enabled        bool
-	CatalogSlug    string
-	InstallStatus  string // unknown|not_installed|installing|installed|failed
-	InstallResult  []byte // jsonb: {runtime, command, ok, error, installed_at}
-	ProjectID      string // owner (XOR with ConversationID)
-	ConversationID string // owner (XOR with ProjectID)
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID            string
+	TenantID      string
+	Name          string
+	Transport     string // "stdio" | "streamable-http"
+	Command       string
+	Args          []string
+	Env           map[string]string
+	URL           string
+	Headers       map[string]string
+	Enabled       bool
+	CatalogSlug   string
+	InstallStatus string // unknown|not_installed|installing|installed|failed
+	InstallResult []byte // jsonb: {runtime, command, ok, error, installed_at}
+	// ProtocolVersion pins the MCP wire version this server speaks; "" means negotiate. See
+	// db/migrations/20261101000000_mcp_server_protocol_version.sql for why it is a column.
+	ProtocolVersion string
+	ProjectID       string // owner (XOR with ConversationID)
+	ConversationID  string // owner (XOR with ProjectID)
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 const mcpServerCols = `id, tenant_id, name, transport, command, args, env, url, headers, enabled,
-	catalog_slug, install_status, install_result, project_id, conversation_id, created_at, updated_at`
+	catalog_slug, install_status, install_result, protocol_version, project_id, conversation_id,
+	created_at, updated_at`
 
 func scanMCPServer(row pgx.Row) (MCPServerRow, error) {
 	var r MCPServerRow
@@ -48,7 +52,7 @@ func scanMCPServer(row pgx.Row) (MCPServerRow, error) {
 	var projectID, conversationID *string
 	err := row.Scan(&r.ID, &r.TenantID, &r.Name, &r.Transport, &r.Command, &argsRaw, &envRaw,
 		&r.URL, &headersRaw, &r.Enabled, &r.CatalogSlug, &r.InstallStatus, &r.InstallResult,
-		&projectID, &conversationID,
+		&r.ProtocolVersion, &projectID, &conversationID,
 		&r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		return r, err
@@ -145,8 +149,8 @@ func UpsertMCPServer(ctx context.Context, tx pgx.Tx, r MCPServerRow) (MCPServerR
 	}
 	const q = `INSERT INTO mcp_servers
 		(id, tenant_id, name, transport, command, args, env, url, headers, enabled,
-		 catalog_slug, install_status, install_result, project_id, conversation_id)
-		VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9::jsonb,$10,$11,$12,$13::jsonb,$14,$15)
+		 catalog_slug, install_status, install_result, protocol_version, project_id, conversation_id)
+		VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9::jsonb,$10,$11,$12,$13::jsonb,$14,$15,$16)
 		ON CONFLICT (id) DO UPDATE SET
 			transport       = EXCLUDED.transport,
 			command         = EXCLUDED.command,
@@ -158,13 +162,14 @@ func UpsertMCPServer(ctx context.Context, tx pgx.Tx, r MCPServerRow) (MCPServerR
 			catalog_slug    = EXCLUDED.catalog_slug,
 			install_status  = EXCLUDED.install_status,
 			install_result  = EXCLUDED.install_result,
+			protocol_version = EXCLUDED.protocol_version,
 			project_id      = EXCLUDED.project_id,
 			conversation_id = EXCLUDED.conversation_id,
 			updated_at      = now()
 		RETURNING ` + mcpServerCols
 	row, err := scanMCPServer(tx.QueryRow(ctx, q,
 		r.ID, r.TenantID, r.Name, r.Transport, r.Command, argsJSON, envJSON, r.URL, headersJSON,
-		r.Enabled, r.CatalogSlug, r.InstallStatus, string(resultJSON),
+		r.Enabled, r.CatalogSlug, r.InstallStatus, string(resultJSON), r.ProtocolVersion,
 		nullIfEmpty(r.ProjectID), nullIfEmpty(r.ConversationID)))
 	if err != nil {
 		return MCPServerRow{}, fmt.Errorf("db: upsert mcp server: %w", err)
@@ -312,9 +317,9 @@ type InlineMCPServer struct {
 // "mcp_servers" jsonb. THREE shapes decode here and NOTHING else parses
 // that key, so the reader and the writers can never disagree:
 //
-//	1. full inline spec  {"id","type","command":["npx","-y","x"],"url","headers","env","enabled","onError"}
-//	2. legacy reference  {"id":"01H…","command":"npx -y x"}   (command is a *string* → strings.Fields)
-//	3. legacy bare id    "01H…"
+//  1. full inline spec  {"id","type","command":["npx","-y","x"],"url","headers","env","enabled","onError"}
+//  2. legacy reference  {"id":"01H…","command":"npx -y x"}   (command is a *string* → strings.Fields)
+//  3. legacy bare id    "01H…"
 //
 // A malformed jsonb yields nil (read-time normalization degrades, never
 // fails a session over worker config shape).
