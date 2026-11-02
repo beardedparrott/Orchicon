@@ -343,6 +343,21 @@ func (r *WorktreeReconciler) isAncestorOf(ctx context.Context, projectDir, ances
 // do while the main checkout has that branch checked out. Callers have already established the ancestry
 // relationship, so this cannot rewind a branch.
 func (r *WorktreeReconciler) setBranchRef(ctx context.Context, projectDir, branch, sha string) error {
+	// A BRANCH MAY ONLY MOVE FORWARD. Callers already check ancestry, but the invariant belongs HERE: this is
+	// the only function in the platform that moves a branch ref without a working tree, and "never lose
+	// commits" should not depend on every future caller remembering to guard it.
+	//
+	// The shape this prevents is specific and was reported: a run provisioned at an EMPTY ROOT commit while
+	// the integration branch was already ahead of it. Moving the branch to that tip would rewind it — the
+	// integration branch would lose every commit and its tree would come back empty, while every run's
+	// branch still held the work. `git update-ref` does that happily; it has no notion of direction.
+	if current, err := r.revParse(ctx, projectDir, "refs/heads/"+branch); err == nil && current != "" {
+		if current != sha && !r.isAncestorOf(ctx, projectDir, current, sha) {
+			return fmt.Errorf("worktree: refusing to move %s from %s to %s — the target %s is not a descendant "+
+				"of the current tip, so this would REWIND the branch and lose commits",
+				branch, short(current), short(sha), short(sha))
+		}
+	}
 	if _, err := runGit(ctx, projectDir, "update-ref", "refs/heads/"+branch, sha); err != nil {
 		return fmt.Errorf("worktree: update %s to %s: %w", branch, short(sha), err)
 	}
