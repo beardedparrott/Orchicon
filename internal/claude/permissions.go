@@ -113,7 +113,72 @@ func PreflightHookExecutable(isContainer bool) error {
 	if st.IsDir() {
 		return fmt.Errorf("claude worker: the permission hook path %s is a directory, not an executable", bin)
 	}
+	// THE COMMAND MUST SURVIVE A SHELL, and this is the only place that can say so before every write is
+	// refused. claude runs the hook command through a shell; an unquoted path with a space is split at the
+	// first space, the hook never runs, and claude treats a FAILING PreToolUse hook as a BLOCK — so the
+	// symptom is "permission denied for all project files", which points at the policy and not at a broken
+	// command. The os.Stat checks above cannot see it: the FILE is perfect, and only the COMMAND is wrong.
+	//
+	// REPORTED as a non-durable permission grant ("run 1 refused every write, run 2 wrote everything, and
+	// permission-policy.yaml never changed"). It was the command, and the file's own binary did change
+	// between those runs. Checking the rendered command turns the silent class into a startup failure.
+	if err := validateHookCommand(hookCommand(bin)); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateHookCommand checks that a rendered hook command parses into exactly the binary and the subcommand,
+// which is what will actually be executed.
+//
+// The split is the shell's, approximated: a double-quoted token is one argument, and everything outside
+// quotes splits on whitespace. That is enough to catch the failure this exists for — an unquoted path
+// containing a space — without pretending to be a shell.
+func validateHookCommand(cmd string) error {
+	tokens := splitHookCommand(cmd)
+	if len(tokens) != 2 {
+		return fmt.Errorf("claude worker: the permission hook command %q splits into %d arguments, want 2 "+
+			"(the binary and `claude-hook`) — a path containing a space must be quoted, or the hook never runs "+
+			"and claude blocks every gated tool", cmd, len(tokens))
+	}
+	if tokens[1] != "claude-hook" {
+		return fmt.Errorf("claude worker: the permission hook command %q does not invoke `claude-hook`", cmd)
+	}
+	if strings.TrimSpace(tokens[0]) == "" {
+		return fmt.Errorf("claude worker: the permission hook command %q has an empty binary", cmd)
+	}
+	return nil
+}
+
+// splitHookCommand splits a command the way a POSIX shell would for the simple case that matters: double
+// quotes group, and unquoted whitespace separates.
+func splitHookCommand(cmd string) []string {
+	var (
+		out     []string
+		cur     strings.Builder
+		inQuote bool
+		started bool
+	)
+	for _, r := range cmd {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+			started = true
+		case (r == ' ' || r == '\t') && !inQuote:
+			if started {
+				out = append(out, cur.String())
+				cur.Reset()
+				started = false
+			}
+		default:
+			cur.WriteRune(r)
+			started = true
+		}
+	}
+	if started {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 // TodoToolsEnv is the ENV TOGGLE that puts claude's todo/task-tracking tool

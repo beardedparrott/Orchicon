@@ -1822,6 +1822,39 @@ func (r *TaskReconciler) writtenFilesFor(execID string) []string {
 // context. `output` may be empty for non-opencode adapters or when
 // the worker errored before producing any text.
 func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded bool, output string, errorMessage string) {
+	// THE WORKER'S OWN VERDICT DECIDES THE OUTCOME, not the process's exit code.
+	//
+	// REPORTED, and it is the worse half of a bad run: a worker that wrote
+	// "ORCHICON WORKER SUMMARY: failure — Nothing implemented or committed" (every write had been
+	// permission-refused) was recorded as Status: succeeded, its workflow run completed, and its work item
+	// sat in a SUCCESS terminal state for ~6.5 hours. The summary word was captured the whole time — it went
+	// into `_decision` for the run view — but nothing consulted it before writing the terminal status.
+	//
+	// The asymmetry is deliberate and is the whole rule:
+	//
+	//   - DOWNGRADE ONLY. A process that FAILED is authoritative and is never upgraded by text a worker
+	//     emitted; a crashed adapter, a reclaimed container or a liveness reap all legitimately outrank
+	//     anything the model said.
+	//   - ONLY AN EXPLICIT FAILURE WORD. `firstWordAsDecision` passes custom words through verbatim
+	//     ("approved"/"rejected" for review steps), so matching a bare "not success" would invert a
+	//     reviewer's approval. Success and failure are the task vocabulary, and only `failure` downgrades.
+	//   - A MISSING MARKER CHANGES NOTHING. The output can be truncated or the adapter may produce no text at
+	//     all; punishing absence would fail runs for a reporting omission.
+	if succeeded {
+		if d := extractSummaryDecision(output); d == "failure" {
+			r.log.Warn("worker reported FAILURE in its own summary while the process exited cleanly — "+
+				"recording the execution as failed, because the worker's verdict is the outcome",
+				"execution", execID, "decision", d,
+				"summary", truncateForLog(extractWorkerSummary(output), 300))
+			succeeded = false
+			if strings.TrimSpace(errorMessage) == "" {
+				// Give the row a reason, so this is legible wherever failures are listed rather than
+				// appearing as a failure with no cause.
+				errorMessage = "worker reported failure in its own ORCHICON WORKER SUMMARY: " +
+					truncateForLog(extractWorkerSummary(output), 300)
+			}
+		}
+	}
 	status := domain.ExecutionSucceeded
 	if !succeeded {
 		status = domain.ExecutionFailed
@@ -3463,4 +3496,14 @@ func (r *TaskReconciler) propagateStepRunResults(ctx context.Context, tx pgx.Tx,
 	}); err != nil {
 		r.log.Warn("propagate step run results: update", "execution", execID, "error", err)
 	}
+}
+
+// truncateForLog bounds a worker-authored string for a log field or an error message. A runaway summary
+// must not be able to blow up a row or a log line.
+func truncateForLog(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
