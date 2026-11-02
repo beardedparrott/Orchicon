@@ -1013,7 +1013,16 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 	if run.WorktreeStatus == domain.WorktreeReady && run.WorktreeBranch != "" {
 		base = run.WorktreeBranch
 	} else {
-		base = r.resolveBaseRef(ctx, projectDir)
+		// REFUSE AN UNUSABLE BASE RATHER THAN PROVISIONING AN EMPTY WORKTREE. resolveBaseRef collapses "detached
+		// HEAD" and "could not resolve" into "", and "" means "start at HEAD" — so an unborn HEAD or an empty
+		// root commit produced an empty worktree, and the worker had to `git reset --hard develop` before it
+		// could begin. A run that must repair its own provisioning was handed an unfinished hand-off.
+		resolved, ok, reason := r.resolveBaseRefForProvisioning(ctx, projectDir)
+		if !ok {
+			return r.markFailed(ctx, tenantID, runID,
+				"worktree provisioning refused: "+reason)
+		}
+		base = resolved
 	}
 	var perr error
 	if strategy == "none" {
