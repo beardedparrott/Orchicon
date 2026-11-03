@@ -48,6 +48,7 @@ import {
 import { RecurringFilter } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { useListProjects } from "@/api/projects";
 import {
+  useDeleteWorkflowRun,
   useListWorkflowRuns,
   useListWorkflows,
 } from "@/api/workflows";
@@ -80,7 +81,7 @@ import {
   ACTIVE_RUNNING_STATUSES,
   historyRunRanAt,
   isHistoryRun,
-  itemHasSchedule,
+  classifyScheduleRemoval,
   queuedSequenceChildren,
   runToItemIdMap,
   upcomingSortTime,
@@ -128,6 +129,7 @@ function SchedulesPage() {
   const hasProjects = projects && projects.length > 0;
   const cancelScheduled = useDeleteWorkItem(projectId);
   const removeSchedule = useRemoveSchedule(projectId);
+  const deleteRun = useDeleteWorkflowRun();
   // One cached read for the per-row removal's title and status. The views
   // already request this list (same key, no extra request); having it here
   // lets a single-row removal name the row it is about and lets a bulk
@@ -201,23 +203,47 @@ function SchedulesPage() {
     setSelected(new Set());
   };
 
+  // REMOVE DISPATCHES ON WHAT THE ROW *IS*, which is the whole bug.
+  //
+  // An UPCOMING/RUNNING row is a WORK ITEM — removing clears its schedule, and the row leaves the list.
+  // A HISTORY row is a WORKFLOW RUN — clearing a schedule is a NO-OP on it (a past run has already consumed
+  // one), so the row never moved and the button read as broken. The row can only disappear when the RUN does,
+  // so those go to DeleteWorkflowRun.
+  //
+  // AND BOTH, when the run's item is still scheduled: deleting the run alone would let a recurring item fire
+  // again and recreate the row, which looks identical to "delete didn't work". So a run whose item still has a
+  // live schedule has that schedule cleared in the same action, and the confirmation says both.
   const handleRemoveSchedule = (ids: string[] = Array.from(selected)) => {
     if (ids.length === 0) return;
-    const count = ids.length;
-    const one = count === 1 ? itemsById.get(ids[0]) : undefined;
-    if (
-      !window.confirm(
-        count === 1
-          ? `Remove the schedule from "${one?.title ?? ids[0]}"? The work item itself is unchanged — its recurring and scheduled start are cleared.`
-          : `Remove ${count} schedules? The work items will remain unchanged.`,
-      )
-    ) {
+    const { runIds: runKeys, itemIds: itemKeys, stillScheduledItemIds: stillScheduled } =
+      classifyScheduleRemoval(ids, runItemId, itemsById);
+
+    const parts: string[] = [];
+    if (runKeys.length > 0) {
+      parts.push(
+        `permanently delete ${runKeys.length} past run${runKeys.length === 1 ? "" : "s"} and their step records`,
+      );
+    }
+    if (itemKeys.length > 0) {
+      parts.push(
+        `clear the schedule on ${itemKeys.length} work item${itemKeys.length === 1 ? "" : "s"} (the item itself is unchanged)`,
+      );
+    }
+    if (stillScheduled.length > 0) {
+      parts.push(
+        `stop the recurrence on ${new Set(stillScheduled).size} still-scheduled item${new Set(stillScheduled).size === 1 ? "" : "s"} so the row does not come back`,
+      );
+    }
+    if (parts.length === 0) return;
+
+    // DELETING A RUN IS IRREVERSIBLE, so the confirmation says so rather than asking a vague question.
+    if (!window.confirm(`This will ${parts.join(", and ")}. Deleting a run cannot be undone. Continue?`)) {
       return;
     }
-    // TRANSLATE BEFORE ACTING: a selection key is a row key, and a history row's key is a RUN id. Two runs
-    // of one work item resolve to ONE item, and deduping after translation is what stops the same schedule
-    // being cleared twice.
-    for (const id of new Set(ids.map(resolveRowKey))) {
+
+    for (const runId of new Set(runKeys)) deleteRun.mutate(runId);
+    // Dedupe AFTER translating: two runs of one item are one schedule.
+    for (const id of new Set([...itemKeys, ...stillScheduled.map(resolveRowKey)])) {
       removeSchedule.mutate({ id, status: itemsById.get(id)?.status });
     }
     setSelected(new Set());
@@ -1368,22 +1394,22 @@ function HistoryCard({
           </CardContent>
         </Card>
       </Link>
-      {/* ONLY WHEN THERE IS A SCHEDULE LEFT TO REMOVE.
+      {/* THE ROW IS A RUN, SO DELETE REMOVES THE RUN — and the button is always available.
        *
-       * A history row is a PAST run, and its work item has usually already consumed its schedule — so the
-       * button cleared nothing and the row stayed put, which read as "the delete button does nothing".
-       * Offering an action that cannot change anything is the defect; hiding it makes the absence visible.
+       * It used to target the WORK ITEM's schedule, which on a past run is already consumed: the click cleared
+       * nothing, the row stayed, and the operator reported "the delete button does nothing" three times. An
+       * earlier revision then HID the button in that case, which hid the action instead of fixing it.
        *
-       * Removal still targets the WORK ITEM (a schedule belongs to the item, not to one run), while the
-       * checkbox above is per run. That asymmetry is deliberate: you select runs, you clear schedules. */}
-      {itemId && itemHasSchedule(item) && (
+       * The run id is what identifies this row; the page's handler deletes that run and, when the item is
+       * still scheduled, clears the recurrence too so the row cannot come straight back. */}
+      {run.id && (
         <Button
           variant="ghost"
           size="sm"
-          aria-label={`Remove schedule from ${title}`}
-          title="Remove schedule"
+          aria-label={`Delete run ${run.id} from ${title}`}
+          title="Delete this run"
           disabled={removing}
-          onClick={() => onRemove([itemId])}
+          onClick={() => onRemove([run.id])}
           className="shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
         >
           <Trash2 aria-hidden="true" className="h-4 w-4" />
