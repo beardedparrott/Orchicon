@@ -140,11 +140,17 @@ func rewriteGitdirFile(path string, mappings []pathMapping) (bool, error) {
 		if werr != nil || !changed {
 			return changed, werr
 		}
-		// THE REVERSE POINTER. Git keeps `<repo>/.git/worktrees/<n>/gitdir` pointing back at the worktree, and
-		// it holds a host path for the same reason. It is not needed for a basic command, but `git worktree
-		// list`, `prune` and remove all consult it — a stale path there is how a worktree becomes "prunable"
-		// inside the container while it is perfectly alive outside it.
-		rewritePlainPointerFile(filepath.Join(guest, "gitdir"), mappings)
+		// THE FORWARD POINTER ONLY — never the back-pointer.
+		//
+		// `<repo>/.git/worktrees/<n>/gitdir` is the REPOSITORY's metadata: the HOST's registry of its own
+		// worktrees. Rewriting it to a container path corrupts the host's view of itself. Measured:
+		//   fatal: '<branch>' is already used by worktree at
+		//          '/mnt/c/projects/weatherapp/.orchicon-worktrees/<run>'
+		// on a path that does not exist on Windows — so the registration could never be satisfied, repaired,
+		// or pruned by the ordinary route, and EVERY retry of that run failed the same way.
+		//
+		// It was written "so `git worktree list` works inside the container". That is cosmetic; a host that
+		// cannot provision is not.
 		return true, nil
 	}
 	return false, nil
@@ -161,29 +167,4 @@ func writeGitdirFile(path, guestTarget string) (bool, error) {
 		return false, fmt.Errorf("write %s: %w", path, err)
 	}
 	return true, nil
-}
-
-// rewritePlainPointerFile rewrites a file whose ENTIRE content is one path (the worktree back-pointer).
-//
-// Best-effort by design: this file is optional and its absence is normal, so a read failure is not reported.
-func rewritePlainPointerFile(path string, mappings []pathMapping) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	target := strings.TrimSpace(string(raw))
-	if target == "" || strings.HasPrefix(target, "/") {
-		return // already guest-form, or empty
-	}
-	norm := strings.ReplaceAll(target, "\\", "/")
-	for _, m := range mappings {
-		normHost := strings.ReplaceAll(strings.TrimRight(m.Host, "\\/"), "\\", "/")
-		if normHost == "" || (!strings.HasPrefix(norm, normHost+"/") && norm != normHost) {
-			continue
-		}
-		rest := strings.TrimPrefix(norm, normHost)
-		guest := strings.TrimRight(m.Guest, "/") + rest
-		_ = os.WriteFile(path, []byte(guest+"\n"), 0o644)
-		return
-	}
 }

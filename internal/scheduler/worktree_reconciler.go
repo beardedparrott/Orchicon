@@ -864,6 +864,12 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 			if rerr := r.removeWorktreeArtifact(path); rerr != nil {
 				return fmt.Errorf("worktree: reclaim leftover at %s: %w", path, rerr)
 			}
+			// THE REGISTRATION OUTLIVES THE DIRECTORY. Removing a worktree's directory does not remove the
+			// repository's admin entry for it, and that entry still claims the BRANCH — which is what makes
+			// `git worktree add` refuse afterwards. Prune here, where we know the claim is stale.
+			if _, perr := runGit(ctx, projectDir, "worktree", "prune"); perr != nil {
+				r.log.Warn("worktree: prune after reclaiming a leftover", "run", runID, "error", perr)
+			}
 		} else {
 			// A RUN-NAMESPACED CONTAINER holding only provably-ours nested branch-worktree artifacts — a
 			// parallel-branch step run was provisioned first, racing the run worktree. Adopt it.
@@ -1145,7 +1151,9 @@ func (r *WorktreeReconciler) branchWorktreeName(ctx context.Context, tenantID st
 // deleted (gated on merged-into-base); on failure/cancellation the branch
 // survives so a retry re-attaches to it.
 func (r *WorktreeReconciler) pruneStepRunOne(ctx context.Context, tenantID string, sr db.WorkflowStepRunRow) error {
-	if sr.WorktreeStatus != domain.WorktreeReady || sr.WorktreePath == "" {
+	// 'failed' as well as 'ready', for the same reason as pruneOne: a provisioning failure can leave a
+	// directory behind, and skipping it here is what let the debris outlive every sweep.
+	if (sr.WorktreeStatus != domain.WorktreeReady && sr.WorktreeStatus != domain.WorktreeFailed) || sr.WorktreePath == "" {
 		return nil
 	}
 	path := sr.WorktreePath
@@ -1280,13 +1288,21 @@ func isTerminalStepRun(sr db.WorkflowStepRunRow) bool {
 //     branch survives so a retry re-attaches to it (carry-over of partial
 //     work).
 func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run db.WorkflowRunRow) error {
-	// Idempotent guard: only reap a worktree this reconciler provably
-	// provisioned and recorded 'ready'. A terminal run in any other
-	// worktree state has nothing to prune (already pruned, or never
-	// provisioned). This is the retry-safety core — a terminal run whose
-	// worktree was already removed still carries worktree_status='ready',
-	// so the missing-worktree handling below reads as success.
-	if run.WorktreeStatus != domain.WorktreeReady || run.WorktreePath == "" {
+	// REAP A 'ready' WORKTREE — and also a 'failed' one, which is the case this guard used to skip.
+	//
+	// The comment here used to say "a terminal run in any other worktree state has nothing to prune". That is
+	// true of 'pruned', and FALSE OF 'failed': a provisioning failure can leave the run-namespaced directory
+	// behind before the branch is ever cut, and the pruner then never looked at it, on any pass, forever. That
+	// is how a leftover directory survived to block four consecutive runs — not the retention policy, this
+	// guard.
+	//
+	// RETAINING A FAILED WORKTREE HAS NO RESUME VALUE. A retry re-provisions from the branch; there is nothing
+	// in a half-created worktree a retry reads. 'ready' worktrees of failed runs are STILL retained — that is
+	// the deliberate resumability feature (a retry re-attaches to the branch and its uncommitted work), and it
+	// is a different state.
+	//
+	// 'pending'/'pruned'/'' keep returning here: nothing was recorded to reap.
+	if (run.WorktreeStatus != domain.WorktreeReady && run.WorktreeStatus != domain.WorktreeFailed) || run.WorktreePath == "" {
 		return nil
 	}
 	path := run.WorktreePath
@@ -2229,11 +2245,11 @@ func (r *WorktreeReconciler) branchExists(ctx context.Context, projectDir, branc
 // the branch does not exist, it CREATES it from base with
 // `git worktree add <path> -b <branch> <base>`.
 func (r *WorktreeReconciler) provisionWorktree(ctx context.Context, projectDir, path, branch, base string) error {
+	// BOTH ARMS GO THROUGH addWorktreeOrFreeStale, and that is not a detail: this function's ATTACH arm used to
+	// call git directly, so it bypassed the stale-registration repair entirely — which is the arm a RETRY takes
+	// (the branch already exists by then). The reported failure was exactly a retry.
 	if r.branchExists(ctx, projectDir, branch) {
-		if _, err := runGit(ctx, projectDir, "worktree", "add", path, branch); err != nil {
-			return err
-		}
-		return nil
+		return r.addWorktreeOrFreeStale(ctx, projectDir, []string{"worktree", "add", path, branch}, branch, path)
 	}
 	return r.addWorktree(ctx, projectDir, path, branch, base)
 }
@@ -2263,8 +2279,40 @@ func (r *WorktreeReconciler) addWorktree(ctx context.Context, projectDir, path, 
 	if base != "" {
 		args = append(args, base)
 	}
-	if _, err := runGit(ctx, projectDir, args...); err != nil {
+	return r.addWorktreeOrFreeStale(ctx, projectDir, args, branch, path)
+}
+
+// addWorktreeOrFreeStale runs a `worktree add` argv, and on the specific refusal that a branch is claimed by an
+// UNSATISFIABLE registration, prunes git's registry and retries ONCE.
+//
+// A BRANCH ALREADY CLAIMED BY A REGISTRATION THE HOST CANNOT SATISFY.
+//
+// "fatal: '<branch>' is already used by worktree at '<path>'" is git reading its OWN registry
+func (r *WorktreeReconciler) addWorktreeOrFreeStale(ctx context.Context, projectDir string, args []string, branch, path string) error {
+	//
+	// (`<repo>/.git/worktrees/<n>/gitdir`) and finding this branch claimed there. When that recorded path
+	// cannot be resolved — a container path, a deleted directory, a worktree whose admin data outlived it —
+	// the registration is stale and `git worktree add` will refuse forever.
+	//
+	// PRUNE AND RETRY ONCE. `git worktree prune` removes registrations whose worktree is gone or whose
+	// back-pointer does not resolve; measured against a registry corrupted this exact way, it clears the
+	// claim and the next add succeeds. It is TARGETED — only this specific refusal triggers it, so a genuine
+	// concurrently-checked-out branch is not disturbed by an unrelated prune.
+	_, err := runGit(ctx, projectDir, args...)
+	if err == nil {
+		return nil
+	}
+	if !strings.Contains(err.Error(), "is already used by worktree") {
 		return err
+	}
+	r.log.Warn("worktree: the branch is claimed by a stale registration — pruning and retrying once",
+		"branch", branch, "path", path, "error", err)
+	if _, perr := runGit(ctx, projectDir, "worktree", "prune"); perr != nil {
+		r.log.Warn("worktree: prune before retry failed", "error", perr)
+		return err // report the ORIGINAL refusal: it is the actionable one
+	}
+	if _, rerr := runGit(ctx, projectDir, args...); rerr != nil {
+		return rerr
 	}
 	return nil
 }

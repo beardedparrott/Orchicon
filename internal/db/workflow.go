@@ -1441,7 +1441,12 @@ func ListTerminalRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID stri
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
-		  AND worktree_status = 'ready' AND worktree_path <> ''
+		  -- 'failed' AS WELL AS 'ready'. A provisioning failure can leave the run-namespaced directory behind
+		  -- before the branch is cut; selecting only 'ready' meant the pruner never saw it, so the debris
+		  -- outlived every sweep and eventually blocked a later run. Retaining it has no resume value — a retry
+		  -- re-provisions from the branch. A 'ready' worktree of a failed run is still retained (that is the
+		  -- deliberate resumability feature).
+		  AND worktree_status IN ('ready', 'failed') AND worktree_path <> ''
 		ORDER BY created_at ASC
 		LIMIT $2`
 	rows, err := tx.Query(ctx, q, tenantID, limit)
@@ -1806,7 +1811,9 @@ func ListTerminalStepRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID 
 		s.started_at, s.ended_at, s.version, s.created_at, s.updated_at
 		FROM workflow_step_runs s
 		JOIN workflow_runs r ON r.id = s.workflow_run_id AND r.tenant_id = s.tenant_id
-		WHERE s.tenant_id = $1 AND s.worktree_status = 'ready' AND s.worktree_path <> ''
+		-- 'failed' as well as 'ready': see ListTerminalRunsWithWorktrees. A step worktree whose provisioning
+		-- failed can leave a directory behind, and selecting only 'ready' meant the pruner never saw it.
+		WHERE s.tenant_id = $1 AND s.worktree_status IN ('ready', 'failed') AND s.worktree_path <> '' 
 		  AND (s.status IN ('succeeded', 'failed', 'skipped', 'blocked')
 		       OR r.status IN ('completed', 'failed', 'aborted'))
 		ORDER BY s.created_at ASC
