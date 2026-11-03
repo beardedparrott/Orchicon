@@ -1142,6 +1142,23 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// silently fall back to the project dir (the observed project-dir
 	// fallback broke branch/PR invariants).
 	execCwd := projectDir
+	// THE STATUS IS CHECKED BEFORE THE PATH, and the order is the fix.
+	//
+	// REPORTED, run 01M6FT6RQ4GVX0M7BAH215S6B4: the provisioner refused at 22:20:47 and recorded
+	// worktree_status=failed; the worker's step dispatched at 22:20:50 anyway, ran 3m50s and SUCCEEDED, and the
+	// run then failed 183ms later when the NEXT step hit the failed status. The run carried status=failed, a
+	// SUCCEEDED execution, and an error for something that never happened.
+	//
+	// The cause: this used to be `if worktreePath != "" { dispatch }` — so a run whose worktree was marked
+	// FAILED but still recorded a PATH (which mark() does, and which a retry keeps) skipped the status switch
+	// entirely. The path existing is exactly the thing that made it look dispatchable.
+	//
+	// A FAILED WORKTREE IS TERMINAL FOR DISPATCH, with or without a path. Whatever is on disk, the platform
+	// refused to provision it, so nothing may run in it.
+	if exec.WorkflowRunID != "" && worktreeStatus == domain.WorktreeFailed {
+		r.log.Warn("worktree provisioning failed — failing dispatch", "task", task.ID, "run", exec.WorkflowRunID, "status", worktreeStatus)
+		return
+	}
 	if worktreePath != "" {
 		execCwd = worktreePath
 	} else if exec.WorkflowRunID != "" {
@@ -1149,9 +1166,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		switch worktreeStatus {
 		case domain.WorktreePending, domain.WorktreePruned:
 			r.log.Info("holding dispatch: worktree not ready, will re-provision", "task", task.ID, "run", exec.WorkflowRunID, "status", worktreeStatus)
-			return
-		case domain.WorktreeFailed:
-			r.log.Warn("worktree provisioning failed — failing dispatch", "task", task.ID, "run", exec.WorkflowRunID, "status", worktreeStatus)
 			return
 		case domain.WorktreeSkipped, "":
 			// intentionally in-place (non-repo) or undetermined — allow projectDir

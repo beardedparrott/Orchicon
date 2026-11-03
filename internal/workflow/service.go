@@ -1271,10 +1271,14 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 			StartedAt:         &now,
 			ClearEndedAt:      true,
 		}
-		// Re-provision pruned worktrees on retry: keep the branch for
-		// re-attach but reset status to pending and clear the stale path
-		// so the WorktreeReconciler re-creates the worktree before dispatch.
-		if sr.WorktreeStatus == domain.WorktreePruned {
+		// Re-provision pruned OR FAILED worktrees on retry: keep the branch for re-attach but reset status to
+		// pending and clear the stale path so the WorktreeReconciler re-creates the worktree before dispatch.
+		//
+		// FAILED IS THE REPORTED CASE. A run whose provisioning failed keeps worktree_status=failed AND its
+		// path; retrying it without this reset left it failed-with-a-path, which is exactly the state that (a)
+		// skipped the dispatch gate and (b) made the provisioner classify its own leftover as foreign —
+		// "path … is occupied by a non-worktree directory". PRUNED was handled; FAILED is the same need.
+		if sr.WorktreeStatus == domain.WorktreePruned || sr.WorktreeStatus == domain.WorktreeFailed {
 			pending := domain.WorktreePending
 			emptyPath := ""
 			fields.WorktreeStatus = &pending
@@ -1304,11 +1308,17 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 		Status:       strPtr(domain.WorkflowRunPending),
 		ClearEndedAt: true,
 	}
-	if run.WorktreeStatus == domain.WorktreePruned {
+	if run.WorktreeStatus == domain.WorktreePruned || run.WorktreeStatus == domain.WorktreeFailed {
 		pending := domain.WorktreePending
 		emptyPath := ""
 		runFields.WorktreeStatus = &pending
 		runFields.WorktreePath = &emptyPath
+		// The recorded REFUSAL belongs to the attempt that failed, not to the retry. Leaving it would label a
+		// freshly-armed run with an error about a provision it has not attempted yet — and it is the same stale
+		// verdict the completion path used to re-stamp onto a run that actually ran.
+		emptyErr := ""
+		runFields.ErrorMessage = &emptyErr
+		runFields.ErrorKind = &emptyErr
 	}
 	updatedRun, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.ID, run.Version, runFields)
 	if err != nil {

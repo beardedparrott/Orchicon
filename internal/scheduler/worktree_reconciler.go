@@ -821,11 +821,27 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 		//     container is never deleted (AC2).
 		//  3. Anything else → fail provisioning — never delete arbitrary
 		//     user directories (AC3).
-		if run.WorktreeStatus == domain.WorktreePending && r.isOrchiconWorktreeArtifact(path) {
+		// NOT GATED ON `pending`. The reclaim below used to require it, so a RETRIED run — which arrives here
+		// with worktree_status=failed and a path — fell straight through to "occupied by a non-worktree
+		// directory" and refused. That is the reported "why was it occupied": the directory was this run's OWN
+		// empty leftover, created before the branch was cut by the attempt that failed, and the retry
+		// classified it as foreign.
+		//
+		// Reclaiming is safe on the same terms it always was — the directory is EMPTY, or holds only a gitdir
+		// file proving it is a partial worktree of ours — so requiring a particular status bought nothing and
+		// cost a whole class of retry.
+		if r.isReclaimableRunDir(path) {
+			// EMPTY, or nothing but a gitdir file: a leftover of ours. Remove it and fall through to the
+			// ORDINARY create path in phase 4 — the simplest route, and the one every other provisioning
+			// already takes, rather than teaching the adopt machinery a case it was not built for.
+			r.log.Info("worktree: reclaiming a leftover run directory before provisioning",
+				"run", runID, "path", path, "status", run.WorktreeStatus)
 			if rerr := r.removeWorktreeArtifact(path); rerr != nil {
-				return fmt.Errorf("worktree: prune partial artifact at %s: %w", path, rerr)
+				return fmt.Errorf("worktree: reclaim leftover at %s: %w", path, rerr)
 			}
-		} else if run.WorktreeStatus == domain.WorktreePending {
+		} else {
+			// A RUN-NAMESPACED CONTAINER holding only provably-ours nested branch-worktree artifacts — a
+			// parallel-branch step run was provisioned first, racing the run worktree. Adopt it.
 			isContainer, cerr := r.isOrchiconContainer(ctx, projectDir, path)
 			if cerr != nil {
 				return fmt.Errorf("worktree: inspect container %s: %w", path, cerr)
@@ -836,9 +852,6 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 				}
 				return r.recordReady(ctx, tenantID, runID, path, branch)
 			}
-			return r.markFailed(ctx, tenantID, runID,
-				fmt.Sprintf("path %s is occupied by a non-worktree directory", path))
-		} else {
 			return r.markFailed(ctx, tenantID, runID,
 				fmt.Sprintf("path %s is occupied by a non-worktree directory", path))
 		}
@@ -2685,6 +2698,22 @@ func (r *WorktreeReconciler) mark(ctx context.Context, tenantID, runID, status, 
 		}
 		fields.ErrorKind = strPtr(preflightErrorKind(status, reason))
 	}
+	// CLEAN UP AN EMPTY LEFTOVER ON FAILURE, so a retry does not inherit it.
+	//
+	// The reported directory was pre-created empty by the attempt that failed at 18:25 — before the branch was
+	// ever cut — and survived. The next attempt found its own leftover and classified it as foreign. Reclaiming
+	// on the NEXT attempt is now handled too (isReclaimableRunDir), but not leaving the debris is the better
+	// fix: an empty directory contains no work, and this path is the one that created it.
+	//
+	// ONLY EMPTY. A failed run's worktree can hold a half-written branch worth inspecting, and deleting that
+	// would destroy the only copy of a worker's partial work.
+	if status == domain.WorktreeFailed && path != "" && r.isReclaimableRunDir(path) {
+		if rerr := os.RemoveAll(path); rerr != nil {
+			r.log.Warn("worktree: could not clear an empty leftover after a failed provision", "run", runID, "path", path, "error", rerr)
+		} else {
+			r.log.Info("worktree: cleared an empty leftover after a failed provision", "run", runID, "path", path)
+		}
+	}
 	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, fields); err != nil {
 		return fmt.Errorf("mark worktree %s: %w", status, err)
 	}
@@ -3316,4 +3345,29 @@ func preflightRemedy(status, reason string) string {
 			"Point the project at a branch with content (or commit something to it) and re-run."
 	}
 	return ""
+}
+
+// isReclaimableRunDir reports whether the directory at path is one this platform may delete during
+// PROVISIONING: it is EMPTY, or it holds nothing but a `.git` gitdir file (a partial worktree of ours).
+//
+// A NON-EMPTY directory with real content is never reclaimable here — that is the one unrecoverable mistake
+// available, and it is why this predicate exists separately from "does it exist".
+//
+// WHY EMPTY QUALIFIES. A failed provisioning attempt can leave the run-namespaced directory behind before the
+// branch is ever cut — reported as: "the run-ID-named directory was pre-created empty by the FAILED 18:25 run
+// … tonight's run reused the same run id, found its own leftover, and classified it as foreign." An empty
+// directory holds no work, and the path is deterministic from the run id, so it is ours by construction.
+func (r *WorktreeReconciler) isReclaimableRunDir(path string) bool {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	if len(entries) == 0 {
+		return true
+	}
+	// Only a `.git` file, which is what a half-created worktree leaves.
+	if len(entries) == 1 && entries[0].Name() == ".git" && !entries[0].IsDir() {
+		return true
+	}
+	return false
 }

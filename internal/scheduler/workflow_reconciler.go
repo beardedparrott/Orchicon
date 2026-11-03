@@ -1551,9 +1551,23 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 				}
 			}
 		}
+		// A COMPLETED RUN CARRIES NO FAILURE, and clearing it is not tidiness.
+		//
+		// REPORTED: "the run is stamped with the stale preflight error at the end" — a run whose execution
+		// SUCCEEDED (22:24:41.287) was marked failed 183ms later from a preflight verdict recorded 4 minutes
+		// earlier. A post-run error must be a post-run error; a verdict from before the run says nothing about
+		// a run that actually ran.
+		//
+		// This clears the columns when the run reaches COMPLETED. Any failure recorded on the way here has been
+		// resolved — the steps ran and succeeded — so leaving it would label a successful run with an error
+		// about something that did not happen, which is precisely the state that made the operator distrust
+		// both fields.
+		emptyErr := ""
 		updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, db.UpdateWorkflowRunFields{
-			Status:  strPtr(domain.WorkflowRunCompleted),
-			EndedAt: &now,
+			Status:       strPtr(domain.WorkflowRunCompleted),
+			EndedAt:      &now,
+			ErrorMessage: &emptyErr,
+			ErrorKind:    &emptyErr,
 		})
 		if err != nil {
 			return fmt.Errorf("mark run completed: %w", err)
