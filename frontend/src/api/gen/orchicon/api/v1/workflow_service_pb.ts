@@ -1847,6 +1847,27 @@ export class RunDiagnosis extends Message<RunDiagnosis> {
    */
   clearable = false;
 
+  /**
+   * failure_message is WHY a TERMINAL run failed, when the platform knows.
+   *
+   * The rest of this message answers "why is this run not moving?", which only
+   * a RUNNING run can be. A FAILED run therefore returned an entirely empty
+   * diagnosis — reported as {"failure_analysis": [], "workflow_executions":
+   * null} for a run that had failed 3.8s after starting, before any step
+   * dispatched, so there was no execution to analyse.
+   *
+   * @generated from field: string failure_message = 11;
+   */
+  failureMessage = "";
+
+  /**
+   * failure_kind is the run's error_kind (see WorkflowRun), or "" when the
+   * failure predates the field.
+   *
+   * @generated from field: string failure_kind = 12;
+   */
+  failureKind = "";
+
   constructor(data?: PartialMessage<RunDiagnosis>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1865,6 +1886,8 @@ export class RunDiagnosis extends Message<RunDiagnosis> {
     { no: 8, name: "blocked_step_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 9, name: "stuck_executions", kind: "message", T: StuckExecution, repeated: true },
     { no: 10, name: "clearable", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 11, name: "failure_message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 12, name: "failure_kind", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RunDiagnosis {

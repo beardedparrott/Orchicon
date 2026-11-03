@@ -110,6 +110,15 @@ message WorkflowRun {
   // still jump to a PR even before one exists.
   string pr_url = 19;
   string pr_state = 20; // e.g. open/merged/draft/none; empty until worker-authored
+  // error_message is WHY THIS RUN FAILED, when the PLATFORM is the party that knows — a preflight refusal
+  // (no valid base ref, a worktree that cannot be created), a dispatch failure. Such a run fails before any
+  // step dispatches, so there is no execution and no worker summary: without this the operator's surfaces
+  // all said nothing, and the reason was reachable only by decoding run_context by hand.
+  string error_message = 21;
+  // error_kind is a small vocabulary the UI groups and phrases on ("worktree_no_base_ref",
+  // "worktree_empty_base", "worktree_preflight"). Empty means unclassified. It is intentionally NOT an enum:
+  // a new kind must be addable without a schema change.
+  string error_kind = 22;
 }
 
 // WorkflowStepRun is the runtime state of a single step within a

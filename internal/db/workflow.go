@@ -90,7 +90,14 @@ type WorkflowRunRow struct {
 	WorktreeStatus string // WorktreeReconciler provisioning state (pending/ready/skipped/failed/pruned)
 	WorktreePath   string // isolated working tree path (git-backed runs)
 	WorktreeBranch string // deterministic branch created for the run
-	Version        int
+	// ErrorMessage / ErrorKind are the run's FAILURE, as an OUTCOME rather than an input.
+	//
+	// It used to live in run_context, which is the run's input document and reaches the API base64-encoded —
+	// so an operator looking at a failed run saw nothing on the page, and diagnose_failure had no execution to
+	// analyse and returned an empty list. See db/migrations/20261103000000_workflow_run_error.sql.
+	ErrorMessage string
+	ErrorKind    string
+	Version      int
 	StartedAt      *time.Time
 	EndedAt        *time.Time
 	CreatedAt      time.Time
@@ -683,7 +690,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
 			current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-			runtime_ready, worktree_status, worktree_path, worktree_branch,
+			runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at`
 	row := r
 	var wiID *string
@@ -696,7 +703,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 		&row.ID, &row.TenantID, &row.WorkflowID, &row.WorkflowVersion,
 		&row.ProjectID, &row.Status, &row.CurrentStep, &row.RunContext,
 		&wiID, &row.BoundWorkerRef, &row.RuntimeImage, &row.RuntimeReady,
-		&row.WorktreeStatus, &row.WorktreePath, &row.WorktreeBranch,
+		&row.WorktreeStatus, &row.WorktreePath, &row.WorktreeBranch, &row.ErrorMessage, &row.ErrorKind,
 		&row.Version, &row.StartedAt, &row.EndedAt,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -713,7 +720,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs WHERE id = $1 AND tenant_id = $2`
 	var r WorkflowRunRow
@@ -722,7 +729,7 @@ func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Workfl
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 		&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-		&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+		&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -763,7 +770,7 @@ func listWorkflowRunsQuery(f ListWorkflowRunsFilter) (string, []any) {
 	}
 	q := `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1`
@@ -867,7 +874,7 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -887,6 +894,14 @@ type UpdateWorkflowRunFields struct {
 	Status      *string
 	CurrentStep *string
 	RunContext  *[]byte
+	// ErrorMessage / ErrorKind record WHY a run failed, as an outcome.
+	//
+	// SET ON EVERY FAILURE PATH THAT DOES NOT PRODUCE AN EXECUTION. A preflight refusal (no valid base ref, a
+	// worktree that cannot be created) fails the run before any step is dispatched, so there is no execution
+	// and no worker summary — and without these the operator's three surfaces all said nothing. See
+	// db/migrations/20261103000000_workflow_run_error.sql.
+	ErrorMessage *string
+	ErrorKind    *string
 	StartedAt   *time.Time
 	EndedAt     *time.Time
 	// ProjectID lets a workflow step bind the run to a project on the
@@ -922,6 +937,16 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 	if f.Status != nil {
 		q += fmt.Sprintf(`, status = $%d`, setIdx)
 		args = append(args, *f.Status)
+		setIdx++
+	}
+	if f.ErrorMessage != nil {
+		q += fmt.Sprintf(`, error_message = $%d`, setIdx)
+		args = append(args, *f.ErrorMessage)
+		setIdx++
+	}
+	if f.ErrorKind != nil {
+		q += fmt.Sprintf(`, error_kind = $%d`, setIdx)
+		args = append(args, *f.ErrorKind)
 		setIdx++
 	}
 	if f.CurrentStep != nil {
@@ -990,7 +1015,7 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at`
 	var r WorkflowRunRow
 	var wiID *string
@@ -998,7 +1023,7 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 		&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-		&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+		&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -1318,7 +1343,7 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('pending', 'running', 'paused')
@@ -1336,7 +1361,7 @@ func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1365,7 +1390,7 @@ func ListWorktreeCandidates(ctx context.Context, tx pgx.Tx, tenantID string, lim
 	}
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('pending', 'running') AND project_id <> ''
@@ -1385,7 +1410,7 @@ func ListWorktreeCandidates(ctx context.Context, tx pgx.Tx, tenantID string, lim
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1412,7 +1437,7 @@ func ListTerminalRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID stri
 	}
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
@@ -1432,7 +1457,7 @@ func ListTerminalRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID stri
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1462,7 +1487,7 @@ func ListTerminalRunsWithPrunedBranches(ctx context.Context, tx pgx.Tx, tenantID
 	}
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status = 'completed'
@@ -1482,7 +1507,7 @@ func ListTerminalRunsWithPrunedBranches(ctx context.Context, tx pgx.Tx, tenantID
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1562,7 +1587,7 @@ func ListTerminalRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx.Tx,
 	}
 	const q = `SELECT r.id, r.tenant_id, r.workflow_id, r.workflow_version, r.project_id, r.status,
 		current_step, r.run_context, r.work_item_id, r.bound_worker_ref, r.runtime_image,
-		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch,
+		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch, r.error_message, r.error_kind,
 			r.version, r.started_at, r.ended_at, r.created_at, r.updated_at
 		FROM workflow_runs r
 		LEFT JOIN work_items wi ON wi.id = r.work_item_id AND wi.tenant_id = r.tenant_id
@@ -1584,7 +1609,7 @@ func ListTerminalRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx.Tx,
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1659,7 +1684,7 @@ func ListTerminalStepRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx
 func ListBackfillPRRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
@@ -1687,7 +1712,7 @@ func ListBackfillPRRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]Work
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1841,7 +1866,7 @@ func ListTerminalRunsWithRuntimeEvidence(ctx context.Context, tx pgx.Tx, tenantI
 	}
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1
@@ -1862,7 +1887,7 @@ func ListTerminalRunsWithRuntimeEvidence(ctx context.Context, tx pgx.Tx, tenantI
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1895,7 +1920,7 @@ func ListCompletedRunsWithBranch(ctx context.Context, tx pgx.Tx, tenantID string
 	}
 	const q = `SELECT r.id, r.tenant_id, r.workflow_id, r.workflow_version, r.project_id, r.status,
 		current_step, r.run_context, r.work_item_id, r.bound_worker_ref, r.runtime_image,
-		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch,
+		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch, r.error_message, r.error_kind,
 			r.version, r.started_at, r.ended_at, r.created_at, r.updated_at
 		FROM workflow_runs r
 		WHERE r.tenant_id = $1 AND r.status = 'completed'
@@ -1925,7 +1950,7 @@ func ListCompletedRunsWithBranch(ctx context.Context, tx pgx.Tx, tenantID string
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {

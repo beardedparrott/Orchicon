@@ -699,6 +699,20 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 		// shared instant and therefore collapses to id order, and a random id says nothing about
 		// when a step runs. Reading the version's steps and putting them in FLOW order (the same
 		// `flowOrder` the workflow view draws) is what makes this list read top-to-bottom.
+		// WHY IT FAILED, above the step flow — the TUI half of the same gap the GUI had.
+		//
+		// The blockage card is silent for a finished run (nothing can block once it is terminal), so a FAILED
+		// run showed its steps and nothing else. Reported: a preflight refusal — no execution at all — left
+		// every surface saying nothing, and the reason reachable only by decoding run_context by hand.
+		//
+		// A FIELD rather than a body prefix: the field list is what an operator scans, and it survives the
+		// body being composed from the flow.
+		if msg := tuiFailureText(r); msg != "" {
+			fields = append(fields, screenkit.Field{Key: "error", Value: msg})
+			if kind := tuiFailureKind(r); kind != "" {
+				fields = append(fields, screenkit.Field{Key: "error kind", Value: kind})
+			}
+		}
 		var body string
 		if sr, err := m.cl.Workflows.GetWorkflowStepRuns(ctx, connect.NewRequest(&apiv1.GetWorkflowStepRunsRequest{RunId: id})); err == nil {
 			m.runFlow.setRows(runStepRows(sr.Msg.GetStepRuns(), m.runStepOrder(ctx, r)), id)
@@ -1096,3 +1110,28 @@ func (m *Model) SelectItem(src, id string) bool { return m.Base.SelectItem(src, 
 
 // RequestDetail loads the detail view for (src, id) directly.
 func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDetail(src, id) }
+
+// tuiFailureText returns the run's recorded failure, wrapped so the field list can render it in a narrow pane.
+//
+// MULTI-LINE IS WRAPPED, not truncated: the platform writes a remedy sentence followed by the raw git detail,
+// and cutting that at the pane edge would hide the half that names the branch and directory.
+func tuiFailureText(r *apiv1.WorkflowRun) string {
+	msg := strings.TrimSpace(r.GetErrorMessage())
+	if msg == "" {
+		return ""
+	}
+	lines := strings.Split(msg, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, " ")
+}
+
+// tuiFailureKind is the run's error_kind, or "" when unclassified.
+func tuiFailureKind(r *apiv1.WorkflowRun) string {
+	return strings.TrimSpace(r.GetErrorKind())
+}

@@ -423,6 +423,18 @@ message RunDiagnosis {
   // clearable is true when at least one slot can be freed — i.e. there is
   // something for ReleaseStuckExecutions to do.
   bool clearable = 10;
+
+  // failure_message is WHY a TERMINAL run failed, when the platform knows.
+  //
+  // The rest of this message answers "why is this run not moving?", which only
+  // a RUNNING run can be. A FAILED run therefore returned an entirely empty
+  // diagnosis — reported as {"failure_analysis": [], "workflow_executions":
+  // null} for a run that had failed 3.8s after starting, before any step
+  // dispatched, so there was no execution to analyse.
+  string failure_message = 11;
+  // failure_kind is the run's error_kind (see WorkflowRun), or "" when the
+  // failure predates the field.
+  string failure_kind = 12;
 }
 
 // StuckExecution is one slot-holding execution the operator may clear.
