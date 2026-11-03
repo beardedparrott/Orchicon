@@ -703,7 +703,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 		&row.ID, &row.TenantID, &row.WorkflowID, &row.WorkflowVersion,
 		&row.ProjectID, &row.Status, &row.CurrentStep, &row.RunContext,
 		&wiID, &row.BoundWorkerRef, &row.RuntimeImage, &row.RuntimeReady,
-		&row.WorktreeStatus, &row.WorktreePath, &row.WorktreeBranch,
+		&row.WorktreeStatus, &row.WorktreePath, &row.WorktreeBranch, &row.ErrorMessage, &row.ErrorKind,
 		&row.Version, &row.StartedAt, &row.EndedAt,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
