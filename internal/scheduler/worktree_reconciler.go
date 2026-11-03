@@ -830,7 +830,32 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 		// Reclaiming is safe on the same terms it always was — the directory is EMPTY, or holds only a gitdir
 		// file proving it is a partial worktree of ours — so requiring a particular status bought nothing and
 		// cost a whole class of retry.
-		if r.isReclaimableRunDir(path) {
+		// A WORKTREE THE CONTAINER CREATED IS OURS, and the host must reclaim it even though it holds content.
+		//
+		// REPORTED, four runs running: "path … is occupied by a non-worktree directory" on a directory that was
+		// a COMPLETE worktree (.git, src/, package.json). The chain is worth stating because two of the three
+		// links are ours:
+		//
+		//  1. The container's worker may create the worktree itself (the arbitration gap — bug 2, still open).
+		//  2. #906 then rewrites that worktree's `.git` to the GUEST form so the container's git can follow it.
+		//     The file is BIND-MOUNTED, so the rewrite is visible to the host too: the host now reads
+		//     `/mnt/c/.../.git/worktrees/<run>`, a path it cannot resolve.
+		//  3. This branch's ownership test compared with `filepath.Separator`, so on Windows the forward-slash
+		//     pointer never matched, the directory was judged foreign, and provisioning refused.
+		//
+		// Reclaiming is safe because the WORK IS ON THE BRANCH, not in the working tree: a worktree is a
+		// checkout of a commit, and the commits this one carried are in the repository's own .git. Nothing is
+		// lost by removing the directory and cutting a fresh worktree from the same branch.
+		//
+		// Genuinely foreign content — a directory with no worktree pointer, or one naming somebody else's
+		// repository — is STILL refused below. That distinction is what keeps this from deleting user data.
+		reclaimForeign := r.isForeignWorktreeOfOurs(path, projectDir)
+		if reclaimForeign {
+			r.log.Warn("worktree: reclaiming a worktree this platform created but cannot resolve "+
+				"(its .git names a container path) — the branch and its commits are unaffected",
+				"run", runID, "path", path, "pointer", r.worktreePointerTarget(path))
+		}
+		if reclaimForeign || r.isReclaimableRunDir(path) {
 			// EMPTY, or nothing but a gitdir file: a leftover of ours. Remove it and fall through to the
 			// ORDINARY create path in phase 4 — the simplest route, and the one every other provisioning
 			// already takes, rather than teaching the adopt machinery a case it was not built for.
@@ -1822,17 +1847,78 @@ func (r *WorktreeReconciler) dirOccupied(path string) (bool, error) {
 // into the parent repo's gitdir. Only such a provably-ours directory may be
 // removed; a plain user directory never is.
 func (r *WorktreeReconciler) isOrchiconWorktreeArtifact(path string) bool {
+	return r.worktreePointerTarget(path) != ""
+}
+
+// worktreePointerTarget returns the gitdir a worktree's `.git` file names, when that gitdir lives in a
+// repository's worktrees metadata — the shape of EVERY git worktree. Empty otherwise.
+//
+// SEPARATOR-INSENSITIVE, and that is a Windows defect fix rather than tidiness.
+//
+// This used to compare against ".git" + filepath.Separator + "worktrees", i.e. `.git\worktrees` on Windows.
+// The pointer is content in a FILE, written by whichever git produced it — and a git inside a Linux container
+// writes `/mnt/c/projects/weatherapp/.git/worktrees/<run>` with FORWARD slashes. On Windows that never matched,
+// so a live worktree of ours was classified as a foreign directory: reported as
+// "path … is occupied by a non-worktree directory", four runs in a row, on a directory that was a fully
+// populated worktree with `.git`, `src`, `package.json` and everything else.
+//
+// The two sides are folded to '/' before comparing, which is the only form both can agree on.
+func (r *WorktreeReconciler) worktreePointerTarget(path string) string {
 	gitFile := filepath.Join(path, ".git")
+	st, err := os.Stat(gitFile)
+	if err != nil || st.IsDir() {
+		return "" // absent, or a real .git DIRECTORY (a repository, not a worktree)
+	}
 	b, err := os.ReadFile(gitFile)
 	if err != nil {
-		return false
+		return ""
 	}
-	// Worktree gitdir files look like: `gitdir: /abs/repo/.git/worktrees/<n>`
 	line := strings.TrimSpace(string(b))
 	if !strings.HasPrefix(line, "gitdir: ") {
+		return ""
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(line, "gitdir: "))
+	if target == "" {
+		return ""
+	}
+	folded := strings.ReplaceAll(target, "\\", "/")
+	if !strings.Contains(folded, ".git/worktrees") {
+		return ""
+	}
+	return target
+}
+
+// isForeignWorktreeOfOurs reports whether path holds a worktree of OURS that the host cannot validate — a
+// pointer naming the repository's own worktrees metadata, via a path form this platform cannot resolve (a
+// CONTAINER wrote it, so it names `/mnt/c/...`).
+//
+// It is deliberately NOT "any worktree": the pointer must lie under THIS project's `.git/worktrees`, so a
+// worktree of somebody else's repository is never reclaimed.
+func (r *WorktreeReconciler) isForeignWorktreeOfOurs(path, projectDir string) bool {
+	target := r.worktreePointerTarget(path)
+	if target == "" {
 		return false
 	}
-	return strings.Contains(line, ".git"+string(filepath.Separator)+"worktrees")
+	folded := strings.ReplaceAll(target, "\\", "/")
+	hostRepo := strings.ReplaceAll(filepath.ToSlash(filepath.Clean(projectDir)), "\\", "/")
+	hostRepo = strings.TrimRight(hostRepo, "/")
+	// THE HOST FORM: an exact prefix, which is the strongest evidence available.
+	if hostRepo != "" && strings.HasPrefix(folded, hostRepo+"/.git/worktrees/") {
+		return true
+	}
+	// THE CONTAINER FORM: the host repo path is not a prefix of `/mnt/c/...`, so an exact prefix cannot work.
+	// What survives the difference is the repository's own directory NAME plus this run's directory name —
+	// both of which this platform chose. Requiring BOTH is what keeps a worktree of somebody else's repository
+	// (or of another project that merely shares a run-id shape) from being claimed: an earlier version matched
+	// the leaf alone, and this package's own test caught it claiming `/home/someone/elsewhere/.git/worktrees/…`.
+	base := strings.TrimRight(filepath.ToSlash(path), "/")
+	leaf := base[strings.LastIndex(base, "/")+1:]
+	projectBase := strings.TrimRight(filepath.ToSlash(filepath.Clean(projectDir)), "/")
+	projectBase = projectBase[strings.LastIndex(projectBase, "/")+1:]
+	if leaf == "" || projectBase == "" || leaf == "." || leaf == "/" {
+		return false
+	}
+	return strings.HasSuffix(folded, "/"+projectBase+"/.git/worktrees/"+leaf)
 }
 
 // pruneWorktreeLeftover reports whether the directory at path is provably ours to delete during a
