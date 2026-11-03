@@ -155,3 +155,48 @@ export function runToItemIdMap(
   }
   return m;
 }
+
+/**
+ * classifyScheduleRemoval splits the Schedules page's selection into what each row ACTUALLY is.
+ *
+ * THE DEFECT THIS ENCODES. The page had one action, "remove schedule", applied to every row — but an
+ * upcoming/running row is a WORK ITEM and a history row is a WORKFLOW RUN. Clearing a schedule on a past run
+ * is a no-op (it was consumed when the run fired), so the click changed nothing, the row stayed, and it read
+ * as a broken button. A run row can only disappear when the RUN is deleted.
+ *
+ * `stillScheduledItemIds` is the second half of that: deleting a run whose item is STILL recurring would let
+ * it fire again and recreate the row, which is indistinguishable from "delete didn't work". Those have their
+ * schedule cleared in the same action.
+ */
+export function classifyScheduleRemoval(
+  keys: readonly string[],
+  runToItem: ReadonlyMap<string, string>,
+  itemsById: ReadonlyMap<string, ScheduleBearingItem>,
+): { runIds: string[]; itemIds: string[]; stillScheduledItemIds: string[] } {
+  const runIds: string[] = [];
+  const itemIds: string[] = [];
+  const stillScheduledItemIds: string[] = [];
+  const seenScheduled = new Set<string>();
+
+  for (const key of keys) {
+    const itemId = runToItem.get(key);
+    if (itemId) {
+      runIds.push(key);
+      if (itemHasSchedule(itemsById.get(itemId)) && !seenScheduled.has(itemId)) {
+        seenScheduled.add(itemId);
+        stillScheduledItemIds.push(itemId);
+      }
+      continue;
+    }
+    itemIds.push(key);
+  }
+  return { runIds, itemIds, stillScheduledItemIds };
+}
+
+/** The slice of a work item the removal decision needs. */
+export interface ScheduleBearingItem {
+  recurringSchedule?: unknown;
+  nextRunAt?: unknown;
+  scheduledStartAt?: unknown;
+  status?: number;
+}

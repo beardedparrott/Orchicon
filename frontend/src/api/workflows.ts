@@ -281,6 +281,33 @@ export function useAbortWorkflow() {
   });
 }
 
+// useDeleteWorkflowRun hard-deletes ONE run and its step runs.
+//
+// WHY THE SCHEDULES PAGE NEEDS IT. A Schedules history row IS a workflow run, so the row can only disappear when
+// the run does — and until now no client hook existed for DeleteWorkflowRun, even though the RPC has been there
+// all along. "Remove schedule" cleared the work item's schedule instead, which is a NO-OP on a past run: the
+// schedule was already consumed, so nothing changed and the row stayed. Reported as "the delete button does
+// nothing", three times.
+//
+// IRREVERSIBLE, and described as such to the caller: a running run is aborted first (status → aborted, ended_at
+// set) and only then removed, so a live reconciler never writes into a deleted row; terminal runs are removed
+// directly.
+export function useDeleteWorkflowRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (runId: string) => {
+      await workflowClient.deleteWorkflowRun({ runId });
+      return runId;
+    },
+    onSuccess: () => {
+      // Invalidate the RUNS LIST rather than one run's keys: the row is gone, so every listing that could show
+      // it must refetch. The schedules page reads the tenant-wide runs list, which is what "runs-list" covers.
+      qc.invalidateQueries({ queryKey: [...workflowKeys.all, "runs-list"] });
+      qc.invalidateQueries({ queryKey: workflowKeys.all });
+    },
+  });
+}
+
 // useRetryStepRun resets a step run to pending so the reconciler
 // re-dispatches it. Clears the execution and result.
 export function useRetryStepRun() {
