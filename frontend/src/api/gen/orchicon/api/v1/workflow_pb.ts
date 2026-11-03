@@ -774,6 +774,25 @@ export class WorkflowRun extends Message<WorkflowRun> {
    */
   prState = "";
 
+  /**
+   * error_message is WHY THIS RUN FAILED, when the PLATFORM is the party that knows — a preflight refusal
+   * (no valid base ref, a worktree that cannot be created), a dispatch failure. Such a run fails before any
+   * step dispatches, so there is no execution and no worker summary: without this the operator's surfaces
+   * all said nothing, and the reason was reachable only by decoding run_context by hand.
+   *
+   * @generated from field: string error_message = 21;
+   */
+  errorMessage = "";
+
+  /**
+   * error_kind is a small vocabulary the UI groups and phrases on ("worktree_no_base_ref",
+   * "worktree_empty_base", "worktree_preflight"). Empty means unclassified. It is intentionally NOT an enum:
+   * a new kind must be addable without a schema change.
+   *
+   * @generated from field: string error_kind = 22;
+   */
+  errorKind = "";
+
   constructor(data?: PartialMessage<WorkflowRun>) {
     super();
     proto3.util.initPartial(data, this);
@@ -802,6 +821,8 @@ export class WorkflowRun extends Message<WorkflowRun> {
     { no: 18, name: "worktree_path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 19, name: "pr_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 20, name: "pr_state", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 21, name: "error_message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 22, name: "error_kind", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRun {

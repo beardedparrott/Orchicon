@@ -2665,9 +2665,25 @@ func (r *WorktreeReconciler) mark(ctx context.Context, tenantID, runID, status, 
 		fields.WorktreeBranch = strPtr(branch)
 	}
 	if reason != "" {
+		// THE REASON IS A FIRST-CLASS OUTCOME, not just a run_context key.
+		//
+		// A preflight refusal fails the run BEFORE any step dispatches, so there is no execution, no worker
+		// summary, and — until this — nothing an operator could SEE. Reported: "could not create the run
+		// worktree: … fatal: invalid reference: HEAD" sat in run_context, base64 over the API, while the
+		// acceptance review said "no summary recorded" and diagnose_failure returned an empty analysis.
+		//
+		// The run_context copy is KEPT: it is where the surrounding detail (strategy, branch, base, dir) lives
+		// and older readers still look there. The column is the part a person reads.
 		if ctx2, ok := mergeRunContext(run.RunContext, map[string]any{"worktree_error": reason}); ok {
 			fields.RunContext = &ctx2
 		}
+		fields.ErrorMessage = strPtr(reason)
+		// The REWRITE is what makes this actionable: the raw git line names a ref, not a remedy. The platform
+		// knows the strategy and the project dir, so it can say what to DO.
+		if friendly := preflightRemedy(status, reason); friendly != "" {
+			fields.ErrorMessage = strPtr(friendly + "\n\nDetail: " + reason)
+		}
+		fields.ErrorKind = strPtr(preflightErrorKind(status, reason))
 	}
 	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version, fields); err != nil {
 		return fmt.Errorf("mark worktree %s: %w", status, err)
@@ -3261,4 +3277,43 @@ func mergeRunContext(existing []byte, add map[string]any) ([]byte, bool) {
 		return nil, false
 	}
 	return b, true
+}
+
+// preflightErrorKind classifies a worktree-preflight failure for the UI, which groups and phrases on it rather
+// than parsing prose. Deliberately a SMALL vocabulary with a catch-all: a new kind must not need a migration.
+func preflightErrorKind(status, reason string) string {
+	if status != domain.WorktreeFailed {
+		return ""
+	}
+	switch {
+	case strings.Contains(reason, "invalid reference") || strings.Contains(reason, "not a valid object name"):
+		// The reported case: HEAD names a branch that does not exist, so there is nothing to branch from.
+		return "worktree_no_base_ref"
+	case strings.Contains(reason, "EMPTY tree"):
+		return "worktree_empty_base"
+	case strings.Contains(reason, "worktree"):
+		return "worktree_preflight"
+	}
+	return "worktree_preflight"
+}
+
+// preflightRemedy turns a raw preflight failure into operator language, when the platform can be specific.
+//
+// WORTH THE SENTENCE. "fatal: invalid reference: HEAD" tells an operator nothing they can act on; "this
+// repository has no valid HEAD to branch from — its HEAD points at a branch that does not exist" tells them
+// exactly what to fix, and the platform already knows enough to say it.
+func preflightRemedy(status, reason string) string {
+	if status != domain.WorktreeFailed {
+		return ""
+	}
+	switch {
+	case strings.Contains(reason, "invalid reference") || strings.Contains(reason, "not a valid object name"):
+		return "This repository has no valid HEAD to branch from: git reports that the ref HEAD points at does " +
+			"not exist. Create the branch it points at (or check one out), and re-run. The detail below names " +
+			"the branch, the base ref and the directory the attempt used."
+	case strings.Contains(reason, "EMPTY tree"):
+		return "The branch this run would be cut from has no files, so a worktree from it would be empty. " +
+			"Point the project at a branch with content (or commit something to it) and re-run."
+	}
+	return ""
 }

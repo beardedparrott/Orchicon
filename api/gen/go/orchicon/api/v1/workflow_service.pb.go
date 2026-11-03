@@ -2103,7 +2103,18 @@ type RunDiagnosis struct {
 	StuckExecutions []*StuckExecution `protobuf:"bytes,9,rep,name=stuck_executions,json=stuckExecutions,proto3" json:"stuck_executions,omitempty"`
 	// clearable is true when at least one slot can be freed — i.e. there is
 	// something for ReleaseStuckExecutions to do.
-	Clearable     bool `protobuf:"varint,10,opt,name=clearable,proto3" json:"clearable,omitempty"`
+	Clearable bool `protobuf:"varint,10,opt,name=clearable,proto3" json:"clearable,omitempty"`
+	// failure_message is WHY a TERMINAL run failed, when the platform knows.
+	//
+	// The rest of this message answers "why is this run not moving?", which only
+	// a RUNNING run can be. A FAILED run therefore returned an entirely empty
+	// diagnosis — reported as {"failure_analysis": [], "workflow_executions":
+	// null} for a run that had failed 3.8s after starting, before any step
+	// dispatched, so there was no execution to analyse.
+	FailureMessage string `protobuf:"bytes,11,opt,name=failure_message,json=failureMessage,proto3" json:"failure_message,omitempty"`
+	// failure_kind is the run's error_kind (see WorkflowRun), or "" when the
+	// failure predates the field.
+	FailureKind   string `protobuf:"bytes,12,opt,name=failure_kind,json=failureKind,proto3" json:"failure_kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2206,6 +2217,20 @@ func (x *RunDiagnosis) GetClearable() bool {
 		return x.Clearable
 	}
 	return false
+}
+
+func (x *RunDiagnosis) GetFailureMessage() string {
+	if x != nil {
+		return x.FailureMessage
+	}
+	return ""
+}
+
+func (x *RunDiagnosis) GetFailureKind() string {
+	if x != nil {
+		return x.FailureKind
+	}
+	return ""
 }
 
 // StuckExecution is one slot-holding execution the operator may clear.
@@ -3024,7 +3049,7 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\"}\n" +
 	"\x1eRetryFailedWorkflowRunResponse\x12.\n" +
 	"\x03run\x18\x01 \x01(\v2\x1c.orchicon.api.v1.WorkflowRunR\x03run\x12+\n" +
-	"\x12reset_step_run_ids\x18\x02 \x03(\tR\x0fresetStepRunIds\"\x8d\x03\n" +
+	"\x12reset_step_run_ids\x18\x02 \x03(\tR\x0fresetStepRunIds\"\xd9\x03\n" +
 	"\fRunDiagnosis\x12\x18\n" +
 	"\ablocked\x18\x01 \x01(\bR\ablocked\x12#\n" +
 	"\rblockage_kind\x18\x02 \x01(\tR\fblockageKind\x12\x16\n" +
@@ -3038,7 +3063,9 @@ const file_orchicon_api_v1_workflow_service_proto_rawDesc = "" +
 	"\x10blocked_step_ids\x18\b \x03(\tR\x0eblockedStepIds\x12J\n" +
 	"\x10stuck_executions\x18\t \x03(\v2\x1f.orchicon.api.v1.StuckExecutionR\x0fstuckExecutions\x12\x1c\n" +
 	"\tclearable\x18\n" +
-	" \x01(\bR\tclearable\"\xdc\x01\n" +
+	" \x01(\bR\tclearable\x12'\n" +
+	"\x0ffailure_message\x18\v \x01(\tR\x0efailureMessage\x12!\n" +
+	"\ffailure_kind\x18\f \x01(\tR\vfailureKind\"\xdc\x01\n" +
 	"\x0eStuckExecution\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vworker_name\x18\x02 \x01(\tR\n" +

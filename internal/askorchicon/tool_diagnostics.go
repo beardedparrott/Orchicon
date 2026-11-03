@@ -55,6 +55,39 @@ func toolDiagnoseFailure(ctx context.Context, pool *db.Pool, args json.RawMessag
 	}
 
 	if params.WorkflowRunID != "" {
+		// THE RUN ITSELF IS A DIAGNOSIS SOURCE, and leaving it out is why this tool returned an empty
+		// analysis for a run that had plainly failed.
+		//
+		// A PREFLIGHT REFUSAL fails the run before any step dispatches: no execution exists, so every branch
+		// below finds nothing, and the answer was `{"failure_analysis": [], "workflow_executions": null}` for
+		// a run whose reason was recorded the whole time. Reported exactly so.
+		if run, rerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, params.WorkflowRunID); rerr == nil {
+			diagnosis["run"] = map[string]any{
+				"id":            run.ID,
+				"status":        run.Status,
+				"current_step":  run.CurrentStep,
+				"error":         run.ErrorMessage,
+				"error_kind":    run.ErrorKind,
+				"worktree":      run.WorktreeStatus,
+				"worktree_path": run.WorktreePath,
+				"branch":        run.WorktreeBranch,
+			}
+			if run.ErrorMessage != "" {
+				label := run.ErrorKind
+				if label == "" {
+					label = "platform"
+				}
+				diagnosis["failure_analysis"] = append(diagnosis["failure_analysis"].([]string),
+					fmt.Sprintf("Workflow run %s failed (%s): %s", run.ID, label, run.ErrorMessage))
+			} else if run.Status == "failed" {
+				// A failed run with NO recorded reason is itself a finding, and saying so is better than an
+				// empty list that reads as "nothing wrong".
+				diagnosis["failure_analysis"] = append(diagnosis["failure_analysis"].([]string),
+					fmt.Sprintf("Workflow run %s is %s but recorded no error — the failure happened outside any "+
+						"step (preflight or dispatch) before errors were recorded for that path", run.ID, run.Status))
+			}
+		}
+
 		runs, err := db.ListExecutions(ctx, ttx.Tx, db.ListExecutionsFilter{
 			TenantID:      tenantID,
 			WorkflowRunID: params.WorkflowRunID,

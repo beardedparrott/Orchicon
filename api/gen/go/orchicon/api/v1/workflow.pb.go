@@ -772,8 +772,17 @@ type WorkflowRun struct {
 	// deterministic `pull/new/{branch}` link derived from the project's
 	// stored git origin (repo_slug) so every provisioned git-backed run can
 	// still jump to a PR even before one exists.
-	PrUrl         string `protobuf:"bytes,19,opt,name=pr_url,json=prUrl,proto3" json:"pr_url,omitempty"`
-	PrState       string `protobuf:"bytes,20,opt,name=pr_state,json=prState,proto3" json:"pr_state,omitempty"` // e.g. open/merged/draft/none; empty until worker-authored
+	PrUrl   string `protobuf:"bytes,19,opt,name=pr_url,json=prUrl,proto3" json:"pr_url,omitempty"`
+	PrState string `protobuf:"bytes,20,opt,name=pr_state,json=prState,proto3" json:"pr_state,omitempty"` // e.g. open/merged/draft/none; empty until worker-authored
+	// error_message is WHY THIS RUN FAILED, when the PLATFORM is the party that knows — a preflight refusal
+	// (no valid base ref, a worktree that cannot be created), a dispatch failure. Such a run fails before any
+	// step dispatches, so there is no execution and no worker summary: without this the operator's surfaces
+	// all said nothing, and the reason was reachable only by decoding run_context by hand.
+	ErrorMessage string `protobuf:"bytes,21,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	// error_kind is a small vocabulary the UI groups and phrases on ("worktree_no_base_ref",
+	// "worktree_empty_base", "worktree_preflight"). Empty means unclassified. It is intentionally NOT an enum:
+	// a new kind must be addable without a schema change.
+	ErrorKind     string `protobuf:"bytes,22,opt,name=error_kind,json=errorKind,proto3" json:"error_kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -944,6 +953,20 @@ func (x *WorkflowRun) GetPrUrl() string {
 func (x *WorkflowRun) GetPrState() string {
 	if x != nil {
 		return x.PrState
+	}
+	return ""
+}
+
+func (x *WorkflowRun) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *WorkflowRun) GetErrorKind() string {
+	if x != nil {
+		return x.ErrorKind
 	}
 	return ""
 }
@@ -1293,7 +1316,7 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"position_x\x18\t \x01(\x01R\tpositionX\x12\x1d\n" +
 	"\n" +
 	"position_y\x18\n" +
-	" \x01(\x01R\tpositionY\"\x97\x06\n" +
+	" \x01(\x01R\tpositionY\"\xdb\x06\n" +
 	"\vWorkflowRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1f\n" +
@@ -1322,7 +1345,10 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\x0fworktree_branch\x18\x11 \x01(\tR\x0eworktreeBranch\x12#\n" +
 	"\rworktree_path\x18\x12 \x01(\tR\fworktreePath\x12\x15\n" +
 	"\x06pr_url\x18\x13 \x01(\tR\x05prUrl\x12\x19\n" +
-	"\bpr_state\x18\x14 \x01(\tR\aprState\"\x99\x05\n" +
+	"\bpr_state\x18\x14 \x01(\tR\aprState\x12#\n" +
+	"\rerror_message\x18\x15 \x01(\tR\ferrorMessage\x12\x1d\n" +
+	"\n" +
+	"error_kind\x18\x16 \x01(\tR\terrorKind\"\x99\x05\n" +
 	"\x0fWorkflowStepRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12&\n" +

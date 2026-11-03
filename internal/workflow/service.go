@@ -1965,6 +1965,8 @@ func runRowToProto(r db.WorkflowRunRow) *apiv1.WorkflowRun {
 		WorktreePath:    r.WorktreePath,
 		PrUrl:           prURL,
 		PrState:         prState,
+		ErrorMessage:    r.ErrorMessage,
+		ErrorKind:       r.ErrorKind,
 		CreatedAt:       timestamppb.New(r.CreatedAt),
 		UpdatedAt:       timestamppb.New(r.UpdatedAt),
 	}

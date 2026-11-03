@@ -1289,7 +1289,18 @@ func (b *Base) key(msg tea.KeyMsg) (bool, tea.Cmd) {
 		// execution screen's message-box stub, and any future screen-level `f`, can own it.
 		return false, nil
 	case "r":
-		return true, b.Refresh(b.ActiveSourceName())
+		// `r` REFRESHES WHAT IS ON SCREEN — the list AND the open detail — not just the list.
+		//
+		// REPORTED: "Hitting 'r' in the tui to refresh a workflow run is not working." It was doing
+		// something; it was doing the wrong thing. Refresh() reloads the source LIST, and a run's detail —
+		// its step flow and statuses — is fetched by the DETAIL function, which only RefreshView re-requests.
+		// So on a run row, `r` re-read the list (invisible: the cursor re-seats by id and nothing visibly
+		// changes) and left the steps stale. From the operator's side the key did nothing.
+		//
+		// RefreshView is the SAME call the rolling refresh window uses, so the two cannot disagree about
+		// what "refresh the view" means, and it carries the guards that stop a reload clobbering an open
+		// editor or a modal.
+		return true, b.RefreshView()
 	case "esc":
 		// ESC CLEARS THE MULTI-SELECTION before it does anything else. That is the operator's
 		// rule — "Esc clears the multi-select" — and it is also the safe order: an operator

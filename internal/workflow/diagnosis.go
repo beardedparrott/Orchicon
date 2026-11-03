@@ -55,6 +55,11 @@ type diagnosisInput struct {
 	stepRuns []db.WorkflowStepRunRow
 	stuck    []db.ExecutionRow
 	now      time.Time
+	// errorMessage / errorKind are the run's recorded failure. A terminal-failed run has no blockage to
+	// report — it is finished — but it still has a REASON, and leaving it out made this RPC answer an empty
+	// diagnosis for a run that plainly failed.
+	errorMessage string
+	errorKind    string
 }
 
 // isWaitingStepRun reports whether a step run is in a state that means "this
@@ -106,6 +111,8 @@ func buildRunDiagnosis(in diagnosisInput) *apiv1.RunDiagnosis {
 		ProjectId:        in.projectID,
 		ActiveExecutions: int32(in.active),
 		DispatchLimit:    int32(in.limit),
+		FailureMessage:   in.errorMessage,
+		FailureKind:      in.errorKind,
 	}
 
 	// Only a RUNNING run can be blocked. A terminal run is finished, and a
@@ -258,6 +265,8 @@ func (s *Service) GetWorkflowRunDiagnosis(ctx context.Context, req *connect.Requ
 		projectID:    run.ProjectID,
 		stepRuns:     stepRuns,
 		now:          time.Now().UTC(),
+		errorMessage: run.ErrorMessage,
+		errorKind:    run.ErrorKind,
 	}
 	// The project-level facts. A run whose project row is gone is a real state
 	// (the project was deleted under a live run): report the run's own blockage
