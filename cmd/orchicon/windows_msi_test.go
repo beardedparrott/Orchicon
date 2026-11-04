@@ -777,13 +777,14 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 		// operator's report was about: it did not exist, so the Linux install path silently
 		// installed a CLI and no GUI.
 		//
-		// THREE occurrences, and the third is the RELEASE NOTE. The two that matter are the assertion
-		// on the built file (want=…) and the AppImage's name in the published-asset list; the note is
-		// documentation a reader needs so the asset is not a mystery. Pinning 3 keeps the note from
-		// being deleted silently, and the sub-assertions below prove the two functional ones are
-		// really doing their job rather than being satisfied by prose.
+		// FOUR occurrences: the assertion on the built file (want=…), the AppImage's name in the
+		// published-asset list, the RELEASE NOTE, and — since the publish job gained an asset guard —
+		// the required-assets list that refuses to publish a partial set. The note is documentation a
+		// reader needs so the asset is not a mystery; pinning the count keeps any of them from being
+		// deleted silently, and the sub-assertions below prove the functional ones are really doing
+		// their job rather than being satisfied by prose.
 		{"the Linux AppImage the installer probes",
-			"orchicon_desktop_canary_linux_amd64.AppImage", 3},
+			"orchicon_desktop_canary_linux_amd64.AppImage", 4},
 	} {
 		if n := strings.Count(canary, want.sub); n != want.count {
 			t.Errorf("canary.yml: %s appears %d time(s), want %d — %q.\n"+
@@ -791,6 +792,36 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 				"  published under a name the installer does not resolve.",
 				want.what, n, want.count, want.sub)
 		}
+	}
+
+	// THE PUBLISH JOB MUST ASSERT THE ASSET SET, because the needs-gate above is a statement about JOB
+	// STATUS and the hazard is about FILES. They are not the same, and the gap is not theoretical: a
+	// macOS job that is CANCELLED for runner capacity reports neither success nor a build failure, and
+	// this file's own annotations show it happening ("The job was not acquired by Runner of type hosted
+	// even after multiple attempts"), which skipped publish three merges running.
+	//
+	// `gh release upload --clobber` replaces the names it is given and LEAVES EVERY OTHER NAME IN PLACE,
+	// so publishing with an asset missing ships this merge's tag carrying the previous merge's copy of
+	// it. The guard is the only thing that turns that into a failure instead of a lie.
+	for _, want := range []struct{ what, sub string }{
+		{"the asset-set guard step", "Assert the full canary asset set exists"},
+		{"its refusal (a partial set must NOT publish)", "Refusing to publish"},
+		{"the darwin app it requires", "orchicon_desktop_canary_darwin_universal.zip"},
+		{"the linux app it requires", "orchicon_desktop_canary_linux_amd64.AppImage"},
+		{"the windows MSI it requires", "orchicon_canary_windows_amd64.msi"},
+	} {
+		if !strings.Contains(canary, want.sub) {
+			t.Errorf("canary.yml is missing %s (%q) — a canary can then publish a PARTIAL asset set, and "+
+				"--clobber leaves the previous merge's copy of whatever is missing under a tag claiming "+
+				"to be this commit", want.what, want.sub)
+		}
+	}
+
+	// AND IT MUST RUN BEFORE THE UPLOAD, not after: an assertion that fires once the release has already
+	// been clobbered is a report, not a guard.
+	if gi, ai := strings.Index(canary, "Assert the full canary asset set exists"),
+		strings.Index(canary, "gh release upload canary"); gi < 0 || ai < 0 || gi > ai {
+		t.Errorf("the asset-set guard does not precede the upload (guard at %d, upload at %d)", gi, ai)
 	}
 
 	// THE PUBLISH JOB MUST WAIT FOR THE DESKTOP BUILD. `gh release upload --clobber` replaces
