@@ -1140,6 +1140,28 @@ func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 		sub(0, db.SessionPartToolUse, map[string]any{"part": map[string]any{
 			"tool": d.ToolCall.Name, "callID": callID, "state": state,
 		}})
+	case TransCompaction:
+		// The collapse the native engine performed, in the SAME part kind the opencode and claude adapters
+		// write (db.SessionPartCompacted) — so one renderer serves all three, and a native run finally shows
+		// the same platform notice the other adapters do.
+		var d struct {
+			Step              int     `json:"step"`
+			Reason            string  `json:"reason"`
+			MessagesBefore    int     `json:"messages_before"`
+			MessagesAfter     int     `json:"messages_after"`
+			ToolRoundsEvicted int     `json:"tool_rounds_evicted"`
+			FreshTokens       int64   `json:"fresh_tokens"`
+			CostUSD           float64 `json:"cost_usd"`
+		}
+		if jsonUnmarshal(data, &d) != nil {
+			return
+		}
+		sub(0, db.SessionPartCompacted, map[string]any{
+			"step": d.Step, "reason": d.Reason,
+			"messages_before": d.MessagesBefore, "messages_after": d.MessagesAfter,
+			"tool_rounds_evicted": d.ToolRoundsEvicted,
+			"fresh_tokens":        d.FreshTokens, "cost_usd": d.CostUSD,
+		})
 	case TransFinish:
 		sub(0, db.SessionPartStepFinish, map[string]any{})
 	case TransError:

@@ -904,7 +904,9 @@ func (s *Session) drain(ctx context.Context, callbacks scheduler.ExecutionCallba
 		case ReasoningDelta:
 			reasoning.WriteString(e.Text)
 			// Parity: reasoning is emitted via a {"kind":"reasoning"}
-			// JSON wrapper and NEVER replayed into history.
+			// JSON wrapper for display, AND accumulated into the
+			// assistant message (appendAssistantToolUse) so a provider
+			// that demands it back receives it.
 			s.pm.observeText()
 			s.nudgeObserved()
 			payload := map[string]any{"kind": "reasoning", "text": e.Text}
@@ -1130,12 +1132,16 @@ func (s *Session) appendAssistantToolUse(text string, calls []ToolCall, reasonin
 	// Attached to the FIRST content block, which is the shape chatturn.go uses. The OpenAI-compat
 	// serializer reads it from whichever block carries it (openaicompat.go), so a message with no text and
 	// only tool calls still replays correctly.
-	if r := strings.TrimSpace(reasoning); r != "" {
+	// REPLAYED BYTE-FOR-BYTE. The provider asked for the reasoning IT produced back, so trimming it is a
+	// silent edit to the one field it validates — and a whitespace-only round becomes "no reasoning" and is
+	// dropped entirely. Blankness decides whether there is anything to carry; the text itself is untouched.
+	if strings.TrimSpace(reasoning) != "" {
 		if len(msg.Content) == 0 {
 			// A round that produced ONLY reasoning still has to exist as a message for the provider to
 			// receive that reasoning back.
 			msg.Content = append(msg.Content, Content{Text: strPtrEmpty()})
 		}
+		r := reasoning
 		msg.Content[0].Reasoning = &r
 	}
 	s.history = append(s.history, msg)

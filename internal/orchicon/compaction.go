@@ -340,10 +340,31 @@ func (s *Session) doCompact(step int, reason string) bool {
 		s.log.Warn("compaction: offload failed — skipping eviction", "execution", s.id, "error", err)
 		return false
 	}
+	before := len(s.history)
 	s.history = replacement
 	s.cs.lastCompactStep = step
 	s.cs.compactions++
 	s.cs.armed = false // re-arm only after forward progress (next step)
+	// A COLLAPSE IS ANNOUNCED. Everything else about a compacted session is visible after the fact, and this
+	// was not: the run page showed a continuous conversation, the log showed nothing on success, and the only
+	// artifact was the offload file — so the one event that rewrites the request the provider has to accept
+	// was the one event an operator could not see. Best-effort like every other transcript write: a failed
+	// append must never fail the session.
+	ev := map[string]any{
+		"step": step, "reason": reason,
+		"messages_before": before, "messages_after": len(replacement),
+		"tool_rounds_evicted": len(evicted),
+		"fresh_tokens":        int64(s.cs.spend.FreshTokens()),
+		"cost_usd":            s.cs.spend.CostUSD(),
+	}
+	s.log.Info("native session: context compacted", "execution", s.id,
+		"reason", reason, "messages_before", before, "messages_after", len(replacement),
+		"tool_rounds_evicted", len(evicted), "compactions", s.cs.compactions)
+	if s.transcript != nil { // best-effort: a session without a durable transcript still compacts
+		if err := s.transcript.Append(TransCompaction, ev); err != nil {
+			s.log.Warn("compaction: transcript append failed", "execution", s.id, "error", err)
+		}
+	}
 	return true
 }
 
@@ -501,6 +522,13 @@ func (s *Session) planMiddleEviction() ([]evictedToolResult, []Message) {
 		if droppedAny && len(kept) == 0 {
 			dropMsg[i] = true // pure tool_use message, fully evicted
 		} else if droppedAny {
+			// The message's reasoning rides ONE content block (the first — see appendAssistantToolUse), so
+			// evicting that block would take the reasoning with it and leave a SURVIVING assistant message
+			// that silently lost the field a thinking-mode provider demands back. Carry it onto the first
+			// block that stays.
+			if carried := contentReasoning(m.Content); carried != nil && contentReasoning(kept) == nil {
+				kept[0].Reasoning = carried
+			}
 			// Text and/or surviving calls stay verbatim — but only as a
 			// COPY staged for the replacement; s.history is not touched
 			// until the offload commits (QA bug B).
@@ -539,6 +567,17 @@ func (s *Session) planMiddleEviction() ([]evictedToolResult, []Message) {
 		out = append(out, s.history[i])
 	}
 	return evicted, out
+}
+
+// contentReasoning returns the message's reasoning, wherever on its content it sits (the loop attaches it to
+// the first block, which is not necessarily the block that survives an eviction).
+func contentReasoning(content []Content) *string {
+	for i := range content {
+		if r := content[i].Reasoning; r != nil && *r != "" {
+			return r
+		}
+	}
+	return nil
 }
 
 // appendMarkerToHead merges the compaction digest-marker text into the

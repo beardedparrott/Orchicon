@@ -314,7 +314,8 @@ func (c *OpenAICompatClient) StreamTurn(ctx context.Context, req TurnRequest) (T
 	//
 	// It is the SHARED loop (requestrepair.go, sendWithRepair) rather than a copy, because this shape appears in
 	// five clients and resilience added to one of them is the asymmetry that leaves the other four dying.
-	quirkReplayReasoning := false
+	quirkReplayReasoning := ReplayReasoningLearned(c.replayKey())
+	repairs := 0
 	resp, serr := sendWithRepair(ctx, c.Retry, c.Logf,
 		func(ctx context.Context, b []byte) (*http.Response, error) {
 			return postJSON(ctx, httpc, url, c.requestHeaders(req.SessionID), b)
@@ -331,18 +332,43 @@ func (c *OpenAICompatClient) StreamTurn(ctx context.Context, req TurnRequest) (T
 				// better evidence than the profile's static guess.
 				if repairRequest(RepairReasoningContent, &req) {
 					quirkReplayReasoning = true
+					// …and REMEMBER it. The demand is a fact about the ENDPOINT: re-learning it on every
+					// request made each round of a tool-using session pay a rejection plus a resend, and left
+					// every round one unrepairable history away from a fatal error.
+					if noteReplayReasoningDemanded(c.replayKey()) {
+						c.logf("%s requires reasoning replay (reasoning_content) — replaying it from now on: %v", c.label(), kind)
+					}
+					repairs++
 					return true
 				}
 				return false
 			default:
-				return repairRequest(kind, &req)
+				if repairRequest(kind, &req) {
+					repairs++
+					return true
+				}
+				return false
 			}
 		})
 	err = serr
 	if err != nil {
+		// A reasoning_content rejection that survived the repair budget is the one failure whose cause is
+		// invisible in the provider's text: say what the final request actually carried.
+		if k, _ := statusErrRepairable(err); k == RepairReasoningContent {
+			err = fmt.Errorf("%w (%s)", err, reasoningReplayReport(req, quirkReplayReasoning, repairs))
+		}
 		return nil, err
 	}
 	return newOpenAIStream(resp.Body), nil
+}
+
+// replayKey identifies the endpoint for the learned-replay set: the provider id when the client has one (the
+// registry always sets it), the base URL otherwise (a client built directly, as tests do).
+func (c *OpenAICompatClient) replayKey() string {
+	if c.ProviderID != "" {
+		return c.ProviderID
+	}
+	return c.BaseURL
 }
 
 // logf reports a repair/retry decision. A no-op unless the client was given a logger: the adapter's other

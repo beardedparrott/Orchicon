@@ -34,9 +34,11 @@ package orchicon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -186,6 +188,76 @@ func repairRequest(kind RepairKind, req *TurnRequest) (changed bool) {
 		return false
 	}
 	return false
+}
+
+// learnedReplayReasoning records the providers that have DEMANDED an assistant message's reasoning back, keyed
+// by provider id.
+//
+// THE DEMAND IS A FACT ABOUT THE ENDPOINT, NOT ABOUT ONE REQUEST — and it used to be treated as the latter. The
+// quirk flip lived in StreamTurn's local scope, so the lesson died with the request that taught it: a 33-round
+// worker session paid 33 rejections and 33 resends, and every single round depended on the repair finding
+// reasoning to replay. When one round's repair could not help, the run died with the provider's 400 and nothing
+// else — which is exactly how a DeepSeek execution failed after 4 minutes of healthy work.
+//
+// It cannot be a static built-in quirk either: `reasoning_content` is not part of the OpenAI chat schema, so a
+// tenant custom profile (Settings → Adapters → Providers accepts any compat endpoint, DeepSeek included) has to
+// start with replay OFF or it would send an unknown field to every provider that has never heard of it. So the
+// durable answer is to LEARN the requirement once per provider and keep it.
+var learnedReplayReasoning sync.Map // provider key → struct{}
+
+// ReplayReasoningLearned reports whether this provider has ever demanded reasoning replay.
+func ReplayReasoningLearned(providerKey string) bool {
+	_, ok := learnedReplayReasoning.Load(providerKey)
+	return ok
+}
+
+// noteReplayReasoningDemanded records the demand, reporting true the FIRST time so the caller logs it once
+// rather than once per request.
+func noteReplayReasoningDemanded(providerKey string) (first bool) {
+	_, loaded := learnedReplayReasoning.LoadOrStore(providerKey, struct{}{})
+	return !loaded
+}
+
+// forgetLearnedReplayReasoning clears the learned set (tests; a provider's profile can legitimately change
+// under a live process via the settings UI).
+func forgetLearnedReplayReasoning() { learnedReplayReasoning = sync.Map{} }
+
+// reasoningReplayReport describes what the LAST request actually carried, for the error a caller surfaces.
+//
+// IT EXISTS BECAUSE THIS FAILURE WAS UNDIAGNOSABLE. The operator gets one line: the provider's 400. Nothing in
+// it says whether Orchicon replayed reasoning at all, whether the history had any to replay, or whether the
+// repair ran — so "the reasoning_content 400" could mean three different defects and looked identical in all
+// of them. Naming the shape costs a few bytes in a message nobody wants to see and makes the next occurrence
+// answerable from the run page alone, without logs or a live box.
+func reasoningReplayReport(req TurnRequest, replayOn bool, repairs int) string {
+	assistant, withReasoning, callsWithout := 0, 0, 0
+	for _, m := range req.Messages {
+		if m.Role != RoleAssistant {
+			continue
+		}
+		assistant++
+		has, calls := false, false
+		for _, c := range m.Content {
+			if c.Reasoning != nil && *c.Reasoning != "" {
+				has = true
+			}
+			if c.ToolUse != nil {
+				calls = true
+			}
+		}
+		if has {
+			withReasoning++
+		} else if calls {
+			callsWithout++
+		}
+	}
+	onoff := "off"
+	if replayOn {
+		onoff = "on"
+	}
+	return fmt.Sprintf("reasoning replay %s: %d of %d assistant messages carried reasoning_content, "+
+		"%d tool-calling message(s) had none to return, %d repair resend(s)",
+		onoff, withReasoning, assistant, callsWithout, repairs)
 }
 
 // statusErrRepairable extracts the pieces classifyRepairable needs from an error.
