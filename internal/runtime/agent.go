@@ -89,10 +89,12 @@ type AgentEvent struct {
 	Skipped bool `json:"skipped,omitempty"`
 }
 
-// envGitdirMaps carries the host->guest project prefix pairs the supervisor repoints worktree `.git` pointers
-// with. Formatted "<host>|<guest>" joined by ';', because a Windows host path contains ':' and a POSIX guest
-// path cannot contain '|'. Emitted by the daemon from the SAME mounts it creates, so the pairs cannot drift
-// from what is actually mounted.
+// envGitdirMaps carries the host->guest project prefix pairs this container was mounted with. Formatted
+// "<host>|<guest>" joined by ';', because a Windows host path contains ':' and a POSIX guest path cannot
+// contain '|'. Emitted by the daemon from the SAME mounts it creates, so the pairs cannot drift from what is
+// actually mounted.
+//
+// It is used to RECOGNISE a worktree (whose `.git` names the host form), never to rewrite one.
 const envGitdirMaps = "ORCHICON_GITDIR_MAPS"
 
 // DefaultAgentSocket is the in-container path of the supervisor's unix
@@ -223,21 +225,15 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	defer l.Close()
 	log.Info("runtime supervisor listening", "socket", socketPath)
 
-	// REPOINT THE WORKTREES THE PLANE PROVISIONED. A git worktree's `.git` file records an ABSOLUTE path as the
-	// host's git wrote it; the project is then mounted here at a different (guest) path, so that pointer names a
-	// directory that does not exist in this namespace and git reports "not a git repository" — with git fully
-	// present and correct. See gitdir.go.
+	// GIT IS TOLD HOW TO READ A WORKTREE; THE WORKTREE IS NOT ALTERED. See gitEnvFor in this file.
 	//
-	// Runs at START, once: the worktrees are provisioned before the container exists, so nothing can be created
-	// mid-life that this would miss, and it is idempotent if the container restarts.
-	if maps := parsePathMappings(os.Getenv(envGitdirMaps)); len(maps) > 0 {
-		for _, m := range maps {
-			if n := rewriteGuestGitdirs(m.Guest, []pathMapping{m}, log); n > 0 {
-				log.Info("gitdir rewrite: worktrees repointed for this container",
-					"root", m.Guest, "host_root", m.Host, "count", n)
-			}
-		}
-	}
+	// This used to REWRITE each worktree's `.git` to the guest path. The file is bind-mounted, so the rewrite
+	// was visible to the HOST as well — and a host that cannot resolve `/mnt/c/...` then failed to validate its
+	// own worktree, refused to provision, and could not satisfy git's worktree registration. The container was
+	// given a usable worktree by breaking the host's.
+	//
+	// The pointer is now LEFT ALONE (the host wrote it, the host needs it) and each container CHILD receives
+	// GIT_DIR/GIT_WORK_TREE in its own environment, which git prefers to the pointer entirely.
 
 	// Reap orphaned children on exit so a container kill never leaves a
 	// stray opencode running inside.
@@ -1513,6 +1509,94 @@ func (h *childRegistry) killAll(sig syscall.Signal) {
 	}
 }
 
+// gitEnvFor returns GIT_DIR and GIT_WORK_TREE for a child whose working directory is cwd, or nil when cwd is
+// not a worktree of a mounted project.
+//
+// THIS IS THE WHOLE MECHANISM, and it replaces rewriting the worktree's `.git`.
+//
+// A git worktree has a `.git` FILE whose content is an absolute path — written by the HOST, naming the host's
+// form. That file lives in a BIND MOUNT, so the host and the container open the SAME BYTES, and no content
+// satisfies both: `C:/...` is unresolvable here, `/mnt/c/...` is unresolvable there. Rewriting it gave the
+// container a working git by breaking the host's — which is what produced a host that could not validate its
+// own worktree, refused to provision, and could not satisfy git's worktree registration.
+//
+// So the file keeps the HOST form and each CONTAINER CHILD is told where its gitdir is. GIT_DIR OVERRIDES the
+// pointer entirely: git never reads the file, so nothing about the host's view changes.
+//
+// PER-CHILD, DERIVED FROM CWD — load-bearing, not tidy: a parallel-branch step runs in its own sibling
+// worktree, so "the run's worktree" is the wrong answer for it. The cwd the child was actually given is the only
+// form correct for both.
+func gitEnvFor(cwd string) []string {
+	workDir := strings.TrimSpace(cwd)
+	if workDir == "" {
+		return nil
+	}
+	if st, err := os.Stat(filepath.Join(workDir, ".git")); err != nil || st.IsDir() {
+		return nil // not a worktree: no pointer file, or a real .git directory
+	}
+	raw, err := os.ReadFile(filepath.Join(workDir, ".git"))
+	if err != nil {
+		return nil
+	}
+	pointer := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(raw)), "gitdir: "))
+	if pointer == "" {
+		return nil
+	}
+	if !strings.Contains(strings.ReplaceAll(pointer, "\\", "/"), ".git/worktrees") {
+		return nil // not a worktree pointer
+	}
+	gitDir := pointer
+	// A host-form pointer must be transposed into this namespace. One that already resolves needs no help and
+	// is left exactly as written.
+	if _, serr := os.Stat(gitDir); serr != nil {
+		mapped, ok := mapHostPointerToGuest(pointer)
+		if !ok {
+			return nil // cannot transpose confidently — git's own error beats a wrong GIT_DIR
+		}
+		gitDir = mapped
+	}
+	return []string{"GIT_DIR=" + gitDir, "GIT_WORK_TREE=" + workDir}
+}
+
+// mapHostPointerToGuest transposes a host-form gitdir into this container's path space, using the same
+// host|guest pairs the daemon emitted for its mounts.
+func mapHostPointerToGuest(pointer string) (string, bool) {
+	folded := strings.ReplaceAll(pointer, "\\", "/")
+	for _, m := range parsePathMappings(os.Getenv(envGitdirMaps)) {
+		hostFolded := strings.ReplaceAll(strings.TrimRight(m.Host, "\\/"), "\\", "/")
+		if hostFolded == "" || !strings.HasPrefix(folded, hostFolded) {
+			continue
+		}
+		return strings.TrimRight(m.Guest, "/") + strings.TrimPrefix(folded, hostFolded), true
+	}
+	return "", false
+}
+
+// parsePathMappings reads the "<host>|<guest>" pairs the daemon emitted. An entry that does not parse is
+// SKIPPED, not fatal: a malformed mapping must not stop a container from starting.
+func parsePathMappings(raw string) []pathMapping {
+	var out []pathMapping
+	for _, entry := range strings.Split(raw, ";") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		host, guest, ok := strings.Cut(entry, "|")
+		host, guest = strings.TrimSpace(host), strings.TrimSpace(guest)
+		if !ok || host == "" || guest == "" || host == guest {
+			continue
+		}
+		out = append(out, pathMapping{Host: host, Guest: guest})
+	}
+	return out
+}
+
+// pathMapping is one host->guest prefix pair.
+type pathMapping struct {
+	Host  string
+	Guest string
+}
+
 // agentEnv builds the child environment: the supervisor's environment
 // plus the daemon-provided overrides (HOME, OPENCODE_CONFIG_CONTENT,
 // OPENCODE_EXECUTION_ID, etc.).
@@ -1541,6 +1625,14 @@ func agentEnv(req AgentRequest) []string {
 	// contributes no prefix (the container-level PATH the daemon set still
 	// resolves the CLIs), so an older daemon cannot have a prefix pointing
 	// at a dir it never mounted.
+	// GIT_DIR / GIT_WORK_TREE FOR THIS CHILD'S WORKTREE. Set here — after the request's own env, so an explicit
+	// override still loses to the derived truth about the directory the child is actually in, and BEFORE the
+	// PATH work below, which does not touch them.
+	if gitEnv := gitEnvFor(req.Cwd); len(gitEnv) > 0 {
+		for _, kv := range gitEnv {
+			out = setEnv(out, kv[:strings.Index(kv, "=")], kv[strings.Index(kv, "=")+1:])
+		}
+	}
 	if home := os.Getenv("HOME"); home != "" {
 		kinds := splitKinds(os.Getenv("ORCHICON_ADAPTER_KINDS"))
 		if dirs := adapterPathPrefix(home, kinds...); len(dirs) > 0 {
