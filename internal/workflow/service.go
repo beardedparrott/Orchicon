@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -1977,6 +1978,7 @@ func runRowToProto(r db.WorkflowRunRow) *apiv1.WorkflowRun {
 		PrState:         prState,
 		ErrorMessage:    r.ErrorMessage,
 		ErrorKind:       r.ErrorKind,
+		IntegrationStatus: integrationStatus(r),
 		CreatedAt:       timestamppb.New(r.CreatedAt),
 		UpdatedAt:       timestamppb.New(r.UpdatedAt),
 	}
@@ -2090,4 +2092,25 @@ func StartWorkflowDirectWithContext(ctx context.Context, pool *db.Pool, log *slo
 		}
 	}
 	return nil
+}
+
+// integrationStatus derives whether a run's work reached the integration branch.
+//
+// THE DERIVATION IS EXACT, not a heuristic. A run branch is deleted only when branchProvablyMerged proves it an
+// ancestor of the integration branch, and that delete clears worktree_branch. So:
+//
+//	completed + no branch  -> landed
+//	completed + branch     -> NOT landed (a conflict, a stale base, or a sweep that missed it)
+//	anything else          -> not applicable yet
+//
+// Reported as the gap that made a missed integration invisible: "status=succeeded, WorkflowRun=completed,
+// acceptance review written" looked identical whether the work landed or not.
+func integrationStatus(r db.WorkflowRunRow) string {
+	if r.Status != domain.WorkflowRunCompleted {
+		return "not_applicable"
+	}
+	if strings.TrimSpace(r.WorktreeBranch) == "" {
+		return "merged"
+	}
+	return "not_merged"
 }

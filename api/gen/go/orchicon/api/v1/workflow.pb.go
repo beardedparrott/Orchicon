@@ -782,9 +782,22 @@ type WorkflowRun struct {
 	// error_kind is a small vocabulary the UI groups and phrases on ("worktree_no_base_ref",
 	// "worktree_empty_base", "worktree_preflight"). Empty means unclassified. It is intentionally NOT an enum:
 	// a new kind must be addable without a schema change.
-	ErrorKind     string `protobuf:"bytes,22,opt,name=error_kind,json=errorKind,proto3" json:"error_kind,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ErrorKind string `protobuf:"bytes,22,opt,name=error_kind,json=errorKind,proto3" json:"error_kind,omitempty"`
+	// integration_status says whether this run's work actually reached the integration branch.
+	//
+	// REPORTED: "both missed-integration runs and correctly-integrated runs present identically: status=succeeded,
+	// WorkflowRun=completed ... There is no field anywhere recording whether integration happened." That is the
+	// worst kind of gap — a run that looks finished and is not.
+	//
+	// DERIVED, not stored, and the derivation is exact rather than heuristic: a run branch is deleted ONLY when
+	// it is provably merged (branchProvablyMerged → ancestry), and deleting it clears worktree_branch. So a
+	// COMPLETED run with no branch has landed, and one with a surviving branch has not. Two facts the platform
+	// already records, read together.
+	//
+	// Values: "merged" | "not_merged" | "not_applicable". Empty for runs that have not completed.
+	IntegrationStatus string `protobuf:"bytes,23,opt,name=integration_status,json=integrationStatus,proto3" json:"integration_status,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *WorkflowRun) Reset() {
@@ -967,6 +980,13 @@ func (x *WorkflowRun) GetErrorMessage() string {
 func (x *WorkflowRun) GetErrorKind() string {
 	if x != nil {
 		return x.ErrorKind
+	}
+	return ""
+}
+
+func (x *WorkflowRun) GetIntegrationStatus() string {
+	if x != nil {
+		return x.IntegrationStatus
 	}
 	return ""
 }
@@ -1316,7 +1336,7 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"position_x\x18\t \x01(\x01R\tpositionX\x12\x1d\n" +
 	"\n" +
 	"position_y\x18\n" +
-	" \x01(\x01R\tpositionY\"\xdb\x06\n" +
+	" \x01(\x01R\tpositionY\"\x8a\a\n" +
 	"\vWorkflowRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1f\n" +
@@ -1348,7 +1368,8 @@ const file_orchicon_api_v1_workflow_proto_rawDesc = "" +
 	"\bpr_state\x18\x14 \x01(\tR\aprState\x12#\n" +
 	"\rerror_message\x18\x15 \x01(\tR\ferrorMessage\x12\x1d\n" +
 	"\n" +
-	"error_kind\x18\x16 \x01(\tR\terrorKind\"\x99\x05\n" +
+	"error_kind\x18\x16 \x01(\tR\terrorKind\x12-\n" +
+	"\x12integration_status\x18\x17 \x01(\tR\x11integrationStatus\"\x99\x05\n" +
 	"\x0fWorkflowStepRun\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12&\n" +
