@@ -445,9 +445,20 @@ jobs:
     #
     # ARCH NOTE: macos-26 is ARM64 and the retiring macos-14 was x64, so this is a change of build HOST as
     # well as OS. That is fine here by design — `wails build -platform darwin/universal` cross-compiles and
-    # lipos both slices — but it is stated rather than glossed: if it ever fails it will be a cgo/WebKit link
-    # error naming arm64, and the x64 label for the same OS is `macos-26-intel`.
-    runs-on: macos-26
+    # lipos both slices — so the HOST arch is free to be whichever pool can actually give us a machine.
+    #
+    # IT BUILDS ON THE X64 LABEL, BECAUSE THE ARM64 POOL STARVED AND THAT COST THREE RELEASES. Measured on
+    # run 41856905423 (merge 06bc446ba): the job was queued, never acquired a runner, and was cancelled
+    # after 15m01s with ZERO steps executed — so `publish` (which needs it) was skipped and the canary
+    # stayed three merges behind at 9622f57. GitHub's own job annotations name the cause verbatim:
+    #
+    #   "The job was not acquired by Runner of type hosted even after multiple attempts"
+    #   "Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times."
+    #
+    # `macos-26-intel` is the SAME macOS image and therefore the same Xcode/SDK — the pin in the comment
+    # above is preserved — on a pool with capacity. The build is universal either way, so the artifact is
+    # byte-shaped the same and `install.sh` resolves the same name.
+    runs-on: macos-26-intel
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -620,6 +631,48 @@ jobs:
           pattern: canary-*
           merge-multiple: true
           path: dist
+
+      # THE ASSET SET IS ASSERTED HERE, AND IT DID NOT USE TO BE.
+      #
+      # The `needs` gate above is a statement about JOB STATUS; what the release actually needs is a
+      # statement about FILES. They are not the same, and the gap is destructive: `gh release upload
+      # --clobber` replaces the names it is given and LEAVES EVERY OTHER NAME IN PLACE, so publishing
+      # without, say, the macOS app would ship this merge's tag carrying the PREVIOUS merge's macOS app —
+      # a canary that lies about its own contents, which is the exact failure the `needs` gate exists to
+      # prevent.
+      #
+      # A comment further up this file already claimed "this file's ASSETS list guards against" the
+      # built-and-silently-not-published case. It did not exist; there was no list and no check. This is it.
+      #
+      # Every name listed in the release notes at the bottom is required, so a rename that forgets this
+      # list fails here rather than shipping a gap.
+      - name: Assert the full canary asset set exists
+        run: |
+          set -euo pipefail
+          required=(
+            orchicon_canary_linux_amd64.tar.gz
+            orchicon_canary_linux_arm64.tar.gz
+            orchicon_canary_darwin_amd64.tar.gz
+            orchicon_canary_darwin_arm64.tar.gz
+            orchicon_canary_windows_amd64.zip
+            orchicon_canary_windows_amd64.msi
+            orchicon_desktop_canary_windows_amd64_installer.exe
+            orchicon_desktop_canary_windows_amd64.zip
+            orchicon_desktop_canary_linux_amd64.AppImage
+            orchicon_desktop_canary_darwin_universal.zip
+          )
+          missing=()
+          for f in "${required[@]}"; do
+            [ -f "dist/$f" ] || missing+=("$f")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf '::error::the canary is MISSING %d required asset(s): %s\n' \
+              "${#missing[@]}" "${missing[*]}"
+            echo "Refusing to publish: --clobber would leave the PREVIOUS merge's copy of each missing" \
+                 "asset under a tag claiming to be this commit. Fix the job that owns it and re-run."
+            exit 1
+          fi
+          echo "All ${#required[@]} required assets present."
 
       - name: Publish the canary prerelease
         env:
