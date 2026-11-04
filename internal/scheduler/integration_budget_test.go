@@ -54,13 +54,13 @@ func TestIntegrationRunsBeforeTheBudgetConsumingSweeps(t *testing.T) {
 // THE FILTER: the query must not exclude pruned worktrees, because that is the shape of an un-integrated run,
 // and it must terminate on the stamp rather than on the worktree state.
 func TestIntegrationQueryDoesNotFilterOnPrunedWorktrees(t *testing.T) {
-	src, err := os.ReadFile("../db/workflow.go")
+	src, err := os.ReadFile("../db/local_integrations.go")
 	if err != nil {
 		t.Fatalf("read db source: %v", err)
 	}
-	start := strings.Index(string(src), "func ListCompletedRunsWithBranch(")
+	start := strings.Index(string(src), "func ListRunsNeedingLocalIntegration(")
 	if start < 0 {
-		t.Fatal("ListCompletedRunsWithBranch is gone")
+		t.Fatal("ListRunsNeedingLocalIntegration is gone")
 	}
 	end := strings.Index(string(src)[start:], "\n}\n")
 	body := string(src)[start : start+end]
@@ -70,10 +70,11 @@ func TestIntegrationQueryDoesNotFilterOnPrunedWorktrees(t *testing.T) {
 			"provably merged has its worktree pruned and its branch kept, so that filter skips exactly the " +
 			"runs integration exists for — which is why a green run was never integrated")
 	}
-	if !strings.Contains(body, "local_integrated_at") {
-		t.Error("the candidate query has no termination stamp. Without it the set grows forever with rows " +
-			"whose branch the orphan sweep already deleted, and the LIMIT starves newer runs behind " +
-			"ancient no-ops")
+	// TERMINATION IS THE RECORD NOW, not a run_context stamp. A run leaves the candidate set because it has an
+	// integration row, so the set is self-cleaning by construction and cannot starve newer runs.
+	if !strings.Contains(body, "FROM local_integrations") {
+		t.Error("the candidate query has no record-based termination. Without it the set grows forever with " +
+			"rows whose branch the orphan sweep already deleted, and the LIMIT starves newer runs")
 	}
 }
 
@@ -102,24 +103,43 @@ func TestConflictIsNotStampedSoARetryCanStillIntegrate(t *testing.T) {
 
 // A run whose project is not local-strategy, or whose branch is gone, must be stamped so it is not rescanned
 // forever; the branch-gone case is also LOGGED, because it is a finding.
-func TestTerminalNonIntegrationOutcomesAreStamped(t *testing.T) {
+// TERMINAL NON-INTEGRATION OUTCOMES ARE RECORDED, NOT INFERRED.
+//
+// This used to assert a run_context stamp (`local_integrated_at`) was written. That mechanism is gone: an
+// outcome stuffed into run_context is invisible in the API (it arrives base64-encoded), semantically wrong
+// (run_context holds the run's INPUTS), and it is not a record anybody can query a queue from. The obligation
+// and its outcome now live in a row (local_integrations), so what this test pins is that every terminal
+// non-integration outcome REACHES that row rather than being dropped.
+func TestTerminalNonIntegrationOutcomesAreRecorded(t *testing.T) {
 	src, err := os.ReadFile("local_integrate.go")
 	if err != nil {
 		t.Fatalf("read source: %v", err)
 	}
 	s := string(src)
 	for _, want := range []string{
-		`stampIntegrated(ctx, tenantID, run.ID, "not a local-strategy project")`,
-		`stampIntegrated(ctx, tenantID, run.ID, "recorded branch does not exist")`,
+		// "nothing to land, and here is why" — recorded as skipped, not left pending forever.
+		"db.LocalIntegrationSkipped",
+		// "a human must resolve this" — recorded as conflicted, and it keeps blocking the queue.
+		"db.LocalIntegrationConflicted",
+		// "it landed" — recorded as merged, with the resulting commit.
+		"db.LocalIntegrationMerged",
+		// Every one of those writes goes through the single writer, so an outcome cannot be half-recorded.
+		"finishIntegrationRecord",
 	} {
 		if !strings.Contains(s, want) {
-			t.Errorf("missing stamp: %s", want)
+			t.Errorf("local_integrate.go never records %s — an outcome that is not written down is the "+
+				"silence this table exists to end", want)
 		}
 	}
-	if !strings.Contains(s, "found NO branch for a completed run") {
+	if !strings.Contains(s, "found NO branch") && !strings.Contains(s, "NO branch — nothing to land") {
 		t.Error("a recorded branch that does not exist is not logged — the reported run 1 recorded a branch " +
 			"that was never created at all, and silence about that is what made it look like integration " +
 			"was running")
+	}
+	// The run_context stamp must NOT come back: it is the mechanism this replaced.
+	if strings.Contains(s, "integrationStampKey") || strings.Contains(s, "local_integrated_at") {
+		t.Error("the run_context stamp is back — obligations belong in local_integrations, where they can be " +
+			"queried, counted and shown")
 	}
 }
 

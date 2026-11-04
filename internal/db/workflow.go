@@ -1908,19 +1908,58 @@ func ListTerminalRunsWithRuntimeEvidence(ctx context.Context, tx pgx.Tx, tenantI
 	return out, rows.Err()
 }
 
-// ListCompletedRunsWithBranch returns COMPLETED runs that still record a worktree branch, oldest first.
+// ListUnintegratedLocalRuns returns COMPLETED runs of ONE PROJECT whose branch has not yet been integrated,
+// oldest first, excluding excludeRunID.
 //
-// It is the candidate set for LOCAL INTEGRATION (internal/scheduler integrateLocalRuns): a run whose
-// project integrates locally has no remote, so nothing ever merges its branch into the integration branch
-// and its work sits on a branch nobody reads. The reconciler finishes the job the worker could not.
+// IT EXISTS FOR THE TWO HALVES OF ORDERED INTEGRATION:
+//   - integrating this project's backlog BEFORE a new branch is cut (the tenant-wide list is sorted by
+//     ended_at and capped, so a busy tenant can fill the page with other projects' runs and leave the
+//     project that is about to branch untouched), and
+//   - deciding whether this project may cut a branch at all yet (nothing here = clear to proceed).
 //
-// THE STAMP IS A FACT ABOUT THE RUN, not a duplicate of a fact about git. `local_integrated_at` in
-// run_context records "integration has dealt with this run", which git cannot answer: git can say whether a
-// branch is an ancestor, but not whether we have looked. Without it the candidate set would grow forever
-// with rows whose branch the orphan sweep already deleted, and the LIMIT would starve newer runs.
-//
-// The ancestry check inside the controller remains the IDEMPOTENCY key for the merge itself; the stamp only
-// decides whether the run is worth examining again.
+// The strategy is NOT filtered here: git_strategy is a workflow-then-project precedence resolved in Go, and a
+// SQL predicate would have to restate that precedence and could disagree with db.EffectiveGitStrategy. Callers
+// resolve it per workflow and skip the non-local rows (integrateLocalRun stamps those, so they leave this set).
+func ListUnintegratedLocalRuns(ctx context.Context, tx pgx.Tx, tenantID, projectID string, limit int, excludeRunID string) ([]WorkflowRunRow, error) {
+	if projectID == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 16
+	}
+	const q = `SELECT r.id, r.tenant_id, r.workflow_id, r.workflow_version, r.project_id, r.status,
+		current_step, r.run_context, r.work_item_id, r.bound_worker_ref, r.runtime_image,
+		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch, r.error_message, r.error_kind,
+			r.version, r.started_at, r.ended_at, r.created_at, r.updated_at
+		FROM workflow_runs r
+		WHERE r.tenant_id = $1 AND r.project_id = $2
+		  AND r.status = 'completed'
+		  AND r.worktree_branch <> ''
+		  -- The same termination stamp the tenant-wide query uses: local_integrated_at records that this run
+		  -- has been DEALT WITH, so the set is self-cleaning and cannot pin the page forever.
+		  AND NOT (r.run_context ? 'local_integrated_at')
+		  AND ($3 = '' OR r.id <> $3)
+		ORDER BY r.ended_at ASC NULLS LAST, r.created_at ASC
+		LIMIT $4`
+	rows, err := tx.Query(ctx, q, tenantID, projectID, excludeRunID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list unintegrated runs for project: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowRunRow
+	for rows.Next() {
+		var r WorkflowRunRow
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion, &r.ProjectID, &r.Status,
+			&r.CurrentStep, &r.RunContext, &r.WorkItemID, &r.BoundWorkerRef, &r.RuntimeImage,
+			&r.RuntimeReady, &r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
+			&r.Version, &r.StartedAt, &r.EndedAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("db: scan unintegrated run: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func ListCompletedRunsWithBranch(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
 	if limit <= 0 {
 		limit = 16

@@ -119,6 +119,11 @@ func purgeWorktreeSweepResidue(t *testing.T, pool *db.Pool) {
 		return
 	}
 	defer ttx.Rollback(ctx)
+	// Cleared FIRST: the rows below stop describing a branch, and an obligation pointing at a branch that no
+	// longer exists would make the queue hold a later fixture's run behind a phantom.
+	if _, err := ttx.Tx.Exec(ctx, `DELETE FROM local_integrations WHERE tenant_id = $1`, approvalTestTenant); err != nil {
+		return
+	}
 	if _, err := ttx.Tx.Exec(ctx, `UPDATE workflow_runs SET worktree_branch = ''
 		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
 		  AND worktree_status = 'pruned' AND worktree_branch <> ''`, approvalTestTenant); err != nil {

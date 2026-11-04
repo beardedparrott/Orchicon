@@ -873,7 +873,18 @@ func (s *Service) GetWorkflowRun(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	return connect.NewResponse(&apiv1.GetWorkflowRunResponse{Run: runRowToProto(run)}), nil
+	proto := runRowToProto(run)
+	// THE RECORD REFINES THE STATUS ON THE VIEW AN OPERATOR OPENS WHEN THEY WANT TO KNOW WHY.
+	//
+	// `integrationStatus` can only answer merged / not_merged, from whether a branch still exists. The record
+	// knows more: that the work is QUEUED behind an unlanded predecessor, that it is CONFLICTED and needs a
+	// human, or that it landed as a specific commit — and it knows it BEFORE the run is terminal, which is
+	// exactly when a stall is worth seeing. The vocabulary rides the existing field so nothing in the wire
+	// format changes and the run page's notice renders it unchanged.
+	if rec, rerr := db.GetLocalIntegrationForRun(ctx, ttx.Tx, tenantID, run.ID); rerr == nil {
+		proto.IntegrationStatus = integrationStatusWithRecord(run, &rec)
+	}
+	return connect.NewResponse(&apiv1.GetWorkflowRunResponse{Run: proto}), nil
 }
 
 // ListWorkflowRuns returns a page of WorkflowRuns scoped by tenant and any
@@ -2105,6 +2116,38 @@ func StartWorkflowDirectWithContext(ctx context.Context, pool *db.Pool, log *slo
 //
 // Reported as the gap that made a missed integration invisible: "status=succeeded, WorkflowRun=completed,
 // acceptance review written" looked identical whether the work landed or not.
+// integrationStatusWithRecord is integrationStatus refined by the platform's own integration record.
+//
+// The record is the authority when it exists, because it is a RECORD of what was attempted rather than an
+// inference from a ref: `pending`/`adopted` mean the work has not landed yet, `conflicted` means a human must
+// act, `merged` means it landed (and the row carries the commit), `skipped` means there was provably nothing to
+// land. Without a record — a `pr`/`none` project, or a run from before the table — the derivation stands.
+//
+// The vocabulary deliberately reuses the two values the UI already renders ("merged" / "not_merged") and adds
+// the two states that were previously invisible: "queued" (waiting for an earlier run to land) and "conflicted".
+func integrationStatusWithRecord(r db.WorkflowRunRow, rec *db.LocalIntegrationRow) string {
+	if rec == nil {
+		return integrationStatus(r)
+	}
+	switch rec.Status {
+	case db.LocalIntegrationMerged:
+		return "merged"
+	case db.LocalIntegrationConflicted:
+		return "conflicted"
+	case db.LocalIntegrationSkipped:
+		// Nothing to land. On a completed run that means the branch is gone (already merged and swept) or the
+		// project has no usable integration branch — the record's last_error says which, and the run page shows
+		// that text.
+		return "not_merged"
+	default: // pending, adopted
+		if r.Status == domain.WorkflowRunCompleted {
+			return "not_merged"
+		}
+		// NOT YET TERMINAL: the run is holding its branch until the queue ahead of it clears.
+		return "queued"
+	}
+}
+
 func integrationStatus(r db.WorkflowRunRow) string {
 	if r.Status != domain.WorkflowRunCompleted {
 		return "not_applicable"

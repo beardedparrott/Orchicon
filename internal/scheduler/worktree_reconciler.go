@@ -760,6 +760,42 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 		branch = r.branchName(ctx, tenantID, run)
 	}
 
+	// INTEGRATE BEFORE THE BASE IS RESOLVED, AND HOLD THE BRANCH UNTIL IT IS SAFE TO CUT.
+	//
+	// THIS IS THE PATH THAT CUTS THE RUN'S OWN BRANCH. The equivalent step in reconcileStepRunOne (added for
+	// the same reason) covers a BRANCH CHILD, which is not what a worker commits to — so the guarantee was
+	// documented and absent exactly where it mattered, and the run branch kept being cut from a stale tip.
+	// Measured on the reported run set: news started 18:45:06 and location integrated 18:45:40; theme started
+	// 19:01:24 and favourites integrated 19:02:21. Both misses branched 30-60s early, both were then divergent,
+	// and a divergent branch is not a small inefficiency — the merge needs a real conflict, so one missed
+	// integration makes every following run in the project un-mergeable cleanly.
+	//
+	// TWO STEPS, and the second is the real fix:
+	//   1. INTEGRATE this project's backlog now, project-scoped (a tenant-wide page can be filled by other
+	//      projects and leave this one untouched).
+	//   2. If anything is STILL un-integrated, WAIT. Waiting is what makes the guarantee independent of
+	//      timing: a run cannot branch over work that has not landed, whether the cause is a slow sweep, a
+	//      just-completed predecessor, or a conflict a human must resolve. It is a queue, not a failure.
+	if strategy == "local" {
+		// DRAIN THE QUEUE FIRST — this project's pending obligations, oldest first. A tenant-wide page can be
+		// filled entirely by other projects' older runs, which is why the drain is project-scoped.
+		r.drainLocalIntegrationQueue(ctx, tenantID, run.ProjectID, time.Now().Add(localIntegrationPerRunBudget))
+		// THEN ASK. The count is the gate: while ANY earlier obligation is pending or conflicted, this run
+		// must not cut a branch over work that has not landed. Waiting is what makes the guarantee independent
+		// of timing — whether the cause is a slow drain, a run that finished a second ago, or a conflict a
+		// human must resolve.
+		if blocking := r.BlockingIntegrationCount(ctx, tenantID, run.ProjectID); blocking > 0 {
+			ahead, recs := r.QueuePosition(ctx, tenantID, run.ProjectID, runID)
+			// NOT A FAILURE, and deliberately no status change: the step run stays pending and the next pass
+			// retries. Marking it failed would lose a run that has done nothing wrong; marking it ready would
+			// hand the worker a branch cut over missing work — the exact defect.
+			r.log.Info("worktree: this run's branch is QUEUED behind work that has not landed yet",
+				"run", runID, "project", run.ProjectID, "blocking_records", blocking, "ahead_of_it", ahead,
+				"oldest_blocking_run", oldestBlockingRun(recs))
+			return nil
+		}
+	}
+
 	// Resolve the base ref up front so the container-adopt path (Phase 3,
 	// case 2) can create the run worktree without re-entering Phase 4.
 	base := r.resolveBaseRef(ctx, projectDir)

@@ -995,6 +995,9 @@ func purgeBranchDispatchResidue(t *testing.T, pool *db.Pool) {
 	// Terminal + non-terminal workflow runs and their step runs from prior
 	// tests; the fixture recreates everything it needs.
 	for _, q := range []string{
+		// local_integrations FIRST: it references runs by id, and a stale obligation row would make the queue
+		// this platform now enforces hold a later fixture's run for an owner that no longer exists.
+		`DELETE FROM local_integrations WHERE tenant_id = $1`,
 		`DELETE FROM workflow_step_runs WHERE tenant_id = $1`,
 		`DELETE FROM workflow_runs WHERE tenant_id = $1`,
 	} {

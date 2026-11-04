@@ -1007,6 +1007,20 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			s.rcmgr.Enqueue("worktree", runID)
 		}
 	})
+	// Wire the integration notifier: a run that reached COMPLETED integrates its project NOW, so the next
+	// run's branch is cut from a tip that already contains it. The provisioning gate waits for un-integrated
+	// work, so this is what keeps that wait short rather than what makes it correct — but a wait of one
+	// reconcile pass instead of one sweep interval is the difference between a queue nobody notices and a
+	// queue that looks like a stall.
+	workflowRec.SetIntegrationEnqueuer(func(ctx context.Context, tenantID, projectID, runID string) {
+		worktreeRec.EnqueueRunForIntegration(ctx, tenantID, projectID, runID)
+	})
+	workflowRec.SetIntegrationNotifier(func(ctx context.Context, tenantID, projectID string) {
+		if projectID == "" {
+			return
+		}
+		go worktreeRec.IntegrateProjectNow(ctx, tenantID, projectID)
+	})
 	// Wire the scan-pass failure sink: a run the scan cannot progress must back off like any other failed
 	// key, not retry — and log — on every 200ms heartbeat. Without this the scan retries immediately and
 	// without limit; with it, a persistently broken run degrades to one line plus a five-minute cadence.

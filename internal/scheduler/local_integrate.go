@@ -77,8 +77,8 @@ func (r *WorktreeReconciler) integrationTarget(ctx context.Context, projectDir s
 }
 
 // localIntegrationLimit bounds how many candidate runs one slow pass examines. The work is a couple of git
-// subprocesses per run, and the set is self-cleaning (see db.ListCompletedRunsWithBranch), so a small page
-// is enough to converge.
+// subprocesses per pending record, and the set is self-cleaning (a settled record leaves the queue), so a
+// small page is enough to converge.
 const localIntegrationLimit = 16
 
 // localIntegrationPerRunBudget bounds the integration pass run immediately before a new branch is cut.
@@ -88,148 +88,369 @@ const localIntegrationLimit = 16
 // periodic sweep still will.
 const localIntegrationPerRunBudget = 5 * time.Second
 
-// integrateLocalRuns advances the integration branch for completed local-strategy runs.
+// integrateLocalRuns is the PERIODIC backstop: drain the queue for every project that has pending records.
 //
-// IDEMPOTENT BY CONSTRUCTION: the ancestry check below is the idempotency key, so a run whose branch is
-// already an ancestor of the integration branch costs one `git merge-base` and nothing else. No marker, no
-// migration, and no possibility of the marker and git disagreeing.
+// It used to select CANDIDATE RUNS tenant-wide by ended_at, which is where the loss started: a busy tenant fills
+// that page with other projects' runs, the budget expires, and the project that was about to branch never got
+// integrated. Selecting PROJECTS WITH PENDING RECORDS instead is the same work with a queue as its index — and
+// a project that has nothing pending costs one indexed query, not a page slot.
 func (r *WorktreeReconciler) integrateLocalRuns(ctx context.Context, tenantID string, deadline time.Time) {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		r.log.Warn("worktree: local integration begin tx failed", "error", err)
 		return
 	}
-	runs, err := db.ListCompletedRunsWithBranch(ctx, ttx.Tx, tenantID, localIntegrationLimit)
+	projects, perr := db.ListProjectsWithPendingLocalIntegration(ctx, ttx.Tx, tenantID, localIntegrationLimit)
 	ttx.Rollback(ctx)
-	if err != nil {
-		r.log.Warn("worktree: local integration list runs failed", "error", err)
+	if perr != nil {
+		r.log.Warn("worktree: local integration could not read pending projects", "error", perr)
 		return
 	}
-	for _, run := range runs {
+	for _, projectID := range projects {
 		if sweepBudgetExpired(deadline) {
-			r.log.Info("worktree: local integration budget expired, resuming next slow pass")
+			r.log.Info("worktree: local integration budget expired, resuming next slow pass",
+				"projects_remaining", len(projects))
 			return
 		}
-		if err := r.integrateLocalRun(ctx, tenantID, run); err != nil {
-			// A FAILED INTEGRATION IS NOT A FAILED RUN. The work is committed and safe on its branch; the
-			// branch is simply not merged yet, and the next pass retries. Saying so at Warn (naming the
-			// run and the branch) is what stops this from being another silent no-op.
-			r.log.Warn("worktree: local integration failed — the run's branch is intact and will be retried",
-				"run", run.ID, "branch", run.WorktreeBranch, "error", err)
+		r.drainLocalIntegrationQueue(ctx, tenantID, projectID, deadline)
+	}
+}
+
+// IntegrateProjectNow is the post-commit entry point: advance THIS project's local integration queue
+// immediately, called when one of its runs reaches COMPLETED.
+//
+// One implementation, three triggers — terminal success (here), before a branch is cut (the gate), and the
+// periodic pass (the backstop). Anything else would be the N-implementations problem this file exists to
+// avoid, one layer over.
+func (r *WorktreeReconciler) IntegrateProjectNow(ctx context.Context, tenantID, projectID string) {
+	r.drainLocalIntegrationQueue(ctx, tenantID, projectID, time.Now().Add(localIntegrationPerRunBudget))
+}
+
+// drainLocalIntegrationQueue works one project's PENDING records, oldest first, until the set is empty or the
+// budget expires.
+//
+// THE QUEUE IS A TABLE, WHICH IS THE POINT. The obligation to land a run's work is a row (db.local_integrations),
+// written when the run reaches terminal success. This function reads that row — it does not re-derive "which
+// runs might still need integrating" from an ancestry check plus a run_context stamp plus whenever the last
+// sweep happened to run. That inference is exactly what missed: six features succeeded, two never landed, and
+// nothing said so.
+//
+// EACH RECORD IS SETTLED IN ONE OF FOUR WAYS, and every one of them is written back:
+//
+//	merged      the integration branch now contains it
+//	conflicted  a real conflict; nothing changed, a human must resolve it, AND IT KEEPS BLOCKING THE QUEUE
+//	skipped     there was provably nothing to land (no branch, not local, already gone)
+//	pending     left alone only when the budget expires or a transient git error occurred — retried next pass
+//
+// Progress is what terminates the loop, not a fixed iteration count: each pass either settles a record or
+// stops, and a record that cannot settle stops the queue rather than being skipped over. Skipping past it is
+// what produces divergence.
+func (r *WorktreeReconciler) drainLocalIntegrationQueue(ctx context.Context, tenantID, projectID string, deadline time.Time) {
+	if projectID == "" {
+		return
+	}
+	// ADOPT ANY RUN THAT HAS NO RECORD YET, before working the queue. Without this, a run that completed
+	// while the plane was down — or before this table existed — would never enter the queue at all, which is
+	// the same silence in a new place.
+	r.enqueueRunsMissingRecords(ctx, tenantID, projectID)
+
+	for {
+		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+		if err != nil {
+			r.log.Warn("worktree: local integration queue: begin tx", "project", projectID, "error", err)
+			return
+		}
+		// THREE STATUSES ARE DRAINED, and the third is not optional:
+		//
+		//	pending     a live obligation the platform owes
+		//	adopted     recognised history (does not block, but must still land)
+		//	conflicted  RETRIED ON EVERY PASS, because a human resolving the conflict in git does not rewrite
+		//	            this platform's record — the row still says conflicted. Without re-examination the queue
+		//	            would stay blocked forever after a resolution, turning a fixed problem into a permanent
+		//	            stall. The re-check is cheap: the ancestry test finds the branch already an ancestor of
+		//	            the integration branch and settles the record as merged.
+		records, lerr := db.ListLocalIntegrationsByStatus(ctx, ttx.Tx, tenantID, projectID,
+			[]string{db.LocalIntegrationPending, db.LocalIntegrationAdopted, db.LocalIntegrationConflicted}, 1)
+		ttx.Rollback(ctx)
+		if lerr != nil {
+			r.log.Warn("worktree: local integration queue: list", "project", projectID, "error", lerr)
+			return
+		}
+		if len(records) == 0 {
+			return // the queue is empty — done
+		}
+		if sweepBudgetExpired(deadline) {
+			r.log.Info("worktree: local integration queue budget expired with work still pending",
+				"project", projectID, "remaining_oldest_run", records[0].WorkflowRunID)
+			return
+		}
+		settled := r.settleIntegrationRecord(ctx, tenantID, projectID, records[0])
+		if !settled {
+			// A conflict, a missing branch, or a git error. The record now says so (or stays pending), and
+			// the queue STOPS here: order is what keeps the next branch fast-forwardable, and working past an
+			// unsettled record would diverge the project exactly as reported.
+			//
+			// STOPPING IS NOT ABANDONING. The record is re-examined on the next pass — which is how a conflict
+			// a human resolved by hand releases the queue — and the run that is waiting is told, on every pass,
+			// which record is holding it (see the QUEUED log line in reconcileOne).
+			return
 		}
 	}
 }
 
-// integrateLocalRun advances the integration branch to include one run's branch.
-func (r *WorktreeReconciler) integrateLocalRun(ctx context.Context, tenantID string, run db.WorkflowRunRow) error {
-	branch := strings.TrimSpace(run.WorktreeBranch)
-	if branch == "" || isProtectedBranch(branch) {
-		return nil
-	}
-	// ONLY A LOCAL-STRATEGY PROJECT INTEGRATES HERE. `pr` projects hand off to GitHub and `none` projects
-	// have no branch at all; doing this for either would be acting on a decision the operator did not make.
-	strategy, err := r.runGitStrategy(ctx, tenantID, run)
+// enqueueRunsMissingRecords writes the obligation for every completed branch-bearing run of this project that
+// does not have one yet.
+func (r *WorktreeReconciler) enqueueRunsMissingRecords(ctx context.Context, tenantID, projectID string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		return err
+		return
 	}
-	if strategy != "local" {
-		// Not this path's job — and it never will be, so stamp it rather than re-reading the project every
-		// pass for the rest of the instance's life.
-		r.stampIntegrated(ctx, tenantID, run.ID, "not a local-strategy project")
-		return nil
+	defer ttx.Rollback(ctx)
+	runs, err := db.ListRunsNeedingLocalIntegration(ctx, ttx.Tx, tenantID, projectID, localIntegrationLimit)
+	if err != nil || len(runs) == 0 {
+		return
 	}
-	projectDir := r.lookupProjectDir(ctx, tenantID, run.ProjectID)
+	for _, run := range runs {
+		if strings.TrimSpace(run.WorktreeBranch) == "" {
+			continue
+		}
+		execID := db.ExecutionIDForRun(ctx, ttx.Tx, tenantID, run.ID)
+		base := ""
+		if b, berr := r.revParse(ctx, r.lookupProjectDir(ctx, tenantID, run.ProjectID), "merge-base"); berr == nil {
+			_ = b // merge-base against the integration branch is resolved at settle time, not here
+		}
+		adopted, eerr := db.EnqueueLocalIntegration(ctx, ttx.Tx, tenantID, projectID, run.ID, execID,
+			run.WorktreeBranch, base)
+		if eerr == nil && adopted.Status == db.LocalIntegrationPending {
+			// ADOPTED, NOT PENDING. The obligation is real and the drain will work it, but it must not hold the
+			// queue: this is history the platform recognised after the fact, and stalling new runs behind an
+			// unbounded archaeology set is how a project stops accepting work entirely.
+			if serr := db.SetLocalIntegrationStatus(ctx, ttx.Tx, tenantID, adopted.ID, db.LocalIntegrationAdopted,
+				"", "adopted: a completed run with no integration record", ""); serr != nil {
+				r.log.Warn("worktree: could not mark an adopted obligation", "run", run.ID, "error", serr)
+			}
+		}
+		if eerr != nil {
+			r.log.Warn("worktree: could not record an integration obligation",
+				"run", run.ID, "branch", run.WorktreeBranch, "error", eerr)
+		}
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		r.log.Warn("worktree: could not commit integration obligations", "project", projectID, "error", err)
+	}
+}
+
+// EnqueueRunForIntegration records the obligation for ONE run at terminal success. This is the live path; the
+// backfill above catches everything that arrives another way.
+//
+// The RECORD IS WRITTEN BEFORE THE WORK IS ATTEMPTED, and that ordering is the whole design: an obligation
+// that exists and has not been met is a pending row an operator can see, while an obligation that was never
+// written is indistinguishable from one that was never owed.
+func (r *WorktreeReconciler) EnqueueRunForIntegration(ctx context.Context, tenantID, projectID, runID string) {
+	if projectID == "" || runID == "" {
+		return
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		r.log.Warn("worktree: enqueue integration: begin tx", "run", runID, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
+	if err != nil {
+		r.log.Warn("worktree: enqueue integration: read run", "run", runID, "error", err)
+		return
+	}
+	branch := strings.TrimSpace(run.WorktreeBranch)
+	if branch == "" {
+		return // no branch, no obligation — and no row to explain away later
+	}
+	// A NON-LOCAL project owes nothing here; record that as `skipped` so the absence of a pending row is
+	// evidence rather than a question.
+	strategy := r.effectiveGitStrategy(ctx, tenantID, run)
+	rec, eerr := db.EnqueueLocalIntegration(ctx, ttx.Tx, tenantID, projectID, runID,
+		db.ExecutionIDForRun(ctx, ttx.Tx, tenantID, runID), branch, "")
+	if eerr != nil {
+		r.log.Warn("worktree: enqueue integration: write", "run", runID, "error", eerr)
+		return
+	}
+	if strategy != "local" && rec.Status == db.LocalIntegrationPending {
+		if serr := db.SetLocalIntegrationStatus(ctx, ttx.Tx, tenantID, rec.ID, db.LocalIntegrationSkipped,
+			"", "git_strategy="+strategy+": nothing to land locally", ""); serr != nil {
+			r.log.Warn("worktree: could not mark a non-local obligation skipped", "run", runID, "error", serr)
+		}
+	}
+	if cerr := ttx.Commit(ctx); cerr != nil {
+		r.log.Warn("worktree: enqueue integration: commit", "run", runID, "error", cerr)
+	}
+}
+
+// settleIntegrationRecord attempts ONE record and writes back what happened. Reports whether the record is
+// settled (so the queue may advance); `false` means the queue must stop here.
+func (r *WorktreeReconciler) settleIntegrationRecord(ctx context.Context, tenantID, projectID string, rec db.LocalIntegrationRow) bool {
+	projectDir := r.lookupProjectDir(ctx, tenantID, projectID)
 	if projectDir == "" || !r.isInsideWorkTree(ctx, projectDir) {
-		// Not a git-backed project (or a main repo that cannot be resolved). Nothing can land, and it will
-		// not resolve itself by being retried, so stamp with the reason instead of rescanning forever.
-		r.stampIntegrated(ctx, tenantID, run.ID, "project dir is not a git work tree")
-		return nil
+		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationSkipped, "", "project dir is not a git work tree", "")
+		return true
 	}
-	if !r.branchExists(ctx, projectDir, branch) {
-		// The branch is gone: already merged and deleted by the orphan sweep, or never created (a run whose
-		// provisioning failed). Either way there is nothing to integrate and nothing to wait for. SAID OUT
-		// LOUD, because "the branch this run recorded does not exist" is a finding an operator wants, not a
-		// silent no-op — the reported run 1 recorded a branch that was never created at all.
-		r.log.Warn("worktree: local integration found NO branch for a completed run — nothing to integrate",
-			"run", run.ID, "branch", branch, "repo", projectDir,
-			"hint", "the branch was already merged and swept, or the run never created it")
-		r.stampIntegrated(ctx, tenantID, run.ID, "recorded branch does not exist")
-		return nil
+	// THE BRANCH IS THE EVIDENCE, and this is where the old code's silence lived: a record whose branch no
+	// longer exists has nothing to land. It is `skipped`, not `pending` — leaving it pending would block the
+	// project's queue forever on a ref that will never come back.
+	if !r.branchExists(ctx, projectDir, rec.Branch) {
+		r.log.Warn("worktree: integration record has NO branch — nothing to land",
+			"run", rec.WorkflowRunID, "branch", rec.Branch, "repo", projectDir,
+			"hint", "already merged and swept, or the run never created it")
+		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationSkipped, "",
+			"recorded branch does not exist", "")
+		return true
 	}
-	// RESOLVE THE TARGET BEFORE ANY MUTATION, and REFUSE rather than invent one.
 	target, terr := r.integrationTarget(ctx, projectDir)
 	if terr != nil {
-		// NOT STAMPED: an unresolvable integration branch is a repository/configuration fact that CAN change
-		// without this platform acting — the operator creates the branch, or fixes origin/HEAD — so the next
-		// pass must try again. Logged on every pass for the same reason: silence is what hid this before.
-		r.log.Warn("worktree: local integration cannot run — the repository has no usable integration branch",
-			"run", run.ID, "branch", branch, "repo", projectDir, "error", terr)
-		return nil
+		// A REPOSITORY WITH NO USABLE INTEGRATION BRANCH IS A CONFIGURATION FACT, NOT PENDING WORK, and it must
+		// not hold the queue. There is nothing to compare the branch against, so waiting cannot help and would
+		// stall the project forever — which is worse than the silence this table replaces, because a stalled
+		// project looks like a hang rather than a lost merge.
+		//
+		// So it is recorded as SKIPPED with the reason on the record: visible, countable, and non-blocking. The
+		// work stays on its branch and the run page's integration notice reports it as not merged, so nothing is
+		// hidden — the operator is told the repository needs an integration branch, which is the actionable fact.
+		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationSkipped, "", terr.Error(), "")
+		r.log.Warn("worktree: integration cannot run — the repository has no usable integration branch; the "+
+			"branch is kept and the run reports NOT MERGED",
+			"run", rec.WorkflowRunID, "branch", rec.Branch, "repo", projectDir, "error", terr)
+		return true // settle it: a missing branch must not stall the queue
 	}
 
-	// IDEMPOTENCY. Ancestry is the test, so "already integrated" needs no stored flag.
-	if r.isAncestorOf(ctx, projectDir, branch, target) {
-		r.stampIntegrated(ctx, tenantID, run.ID, "already an ancestor of "+target)
-		return nil
+	if r.isAncestorOf(ctx, projectDir, rec.Branch, target) {
+		// ALREADY LANDED — the ancestry check VERIFIES the record rather than substituting for it.
+		sha, _ := r.revParse(ctx, projectDir, target)
+		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationMerged, sha,
+			"already an ancestor of "+target, target)
+		return true
 	}
 
-	// SERIALIZE. The reconciler's scan is already a single goroutine, but this makes the property explicit
-	// and survives any future fan-out: two merges into one ref is a lost update.
 	r.integrateMu.Lock()
 	defer r.integrateMu.Unlock()
-
-	// Re-check under the lock: a concurrent pass may have integrated it while we waited.
-	if r.isAncestorOf(ctx, projectDir, branch, target) {
-		return nil
+	// Re-check under the lock: another pass may have landed it while we waited.
+	if r.isAncestorOf(ctx, projectDir, rec.Branch, target) {
+		sha, _ := r.revParse(ctx, projectDir, target)
+		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationMerged, sha,
+			"already an ancestor of "+target, target)
+		return true
 	}
 
-	// WHETHER THE MAIN CHECKOUT MAY BE REFRESHED MUST BE DECIDED **BEFORE** THE REF MOVES.
-	//
-	// After `update-ref` the index is necessarily stale relative to the new HEAD, so `git status` reports a
-	// difference for every file the merge brought in — a check made afterwards can never pass. Captured
-	// here, while the tree still describes the commit it is actually on, "clean" means what it should:
-	// the operator has no uncommitted work to lose.
 	readyToRefresh, refreshBlockedBy := r.mainCheckoutRefreshReadiness(ctx, projectDir, target)
 
-	// FAST-FORWARD when the integration branch is an ancestor of the run branch: the common case, and the
-	// only one that needs no merge commit.
-	if r.isAncestorOf(ctx, projectDir, target, branch) {
-		sha, err := r.revParse(ctx, projectDir, branch)
+	if r.isAncestorOf(ctx, projectDir, target, rec.Branch) {
+		sha, err := r.revParse(ctx, projectDir, rec.Branch)
 		if err != nil {
-			return err
+			r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationPending, "", err.Error(), target)
+			return false
 		}
 		if err := r.setBranchRef(ctx, projectDir, target, sha,
-			fmt.Sprintf("orchicon: local integration fast-forward of %s to run %s", target, run.ID)); err != nil {
-			return err
+			fmt.Sprintf("orchicon: local integration fast-forward of %s to run %s", target, rec.WorkflowRunID)); err != nil {
+			r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationPending, "", err.Error(), target)
+			return false
 		}
 		r.log.Info("worktree: local integration fast-forwarded the integration branch",
-			"run", run.ID, "branch", branch, "into", target, "commit", short(sha))
-		r.stampIntegrated(ctx, tenantID, run.ID, "fast-forwarded to "+short(sha))
-		return r.refreshMainCheckout(ctx, projectDir, target, readyToRefresh, refreshBlockedBy)
+			"run", rec.WorkflowRunID, "branch", rec.Branch, "into", target, "commit", short(sha))
+		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationMerged, sha, "", target)
+		if err := r.refreshMainCheckout(ctx, projectDir, target, readyToRefresh, refreshBlockedBy); err != nil {
+			r.log.Warn("worktree: could not refresh the main checkout after integration",
+				"run", rec.WorkflowRunID, "error", err)
+		}
+		return true
 	}
 
-	// DIVERGED: the integration branch has moved since this run branched. Merge the run branch in, in a
-	// SCRATCH WORKTREE, so the operator's checked-out tree is never the scene of a conflict.
-	merged, err := r.mergeRunBranchInScratch(ctx, projectDir, branch, run.ID, target)
+	merged, err := r.mergeRunBranchInScratch(ctx, projectDir, rec.Branch, rec.WorkflowRunID, target)
 	if err != nil {
-		return err
+		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationPending, "", err.Error(), target)
+		return false
 	}
 	if merged == "" {
-		// A CONFLICT. A controller cannot resolve one SEMANTICALLY — it can only pick a side, which is
-		// worse than stopping. Both branches are left exactly as they are, nothing is committed, and the
-		// operator gets a line naming the run; a human decides.
-		// NOT STAMPED, deliberately: a conflict is the one outcome that CAN change without this platform
-		// doing anything, because a human resolving it makes the next pass succeed. Stamping here would
-		// strand the run permanently.
-		r.log.Warn("worktree: local integration hit a CONFLICT — nothing was merged and both branches are "+
-			"untouched; resolve it by hand, and the next pass will integrate it",
-			"run", run.ID, "branch", branch, "into", target, "repo", projectDir)
-		return nil
+		// A CONFLICT. Recorded as such — visible, and it KEEPS BLOCKING, because branching past a conflict is
+		// what makes the NEXT merge un-mergeable too. The old code logged a warning and retried forever, which
+		// looked like a stall and told nobody why.
+		r.log.Warn("worktree: local integration hit a CONFLICT — nothing was merged, both branches are untouched, "+
+			"and the project's queue is HELD until it is resolved by hand",
+			"run", rec.WorkflowRunID, "branch", rec.Branch, "into", target, "repo", projectDir)
+		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationConflicted, "",
+			fmt.Sprintf("merge conflict between %s and %s; resolve by hand", rec.Branch, target), target)
+		return false
 	}
 	r.log.Info("worktree: local integration merged the run branch",
-		"run", run.ID, "branch", branch, "into", target, "commit", short(merged))
-	r.stampIntegrated(ctx, tenantID, run.ID, "merged as "+short(merged))
-	return r.refreshMainCheckout(ctx, projectDir, target, readyToRefresh, refreshBlockedBy)
+		"run", rec.WorkflowRunID, "branch", rec.Branch, "into", target, "commit", short(merged))
+	r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationMerged, merged, "", target)
+	if err := r.refreshMainCheckout(ctx, projectDir, target, readyToRefresh, refreshBlockedBy); err != nil {
+		r.log.Warn("worktree: could not refresh the main checkout after integration",
+			"run", rec.WorkflowRunID, "error", err)
+	}
+	return true
+}
+
+// finishIntegrationRecord writes an outcome back to the record. Best-effort and logged: a failure here must
+// not crash a pass, but it MUST be visible, because the record is the only thing that knows what happened.
+func (r *WorktreeReconciler) finishIntegrationRecord(ctx context.Context, tenantID, id, status, mergeCommit, lastError, integrationBranch string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		r.log.Warn("worktree: integration record: begin tx", "record", id, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if err := db.SetLocalIntegrationStatus(ctx, ttx.Tx, tenantID, id, status, mergeCommit, lastError, integrationBranch); err != nil {
+		r.log.Warn("worktree: could not write the integration outcome", "record", id, "status", status, "error", err)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		r.log.Warn("worktree: integration record: commit", "record", id, "error", err)
+	}
+}
+
+// BlockingIntegrationCount reports how many of this project's records are still holding the queue.
+//
+// THIS IS THE GATE'S QUESTION, and it is a COUNT rather than a judgement: a run about to cut a branch must not
+// do so while an earlier run's work is unlanded or conflicted. That converts a silent loss into an ordered
+// queue, which is what these runs already are.
+func (r *WorktreeReconciler) BlockingIntegrationCount(ctx context.Context, tenantID, projectID string) int {
+	if projectID == "" {
+		return 0
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return 0 // cannot verify — do not block on a broken read
+	}
+	defer ttx.Rollback(ctx)
+	n, cerr := db.CountBlockingLocalIntegrations(ctx, ttx.Tx, tenantID, projectID)
+	if cerr != nil {
+		r.log.Warn("worktree: could not count blocking integrations — proceeding", "project", projectID, "error", cerr)
+		return 0
+	}
+	return n
+}
+
+// QueuePosition returns a run's place in the queue plus the records ahead of it, for the wait notice. Empty
+// when the run is not blocked.
+func (r *WorktreeReconciler) QueuePosition(ctx context.Context, tenantID, projectID, runID string) (ahead int, blocking []db.LocalIntegrationRow) {
+	if projectID == "" {
+		return 0, nil
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return 0, nil
+	}
+	defer ttx.Rollback(ctx)
+	recs, lerr := db.ListLocalIntegrationsByStatus(ctx, ttx.Tx, tenantID, projectID,
+		[]string{db.LocalIntegrationPending, db.LocalIntegrationConflicted}, localIntegrationLimit)
+	if lerr != nil {
+		return 0, nil
+	}
+	for _, rec := range recs {
+		if rec.WorkflowRunID == runID {
+			continue // the asking run's own record does not block it
+		}
+		blocking = append(blocking, rec)
+	}
+	return len(blocking), blocking
 }
 
 // runGitStrategy resolves the run's effective git strategy.
@@ -294,7 +515,7 @@ func (r *WorktreeReconciler) mergeRunBranchInScratch(ctx context.Context, projec
 // mainCheckoutRefreshReadiness reports whether the operator's working tree may safely be brought up to
 // date after the integration branch moves, and — when it may not — WHY, so the log line can name it.
 //
-// MUST BE CALLED BEFORE THE REF MOVES (see integrateLocalRun): once the ref advances, the index is stale by
+// MUST BE CALLED BEFORE THE REF MOVES (see settleIntegrationRecord): once the ref advances, the index is stale by
 // construction and every file the integration brought in looks like a local modification.
 func (r *WorktreeReconciler) mainCheckoutRefreshReadiness(ctx context.Context, projectDir, target string) (bool, string) {
 	if cur := r.currentBranch(ctx, projectDir); cur != target {
@@ -418,41 +639,6 @@ func short(sha string) string {
 	return sha
 }
 
-// integrationStampKey is the run_context key recording that local integration has dealt with a run.
-const integrationStampKey = "local_integrated_at"
-
-// stampIntegrated records that this run needs no further integration attention, so the candidate query stops
-// returning it. Best-effort: a failed stamp costs a re-examination next pass, which is a no-op — never the
-// other way round, so a failure here is logged and nothing else.
-func (r *WorktreeReconciler) stampIntegrated(ctx context.Context, tenantID, runID, why string) {
-	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
-	if err != nil {
-		r.log.Warn("worktree: local integration stamp: begin tx", "run", runID, "error", err)
-		return
-	}
-	defer ttx.Rollback(ctx)
-	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
-	if err != nil {
-		r.log.Warn("worktree: local integration stamp: read run", "run", runID, "error", err)
-		return
-	}
-	merged, ok := db.MergeRunContext(run.RunContext, map[string]any{
-		integrationStampKey:     time.Now().UTC().Format(time.RFC3339),
-		"local_integrated_note": why,
-	})
-	if !ok {
-		return
-	}
-	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version,
-		db.UpdateWorkflowRunFields{RunContext: &merged}); err != nil {
-		r.log.Warn("worktree: local integration stamp: write run", "run", runID, "error", err)
-		return
-	}
-	if err := ttx.Commit(ctx); err != nil {
-		r.log.Warn("worktree: local integration stamp: commit", "run", runID, "error", err)
-	}
-}
-
 // staleCheckoutOnly reports whether a `git status --porcelain` result consists ONLY of tracked files MISSING
 // from the working tree — the exact shape a ref that moved under its own checkout produces.
 //
@@ -494,4 +680,13 @@ func staleCheckoutOnly(status string) (bool, string) {
 		return false, ""
 	}
 	return true, "tracked files missing from the working tree"
+}
+
+// oldestBlockingRun names the earliest record holding a project's queue, for the log line. Empty when there
+// is none, which the caller has already established.
+func oldestBlockingRun(recs []db.LocalIntegrationRow) string {
+	if len(recs) == 0 {
+		return ""
+	}
+	return recs[0].WorkflowRunID
 }
