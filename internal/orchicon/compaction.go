@@ -59,11 +59,15 @@ type CompactPolicy struct {
 	// RecentTurns keeps this many trailing messages verbatim.
 	RecentTurns int
 	// CompactMaxTurns is the turn-count context-hygiene gate
-	// (compact_max_turns, opencode parity): when the turn count reaches
-	// this many turns since the last compaction, doCompact fires at the
-	// quiet turn boundary — even when no budget dimension breached and no
-	// window pressure exists. <= 0 disables the gate entirely (explicit 0
-	// in the merged budget JSON mirrors opencode's effectiveCompactMaxTurns).
+	// (compact_max_turns, opencode parity): when the turn count reaches this
+	// many turns since the last compaction, doCompact fires at the quiet turn
+	// boundary — even when no budget dimension breached and no window pressure
+	// exists. <= 0 means OFF, which is now the DEFAULT: this trigger collapsed
+	// a healthy 4-minute run's history at turn 30 on a number nobody had set,
+	// and the provider rejected the request that followed. Only an explicit
+	// compact_max_turns arms it. (The window-pressure trigger is separate and
+	// stays on — it is bounded by the model's REAL window, so it cannot fire on
+	// a healthy run.)
 	CompactMaxTurns int
 }
 
@@ -152,9 +156,8 @@ func policyFromSettings(budgetJSON []byte) (CompactPolicy, MemoryPolicy) {
 	}
 	// compact_max_turns is a TOP-LEVEL merged-budget key (opencode parity:
 	// the same key opencode's parseBudgetSpec reads), not nested under
-	// context_compaction. Unset → the opencode built-in default; an
-	// explicit value <= 0 disables the turn-count trigger entirely
-	// (effectiveCompactMaxTurns parity); malformed → built-in default.
+	// context_compaction. An ABSENT key leaves the gate off (the default);
+	// an explicit value <= 0 also disables it; a positive value arms it.
 	if cmRaw, ok := raw["compact_max_turns"]; ok {
 		var maxTurns *float64
 		if err := json.Unmarshal(cmRaw, &maxTurns); err == nil && maxTurns != nil {

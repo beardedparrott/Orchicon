@@ -280,7 +280,8 @@ export function BudgetSection({ value, onChange }: SectionProps) {
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
-        Per-execution budget limits. Leave blank for server defaults; enter 0 for unlimited.
+        Per-execution budget limits. Leave blank for no limit (and to inherit the tenant
+        default); 0 also means unlimited.
       </p>
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1">
@@ -297,7 +298,7 @@ export function BudgetSection({ value, onChange }: SectionProps) {
             }
             placeholder="1000000"
             className="font-mono text-xs"
-            title="0 = unlimited (blank = server default)"
+            title="0 = unlimited (blank = no limit)"
           />
         </div>
         <div className="space-y-1">
@@ -315,7 +316,7 @@ export function BudgetSection({ value, onChange }: SectionProps) {
             }
             placeholder="10"
             className="font-mono text-xs"
-            title="0 = unlimited (blank = server default)"
+            title="0 = unlimited (blank = no limit)"
           />
         </div>
         <div className="space-y-1">
@@ -332,7 +333,7 @@ export function BudgetSection({ value, onChange }: SectionProps) {
             }
             placeholder="3600"
             className="font-mono text-xs"
-            title="0 = unlimited (blank = server default)"
+            title="0 = unlimited (blank = no limit)"
           />
         </div>
         <div className="space-y-1">
@@ -349,7 +350,7 @@ export function BudgetSection({ value, onChange }: SectionProps) {
             }
             placeholder="100"
             className="font-mono text-xs"
-            title="0 = unlimited (blank = server default)"
+            title="0 = unlimited (blank = no limit)"
           />
         </div>
       </div>

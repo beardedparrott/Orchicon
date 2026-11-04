@@ -84,24 +84,43 @@ func TestTurnCountGateFiresWithoutAnyBudgetTier(t *testing.T) {
 // AC: unset compact_max_turns → the opencode built-in default
 // (DefaultCompactMaxTurns). ONE source of the default: the native policy
 // falls back to the opencode constant, never a re-stated number.
-func TestTurnCountGateUnsetUsesOpencodeDefault(t *testing.T) {
-	def := opencode.DefaultCompactMaxTurns()
-	if def < 2 {
-		t.Fatalf("opencode default %d < min-turn floor — gate could never fire", def)
+// THIS IS THE REGRESSION THAT COST A RUN. With compact_max_turns UNSET the gate
+// is OFF — the old fallback of 30 collapsed a healthy 4-minute worker session's
+// history at turn 30, and the provider rejected the very next request with a 400
+// that named neither the collapse nor the budget. A lossy mid-run collapse is the
+// operator's decision, so an unset key must never perform one.
+func TestTurnCountGateUnsetMeansNoCollapse(t *testing.T) {
+	if def := opencode.DefaultCompactMaxTurns(); def != 0 {
+		t.Fatalf("opencode's unset turn-count default = %d, want 0 (disabled)", def)
 	}
 	s := turnGateSession(t, `{"tokens":0,"cost_usd":0,"tool_call_count":0,"context_compaction":{"recent_turns":2}}`)
-	if s.cp.CompactMaxTurns != def {
-		t.Fatalf("policy CompactMaxTurns = %d, want the opencode default %d", s.cp.CompactMaxTurns, def)
+	if s.cp.CompactMaxTurns != 0 {
+		t.Fatalf("policy CompactMaxTurns = %d, want 0 (disabled)", s.cp.CompactMaxTurns)
 	}
 	ctx := context.Background()
 	usage := Usage{InputTokens: 10}
-	// Just below the default cap → no fire.
-	if got := s.maybeCompact(ctx, def-1, usage); got != "" {
-		t.Fatalf("step %d < default cap → %q, want no compaction", def-1, got)
+	// A long, healthy session must never turn-count-compact on an unset key.
+	for _, step := range []int{29, 30, 31, 60, 200} {
+		if got := s.maybeCompact(ctx, step, usage); got != "" {
+			t.Fatalf("step %d with compact_max_turns unset → %q, want no compaction", step, got)
+		}
 	}
-	// At the default cap → fires.
-	if got := s.maybeCompact(ctx, def, usage); got != "compacted:turn_count" {
-		t.Fatalf("step %d == default cap → %q, want compacted:turn_count", def, got)
+}
+
+// …AND SETTING IT STILL WORKS. The default is gone, not the feature: an operator
+// who configures compact_max_turns gets the collapse at exactly that turn.
+func TestTurnCountGateConfiguredStillFires(t *testing.T) {
+	s := turnGateSession(t, `{"tokens":0,"cost_usd":0,"tool_call_count":0,"compact_max_turns":15,"context_compaction":{"recent_turns":2}}`)
+	if s.cp.CompactMaxTurns != 15 {
+		t.Fatalf("policy CompactMaxTurns = %d, want the configured 15", s.cp.CompactMaxTurns)
+	}
+	ctx := context.Background()
+	usage := Usage{InputTokens: 10}
+	if got := s.maybeCompact(ctx, 14, usage); got != "" {
+		t.Fatalf("step 14 < the configured 15 → %q, want no compaction", got)
+	}
+	if got := s.maybeCompact(ctx, 15, usage); got != "compacted:turn_count" {
+		t.Fatalf("step 15 == the configured 15 → %q, want compacted:turn_count", got)
 	}
 }
 

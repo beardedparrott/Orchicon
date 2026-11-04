@@ -115,8 +115,9 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
   }
 }
 
-// Build the default_budget_overrides JSON from the form fields. Empty
-// fields are omitted so the worker/tenant fall back to built-in defaults.
+// Build the default_budget_overrides JSON from the form fields. Empty fields
+// are omitted, and an omitted ceiling is NO ceiling — there is no built-in
+// fallback for any of them, so the operator's silence means "unlimited".
 export function buildBudgetDefaults(
   tokens: string,
   costUsd: string,

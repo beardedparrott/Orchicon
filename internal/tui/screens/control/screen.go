@@ -1600,11 +1600,11 @@ func (m *Model) settingsForm() *kit2.Form {
 		// means "built-in default" and an explicit 0 DISABLES it — which is why
 		// they are left blank rather than zero-filled: blank and 0 mean different
 		// things, and every placeholder says which is which.
-		kit2.FieldSpec{Name: "budget_tokens", Label: "Budget - tokens (0 = off, blank = built-in)", Kind: kit2.KNumber, Initial: bi("budget_tokens", ""), Placeholder: "all tokens at full weight, cache included"},
-		kit2.FieldSpec{Name: "budget_cost_usd", Label: "Budget - cost USD", Kind: kit2.KNumber, Initial: bi("budget_cost_usd", ""), Placeholder: "priced cost, a separate gate from tokens"},
-		kit2.FieldSpec{Name: "budget_wall_clock_seconds", Label: "Budget - wall clock (s)", Kind: kit2.KNumber, Initial: bi("budget_wall_clock_seconds", ""), Placeholder: "max runtime before the run is aborted"},
-		kit2.FieldSpec{Name: "budget_tool_call_count", Label: "Budget - tool calls", Kind: kit2.KNumber, Initial: bi("budget_tool_call_count", ""), Placeholder: "how many tool calls before abort"},
-		kit2.FieldSpec{Name: "budget_compact_max_turns", Label: "Budget - compact at turns", Kind: kit2.KNumber, Initial: bi("budget_compact_max_turns", ""), Placeholder: "turns before a context compaction is forced"},
+		kit2.FieldSpec{Name: "budget_tokens", Label: "Budget - tokens (blank = no limit)", Kind: kit2.KNumber, Initial: bi("budget_tokens", ""), Placeholder: "all tokens at full weight, cache included"},
+		kit2.FieldSpec{Name: "budget_cost_usd", Label: "Budget - cost USD (blank = no limit)", Kind: kit2.KNumber, Initial: bi("budget_cost_usd", ""), Placeholder: "priced cost, a separate gate from tokens"},
+		kit2.FieldSpec{Name: "budget_wall_clock_seconds", Label: "Budget - wall clock (s, blank = none)", Kind: kit2.KNumber, Initial: bi("budget_wall_clock_seconds", ""), Placeholder: "max runtime before the run is aborted"},
+		kit2.FieldSpec{Name: "budget_tool_call_count", Label: "Budget - tool calls (blank = no limit)", Kind: kit2.KNumber, Initial: bi("budget_tool_call_count", ""), Placeholder: "how many tool calls before abort"},
+		kit2.FieldSpec{Name: "budget_compact_max_turns", Label: "Budget - compact at turns (blank = never)", Kind: kit2.KNumber, Initial: bi("budget_compact_max_turns", ""), Placeholder: "turns before a context compaction is forced"},
 		// The LADDER: each dimension goes warn, escalate, final and then ABORTS.
 		// A fraction is OF THE GATE ABOVE (0.5 = half of it).
 		kit2.FieldSpec{Name: "warn_frac_tokens", Label: "Ladder - tokens: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_tokens", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},

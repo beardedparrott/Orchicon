@@ -1900,12 +1900,22 @@ there is no separate runtime reference.
   **Blank means the built-in default, and `0` means "use the built-in default"
   too** (they are indistinguishable from "unset"); a **negative** value
   unambiguously disables that specific check.
-- **Execution budgets** — default ceilings for tokens, cost, wall clock, tool calls
-  and the compaction interval, applied when a worker does not set its own. A
-  worker's `budget_overrides` always wins, per field. **Wall clock** and
-  **tool call count** are hard aborts; **cost**, **tokens** and
-  **compact_max_turns** are soft triggers that compact the context and continue. An
-  explicit `0` disables that specific gate.
+- **Execution budgets** — ceilings for tokens, cost, wall clock, tool calls and the
+  compaction interval, applied when a worker does not set its own. A worker's
+  `budget_overrides` always wins, per field. **Wall clock** and **tool call count**
+  are hard aborts; **cost**, **tokens** and **compact_max_turns** are soft triggers
+  that compact the context and continue.
+  **Blank means NO LIMIT** — there are no built-in ceilings any more, because a
+  ceiling nobody set used to abort healthy runs (a 4-minute worker session was
+  killed mid-deliverable by a 30-turn compaction default, after which the provider
+  rejected the next request). A gate now exists only because you set one, here or
+  on the worker. An explicit `0` also disables that specific gate, and is how you
+  clear one you no longer want (leaving the field blank means "leave it alone").
+  With **wall clock** blank there is no deadline at all; a wedged session is caught
+  by the **stall parameters** above, which are activity-based rather than
+  clock-based. The one collapse that still happens by default is the
+  **context-window pressure** trigger — that one is a fraction of the model's real
+  window, so it cannot fire on a run that is merely healthy.
 - **Execution liveness reaper** — the sweep that fails executions whose runtime
   process is gone. Because the probe can false-negative on a transient hiccup, an
   execution is reaped only once it is older than the grace window **and** has

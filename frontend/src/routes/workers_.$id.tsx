@@ -69,13 +69,9 @@ const DEFAULT_PERMISSIONS = `{
   "model_providers": []
 }`;
 
-const DEFAULT_BUDGETS = `{
-  "tokens": 500000,
-  "cost_usd": 0.5,
-  "wall_clock_seconds": 3600,
-  "tool_call_count": 100,
-  "compact_max_turns": 12
-}`;
+// No ceilings: an unset field is no limit, so a new worker starts unlimited and
+// the operator opts in per field (or inherits the tenant defaults).
+const DEFAULT_BUDGETS = `{}`;
 
 // Fields on UpdateWorkerVersionRequest — only version-level fields,
 // not worker header fields (name, slug, description, purpose).

@@ -70,28 +70,51 @@ func TestBudgetBreachedTokenFreshWeight(t *testing.T) {
 	}
 }
 
-// TestBudgetBreachedBuiltInDefaults verifies that when neither cost_usd nor
-// tokens is configured, the gate falls back to the built-in defaults
-// (defaultCompactCostUSD / defaultCompactTokens) instead of never
-// tripping — matching what Settings has always told operators an empty
-// field falls back to (frontend/src/routes/settings.tsx DefaultsTab).
-// A nil accumulator (no usage recorded yet) never breaches regardless.
-func TestBudgetBreachedBuiltInDefaults(t *testing.T) {
+// THERE ARE NO BUILT-IN SPEND CEILINGS ANY MORE, and this pins it.
+//
+// tokens / cost_usd / tool_call_count / wall_clock_seconds used to fall back to
+// 500,000 fresh tokens, $0.50, 100 calls and 3600s when unset — numbers no
+// operator had chosen. The 4-minute DeepSeek run that motivated this change had
+// a $10 cost gate stored and NO token gate, and it died on a ceiling it never
+// configured. A nil accumulator (no usage recorded yet) still never breaches.
+func TestNoConfiguredBudgetMeansNoGate(t *testing.T) {
 	if budgetBreached(budgetSpec{}, nil) {
 		t.Fatal("expected no breach on a nil accumulator")
 	}
-	// Below both built-in defaults → no breach.
-	if budgetBreached(budgetSpec{}, &budgetAccumulator{costUSD: defaultCompactCostUSD - 0.01, prompt: 100}) {
-		t.Fatal("expected no breach below the built-in cost default")
+	// An ENORMOUS turn under an empty budget must not breach: unset = no gate.
+	huge := &budgetAccumulator{costUSD: 5000, prompt: 50_000_000, completion: 5_000_000}
+	if budgetBreached(budgetSpec{}, huge) {
+		t.Fatal("an empty budget breached on a spend ceiling nobody configured — the old defaults are back")
 	}
-	// Cost crosses the built-in default → breach.
-	if !budgetBreached(budgetSpec{}, &budgetAccumulator{costUSD: defaultCompactCostUSD}) {
-		t.Fatalf("expected breach at the built-in cost default ($%v) with no configured budget", defaultCompactCostUSD)
+	for name, frac := range map[string]float64{
+		"tokens":          budgetSpec{}.fraction(dimTokens, huge, 0, 0),
+		"cost_usd":        budgetSpec{}.fraction(dimCost, huge, 0, 0),
+		"tool_call_count": budgetSpec{}.fraction(dimTools, huge, 0, 1_000_000),
+		"wall_clock":      budgetSpec{}.fraction(dimTime, huge, 400*24*time.Hour, 0),
+	} {
+		if frac != -1 {
+			t.Errorf("%s resolves to fraction %v with no configured limit, want -1 (no effective limit)", name, frac)
+		}
 	}
-	// No cost recorded, but fresh tokens cross the built-in 1,000,000
-	// default → breach via the token fallback.
-	if !budgetBreached(budgetSpec{}, &budgetAccumulator{prompt: 900_000, completion: 100_000}) {
-		t.Fatal("expected breach at the built-in token default (1,000,000) with no configured budget")
+}
+
+// AND SETTING ONE STILL WORKS — the defaults are gone, not the feature. This is
+// the half that must not regress: an operator who sets a ceiling gets it.
+func TestConfiguredCeilingsStillApply(t *testing.T) {
+	spec := parseBudgetSpec([]byte(`{"tokens":1000,"cost_usd":2,"tool_call_count":50,"wall_clock_seconds":600}`))
+	over := &budgetAccumulator{costUSD: 2, prompt: 1000}
+	if !budgetBreached(spec, over) {
+		t.Fatal("a configured ceiling must still breach when crossed")
+	}
+	if got := spec.fraction(dimTools, &budgetAccumulator{}, 0, 50); got != 1 {
+		t.Errorf("tool_call_count at its configured 50 = fraction %v, want 1", got)
+	}
+	if got := spec.fraction(dimTime, &budgetAccumulator{}, 600*time.Second, 0); got != 1 {
+		t.Errorf("wall_clock_seconds at its configured 600 = fraction %v, want 1", got)
+	}
+	// Below the configured ceilings nothing fires.
+	if budgetBreached(spec, &budgetAccumulator{costUSD: 1.99, prompt: 999}) {
+		t.Fatal("a budget below every configured ceiling must not breach")
 	}
 }
 
@@ -615,12 +638,13 @@ func TestMaybeCompactTurnCountGateDisabled(t *testing.T) {
 	}
 }
 
-// TestEffectiveCompactMaxTurns verifies the turn-count gate resolver: unset
-// → built-in default (12), configured → that value, explicit 0/negative →
-// disabled.
+// TestEffectiveCompactMaxTurns verifies the turn-count gate resolver: unset →
+// DISABLED (this is the default that collapsed a healthy run at turn 30),
+// configured → that value, explicit 0/negative → disabled.
 func TestEffectiveCompactMaxTurns(t *testing.T) {
-	if turns, ok := effectiveCompactMaxTurns(budgetSpec{}); !ok || turns != defaultCompactMaxTurns {
-		t.Fatalf("unset compactMaxTurns = (%d, %v), want (%d, true)", turns, ok, defaultCompactMaxTurns)
+	if turns, ok := effectiveCompactMaxTurns(budgetSpec{}); ok {
+		t.Fatalf("unset compactMaxTurns = (%d, %v), want (_, false): an unset turn-count "+
+			"gate must not collapse anything", turns, ok)
 	}
 	if turns, ok := effectiveCompactMaxTurns(budgetSpec{compactMaxTurns: float64Ptr(15)}); !ok || turns != 15 {
 		t.Fatalf("configured compactMaxTurns = (%d, %v), want (15, true)", turns, ok)
@@ -633,12 +657,13 @@ func TestEffectiveCompactMaxTurns(t *testing.T) {
 	}
 }
 
-// TestEffectiveToolCallLimit verifies the tool-call HARD-abort gate
-// resolver: unset → built-in default (100), configured → that value,
-// explicit 0/negative → disabled.
+// TestEffectiveToolCallLimit verifies the tool-call HARD-abort gate resolver:
+// unset → DISABLED (100 was a ceiling nobody chose, and 120 honest calls is not
+// a loop), configured → that value, explicit 0/negative → disabled.
 func TestEffectiveToolCallLimit(t *testing.T) {
-	if limit, ok := effectiveToolCallLimit(budgetSpec{}); !ok || limit != defaultToolCallLimit {
-		t.Fatalf("unset toolCallCount = (%d, %v), want (%d, true)", limit, ok, defaultToolCallLimit)
+	if limit, ok := effectiveToolCallLimit(budgetSpec{}); ok {
+		t.Fatalf("unset toolCallCount = (%d, %v), want (_, false): an unset tool-call gate "+
+			"must not abort anything", limit, ok)
 	}
 	if limit, ok := effectiveToolCallLimit(budgetSpec{toolCallCount: float64Ptr(25)}); !ok || limit != 25 {
 		t.Fatalf("configured toolCallCount = (%d, %v), want (25, true)", limit, ok)
@@ -651,9 +676,12 @@ func TestEffectiveToolCallLimit(t *testing.T) {
 	}
 }
 
-// TestLadderToolCallAbortsAtLimit verifies the tool-call dimension hard-
-// aborts once stats.toolUses reaches the built-in default (100) — the
-// abort tier of the unified ladder (reason budget_abort:tool_call_count).
+// TestLadderToolCallAbortsAtLimit verifies the tool-call dimension hard-aborts
+// once stats.toolUses reaches a CONFIGURED limit — the abort tier of the unified
+// ladder (reason budget_abort:tool_call_count). The gate is configured here
+// explicitly because it has no built-in default any more (see
+// TestNoConfiguredBudgetMeansNoGate); a ceiling that fires must be one somebody
+// set.
 func TestLadderToolCallAbortsAtLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	defer srv.Close()
@@ -665,20 +693,20 @@ func TestLadderToolCallAbortsAtLimit(t *testing.T) {
 		client:     NewSessionClient(srv.URL, "", ""),
 		sessionID:  "sess-1",
 		done:       make(chan struct{}),
-		stats:      &execStreamState{toolUses: defaultToolCallLimit - 1},
+		stats:      &execStreamState{toolUses: 99},
 		budget:     &budgetAccumulator{},
-		budgetSpec: parseBudgetSpec(nil),
+		budgetSpec: parseBudgetSpec([]byte(`{"tool_call_count":100}`)),
 		startedAt:  time.Now(),
 	}
-	r.maybeEnforceLadder(dimTools) // 99 < 100 → no abort
+	r.maybeEnforceLadder(dimTools) // 99 < the configured 100 → no abort
 	r.mu.Lock()
 	fin := r.finished
 	r.mu.Unlock()
 	if fin {
-		t.Fatal("expected no abort below the built-in tool-call default")
+		t.Fatal("expected no abort below the configured tool-call ceiling")
 	}
-	r.stats.toolUses = defaultToolCallLimit
-	r.maybeEnforceLadder(dimTools) // 100 >= 100 → abort
+	r.stats.toolUses = 100
+	r.maybeEnforceLadder(dimTools) // 100 >= the configured 100 → abort
 	r.mu.Lock()
 	fin, ok, resultErr := r.finished, r.resultOk, r.resultErr
 	r.mu.Unlock()

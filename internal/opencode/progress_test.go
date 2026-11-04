@@ -405,14 +405,11 @@ func TestWallClockDeadline(t *testing.T) {
 	if want := time.Duration(30) * time.Second; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
 		t.Fatalf("deadline = %v from now, want ~%v", time.Until(d), want)
 	}
-	// No budget → the documented default backstop (3600s) applies so every
-	// execution has a hard timeout even when the worker doesn't opt in.
-	d, ok = wallClockDeadline(nil, []byte(`{}`))
-	if !ok {
-		t.Fatal("expected the default deadline when wall_clock_seconds absent")
-	}
-	if want := defaultWallClockTimeout; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
-		t.Fatalf("default deadline = %v from now, want ~%v", time.Until(d), want)
+	// No budget → NO DEADLINE. A hard stop is the operator's decision; the old
+	// 3600s fallback killed working sessions mid-deliverable on a number nobody
+	// had set. A wedged session is caught by the activity-based stall monitor.
+	if d, ok := wallClockDeadline(nil, []byte(`{}`)); ok {
+		t.Fatalf("expected NO deadline when wall_clock_seconds is absent, got %v", d)
 	}
 	// Zero disables the hard timeout.
 	if _, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":0}`)); ok {
@@ -422,13 +419,9 @@ func TestWallClockDeadline(t *testing.T) {
 	if _, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":-5}`)); ok {
 		t.Fatal("expected no deadline when wall_clock_seconds negative")
 	}
-	// Unparseable budgets → fall back to the default backstop (never hang).
-	d, ok = wallClockDeadline(nil, []byte(`not-json`))
-	if !ok {
-		t.Fatal("expected the default deadline on unparseable budgets")
-	}
-	if want := defaultWallClockTimeout; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
-		t.Fatalf("unparseable fallback = %v from now, want ~%v", time.Until(d), want)
+	// Unparseable budgets → same as absent: no deadline (never a guessed one).
+	if d, ok := wallClockDeadline(nil, []byte(`not-json`)); ok {
+		t.Fatalf("expected no deadline on unparseable budgets, got %v", d)
 	}
 }
 

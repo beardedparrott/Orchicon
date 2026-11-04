@@ -542,15 +542,18 @@ func nudgeCooldownFromManifest(manifestSec *int64) time.Duration {
 	return envDuration("ORCHICON_STALL_NUDGE_COOLDOWN", defaultNudgeCooldown)
 }
 
-// defaultWallClockTimeout is the hard per-execution timeout applied when
-// the merged budget omits wall_clock_seconds (opencode parity).
-const defaultWallClockTimeout = 3600 * time.Second
-
 // wallClockDeadline parses the merged budget JSON and returns the absolute
-// deadline for the session (opencode parity). Explicit 0 (worker or tenant
-// default) disables the hard timeout; unset falls back to the 3600s
-// backstop so every session has one. The merged JSON (tenant defaults +
-// worker overrides) carries wall_clock_seconds as a top-level number.
+// deadline for the session (opencode parity).
+//
+// UNSET MEANS NO DEADLINE. There is no backstop constant any more: a 3600s
+// fallback killed working sessions mid-deliverable on a number nobody had set.
+// A wedged session is caught by the stall monitor instead — no-progress,
+// tool-hang and repetition windows are all ACTIVITY-based, so they fire on a
+// session that has stopped making progress and never on one that is simply
+// slow. An operator who wants a hard ceiling sets wall_clock_seconds (tenant
+// default or worker override); ORCHICON_STALL_WALL_CLOCK_SECONDS overrides
+// both for dev. The merged JSON (tenant defaults + worker overrides) carries
+// wall_clock_seconds as a top-level number.
 func wallClockDeadline(budgets []byte) (time.Time, bool) {
 	if v := os.Getenv("ORCHICON_STALL_WALL_CLOCK_SECONDS"); v != "" {
 		if d, err := time.ParseDuration(v + "s"); err == nil && d > 0 {
@@ -566,11 +569,13 @@ func wallClockDeadline(budgets []byte) (time.Time, bool) {
 			spec.WallClockSeconds = nil
 		}
 	}
-	// Absent field (or empty/unparseable budgets) → default backstop.
+	// Absent field (or empty/unparseable budgets) → NO deadline: a hard stop is
+	// a decision, not a default.
 	if spec.WallClockSeconds == nil {
-		return time.Now().Add(defaultWallClockTimeout), true
+		return time.Time{}, false
 	}
-	// Explicit 0 (or negative) disables the hard timeout.
+	// Explicit 0 (or negative) also means no deadline — the historical way to
+	// opt out, still honoured so settings that already carry 0 keep working.
 	if *spec.WallClockSeconds <= 0 {
 		return time.Time{}, false
 	}
