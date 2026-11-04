@@ -1,4 +1,4 @@
-import { AlertTriangle, OctagonAlert } from "lucide-react";
+import { AlertTriangle, Clock, OctagonAlert } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 
@@ -67,7 +67,56 @@ export function RunFailureCard({
 //
 // DERIVED SERVER-SIDE from whether the run branch survived (see integrationStatus). This component only reports
 // it, and says nothing when the run landed or has not finished.
+//
+// TWO MORE STATES, because a queue nobody can see is the failure this whole change exists to remove:
+//
+//	"queued"      the run is HOLDING ITS BRANCH until an earlier run in the project lands. Not a fault, and not
+//	              a success either — it is the guardrail working, and an operator watching the board needs to
+//	              read it as "waiting its turn" rather than "stuck" or "broken".
+//	"conflicted"  a real merge conflict. Nothing was merged, the project's queue is HELD until a person resolves
+//	              it, and every later run is waiting behind it. This is the state that used to be a warning in a
+//	              log and a branch nobody noticed.
 export function RunIntegrationNotice({ status }: { status?: string }) {
+  if (status === "queued") {
+    return (
+      <div role="status" className="rounded-xl border border-sky-500/40 bg-sky-50 p-4 dark:bg-sky-950/20">
+        <div className="flex gap-3">
+          <Clock className="h-5 w-5 shrink-0 text-sky-600" aria-hidden="true" />
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-sm font-semibold text-sky-900 dark:text-sky-100">
+              Queued — waiting for an earlier run to land
+            </p>
+            <p className="text-sm text-sky-900/90 dark:text-sky-100/90">
+              A local project integrates one run at a time. An earlier run's work has not been merged into the
+              integration branch yet, so this run is holding its own branch rather than cutting one from a
+              stale tip — which would make its merge need a conflict resolution too. It starts on its own once
+              the run ahead of it lands.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (status === "conflicted") {
+    return (
+      <div role="alert" className="rounded-xl border border-red-500/40 bg-red-50 p-4 dark:bg-red-950/20">
+        <div className="flex gap-3">
+          <AlertTriangle className="h-5 w-5 shrink-0 text-red-600" aria-hidden="true" />
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-sm font-semibold text-red-900 dark:text-red-100">
+              This run's work could not be merged — a conflict needs a person
+            </p>
+            <p className="text-sm text-red-900/90 dark:text-red-100/90">
+              Both branches are untouched: nothing was half-merged. The project's integration queue is HELD
+              here, because letting a later run branch past this one would make its merge need a resolution
+              too. Resolve the conflict by hand — once the branch is an ancestor of the integration branch,
+              the next pass records it as merged and releases the queue.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (status !== "not_merged") return null;
   return (
     <div role="status" className="rounded-xl border border-amber-500/40 bg-amber-50 p-4 dark:bg-amber-950/20">

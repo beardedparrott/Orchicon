@@ -92,6 +92,18 @@ type WorkflowReconciler struct {
 	// pass is the safety net.
 	worktreeNotifier func(ctx context.Context, runID string)
 
+	// integrationNotifier is called right after a run reaches COMPLETED, so its project's local integration
+	// runs NOW rather than on the next sweep. It is the "per-run, idempotent" half of ordered integration:
+	// the gate (a run will not cut a branch over un-integrated work) makes the ordering CORRECT, and this
+	// makes the wait SHORT — without it every run in a local project waits up to a sweep interval for its
+	// predecessor to land, which is tolerable but pointless when the predecessor finished a moment ago.
+	integrationNotifier func(ctx context.Context, tenantID, projectID string)
+
+	// integrationEnqueuer writes the run's INTEGRATION OBLIGATION — one row in local_integrations — the moment
+	// the run reaches COMPLETED. Separate from the notifier on purpose: the obligation must exist even if the
+	// drain fails, is slow, or is never reached, because the row is what makes a miss countable later.
+	integrationEnqueuer func(ctx context.Context, tenantID, projectID, runID string)
+
 	// warming tracks workflow runs whose runtime-serve readiness probe is
 	// in flight (the async ensure-serving pass). Guards against spawning a
 	// duplicate probe goroutine per run; a plane restart clears it and the
@@ -288,6 +300,18 @@ func (r *WorkflowReconciler) isSequenceParentActive(ctx context.Context, tenantI
 // immediately. Optional — the scan pass is the safety net.
 func (r *WorkflowReconciler) SetWorktreeNotifier(fn func(ctx context.Context, runID string)) {
 	r.worktreeNotifier = fn
+}
+
+// SetIntegrationNotifier injects the callback that advances LOCAL INTEGRATION immediately for a run's project
+// when the run reaches COMPLETED. Optional: the WorktreeReconciler's periodic pass is the safety net, and the
+// provisioning gate waits for it if this does not fire.
+func (r *WorkflowReconciler) SetIntegrationNotifier(fn func(ctx context.Context, tenantID, projectID string)) {
+	r.integrationNotifier = fn
+}
+
+// SetIntegrationEnqueuer injects the hook that records a completed run's integration obligation.
+func (r *WorkflowReconciler) SetIntegrationEnqueuer(fn func(ctx context.Context, tenantID, projectID, runID string)) {
+	r.integrationEnqueuer = fn
 }
 
 // SetDispatchConcurrency sets the per-pass concurrency bound for the
@@ -1437,6 +1461,9 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// reached a terminal state in this pass — the sequence engine is
 	// notified after commit so the chain advances immediately.
 	var terminalParent string
+	// completedProjectID/completedRunID carry a run that reached COMPLETED this pass to the post-commit
+	// integration hooks. Empty when no run completed in this pass.
+	var completedProjectID, completedRunID string
 	// Collect every active non-terminal step run so that — once anyFailed is
 	// known — ALL of them are skipped, not just the ones that happened to be
 	// iterated after the first failed step (created_at order is not
@@ -1575,6 +1602,11 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		run = updated
 		progressed = true
 		reapRuntime = true
+		// Mark the terminal transition for the post-commit notifier. A local-strategy project must have this
+		// run's branch integrated before the NEXT run cuts its own, and the next run is dispatched in this
+		// same reconcile pass — so the notification cannot wait for a sweep.
+		completedProjectID = run.ProjectID
+		completedRunID = run.ID
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunCompleted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_completed: %w", err)
 		}
@@ -1653,6 +1685,21 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 
 	if err := ttx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit: %w", err)
+	}
+	// Local integration for a run that just COMPLETED, post-commit so the run's terminal status is visible to
+	// the integration pass it triggers. Idempotent (an ancestry check), so firing it for a project that is
+	// already clean costs one `git merge-base` and nothing else.
+	// AND WRITE THE OBLIGATION FIRST, then drain. The record is written before the work is attempted because
+	// an obligation that EXISTS and has not been met is a pending row an operator can see; an obligation that
+	// was never written down is indistinguishable from one that was never owed — which is exactly how two of
+	// six features were lost with every surface reporting success.
+	if completedRunID != "" && completedProjectID != "" {
+		if r.integrationEnqueuer != nil {
+			r.integrationEnqueuer(context.Background(), tenantID, completedProjectID, completedRunID)
+		}
+		if r.integrationNotifier != nil {
+			r.integrationNotifier(context.Background(), tenantID, completedProjectID)
+		}
 	}
 	// Worktree provisioning: a run armed in this pass is enqueued with the
 	// WorktreeReconciler immediately so its isolated working tree is ready
