@@ -19,7 +19,9 @@ const (
 	TransUserMessage = "user_message"
 	// TransText is a chunk of assistant text.
 	TransText = "text"
-	// TransReasoning is a chunk of assistant reasoning (never replayed).
+	// TransReasoning is a chunk of assistant reasoning. The replay of a
+	// resumed session reads the reasoning off TransToolCall, which is where
+	// the assistant message that carries it is rebuilt from.
 	TransReasoning = "reasoning"
 	// TransToolCall is a complete tool invocation.
 	TransToolCall = "tool_call"
@@ -27,6 +29,15 @@ const (
 	TransToolResult = "tool_result"
 	// TransWrittenFiles carries the deduped set of written file paths.
 	TransWrittenFiles = "written_files"
+	// TransCompaction records that the platform COLLAPSED the session's context mid-run: which trigger fired,
+	// how many messages went in and came out, and how many tool rounds were evicted. It is a fact about the
+	// session, not part of its conversation, so replay ignores it — the history a resume rebuilds is already
+	// the post-compaction one.
+	//
+	// IT EXISTS BECAUSE A COMPACTION WAS INVISIBLE. The offload file on disk was the only trace that a run's
+	// history had been rewritten under it, so a provider 400 arriving on the first request after a collapse
+	// gave the operator nothing to correlate against: no log line, no transcript part, nothing in the run page.
+	TransCompaction = "compaction"
 	// TransError is a surfaced error (stream error, tool failure, panic).
 	TransError = "error"
 	// TransState is a lifecycle marker: started / cancelled / failed / done.

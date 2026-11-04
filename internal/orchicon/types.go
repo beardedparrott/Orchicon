@@ -13,8 +13,8 @@ type Event interface{ isEvent() }
 // TextDelta is a chunk of assistant text content.
 type TextDelta struct{ Text string }
 
-// ReasoningDelta is a chunk of assistant reasoning/thinking content.
-// Reasoning is NEVER replayed back into history by any client.
+// ReasoningDelta is a chunk of assistant reasoning/thinking content. The DELTA is display-only; what a
+// provider can demand back is the message's Content.Reasoning, which the loop accumulates from these.
 type ReasoningDelta struct{ Text string }
 
 // ToolCallStart marks the beginning of tool call `Index`.
