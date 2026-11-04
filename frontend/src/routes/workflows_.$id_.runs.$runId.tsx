@@ -53,7 +53,7 @@ import {
 } from "@/components/workflow-runs/headsUp";
 import { HeadsUpGrid } from "@/components/workflow-runs/HeadsUpGrid";
 import { RunBlockageCard } from "@/components/workflow-runs/RunBlockageCard";
-import { RunFailureCard } from "@/components/workflow-runs/RunFailureCard";
+import { RunFailureCard, RunIntegrationNotice } from "@/components/workflow-runs/RunFailureCard";
 import {
   ExecStatusBadge,
   StepStatusPill,
@@ -477,6 +477,9 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           finished run — which is exactly the state a failed run is in, so nothing on this page ever said why
           one failed. Renders nothing when no error was recorded. */}
       <RunFailureCard errorMessage={run.errorMessage} errorKind={run.errorKind} />
+
+      {/* A run can be COMPLETE and NOT MERGED. Reported as indistinguishable from a landed run before this. */}
+      <RunIntegrationNotice status={run.integrationStatus} />
 
       {view === "tile" ? (
         <>

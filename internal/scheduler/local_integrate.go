@@ -81,6 +81,13 @@ func (r *WorktreeReconciler) integrationTarget(ctx context.Context, projectDir s
 // is enough to converge.
 const localIntegrationLimit = 16
 
+// localIntegrationPerRunBudget bounds the integration pass run immediately before a new branch is cut.
+//
+// Tighter than the sweep's budget on purpose: this sits on the PROVISIONING path, and a run must not wait
+// behind a backlog of other projects' integrations to get its worktree. Anything it does not reach, the
+// periodic sweep still will.
+const localIntegrationPerRunBudget = 5 * time.Second
+
 // integrateLocalRuns advances the integration branch for completed local-strategy runs.
 //
 // IDEMPOTENT BY CONSTRUCTION: the ancestry check below is the idempotency key, so a run whose branch is

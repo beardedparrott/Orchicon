@@ -1057,6 +1057,20 @@ func (r *WorktreeReconciler) reconcileStepRunOne(ctx context.Context, tenantID, 
 	if run.WorktreeStatus == domain.WorktreeReady && run.WorktreeBranch != "" {
 		base = run.WorktreeBranch
 	} else {
+		// INTEGRATE FIRST, THEN BRANCH. A run is cut from the integration branch's CURRENT tip, so anything
+		// completed-but-not-yet-merged misses the new branch entirely — and the damage compounds:
+		//
+		// REPORTED: "favourites was cut at 19:24 from develop=3c30fbb (news still un-integrated), so 23f143c is
+		// NOT a descendant of 34e483f. Merging the missing pair is not two fast-forwards; the second requires a
+		// real merge with conflicts. A missed integration does not just lose one feature, it makes every
+		// following run un-mergeable cleanly."
+		//
+		// Integration is idempotent and cheap when there is nothing to do (an ancestry check per candidate), so
+		// running it here — on the path that is ABOUT to depend on the base — is the cheapest place to close the
+		// window rather than hoping a 60s sweep caught up. Bounded by its own deadline so provisioning cannot
+		// stall behind it.
+		r.integrateLocalRuns(ctx, tenantID, time.Now().Add(localIntegrationPerRunBudget))
+
 		// REFUSE AN UNUSABLE BASE RATHER THAN PROVISIONING AN EMPTY WORKTREE. resolveBaseRef collapses "detached
 		// HEAD" and "could not resolve" into "", and "" means "start at HEAD" — so an unborn HEAD or an empty
 		// root commit produced an empty worktree, and the worker had to `git reset --hard develop` before it
@@ -2180,10 +2194,42 @@ func (r *WorktreeReconciler) removeWorktreeArtifact(path string) error {
 // removeWorktree runs `git worktree remove --force` for a registered
 // worktree that must be repaired (row still pending — we own the path).
 func (r *WorktreeReconciler) removeWorktree(ctx context.Context, projectDir, path string) error {
+	// NEVER DESTROY UNCOMMITTED WORK. `git worktree remove --force` discards it without asking, and this runs
+	// from a periodic sweep that cannot see what the operator or a worker has in flight.
+	//
+	// REPORTED, twice: "a worktree became prunable and its directory vanished mid-session while I was resolving
+	// conflicts, losing the resolutions", and "a reaper must not reclaim a worktree with uncommitted changes or
+	// an unmerged branch". The second is already guaranteed — a branch is only deleted when provably merged —
+	// but the first was not guarded at all.
+	//
+	// A DIRTY WORKTREE IS KEPT AND NAMED. Leaving it costs disk; removing it costs work that exists nowhere
+	// else, and the operator can act on a warning about a path they can see.
+	if dirty, derr := r.worktreeIsDirty(ctx, path); derr != nil {
+		r.log.Warn("worktree: could not tell whether this worktree has uncommitted work — leaving it in place",
+			"path", path, "error", derr)
+		return nil
+	} else if dirty {
+		r.log.Warn("worktree: NOT removing a worktree that has UNCOMMITTED changes — it holds work that exists "+
+			"nowhere else. Commit or discard it, then the sweep will reclaim it",
+			"path", path, "remedy", "cd "+path+" && git status")
+		return nil
+	}
 	if _, err := runGit(ctx, projectDir, "worktree", "remove", "--force", path); err != nil {
 		return err
 	}
 	return nil
+}
+
+// worktreeIsDirty reports whether the worktree at path holds modified, staged, or untracked files.
+//
+// UNTRACKED COUNTS. A worker that wrote a file without committing it has produced work; `--force` deletes it.
+// An error means "could not tell", which the caller treats as dirty — the safe direction.
+func (r *WorktreeReconciler) worktreeIsDirty(ctx context.Context, path string) (bool, error) {
+	out, err := runGit(ctx, path, "status", "--porcelain")
+	if err != nil {
+		return true, err
+	}
+	return strings.TrimSpace(out) != "", nil
 }
 
 // cleanupFailedProvision removes what a FAILED `git worktree add` may have left behind.

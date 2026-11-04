@@ -1,4 +1,4 @@
-import { OctagonAlert } from "lucide-react";
+import { AlertTriangle, OctagonAlert } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 
@@ -49,6 +49,39 @@ export function RunFailureCard({
               line and the raw detail, and collapsing that newline runs the two
               together into one sentence. */}
           <p className="whitespace-pre-wrap break-words text-sm text-foreground/90">{errorMessage}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// RunIntegrationNotice — "this run finished, but its work did not land."
+//
+// REPORTED: "both missed-integration runs and correctly-integrated runs present identically: status=succeeded,
+// WorkflowRun=completed, acceptance review written. There is no field anywhere recording whether integration
+// happened."
+//
+// A run can be COMPLETE and NOT MERGED — a conflict, a stale base, or an integration pass that has not caught up
+// yet. Rendering that as ordinary success is the same silent-failure class as the missing error message, and it
+// is worse in one way: the work exists, looks delivered, and is not in the branch anyone builds from.
+//
+// DERIVED SERVER-SIDE from whether the run branch survived (see integrationStatus). This component only reports
+// it, and says nothing when the run landed or has not finished.
+export function RunIntegrationNotice({ status }: { status?: string }) {
+  if (status !== "not_merged") return null;
+  return (
+    <div role="status" className="rounded-xl border border-amber-500/40 bg-amber-50 p-4 dark:bg-amber-950/20">
+      <div className="flex gap-3">
+        <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600" aria-hidden="true" />
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+            This run finished, but its work has NOT landed
+          </p>
+          <p className="text-sm text-amber-900/90 dark:text-amber-100/90">
+            Its run branch still exists, which means it was never merged into the integration branch — so a
+            later run cut from that branch did not include it. The platform retries integration, and a conflict
+            needs a person.
+          </p>
         </div>
       </div>
     </div>

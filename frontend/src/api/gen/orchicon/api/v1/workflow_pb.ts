@@ -793,6 +793,24 @@ export class WorkflowRun extends Message<WorkflowRun> {
    */
   errorKind = "";
 
+  /**
+   * integration_status says whether this run's work actually reached the integration branch.
+   *
+   * REPORTED: "both missed-integration runs and correctly-integrated runs present identically: status=succeeded,
+   * WorkflowRun=completed ... There is no field anywhere recording whether integration happened." That is the
+   * worst kind of gap — a run that looks finished and is not.
+   *
+   * DERIVED, not stored, and the derivation is exact rather than heuristic: a run branch is deleted ONLY when
+   * it is provably merged (branchProvablyMerged → ancestry), and deleting it clears worktree_branch. So a
+   * COMPLETED run with no branch has landed, and one with a surviving branch has not. Two facts the platform
+   * already records, read together.
+   *
+   * Values: "merged" | "not_merged" | "not_applicable". Empty for runs that have not completed.
+   *
+   * @generated from field: string integration_status = 23;
+   */
+  integrationStatus = "";
+
   constructor(data?: PartialMessage<WorkflowRun>) {
     super();
     proto3.util.initPartial(data, this);
@@ -823,6 +841,7 @@ export class WorkflowRun extends Message<WorkflowRun> {
     { no: 20, name: "pr_state", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 21, name: "error_message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 22, name: "error_kind", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 23, name: "integration_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRun {
