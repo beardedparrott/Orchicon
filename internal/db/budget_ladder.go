@@ -15,8 +15,10 @@ import (
 // and for dispatch via the scheduler) and ApplyBudgetJSON ingests a client's
 // JSON into these columns.
 type BudgetLadder struct {
-	// Gate ceilings. A nil pointer means "built-in default" (the column is
-	// NULL); an explicit 0 disables that gate.
+	// Gate ceilings. NULL (nil pointer) means NO GATE — there is no built-in
+	// ceiling for any of them, so a gate exists only because an operator set
+	// one. An explicit 0 also disables that gate (the historical opt-out, kept
+	// so a client can CLEAR a ceiling: an absent key means "leave unchanged").
 	Tokens          *float64 `json:"-"`
 	CostUSD         *float64 `json:"-"`
 	ToolCallCount   *float64 `json:"-"`
@@ -146,8 +148,8 @@ func (l *BudgetLadder) jsonWarnings() map[string]any {
 // BudgetJSON serializes the typed budget columns into the budget JSON
 // document the adapters' parseBudgetSpec reads and the Settings API returns
 // on the default_budget_overrides string. Gates are emitted only when set
-// (NULL = built-in default); the ladder is always emitted (columns are
-// NOT NULL DEFAULT).
+// (NULL = no gate, which is the default); the ladder itself is always emitted
+// (those columns are NOT NULL DEFAULT).
 func (r *TenantSettingsRow) BudgetJSON() []byte {
 	out := map[string]any{"warnings": r.Budget.jsonWarnings()}
 	if r.Budget.Tokens != nil {
@@ -171,9 +173,9 @@ func (r *TenantSettingsRow) BudgetJSON() []byte {
 	// Compaction + memory policy (D4): the typed tenant_settings columns
 	// serialize as context_compaction / memory objects — the same keys the
 	// native session's policyFromSettings and a worker's budget_overrides
-	// parse, so mergeBudgets layers worker-over-tenant per key. Only
-	// meaningful values are emitted (zero = built-in default) so a fresh
-	// tenant's JSON stays minimal.
+	// parse, so mergeBudgets layers worker-over-tenant per key. These ARE
+	// emitted always (their columns are NOT NULL DEFAULT): unlike a spend
+	// ceiling, the window-pressure trigger has a real default worth stating.
 	out["context_compaction"] = map[string]any{
 		"enabled":       r.ContextCompactionEnabled,
 		"pressure_frac": r.ContextCompactionPressureFrac,

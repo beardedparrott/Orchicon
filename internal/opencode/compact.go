@@ -226,15 +226,17 @@ func elapsedSecsToFloat(elapsed time.Duration) float64 {
 
 // ─── effective limits ─────────────────────────────────────────────────────
 
-// effectiveTokenBudget resolves the tokens gate: unset → the built-in
-// default (defaultCompactTokens, 500,000); an explicit value <= 0 disables
-// the gate entirely (ok=false). The gate keys off FRESH tokens
-// (prompt+completion+reasoning) — cache reads are excluded (they re-send
-// already-counted context) — so the ceiling bounds real work, not transport.
-// Cache reads still factor into cost, which remains the other spend gate.
+// effectiveTokenBudget resolves the tokens gate: UNSET → NO GATE (ok=false).
+// A spend ceiling is a decision the operator makes, never one inferred from
+// silence — the previous 500,000 default aborted healthy runs on a number
+// nobody had set. An explicit value <= 0 is also no gate (the historical way
+// to opt a dimension out), and a positive value is the ceiling. The gate keys
+// off FRESH tokens (prompt+completion+reasoning) — cache reads are excluded
+// (they re-send already-counted context) — so a ceiling bounds real work, not
+// transport. Cache reads still factor into cost, the other spend dimension.
 func effectiveTokenBudget(spec budgetSpec) (tokens float64, ok bool) {
 	if spec.tokens == nil {
-		return defaultCompactTokens, true
+		return 0, false
 	}
 	if *spec.tokens <= 0 {
 		return 0, false
@@ -242,13 +244,13 @@ func effectiveTokenBudget(spec budgetSpec) (tokens float64, ok bool) {
 	return *spec.tokens, true
 }
 
-// effectiveCostBudget resolves the cost_usd gate: unset → the built-in
-// default (defaultCompactCostUSD, $0.50); an explicit value <= 0 disables
-// the gate entirely (ok=false). Cost is priced (cache-aware) by the
-// provider, so it is a SEPARATE gate from tokens, not a token fallback.
+// effectiveCostBudget resolves the cost_usd gate: UNSET → NO GATE (see
+// effectiveTokenBudget — a ceiling is the operator's decision). Cost is priced
+// (cache-aware) by the provider, so it is a SEPARATE dimension from tokens,
+// not a token fallback.
 func effectiveCostBudget(spec budgetSpec) (usd float64, ok bool) {
 	if spec.costUSD == nil {
-		return defaultCompactCostUSD, true
+		return 0, false
 	}
 	if *spec.costUSD <= 0 {
 		return 0, false
@@ -257,14 +259,16 @@ func effectiveCostBudget(spec budgetSpec) (usd float64, ok bool) {
 }
 
 // effectiveToolCallLimit resolves the tool_call_count HARD-abort gate:
-// unset → the built-in default (defaultToolCallLimit, 100); an explicit
-// value <= 0 disables the gate entirely (ok=false). Unlike the spend
-// gates, a tool call already made cannot be "compacted away", so this is
-// the dimension with the most obvious hard-abort semantics — but it still
-// follows the SAME warn→escalate→abort ladder as the others.
+// UNSET → NO GATE (see effectiveTokenBudget; 100 was a ceiling no operator
+// asked for, and a tool-heavy run of 120 calls is honest work, not a loop —
+// the progress monitor's repetition window detects the real thing). An
+// explicit value <= 0 is also no gate. Unlike the spend dimensions, a tool
+// call already made cannot be "compacted away", so this one has the most
+// obviously terminal semantics — but it still follows the SAME
+// warn→escalate→abort ladder as the others.
 func effectiveToolCallLimit(spec budgetSpec) (limit int, ok bool) {
 	if spec.toolCallCount == nil {
-		return defaultToolCallLimit, true
+		return 0, false
 	}
 	if *spec.toolCallCount <= 0 {
 		return 0, false
@@ -272,13 +276,14 @@ func effectiveToolCallLimit(spec budgetSpec) (limit int, ok bool) {
 	return int(*spec.toolCallCount), true
 }
 
-// effectiveWallClockBudget resolves the wall_clock_seconds gate: unset →
-// the built-in default (defaultWallClockSeconds, 3600); an explicit value
-// <= 0 disables the gate entirely (ok=false). Mirrors wallClockDeadline's
-// "0 disables" convention.
+// effectiveWallClockBudget resolves the wall_clock_seconds gate:
+// UNSET → NO DEADLINE (ok=false), mirroring wallClockDeadline. A hard deadline
+// is a policy the operator sets; the previous 3600s default killed a working
+// session mid-deliverable. A wedged session is caught by the stall monitor
+// (activity-based), not by a clock.
 func effectiveWallClockBudget(spec budgetSpec) (sec float64, ok bool) {
 	if spec.wallClockSeconds == nil {
-		return defaultWallClockSeconds, true
+		return 0, false
 	}
 	if *spec.wallClockSeconds <= 0 {
 		return 0, false
@@ -287,12 +292,16 @@ func effectiveWallClockBudget(spec budgetSpec) (sec float64, ok bool) {
 }
 
 // effectiveCompactMaxTurns resolves the turn-count gate (compact_max_turns):
-// unset → the built-in default (defaultCompactMaxTurns, 12); an explicit
-// value <= 0 disables the turn-count trigger entirely (ok=false). This is
-// the ORTHOGONAL context-hygiene compact, not a ladder stage.
+// UNSET → NO TURN-COUNT COLLAPSE (ok=false). This is the ORTHOGONAL
+// context-hygiene compact, not a ladder stage — and its old 30-turn default
+// was the one that mattered: it collapsed a healthy 4-minute run's history at
+// step 30 and the provider rejected the next request. A lossy collapse is a
+// decision, so it is now opt-in via an explicit compact_max_turns. The
+// WINDOW-PRESSURE trigger is untouched: that one is derived from the model's
+// real window and is the only thing preventing a context-overflow failure.
 func effectiveCompactMaxTurns(spec budgetSpec) (turns int, ok bool) {
 	if spec.compactMaxTurns == nil {
-		return defaultCompactMaxTurns, true
+		return 0, false
 	}
 	if *spec.compactMaxTurns <= 0 {
 		return 0, false
@@ -609,38 +618,25 @@ func parseBudgetSpec(budgets []byte) budgetSpec {
 
 // ── built-in defaults ────────────────────────────────────────────────────
 const (
-	// defaultWallClockSeconds is the built-in per-execution deadline applied
-	// when a budget omits wall_clock_seconds. Matches wallClockDeadline's
-	// existing 3600s backstop.
-	defaultWallClockSeconds = 3600.0
-	// defaultCompactCostUSD is the built-in cost_usd abort gate applied when
-	// a worker/tenant budget omits the field. Calibration is documented on
-	// the old constant it replaces (see git history); $0.50 is ~10x the
-	// clean max observed on a narrow DeepSeek sample, with the intent that
-	// per-worker budgets are raised for materially costlier providers.
-	defaultCompactCostUSD = 0.50
-	// defaultCompactTokens is the built-in tokens gate (FRESH tokens:
-	// prompt+completion+reasoning, cache reads excluded) applied when a
-	// budget omits tokens. 500,000 is ~3x the clean max observed — real
-	// headroom without being oversized.
-	defaultCompactTokens = 500_000.0
-	// defaultCompactMaxTurns is the orthogonal turn-count context-hygiene
-	// compact gate (see file header). 30 keeps a chatty session bounded
-	// without the disruptive mid-flight compaction of the original 12: the
-	// spend ladder now handles budget, so the turn-count gate only needs to
-	// cap a genuinely chatty session's re-sent prefix, not interrupt one that
-	// is comfortably within its token/cost budget. Tuned to the observed
-	// SSE/SDLC worker cadence where a healthy implementation step runs
-	// ~30-50 turns; a compact every ~30 turns bounds the prefix without
-	// forcing an expensive fresh re-send every dozen turns.
-	defaultCompactMaxTurns = 30
+	// THE GATE CEILINGS HAVE NO BUILT-IN DEFAULTS. tokens, cost_usd,
+	// tool_call_count, wall_clock_seconds and compact_max_turns all resolve to
+	// "no gate" when unset (see the effective* resolvers). They used to fall
+	// back to 500,000 fresh tokens / $0.50 / 100 calls / 3600s / every 30
+	// turns — numbers no operator chose — and the 30-turn one collapsed a
+	// healthy 4-minute worker run's history mid-flight, after which the
+	// provider rejected the next request with a 400 that named neither the
+	// collapse nor the budget. A ceiling is a decision, so it is now made
+	// explicitly (Settings → Defaults, or a worker's budget_overrides) or not
+	// at all.
+	//
+	// The two constants below are NOT ceilings and keep their defaults: they
+	// bound the collapse itself once an operator HAS opted into compaction.
+	//
 	// defaultCompactMinTurns is the minimum completed turns before the
 	// turn-count gate is armed (never at start; prevents the compact loop).
 	defaultCompactMinTurns = 2
 	// defaultCompactMax bounds how many compacts fire per execution.
 	defaultCompactMax = 10
-	// defaultToolCallLimit is the built-in tool_call_count gate.
-	defaultToolCallLimit = 100
 )
 
 // compactMinTurns returns the minimum-turn floor before the gate is armed

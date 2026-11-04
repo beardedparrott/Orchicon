@@ -704,48 +704,48 @@ function DefaultsTab() {
           <CardHeader>
             <CardTitle>Execution budget (defaults)</CardTitle>
             <CardDescription>
-              Default per-execution budget ceilings applied when a worker does not
-              set its own value for a field. A worker&apos;s <code>budget_overrides</code>{" "}
-              overrides these per-field. Values are the tenant-level defaults; leave a
-              field empty to fall back to the built-in default.
+              Per-execution budget ceilings applied when a worker does not set its
+              own value for a field. A worker&apos;s <code>budget_overrides</code> overrides
+              these per-field. <strong>An empty field means no limit</strong> — nothing is
+              inferred from silence, so a ceiling only exists once you set one.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <StallField
                 label="Token limit"
-                description="Max tokens per execution. Empty = built-in default (500,000)."
+                description="Max fresh tokens per execution (prompt+completion+reasoning; cache reads excluded). Empty = no limit."
                 value={draftBudgetTokens}
                 onChange={setDraftBudgetTokens}
-                placeholder="1000000"
+                placeholder="unlimited"
               />
               <StallField
                 label="Cost limit (USD)"
-                description="Max spend per execution. Empty = built-in default ($0.50)."
+                description="Max spend per execution, at the provider's priced (cache-aware) rate. Empty = no limit."
                 value={draftBudgetCost}
                 onChange={setDraftBudgetCost}
-                placeholder="10"
+                placeholder="unlimited"
               />
               <StallField
                 label="Wall clock timeout (seconds)"
-                description="Hard per-execution deadline. Empty = built-in default (3600). A worker can set 0 to disable its own timeout."
+                description="Hard per-execution deadline. Empty = no deadline — the stall monitor (activity-based) catches a wedged session instead of a clock."
                 value={draftBudgetWallClock}
                 onChange={setDraftBudgetWallClock}
-                placeholder="3600"
+                placeholder="unlimited"
               />
               <StallField
                 label="Tool call limit"
-                description="Max tool calls per execution — a hard stop (unlike the token/cost/turn gates below, a tool call already made can't be undone by compacting). Empty = built-in default (100). Set 0 to disable."
+                description="Max tool calls per execution — a hard stop (unlike the token/cost gates, a tool call already made can't be undone by compacting). Empty = no limit."
                 value={draftBudgetToolCalls}
                 onChange={setDraftBudgetToolCalls}
-                placeholder="100"
+                placeholder="unlimited"
               />
               <StallField
                 label="Compact interval (turns)"
-                description="Force a context compact at least every N turns, regardless of cost — bounds cumulative cache-read resend on long chatty sessions even when per-turn spend stays cheap. Empty = built-in default (30). Set 0 to rely on the cost/token gates only."
+                description="Force a context compact at least every N turns, regardless of cost. Empty = never collapse on turn count: a compaction is lossy and mid-flight, so it only happens if you ask for it (or when the model's own context window is nearly full)."
                 value={draftCompactMaxTurns}
                 onChange={setDraftCompactMaxTurns}
-                placeholder="30"
+                placeholder="never"
               />
             </div>
 

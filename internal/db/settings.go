@@ -148,9 +148,13 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 // Returns the full row after update.
 //
 // EXCEPTION — the stall thresholds are written verbatim, blank included: NULL
-// means "built-in default" and 0 means "disabled", so an absent value is a real
+// means "use the fallback" and 0 means "disabled", so an absent value is a real
 // instruction ("go back to the default") rather than "leave it alone". Every
 // other column keeps the CASE-guarded preserve-on-zero behaviour.
+//
+// The budget GATE ceilings are the other exception in effect: their built-in
+// fallback is now "no gate", so NULL and 0 mean the same thing there, and an
+// operator clears a ceiling by sending 0 (an absent key preserves it).
 func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in TenantSettingsRow) (TenantSettingsRow, error) {
 	// The INSERT branch supplies a value for default_budget_overrides, which
 	// is jsonb NOT NULL. A caller that leaves the field unset (nil/empty)

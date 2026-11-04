@@ -98,22 +98,22 @@ func (l *BudgetLadder) Message(dim string, frac float64) string {
 func (l *BudgetLadder) CompactionTurnFloor() int { return compactMinTurns() }
 
 // CompactMaxTurns resolves the turn-count context-hygiene gate
-// (compact_max_turns) from the SAME merged budget JSON, plus ok=false when
-// the gate is explicitly disabled (<= 0). Callers never restate the
-// default — it comes from the one place that defines it
-// (defaultCompactMaxTurns).
+// (compact_max_turns) from the SAME merged budget JSON, plus ok=false when the
+// gate is unset OR explicitly disabled (<= 0) — both mean "do not collapse on
+// turn count". Callers never restate a default.
 func (l *BudgetLadder) CompactMaxTurns() (int, bool) { return effectiveCompactMaxTurns(l.spec) }
 
 // CompactionMax returns the per-execution compaction cap
 // (ORCHICON_COMPACT_MAX; 0 disables).
 func (l *BudgetLadder) CompactionMax() int { return compactMax() }
 
-// DefaultCompactMaxTurns returns the built-in turn-count hygiene gate
-// default (compact_max_turns; see compact.go defaultCompactMaxTurns) —
-// the default the native engine's policyFromSettings falls back to when
-// the merged budget JSON omits the key. ONE source of the default: the
-// native gate never re-states the number.
-func DefaultCompactMaxTurns() int { return defaultCompactMaxTurns }
+// DefaultCompactMaxTurns returns the turn-count hygiene gate the native
+// engine's policyFromSettings falls back to when the merged budget JSON omits
+// compact_max_turns. It is 0 = DISABLED: a lossy mid-run collapse is the
+// operator's decision, and the old 30-turn fallback collapsed healthy runs
+// nobody had budgeted. An explicit compact_max_turns in the merged JSON still
+// arms it. ONE source of the value: the native gate never re-states a number.
+func DefaultCompactMaxTurns() int { return 0 }
 
 // BudgetSpend is the exported view of a cumulative spend accumulator
 // (fresh tokens + cost + step count). Fed from LIVE provider-reported

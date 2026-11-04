@@ -725,13 +725,6 @@ func isFatalStall(reason string) bool {
 	return strings.HasPrefix(reason, "stalled:no_progress")
 }
 
-// defaultWallClockTimeout is the hard per-execution timeout applied when a
-// worker's final merged budget (tenant default + worker override) omits
-// wall_clock_seconds. AGENTS.md documents this as the default (3600s) — the
-// runaway-spend backstop that kills the subprocess even when the model is
-// still producing output.
-const defaultWallClockTimeout = 3600 * time.Second
-
 // wallClockDeadline parses the execution's merged budget JSON
 // (budget_overrides after tenant-default merge, docs/05 §8) and returns the
 // absolute deadline for the execution. Returns ok=false if no wall-clock
@@ -741,11 +734,13 @@ const defaultWallClockTimeout = 3600 * time.Second
 // "wall_clock_timeout" (docs/06 §2 budget overrun trigger).
 //
 // Precedence (applied before this call, in the reconciler): worker
-// budget_overrides.wall_clock_seconds (explicit) → tenant
-// default_budget_overrides.wall_clock_seconds → this default (3600). An
-// explicit 0 in the worker OR the tenant default disables the hard timeout
-// (relying solely on stall detection); an unset field falls back to
-// defaultWallClockTimeout so every execution has a hard backstop.
+// budget_overrides.wall_clock_seconds → tenant
+// default_budget_overrides.wall_clock_seconds. UNSET → NO DEADLINE: the old
+// 3600s backstop killed working sessions mid-deliverable on a number nobody
+// had set, so a hard stop is now an explicit decision. An explicit 0 in the
+// worker OR the tenant default also means no deadline (the historical opt-out,
+// still honoured). A wedged session is caught by the stall monitor, whose
+// windows are activity-based. ORCHICON_STALL_WALL_CLOCK_SECONDS overrides both.
 //
 // The wall-clock dimension shares the single budget parse (parseBudgetSpec)
 // with the compaction gate so both read the same merged budget.
@@ -756,11 +751,11 @@ func wallClockDeadline(ctx context.Context, budgets []byte) (time.Time, bool) {
 		}
 	}
 	spec := parseBudgetSpec(budgets)
-	// Absent field (or empty/unparseable budgets) → default backstop (3600s).
+	// Absent field (or empty/unparseable budgets) → NO deadline.
 	if spec.wallClockSeconds == nil {
-		return time.Now().Add(defaultWallClockTimeout), true
+		return time.Time{}, false
 	}
-	// Explicit 0 (or negative) disables the hard timeout.
+	// Explicit 0 (or negative) also means no deadline.
 	if *spec.wallClockSeconds <= 0 {
 		return time.Time{}, false
 	}

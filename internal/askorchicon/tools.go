@@ -847,7 +847,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"stall_nudge_reply_window_seconds":    {Type: "number", Description: "Seconds a probe is awaited before the execution is considered unresponsive (0 = leave unchanged)"},
 				"stall_nudge_cooldown_seconds":        {Type: "number", Description: "Seconds between consecutive probes (0 = leave unchanged)"},
 				"stall_tool_hang_seconds":             {Type: "number", Description: "Seconds a tool call with no events is allowed before it is cancelled natively and a course-correcting redirect is injected (0 = leave unchanged; negative = disabled)"},
-				"default_budget_overrides":            {Type: "string", Description: "JSON object of default execution-budget gates (e.g. {\"tokens\":500000,\"cost_usd\":0.5,\"wall_clock_seconds\":7200,\"tool_call_count\":0,\"compact_max_turns\":12}). Empty string = leave unchanged."},
+				"default_budget_overrides":            {Type: "string", Description: "JSON object of default execution-budget gates. An OMITTED gate means NO LIMIT — there are no built-in ceilings, so each one exists only because an operator set it. Example: {\"cost_usd\":10,\"wall_clock_seconds\":7200,\"compact_max_turns\":30}. Empty string = leave unchanged."},
 				"execution_reap_grace_seconds":        {Type: "number", Description: "Liveness reaper grace before a stuck running execution is reaped (0 = leave unchanged)"},
 				"execution_reap_consecutive_failures": {Type: "number", Description: "Liveness probe failures before the reaper acts (0 = leave unchanged)"},
 			},

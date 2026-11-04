@@ -302,18 +302,17 @@ func TestTurnMaxTokens(t *testing.T) {
 	}
 }
 
-// AC (wall-clock parity): explicit 0 disables; unset uses the backstop;
-// a value sets the deadline.
+// AC (wall-clock parity): explicit 0 disables; UNSET means NO DEADLINE (there is
+// no backstop any more — a hard stop is a decision); a value sets the deadline.
 func TestNativeWallClockDeadline(t *testing.T) {
 	if d, ok := wallClockDeadline([]byte(`{"wall_clock_seconds":0}`)); ok {
 		t.Fatalf("explicit 0 must disable, got deadline %v", d)
 	}
-	if _, ok := wallClockDeadline([]byte(`{"wall_clock_seconds":1500}`)); !ok {
-		t.Fatalf("1500s must set a deadline")
+	if d, ok := wallClockDeadline([]byte(`{"wall_clock_seconds":1500}`)); !ok {
+		t.Fatalf("1500s must set a deadline, got %v", d)
 	}
-	d1, ok1 := wallClockDeadline([]byte(`{}`))
-	if !ok1 || time.Until(d1) > defaultWallClockTimeout {
-		t.Fatalf("unset must use the %v backstop (got ok=%v until=%v)", defaultWallClockTimeout, ok1, time.Until(d1))
+	if d, ok := wallClockDeadline([]byte(`{}`)); ok {
+		t.Fatalf("unset wall_clock_seconds must mean NO deadline, got %v", d)
 	}
 }
 

@@ -867,7 +867,7 @@ Agent-memory session storage is configured per tenant; the memory tools (`orchic
 
 ### Compaction controls
 
-Set under **Settings → Defaults → Execution budget** (per-worker `budget_overrides`): the budget gates (`tokens`, `cost_usd`, `wall_clock_seconds`, `tool_call_count`) and the `compact_max_turns`/`compact_tiers` ladder drive the native engine's context management (see [USERGUIDE.md §11.3](USERGUIDE.md#113-settings) for the exact semantics). Compaction only fires on a **LIVE context-hint source** (never guessed context): a model that reports real metadata (Ollama `/api/show` true metadata) or a probed/catalog context window; when no hint exists the picker shows a `WARN` and compaction never guesses the window.
+Set under **Settings → Defaults → Execution budget** (per-worker `budget_overrides`): the budget gates (`tokens`, `cost_usd`, `wall_clock_seconds`, `tool_call_count`) and the `compact_max_turns`/`compact_tiers` ladder drive the native engine's context management. **Every gate defaults to NO GATE** (an unset key is no limit; an explicit `0` also disables it) — a ceiling exists only because an operator set one (see [USERGUIDE.md §11.3](USERGUIDE.md#113-settings) for the exact semantics). Compaction only fires on a **LIVE context-hint source** (never guessed context): a model that reports real metadata (Ollama `/api/show` true metadata) or a probed/catalog context window; when no hint exists the picker shows a `WARN` and compaction never guesses the window.
 
 ## Development Guide
 
