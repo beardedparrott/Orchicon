@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	projectpkg "github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/slug"
@@ -57,6 +58,17 @@ import (
 // worktreeDirName is the subdirectory under project_dir where per-run
 // working trees live.
 const worktreeDirName = ".orchicon-worktrees"
+
+// worktreeNoticeKind marks an error_message that is a NOTICE, not a failure.
+//
+// workflow_runs.error_message is where a failure goes, and the run page renders it as a red failure card. A
+// SKIPPED worktree is not a failure — it is the supported "works in place, no branch" path — but it has a reason
+// worth reading, and it was being written to that column with no kind. The operator therefore saw a failed run
+// whose worker carried on, and aborted a run that was fine.
+//
+// The kind is the signal the UI keys on: this text is a warning about what happened and what the platform did,
+// on a run that is otherwise proceeding.
+const worktreeNoticeKind = "worktree_notice"
 
 // stagingPrefix names the transient sibling directory used to stage a
 // nested branch worktree out of a run container during adoption
@@ -735,15 +747,72 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 		return nil
 	}
 
+	// THE STRATEGY IS RESOLVED BEFORE THE REPOSITORY CHECK, because it decides what a MISSING repository means:
+	// a problem to fix (local/pr) or simply how this project works (none).
+	strategy := r.effectiveGitStrategy(ctx, tenantID, run)
+
 	// Phase 2 — resolve the project dir + detect a git work tree (cached on
 	// the project row so the loop does not shell out to git on every pass).
 	projectDir, gitBacked, found := r.resolveGitBacked(ctx, tenantID, run.ProjectID)
 	if !found {
-		return r.markSkipped(ctx, tenantID, runID, "project has no project_dir")
+		return r.markSkippedNotice(ctx, tenantID, runID, "project has no project_dir",
+			"this project has no directory, so the run works with no isolated tree")
 	}
 	if !gitBacked {
-		return r.markSkipped(ctx, tenantID, runID,
-			fmt.Sprintf("project dir %s is not a git work tree", projectDir))
+		// A GIT-TYPE STRATEGY WITH NO REPOSITORY IS INITIALISED, NOT REFUSED.
+		//
+		// REPORTED: a project created through Ask Orchicon had no `git init` (the Ask tool wrote the row directly
+		// instead of going through the project service, which is the only caller of EnsureGitState), so its first
+		// run found no work tree. The run was then SKIPPED with the reason written into error_message — which the
+		// run page renders as a red failure card — while the DAG gate let the worker carry on in place. The
+		// operator saw "failed" and a working worker, and aborted a run that was fine.
+		//
+		// The intent the operator stated: "if set to any git type strategy with no local git initialized, run a
+		// git init". So the reconciler does exactly that — using the SAME EnsureGitState the console runs on
+		// save, so a repaired project is indistinguishable from one set up in the UI. It happens BEFORE the
+		// worktree is cut (this is the provisioning path, not mid-run), so the branch that follows is cut from a
+		// real repository, and it is idempotent: EnsureGitState asks "is this a repo" first.
+		if db.RequiresRepository(strategy) {
+			rep := projectpkg.EnsureGitState(ctx, projectDir, strategy)
+			// "NO ERROR" IS NOT "REPAIRED". EnsureGitState DECLINES for good reasons — no directory yet, or a
+			// directory that sits inside somebody else's repository, which it will not shadow with a nested one.
+			// Those come back as Skipped with no error, and treating that as success would then hand the run a
+			// branch of the ENCLOSING repository. The repair signal is Needed (setup actually did something) plus
+			// the directory being its OWN repository root.
+			repaired := rep.Needed && rep.Err == nil && !rep.GitMissing && r.isRepoRoot(ctx, projectDir)
+			if repaired {
+				// The cached detection is stale by construction — we just changed the fact it caches.
+				r.refreshGitDetection(ctx, tenantID, run.ProjectID, projectDir)
+				gitBacked = true
+				// A NOTICE, NOT AN ERROR: nothing failed, and the text says what happened and what the platform
+				// did about it. It rides run_context, so the run's status is untouched — it proceeds and branches
+				// exactly like a project that was set up by hand.
+				notice := "This project had no git repository, so this run could not have cut a branch. The " +
+					"platform initialised one on the project directory (" + strings.Join(rep.Done, "; ") + ") " +
+					"and then provisioned the run's worktree as usual. Nothing was lost and nothing failed."
+				r.noteRunNotice(ctx, tenantID, runID, "worktree_git_initialised", notice)
+				r.log.Warn("worktree: initialised a missing git repository so the run can branch",
+					"run", runID, "project_dir", projectDir, "strategy", strategy, "done", rep.Done)
+			} else {
+				// No git binary, an unwritable directory, or a directory inside another repository. Still NOT a
+				// failure: the run proceeds in place and the notice says why.
+				reason := rep.Summary()
+				if reason == "" {
+					reason = "a git repository could not be initialised there"
+				}
+				return r.markSkippedNotice(ctx, tenantID, runID,
+					fmt.Sprintf("project dir %s has no usable git repository: %s", projectDir, reason),
+					"This project is set to "+strategy+", which expects a git repository, and one could not be "+
+						"created here. The run proceeds in place with no branch and no integration — nothing is "+
+						"lost, but this run's work will not appear on the integration branch.")
+			}
+		} else {
+			// `none`: no repository is required by design. Informational, never a warning.
+			return r.markSkippedNotice(ctx, tenantID, runID,
+				fmt.Sprintf("project dir %s is not a git work tree", projectDir),
+				"This project is ephemeral (git_strategy=none), so the run works in place in the project "+
+					"directory with no branch — exactly as configured.")
+		}
 	}
 
 	stages.mark("project")
@@ -760,7 +829,6 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	// (a detached worktree creates no ref that can leak locally or
 	// remotely). The strategy is resolved once here and used for both the
 	// branch name and the detached-vs-named provisioning decision.
-	strategy := r.effectiveGitStrategy(ctx, tenantID, run)
 	branch := ""
 	if strategy != "none" {
 		branch = r.branchName(ctx, tenantID, run)
@@ -1745,6 +1813,32 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 		return string(out), gitError(dir, args, string(out), err)
 	}
 	return string(out), nil
+}
+
+// isRepoRoot reports whether projectDir is ITSELF a git repository root, as opposed to a directory that merely
+// sits inside someone else's repository.
+//
+// THE DISTINCTION IS LOAD-BEARING for the run-time repair: `git rev-parse --is-inside-work-tree` is true for any
+// subdirectory of any repo — including a project dir nested in the operator's own checkout — and `git worktree
+// add` there would cut a branch of the ENCLOSING repository. That is not "this project has a repository", so the
+// repair must not claim it as one.
+func (r *WorktreeReconciler) isRepoRoot(ctx context.Context, dir string) bool {
+	top, err := runGit(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return false
+	}
+	top = strings.TrimSpace(top)
+	if top == "" {
+		return false
+	}
+	// Symlinks and trailing separators differ across platforms; compare resolved paths when possible.
+	if resolved, rerr := filepath.EvalSymlinks(top); rerr == nil {
+		top = resolved
+	}
+	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
+		dir = resolved
+	}
+	return filepath.Clean(top) == filepath.Clean(dir)
 }
 
 // isInsideWorkTree reports whether projectDir is inside a git work tree
@@ -2823,6 +2917,81 @@ func (r *WorktreeReconciler) recordReady(ctx context.Context, tenantID, runID, p
 
 // markSkipped records that the project is not git-backed so the run
 // proceeds in place (the non-repo fallback consumes this decision).
+// markSkippedNotice records a NON-FAILING outcome with an operator-facing note.
+//
+// THIS EXISTS BECAUSE "SKIPPED" WAS BEING PAINTED AS A FAILURE. mark() writes its reason into
+// workflow_runs.error_message, and the run page renders error_message as a red failure card regardless of status.
+// So a run that simply had no repository to work in — a normal, supported outcome — told the operator "failed"
+// while its worker carried on. Reported exactly that way: "it claimed the run had failed because of that but then
+// the worker kept working", and the operator aborted a run that was fine.
+//
+// The note column keeps the reason (it is genuinely useful) but the KIND is what the UI keys on, so a skip
+// renders as a notice. Nothing about the run's status changes: skipped still dispatches in place.
+func (r *WorktreeReconciler) markSkippedNotice(ctx context.Context, tenantID, runID, reason, note string) error {
+	r.log.Info("worktree: run skipped (works in place)", "run", runID, "reason", reason, "notice", note)
+	return r.mark(ctx, tenantID, runID, domain.WorktreeSkipped, "", "", reason+"\n\n"+note)
+}
+
+// noteRunNotice records an operator-facing note on the run without touching its status.
+//
+// Used for the repair path: the run was NOT skipped (it got a real worktree and will branch normally), but
+// something worth reading happened first — the platform created the missing repository. A notice is the honest
+// shape: it is not a warning about a problem, it is a record of what was done to avoid one.
+func (r *WorktreeReconciler) noteRunNotice(ctx context.Context, tenantID, runID, kind, note string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return
+	}
+	defer ttx.Rollback(ctx)
+	run, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, runID)
+	if err != nil {
+		return
+	}
+	merged, ok := mergeRunContext(run.RunContext, map[string]any{
+		"worktree_notice":      note,
+		"worktree_notice_kind": kind,
+	})
+	if !ok {
+		return
+	}
+	if _, uerr := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, runID, run.Version,
+		db.UpdateWorkflowRunFields{RunContext: &merged}); uerr != nil {
+		r.log.Warn("worktree: could not record the run notice", "run", runID, "error", uerr)
+		return
+	}
+	if cerr := ttx.Commit(ctx); cerr != nil {
+		r.log.Warn("worktree: could not commit the run notice", "run", runID, "error", cerr)
+	}
+}
+
+// refreshGitDetection re-detects whether projectDir is a git work tree and WRITES the result back, bypassing the
+// cached value. It exists for the one case where the cache is known to be stale by construction: the platform
+// just created the repository, so the fact the cache remembers is the one that changed.
+func (r *WorktreeReconciler) refreshGitDetection(ctx context.Context, tenantID, projectID, projectDir string) bool {
+	isWT := r.isInsideWorkTree(ctx, projectDir)
+	slug := ""
+	if isWT {
+		slug = r.detectRepoSlug(ctx, projectDir)
+	}
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return isWT // detection still answers; only the cache write is lost
+	}
+	defer ttx.Rollback(ctx)
+	proj, err := db.GetProject(ctx, ttx.Tx, tenantID, projectID)
+	if err != nil {
+		return isWT
+	}
+	if _, uerr := db.UpdateProjectGitDetection(ctx, ttx.Tx, tenantID, projectID, proj.Version, isWT, slug); uerr != nil {
+		r.log.Warn("worktree: could not refresh the cached git detection after init", "project", projectID, "error", uerr)
+		return isWT
+	}
+	if cerr := ttx.Commit(ctx); cerr != nil {
+		r.log.Warn("worktree: could not commit the git detection refresh", "project", projectID, "error", cerr)
+	}
+	return isWT
+}
+
 func (r *WorktreeReconciler) markSkipped(ctx context.Context, tenantID, runID, reason string) error {
 	r.log.Info("worktree: run skipped (non-repo project)", "run", runID, "reason", reason)
 	return r.mark(ctx, tenantID, runID, domain.WorktreeSkipped, "", "", reason)
@@ -2918,7 +3087,13 @@ func (r *WorktreeReconciler) mark(ctx context.Context, tenantID, runID, status, 
 		if friendly := preflightRemedy(status, reason); friendly != "" {
 			fields.ErrorMessage = strPtr(friendly + "\n\nDetail: " + reason)
 		}
-		fields.ErrorKind = strPtr(preflightErrorKind(status, reason))
+		if status == domain.WorktreeSkipped {
+			// A SKIP IS A NOTICE. Status is untouched (skipped still dispatches in place); only the CLASS of the
+			// message changes, so the UI stops painting a supported outcome as a failure.
+			fields.ErrorKind = strPtr(worktreeNoticeKind)
+		} else {
+			fields.ErrorKind = strPtr(preflightErrorKind(status, reason))
+		}
 	}
 	// CLEAN UP AN EMPTY LEFTOVER ON FAILURE, so a retry does not inherit it.
 	//

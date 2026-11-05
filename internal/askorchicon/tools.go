@@ -114,14 +114,21 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Required:    []string{"id"},
 		},
 		{
-			Name:        "create_project",
-			Description: "Create a new project. Requires title. Optionally accepts goals, project_dir, default_runtime_image, execution_mode (runtime|local, default local).",
-			Mutating:    true,
-			Fn:          toolCreateProject,
+			Name: "create_project",
+			Description: "Create a new project. Requires title. Optionally accepts goals, project_dir, " +
+				"git_strategy (local|pr|none, default local), init_git (run the platform's git setup for it), " +
+				"default_runtime_image, execution_mode (runtime|local, default local). ASK the user for the git " +
+				"strategy before creating: local = runs commit to a branch the platform integrates, pr = the same " +
+				"plus a pull request, none = ephemeral, no branch. If they pick local or pr, ask whether to " +
+				"initialise the repository and pass init_git true if they agree.",
+			Mutating: true,
+			Fn:       toolCreateProject,
 			Properties: map[string]PropertySchema{
 				"title":                 {Type: "string", Description: "Project title"},
 				"goals":                 {Type: "string", Description: "Project goals (markdown)"},
 				"project_dir":           {Type: "string", Description: "Project directory path"},
+				"git_strategy":          {Type: "string", Description: "local | pr | none (default local). local and pr need a git repository; none works in place with no branch."},
+				"init_git":              {Type: "boolean", Description: "Run the platform's git setup (EnsureGitState: git init, initial commit, integration branch) against project_dir. Only after the user agrees. No-op when the directory already has a repository."},
 				"default_runtime_image": {Type: "string", Description: "Default runtime image tag (empty = inherit)"},
 				"execution_mode":        {Type: "string", Description: "runtime = always-container (opt-in); local = in-process (default). Omit for local."},
 			},
@@ -151,11 +158,18 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Required:    []string{"id"},
 		},
 		{
-			Name:        "create_project_directory",
-			Description: "Create a project directory on the filesystem and set it as the project's project_dir. Optionally scaffold subdirectories (src, docs, tests, workflows).",
+			Name: "create_project_directory",
+			Description: "Create a project directory on the filesystem and set it as the project's project_dir. " +
+				"Optionally scaffold subdirectories (src, docs, tests, workflows) and initialise a git repository " +
+				"(init_git) — which a local/pr project needs before its runs can branch. init_git is a no-op when " +
+				"the directory already has a repository, and the project's strategy none means it never runs.",
 			Mutating:    true,
 			Fn:          toolCreateProjectDir,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Project ID"}, "scaffold": {Type: "boolean", Description: "Whether to create scaffold subdirectories"}},
+			Properties: map[string]PropertySchema{
+				"project_id": {Type: "string", Description: "Project ID"},
+				"scaffold":   {Type: "boolean", Description: "Whether to create scaffold subdirectories"},
+				"init_git":   {Type: "boolean", Description: "Run the platform's git setup on the new directory (git init + initial commit + integration branch when a remote exists). Only after the user agrees; no-op when a repository already exists."},
+			},
 			Required:    []string{"project_id"},
 		},
 		{

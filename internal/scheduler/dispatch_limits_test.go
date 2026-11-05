@@ -208,6 +208,10 @@ func TestWorktreeInPlaceSerialization(t *testing.T) {
 		Status: domain.ProjectActive, Goals: []byte("[]"),
 		ProjectDir:    plain,
 		ExecutionMode: db.ExecutionModeRuntime,
+		// git_strategy=none: this test is about the IN-PLACE path (a run admitted with no isolated worktree),
+		// which is what the ephemeral strategy is for. Under local/pr the platform now initialises a repository
+		// instead of admitting in place.
+		GitStrategy: "none",
 	})
 	if err != nil {
 		t.Fatalf("create non-repo project: %v", err)

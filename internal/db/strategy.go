@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -12,6 +14,36 @@ import (
 // ("ephemeral") is a detached-HEAD run that must never create a branch ref
 // locally or remotely.
 const DefaultGitStrategy = "local"
+
+// GitStrategyValues is the closed set a project may be set to. It exists so validation has ONE definition:
+// the UI's proto enum, the Ask tools' string parameters and any future caller must agree about what a valid
+// strategy is, and a strategy that is not in this set must be REFUSED rather than silently defaulted — a
+// project whose strategy was quietly rewritten runs differently from the one the operator chose.
+var GitStrategyValues = []string{"local", "pr", "none"}
+
+// ParseGitStrategy validates a strategy, returning fallback for the empty string and an error for anything
+// outside GitStrategyValues. Modelled on ParseExecutionMode so the two project fields validate alike.
+func ParseGitStrategy(v, fallback string) (string, error) {
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return fallback, nil
+	}
+	for _, ok := range GitStrategyValues {
+		if v == ok {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("git_strategy %q is not valid — use one of %s", v, strings.Join(GitStrategyValues, ", "))
+}
+
+// RequiresRepository reports whether a strategy expects a git repository on disk.
+//
+// `local` and `pr` both do: they cut a run branch in a worktree, which is meaningless without a repo. `none`
+// deliberately does not — it is the ephemeral, no-branch mode. This is the predicate the run-time check uses to
+// decide whether a missing repository is a problem to FIX (initialise it) or simply how the project works.
+func RequiresRepository(strategy string) bool {
+	return strategy == "local" || strategy == "pr"
+}
 
 // EffectiveGitStrategy resolves the effective git strategy for a workflow
 // run: workflow wins, else project, else DefaultGitStrategy. It is the

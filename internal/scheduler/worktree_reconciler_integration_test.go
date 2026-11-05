@@ -358,6 +358,11 @@ func TestWorktreeNonRepoProjectSkipped(t *testing.T) {
 		Status: "active", Goals: []byte("[]"),
 		ProjectDir:    plain,
 		ExecutionMode: db.ExecutionModeRuntime,
+		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only
+		// for the ephemeral strategy. Under local/pr the platform now INITIALISES a repository instead of
+		// skipping (see the run-time git init in reconcileOne), so pinning the default here would test the
+		// wrong contract — and did, until this fixture said what it meant.
+		GitStrategy: "none",
 	})
 	if err != nil {
 		t.Fatalf("create non-repo project: %v", err)
@@ -489,6 +494,11 @@ func TestWorktreeNonRepoProjectCachesFalse(t *testing.T) {
 		Status: "active", Goals: []byte("[]"),
 		ProjectDir:    plain,
 		ExecutionMode: db.ExecutionModeRuntime,
+		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only
+		// for the ephemeral strategy. Under local/pr the platform now INITIALISES a repository instead of
+		// skipping (see the run-time git init in reconcileOne), so pinning the default here would test the
+		// wrong contract — and did, until this fixture said what it meant.
+		GitStrategy: "none",
 	})
 	if err != nil {
 		t.Fatalf("create non-repo project: %v", err)
@@ -583,6 +593,11 @@ func TestWorktreeNonRepoSecondPassNoGitShellOut(t *testing.T) {
 		Status: "active", Goals: []byte("[]"),
 		ProjectDir:    plain,
 		ExecutionMode: db.ExecutionModeRuntime,
+		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only
+		// for the ephemeral strategy. Under local/pr the platform now INITIALISES a repository instead of
+		// skipping (see the run-time git init in reconcileOne), so pinning the default here would test the
+		// wrong contract — and did, until this fixture said what it meant.
+		GitStrategy: "none",
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -649,6 +664,11 @@ func TestWorktreeSkippedNotReprovisioned(t *testing.T) {
 		Status: "active", Goals: []byte("[]"),
 		ProjectDir:    plain,
 		ExecutionMode: db.ExecutionModeRuntime,
+		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only
+		// for the ephemeral strategy. Under local/pr the platform now INITIALISES a repository instead of
+		// skipping (see the run-time git init in reconcileOne), so pinning the default here would test the
+		// wrong contract — and did, until this fixture said what it meant.
+		GitStrategy: "none",
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
