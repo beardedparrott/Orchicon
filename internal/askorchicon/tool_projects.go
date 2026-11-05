@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	projectpkg "github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/slug"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
@@ -78,6 +79,8 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		Name                string `json:"name"`
 		Goals               string `json:"goals"`
 		ProjectDir          string `json:"project_dir"`
+		GitStrategy         string `json:"git_strategy"`
+		InitGit             bool   `json:"init_git"`
 		DefaultRuntimeImage string `json:"default_runtime_image"`
 		ExecutionMode       string `json:"execution_mode"`
 	}
@@ -109,6 +112,12 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
+	// A STRATEGY OUTSIDE THE CLOSED SET IS REFUSED, not silently defaulted: a project quietly rewritten to
+	// "local" runs differently from the one the user chose, and that shows up later as runs that cannot branch.
+	gitStrategy, err := db.ParseGitStrategy(params.GitStrategy, db.DefaultGitStrategy)
+	if err != nil {
+		return nil, err
+	}
 	project, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
 		ID:         db.NewID(),
 		TenantID:   tenantID,
@@ -116,7 +125,8 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		Slug:       makeSlug(name),
 		Status:     "active",
 		Goals:      goalsJSON,
-		ProjectDir: params.ProjectDir,
+		ProjectDir:  params.ProjectDir,
+		GitStrategy: gitStrategy,
 		DefaultRuntimeImage: func() *string {
 			if v := strings.TrimSpace(params.DefaultRuntimeImage); v != "" {
 				return &v
@@ -131,7 +141,64 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return json.Marshal(project)
+	// THE REPOSITORY IS SET UP AFTER THE ROW IS COMMITTED, deliberately: the platform's git setup touches the
+	// FILESYSTEM, and a git failure must not roll back a project the user asked for. It is REPORTED instead, so
+	// the agent can say what happened and what it did about it.
+	return marshalProjectWithGitSetup(ctx, project, params.InitGit)
+}
+
+// marshalProjectWithGitSetup returns the project plus the outcome of the platform's git setup when it was asked
+// for. The report rides the RESULT rather than a separate call so a project cannot be created as local/pr and
+// left without a repository — which is exactly how an Ask-created project came to behave differently from one
+// created in the console.
+func marshalProjectWithGitSetup(ctx context.Context, project db.ProjectRow, initGit bool) (json.RawMessage, error) {
+	// THE PROJECT'S OWN FIELDS STAY AT THE TOP LEVEL, with git_setup added beside them. The response is the
+	// project the caller asked for; wrapping it under a "project" key would break every existing consumer that
+	// unmarshals the result straight into a project row — including this package's own tests — for the sake of a
+	// report that is additive.
+	base, berr := json.Marshal(project)
+	if berr != nil {
+		return nil, berr
+	}
+	out := map[string]any{}
+	if uerr := json.Unmarshal(base, &out); uerr != nil {
+		return nil, uerr
+	}
+	if !initGit {
+		// Say what was NOT done, so the agent acts on it instead of assuming it happened.
+		out["git_setup"] = map[string]any{
+			"ran": false,
+			"reason": "init_git was not requested — a local/pr project needs a repository before its runs can " +
+				"branch",
+		}
+		return json.Marshal(out)
+	}
+	rep := projectpkg.EnsureGitState(ctx, project.ProjectDir, project.GitStrategy)
+	out["git_setup"] = gitSetupReportJSON(rep)
+	return json.Marshal(out)
+}
+
+// gitSetupReportJSON renders EnsureGitState's report as a small, stable shape the agent can relay verbatim.
+func gitSetupReportJSON(rep projectpkg.GitSetupReport) map[string]any {
+	out := map[string]any{
+		"ran":     true,
+		"done":    rep.Done,
+		"needed":  rep.Needed,
+		"summary": rep.Summary(),
+	}
+	if rep.GitMissing {
+		out["git_missing"] = true
+	}
+	if rep.Err != nil {
+		out["error"] = rep.Err.Error()
+	}
+	if rep.Skipped != "" {
+		out["skipped"] = rep.Skipped
+	}
+	if rep.Warning != "" {
+		out["warning"] = rep.Warning
+	}
+	return out
 }
 
 func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
@@ -141,6 +208,8 @@ func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		Name                string  `json:"name"`
 		Goals               string  `json:"goals"`
 		ProjectDir          string  `json:"project_dir"`
+		GitStrategy         *string `json:"git_strategy"`
+		InitGit             bool    `json:"init_git"`
 		DefaultRuntimeImage *string `json:"default_runtime_image"`
 		ExecutionMode       *string `json:"execution_mode"`
 	}
@@ -193,6 +262,15 @@ func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		}
 		update.ExecutionMode = &m
 	}
+	if params.GitStrategy != nil {
+		// A CHANGED STRATEGY IS VALIDATED, and it is a real change: switching to local/pr is exactly the moment a
+		// project starts needing a repository it may not have.
+		gs, gerr := db.ParseGitStrategy(*params.GitStrategy, "")
+		if gerr != nil {
+			return nil, gerr
+		}
+		update.GitStrategy = &gs
+	}
 	project, err := db.UpdateProject(ctx, ttx.Tx, tenantID, params.ID, current.Version, update)
 	if err != nil {
 		return nil, err
@@ -200,7 +278,7 @@ func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return json.Marshal(project)
+	return marshalProjectWithGitSetup(ctx, project, params.InitGit)
 }
 
 func toolArchiveProject(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
@@ -264,6 +342,7 @@ func toolCreateProjectDir(ctx context.Context, pool *db.Pool, args json.RawMessa
 		DirPath   string   `json:"dir_path"`
 		Scaffold  bool     `json:"scaffold"`
 		Subdirs   []string `json:"subdirs"`
+		InitGit   bool     `json:"init_git"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -318,8 +397,21 @@ func toolCreateProjectDir(ctx context.Context, pool *db.Pool, args json.RawMessa
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]any{
+	out := map[string]any{
 		"project_dir": absPath,
 		"scaffolded":  params.Scaffold,
-	})
+	}
+	// THE NATURAL HOME FOR git init: this tool is what CREATES the directory, so it is also the moment a
+	// local/pr project stops being able to branch unless something initialises a repository. Post-commit for the
+	// same reason as create_project — a git failure must not undo the directory the user asked for.
+	if params.InitGit {
+		out["git_setup"] = gitSetupReportJSON(projectpkg.EnsureGitState(ctx, absPath, current.GitStrategy))
+	} else if db.RequiresRepository(current.GitStrategy) {
+		out["git_setup"] = map[string]any{
+			"ran": false,
+			"reason": "init_git was not requested — this project is " + current.GitStrategy + ", which needs a " +
+				"repository before its runs can branch",
+		}
+	}
+	return json.Marshal(out)
 }

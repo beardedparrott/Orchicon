@@ -1,4 +1,4 @@
-import { AlertTriangle, Clock, OctagonAlert } from "lucide-react";
+import { AlertTriangle, Clock, Info, OctagonAlert } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 
@@ -28,6 +28,32 @@ export function RunFailureCard({
   // report what was recorded. Runs that failed before the field existed fall
   // here, and rendering an empty card would be noise.
   if (!errorMessage) return null;
+
+  // A NOTICE IS NOT A FAILURE, and this is the operator-visible half of a real report:
+  // "it claimed the run had failed because of that but then the worker kept working" — a run whose project had
+  // no git repository was SKIPPED (the supported "works in place, no branch" path), but its reason was written
+  // to error_message, which this card renders in red as a failure. The operator aborted a run that was fine.
+  //
+  // `worktree_notice` is the platform saying: this is what happened and what I did about it; nothing failed.
+  if (errorKind === "worktree_notice") {
+    return (
+      <div role="status" className="rounded-xl border border-sky-500/40 bg-sky-50 p-4 dark:bg-sky-950/20">
+        <div className="flex gap-3">
+          <Info className="h-5 w-5 shrink-0 text-sky-600" aria-hidden="true" />
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-sm font-semibold text-sky-900 dark:text-sky-100">
+              Note — nothing failed
+            </p>
+            {errorMessage.split(/\n{2,}/).map((para, i) => (
+              <p key={i} className="text-sm text-sky-900/90 dark:text-sky-100/90 [overflow-wrap:anywhere]">
+                {para}
+              </p>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
