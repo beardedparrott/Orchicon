@@ -28,11 +28,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
+
+// Bounds for the project's declared post-integration check. A hung check must fail verification rather than
+// wedge the queue, and a failure's output must fit in a record a person will actually read.
+const (
+	verifyCommandTimeout = 10 * time.Minute
+	verifyOutputLimit    = 1200
+)
+
+// shellBinary/shellFlag give the declared command the same shell a person would use on this host.
+func shellBinary() string {
+	if runtime.GOOS == "windows" {
+		return "cmd"
+	}
+	return "/bin/sh"
+}
+
+func shellFlag() string {
+	if runtime.GOOS == "windows" {
+		return "/C"
+	}
+	return "-c"
+}
 
 // defaultIntegrationBranch is the HISTORICAL convention: where every run used to land unconditionally.
 //
@@ -154,13 +178,18 @@ func (r *WorktreeReconciler) drainLocalIntegrationQueue(ctx context.Context, ten
 	// the same silence in a new place.
 	r.enqueueRunsMissingRecords(ctx, tenantID, projectID)
 
+	// EACH RECORD IS ATTEMPTED AT MOST ONCE PER PASS. Without this a record that settles into a state we retry —
+	// `failed` (a declared check that no longer passes) or `conflicted` — is re-read the moment it is written,
+	// re-attempted, re-failed, and the pass spins until its budget expires. Measured: a 10-second stall on the
+	// first run of the failing-check test, which is a wedge in the integration path, not a slow check.
+	attempted := map[string]bool{}
 	for {
 		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 		if err != nil {
 			r.log.Warn("worktree: local integration queue: begin tx", "project", projectID, "error", err)
 			return
 		}
-		// THREE STATUSES ARE DRAINED, and the third is not optional:
+		// EVERY UNPROVEN STATUS IS DRAINED, and the set is not optional:
 		//
 		//	pending     a live obligation the platform owes
 		//	adopted     recognised history (does not block, but must still land)
@@ -170,7 +199,16 @@ func (r *WorktreeReconciler) drainLocalIntegrationQueue(ctx context.Context, ten
 		//	            stall. The re-check is cheap: the ancestry test finds the branch already an ancestor of
 		//	            the integration branch and settles the record as merged.
 		records, lerr := db.ListLocalIntegrationsByStatus(ctx, ttx.Tx, tenantID, projectID,
-			[]string{db.LocalIntegrationPending, db.LocalIntegrationAdopted, db.LocalIntegrationConflicted}, 1)
+			[]string{
+				db.LocalIntegrationPending,
+				db.LocalIntegrationAdopted,
+				db.LocalIntegrationConflicted,
+				// An interrupted attempt (the plane died mid-merge) and a legacy `merged` row (landed, never
+				// proven) are both work to finish, not work to skip.
+				db.LocalIntegrationIntegrating,
+				db.LocalIntegrationMerged,
+				db.LocalIntegrationFailed,
+			}, 1)
 		ttx.Rollback(ctx)
 		if lerr != nil {
 			r.log.Warn("worktree: local integration queue: list", "project", projectID, "error", lerr)
@@ -179,6 +217,12 @@ func (r *WorktreeReconciler) drainLocalIntegrationQueue(ctx context.Context, ten
 		if len(records) == 0 {
 			return // the queue is empty — done
 		}
+		if attempted[records[0].ID] {
+			// The oldest outstanding record has already been tried in this pass. STOP: retrying it now would
+			// spin, and working past it would break the ordering the whole queue exists for.
+			return
+		}
+		attempted[records[0].ID] = true
 		if sweepBudgetExpired(deadline) {
 			r.log.Info("worktree: local integration queue budget expired with work still pending",
 				"project", projectID, "remaining_oldest_run", records[0].WorkflowRunID)
@@ -322,25 +366,48 @@ func (r *WorktreeReconciler) settleIntegrationRecord(ctx context.Context, tenant
 	}
 
 	if r.isAncestorOf(ctx, projectDir, rec.Branch, target) {
-		// ALREADY LANDED — the ancestry check VERIFIES the record rather than substituting for it.
+		// ALREADY LANDED — AND STILL NOT TRUSTED. This branch used to record `merged` and return, which made it a
+		// shortcut AROUND verification: a record that had FAILED its check came back as a clean pass on the next
+		// attempt simply because the branch was an ancestor, and a project whose checkout was empty stayed empty
+		// because nothing repaired it. The ancestry test answers "is it in the history"; it says nothing about the
+		// tree, which is the whole reason verification exists.
+		//
+		// So the already-landed path does exactly what a fresh merge does: repair the checkout if it is
+		// repairable, then VERIFY. That also makes it the repair path for a project left broken by an earlier
+		// build — the next pass materialises the tree and proves it.
 		sha, _ := r.revParse(ctx, projectDir, target)
-		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationMerged, sha,
-			"already an ancestor of "+target, target)
+		ready := r.mainCheckoutRefreshReadiness(ctx, projectDir, target)
+		if err := r.refreshMainCheckout(ctx, projectDir, target, ready); err != nil {
+			r.log.Warn("worktree: could not refresh the main checkout for an already-landed integration",
+				"run", rec.WorkflowRunID, "error", err)
+		}
+		r.completeIntegration(ctx, tenantID, rec, projectDir, target, sha, ready.reason)
 		return true
 	}
+
+	// MARK THE ATTEMPT BEFORE MAKING IT. If the plane dies mid-merge, the record says `integrating` rather
+	// than `pending` — so a restart knows an attempt was interrupted rather than never started, and the row is
+	// retried. That is the survivability the operator asked for: state in the table, not inferred from timing.
+	r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationIntegrating, "", rec.LastError, target)
 
 	r.integrateMu.Lock()
 	defer r.integrateMu.Unlock()
-	// Re-check under the lock: another pass may have landed it while we waited.
+	// Re-check under the lock: another pass may have landed it while we waited. Same rule — verify, never
+	// assume, and repair the checkout first if it needs it.
 	if r.isAncestorOf(ctx, projectDir, rec.Branch, target) {
 		sha, _ := r.revParse(ctx, projectDir, target)
-		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationMerged, sha,
-			"already an ancestor of "+target, target)
+		ready := r.mainCheckoutRefreshReadiness(ctx, projectDir, target)
+		if err := r.refreshMainCheckout(ctx, projectDir, target, ready); err != nil {
+			r.log.Warn("worktree: could not refresh the main checkout after a concurrent integration",
+				"run", rec.WorkflowRunID, "error", err)
+		}
+		r.completeIntegration(ctx, tenantID, rec, projectDir, target, sha, ready.reason)
 		return true
 	}
 
-	readyToRefresh, refreshBlockedBy := r.mainCheckoutRefreshReadiness(ctx, projectDir, target)
+	readiness := r.mainCheckoutRefreshReadiness(ctx, projectDir, target)
 
+	var landed string
 	if r.isAncestorOf(ctx, projectDir, target, rec.Branch) {
 		sha, err := r.revParse(ctx, projectDir, rec.Branch)
 		if err != nil {
@@ -354,38 +421,123 @@ func (r *WorktreeReconciler) settleIntegrationRecord(ctx context.Context, tenant
 		}
 		r.log.Info("worktree: local integration fast-forwarded the integration branch",
 			"run", rec.WorkflowRunID, "branch", rec.Branch, "into", target, "commit", short(sha))
-		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationMerged, sha, "", target)
-		if err := r.refreshMainCheckout(ctx, projectDir, target, readyToRefresh, refreshBlockedBy); err != nil {
-			r.log.Warn("worktree: could not refresh the main checkout after integration",
-				"run", rec.WorkflowRunID, "error", err)
+		landed = sha
+	} else {
+		merged, err := r.mergeRunBranchInScratch(ctx, projectDir, rec.Branch, rec.WorkflowRunID, target)
+		if err != nil {
+			r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationPending, "", err.Error(), target)
+			return false
 		}
-		return true
+		if merged == "" {
+			// A CONFLICT. Recorded as such — visible, and it KEEPS BLOCKING, because branching past a conflict
+			// is what makes the NEXT merge un-mergeable too. The old code logged a warning and retried forever,
+			// which looked like a stall and told nobody why.
+			r.log.Warn("worktree: local integration hit a CONFLICT — nothing was merged, both branches are "+
+				"untouched, and the project's queue is HELD until it is resolved by hand",
+				"run", rec.WorkflowRunID, "branch", rec.Branch, "into", target, "repo", projectDir)
+			r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationConflicted, "",
+				fmt.Sprintf("merge conflict between %s and %s; resolve by hand", rec.Branch, target), target)
+			return false
+		}
+		r.log.Info("worktree: local integration merged the run branch",
+			"run", rec.WorkflowRunID, "branch", rec.Branch, "into", target, "commit", short(merged))
+		landed = merged
 	}
 
-	merged, err := r.mergeRunBranchInScratch(ctx, projectDir, rec.Branch, rec.WorkflowRunID, target)
-	if err != nil {
-		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationPending, "", err.Error(), target)
-		return false
-	}
-	if merged == "" {
-		// A CONFLICT. Recorded as such — visible, and it KEEPS BLOCKING, because branching past a conflict is
-		// what makes the NEXT merge un-mergeable too. The old code logged a warning and retried forever, which
-		// looked like a stall and told nobody why.
-		r.log.Warn("worktree: local integration hit a CONFLICT — nothing was merged, both branches are untouched, "+
-			"and the project's queue is HELD until it is resolved by hand",
-			"run", rec.WorkflowRunID, "branch", rec.Branch, "into", target, "repo", projectDir)
-		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationConflicted, "",
-			fmt.Sprintf("merge conflict between %s and %s; resolve by hand", rec.Branch, target), target)
-		return false
-	}
-	r.log.Info("worktree: local integration merged the run branch",
-		"run", rec.WorkflowRunID, "branch", rec.Branch, "into", target, "commit", short(merged))
-	r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationMerged, merged, "", target)
-	if err := r.refreshMainCheckout(ctx, projectDir, target, readyToRefresh, refreshBlockedBy); err != nil {
+	if err := r.refreshMainCheckout(ctx, projectDir, target, readiness); err != nil {
 		r.log.Warn("worktree: could not refresh the main checkout after integration",
 			"run", rec.WorkflowRunID, "error", err)
 	}
+	r.completeIntegration(ctx, tenantID, rec, projectDir, target, landed, readiness.reason)
 	return true
+}
+
+// completeIntegration VERIFIES the integration and records the outcome. A merge that cannot be proven is not a
+// success, and it must not let the next run start.
+//
+// THE REQUIREMENT, in the operator's words: "a failing check must NOT be recorded as success and must NOT let
+// the next run start. It should mark that integration row failed and surface it — ideally blocking the chain."
+// So verification is not advisory: `failed` blocks the queue exactly as `pending` and `conflicted` do.
+//
+// WHY IT EXISTS AT ALL: six runs integrated correctly — the ref moved six times, the reflog proved it, the file
+// counts grew — and the operator's checkout was left at the initial empty commit, so `ls` showed nothing and
+// the whole cycle looked like a total failure. The record said `merged`, and it was right about the ref and
+// silent about the tree. Verification closes that gap.
+func (r *WorktreeReconciler) completeIntegration(ctx context.Context, tenantID string, rec db.LocalIntegrationRow,
+	projectDir, target, landed, notRefreshedBecause string) {
+	verified, detail := r.verifyIntegration(ctx, projectDir, target, rec.Branch, notRefreshedBecause)
+	if verified {
+		r.log.Info("worktree: local integration VERIFIED",
+			"run", rec.WorkflowRunID, "branch", rec.Branch, "into", target, "commit", short(landed), "detail", detail)
+		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationVerified, landed, "", target)
+		return
+	}
+	// NOT A SUCCESS, AND IT BLOCKS. The commit exists and the ref moved — the work is not lost — but the state
+	// a person or a later run would build on is not there, so the chain stops here and says why.
+	r.log.Warn("worktree: local integration FAILED VERIFICATION — the branch is intact but the result is not "+
+		"usable, so the project's queue is HELD",
+		"run", rec.WorkflowRunID, "branch", rec.Branch, "into", target, "commit", short(landed), "detail", detail)
+	r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationFailed, landed, detail, target)
+}
+
+// verifyIntegration proves the integration actually produced a usable tree, and reports what it found.
+//
+// THREE CHECKS, in the order that fails fastest and cheapest:
+//
+//  1. THE WORK IS REACHABLE — the run branch is an ancestor of the integration branch. This is the merge
+//     itself, re-asserted after the fact rather than trusted from the code path that performed it.
+//  2. THE TREE IS MATERIALISED — when the main checkout is ON the integration branch, its index must match HEAD
+//     and no tracked file may be missing from disk. This is the check that was absent and would have caught the
+//     reported failure on its FIRST occurrence instead of after six.
+//  3. THE PROJECT'S OWN COMMAND PASSES — opt-in, only when the project declares one (see projectVerifyCommand).
+//
+// A checkout left alone BECAUSE THE OPERATOR HAS UNCOMMITTED WORK is not a verification failure: the platform
+// deliberately does not touch their tree, so demanding it match the branch would fail an integration for the
+// operator's own edits. It is reported, not failed.
+func (r *WorktreeReconciler) verifyIntegration(ctx context.Context, projectDir, target, branch, notRefreshedBecause string) (bool, string) {
+	// 0. Leave a trace if git's registry is malformed. Not a verdict — a registration that looks wrong must be
+	// REPORTED, never silently repaired, and never treated as the cause of anything on its own.
+	r.malformedWorktreeRegistrations(ctx, projectDir)
+
+	// 1. Reachability. Always checked, always possible.
+	if !r.isAncestorOf(ctx, projectDir, branch, target) {
+		return false, fmt.Sprintf("verification: %s is NOT an ancestor of %s — the merge did not land", branch, target)
+	}
+	onTarget := r.currentBranch(ctx, projectDir) == target
+	if !onTarget {
+		return true, fmt.Sprintf("branch merged into %s; the main checkout is on another branch and was not "+
+			"touched, so its tree was not verified", target)
+	}
+	if notRefreshedBecause != "" {
+		return true, fmt.Sprintf("branch merged into %s; the main checkout was left alone (%s), so its tree was "+
+			"not verified", target, notRefreshedBecause)
+	}
+	// 2. The index must agree with HEAD. `git diff --cached --quiet` exits 0 exactly when the index matches,
+	// which is the mechanical form of "the ref and the tree describe the same commit".
+	if _, err := runGit(ctx, projectDir, "diff", "--cached", "--quiet"); err != nil {
+		return false, "verification: the index does not match the integration branch — the checkout is stale " +
+			"(the operator's remedy is `git reset --hard " + target + "`)"
+	}
+	status, serr := runGit(ctx, projectDir, "status", "--porcelain")
+	if serr != nil {
+		return false, "verification: could not read the working tree state"
+	}
+	if stale, why := staleCheckoutOnly(status); stale {
+		return false, fmt.Sprintf("verification: tracked files are MISSING from the working tree (%s) — the "+
+			"integration branch records them but they are not on disk", why)
+	}
+	if strings.TrimSpace(status) != "" {
+		if _, why := staleCheckoutOnly(status); why != "" {
+			return false, "verification: the working tree is not clean after integration — " + why
+		}
+	}
+	// 3. The project's own command, when it declares one.
+	if cmd := projectVerifyCommand(projectDir); cmd != "" {
+		if out, verr := runVerifyCommand(ctx, projectDir, cmd); verr != nil {
+			return false, "verification: the project's declared check failed: " + trimForMessage(out, verr)
+		}
+	}
+	return true, "ancestry proven, index matches " + target + ", working tree clean"
 }
 
 // finishIntegrationRecord writes an outcome back to the record. Best-effort and logged: a failure here must
@@ -512,39 +664,40 @@ func (r *WorktreeReconciler) mergeRunBranchInScratch(ctx context.Context, projec
 	return tip, nil
 }
 
-// mainCheckoutRefreshReadiness reports whether the operator's working tree may safely be brought up to
-// date after the integration branch moves, and — when it may not — WHY, so the log line can name it.
+// mainCheckoutRefreshReadiness reports the state of the operator's checkout BEFORE the ref moves.
 //
-// MUST BE CALLED BEFORE THE REF MOVES (see settleIntegrationRecord): once the ref advances, the index is stale by
-// construction and every file the integration brought in looks like a local modification.
-func (r *WorktreeReconciler) mainCheckoutRefreshReadiness(ctx context.Context, projectDir, target string) (bool, string) {
+// MUST BE CALLED BEFORE THE REF MOVES: once the ref advances, the index is stale by construction and every file
+// the integration brought in looks like a local modification.
+func (r *WorktreeReconciler) mainCheckoutRefreshReadiness(ctx context.Context, projectDir, target string) checkoutReadiness {
 	if cur := r.currentBranch(ctx, projectDir); cur != target {
-		// The operator is not on the branch that moved, so its working tree is unaffected: nothing to do,
-		// and nothing to warn about.
-		return false, ""
+		// The operator is not on the branch that moved, so its working tree is unaffected: nothing to do, and
+		// nothing to demand of the verification either.
+		return checkoutReadiness{onTarget: false}
 	}
 	status, err := runGit(ctx, projectDir, "status", "--porcelain")
 	if err != nil {
-		return false, "git status could not be read"
+		return checkoutReadiness{onTarget: true, reason: "git status could not be read"}
 	}
 	if stale, why := staleCheckoutOnly(status); stale {
 		// THE TREE LAGS ITS OWN HEAD, WHICH IS NOT UNCOMMITTED WORK. Reported: "develop's ref is 066279b, but
 		// C:\projects\weatherapp contains only .git, .orchicon, .orchicon-worktrees — no src/, no index.html".
-		// A tree left behind by an earlier ref move reports every file HEAD has as DELETED, which the old check
-		// read as "uncommitted changes" and therefore refused to fix — so the staleness was permanent.
-		//
 		// Refreshing is safe here precisely because there is nothing to lose: every dirty entry is a file git
-		// already has at HEAD, absent from the working tree only because the tree is older. The moment there is
-		// a MODIFICATION or an UNTRACKED file — where real work lives — this does not apply and the tree is
-		// left alone. (`why` is carried for the log line.)
-		r.log.Info("worktree: the main checkout lags its own HEAD — refreshing is safe, nothing is uncommitted",
+		// already has at HEAD, absent from the tree only because the tree is out of date.
+		r.log.Info("worktree: the main checkout is behind its own HEAD — refreshing is safe, nothing is uncommitted",
 			"repo", projectDir, "shape", why)
-		return true, ""
+		return checkoutReadiness{onTarget: true, repairable: true}
 	}
 	if strings.TrimSpace(status) != "" {
-		return false, "the operator's main checkout has UNCOMMITTED changes"
+		// THREE OUTCOMES, NOT TWO. staleCheckoutOnly answers "repairable?" and "complaint?" separately, and
+		// `(false, "")` means the only entries were OUR OWN artifact directories — which is CLEAN, not dirty.
+		// Reading "status non-empty" as "dirty" is what made a project containing nothing but
+		// `?? .orchicon/` refuse every refresh, and the log then blamed the operator's uncommitted work.
+		// Measured in this very test: status was exactly `?? .orchicon/`.
+		if _, why := staleCheckoutOnly(status); why != "" {
+			return checkoutReadiness{onTarget: true, reason: why, status: status}
+		}
 	}
-	return true, ""
+	return checkoutReadiness{onTarget: true, repairable: true}
 }
 
 // refreshMainCheckout makes the operator's working tree match the integration branch after its ref moved.
@@ -557,24 +710,156 @@ func (r *WorktreeReconciler) mainCheckoutRefreshReadiness(ctx context.Context, p
 // Uncommitted work is NEVER touched. Destroying it to tidy up a ref is not a trade worth making, so a tree
 // that was dirty before the integration is left exactly as it was and the operator is told, with the
 // command that resolves it.
-func (r *WorktreeReconciler) refreshMainCheckout(ctx context.Context, projectDir, target string, ready bool, blockedBy string) error {
-	if blockedBy != "" {
+func (r *WorktreeReconciler) refreshMainCheckout(ctx context.Context, projectDir, target string, rd checkoutReadiness) error {
+	if !rd.onTarget {
+		return nil // the operator is on another branch; its tree is not this branch's business
+	}
+	if rd.reason != "" {
 		r.log.Warn("worktree: the integration branch advanced but the main checkout was left alone — it is "+
 			"now stale relative to its own HEAD",
-			"repo", projectDir, "branch", target, "reason", blockedBy,
+			"repo", projectDir, "branch", target, "reason", rd.reason,
+			// WHAT the verdict was made from — capped, because the point is to name the entries, not to dump a
+			// tree.
+			"status", trimForMessage(rd.status, nil),
 			"remedy", "commit or stash, then run: git reset --hard "+target)
 		return nil
 	}
-	if !ready {
-		return nil // the operator is not on the integration branch
-	}
+	// `reset --hard` is the repair for BOTH repairable shapes: a tree behind the index, and an index behind
+	// HEAD. It is safe here by construction — mainCheckoutRefreshReadiness only reports repairable when every
+	// dirty entry is a tracked file git already has, so there is nothing of the operator's to lose.
 	if _, err := runGit(ctx, projectDir, "reset", "--hard", target); err != nil {
-		r.log.Warn("worktree: could not refresh the main checkout after integration",
-			"repo", projectDir, "branch", target, "error", err)
-		return nil
+		return fmt.Errorf("git reset --hard %s: %w", target, err)
 	}
 	r.log.Info("worktree: refreshed the main checkout to the integration branch", "repo", projectDir, "branch", target)
 	return nil
+}
+
+// isMalformedWorktreePath reports whether a registered worktree path has another absolute path appended under
+// it — the shape reported as `.../.orchicon-worktrees/<runID>/C:/projects/weatherapp/.orchicon-worktrees/<runID>`.
+//
+// WHY THIS EXISTS, AND WHAT IT DOES NOT CLAIM. The operator reported three such registrations coinciding with a
+// checkout being left empty, and named them the leading candidate for the cause. They are NOT the cause: the
+// empty tree is explained by two defects in the readiness detector that this same change fixes, which refused
+// every single refresh (see staleCheckoutOnly). What is worth keeping is the DETECTOR, because the report's
+// other finding was that "no trace was left" — a malformed registration appearing again should be visible in
+// the log rather than inferred from an empty directory afterwards.
+func isMalformedWorktreePath(p string) bool {
+	folded := strings.ReplaceAll(p, "\\", "/")
+	// A drive-letter or absolute-path segment appearing AFTER the worktree id means a path was joined onto a
+	// path. Checked on the folded form so both Windows and POSIX registrations are covered.
+	i := strings.Index(folded, ".orchicon-worktrees/")
+	if i < 0 {
+		return false
+	}
+	rest := folded[i+len(".orchicon-worktrees/"):]
+	seg := strings.Index(rest, "/")
+	if seg < 0 {
+		return false // just the id
+	}
+	after := rest[seg+1:]
+	if after == "" {
+		// A trailing slash is not a malformed path.
+		return false
+	}
+	// `<id>/<stepRunID>` is legitimate (a parallel-branch child worktree). A path carrying a drive letter, or a
+	// second copy of the platform directory, is not.
+	if strings.Contains(after, ":") || strings.Contains(after, ".orchicon-worktrees") {
+		return true
+	}
+	// A nested absolute path (POSIX): `<id>/home/...` or `<id>/tmp/...`.
+	return strings.HasPrefix(after, "home/") || strings.HasPrefix(after, "tmp/") || strings.HasPrefix(after, "/")
+}
+
+// malformedWorktreeRegistrations logs any worktree registration whose path is malformed, so the next occurrence
+// leaves a trace. Best-effort and read-only: it never repairs, because a registration that looks wrong is not
+// something to delete without knowing why it is wrong.
+func (r *WorktreeReconciler) malformedWorktreeRegistrations(ctx context.Context, projectDir string) {
+	out, err := runGit(ctx, projectDir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "worktree ") {
+			continue
+		}
+		path := strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+		if !isMalformedWorktreePath(path) {
+			continue
+		}
+		r.log.Warn("worktree: MALFORMED worktree registration — a full path is appended after the worktree id. "+
+			"This is NOT the cause of an empty checkout (see the readiness detector), but it is a defect and it "+
+			"was previously invisible; file it with this path",
+			"repo", projectDir, "path", path)
+	}
+}
+
+// projectVerifyCommand returns the project's declared post-integration check, or "" when it declares none.
+//
+// OPT-IN BY A FILE IN THE PROJECT, deliberately: running a command the platform invents would be worse than not
+// running one, and a per-project setting would need a schema and a wire change for something most projects will
+// not set. Two lines in `.orchicon/verify` is a declaration the operator can see, version, and delete:
+//
+//	<the shell command, run with the project dir as its cwd>
+//
+// Anything else — absent file, empty file, a comment — means "no check", and verification then rests on the two
+// mechanical checks that need no cooperation from the project.
+func projectVerifyCommand(projectDir string) string {
+	b, err := os.ReadFile(filepath.Join(projectDir, ".orchicon", "verify"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+
+// runVerifyCommand runs the project's declared check with a bounded budget and returns its combined output.
+//
+// BOUNDED, because this runs on the integration path and a hung check would wedge the queue exactly as a
+// missing merge did. A timeout is a FAILURE of the check, not a pass.
+func runVerifyCommand(ctx context.Context, projectDir, command string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, verifyCommandTimeout)
+	defer cancel()
+	// procwin.CommandContext, NOT exec.CommandContext: a bare exec here spawns a VISIBLE console window on
+	// Windows for a check the operator never asked to watch. (Caught by the platform's own guard test — the
+	// first version of this function failed it.)
+	cmd := procwin.CommandContext(cctx, shellBinary(), shellFlag(), command)
+	cmd.Dir = projectDir
+	out, err := cmd.CombinedOutput()
+	if cctx.Err() != nil {
+		return string(out), fmt.Errorf("timed out after %s", verifyCommandTimeout)
+	}
+	return string(out), err
+}
+
+// trimForMessage keeps a failing check's output to something a record can carry: the tail, where the failure
+// is, rather than the head, where the banner is.
+//
+// err MAY BE NIL — this is also used to cap a diagnostic string that has no error attached. It dereferenced the
+// error unconditionally at first and panicked inside the integration path, which is the worst place to learn that.
+func trimForMessage(out string, err error) string {
+	tail := truncateTail(strings.TrimSpace(out), verifyOutputLimit)
+	if err == nil {
+		return tail
+	}
+	if tail == "" {
+		return err.Error()
+	}
+	return err.Error() + ": " + tail
+}
+
+// truncateTail keeps the END of s, where a failure's cause usually is, capped at limit bytes.
+func truncateTail(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return "…" + s[len(s)-limit:]
 }
 
 // isAncestorOf reports whether ancestor is reachable from descendant.
@@ -639,25 +924,51 @@ func short(sha string) string {
 	return sha
 }
 
-// staleCheckoutOnly reports whether a `git status --porcelain` result consists ONLY of tracked files MISSING
-// from the working tree — the exact shape a ref that moved under its own checkout produces.
+// platformArtifactPaths are directories the PLATFORM creates inside a project directory. The operator never
+// authored them, so their presence must never read as "the operator has uncommitted work".
 //
-// WHAT IT REFUSES, and why the line is drawn there:
+// THIS WAS THE CAUSE OF A SIX-RUN FAILURE, and it is worth stating plainly because the message it produced
+// blamed the operator. `.orchicon-worktrees/` holds the per-run worktrees; `.orchicon/` holds the transcript,
+// offload and memory files. A worker prompt has claimed for a long time that `.orchicon-worktrees/` "is already
+// gitignored" — nothing ever writes that entry into a project, so on a project without it `git status` reports
+// `?? .orchicon-worktrees/`, the readiness check read that as the operator's untracked files, REFUSED to
+// refresh, and logged "the operator's main checkout has UNCOMMITTED changes" about our own artifact. Six
+// integrations then moved develop six times while the checkout stayed at the initial empty commit, and the
+// operator saw an empty directory and concluded the whole run had failed.
+var platformArtifactPaths = []string{worktreeDirName, ".orchicon"}
+
+// isPlatformArtifactPath reports whether a status path is one of ours.
+func isPlatformArtifactPath(p string) bool {
+	p = strings.Trim(strings.Trim(strings.ReplaceAll(p, "\\", "/"), "\""), "/")
+	for _, dir := range platformArtifactPaths {
+		if p == dir || strings.HasPrefix(p, dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// staleCheckoutOnly reports whether a `git status --porcelain` result is REPAIRABLE by a hard reset — i.e.
+// every dirty entry is a tracked file that is merely absent from the index or the working tree — and, when it
+// is not, says why so the log names the real reason.
 //
-//   - `??` UNTRACKED — user data that exists nowhere else. Never touched.
-//   - ` M` / `MM` MODIFIED — a real edit, even if it happens to resemble a checkout shape. Never touched.
-//   - `A ` / `R ` / staged changes — an index that disagrees with HEAD on purpose. Never touched.
+// THE TWO SHAPES THAT MATTER, and the old version accepted only the second:
 //
-// WHAT IT ACCEPTS: every line is ` D` (deleted in the working tree) or `D ` on a path that HEAD still has. That
-// is unrecoverable-work-free by construction: the content is in git, and `git reset --hard` restores it.
+//	" D <path>"  deleted from the WORKING TREE, present in the index  — the tree lags the index
+//	"D  <path>"  deleted from the INDEX, present at HEAD             — HEAD moved past a stale index
 //
-// AN EMPTY STATUS IS NOT "STALE" — it is clean, and the caller handles it.
+// The second is what a ref moved by `git update-ref` produces, which is exactly how this platform advances the
+// integration branch (setBranchRef never touches a working tree). MEASURED against real git: moving a branch
+// forward while index and worktree stay put yields `D  f1.txt` / `D  f2.txt` and `git diff --cached` reporting
+// them as deletions — the operator's report verbatim ("55 staged DELETIONS"). The old function sent that branch
+// to `default:` and answered "the working tree has staged or modified changes", so the ONE state a hard reset
+// exists to repair was the one it refused to repair, on every pass.
 func staleCheckoutOnly(status string) (bool, string) {
 	lines := strings.Split(strings.TrimRight(status, "\n"), "\n")
 	if len(lines) == 0 || strings.TrimSpace(status) == "" {
 		return false, ""
 	}
-	deleted := 0
+	missing := 0
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -666,20 +977,43 @@ func staleCheckoutOnly(status string) (bool, string) {
 			return false, ""
 		}
 		x, y := line[0], line[1]
+		path := strings.TrimSpace(line[2:])
 		switch {
 		case x == '?' && y == '?':
-			return false, "the working tree has untracked files"
+			if isPlatformArtifactPath(path) {
+				continue // OUR directory, not the operator's work
+			}
+			return false, "the working tree has untracked files that are not ours"
+		case x == 'D' && y == ' ':
+			// HEAD has the file, the index does not: the integration branch moved past a stale index.
+			missing++
 		case x == ' ' && y == 'D':
-			// Deleted in the working tree, present at HEAD: the stale shape.
-			deleted++
+			// The index has it, the working tree does not: the tree lags the index.
+			missing++
 		default:
 			return false, "the working tree has staged or modified changes"
 		}
 	}
-	if deleted == 0 {
+	if missing == 0 {
 		return false, ""
 	}
-	return true, "tracked files missing from the working tree"
+	return true, "tracked files missing from the index or the working tree"
+}
+
+// checkoutReadiness is what the caller needs to know about the operator's checkout before a ref moves.
+type checkoutReadiness struct {
+	// onTarget is whether the main checkout is ON the integration branch. When it is not, its working tree
+	// belongs to another branch and must not be touched or demanded anything.
+	onTarget bool
+	// repairable is whether it MAY be brought up to date: every dirty entry is a tracked file merely absent, or
+	// one of our own artifact directories.
+	repairable bool
+	// reason explains a refusal in the log line ("" when repairable).
+	reason string
+	// status is the raw `git status --porcelain` the verdict was made from, carried so a refusal can say WHAT it
+	// saw. Without it the log said "has uncommitted work" and nothing else, which is indistinguishable between
+	// the operator's edits, a stale index, and one of our own directories.
+	status string
 }
 
 // oldestBlockingRun names the earliest record holding a project's queue, for the log line. Empty when there

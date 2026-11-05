@@ -33,7 +33,26 @@ const (
 	// LocalIntegrationPending means the obligation exists and the work has not landed. It BLOCKS the
 	// project's queue: a later run must not cut a branch over work that is still waiting to land.
 	LocalIntegrationPending = "pending"
-	// LocalIntegrationMerged means it landed; MergeCommit records the resulting commit.
+	// LocalIntegrationIntegrating means an attempt is IN FLIGHT. Written before the ref moves, so a plane that
+	// dies mid-merge leaves a record saying "an attempt was interrupted" rather than one that looks untouched —
+	// the difference between a state that survives a restart and one inferred from a timestamp.
+	LocalIntegrationIntegrating = "integrating"
+	// LocalIntegrationVerified means it landed AND the result was proven: the branch is an ancestor of the
+	// integration branch, and (when the main checkout is on that branch) the tree is materialised — index
+	// matching HEAD, no tracked file missing from disk — plus the project's own check when one is declared.
+	//
+	// THIS IS THE ONLY SUCCESS. A ref that moved is not a delivery: six runs merged correctly and left the
+	// operator's checkout at the initial empty commit, so `ls` showed nothing and the whole cycle read as a
+	// total failure. `merged` was true and useless.
+	LocalIntegrationVerified = "verified"
+	// LocalIntegrationFailed means the merge may have moved the ref but the RESULT is not usable — the tree is
+	// not materialised, or the project's own check failed. The work is not lost (the branch and commit remain);
+	// what is missing is a state anything can build on. It BLOCKS the queue, which is the requested behaviour:
+	// "a failing check must not be recorded as success and must not let the next run start".
+	LocalIntegrationFailed = "failed"
+	// LocalIntegrationMerged is the LEGACY pre-verification success. Rows carrying it landed but were never
+	// proven, so they are treated as NOT verified and re-examined — which is also how a project that already
+	// has a stale checkout gets repaired instead of quietly staying broken.
 	LocalIntegrationMerged = "merged"
 	// LocalIntegrationConflicted means a real merge conflict. Nothing was changed and a human must resolve
 	// it. It KEEPS BLOCKING — branching past a conflict is what makes the next merge un-mergeable too.
@@ -70,19 +89,23 @@ type LocalIntegrationRow struct {
 	Attempts int
 	LastError string
 	MergeCommit string
+	// VerificationDetail is what the checks found — the reason on a failure, the evidence on a pass.
+	VerificationDetail string
+	VerifiedAt *time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	MergedAt *time.Time
 }
 
 const localIntegrationColumns = `id, tenant_id, project_id, workflow_run_id, execution_id, branch, base_commit,
-	integration_branch, status, attempts, last_error, merge_commit, created_at, updated_at, merged_at`
+	integration_branch, status, attempts, last_error, merge_commit, verification_detail, verified_at,
+	created_at, updated_at, merged_at`
 
 func scanLocalIntegration(row pgx.Row) (LocalIntegrationRow, error) {
 	var r LocalIntegrationRow
 	err := row.Scan(&r.ID, &r.TenantID, &r.ProjectID, &r.WorkflowRunID, &r.ExecutionID, &r.Branch,
 		&r.BaseCommit, &r.IntegrationBranch, &r.Status, &r.Attempts, &r.LastError, &r.MergeCommit,
-		&r.CreatedAt, &r.UpdatedAt, &r.MergedAt)
+		&r.VerificationDetail, &r.VerifiedAt, &r.CreatedAt, &r.UpdatedAt, &r.MergedAt)
 	return r, err
 }
 
@@ -162,10 +185,10 @@ func ListLocalIntegrationsByStatus(ctx context.Context, tx pgx.Tx, tenantID, pro
 	return out, rows.Err()
 }
 
-// CountBlockingLocalIntegrations reports how many of a project's records are still holding the queue:
-// `pending` (not landed yet, written by this build at terminal success) and `conflicted` (needs a human). This
-// is THE gate — a run about to cut a branch asks this question about its own project and waits while the answer
-// is non-zero.
+// CountBlockingLocalIntegrations reports how many of a project's records are still holding the queue: anything
+// not PROVEN GOOD. `pending` (not landed), `integrating` (attempt in flight), `conflicted` (needs a human),
+// `failed` (merged but unverifiable), and legacy `merged` (landed, never proven). This is THE gate — a run about
+// to cut a branch asks this question about its own project and waits while the answer is non-zero.
 //
 // `adopted` is deliberately NOT counted: recognised history is drained in the background, but stalling new work
 // behind it would mean a project can never accept a run again until every historical branch is reconciled.
@@ -174,7 +197,16 @@ func CountBlockingLocalIntegrations(ctx context.Context, tx pgx.Tx, tenantID, pr
 		WHERE tenant_id = $1 AND project_id = $2 AND status = ANY($3)`
 	var n int
 	if err := tx.QueryRow(ctx, q, tenantID, projectID,
-		[]string{LocalIntegrationPending, LocalIntegrationConflicted}).Scan(&n); err != nil {
+		[]string{
+			LocalIntegrationPending,
+			LocalIntegrationIntegrating,
+			LocalIntegrationConflicted,
+			LocalIntegrationFailed,
+			// LEGACY: landed but never verified. It must be re-examined — leaving it unblocked would let a
+			// project keep branching on top of an unproven result, which is the state that produced an empty
+			// checkout nobody noticed.
+			LocalIntegrationMerged,
+		}).Scan(&n); err != nil {
 		return 0, fmt.Errorf("db: count blocking local integrations: %w", err)
 	}
 	return n, nil
@@ -185,21 +217,36 @@ func CountBlockingLocalIntegrations(ctx context.Context, tx pgx.Tx, tenantID, pr
 // ATTEMPTS IS INCREMENTED, never set: it is the count of times the platform TRIED, which is what tells an
 // operator whether a stuck record is being retried at all or has been abandoned.
 func SetLocalIntegrationStatus(ctx context.Context, tx pgx.Tx, tenantID, id, status, mergeCommit, lastError, integrationBranch string) error {
-	var mergedAt *time.Time
-	if status == LocalIntegrationMerged {
-		now := time.Now().UTC()
+	return SetLocalIntegrationStatusWithDetail(ctx, tx, tenantID, id, status, mergeCommit, lastError, "", integrationBranch)
+}
+
+// SetLocalIntegrationStatusWithDetail writes the outcome together with what the verification found.
+//
+// `merged`, `verified` and `failed` all stamp attempts and merged_at where they apply, so "did this ever land,
+// and was it ever checked" is answerable from the row rather than reconstructed from logs.
+func SetLocalIntegrationStatusWithDetail(ctx context.Context, tx pgx.Tx, tenantID, id, status, mergeCommit, lastError, verificationDetail, integrationBranch string) error {
+	var mergedAt, verifiedAt *time.Time
+	now := time.Now().UTC()
+	switch status {
+	case LocalIntegrationVerified, LocalIntegrationMerged, LocalIntegrationFailed:
 		mergedAt = &now
+	}
+	if status == LocalIntegrationVerified {
+		verifiedAt = &now
 	}
 	const q = `UPDATE local_integrations SET
 		status = $1,
 		merge_commit = CASE WHEN $2 = '' THEN merge_commit ELSE $2 END,
 		last_error = $3,
-		integration_branch = CASE WHEN $4 = '' THEN integration_branch ELSE $4 END,
-		merged_at = COALESCE($5, merged_at),
+		verification_detail = CASE WHEN $4 = '' THEN verification_detail ELSE $4 END,
+		integration_branch = CASE WHEN $5 = '' THEN integration_branch ELSE $5 END,
+		merged_at = COALESCE($6, merged_at),
+		verified_at = COALESCE($7, verified_at),
 		attempts = attempts + 1,
 		updated_at = now()
-		WHERE tenant_id = $6 AND id = $7`
-	if _, err := tx.Exec(ctx, q, status, mergeCommit, lastError, integrationBranch, mergedAt, tenantID, id); err != nil {
+		WHERE tenant_id = $8 AND id = $9`
+	if _, err := tx.Exec(ctx, q, status, mergeCommit, lastError, verificationDetail, integrationBranch,
+		mergedAt, verifiedAt, tenantID, id); err != nil {
 		return fmt.Errorf("db: set local integration status: %w", err)
 	}
 	return nil
@@ -287,6 +334,8 @@ func MarshalLocalIntegration(r LocalIntegrationRow) map[string]any {
 		"attempts":           r.Attempts,
 		"last_error":         r.LastError,
 		"merge_commit":       r.MergeCommit,
+		"verification_detail": r.VerificationDetail,
+		"verified_at":         r.VerifiedAt,
 		"created_at":         r.CreatedAt.UTC().Format(time.RFC3339),
 		"updated_at":         r.UpdatedAt.UTC().Format(time.RFC3339),
 		"merged_at":          r.MergedAt,

@@ -2130,16 +2130,24 @@ func integrationStatusWithRecord(r db.WorkflowRunRow, rec *db.LocalIntegrationRo
 		return integrationStatus(r)
 	}
 	switch rec.Status {
+	case db.LocalIntegrationVerified:
+		return "merged"
 	case db.LocalIntegrationMerged:
+		// Legacy: the ref moved but nothing proved the tree. Reported as merged (it did land) while the queue
+		// still re-examines it — the run page's notice is about landing, not about verification.
 		return "merged"
 	case db.LocalIntegrationConflicted:
 		return "conflicted"
+	case db.LocalIntegrationFailed:
+		// LANDED BUT UNUSABLE. Distinct from conflicted: there is nothing for a person to resolve in git, the
+		// platform's own check failed — a tree that was not materialised, or the project's declared check.
+		return "failed"
 	case db.LocalIntegrationSkipped:
 		// Nothing to land. On a completed run that means the branch is gone (already merged and swept) or the
 		// project has no usable integration branch — the record's last_error says which, and the run page shows
 		// that text.
 		return "not_merged"
-	default: // pending, adopted
+	default: // pending, integrating, adopted
 		if r.Status == domain.WorkflowRunCompleted {
 			return "not_merged"
 		}

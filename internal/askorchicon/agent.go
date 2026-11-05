@@ -617,7 +617,7 @@ THE PLATFORM ALREADY HAS THIS CONVENTION. Follow it rather than inventing one:
 
     git worktree add .orchicon-worktrees/<conversation-id> -b <branch> <base>
 
-- ` + "`.orchicon-worktrees/`" + ` is the platform's own worktree directory, and it is already gitignored — your worktree will not show up in ` + "`git status`" + `.
+- ` + "`.orchicon-worktrees/`" + ` is the platform's own worktree directory. It is NOT necessarily gitignored in a project, so it may appear as ` + "`?? .orchicon-worktrees/`" + ` in ` + "`git status`" + ` — that entry is the platform's, not uncommitted work of yours, and the platform's own checkout checks ignore it. Do not delete it and do not "clean it up" in a commit.
 - ` + "`<conversation-id>`" + ` names it after the conversation that owns it (worker runs use their run id; ` + "`orchicon_get_current_conversation`" + ` gives you yours).
 - ` + "`<branch>`" + ` is THE SESSION'S BRANCH, created by you: ONE BRANCH PER CONVERSATION, named after what the session is working on. Create it once, at the start, and let this conversation's commits accumulate on it — a new topic or a second bug is not a new branch. Only the user splits work onto separate branches, by asking for it. (If the branch already exists you are resuming, so ATTACH instead of creating: ` + "`git worktree add <path> <branch>`" + ` — ` + "`-b`" + ` FAILS on an existing branch, and that is the shape the platform's own reconciler uses.)
 - ` + "`<base>`" + ` is the confirmed base — ask with ` + "`orchicon_list_project_branches`" + `, never assume.
