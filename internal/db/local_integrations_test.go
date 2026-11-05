@@ -107,64 +107,65 @@ func TestLocalIntegrationEnqueueIsIdempotentAndPreservesOutcome(t *testing.T) {
 	}
 }
 
-// THE GATE'S COUNT. Pending and conflicted block; merged and skipped do not.
-func TestOnlyPendingAndConflictedBlockTheQueue(t *testing.T) {
-	pool, ctx := localIntegrationTestPool(t)
-	tenantID, projectID := localIntegrationTenant(t, ctx, pool)
-
-	tx, err := pool.Begin(ctx)
-	t.Cleanup(func() { _ = tx.Rollback(ctx) })
-	if err != nil {
-		t.Fatalf("begin: %v", err)
+// THE GATE'S COUNT — THE CONTRACT IS "ONLY A PROVEN RESULT RELEASES THE QUEUE".
+//
+// `verified`, `skipped` and `adopted` release it. Everything else blocks, and that list is longer than the
+// obvious two because some of its members are states the platform used to CALL success:
+//
+//	pending      not landed yet
+//	integrating  an attempt is in flight, or was interrupted by a restart
+//	conflicted   a merge conflict; a human must resolve it
+//	failed       merged, but the result could not be PROVEN — a tree that was not materialised, or the
+//	             project's own check failing. The requested behaviour: "must not be recorded as success and
+//	             must not let the next run start".
+//	merged       LEGACY: landed by a build that did not verify. Unproven, so it is re-examined — otherwise a
+//	             project keeps branching on top of a result nobody checked, which is how an empty checkout went
+//	             unnoticed for six runs.
+func TestOnlyAProvenResultReleasesTheQueue(t *testing.T) {
+	cases := map[string]bool{ // status -> does it hold the queue?
+		LocalIntegrationPending:     true,
+		LocalIntegrationIntegrating: true,
+		LocalIntegrationConflicted:  true,
+		LocalIntegrationFailed:      true,
+		LocalIntegrationMerged:      true, // legacy, unproven
+		LocalIntegrationVerified:    false,
+		LocalIntegrationSkipped:     false,
+		LocalIntegrationAdopted:     false, // drained in the background, not gated
 	}
-	if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenantID); err != nil {
-		t.Fatalf("set tenant: %v", err)
-	}
-
-	count := func() int {
-		n, cerr := CountBlockingLocalIntegrations(ctx, tx, tenantID, projectID)
-		if cerr != nil {
-			t.Fatalf("count: %v", cerr)
-		}
-		return n
-	}
-	if got := count(); got != 0 {
-		t.Fatalf("empty project blocks with %d records", got)
-	}
-
-	merged, _ := EnqueueLocalIntegration(ctx, tx, tenantID, projectID, "run_a", "", "b-a", "")
-	if err := SetLocalIntegrationStatus(ctx, tx, tenantID, merged.ID, LocalIntegrationMerged, "sha_a", "", "develop"); err != nil {
-		t.Fatalf("merge a: %v", err)
-	}
-	if got := count(); got != 0 {
-		t.Fatalf("a MERGED record blocks the queue (%d) — every integration would stall the project forever", got)
-	}
-
-	skipped, _ := EnqueueLocalIntegration(ctx, tx, tenantID, projectID, "run_b", "", "b-b", "")
-	if err := SetLocalIntegrationStatus(ctx, tx, tenantID, skipped.ID, LocalIntegrationSkipped, "", "no branch", ""); err != nil {
-		t.Fatalf("skip b: %v", err)
-	}
-	if got := count(); got != 0 {
-		t.Fatalf("a SKIPPED record blocks the queue (%d)", got)
-	}
-
-	pending, _ := EnqueueLocalIntegration(ctx, tx, tenantID, projectID, "run_c", "", "b-c", "")
-	_ = pending
-	if got := count(); got != 1 {
-		t.Fatalf("a PENDING record must block the queue, count = %d", got)
-	}
-
-	conflicted, _ := EnqueueLocalIntegration(ctx, tx, tenantID, projectID, "run_d", "", "b-d", "")
-	if err := SetLocalIntegrationStatus(ctx, tx, tenantID, conflicted.ID, LocalIntegrationConflicted, "",
-		"merge conflict", "develop"); err != nil {
-		t.Fatalf("conflict d: %v", err)
-	}
-	// A CONFLICT KEEPS BLOCKING. Branching past it is what makes the NEXT merge un-mergeable too — the
-	// reported damage was one missed integration making every following run divergent.
-	if got := count(); got != 2 {
-		t.Fatalf("a CONFLICTED record must keep blocking the queue, count = %d want 2", got)
+	for status, wantBlock := range cases {
+		t.Run(status, func(t *testing.T) {
+			pool, ctx := localIntegrationTestPool(t)
+			// A project of its own, so nothing else in the shared tenant can influence the count.
+			tenantID, projectID := localIntegrationTenant(t, ctx, pool)
+			tx, err := pool.Begin(ctx)
+			t.Cleanup(func() { _ = tx.Rollback(ctx) })
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenantID); err != nil {
+				t.Fatalf("set tenant: %v", err)
+			}
+			rec, err := EnqueueLocalIntegration(ctx, tx, tenantID, projectID, "run_x", "", "b-x", "")
+			if err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+			if status != LocalIntegrationPending {
+				if serr := SetLocalIntegrationStatus(ctx, tx, tenantID, rec.ID, status, "", "", "develop"); serr != nil {
+					t.Fatalf("set status: %v", serr)
+				}
+			}
+			n, cerr := CountBlockingLocalIntegrations(ctx, tx, tenantID, projectID)
+			if cerr != nil {
+				t.Fatalf("count: %v", cerr)
+			}
+			if gotBlock := n > 0; gotBlock != wantBlock {
+				t.Fatalf("status %q holds the queue=%v (count %d), want %v — the gate releases only on a "+
+					"PROVEN result", status, gotBlock, n, wantBlock)
+			}
+		})
 	}
 }
+
 
 // THE QUEUE IS ORDERED BY PRODUCTION ORDER, and excludes an asking run's own record.
 func TestQueueIsOldestFirstAndARunDoesNotBlockItself(t *testing.T) {

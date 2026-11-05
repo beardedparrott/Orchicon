@@ -196,10 +196,10 @@ func TestRefreshMainCheckoutHandlesCleanAndDirtyTrees(t *testing.T) {
 
 	// READINESS IS READ BEFORE THE REF MOVES. Afterwards the index is stale by construction, so a check
 	// made then can never pass — that ordering is the bug this test found.
-	ready, blockedBy := h.r.mainCheckoutRefreshReadiness(context.Background(), h.repo, defaultIntegrationBranch)
-	if !ready || blockedBy != "" {
-		t.Fatalf("a clean checkout on the integration branch was judged not refreshable (ready=%v reason=%q)",
-			ready, blockedBy)
+	rd := h.r.mainCheckoutRefreshReadiness(context.Background(), h.repo, defaultIntegrationBranch)
+	if !rd.onTarget || !rd.repairable || rd.reason != "" {
+		t.Fatalf("a clean checkout on the integration branch was judged not refreshable (onTarget=%v "+
+			"repairable=%v reason=%q)", rd.onTarget, rd.repairable, rd.reason)
 	}
 	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha, "test: move"); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
@@ -209,7 +209,7 @@ func TestRefreshMainCheckoutHandlesCleanAndDirtyTrees(t *testing.T) {
 		t.Fatal("test premise wrong: the working tree already shows the new file")
 	}
 
-	if err := h.r.refreshMainCheckout(context.Background(), h.repo, defaultIntegrationBranch, ready, blockedBy); err != nil {
+	if err := h.r.refreshMainCheckout(context.Background(), h.repo, defaultIntegrationBranch, rd); err != nil {
 		t.Fatalf("refreshMainCheckout: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(h.repo, "brand-new.txt")); err != nil {
@@ -222,15 +222,15 @@ func TestRefreshMainCheckoutHandlesCleanAndDirtyTrees(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	// NOW the tree is dirty, so the next integration must refuse to refresh.
-	ready2, blocked2 := h.r.mainCheckoutRefreshReadiness(context.Background(), h.repo, defaultIntegrationBranch)
-	if ready2 || blocked2 == "" {
-		t.Fatalf("a DIRTY checkout was judged refreshable (ready=%v reason=%q)", ready2, blocked2)
+	rd2 := h.r.mainCheckoutRefreshReadiness(context.Background(), h.repo, defaultIntegrationBranch)
+	if rd2.repairable || rd2.reason == "" {
+		t.Fatalf("a DIRTY checkout was judged refreshable (repairable=%v reason=%q)", rd2.repairable, rd2.reason)
 	}
 	sha2 := h.commitOn(t, "run-refresh-2", "second-new.txt", "content\n")
 	if err := h.r.setBranchRef(context.Background(), h.repo, defaultIntegrationBranch, sha2, "test: move"); err != nil {
 		t.Fatalf("setBranchRef: %v", err)
 	}
-	if err := h.r.refreshMainCheckout(context.Background(), h.repo, defaultIntegrationBranch, ready2, blocked2); err != nil {
+	if err := h.r.refreshMainCheckout(context.Background(), h.repo, defaultIntegrationBranch, rd2); err != nil {
 		t.Fatalf("refreshMainCheckout (dirty): %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(h.repo, "uncommitted.txt")); err != nil {

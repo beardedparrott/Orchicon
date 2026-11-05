@@ -117,6 +117,27 @@ export function RunIntegrationNotice({ status }: { status?: string }) {
       </div>
     );
   }
+  if (status === "failed") {
+    return (
+      <div role="alert" className="rounded-xl border border-red-500/40 bg-red-50 p-4 dark:bg-red-950/20">
+        <div className="flex gap-3">
+          <OctagonAlert className="h-5 w-5 shrink-0 text-red-600" aria-hidden="true" />
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-sm font-semibold text-red-900 dark:text-red-100">
+              This run's work merged, but the result could not be verified
+            </p>
+            <p className="text-sm text-red-900/90 dark:text-red-100/90">
+              The commit is on the integration branch — nothing was lost — but the check that proves the result
+              is usable failed: the files were not actually materialised on disk, or the project&apos;s own
+              test/build command failed. The project&apos;s queue is HELD here, because a later run branching on
+              an unproven result is how an empty working tree goes unnoticed. The record carries the exact
+              reason; fixing it releases the queue on the next pass.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (status !== "not_merged") return null;
   return (
     <div role="status" className="rounded-xl border border-amber-500/40 bg-amber-50 p-4 dark:bg-amber-950/20">

@@ -214,8 +214,9 @@ func TestCompletedRunGetsAnObligationAndTheDrainLandsIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read obligation: %v", err)
 	}
-	if rec.Status != db.LocalIntegrationMerged {
-		t.Fatalf("obligation status = %q, want merged (last_error=%q)", rec.Status, rec.LastError)
+	if rec.Status != db.LocalIntegrationVerified {
+		t.Fatalf("obligation status = %q, want verified (last_error=%q detail=%q)",
+			rec.Status, rec.LastError, rec.VerificationDetail)
 	}
 	if rec.MergeCommit == "" {
 		t.Error("the record has no merge commit — 'did it land' should be answerable from the row, not inferred")
@@ -302,6 +303,89 @@ func TestNewRunWaitsWhileAPredecessorCannotLandThenProceeds(t *testing.T) {
 	if !env.wrec.isAncestorOf(env.ctx, env.repo, predecessorBranch, got.WorktreeBranch) {
 		t.Fatalf("the new branch %q does not contain the predecessor %q — it was cut from a stale tip, and its "+
 			"merge will need a conflict resolution", got.WorktreeBranch, predecessorBranch)
+	}
+}
+
+// A MERGE THAT CANNOT BE VERIFIED IS `failed`, AND IT HOLDS THE QUEUE — the operator's requirement: "a failing
+// check must not be recorded as success and must not let the next run start".
+//
+// The failure used here is the reported one: the project declares a check that fails. (The other failure — a
+// tree that was not materialised — is covered directly by TestVerificationFailsWhenTheTreeIsNotMaterialised,
+// because provoking it through the drain requires an unwritable checkout.)
+func TestAFailedVerificationIsRecordedAndBlocksTheQueue(t *testing.T) {
+	env := newQueueTestEnv(t)
+	runID, branch := env.seedCompletedRun(t, "verifail")
+
+	// The project declares a check, and it fails.
+	dir := filepath.Join(env.repo, ".orchicon")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "verify"), []byte("printf 'suite failed\\n'; exit 1\n"), 0o644); err != nil {
+		t.Fatalf("write verify: %v", err)
+	}
+
+	env.wrec.IntegrateProjectNow(env.ctx, approvalTestTenant, env.proj.ID)
+
+	rec, err := env.obligation(t, runID)
+	if err != nil {
+		t.Fatalf("read obligation: %v", err)
+	}
+	// THE MERGE DID HAPPEN — this is not a conflict, and the work is not lost.
+	if !env.wrec.isAncestorOf(env.ctx, env.repo, branch, "develop") {
+		t.Fatalf("premise wrong: the branch did not merge, so this is not testing verification")
+	}
+	if rec.Status != db.LocalIntegrationFailed {
+		t.Fatalf("a failed verification recorded %q, want %q — a merge that cannot be proven is not a success",
+			rec.Status, db.LocalIntegrationFailed)
+	}
+	if !strings.Contains(rec.LastError, "suite failed") {
+		t.Errorf("the failure record does not carry the check's output: %q", rec.LastError)
+	}
+	// AND IT BLOCKS: "must not let the next run start".
+	if n := env.wrec.BlockingIntegrationCount(env.ctx, approvalTestTenant, env.proj.ID); n != 1 {
+		t.Fatalf("a FAILED verification stopped blocking the queue (%d) — the next run would branch on top of "+
+			"a result nothing could prove", n)
+	}
+
+	// Fixing the project's check releases it on the next pass, and the record becomes verified — the failure is
+	// retried rather than being a permanent tombstone.
+	if err := os.WriteFile(filepath.Join(dir, "verify"), []byte("printf 'ok\\n'\n"), 0o644); err != nil {
+		t.Fatalf("rewrite verify: %v", err)
+	}
+	env.wrec.IntegrateProjectNow(env.ctx, approvalTestTenant, env.proj.ID)
+	rec, err = env.obligation(t, runID)
+	if err != nil {
+		t.Fatalf("re-read obligation: %v", err)
+	}
+	if rec.Status != db.LocalIntegrationVerified {
+		t.Fatalf("after the check passed the record is %q, want verified (last_error=%q)", rec.Status, rec.LastError)
+	}
+	if rec.VerifiedAt == nil {
+		t.Error("a verified record carries no verified_at — 'was this ever proven' should be answerable from the row")
+	}
+	if n := env.wrec.BlockingIntegrationCount(env.ctx, approvalTestTenant, env.proj.ID); n != 0 {
+		t.Fatalf("the queue still blocks (%d) after a passing verification", n)
+	}
+}
+
+// A SUCCESSFUL INTEGRATION IS RECORDED AS `verified`, NOT `merged` — the whole point of the distinction.
+func TestSuccessfulIntegrationRecordsVerified(t *testing.T) {
+	env := newQueueTestEnv(t)
+	runID, _ := env.seedCompletedRun(t, "verified")
+	env.wrec.IntegrateProjectNow(env.ctx, approvalTestTenant, env.proj.ID)
+	rec, err := env.obligation(t, runID)
+	if err != nil {
+		t.Fatalf("read obligation: %v", err)
+	}
+	if rec.Status != db.LocalIntegrationVerified {
+		t.Fatalf("status = %q, want verified (last_error=%q detail=%q)", rec.Status, rec.LastError, rec.VerificationDetail)
+	}
+	if rec.MergeCommit == "" {
+		t.Error("a verified record carries no merge commit")
+	}
+	if rec.VerifiedAt == nil {
+		t.Error("a verified record carries no verified_at")
 	}
 }
 
