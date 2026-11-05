@@ -247,6 +247,18 @@ func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy st
 		// call under ambiguity; stating it removes the ambiguity. The exact path is not interpolated because the
 		// prefix is cache-shared across runs — the RULE is what a worker needs.
 		sb.WriteString("- **Your working directory is this run's worktree** — a sibling of the project directory under `.orchicon-worktrees/<run-id>`. Relative paths in every tool resolve against it and `pwd` prints it. It is YOURS: it is not the shared checkout, and a sibling run's worktree is not yours to write to.\n")
+		// IT ALREADY EXISTS — AND A HOST PATH IS A TRAP IN HERE.
+		//
+		// Reported across two cycles: three `git worktree add` calls left registrations like
+		// `.git/worktrees/<runID>/C:/projects/weatherapp/.orchicon-worktrees/<runID>`, all prunable, plus a
+		// stray `C:/...` tree in the project. Reproduced: inside the container the project is a mount, so
+		// `git worktree add C:/projects/...` does not name a drive — `C:` is a DIRECTORY NAME, and git registers
+		// a worktree at a path that exists only in the container's namespace. The host then reads an
+		// unresolvable, prunable registration and an untracked `C:/` tree that blocks its checkout refresh.
+		//
+		// The worktree is provisioned BEFORE the container starts, so there is nothing to create. Saying so is
+		// the cheapest possible prevention, and it costs one line of prompt.
+		sb.WriteString("- **Your worktree already exists — do NOT run `git worktree add`.** It was provisioned before this container started. If you ever need an absolute path, take it from `pwd`; never pass a host path (`C:\\...`) to git here — inside the container `C:` is an ordinary directory name, so git would create a stray `C:/` tree and register a worktree the host cannot resolve.\n")
 		sb.WriteString("- **Commit everything in scope before you finish.** `git status --porcelain` must be clean when you report, apart from files your project's `.gitignore` covers. Uncommitted work is invisible to every later step and to the operator.\n")
 		if gitStrategy == "local" {
 			// LOCAL INTEGRATION: THERE IS NO REMOTE, SO THERE IS NOTHING TO PUSH TO.

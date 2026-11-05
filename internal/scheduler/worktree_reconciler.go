@@ -748,6 +748,12 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 
 	stages.mark("project")
 
+	// REPAIR THE REGISTRY BEFORE CREATING INTO IT. A malformed registration (a host path used inside the
+	// container — see malformedWorktreeRegistrations) names a path that does not exist on this host, and git
+	// refuses `worktree add` when a recorded path is already in use. Cleaning up here means one bad registration
+	// cannot block a later run's provisioning; it is cheap (one `worktree list`, usually nothing to do).
+	r.malformedWorktreeRegistrations(ctx, projectDir)
+
 	path := filepath.Join(projectDir, worktreeDirName, runID)
 	// For a `none` (ephemeral) run, NO named branch is created — the
 	// worktree is detached HEAD, so "no branch retained" is structural
