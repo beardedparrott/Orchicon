@@ -26,6 +26,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -734,64 +735,252 @@ func (r *WorktreeReconciler) refreshMainCheckout(ctx context.Context, projectDir
 	return nil
 }
 
-// isMalformedWorktreePath reports whether a registered worktree path has another absolute path appended under
-// it — the shape reported as `.../.orchicon-worktrees/<runID>/C:/projects/weatherapp/.orchicon-worktrees/<runID>`.
+// isMalformedWorktreePath reports whether a worktree path carries a HOST path inside it — the shape
+// `.../.orchicon-worktrees/<runID>/C:/projects/weatherapp/.orchicon-worktrees/<runID>`.
 //
-// WHY THIS EXISTS, AND WHAT IT DOES NOT CLAIM. The operator reported three such registrations coinciding with a
-// checkout being left empty, and named them the leading candidate for the cause. They are NOT the cause: the
-// empty tree is explained by two defects in the readiness detector that this same change fixes, which refused
-// every single refresh (see staleCheckoutOnly). What is worth keeping is the DETECTOR, because the report's
-// other finding was that "no trace was left" — a malformed registration appearing again should be visible in
-// the log rather than inferred from an empty directory afterwards.
+// THE INVARIANT, stated as the thing that is actually wrong: on a POSIX filesystem `C:` is an ordinary DIRECTORY
+// NAME, so a Windows path handed to `git worktree add` inside a container becomes a RELATIVE path whose first
+// component is a drive designator. A drive-letter segment can therefore only be legitimate at position 0 of a
+// Windows path — anywhere else it is the signature of a host path used in the wrong namespace.
+//
+// Three shapes, all reported:
+//   - a drive-letter segment at any position other than the first;
+//   - `.orchicon-worktrees` appearing twice (the platform directory joined under itself);
+//   - a nested absolute path (`home/`, `tmp/`, or a leading `/`) after the platform directory.
+//
+// A parallel-branch CHILD worktree (`<id>/<stepRunID>`) is legitimate and stays that way: an id is an opaque
+// token, so a second segment alone is not malformed.
 func isMalformedWorktreePath(p string) bool {
 	folded := strings.ReplaceAll(p, "\\", "/")
-	// A drive-letter or absolute-path segment appearing AFTER the worktree id means a path was joined onto a
-	// path. Checked on the folded form so both Windows and POSIX registrations are covered.
-	i := strings.Index(folded, ".orchicon-worktrees/")
+	segments := strings.Split(folded, "/")
+	worktreesDirs := 0
+	for i, seg := range segments {
+		if isDriveLetterName(strings.TrimSpace(seg)) {
+			if i > 0 {
+				return true // a drive designator that is not the path's root
+			}
+			continue
+		}
+		if strings.TrimSpace(seg) == worktreeDirName {
+			worktreesDirs++
+		}
+	}
+	if worktreesDirs > 1 {
+		return true // the platform directory joined under itself
+	}
+	i := strings.LastIndex(folded, worktreeDirName+"/")
 	if i < 0 {
 		return false
 	}
-	rest := folded[i+len(".orchicon-worktrees/"):]
-	seg := strings.Index(rest, "/")
-	if seg < 0 {
-		return false // just the id
-	}
-	after := rest[seg+1:]
-	if after == "" {
-		// A trailing slash is not a malformed path.
+	rest := strings.TrimPrefix(folded[i+len(worktreeDirName)+1:], "/")
+	if rest == "" {
 		return false
 	}
-	// `<id>/<stepRunID>` is legitimate (a parallel-branch child worktree). A path carrying a drive letter, or a
-	// second copy of the platform directory, is not.
-	if strings.Contains(after, ":") || strings.Contains(after, ".orchicon-worktrees") {
-		return true
+	parts := strings.Split(rest, "/")
+	for _, extra := range parts[1:] { // parts[0] is the id; anything after it must be an id too
+		if extra == "" {
+			continue
+		}
+		if strings.Contains(extra, ":") || extra == "home" || extra == "tmp" || strings.HasPrefix(extra, ".") {
+			return true
+		}
 	}
-	// A nested absolute path (POSIX): `<id>/home/...` or `<id>/tmp/...`.
-	return strings.HasPrefix(after, "home/") || strings.HasPrefix(after, "tmp/") || strings.HasPrefix(after, "/")
+	return false
 }
 
-// malformedWorktreeRegistrations logs any worktree registration whose path is malformed, so the next occurrence
-// leaves a trace. Best-effort and read-only: it never repairs, because a registration that looks wrong is not
-// something to delete without knowing why it is wrong.
+// malformedWorktreeRegistrations DETECTS AND REPAIRS registrations whose path has another absolute path appended
+// under it — the shape `.../.orchicon-worktrees/<runID>/C:/projects/weatherapp/.orchicon-worktrees/<runID>`.
+//
+// THE PRODUCER IS KNOWN NOW, and it is worth stating because "no trace was left" cost two cycles. REPRODUCED
+// against real git: `git worktree add C:/projects/weatherapp/.orchicon-worktrees/<id>` executed somewhere that
+// does NOT have C: as a drive — i.e. INSIDE THE RUNTIME CONTAINER — treats the host path as a RELATIVE one:
+//
+//	$ git worktree add 'C:/projects/weatherapp/.orchicon-worktrees/01M6TEST'
+//	$ cat .git/worktrees/01M6TEST/gitdir
+//	/mnt/c/projects/weatherapp/C:/projects/weatherapp/.orchicon-worktrees/01M6TEST/.git
+//	$ git worktree list
+//	worktree /mnt/c/projects/weatherapp/C:/projects/weatherapp/.orchicon-worktrees/01M6TEST
+//
+// The admin dir is named `<runID>` (the basename, which is why it looks legitimate), the recorded gitdir is a
+// GUEST path the host cannot resolve — hence "prunable" — and the checkout it names does not exist. So a
+// containerised process (a worker running `git worktree add` with the path it was told the project lives at)
+// registers a worktree at a path that exists only in its own namespace.
+//
+// TWO THINGS IT COSTS, beyond a confusing `git worktree list`:
+//   1. the stray tree (`<project>/C:/...`) is an UNTRACKED entry, and `C:` is not one of ours — so after the
+//      readiness fix it would block the operator's checkout refresh again, as `?? C:/`;
+//   2. a registration naming a path makes `git worktree add` refuse if a later run computes the same path.
+//
+// SO THIS REPAIRS RATHER THAN ONLY REPORTS. It prunes the stale registrations and removes the stray trees, but
+// ONLY when both are provably ours: the recorded path must not exist on disk (git already calls such an entry
+// prunable), and every file inside a stray tree must be a worktree pointer naming THIS repository. Anything else
+// is logged and left alone — a wrong deletion is worse than a confusing listing.
 func (r *WorktreeReconciler) malformedWorktreeRegistrations(ctx context.Context, projectDir string) {
-	out, err := runGit(ctx, projectDir, "worktree", "list", "--porcelain")
+	wts, err := listWorktrees(ctx, projectDir)
 	if err != nil {
 		return
 	}
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "worktree ") {
-			continue
+	var malformed []string
+	for _, wt := range wts {
+		if isMalformedWorktreePath(wt.path) {
+			malformed = append(malformed, wt.path)
 		}
-		path := strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
-		if !isMalformedWorktreePath(path) {
-			continue
-		}
-		r.log.Warn("worktree: MALFORMED worktree registration — a full path is appended after the worktree id. "+
-			"This is NOT the cause of an empty checkout (see the readiness detector), but it is a defect and it "+
-			"was previously invisible; file it with this path",
-			"repo", projectDir, "path", path)
 	}
+	if len(malformed) == 0 {
+		return
+	}
+	for _, p := range malformed {
+		r.log.Warn("worktree: MALFORMED worktree registration — a host path (C:/...) was used inside the "+
+			"container, where C: is a relative directory name",
+			"repo", projectDir, "path", p)
+	}
+	// THE FILESYSTEM HALF GOES FIRST, and the order is load-bearing twice over: `git worktree prune` drops an
+	// entry only when the directory it names is MISSING, so a stray tree that still exists pins its own
+	// registration; and the existence test below is precisely "is this entry still pinned".
+	r.removeStrayContainerTrees(ctx, projectDir)
+
+	// Now decide per entry: pinned by a directory that still exists, or genuinely reclaimable.
+	repaired := 0
+	survivors := 0
+	for _, p := range malformed {
+		if _, serr := os.Stat(p); serr == nil {
+			survivors++
+			r.log.Warn("worktree: a malformed registration names a path that STILL EXISTS — git will not prune "+
+				"it and this needs a human. Do not delete it blindly: it is a worktree, at a wrong path",
+				"repo", projectDir, "path", p)
+			continue
+		}
+		repaired++
+	}
+	if repaired > 0 {
+		if _, perr := runGit(ctx, projectDir, "worktree", "prune"); perr != nil {
+			r.log.Warn("worktree: prune after malformed registrations failed", "repo", projectDir, "error", perr)
+		}
+		// REPORT WHAT SURVIVED, not what was attempted: a second list is the only honest evidence the registry
+		// is clean.
+		if after, aerr := listWorktrees(ctx, projectDir); aerr == nil {
+			left := 0
+			for _, wt := range after {
+				if isMalformedWorktreePath(wt.path) {
+					left++
+				}
+			}
+			if left > 0 {
+				r.log.Warn("worktree: malformed registrations REMAIN after repair", "repo", projectDir, "remaining", left)
+			} else {
+				r.log.Info("worktree: repaired malformed worktree registrations",
+					"repo", projectDir, "repaired", repaired, "still_pinned", survivors)
+			}
+		}
+	}
+}
+
+// removeStrayContainerTrees deletes a drive-letter directory at the project root that holds nothing but OUR
+// worktree pointers — the on-disk half of a host path used inside a container.
+//
+// `C:` under the project root is never legitimate content of a git project, and its presence breaks two things:
+// it is an untracked entry that blocks the operator's checkout refresh, and it is the tree the malformed
+// registration named. Every file inside it is verified to be a worktree pointer into THIS repository before
+// anything is deleted, so a directory some other tool created — or one holding real files — is left alone.
+func (r *WorktreeReconciler) removeStrayContainerTrees(ctx context.Context, projectDir string) {
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !isDriveLetterName(e.Name()) {
+			continue
+		}
+		root := filepath.Join(projectDir, e.Name())
+		ours, checked := strayTreeIsProvablyOurWorktrees(projectDir, root)
+		if !ours {
+			r.log.Warn("worktree: a drive-letter directory exists at the project root but does NOT hold only "+
+				"this repository's worktree pointers — leaving it alone. Tell the worker to use the relative "+
+				"worktree path inside the container",
+				"repo", projectDir, "path", root, "files_checked", checked)
+			continue
+		}
+		if rerr := os.RemoveAll(root); rerr != nil {
+			r.log.Warn("worktree: could not remove a stray container-path tree", "path", root, "error", rerr)
+			continue
+		}
+		r.log.Warn("worktree: removed a stray container-path tree left by `git worktree add C:/...` inside the "+
+			"container (a host path used where C: is a relative directory)",
+			"repo", projectDir, "path", root)
+	}
+}
+
+// isDriveLetterName reports whether a directory name is a bare drive designator ("C:", "d:").
+//
+// That is what a Windows path's first component looks like when a POSIX filesystem treats it as a name, and it is
+// never valid content of a git project at the root.
+func isDriveLetterName(name string) bool {
+	if len(name) != 2 || name[1] != ':' {
+		return false
+	}
+	c := name[0]
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+// strayTreeIsProvablyOurWorktrees reports whether root holds nothing but checked-out worktrees OF THIS
+// REPOSITORY — which is what a stray container-path tree is, once the mechanism is understood.
+//
+// "ONLY WORKTREE POINTERS" WAS THE FIRST PREDICATE AND IT WAS WRONG: `git worktree add` CHECKS OUT the branch, so
+// the stray tree contains a `.git` pointer AND every file of the branch (measured: `.git` + `README.md`). A rule
+// that demands "only `.git` files" therefore classified our own mess as foreign and never repaired it.
+//
+// The safe rule is COVERAGE: find every directory inside root whose `.git` file points into this repository's
+// `.git/worktrees`, then require that EVERY file in the tree lies under one of those directories. So:
+//
+//	our stray tree        → each file belongs to a worktree of ours  → reclaimed
+//	a user's `C:` folder  → files covered by no worktree of ours     → left alone
+//	an empty directory    → no pointer at all                        → left alone
+//
+// It returns whether the tree is provably ours and how many files were covered, so the log can say what it saw
+// rather than asserting a verdict.
+func strayTreeIsProvablyOurWorktrees(repo, root string) (bool, int) {
+	owned := map[string]bool{} // directories holding a `.git` pointer into our own worktree registry
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != ".git" {
+			return nil
+		}
+		b, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		pointer := strings.ReplaceAll(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(b)), "gitdir: ")), "\\", "/")
+		if strings.Contains(pointer, "/.git/worktrees/") || strings.HasPrefix(pointer, ".git/worktrees/") {
+			owned[filepath.Dir(path)] = true
+		}
+		return nil
+	})
+	if len(owned) == 0 {
+		return false, 0 // no worktree of ours anywhere — not our mess
+	}
+	covered := 0
+	proven := true
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			proven = false
+			return fs.SkipAll
+		}
+		if d.IsDir() {
+			return nil
+		}
+		for dir := range owned {
+			if path == dir || strings.HasPrefix(path, dir+string(os.PathSeparator)) {
+				covered++
+				return nil
+			}
+		}
+		// A file belonging to no worktree of ours is somebody's content, and the caller would delete it.
+		proven = false
+		return fs.SkipAll
+	})
+	if !proven {
+		return false, covered
+	}
+	return true, covered
 }
 
 // projectVerifyCommand returns the project's declared post-integration check, or "" when it declares none.
