@@ -1,0 +1,256 @@
+package scheduler
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+
+	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/verify"
+)
+
+// The scheduler-side tests cover two things the pure package cannot: the POLICY (which verdict changes
+// which status) and the PARSING of a project's real gate output. Both are places where a quiet edit
+// would re-open the defect without breaking a compile.
+
+// TestApplyVerdictPolicy pins the entire policy in one table, because it is the whole behavioural
+// contract of this feature and every row was a deliberate decision.
+func TestApplyVerdictPolicy(t *testing.T) {
+	cases := []struct {
+		name          string
+		succeeded     bool
+		verdict       verify.Verdict
+		wantSucceeded bool
+		wantNotice    bool
+		why           string
+	}{
+		{
+			name: "worker failed stays failed", succeeded: false,
+			verdict: verify.VerdictVerified, wantSucceeded: false, wantNotice: false,
+			why: "a failed worker is never upgraded by evidence — there is nothing to substantiate",
+		},
+		{
+			name: "worker failed and unverified stays failed", succeeded: false,
+			verdict: verify.VerdictUnverified, wantSucceeded: false, wantNotice: false,
+			why: "no notice: the step is already failing, so 'unverified' adds nothing for the operator",
+		},
+		{
+			name: "verified stays succeeded", succeeded: true,
+			verdict: verify.VerdictVerified, wantSucceeded: true, wantNotice: false,
+			why: "no behavioural change for good work",
+		},
+		{
+			name: "unsubstantiated DOWNGRADES to failed", succeeded: true,
+			verdict: verify.VerdictUnsubstantiated, wantSucceeded: false, wantNotice: true,
+			why: "the repository contradicts the claim — this is the defect case",
+		},
+		{
+			name: "unverified keeps succeeded but is never silent", succeeded: true,
+			verdict: verify.VerdictUnverified, wantSucceeded: true, wantNotice: true,
+			why: "failing it would fail every project with no gate and the mechanism would be disabled",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotSucceeded, notice := applyVerdict(tc.succeeded, verify.Result{Verdict: tc.verdict})
+			if gotSucceeded != tc.wantSucceeded {
+				t.Errorf("succeeded = %v, want %v (%s)", gotSucceeded, tc.wantSucceeded, tc.why)
+			}
+			if (notice != "") != tc.wantNotice {
+				t.Errorf("notice = %q, want present=%v (%s)", notice, tc.wantNotice, tc.why)
+			}
+		})
+	}
+}
+
+// TestUnsubstantiatedNoticeNamesTheReason pins that the failure reason an operator sees says WHAT was
+// contradicted. A failure with no cause sends them to a terminal, which is the cost this feature is
+// supposed to remove.
+func TestUnsubstantiatedNoticeNamesTheReason(t *testing.T) {
+	_, notice := applyVerdict(true, verify.Result{
+		Verdict: verify.VerdictUnsubstantiated,
+		Reason:  "not substantiated: work_present: HEAD did not move",
+	})
+	for _, want := range []string{"contradicts", "work_present"} {
+		if !contains(notice, want) {
+			t.Errorf("notice %q missing %q", notice, want)
+		}
+	}
+}
+
+func contains(haystack, needle string) bool {
+	return len(haystack) >= len(needle) && (haystack == needle ||
+		len(needle) == 0 || indexOf(haystack, needle) >= 0)
+}
+
+func indexOf(h, n string) int {
+	for i := 0; i+len(n) <= len(h); i++ {
+		if h[i:i+len(n)] == n {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestParseGateResultsGoTest pins the parser against real `go test` output shapes.
+func TestParseGateResultsGoTest(t *testing.T) {
+	out := `ok  	github.com/x/a	0.012s
+FAIL	github.com/x/b [build failed]
+--- FAIL: TestC (0.00s)
+--- PASS: TestD (0.00s)
+ok  	github.com/x/e	(cached)
+`
+	got := parseGateResults(out)
+	want := map[string]bool{
+		"github.com/x/a": true,
+		"github.com/x/b": false,
+		"TestC":          false,
+		"TestD":          true,
+		"github.com/x/e": true,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parsed = %v\nwant    = %v", got, want)
+	}
+}
+
+// TestParseGateResultsVitest pins a non-Go runner, because the gate must not be Go-only: the point of
+// a project-declared command is that it can be anything.
+func TestParseGateResultsVitest(t *testing.T) {
+	out := ` FAIL  src/foo.test.ts > renders
+ PASS  src/bar.test.ts > counts
+`
+	got := parseGateResults(out)
+	if got["src/foo.test.ts"] != false {
+		t.Errorf("src/foo.test.ts = %v, want false (parsed: %v)", got["src/foo.test.ts"], got)
+	}
+	if got["src/bar.test.ts"] != true {
+		t.Errorf("src/bar.test.ts = %v, want true (parsed: %v)", got["src/bar.test.ts"], got)
+	}
+}
+
+// TestParseGateResultsEmptyIsEmptyNotGreen pins that unparseable output yields an EMPTY map, never a
+// synthetic pass. An empty map is turned into an incomplete baseline by the caller; a synthetic
+// "everything passed" would silently certify a gate that never ran.
+func TestParseGateResultsEmptyIsEmptyNotGreen(t *testing.T) {
+	if got := parseGateResults("gibberish\nno results here\n"); len(got) != 0 {
+		t.Fatalf("parsed = %v, want empty", got)
+	}
+}
+
+// TestBaselineCacheRoundTrip pins the cache, including that a corrupt or incomplete entry reads as a
+// MISS rather than a clean baseline.
+func TestBaselineCacheRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	commit := "abc123def456"
+
+	if b := loadCachedBaseline(dir, commit); b != nil {
+		t.Fatalf("expected no baseline before capture, got %+v", b)
+	}
+
+	want := &verify.Baseline{Commit: commit, Results: map[string]bool{"pkg/a": true, "pkg/b": false}}
+	if err := storeCachedBaseline(dir, want); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	got := loadCachedBaseline(dir, commit)
+	if got == nil {
+		t.Fatal("baseline did not round-trip")
+	}
+	if !reflect.DeepEqual(got.Results, want.Results) {
+		t.Fatalf("results = %v, want %v", got.Results, want.Results)
+	}
+
+	// An INCOMPLETE baseline is not cached at all — storing one would let a failed measurement
+	// masquerade as a clean one.
+	incomplete := &verify.Baseline{Commit: "other", Detail: "gate could not run"}
+	if err := storeCachedBaseline(dir, incomplete); err != nil {
+		t.Fatalf("store incomplete: %v", err)
+	}
+	if b := loadCachedBaseline(dir, "other"); b != nil {
+		t.Fatalf("an incomplete baseline must not be cached, got %+v", b)
+	}
+
+	// A corrupt file reads as absent.
+	if err := os.WriteFile(filepath.Join(dir, ".orchicon", baselineCacheDir, "corrupt.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write corrupt: %v", err)
+	}
+	if b := loadCachedBaseline(dir, "corrupt"); b != nil {
+		t.Fatalf("corrupt cache must read as absent, got %+v", b)
+	}
+}
+
+// TestSummariseDirty pins the failure detail: it must name files, not just say "dirty".
+func TestSummariseDirty(t *testing.T) {
+	out := " M internal/foo.go\n?? internal/bar.go\nA  internal/baz.go\n M internal/qux.go\n M internal/extra.go\n"
+	got := summariseDirty(out)
+	for _, want := range []string{"internal/foo.go", "internal/bar.go", "internal/baz.go", "internal/qux.go"} {
+		if !contains(got, want) {
+			t.Errorf("summary %q missing %q", got, want)
+		}
+	}
+	// Capped at four entries with an ellipsis, so a huge diff cannot bloat an error_message row.
+	if !contains(got, "…") {
+		t.Errorf("summary %q should be elided when more entries exist", got)
+	}
+}
+
+// TestPathSet pins diff-name parsing including blank lines.
+func TestPathSet(t *testing.T) {
+	got := pathSet("a.go\n\nb.go\n  c.go  \n")
+	want := map[string]struct{}{"a.go": {}, "b.go": {}, "c.go": {}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	if empty := pathSet("\n\n"); len(empty) != 0 {
+		t.Fatalf("empty diff should yield an empty set, got %v", empty)
+	}
+}
+
+// TestStepDeclaresDeliverableExemptions pins WHICH steps are exempt from the commit check.
+//
+// The default is true on purpose: wrongly expecting a deliverable produces a loud, fixable "no
+// commits", whereas wrongly exempting a code step silently removes the only universal check there is.
+// So the exemption list must stay short and each entry justified.
+func TestStepDeclaresDeliverableExemptions(t *testing.T) {
+	r := &TaskReconciler{}
+	cases := []struct {
+		name        string
+		stepID      string
+		workerName  string
+		wantDeclare bool
+	}{
+		{"senior engineer owes code", "step-sse", "Senior Software Engineer", true},
+		{"quick worker owes code", "step-quick", "Quick Software Engineer", true},
+		{"QA owes fixes", "step-qa", "QA Engineer", true},
+		{"reviewer owes fixes", "step-pr-reviewer", "PR Reviewer", true},
+		{"devops owes a PR", "step-devops-pr", "DevOps Engineer", true},
+		{"architect writes an ignored plan", "step-q4xlbg6v", "Principal Software Architect", false},
+		{"design approver is a gate", "step-i64wso0x", "Design Approver", false},
+		{"code approver is a gate", "step-9gfybwnv", "Code Approver", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			declares, reason := r.stepDeclaresDeliverable(nil, execFor(tc.stepID, tc.workerName))
+			if declares != tc.wantDeclare {
+				t.Fatalf("declares = %v, want %v (reason: %q)", declares, tc.wantDeclare, reason)
+			}
+			if !declares && reason == "" {
+				t.Error("an exemption must say WHY, for the record")
+			}
+		})
+	}
+}
+
+// TestStandaloneDispatchOwesDeliverable pins the no-workflow case.
+func TestStandaloneDispatchOwesDeliverable(t *testing.T) {
+	r := &TaskReconciler{}
+	declares, _ := r.stepDeclaresDeliverable(nil, execFor("", "Senior Software Engineer"))
+	if !declares {
+		t.Fatal("a standalone dispatch was assigned a work item, so it owes a deliverable")
+	}
+}
+
+// execFor builds the minimal execution row the deliverable check reads.
+func execFor(stepID, workerName string) db.ExecutionRow {
+	return db.ExecutionRow{WorkflowStepID: stepID, WorkerName: workerName}
+}

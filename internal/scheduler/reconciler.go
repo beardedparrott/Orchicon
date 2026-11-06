@@ -37,6 +37,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
+	"github.com/beardedparrott/orchicon/internal/verify"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
 )
@@ -916,6 +917,27 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 	created, err := db.CreateExecution(ctx, ttx.Tx, execRow)
 	if err != nil {
 		return fmt.Errorf("create execution: %w", err)
+	}
+
+	// BASELINE CAPTURE — BEFORE THE WORK RUNS, BECAUSE AFTERWARDS IS TOO LATE.
+	//
+	// "Was this test already failing?" can only be answered by measuring the gate at the commit the
+	// work was cut from, and that measurement must happen before the worker touches anything. It is
+	// started here, at dispatch, and it runs in the BACKGROUND so a slow gate can never delay a
+	// dispatch: the result is cached per commit and read at completion, and a miss makes the
+	// differential abstain (which is honest) rather than guess.
+	//
+	// Deliberately after CreateExecution: the execution row is the durable record that a step is
+	// under way, and it must exist before we spend any effort measuring for it.
+	if projectDir := r.lookupProjectDir(ctx, task.ProjectID); projectDir != "" {
+		wtPath, wtBranch := "", ""
+		if worktreePath != nil {
+			wtPath = *worktreePath
+		}
+		if worktreeBranch != nil {
+			wtBranch = *worktreeBranch
+		}
+		r.captureBaselineForDispatch(ctx, projectDir, wtPath, wtBranch)
 	}
 
 	// Transition task to "assigned" (docs/03 §6: ready → assigned) —
@@ -1867,6 +1889,51 @@ func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded 
 				errorMessage = "worker reported failure in its own ORCHICON WORKER SUMMARY: " +
 					truncateForLog(extractWorkerSummary(output), 300)
 			}
+		}
+	}
+	// EVIDENCE GATE — ASK THE REPOSITORY, NOT THE REPORT.
+	//
+	// Everything above this line decides the outcome from text the worker wrote. That is the defect
+	// this block closes: a worker could report `success` having changed nothing, and the platform
+	// would write a green terminal status and a green acceptance review over it. Verified on this
+	// platform's own records: work item 01M5X62Z1X8N08KD7KAY0G6FSV.
+	//
+	// The verdict is three-valued (see internal/verify). Only ONE state changes the status:
+	// `unsubstantiated` turns a claimed success into a failure, because the repository contradicts the
+	// claim. `unverified` keeps the status and records a notice, deliberately — see the reasoning in
+	// verify_onresult.go (failing it would fail every run of every project that declares no gate, and
+	// the mechanism would be switched off rather than adopted).
+	//
+	// The gate only runs on the SUCCESS path. A worker that already reported failure has nothing to
+	// substantiate, and running the project's whole gate to confirm a failure would burn minutes to
+	// learn nothing.
+	if succeeded {
+		if exec, lerr := r.loadExecutionRow(ctx, execID); lerr == nil {
+			if res, ok := r.verdictForOutcome(ctx, exec); ok {
+				prevSucceeded := succeeded
+				var notice string
+				succeeded, notice = applyVerdict(succeeded, res)
+				if !succeeded && prevSucceeded {
+					r.log.Warn("verify: worker claimed success but the evidence contradicts it — failing the execution",
+						"execution", execID, "verdict", res.Verdict.String(), "reason", res.Reason)
+					errorMessage = notice
+				} else if notice != "" && strings.TrimSpace(errorMessage) == "" {
+					// An unverified step keeps its status but never silently: the notice rides the same
+					// slot the worktree reconciler uses for its advisories.
+					errorMessage = notice
+				}
+				// Record the evidence on the step run so the acceptance review and the UI can show what
+				// was and was not confirmed. Best-effort; it cannot change the outcome above.
+				r.recordVerification(ctx, exec, res)
+				if res.Verdict == verify.VerdictVerified {
+					r.log.Info("verify: step verified", "execution", execID, "checks", len(res.Checks))
+				}
+			}
+		} else {
+			// The row could not be read. That is a platform problem, not a worker one: leave the
+			// outcome exactly as the worker reported it and say so, rather than manufacturing a
+			// failure out of an unreadable database.
+			r.log.Warn("verify: execution row unreadable — outcome left as reported", "execution", execID, "error", lerr)
 		}
 	}
 	status := domain.ExecutionSucceeded
