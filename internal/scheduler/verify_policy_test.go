@@ -3,9 +3,13 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -417,4 +421,73 @@ func TestCompletionGateTimeoutAbstainsNotFails(t *testing.T) {
 		t.Fatalf("verdict = %q, want unverified", got.Verdict)
 	}
 	_ = r
+}
+
+// TestBaselineCaptureAgainstARealRepo is the outermost proof for the baseline half, and it is a REAL
+// integration test rather than a fixture on purpose: the mechanism's whole claim is that it can measure
+// an arbitrary project's gate, and a synthetic Baseline map would prove only that the map round-trips.
+//
+// It is skipped unless a declared gate is present above the test directory, so it is inert in a checkout
+// that has no `.orchicon/verify` — which is most of them. Where it does run, it answers the only question
+// that matters about this design: can the platform actually shell out to a project's own gate, parse the
+// results, cache them per commit, and read them back?
+//
+// It narrows the gate to a single fast package so the test measures the MECHANISM rather than this
+// repository's whole suite; the full-suite path is exercised by the declared gate itself on every run.
+func TestBaselineCaptureAgainstARealRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	rootOut, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		t.Skip("not in a git work tree")
+	}
+	root := strings.TrimSpace(string(rootOut))
+	if _, err := os.Stat(filepath.Join(root, ".orchicon", "verify")); err != nil {
+		t.Skip("this repository declares no .orchicon/verify gate")
+	}
+
+	refOut, err := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	ref := strings.TrimSpace(string(refOut))
+
+	r := &TaskReconciler{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Point the "project" at a scratch root carrying a narrowed gate, so the test never writes into the
+	// repository's own .orchicon/ and never runs the whole suite.
+	scratch := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(scratch, ".orchicon"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scratch, ".orchicon", "verify"),
+		[]byte("go test ./internal/verify/"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := r.captureBaseline(ctx, root, ref, "")
+	if b == nil {
+		t.Fatal("captureBaseline returned nil for a repository WITH a declared gate")
+	}
+	if b.Incomplete() {
+		t.Fatalf("baseline incomplete: %s", b.Detail)
+	}
+	if _, ok := b.Results["github.com/beardedparrott/orchicon/internal/verify"]; !ok {
+		t.Fatalf("the verify package is missing from the measured baseline: %v", b.Results)
+	}
+
+	// The cache is keyed by commit, which is what makes sibling runs share one measurement.
+	if err := storeCachedBaseline(scratch, b); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	got := loadCachedBaseline(scratch, ref)
+	if got == nil {
+		t.Fatal("a cached baseline did not load back — every sibling run would re-measure")
+	}
+	if len(got.Results) != len(b.Results) {
+		t.Fatalf("round-trip changed the result set: %d vs %d", len(got.Results), len(b.Results))
+	}
 }
