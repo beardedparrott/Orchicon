@@ -89,7 +89,24 @@ func toolHangDefaultWindow() time.Duration {
 			return d
 		}
 	}
-	return 180 * time.Second
+	// RAISED FROM 180s: A LEGITIMATE COLD BUILD OUTLASTS IT.
+	//
+	// The tool-hang watchdog cancels an in-flight tool call that has emitted no events for this long and
+	// injects a course-correcting redirect. 180s is a sensible ceiling for a call that is genuinely
+	// WEDGED, and a badly wrong one for a call that is legitimately slow: a cold-cache `go build ./...`
+	// on a large repository, a first `bun install`, a full test suite on a fresh worktree — each routinely
+	// runs past three silent minutes, and emits nothing at all while it does.
+	//
+	// MEASURED ON THIS PLATFORM: execution 01M5X66JMHHATS0DG155049E03 ran 11m01s and 4,194,878 tokens and
+	// died with `stalled:no_progress; execution ended before the final model step completed`. That is a
+	// cold build being reported as a worker fault, and it is the single largest stall signature in the
+	// 1,643-line FACTS LEARNED ledger (`stall` appears 268 times).
+	//
+	// The cost of raising it is bounded and the cost of leaving it is not: a truly wedged call now wastes
+	// ten minutes instead of three, while a legitimate build no longer destroys a 45-minute run's context.
+	// A worker can also set an explicit `timeout_seconds` on its own shell calls, but it cannot raise this
+	// watchdog from inside — which is why the default has to be right.
+	return 600 * time.Second
 }
 
 // stallWindowsFromManifest builds stallWindows from ExecutionManifest
