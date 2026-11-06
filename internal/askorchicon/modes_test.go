@@ -606,3 +606,36 @@ func TestQuickWorkPutsTheMapInTheBriefAndTheWorkerPrompt(t *testing.T) {
 		}
 	}
 }
+
+// TestBrainstormWritesVerifiableAcceptanceCriteria pins the authoring half of the verification feature.
+//
+// The engine can only verify what it is given. A work item whose criteria are phrased as feelings
+// ("the UI feels responsive") cannot be answered with the AC REPORT contract, so it degrades into an
+// adjective and the operator learns nothing — no amount of engine work fixes that at the other end. And a
+// project with no `.orchicon/verify` produces steps the platform must report as UNVERIFIED, so Brainstorm
+// is the right place to surface it, before the operator has committed to the work.
+func TestBrainstormWritesVerifiableAcceptanceCriteria(t *testing.T) {
+	prompt := BuildSystemPrompt(modeBrainstorm, db.AgentConfigRow{}, &ToolRegistry{}, "")
+
+	for _, want := range []string{
+		// The authoring contract.
+		"WRITE ACCEPTANCE CRITERIA THAT CAN BE ANSWERED WITH EVIDENCE",
+		"AC REPORT",
+		// A worked contrast, because an abstract instruction to "be specific" is what we already had.
+		"weak:",
+		"strong:",
+		// The gate disclosure.
+		"`.orchicon/verify`",
+		"UNVERIFIED",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("Brainstorm's drafting rules must carry %q — otherwise it writes items the platform cannot verify", want)
+		}
+	}
+
+	// The numbering instruction matters mechanically: the AC REPORT parser keys on AC1/AC2, so criteria
+	// must be numbered for a worker to answer them in the form the platform reads.
+	if !strings.Contains(prompt, "Number them") {
+		t.Error("Brainstorm must tell the model to number acceptance criteria — the AC REPORT contract keys on the number")
+	}
+}

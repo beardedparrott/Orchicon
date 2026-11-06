@@ -1,0 +1,20 @@
+# The verification gate this project declares for worker steps.
+#
+# READ BY: internal/scheduler/local_integrate.go (projectVerifyCommand) and
+#          internal/scheduler/verify_evidence.go (declaredGateCommand), so one declaration
+#          serves both the integration check and the per-step evidence gate.
+#
+# WHY THIS FILE EXISTS. Without it every worker step in this repository is recorded as UNVERIFIED: the
+# platform compares the project's gate at a step's HEAD against a baseline taken before the step
+# started, and with nothing declared there is nothing to compare. That is not a theoretical gap — it is
+# why a run could report success having changed nothing and still be marked green.
+#
+# SCOPE IS DELIBERATE: build + vet + the Go test suite. NOT `make ci` (which adds fe-lint,
+# fe-typecheck, fe-test and site-check) and NOT `ci-go` (which adds cross-compile). Those belong in CI,
+# where a cold cache and a 13-minute budget are acceptable; this command runs twice per step (baseline
+# and HEAD) on every worker run, so it is kept to what a warm cache turns around in seconds. A gate slow
+# enough to be skipped is worse than a narrower one that always runs.
+#
+# The baseline is per-commit and cached under .orchicon/baselines/, so the first run cut from a given
+# develop tip pays for the measurement and every sibling run reuses it.
+go build ./... && go vet ./... && go test ./internal/... ./cmd/...
