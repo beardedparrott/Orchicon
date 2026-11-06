@@ -33,6 +33,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -298,4 +299,99 @@ func (r *TaskReconciler) loadExecutionRow(ctx context.Context, execID string) (d
 	}
 	_ = ttx.Commit(ctx)
 	return row, nil
+}
+
+// verificationSummaryLine is the per-step rendering inside an acceptance review.
+type verificationSummaryLine struct {
+	step    string
+	verdict string
+	reason  string
+}
+
+// collectVerificationSummaries extracts the `_verification` record from each step run.
+//
+// Sorted by the VERDICT ORDER that matters to a reader: unsubstantiated first (something is wrong),
+// then unverified (nobody checked), then verified. A review that lists the confirmed steps first
+// buries the two that need attention.
+func collectVerificationSummaries(stepRuns []db.WorkflowStepRunRow) []verificationSummaryLine {
+	var out []verificationSummaryLine
+	for _, sr := range stepRuns {
+		if sr.SupersededBy != "" || len(sr.Result) == 0 {
+			continue
+		}
+		var meta struct {
+			Verification *struct {
+				Verdict string `json:"verdict"`
+				Reason  string `json:"reason"`
+			} `json:"_verification"`
+		}
+		if err := json.Unmarshal(sr.Result, &meta); err != nil || meta.Verification == nil {
+			continue
+		}
+		out = append(out, verificationSummaryLine{
+			step:    sr.StepName,
+			verdict: meta.Verification.Verdict,
+			reason:  meta.Verification.Reason,
+		})
+	}
+	rank := map[string]int{
+		verify.VerdictUnsubstantiated.String(): 0,
+		verify.VerdictUnverified.String():      1,
+		verify.VerdictVerified.String():        2,
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ri, rj := rank[out[i].verdict], rank[out[j].verdict]
+		if ri != rj {
+			return ri < rj
+		}
+		return out[i].step < out[j].step
+	})
+	return out
+}
+
+// formatVerificationSummary renders the evidence block for the acceptance review.
+//
+// IT ALWAYS RENDERS. A run whose steps carry no verification record at all is itself the finding —
+// "nothing was checked" — and silently omitting the section is exactly the silent-success the whole
+// feature exists to remove. An empty block would be worse still, so the "no evidence recorded" case is
+// stated explicitly.
+func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
+	lines := collectVerificationSummaries(stepRuns)
+	if len(lines) == 0 {
+		return "### Verification\n\nNo verification evidence was recorded for any step in this run. " +
+			"The worker reports were accepted on their own word — treat the outcome above as UNCONFIRMED.\n\n"
+	}
+	var verified, unverified, unsubstantiated int
+	var b strings.Builder
+	b.WriteString("### Verification\n\n")
+	for _, l := range lines {
+		sym := "✓"
+		switch l.verdict {
+		case verify.VerdictUnverified.String():
+			sym = "?"
+			unverified++
+		case verify.VerdictUnsubstantiated.String():
+			sym = "✗"
+			unsubstantiated++
+		default:
+			verified++
+		}
+		if l.reason != "" {
+			b.WriteString(fmt.Sprintf("- %s **%s** — %s: %s\n", sym, l.step, l.verdict, l.reason))
+			continue
+		}
+		b.WriteString(fmt.Sprintf("- %s **%s** — %s\n", sym, l.step, l.verdict))
+	}
+	b.WriteString("\n")
+	total := len(lines)
+	switch {
+	case unverified > 0 || unsubstantiated > 0:
+		b.WriteString(fmt.Sprintf("%d of %d step(s) verified; %d unverified, %d contradicted. "+
+			"An UNVERIFIED step is not a failure and is not a confirmation — the platform could not "+
+			"determine it. Declaring the project's gate in `.orchicon/verify` is what makes a step "+
+			"verifiable.\n\n", verified, total, unverified, unsubstantiated))
+	default:
+		b.WriteString(fmt.Sprintf("All %d step(s) verified against the repository and the project's gate.\n\n", total))
+	}
+	return b.String()
 }

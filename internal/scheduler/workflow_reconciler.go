@@ -2378,6 +2378,19 @@ func formatAcceptanceReview(run db.WorkflowRunRow, stepRuns []db.WorkflowStepRun
 		b.WriteString("\n")
 	}
 
+	// VERIFICATION EVIDENCE — the answer to "was any of this actually checked?".
+	//
+	// This review is the document an operator opens to decide whether to trust a run, so evidence that
+	// is not in it may as well not exist. It is rendered from the per-step `_verification` records the
+	// evidence gate stamps (internal/scheduler/verify_onresult.go), and it deliberately LEADS with the
+	// count of steps nothing confirmed: a review that says "6 steps, 1 verified" is telling the
+	// operator something quite different from "6 steps" with a green tick next to the run.
+	//
+	// RECOVERIES ARE FOLDED IN HERE FOR THE SAME REASON. A step that failed three times and then
+	// recovered reads identically to a clean success in the narrative above, and that is a large part
+	// of "sometimes it works" — it did not work, it recovered, and the record did not say so.
+	b.WriteString(formatVerificationSummary(sorted))
+
 	if len(recoveries) > 0 {
 		b.WriteString("### Recovery\n\n")
 		for _, rec := range recoveries {

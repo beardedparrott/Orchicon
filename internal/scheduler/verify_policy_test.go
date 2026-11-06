@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -253,4 +254,64 @@ func TestStandaloneDispatchOwesDeliverable(t *testing.T) {
 // execFor builds the minimal execution row the deliverable check reads.
 func execFor(stepID, workerName string) db.ExecutionRow {
 	return db.ExecutionRow{WorkflowStepID: stepID, WorkerName: workerName}
+}
+
+// TestFormatVerificationSummary pins the operator-facing evidence block. The failure mode this guards
+// is a review that reports a clean run while nothing was checked.
+func TestFormatVerificationSummary(t *testing.T) {
+	mk := func(name, verdict, reason string) db.WorkflowStepRunRow {
+		meta := map[string]any{"_verification": map[string]any{"verdict": verdict, "reason": reason}}
+		raw, _ := json.Marshal(meta)
+		return db.WorkflowStepRunRow{StepName: name, Result: raw, Status: "succeeded"}
+	}
+
+	t.Run("unsubstantiated sorts first and is named", func(t *testing.T) {
+		got := formatVerificationSummary([]db.WorkflowStepRunRow{
+			mk("Senior Software Engineer", "verified", ""),
+			mk("QA Engineer", "unsubstantiated", "work_present: HEAD did not move"),
+		})
+		if !contains(got, "QA Engineer") || !contains(got, "✗") {
+			t.Fatalf("missing the contradicted step: %s", got)
+		}
+		// The contradicted line must come before the verified one.
+		if indexOf(got, "QA Engineer") > indexOf(got, "Senior Software Engineer") {
+			t.Errorf("contradicted step should sort before verified steps:\n%s", got)
+		}
+	})
+
+	t.Run("no evidence at all says so explicitly", func(t *testing.T) {
+		got := formatVerificationSummary(nil)
+		if !contains(got, "UNCONFIRMED") {
+			t.Fatalf("an unverified run must say so, got: %s", got)
+		}
+	})
+
+	t.Run("unverified is counted separately from verified", func(t *testing.T) {
+		got := formatVerificationSummary([]db.WorkflowStepRunRow{
+			mk("Senior Software Engineer", "verified", ""),
+			mk("QA Engineer", "unverified", "project_gate: no .orchicon/verify"),
+		})
+		if !contains(got, "1 of 2 step(s) verified") {
+			t.Fatalf("must count verified vs total, got: %s", got)
+		}
+		if !contains(got, "not a failure") {
+			t.Errorf("must explain that unverified is not a failure, got: %s", got)
+		}
+	})
+
+	t.Run("all verified reads cleanly", func(t *testing.T) {
+		got := formatVerificationSummary([]db.WorkflowStepRunRow{mk("Senior Software Engineer", "verified", "")})
+		if !contains(got, "All 1 step(s) verified") {
+			t.Fatalf("got: %s", got)
+		}
+	})
+
+	t.Run("superseded steps are excluded", func(t *testing.T) {
+		row := mk("SSE", "unsubstantiated", "x")
+		row.SupersededBy = "later"
+		got := formatVerificationSummary([]db.WorkflowStepRunRow{row})
+		if contains(got, "SSE") {
+			t.Fatalf("a superseded step is not final work and must not appear: %s", got)
+		}
+	})
 }
