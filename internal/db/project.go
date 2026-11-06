@@ -467,14 +467,14 @@ func UpdateProjectGitDetection(ctx context.Context, tx pgx.Tx, tenantID, id stri
 //  8. workflow_step_runs       — children of the runs
 //  9. workflow_runs
 //
-//  10. workflow_versions        — children of the workflows
-//  11. workflows
-//  12. work_item_attachments    — children of the work items
-//  13. work_item_dependencies
-//  14. work_items
-//  15. mcp_servers             — the definitions this project OWNS (mcp_servers' project FK does
+// 10. workflow_versions        — children of the workflows
+// 11. workflows
+// 12. work_item_attachments    — children of the work items
+// 13. work_item_dependencies
+// 14. work_items
+// 15. mcp_servers             — the definitions this project OWNS (mcp_servers' project FK does
 //     cascade, but the explicit step keeps this function's ordered, leaf-first contract)
-//  16. the project
+// 16. the project
 //
 // Every statement is scoped by BOTH tenant_id and the project, so a cross-tenant id can never match
 // (defence in depth behind row-level security).
