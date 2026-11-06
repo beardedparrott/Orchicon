@@ -2,12 +2,13 @@ package askorchicon
 
 import (
 	"encoding/json"
-	"fmt"
-
-	"github.com/beardedparrott/orchicon/internal/db"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/db"
 )
 
 // Live tool ledger for Ask Orchicon turns: every tool call issued and every
@@ -23,6 +24,46 @@ type toolLedger struct {
 	nextID  int
 	calls   []toolCallEntry
 	results []toolResultEntry
+}
+
+// toolCallIDPrefix makes a SYNTHESIZED tool-call id unique for the life of the process.
+//
+// THE ID IS AN IDENTITY, NOT A LABEL, AND IT WAS BEING MINTED LIKE A LABEL. A ledger is created per TURN
+// (chat.go: turnLedger := newToolLedger()), so its counter restarted at 1 every turn and every turn's ask
+// became `tc-3`. Three separate things treat that string as an identity:
+//
+//	the CLIENT's settled-ask map (ask-orchicon.tsx: const settledAsks = new Map<string,string>())
+//	findPromotedAsk's query (tool_calls @> '{"id": <askID>}', across the whole conversation)
+//	the in-process pending-ask registry
+//
+// REPORTED: "clicking an answer sometimes doesn't work unless I first refresh the page." Answering an ask in an
+// earlier turn put `tc-3` in the client's settled map; a LATER turn's ask was also `tc-3`; the card was drawn
+// already-answered, so every option button was disabled and clicks did nothing. A refresh re-initialises the
+// module, clearing the map — which is exactly why refreshing "fixed" it, and why it looked flaky rather than
+// broken: it only bites when the new ask's ordinal matches one already answered.
+//
+// The process-scoped prefix makes collisions impossible ACROSS turns, conversations and restarts within a run,
+// while keeping the `tc-<n>` shape every reader already expects. (Nothing parses the number; the shape is only
+// ever compared for equality.)
+var toolCallIDPrefix = "tc-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "-"
+
+// toolCallSeq is the PROCESS-WIDE sequence behind every synthesized tool-call id.
+//
+// IT IS PACKAGE-LEVEL ON PURPOSE, and the first version of this fix was wrong because it was not. A per-ledger
+// counter looks sufficient once the prefix is unique — but a ledger is created per turn, so each one starts at 1
+// and two turns still mint `<prefix>-1`, `<prefix>-1`. The regression test caught exactly that, which is the
+// argument for writing it before believing the fix.
+var toolCallSeq atomic.Int64
+
+// newToolCallID mints a unique id for a synthesized call. THE CALLER MUST HOLD l.mu.
+//
+// Uniqueness is process-wide (the package counter) and, within a deployment, across restarts (the time-derived
+// prefix) — which is what the id needs to be, because it outlives the turn that made it: it is stored in the
+// transcript, searched by findPromotedAsk across the whole conversation, and remembered by the client's
+// settled-ask map for the life of the page.
+func (l *toolLedger) newToolCallID() string {
+	l.nextID++ // the ledger's own count, kept for anything that reads it
+	return toolCallIDPrefix + strconv.FormatInt(toolCallSeq.Add(1), 10)
 }
 
 type toolCallEntry struct {
@@ -159,10 +200,9 @@ func (l *toolLedger) promoteRecordedAsk(callID, output string) {
 			return
 		}
 	}
-	l.nextID++
 	// NOT `callID`: that is the parameter naming the WRAPPED call this promotion came from, and
 	// reusing it here would silently attribute the await to the wrong call.
-	promotedID := fmt.Sprintf("tc-%d", l.nextID)
+	promotedID := l.newToolCallID()
 	l.calls = append(l.calls, toolCallEntry{
 		ID:           promotedID,
 		Type:         "function",
@@ -240,9 +280,8 @@ func (l *toolLedger) recordStart(tool string) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.nextID++
 	l.calls = append(l.calls, toolCallEntry{
-		ID:             fmt.Sprintf("tc-%d", l.nextID),
+		ID:             l.newToolCallID(),
 		Type:           "function",
 		FunctionName:   tool,
 		Arguments:      "{}",
@@ -297,8 +336,7 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 		// start event missed): synthesize the call so the result is kept. "Now"
 		// is the honest issue time for it — the call is known to have happened
 		// by the time its result arrived, and the start was never seen.
-		l.nextID++
-		callID = fmt.Sprintf("tc-%d", l.nextID)
+		callID = l.newToolCallID()
 		l.calls = append(l.calls, toolCallEntry{
 			ID:             callID,
 			Type:           "function",
@@ -369,8 +407,7 @@ func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr b
 		// Resolution without an observed start (re-attached mid-tool, or a start
 		// event missed): synthesize the call so the result is kept — the same
 		// rule recordResolve applies, including the "stamp now" answer.
-		l.nextID++
-		callID = fmt.Sprintf("tc-%d", l.nextID)
+		callID = l.newToolCallID()
 		l.calls = append(l.calls, toolCallEntry{
 			ID: callID, Type: "function", FunctionName: tool,
 			Arguments: truncateLedgerString(argsJSON, 4000), resolved: true,

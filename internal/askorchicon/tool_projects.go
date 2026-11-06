@@ -119,12 +119,12 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		return nil, err
 	}
 	project, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
-		ID:         db.NewID(),
-		TenantID:   tenantID,
-		Name:       name,
-		Slug:       makeSlug(name),
-		Status:     "active",
-		Goals:      goalsJSON,
+		ID:          db.NewID(),
+		TenantID:    tenantID,
+		Name:        name,
+		Slug:        makeSlug(name),
+		Status:      "active",
+		Goals:       goalsJSON,
 		ProjectDir:  params.ProjectDir,
 		GitStrategy: gitStrategy,
 		DefaultRuntimeImage: func() *string {

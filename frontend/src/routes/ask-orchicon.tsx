@@ -707,7 +707,7 @@ function AskOrchiconPage() {
   // thing in the turn, and the thing being asked of the operator. Only while live items exist — with no live
   // stream the row IS the turn (a reload, another tab), and the card draws in its own place.
   const inFlightMsg = durableMessages.find((m) => m.id === pendingReplyId);
-  const liftedCard = hasLive && inFlightMsg ? askCardOf(inFlightMsg) : null;
+  const liftedCard = hasLive && inFlightMsg ? askCardOf(activeConvId ?? "", inFlightMsg) : null;
 
   const liveBlocks: TranscriptBlock[] = hasLive
     ? groupedStream
@@ -964,17 +964,30 @@ function AskOrchiconPage() {
       if (askInFlight[askId]) return;
       setAskInFlight((prev) => ({ ...prev, [askId]: true }));
       try {
-        const res = await askOrchiconClient.replyPermissionAsk({
-          conversationId: convId,
-          askId,
-          choice,
-          answer,
-        });
+        // THE REPLY IS BOUNDED, BECAUSE A STUCK ONE DISABLES THE CARD FOR EVER.
+        //
+        // `askInFlight[askId]` gates the handler (above) and drives each card's `busy` prop, which disables every
+        // option button. It is cleared only in the `finally` below — so if the RPC never settles, the entry is
+        // never removed, the guard swallows every later click, and the card sits there looking live with buttons
+        // that do nothing. A page refresh resets this component's state, which is why refreshing "fixed" it:
+        // REPORTED — "clicking an answer sometimes doesn't work unless I first refresh the page."
+        //
+        // The transport has no timeout of its own, and this RPC starts a conversation turn server-side, so a slow
+        // or wedged turn can hold it open indefinitely. A deadline guarantees the finally runs, the card frees
+        // itself, and the operator can simply try again.
+        const res = await withReplyDeadline(
+          askOrchiconClient.replyPermissionAsk({
+            conversationId: convId,
+            askId,
+            choice,
+            answer,
+          }),
+        );
         if (res.applied) {
           // REMEMBER IT LOCALLY TOO — the card must never depend solely on the transcript catching up.
           // String(choice) because choice is the generated PermissionChoice ENUM, not a string: a
           // question carries `answer` and an UNSPECIFIED choice, a permission carries the decision.
-          markAskSettled(askId, answer || String(choice));
+          markAskSettled(convId, askId, answer || String(choice));
           setStream(convId, (prev) => ({
             ...prev,
             asks: resolveAsk(prev.asks, askId, outcomeFromChoice(choice)),
@@ -2419,6 +2432,7 @@ function AskOrchiconPage() {
                           <UserBubble text={block.text} source="you" />
                         ) : (
                           <MessageBubble
+                            convId={activeConvId ?? ""}
                             message={block.message}
                             onRetry={handleRetry}
                             // ANSWERING A RECORDED CARD IS A REPLY, not a message. It goes through the
@@ -2949,15 +2963,53 @@ function AskOrchiconPage() {
  */
 const settledAsks = new Map<string, string>();
 
-function markAskSettled(askId: string, answer: string) {
-  settledAsks.set(askId, answer);
+/**
+ * settledKey scopes a settle to its CONVERSATION.
+ *
+ * THE ID ALONE IS NOT AN IDENTITY, and treating it as one is what made a click silently do nothing:
+ * "clicking an answer sometimes doesn't work unless I first refresh the page." The server minted tool-call ids
+ * from a per-turn ledger, so the counter restarted every turn and every turn's ask was `tc-3`. This map is
+ * module-level and never cleared, so answering an ask in one turn settled `tc-3` for the whole page lifetime —
+ * and a LATER turn's `tc-3` was drawn `answered`, which disables every option button. A refresh re-initialises
+ * the module and the card worked again, which is why it read as flakiness rather than a collision.
+ *
+ * The server now mints process-unique ids (internal/askorchicon/tool_ledger.go), which fixes the cause. This
+ * scoping is the second lock on the same door: even if an id repeated, it could only ever affect the
+ * conversation that produced it.
+ */
+/**
+ * REPLY_DEADLINE_MS bounds a permission/question reply.
+ *
+ * The reply STARTS a conversation turn, so it is not instant — but it must not be unbounded either: the card's
+ * buttons are disabled while it is in flight, and a reply that never settles leaves them disabled for the rest of
+ * the page's life (see handleAskDecision). 30s is comfortably longer than a healthy acknowledgement and far
+ * shorter than "until I refresh".
+ */
+const REPLY_DEADLINE_MS = 30_000;
+
+/** withReplyDeadline rejects if p has not settled within REPLY_DEADLINE_MS. */
+function withReplyDeadline<T>(p: Promise<T>): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error("The platform did not acknowledge the answer in time.")), REPLY_DEADLINE_MS),
+    ),
+  ]);
 }
 
-function settledAnswerOf(askId: string): string | undefined {
-  return settledAsks.get(askId);
+function settledKey(convId: string, askId: string): string {
+  return `${convId}\u0000${askId}`;
 }
 
-function askCardOf(message: ChatMessage) {
+function markAskSettled(convId: string, askId: string, answer: string) {
+  settledAsks.set(settledKey(convId, askId), answer);
+}
+
+function settledAnswerOf(convId: string, askId: string): string | undefined {
+  return settledAsks.get(settledKey(convId, askId));
+}
+
+function askCardOf(convId: string, message: ChatMessage) {
   const asks = (message.toolCalls ?? []).filter((c) => isAskUserToolCall(c.functionName));
   if (asks.length === 0) return null;
   const resultOf = (id: string) =>
@@ -2984,12 +3036,12 @@ function askCardOf(message: ChatMessage) {
   const call = pickAskCall(
     asks,
     resultOf,
-    (id) => settledAnswerOf(id) !== undefined,
+    (id) => settledAnswerOf(convId, id) !== undefined,
   );
   if (!call) return null;
 
   // LOCAL SETTLE WINS, so a card the operator has answered can never be re-drawn as pending.
-  const local = settledAnswerOf(call.id);
+  const local = settledAnswerOf(convId, call.id);
   if (local !== undefined) {
     return {
       id: call.id,
@@ -3021,6 +3073,7 @@ function askCardOf(message: ChatMessage) {
 }
 
 function MessageBubble({
+  convId,
   message,
   messageActions,
   onRetry,
@@ -3029,6 +3082,11 @@ function MessageBubble({
   cardLifted = false,
   proseLifted = false,
 }: {
+  /**
+   * convId scopes a recorded ask's settled state to this conversation. A card's "already answered" memory is
+   * keyed by ask id, and an id is only an identity WITHIN the conversation that minted it — see settledKey.
+   */
+  convId: string;
   message: ChatMessage;
   /**
    * messageActions is the per-message edit menu, passed DOWN rather than built here: this bubble renders every
@@ -3121,7 +3179,7 @@ function MessageBubble({
   // open"), and whether to draw at all. This block used to re-derive all of it inline, and the copy
   // had already drifted: it took the first ask call and treated any result as an answer, which is
   // exactly the pair of defects that made the card settle itself on arrival or never appear.
-  const askCard = askCardOf(message);
+  const askCard = askCardOf(convId, message);
 
   return (
     <>

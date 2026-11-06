@@ -89,7 +89,7 @@ describe("AskCard wiring (clarifying-question card)", () => {
     // that mattered: it took the FIRST ask-named call (claude records one twice, and the first is a
     // phantom with an empty result) and it treated ANY result as an answer (an empty one and the
     // awaiting marker are both "still open"). Pinning the copy is what let the two disagree.
-    expect(route).toContain("const askCard = askCardOf(message);");
+    expect(route).toContain("const askCard = askCardOf(convId, message);");
     expect(route).toContain("answered={askCard.answered}");
     expect(route).not.toContain("const askAnswered =");
   });
