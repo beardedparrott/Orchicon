@@ -167,7 +167,7 @@ func TestARealWorktreeAtAnOddNameIsNotPruned(t *testing.T) {
 func TestIsMalformedWorktreePath(t *testing.T) {
 	cases := map[string]bool{
 		// The reported shape, guest and host forms.
-		`/repo/.orchicon-worktrees/01ABC/C:/projects/weatherapp/.orchicon-worktrees/01ABC`:  true,
+		`/repo/.orchicon-worktrees/01ABC/C:/projects/weatherapp/.orchicon-worktrees/01ABC`: true,
 		`/repo/C:/projects/weatherapp/.orchicon-worktrees/01ABC`:                           true,
 		`C:/projects/weatherapp/C:/projects/weatherapp/.orchicon-worktrees/01ABC`:          true,
 		`/repo/.orchicon-worktrees/01ABC/C:\projects\weatherapp\.orchicon-worktrees\01ABC`: true,

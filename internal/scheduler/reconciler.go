@@ -1909,7 +1909,7 @@ func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded 
 	// learn nothing.
 	if succeeded {
 		if exec, lerr := r.loadExecutionRow(ctx, execID); lerr == nil {
-			if res, ok := r.verdictForOutcome(ctx, exec); ok {
+			if res, ok := r.verdictForOutcome(ctx, exec, output); ok {
 				prevSucceeded := succeeded
 				var notice string
 				succeeded, notice = applyVerdict(succeeded, res)

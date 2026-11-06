@@ -101,6 +101,37 @@ const memoryPlaybookBlock = "\n## Memory playbook — project memory survives pe
 	"- `orchicon_memory_note` is the in-session digest for the CURRENT run (rendered after the cache breakpoint, replayed on resume) — use it for turn-level notes; use `memory_*` for anything that must outlive this execution.\n" +
 	"- These tools are project-scoped and survive per-execution isolation: cross-step context lives here, not in re-derived reads.\n\n"
 
+// acceptanceEvidenceBlock is the AC-EVIDENCE contract: every acceptance criterion must be answered with
+// an artifact, not an adjective.
+//
+// WHAT THIS SOLVES AND WHAT IT CANNOT. The platform cannot decide whether an arbitrary project's work
+// satisfies an arbitrary criterion — semantic correctness is not mechanically decidable, and a system
+// that pretends otherwise fails confidently. What it CAN do is make the answer auditable: require each
+// criterion to be reported with the thing that demonstrates it (a command and its output, a file:line, a
+// screenshot path), and refuse to render "done" for a criterion answered with nothing.
+//
+// That is a real improvement over the status quo without overclaiming: it makes lying expensive and
+// makes the operator's read cheap. A criterion answered "satisfied" tells a reviewer nothing; a criterion
+// answered with `go test ./internal/verify/ -run TestX → PASS (0.01s)` can be re-run in seconds.
+//
+// IT IS A REPORTING contract, not a gate. The evidence gate checks the REPOSITORY; this checks that the
+// worker's account of each criterion carries its own support. A step whose criteria are answered with
+// adjectives is unverifiable in the same way a step with no gate is unverifiable — and both are surfaced
+// to the operator rather than silently accepted.
+const acceptanceEvidenceBlock = "\n## Acceptance criteria — answer each one with evidence\n" +
+	"If your task lists acceptance criteria, they are the definition of done. Answer them with the `AC REPORT:` contract:\n\n" +
+	"```\nAC REPORT:\n" +
+	"- AC1: PASS — <what you ran or read> → <what it showed>\n" +
+	"- AC2: PASS — src/foo.tsx:120 renders the value; screenshot .orchicon/<run>/ac2.png\n" +
+	"- AC3: FAIL — expected X, observed Y (<the command and its output>)\n" +
+	"```\n\n" +
+	"Rules:\n" +
+	"- **One line per criterion, in order, prefixed `AC1:`, `AC2:` …** \n" +
+	"- **Every line must carry its evidence**: the command and what it printed, a `file:line`, or a path to an artifact you produced. \"Satisfied\" / \"done\" / \"verified\" with no support is not an answer, and a criterion answered that way counts as NOT VERIFIED for the operator reading your report.\n" +
+	"- **PASS / FAIL / NOT VERIFIED** are the only verdicts. `NOT VERIFIED` is honest and expected when you could not establish something — say why. Do NOT mark a criterion PASS because you ran out of time.\n" +
+	"- **A report that contradicts your `ORCHICON WORKER SUMMARY:` word is the worst outcome available.** If any criterion is FAIL or NOT VERIFIED, your summary word is `failure`.\n\n" +
+	"If your task lists no acceptance criteria, say so in one line and skip this block — do not invent criteria.\n\n"
+
 // deliverableBlock tells the worker what the platform will CHECK, and what to do when the project has
 // no declared gate.
 //
@@ -216,6 +247,7 @@ func StablePromptPrefix(runtimeImage, mode string) string {
 	sb.WriteString(efficiencyBlock)
 	sb.WriteString(stepOutputBlock)
 	sb.WriteString(deliverableBlock)
+	sb.WriteString(acceptanceEvidenceBlock)
 	sb.WriteString(todoListBlock)
 	sb.WriteString(memoryPlaybookBlock)
 	sb.WriteString(RuntimeEnvironmentBlock(runtimeImage, mode))

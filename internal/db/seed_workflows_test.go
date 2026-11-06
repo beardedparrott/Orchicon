@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -250,5 +251,60 @@ func TestUnpinClearsAStoredStrategyDB(t *testing.T) {
 	if stored != nil {
 		t.Fatalf("after re-seeding, Quick Work still stores git_strategy=%q — an existing install "+
 			"stays pinned to PR mode and the operator is stuck with exactly what was reported", *stored)
+	}
+}
+
+// TestQuickWorkVerifiesItsOwnPR pins that the all-in-one Quick Work step is PR-verified.
+//
+// Quick Work is a SINGLE worker step (step-quick → step-end, no DevOps step), and it is the
+// platform's most-used path — every Quick Work dispatch runs it. Without `requires_pr`, the
+// deterministic PR check in the workflow reconciler never runs for it, so the platform never confirms
+// a PR exists for the run's branch and the worker's own claim is the only evidence there is. That is
+// exactly the gap the evidence gate closes for the code, applied to the ship half.
+//
+// Why it matters even though the worker still self-reports: `requires_pr` makes the platform go and
+// LOOK (deterministicPRForBranch queries the repo for a PR whose head is the run branch), so a worker
+// that says "opened and merged" without doing it now fails the step instead of completing the run.
+func TestQuickWorkVerifiesItsOwnPR(t *testing.T) {
+	var found bool
+	for _, w := range db.CannedWorkflows() {
+		if w.Name != "Quick Work" {
+			continue
+		}
+		found = true
+		// The steps JSON is a string of JSON, so the config carries the escaped form.
+		if !strings.Contains(w.StepsJSON, `requires_pr\":true`) {
+			t.Fatalf("Quick Work's step-quick must carry requires_pr:true so the platform verifies the PR exists.\nsteps: %s", w.StepsJSON)
+		}
+		var steps []map[string]any
+		if err := json.Unmarshal([]byte(w.StepsJSON), &steps); err != nil {
+			t.Fatalf("steps JSON invalid: %v", err)
+		}
+		var checked bool
+		for _, st := range steps {
+			if st["id"] != "step-quick" {
+				continue
+			}
+			checked = true
+			cfgRaw, _ := st["config"].(string)
+			var cfg map[string]any
+			if err := json.Unmarshal([]byte(cfgRaw), &cfg); err != nil {
+				t.Fatalf("step-quick config is not valid JSON: %v", err)
+			}
+			if cfg["requires_pr"] != true {
+				t.Fatalf("requires_pr must parse as true from the step config, got %v", cfg["requires_pr"])
+			}
+			// The recovery block must survive alongside it — losing it silently downgrades recovery to
+			// the blind `retry` strategy (see writeQuickWorkDispatchRules rule 11).
+			if _, ok := cfg["recovery"]; !ok {
+				t.Error("the recovery block must remain in step-quick's config")
+			}
+		}
+		if !checked {
+			t.Fatal("step-quick not found in Quick Work's steps")
+		}
+	}
+	if !found {
+		t.Fatal("Quick Work workflow not found in canned seeds")
 	}
 }

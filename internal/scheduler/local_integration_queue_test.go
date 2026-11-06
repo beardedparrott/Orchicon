@@ -438,5 +438,3 @@ func TestAConflictingObligationIsRecordedAndKeepsBlocking(t *testing.T) {
 		t.Error("the run branch became an ancestor of develop even though the merge conflicted")
 	}
 }
-
-

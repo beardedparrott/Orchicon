@@ -54,7 +54,7 @@ const verifyResultKey = "_verification"
 // A worker that reported FAILURE is not verified: it already failed, its work is not being accepted,
 // and running the project's whole gate to establish that would burn minutes to learn nothing. So this
 // only runs on the success path — which is exactly the path that has been lying.
-func (r *TaskReconciler) verdictForOutcome(ctx context.Context, exec db.ExecutionRow) (verify.Result, bool) {
+func (r *TaskReconciler) verdictForOutcome(ctx context.Context, exec db.ExecutionRow, output string) (verify.Result, bool) {
 	// A follow-up execution continues an existing conversation; its "work" is a delta on a step that
 	// was already verified, and re-running the gate would double-count. Treat as not-applicable.
 	if exec.IsFollowUp {
@@ -95,7 +95,65 @@ func (r *TaskReconciler) verdictForOutcome(ctx context.Context, exec db.Executio
 	}
 
 	ev := r.gatherEvidence(ctx, in)
-	return verify.Collect(ctx, ev), true
+	res := verify.Collect(ctx, ev)
+
+	// AC REPORT — the semantic half, explicitly NOT a pass/fail gate.
+	//
+	// The repository checks above answer "did work happen and does the gate hold". They cannot answer
+	// "did the worker address each acceptance criterion", because that is semantic and not mechanically
+	// decidable. What IS decidable is whether the worker ANSWERED them and whether the answer carries
+	// anything checkable — so an unanswered or unevidenced criterion is surfaced to the operator rather
+	// than being rounded into a green step.
+	//
+	// It ABSTAINS rather than failing when criteria were reported without evidence, deliberately: the
+	// evidence heuristic can be wrong, and failing an honest step on a heuristic is worse than showing
+	// the operator. An explicit FAIL verdict in the worker's own report does contradict its own
+	// `success`, though, and that is a contradiction.
+	res = appendACReportCheck(res, output)
+
+	return res, true
+}
+
+// appendACReportCheck folds the worker's own AC REPORT into the verdict.
+//
+// PRECEDENCE, and why:
+//   - no report block at all → ABSTAIN. Many work items have no acceptance criteria, and a step is not
+//     suspect merely for skipping a section it was told to skip. The abstention lands the step in
+//     "unverified", which is accurate.
+//   - the worker reported a FAIL or NOT VERIFIED on any criterion while claiming `success` overall →
+//     FAIL. That is the worker contradicting itself, which is a positive fact, not an absence. (NOT
+//     VERIFIED counts: a worker that says "I could not establish criterion 3" and then reports success
+//     has told the operator the step is not done.)
+//   - every criterion PASS but some without evidence → ABSTAIN. Surfaced, not punished: the heuristic
+//     is deliberately generous but not omniscient.
+//   - every criterion PASS with evidence → PASS.
+func appendACReportCheck(res verify.Result, output string) verify.Result {
+	rep := verify.ParseACReport(output)
+	switch {
+	case !rep.Present:
+		res.Add("acceptance_criteria", verify.CheckAbstain,
+			"the worker reported no acceptance-criteria outcomes")
+		return res.Conclude()
+	}
+	var failed, unevidenced int
+	for _, a := range rep.Answers {
+		if a.Verdict == verify.ACFail || a.Verdict == verify.ACNotVerified {
+			failed++
+			continue
+		}
+		if a.Verdict == verify.ACMalformed || (a.Verdict == verify.ACPass && !a.Evidenced) {
+			unevidenced++
+		}
+	}
+	switch {
+	case failed > 0:
+		res.Add("acceptance_criteria", verify.CheckFail, rep.Summary())
+	case unevidenced > 0:
+		res.Add("acceptance_criteria", verify.CheckAbstain, rep.Summary())
+	default:
+		res.Add("acceptance_criteria", verify.CheckPass, rep.Summary())
+	}
+	return res.Conclude()
 }
 
 // stepDeclaresDeliverable reports whether this execution's step is expected to change files.

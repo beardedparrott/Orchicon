@@ -315,3 +315,54 @@ func TestFormatVerificationSummary(t *testing.T) {
 		}
 	})
 }
+
+// TestAppendACReportCheck pins how the worker's own acceptance-criteria report folds into the verdict.
+//
+// This is the one semantic-adjacent check in the system, so its posture is deliberate: it surfaces what
+// the worker admitted rather than judging whether the work is good.
+func TestAppendACReportCheck(t *testing.T) {
+	base := func() verify.Result {
+		r := verify.Result{}
+		r.Add("work_present", verify.CheckPass, "1 commit")
+		return r
+	}
+	cases := []struct {
+		name, output string
+		want         verify.Verdict
+		why          string
+	}{
+		{
+			name: "no report block abstains", output: "just prose",
+			want: verify.VerdictUnverified,
+			why:  "many items carry no acceptance criteria, so skipping the section is not evidence of a problem",
+		},
+		{
+			name: "all criteria pass with evidence", output: "AC1: PASS — go test ./a → ok\nAC2: PASS — internal/x.go:12",
+			want: verify.VerdictVerified,
+			why:  "a fully evidenced report is the contract being met",
+		},
+		{
+			name: "pass without evidence abstains", output: "AC1: PASS — satisfied",
+			want: verify.VerdictUnverified,
+			why:  "an adjective is not an answer, but the evidence heuristic must not fail an honest step",
+		},
+		{
+			name: "an explicit FAIL contradicts a success claim", output: "AC1: FAIL — expected x observed y",
+			want: verify.VerdictUnsubstantiated,
+			why:  "the worker's own report says a criterion did not pass while its summary says success",
+		},
+		{
+			name: "NOT VERIFIED contradicts a success claim", output: "AC1: NOT VERIFIED — no app available",
+			want: verify.VerdictUnsubstantiated,
+			why:  "a worker that could not establish a criterion has told the operator the step is not done",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := appendACReportCheck(base(), tc.output)
+			if got.Verdict != tc.want {
+				t.Fatalf("verdict = %q, want %q — %s (reason: %s)", got.Verdict, tc.want, tc.why, got.Reason)
+			}
+		})
+	}
+}
