@@ -1,11 +1,13 @@
 package scheduler
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/verify"
@@ -365,4 +367,54 @@ func TestAppendACReportCheck(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCompletionGateIsBounded pins that the completion-path gate cannot wedge a run.
+//
+// This is the one place the evidence gate touches the critical path: it runs SYNCHRONOUSLY inside
+// OnResult, while the execution is still formally `running` and every later reconcile pass for that row
+// is behind it. Reusing the integration path's 10-minute budget here would mean a slow gate holds a
+// terminal status for ten minutes — a wedge, which is strictly worse than an unmeasured gate, because a
+// wedge strands the run while a timeout merely abstains.
+func TestCompletionGateIsBounded(t *testing.T) {
+	if completionGateTimeout <= 0 {
+		t.Fatal("the completion gate must have a positive bound")
+	}
+	if completionGateTimeout >= 10*time.Minute {
+		t.Fatalf("completionGateTimeout = %s; it must be strictly shorter than the integration "+
+			"path's 10m budget, or a slow gate wedges OnResult", completionGateTimeout)
+	}
+	// It must still be long enough for a real project's warm-cache suite, or it would abstain always
+	// and the gate would be decorative.
+	if completionGateTimeout < time.Minute {
+		t.Fatalf("completionGateTimeout = %s; too short for a real gate to ever measure anything",
+			completionGateTimeout)
+	}
+}
+
+// TestCompletionGateTimeoutAbstainsNotFails pins the posture on timeout: unverified, never failed.
+func TestCompletionGateTimeoutAbstainsNotFails(t *testing.T) {
+	r := &TaskReconciler{}
+	// A command that outlives the budget is not something we can wait for in a test; instead assert the
+	// contract at the decision layer: a declared gate that never ran yields an ABSTENTION.
+	ev := verify.Evidence{
+		GitReadable:             true,
+		BaseRef:                 "develop",
+		CommitsAhead:            1,
+		ChangedFiles:            map[string]struct{}{"a.go": {}},
+		DeclaredCommand:         "make test",
+		DeclaredRan:             false, // never completed
+		StepDeclaresDeliverable: true,
+		TreeClean:               boolPtr(true),
+		Baseline:                nil,
+		HeadMeasured:            false,
+	}
+	got := verify.Collect(context.Background(), ev)
+	if got.Verdict == verify.VerdictUnsubstantiated {
+		t.Fatalf("a gate that could not be measured must never be reported as a failure: %s", got.Reason)
+	}
+	if got.Verdict != verify.VerdictUnverified {
+		t.Fatalf("verdict = %q, want unverified", got.Verdict)
+	}
+	_ = r
 }

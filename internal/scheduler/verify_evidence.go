@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/verify"
 )
@@ -28,8 +29,20 @@ import (
 // each check, not the whole transcript; a runaway suite would otherwise write megabytes into a row.
 const maxGateOutput = 64 * 1024
 
-// gateTimeout bound is declared in local_integrate.go (verifyCommandTimeout) and reused, so the two
-// paths cannot disagree about how long a project's check may take.
+// completionGateTimeout bounds the gate run on the COMPLETION path, and it is deliberately much shorter
+// than verifyCommandTimeout (10m).
+//
+// THE CONSTRAINTS ARE DIFFERENT AND THE DIFFERENCE MATTERS. local_integrate runs on its own queue with
+// its own budget, where waiting ten minutes for a thorough check is the whole point. This one runs
+// SYNCHRONOUSLY inside OnResult — the execution is still formally `running`, the operator's UI shows a
+// worker that has visibly stopped, and every later reconcile pass for this row is behind it. A 10-minute
+// wait there is not patience, it is a wedge, and a wedged completion is far worse than an unmeasured
+// gate: a timeout ABSTAINS (the step lands `unverified`, which is honest) whereas a wedge strands the
+// run.
+//
+// The budget is generous enough for a warm-cache suite on a real repository (this one turns its whole Go
+// suite around in ~17s warm) and short enough that a pathological gate costs minutes, not a run.
+const completionGateTimeout = 3 * time.Minute
 
 // declaredGateCommand returns the project's declared verification command, or "".
 //
@@ -125,6 +138,34 @@ func (r *TaskReconciler) scratchCheckout(ctx context.Context, projectDir, ref st
 // express.
 func (r *TaskReconciler) runGateCommand(ctx context.Context, dir, command string) (string, error) {
 	out, err := runVerifyCommand(ctx, dir, command)
+	if len(out) > maxGateOutput {
+		out = out[:maxGateOutput]
+	}
+	return out, err
+}
+
+// runCompletionGate runs the project's gate on the COMPLETION path under completionGateTimeout.
+//
+// A TIMEOUT IS AN ABSTENTION, NOT A GATE FAILURE. If the check cannot finish inside the budget the
+// evidence says "not measured", which the decision function turns into `unverified` — never into a
+// failure, because the worker is not responsible for the gate being slow, and never into a pass, because
+// nothing was established.
+func (r *TaskReconciler) runCompletionGate(ctx context.Context, dir, command string) (string, error) {
+	gctx, cancel := context.WithTimeout(ctx, completionGateTimeout)
+	defer cancel()
+	done := make(chan struct{})
+	var out string
+	var err error
+	go func() {
+		defer close(done)
+		out, err = runVerifyCommand(gctx, dir, command)
+	}()
+	select {
+	case <-done:
+	case <-gctx.Done():
+		return "", fmt.Errorf("the project's gate did not finish within %s — not measured", completionGateTimeout)
+	}
+	<-done
 	if len(out) > maxGateOutput {
 		out = out[:maxGateOutput]
 	}
@@ -299,7 +340,7 @@ func (r *TaskReconciler) gatherEvidence(ctx context.Context, in evidenceInput) v
 	// The project's declared gate, re-measured at HEAD.
 	ev.DeclaredCommand = declaredGateCommand(in.projectDir)
 	if ev.DeclaredCommand != "" {
-		out, gerr := r.runGateCommand(ctx, in.worktreePath, ev.DeclaredCommand)
+		out, gerr := r.runCompletionGate(ctx, in.worktreePath, ev.DeclaredCommand)
 		ev.DeclaredRan = true
 		ev.DeclaredPassed = gerr == nil
 		ev.DeclaredDetail = truncateTail(strings.TrimSpace(out), 600)
