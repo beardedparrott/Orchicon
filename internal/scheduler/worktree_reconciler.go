@@ -45,8 +45,8 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/domain"
 	projectpkg "github.com/beardedparrott/orchicon/internal/project"
+	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/slug"
 	"github.com/beardedparrott/orchicon/internal/workflow"

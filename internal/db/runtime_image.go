@@ -25,19 +25,19 @@ type RuntimeImageRow struct {
 	Tag                string
 	// IncludeAdapters installs the runtime CLI adapters (opencode, Claude Code) into a GENERATED image.
 	// Default true: an image nobody can run work with is not what "create a runtime image" means.
-	IncludeAdapters bool
-	Status          string
-	BuildLog        string
-	Error           string
-	FailureReason   string
-	FailedStep      string
-	LogTail         string
-	FailureCategory string
-	Version         int
-	BuiltVersion    int    // spec version the current ready image was built from (0 = never built)
-	Source          string // "stock" (canned, seeded) or "custom" (tenant-created)
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	IncludeAdapters    bool
+	Status             string
+	BuildLog           string
+	Error              string
+	FailureReason      string
+	FailedStep         string
+	LogTail            string
+	FailureCategory    string
+	Version            int
+	BuiltVersion       int    // spec version the current ready image was built from (0 = never built)
+	Source             string // "stock" (canned, seeded) or "custom" (tenant-created)
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // RuntimeImageFilter is the list filter for ListRuntimeImages.

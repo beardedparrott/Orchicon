@@ -40,8 +40,8 @@ func asServerProcess(t *testing.T) {
 }
 
 const (
-	prodDSN  = "postgres://orchicon:secretpw@prod-db.internal:5432/orchicon?sslmode=disable"
-	devDSN   = "postgres://orchicon:orchicon@localhost:5433/orchicon?sslmode=disable"
+	prodDSN = "postgres://orchicon:secretpw@prod-db.internal:5432/orchicon?sslmode=disable"
+	devDSN  = "postgres://orchicon:orchicon@localhost:5433/orchicon?sslmode=disable"
 	testdDSN = "postgres://orchicon:orchicon@localhost:5432/orchicon_test?sslmode=disable"
 )
 

@@ -65,9 +65,9 @@ func TestOurOwnArtifactDirsAreNotTheOperatorsUncommittedWork(t *testing.T) {
 func TestBothStaleShapesAreRepairable(t *testing.T) {
 	cases := map[string]string{
 		"index behind HEAD (a ref moved with update-ref)": "D  f1.txt\nD  f2.txt\nD  src/app.js\n",
-		"working tree behind the index":                   " D f1.txt\n D f2.txt\n",
-		"both at once":                                    "D  a.js\n D b.js\n",
-		"staged deletion plus our own artifact dir":       "D  a.js\n?? .orchicon-worktrees/\n",
+		"working tree behind the index":                    " D f1.txt\n D f2.txt\n",
+		"both at once":                                     "D  a.js\n D b.js\n",
+		"staged deletion plus our own artifact dir":        "D  a.js\n?? .orchicon-worktrees/\n",
 	}
 	for name, status := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -81,8 +81,8 @@ func TestBothStaleShapesAreRepairable(t *testing.T) {
 
 	// REAL WORK IS STILL REAL WORK. These must keep refusing, or the repair would destroy edits.
 	for name, status := range map[string]string{
-		"a modification":        " M src/app.js\n",
-		"a staged addition":     "A  new.js\n",
+		"a modification":       " M src/app.js\n",
+		"a staged addition":    "A  new.js\n",
 		"a staged modification": "M  src/app.js\n",
 	} {
 		t.Run("refuse: "+name, func(t *testing.T) {

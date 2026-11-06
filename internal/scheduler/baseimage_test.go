@@ -109,7 +109,7 @@ func TestResolvedBaseImageIsInTheDaemonAllowlist(t *testing.T) {
 
 	for _, daemonBase := range []string{
 		"orchicon-runtime:local",                             // a dev host's build
-		"ghcr.io/beardedparrott/orchicon-runtime:latest",     // a release
+		"ghcr.io/beardedparrott/orchicon-runtime:latest",      // a release
 		"ghcr.io/beardedparrott/orchicon-runtime:dev-latest", // a published variant
 	} {
 		t.Setenv(EnvRuntimeBaseImage, daemonBase)
