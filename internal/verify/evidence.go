@@ -1,0 +1,543 @@
+package verify
+
+// evidence.go — the COLLECTOR half. verify.go is the pure decision function; this file is where the
+// facts come from. Split deliberately: the rules in verify.go can be unit-tested against recorded
+// cases without a repository, and this file can be tested against a real one without re-deriving the
+// rules.
+//
+// EVERY CHECK HERE IS ONE OF THREE KINDS:
+//
+//  1. UNIVERSAL — works on any git repository, any language, no project cooperation. HEAD moved;
+//     the files the worker claimed are a subset of the files git recorded; the tree is clean. These
+//     cannot be defeated by a worker that lies, because they read the repository rather than the
+//     report.
+//  2. BASELINE-DIFFERENTIAL — the project's own declared gate, run at the base commit and again at
+//     the step's HEAD, compared as a SET of results. This is the check that removes the entire
+//     "is this failure pre-existing?" argument: the platform measures both ends, so a worker never
+//     has to guess and never has to be trusted about it.
+//  3. DECLARED — the project's `.orchicon/verify` command, which is opt-in because running a command
+//     the platform invented would be worse than running none.
+//
+// A NOTE ON WHAT IS NOT HERE. Claim-vs-telemetry verification (did the `go test` the worker says it
+// ran actually run?) would be the strongest check of the lot, and the opencode adapter does NOT
+// persist tool_use session parts (only text / reasoning / step boundaries — see
+// internal/opencode/session_run.go's recordPart call sites), so the tool-call stream is not
+// available for opencode-backed executions, which is what this platform runs. Rather than build a
+// check that silently abstains on the only adapter in use, the claim is cross-checked against GIT,
+// which every adapter writes to. When tool_use persistence lands for opencode, this is the natural
+// place to add it — the Result shape already accommodates it.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// Runner executes a command in a directory and returns combined output. Injected so the collector
+// can be tested without spawning processes, and so the reconciler can pass the same procwin-based
+// runner it uses elsewhere (a bare exec here would pop a console window on Windows).
+type Runner func(ctx context.Context, dir, command string) (output string, err error)
+
+// Evidence is everything the collector could learn about one completed step. A field that could not
+// be read stays at its zero value and is reported as an abstention — never as a pass.
+type Evidence struct {
+	// GitReadable is false when the work tree could not be read at all (no repo, git missing, the
+	// directory vanished). Every git-based check abstains when it is false.
+	GitReadable bool
+	// GitError carries the read failure, so the abstention says WHY.
+	GitError string
+
+	// BaseRef is the commit the step's work was cut from (the run branch's base, or the parent
+	// branch). Empty when unknown.
+	BaseRef string
+	// HeadRef is what the work tree is on now.
+	HeadRef string
+
+	// CommitsAhead is how many commits HEAD is ahead of BaseRef. -1 means "not measured".
+	CommitsAhead int
+
+	// ChangedFiles is the set of paths git reports as changed between BaseRef and HEAD. nil means
+	// "not measured" (distinct from empty, which means "measured and nothing changed").
+	ChangedFiles map[string]struct{}
+
+	// ClaimedFiles is the set of paths the worker said it touched, extracted from its own report.
+	ClaimedFiles map[string]struct{}
+
+	// DeclaredCommand is the project's `.orchicon/verify` command, "" when it declares none.
+	DeclaredCommand string
+	// DeclaredResult is the outcome of running DeclaredCommand at HEAD.
+	DeclaredRan    bool
+	DeclaredPassed bool
+	DeclaredDetail string
+
+	// Baseline records, per check name, whether that check passed at the BASE commit. nil means no
+	// baseline was captured, which makes the differential check abstain rather than guess.
+	Baseline *Baseline
+	// HeadResults is the same set of results measured at the step's HEAD.
+	HeadResults map[string]bool
+	// HeadMeasured is false when HeadResults could not be produced.
+	HeadMeasured bool
+	// HeadDetail carries the failure reason when HeadResults could not be produced.
+	HeadDetail string
+
+	// TreeClean reports whether the work tree has no uncommitted changes. nil means "not read".
+	TreeClean *bool
+	// DirtySummary names what is dirty, for the failure detail.
+	DirtySummary string
+
+	// StepDeclaresDeliverable reports whether this step is expected to produce changes at all. A
+	// plan-only or review-only step legitimately produces none, and failing it for "no commits"
+	// would punish correct behaviour — the check is skipped, not abstained.
+	StepDeclaresDeliverable bool
+	// SkipReason explains WHY the deliverable checks are skipped, for the record.
+	SkipReason string
+}
+
+// Baseline is the recorded outcome of the project's gate at a specific commit.
+//
+// It is a SET of named results rather than a single pass/fail because the entire point is the
+// DIFFERENCE between two runs. A single boolean at each end cannot distinguish "this was already
+// broken" from "this is now broken", which is exactly the judgement every worker has been making
+// unaided — and, per the 1,643 lines of FACTS LEARNED on this platform, getting argued about on
+// almost every run.
+type Baseline struct {
+	// Commit is the ref the baseline was measured at.
+	Commit string
+	// Results maps a stable check key to whether it passed. For Go projects the key is
+	// "ok <package>" / "FAIL <package>"; for the declared command it is "declared".
+	Results map[string]bool
+	// Detail carries anything the measurement could not express as pass/fail (a build failure that
+	// prevented the run). Non-empty means the baseline is INCOMPLETE and the differential check must
+	// abstain rather than treat missing entries as "was passing".
+	Detail string
+}
+
+// Incomplete reports whether the baseline is unusable for a differential comparison.
+func (b *Baseline) Incomplete() bool { return b == nil || b.Detail != "" || len(b.Results) == 0 }
+
+// Collect assembles the evidence and decides.
+//
+// The order of the checks is the order they are appended, which is also the order they render in the
+// record. It runs cheapest-and-most-universal first so a contradiction is found without shelling out
+// to the project's whole gate.
+func Collect(ctx context.Context, ev Evidence) Result {
+	var r Result
+
+	// --- Layer 2: universal git invariants ------------------------------------------------------
+	//
+	// These need no project cooperation and cannot be talked around: they read the repository, not
+	// the report. They are first because they are the cheapest and because a contradiction here makes
+	// the expensive checks pointless.
+	collectGitInvariants(&r, ev)
+
+	// --- Layer 1: the project's declared command, at HEAD ---------------------------------------
+	//
+	// Run before the differential so its result is in the record even when no baseline exists.
+	collectDeclaredCommand(ctx, &r, ev)
+
+	// --- Layer 1 (differential): the project's gate, base vs HEAD -------------------------------
+	collectDifferential(&r, ev)
+
+	return r.Conclude()
+}
+
+// collectGitInvariants appends the checks that work on any repository.
+func collectGitInvariants(r *Result, ev Evidence) {
+	if !ev.GitReadable {
+		detail := strings.TrimSpace(ev.GitError)
+		if detail == "" {
+			detail = "the work tree could not be read"
+		}
+		// NOT a pass and NOT a fail. The work may be perfect; nothing demonstrated it. Three
+		// abstentions so the record names each thing that went unmeasured.
+		r.Add("work_present", CheckAbstain, detail)
+		r.Add("claimed_files_recorded", CheckAbstain, detail)
+		r.Add("tree_clean", CheckAbstain, detail)
+		return
+	}
+
+	// 1. WORK PRESENT — did HEAD actually move off the base?
+	//
+	// THIS IS THE CHECK THAT CATCHES THE REPORTED CASE. A worker that reads the tree, decides the
+	// fix is "already merged", and reports success without changing anything is exactly what
+	// produced a green acceptance review for work item 01M5X62Z1X8N08KD7KAY0G6FSV. Under the old
+	// rule its summary word was the whole verdict; here the repository contradicts it.
+	switch {
+	case !ev.StepDeclaresDeliverable:
+		reason := strings.TrimSpace(ev.SkipReason)
+		if reason == "" {
+			reason = "this step does not declare a code deliverable"
+		}
+		r.Add("work_present", CheckSkip, reason)
+		r.Add("claimed_files_recorded", CheckSkip, reason)
+	case ev.CommitsAhead < 0:
+		r.Add("work_present", CheckAbstain, "commit count could not be measured")
+	case ev.CommitsAhead == 0:
+		r.Add("work_present", CheckFail,
+			fmt.Sprintf("HEAD did not move off the base (%s) — no commits were added by this step", shortRef(ev.BaseRef)))
+	case ev.BaseRef == "":
+		// HEAD moved but there is no base to compare against: unmeasurable, not wrong.
+		r.Add("work_present", CheckAbstain, "the base commit is unknown, so progress could not be measured")
+	default:
+		r.Add("work_present", CheckPass, fmt.Sprintf("%d commit(s) on top of %s", ev.CommitsAhead, shortRef(ev.BaseRef)))
+	}
+
+	// 2. CLAIMED FILES ARE RECORDED — a cross-check between two independent signals.
+	//
+	// The worker's report says which files it touched; git says which files changed. For a claim to
+	// be substantiated they must be consistent. This catches the "I fixed X" with no file touched,
+	// and — more usefully — the worker that edited one file and reported five.
+	//
+	// ONLY A CONTRADICTION FAILS. A file changed but not claimed is normal (regenerated code, a
+	// formatter, a test the worker did not think worth mentioning) and must not fail an honest step.
+	switch {
+	case !ev.StepDeclaresDeliverable:
+		// already skipped above
+	case ev.ChangedFiles == nil:
+		r.Add("claimed_files_recorded", CheckAbstain, "changed files could not be measured")
+	case len(ev.ClaimedFiles) == 0:
+		// Nothing claimed: no contradiction is possible. Informational, never a failure — a worker
+		// that omits file attribution has made an unverifiable claim, not a false one.
+		r.Add("claimed_files_recorded", CheckSkip, "the worker claimed no specific files")
+	default:
+		missing := missingPaths(ev.ClaimedFiles, ev.ChangedFiles)
+		if len(missing) > 0 {
+			r.Add("claimed_files_recorded", CheckFail,
+				fmt.Sprintf("%d claimed file(s) show no change: %s", len(missing), joinCapped(missing, 3)))
+		} else {
+			r.Add("claimed_files_recorded", CheckPass,
+				fmt.Sprintf("all %d claimed file(s) appear in the diff", len(ev.ClaimedFiles)))
+		}
+	}
+
+	// 3. TREE CLEAN — is the work actually persisted, or sitting as uncommitted edits?
+	//
+	// Uncommitted work is invisible to every later step (each step runs in a pristine sibling
+	// worktree) and to the operator, so a step that reports success with a dirty tree has not handed
+	// anything over. This is the check that turns the prompt's "commit everything" INSTRUCTION into
+	// something the platform actually knows.
+	switch {
+	case ev.StepDeclaresDeliverable:
+		if ev.TreeClean == nil {
+			r.Add("tree_clean", CheckAbstain, "working-tree state could not be read")
+		} else if *ev.TreeClean {
+			r.Add("tree_clean", CheckPass, "no uncommitted changes")
+		} else {
+			r.Add("tree_clean", CheckFail, "uncommitted changes remain: "+ev.DirtySummary)
+		}
+	default:
+		r.Add("tree_clean", CheckSkip, "this step does not declare a code deliverable")
+	}
+}
+
+// collectDeclaredCommand appends the result of the project's own `.orchicon/verify` command.
+func collectDeclaredCommand(_ context.Context, r *Result, ev Evidence) {
+	switch {
+	case strings.TrimSpace(ev.DeclaredCommand) == "":
+		// The project declares no gate. This is a legitimate configuration, and it is also the
+		// single biggest reason a step cannot be verified — so it ABSTAINS rather than silently
+		// passing. That is the whole design: an absent check must cost the step its "verified"
+		// status, or every project without a gate would look as good as one with a comprehensive
+		// suite. (This platform's OWN project is in exactly this state: `.orchicon/verify` does not
+		// exist in the Orchicon repository, and its runs are therefore unverifiable today.)
+		r.Add("project_gate", CheckAbstain,
+			"the project declares no gate (no .orchicon/verify), so nothing can be confirmed passing")
+	case !ev.DeclaredRan:
+		r.Add("project_gate", CheckAbstain, "the declared gate could not be executed")
+	case ev.DeclaredPassed:
+		detail := "the project's declared gate passed"
+		if d := strings.TrimSpace(ev.DeclaredDetail); d != "" {
+			detail += ": " + firstLine(d)
+		}
+		r.Add("project_gate", CheckPass, detail)
+	default:
+		detail := "the project's declared gate FAILED"
+		if d := strings.TrimSpace(ev.DeclaredDetail); d != "" {
+			detail += ": " + firstLine(d)
+		}
+		r.Add("project_gate", CheckFail, detail)
+	}
+}
+
+// collectDifferential appends the base-vs-HEAD comparison — the check that settles "pre-existing".
+func collectDifferential(r *Result, ev Evidence) {
+	if ev.Baseline.Incomplete() {
+		detail := "no baseline was captured for this step, so new failures cannot be distinguished from existing ones"
+		if ev.Baseline != nil && strings.TrimSpace(ev.Baseline.Detail) != "" {
+			detail = "the baseline is incomplete: " + firstLine(ev.Baseline.Detail)
+		}
+		r.Add("no_new_failures", CheckAbstain, detail)
+		return
+	}
+	if !ev.HeadMeasured {
+		detail := strings.TrimSpace(ev.HeadDetail)
+		if detail == "" {
+			detail = "the gate could not be re-run at this step's HEAD"
+		}
+		r.Add("no_new_failures", CheckAbstain, "HEAD could not be measured: "+firstLine(detail))
+		return
+	}
+	regressed := NewFailures(ev.Baseline.Results, ev.HeadResults)
+	if len(regressed) > 0 {
+		r.Add("no_new_failures", CheckFail,
+			fmt.Sprintf("%d check(s) newly failing: %s", len(regressed), joinCapped(regressed, 3)))
+		return
+	}
+	fixed := NewPasses(ev.Baseline.Results, ev.HeadResults)
+	detail := fmt.Sprintf("no new failures against the baseline at %s", shortRef(ev.Baseline.Commit))
+	if len(fixed) > 0 {
+		detail += fmt.Sprintf(" (%d previously-failing check(s) now pass)", len(fixed))
+	}
+	r.Add("no_new_failures", CheckPass, detail)
+}
+
+// resultPrefixes are the leading tokens a raw test-runner line carries BEFORE the identity it is
+// reporting on. They are stripped by normalizeResultKey.
+//
+// THIS IS NOT COSMETIC. `go test` prints `ok pkg/b` when a package passes and `FAIL pkg/b` when it
+// fails, so the OUTCOME IS PART OF THE LINE. Keying a result map on the raw line makes a regression
+// look like one entry disappearing and an unrelated one appearing — never "this used to pass and now
+// fails" — and the differential silently reports no new failures. Caught by
+// TestNewFailureFailsEvenWhenDeclaredGatePasses, which is exactly the case that must not be missed.
+var resultPrefixes = []string{"ok", "FAIL", "--- FAIL:", "--- PASS:", "?"}
+
+// normalizeResultKey reduces a result line to the IDENTITY it reports on, so the same subject
+// compares equal across a change of outcome.
+//
+// The separator after a prefix is WHITESPACE of any kind, not a single space: `go test` separates
+// with a TAB ("FAIL\tpkg") in its package lines and with a space in others, so matching a literal
+// "FAIL " leaves the tab-terminated form intact and the outcome stays glued to the key.
+func normalizeResultKey(name string) string {
+	// Fields collapses every run of whitespace, so "FAIL\tpkg [build failed]" and
+	// "FAIL  pkg  0.1s" both become ["FAIL", "pkg", ...] regardless of which separator was used.
+	fields := strings.Fields(strings.TrimSpace(name))
+	for len(fields) > 0 && isResultPrefix(fields[0]) {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	// The first surviving field is the subject identity. Package lines may continue with a duration
+	// or a "[build failed]" note, and sub-test names contain "/" but no whitespace, so they survive.
+	return fields[0]
+}
+
+// isResultPrefix reports whether a leading field is an outcome marker rather than the subject.
+func isResultPrefix(s string) bool {
+	switch s {
+	case "ok", "FAIL", "PASS", "?", "---":
+		return true
+	}
+	// "--- FAIL:" / "--- PASS:" arrive as one field after Fields collapses "--- FAIL:" → "---",
+	// "FAIL:" only if spaced; handle the joined form too.
+	return s == "FAIL:" || s == "PASS:"
+}
+
+// normalizeResults rewrites a raw results map to identity-keyed form. When two raw entries normalise
+// to the same identity the FAILURE wins: collapsing a pass and a fail into one entry must never
+// manufacture a green.
+func normalizeResults(in map[string]bool) map[string]bool {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(in))
+	for name, passing := range in {
+		key := normalizeResultKey(name)
+		if key == "" {
+			continue
+		}
+		if prev, ok := out[key]; ok {
+			out[key] = prev && passing
+			continue
+		}
+		out[key] = passing
+	}
+	return out
+}
+
+// NewFailures returns the checks that pass in the baseline and fail at HEAD, sorted.
+//
+// SET ARITHMETIC, not counts. The predecessor of this function would have been "does the suite
+// exit 0", which is unusable on a repository with any pre-existing breakage — and every real
+// repository has some. Comparing keyed results makes the comparison independent of how many checks
+// there are, so a project that adds tests between the two measurements is still comparable.
+//
+// BOTH SIDES ARE IDENTITY-NORMALISED before comparison (see normalizeResultKey): a caller may pass
+// raw runner lines ("ok pkg/a") or pre-normalised identities ("pkg/a") and get the same answer.
+func NewFailures(baseline, head map[string]bool) []string {
+	if baseline == nil || head == nil {
+		return nil
+	}
+	base, now := normalizeResults(baseline), normalizeResults(head)
+	var out []string
+	for name, wasPassing := range base {
+		if !wasPassing {
+			continue // it was already failing; not this step's doing
+		}
+		if nowPassing, measured := now[name]; measured && !nowPassing {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// NewPasses returns the checks that failed in the baseline and pass at HEAD, sorted. Informational:
+// it is how the record says "this step also fixed something", and it is deliberately not a criterion.
+func NewPasses(baseline, head map[string]bool) []string {
+	if baseline == nil || head == nil {
+		return nil
+	}
+	base, now := normalizeResults(baseline), normalizeResults(head)
+	var out []string
+	for name, wasPassing := range base {
+		if wasPassing {
+			continue
+		}
+		if nowPassing, measured := now[name]; measured && nowPassing {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// missingPaths returns the claimed paths that are absent from changed, sorted.
+//
+// PATH COMPARISON IS NORMALISED, because the two sides are produced by different mechanisms: the
+// claim comes from the worker's prose (which writes "./internal/foo.go" or "internal/foo.go" or an
+// absolute path), and git reports repository-relative paths. A naive set difference would fail an
+// honest worker for a leading "./", which is the worst kind of bug in a verification system: it
+// punishes correctness.
+func missingPaths(claimed, changed map[string]struct{}) []string {
+	norm := make(map[string]struct{}, len(changed))
+	for p := range changed {
+		norm[normalisePath(p)] = struct{}{}
+	}
+	var out []string
+	for p := range claimed {
+		if !hasSuffixPath(normalisePath(p), norm) {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// normalisePath reduces a path to its most specific repository-relative form, so the same file
+// claimed in one spelling and recorded in another compares equal.
+//
+// THE THREE SPELLINGS ARE REAL, not hypothetical: a worker writing prose says
+// "./internal/foo.go", "/home/user/projects/repo/internal/foo.go", or "internal/foo.go", and git
+// reports exactly one of those (the last). Failing a step because a worker used an absolute path
+// would be a false accusation, which is the worst failure mode a verification system can have — it
+// teaches the operator to ignore the verdict.
+//
+// The absolute case keeps everything after the FIRST segment that looks like a project directory.
+// That is a heuristic, and it is deliberately biased toward MATCHING: a missed real discrepancy only
+// costs one un-caught fabrication, whereas a false accusation costs the whole mechanism's credibility.
+func normalisePath(p string) string {
+	p = filepath.ToSlash(strings.TrimSpace(p))
+	p = strings.TrimPrefix(p, "./")
+	if !strings.HasPrefix(p, "/") {
+		return p
+	}
+	// Absolute: drop the leading root and every segment before the first plausible source root.
+	segs := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	for i, s := range segs {
+		if sourceRootSegment(s) {
+			return strings.Join(segs[i:], "/")
+		}
+	}
+	// No recognisable root: fall back to the last two segments, which is the most a suffix match can
+	// honestly claim.
+	if len(segs) > 2 {
+		return strings.Join(segs[len(segs)-2:], "/")
+	}
+	return strings.Join(segs, "/")
+}
+
+// sourceRootSegment reports whether a path segment marks the start of a project tree.
+func sourceRootSegment(s string) bool {
+	switch s {
+	case "internal", "src", "cmd", "pkg", "test", "tests", "docs", "frontend", "backend",
+		"proto", "scripts", "db", "deploy", "site", "tools", "api", "skills":
+		return true
+	}
+	return false
+}
+
+// hasSuffixPath reports whether claimed p is recorded in changed either exactly (after
+// normalisation) or as a unique path-suffix of a changed entry. Used instead of a bare map lookup so
+// an absolute or root-truncated claim is still matched against the git path it names.
+func hasSuffixPath(p string, changed map[string]struct{}) bool {
+	if _, ok := changed[p]; ok {
+		return true
+	}
+	suffix := "/" + p
+	for c := range changed {
+		if strings.HasSuffix(c, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// shortRef abbreviates a commit or ref for a one-line record.
+func shortRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "(unknown)"
+	}
+	if i := strings.LastIndex(ref, "/"); i >= 0 && len(ref)-i <= 8 {
+		// a branch name: keep it whole, it is more informative than a hash
+		return ref
+	}
+	if len(ref) > 12 {
+		return ref[:12]
+	}
+	return ref
+}
+
+// firstLine returns the first non-empty line of s, trimmed and capped — for an error excerpt.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) > 200 {
+			return line[:200] + "…"
+		}
+		return line
+	}
+	return ""
+}
+
+// joinCapped joins up to max items and summarises the remainder, so a record stays one line even
+// when a step breaks forty tests.
+func joinCapped(items []string, max int) string {
+	if len(items) <= max {
+		return strings.Join(items, ", ")
+	}
+	return strings.Join(items[:max], ", ") + fmt.Sprintf(" (+%d more)", len(items)-max)
+}
+
+// ErrNoRepo is returned by a collector when the directory is not a git work tree. It exists so the
+// caller can distinguish "not a repository" (a legitimate configuration — git_strategy=none) from
+// "could not read the repository" (a real problem).
+var ErrNoRepo = errors.New("not a git work tree")
+
+// ReadFileTrimmed reads a small file and trims it, treating absence as empty. Used for the project's
+// declared gate file.
+func ReadFileTrimmed(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
