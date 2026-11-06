@@ -3662,15 +3662,30 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			break
 		}
 	}
+	// INDEPENDENT REVIEW: withhold the implementer's own account.
+	//
+	// A verifier that reads `.orchicon/<run>/summary` before it starts is primed with the conclusion it
+	// exists to reach independently — that file is written by the model that believes the work is done.
+	// The reviewer keeps everything it can CHECK (the diff, the criteria, the facts ledger, the issues
+	// file, the touched-file list) and loses only the implementer's narrative, which is the claim under
+	// review. See verify_context.go.
+	reviewIndependently := isVerifierStep(wi.WorkflowStepID, "", worker.Role)
 	if hasPriorSteps {
 		fmt.Fprintf(&sb, "**Before you begin:** read this run's `.orchicon/` files (%s) to see what earlier steps produced and what they require of you. They are the authoritative feedback — do not start until you have read them:\n\n", orchiconLocationNote(projectDir))
 		fmt.Fprintf(&sb, "- `.orchicon/%s/facts_learned` — a running ledger of facts, root causes, environment gotchas, and decisions established by earlier steps. **A fact already recorded here is established — do not re-verify or re-derive it.** If you establish something new, append a `FACTS LEARNED:` line (see below)\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/status` — `success` or `failure` from the previous step\n", wi.WorkflowRunID)
-		fmt.Fprintf(&sb, "- `.orchicon/%s/summary` — what the previous worker did\n", wi.WorkflowRunID)
+		if reviewIndependently {
+			sb.WriteString("- `.orchicon/<run>/summary` — **withheld from you on purpose**: it is the previous worker's own account of what it did, which is the claim you are testing. Do not seek it out.\n")
+		} else {
+			fmt.Fprintf(&sb, "- `.orchicon/%s/summary` — what the previous worker did\n", wi.WorkflowRunID)
+		}
 		fmt.Fprintf(&sb, "- `.orchicon/%s/issues` — issues found by the previous reviewer (read these; they are blocking unless stated otherwise)\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/touched_files` — files the previous worker wrote or edited (read the ones relevant to your task)\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/worker` — which worker produced the previous results\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/attachments/` — files/screenshots the human attached to an approval decision (read them!)\n\n", wi.WorkflowRunID)
+	}
+	if reviewIndependently {
+		sb.WriteString(verifierIsolationBlock)
 	}
 	sb.WriteString("Complete the work this step requires of you and bring it to a state that passes review before handing it off. Do not push your step's work downstream incomplete, and do not take on work that belongs to another step in this workflow — each step has its own role and deliverable, and doing another step's job for it breaks the division of labor. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
 	sb.WriteString("Format:\n")
