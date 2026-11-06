@@ -98,10 +98,10 @@ type WorkflowRunRow struct {
 	ErrorMessage string
 	ErrorKind    string
 	Version      int
-	StartedAt      *time.Time
-	EndedAt        *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	StartedAt    *time.Time
+	EndedAt      *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // PrFromRunContext extracts the PR surface (pr_url, pr_state) that the
@@ -902,8 +902,8 @@ type UpdateWorkflowRunFields struct {
 	// db/migrations/20261103000000_workflow_run_error.sql.
 	ErrorMessage *string
 	ErrorKind    *string
-	StartedAt   *time.Time
-	EndedAt     *time.Time
+	StartedAt    *time.Time
+	EndedAt      *time.Time
 	// ProjectID lets a workflow step bind the run to a project on the
 	// first dispatch (PROJECT kind steps write this; idempotent).
 	ProjectID *string

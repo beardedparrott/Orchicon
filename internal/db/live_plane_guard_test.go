@@ -132,10 +132,10 @@ func TestLoopbackSpellingsAreTheSameDatabase(t *testing.T) {
 	}
 	// AND NOTHING ELSE IS EQUIVALENT, or the guard would refuse a genuinely remote database.
 	differ := [][2]string{
-		{"localhost:5432/orchicon", "localhost:5433/orchicon"},       // different port
-		{"localhost:5432/orchicon", "localhost:5432/orchicon_test"},  // different database
-		{"localhost:5432/orchicon", "db.example.com:5432/orchicon"},  // remote host
-		{"10.0.0.5:5432/orchicon", "127.0.0.1:5432/orchicon"},        // remote vs local
+		{"localhost:5432/orchicon", "localhost:5433/orchicon"},      // different port
+		{"localhost:5432/orchicon", "localhost:5432/orchicon_test"}, // different database
+		{"localhost:5432/orchicon", "db.example.com:5432/orchicon"}, // remote host
+		{"10.0.0.5:5432/orchicon", "127.0.0.1:5432/orchicon"},       // remote vs local
 	}
 	for _, c := range differ {
 		if sameDatabaseTarget(c[0], c[1]) {

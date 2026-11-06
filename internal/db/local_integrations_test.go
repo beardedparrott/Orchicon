@@ -166,7 +166,6 @@ func TestOnlyAProvenResultReleasesTheQueue(t *testing.T) {
 	}
 }
 
-
 // THE QUEUE IS ORDERED BY PRODUCTION ORDER, and excludes an asking run's own record.
 func TestQueueIsOldestFirstAndARunDoesNotBlockItself(t *testing.T) {
 	pool, ctx := localIntegrationTestPool(t)

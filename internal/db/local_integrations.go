@@ -74,27 +74,27 @@ const (
 
 // LocalIntegrationRow is one run's integration obligation.
 type LocalIntegrationRow struct {
-	ID string
-	TenantID string
-	ProjectID string
+	ID            string
+	TenantID      string
+	ProjectID     string
 	WorkflowRunID string
 	// ExecutionID is the worker execution that produced the commit. Recorded because it is the thing an
 	// operator actually asks about ("which worker wrote this, and did it land"), not because the merge needs
 	// it — the RUN owns the branch.
-	ExecutionID string
-	Branch string
-	BaseCommit string
+	ExecutionID       string
+	Branch            string
+	BaseCommit        string
 	IntegrationBranch string
-	Status string
-	Attempts int
-	LastError string
-	MergeCommit string
+	Status            string
+	Attempts          int
+	LastError         string
+	MergeCommit       string
 	// VerificationDetail is what the checks found — the reason on a failure, the evidence on a pass.
 	VerificationDetail string
-	VerifiedAt *time.Time
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	MergedAt *time.Time
+	VerifiedAt         *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	MergedAt           *time.Time
 }
 
 const localIntegrationColumns = `id, tenant_id, project_id, workflow_run_id, execution_id, branch, base_commit,
@@ -323,22 +323,22 @@ func ExecutionIDForRun(ctx context.Context, tx pgx.Tx, tenantID, runID string) s
 // columns cannot drift.
 func MarshalLocalIntegration(r LocalIntegrationRow) map[string]any {
 	b, err := json.Marshal(map[string]any{
-		"id":                 r.ID,
-		"project_id":         r.ProjectID,
-		"workflow_run_id":    r.WorkflowRunID,
-		"execution_id":       r.ExecutionID,
-		"branch":             r.Branch,
-		"base_commit":        r.BaseCommit,
-		"integration_branch": r.IntegrationBranch,
-		"status":             r.Status,
-		"attempts":           r.Attempts,
-		"last_error":         r.LastError,
-		"merge_commit":       r.MergeCommit,
+		"id":                  r.ID,
+		"project_id":          r.ProjectID,
+		"workflow_run_id":     r.WorkflowRunID,
+		"execution_id":        r.ExecutionID,
+		"branch":              r.Branch,
+		"base_commit":         r.BaseCommit,
+		"integration_branch":  r.IntegrationBranch,
+		"status":              r.Status,
+		"attempts":            r.Attempts,
+		"last_error":          r.LastError,
+		"merge_commit":        r.MergeCommit,
 		"verification_detail": r.VerificationDetail,
 		"verified_at":         r.VerifiedAt,
-		"created_at":         r.CreatedAt.UTC().Format(time.RFC3339),
-		"updated_at":         r.UpdatedAt.UTC().Format(time.RFC3339),
-		"merged_at":          r.MergedAt,
+		"created_at":          r.CreatedAt.UTC().Format(time.RFC3339),
+		"updated_at":          r.UpdatedAt.UTC().Format(time.RFC3339),
+		"merged_at":           r.MergedAt,
 	})
 	if err != nil {
 		return map[string]any{}

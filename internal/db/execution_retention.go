@@ -45,8 +45,8 @@ type ExecutionRetentionPlan struct {
 	TenantID string
 	Keep     int
 
-	TotalExecutions int64
-	KeepExecutions  int64
+	TotalExecutions  int64
+	KeepExecutions   int64
 	DeleteExecutions int64
 
 	// LiveAmongDelete is the number of candidates in a NON-TERMINAL state. A non-zero value is reported
@@ -55,13 +55,13 @@ type ExecutionRetentionPlan struct {
 	LiveAmongDelete int64
 
 	// Child rows in the delete set, table by table.
-	SessionParts      int64
-	Checkpoints       int64
-	RecoveryExecs     int64
-	RecoveryStepRuns  int64
-	StepRunRefs       int64
-	UsageRecords      int64
-	UsageRecordsKept  int64
+	SessionParts       int64
+	Checkpoints        int64
+	RecoveryExecs      int64
+	RecoveryStepRuns   int64
+	StepRunRefs        int64
+	UsageRecords       int64
+	UsageRecordsKept   int64
 	WorktreeDirsOnDisk int64
 
 	// Oldest/Newest of the delete set, so the operator can see the WINDOW being removed rather than just

@@ -223,6 +223,7 @@ func planeAnswers(controlPort int) bool {
 
 // allowSharedPlaneEnv is the deliberate opt-out for running DB-backed tests against a live plane's database.
 const allowSharedPlaneEnv = "ORCHICON_TEST_ALLOW_SHARED_DB"
+
 // sameDatabaseTarget compares two "host:port/database" targets, treating every LOOPBACK SPELLING as the same host.
 //
 // IT IS NOT A COSMETIC NORMALISATION. The plane is handed `localhost`; an operator's ORCHICON_TEST_DSN very
