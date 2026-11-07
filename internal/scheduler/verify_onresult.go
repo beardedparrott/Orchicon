@@ -42,7 +42,9 @@ import (
 // verifyNoticePrefix marks an error_message as an advisory notice rather than a failure. Same
 // convention as worktreeNoticeKind: the UI and an operator must be able to tell a step that is fine
 // but unconfirmed from a step that broke.
-const verifyNoticePrefix = "verification notice: "
+// verifyNoticePrefix is the shared marker, defined once in internal/verify so the UI can recognise a notice without
+// importing the scheduler. Kept as a local name because the rest of this file reads better for it.
+const verifyNoticePrefix = verify.NoticePrefix
 
 // verifyResultKey is the step-run result key carrying the evidence record.
 const verifyResultKey = "_verification"
@@ -305,7 +307,12 @@ func applyVerdict(succeeded bool, res verify.Result) (bool, string) {
 		}
 		return true, verifyNoticePrefix + reason
 	case verify.VerdictUnverified:
-		reason := "the worker reported success and nothing confirmed it"
+		// THE OPENER MUST NOT OVERCLAIM, and the old one did: "nothing confirmed it" was printed for a step whose
+		// acceptance-criteria check had PASSED with evidence, because the sentence summarised the verdict rather
+		// than what the checks actually established. Naming the counts keeps it true whichever way it lands.
+		confirmed, total := countConfirmed(res)
+		reason := fmt.Sprintf("the platform could not confirm this step mechanically (%d of %d check(s) "+
+			"confirmed)", confirmed, total)
 		if res.Reason != "" {
 			reason += " — " + res.Reason
 		}
@@ -522,4 +529,21 @@ func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
 			total))
 	}
 	return b.String()
+}
+
+// countConfirmed reports how many of a result's checks reached a conclusion and how many there were.
+//
+// A check that passed is CONFIRMED; one that abstained was not measured; one that was skipped did not apply. The
+// count exists so a notice can say what WAS established instead of claiming nothing was.
+func countConfirmed(res verify.Result) (confirmed, total int) {
+	for _, c := range res.Checks {
+		if c.Status == verify.CheckSkip {
+			continue
+		}
+		total++
+		if c.Status == verify.CheckPass {
+			confirmed++
+		}
+	}
+	return confirmed, total
 }

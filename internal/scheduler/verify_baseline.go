@@ -112,8 +112,11 @@ func (r *TaskReconciler) startBaselineCapture(projectDir, ref string) {
 	if loadCachedBaseline(projectDir, ref) != nil {
 		return // already measured for this commit
 	}
-	if declaredGateCommand(projectDir) == "" {
-		return // nothing declared; the differential will abstain, which is correct
+	// THE GATE IS ASKED OF THE REF, NOT OF THE OPERATOR'S CHECKOUT. The checkout can be on a different branch, so
+	// asking it would skip the capture for a base commit that DOES declare a gate — or start one for a commit that
+	// declares none. The ref being measured is the only authority.
+	if !r.refDeclaresGate(context.Background(), projectDir, ref) {
+		return // nothing declared at the base commit; the differential says so, and it is the honest answer
 	}
 	key := projectDir + "\x00" + ref
 	if _, loaded := baselineInFlight.LoadOrStore(key, struct{}{}); loaded {
@@ -213,4 +216,26 @@ func describeBaselineCache(projectDir string) string {
 		return fmt.Sprintf("%s (unreadable: %v)", dir, err)
 	}
 	return fmt.Sprintf("%s (%d cached)", dir, len(entries))
+}
+
+// refDeclaresGate reports whether the commit at ref declares a gate.
+//
+// It reads the file OUT OF THE COMMIT (`git show ref:.orchicon/verify`) rather than from a working tree, because no
+// working tree is guaranteed to be on that ref — the operator's checkout is on whatever branch they left it on, and
+// a run worktree is on the run's branch, not the base.
+//
+// AN UNREADABLE REF IS TREATED AS "DECLARES NOTHING", which only costs a baseline: the differential then says it
+// has nothing to compare against, which is true.
+func (r *TaskReconciler) refDeclaresGate(ctx context.Context, projectDir, ref string) bool {
+	out, err := runGit(ctx, projectDir, "show", ref+":.orchicon/verify")
+	if err != nil {
+		return false
+	}
+	d, perr := verify.ParseDeclaration(out)
+	if perr != nil {
+		// A malformed declaration at the base commit is still A DECLARATION: let the capture run and report the
+		// parse error in the baseline's detail, rather than silently treating a typo as "no gate".
+		return true
+	}
+	return d.Declared()
 }

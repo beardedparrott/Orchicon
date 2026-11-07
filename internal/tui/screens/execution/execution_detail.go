@@ -31,6 +31,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
+	"github.com/beardedparrott/orchicon/internal/verify"
 )
 
 // execTodosMsg carries a fetched todo list.
@@ -185,10 +186,21 @@ func (s *execDetailState) parts(id string) *execDetailParts {
 }
 
 // renderExecutionRecord renders the run's own prose: the error, then the output.
+//
+// AN ADVISORY IS NOT AN ERROR, and the label says which. One column carries both a real failure and a verification
+// notice, so rendering the slot as "error: …" in the error colour told the operator something was wrong when a
+// notice may say the work was never checked. The operator's words: "I don't think we should be using the word
+// error on these messages. I think something like 'Additional info' would be better."
 func renderExecutionRecord(e *apiv1.WorkerExecution) string {
 	var b strings.Builder
-	if e.GetErrorMessage() != "" {
-		b.WriteString(theme.ErrorText.Render("error: "+e.GetErrorMessage()) + "\n\n")
+	if msg := e.GetErrorMessage(); msg != "" {
+		if verify.IsNotice(msg) {
+			// The notice already carries its own sentence; strip the internal marker and label it neutrally.
+			b.WriteString(theme.HintText.Render("additional info: "+
+				strings.TrimPrefix(strings.TrimSpace(msg), verify.NoticePrefix)) + "\n\n")
+		} else {
+			b.WriteString(theme.ErrorText.Render("error: "+msg) + "\n\n")
+		}
 	}
 	if out := strings.TrimSpace(e.GetOutput()); out != "" {
 		b.WriteString(theme.ListTitle.Render("output") + "\n" + out + "\n")
@@ -424,8 +436,14 @@ func executionFields(e *apiv1.WorkerExecution, meta string) []screenkit.Field {
 		screenkit.Field{Key: "started", Value: screenkit.FmtTime(e.GetStartedAt())},
 		screenkit.Field{Key: "ended", Value: screenkit.FmtTime(e.GetEndedAt())},
 	)
-	if e.GetErrorMessage() != "" {
-		fields = append(fields, screenkit.Field{Key: "error", Value: truncateForField(e.GetErrorMessage(), 200)})
+	if msg := e.GetErrorMessage(); msg != "" {
+		// Same split as the prose render: a notice is "notes", not "error".
+		key, value := "error", msg
+		if verify.IsNotice(msg) {
+			key = "notes"
+			value = strings.TrimPrefix(strings.TrimSpace(msg), verify.NoticePrefix)
+		}
+		fields = append(fields, screenkit.Field{Key: key, Value: truncateForField(value, 200)})
 	}
 	return fields
 }

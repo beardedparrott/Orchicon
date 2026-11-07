@@ -36,6 +36,17 @@ import (
 	"strings"
 )
 
+// NoticePrefix marks an advisory notice rather than a failure on an execution's error_message slot.
+//
+// THE SLOT IS SHARED — one column carries both a real failure and this notice — so the presentation layer has to be
+// able to tell them apart, and this marker is the only thing that can. It lives HERE, in the package that owns the
+// vocabulary, rather than in the scheduler: the UI must be able to recognise a notice without importing the
+// scheduler, and a second copy of the string is how the two would come to disagree.
+const NoticePrefix = "verification notice: "
+
+// IsNotice reports whether a message is an advisory notice rather than a failure.
+func IsNotice(msg string) bool { return strings.HasPrefix(strings.TrimSpace(msg), NoticePrefix) }
+
 // Verdict is the evidence-based outcome of a completed step.
 //
 // THREE states, and the third is the one that matters. Before this package there were two (the

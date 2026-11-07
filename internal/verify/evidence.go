@@ -340,6 +340,21 @@ func collectDifferential(r *Result, ev Evidence, regressed []string) {
 	if !ev.StepDeclaresDeliverable {
 		return
 	}
+	// ONE CAUSE, ONE LINE. When the project declares no gate at all, `project_gate` already says exactly that.
+	// Adding "no baseline was captured" on top reports the same absence twice and reads as two problems — which is
+	// what execution 01M6W2KC1CQCH6FFZ99G132F6S showed the operator.
+	if strings.TrimSpace(ev.DeclaredCommand) == "" {
+		return
+	}
+	// NOTHING FAILED, SO NOTHING REGRESSED. A differential exists to tell "already broken" from "broken by this
+	// step"; when the gate is fully green at HEAD there is no failure to place, so the question does not arise.
+	// Abstaining here used to demote a step whose whole suite passed to `unverified`, which is noise dressed as
+	// caution — and again, it was HALF of a two-line notice about one green gate.
+	if ev.HeadMeasured && len(ev.HeadResults) > 0 && !anyFailing(ev.HeadResults) {
+		r.Add("no_new_failures", CheckPass, fmt.Sprintf(
+			"the gate is fully green at this step's HEAD (%d check(s)), so nothing regressed", len(ev.HeadResults)))
+		return
+	}
 	if ev.Baseline.Incomplete() {
 		detail := "no baseline was captured for this step, so new failures cannot be distinguished from existing ones"
 		if ev.Baseline != nil && strings.TrimSpace(ev.Baseline.Detail) != "" {
@@ -661,4 +676,14 @@ func ReadFileTrimmed(path string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// anyFailing reports whether any check in a result set failed.
+func anyFailing(results map[string]bool) bool {
+	for _, passing := range results {
+		if !passing {
+			return true
+		}
+	}
+	return false
 }

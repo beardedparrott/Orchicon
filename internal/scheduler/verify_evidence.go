@@ -29,13 +29,6 @@ import (
 // each check, not the whole transcript; a runaway suite would otherwise write megabytes into a row.
 const maxGateOutput = 64 * 1024
 
-// declaredGateCommand returns the project's declared verification command, or "".
-//
-// It reuses projectVerifyCommand — the SAME reader the local-integration path uses — so a project
-// cannot end up with two different notions of "its gate" depending on which code path asked. The
-// comment there explains why this is a file rather than a setting; the short version is that a
-// command the platform invents would be worse than none, and a schema field for something most
-// projects will not set is a schema field nobody maintains.
 // declaredGate reads the project's full gate declaration (command, result format, optional report path).
 //
 // ONE READER FOR EVERYTHING THAT ASKS "WHAT IS THIS PROJECT'S GATE". The integration path, the baseline capture and
@@ -60,13 +53,24 @@ func declaredGate(projectDir string) (verify.Declaration, error) {
 	return d, nil
 }
 
-// declaredGateCommand returns just the command, for callers that only need to know whether one exists.
-func declaredGateCommand(projectDir string) string {
-	d, err := declaredGate(projectDir)
-	if err != nil {
-		return ""
+// gateDeclarationDir picks the directory a gate declaration should be READ from.
+//
+// THE WORKTREE WINS, AND THAT IS THE FIX FOR A REAL FAILURE. The declaration is part of the repository, so the one
+// that governs a step is the one at that step's HEAD — which lives in the run's own worktree, not in the operator's
+// checkout. Reading the checkout instead meant a step whose deliverable INCLUDED creating `.orchicon/verify`
+// reported "the project declares no gate" about a project that, at the commit under test, declares one.
+//
+// MEASURED, on execution 01M6W2KC1CQCH6FFZ99G132F6S: the worker's AC1 was creating `.orchicon/verify` on the run
+// branch (faf69a7, contents `node scripts/gate.mjs`), while the project checkout sat on another branch with no such
+// file. The platform read the checkout, abstained, and told the operator the project declares no gate.
+//
+// THE FALLBACK IS THE PROJECT DIRECTORY, for the in-place case (git_strategy=none, or a non-repo project) where
+// there is no worktree to read.
+func gateDeclarationDir(worktreePath, projectDir string) string {
+	if d := strings.TrimSpace(worktreePath); d != "" {
+		return d
 	}
-	return d.Command
+	return projectDir
 }
 
 // captureBaseline runs the project's gate at ref and records the per-check results.
@@ -83,17 +87,12 @@ func declaredGateCommand(projectDir string) string {
 // (linkIgnoredDependencies), which is what makes the baseline a measurement of the base COMMIT rather than a
 // measurement of a tree nothing can build.
 func (r *TaskReconciler) captureBaseline(ctx context.Context, projectDir, ref, worktreePath string) *verify.Baseline {
-	decl, declErr := declaredGate(projectDir)
-	if declErr != nil {
-		// Named, not swallowed: the operator has to know their declaration is broken.
-		return &verify.Baseline{Commit: ref, Detail: "the gate declaration could not be read: " + declErr.Error()}
-	}
-	if !decl.Declared() {
-		return nil // no gate at all: nothing to baseline, and the differential abstains with its own reason
-	}
-
-	// The baseline runs in a scratch worktree of the base ref so it cannot disturb the run's own tree or the
-	// operator's checkout.
+	// THE BASELINE IS MEASURED AGAINST THE BASE COMMIT'S OWN DECLARATION, which is why the scratch checkout is made
+	// FIRST and the declaration is read from inside it.
+	//
+	// Reading the declaration from the operator's checkout instead was a real defect: the checkout can be on a
+	// different branch, so the baseline could run a command the base commit never declared — or find no gate at all
+	// for a commit that has one. The ref being measured is the only authority on what that ref declares.
 	dir, cleanup, err := r.scratchCheckout(ctx, projectDir, ref)
 	if err != nil {
 		r.log.Info("verify: no baseline (scratch checkout unavailable)",
@@ -102,6 +101,20 @@ func (r *TaskReconciler) captureBaseline(ctx context.Context, projectDir, ref, w
 			" could be created, so the base commit was not measured: " + err.Error()}
 	}
 	defer cleanup()
+
+	decl, declErr := declaredGate(dir)
+	if declErr != nil {
+		// Named, not swallowed: the operator has to know their declaration is broken.
+		return &verify.Baseline{Commit: ref, Detail: "the gate declaration could not be read at " +
+			short(ref) + ": " + declErr.Error()}
+	}
+	if !decl.Declared() {
+		// A GATE THAT DID NOT EXIST YET IS A REAL ANSWER, not a failure to measure. A step that ADDS the gate has
+		// no baseline by definition, and saying so is what stops the differential complaining about a comparison
+		// that could never have been made.
+		return &verify.Baseline{Commit: ref, Detail: "the base commit declares no gate, so there is nothing to " +
+			"compare against"}
+	}
 
 	// THE DEPENDENCIES COME WITH IT. Without this the gate fails for a reason that has nothing to do with the base
 	// commit's correctness, and the failure would be recorded AS the baseline.
@@ -430,7 +443,7 @@ func (r *TaskReconciler) gatherEvidence(ctx context.Context, in evidenceInput) v
 	//
 	// This was a real failure: architect run 01M6TBXTPB26MX13JFEPFTV7EG ran the full gate, got a red result
 	// it had not caused, and failed six recovery attempts in a row.
-	decl, declErr := declaredGate(in.projectDir)
+	decl, declErr := declaredGate(gateDeclarationDir(in.worktreePath, in.projectDir))
 	ev.DeclaredCommand = decl.Command
 	if declErr != nil {
 		// A BROKEN DECLARATION IS REPORTED, and it is an abstention rather than a failure: the worker did not
