@@ -522,3 +522,44 @@ func TestSkillPolicyInlinesADirectoryOfSkills(t *testing.T) {
 		t.Errorf("a skills directory must not render as a read-on-demand listing:\n%s", out)
 	}
 }
+
+// TestDirectoryManifestIsCapped pins the prompt bound on directory expansion.
+//
+// MaxContextFiles (1000) is an INPUT bound; the manifest needs a PROMPT bound, and conflating them was
+// costing whole model windows. Measured on a real repository before this cap: a directory path at
+// internal/ rendered 94 KB (≈23,400 tokens) and a project root 137 KB (≈34,400 tokens) — four times the
+// entire static system prompt, for a nested tree an agent could just as well SEARCH.
+//
+// A manifest's job is to make a directory's shape legible and point at the right files. It is not a
+// filesystem dump, and no agent reads a thousand paths. Beyond the cap the block must say how to search,
+// because "…and more files" with no method is a dead end.
+func TestDirectoryManifestIsCapped(t *testing.T) {
+	root := t.TempDir()
+	// A tree bigger than the cap, spread across subdirectories.
+	const total = MaxManifestEntries + 60
+	for i := 0; i < total; i++ {
+		dir := filepath.Join(root, fmt.Sprintf("pkg%02d", i%12))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%03d.go", i)), []byte("package x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := RenderManifest("# Context", []string{root}, root)
+	entries := strings.Count(out, "- `")
+	if entries > MaxManifestEntries {
+		t.Errorf("manifest lists %d entries, over the %d cap — a directory dump is not a context aid",
+			entries, MaxManifestEntries)
+	}
+	if !strings.Contains(out, "capped at") {
+		t.Error("a capped manifest must SAY it is capped, or the model believes it has seen the whole tree")
+	}
+	// And it must name a way forward that is cheaper than reading everything.
+	for _, want := range []string{"glob", "grep"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a capped manifest must point at %q — otherwise the model's only recourse is reading files one by one", want)
+		}
+	}
+}

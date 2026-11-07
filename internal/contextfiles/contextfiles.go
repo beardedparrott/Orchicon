@@ -25,6 +25,20 @@ import (
 const (
 	// MaxContextFiles is the max number of entries in a context_files list.
 	MaxContextFiles = 1000
+	// MaxManifestEntries caps how many files a DIRECTORY context path lists in the rendered
+	// manifest. It is deliberately far below MaxContextFiles.
+	//
+	// MAXCONTEXTFILES IS AN INPUT BOUND; THIS IS A PROMPT BOUND, and conflating them was costing
+	// whole model windows. A directory path expands to one manifest line per file, and each line is
+	// re-sent to the model on every turn. Measured on a real repository: internal/ rendered 94 KB
+	// (≈23,400 tokens) and a project root 137 KB (≈34,400 tokens) — four times the entire static
+	// system prompt, for a nested tree an agent could just as well SEARCH.
+	//
+	// A manifest's job is to make the shape of a directory legible and point at the right files; it
+	// is not a filesystem dump, and an agent cannot read 1000 paths anyway. 120 entries per path
+	// keeps a large package identifiable while the block tells the model to use glob/grep beyond it —
+	// which is the cheaper and more accurate route for anything this list cannot cover.
+	MaxManifestEntries = 120
 	// MaxFilePathLen is the max length of a single context path.
 	MaxFilePathLen = 4096
 	// MaxInlineFileBytes caps a single file's contents inlined into the
@@ -475,7 +489,8 @@ func RenderManifestWithPolicy(rootNote string, paths []string, projectDir string
 // manifest with sizes, telling the worker to read only what it needs.
 func renderDirectoryManifest(sb *strings.Builder, path string, budget *renderBudget, policy ManifestPolicy) bool {
 	before := sb.Len()
-	entries, err := WalkDir(path, MaxContextFiles)
+	// BOUNDED BY THE PROMPT BUDGET, not the input cap — see MaxManifestEntries.
+	entries, err := WalkDir(path, MaxManifestEntries)
 	if err != nil {
 		fmt.Fprintf(sb, "**Note:** could not list `%s`: %v\n\n", path, err)
 		budget.charge(sb, before)
@@ -511,8 +526,9 @@ func renderDirectoryManifest(sb *strings.Builder, path string, budget *renderBud
 		}
 		fmt.Fprintf(sb, "- `%s` (%d bytes)\n", e, size)
 	}
-	if len(entries) >= MaxContextFiles {
-		sb.WriteString("- … and more files (use your tools to browse the directory)\n")
+	if len(entries) >= MaxManifestEntries {
+		fmt.Fprintf(sb, "- … and more: this listing is capped at %d entries. Use `glob` (by pattern) or "+
+			"`grep` (by content) to find what you need, and `read` for the files you pick.\n", MaxManifestEntries)
 	}
 	sb.WriteString("\n")
 	budget.charge(sb, before)

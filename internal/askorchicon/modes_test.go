@@ -444,9 +444,13 @@ func integrationMapBlock(t *testing.T, prompt string) string {
 func TestEveryModeCarriesTheIntegrationMapContract(t *testing.T) {
 	for _, mode := range everyMode {
 		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), "")
+		// THE CONTRACT, NOT THE NUMBERING. These assertions used to pin the exact headings
+		// ("### 1. Draw the map BEFORE you write anything" / "### 2. Close the map — …"), which made a
+		// prose tightening fail while every concept it protects survived. The obligation is that both
+		// halves of the contract are present, so that is what is asserted.
 		for _, want := range []string{
-			"### 1. Draw the map BEFORE you write anything",
-			"### 2. Close the map — no half-realized work",
+			"Draw the map first",
+			"Then close it",
 			"What it depends on",
 			"What depends on it",
 			"What must LEARN about it",
@@ -481,11 +485,12 @@ func TestIntegrationMapSpeaksSystemsDesignNotOrchiconComponents(t *testing.T) {
 		}
 		// The systems/architecture half.
 		for _, want := range []string{
-			"registries and dispatch tables",
-			"configuration defaults",
+			"registries",
+			"dispatch tables",
+			"config defaults",
 			"migrations",
-			"the API/wire contract at each boundary",
-			"the tests that assert each",
+			"wire contract",
+			"tests that assert each",
 		} {
 			if !strings.Contains(block, want) {
 				t.Errorf("%s: the shared block is missing the systems-design vocabulary %q", mode, want)
@@ -493,9 +498,9 @@ func TestIntegrationMapSpeaksSystemsDesignNotOrchiconComponents(t *testing.T) {
 		}
 		// The UI/UX half — what makes the rule apply to a design or front-end project, not only a back end.
 		for _, want := range []string{
-			"loading, empty, error, partial and permission-denied",
-			"design-system primitives and tokens",
-			"keyboard, focus, resize",
+			"loading, empty, error, partial, permission-denied",
+			"design-system primitives",
+			"keyboard, focus and resize",
 			"A user-facing element without its states is not a feature",
 		} {
 			if !strings.Contains(block, want) {

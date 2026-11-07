@@ -1736,6 +1736,43 @@ func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Reques
 // skillsSection is the ALREADY-RENDERED `# Skills` manifest for this turn ("" when the conversation and its
 // project have no skill files). It is rendered by skillManifestSection and forwarded to BuildSystemPrompt,
 // which appends it beside the tenant's free-text additional instructions — see writeSkillsManifest.
+// historyByteBudget bounds the TOTAL bytes of replayed conversation history in the system prompt.
+//
+// 48 KiB ≈ 12k tokens. Deliberately generous — an ordinary conversation never reaches it, so the
+// truncation path is invisible in the common case — while still capping the pathological one (ten
+// messages each carrying a large file read). The number is a whole-conversation budget rather than a
+// per-message cap because what matters is the TOTAL the model must prefill on every turn.
+const historyByteBudget = 48 * 1024
+
+// elideHistoryMessage shortens one history message to at most budget bytes, keeping the START and the
+// END and cutting the middle.
+//
+// THE HEAD AND THE TAIL ARE THE INFORMATIVE PARTS of both a user message and a tool-shaped assistant
+// turn: the head says what was asked, the tail says what came of it. The middle of a long paste or a
+// large file read is exactly the part that can be re-fetched with a tool — so it is the part worth
+// dropping, and dropping it is recoverable in a way that dropping the question is not.
+func elideHistoryMessage(content string, budget int) string {
+	if budget <= 0 {
+		return "[earlier message elided to fit the context budget]"
+	}
+	if len(content) <= budget {
+		return content
+	}
+	const marker = "\n\n[… elided to fit the context budget — re-read the file if you need this …]\n\n"
+	if budget <= len(marker)+2 {
+		return content[:max(0, budget)]
+	}
+	head := (budget - len(marker)) * 3 / 5
+	tail := budget - len(marker) - head
+	if head < 0 {
+		head = 0
+	}
+	if tail < 0 {
+		tail = 0
+	}
+	return content[:head] + marker + content[len(content)-tail:]
+}
+
 func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistry, history []db.MessageRow, includeHistory bool, attachments []*apiv1.AttachmentInput, projectContext, convProject, skillsSection string) string {
 	var b strings.Builder
 
@@ -1754,6 +1791,21 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 		if len(history) > 10 {
 			start = len(history) - 10
 		}
+		// A MESSAGE COUNT IS NOT A SIZE BOUND, and treating it as one is how a local model gets a window
+		// it cannot fit. Ten messages is one thing when they are ten sentences and quite another when an
+		// assistant turn embeds a large file read — 10 × 20 KB is 50k tokens of replay before the operator
+		// has typed anything on the current turn.
+		//
+		// So the replay is *also* budgeted by bytes, and the budget is spent NEWEST-FIRST: the most recent
+		// exchange keeps its full text (it is what the current turn is about), and older messages are
+		// elided from the middle — never dropped entirely, because an older message is often the one that
+		// set the task up. What is elided is quoted raw content, which is exactly what the operator can
+		// re-read with a tool if the model asks.
+		//
+		// The bound is generous enough that an ordinary conversation never touches it, so this changes
+		// nothing for the common case and only bites where it matters.
+		remaining := historyByteBudget
+		truncated := 0
 		for _, h := range history[start:] {
 			if h.Content == "" {
 				continue
@@ -1770,7 +1822,35 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 			if h.Role == "assistant" {
 				roleLabel = "Orchicon"
 			}
-			b.WriteString(fmt.Sprintf("%s: %s\n", roleLabel, h.Content))
+			content := h.Content
+			// THE BUDGET IS CHECKED **BEFORE** THE MESSAGE IS CUT, AND THE COST INCLUDES THE LABEL.
+			//
+			// The first version of this compared len(content) to `remaining` and then elided to
+			// `remaining` — which reads correctly and is off by the label: after eliding, the writer
+			// added "User: " / "Orchicon: " plus a newline ON TOP, so every message could overshoot by a
+			// few bytes and the total quietly exceeded the budget. Caught by
+			// TestHistoryIsBoundedByBytes, which measured 74,771 bytes against a 49,152 budget — the
+			// elision never ran at all for the later messages because `remaining` was still generous.
+			//
+			// Charging the label up front is what makes the sum actually bounded.
+			overhead := len(roleLabel) + 2 // ": " + "\n"
+			avail := remaining - overhead
+			if avail <= 0 {
+				content = "[earlier message elided to fit the context budget]"
+				truncated++
+			} else if len(content) > avail {
+				content = elideHistoryMessage(content, avail)
+				truncated++
+			}
+			remaining -= len(content) + overhead
+			if remaining < 0 {
+				remaining = 0
+			}
+			b.WriteString(fmt.Sprintf("%s: %s\n", roleLabel, content))
+		}
+		if truncated > 0 {
+			fmt.Fprintf(&b, "\n(%d earlier message(s) were shortened to fit the context budget — ask for a file "+
+				"to be re-read if you need its full contents.)\n", truncated)
 		}
 		b.WriteString("\n")
 		b.WriteString("Note: If the user refers to something mentioned earlier in this conversation (like a work item, project, or result), the details are in the conversation history above — use them directly.\n\n")

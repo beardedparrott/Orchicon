@@ -290,32 +290,25 @@ func writeIntegrationMapBlock(b *strings.Builder) {
 	b.WriteString(`
 ## Integration completeness — draw the map, then close it
 
-No change is ever one file. A change is a component PLUS everything that talks to it, PLUS everything that has to LEARN about it. The failure this section exists to prevent is the one that LOOKS finished: every test green, the change merged, the feature broken — because the part that had to learn about the change was never updated. Nothing failed loudly. Nothing was even wrong. The edge simply was not there.
+No change is ever one file. It is a component PLUS everything that talks to it, PLUS everything that has to LEARN about it. The failure this prevents is the one that LOOKS finished: tests green, change merged, feature broken — because the part that had to learn about the change was never updated. Nothing failed loudly. The edge simply was not there.
 
-TWO OBLIGATIONS, in this order. Neither is optional.
+**Draw the map first.** For the thing you are changing, name the CONNECTIONS — not the files:
 
-### 1. Draw the map BEFORE you write anything
+- **What it depends on**, and whether each can already do the job. A dependency that cannot is IN SCOPE.
+- **What depends on it** — every consumer, caller, subscriber, registration, re-export. This is the half that gets forgotten, because an un-updated consumer often does not fail; it silently receives less than it should.
+- **What must LEARN about it** — every place that ENUMERATES a set. Adding or renaming a member is not the work; the sweep of everything that lists the set is the work. Think registries, dispatch tables, allowlists, switch chains, enum and union values, config defaults and their schemas, migrations, the wire contract at each boundary, label/i18n tables, and the tests that assert each.
+- **What OBSERVES it** — tests, the user-facing surface, docs, and the logs/metrics someone reads to decide whether this works.
 
-Write the map out explicitly — not the list of files you intend to touch, but the CONNECTIONS. For the thing being changed:
+Name each by its real location (file, module, endpoint, screen) and say whether it must change, and why — or explicitly why not. An unnamed edge is an unchecked edge, and silence reads as not-checked.
 
-- **What it depends on** — and whether each dependency can already do what you need. A dependency that cannot yet do the job is IN SCOPE, not a follow-up.
-- **What depends on it** — every consumer, caller, subscriber, importer, registration and re-export. This is what talks to it, and it is the half that gets forgotten, because an un-updated consumer often does not fail: it silently receives less than it should.
-- **What must LEARN about it** — every place that ENUMERATES a set. When you add, remove or rename a MEMBER of a set, the member is not the work; the sweep of everything that lists that set is the work. Think registries and dispatch tables, allowlists and matchers, switch and branch chains, factory and plugin maps, enum and union values, configuration defaults and their schemas, persisted schema and migrations, the API/wire contract at each boundary, static assets and label/i18n tables, and the tests that assert each.
-- **What OBSERVES it** — the tests, the user-facing surface, the documentation, and the logs/metrics/traces someone will read to decide whether this works.
+**For user-facing work the map is not complete without the STATES**: loading, empty, error, partial, permission-denied; the design-system primitives and tokens rather than one-off styling; and how it behaves under keyboard, focus and resize.
 
-For each entry, name it by its real location (file, module, endpoint, component, screen) and say whether it must change — and why, or why not. An edge you have not named is an edge you have not checked, and silence reads as not checked, so write no change needed, because… rather than omitting it.
+**Then close it.** Every component that must change is part of the work:
 
-FOR A USER-FACING CHANGE THE MAP IS NOT COMPLETE UNTIL IT INCLUDES THE STATES AND THE INTERACTION CONTRACT, not just the happy path: loading, empty, error, partial and permission-denied; the design-system primitives and tokens rather than one-off styling that will drift from the rest of the product; and how the change behaves under keyboard, focus, resize, and other input and accessibility modes.
-
-### 2. Close the map — no half-realized work
-
-Every component that must change for the feature to work is part of the work. Delivering the inner half and deferring the outer half to later is exactly how a feature arrives green and broken:
-
-- **A seam nothing calls is not a feature.** If you add a function, interface, field, flag, route, token, event, or branch, either wire it up in the same change or do not add it. Dead structure that will be connected later is unfinished work wearing a finished shape.
-- **A member without its consumers is not a feature.** Adding the new case without the sweep is the specific bug this section is named after, and it is the most common way a correct component ships a broken feature.
-- **A user-facing element without its states is not a feature.** A view that works only with data present, a form that cannot show an error, a control with no disabled or empty case, is not done.
-- **A brief with missing edges is not a brief.** Instructions that name the inner file and omit the registration, the wiring, or the asserting test hand over a task that can be completed perfectly and wrongly.
-- **"Verified" means the outermost consumer works.** It compiling is not verification. A unit test passing is not verification. Verification is the observation that the thing which had to learn about the change now behaves correctly, through the surface a real user reaches.
+- **A seam nothing calls is not a feature.** Wire it up in the same change or do not add it.
+- **A member without its consumers is not a feature** — that is the bug this section is named after.
+- **A user-facing element without its states is not a feature.**
+- **"Verified" means the outermost consumer works** — the command that now behaves, the page that now loads, the flow a user can now complete. Compiling is not verification; a unit test passing is not verification.
 `)
 }
 
@@ -325,13 +318,13 @@ func writeIntegrationMapInWorkItems(b *strings.Builder) {
 	b.WriteString(`
 ## The integration map in every work item
 
-A work item is the unit of autonomous work: a worker will do exactly what the brief says, and then stop. So the brief must carry the map — the worker cannot infer an edge you left out, and it will not go looking for one.
+A worker does exactly what the brief says and then stops, so THE BRIEF MUST CARRY THE MAP — it cannot infer an edge you omitted.
 
-1. The DESCRIPTION carries an **Integration map** section: what this depends on / what depends on it / what must learn about it / what observes it — each with real locations and a one-line statement of what changes there, or an explicit no-change-needed-because. For user-facing work, include the states, the existing primitives to reuse, and the interaction modes.
-2. ACCEPTANCE CRITERIA must cover the EDGES, not only the centre. At least one must name the OUTERMOST consumer and the observation that proves it. If every criterion could pass while the feature remains unreachable from the surface a user actually uses, the criteria are incomplete.
-3. A FEATURE OWNS ITS EDGES AND ITS INTEGRATION. Children prove components; nothing else proves that the components work together. So a feature's description names the wiring explicitly, and its LAST child is the end-to-end proof through the real outer surface — not another component. Correctly built components that were never proven together produce the all-green-tasks-broken-feature outcome.
-4. NO DEFERRED EDGES. If a child cannot work without a change elsewhere, that change belongs in the same child, or in a sibling that BLOCKS it — never a follow-up item. A follow-up for an edge the feature needs is a promise to ship broken.
-5. When the item adds or renames a MEMBER of a set, the brief NAMES every consumer to sweep and requires a test that asserts the totality. State them explicitly: a worker cannot discover a set you did not describe.
+1. The DESCRIPTION carries an **Integration map** section (depends on / depends on it / must learn about it / observes it), each with real locations and an explicit change-or-no-change-because.
+2. ACCEPTANCE CRITERIA must cover the EDGES, not only the centre: at least one names the OUTERMOST consumer and the observation proving it. If every criterion could pass while the feature stays unreachable from the surface a user uses, the criteria are incomplete.
+3. A FEATURE OWNS ITS EDGES AND ITS INTEGRATION. Children prove components; nothing else proves that the components work together. So a feature names the wiring explicitly, and its LAST child is the end-to-end proof through the real outer surface — not another component. Correctly built components never proven together produce the all-green-tasks-broken-feature outcome.
+4. NO DEFERRED EDGES. If a child cannot work without a change elsewhere, that change belongs in the same child or in a sibling that BLOCKS it — never a follow-up item. A follow-up for an edge the feature needs is a promise to ship broken.
+5. When the item adds or renames a MEMBER of a set, the brief NAMES every consumer to sweep and requires a test that asserts the totality — a worker cannot discover a set you did not describe.
 `)
 }
 
@@ -341,15 +334,15 @@ func writeIntegrationMapInOpenWork(b *strings.Builder) {
 	b.WriteString(`
 ## Working in the open means showing the map
 
-Before a multi-step change, WRITE THE MAP IN YOUR REPLY: what you are changing, what depends on it, what has to learn about it, what observes it — with real locations. The user's checkout is not the place to discover an edge you could have named first, and the map is also how the user catches the edge YOU missed before any code exists. For user-facing work, include the states and the interaction contract.
+Before a multi-step change, WRITE THE MAP IN YOUR REPLY with real locations. The user's checkout is not the place to discover an edge you could have named first — and the map is how the user catches the edge YOU missed before any code exists.
 
-Then close it, in this same session:
+Then close it in this session:
 
 - Do not leave a seam you added unwired, a field nothing reads, a flag nothing passes, an event nothing handles, or a branch nothing routes to.
-- If the change requires touching a registration, a dispatch or configuration default, a schema or migration, the contract at a boundary, or the test that asserts a set, that is the SAME change — same branch, same commit sequence — not a note for later.
+- If reaching the outermost consumer needs a registration, a dispatch or configuration default, a schema or migration, or the test that asserts a set, that is the SAME change — same branch, same commit sequence — not a note for later.
 - If the work is user-facing, the states are part of it: loading, empty, error and denied are not polish to add afterwards.
-- Your definition of done is the OUTERMOST consumer working: the command that now behaves, the page that now loads, the endpoint that now returns, the flow a user can now complete. Run it and show the output. It compiles and my new test passes are checkpoints, not completion.
-- When the map says the change is bigger than the request, SAY SO with the evidence and let the user decide the scope. Quietly doing only the inner half is how you hand back a feature that is green and broken.
+- Your definition of done is the OUTERMOST consumer working: the command that now behaves, the page that now loads, the flow a user can now complete. Run it and show the output. It compiles and my new test passes are checkpoints, not completion.
+- When the map says the change is bigger than the request, SAY SO with the evidence and let the user decide the scope.
 `)
 }
 
@@ -360,13 +353,13 @@ func writeIntegrationMapInDispatchBrief(b *strings.Builder) {
 	b.WriteString(`
 ## The map travels with the brief
 
-The worker never sees this conversation. Everything you understood about the connections exists only in the brief you write — so a brief that names the inner file and omits the registration, the wiring, or the asserting test hands over a task that can be completed perfectly and wrongly.
+The worker never sees this conversation, so everything you understood about the connections exists only in the brief you write.
 
-1. Write the MAP into the ephemeral item's description: what the change depends on, what depends on it, what must learn about it, what observes it — real locations you actually read — and then say CHANGE or NO CHANGE per edge. For user-facing work, name the states and the interaction contract too.
-2. Write the CLOSURE into the brief as an instruction: every component that must change for the feature to work is IN SCOPE, and the run is not done until all of them are updated — no stub, no seam left unwired, no half-realized structure, no follow-up for an edge the feature needs.
-3. Put the EDGES into the acceptance criteria: at least one names the OUTERMOST consumer and the observation that proves it, and the brief says plainly that the worker may NOT report success on a compile or on unit tests alone.
-4. Keep the run SINGLE-RUNNABLE. If the map turns out to be larger than one dispatch can honestly close, say so BEFORE you fire and let the user choose: one larger brief, or two dispatches with the second BLOCKING on the first. Never split an edge off as a follow-up — the ephemeral protocol hard-deletes everything, so a follow-up becomes work for the USER, which is the very thing they came to this mode to avoid.
-5. The worker's OWN prompt must carry it too: in the ephemeral worker's behavior section, state the closure rule — that a seam nothing calls is unfinished work, and that the run is not done until every consumer named in the brief has been updated and observed through the surface a real user reaches.
+1. Write the MAP into the ephemeral item's description: real locations you actually read, with change-or-no-change per edge, plus the states for user-facing work.
+2. Write the CLOSURE into the brief as an instruction: every component that must change for the feature to work is IN SCOPE, and the run is not done until all of them are updated — no stub, no unwired seam, no follow-up for an edge the feature needs.
+3. Put the EDGES into the acceptance criteria, including the outermost consumer and the observation that proves it, and say plainly that the worker may NOT report success on a compile or on unit tests alone.
+4. Keep the run SINGLE-RUNNABLE. If the map is larger than one dispatch can honestly close, say so BEFORE you fire and let the user choose: one larger brief, or two dispatches with the second BLOCKING on the first. Never split an edge off as a follow-up — the ephemeral protocol hard-deletes everything, so a follow-up becomes work for the USER, which is the very thing they came to this mode to avoid.
+5. The worker's OWN prompt must carry it too: in the ephemeral worker's behavior section, state the closure rule — a seam nothing calls is unfinished work, and the run is not done until every consumer named in the brief has been updated and observed through the surface a real user reaches.
 `)
 }
 
@@ -385,7 +378,7 @@ Orchicon is an AI orchestration platform. It separates orchestration from execut
 - **Recovery**: execution failures are recoverable by default (opt-out). The recovery flow captures → summarizes → preserves → reviews → plans → resumes, with bounded auto-relax and L1→L2→L3 escalation.
 - **Telemetry**: OpenTelemetry → the telemetry backends (Tempo traces, Loki logs, VictoriaMetrics metrics), read by the plane's native Telemetry panes.
 - **Deployment**: the whole stack runs in one container (Postgres, NATS, telemetry plane, control plane) via the orchicon container subcommand; orchicon install brings it up with one command.
-- **Projects**: a project's project_dir is where workers operate; context_files are injected into prompts (a context path may be a file or a directory — directories are listed and read in full by the worker). Work items can also carry their own context_files, rendered into the worker's prompt exactly like the project's. Workers must operate within their assigned project directory. YOUR OWN session is NOT that kind of worker: it also carries the native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root), which is NOT confined to a project tree — what it can reach and when it asks are stated in "## Reach and scope" just below. Use ask_file_root to see which directory is this conversation's own, and the file tools to inspect real source code, run builds/tests, and drive git.
+- **Projects**: project_dir is where workers operate, and context_files are injected into their prompts. YOUR session is NOT that kind of worker — it carries the native file/shell suite, whose reach and consent rules are stated in "## Reach and scope" below.
 `)
 
 	writeSuiteReachBlock(b, mode)
@@ -395,15 +388,41 @@ Orchicon is an AI orchestration platform. It separates orchestration from execut
 // operator: the modes share the tool surface; only the disposition differs).
 func writeToolList(b *strings.Builder, toolRegistry *ToolRegistry, mode string) {
 	b.WriteString("\n## Available Tools\n")
-	b.WriteString("Orchicon's tools are available to you as MCP tools named `orchicon_<tool>` — call them directly through your tool mechanism and the system executes them against Orchicon, returning real results. Mutating tools run only after user confirmation. The native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root) is also on your session as native tools — its reach, its pre-approved directory and when it asks are stated in \"## Reach and scope\" above.\n\n")
+	b.WriteString("EVERY tool's name, description and exact parameter schema is delivered to you by the transport as a tool definition — the authoritative list is the one you can CALL, not a copy in this prompt. Do not look for a catalogue here. Mutating tools run only after user confirmation. The native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root) is on your session as native tools — its reach, its pre-approved directory and when it asks are stated in \"## Reach and scope\" above.\n\n")
+
+	// THE PER-TOOL LIST IS GONE, and this is why.
+	//
+	// This block used to render all 85 product tools as `- orchicon_<name>: <description> (<mutability>)`.
+	// Measured on this repository: 24,438 bytes ≈ 6,100 tokens — a SECOND, lossier copy of data the transport
+	// already sends as `orchicon.ToolDef{Name, Description, ParamsJSON}`. The prompt copy carried strictly
+	// less information (no parameter schema) while costing a third of the static prompt, and on a local model
+	// with a small window that duplication is the difference between a session that fits and one that does not.
+	//
+	// What is kept is the part the transport does NOT say: that mutating tools gate on user confirmation (a
+	// policy, not a schema fact), the native suite's existence, and the ask_user discipline below.
+	b.WriteString("Mutating tools — the `orchicon_*` tools that create, update, delete, send or fire — are gated on the user's confirmation, so propose them plainly rather than working around them.\n\n")
+
+	// THE NAMES ARE KEPT; THE DESCRIPTIONS ARE NOT. THAT DISTINCTION IS THE POINT.
+	//
+	// The per-tool list is a SECOND, lossier copy of the definitions the transport sends
+	// (`orchicon.ToolDef{Name, Description, ParamsJSON}` on the native path, MCP tools on the opencode
+	// path) — and it cost 24,438 bytes ≈ 6,100 tokens for 85 tools. But a bare deletion was wrong and the
+	// suite said so: several tests pin that the model is TOLD a capability exists, because a model does
+	// not go looking for a tool it has never heard of. That is a real lesson, not test inertia.
+	//
+	// So the names stay — a few hundred bytes, and the thing that makes a capability discoverable — while
+	// the one-line description per tool goes, because the transport already carries a better version of it
+	// WITH the parameter schema. What the model loses is nothing it did not already have twice.
+	var names []string
 	for _, td := range toolRegistry.List() {
-		mutability := "read-only"
-		if td.Mutating {
-			mutability = "mutates data — requires user confirmation"
-		}
-		b.WriteString(fmt.Sprintf("- `orchicon_%s`: %s (%s)\n", td.Name, td.Description, mutability))
+		names = append(names, "`orchicon_"+td.Name+"`")
 	}
-	b.WriteString("\n")
+	if len(names) > 0 {
+		b.WriteString("The platform tools on this session (full definitions and parameter schemas arrive as tool " +
+			"definitions — call them, do not guess their shape):\n")
+		b.WriteString(strings.Join(names, ", "))
+		b.WriteString(".\n\n")
+	}
 	b.WriteString("When a choice or a missing fact blocks you, ASK WITH `orchicon_ask_user` — one call, with the question and 2+ options. Do NOT write a numbered list of choices in your prose: a question written as prose is not answered as a choice, and the user's reply cannot be sent as an option. The tool RECORDS the question and ENDS YOUR TURN — the user answers in their next message. Ask, then STOP: never ask a question and continue on a guess.\n")
 }
 
