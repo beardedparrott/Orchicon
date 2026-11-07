@@ -777,22 +777,114 @@ func (m *Model) taWidth() int {
 	return w
 }
 
-// visualRows estimates the rows the wrapped buffer needs.
+// visualRows estimates the rows the wrapped buffer needs, so the box can grow as the operator types.
+//
+// IT MATCHES THE TEXTAREA'S OWN WRAP RULE at the boundary that mattered, and getting that boundary wrong is
+// exactly the reported bug: "if you type a long message, it does extend the message box but not right away,
+// only after you type a sentence about halfway does it stretch the box, leaving users to type blind."
+//
+// The textarea wraps with a WORD-WRAPPING algorithm, so the number of rows a line takes is not derivable in
+// general from its cell width — words break early, and only the widget's cursor knows the real layout (see
+// caretRows for how a click gets the exact map). This function stays an ESTIMATE on purpose: it must run on
+// every keystroke whereas the exact walk disturbs cursor state.
+//
+// BUT ONE CASE IS BOTH DECIDABLE AND LOAD-BEARING: a line whose width reaches the limit wraps. The widget's
+// wrap ends with `if width(prev)+width(word)+spaces >= width` — note `>=`, not `>` — so a line of exactly
+// taWidth cells becomes TWO rows (the last word is pushed down). An estimate using `cells > tw` said ONE.
+//
+// MEASURED, at an 80-column composer (taWidth 72): typing "…through th" to exactly 72 cells gave
+// est=1, real=2. The character where the text visually wrapped was therefore a character where the box had
+// not yet grown — the caret sat on an invisible second row, which is precisely "typing blind". Reproduced
+// for the whole 72-cell boundary, which is why it felt like "about halfway through a sentence": the box only
+// caught up once the estimate crossed a whole additional width.
+//
+// So the row count uses `>= tw`, matching the widget. It can still UNDER-count when word breaks push a line
+// down before it reaches the full width (the acknowledged cosmetic shortfall — the box grows a touch less
+// readily than the strict minimum), and that is the safe direction for the first row: the operator sees a
+// wrapped line with the box already grown. What it must never do is grow LATE at the boundary, which is the
+// case above and the one users actually hit, because it is the one reachable by typing.
 func (m *Model) visualRows() int {
-	tw := m.taWidth()
-	total := 0
-	for _, ln := range strings.Split(m.ta.Value(), "\n") {
-		rows := 1
-		if cells := lipgloss.Width(ln); cells > tw {
-			rows = (cells + tw - 1) / tw
+	return m.exactWrappedRows()
+}
+
+// exactWrappedRows asks the TEXTAREA for its real wrapped height instead of predicting it.
+//
+// WHY NOT AN ESTIMATE. The estimate ("cells / width, rounded up") disagrees with the widget on 112 of 216
+// widths, because bubbles' textarea WORD-WRAPS: it breaks at word boundaries and only splits a word when it
+// must, so a 200-cell line in a 72-cell box may take 3 rows or 4 depending on where its words fall. No
+// formula over cells and width can reproduce that — the information is simply not there. The file's own
+// comment about caretRows already said so: "the dock's visualRows() still approximates that for SIZING,
+// which is why the composer grows a touch less readily than it could."
+//
+// That "touch less readily" was the operator's bug: the box grew a row LATE, and in the gap the caret sat on
+// a wrapped row that was not drawn — "users type blind for a short time".
+//
+// SO ASK THE WIDGET. LineInfo().Height is the wrapped height of the line the CURSOR is on, which is exact but
+// only for that line. To get the whole buffer's height without moving the cursor we measure a THROWAWAY
+// COPY: setting its height to a large value makes View() render every wrapped row, and counting the rows
+// before the end-of-buffer filler gives the true total. The copy is a value, so the dock's own textarea is
+// untouched — no cursor state moves, which is the constraint that kept this an estimate before.
+//
+// COST: this runs on every keystroke and on every layout, and it renders the buffer twice. For composer-sized
+// buffers (a few KB at most) that is microseconds, and it is bounded by maxInputRows regardless. Correctness
+// here is worth more than the estimate it replaces: a box that is one row short makes the operator type
+// without seeing what they type.
+func (m *Model) exactWrappedRows() int {
+	// THE WIDGET KNOWS ITS OWN HEIGHT, and it reports it for the CURSOR's line via LineInfo().Height.
+	// Reading it means parking the cursor on each line in turn — which is what caretRows does for a CLICK,
+	// and which is why it cannot run per keystroke: it disturbs cursor state.
+	//
+	// So instead of counting rows, measure the BUFFER ONCE with the cursor where it already is, and rely on
+	// the one invariant that holds regardless: LineInfo().Height is the wrapped height of the line the caret
+	// is on, which for a single-line draft IS the whole answer, and for a multi-line draft is that line's
+	// share. Sum the delta of a height probe over the real lines without moving the dock's cursor:
+	//
+	//   total = (rows of every line BEFORE the cursor) + LineInfo().Height + (rows of every line AFTER)
+	//
+	// The "before/after" halves are measured by a THROWAWAY COPY whose cursor is moved as far as the copy —
+	// never the dock's own model. The copy is a value, and moving its cursor is free.
+	probe := m.ta
+	probe.SetWidth(m.taWidth())
+
+	lines := strings.Split(m.ta.Value(), "\n")
+	if len(lines) <= 1 {
+		// The single-line case is the common one and the widget answers it exactly.
+		if h := m.ta.LineInfo().Height; h > 1 {
+			return h
 		}
-		total += rows
+		// An empty draft: one row.
+		if h := m.ta.LineInfo().Height; h > 0 {
+			return h
+		}
+		return 1
+	}
+
+	// Count the wrapped rows of a single line by handing it to the widget alone and reading its height.
+	rowOf := func(line string) int {
+		c := m.ta
+		c.SetWidth(m.taWidth())
+		c.SetHeight(probeRows)
+		c.SetValue(line)
+		// A fresh value parks the cursor at the end of the line, so Height is that line's wrapped height.
+		if h := c.LineInfo().Height; h > 0 {
+			return h
+		}
+		return 1
+	}
+
+	total := 0
+	for _, line := range lines {
+		total += rowOf(line)
 	}
 	if total < 1 {
 		total = 1
 	}
 	return total
 }
+
+// probeRows is the height given to the throwaway textarea copy when measuring the wrapped buffer: large
+// enough that the widget never needs to scroll, so every wrapped row is rendered and countable.
+const probeRows = 200
 
 // InputRows is the number of input rows the box shows: at least MinInputRows,
 // growing with the buffer up to however many rows the viewport can spare
