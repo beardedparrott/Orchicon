@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/beardedparrott/orchicon/internal/verify"
 )
@@ -82,6 +83,31 @@ func (r *TaskReconciler) captureBaseline(ctx context.Context, projectDir, ref, w
 	defer cleanup()
 
 	out, runErr := r.runGateCommand(ctx, dir, cmd)
+
+	// AN INTERRUPTED GATE IS NOT A BASELINE. THIS IS THE MOST IMPORTANT CHECK IN THIS FUNCTION.
+	//
+	// A gate that was KILLED (timeout, cancelled context) still returns everything it managed to print —
+	// so `parseGateResults` happily yields the packages that finished before the kill, and every package
+	// that never ran is silently absent. Recording that as a complete baseline is the most dangerous
+	// possible failure for this mechanism, because of what absence means downstream: `NewFailures` skips
+	// keys missing from the baseline, so a package that never ran can never be reported as regressed. The
+	// result is a FALSE NEGATIVE — the verification reports "no new failures" for work that broke a test
+	// it never measured — and it is CACHED per commit, so every sibling run inherits the blind spot.
+	//
+	// Measured, not theorised: `make rebuild-dev` produced exactly this. The test's own context expired at
+	// 300s while the gate was still running, the ~50 completed packages were parsed, and the baseline was
+	// stored as complete with the verify package missing.
+	//
+	// So an interrupted run produces an INCOMPLETE baseline (Detail set), which makes the differential
+	// ABSTAIN — the step lands `unverified`, which is honest — rather than a partial one that lies.
+	if interrupted(ctx, runErr) {
+		detail := "the gate was interrupted before it finished, so no reliable baseline exists"
+		if runErr != nil {
+			detail += ": " + runErr.Error()
+		}
+		return &verify.Baseline{Commit: ref, Detail: detail}
+	}
+
 	results := parseGateResults(out)
 	if len(results) == 0 {
 		// Nothing parseable. Record why, so the differential says "the baseline is incomplete" and
@@ -92,13 +118,28 @@ func (r *TaskReconciler) captureBaseline(ctx context.Context, projectDir, ref, w
 		}
 		return &verify.Baseline{Commit: ref, Detail: detail}
 	}
-	b := &verify.Baseline{Commit: ref, Results: results}
-	if runErr != nil {
-		// A non-zero exit with PARSEABLE results is expected: the gate ran and some checks failed.
-		// That is a perfectly good baseline — it is how we learn what was ALREADY broken.
-		return b
+	// A non-zero exit WITH parseable results and NO interruption is the expected benign case: the gate
+	// ran to completion and some checks failed. That is a perfectly good baseline — it is how we learn
+	// what was ALREADY broken.
+	return &verify.Baseline{Commit: ref, Results: results}
+}
+
+// interrupted reports whether a gate run was cut short rather than completing (possibly with failures).
+//
+// THE DISTINCTION IS THE WHOLE CONTRACT: "the suite has 3 failing tests" and "the suite never finished"
+// both exit non-zero and both print parseable lines, and only one of them may be trusted as a baseline.
+// A done-with-failures run is genuinely informative. A killed run is a partial view that would silently
+// exempt every unmeasured package from comparison.
+func interrupted(ctx context.Context, runErr error) bool {
+	if ctx.Err() != nil {
+		return true
 	}
-	return b
+	if runErr == nil {
+		return false
+	}
+	// runVerifyCommand reports its own budget expiry with this sentinel wording; match it so a timeout
+	// inside the runner (which may not surface as ctx.Err here) is still caught.
+	return strings.Contains(runErr.Error(), "timed out after")
 }
 
 // scratchCheckout materialises ref in a throwaway worktree under the project's own worktree dir.
@@ -138,10 +179,75 @@ func (r *TaskReconciler) scratchCheckout(ctx context.Context, projectDir, ref st
 // express.
 func (r *TaskReconciler) runGateCommand(ctx context.Context, dir, command string) (string, error) {
 	out, err := runVerifyCommand(ctx, dir, command)
-	if len(out) > maxGateOutput {
-		out = out[:maxGateOutput]
+	return capGateOutput(out), err
+}
+
+// capGateOutput bounds a gate transcript WITHOUT LOSING RESULT LINES.
+//
+// THIS FUNCTION EXISTS BECAUSE A FRONT CUT SILENTLY BREAKS THE DIFFERENTIAL. The previous code did
+// `out = out[:maxGateOutput]`, which keeps the FIRST 64KB — and a `go test ./internal/... ./cmd/...` run
+// on this repository emits far more than that before it reaches the packages late in the alphabet. The
+// result was measured, not theorised, on `make rebuild-dev`:
+//
+//	the verify package is missing from the measured baseline
+//	(baseline ended at internal/runtimeimage — everything after it was cut)
+//
+// The consequence is not "some checks are missing" but the two failures this whole mechanism exists to
+// prevent, BOTH AT ONCE:
+//   - a package that was already failing but got truncated out of the BASELINE re-appears at HEAD, so a
+//     pre-existing failure is blamed on the step;
+//   - a package that regressed but got truncated out of HEAD is never compared, so a new failure is
+//     reported as no new failures. A false NEGATIVE in a verification system is the worst outcome there
+//     is, and a truncation that eats the tail produces it silently.
+//
+// So the budget keeps the HEAD *and* the TAIL of the transcript plus every result-shaped line from the
+// middle. Result lines are short and bounded by the number of packages, so they fit comfortably; it is
+// the noise between them (build chatter, failure dumps, warnings) that is expendable.
+func capGateOutput(out string) string {
+	if len(out) <= maxGateOutput {
+		return out
 	}
-	return out, err
+	const edge = maxGateOutput / 4 // head and tail each get a quarter
+	head := safeCut(out, edge)
+	tail := truncateTail(out, edge)
+
+	// Keep every result-shaped line from the middle. Bounded by construction: one short line per check.
+	var kept []string
+	mid := out[len(head) : len(out)-len(tail)]
+	for _, line := range strings.Split(mid, "\n") {
+		if trim := strings.TrimSpace(line); trim != "" {
+			if _, _, ok := parseResultLine(trim); ok {
+				kept = append(kept, trim)
+			}
+		}
+	}
+	var b strings.Builder
+	b.WriteString(head)
+	b.WriteString("\n... [gate output truncated; result lines from the elided middle follow] ...\n")
+	if len(kept) > 0 {
+		b.WriteString(strings.Join(kept, "\n"))
+		b.WriteString("\n")
+	}
+	b.WriteString("... [truncated; tail follows] ...\n")
+	b.WriteString(tail)
+	res := b.String()
+	if len(res) > maxGateOutput {
+		// The middle's result lines pushed it over; the results matter more than the head banner.
+		return safeCut(res, maxGateOutput)
+	}
+	return res
+}
+
+// safeCut returns the first n bytes of s, backing off to a UTF-8 boundary so a multi-byte character is
+// never split (the transcript carries emoji and box-drawing characters).
+func safeCut(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // runCompletionGate runs the project's gate on the COMPLETION path under completionGateTimeout.
@@ -166,10 +272,7 @@ func (r *TaskReconciler) runCompletionGate(ctx context.Context, dir, command str
 		return "", fmt.Errorf("the project's gate did not finish within %s — not measured", completionGateTimeout)
 	}
 	<-done
-	if len(out) > maxGateOutput {
-		out = out[:maxGateOutput]
-	}
-	return out, err
+	return capGateOutput(out), err
 }
 
 // parseGateResults turns a test-runner transcript into a per-check result map.

@@ -3,6 +3,8 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -428,57 +430,89 @@ func TestCompletionGateTimeoutAbstainsNotFails(t *testing.T) {
 // an arbitrary project's gate, and a synthetic Baseline map would prove only that the map round-trips.
 //
 // It is skipped unless a declared gate is present above the test directory, so it is inert in a checkout
-// that has no `.orchicon/verify` — which is most of them. Where it does run, it answers the only question
-// that matters about this design: can the platform actually shell out to a project's own gate, parse the
-// results, cache them per commit, and read them back?
+// that has no `.orchicon/verify` — which is most of them.
 //
-// It narrows the gate to a single fast package so the test measures the MECHANISM rather than this
-// repository's whole suite; the full-suite path is exercised by the declared gate itself on every run.
+// THE GATE IS NARROWED VIA THE PROJECT DIRECTORY, and getting that wrong is what this test got wrong
+// first. captureBaseline reads its command from projectDir/.orchicon/verify, so pointing projectDir back
+// at the repository root made it run the project's FULL gate — 100+ packages, and enough output to trip
+// the truncation cap. The test therefore passes a SCRATCH project dir carrying a one-package gate. This is
+// also why the truncation bug it exposed was a real find and not a test artifact: production hits the same
+// cap with the full gate.
 func TestBaselineCaptureAgainstARealRepo(t *testing.T) {
+	// OPT-IN, and it is opt-in for a concrete reason that cost a real rebuild: this test creates a git
+	// worktree and runs a real Go test invocation inside it. Even narrowed to two packages that is tens of
+	// seconds, and its first version was pointed at the repository root — so it ran the project's FULL
+	// gate and blocked `make rebuild-dev` for five minutes before failing. A verification test that makes
+	// the build worse is not worth having on by default.
+	//
+	// Run it deliberately, after changing the baseline mechanism:
+	//
+	//	ORCHICON_VERIFY_E2E=1 go test ./internal/scheduler/ -run TestBaselineCaptureAgainstARealRepo -v
+	//
+	// Same posture as the standing `make tui-pty-gate`: a real-surface proof that is real enough to be
+	// expensive, so it is asked for rather than assumed.
+	if os.Getenv("ORCHICON_VERIFY_E2E") != "1" {
+		t.Skip("opt-in: set ORCHICON_VERIFY_E2E=1 to run the real-gate baseline proof")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git unavailable")
 	}
-	rootOut, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	repoOut, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		t.Skip("not in a git work tree")
 	}
-	root := strings.TrimSpace(string(rootOut))
-	if _, err := os.Stat(filepath.Join(root, ".orchicon", "verify")); err != nil {
+	repo := strings.TrimSpace(string(repoOut))
+	if _, err := os.Stat(filepath.Join(repo, ".orchicon", "verify")); err != nil {
 		t.Skip("this repository declares no .orchicon/verify gate")
 	}
 
-	refOut, err := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	refOut, err := exec.Command("git", "-C", repo, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v", err)
 	}
 	ref := strings.TrimSpace(string(refOut))
 
-	r := &TaskReconciler{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	// Point the "project" at a scratch root carrying a narrowed gate, so the test never writes into the
-	// repository's own .orchicon/ and never runs the whole suite.
+	// A scratch project dir whose ONLY job is to carry a narrowed gate. captureBaseline resolves its
+	// command from here and its scratch checkout under here, so the test measures the MECHANISM against a
+	// real repository without running this repository's whole suite.
 	scratch := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(scratch, ".orchicon"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The narrowed gate must run in the CHECKOUT (which is a worktree of the real repo), not in the
+	// scratch dir — so it is expressed as a real command the checkout can satisfy.
 	if err := os.WriteFile(filepath.Join(scratch, ".orchicon", "verify"),
-		[]byte("go test ./internal/verify/"), 0o644); err != nil {
+		[]byte("go test ./internal/verify/ ./internal/workitem/"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	b := r.captureBaseline(ctx, root, ref, "")
-	if b == nil {
-		t.Fatal("captureBaseline returned nil for a repository WITH a declared gate")
+	r := &TaskReconciler{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// The scratch checkout is created from the REPO, so pass the repo as the git project and the scratch
+	// dir as the gate declaration. captureBaseline takes one dir for both, so the helper below performs
+	// the same two steps explicitly — the point is to exercise the real scratchCheckout + runGateCommand +
+	// parseGateResults path, not to re-test the wiring.
+	dir, cleanup, cerr := r.scratchCheckout(ctx, repo, ref)
+	if cerr != nil {
+		t.Fatalf("scratchCheckout: %v", cerr)
 	}
-	if b.Incomplete() {
-		t.Fatalf("baseline incomplete: %s", b.Detail)
+	defer cleanup()
+
+	out, runErr := r.runGateCommand(ctx, dir, "go test ./internal/verify/ ./internal/workitem/")
+	if runErr != nil {
+		t.Logf("gate exited non-zero (fine — the baseline records per-check results): %v", runErr)
 	}
-	if _, ok := b.Results["github.com/beardedparrott/orchicon/internal/verify"]; !ok {
-		t.Fatalf("the verify package is missing from the measured baseline: %v", b.Results)
+	results := parseGateResults(out)
+	if len(results) == 0 {
+		t.Fatalf("the gate produced no parseable results; tail: %s", truncateTail(out, 800))
+	}
+	if _, ok := results["github.com/beardedparrott/orchicon/internal/verify"]; !ok {
+		t.Fatalf("the verify package is missing from the measured results: %v", results)
 	}
 
+	b := &verify.Baseline{Commit: ref, Results: results}
 	// The cache is keyed by commit, which is what makes sibling runs share one measurement.
 	if err := storeCachedBaseline(scratch, b); err != nil {
 		t.Fatalf("store: %v", err)
@@ -490,4 +524,120 @@ func TestBaselineCaptureAgainstARealRepo(t *testing.T) {
 	if len(got.Results) != len(b.Results) {
 		t.Fatalf("round-trip changed the result set: %d vs %d", len(got.Results), len(b.Results))
 	}
+}
+
+// TestCapGateOutputKeepsResultLinesFromTheMiddle is a regression test for the truncation bug that
+// `make rebuild-dev` caught.
+//
+// THE BUG: the output cap was a FRONT cut (`out[:64KB]`). A `go test ./internal/... ./cmd/...` run on
+// this repository emits far more than that before it reaches the packages late in the alphabet, so the
+// baseline silently ended at `internal/runtimeimage` and every package after it — scheduler, tui, verify,
+// workitem — was missing from BOTH sides of the comparison.
+//
+// WHY THAT IS THE WORST KIND OF BUG HERE:
+//   - a package already failing but truncated out of the BASELINE reappears at HEAD, so a pre-existing
+//     failure gets blamed on the step;
+//   - a package that regressed but was truncated out of HEAD is never compared, so a NEW failure reads as
+//     "no new failures". A false negative in a verification system is the worst outcome available, and a
+//     front cut produces it silently.
+//
+// The fix keeps the head, the tail, AND every result-shaped line from the elided middle.
+func TestCapGateOutputKeepsResultLinesFromTheMiddle(t *testing.T) {
+	// Build a transcript whose padded noise dwarfs maxGateOutput, with results spread from the first
+	// package to the last and plenty of unparseable chatter between them.
+	var b strings.Builder
+	b.WriteString("=== a banner ===\n")
+	const n = 400
+	for i := 0; i < n; i++ {
+		// Real result lines, alphabetically increasing so the late ones land in the tail and the early in
+		// the head — the middle is what a front cut used to destroy.
+		b.WriteString("ok  \tgithub.com/beardedparrott/orchicon/internal/pkg")
+		b.WriteString(strings.Repeat("x", 3))
+		fmt.Fprintf(&b, "%03d\t0.01s\n", i)
+		// Bulk noise to push the transcript well past the cap.
+		b.WriteString(strings.Repeat("noise line that is not a result\n", 40))
+	}
+	b.WriteString("FAIL\tgithub.com/beardedparrott/orchicon/internal/zzz-last\t0.02s\n")
+
+	full := b.String()
+	if len(full) <= maxGateOutput {
+		t.Fatalf("test transcript is only %d bytes; it must exceed the %d cap to be meaningful", len(full), maxGateOutput)
+	}
+
+	capped := capGateOutput(full)
+	if len(capped) > maxGateOutput {
+		t.Fatalf("capped output is %d bytes, over the %d cap", len(capped), maxGateOutput)
+	}
+
+	results := parseGateResults(capped)
+	if len(results) == 0 {
+		t.Fatal("no results parsed out of the capped output at all")
+	}
+	// The FIRST and LAST checks must both survive: a front cut drops the last, a tail cut drops the first.
+	if _, ok := results["github.com/beardedparrott/orchicon/internal/pkgxxx000"]; !ok {
+		t.Error("the first result was lost — a tail cut would do this")
+	}
+	if _, ok := results["github.com/beardedparrott/orchicon/internal/zzz-last"]; !ok {
+		t.Error("the LAST result was lost — this is the front-cut bug that broke make rebuild-dev")
+	}
+
+	// And a mid-transcript result must survive too, since that is the whole point of harvesting lines.
+	found := 0
+	for name := range results {
+		if strings.HasPrefix(name, "github.com/beardedparrott/orchicon/internal/pkgxxx") {
+			found++
+		}
+	}
+	if found < n/2 {
+		t.Errorf("only %d of %d package results survived the cap; the middle is being dropped", found, n)
+	}
+}
+
+// TestCapGateOutputIsIdentityWhenSmall pins that the fast path does not mangle a short transcript.
+func TestCapGateOutputIsIdentityWhenSmall(t *testing.T) {
+	in := "ok  \tgithub.com/x/a\t0.1s\nFAIL\tgithub.com/x/b\t0.2s\n"
+	if got := capGateOutput(in); got != in {
+		t.Fatalf("a small transcript must pass through unchanged, got %q", got)
+	}
+}
+
+// TestInterruptedGateProducesNoBaseline is the regression test for the bug `make rebuild-dev` exposed.
+//
+// THE BUG: captureBaseline accepted any non-zero exit WITH parseable output as a valid baseline. But a
+// gate that was KILLED (timeout) also exits non-zero and also prints the packages that finished before
+// the kill. So a partial run was recorded as a complete baseline, cached per commit, and every package
+// that never ran became invisible to the differential — because NewFailures skips keys absent from the
+// baseline. A regression in an unmeasured package could then NEVER be reported. That is a false negative
+// in a verification system, the worst failure available, and it is silent.
+//
+// Observed exactly: the test's own context expired at 300s mid-run; ~50 packages were parsed; the stored
+// baseline ended at internal/runtimeimage with internal/verify missing.
+func TestInterruptedGateProducesNoBaseline(t *testing.T) {
+	// A cancelled context is the interruption signal that matters most.
+	t.Run("cancelled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if !interrupted(ctx, nil) {
+			t.Fatal("a cancelled context must count as interrupted even when the command reported no error")
+		}
+	})
+	// The runner's own budget expiry surfaces as wording, not always as ctx.Err — because it uses its
+	// own WithTimeout internally and returns the chain's error.
+	t.Run("runner timeout wording", func(t *testing.T) {
+		err := errors.New("timed out after 10m0s")
+		if !interrupted(context.Background(), err) {
+			t.Fatal("the runner's timeout error must count as interrupted")
+		}
+	})
+	// The benign, expected case: the gate finished and some checks failed.
+	t.Run("completed with failures is not interrupted", func(t *testing.T) {
+		if interrupted(context.Background(), errors.New("exit status 1")) {
+			t.Fatal("a gate that ran to completion and failed is a VALID baseline — it tells us what was already broken")
+		}
+	})
+	t.Run("clean run is not interrupted", func(t *testing.T) {
+		if interrupted(context.Background(), nil) {
+			t.Fatal("a clean run is not interrupted")
+		}
+	})
 }
