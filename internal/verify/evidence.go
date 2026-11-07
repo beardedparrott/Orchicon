@@ -134,13 +134,14 @@ func Collect(ctx context.Context, ev Evidence) Result {
 	// the expensive checks pointless.
 	collectGitInvariants(&r, ev)
 
-	// --- Layer 1: the project's declared command, at HEAD ---------------------------------------
+	// --- Layer 1: the project's gate, base vs HEAD, and the declared command's exit code ---------
 	//
-	// Run before the differential so its result is in the record even when no baseline exists.
-	collectDeclaredCommand(ctx, &r, ev)
-
-	// --- Layer 1 (differential): the project's gate, base vs HEAD -------------------------------
-	collectDifferential(&r, ev)
+	// THE REGRESSION SET IS COMPUTED FIRST because BOTH checks depend on it: the declared command may only
+	// call a red gate a problem when the differential cannot explain it. Computing it once also guarantees
+	// the two checks cannot disagree about what regressed.
+	regressed := regressionsAgainstBaseline(ev)
+	collectDeclaredCommand(ctx, &r, ev, regressed)
+	collectDifferential(&r, ev, regressed)
 
 	return r.Conclude()
 }
@@ -235,15 +236,52 @@ func collectGitInvariants(r *Result, ev Evidence) {
 }
 
 // collectDeclaredCommand appends the result of the project's own `.orchicon/verify` command.
-func collectDeclaredCommand(_ context.Context, r *Result, ev Evidence) {
+//
+// THE EXIT CODE ALONE IS NEVER A FAILURE, and this is the correction of a real defect that failed every
+// step of a live run six times.
+//
+// `project_gate` and `no_new_failures` answer DIFFERENT QUESTIONS, and this check used to answer the second
+// one badly:
+//
+//	project_gate     — did the declared command exit 0?                          (a blunt, whole-repo signal)
+//	no_new_failures  — did THIS STEP make anything worse?                        (the question that matters)
+//
+// On a repository with ANY pre-existing breakage the first is not merely uninformative, it is actively
+// wrong: it fails every step for something that step did not do. Measured on this platform's own project,
+// where the gate is red at baseline (2 pre-existing failures): a PLAN-ONLY architect step — which by
+// contract writes no code at all — was failed with `project_gate: the project's declared gate FAILED`, then
+// re-dispatched through all six recovery attempts, each one failing identically. Nothing the step did could
+// have changed the outcome, and the differential it was supposed to defer to would have cleared it.
+//
+// So the exit code is attributed, not trusted:
+//
+//	exit 0                                              → PASS
+//	exit != 0, and the differential explains it           → PASS, with the pre-existing failures named
+//	exit != 0, and the differential found a regression    → PASS here; `no_new_failures` carries the failure
+//	exit != 0, and there is NO baseline to attribute it   → ABSTAIN (unverified), never FAIL
+//
+// The third case is deliberate: a regression is reported ONCE, by the check that can attribute it. Failing
+// two checks for one cause reads as two problems and buries the one that says what and whose it is.
+func collectDeclaredCommand(_ context.Context, r *Result, ev Evidence, regressed []string) {
 	switch {
+	case !ev.StepDeclaresDeliverable:
+		// A step that owes no code cannot move the gate, so the check does not apply — SKIP, not abstain.
+		// Skipping keeps the verdict decided by the checks that DO apply, which is what lets a plan-only
+		// step be verified on the evidence it can offer. (An abstention here would hold every architect step
+		// at `unverified` forever for a question never asked of it.)
+		reason := strings.TrimSpace(ev.SkipReason)
+		if reason == "" {
+			reason = "this step does not declare a code deliverable"
+		}
+		r.Add("project_gate", CheckSkip, reason)
+		r.Add("no_new_failures", CheckSkip, reason)
+		return
 	case strings.TrimSpace(ev.DeclaredCommand) == "":
 		// The project declares no gate. This is a legitimate configuration, and it is also the
 		// single biggest reason a step cannot be verified — so it ABSTAINS rather than silently
 		// passing. That is the whole design: an absent check must cost the step its "verified"
 		// status, or every project without a gate would look as good as one with a comprehensive
-		// suite. (This platform's OWN project is in exactly this state: `.orchicon/verify` does not
-		// exist in the Orchicon repository, and its runs are therefore unverifiable today.)
+		// suite.
 		r.Add("project_gate", CheckAbstain,
 			"the project declares no gate (no .orchicon/verify), so nothing can be confirmed passing")
 	case !ev.DeclaredRan:
@@ -254,17 +292,54 @@ func collectDeclaredCommand(_ context.Context, r *Result, ev Evidence) {
 			detail += ": " + firstLine(d)
 		}
 		r.Add("project_gate", CheckPass, detail)
+	case !ev.Baseline.Incomplete() && ev.HeadMeasured && len(regressed) > 0:
+		// Red, and something regressed. The differential reports it — not this check.
+		r.Add("project_gate", CheckPass,
+			"the gate is red, and the regression it contains is reported by no_new_failures")
+	case !ev.Baseline.Incomplete() && ev.HeadMeasured:
+		// Red, but identically red before the step began. THIS is the case that was failing good work.
+		existing := countBaselineFailures(ev.Baseline)
+		r.Add("project_gate", CheckPass, fmt.Sprintf(
+			"the gate is not fully green, but it is identically not-green at the baseline (%d pre-existing "+
+				"failure(s)) — nothing here is attributable to this step", existing))
 	default:
-		detail := "the project's declared gate FAILED"
+		// Red and unattributable: no baseline, or HEAD could not be re-measured. Unverified, not failed.
+		// Blaming a step for a failure the platform cannot place is the defect this whole package exists
+		// to remove, and the honest answer is that we do not know.
+		detail := "the gate is red and there is no baseline to attribute it against, so it is not assigned " +
+			"to this step"
 		if d := strings.TrimSpace(ev.DeclaredDetail); d != "" {
-			detail += ": " + firstLine(d)
+			if failure := firstFailureLine(d); failure != "" {
+				detail += ": " + failure
+			} else {
+				detail += " (the captured output did not include the failing line)"
+			}
 		}
-		r.Add("project_gate", CheckFail, detail)
+		r.Add("project_gate", CheckAbstain, detail)
 	}
 }
 
+// countBaselineFailures reports how many checks were already failing when the baseline was taken.
+func countBaselineFailures(b *Baseline) int {
+	if b == nil {
+		return 0
+	}
+	n := 0
+	for _, passing := range b.Results {
+		if !passing {
+			n++
+		}
+	}
+	return n
+}
+
 // collectDifferential appends the base-vs-HEAD comparison — the check that settles "pre-existing".
-func collectDifferential(r *Result, ev Evidence) {
+func collectDifferential(r *Result, ev Evidence, regressed []string) {
+	// Already recorded as a skip by collectDeclaredCommand when the step owes no code; a second entry would
+	// be a duplicate. Nothing to add.
+	if !ev.StepDeclaresDeliverable {
+		return
+	}
 	if ev.Baseline.Incomplete() {
 		detail := "no baseline was captured for this step, so new failures cannot be distinguished from existing ones"
 		if ev.Baseline != nil && strings.TrimSpace(ev.Baseline.Detail) != "" {
@@ -281,7 +356,6 @@ func collectDifferential(r *Result, ev Evidence) {
 		r.Add("no_new_failures", CheckAbstain, "HEAD could not be measured: "+firstLine(detail))
 		return
 	}
-	regressed := NewFailures(ev.Baseline.Results, ev.HeadResults)
 	if len(regressed) > 0 {
 		r.Add("no_new_failures", CheckFail,
 			fmt.Sprintf("%d check(s) newly failing: %s", len(regressed), joinCapped(regressed, 3)))
@@ -357,6 +431,15 @@ func normalizeResults(in map[string]bool) map[string]bool {
 		out[key] = passing
 	}
 	return out
+}
+
+// regressionsAgainstBaseline is NewFailures, guarded so an unmeasured baseline or HEAD yields nil rather
+// than a misleading empty-but-present set.
+func regressionsAgainstBaseline(ev Evidence) []string {
+	if ev.Baseline.Incomplete() || !ev.HeadMeasured {
+		return nil
+	}
+	return NewFailures(ev.Baseline.Results, ev.HeadResults)
 }
 
 // NewFailures returns the checks that pass in the baseline and fail at HEAD, sorted.
@@ -504,6 +587,44 @@ func shortRef(ref string) string {
 }
 
 // firstLine returns the first non-empty line of s, trimmed and capped — for an error excerpt.
+// firstFailureLine returns the first line of a gate transcript that actually reports a FAILURE, or "" when
+// the transcript names none.
+//
+// THE OBSERVED DEFECT: the failure reason read `project_gate: the project's declared gate FAILED: …
+// internal/version [no test files]`. `[no test files]` is a PASSING line. `firstLine` had returned the first
+// line of a TAIL-TRUNCATED excerpt, which is by construction the oldest surviving line and therefore the
+// least likely to be the failure — so the one thing an operator needs (WHICH check broke, and why) was
+// absent, and the message actively pointed at the wrong one.
+//
+// This scans for the failure instead of taking the first line, and returns "" rather than a misleading
+// excerpt when the excerpt genuinely contains none — the caller then says the cause was not in the captured
+// output, which is true and actionable, instead of naming a green line.
+func firstFailureLine(s string) string {
+	for _, raw := range strings.Split(s, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		failed := strings.HasPrefix(line, "FAIL") ||
+			strings.Contains(line, "--- FAIL:") ||
+			strings.Contains(lower, " build failed") ||
+			strings.HasSuffix(line, " FAILED") ||
+			strings.Contains(line, ": FAILED") ||
+			strings.Contains(line, "cannot find package") ||
+			strings.Contains(line, "undefined:") ||
+			strings.Contains(line, "panic:") ||
+			(strings.Contains(line, ".go:") && strings.Contains(lower, "error"))
+		if failed {
+			if len(line) > 200 {
+				return line[:200] + "…"
+			}
+			return line
+		}
+	}
+	return ""
+}
+
 func firstLine(s string) string {
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(line)

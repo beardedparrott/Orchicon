@@ -441,8 +441,16 @@ func (r *TaskReconciler) gatherEvidence(ctx context.Context, in evidenceInput) v
 	}
 
 	// The project's declared gate, re-measured at HEAD.
+	//
+	// SKIPPED FOR A STEP THAT OWES NO CODE. A plan-only step (the architect writes a gitignored note) cannot
+	// change the gate's outcome, so running it costs a full build+test cycle to learn nothing and — worse —
+	// makes a red-at-baseline gate a failure that step can never clear. The differential is skipped with it
+	// for the same reason: with no code change there is nothing to regress.
+	//
+	// This was a real failure: architect run 01M6TBXTPB26MX13JFEPFTV7EG ran the full gate, got a red result
+	// it had not caused, and failed six recovery attempts in a row.
 	ev.DeclaredCommand = declaredGateCommand(in.projectDir)
-	if ev.DeclaredCommand != "" {
+	if ev.DeclaredCommand != "" && in.stepDeclaresDeliverable {
 		out, gerr := r.runCompletionGate(ctx, in.worktreePath, ev.DeclaredCommand)
 		ev.DeclaredRan = true
 		ev.DeclaredPassed = gerr == nil

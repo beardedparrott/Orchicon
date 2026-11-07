@@ -54,12 +54,24 @@ const (
 	// it either). The operator's whole complaint — "sometimes it works, sometimes it doesn't, and I
 	// find out later" — is this state being silently reported as success.
 	VerdictUnverified Verdict = "unverified"
+
+	// VerdictNotApplicable — no check APPLIED to this step at all, so the step was neither confirmed nor
+	// left ambiguous. It is the honest verdict for a plan-only or approval step: nothing about it is
+	// mechanically checkable, and saying "verified" would claim a confirmation that did not happen.
+	//
+	// WHY THIS IS SEPARATE FROM UNVERIFIED. `unverified` means "a check that should have run could not" —
+	// it is a gap in the evidence and an operator should treat it as one. `not_applicable` means "this step
+	// is not the kind of thing that is checked" — a plan, an approval, graph plumbing. Collapsing the two
+	// would flood the acceptance review with "unverified" on every architect/approver step until the word
+	// stopped meaning anything, which is exactly how a signal gets ignored.
+	VerdictNotApplicable Verdict = "not_applicable"
 )
 
-// IsSuccess reports whether the verdict permits the step to be treated as done.
+// IsSuccess reports whether the verdict permits the step to be treated as a CONFIRMED success.
 //
 // ONLY VerdictVerified does. This is the single most important line in the package: it is where
-// "unverified" stops being rounded up to "fine".
+// "unverified" stops being rounded up to "fine", and where `not_applicable` correctly refuses to claim a
+// confirmation that did not happen.
 func (v Verdict) IsSuccess() bool { return v == VerdictVerified }
 
 // String renders the verdict for logs, records and the UI.
@@ -163,7 +175,24 @@ func (r *Result) Conclude() Result {
 		r.Reason = describe(abstained, "unverified: ")
 		return *r
 	}
+	// NO CHECK APPLIED AT ALL is not the same as every check passing. A verdict of `verified` asserts that
+	// something was confirmed; with every check skipped, nothing was — and claiming otherwise is the silent
+	// success this package exists to remove, just wearing a different hat.
+	if !r.anyCheckApplied() {
+		r.Verdict = VerdictNotApplicable
+		r.Reason = "no mechanical check applies to this step (it produces no repository evidence to examine)"
+	}
 	return *r
+}
+
+// anyCheckApplied reports whether at least one check actually reached a conclusion.
+func (r *Result) anyCheckApplied() bool {
+	for _, c := range r.Checks {
+		if c.Status == CheckPass || c.Status == CheckFail || c.Status == CheckAbstain {
+			return true
+		}
+	}
+	return false
 }
 
 // describe renders up to two checks as a one-line reason. Two, not all: the reason is a summary for

@@ -109,9 +109,26 @@ func (r *TaskReconciler) verdictForOutcome(ctx context.Context, exec db.Executio
 	// evidence heuristic can be wrong, and failing an honest step on a heuristic is worse than showing
 	// the operator. An explicit FAIL verdict in the worker's own report does contradict its own
 	// `success`, though, and that is a contradiction.
-	res = appendACReportCheck(res, output)
+	res = appendACReportCheck(res, output, skipReasonForNoDeliverable(declares, skipReason))
 
 	return res, true
+}
+
+// skipReasonForNoDeliverable converts the deliverable exemption into an AC-report skip reason, or "" when the
+// step DOES owe a deliverable (so a missing report is a real omission and must abstain).
+//
+// The two questions are the same question: a step that owes no code also owes no acceptance-criteria account,
+// because the criteria describe outcomes a LATER step produces. Deriving one from the other keeps them from
+// drifting — and it is what lets the architect's deliberate "no AC REPORT, and here is why" be recognised as
+// correct rather than as an omission.
+func skipReasonForNoDeliverable(declares bool, skipReason string) string {
+	if declares {
+		return ""
+	}
+	if r := strings.TrimSpace(skipReason); r != "" {
+		return r
+	}
+	return "this step does not declare a code deliverable"
 }
 
 // appendACReportCheck folds the worker's own AC REPORT into the verdict.
@@ -127,9 +144,16 @@ func (r *TaskReconciler) verdictForOutcome(ctx context.Context, exec db.Executio
 //   - every criterion PASS but some without evidence → ABSTAIN. Surfaced, not punished: the heuristic
 //     is deliberately generous but not omniscient.
 //   - every criterion PASS with evidence → PASS.
-func appendACReportCheck(res verify.Result, output string) verify.Result {
+func appendACReportCheck(res verify.Result, output, skipReason string) verify.Result {
 	rep := verify.ParseACReport(output)
 	switch {
+	case !rep.Present && skipReason != "":
+		// THE STEP OWES NO ACCEPTANCE-CRITERIA REPORT, and the caller said why. A plan-only or approval step
+		// cannot assert outcomes for work a LATER step performs, so skipping the block is correct behaviour
+		// rather than an omission — SKIP, not abstain. (An abstention would hold the step at `unverified` for
+		// declining a question that was never its job to answer.)
+		res.Add("acceptance_criteria", verify.CheckSkip, skipReason)
+		return res.Conclude()
 	case !rep.Present:
 		res.Add("acceptance_criteria", verify.CheckAbstain,
 			"the worker reported no acceptance-criteria outcomes")
@@ -254,6 +278,9 @@ func (r *TaskReconciler) integrationBranchForProject(_ context.Context, projectI
 //	verified                → unchanged (succeeded).
 //	unsubstantiated         → succeeded becomes FAILED. The claim is contradicted.
 //	unverified              → unchanged (succeeded) + a notice. Deliberate, documented at the top.
+//	not_applicable          → unchanged (succeeded), with a notice naming the absence of checks. A step
+//	                          that produces no repository evidence — a plan, an approval — must not be
+//	                          failed for it, and must not be reported as verified either.
 func applyVerdict(succeeded bool, res verify.Result) (bool, string) {
 	if !succeeded {
 		return false, ""
@@ -271,6 +298,10 @@ func applyVerdict(succeeded bool, res verify.Result) (bool, string) {
 			reason += " — " + res.Reason
 		}
 		return true, verifyNoticePrefix + reason
+	case verify.VerdictNotApplicable:
+		// NOT a notice. A plan-only step is CORRECT when it produces a plan, and flagging every one of them
+		// would train the operator to ignore the notice on the steps where it matters.
+		return true, ""
 	}
 	return true, ""
 }
@@ -396,6 +427,7 @@ func collectVerificationSummaries(stepRuns []db.WorkflowStepRunRow) []verificati
 		verify.VerdictUnsubstantiated.String(): 0,
 		verify.VerdictUnverified.String():      1,
 		verify.VerdictVerified.String():        2,
+		verify.VerdictNotApplicable.String():   3,
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		ri, rj := rank[out[i].verdict], rank[out[j].verdict]
@@ -419,7 +451,7 @@ func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
 		return "### Verification\n\nNo verification evidence was recorded for any step in this run. " +
 			"The worker reports were accepted on their own word — treat the outcome above as UNCONFIRMED.\n\n"
 	}
-	var verified, unverified, unsubstantiated int
+	var verified, unverified, unsubstantiated, notApplicable int
 	var b strings.Builder
 	b.WriteString("### Verification\n\n")
 	for _, l := range lines {
@@ -431,6 +463,13 @@ func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
 		case verify.VerdictUnsubstantiated.String():
 			sym = "✗"
 			unsubstantiated++
+		case verify.VerdictNotApplicable.String():
+			// A step that produces no repository evidence (a plan, an approval) is neither confirmed nor
+			// at fault. It gets its own mark so it cannot be read as either — counting it as "verified"
+			// would inflate the confirmed total, and counting it as "unverified" would train the operator
+			// to ignore that word on the steps where it means something.
+			sym = "·"
+			notApplicable++
 		default:
 			verified++
 		}
@@ -448,6 +487,14 @@ func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
 			"An UNVERIFIED step is not a failure and is not a confirmation — the platform could not "+
 			"determine it. Declaring the project's gate in `.orchicon/verify` is what makes a step "+
 			"verifiable.\n\n", verified, total, unverified, unsubstantiated))
+	case notApplicable > 0 && verified == 0:
+		b.WriteString(fmt.Sprintf("None of the %d step(s) produce repository evidence to examine (%d "+
+			"not-applicable), so nothing here was mechanically confirmed. That is expected for a run made "+
+			"of planning and approval steps — it is not a bad sign, and it is not a confirmation.\n\n",
+			total, notApplicable))
+	case notApplicable > 0:
+		b.WriteString(fmt.Sprintf("%d of %d step(s) verified; %d produce no repository evidence and were "+
+			"not mechanically checked.\n\n", verified, total, notApplicable))
 	default:
 		b.WriteString(fmt.Sprintf("All %d step(s) verified against the repository and the project's gate.\n\n", total))
 	}

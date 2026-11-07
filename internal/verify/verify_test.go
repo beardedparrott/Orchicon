@@ -235,6 +235,10 @@ func TestDirtyTreeFails(t *testing.T) {
 // Under a naive "no commits = failure" rule it would fail every run, which is the fastest possible
 // way to get a verification system switched off. Inapplicable checks SKIP; they do not abstain,
 // because they carry no information about the claim.
+//
+// NOTE the absence of a declared gate here. WHEN there is one, the step's own collector does not run it
+// at all (it cannot change the outcome), so the gate check is skipped by the producer rather than by this
+// function — see TestPlanOnlyStepSkipsTheGateEntirely.
 func TestPlanOnlyStepSkipsDeliverableChecks(t *testing.T) {
 	got := Collect(context.Background(), Evidence{
 		GitReadable:             true,
@@ -243,14 +247,15 @@ func TestPlanOnlyStepSkipsDeliverableChecks(t *testing.T) {
 		ChangedFiles:            map[string]struct{}{},
 		StepDeclaresDeliverable: false,
 		SkipReason:              "this is a plan-only step",
-		DeclaredCommand:         "true", DeclaredRan: true, DeclaredPassed: true,
-		Baseline:     &Baseline{Commit: "b", Results: map[string]bool{"x": true}},
-		HeadResults:  map[string]bool{"x": true},
-		HeadMeasured: true,
 	})
-	if got.Verdict != VerdictVerified {
-		t.Fatalf("verdict = %q, want verified — a plan-only step with a green gate is done (reason: %s)",
-			got.Verdict, got.Reason)
+	// Every check is inapplicable, so nothing is confirmed: `not_applicable`, never a failure and never a
+	// claim of verification.
+	if got.Verdict != VerdictNotApplicable {
+		t.Fatalf("verdict = %q, want %q — a plan-only step is neither confirmed nor at fault (reason: %s)",
+			got.Verdict, VerdictNotApplicable, got.Reason)
+	}
+	if got.Verdict == VerdictUnsubstantiated {
+		t.Fatal("a plan-only step must not be failed for producing no code")
 	}
 }
 
@@ -404,5 +409,196 @@ func TestGoTestShapeRegressionIsDetected(t *testing.T) {
 	}
 	if !strings.Contains(got.Reason, "github.com/x/b") {
 		t.Errorf("reason %q must name the regressed package", got.Reason)
+	}
+}
+
+// TestPreExistingRedGateDoesNotFailTheStep is the regression test for the defect that failed a live run six
+// times, and it is written to the exact shape of that run.
+//
+// THE OBSERVED FAILURE. A Principal Software Architect step — a PLAN-ONLY step, contractually barred from
+// writing code — reported `success` having produced a 438-line plan. The evidence gate overrode it with
+// `not substantiated: project_gate: the project's declared gate FAILED`, and every one of the six recovery
+// attempts failed identically. Nothing the step could have done would have changed the outcome.
+//
+// THE CAUSE. `project_gate` was a BINARY check on the declared command's exit code. On a repository with any
+// pre-existing breakage that is not uninformative, it is actively wrong: it blames every step for a failure
+// that step did not cause. The differential exists precisely to attribute a red gate — and it would have
+// cleared this step, because nothing regressed.
+//
+// The exit code must therefore be ATTRIBUTED, not trusted.
+func TestPreExistingRedGateDoesNotFailTheStep(t *testing.T) {
+	got := Collect(context.Background(), Evidence{
+		GitReadable:             true,
+		BaseRef:                 "develop",
+		CommitsAhead:            1,
+		ChangedFiles:            map[string]struct{}{"architecture-notes/plan.md": {}},
+		StepDeclaresDeliverable: true,
+		TreeClean:               boolPtr(true),
+
+		DeclaredCommand: "go build ./... && go vet ./... && go test ./internal/... ./cmd/...",
+		DeclaredRan:     true,
+		DeclaredPassed:  false, // RED — as it was on the real run
+		DeclaredDetail:  "FAIL\tgithub.com/x/runtime\t0.5s\nok  \tgithub.com/x/version\t[no test files]\n",
+
+		// Red at BOTH ends, identically: the same check was failing before the step started.
+		Baseline:     &Baseline{Commit: "base", Results: map[string]bool{"github.com/x/runtime": false, "github.com/x/version": true}},
+		HeadResults:  map[string]bool{"github.com/x/runtime": false, "github.com/x/version": true},
+		HeadMeasured: true,
+	})
+
+	if got.Verdict == VerdictUnsubstantiated {
+		t.Fatalf("a step must not be FAILED for a gate that was identically red before it started — this is "+
+			"the defect that failed run 01M6TBXTPB26MX13JFEPFTV7EG six times (reason: %s)", got.Reason)
+	}
+	if got.Verdict != VerdictVerified {
+		t.Fatalf("verdict = %q, want verified: nothing regressed, so the step is substantiated (reason: %s)",
+			got.Verdict, got.Reason)
+	}
+	// And the record must SAY the gate is red, so the operator is not told everything is green.
+	for _, c := range got.Checks {
+		if c.Name == "project_gate" && !strings.Contains(c.Detail, "pre-existing") {
+			t.Errorf("the project_gate record must name the pre-existing breakage, got %q", c.Detail)
+		}
+	}
+}
+
+// TestRegressionIsReportedOnceNotTwice pins attribution: one cause, one failure line.
+func TestRegressionIsReportedOnceNotTwice(t *testing.T) {
+	got := Collect(context.Background(), Evidence{
+		GitReadable: true, BaseRef: "develop", CommitsAhead: 1,
+		ChangedFiles:            map[string]struct{}{"a.go": {}},
+		StepDeclaresDeliverable: true,
+		TreeClean:               boolPtr(true),
+		DeclaredCommand:         "make test", DeclaredRan: true, DeclaredPassed: false,
+		DeclaredDetail: "FAIL\tpkg/a\t0.1s\n",
+		Baseline:       &Baseline{Commit: "b", Results: map[string]bool{"pkg/a": true}},
+		HeadResults:    map[string]bool{"pkg/a": false},
+		HeadMeasured:   true,
+	})
+	if got.Verdict != VerdictUnsubstantiated {
+		t.Fatalf("a genuine regression must fail the step (got %q, reason: %s)", got.Verdict, got.Reason)
+	}
+	if n := len(got.Failed()); n != 1 {
+		t.Fatalf("%d checks failed for ONE regression (%v) — the operator reads that as two problems, and "+
+			"the one naming what broke is buried", n, got.Failed())
+	}
+	if !strings.Contains(got.Reason, "pkg/a") {
+		t.Errorf("the reason must name the regressed check, got %q", got.Reason)
+	}
+}
+
+// TestRedGateWithoutBaselineAbstains pins that an unattributable failure is not blamed on the worker.
+func TestRedGateWithoutBaselineAbstains(t *testing.T) {
+	got := Collect(context.Background(), Evidence{
+		GitReadable: true, BaseRef: "develop", CommitsAhead: 1,
+		ChangedFiles:            map[string]struct{}{"a.go": {}},
+		StepDeclaresDeliverable: true,
+		TreeClean:               boolPtr(true),
+		DeclaredCommand:         "make test", DeclaredRan: true, DeclaredPassed: false,
+		DeclaredDetail: "FAIL\tpkg/a\t0.1s\n",
+		// No baseline at all — the platform cannot place the failure.
+	})
+	if got.Verdict == VerdictUnsubstantiated {
+		t.Fatalf("a red gate the platform cannot attribute must not be charged to the step (reason: %s)", got.Reason)
+	}
+}
+
+// TestFailureReasonNamesAFailureNotAPassingLine pins the second defect from the live run.
+//
+// The recorded reason was: `project_gate: the project's declared gate FAILED: … internal/version [no test
+// files]` — and `[no test files]` is a PASSING line. A tail-truncated excerpt starts at the oldest surviving
+// line, so taking the FIRST line reliably names something that is not the failure. The operator's one
+// question — which check broke — went unanswered, and the message pointed at a green line.
+func TestFailureReasonNamesAFailureNotAPassingLine(t *testing.T) {
+	excerpt := "ok  \tgithub.com/x/version\t[no test files]\nFAIL\tgithub.com/x/runtime\t0.512s\n" +
+		"--- FAIL: TestProviderAPIKeyEnvMatchesOpenCodeRegistry (0.00s)\n"
+	got := firstFailureLine(excerpt)
+	if got == "" {
+		t.Fatal("a transcript containing a FAIL must yield a failing line")
+	}
+	if strings.Contains(got, "[no test files]") {
+		t.Fatalf("the reason names a PASSING line (%q) — the operator cannot diagnose that", got)
+	}
+	if !strings.Contains(got, "FAIL") {
+		t.Fatalf("the reason %q does not name a failure", got)
+	}
+
+	// Nothing failing in the excerpt: say so rather than naming a green line.
+	if got := firstFailureLine("ok  \tpkg/a\t0.1s\nok  \tpkg/b\t[no test files]\n"); got != "" {
+		t.Fatalf("an excerpt with no failure must yield \"\", got %q", got)
+	}
+}
+
+// TestPlanOnlyStepSkipsTheGateEntirely pins the third defect from the live run.
+//
+// The architect step was made to run the full declared gate — `go build ./... && go vet ./... && go test
+// ./internal/... ./cmd/...` — even though a plan-only step cannot change the gate's outcome. On a repository
+// that is red at baseline, that turned a correctly-executed step into an unclearable failure.
+//
+// The check must SKIP (carry no information about the claim), not abstain (carry an absence), or every
+// architect step would sit at `unverified` forever for a question never asked of it.
+func TestPlanOnlyStepSkipsTheGateEntirely(t *testing.T) {
+	got := Collect(context.Background(), Evidence{
+		GitReadable:             true,
+		BaseRef:                 "develop",
+		CommitsAhead:            0,
+		ChangedFiles:            map[string]struct{}{},
+		StepDeclaresDeliverable: false,
+		SkipReason:              "architect steps deliver a plan note, which this project gitignores",
+		// Deliberately NO declared command and NO baseline: the plan-only step was never measured.
+	})
+	// NOT `verified`, and not a failure either: with every check skipped, nothing was confirmed. Claiming
+	// `verified` here would be the silent-success defect this package exists to remove, wearing a
+	// different hat — a confirmation asserted where none happened.
+	if got.Verdict != VerdictNotApplicable {
+		t.Fatalf("a step with every check skipped must be %q, got %q (reason: %s)",
+			VerdictNotApplicable, got.Verdict, got.Reason)
+	}
+	if got.Verdict == VerdictUnsubstantiated {
+		t.Fatal("a plan-only step must never be failed for producing no repository evidence")
+	}
+	var sawGate, sawDiff bool
+	for _, c := range got.Checks {
+		switch c.Name {
+		case "project_gate":
+			sawGate = true
+			if c.Status != CheckSkip {
+				t.Errorf("project_gate = %q, want skip — a plan-only step was never asked this question",
+					c.Status)
+			}
+		case "no_new_failures":
+			sawDiff = true
+			if c.Status != CheckSkip {
+				t.Errorf("no_new_failures = %q, want skip", c.Status)
+			}
+		}
+	}
+	if !sawGate || !sawDiff {
+		t.Error("the record must still NAME the skipped checks, so the operator sees what was not applied")
+	}
+}
+
+// TestAllChecksSkippedIsNotVerified pins the verdict vocabulary: a step with NOTHING checked has not been
+// confirmed, and saying so is the whole point of this package.
+//
+// The temptation — and the first version of this code did it — is to let `verified` be the default when
+// nothing failed and nothing abstained, which means every plan-only and approval step reports a
+// confirmation that never happened. That is the silent success this package exists to remove, wearing a
+// different hat.
+func TestAllChecksSkippedIsNotVerified(t *testing.T) {
+	got := Collect(context.Background(), Evidence{
+		StepDeclaresDeliverable: false,
+		SkipReason:              "graph plumbing carries no deliverable",
+		GitReadable:             true, // readable, but every check is skipped by the deliverable rule
+	})
+	if got.Verdict == VerdictVerified {
+		t.Fatal("a step with no applicable check must not report `verified` — nothing was confirmed")
+	}
+	if got.Verdict != VerdictNotApplicable {
+		t.Fatalf("verdict = %q, want %q (reason: %s)", got.Verdict, VerdictNotApplicable, got.Reason)
+	}
+	// not_applicable is not a confirmation, and must not claim to be one.
+	if got.Verdict.IsSuccess() {
+		t.Error("not_applicable must not report as a confirmed success")
 	}
 }

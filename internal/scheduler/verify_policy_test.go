@@ -367,7 +367,7 @@ func TestAppendACReportCheck(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := appendACReportCheck(base(), tc.output)
+			got := appendACReportCheck(base(), tc.output, "")
 			if got.Verdict != tc.want {
 				t.Fatalf("verdict = %q, want %q — %s (reason: %s)", got.Verdict, tc.want, tc.why, got.Reason)
 			}
@@ -640,4 +640,78 @@ func TestInterruptedGateProducesNoBaseline(t *testing.T) {
 			t.Fatal("a clean run is not interrupted")
 		}
 	})
+}
+
+// TestNotApplicableIsRenderedDistinctly pins that the operator can tell the three states apart in the
+// acceptance review. Counting a not-applicable step as "verified" would inflate the confirmed total, and
+// counting it as "unverified" would train the operator to ignore that word where it matters.
+func TestNotApplicableIsRenderedDistinctly(t *testing.T) {
+	mk := func(name, verdict string) db.WorkflowStepRunRow {
+		raw, _ := json.Marshal(map[string]any{
+			"_verification": map[string]any{"verdict": verdict, "reason": ""},
+		})
+		return db.WorkflowStepRunRow{StepName: name, Result: raw, Status: "succeeded"}
+	}
+
+	got := formatVerificationSummary([]db.WorkflowStepRunRow{
+		mk("Principal Software Architect", "not_applicable"),
+		mk("Senior Software Engineer", "verified"),
+	})
+	if !strings.Contains(got, "·") {
+		t.Errorf("a not-applicable step must have its own mark:\n%s", got)
+	}
+	if !strings.Contains(got, "1 of 2 step(s) verified") {
+		t.Errorf("verified must count the confirmed steps only, not every step:\n%s", got)
+	}
+	if !strings.Contains(got, "not mechanically checked") {
+		t.Errorf("the summary must say what the not-applicable row means:\n%s", got)
+	}
+
+	// A run made only of planning/approval steps must read honestly, not as a clean sweep.
+	only := formatVerificationSummary([]db.WorkflowStepRunRow{mk("Architect", "not_applicable")})
+	if strings.Contains(only, "All 1 step(s) verified") {
+		t.Errorf("a run with nothing checkable must not read as fully verified:\n%s", only)
+	}
+	if !strings.Contains(only, "nothing here was mechanically confirmed") {
+		t.Errorf("it must say plainly that nothing was confirmed:\n%s", only)
+	}
+}
+
+// TestNotApplicableDoesNotFailOrNotice pins the status consequence: a plan-only step succeeds quietly.
+func TestNotApplicableDoesNotFailOrNotice(t *testing.T) {
+	ok, notice := applyVerdict(true, verify.Result{Verdict: verify.VerdictNotApplicable})
+	if !ok {
+		t.Fatal("a not-applicable step must not be failed — it did its job")
+	}
+	if notice != "" {
+		t.Fatalf("a not-applicable step must not raise an advisory notice (%q): flagging every plan and "+
+			"approval step is how the notice stops meaning anything", notice)
+	}
+}
+
+// TestPreExistingRedGateStillFailsARegression is the guard on the fix: relaxing the binary gate check must
+// not blind the differential. A real regression on a repo that is ALREADY red must still fail the step.
+func TestPreExistingRedGateStillFailsARegression(t *testing.T) {
+	got := verify.Collect(context.Background(), verify.Evidence{
+		GitReadable: true, BaseRef: "develop", CommitsAhead: 1,
+		ChangedFiles:            map[string]struct{}{"internal/a/a.go": {}},
+		StepDeclaresDeliverable: true,
+		TreeClean:               boolPtr(true),
+		DeclaredCommand:         "make test", DeclaredRan: true, DeclaredPassed: false,
+		DeclaredDetail: "FAIL\tpkg/old\t0.1s\nFAIL\tpkg/new\t0.2s\n",
+		// Already red at baseline (pkg/old), and this step broke pkg/new as well.
+		Baseline:     &verify.Baseline{Commit: "b", Results: map[string]bool{"pkg/old": false, "pkg/new": true}},
+		HeadResults:  map[string]bool{"pkg/old": false, "pkg/new": false},
+		HeadMeasured: true,
+	})
+	if got.Verdict != verify.VerdictUnsubstantiated {
+		t.Fatalf("verdict = %q, want unsubstantiated — a repo that is already red must NOT hide a NEW "+
+			"failure (reason: %s)", got.Verdict, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "pkg/new") {
+		t.Errorf("the reason must name the REGRESSED check, not the pre-existing one: %q", got.Reason)
+	}
+	if strings.Contains(got.Reason, "pkg/old") {
+		t.Errorf("the pre-existing failure must not be blamed on this step: %q", got.Reason)
+	}
 }
