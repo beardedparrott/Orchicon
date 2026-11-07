@@ -8,22 +8,26 @@
 // the fix is already merged... no duplicate PR was created", when the work had changed nothing at all.
 // The worker's own verdict was the completion criterion, and every gate downstream inherited it.
 //
-// WHAT THIS PACKAGE IS. A pure, dependency-free decision function: given the facts of a completed
-// step (what the worker claimed, what git recorded, what the baseline said), decide whether that
-// claim is SUBSTANTIATED. It runs no commands and reads no files — the callers own every side effect
-// (WorktreeEvidence's collector, the reconciler's git probes) — which is what makes the rules unit-
-// testable against real recorded cases rather than only against a live repository.
+// WHAT THIS PACKAGE IS. A pure, dependency-free assessment: given the facts of a completed step (what the
+// worker claimed, what git recorded, what the baseline said), report whether that claim is SUBSTANTIATED. It
+// runs no commands and reads no files — the callers own every side effect — which is what makes the rules
+// unit-testable against real recorded cases rather than only against a live repository.
 //
-// WHAT IT DELIBERATELY DOES NOT DO. It does not judge whether the work is GOOD. Semantic correctness
-// ("does this do what the user wanted") is not mechanically decidable for arbitrary projects, and a
-// system that pretends otherwise fails confidently. This package decides whether the EVIDENCE that
-// work happened exists and is consistent. The design rule for everything below is therefore:
+// WHAT IT DECIDES: NOTHING. The verdict is a RECORD. It is stamped onto the execution and rendered in the
+// acceptance review, and it never changes a step's status. That is deliberate, and it is the operator's call:
+// acting on a verdict means being RIGHT about it, and being right means parsing a project's output, comparing
+// baselines and attributing failures — each of which can be wrong for reasons the worker does not control.
 //
 //	THE PLATFORM MUST BE ABLE TO SAY "I DON'T KNOW" — AND THAT ANSWER MUST NOT LOOK LIKE SUCCESS.
 //
-// That is what VerdictUnverified is for. It is a first-class, non-success, non-failure state: the
-// work was not shown to be wrong, and it was not shown to be right. Collapsing it into either
-// direction is the defect this package exists to prevent.
+// VerdictUnverified is that answer, and it stays distinct from both success and failure even though neither is
+// acted on: an operator reading a review can tell "checked and confirmed" from "nobody checked", which is the
+// distinction the original complaint — "sometimes it works, sometimes it doesn't, and I find out later" — was
+// about. Collapsing the two would make the record useless even as a record.
+//
+// WHAT IT DELIBERATELY DOES NOT DO. It does not judge whether the work is GOOD. Semantic correctness ("does
+// this do what the user wanted") is not mechanically decidable for arbitrary projects, and a system that
+// pretends otherwise fails confidently.
 package verify
 
 import (
@@ -67,11 +71,11 @@ const (
 	VerdictNotApplicable Verdict = "not_applicable"
 )
 
-// IsSuccess reports whether the verdict permits the step to be treated as a CONFIRMED success.
+// IsSuccess reports whether the verdict permits the claim to be described as CONFIRMED.
 //
-// ONLY VerdictVerified does. This is the single most important line in the package: it is where
-// "unverified" stops being rounded up to "fine", and where `not_applicable` correctly refuses to claim a
-// confirmation that did not happen.
+// ONLY VerdictVerified does. This is where "unverified" refuses to be rounded up to "confirmed", and where
+// `not_applicable` correctly declines to claim a confirmation that did not happen. It is a statement about the
+// RECORD (what the operator is being told) — never about whether the step runs.
 func (v Verdict) IsSuccess() bool { return v == VerdictVerified }
 
 // String renders the verdict for logs, records and the UI.

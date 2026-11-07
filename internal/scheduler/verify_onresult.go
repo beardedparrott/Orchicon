@@ -465,17 +465,21 @@ func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
 	}
 	var verified, unverified, unsubstantiated, notApplicable int
 	var b strings.Builder
-	b.WriteString("### Verification\n\n")
+	b.WriteString("### Verification (advisory)\n\n")
 	for _, l := range lines {
 		sym := "✓"
-		switch l.verdict {
-		case verify.VerdictUnverified.String():
+		switch v := verify.Verdict(l.verdict); {
+		case v.IsSuccess():
+			// CONFIRMED, and IsSuccess is the single place that decides what that word covers — so the count
+			// and the vocabulary cannot drift apart.
+			verified++
+		case v == verify.VerdictUnverified:
 			sym = "?"
 			unverified++
-		case verify.VerdictUnsubstantiated.String():
-			sym = "✗"
+		case v == verify.VerdictUnsubstantiated:
+			sym = "!" // advisory: nothing was failed on this
 			unsubstantiated++
-		case verify.VerdictNotApplicable.String():
+		case v == verify.VerdictNotApplicable:
 			// A step that produces no repository evidence (a plan, an approval) is neither confirmed nor
 			// at fault. It gets its own mark so it cannot be read as either — counting it as "verified"
 			// would inflate the confirmed total, and counting it as "unverified" would train the operator
@@ -493,12 +497,18 @@ func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
 	}
 	b.WriteString("\n")
 	total := len(lines)
+	// NOTHING IN THIS SECTION CHANGED THE RUN'S OUTCOME, and it says so before it says anything else. Without
+	// that sentence an operator reads a `!` mark as a failure the platform chose to tolerate, when in fact the
+	// platform is not acting on it at all.
+	if unverified > 0 || unsubstantiated > 0 {
+		b.WriteString("This section is a RECORD. No step's status was changed by it.\n\n")
+	}
 	switch {
 	case unverified > 0 || unsubstantiated > 0:
-		b.WriteString(fmt.Sprintf("%d of %d step(s) verified; %d unverified, %d contradicted. "+
-			"An UNVERIFIED step is not a failure and is not a confirmation — the platform could not "+
-			"determine it. Declaring the project's gate in `.orchicon/verify` is what makes a step "+
-			"verifiable.\n\n", verified, total, unverified, unsubstantiated))
+		b.WriteString(fmt.Sprintf("%d of %d step(s) confirmed; %d unverified, %d not supported by the "+
+			"repository. An UNVERIFIED step is not a failure and is not a confirmation — the platform could "+
+			"not determine it. Declaring a result format in `.orchicon/verify` is what makes a step's gate "+
+			"measurable.\n\n", verified, total, unverified, unsubstantiated))
 	case notApplicable > 0 && verified == 0:
 		b.WriteString(fmt.Sprintf("None of the %d step(s) produce repository evidence to examine (%d "+
 			"not-applicable), so nothing here was mechanically confirmed. That is expected for a run made "+
@@ -508,7 +518,8 @@ func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
 		b.WriteString(fmt.Sprintf("%d of %d step(s) verified; %d produce no repository evidence and were "+
 			"not mechanically checked.\n\n", verified, total, notApplicable))
 	default:
-		b.WriteString(fmt.Sprintf("All %d step(s) verified against the repository and the project's gate.\n\n", total))
+		b.WriteString(fmt.Sprintf("All %d step(s) confirmed against the repository and the project's gate.\n\n",
+			total))
 	}
 	return b.String()
 }

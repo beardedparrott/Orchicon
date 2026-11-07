@@ -291,8 +291,13 @@ func TestFormatVerificationSummary(t *testing.T) {
 			mk("Senior Software Engineer", "verified", ""),
 			mk("QA Engineer", "unsubstantiated", "work_present: HEAD did not move"),
 		})
-		if !contains(got, "QA Engineer") || !contains(got, "✗") {
+		if !contains(got, "QA Engineer") {
 			t.Fatalf("missing the contradicted step: %s", got)
+		}
+		// AN ADVISORY MARK, NOT THE FAILURE MARK. Nothing was failed, so a ✗ here would tell the operator a
+		// green run had a failure in it.
+		if contains(got, "✗") {
+			t.Errorf("the contradicted step uses the failure mark; no step was failed:\n%s", got)
 		}
 		// The contradicted line must come before the verified one.
 		if indexOf(got, "QA Engineer") > indexOf(got, "Senior Software Engineer") {
@@ -312,8 +317,8 @@ func TestFormatVerificationSummary(t *testing.T) {
 			mk("Senior Software Engineer", "verified", ""),
 			mk("QA Engineer", "unverified", "project_gate: no .orchicon/verify"),
 		})
-		if !contains(got, "1 of 2 step(s) verified") {
-			t.Fatalf("must count verified vs total, got: %s", got)
+		if !contains(got, "1 of 2 step(s) confirmed") {
+			t.Fatalf("must count confirmed vs total, got: %s", got)
 		}
 		if !contains(got, "not a failure") {
 			t.Errorf("must explain that unverified is not a failure, got: %s", got)
@@ -322,7 +327,7 @@ func TestFormatVerificationSummary(t *testing.T) {
 
 	t.Run("all verified reads cleanly", func(t *testing.T) {
 		got := formatVerificationSummary([]db.WorkflowStepRunRow{mk("Senior Software Engineer", "verified", "")})
-		if !contains(got, "All 1 step(s) verified") {
+		if !contains(got, "All 1 step(s) confirmed") {
 			t.Fatalf("got: %s", got)
 		}
 	})
@@ -845,5 +850,35 @@ func TestTheScratchCheckoutCanRunTheProjectsGate(t *testing.T) {
 	if fi.Mode()&os.ModeSymlink == 0 {
 		t.Errorf("frontend/node_modules is not a symlink; installing a copy would measure a DIFFERENT dependency " +
 			"set from the one the project actually runs")
+	}
+}
+
+// THE REVIEW SAYS NOTHING WAS FAILED. An operator opening the acceptance review of a run whose steps carry
+// unverified or unsupported evidence must not read those marks as failures the platform chose to tolerate — the
+// platform is not acting on them at all, and the review has to say so.
+func TestTheReviewSaysTheSectionIsAdvisory(t *testing.T) {
+	mk := func(name, verdict, reason string) db.WorkflowStepRunRow {
+		raw, _ := json.Marshal(map[string]any{
+			"_verification": map[string]any{"verdict": verdict, "reason": reason},
+		})
+		return db.WorkflowStepRunRow{StepName: name, Result: raw, Status: "succeeded"}
+	}
+	got := formatVerificationSummary([]db.WorkflowStepRunRow{
+		mk("Engineer", "unsubstantiated", "work_present: HEAD did not move"),
+		mk("Reviewer", "verified", ""),
+	})
+	if !strings.Contains(got, "advisory") {
+		t.Errorf("the section heading must mark itself advisory:\n%s", got)
+	}
+	if !strings.Contains(got, "No step's status was changed") {
+		t.Errorf("the review must say plainly that nothing was failed:\n%s", got)
+	}
+	// The contradicted step's mark must NOT be the failure mark, or the review contradicts its own sentence.
+	if strings.Contains(got, "✗ **Engineer**") {
+		t.Errorf("a contradiction uses the failure mark; the run did not fail:\n%s", got)
+	}
+	// And the count still distinguishes confirmed from everything else.
+	if !strings.Contains(got, "1 of 2 step(s) confirmed") {
+		t.Errorf("the confirmed count must not include an unsupported step:\n%s", got)
 	}
 }
