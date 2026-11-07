@@ -325,6 +325,10 @@ func (m *App) setProjectScope(scope string) {
 		m.convSel = max(0, len(m.railRows())-1)
 	}
 	m.convScroll = 0
+	// THE SCREENS FOLLOW THE WORKSPACE — staged, because this method is called from key and mouse handlers
+	// that cannot return a command. Picking a project must re-filter the Work screen NOW, not on whatever
+	// message happens to arrive next.
+	m.pendingScreenCmd = tea.Batch(m.pendingScreenCmd, m.pushProjectScope())
 }
 
 // openProjectPicker opens the picker for a purpose. It loads the project list first when the rail has none —

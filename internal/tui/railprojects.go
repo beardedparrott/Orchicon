@@ -195,7 +195,11 @@ func (m *App) onRailProjects(msg railProjectsMsg) tea.Cmd {
 	if m.convSel >= len(m.railRows()) {
 		m.convSel = max(0, len(m.railRows())-1)
 	}
-	return nil
+	// AND THE WORKSPACE REACHES THE SCREENS IN THIS SAME CYCLE. The scope may have just been set above
+	// (a parked selection, or the launch-directory default), and rebindScreens ran BEFORE this handler — so
+	// without this the Work screen would keep showing the previous project's rows until some unrelated
+	// message happened to arrive. A session with nothing else going on may never get one.
+	return m.pushProjectScope()
 }
 
 // applyLaunchDirScope points the rail at the workspace the operator launched from, once, and only while they
