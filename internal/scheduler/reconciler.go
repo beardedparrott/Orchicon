@@ -1910,17 +1910,19 @@ func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded 
 	if succeeded {
 		if exec, lerr := r.loadExecutionRow(ctx, execID); lerr == nil {
 			if res, ok := r.verdictForOutcome(ctx, exec, output); ok {
-				prevSucceeded := succeeded
+				// THE VERDICT IS A RECORD, NOT A STATUS. applyVerdict returns the outcome unchanged; what it
+				// produces is the sentence an operator reads. Nothing here can fail a step, which is the whole
+				// point of the change — see applyVerdict for what that costs.
 				var notice string
 				succeeded, notice = applyVerdict(succeeded, res)
-				if !succeeded && prevSucceeded {
-					r.log.Warn("verify: worker claimed success but the evidence contradicts it — failing the execution",
+				if notice != "" && strings.TrimSpace(errorMessage) == "" {
+					// The notice rides the same slot the worktree reconciler uses for its advisories, so it
+					// appears where an operator already looks.
+					errorMessage = notice
+				}
+				if res.Verdict == verify.VerdictUnsubstantiated {
+					r.log.Warn("verify: the worker's claim is not supported by the repository (advisory only)",
 						"execution", execID, "verdict", res.Verdict.String(), "reason", res.Reason)
-					errorMessage = notice
-				} else if notice != "" && strings.TrimSpace(errorMessage) == "" {
-					// An unverified step keeps its status but never silently: the notice rides the same
-					// slot the worktree reconciler uses for its advisories.
-					errorMessage = notice
 				}
 				// Record the evidence on the step run so the acceptance review and the UI can show what
 				// was and was not confirmed. Best-effort; it cannot change the outcome above.

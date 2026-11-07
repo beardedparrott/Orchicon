@@ -20,7 +20,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/beardedparrott/orchicon/internal/verify"
@@ -30,21 +29,6 @@ import (
 // each check, not the whole transcript; a runaway suite would otherwise write megabytes into a row.
 const maxGateOutput = 64 * 1024
 
-// completionGateTimeout bounds the gate run on the COMPLETION path, and it is deliberately much shorter
-// than verifyCommandTimeout (10m).
-//
-// THE CONSTRAINTS ARE DIFFERENT AND THE DIFFERENCE MATTERS. local_integrate runs on its own queue with
-// its own budget, where waiting ten minutes for a thorough check is the whole point. This one runs
-// SYNCHRONOUSLY inside OnResult — the execution is still formally `running`, the operator's UI shows a
-// worker that has visibly stopped, and every later reconcile pass for this row is behind it. A 10-minute
-// wait there is not patience, it is a wedge, and a wedged completion is far worse than an unmeasured
-// gate: a timeout ABSTAINS (the step lands `unverified`, which is honest) whereas a wedge strands the
-// run.
-//
-// The budget is generous enough for a warm-cache suite on a real repository (this one turns its whole Go
-// suite around in ~17s warm) and short enough that a pathological gate costs minutes, not a run.
-const completionGateTimeout = 3 * time.Minute
-
 // declaredGateCommand returns the project's declared verification command, or "".
 //
 // It reuses projectVerifyCommand — the SAME reader the local-integration path uses — so a project
@@ -52,54 +36,90 @@ const completionGateTimeout = 3 * time.Minute
 // comment there explains why this is a file rather than a setting; the short version is that a
 // command the platform invents would be worse than none, and a schema field for something most
 // projects will not set is a schema field nobody maintains.
-func declaredGateCommand(projectDir string) string {
+// declaredGate reads the project's full gate declaration (command, result format, optional report path).
+//
+// ONE READER FOR EVERYTHING THAT ASKS "WHAT IS THIS PROJECT'S GATE". The integration path, the baseline capture and
+// the completion gate all go through here, so a project cannot end up with two different notions of its own gate
+// depending on which code path asked — the defect that let the completion path use a different budget than the
+// integration path.
+func declaredGate(projectDir string) (verify.Declaration, error) {
 	if strings.TrimSpace(projectDir) == "" {
+		return verify.Declaration{}, nil
+	}
+	raw, err := os.ReadFile(filepath.Join(projectDir, ".orchicon", "verify"))
+	if err != nil {
+		return verify.Declaration{}, nil // absent is legitimate: the project declares no gate
+	}
+	d, perr := verify.ParseDeclaration(string(raw))
+	if perr != nil {
+		// A MALFORMED DECLARATION IS AN ERROR, NOT AN ABSENCE. Parsing it leniently would run something the
+		// operator did not write; reporting it as "no gate" would make a typo indistinguishable from a project
+		// that never configured one — and the operator would go looking in the wrong place.
+		return verify.Declaration{}, fmt.Errorf("%s: %w", filepath.Join(".orchicon", "verify"), perr)
+	}
+	return d, nil
+}
+
+// declaredGateCommand returns just the command, for callers that only need to know whether one exists.
+func declaredGateCommand(projectDir string) string {
+	d, err := declaredGate(projectDir)
+	if err != nil {
 		return ""
 	}
-	return projectVerifyCommand(projectDir)
+	return d.Command
 }
 
 // captureBaseline runs the project's gate at ref and records the per-check results.
 //
-// A BASELINE IS BEST-EFFORT AND ITS FAILURE IS NOT AN ERROR. If it cannot be taken (no gate, git
-// unreadable, the tree is not checked out where we can reach it) the returned Baseline is nil and the
-// differential abstains — which is the honest outcome, and lands the step in "unverified" rather than
-// failing it. Failing a step because the PLATFORM could not measure something would be blaming the
-// worker for an infrastructure problem.
+// A BASELINE IS BEST-EFFORT AND ITS FAILURE IS NOT AN ERROR. If it cannot be taken (no gate, git unreadable, an
+// unmatched result format) the returned Baseline carries a Detail and the differential abstains — which is the
+// honest outcome. Failing a step because the PLATFORM could not measure something would be blaming the worker for
+// an infrastructure problem, and the operator's rule is that an unmeasurable check is never a failure.
+//
+// IT MEASURES WHERE THE PROJECT ACTUALLY RUNS. A scratch `git worktree` carries the TRACKED tree only, so every
+// gitignored dependency — node_modules, .venv, vendor, target, .dev — is absent and a gate that needs any of them
+// dies instantly with "vitest: command not found". Measured: this repository's frontend gate cannot run in a bare
+// worktree at all. The dependencies are therefore LINKED IN from the project directory before the gate runs
+// (linkIgnoredDependencies), which is what makes the baseline a measurement of the base COMMIT rather than a
+// measurement of a tree nothing can build.
 func (r *TaskReconciler) captureBaseline(ctx context.Context, projectDir, ref, worktreePath string) *verify.Baseline {
-	cmd := declaredGateCommand(projectDir)
-	if cmd == "" {
-		return nil
+	decl, declErr := declaredGate(projectDir)
+	if declErr != nil {
+		// Named, not swallowed: the operator has to know their declaration is broken.
+		return &verify.Baseline{Commit: ref, Detail: "the gate declaration could not be read: " + declErr.Error()}
 	}
-	// The baseline runs in a scratch worktree of the base ref so it cannot disturb the run's own tree
-	// or the operator's checkout. When that is not possible we abstain rather than running the gate in
-	// a place whose state we do not control.
+	if !decl.Declared() {
+		return nil // no gate at all: nothing to baseline, and the differential abstains with its own reason
+	}
+
+	// The baseline runs in a scratch worktree of the base ref so it cannot disturb the run's own tree or the
+	// operator's checkout.
 	dir, cleanup, err := r.scratchCheckout(ctx, projectDir, ref)
 	if err != nil {
 		r.log.Info("verify: no baseline (scratch checkout unavailable)",
 			"project_dir", projectDir, "ref", ref, "error", err.Error())
-		return nil
+		return &verify.Baseline{Commit: ref, Detail: "no isolated checkout of " + short(ref) +
+			" could be created, so the base commit was not measured: " + err.Error()}
 	}
 	defer cleanup()
 
-	out, runErr := r.runGateCommand(ctx, dir, cmd)
+	// THE DEPENDENCIES COME WITH IT. Without this the gate fails for a reason that has nothing to do with the base
+	// commit's correctness, and the failure would be recorded AS the baseline.
+	if lerr := linkIgnoredDependencies(ctx, projectDir, dir); lerr != nil {
+		r.log.Info("verify: baseline dependency linking was incomplete",
+			"ref", ref, "error", lerr.Error())
+	}
 
-	// AN INTERRUPTED GATE IS NOT A BASELINE. THIS IS THE MOST IMPORTANT CHECK IN THIS FUNCTION.
+	out, runErr := r.runGateCommand(ctx, dir, decl)
+
+	// AN INTERRUPTED GATE IS NOT A BASELINE.
 	//
-	// A gate that was KILLED (timeout, cancelled context) still returns everything it managed to print —
-	// so `parseGateResults` happily yields the packages that finished before the kill, and every package
-	// that never ran is silently absent. Recording that as a complete baseline is the most dangerous
-	// possible failure for this mechanism, because of what absence means downstream: `NewFailures` skips
-	// keys missing from the baseline, so a package that never ran can never be reported as regressed. The
-	// result is a FALSE NEGATIVE — the verification reports "no new failures" for work that broke a test
-	// it never measured — and it is CACHED per commit, so every sibling run inherits the blind spot.
-	//
-	// Measured, not theorised: `make rebuild-dev` produced exactly this. The test's own context expired at
-	// 300s while the gate was still running, the ~50 completed packages were parsed, and the baseline was
-	// stored as complete with the verify package missing.
-	//
-	// So an interrupted run produces an INCOMPLETE baseline (Detail set), which makes the differential
-	// ABSTAIN — the step lands `unverified`, which is honest — rather than a partial one that lies.
+	// A gate that was KILLED (cancelled context, the runtime container going away) still returns everything it
+	// managed to print, so the checks that finished parse fine and every check that never ran is silently
+	// absent. Recording that as a complete baseline is the most dangerous failure this mechanism has, because of
+	// what absence means downstream: NewFailures skips keys missing from the baseline, so a check that never ran
+	// can never be reported as regressed. The result is a FALSE NEGATIVE, and it is CACHED per commit, so every
+	// sibling run inherits the blind spot.
 	if interrupted(ctx, runErr) {
 		detail := "the gate was interrupted before it finished, so no reliable baseline exists"
 		if runErr != nil {
@@ -108,20 +128,78 @@ func (r *TaskReconciler) captureBaseline(ctx context.Context, projectDir, ref, w
 		return &verify.Baseline{Commit: ref, Detail: detail}
 	}
 
-	results := parseGateResults(out)
-	if len(results) == 0 {
-		// Nothing parseable. Record why, so the differential says "the baseline is incomplete" and
-		// names it rather than reporting an absence of failures.
-		detail := "the baseline gate produced no parseable results"
-		if runErr != nil {
-			detail += ": " + truncateTail(strings.TrimSpace(out), 400)
-		}
-		return &verify.Baseline{Commit: ref, Detail: detail}
+	results, perr := r.parseGateOutput(decl, dir, out)
+	if perr != nil {
+		return &verify.Baseline{Commit: ref, Detail: perr.Error()}
 	}
-	// A non-zero exit WITH parseable results and NO interruption is the expected benign case: the gate
-	// ran to completion and some checks failed. That is a perfectly good baseline — it is how we learn
-	// what was ALREADY broken.
+	if len(results) == 0 {
+		return &verify.Baseline{Commit: ref, Detail: "the baseline gate reported no per-check results"}
+	}
+	// A non-zero exit WITH parseable results and NO interruption is the expected benign case: the gate ran to
+	// completion and some checks failed. That is a perfectly good baseline — it is how we learn what was ALREADY
+	// broken.
 	return &verify.Baseline{Commit: ref, Results: results}
+}
+
+// linkIgnoredDependencies makes the scratch checkout able to RUN the project's gate.
+//
+// A worktree carries tracked files only, so every build cache and dependency tree — the things a gate needs and
+// nobody commits — is missing. This links the project directory's IGNORED HEAD entries into the scratch tree,
+// which gives the gate the same dependency set it has when the operator runs it.
+//
+// IT LINKS RATHER THAN INSTALLS. Installing would mean a network fetch per baseline capture and a dependency
+// resolution that could DIFFER from the project's own — measuring something the project never runs is worse than
+// not measuring. A symlink is the same bytes the project already built.
+//
+// THE IGNORED PATHS ARE OFTEN NESTED (frontend/node_modules), not top-level, so every ignored DIRECTORY is
+// linked, at any depth. Linking only the top level was the first version of this function and it silently did
+// nothing here — measured: `npx vitest` in the scratch checkout still reported "missing packages and no YES
+// option" while the project's own checkout ran it fine.
+//
+// ONLY IGNORED PATHS. A tracked directory is part of the base commit and must be the base commit's copy; linking
+// over it would measure HEAD's version of the file while claiming to measure the ref's.
+func linkIgnoredDependencies(ctx context.Context, projectDir, scratchDir string) error {
+	out, err := runGit(ctx, projectDir, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory")
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	linked := 0
+	for _, line := range strings.Split(out, "\n") {
+		entry := strings.TrimSuffix(strings.TrimSpace(line), "/")
+		if entry == "" {
+			continue
+		}
+		src := filepath.Join(projectDir, entry)
+		info, serr := os.Stat(src)
+		if serr != nil || !info.IsDir() {
+			continue // a single ignored FILE (a lockfile, a cache file) is not a dependency tree
+		}
+		dst := filepath.Join(scratchDir, entry)
+		if _, derr := os.Lstat(dst); derr == nil {
+			continue // the scratch tree already has this path
+		}
+		// The parent must exist in the scratch tree before the link can be made. When it does not, the parent is
+		// itself an ignored directory that will be linked by its own entry — so skipping is right, not creating
+		// it.
+		if _, perr := os.Stat(filepath.Dir(dst)); perr != nil {
+			continue
+		}
+		if lerr := os.Symlink(src, dst); lerr != nil {
+			// Non-fatal per entry: one unlinkable cache must not cost the whole baseline. The first failure is
+			// reported so a systematic problem (a filesystem without symlinks) is visible.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("link %s: %w", entry, lerr)
+			}
+			continue
+		}
+		linked++
+	}
+	if linked == 0 && firstErr == nil {
+		return fmt.Errorf("no ignored dependency directories were linked; a gate that needs them will fail in " +
+			"the scratch checkout for a reason unrelated to the base commit")
+	}
+	return firstErr
 }
 
 // interrupted reports whether a gate run was cut short rather than completing (possibly with failures).
@@ -177,8 +255,8 @@ func (r *TaskReconciler) scratchCheckout(ctx context.Context, projectDir, ref st
 // It reports the error so the caller can distinguish "the gate failed" (a useful baseline) from "the
 // gate could not run" (an abstention) — a distinction the previous integration-only check could not
 // express.
-func (r *TaskReconciler) runGateCommand(ctx context.Context, dir, command string) (string, error) {
-	out, err := runVerifyCommand(ctx, dir, command)
+func (r *TaskReconciler) runGateCommand(ctx context.Context, dir string, decl verify.Declaration) (string, error) {
+	out, err := runVerifyCommand(ctx, dir, decl.Command)
 	return capGateOutput(out), err
 }
 
@@ -207,35 +285,16 @@ func capGateOutput(out string) string {
 	if len(out) <= maxGateOutput {
 		return out
 	}
-	const edge = maxGateOutput / 4 // head and tail each get a quarter
+	// HEAD AND TAIL, and NOTHING is filtered out of the middle any more.
+	//
+	// The previous version kept "result-shaped lines" from the middle, which meant it had to know the result
+	// FORMAT — the pattern-matching defect this change removes. A declared format does not need that: the report
+	// is parsed from the FULL transcript before it is capped (the cap is only what the record keeps), so a
+	// truncated record no longer costs a measurement.
+	const edge = maxGateOutput / 4
 	head := safeCut(out, edge)
 	tail := truncateTail(out, edge)
-
-	// Keep every result-shaped line from the middle. Bounded by construction: one short line per check.
-	var kept []string
-	mid := out[len(head) : len(out)-len(tail)]
-	for _, line := range strings.Split(mid, "\n") {
-		if trim := strings.TrimSpace(line); trim != "" {
-			if _, _, ok := parseResultLine(trim); ok {
-				kept = append(kept, trim)
-			}
-		}
-	}
-	var b strings.Builder
-	b.WriteString(head)
-	b.WriteString("\n... [gate output truncated; result lines from the elided middle follow] ...\n")
-	if len(kept) > 0 {
-		b.WriteString(strings.Join(kept, "\n"))
-		b.WriteString("\n")
-	}
-	b.WriteString("... [truncated; tail follows] ...\n")
-	b.WriteString(tail)
-	res := b.String()
-	if len(res) > maxGateOutput {
-		// The middle's result lines pushed it over; the results matter more than the head banner.
-		return safeCut(res, maxGateOutput)
-	}
-	return res
+	return head + "\n... [gate output truncated; the tail follows. The report was parsed in full.] ...\n" + tail
 }
 
 // safeCut returns the first n bytes of s, backing off to a UTF-8 boundary so a multi-byte character is
@@ -250,135 +309,57 @@ func safeCut(s string, n int) string {
 	return s[:n]
 }
 
-// runCompletionGate runs the project's gate on the COMPLETION path under completionGateTimeout.
+// runCompletionGate runs the project's gate on the COMPLETION path.
 //
-// A TIMEOUT IS AN ABSTENTION, NOT A GATE FAILURE. If the check cannot finish inside the budget the
-// evidence says "not measured", which the decision function turns into `unverified` — never into a
-// failure, because the worker is not responsible for the gate being slow, and never into a pass, because
-// nothing was established.
-func (r *TaskReconciler) runCompletionGate(ctx context.Context, dir, command string) (string, error) {
-	gctx, cancel := context.WithTimeout(ctx, completionGateTimeout)
-	defer cancel()
-	done := make(chan struct{})
-	var out string
-	var err error
-	go func() {
-		defer close(done)
-		out, err = runVerifyCommand(gctx, dir, command)
-	}()
-	select {
-	case <-done:
-	case <-gctx.Done():
-		return "", fmt.Errorf("the project's gate did not finish within %s — not measured", completionGateTimeout)
-	}
-	<-done
-	return capGateOutput(out), err
+// THERE IS NO INVENTED TIME LIMIT HERE, and that is deliberate. This used to carry its own 3-minute budget on top
+// of the integration path's 10-minute one; both are gone. The platform's rule everywhere else is that an OMITTED
+// limit means NO limit — a ceiling exists only when an operator sets one — and a hardcoded number nobody
+// configured is exactly the kind of hidden policy that fails good work. Stall detection, tool-hang cancellation
+// and the execution reaper are the mechanism for a runaway, and none of them needs a second opinion from here.
+//
+// IT IS STILL CANCELLABLE, which is the part that matters and is NOT a timeout: the run's own context reaches
+// this call, so an operator cancelling the execution, a container going away, or a wall-clock budget the OPERATOR
+// configured all stop the gate. The difference is that the bound is one somebody chose, not one this file
+// invented.
+// It returns the FULL transcript as well as the capped copy the record keeps. The cap is a RECORD limit, not a
+// measurement limit: the declared report is parsed from the full output, so trimming what gets stored can never
+// change a verdict.
+func (r *TaskReconciler) runCompletionGate(ctx context.Context, dir string, decl verify.Declaration) (full, capped string, err error) {
+	out, err := runVerifyCommand(ctx, dir, decl.Command)
+	return out, capGateOutput(out), err
 }
 
-// parseGateResults turns a test-runner transcript into a per-check result map.
+// parseGateOutput reads a gate's per-check results using the project's DECLARED format.
 //
-// WHY A PARSER AND NOT JUST THE EXIT CODE. The exit code answers "is everything green", which is
-// unanswerable on a repository with any pre-existing breakage — and every real repository has some.
-// Per-check results let the comparison be a SET difference, so a step is measured only on what IT
-// changed. It also means a project whose gate is already red can still have its steps verified, which
-// matters: the alternative is that any project with one broken test can never certify anything, and
-// the mechanism gets switched off.
+// IT REFUSES TO GUESS. No format, or a format that yields no results, returns an error naming the reason — never
+// an empty map, because an empty map is indistinguishable from "everything passed" and that is how a verification
+// system starts lying. Every error here becomes an abstention upstream, so an unmeasurable gate costs the step
+// its "verified" status and never fails it.
 //
-// THE LINE FORMATS ARE THE COMMON ONES, not a Go-only contract:
-//
-//	go test        "ok  \tpkg", "FAIL\tpkg", "--- FAIL: TestX"
-//	make/npm/any   anything the project's own command prints, plus a final exit status
-//
-// When nothing is parseable the caller records an incomplete baseline rather than an empty (i.e.
-// "everything passed") one — an empty map must never be read as success.
-func parseGateResults(out string) map[string]bool {
-	results := map[string]bool{}
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		key, passing, ok := parseResultLine(line)
-		if !ok {
-			continue
-		}
-		// A subject that appears twice (package + its tests) fails if ANY line fails.
-		if prev, seen := results[key]; seen {
-			results[key] = prev && passing
-			continue
-		}
-		results[key] = passing
+// THE REPORT MAY BE A FILE. Some runners cannot write to stdout (surefire writes target/surefire-reports, pytest
+// wants a path), so `path` in the declaration is read INSTEAD of the command's output. That also removes the
+// gate's own chatter from the parse entirely, rather than hoping the parser finds the document inside it.
+func (r *TaskReconciler) parseGateOutput(decl verify.Declaration, dir, out string) (map[string]bool, error) {
+	if !decl.Declared() {
+		return nil, fmt.Errorf("the project declares no gate")
 	}
-	return results
-}
-
-// parseResultLine recognises the result lines this platform's projects produce.
-func parseResultLine(line string) (key string, passing bool, ok bool) {
-	lower := strings.ToLower(line)
-	switch {
-	case strings.HasPrefix(line, "--- FAIL:"):
-		name := strings.TrimSpace(strings.TrimPrefix(line, "--- FAIL:"))
-		return firstField(name), false, name != ""
-	case strings.HasPrefix(line, "--- PASS:"):
-		name := strings.TrimSpace(strings.TrimPrefix(line, "--- PASS:"))
-		return firstField(name), true, name != ""
-	case strings.HasPrefix(lower, "ok ") || strings.HasPrefix(lower, "ok\t"):
-		f := strings.Fields(line)
-		if len(f) >= 2 {
-			return f[1], true, true
+	if !decl.Format.ParsesResults() {
+		return nil, fmt.Errorf("the project declares no machine-readable result format, so its gate's per-check "+
+			"results are not available (add `format = junit|tap|sarif|json` to .orchicon/verify)")
+	}
+	body := out
+	if p := strings.TrimSpace(decl.Path); p != "" {
+		raw, rerr := os.ReadFile(filepath.Join(dir, p))
+		if rerr != nil {
+			return nil, fmt.Errorf("the gate's declared report %q could not be read: %w", p, rerr)
 		}
-	case strings.HasPrefix(line, "FAIL") || strings.HasPrefix(line, "FAIL\t"):
-		f := strings.Fields(line)
-		if len(f) >= 2 {
-			return f[1], false, true
-		}
-	case strings.HasPrefix(line, "PASS") || strings.HasPrefix(line, "PASS\t"):
-		// A bare "PASS" with no subject is go test's final summary line — no identity, so no result.
-		f := strings.Fields(line)
-		if len(f) >= 2 {
-			return f[1], true, true
-		}
+		body = string(raw)
 	}
-	// Runner-prefixed per-file lines: " FAIL  src/foo.test.ts > case" / " PASS  src/bar.test.ts".
-	// Checked last so the exact-prefix cases above win, and matched case-insensitively because these
-	// runners vary (vitest "FAIL", jest "FAIL", mocha "failing").
-	if k, p, ok := parseRunnerPrefixed(lower, line); ok {
-		return k, p, true
+	results, perr := verify.ParseResults(decl.Format, body)
+	if perr != nil {
+		return nil, fmt.Errorf("the gate's output is not %s: %w", decl.Format, perr)
 	}
-	if strings.Contains(line, ": FAILED") || strings.HasSuffix(line, " FAILED") {
-		f := strings.Fields(line)
-		for i, tok := range f {
-			if strings.EqualFold(tok, "FAIL") && i+1 < len(f) {
-				return f[i+1], false, true
-			}
-		}
-	}
-	return "", false, false
-}
-
-// parseRunnerPrefixed handles the " STATUS <subject>" family (vitest/jest/mocha style), where the
-// status word is padded with whitespace before the subject on the same line.
-func parseRunnerPrefixed(lower, line string) (string, bool, bool) {
-	f := strings.Fields(line)
-	if len(f) < 2 {
-		return "", false, false
-	}
-	switch strings.ToUpper(f[0]) {
-	case "FAIL", "FAILED", "✗", "✕", "×":
-		return f[1], false, true
-	case "PASS", "PASSED", "✓", "√", "✔":
-		return f[1], true, true
-	}
-	return "", false, false
-}
-
-// firstField returns the first whitespace-delimited field, or "".
-func firstField(s string) string {
-	f := strings.Fields(s)
-	if len(f) == 0 {
-		return ""
-	}
-	return f[0]
+	return results, nil
 }
 
 // gatherEvidence assembles the verify.Evidence for a completed step.
@@ -449,20 +430,30 @@ func (r *TaskReconciler) gatherEvidence(ctx context.Context, in evidenceInput) v
 	//
 	// This was a real failure: architect run 01M6TBXTPB26MX13JFEPFTV7EG ran the full gate, got a red result
 	// it had not caused, and failed six recovery attempts in a row.
-	ev.DeclaredCommand = declaredGateCommand(in.projectDir)
-	if ev.DeclaredCommand != "" && in.stepDeclaresDeliverable {
-		out, gerr := r.runCompletionGate(ctx, in.worktreePath, ev.DeclaredCommand)
+	decl, declErr := declaredGate(in.projectDir)
+	ev.DeclaredCommand = decl.Command
+	if declErr != nil {
+		// A BROKEN DECLARATION IS REPORTED, and it is an abstention rather than a failure: the worker did not
+		// write the declaration, and failing it for someone else's typo is the "holding people back" the operator
+		// is removing.
+		ev.DeclaredDetail = "the gate declaration could not be read: " + declErr.Error()
+		ev.HeadDetail = ev.DeclaredDetail
+	}
+	if ev.DeclaredCommand != "" && declErr == nil && in.stepDeclaresDeliverable {
+		full, capped, gerr := r.runCompletionGate(ctx, in.worktreePath, decl)
 		ev.DeclaredRan = true
 		ev.DeclaredPassed = gerr == nil
-		ev.DeclaredDetail = truncateTail(strings.TrimSpace(out), 600)
-		// The HEAD result set feeds the differential.
-		if res := parseGateResults(out); len(res) > 0 {
+		ev.DeclaredDetail = truncateTail(strings.TrimSpace(capped), 600)
+		// The HEAD result set feeds the differential — parsed from the FULL transcript, before the cap, so the
+		// record's size limit can never cost a measurement.
+		res, perr := r.parseGateOutput(decl, in.worktreePath, full)
+		if perr == nil && len(res) > 0 {
 			ev.HeadResults = res
 			ev.HeadMeasured = true
 		} else {
-			ev.HeadDetail = "the gate produced no parseable results"
-			if gerr != nil {
-				ev.HeadDetail += ": " + ev.DeclaredDetail
+			ev.HeadDetail = "the gate's per-check results were not available"
+			if perr != nil {
+				ev.HeadDetail = perr.Error()
 			}
 		}
 	}

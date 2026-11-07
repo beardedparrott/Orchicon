@@ -1,20 +1,21 @@
 # The verification gate this project declares for worker steps.
 #
-# READ BY: internal/scheduler/local_integrate.go (projectVerifyCommand) and
-#          internal/scheduler/verify_evidence.go (declaredGateCommand), so one declaration
-#          serves both the integration check and the per-step evidence gate.
+# READ BY: internal/scheduler (declaredGate), one reader shared by the integration check, the per-step HEAD
+# measurement and the baseline capture — so the project cannot have two different notions of its own gate.
 #
-# WHY THIS FILE EXISTS. Without it every worker step in this repository is recorded as UNVERIFIED: the
-# platform compares the project's gate at a step's HEAD against a baseline taken before the step
-# started, and with nothing declared there is nothing to compare. That is not a theoretical gap — it is
-# why a run could report success having changed nothing and still be marked green.
+# WHY THE KEYS AND NOT A BARE COMMAND. The platform used to infer per-check results by pattern-matching the
+# gate's output, which was wrong in principle and broken in practice: raw `node --test` TAP keyed its failure on
+# the test NUMBER and dropped it, so failures vanished. The project now DECLARES the format and the platform
+# parses that — no guessing, no per-language wrapper.
 #
-# SCOPE IS DELIBERATE: build + vet + the Go test suite. NOT `make ci` (which adds fe-lint,
-# fe-typecheck, fe-test and site-check) and NOT `ci-go` (which adds cross-compile). Those belong in CI,
-# where a cold cache and a 13-minute budget are acceptable; this command runs twice per step (baseline
-# and HEAD) on every worker run, so it is kept to what a warm cache turns around in seconds. A gate slow
-# enough to be skipped is worse than a narrower one that always runs.
+# `format = json` COVERS `go test -json`, which is Go's own machine-readable output (a stream of test events,
+# collapsed per package). No gotestsum, no extra tool.
 #
-# The baseline is per-commit and cached under .orchicon/baselines/, so the first run cut from a given
-# develop tip pays for the measurement and every sibling run reuses it.
-go build ./... && go vet ./... && go test ./internal/... ./cmd/...
+# ANYTHING ELSE — no file, an empty file, a bare command — is still legal: a bare command means format
+# `exit_code`, which parses nothing and simply records that per-check results were not available. That is an
+# advisory note, never a failure.
+#
+# THE PER-CHECK RESULTS ARE WHAT MAKE THE DIFFERENTIAL POSSIBLE: base vs HEAD, so a step is measured only on what
+# IT changed and a repository that is already red can still say something useful about a step.
+command = go build ./... && go vet ./... && go test -json ./internal/... ./cmd/...
+format  = json

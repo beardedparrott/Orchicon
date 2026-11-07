@@ -7,27 +7,26 @@ package scheduler
 // the claim was true. This file supplies that half, and it is deliberately called from exactly one
 // place — the terminal transition — so there is one answer to "how did this step get its status".
 //
-// THE THREE-WAY OUTCOME AND HOW EACH LANDS:
+// EVERY VERDICT LANDS THE SAME WAY: the step's status is unchanged, and anything worth saying goes into the
+// execution's error_message slot as a notice plus the step run's `_verification` record.
 //
-//	verified         → succeeded, exactly as before. No behavioural change for good work.
-//	unsubstantiated  → FAILED, with the contradicting evidence in error_message. This is a real
-//	                   failure: the worker claimed something the repository disproves.
-//	unverified       → succeeded, BUT the evidence and the verdict are recorded on the execution and
-//	                   stamped onto the step run, so the acceptance review and the UI can say
-//	                   "nothing confirmed this". It is not silent.
+//	verified         → succeeded, silently. Good work is not decorated.
+//	unsubstantiated  → succeeded, with a notice saying the repository does not support the claim.
+//	unverified       → succeeded, with a notice saying nothing confirmed the claim.
+//	not_applicable   → succeeded, silently: a plan-only or approval step is not a checked thing.
 //
-// WHY UNVERIFIED IS NOT A FAILURE. Failing it would make a step fail whenever a project declares no
-// gate — which is every project today, including this one. That would fail every run immediately and
-// the mechanism would be switched off within a day, which is the worst possible outcome: it would
-// leave the platform exactly as unverified as before, with the added belief that verification was
-// tried. Recording it honestly and NOT blocking is the version that survives contact with a real
-// backlog. The pressure to declare a gate belongs in the prompts and the review, not in a hard fail.
+// WHY NOTHING FAILS. The gate was built to be able to fail a step whose claim the repository contradicted. That
+// requires the platform to be RIGHT about the contradiction — which means parsing a project's output, comparing
+// baselines and attributing failures, each of which can be wrong for reasons the worker does not control. The
+// operator's verdict on that trade: "it is too strict, it is language-specific, and it is holding people back."
+// So the verdict became information.
 //
-// WHY IT IS NOT SILENT SUCCESS EITHER. `unverified` is written into the execution's error_message
-// slot as a NOTICE (the same pattern the worktree reconciler uses for worktreeNoticeKind) and into
-// the step run's result as `_verification`. The acceptance review renders it. An operator reading a
-// run can therefore tell "checked and confirmed" from "nobody checked", which is the distinction the
-// whole complaint — "sometimes it works, sometimes it doesn't, and I find out later" — was about.
+// THE COST, named rather than buried in a commit message: a worker that reports success having changed NOTHING now
+// lands green with a notice, where it used to fail. The evidence still says so and the review still shows it; the
+// platform simply does not act on it. See applyVerdict.
+//
+// NOTHING IS SILENT, which is the half worth keeping: the notice rides the same slot the worktree reconciler uses
+// for its advisories, so an operator can still tell "checked and confirmed" from "nobody checked".
 
 import (
 	"context"
@@ -268,30 +267,43 @@ func (r *TaskReconciler) integrationBranchForProject(_ context.Context, projectI
 	return defaultIntegrationBranch
 }
 
-// applyVerdict folds the evidence verdict into the outcome.
+// applyVerdict folds the evidence verdict into the outcome — as a RECORD, never as a status change.
 //
-// THIS IS THE ONLY PLACE A VERDICT AFFECTS A STATUS. Kept as a pure function of (verdict, current
-// outcome) so the policy is readable in one screen and testable without a database.
+// THE OPERATOR'S DECISION, and it is a real simplification of what this function used to do.
 //
-//	worker failed           → unchanged. A failed worker is never upgraded by evidence, and there is
-//	                          nothing to substantiate.
-//	verified                → unchanged (succeeded).
-//	unsubstantiated         → succeeded becomes FAILED. The claim is contradicted.
-//	unverified              → unchanged (succeeded) + a notice. Deliberate, documented at the top.
-//	not_applicable          → unchanged (succeeded), with a notice naming the absence of checks. A step
-//	                          that produces no repository evidence — a plan, an approval — must not be
-//	                          failed for it, and must not be reported as verified either.
+// The evidence gate was built to be able to FAIL a step whose claim the repository contradicted. That is a
+// powerful idea and it was the wrong shape for this product: to act on a contradiction the platform has to be
+// right about it, and being right means parsing output, comparing baselines and attributing failures — every one
+// of which can be wrong in a way the worker cannot control. The operator's verdict: "it is too strict, it is
+// language-specific, and it is holding people back instead of helping them get work done."
+//
+// So the verdict is now INFORMATION. It is computed, recorded on the execution and rendered in the acceptance
+// review, and it never changes whether a step succeeded. Success/failure is what it has always been: the worker's
+// own verdict plus the process exit code.
+//
+// WHAT IS LOST, stated plainly rather than buried: the smoking-gun case — a worker that reports success having
+// changed nothing — now lands GREEN with a notice attached, instead of failing. The evidence still says so; the
+// notice still says so; nothing blocks anyone. That is the trade, chosen deliberately.
+//
+// NOTHING IS SILENT, though, which is the half worth keeping. An unverified or contradicted step carries a
+// sentence saying what was and was not established, in the same slot the worktree reconciler uses for its
+// advisories.
 func applyVerdict(succeeded bool, res verify.Result) (bool, string) {
 	if !succeeded {
+		// A FAILED worker keeps its failure and gets no evidence notice: there is nothing to substantiate, and
+		// adding "unverified" to an already-failing step is noise at the moment the operator wants the cause.
 		return false, ""
 	}
 	switch res.Verdict {
 	case verify.VerdictUnsubstantiated:
-		reason := "the worker reported success but the evidence contradicts it"
+		// The strongest thing the platform can say without acting on it, so it says it plainly and does not
+		// soften it — the operator should be able to see that this run's account of itself does not match the
+		// repository.
+		reason := "the worker reported success but the repository does not support it"
 		if res.Reason != "" {
 			reason += " — " + res.Reason
 		}
-		return false, reason
+		return true, verifyNoticePrefix + reason
 	case verify.VerdictUnverified:
 		reason := "the worker reported success and nothing confirmed it"
 		if res.Reason != "" {
@@ -299,8 +311,8 @@ func applyVerdict(succeeded bool, res verify.Result) (bool, string) {
 		}
 		return true, verifyNoticePrefix + reason
 	case verify.VerdictNotApplicable:
-		// NOT a notice. A plan-only step is CORRECT when it produces a plan, and flagging every one of them
-		// would train the operator to ignore the notice on the steps where it matters.
+		// No notice. A plan-only step is CORRECT when it produces a plan, and flagging every architect and
+		// approval step is how an operator learns to ignore the notice on the steps where it matters.
 		return true, ""
 	}
 	return true, ""

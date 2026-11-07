@@ -50,9 +50,10 @@ func TestApplyVerdictPolicy(t *testing.T) {
 			why: "no behavioural change for good work",
 		},
 		{
-			name: "unsubstantiated DOWNGRADES to failed", succeeded: true,
-			verdict: verify.VerdictUnsubstantiated, wantSucceeded: false, wantNotice: true,
-			why: "the repository contradicts the claim — this is the defect case",
+			name: "unsubstantiated stays SUCCEEDED with a notice", succeeded: true,
+			verdict: verify.VerdictUnsubstantiated, wantSucceeded: true, wantNotice: true,
+			why: "the verdict is a record now: a contradiction is said out loud and never acts on the step. " +
+				"This is the operator's decision — the mechanism was holding people back",
 		},
 		{
 			name: "unverified keeps succeeded but is never silent", succeeded: true,
@@ -73,15 +74,14 @@ func TestApplyVerdictPolicy(t *testing.T) {
 	}
 }
 
-// TestUnsubstantiatedNoticeNamesTheReason pins that the failure reason an operator sees says WHAT was
-// contradicted. A failure with no cause sends them to a terminal, which is the cost this feature is
-// supposed to remove.
+// TestUnsubstantiatedNoticeNamesTheReason pins that the notice an operator sees says WHAT was contradicted. A
+// verdict with no cause sends them to a terminal, which is the cost this feature exists to remove.
 func TestUnsubstantiatedNoticeNamesTheReason(t *testing.T) {
 	_, notice := applyVerdict(true, verify.Result{
 		Verdict: verify.VerdictUnsubstantiated,
 		Reason:  "not substantiated: work_present: HEAD did not move",
 	})
-	for _, want := range []string{"contradicts", "work_present"} {
+	for _, want := range []string{"does not support", "work_present"} {
 		if !contains(notice, want) {
 			t.Errorf("notice %q missing %q", notice, want)
 		}
@@ -102,48 +102,61 @@ func indexOf(h, n string) int {
 	return -1
 }
 
-// TestParseGateResultsGoTest pins the parser against real `go test` output shapes.
-func TestParseGateResultsGoTest(t *testing.T) {
-	out := `ok  	github.com/x/a	0.012s
-FAIL	github.com/x/b [build failed]
---- FAIL: TestC (0.00s)
---- PASS: TestD (0.00s)
-ok  	github.com/x/e	(cached)
-`
-	got := parseGateResults(out)
-	want := map[string]bool{
-		"github.com/x/a": true,
-		"github.com/x/b": false,
-		"TestC":          false,
-		"TestD":          true,
-		"github.com/x/e": true,
+// THE GATE IS READ IN THE FORMAT THE PROJECT DECLARES, not guessed from its output.
+//
+// These replace the three tests that pinned the old line parser. The parser is gone: pattern-matching log lines
+// was wrong in principle (a log line is a rendering, not a contract) and broken in practice (raw `node --test`
+// TAP keyed its failure on the test number and dropped it). The format layer's own tests live in
+// internal/verify/results_test.go; what is pinned HERE is the scheduler's wiring — that the declaration's format
+// and path are what actually get used.
+func TestTheGateIsReadInTheDeclaredFormat(t *testing.T) {
+	dir := t.TempDir()
+	decl := verify.Declaration{Command: "make test", Format: verify.FormatJSON}
+	r := &TaskReconciler{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	got, err := r.parseGateOutput(decl, dir, `{"pkg/a": true, "pkg/b": false}`)
+	if err != nil {
+		t.Fatalf("parseGateOutput: %v", err)
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("parsed = %v\nwant    = %v", got, want)
+	if len(got) != 2 || got["pkg/b"] || !got["pkg/a"] {
+		t.Fatalf("parsed = %v, want pkg/a true and pkg/b false", got)
 	}
 }
 
-// TestParseGateResultsVitest pins a non-Go runner, because the gate must not be Go-only: the point of
-// a project-declared command is that it can be anything.
-func TestParseGateResultsVitest(t *testing.T) {
-	out := ` FAIL  src/foo.test.ts > renders
- PASS  src/bar.test.ts > counts
-`
-	got := parseGateResults(out)
-	if got["src/foo.test.ts"] != false {
-		t.Errorf("src/foo.test.ts = %v, want false (parsed: %v)", got["src/foo.test.ts"], got)
+// A DECLARED REPORT PATH IS READ INSTEAD OF THE OUTPUT, which is how a runner that cannot write to stdout
+// (surefire, pytest) is supported without a wrapper.
+func TestADeclaredReportPathIsReadFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	report := `{"pkg/a": false}`
+	if err := os.WriteFile(filepath.Join(dir, "report.json"), []byte(report), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if got["src/bar.test.ts"] != true {
-		t.Errorf("src/bar.test.ts = %v, want true (parsed: %v)", got["src/bar.test.ts"], got)
+	decl := verify.Declaration{Command: "make test", Format: verify.FormatJSON, Path: "report.json"}
+	r := &TaskReconciler{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	// The command's own output says nothing; only the file carries the results.
+	got, err := r.parseGateOutput(decl, dir, "BUILD SUCCESSFUL\n")
+	if err != nil {
+		t.Fatalf("parseGateOutput: %v", err)
+	}
+	if got["pkg/a"] {
+		t.Fatalf("parsed = %v, want pkg/a false (from the report file)", got)
 	}
 }
 
-// TestParseGateResultsEmptyIsEmptyNotGreen pins that unparseable output yields an EMPTY map, never a
-// synthetic pass. An empty map is turned into an incomplete baseline by the caller; a synthetic
-// "everything passed" would silently certify a gate that never ran.
-func TestParseGateResultsEmptyIsEmptyNotGreen(t *testing.T) {
-	if got := parseGateResults("gibberish\nno results here\n"); len(got) != 0 {
-		t.Fatalf("parsed = %v, want empty", got)
+// NO DECLARED FORMAT IS AN ERROR, NEVER AN EMPTY MAP. An empty map reads as "everything passed", which is how a
+// verification system starts certifying work it never measured.
+func TestNoDeclaredFormatIsAnErrorNotAnEmptyMap(t *testing.T) {
+	r := &TaskReconciler{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	got, err := r.parseGateOutput(verify.Declaration{Command: "make test"}, t.TempDir(),
+		"ok  pkg/a\nFAIL  pkg/b\n")
+	if err == nil {
+		t.Fatalf("a declaration with no result format was accepted; returned %v", got)
+	}
+	if got != nil {
+		t.Fatalf("a non-nil result map came back alongside the error: %v", got)
+	}
+	if !strings.Contains(err.Error(), "format") {
+		t.Errorf("the error must name the missing format, got %q", err)
 	}
 }
 
@@ -375,26 +388,50 @@ func TestAppendACReportCheck(t *testing.T) {
 	}
 }
 
-// TestCompletionGateIsBounded pins that the completion-path gate cannot wedge a run.
+// THE COMPLETION GATE CARRIES NO INVENTED TIME LIMIT — the operator's rule, and the one thing this file used to
+// pin the OPPOSITE of.
 //
-// This is the one place the evidence gate touches the critical path: it runs SYNCHRONOUSLY inside
-// OnResult, while the execution is still formally `running` and every later reconcile pass for that row
-// is behind it. Reusing the integration path's 10-minute budget here would mean a slow gate holds a
-// terminal status for ten minutes — a wedge, which is strictly worse than an unmeasured gate, because a
-// wedge strands the run while a timeout merely abstains.
-func TestCompletionGateIsBounded(t *testing.T) {
-	if completionGateTimeout <= 0 {
-		t.Fatal("the completion gate must have a positive bound")
+// The gate runs SYNCHRONOUSLY inside OnResult, and the old code answered that by inventing a 3-minute ceiling
+// (then, before that, borrowing the integration path's 10-minute one). Both are gone. A ceiling nobody configured
+// is a hidden policy that fails good work on a slow machine, and it is not the mechanism for a runaway: stall
+// detection, tool-hang cancellation and the execution reaper are, and each of them acts on evidence of being stuck
+// rather than on elapsed time.
+//
+// WHAT REPLACES IT IS CANCELLABILITY, and that is a real property worth pinning: the run's own context reaches the
+// command, so an operator's cancel, a container going away, or a budget the OPERATOR set all stop the gate. That
+// bound is somebody's decision; a number in this file is not.
+func TestTheCompletionGateHasNoInventedTimeout(t *testing.T) {
+	src, err := os.ReadFile("verify_evidence.go")
+	if err != nil {
+		t.Fatalf("read verify_evidence.go: %v", err)
 	}
-	if completionGateTimeout >= 10*time.Minute {
-		t.Fatalf("completionGateTimeout = %s; it must be strictly shorter than the integration "+
-			"path's 10m budget, or a slow gate wedges OnResult", completionGateTimeout)
+	// A SOURCE ASSERTION, and legitimately so: the property is the ABSENCE of a local deadline, and there is no
+	// runtime seam that can observe a timeout that never fires. This proves the wiring is gone; the cancellation
+	// half is proved by TestTheCompletionGateHonoursCancellation below.
+	for _, banned := range []string{"context.WithTimeout", "context.WithDeadline", "time.AfterFunc"} {
+		if strings.Contains(string(src), banned) {
+			t.Errorf("verify_evidence.go still arms a local bound (%s); the run's own context is the only "+
+				"limit this file may apply", banned)
+		}
 	}
-	// It must still be long enough for a real project's warm-cache suite, or it would abstain always
-	// and the gate would be decorative.
-	if completionGateTimeout < time.Minute {
-		t.Fatalf("completionGateTimeout = %s; too short for a real gate to ever measure anything",
-			completionGateTimeout)
+}
+
+// AND THE BOUND THAT DOES EXIST IS THE CALLER'S: a cancelled run context stops the gate.
+//
+// This is the property the removed timeouts were trying to buy, obtained the right way — from the context that
+// already knows the execution was cancelled.
+func TestTheCompletionGateHonoursCancellation(t *testing.T) {
+	r := &TaskReconciler{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	decl := verify.Declaration{Command: "sleep 30", Format: verify.FormatExitCode}
+	start := time.Now()
+	_, _, err := r.runCompletionGate(ctx, t.TempDir(), decl)
+	if err == nil {
+		t.Fatal("a cancelled context did not stop the gate")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("the gate ran for %s after cancellation; it must stop promptly", elapsed)
 	}
 }
 
@@ -481,8 +518,11 @@ func TestBaselineCaptureAgainstARealRepo(t *testing.T) {
 	}
 	// The narrowed gate must run in the CHECKOUT (which is a worktree of the real repo), not in the
 	// scratch dir — so it is expressed as a real command the checkout can satisfy.
-	if err := os.WriteFile(filepath.Join(scratch, ".orchicon", "verify"),
-		[]byte("go test ./internal/verify/ ./internal/workitem/"), 0o644); err != nil {
+	// THE DECLARATION NOW CARRIES A FORMAT, because the platform no longer guesses one out of the output. `go test
+	// -json` is Go's own machine-readable form, so this measures the real path a Go project would use with no
+	// wrapper installed.
+	declBody := "command = go test -json ./internal/verify/ ./internal/workitem/\nformat = json\n"
+	if err := os.WriteFile(filepath.Join(scratch, ".orchicon", "verify"), []byte(declBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -500,13 +540,20 @@ func TestBaselineCaptureAgainstARealRepo(t *testing.T) {
 	}
 	defer cleanup()
 
-	out, runErr := r.runGateCommand(ctx, dir, "go test ./internal/verify/ ./internal/workitem/")
+	decl, derr := declaredGate(scratch)
+	if derr != nil {
+		t.Fatalf("declaredGate: %v", derr)
+	}
+	out, runErr := r.runGateCommand(ctx, dir, decl)
 	if runErr != nil {
 		t.Logf("gate exited non-zero (fine — the baseline records per-check results): %v", runErr)
 	}
-	results := parseGateResults(out)
+	results, perr := r.parseGateOutput(decl, dir, out)
+	if perr != nil {
+		t.Fatalf("parseGateOutput: %v (tail: %s)", perr, truncateTail(out, 800))
+	}
 	if len(results) == 0 {
-		t.Fatalf("the gate produced no parseable results; tail: %s", truncateTail(out, 800))
+		t.Fatalf("the gate produced no per-check results; tail: %s", truncateTail(out, 800))
 	}
 	if _, ok := results["github.com/beardedparrott/orchicon/internal/verify"]; !ok {
 		t.Fatalf("the verify package is missing from the measured results: %v", results)
@@ -526,70 +573,48 @@ func TestBaselineCaptureAgainstARealRepo(t *testing.T) {
 	}
 }
 
-// TestCapGateOutputKeepsResultLinesFromTheMiddle is a regression test for the truncation bug that
-// `make rebuild-dev` caught.
+// THE OUTPUT CAP CANNOT COST A MEASUREMENT ANY MORE, and that is a stronger guarantee than the old fix.
 //
-// THE BUG: the output cap was a FRONT cut (`out[:64KB]`). A `go test ./internal/... ./cmd/...` run on
-// this repository emits far more than that before it reaches the packages late in the alphabet, so the
-// baseline silently ended at `internal/runtimeimage` and every package after it — scheduler, tui, verify,
-// workitem — was missing from BOTH sides of the comparison.
+// THE BUG THIS REPLACES: the cap used to be a FRONT cut, so a transcript larger than 64KB silently lost every
+// result after the cut. On `make rebuild-dev` the baseline ended at internal/runtimeimage and everything after it
+// vanished from BOTH sides of the comparison — so a pre-existing failure got blamed on the step, and a genuine
+// regression read as "no new failures". The first fix kept "result-shaped lines" from the elided middle, which
+// worked but meant the cap had to know the result FORMAT — the pattern-matching defect this change removes.
 //
-// WHY THAT IS THE WORST KIND OF BUG HERE:
-//   - a package already failing but truncated out of the BASELINE reappears at HEAD, so a pre-existing
-//     failure gets blamed on the step;
-//   - a package that regressed but was truncated out of HEAD is never compared, so a NEW failure reads as
-//     "no new failures". A false negative in a verification system is the worst outcome available, and a
-//     front cut produces it silently.
-//
-// The fix keeps the head, the tail, AND every result-shaped line from the elided middle.
-func TestCapGateOutputKeepsResultLinesFromTheMiddle(t *testing.T) {
-	// Build a transcript whose padded noise dwarfs maxGateOutput, with results spread from the first
-	// package to the last and plenty of unparseable chatter between them.
+// THE STRUCTURAL FIX: parsing happens on the FULL transcript and the cap is applied only to what the RECORD
+// keeps. So a transcript of any size yields every result, and the cap becomes a record-size decision that cannot
+// change a verdict.
+func TestAHugeTranscriptStillYieldsEveryResult(t *testing.T) {
+	// A NDJSON stream (go test -json) whose bulk dwarfs the cap, with packages spread first to last.
 	var b strings.Builder
-	b.WriteString("=== a banner ===\n")
 	const n = 400
 	for i := 0; i < n; i++ {
-		// Real result lines, alphabetically increasing so the late ones land in the tail and the early in
-		// the head — the middle is what a front cut used to destroy.
-		b.WriteString("ok  \tgithub.com/beardedparrott/orchicon/internal/pkg")
-		b.WriteString(strings.Repeat("x", 3))
-		fmt.Fprintf(&b, "%03d\t0.01s\n", i)
-		// Bulk noise to push the transcript well past the cap.
-		b.WriteString(strings.Repeat("noise line that is not a result\n", 40))
+		fmt.Fprintf(&b, "{\"Action\":\"pass\",\"Package\":\"example.com/pkg%03d\"}\n", i)
+		b.WriteString(strings.Repeat("noise line that is not an event\n", 40))
 	}
-	b.WriteString("FAIL\tgithub.com/beardedparrott/orchicon/internal/zzz-last\t0.02s\n")
+	b.WriteString("{\"Action\":\"fail\",\"Package\":\"example.com/zzz-last\"}\n")
 
 	full := b.String()
 	if len(full) <= maxGateOutput {
 		t.Fatalf("test transcript is only %d bytes; it must exceed the %d cap to be meaningful", len(full), maxGateOutput)
 	}
-
-	capped := capGateOutput(full)
-	if len(capped) > maxGateOutput {
-		t.Fatalf("capped output is %d bytes, over the %d cap", len(capped), maxGateOutput)
+	if len(capGateOutput(full)) > maxGateOutput {
+		t.Fatalf("capped output exceeds the %d cap", maxGateOutput)
 	}
 
-	results := parseGateResults(capped)
-	if len(results) == 0 {
-		t.Fatal("no results parsed out of the capped output at all")
+	// PARSED FROM THE FULL TRANSCRIPT — which is what the collector does.
+	results, err := verify.ParseResults(verify.FormatJSON, full)
+	if err != nil {
+		t.Fatalf("ParseResults: %v", err)
 	}
-	// The FIRST and LAST checks must both survive: a front cut drops the last, a tail cut drops the first.
-	if _, ok := results["github.com/beardedparrott/orchicon/internal/pkgxxx000"]; !ok {
-		t.Error("the first result was lost — a tail cut would do this")
+	if len(results) != n+1 {
+		t.Fatalf("parsed %d packages, want %d — the transcript's size lost measurements", len(results), n+1)
 	}
-	if _, ok := results["github.com/beardedparrott/orchicon/internal/zzz-last"]; !ok {
-		t.Error("the LAST result was lost — this is the front-cut bug that broke make rebuild-dev")
+	if results["example.com/zzz-last"] {
+		t.Error("the LAST package is recorded as passing; it failed")
 	}
-
-	// And a mid-transcript result must survive too, since that is the whole point of harvesting lines.
-	found := 0
-	for name := range results {
-		if strings.HasPrefix(name, "github.com/beardedparrott/orchicon/internal/pkgxxx") {
-			found++
-		}
-	}
-	if found < n/2 {
-		t.Errorf("only %d of %d package results survived the cap; the middle is being dropped", found, n)
+	if !results["example.com/pkg000"] {
+		t.Error("the FIRST package is missing from the results")
 	}
 }
 
@@ -713,5 +738,112 @@ func TestPreExistingRedGateStillFailsARegression(t *testing.T) {
 	}
 	if strings.Contains(got.Reason, "pkg/old") {
 		t.Errorf("the pre-existing failure must not be blamed on this step: %q", got.Reason)
+	}
+}
+
+// NOTHING THE VERIFIER FINDS CAN FAIL A STEP — the operator's rule, asserted over EVERY verdict.
+//
+// This is the test that would have caught the "too strict" product defect: whatever the evidence says, the step's
+// status is the worker's and the process's to decide. A regression in applyVerdict that reintroduced a downgrade
+// would fail here, for every verdict at once, rather than only for the one case someone remembered.
+func TestNoVerdictCanFailAStep(t *testing.T) {
+	for _, v := range []verify.Verdict{
+		verify.VerdictVerified, verify.VerdictUnverified,
+		verify.VerdictUnsubstantiated, verify.VerdictNotApplicable,
+	} {
+		t.Run(string(v), func(t *testing.T) {
+			// A worker that succeeded keeps succeeding, whatever the evidence concluded.
+			if ok, _ := applyVerdict(true, verify.Result{Verdict: v}); !ok {
+				t.Errorf("verdict %q failed a step that the worker reported as succeeding — the verifier must "+
+					"never change a status", v)
+			}
+			// A worker that failed keeps failing, and is never upgraded either.
+			if ok, _ := applyVerdict(false, verify.Result{Verdict: v}); ok {
+				t.Errorf("verdict %q upgraded a FAILED worker — evidence never outranks a real failure", v)
+			}
+		})
+	}
+}
+
+// AND THE ONE CASE THAT USED TO FAIL NOW LANDS GREEN WITH A NOTICE ATTACHED — stated explicitly, because it is the
+// cost of the rule above and it should not be discovered later by surprise.
+//
+// A worker reports success having changed nothing. The evidence says so (work_present failed, verdict
+// unsubstantiated). The step is SUCCEEDED, and the only trace is the notice.
+func TestAnEmptyClaimLandsGreenWithANotice(t *testing.T) {
+	res := verify.Collect(context.Background(), verify.Evidence{
+		GitReadable: true, BaseRef: "develop", CommitsAhead: 0,
+		ChangedFiles:            map[string]struct{}{},
+		StepDeclaresDeliverable: true,
+		TreeClean:               boolPtr(true),
+		DeclaredCommand:         "make test", DeclaredRan: true, DeclaredPassed: true,
+		Baseline:     &verify.Baseline{Commit: "b", Results: map[string]bool{"pkg/a": true}},
+		HeadResults:  map[string]bool{"pkg/a": true},
+		HeadMeasured: true,
+	})
+	if res.Verdict != verify.VerdictUnsubstantiated {
+		t.Fatalf("fixture: verdict = %q, want unsubstantiated (no commits is a contradiction)", res.Verdict)
+	}
+	ok, notice := applyVerdict(true, res)
+	if !ok {
+		t.Error("a step that changed nothing failed — the operator's rule is that the verifier never fails a step")
+	}
+	if notice == "" {
+		t.Error("the step landed green SILENTLY; the evidence must still say what it found")
+	}
+	if !strings.Contains(notice, "does not support") {
+		t.Errorf("the notice must say the repository does not support the claim, got %q", notice)
+	}
+}
+
+// THE SCRATCH CHECKOUT MUST BE ABLE TO RUN THE PROJECT'S GATE — the operator's "stop assuming the gate can run
+// with nothing installed in a scratch worktree".
+//
+// A git worktree carries TRACKED files only, so node_modules, .dev, vendor and every build cache are absent and a
+// gate that needs any of them dies instantly. That failure would be recorded AS the baseline, which is worse than
+// no baseline: it looks like a measurement.
+//
+// MEASURED BEFORE THE FIX: `npx vitest --version` in a fresh scratch checkout of this repository exited 1 with
+// "npx canceled due to missing packages", because nothing had linked frontend/node_modules in.
+//
+// SKIPPED when the repository has no ignored dependency tree to link — it is a real integration test that needs a
+// real checkout, and most test runs have neither.
+func TestTheScratchCheckoutCanRunTheProjectsGate(t *testing.T) {
+	repo, err := filepath.Abs("../..")
+	if err != nil {
+		t.Skip("no repository root")
+	}
+	if _, serr := os.Stat(filepath.Join(repo, ".git")); serr != nil {
+		t.Skip("not a checkout")
+	}
+	r := &TaskReconciler{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	dir, cleanup, cerr := r.scratchCheckout(ctx, repo, "HEAD")
+	if cerr != nil {
+		t.Skipf("scratch checkout unavailable: %v", cerr)
+	}
+	defer cleanup()
+
+	// The dependency this repository's FRONTEND gate needs, as the concrete instance of the class.
+	deps := filepath.Join(dir, "frontend", "node_modules")
+	if _, serr := os.Stat(filepath.Join(repo, "frontend", "node_modules")); serr != nil {
+		t.Skip("this checkout has no frontend node_modules to link")
+	}
+	if _, serr := os.Stat(deps); serr == nil {
+		t.Fatalf("fixture: the scratch checkout already has frontend/node_modules — the test cannot prove the link")
+	}
+	if lerr := linkIgnoredDependencies(ctx, repo, dir); lerr != nil {
+		t.Fatalf("linkIgnoredDependencies: %v", lerr)
+	}
+	fi, serr := os.Lstat(deps)
+	if serr != nil {
+		t.Fatalf("frontend/node_modules is still absent from the scratch checkout (%v) — a gate that needs it "+
+			"cannot run, so the baseline would measure a tree nothing can build", serr)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("frontend/node_modules is not a symlink; installing a copy would measure a DIFFERENT dependency " +
+			"set from the one the project actually runs")
 	}
 }
