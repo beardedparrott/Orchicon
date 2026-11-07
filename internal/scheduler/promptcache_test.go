@@ -123,3 +123,32 @@ func TestPromptSectionCacheHitReuseVerbatim(t *testing.T) {
 	// Different tenant/project isolates cache keys.
 	_, _ = renderContextSectionCached(cache, log, "t2", "p1", "# Project context", []string{file}, dir)
 }
+
+// TestCacheDoesNotConfuseTheTwoPolicies pins that the policy is part of the cache identity.
+//
+// The cache is keyed on (tenant, project, rootNote, fingerprint). Two sections can share ALL of those — the
+// skills union and the context union are derived from the same project selection and can hash to the same
+// stamps — while rendering DIFFERENT bytes, because one inlines a large file and the other degrades it to a
+// reference. Without the policy in the key the second caller is served the first's bytes: the skill section
+// would silently come back as a context listing, which is the exact defect this change removes.
+func TestCacheDoesNotConfuseTheTwoPolicies(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "big.md")
+	writeCtxFile(t, file, "SKILL-RULE: "+strings.Repeat("z", contextfiles.ManifestInlineMaxBytes+2048))
+	cache := newPromptSectionCache(8)
+	log := &capLog{}
+
+	// Same paths, same rootNote, same fingerprint — only the policy differs.
+	asContext, _ := renderSectionCachedWithPolicy(cache, log, "t1", "p1", "# Skills",
+		[]string{file}, dir, contextfiles.ManifestPolicyContext)
+	asSkill, _ := renderSectionCachedWithPolicy(cache, log, "t1", "p1", "# Skills",
+		[]string{file}, dir, contextfiles.ManifestPolicySkill)
+
+	if strings.Contains(asContext, "SKILL-RULE") {
+		t.Fatal("fixture: the context policy should have degraded the large file")
+	}
+	if !strings.Contains(asSkill, "SKILL-RULE") {
+		t.Fatalf("the skill render was served the CONTEXT render from the cache — the policy is not in the "+
+			"cache key, so a skill silently degrades to a reference:\n%s", asSkill)
+	}
+}

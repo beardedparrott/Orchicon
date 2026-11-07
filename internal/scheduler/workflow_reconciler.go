@@ -3434,7 +3434,10 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 							"project", wi.ProjectID, "error", err.Error())
 					}
 				} else {
-					skillSection, skillFP := r.renderContextSectionCached(tenantID, wi.ProjectID, "# Skills", skillUnion, p.ProjectDir)
+					// ManifestPolicySkill: a worker must READ its instructions, not be handed a table of
+					// contents. Under the context policy this project's own skill (7,275 bytes) rendered as
+					// a 446-byte listing, so every worker was told a skill existed and shown none of it.
+					skillSection, skillFP := r.renderSectionCachedWithPolicy(tenantID, wi.ProjectID, "# Skills", skillUnion, p.ProjectDir, contextfiles.ManifestPolicySkill)
 					if skillSection != "" {
 						sb.WriteString(skillSection)
 					}

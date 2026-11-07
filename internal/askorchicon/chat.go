@@ -3563,7 +3563,10 @@ func (s *Service) skillManifestSection(ctx context.Context, tenantID string, con
 			"conversation", conv.ID, "error", err.Error())
 		return ""
 	}
-	return contextfiles.RenderManifest("# Skills", union, projectDir)
+	// ManifestPolicySkill, NOT the default: a skill is the operator's instruction set, so its CONTENTS are
+	// inlined regardless of size. Under the context policy this repository's own skill (7,275 bytes) rendered
+	// as a 446-byte path+size listing — every agent was told a skill existed and shown none of it.
+	return contextfiles.RenderManifestWithPolicy("# Skills", union, projectDir, contextfiles.ManifestPolicySkill)
 }
 
 func (s *Service) conversationProjectContext(ctx context.Context, tenantID string, conv db.ConversationRow) string {

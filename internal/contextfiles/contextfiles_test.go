@@ -472,3 +472,53 @@ func TestRenderCumulativeBudget(t *testing.T) {
 		t.Fatalf("final file was fully inlined past the cumulative budget")
 	}
 }
+
+// TestSkillPolicyAlwaysInlines pins WHY the skill renderer does not use the context policy.
+//
+// A SKILL IS THE OPERATOR'S INSTRUCTION SET, NOT THE PLATFORM'S CONTEXT. The inline floor exists to protect a
+// token budget for context the platform injects; applying it to skills was a category error with a measurable
+// cost: this repository's own skills/ directory (7,275 bytes) rendered as a 446-byte path+size listing, so
+// every agent in every mode — Ask and worker alike — was told a skill existed and shown none of its contents.
+//
+// An operator who writes a large skill has made a deliberate choice about their own prompt. Silently degrading
+// it to a reference means the agent never reads it at all, which is strictly worse than a large prompt.
+func TestSkillPolicyAlwaysInlines(t *testing.T) {
+	root := t.TempDir()
+	big := filepath.Join(root, "big-skill.md")
+	body := "SKILL-RULE-ONE: " + strings.Repeat("z", ManifestInlineMaxBytes+2048)
+	mustWrite(t, big, body)
+
+	ctxOut := RenderManifest("# Context", []string{big}, root)
+	skillOut := RenderManifestWithPolicy("# Skills", []string{big}, root, ManifestPolicySkill)
+
+	if strings.Contains(ctxOut, "SKILL-RULE-ONE") {
+		t.Fatal("the CONTEXT policy must still degrade a large file to a reference — that policy is unchanged")
+	}
+	if !strings.Contains(skillOut, "SKILL-RULE-ONE") {
+		t.Fatalf("the SKILL policy must inline a large skill file:\n%s", skillOut)
+	}
+	// And it says to FOLLOW it, not to sample it — "read what you need" would invite skipping the rules.
+	if !strings.Contains(skillOut, "read them and follow them") {
+		t.Errorf("a skill section must instruct the agent to follow it:\n%s", skillOut)
+	}
+}
+
+// TestSkillPolicyInlinesADirectoryOfSkills covers the shape this project actually uses: skill_files names a
+// DIRECTORY. Listing its files would reproduce the same defect one level up — the operator pointed at a
+// directory of instructions and the agent got a table of contents.
+func TestSkillPolicyInlinesADirectoryOfSkills(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "skills")
+	mustWrite(t, filepath.Join(dir, "a.md"), "RULE-A: always do the thing\n")
+	mustWrite(t, filepath.Join(dir, "b.md"), "RULE-B: never do the other thing\n")
+
+	out := RenderManifestWithPolicy("# Skills", []string{dir}, root, ManifestPolicySkill)
+	for _, want := range []string{"RULE-A", "RULE-B"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("a skills DIRECTORY must inline each file, missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "(directory — read on demand)") {
+		t.Errorf("a skills directory must not render as a read-on-demand listing:\n%s", out)
+	}
+}
