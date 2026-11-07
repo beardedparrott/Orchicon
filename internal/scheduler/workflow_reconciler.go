@@ -4702,9 +4702,14 @@ type recoveryTriggerReq struct {
 // _recovery_worker_version / _recovery_adapter pin the exact version and
 // adapter the dead execution ran on (model_ref is per-version); the gate
 // fails fast when the step's current version moved off the pin.
+// recoveryResultKeys is the CARRY-FORWARD list across the recovering transition, and membership is
+// load-bearing: recoveringStepResult REPLACES the result JSON, and these two call sites copy back only what is
+// named here. A key absent from this list is silently destroyed when a step enters recovering — which for
+// _recovery_failure_reason would mean the resumed agent is told nothing, exactly as before the fix.
 var recoveryResultKeys = []string{
 	"_recovery_summary", "_recovery_execution_id", "_recovery_worker_id",
 	"_recovery_worker_version", "_recovery_adapter",
+	"_recovery_failure_reason",
 	"_failed_execution_id", "_failed_worker_id", "_recovery_strategy",
 }
 
@@ -4734,7 +4739,14 @@ func recoveringStepResult(ctx context.Context, tx pgx.Tx, tenantID, workItemID, 
 	if len(prevResult) > 0 {
 		var prev map[string]any
 		if json.Unmarshal(prevResult, &prev) == nil {
-			for _, k := range []string{"_worker_id", "_worker_version"} {
+			// _recovery_failure_reason IS CARRIED HERE, not only in the recoveryResultKeys sweeps.
+			//
+			// Those sweeps run in the OTHER recovering-result builders; this function rebuilds the map from
+			// scratch and copies back only what is named in this list. On a SECOND recovery the previous
+			// result already carries the first attempt's reason — and without this it was wiped before the
+			// retry was dispatched, so the single retry the policy allows would go out blind and the
+			// feature would fail quietly, exactly where it mattered most.
+			for _, k := range []string{"_worker_id", "_worker_version", "_recovery_failure_reason"} {
 				if v, ok := prev[k]; ok {
 					res[k] = v
 				}

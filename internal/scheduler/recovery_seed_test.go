@@ -642,3 +642,86 @@ func TestChurnOnlySeedCarriesPriorTail(t *testing.T) {
 		t.Error("footer must remain the last lines")
 	}
 }
+
+// TestTheReasonReachesTheResumedAgent is the proof for the whole change: the objection that failed the
+// original run must appear in what the resumed agent is given, and the "do not redo" advice must be
+// corrected for this failure class.
+func TestTheReasonReachesTheResumedAgent(t *testing.T) {
+	const reason = "the worker reported success but the evidence contradicts it — not substantiated: project_gate: the project's declared gate FAILED"
+	seed := &recoverySeed{
+		Summary:        "Execution 01M6TB0NP59ZMXHKCF2BWERFRR failed after 1120019 tokens ($0.0620). Worker w_se_principal_architect v1. Resuming from captured state.",
+		FailedExecID:   "01M6TB0NP59ZMXHKCF2BWERFRR",
+		FailedWorkerID: "w_se_principal_architect",
+		FailureReason:  reason,
+	}
+
+	// 1. The prompt block the composite emits.
+	block := recoveryFileReferenceBlock(seed)
+	if !strings.Contains(block, "the project's declared gate FAILED") {
+		t.Fatalf("the PROMPT does not carry the reason — the agent is still resuming blind:\n%s", block)
+	}
+	if !strings.Contains(block, recoveryReasonSectionHeading) {
+		t.Errorf("the reason must have its own heading so it is not skimmed past:\n%s", block)
+	}
+	if !strings.Contains(block, "REJECTED by the platform") {
+		t.Errorf("the 'do not redo work' advice must be corrected for a rejection — otherwise the agent is "+
+			"told to preserve exactly what got it rejected:\n%s", block)
+	}
+	if strings.Contains(block, "Do NOT redo work that is already done") {
+		t.Errorf("the unconditional no-redo directive must not survive for an evidence rejection:\n%s", block)
+	}
+
+	// 2. The seed FILE the agent is told to read.
+	file := buildRecoveryFileContent("Principal Software Architect", seed, "transcript tail here")
+	if !strings.Contains(file, "the project's declared gate FAILED") {
+		t.Fatalf("the SEED FILE does not carry the reason:\n%s", file)
+	}
+	// It must come BEFORE the transcript: a confident transcript reads as a finished job.
+	ri := strings.Index(file, recoveryReasonSectionHeading)
+	ti := strings.Index(file, recoveryTailSectionHeading)
+	if ri < 0 || (ti >= 0 && ri > ti) {
+		t.Errorf("the reason must precede the transcript, or the agent reads its own confident output first "+
+			"and concludes the job is done (reason@%d transcript@%d)", ri, ti)
+	}
+}
+
+// TestNoReasonSaysSoRatherThanAssumingNothingWasWrong pins the honest fallback.
+func TestNoReasonSaysSoRatherThanAssumingNothingWasWrong(t *testing.T) {
+	block := recoveryFileReferenceBlock(&recoverySeed{Summary: "failed after 10 tokens"})
+	if !strings.Contains(block, "resuming without one") {
+		t.Fatalf("a seed with no reason must say so — silence reads as 'nothing was wrong':\n%s", block)
+	}
+	if !strings.Contains(block, "UNCONFIRMED") {
+		t.Errorf("it must tell the agent to re-examine rather than repeat:\n%s", block)
+	}
+}
+
+// TestTheReasonSurvivesTheRecoveringTransition guards the most fragile part of carrying the reason.
+//
+// entering `recovering` REPLACES the step run's result JSON (recoveringStepResult starts from a fresh map),
+// and the keys are copied back only if they are named in recoveryResultKeys. A key missing from that list is
+// silently destroyed — so the reason would reach the seed on the FIRST read and vanish on the re-dispatch,
+// leaving the agent blind again with no error anywhere.
+func TestTheReasonSurvivesTheRecoveringTransition(t *testing.T) {
+	found := false
+	for _, k := range recoveryResultKeys {
+		if k == "_recovery_failure_reason" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("_recovery_failure_reason is not in recoveryResultKeys — the recovering transition would drop " +
+			"it and the resumed agent would be told nothing, which is the defect this change exists to fix")
+	}
+
+	// End to end: a SECOND recovery re-enters the recovering transition with a result that already carries a
+	// reason, and recoveringStepResult rebuilds the map from scratch. Without the carry-forward the FIRST
+	// attempt's reason is wiped before the second attempt is dispatched — so the one retry this policy allows
+	// would go out blind, which is the whole feature failing quietly.
+	prev := []byte(`{"_recovery_failure_reason":"project_gate: the project's declared gate FAILED","_worker_id":"w1"}`)
+	out := recoveringStepResult(context.Background(), nil, "tnt", "wi1", "exec1", strategySummarizeRestart, prev)
+	if !strings.Contains(string(out), "project_gate: the project's declared gate FAILED") {
+		t.Fatalf("the reason did not survive a SECOND recovering transition; result=%s", out)
+	}
+}
