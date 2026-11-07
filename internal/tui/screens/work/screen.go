@@ -63,10 +63,19 @@ type Model struct {
 
 	w, h int
 
-	// viewMu guards the work-items display grouping (it is read from the
-	// fetch closure, which runs off the update loop).
+	// viewMu guards the work-items display grouping and the project filter (both
+	// are read from the fetch closure, which runs off the update loop).
 	viewMu sync.Mutex
 	view   viewMode
+	// projectFilter narrows the WORK ITEMS pane to one project, set by the shell from
+	// the active workspace (SetActiveProject). Empty = no filter, which is the only
+	// behaviour this screen had before, so every existing path is unchanged.
+	//
+	// IT IS A FILTER ON THE QUERY, NOT ON THE ROWS, deliberately: the work-items list is
+	// one page of up to workItemPageSize rows, and filtering a page in the client would
+	// show "no work items" for a project whose items fell past the page — a wrong answer
+	// that looks like an empty project.
+	projectFilter string
 	// sort is the sibling DISPLAY order (the control next to the search box).
 	sort sortMode
 
@@ -552,6 +561,7 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	resp, err := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
 		PageSize:        workItemPageSize,
 		PageToken:       pageToken,
+		ProjectId:       m.projectScopeFilter(),
 		IncludeArchived: view == viewArchive,
 		RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
 		IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,
@@ -573,6 +583,7 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	if view == viewArchive {
 		if ar, aerr := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
 			PageSize:        workItemPageSize,
+			ProjectId:       m.projectScopeFilter(),
 			IncludeArchived: false,
 			RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
 			IdeaScope:       apiv1.IdeaScope_IDEA_SCOPE_EXCLUDE_IDEA,

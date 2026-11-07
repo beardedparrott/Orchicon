@@ -460,6 +460,11 @@ type App struct {
 	// railProjectsLoaded records that a project load SUCCEEDED, so a failed one is retried by the next
 	// conversations load rather than leaving an empty picker for the session.
 	railProjectsLoaded bool
+	// pendingProjectName is a workspace selection parked until the project list arrives (projectselect.go).
+	// A launch knows the NAME it wants — the launch directory's basename, or the name just typed into the
+	// create form — before any project has been listed, so the selection cannot be made when it is decided.
+	// Empty means nothing is parked.
+	pendingProjectName string
 	// projectThemes mirrors the config file's top-level project_themes map: project id -> palette name,
 	// verbatim (see config.Config.ProjectThemes). Loaded once at construction (loadProjectThemes) and
 	// read/written by Bind/UnbindProjectTheme — see projecttheme.go.
@@ -1011,6 +1016,15 @@ func (m *App) rebindScreens() {
 		// otherwise reachable, and one built later must not miss the setting.
 		if lr, ok := s.(interface{ SetListSharePct(int) }); ok {
 			lr.SetListSharePct(m.listSharePct)
+		}
+		// THE ACTIVE WORKSPACE, on the same pass and for the same reason: a screen built
+		// during an earlier Update is not otherwise reachable, so a screen that filters by
+		// project must be told which project on the SAME cadence as the rest of the shell's
+		// preferences or it keeps rendering the scope from whenever it was constructed.
+		if ap, ok := s.(interface{ SetActiveProject(string) tea.Cmd }); ok {
+			if c := ap.SetActiveProject(m.activeProjectID()); c != nil {
+				m.pendingScreenCmd = tea.Batch(m.pendingScreenCmd, c)
+			}
 		}
 	}
 }

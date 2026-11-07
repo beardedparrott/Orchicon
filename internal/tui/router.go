@@ -555,8 +555,20 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		case launchCreatedMsg:
 			// Done: continue into the app exactly as a normal launch would (the Ask
 			// "New" page is the launch default and was never left).
+			//
+			// AND MAKE THE NEW PROJECT THE WORKSPACE — the gap this message used to
+			// paper over. The prompt exists because the operator said "I want to work in
+			// this directory"; creating the project and then leaving the scope at All
+			// projects meant the very first conversation they sent landed unassigned, so
+			// the workspace they had just named was not the one in effect. Selecting it
+			// here is the same act /project performs, minus the picker.
+			//
+			// A MISS IS NOT AN ERROR: the name is recorded as a pending selection when
+			// the rail has no list yet (selectProjectByNameCmd), so a cold rail still
+			// applies it when the projects land.
 			m.dismissLaunchPrompt()
-			return m, nil
+			cmd := m.applyCreatedProjectScope(msg)
+			return m, cmd
 		case launchFailedMsg:
 			// KEEP THE FORM OPEN with the reason on it, so the operator can correct
 			// and retry rather than losing everything they typed.
