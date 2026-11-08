@@ -343,11 +343,11 @@ test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Te
 	@# A TEST MUST ALSO NEVER INHERIT THE OPERATOR'S LIVE PLANE. The same reasoning, one layer up: a
 	@# shell that launched a host plane carries that plane's configuration (scripts/lib/instances.sh's plane_env
 	@# exports ORCHICON_SERVE_STATE_DIR, ORCHICON_GUARD_POLICY, ...), and a test that EXECS a
-	@# subprocess hands the whole ambient environment to it. Four packages failed on the operator's
+	@# subprocess hands the whole ambient environment to it. Five packages failed on the operator's
 	@# machine and none in CI for exactly that reason — cmd/orchicon (the serve state paths resolved
 	@# to the LIVE instance), internal/guard + internal/runtime (the shim ran the interactive profile
 	@# where the tests assert the worker one), internal/claude (Ask's shim refused differently than
-	@# the docs say).
+	@# the docs say), internal/orchicon (the model registry resolved the LIVE plane's cache).
 	@#
 	@# The list is testfixtures.AmbientConfigEnv, and each affected package unsets it in its own
 	@# `init` (so a bare `go test ./...` works too, and a test written later cannot forget). It is
@@ -360,7 +360,7 @@ test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Te
 	@# (make services) must stay reachable, which is what the opt-in variables are for. The isolation
 	@# that matters — config, live plane, guard — is unchanged.
 	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
-	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR; do unset "$$v"; done; \
+	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR; do unset "$$v"; done; \
 	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(PKGS)
 
 vet: ## Run go vet
