@@ -343,11 +343,11 @@ test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Te
 	@# A TEST MUST ALSO NEVER INHERIT THE OPERATOR'S LIVE PLANE. The same reasoning, one layer up: a
 	@# shell that launched a host plane carries that plane's configuration (scripts/lib/instances.sh's plane_env
 	@# exports ORCHICON_SERVE_STATE_DIR, ORCHICON_GUARD_POLICY, ...), and a test that EXECS a
-	@# subprocess hands the whole ambient environment to it. Four packages failed on the operator's
+	@# subprocess hands the whole ambient environment to it. Five packages failed on the operator's
 	@# machine and none in CI for exactly that reason — cmd/orchicon (the serve state paths resolved
 	@# to the LIVE instance), internal/guard + internal/runtime (the shim ran the interactive profile
 	@# where the tests assert the worker one), internal/claude (Ask's shim refused differently than
-	@# the docs say).
+	@# the docs say), internal/orchicon (the model registry resolved the LIVE plane's cache).
 	@#
 	@# The list is testfixtures.AmbientConfigEnv, and each affected package unsets it in its own
 	@# `init` (so a bare `go test ./...` works too, and a test written later cannot forget). It is
@@ -360,7 +360,7 @@ test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Te
 	@# (make services) must stay reachable, which is what the opt-in variables are for. The isolation
 	@# that matters — config, live plane, guard — is unchanged.
 	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
-	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR; do unset "$$v"; done; \
+	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR; do unset "$$v"; done; \
 	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(PKGS)
 
 vet: ## Run go vet
@@ -376,7 +376,7 @@ tidy: ## Run go mod tidy
 # the entries the next build actually wants. Run `clean` when the cache is corrupt, or when
 # you want a guaranteed-cold build (timings, or a suspected bad cache entry). It does NOT
 # touch the DB, container images, or any runtime data.
-.PHONY: clean cache-check cache-trim cache-trim-test
+.PHONY: clean cache-check cache-trim cache-trim-test cleanup cleanup-apply
 clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygiene; see cache-trim)
 	$(GO) clean -cache -testcache
 	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
@@ -413,6 +413,16 @@ clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygien
 # updates on reuse), with a grace window so a build running concurrently is never truncated.
 cache-trim: ## Bound the Go build cache by size, evicting coldest-first (a no-op when under cap)
 	@scripts/gocache-trim.sh "$(GOCACHE)" --cap-mb "$(CACHE_CAP_MB)" $(if $(filter 1,$(cache_dry)),--dry-run,)
+
+# cleanup reclaims the disk that Orchicon's own leftovers hold: go caches, leaked worktrees, stopped
+# runtime containers, telemetry stores and rotated logs. REPORT-ONLY by default — the destructive form
+# is spelled out, because the categories it touches include things (a worktree's unpushed branch) whose
+# loss is not recoverable. See scripts/orchicon-cleanup.sh for the category list and the safety rules.
+cleanup: ## Report the disk Orchicon's leftovers hold (nothing is deleted)
+	@scripts/orchicon-cleanup.sh
+
+cleanup-apply: ## Reclaim every SAFE category (go caches, leaked worktrees, stopped containers, telemetry, logs, scratch)
+	@scripts/orchicon-cleanup.sh --all --apply
 
 # CACHE_CAP_MB is the ceiling `make cache-trim` enforces. 20 GiB is a little over the working set of
 # an active dev loop on this repo (its hot native entries measured ~17 GB over 30h), so a healthy
@@ -556,25 +566,6 @@ adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image
 cache-trim-test: ## CI gate: assert the Go cache trim's eviction semantics and its refusals
 	bash scripts/tests/gocache-trim/run.sh
 
-# disk-report answers a question `df` structurally cannot: how much of the filesystem is held by
-# SNAPSHOTS rather than by live files. The two disagree by design, and the gap is invisible —
-# deleting files frees nothing while a snapshot still references the extents. Measured on this
-# machine: 65.6 GB deleted against 7.0 GB freed, with ~58 GB of it sitting in a snapshot, and
-# 343 GiB (67% of all data in use) pinned in total. That is what this reports.
-#
-# WHY IT NEEDS ITS OWN TARGET. Every other hygiene target here measures FILES. This one measures
-# the space where files are not — which is why `du` and `df` both looked healthy while the disk
-# sat at 93%. It is a HOST DIAGNOSTIC, so it describes the machine it runs on and is deliberately
-# never called from CI. disk-report-test is the part that IS a gate: it fakes the inputs and
-# pins the subtraction, because a report that overstates the pinned figure argues the wrong way
-# at exactly the moment someone is deciding whether to delete a snapshot.
-DISK_REPORT_TARGET ?=
-.PHONY: disk-report disk-report-test
-disk-report: ## Report how much of the filesystem is held by btrfs snapshots, not live files
-	@scripts/disk-report.sh $(DISK_REPORT_TARGET)
-
-disk-report-test: ## CI gate: assert disk-report's subtraction, its bounds, and its exit codes
-	bash scripts/tests/disk-report/run.sh
 # install-ps1-test pins the Windows installer's two invisibles, both of which are silent
 # by construction: it must never call `exit` (under `irm … | iex` the file's text runs in
 # the operator's OWN session, so an exit closes the window and takes the diagnosis with
@@ -700,8 +691,7 @@ plane-control-e2e-assertions-test: ## CI gate: the plane-control acceptance harn
 published-archive-e2e-assertions-test: ## CI gate: the published-archive acceptance harness never PASSes on an empty/unverified probe
 	bash scripts/tests/published-archive-e2e-assertions/run.sh
 
-# The MEASUREMENT the epic's "under 1 GB" claim is checked with — measured, not derived
-# (scripts/disk-report.sh answers a different question: btrfs snapshot-pinned bytes).
+# The MEASUREMENT the epic's "under 1 GB" claim is checked with — measured, not derived.
 .PHONY: published-archive-e2e-footprint
 published-archive-e2e-footprint: ## Measure an install's footprint (binaries + host services + instance data, excl. projects/runtime images)
 	bash scripts/e2e/footprint.sh $(if $(INSTANCE),--instance $(INSTANCE),) $(FOOTPRINT_ARGS)
@@ -1597,10 +1587,6 @@ cross-compile: ## Compile the shipped binaries for every release platform plus w
 # loses nothing platform-specific. The guard above the loop refuses an empty list, because
 # `go vet` with no arguments would silently vet the CURRENT DIRECTORY and report success.
 
-# ALL THREE test targets, because each side added one to the same line: this branch adds the
-# two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
-# are independent, so the union is the correct resolution — dropping either side would silently
-# retire a gate that other work depends on.
 # ci-go-base is the gate MINUS cross-compile. It exists so CI can run cross-compile as its OWN job, in
 # PARALLEL with everything else, instead of serially after it — cross-compile is the single slowest target
 # (140 s measured, ~60% of the gate) and it shares nothing with the other checks, so serialising it only
@@ -1611,7 +1597,7 @@ cross-compile: ## Compile the shipped binaries for every release platform plus w
 # plane-control-e2e-assertions-test, published-archive-e2e-assertions-test and desktop-e2e-assertions-test.
 # They are independent, so neither side may be dropped — a gate quietly retired by a merge conflict is the
 # worst possible outcome for a file whose whole purpose is to catch what nobody looked at.
-CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test disk-report-test version-tag-match
+CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test version-tag-match
 
 ci-go-base: $(CI_GO_GATES) ## The Go gate WITHOUT cross-compile (CI runs that as a parallel job)
 

@@ -61,11 +61,11 @@ genuinely has a human sets `ORCHICON_INSTALL_INTERACTIVE=1`.
 
 ### C4 — the footprint number needs its date and its contents beside it.
 
-`scripts/disk-report.sh` answers a *different* question — how much a btrfs filesystem pins in
-snapshots (`data_used − du(live)`) — and it reports "no snapshot attribution" on ext4, APFS and
-NTFS, i.e. on two of the three platforms here. The footprint is therefore measured with
-`scripts/e2e/footprint.sh` (`du`, per component) and **recorded with the measurement date and the
-components that were installed**. Until the Grafana-removal work lands, the figure still includes
+`scripts/e2e/footprint.sh` measures the footprint with `du`, per component, and **records it with the
+measurement date and the components that were installed**. A filesystem-level figure (how much a
+btrfs filesystem pins in snapshots) would answer a different question and reports nothing on ext4,
+APFS or NTFS — two of the three platforms here — so it is deliberately not used. Until the
+Grafana-removal work lands, the figure still includes
 everything in the tree at the time of the run; a number without that context will be misread later.
 
 ---
@@ -260,7 +260,7 @@ Per platform, attach:
 |---|---|---|---|
 | DEF-1 | `release.yml` builds `SHA256SUMS` from `*.tar.gz *.pkg` only, so the Windows `.zip` is published **unchecksummed** and `install.ps1` falls back to "skipping checksum verification". | release-matrix task | step 1 fails "the archive is LISTED in SHA256SUMS" on Windows; Linux/macOS verify normally |
 | DEF-2 | `scripts/install.sh` help/teardown text still names a "Docker volume" and probes `docker`. | installer task | step 10 fails on any path that prints it |
-| DEF-3 | `scripts/disk-report.sh` measures btrfs snapshot-pinned bytes, not an install footprint. | epic (footprint claim) | why step 11 uses `scripts/e2e/footprint.sh` instead |
+| DEF-3 | An install footprint and a filesystem's snapshot-pinned bytes are different quantities. | epic (footprint claim) | why step 11 uses `scripts/e2e/footprint.sh`, which measures bytes per installed component |
 
 A run that hits these is a **valid run with real findings**: record them, file them against the owner
 named in `defects.tsv`, and do not "fix" the product from inside this procedure.

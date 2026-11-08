@@ -1285,13 +1285,11 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `cache-trim` | Bound the Go build cache by **size**, evicting coldest-first, keeping the entries the next build wants. A no-op under the cap (`CACHE_CAP_MB`, default 20 GiB). Preview with `cache-trim cache_dry=1`. Runs automatically at the end of `full-rebuild`. See *The Go build cache* below |
 | `cache-check` | Report the Go build cache size **against the cap**, and whether a trim is due |
 | `cache-trim-test` | CI gate: assert the cache trim's eviction semantics (order, grace window, stop-at-cap, `--dry-run`) and that it refuses to run against a non-cache directory |
-| `disk-report` | Report how much of the filesystem is held by **btrfs snapshots** rather than live files — the number `df` stays silent about. Subtracts `du` of every live file from the filesystem's data in use; on a **compressing** filesystem that second term is apparent size, so the result is a **lower bound** and is labelled one. Host diagnostic, never called from CI. See *Snapshots, and the space files no longer occupy* below |
-| `disk-report-test` | CI gate: assert disk-report's subtraction (metadata excluded, profiles summed), that partial coverage is labelled an upper bound, and that it degrades rather than dies |
 | `host-residency-test` | CI gate: the instance **launch shape** — that a plain `up` produces the default residency, that every per-instance value (ports, plane URL, data dir) is its OWN rather than shared with another instance, and that the host plane's two listeners are concrete addresses that cannot collide. Docker-free: it resolves shapes through `scripts/orchicon.sh`'s own functions |
 | `clean-docker` | Prune Orchicon's dangling images + its own stopped containers (`--filter label=orchicon-instance`). **Never volumes**: it used to run `docker volume prune -f` host-wide, which removes other projects' data on any machine with more than Orchicon on it |
 | **CI** | |
 | `cross-compile` | Compile both shipped binaries for every release platform (linux/darwin/windows × amd64/arm64, `CGO_ENABLED=0`). Catches platform-specific breaks — see *Continuous integration* below. Builds into a **throwaway `GOCACHE`**: its six-platform output is worthless to a dev host and would otherwise be unreclaimable, so it must never land in the shared cache (see *The Go build cache*) |
-| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **install-ps1-test** → **install-path-test** → **host-residency-test** → **cache-trim-test** → **disk-report-test** → **cross-compile**. This is exactly what the `go-ci` workflow job runs. The four `*-test` harnesses in the middle are the SHELL gates — they guard the installers, the launch shape and the host diagnostics, none of which Go tests can reach |
+| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **install-ps1-test** → **install-path-test** → **host-residency-test** → **cache-trim-test** → **cross-compile**. This is exactly what the `go-ci` workflow job runs. The `*-test` harnesses in the middle are the SHELL gates — they guard the installers, the launch shape and the Go cache trim, none of which Go tests can reach |
 | `ci` | `ci-go` + `fe-lint` + `fe-test` — the full gate |
 
 The deprecated `container-*` names are real targets that still work: each prints what it became and delegates (`container-up` → `instance-up`, `container-build` → `instance-build`, `container-rebuild` → `instance-rebuild`, …). They carry no `##` comment on purpose, so `make help` lists only the canonical names.
@@ -1385,14 +1383,11 @@ that churns build caches, container layers and `node_modules` makes seventeen sn
 hundreds of gigabytes. The `root` config is *not* a factor: it sets `TIMELINE_CREATE="no"` and
 only fires on package operations. **One config, one subvolume, 343 GiB.**
 
-**Seeing it.** `make disk-report` performs the subtraction and prints the pinned figure, with the
-places it can mislead stated in the output rather than buried: filesystem **metadata** is excluded
-from both sides (`du` cannot see it, and folding it in would overstate the result by ~10 GiB);
-**partial coverage** (`--paths`) undercounts live data and so overstates the result; anything
-**unreadable** does the same, and is listed. The live side must walk **every** mount of the
-device with `du -x` — each btrfs subvolume has its own `st_dev`, so `-x` stops at the subvolume
-boundary, which is what makes a per-mount sum correct rather than a double count. One mount
-measured 42 GiB against a real total of 172 GiB.
+**Seeing it.** The figures above came from subtracting `du` of every live file from the filesystem's
+data in use, which was a one-off host measurement and is no longer a command in this repo. What
+remains is the machine-readable half: the per-snapshot exclusive-bytes figure and `df` deltas at the
+bottom of this section. **Treat every estimate as a bound and the `df` DELTA as the measurement** —
+delete one snapshot and watch `df`.
 
 **Compression is the subtlety that bites.** `/home` mounts `compress=zstd:3`, and btrfs reports
 `st_blocks` as a file's **apparent** size — so `du`, `ls -ls` **and** `btrfs filesystem du` all
@@ -1412,10 +1407,10 @@ unprivileged way to measure live physical bytes (`compsize` is the exact tool an
 "exclusive bytes" figure you can get without root is an upper bound for the same reason.
 
 ```bash
-make disk-report                              # the pinned figure for the current filesystem
-make disk-report DISK_REPORT_TARGET=/mnt/data # some other filesystem
-scripts/disk-report.sh --paths ~/projects     # scoped check (upper bound; labelled as one)
-scripts/disk-report.sh --raw                  # one key=value line, for scripting
+# The operator's own numbers above came from a one-off subtraction; these need root and are the
+# reproducible half.
+sudo snapper -c home list                       # the snapshots
+sudo snapper -c home delete <N>                 # then re-check df — the delta is the truth
 ```
 
 **Two levers, and the second is the structural one.**

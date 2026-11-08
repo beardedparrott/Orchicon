@@ -2,13 +2,10 @@
 # ============================================================================
 # The INSTALLED FOOTPRINT of an Orchicon install — measured, not derived.
 #
-# WHY THIS IS NOT `scripts/disk-report.sh`. That tool answers a different
-# question: how much of a BTRFS filesystem is held by snapshots (data_used minus
-# du(live)). It has no answer on ext4, APFS or NTFS, where it reports "no
-# snapshot attribution" — so using it to check the epic's "under 1 GB" claim
-# would measure nothing on two of the three platforms this procedure runs on.
-# The claim is about BYTES ON DISK for a default install, so this measures bytes
-# on disk with `du` (see measure_bytes for the per-platform fallbacks).
+# THE CLAIM IS ABOUT BYTES ON DISK for a default install, so this measures bytes on
+# disk with `du` (see measure_bytes for the per-platform fallbacks). Nothing here
+# depends on a filesystem feature, which is what lets the same procedure run on
+# Linux, macOS and Windows.
 #
 # WHAT IS COUNTED (the epic's claim is "under 1 GB excluding projects and runtime
 # images", so exactly those two are excluded):
@@ -158,8 +155,8 @@ for name in $COMPONENT_NAMES; do
 done
 # The claim is "under 1 GB EXCLUDING projects and runtime images", so those two come OUT of the
 # total. instance_data is reported GROSS above so the raw figure stays visible; subtracting here is
-# what makes the number comparable to the claim at all. It is clamped at zero for the same reason
-# disk-report clamps: a negative footprint is a bug, not a small install.
+# what makes the number comparable to the claim at all. It is clamped at zero because a negative
+# footprint is a bug, not a small install.
 GROSS_TOTAL="$TOTAL"
 TOTAL=$((TOTAL - PROJECTS_BYTES - RUNTIME_BYTES))
 [ "$TOTAL" -lt 0 ] && TOTAL=0
