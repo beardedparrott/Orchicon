@@ -81,6 +81,7 @@ done
 
 want() { case " ${CATS} " in *" $1 "*) return 0 ;; esac; return 1; }
 tot()  { du -sh "$1" 2>/dev/null | cut -f1 || echo "?"; }
+gb()   { awk -v k="${1:-0}" 'BEGIN{ if (k<1024) printf "%.0fM", k/1024; else printf "%.1fG", k/1048576 }'; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # remove_path is the one destructive primitive. It refuses a path that is a mount point or that sits
@@ -94,15 +95,16 @@ remove_path() {
   if [ ! -e "$p" ]; then skip "absent: $p"; return; fi
   local sz; sz="$(tot "$p")"
   if [ "$APPLY" != true ]; then did "would remove $p  ($sz)${why:+  — $why}"; return; fi
-  if rm -rf -- "$p" 2>/dev/null; then
-    FREED_KB=$(( FREED_KB + $(du -sk "$p" 2>/dev/null | cut -f1 || echo 0) ))
+  # rm's stderr is the only thing that names the real cause — a session guard refusing the command, an
+  # immutable file, a busy mount. Swallowing it printed "(permissions?)" for every one of them.
+  local rmerr
+  if rmerr="$(rm -rf -- "$p" 2>&1)"; then
     did "removed $p  ($sz)${why:+  — $why}"
   else
-    err "could not remove $p (permissions?)"
+    err "could not remove $p${rmerr:+: $rmerr}"
   fi
 }
 
-FREED_KB=0
 START_AVAIL="$(df -Pk "$HOME" | awk 'NR==2{print $4}')"
 
 # --- go caches --------------------------------------------------------------
@@ -163,16 +165,45 @@ wt_branch_safe() {
     elif ! git -C "$wt" merge-base --is-ancestor HEAD develop 2>/dev/null; then
       echo "branch $branch is not merged into develop"; return 1
     fi
+  else
+    # DETACHED HEAD: these commits belong to no branch, so removing the worktree strands them.
+    local ref anc=false
+    for ref in develop origin/develop; do
+      if git -C "$wt" rev-parse --verify --quiet "$ref" >/dev/null 2>&1 &&
+         git -C "$wt" merge-base --is-ancestor HEAD "$ref" 2>/dev/null; then anc=true; break; fi
+    done
+    if [ "$anc" != true ]; then echo "detached HEAD with commits on no branch"; return 1; fi
   fi
   return 0
 }
 
-do_worktrees() {
-  head1 "stale worktrees"
-  local roots=("${PROJECT_ROOTS[@]:-}")
-  if [ "${#roots[@]}" -eq 0 ] || [ -z "${roots[0]:-}" ]; then
+# scan_roots prints the roots to search for .orchicon-worktrees. --project-root REPLACES the defaults so a
+# sweep can be scoped; the inventory reads this too, or its numbers describe a different tree than --apply.
+scan_roots() {
+  local roots=()
+  if [ "${#PROJECT_ROOTS[@]}" -gt 0 ] && [ -n "${PROJECT_ROOTS[0]:-}" ]; then
+    roots=("${PROJECT_ROOTS[@]}")
+  else
     roots=("$HOME/projects" "$REPO_ROOT")
   fi
+  printf '%s\n' "${roots[@]}"
+}
+
+# wt_verdict classifies one .orchicon-worktrees child: `leaked` (registered nowhere), `safe` (its content
+# exists elsewhere), or `keep:<why>`. Both the sweep and the inventory read this one function, so the space
+# the report calls reclaimable is the space --apply actually reclaims.
+wt_verdict() {
+  local repo="$1" child="$2" why
+  if ! git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qx "worktree $child"; then
+    echo leaked; return
+  fi
+  if why="$(wt_branch_safe "$repo" "$child")"; then echo safe; else echo "keep:$why"; fi
+}
+
+do_worktrees() {
+  head1 "stale worktrees"
+  local roots=() r
+  while IFS= read -r r; do if [ -n "$r" ]; then roots+=("$r"); fi; done < <(scan_roots)
   local found_any=false
   local wtroot repo
   while IFS= read -r wtroot; do
@@ -180,28 +211,28 @@ do_worktrees() {
     repo="$(dirname "$wtroot")"
     git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || continue
     found_any=true
-    local name child why
+    local name child v
     for child in "$wtroot"/*; do
       [ -d "$child" ] || continue
       name="$(basename "$child")"
       case "$name" in _stage-*) skip "$name — staging dir, belongs to an in-flight adoption"; continue ;; esac
 
-      if ! git -C "$repo" worktree list --porcelain 2>/dev/null | grep -qx "worktree $child"; then
-        # NOT REGISTERED. This is the leaked shape: the directory outlived its registration, which is
-        # why the platform's own sweeper can never reclaim it (that sweeper trusts the registration).
-        remove_path "$child" "unregistered worktree dir (leaked)"
-        continue
-      fi
-      if why="$(wt_branch_safe "$repo" "$child")"; then
-        if [ "$APPLY" = true ]; then
-          git -C "$repo" worktree remove --force "$child" >/dev/null 2>&1 \
-            && did "removed worktree $name" || warn "$name — git refused to remove it"
-        else
-          did "would remove worktree $name  ($(tot "$child"))"
-        fi
-      else
-        warn "$name — KEPT: $why"
-      fi
+      v="$(wt_verdict "$repo" "$child")"
+      case "$v" in
+        leaked)
+          # NOT REGISTERED. This is the leaked shape: the directory outlived its registration, which is
+          # why the platform's own sweeper can never reclaim it (that sweeper trusts the registration).
+          remove_path "$child" "unregistered worktree dir (leaked)" ;;
+        safe)
+          if [ "$APPLY" = true ]; then
+            git -C "$repo" worktree remove --force "$child" >/dev/null 2>&1 \
+              && did "removed worktree $name" || warn "$name — git refused to remove it"
+          else
+            did "would remove worktree $name  ($(tot "$child"))"
+          fi ;;
+        *)
+          warn "$name — KEPT: ${v#keep:}" ;;
+      esac
     done
     if [ "$APPLY" = true ]; then git -C "$repo" worktree prune >/dev/null 2>&1 || true; fi
   done < <( for r in "${roots[@]}"; do find "$r" -maxdepth 3 -type d -name '.orchicon-worktrees' 2>/dev/null; done )
@@ -344,21 +375,28 @@ do_inventory() {
   size_line ".dev/tools/gomodcache"     "$REPO_ROOT/.dev/tools/gomodcache" "removed by --go-cache"
   size_line ".dev/tools/gopath"         "$REPO_ROOT/.dev/tools/gopath"    "removed by --go-cache"
 
-  # Worktrees: total, and how much of it is reclaimable by --worktrees (same rule the sweep applies).
-  local wt_kb=0 wt_n=0 wtroot repo child
+  # Worktrees: total, and the part --worktrees would actually reclaim. Both come from wt_verdict, so the
+  # report cannot promise space the sweep will keep — and only the reclaimable part enters the total.
+  local wt_kb=0 wt_n=0 wt_r_kb=0 wt_r_n=0 wtroot repo child k
   while IFS= read -r wtroot; do
     [ -n "$wtroot" ] || continue
     repo="$(dirname "$wtroot")"
+    git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || continue
     for child in "$wtroot"/*; do
       [ -d "$child" ] || continue
       case "$(basename "$child")" in _stage-*) continue ;; esac
       wt_n=$(( wt_n + 1 ))
-      wt_kb=$(( wt_kb + $(du -sk "$child" 2>/dev/null | cut -f1 || echo 0) ))
+      k="$(du -sk "$child" 2>/dev/null | cut -f1 || echo 0)"
+      wt_kb=$(( wt_kb + k ))
+      case "$(wt_verdict "$repo" "$child")" in
+        leaked|safe) wt_r_n=$(( wt_r_n + 1 )); wt_r_kb=$(( wt_r_kb + k )) ;;
+      esac
     done
-  done < <( for r in "$HOME/projects" "$REPO_ROOT"; do find "$r" -maxdepth 3 -type d -name '.orchicon-worktrees' 2>/dev/null; done )
+  done < <( scan_roots | while IFS= read -r r; do find "$r" -maxdepth 3 -type d -name '.orchicon-worktrees' 2>/dev/null; done )
   if [ "$wt_n" -gt 0 ]; then
-    total_kb=$(( total_kb + wt_kb ))
-    printf '  %-46s %8s  %s\n' "worktrees ($wt_n)" "$(awk -v k="$wt_kb" 'BEGIN{printf "%.1fG", k/1048576}')" "swept by --worktrees (only ones with no unmerged work)"
+    total_kb=$(( total_kb + wt_r_kb ))
+    printf '  %-46s %8s  %s\n' "worktrees ($wt_n, $wt_r_n reclaimable)" "$(gb "$wt_kb")" \
+      "$(gb "$wt_r_kb") reclaimable; the rest hold unmerged or unpushed work"
   fi
 
   local e; e="$(engine)"
