@@ -76,7 +76,7 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 			printInstallInfo("dev", residencyContainer, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
 				"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
 				"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin",
-				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, ports, false, healthy, containerengine.Status{})
+				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, pathHint{}, ports, false, healthy, containerengine.Status{})
 		})
 	}
 
@@ -138,7 +138,7 @@ func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
 		printInstallInfo("dev", residencyHost, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
 			"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
 			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin",
-				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, ports, true, true, containerengine.Status{})
+				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, pathHint{}, ports, true, true, containerengine.Status{})
 	})
 	// SERVICES ARE ALWAYS HOST NOW. The single-decision property is unchanged and still worth pinning: the
 	// summary must describe the shape the install PRODUCED (host services, host data dir), whatever a fresh
@@ -170,7 +170,7 @@ func TestPrintInstallInfoIsHonestAboutTheNoEngineShape(t *testing.T) {
 		printInstallInfo("test", residencyHost, "orchicon-cnt-test", "orchicon-cnt-test-data",
 			"/tmp/orchicon-runtime", "http://localhost:8092/healthz",
 			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin",
-				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, ports, false, true, containerengine.Status{})
+				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, pathHint{}, ports, false, true, containerengine.Status{})
 	})
 	if strings.Contains(noEngine, "short-lived container") {
 		t.Errorf("a no-engine install must NOT promise a per-workflow runtime container it cannot launch:\n%s", noEngine)
@@ -192,7 +192,7 @@ func TestPrintInstallInfoIsHonestAboutTheNoEngineShape(t *testing.T) {
 		printInstallInfo("dev", residencyHost, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
 			"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
 			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin",
-				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, ports, true, true, containerengine.Status{})
+				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, pathHint{}, ports, true, true, containerengine.Status{})
 	})
 	if !strings.Contains(withEngine, "short-lived container") {
 		t.Errorf("an engine-backed install must still describe the runtime container carrier:\n%s", withEngine)

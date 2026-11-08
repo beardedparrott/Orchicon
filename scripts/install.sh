@@ -235,6 +235,32 @@ validate_instance() {
 # of defaulting to dev. This is the coupling that makes `--instance test` mean one thing end to end.
 validate_instance
 export ORCHICON_INSTANCE="$INSTANCE"
+# AND THE SAME FOR THE INSTALL DIR, which was the missing half of that coupling. `--install-dir` moved the
+# binaries but was never published, so `orchicon install` — run below with no flags — fell back to its own
+# default: the launcher and the PATH entry went to ~/.local/bin while the binaries went wherever the flag
+# said. Publishing it makes the flag mean one thing end to end.
+export ORCHICON_INSTALL_DIR="$INSTALL_DIR"
+
+# login_profile names the file a NEW LOGIN shell reads for $SHELL — the only file a PATH entry belongs in.
+#
+# LOGIN, NOT INTERACTIVE: a login shell reads ~/.zprofile, or the first of ~/.bash_profile, ~/.bash_login,
+# ~/.profile — never ~/.zshrc or ~/.bashrc. It does NOT guess: an unknown shell returns empty and the caller
+# prints guidance naming no file, because naming the wrong one is exactly what the old hint did.
+login_profile() {
+  local shell="${SHELL##*/}"
+  shell="${shell#-}"          # a login shell reports itself as -zsh
+  case "$shell" in
+    zsh) echo "${HOME}/.zprofile" ;;
+    bash)
+      local c
+      for c in .bash_profile .bash_login .profile; do
+        [ -f "${HOME}/${c}" ] && { echo "${HOME}/${c}"; return; }
+      done
+      echo "${HOME}/.bash_profile"
+      ;;
+    *) echo "" ;;
+  esac
+}
 # --yes REACHES THE GO INSTALLER'S OWN PROMPTS THE SAME WAY THE INSTANCE DOES, through the environment:
 # the setup step runs `orchicon install` with no flags, so an exported answer channel is the only one that
 # arrives. Without it --yes answered the shell's questions and then left the Go runtime-image prompt
@@ -1347,19 +1373,33 @@ Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running t
 # <<< verification-guidance
 GUIDANCE
 
-  # PATH hint — ONLY WHEN SOMETHING WAS INSTALLED. A dry run reported "Orchicon was installed to …" for a
-  # binary it never wrote, which is the class of lie ok_dry exists to prevent: the operator acts on it.
+  # PATH — DONE, NOT HINTED AT.
+  #
+  # ~/.local/bin is not on Apple's default PATH, and the hint this block used to print named ~/.zshrc — a file
+  # a login shell never reads — so a correct install produced an unrunnable `orch` plus a note that would not
+  # have fixed it. The entry is now WRITTEN to the login profile by `orchicon install` below
+  # (cmd/orchicon/install_path.go), which reports it as done.
+  #
+  # SO THIS BLOCK IS SILENT WHEN THAT COMMAND RUNS, and covers only the cases where it does not, rather than
+  # stating the same fact twice in two different ways.
   case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
       if [ "$DRY_RUN" = true ]; then
         echo ""
         info "(a real install would add ${INSTALL_DIR} to your PATH if it is not already on it)"
+      elif [ "$SETUP" = true ]; then
+        : # `orchicon install` adds the entry and reports it
       else
         echo ""
-        warn "Orchicon was installed to ${INSTALL_DIR} which is not on your PATH."
-        echo -e "  Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-        echo -e "  ${D}export PATH=\"\$PATH:${INSTALL_DIR}\"${X}"
+        info "Orchicon was installed to ${INSTALL_DIR}, which is not on your PATH."
+        local profile; profile="$(login_profile)"
+        if [ -n "$profile" ]; then
+          echo -e "  Add it to ${B}${profile}${X} — the file a login shell reads — then open a new terminal:"
+        else
+          echo -e "  Add it to your shell's login profile (not ~/.zshrc or ~/.bashrc), then open a new terminal:"
+        fi
+        echo -e "  ${D}export PATH=\"${INSTALL_DIR}:\$PATH\"${X}"
       fi
       ;;
   esac

@@ -1,0 +1,189 @@
+package main
+
+// install_path.go — PUT THE INSTALL DIR ON THE PATH, IN THE FILE A LOGIN SHELL ACTUALLY READS.
+//
+// THE REPORTED FAILURE, from a macOS box: `orch` and `orchicon` were installed to ~/.local/bin and neither
+// could be run. macOS does not put ~/.local/bin on PATH, and the installer's whole remedy was a printed hint
+// — naming ~/.zshrc, which a LOGIN shell never reads. So the operator was told to edit a file that would not
+// have helped, by a program that could have made the change itself.
+//
+// Windows already did this properly (scripts/install.ps1's Write-PathHint writes the per-user PATH registry
+// value and says so); this is the POSIX half, and it is why the summary reports an OUTCOME rather than advice.
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+)
+
+// pathHint is WHAT HAPPENED when the install dir was put on the login shell's PATH.
+type pathHint struct {
+	// Dir is the install dir the hint is about.
+	Dir string
+	// OnPath is true when the dir is already exported in this process's PATH, so nothing was written.
+	OnPath bool
+	// Profile is the login profile consulted: written when Changed, or found to carry the entry already.
+	Profile string
+	// Changed is true when the entry was appended by this run.
+	Changed bool
+	// Problem is why the entry could not be placed. The summary falls back to advice when it is set, so a
+	// host we cannot handle by hand is told how to do it rather than left with a silent no-op.
+	Problem string
+}
+
+// ensureLoginProfilePATH puts installDir on the PATH for future LOGIN shells, idempotently.
+//
+// IT IS NOT FATAL ON ANY PATH: an install that cannot write a profile is still an install, and the summary
+// carries the reason. It is also a NO-OP WHEN THE DIR IS ALREADY ON PATH, which is the case that keeps a
+// reinstall from appending a second identical line.
+func ensureLoginProfilePATH(installDir string) pathHint {
+	out := pathHint{Dir: installDir}
+	if strings.TrimSpace(installDir) == "" {
+		out.Problem = "no install directory to add to PATH"
+		return out
+	}
+	if dirOnPath(installDir) {
+		out.OnPath = true
+		return out
+	}
+	if runtime.GOOS == "windows" {
+		// The PowerShell installer owns PATH on Windows (a registry value); the summary prints the
+		// PowerShell equivalent, because "export PATH=..." is a syntax error there.
+		return out
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		out.Problem = fmt.Sprintf("could not resolve the home directory: %v", err)
+		return out
+	}
+	profile, shell, ok := loginProfileFor(os.Getenv("SHELL"), home)
+	if !ok {
+		out.Problem = fmt.Sprintf("unrecognised shell %q — add %s to its profile by hand", shell, installDir)
+		return out
+	}
+	out.Profile = profile
+
+	existing, rerr := os.ReadFile(profile)
+	if rerr != nil && !os.IsNotExist(rerr) {
+		out.Problem = fmt.Sprintf("could not read %s: %v", profile, rerr)
+		return out
+	}
+	if mentionsDir(string(existing), installDir) {
+		return out // a previous install already did this
+	}
+	entry, eerr := pathExportLine(installDir)
+	if eerr != nil {
+		out.Problem = eerr.Error()
+		return out
+	}
+	if err := os.MkdirAll(filepath.Dir(profile), 0o755); err != nil {
+		out.Problem = fmt.Sprintf("could not create the profile's directory: %v", err)
+		return out
+	}
+	body := string(existing)
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	body += "\n# Orchicon: so `orchicon` and `orch` resolve in a new terminal (added by the installer).\n" + entry + "\n"
+	if err := os.WriteFile(profile, []byte(body), 0o644); err != nil {
+		out.Problem = fmt.Sprintf("could not write %s: %v", profile, err)
+		return out
+	}
+	out.Changed = true
+	return out
+}
+
+// loginProfileFor returns the profile a NEW LOGIN shell reads, for the operator's shell.
+//
+// LOGIN, NOT INTERACTIVE — that is the whole correction. A login shell reads ~/.zprofile, ~/.bash_profile,
+// ~/.bash_login or ~/.profile; it does NOT read ~/.zshrc or ~/.bashrc, which is what the old hint named.
+//
+// THE BASH CHAIN IS WALKED RATHER THAN JUMPED TO THE END: bash login reads the FIRST of .bash_profile,
+// .bash_login, .profile that exists, so creating .bash_profile on a host that already has .profile would
+// SHADOW it — silently dropping whatever the operator's own .profile set up. So an existing file wins.
+func loginProfileFor(shell, home string) (profile, name string, ok bool) {
+	name = strings.TrimPrefix(filepath.Base(strings.TrimSpace(shell)), "-") // login shells report "-zsh"
+	switch name {
+	case "zsh":
+		return filepath.Join(home, ".zprofile"), name, true
+	case "bash":
+		for _, cand := range []string{".bash_profile", ".bash_login", ".profile"} {
+			p := filepath.Join(home, cand)
+			if _, err := os.Stat(p); err == nil {
+				return p, name, true
+			}
+		}
+		return filepath.Join(home, ".bash_profile"), name, true
+	}
+	return "", name, false
+}
+
+// mentionsDir reports whether a profile already puts dir on PATH, by any spelling of the line.
+func mentionsDir(profile, dir string) bool {
+	for _, line := range strings.Split(profile, "\n") {
+		if strings.Contains(line, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathExportLine renders the line to append.
+//
+// THE PATH IS DOUBLE-QUOTED AND ESCAPED because an install dir may contain a space (a macOS home can), and
+// an unquoted entry would silently export two broken fragments instead of one usable path.
+func pathExportLine(dir string) (string, error) {
+	if strings.ContainsAny(dir, "\n\r") {
+		return "", fmt.Errorf("the install directory contains a newline, so it cannot go in a profile line")
+	}
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`", "\\`")
+	return `export PATH="` + r.Replace(dir) + `:$PATH"`, nil
+}
+
+// reportLauncherOnly finishes a `--install-launcher` run: it reports the launcher, and then puts the install
+// dir on the login PATH.
+//
+// THE PATH HALF IS PART OF "THE LAUNCHER WORKS", and this mode has no summary to put it in. The summary's own
+// remedy sends an operator here, so leaving PATH out would mean recovering the file and still not being able
+// to run it — the reported failure, one command later.
+func reportLauncherOnly(l orchLauncher, installDir string) error {
+	if !l.Installed {
+		return fmt.Errorf("the orch launcher could not be installed: %s", l.Problem)
+	}
+	fmt.Printf("orch launcher installed at %s (%s)\n", l.Path, l.Method)
+	printPathHint(ensureLoginProfilePATH(installDir), installDir)
+	return nil
+}
+
+// printPathHint renders the PATH outcome in the install summary.
+//
+// A ZERO pathHint FALLS BACK TO ADVICE. That is what keeps a host we could not handle — an unrecognised shell,
+// an unwritable profile — actionable instead of silent, and it keeps the summary honest about the difference
+// between "done" and "you need to do this".
+func printPathHint(h pathHint, installDir string) {
+	dir := h.Dir
+	if dir == "" {
+		dir = installDir
+	}
+	switch {
+	case h.OnPath:
+		// Already exported in the PATH this process ran with: nothing changes and nothing needs saying.
+	case h.Changed:
+		fmt.Printf("  Added %s to PATH in %s\n", dir, h.Profile)
+		fmt.Printf("    Open a NEW terminal for `orchicon` and `orch` to resolve there — this one kept the PATH it started with.\n")
+	case h.Problem == "" && h.Profile != "":
+		fmt.Printf("  %s is already on your PATH via %s\n", dir, h.Profile)
+	case runtime.GOOS == "windows":
+		fmt.Printf("  %s is not on your PATH — add it to your user PATH (then open a NEW terminal):\n", dir)
+		fmt.Printf("    [Environment]::SetEnvironmentVariable(\"Path\", \"$([Environment]::GetEnvironmentVariable('Path','User'));%s\", \"User\")\n", dir)
+	default:
+		fmt.Printf("  %s is not on your PATH — add it to your shell profile:\n", dir)
+		fmt.Printf("    export PATH=\"%s:$PATH\"\n", dir)
+		if h.Problem != "" {
+			fmt.Printf("    (%s)\n", h.Problem)
+		}
+	}
+}

@@ -875,6 +875,32 @@ else
   ok "no backup is created automatically"
 fi
 
+# --- 13. the PATH guidance names a LOGIN profile ---
+#
+# REPORTED FROM macOS: orch and orchicon installed to ~/.local/bin, which macOS does not put on PATH, and the
+# whole remedy was advice naming ~/.zshrc — a file a login shell never reads. This asserts the shell half end
+# to end; the WRITING half belongs to `orchicon install` (cmd/orchicon/install_path_test.go) because that is
+# the program that can drive a real HOME, and --no-setup here means it never runs.
+say ""
+say "[13] the PATH guidance names a login profile"
+ZLOG="${WORK}/install-zsh.log"
+ZDEST="${WORK}/bin-zsh"
+set +e
+SHELL=/bin/zsh ORCHICON_INSTALL_BASE_URL="${BASE}" env -u DISPLAY -u WAYLAND_DISPLAY bash "${INSTALLER}" \
+  --version "${VERSION}" --install-dir "${ZDEST}" --instance test --no-setup >"${ZLOG}" 2>&1
+set -e
+if grep -q "\.zprofile" "${ZLOG}"; then
+  ok "a zsh operator is pointed at ~/.zprofile"
+else
+  bad "a zsh operator is pointed at ~/.zprofile"
+  grep -i "PATH" "${ZLOG}" | sed 's/^/      /' | head -4
+fi
+if grep -qE "\.zshrc|\.bashrc" "${ZLOG}"; then
+  bad "the guidance names an INTERACTIVE file, which a login shell never reads"
+else
+  ok "the guidance names no interactive-only file (.zshrc/.bashrc)"
+fi
+
 say ""
 say ""
 if [ "${FAIL}" -eq 0 ]; then

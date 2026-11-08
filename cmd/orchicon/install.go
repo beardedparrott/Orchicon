@@ -230,12 +230,8 @@ func runInstall(args []string, log *slog.Logger) error {
 		// convergent and idempotent, but the launcher can be missing for a reason nothing else shares (Windows
 		// symlink privilege), and re-running the whole multi-minute install to recover a file copy is not a
 		// reasonable thing to ask. Returns after placing it — no ports, no engine, no services.
-		l := installOrchLauncher(env("ORCHICON_INSTALL_DIR", defaultInstallDir()))
-		if !l.Installed {
-			return fmt.Errorf("the orch launcher could not be installed: %s", l.Problem)
-		}
-		fmt.Printf("orch launcher installed at %s (%s)\n", l.Path, l.Method)
-		return nil
+		installDir := env("ORCHICON_INSTALL_DIR", defaultInstallDir())
+		return reportLauncherOnly(installOrchLauncher(installDir), installDir)
 	}
 	instance, err := parseInstanceTarget(args, env("ORCHICON_INSTANCE", "dev"))
 	if err != nil {
@@ -848,8 +844,12 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 	// through: the installer knew the launcher was not placed, printed a warning nobody could see behind the
 	// banner, and then reported success in the box below.
 	launcher := installOrchLauncher(installDir)
+	// THE PATH ENTRY IS MADE HERE FOR THE SAME REASON, AND THE SUMMARY RENDERS THE OUTCOME. Advice was the old
+	// behaviour: on macOS it named ~/.zshrc, which a login shell never reads, so a correct install left an
+	// unrunnable `orch` behind a note nobody could act on.
+	pathOutcome := ensureLoginProfilePATH(installDir)
 
-	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, launcher, ports, containersUsed, healthy, engineStatus)
+	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, launcher, pathOutcome, ports, containersUsed, healthy, engineStatus)
 
 	// THE HANDOVER, AND IT HAPPENS HERE BECAUSE THE FACT IS KNOWN HERE.
 	//
@@ -1034,9 +1034,16 @@ func installOrchLauncherFrom(exe, installDir string) orchLauncher {
 				return out
 			}
 			fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
-		case runtime.GOOS == "windows" && isOurCopy(link, sibling):
-			// A COPY WE MADE on a previous install. Without this arm every reinstall would hit the foreign-file
-			// guard below and refuse to refresh our own launcher — the second-install-must-converge rule.
+		case isOurCopy(link, sibling):
+			// A COPY WE — OR THE SHELL INSTALLER — MADE. It is byte-identical to this install's own sibling
+			// `orch`, so it IS this build, whatever platform wrote it. Without this arm every reinstall hits the
+			// foreign-file guard below and refuses to refresh our own launcher.
+			//
+			// THE GATE HERE WAS WINDOWS-ONLY, WHICH MADE THE GUARD ACCUSE OUR OWN FILE ON macOS.
+			// scripts/install.sh `mv`s the archive's `orch` into the install dir as a REGULAR FILE, so the next
+			// `orchicon install` found a file at that path, recognised ownership only on Windows, and reported
+			// "exists and was not placed there by this install" about its own launcher — then declared the TUI
+			// missing while `orch` sat there and ran. Matching on content everywhere makes the rerun converge.
 			fmt.Printf("refreshing the copied orch launcher at %s\n", link)
 		default:
 			if !force {
@@ -1539,7 +1546,7 @@ func containerExists(name string) (bool, error) {
 	return strings.TrimSpace(string(out)) != "", nil
 }
 
-func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, launcher orchLauncher, ports map[string]int, containersUsed, healthy bool, engine containerengine.Status) {
+func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, launcher orchLauncher, path pathHint, ports map[string]int, containersUsed, healthy bool, engine containerengine.Status) {
 	// WHERE THE SERVICES RUN follows from the shape and the host: a host-resident plane has its services as
 	// host processes when there is no engine to put them in a container, and in the instance container when
 	// there is.
@@ -1658,18 +1665,7 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 			fmt.Printf("    orch%s from beside orchicon%s into %s yourself.\n", exeSuffix(), exeSuffix(), installDir)
 		}
 	}
-	// THE PATH ADVICE MUST MATCH THE SHELL IT LANDS IN. "export PATH=..." is POSIX; on Windows the user is in
-	// PowerShell, where it is a syntax error. Naming the wrong command is how a correct install produces a
-	// broken setup.
-	if !dirOnPath(installDir) {
-		if runtime.GOOS == "windows" {
-			fmt.Printf("  %s is not on your PATH — add it to your user PATH (then open a NEW terminal):\n", installDir)
-			fmt.Printf("    [Environment]::SetEnvironmentVariable(\"Path\", \"$([Environment]::GetEnvironmentVariable('Path','User'));%s\", \"User\")\n", installDir)
-		} else {
-			fmt.Printf("  %s is not on your PATH — add it to your shell profile:\n", installDir)
-			fmt.Printf("    export PATH=\"$PATH:%s\"\n", installDir)
-		}
-	}
+	printPathHint(path, installDir)
 	fmt.Println()
 	if containersUsed {
 		fmt.Println("  Per-workflow runtime containers are used automatically when a")

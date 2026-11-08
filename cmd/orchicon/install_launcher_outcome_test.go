@@ -207,7 +207,7 @@ func TestSummaryReportsTheLauncherItActuallyInstalled(t *testing.T) {
 	summary := func(l orchLauncher) string {
 		return captureStdout(t, func() {
 			printInstallInfo("dev", residencyHost, "n", "v", "/tmp/s", "http://localhost:8080/healthz",
-				"img", "/home/u/.local/bin", l, map[string]int{}, false, true, containerengine.Status{})
+				"img", "/home/u/.local/bin", l, pathHint{}, map[string]int{}, false, true, containerengine.Status{})
 		})
 	}
 
