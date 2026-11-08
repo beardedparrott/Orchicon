@@ -244,7 +244,7 @@ func (r *TaskReconciler) scratchCheckout(ctx context.Context, projectDir, ref st
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return "", func() {}, fmt.Errorf("create worktree base: %w", err)
 	}
-	dir, err := os.MkdirTemp(base, "_verify-baseline-")
+	dir, err := os.MkdirTemp(base, scratchBaselinePrefix)
 	if err != nil {
 		return "", func() {}, fmt.Errorf("create scratch dir: %w", err)
 	}
@@ -255,7 +255,8 @@ func (r *TaskReconciler) scratchCheckout(ctx context.Context, projectDir, ref st
 	}
 	cleanup := func() {
 		if _, err := runGit(ctx, projectDir, "worktree", "remove", "--force", dir); err != nil {
-			r.log.Info("verify: scratch checkout cleanup failed (will be swept)", "dir", dir, "error", err.Error())
+			r.log.Info("verify: scratch checkout cleanup failed; the orphan sweep reclaims it once stale",
+				"dir", dir, "error", err.Error())
 			_ = os.RemoveAll(dir)
 		}
 		_, _ = runGit(ctx, projectDir, "worktree", "prune")

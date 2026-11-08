@@ -76,6 +76,14 @@ const worktreeNoticeKind = "worktree_notice"
 // orphans.
 const stagingPrefix = "_stage-"
 
+// scratchBaselinePrefix names the throwaway checkouts a baseline capture materialises. The creator
+// (scratchCheckout) and the sweep share this one constant so they cannot drift apart.
+const scratchBaselinePrefix = "_verify-baseline-"
+
+// scratchBaselineMaxAge is how old a scratch checkout must be before the sweep calls it leaked. It
+// tracks the capture's deadline: a capture is cancelled at baselineCaptureTimeout, so nothing older runs.
+const scratchBaselineMaxAge = 2 * baselineCaptureTimeout
+
 // gitCmdTimeout bounds every git subprocess the reconciler spawns.
 const gitCmdTimeout = 30 * time.Second
 
@@ -3542,6 +3550,12 @@ func (r *WorktreeReconciler) sweepOrphanDirs(ctx context.Context, tenantID strin
 				continue
 			}
 			child := filepath.Join(root, e.Name())
+			// BEFORE the registered-worktree skip: a leaked scratch checkout IS a
+			// registered worktree, so that check skips exactly what needs reclaiming.
+			if strings.HasPrefix(e.Name(), scratchBaselinePrefix) {
+				r.reclaimStaleScratchDir(ctx, dir, child)
+				continue
+			}
 			if validPaths[filepath.Clean(child)] {
 				continue
 			}
@@ -3598,6 +3612,28 @@ func (r *WorktreeReconciler) sweepOrphanDirs(ctx context.Context, tenantID strin
 			r.log.Warn("worktree: orphan dir sweep found stale dir (not artifact, not empty)", "path", child)
 		}
 	}
+}
+
+// reclaimStaleScratchDir removes a baseline capture's scratch checkout once no capture can still be
+// running in it. Without this they survive forever: the sweep treats a REGISTERED worktree as valid.
+func (r *WorktreeReconciler) reclaimStaleScratchDir(ctx context.Context, projectDir, path string) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	if time.Since(fi.ModTime()) < scratchBaselineMaxAge {
+		return // young enough to belong to a capture that is still measuring
+	}
+	if _, err := runGit(ctx, projectDir, "worktree", "remove", "--force", path); err != nil {
+		// Not registered (or git refuses the path): drop the tree and let prune clear the metadata.
+		if rerr := os.RemoveAll(path); rerr != nil {
+			r.log.Warn("worktree: leaked baseline scratch checkout could not be removed",
+				"path", path, "error", rerr.Error())
+			return
+		}
+	}
+	_, _ = runGit(ctx, projectDir, "worktree", "prune")
+	r.log.Info("worktree: reclaimed leaked baseline scratch checkout", "path", path)
 }
 
 // listReadyRunPaths returns worktree_path for runs in ready state whose
