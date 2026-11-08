@@ -35,6 +35,9 @@ GOCACHE     ?= $(DEV_TOOLS)/gocache
 export GOCACHE
 GOTMPDIR    ?= $(DEV_TOOLS)/gotmp
 export GOTMPDIR
+# go CREATES gocache and gopath but NOT gotmp, and reports the missing one as "creating work dir: stat …" —
+# which names a path, not a cause. Parse-time so no per-target prerequisite list can forget it.
+$(shell mkdir -p $(GOPATH) $(GOCACHE) $(GOTMPDIR))
 # PATH as well: a couple of recipes call a bare `go` (the standing PTY gate), and
 # they must resolve the SAME toolchain rather than whatever the shell happens to
 # have. Deliberately NOT adding .dev/tools/bin — `buf` and `atlas` each resolve
