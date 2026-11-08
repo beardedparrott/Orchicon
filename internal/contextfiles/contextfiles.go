@@ -25,6 +25,20 @@ import (
 const (
 	// MaxContextFiles is the max number of entries in a context_files list.
 	MaxContextFiles = 1000
+	// MaxManifestEntries caps how many files a DIRECTORY context path lists in the rendered
+	// manifest. It is deliberately far below MaxContextFiles.
+	//
+	// MAXCONTEXTFILES IS AN INPUT BOUND; THIS IS A PROMPT BOUND, and conflating them was costing
+	// whole model windows. A directory path expands to one manifest line per file, and each line is
+	// re-sent to the model on every turn. Measured on a real repository: internal/ rendered 94 KB
+	// (≈23,400 tokens) and a project root 137 KB (≈34,400 tokens) — four times the entire static
+	// system prompt, for a nested tree an agent could just as well SEARCH.
+	//
+	// A manifest's job is to make the shape of a directory legible and point at the right files; it
+	// is not a filesystem dump, and an agent cannot read 1000 paths anyway. 120 entries per path
+	// keeps a large package identifiable while the block tells the model to use glob/grep beyond it —
+	// which is the cheaper and more accurate route for anything this list cannot cover.
+	MaxManifestEntries = 120
 	// MaxFilePathLen is the max length of a single context path.
 	MaxFilePathLen = 4096
 	// MaxInlineFileBytes caps a single file's contents inlined into the
@@ -347,6 +361,33 @@ func Render(rootNote string, paths []string, projectDir string) string {
 	return sb.String()
 }
 
+// ManifestPolicy selects how a manifest treats a file that is too big to inline.
+//
+// WHY A POLICY RATHER THAN ONE BUDGET. The inline floor protects a TOKEN budget, which is the platform's
+// concern for context it injects (project context files, worker context) — but a SKILL is not the platform's
+// context, it is the operator's own instruction set. Capping that was a category error: a skill is meant to be
+// READ by the agent, an operator who writes a large one has made a deliberate choice about their own prompt,
+// and silently degrading it to a path means the agent never reads it at all. Measured: the project's own
+// skills/ directory rendered as `path (7275 bytes)` — 446 bytes of manifest and no content — so every agent
+// in this repository was told a skill existed and shown none of it.
+type ManifestPolicy int
+
+const (
+	// ManifestPolicyContext is the CONTEXT-FILE policy: a file over ManifestInlineMaxBytes becomes a
+	// path+size entry with a "read on demand" instruction. Right for platform-injected context, where the
+	// budget belongs to the platform and a large file should stay on disk until a task needs it.
+	ManifestPolicyContext ManifestPolicy = iota
+	// ManifestPolicySkill is the SKILL policy: file contents are ALWAYS inlined (bounded only by the hard
+	// per-file cap), and a directory's skill files are inlined too rather than merely listed. The operator
+	// selected these files to instruct the agent; a reference the agent must choose to follow is not an
+	// instruction, so there is no size floor here.
+	//
+	// It is NOT unbounded: MaxInlineFileBytes still caps one file, and the cumulative budget still applies,
+	// because a prompt large enough to exceed a model's window fails the run outright — which is a worse
+	// outcome than a truncated file, and it is loud either way.
+	ManifestPolicySkill
+)
+
 // RenderManifest is the context-by-reference renderer. Instead of inlining
 // every file's full contents into the prompt (each byte is re-sent on every
 // tool call of the run), it produces a compact MANIFEST of the available
@@ -367,13 +408,26 @@ func Render(rootNote string, paths []string, projectDir string) string {
 // Returns the rendered section (possibly empty). Errors in a single path
 // degrade to a note; rendering never fails the prompt build.
 func RenderManifest(rootNote string, paths []string, projectDir string) string {
+	return RenderManifestWithPolicy(rootNote, paths, projectDir, ManifestPolicyContext)
+}
+
+// RenderManifestWithPolicy is RenderManifest with the inline policy made explicit. Callers that inject
+// PLATFORM context keep ManifestPolicyContext; the SKILL renderer passes ManifestPolicySkill so an operator's
+// skill is read rather than referenced.
+func RenderManifestWithPolicy(rootNote string, paths []string, projectDir string, policy ManifestPolicy) string {
 	var sb strings.Builder
 	if len(paths) == 0 {
 		return ""
 	}
 	if strings.TrimSpace(rootNote) != "" {
 		fmt.Fprintf(&sb, "%s\n\n", strings.TrimSpace(rootNote))
-		sb.WriteString("The following context is available inside the project directory. Small, essential files are inlined below; everything else is listed as a manifest of path + size. **Read only the files your task needs** using your read/grep tools — do not dump large files wholesale. This keeps your context lean and fast.\n\n")
+		if policy == ManifestPolicySkill {
+			// A skill is INSTRUCTIONS, not context to be sampled — so the text says "read and follow", not
+			// "read only what you need", which would invite the agent to skip the very rules it was given.
+			sb.WriteString("The following skills are available. Their contents are included below — **read them and follow them**: they are the operator's standing instructions for how to do work in this project.\n\n")
+		} else {
+			sb.WriteString("The following context is available inside the project directory. Small, essential files are inlined below; everything else is listed as a manifest of path + size. **Read only the files your task needs** using your read/grep tools — do not dump large files wholesale. This keeps your context lean and fast.\n\n")
+		}
 	}
 	wroteAny := false
 	budget := &renderBudget{remaining: MaxInlineContextBytes}
@@ -403,11 +457,15 @@ func RenderManifest(rootNote string, paths []string, projectDir string) string {
 			continue
 		}
 		if info.IsDir() {
-			wroteAny = renderDirectoryManifest(&sb, resolved, budget) || wroteAny
+			wroteAny = renderDirectoryManifest(&sb, resolved, budget, policy) || wroteAny
 			continue
 		}
 		if info.Mode().IsRegular() {
-			if info.Size() <= int64(ManifestInlineMaxBytes) {
+			// SKILL FILES ARE ALWAYS INLINED. The inline floor exists to protect a token budget for
+			// platform-injected context; a skill is the operator's own instruction set, and degrading it to a
+			// path means the agent is told a skill exists and shown none of it — which is what happened to
+			// this repository's own skills/ directory (7,275 bytes rendered as a 446-byte listing).
+			if policy == ManifestPolicySkill || info.Size() <= int64(ManifestInlineMaxBytes) {
 				wroteAny = renderFile(&sb, resolved, budget) || wroteAny
 			} else {
 				before := sb.Len()
@@ -429,14 +487,35 @@ func RenderManifest(rootNote string, paths []string, projectDir string) string {
 
 // renderDirectoryManifest lists a directory's entries (bounded) as a
 // manifest with sizes, telling the worker to read only what it needs.
-func renderDirectoryManifest(sb *strings.Builder, path string, budget *renderBudget) bool {
+func renderDirectoryManifest(sb *strings.Builder, path string, budget *renderBudget, policy ManifestPolicy) bool {
 	before := sb.Len()
-	entries, err := WalkDir(path, MaxContextFiles)
+	// BOUNDED BY THE PROMPT BUDGET, not the input cap — see MaxManifestEntries.
+	entries, err := WalkDir(path, MaxManifestEntries)
 	if err != nil {
 		fmt.Fprintf(sb, "**Note:** could not list `%s`: %v\n\n", path, err)
 		budget.charge(sb, before)
 		return true
 	}
+
+	// A SKILLS DIRECTORY INLINES ITS FILES. Listing them would reproduce the defect one level up: the
+	// operator pointed at a directory of instructions and the agent received a table of contents. Each file
+	// still goes through renderFile, so MaxInlineFileBytes and the cumulative budget still bound it.
+	if policy == ManifestPolicySkill {
+		fmt.Fprintf(sb, "## %s (skills — follow these)\n\n", path)
+		for _, e := range entries {
+			if budget.exhausted() {
+				fmt.Fprintf(sb, "**Note:** skills budget reached — read `%s` from disk\n\n", e)
+				break
+			}
+			if st, serr := os.Stat(e); serr == nil && st.Mode().IsRegular() {
+				renderFile(sb, e, budget)
+			}
+		}
+		sb.WriteString("\n")
+		budget.charge(sb, before)
+		return true
+	}
+
 	fmt.Fprintf(sb, "## %s (directory — read on demand)\n\n", path)
 	sb.WriteString("Directory context. Read the specific files you need for the task; do not read the whole directory. The listing below is a manifest (path + size):\n\n")
 	for _, e := range entries {
@@ -447,8 +526,9 @@ func renderDirectoryManifest(sb *strings.Builder, path string, budget *renderBud
 		}
 		fmt.Fprintf(sb, "- `%s` (%d bytes)\n", e, size)
 	}
-	if len(entries) >= MaxContextFiles {
-		sb.WriteString("- … and more files (use your tools to browse the directory)\n")
+	if len(entries) >= MaxManifestEntries {
+		fmt.Fprintf(sb, "- … and more: this listing is capped at %d entries. Use `glob` (by pattern) or "+
+			"`grep` (by content) to find what you need, and `read` for the files you pick.\n", MaxManifestEntries)
 	}
 	sb.WriteString("\n")
 	budget.charge(sb, before)

@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"container/list"
+	"strconv"
 	"sync"
 
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
@@ -99,6 +100,13 @@ func (c *promptSectionCache) rememberStamps(scope string, stamps []contextfiles.
 // the per-path diff is logged so the miss is attributable. Returns the
 // rendered section and the fingerprint.
 func (r *WorkflowReconciler) renderContextSectionCached(tenantID, projectID, rootNote string, paths []string, projectDir string) (string, string) {
+	return r.renderSectionCachedWithPolicy(tenantID, projectID, rootNote, paths, projectDir, contextfiles.ManifestPolicyContext)
+}
+
+// renderSectionCachedWithPolicy is the policy-aware form. The SKILLS section passes ManifestPolicySkill so a
+// worker reads its instructions rather than a table of contents; every other section keeps the context
+// policy, which is what its budget was designed for.
+func (r *WorkflowReconciler) renderSectionCachedWithPolicy(tenantID, projectID, rootNote string, paths []string, projectDir string, policy contextfiles.ManifestPolicy) (string, string) {
 	// Normalize a typed-nil logger (*slog.Logger(nil) boxed in the
 	// Info-capable interface is != nil) — struct-literal reconcilers
 	// (tests) carry a nil log, and calling Info on it would panic.
@@ -106,26 +114,32 @@ func (r *WorkflowReconciler) renderContextSectionCached(tenantID, projectID, roo
 	if r.log != nil {
 		lg = r.log
 	}
-	return renderContextSectionCached(globalPromptCache, lg, tenantID, projectID, rootNote, paths, projectDir)
+	return renderSectionCachedWithPolicy(globalPromptCache, lg, tenantID, projectID, rootNote, paths, projectDir, policy)
 }
 
+// renderContextSectionCached is the CONTEXT-policy entry point, kept as its own name so existing callers and
+// tests read the same and cannot accidentally opt into the skills policy.
 func renderContextSectionCached(cache *promptSectionCache, log interface{ Info(string, ...any) }, tenantID, projectID, rootNote string, paths []string, projectDir string) (string, string) {
+	return renderSectionCachedWithPolicy(cache, log, tenantID, projectID, rootNote, paths, projectDir, contextfiles.ManifestPolicyContext)
+}
+
+func renderSectionCachedWithPolicy(cache *promptSectionCache, log interface{ Info(string, ...any) }, tenantID, projectID, rootNote string, paths []string, projectDir string, policy contextfiles.ManifestPolicy) (string, string) {
 	fp, stamps, err := contextfiles.Fingerprint(paths, projectDir)
 	if err != nil || cache == nil {
 		// Fingerprinting must never fail the prompt build — degrade to a
 		// plain render (uncached).
-		return contextfiles.RenderManifest(rootNote, paths, projectDir), fp
+		return contextfiles.RenderManifestWithPolicy(rootNote, paths, projectDir, policy), fp
 	}
 	// rootNote IS PART OF THE KEY. The cache is keyed on (tenant, project, fingerprint), and two DIFFERENT
 	// sections can legitimately share a fingerprint: the skills union and the context union are both derived
 	// from the same project selection and can hash to the same stamps. Without the rootNote in the key the
 	// second render would be served the first section's bytes — the wrong heading, wrong body — and, worse,
 	// silently. The rootNote is the section's identity, so it belongs in the key.
-	key := tenantID + "\x00" + projectID + "\x00" + rootNote + "\x00" + fp
+	key := tenantID + "\x00" + projectID + "\x00" + rootNote + "\x00" + fp + "\x00" + strconv.Itoa(int(policy))
 	if cached, ok := cache.get(key); ok {
 		return cached, fp
 	}
-	section := contextfiles.RenderManifest(rootNote, paths, projectDir)
+	section := contextfiles.RenderManifestWithPolicy(rootNote, paths, projectDir, policy)
 	scope := tenantID + "\x00" + projectID + "\x00" + rootNote
 	prev := cache.rememberStamps(scope, stamps)
 	if log != nil {

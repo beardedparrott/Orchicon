@@ -472,3 +472,94 @@ func TestRenderCumulativeBudget(t *testing.T) {
 		t.Fatalf("final file was fully inlined past the cumulative budget")
 	}
 }
+
+// TestSkillPolicyAlwaysInlines pins WHY the skill renderer does not use the context policy.
+//
+// A SKILL IS THE OPERATOR'S INSTRUCTION SET, NOT THE PLATFORM'S CONTEXT. The inline floor exists to protect a
+// token budget for context the platform injects; applying it to skills was a category error with a measurable
+// cost: this repository's own skills/ directory (7,275 bytes) rendered as a 446-byte path+size listing, so
+// every agent in every mode — Ask and worker alike — was told a skill existed and shown none of its contents.
+//
+// An operator who writes a large skill has made a deliberate choice about their own prompt. Silently degrading
+// it to a reference means the agent never reads it at all, which is strictly worse than a large prompt.
+func TestSkillPolicyAlwaysInlines(t *testing.T) {
+	root := t.TempDir()
+	big := filepath.Join(root, "big-skill.md")
+	body := "SKILL-RULE-ONE: " + strings.Repeat("z", ManifestInlineMaxBytes+2048)
+	mustWrite(t, big, body)
+
+	ctxOut := RenderManifest("# Context", []string{big}, root)
+	skillOut := RenderManifestWithPolicy("# Skills", []string{big}, root, ManifestPolicySkill)
+
+	if strings.Contains(ctxOut, "SKILL-RULE-ONE") {
+		t.Fatal("the CONTEXT policy must still degrade a large file to a reference — that policy is unchanged")
+	}
+	if !strings.Contains(skillOut, "SKILL-RULE-ONE") {
+		t.Fatalf("the SKILL policy must inline a large skill file:\n%s", skillOut)
+	}
+	// And it says to FOLLOW it, not to sample it — "read what you need" would invite skipping the rules.
+	if !strings.Contains(skillOut, "read them and follow them") {
+		t.Errorf("a skill section must instruct the agent to follow it:\n%s", skillOut)
+	}
+}
+
+// TestSkillPolicyInlinesADirectoryOfSkills covers the shape this project actually uses: skill_files names a
+// DIRECTORY. Listing its files would reproduce the same defect one level up — the operator pointed at a
+// directory of instructions and the agent got a table of contents.
+func TestSkillPolicyInlinesADirectoryOfSkills(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "skills")
+	mustWrite(t, filepath.Join(dir, "a.md"), "RULE-A: always do the thing\n")
+	mustWrite(t, filepath.Join(dir, "b.md"), "RULE-B: never do the other thing\n")
+
+	out := RenderManifestWithPolicy("# Skills", []string{dir}, root, ManifestPolicySkill)
+	for _, want := range []string{"RULE-A", "RULE-B"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("a skills DIRECTORY must inline each file, missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "(directory — read on demand)") {
+		t.Errorf("a skills directory must not render as a read-on-demand listing:\n%s", out)
+	}
+}
+
+// TestDirectoryManifestIsCapped pins the prompt bound on directory expansion.
+//
+// MaxContextFiles (1000) is an INPUT bound; the manifest needs a PROMPT bound, and conflating them was
+// costing whole model windows. Measured on a real repository before this cap: a directory path at
+// internal/ rendered 94 KB (≈23,400 tokens) and a project root 137 KB (≈34,400 tokens) — four times the
+// entire static system prompt, for a nested tree an agent could just as well SEARCH.
+//
+// A manifest's job is to make a directory's shape legible and point at the right files. It is not a
+// filesystem dump, and no agent reads a thousand paths. Beyond the cap the block must say how to search,
+// because "…and more files" with no method is a dead end.
+func TestDirectoryManifestIsCapped(t *testing.T) {
+	root := t.TempDir()
+	// A tree bigger than the cap, spread across subdirectories.
+	const total = MaxManifestEntries + 60
+	for i := 0; i < total; i++ {
+		dir := filepath.Join(root, fmt.Sprintf("pkg%02d", i%12))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%03d.go", i)), []byte("package x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := RenderManifest("# Context", []string{root}, root)
+	entries := strings.Count(out, "- `")
+	if entries > MaxManifestEntries {
+		t.Errorf("manifest lists %d entries, over the %d cap — a directory dump is not a context aid",
+			entries, MaxManifestEntries)
+	}
+	if !strings.Contains(out, "capped at") {
+		t.Error("a capped manifest must SAY it is capped, or the model believes it has seen the whole tree")
+	}
+	// And it must name a way forward that is cheaper than reading everything.
+	for _, want := range []string{"glob", "grep"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a capped manifest must point at %q — otherwise the model's only recourse is reading files one by one", want)
+		}
+	}
+}

@@ -2378,6 +2378,19 @@ func formatAcceptanceReview(run db.WorkflowRunRow, stepRuns []db.WorkflowStepRun
 		b.WriteString("\n")
 	}
 
+	// VERIFICATION EVIDENCE — the answer to "was any of this actually checked?".
+	//
+	// This review is the document an operator opens to decide whether to trust a run, so evidence that
+	// is not in it may as well not exist. It is rendered from the per-step `_verification` records the
+	// evidence gate stamps (internal/scheduler/verify_onresult.go), and it deliberately LEADS with the
+	// count of steps nothing confirmed: a review that says "6 steps, 1 verified" is telling the
+	// operator something quite different from "6 steps" with a green tick next to the run.
+	//
+	// RECOVERIES ARE FOLDED IN HERE FOR THE SAME REASON. A step that failed three times and then
+	// recovered reads identically to a clean success in the narrative above, and that is a large part
+	// of "sometimes it works" — it did not work, it recovered, and the record did not say so.
+	b.WriteString(formatVerificationSummary(sorted))
+
 	if len(recoveries) > 0 {
 		b.WriteString("### Recovery\n\n")
 		for _, rec := range recoveries {
@@ -3421,7 +3434,10 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 							"project", wi.ProjectID, "error", err.Error())
 					}
 				} else {
-					skillSection, skillFP := r.renderContextSectionCached(tenantID, wi.ProjectID, "# Skills", skillUnion, p.ProjectDir)
+					// ManifestPolicySkill: a worker must READ its instructions, not be handed a table of
+					// contents. Under the context policy this project's own skill (7,275 bytes) rendered as
+					// a 446-byte listing, so every worker was told a skill existed and shown none of it.
+					skillSection, skillFP := r.renderSectionCachedWithPolicy(tenantID, wi.ProjectID, "# Skills", skillUnion, p.ProjectDir, contextfiles.ManifestPolicySkill)
 					if skillSection != "" {
 						sb.WriteString(skillSection)
 					}
@@ -3649,15 +3665,30 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 			break
 		}
 	}
+	// INDEPENDENT REVIEW: withhold the implementer's own account.
+	//
+	// A verifier that reads `.orchicon/<run>/summary` before it starts is primed with the conclusion it
+	// exists to reach independently — that file is written by the model that believes the work is done.
+	// The reviewer keeps everything it can CHECK (the diff, the criteria, the facts ledger, the issues
+	// file, the touched-file list) and loses only the implementer's narrative, which is the claim under
+	// review. See verify_context.go.
+	reviewIndependently := isVerifierStep(wi.WorkflowStepID, "", worker.Role)
 	if hasPriorSteps {
 		fmt.Fprintf(&sb, "**Before you begin:** read this run's `.orchicon/` files (%s) to see what earlier steps produced and what they require of you. They are the authoritative feedback — do not start until you have read them:\n\n", orchiconLocationNote(projectDir))
 		fmt.Fprintf(&sb, "- `.orchicon/%s/facts_learned` — a running ledger of facts, root causes, environment gotchas, and decisions established by earlier steps. **A fact already recorded here is established — do not re-verify or re-derive it.** If you establish something new, append a `FACTS LEARNED:` line (see below)\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/status` — `success` or `failure` from the previous step\n", wi.WorkflowRunID)
-		fmt.Fprintf(&sb, "- `.orchicon/%s/summary` — what the previous worker did\n", wi.WorkflowRunID)
+		if reviewIndependently {
+			sb.WriteString("- `.orchicon/<run>/summary` — **withheld from you on purpose**: it is the previous worker's own account of what it did, which is the claim you are testing. Do not seek it out.\n")
+		} else {
+			fmt.Fprintf(&sb, "- `.orchicon/%s/summary` — what the previous worker did\n", wi.WorkflowRunID)
+		}
 		fmt.Fprintf(&sb, "- `.orchicon/%s/issues` — issues found by the previous reviewer (read these; they are blocking unless stated otherwise)\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/touched_files` — files the previous worker wrote or edited (read the ones relevant to your task)\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/worker` — which worker produced the previous results\n", wi.WorkflowRunID)
 		fmt.Fprintf(&sb, "- `.orchicon/%s/attachments/` — files/screenshots the human attached to an approval decision (read them!)\n\n", wi.WorkflowRunID)
+	}
+	if reviewIndependently {
+		sb.WriteString(verifierIsolationBlock)
 	}
 	sb.WriteString("Complete the work this step requires of you and bring it to a state that passes review before handing it off. Do not push your step's work downstream incomplete, and do not take on work that belongs to another step in this workflow — each step has its own role and deliverable, and doing another step's job for it breaks the division of labor. When you have finished, end your response with the literal line `ORCHICON WORKER SUMMARY:` followed by one word — either `success` or `failure` — and a short paragraph summarizing what you did.\n\n")
 	sb.WriteString("Format:\n")
@@ -4674,9 +4705,14 @@ type recoveryTriggerReq struct {
 // _recovery_worker_version / _recovery_adapter pin the exact version and
 // adapter the dead execution ran on (model_ref is per-version); the gate
 // fails fast when the step's current version moved off the pin.
+// recoveryResultKeys is the CARRY-FORWARD list across the recovering transition, and membership is
+// load-bearing: recoveringStepResult REPLACES the result JSON, and these two call sites copy back only what is
+// named here. A key absent from this list is silently destroyed when a step enters recovering — which for
+// _recovery_failure_reason would mean the resumed agent is told nothing, exactly as before the fix.
 var recoveryResultKeys = []string{
 	"_recovery_summary", "_recovery_execution_id", "_recovery_worker_id",
 	"_recovery_worker_version", "_recovery_adapter",
+	"_recovery_failure_reason",
 	"_failed_execution_id", "_failed_worker_id", "_recovery_strategy",
 }
 
@@ -4706,7 +4742,14 @@ func recoveringStepResult(ctx context.Context, tx pgx.Tx, tenantID, workItemID, 
 	if len(prevResult) > 0 {
 		var prev map[string]any
 		if json.Unmarshal(prevResult, &prev) == nil {
-			for _, k := range []string{"_worker_id", "_worker_version"} {
+			// _recovery_failure_reason IS CARRIED HERE, not only in the recoveryResultKeys sweeps.
+			//
+			// Those sweeps run in the OTHER recovering-result builders; this function rebuilds the map from
+			// scratch and copies back only what is named in this list. On a SECOND recovery the previous
+			// result already carries the first attempt's reason — and without this it was wiped before the
+			// retry was dispatched, so the single retry the policy allows would go out blind and the
+			// feature would fail quietly, exactly where it mattered most.
+			for _, k := range []string{"_worker_id", "_worker_version", "_recovery_failure_reason"} {
 				if v, ok := prev[k]; ok {
 					res[k] = v
 				}

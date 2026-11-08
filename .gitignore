@@ -109,8 +109,12 @@ data/
 .qa-gocache/
 .qa-gotmp/
 # Per-project scratch dirs written by the control plane (run results,
-# safety lint). Never committed.
-/.orchicon/
+# safety lint, captured verification baselines). Never committed.
+# Note: the declared verification gate lives at .orchicon/verify and IS tracked — see
+# the explicit include further down. Git cannot re-include a file inside an ignored
+# DIRECTORY, so the directory itself is not ignored; only its run-state children are.
+/.orchicon/*
+!/.orchicon/verify
 # Worktrees Orchicon creates during work-item context. Never committed.
 /.orchicon-worktrees/
 

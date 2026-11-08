@@ -181,8 +181,12 @@ func TestToolHangManifestBranch(t *testing.T) {
 
 	// BLANK (nil) — the tenant left it unset, so the built-in default applies.
 	// This is what a never-configured tenant has.
-	if w := stallWindowsFromManifest(scheduler.ExecutionManifest{}); w.toolHang != 180*time.Second {
-		t.Fatalf("blank -> %v, want 180s default", w.toolHang)
+	// RAISED FROM 180s: a legitimate cold build (a fresh-worktree `go build ./...`, a first
+	// `bun install`, a full suite) routinely runs past three silent minutes and emits nothing while it
+	// does, so 180s reported healthy work as `stalled:no_progress`. The default now bounds a genuinely
+	// WEDGED call without killing a slow one. See toolHangDefaultWindow for the measurement.
+	if w := stallWindowsFromManifest(scheduler.ExecutionManifest{}); w.toolHang != 600*time.Second {
+		t.Fatalf("blank -> %v, want the 600s default", w.toolHang)
 	}
 	// An explicit positive value overrides the default.
 	if w := stallWindowsFromManifest(newToolHangManifest(90)); w.toolHang != 90*time.Second {

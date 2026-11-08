@@ -91,14 +91,14 @@ var cannedWorkflows = []cannedWorkflow{
 ]`,
 	},
 	{
-		ID:          "01M1ERHNCNF38MP3SEV1GTH26G",
-		VersionID:   "wfv_quick_work_v1",
-		Name:        "Quick Work",
-		VersionNote: "Merge-autonomy fast path (git_strategy=INHERIT — the bound PROJECT decides local/pr/none): the all-in-one Quick Software Engineer implements, verifies green, commits to the run branch, pushes to origin, then ships according to that strategy. There is no separate DevOps step — the Quick worker owns PR creation + merge (PR_URL + PR_STATE) when the strategy is pr, so the run ends merged with fully autonomous handoff.",
-		GitStrategy: "",
+		ID:               "01M1ERHNCNF38MP3SEV1GTH26G",
+		VersionID:        "wfv_quick_work_v1",
+		Name:             "Quick Work",
+		VersionNote:      "Merge-autonomy fast path (git_strategy=INHERIT — the bound PROJECT decides local/pr/none): the all-in-one Quick Software Engineer implements, verifies green, commits to the run branch, pushes to origin, then ships according to that strategy. There is no separate DevOps step — the Quick worker owns PR creation + merge (PR_URL + PR_STATE) when the strategy is pr, so the run ends merged with fully autonomous handoff.",
+		GitStrategy:      "",
 		UnpinGitStrategy: true,
 		StepsJSON: `[
-  {"id":"step-quick","ref":"01M1ERH9921YS9S1QWGZV8D1VM","kind":"task","name":"Quick Software Engineer","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","depends_on":[],"position_x":73.66668701171875,"position_y":28.75,"worker_version":0,"gate_policy_ref":""},
+  {"id":"step-quick","ref":"01M1ERH9921YS9S1QWGZV8D1VM","kind":"task","name":"Quick Software Engineer","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6},\"requires_pr\":true}","depends_on":[],"position_x":73.66668701171875,"position_y":28.75,"worker_version":0,"gate_policy_ref":""},
   {"id":"step-end","ref":"","kind":"end","name":"End","config":"{}","depends_on":["step-quick"],"position_x":366.4761407515862,"position_y":43.75,"worker_version":0,"gate_policy_ref":""}
 ]`,
 	},

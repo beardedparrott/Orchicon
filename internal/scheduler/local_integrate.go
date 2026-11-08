@@ -34,15 +34,19 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/verify"
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// Bounds for the project's declared post-integration check. A hung check must fail verification rather than
-// wedge the queue, and a failure's output must fit in a record a person will actually read.
-const (
-	verifyCommandTimeout = 10 * time.Minute
-	verifyOutputLimit    = 1200
-)
+// verifyOutputLimit bounds what a failure's message carries: enough to name the cause, small enough that a person
+// will read it.
+//
+// THERE IS NO COMMAND TIMEOUT ANY MORE. `verifyCommandTimeout` (10 minutes) was a ceiling nobody configured, and
+// the platform's rule everywhere else is that an OMITTED limit means NO limit. Stall detection, tool-hang
+// cancellation and the execution reaper are the mechanism for a runaway — a hardcoded number in a shell runner is
+// not a second opinion, it is a hidden policy that fails good work on a slow machine. The command is still bound
+// by the CONTEXT the caller passes, so an operator's cancel or a configured budget still reaches it.
+const verifyOutputLimit = 1200
 
 // shellBinary/shellFlag give the declared command the same shell a person would use on this host.
 func shellBinary() string {
@@ -987,25 +991,25 @@ func strayTreeIsProvablyOurWorktrees(repo, root string) (bool, int) {
 //
 // OPT-IN BY A FILE IN THE PROJECT, deliberately: running a command the platform invents would be worse than not
 // running one, and a per-project setting would need a schema and a wire change for something most projects will
-// not set. Two lines in `.orchicon/verify` is a declaration the operator can see, version, and delete:
+// not set. `.orchicon/verify` is a declaration the operator can see, version, and delete.
 //
-//	<the shell command, run with the project dir as its cwd>
+// THE FILE HAS TWO FORMS and ONE READER (verify.Declaration):
 //
-// Anything else — absent file, empty file, a comment — means "no check", and verification then rests on the two
-// mechanical checks that need no cooperation from the project.
+//	<the shell command>                      — the original, one line, format exit_code
+//	command = …\nformat = junit\npath = …      — the opt-in, carrying per-check results
+//
+// A malformed declaration reports no command here, and the evidence collector names the parse error separately —
+// so a typo is visible rather than silently indistinguishable from "no gate".
 func projectVerifyCommand(projectDir string) string {
-	b, err := os.ReadFile(filepath.Join(projectDir, ".orchicon", "verify"))
+	raw, err := os.ReadFile(filepath.Join(projectDir, ".orchicon", "verify"))
 	if err != nil {
 		return ""
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		return line
+	d, perr := verify.ParseDeclaration(string(raw))
+	if perr != nil {
+		return ""
 	}
-	return ""
+	return d.Command
 }
 
 // runVerifyCommand runs the project's declared check with a bounded budget and returns its combined output.
@@ -1013,17 +1017,15 @@ func projectVerifyCommand(projectDir string) string {
 // BOUNDED, because this runs on the integration path and a hung check would wedge the queue exactly as a
 // missing merge did. A timeout is a FAILURE of the check, not a pass.
 func runVerifyCommand(ctx context.Context, projectDir, command string) (string, error) {
-	cctx, cancel := context.WithTimeout(ctx, verifyCommandTimeout)
-	defer cancel()
 	// procwin.CommandContext, NOT exec.CommandContext: a bare exec here spawns a VISIBLE console window on
 	// Windows for a check the operator never asked to watch. (Caught by the platform's own guard test — the
 	// first version of this function failed it.)
-	cmd := procwin.CommandContext(cctx, shellBinary(), shellFlag(), command)
+	//
+	// THE CONTEXT IS THE CALLER'S, UNBOUNDED BY THIS FILE. See verifyOutputLimit for why the local deadline was
+	// removed; the short version is that a limit the operator did not set is not a limit, it is a policy.
+	cmd := procwin.CommandContext(ctx, shellBinary(), shellFlag(), command)
 	cmd.Dir = projectDir
 	out, err := cmd.CombinedOutput()
-	if cctx.Err() != nil {
-		return string(out), fmt.Errorf("timed out after %s", verifyCommandTimeout)
-	}
 	return string(out), err
 }
 

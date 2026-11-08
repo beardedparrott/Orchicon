@@ -104,7 +104,16 @@ type launchPromptMsg struct {
 }
 
 // launchCreatedMsg reports a successful create-and-attach.
-type launchCreatedMsg struct{ projectID string }
+//
+// IT CARRIES THE NAME AS WELL AS THE ID. The id alone is not enough for the thing this message now has to do:
+// make the new project the workspace. The scope is chosen by NAME (projectselect.go) so that one path serves
+// both "the project I just created" and "the project this directory belongs to", and by the time this lands
+// the rail's project list may still be the pre-create snapshot — which does not contain the new row, so looking
+// the name up by id would miss.
+type launchCreatedMsg struct {
+	projectID string
+	name      string
+}
 
 // launchFailedMsg reports a create that did not go through, carrying the reason to
 // show in the form.
@@ -436,7 +445,7 @@ func (m *App) launchSubmit(values map[string]string, multi map[string][]string) 
 				}
 			}
 		}
-		return launchCreatedMsg{projectID: id}
+		return launchCreatedMsg{projectID: id, name: name}
 	}, nil
 }
 

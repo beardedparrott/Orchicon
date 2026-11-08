@@ -323,28 +323,46 @@ fi
 
 # THE BEHAVIOURAL HALF: reproduce the state and prove the detector reads it correctly. A shell
 # function is not needed — the check is a readlink on /proc, and that is what is exercised.
+# tmp/ is gitignored, and mktemp -d will not create it — without this the probe is silently SKIPPED.
+mkdir -p "${REPO_ROOT}/tmp"
 TMP_PROBE="$(mktemp -d "${REPO_ROOT}/tmp/stale-probe.XXXXXX")"
 trap 'rm -rf "$TMP_PROBE"' EXIT
 
 # THE PROBE MUST BE A REAL BINARY, NOT A SCRIPT. A `#!/bin/sh` file's /proc/<pid>/exe is the
 # INTERPRETER (/usr/bin/bash), so replacing the script deletes nothing and the test measures its own
 # construction instead of the detector. Measured: the script version reported "no" for a process whose
-# binary had just been replaced. /bin/sleep is a real ELF and is never a script.
+# binary had just been replaced.
+#
+# THE COPY KEEPS ITS OWN NAME: a coreutils multicall /bin/sleep picks its applet from argv[0] and exits
+# on a name it does not know. The detector only reads /proc/<pid>/exe, so the name is irrelevant to it.
 #
 # The scratch dir lives under the repo's gitignored tmp/ so the copy is project-scoped; a copy into a
 # scratch path outside the tree is refused by the execution guard in a guarded environment, which
 # would make this test pass or fail depending on who ran it.
-if cp /bin/sleep "$TMP_PROBE/plane" 2>/dev/null; then
+if cp /bin/sleep "$TMP_PROBE/sleep" 2>/dev/null; then
   # A SIMPLE background command, deliberately not part of an &&-chain: `a && b &` backgrounds the
   # whole chain, so $! is the subshell rather than the binary. That is how the first version of this
   # test "measured" /usr/bin/bash.
-  "$TMP_PROBE/plane" 20 &
+  "$TMP_PROBE/sleep" 20 &
   PROBE_PID=$!
   sleep 1
+
+  # A DEAD PROBE STILL YIELDS "not stale (pass), stale (fail)" — blaming the detector for the fixture.
+  if ! kill -0 "$PROBE_PID" 2>/dev/null; then
+    printf '  \033[33mSKIP\033[0m  %-52s %s\n' "the deleted-exe detector" \
+      "the probe binary did not stay running, so there is nothing to measure"
+    SKIPPED=$((SKIPPED + 1))
+    PROBE_RAN=no
+  else
+    PROBE_RAN=yes
+  fi
+fi
+
+if [ "${PROBE_RAN:-}" = "yes" ]; then
   BEFORE="$(readlink "/proc/$PROBE_PID/exe" 2>/dev/null || echo '')"
 
   # Replace the file the process was launched from — exactly what a rebuild does to bin/orchicon.
-  cp /bin/sleep "$TMP_PROBE/plane.new" && mv "$TMP_PROBE/plane.new" "$TMP_PROBE/plane"
+  cp /bin/sleep "$TMP_PROBE/sleep.new" && mv "$TMP_PROBE/sleep.new" "$TMP_PROBE/sleep"
   AFTER="$(readlink "/proc/$PROBE_PID/exe" 2>/dev/null || echo '')"
 
   kill "$PROBE_PID" 2>/dev/null || true
@@ -361,7 +379,7 @@ if cp /bin/sleep "$TMP_PROBE/plane" 2>/dev/null; then
 
   check "a running process is NOT stale before its binary is replaced" "no" "$BEFORE_STALE"
   check "the SAME process IS stale once its binary is replaced" "yes" "$AFTER_STALE"
-else
+elif [ "${PROBE_RAN:-}" != "no" ]; then
   # AN INVISIBLE SKIP IS THE FAILURE MODE THIS WHOLE SESSION HAS BEEN REMOVING, so it is reported
   # loudly and counted as a skip rather than passing quietly. A pass here would claim the detection
   # works without having exercised it.

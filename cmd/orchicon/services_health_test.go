@@ -113,7 +113,13 @@ func TestServicesHealthNamesEveryDeadComponent(t *testing.T) {
 func TestServicesHealthRequiredDownFailsTheGate(t *testing.T) {
 	ports := map[string]int{
 		"ORCHICON_POSTGRES_PORT":     5432, // the fake pg_isready below will FAIL
-		"ORCHICON_NATS_MONITOR_PORT": closedPort(t),
+		// deadServicePort, NOT closedPort: this assertion requires the port to be DOWN, and closedPort
+		// RELEASES its number, which the kernel may hand to a later listener — including one of the
+		// serveOK(t) calls in this same test. When that happened here the declared-dead component
+		// answered 200 and requiredServicesReady correctly returned true, failing the assertion. Measured
+		// as a CI failure of the whole go-ci gate for the sibling case at line ~171; see deadServicePort's
+		// own comment for the experiment that confirmed the mechanism.
+		"ORCHICON_NATS_MONITOR_PORT": deadServicePort(t),
 		"ORCHICON_TEMPO_PORT":        serveOK(t),
 		"ORCHICON_LOKI_PORT":         serveOK(t),
 		"ORCHICON_VM_PORT":           serveOK(t),
@@ -168,10 +174,12 @@ func TestTelemetryNoneHasNoOptionalComponents(t *testing.T) {
 		"ORCHICON_POSTGRES_PORT":     5432,
 		"ORCHICON_NATS_MONITOR_PORT": serveOK(t),
 		// Deliberately dead: a `none` boot must not ask about them at all.
-		"ORCHICON_TEMPO_PORT":       closedPort(t),
-		"ORCHICON_LOKI_PORT":        closedPort(t),
-		"ORCHICON_VM_PORT":          closedPort(t),
-		"ORCHICON_OTEL_HEALTH_PORT": closedPort(t),
+		// These four are asserted DOWN, so they must stay reserved — see the comment on the nats
+		// port above and deadServicePort's.
+		"ORCHICON_TEMPO_PORT":       deadServicePort(t),
+		"ORCHICON_LOKI_PORT":        deadServicePort(t),
+		"ORCHICON_VM_PORT":          deadServicePort(t),
+		"ORCHICON_OTEL_HEALTH_PORT": deadServicePort(t),
 	}
 	health := servicesHealth("dev", ports)
 	if len(health) != 2 {

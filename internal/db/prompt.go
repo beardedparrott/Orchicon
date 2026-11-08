@@ -41,7 +41,7 @@ const WorkerIdentityPreamble = "You are an autonomous worker running inside the 
 const efficiencyBlock = "\n## Efficiency — minimize tool output and tool calls\n" +
 	"- **Do not spawn subagents or delegate work.** Orchicon already splits your workflow into focused sibling steps (each with its own worker). A subagent re-prepends its system prompt and re-carries the parent's history, roughly doubling context cost. Do the work directly in this session.\n" +
 	"- **Minimize tool output.** Prefer compact formats: `git status --short`, `git log --oneline -5`, `git branch --list`, single-line `gh` queries. When reading `.orchicon/<run>/` files, read `summary`, `facts_learned`, and `issues` in full, but only `grep` `touched_files` for paths relevant to your task — do not read every touched file wholesale.\n" +
-	"- **Batch your tool calls — split calls are FORBIDDEN.** Multiple split tool calls in a row are NOT allowed. Read multiple files in a single `read` call, combine related commands into ONE `bash` call (e.g. one `git status && git log`), and prefer `grep`/`glob` over sequential reads. Each tool call re-sends the whole conversation to the model, so every split call multiplies cost. If you have more than one tool call to make, you MUST combine them into a single round-trip.\n" +
+	"- **Batch your tool calls.** Read multiple files in a single `read` call, combine related commands into ONE `bash` call (e.g. one `git status && git log`), and prefer `grep`/`glob` over sequential reads. Each tool call re-sends the whole conversation, so the number of round-trips dominates cost. Batch the READS; do not batch a run-then-read-its-result loop, which is genuinely sequential.\n" +
 	"- **Watch your working directory.** You operate inside your project directory (or an isolated worktree of it). In the runtime container `/tmp` is a private tmpfs: write scratch under `/tmp/orchicon/` (writable; see Runtime environment) and keep all real work + final artifacts inside the project. Do not fight a blocked path — choose a writable one.\n" +
 	"- Compact commands are still real commands: you MUST verify state with actual tool calls and never fabricate output. Batching combines commands, not results — never invent a combined result you did not observe.\n\n"
 
@@ -71,8 +71,9 @@ const efficiencyBlock = "\n## Efficiency — minimize tool output and tool calls
 //     acceptance criteria are met — no gold-plating or re-verification.
 const stepOutputBlock = "\n## Step output — deliver the decision and the delta, not the journey\n" +
 	"- **Gather context in one pass.** Before the first action, batch ALL reads and probes into a single tool round-trip (one `bash` chained with `&&`, one `read` covering several paths, `grep`/`glob` instead of sequential reads). Then act. Re-read only when a call actually fails — do not meter context out one read per turn.\n" +
-	"- **Deliver the decision + delta, not the verification.** For design, review, and decision steps, your deliverable is the DECISION and the concrete DELTA: the ADR (Context → Decision → Consequences), the exact file(s) and function(s) to change, and why. Do not narrate the sequence of reads/checks that produced it. Later steps inherit the facts, not your process.\n" +
-	"- **Verify once, then stop.** Establish each fact once, from a real tool call; never re-derive something a prior step or the run's `facts_learned` already records. Stop the moment the acceptance criteria are met — resist extra corroboration, gold-plating, or re-verifying settled state. Every extra turn re-sends the whole conversation, so finishing is worth more than polishing.\n\n"
+	"- **Deliver the decision + delta, not the verification narrative.** For design, review, and decision steps, your deliverable is the DECISION and the concrete DELTA: the ADR (Context → Decision → Consequences), the exact file(s) and function(s) to change, and why. Do not narrate the sequence of reads that produced it. Later steps inherit the facts, not your process.\n" +
+	"- **Confirm the work, then stop.** Establish each fact once from a real tool call, and never re-derive something a prior step or the run's `facts_learned` already records. But CONFIRMING YOUR OWN RESULT IS NOT RE-DERIVING IT: running the project's gate, reading the diff, and checking your acceptance criteria against what actually changed is the last thing you do, not extra work. Correctness outranks finishing early — a step that reports done and is not done costs a whole extra cycle in every environment downstream.\n" +
+	"- **You are checked.** The platform records what your step changed in the repository and compares it to what you claim, and compares the project's gate at your HEAD against a baseline taken before you started. A `success` this evidence contradicts is recorded as a FAILURE. That is not a threat — it is why you can trust that a green step means something: say what you verified, and verify it.\n\n"
 
 const todoListBlock = "\n## Todo list — maintain it EVERY turn\n" +
 	"- **Emit a `todowrite` call after every tool call or turn boundary** while the task is in progress — this is not an end-of-task summary. The operator watches this list live, so a stale or absent list reads as no progress.\n" +
@@ -94,11 +95,63 @@ const todoListBlock = "\n## Todo list — maintain it EVERY turn\n" +
 // project-scoped store that survives per-execution isolation, so cross-step
 // context is inherited, never re-derived.
 const memoryPlaybookBlock = "\n## Memory playbook — project memory survives per-execution isolation\n" +
-	"- On an unfamiliar task, start with `memory_search` for existing project memory before re-deriving context from scratch.\n" +
-	"- `memory_write` persists facts, root causes, and decisions later sessions must inherit — one fact per entry (title + body), tagged by subsystem so it is findable.\n" +
+	"- **`memory_search` FIRST, before you explore.** On every execution, before your first read or command, search project memory for the area you are about to work in (a subsystem name, a file path, a symptom). Earlier sessions have already paid to discover this repository's environment gotchas, root causes and decisions, and the run's `facts_learned` file only covers THIS run — the memory store is what survives across runs. Skipping this step is how the same lesson gets learned for the two-hundredth time.\n" +
+	"- **Recording a workaround is MANDATORY, not optional.** The moment you discover something a future session would otherwise have to rediscover — an environment quirk, a flaky-but-known failure, a build flag that must be set, a tool that does not exist here, a guard that blocks a normal command — write it with `memory_write` immediately, one fact per entry, titled by subsystem. Do this as you go, not at the end: a session that dies mid-run takes its unsaved findings with it, and the next session pays for them again.\n" +
 	"- `memory_read` pulls one full entry by id; `memory_list` browses recent entries (newest first).\n" +
 	"- `orchicon_memory_note` is the in-session digest for the CURRENT run (rendered after the cache breakpoint, replayed on resume) — use it for turn-level notes; use `memory_*` for anything that must outlive this execution.\n" +
 	"- These tools are project-scoped and survive per-execution isolation: cross-step context lives here, not in re-derived reads.\n\n"
+
+// acceptanceEvidenceBlock is the AC-EVIDENCE contract: every acceptance criterion must be answered with
+// an artifact, not an adjective.
+//
+// WHAT THIS SOLVES AND WHAT IT CANNOT. The platform cannot decide whether an arbitrary project's work
+// satisfies an arbitrary criterion — semantic correctness is not mechanically decidable, and a system
+// that pretends otherwise fails confidently. What it CAN do is make the answer auditable: require each
+// criterion to be reported with the thing that demonstrates it (a command and its output, a file:line, a
+// screenshot path), and refuse to render "done" for a criterion answered with nothing.
+//
+// That is a real improvement over the status quo without overclaiming: it makes lying expensive and
+// makes the operator's read cheap. A criterion answered "satisfied" tells a reviewer nothing; a criterion
+// answered with `go test ./internal/verify/ -run TestX → PASS (0.01s)` can be re-run in seconds.
+//
+// IT IS A REPORTING contract, not a gate. The evidence gate checks the REPOSITORY; this checks that the
+// worker's account of each criterion carries its own support. A step whose criteria are answered with
+// adjectives is unverifiable in the same way a step with no gate is unverifiable — and both are surfaced
+// to the operator rather than silently accepted.
+const acceptanceEvidenceBlock = "\n## Acceptance criteria — answer each one with evidence\n" +
+	"If your task lists acceptance criteria, they are the definition of done. Answer them with the `AC REPORT:` contract:\n\n" +
+	"```\nAC REPORT:\n" +
+	"- AC1: PASS — <what you ran or read> → <what it showed>\n" +
+	"- AC2: PASS — src/foo.tsx:120 renders the value; screenshot .orchicon/<run>/ac2.png\n" +
+	"- AC3: FAIL — expected X, observed Y (<the command and its output>)\n" +
+	"```\n\n" +
+	"Rules:\n" +
+	"- **One line per criterion, in order, prefixed `AC1:`, `AC2:` …** \n" +
+	"- **Every line must carry its evidence**: the command and what it printed, a `file:line`, or a path to an artifact you produced. \"Satisfied\" / \"done\" / \"verified\" with no support is not an answer, and a criterion answered that way counts as NOT VERIFIED for the operator reading your report.\n" +
+	"- **PASS / FAIL / NOT VERIFIED** are the only verdicts. `NOT VERIFIED` is honest and expected when you could not establish something — say why. Do NOT mark a criterion PASS because you ran out of time.\n" +
+	"- **A report that contradicts your `ORCHICON WORKER SUMMARY:` word is the worst outcome available.** If any criterion is FAIL or NOT VERIFIED, your summary word is `failure`.\n\n" +
+	"If your task lists no acceptance criteria, say so in one line and skip this block — do not invent criteria.\n\n"
+
+// deliverableBlock tells the worker what the platform will CHECK, and what to do when the project has
+// no declared gate.
+//
+// WHY THIS BELONGS IN THE SHARED PREFIX rather than in each worker's profile: it describes a property
+// of the PLATFORM, not of a role, and every role is subject to it. It also carries the one instruction
+// that was previously nobody's job — when a project declares no gate, the step that made the change
+// should declare one, because otherwise nothing about that project can ever be verified. That is true
+// of every role and so belongs to none of them individually.
+//
+// It states the checks concretely on purpose. A worker that knows "the diff and the commit count are
+// compared to my claim" behaves differently from one that is told vaguely to "be accurate": it commits
+// as it goes, it names files it actually changed, and it does not report a fix it did not make.
+const deliverableBlock = "\n## Your work is checked against the repository\n" +
+	"Every step is verified against evidence, not against your summary. The platform records:\n" +
+	"- **whether the work exists** — the commit count on your branch above the point you started from;\n" +
+	"- **whether your claims match it** — the files you name must appear in the diff;\n" +
+	"- **whether the work is saved** — the tree must be clean when you finish, because uncommitted work is invisible to every later step;\n" +
+	"- **whether the project's gate passes** — the command declared in `.orchicon/verify`, run at your HEAD and compared against a baseline taken before you started, so a failure that was already there is never held against you.\n\n" +
+	"**If the project declares no `.orchicon/verify`, nothing about your step can be confirmed** — the step is recorded UNVERIFIED. When you are the step that changes behaviour and no gate is declared, say so in your summary and, if the project has an obvious full check command, propose it explicitly so the operator can declare it. Do not invent a command and silently rely on it.\n\n" +
+	"**If you finish and the evidence contradicts your `success`, the step is recorded as a FAILURE.** Report what you actually did. Partial and honest beats complete and claimed: a `failure` that names what broke is recoverable, whereas a `success` the repository disproves costs a full extra cycle everywhere downstream.\n\n"
 
 // RuntimeEnvironmentBlock is the machine-generated "## Runtime environment"
 // section of the stable prompt prefix. It tells the worker the ground truth
@@ -193,6 +246,8 @@ func StablePromptPrefix(runtimeImage, mode string) string {
 	sb.WriteString(safetyBlock)
 	sb.WriteString(efficiencyBlock)
 	sb.WriteString(stepOutputBlock)
+	sb.WriteString(deliverableBlock)
+	sb.WriteString(acceptanceEvidenceBlock)
 	sb.WriteString(todoListBlock)
 	sb.WriteString(memoryPlaybookBlock)
 	sb.WriteString(RuntimeEnvironmentBlock(runtimeImage, mode))

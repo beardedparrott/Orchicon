@@ -444,9 +444,13 @@ func integrationMapBlock(t *testing.T, prompt string) string {
 func TestEveryModeCarriesTheIntegrationMapContract(t *testing.T) {
 	for _, mode := range everyMode {
 		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), "")
+		// THE CONTRACT, NOT THE NUMBERING. These assertions used to pin the exact headings
+		// ("### 1. Draw the map BEFORE you write anything" / "### 2. Close the map — …"), which made a
+		// prose tightening fail while every concept it protects survived. The obligation is that both
+		// halves of the contract are present, so that is what is asserted.
 		for _, want := range []string{
-			"### 1. Draw the map BEFORE you write anything",
-			"### 2. Close the map — no half-realized work",
+			"Draw the map first",
+			"Then close it",
 			"What it depends on",
 			"What depends on it",
 			"What must LEARN about it",
@@ -481,11 +485,12 @@ func TestIntegrationMapSpeaksSystemsDesignNotOrchiconComponents(t *testing.T) {
 		}
 		// The systems/architecture half.
 		for _, want := range []string{
-			"registries and dispatch tables",
-			"configuration defaults",
+			"registries",
+			"dispatch tables",
+			"config defaults",
 			"migrations",
-			"the API/wire contract at each boundary",
-			"the tests that assert each",
+			"wire contract",
+			"tests that assert each",
 		} {
 			if !strings.Contains(block, want) {
 				t.Errorf("%s: the shared block is missing the systems-design vocabulary %q", mode, want)
@@ -493,9 +498,9 @@ func TestIntegrationMapSpeaksSystemsDesignNotOrchiconComponents(t *testing.T) {
 		}
 		// The UI/UX half — what makes the rule apply to a design or front-end project, not only a back end.
 		for _, want := range []string{
-			"loading, empty, error, partial and permission-denied",
-			"design-system primitives and tokens",
-			"keyboard, focus, resize",
+			"loading, empty, error, partial, permission-denied",
+			"design-system primitives",
+			"keyboard, focus and resize",
 			"A user-facing element without its states is not a feature",
 		} {
 			if !strings.Contains(block, want) {
@@ -604,5 +609,38 @@ func TestQuickWorkPutsTheMapInTheBriefAndTheWorkerPrompt(t *testing.T) {
 			t.Errorf("quick work is missing %q — the dispatched worker never sees this conversation, so the brief "+
 				"and its own prompt are the only places the map can live", want)
 		}
+	}
+}
+
+// TestBrainstormWritesVerifiableAcceptanceCriteria pins the authoring half of the verification feature.
+//
+// The engine can only verify what it is given. A work item whose criteria are phrased as feelings
+// ("the UI feels responsive") cannot be answered with the AC REPORT contract, so it degrades into an
+// adjective and the operator learns nothing — no amount of engine work fixes that at the other end. And a
+// project with no `.orchicon/verify` produces steps the platform must report as UNVERIFIED, so Brainstorm
+// is the right place to surface it, before the operator has committed to the work.
+func TestBrainstormWritesVerifiableAcceptanceCriteria(t *testing.T) {
+	prompt := BuildSystemPrompt(modeBrainstorm, db.AgentConfigRow{}, &ToolRegistry{}, "")
+
+	for _, want := range []string{
+		// The authoring contract.
+		"WRITE ACCEPTANCE CRITERIA THAT CAN BE ANSWERED WITH EVIDENCE",
+		"AC REPORT",
+		// A worked contrast, because an abstract instruction to "be specific" is what we already had.
+		"weak:",
+		"strong:",
+		// The gate disclosure.
+		"`.orchicon/verify`",
+		"UNVERIFIED",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("Brainstorm's drafting rules must carry %q — otherwise it writes items the platform cannot verify", want)
+		}
+	}
+
+	// The numbering instruction matters mechanically: the AC REPORT parser keys on AC1/AC2, so criteria
+	// must be numbered for a worker to answer them in the form the platform reads.
+	if !strings.Contains(prompt, "Number them") {
+		t.Error("Brainstorm must tell the model to number acceptance criteria — the AC REPORT contract keys on the number")
 	}
 }

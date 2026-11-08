@@ -84,6 +84,27 @@ const (
 	// legacy direct-dispatch composites built without the block.
 	recoveryFileReferenceMarker = "Read the file `.orchicon/worker.recovery`"
 
+	// recoveryReasonSectionHeading is the heading of the WHY section inside both the seed file and the
+	// composite's ## Recovery block.
+	//
+	// IT LEADS. The dead session's transcript says what the agent DID; this says what was WRONG with it,
+	// and a resumed agent that reads only one of the two must read this one. On run
+	// 01M6TB0MQ2EXDRW6EX8GAR0DT3 the transcript was the only thing carried, and five resumes reproduced
+	// the same rejected report because the transcript of a confident agent reads as a finished job.
+	recoveryReasonSectionHeading = "## Why the last attempt was rejected"
+
+	// recoveryRedoSupersedesAlreadyDone is the correction to the "do not redo work" directive, applied
+	// when the failure was the PLATFORM rejecting the work rather than a stall or a crash.
+	//
+	// THE OLD DIRECTIVE WAS ACTIVELY WRONG FOR THIS CLASS. "Do NOT redo work that is already done" is
+	// correct after a stall — the work exists and re-deriving it wastes the budget. After an EVIDENCE
+	// REJECTION it is the opposite of the remedy: the work was examined and refused, so leaving it in
+	// place guarantees the identical rejection. A resumed agent needs to be told that explicitly, or the
+	// directive it is reading tells it to preserve exactly what got it rejected.
+	recoveryRedoSupersedesAlreadyDone = "**The work from the last attempt was REJECTED by the platform, not interrupted.** " +
+		"The usual recovery instruction not to redo completed work does NOT apply here: what was delivered was examined and refused, so leaving it unchanged will produce the identical rejection. " +
+		"Read the reason above, change the work accordingly, then report."
+
 	// recoveryTailSectionHeading is the heading of the transcript section
 	// inside the seed file. It doubles as the extraction marker when a
 	// churn-only successor carries the PRIOR seed's transcript forward.
@@ -110,6 +131,19 @@ type recoverySeed struct {
 	Summary        string // the recovery engine's one-line narrative
 	FailedExecID   string // the dead execution's id
 	FailedWorkerID string // the worker the dead execution ran on
+	// FailureReason is WHY the dead execution failed, verbatim from its
+	// execution row's error_message — the one thing the resumed agent needs in
+	// order to behave differently this time.
+	//
+	// WITHOUT IT A RESUME IS A BLIND RETRY. The engine's Summary says only
+	// "Execution X failed after N tokens. Resuming from captured state": it
+	// reports that a failure happened and its cost, never its cause. Measured on
+	// run 01M6TB0MQ2EXDRW6EX8GAR0DT3, where a plan-only step was rejected six
+	// times for `project_gate: the project's declared gate FAILED` and the
+	// resumed agent was told none of it — so each attempt re-read its own prior
+	// output, saw a complete-looking plan, and reported success again. The agent
+	// was not being stubborn; it was being told nothing.
+	FailureReason string
 }
 
 // recoverySeedFor returns the recovery seed for a dispatch, or nil when
@@ -141,6 +175,11 @@ func recoverySeedFor(runResult, wiResults []byte, workerID string) *recoverySeed
 		if seed.FailedWorkerID == "" {
 			if w, ok := m["_recovery_worker_id"].(string); ok && w != "" {
 				seed.FailedWorkerID = w
+			}
+		}
+		if seed.FailureReason == "" {
+			if r, ok := m["_recovery_failure_reason"].(string); ok && r != "" {
+				seed.FailureReason = r
 			}
 		}
 	}
@@ -220,7 +259,14 @@ func recoverySeedFromRow(ctx context.Context, tx pgx.Tx, tenantID, taskID string
 	if failedWorkerID == "" || failedWorkerID != workerID {
 		return nil
 	}
-	return &recoverySeed{Summary: rec.Summary, FailedExecID: rec.FailedExecutionID, FailedWorkerID: failedWorkerID}
+	return &recoverySeed{
+		Summary:        rec.Summary,
+		FailedExecID:   rec.FailedExecutionID,
+		FailedWorkerID: failedWorkerID,
+		// The DB fallback reads the row directly, so the reason is available even
+		// when the engine's published key has not landed on the step run yet.
+		FailureReason: failureReasonForExecution(ctx, tx, tenantID, rec.FailedExecutionID),
+	}
 }
 
 // recoveryFileReferenceBlock is the ## Recovery prompt block that tells a
@@ -231,9 +277,21 @@ func recoverySeedFromRow(ctx context.Context, tx pgx.Tx, tenantID, taskID string
 func recoveryFileReferenceBlock(seed *recoverySeed) string {
 	var sb strings.Builder
 	sb.WriteString("## Recovery\n\n")
-	sb.WriteString("A previous execution of this step stalled and was recovered. This is your recovery-resumed session. " + recoveryFileReferenceMarker + " in the project working directory — it contains the dead session's transcript tail and instructions. Do NOT redo work that is already done. If you are already done with your work, print your ORCHICON WORKER SUMMARY (or re-print it if you already did) and finish. " + recoveryFailFastDirective + "\n\n")
+	sb.WriteString("A previous execution of this step did not complete and was recovered. This is your recovery-resumed session. " + recoveryFileReferenceMarker + " in the project working directory — it carries the reason the last attempt was rejected, the dead session's transcript tail, and instructions. " + recoveryFailFastDirective + "\n\n")
 	if seed != nil && seed.Summary != "" {
 		sb.WriteString("Summary: " + seed.Summary + "\n")
+	}
+	// THE REASON IS STATED IN THE PROMPT AS WELL AS THE FILE, because the file is not always read and this
+	// is the one fact that changes behaviour. It is short and it is the whole point of the resume.
+	if seed != nil && strings.TrimSpace(seed.FailureReason) != "" {
+		sb.WriteString("\n" + recoveryReasonSectionHeading + "\n\n")
+		sb.WriteString(strings.TrimSpace(seed.FailureReason) + "\n\n")
+		sb.WriteString(recoveryRedoSupersedesAlreadyDone + "\n")
+	} else {
+		// No reason available. Say so, so the agent knows it is resuming BLIND rather than assuming the
+		// silence means nothing was wrong.
+		sb.WriteString("\nThe platform did not record a machine-readable reason for the previous failure, so you are resuming without one. " +
+			"Treat your previous report as UNCONFIRMED: re-examine what you produced before reporting again, rather than repeating it.\n")
 	}
 	return sb.String()
 }
@@ -269,6 +327,13 @@ func buildRecoveryFileContent(workerName string, seed *recoverySeed, tail string
 	sb.WriteString("## Recovery\n\n")
 	if seed.Summary != "" {
 		sb.WriteString(seed.Summary + "\n\n")
+	}
+	// WHY BEFORE WHAT: the reason is placed ahead of the transcript, because the transcript of an agent
+	// that believed it had finished reads as a completed job and invites the identical report.
+	if strings.TrimSpace(seed.FailureReason) != "" {
+		sb.WriteString(recoveryReasonSectionHeading + "\n\n")
+		sb.WriteString(strings.TrimSpace(seed.FailureReason) + "\n\n")
+		sb.WriteString(recoveryRedoSupersedesAlreadyDone + "\n\n")
 	}
 	sb.WriteString(recoveryDirective + "\n")
 	if tail != "" {
@@ -877,3 +942,24 @@ func (m *recoverySeedMetrics) recordBlocked() {
 // recoverySeedMetricsSingleton is the shared instance for the recovery-seed
 // counters (ADR fix-recovery-seed-race §6).
 var recoverySeedMetricsSingleton = &recoverySeedMetrics{}
+
+// failureReasonForExecution reads WHY an execution failed, for the recovery seed.
+//
+// IT IS THE EXECUTION'S OWN error_message, VERBATIM AND UNSUMMARISED. Trimming it to a tidy sentence would
+// repeat the mistake it exists to correct: the engine's Summary is already a tidy sentence ("failed after N
+// tokens"), and what a resumed agent needs is the platform's actual objection — `project_gate: the project's
+// declared gate FAILED`, `the worker reported success but the evidence contradicts it — ...`. Anything
+// paraphrased loses the words that tell it what to change.
+//
+// Returns "" when the row cannot be read or carries no message; callers state the absence rather than
+// pretending a reason exists.
+func failureReasonForExecution(ctx context.Context, tx pgx.Tx, tenantID, execID string) string {
+	if tx == nil || execID == "" {
+		return ""
+	}
+	exec, err := db.GetExecution(ctx, tx, tenantID, execID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(exec.ErrorMessage)
+}

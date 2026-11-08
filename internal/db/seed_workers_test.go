@@ -589,57 +589,112 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 	}
 }
 
-// TestSeedPreExistingFailureRemedyContract pins the autonomous remedy
-// contract on the three quality-owning SDLC workers: a test that already
-// fails without the change is remedied BY the worker autonomously — it owns
-// the decision and executes it (fix the cause by default; remove/correct the
-// test only when its own investigation proves the test no longer protects
-// anything needed) — never left red, never proposed upward, with the
-// decision recorded as a FACTS LEARNED line. Pinned via the exported
-// roll-forward marker so a wording drift breaks the test, not the contract.
+// TestSeedPreExistingFailureRemedyContract pins the SPLIT between the implementer and the gates, which
+// replaced the old shared "remedy it yourself" contract.
+//
+// WHY IT CHANGED. The remedy contract used to be shared by all three quality workers, and it authorised
+// each of them to "remove or correct" a failing test when their own investigation concluded it no longer
+// protected anything. That is a defensible instruction for the IMPLEMENTER — it owns the code — and a
+// catastrophic one for a REVIEWER: a gate that may edit the suite to reach green is not a gate, and the
+// failure is invisible because the edit appears in the same diff as the fix. Combined with the reviewers
+// also being told to repair every bug they found, no step in the pipeline could ever return `failure` for
+// the class of defect the pipeline exists to catch.
+//
+// The contract now differs by ROLE, and this test is what keeps them from drifting back together:
+//
+//   - SSE (implementer): owns the suite. May fix a failing test's CAUSE, and may correct or remove the
+//     test itself — but the decision and its rationale must be recorded, so it is visible.
+//   - PR Reviewer / QA (gates): NEVER edit the suite. A pre-existing failure is reported as context with
+//     the base-commit evidence, and a wrong test is a FINDING for the engineer, not an edit by the gate.
 func TestSeedPreExistingFailureRemedyContract(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
-
-	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, "tnt_dev"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	for _, id := range []string{
-		"w_se_senior_software_engineer",
-		"w_se_pr_reviewer",
-		"w_se_qa_engineer",
-	} {
-		resetWorker(t, pool, id)
+
+	// --- The IMPLEMENTER keeps ownership of the suite. ---
+	t.Run("implementer owns the suite", func(t *testing.T) {
+		resetWorker(t, pool, "w_se_senior_software_engineer")
 		var agents string
 		if err := pool.QueryRow(ctx,
 			`SELECT agents_md FROM worker_versions
 			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
-			id).Scan(&agents); err != nil {
-			t.Fatalf("query %s: %v", id, err)
+			"w_se_senior_software_engineer").Scan(&agents); err != nil {
+			t.Fatalf("query: %v", err)
 		}
 		if !strings.Contains(agents, db.PreExistingRemedyMarker) {
-			t.Errorf("%s agents_md missing the remedy-contract marker %q", id, db.PreExistingRemedyMarker)
+			t.Errorf("the SSE agents_md must carry the remedy-contract marker %q", db.PreExistingRemedyMarker)
 		}
 		if !strings.Contains(agents, "FACTS LEARNED") {
-			t.Errorf("%s must require recording the remedy decision as a FACTS LEARNED line", id)
+			t.Error("the SSE must require recording the remedy decision as a FACTS LEARNED line")
 		}
-		// The contract is AUTONOMOUS by design: the worker decides and
-		// executes (fix by default; remove/correct only when its own
-		// investigation proves the test no longer protects anything
-		// needed). It must never be instructed to propose the remedy
-		// upward or merely note the failure.
 		for _, bad := range []string{"propose", "PROPOSAL", "escalate to a human"} {
 			if strings.Contains(agents, bad) {
-				t.Errorf("%s remedy contract must be autonomous — found %q", id, bad)
+				t.Errorf("the SSE remedy contract must be autonomous — found %q", bad)
 			}
 		}
 		if !strings.Contains(agents, "You own the decision and execute it") {
-			t.Errorf("%s must carry the autonomous ownership wording", id)
+			t.Error("the SSE must carry the autonomous ownership wording")
 		}
-	}
-	// The Architect and DevOps are NOT quality gates for the suite — they
-	// must not carry the marker (marker text is specific to the remedy
-	// contract).
+	})
+
+	// --- The GATES must never edit the suite. ---
+	//
+	// This is the assertion that actually protects the pipeline: a reviewer or verifier that can change
+	// the tests to reach green is not an independent check.
+	t.Run("gates never edit the suite", func(t *testing.T) {
+		for _, id := range []string{"w_se_pr_reviewer", "w_se_qa_engineer"} {
+			resetWorker(t, pool, id)
+			var agents string
+			if err := pool.QueryRow(ctx,
+				`SELECT agents_md FROM worker_versions
+				  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+				id).Scan(&agents); err != nil {
+				t.Fatalf("query %s: %v", id, err)
+			}
+			if strings.Contains(agents, db.PreExistingRemedyMarker) {
+				t.Errorf("%s must NOT carry the remedy marker — a gate that repairs what it finds is not a gate", id)
+			}
+			for _, bad := range []string{"fix it yourself", "fix ALL of them", "you FIX all code bugs", "remove or correct it yourself"} {
+				if strings.Contains(agents, bad) {
+					t.Errorf("%s must not be instructed to repair (%q) — it must reject instead", id, bad)
+				}
+			}
+			for _, want := range []string{"do not fix", "Never delete, skip or weaken a test"} {
+				if !strings.Contains(agents, want) {
+					t.Errorf("%s must state %q so the gate cannot substitute repair for a verdict", id, want)
+				}
+			}
+		}
+	})
+
+	// --- The roll-forward fragments must be per-worker, or the new contract never reaches a published
+	// worker. A shared marker would also re-roll workers whose contract did not change. ---
+	t.Run("gates carry their own roll markers", func(t *testing.T) {
+		for _, tc := range []struct{ id, marker string }{
+			{"w_se_pr_reviewer", db.ReviewerVerdictMarker},
+			{"w_se_qa_engineer", db.QAVerifierMarker},
+		} {
+			resetWorker(t, pool, tc.id)
+			var agents string
+			if err := pool.QueryRow(ctx,
+				`SELECT agents_md FROM worker_versions
+				  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+				tc.id).Scan(&agents); err != nil {
+				t.Fatalf("query %s: %v", tc.id, err)
+			}
+			if !strings.Contains(agents, tc.marker) {
+				t.Errorf("%s agents_md missing its own roll-forward marker %q — an already-published worker would never re-roll", tc.id, tc.marker)
+			}
+		}
+		// And the two markers must be DIFFERENT, so a change to one gate never re-rolls the other.
+		if db.ReviewerVerdictMarker == db.QAVerifierMarker {
+			t.Error("the reviewer and verifier markers must be distinct")
+		}
+	})
+
+	// The Architect and DevOps are not quality gates for the suite.
 	for _, id := range []string{"w_se_principal_architect", "w_se_devops_engineer"} {
 		var agents string
 		if err := pool.QueryRow(ctx,
@@ -1062,5 +1117,49 @@ func TestQuickWorkerRollsForwardToTheGate(t *testing.T) {
 	if marker == "SHIPPING IS IDEMPOTENT" {
 		t.Error("the Quick worker's marker still pins the OLD generation, so published versions " +
 			"carrying that fragment would never receive this gate")
+	}
+}
+
+// TestEveryRollMarkerAppearsInItsOwnSeed is a pure, DB-free guard on the roll-forward MECHANISM.
+//
+// A RollMarker is a presence check against a stored worker's agents_md: the seeder re-syncs a worker
+// only when its published content LACKS the fragment. That makes an absent-or-misplaced marker fail
+// SILENTLY and in the worst possible direction — the seed looks updated in source, the test suite is
+// green, and every already-published worker keeps running the old contract forever because the seeder
+// concludes it is already current.
+//
+// Caught live while writing this change: the reviewer and verifier markers were written into the
+// worker's `Role` field, which the presence check never reads. Without this test the whole
+// repair-vs-reject reversal would have shipped as source-only and reached nobody.
+func TestEveryRollMarkerAppearsInItsOwnSeed(t *testing.T) {
+	for _, w := range db.CannedWorkers() {
+		if w.RollMarker == "" {
+			continue
+		}
+		agents := db.SeedAgentsMD(&w)
+		if !strings.Contains(agents, w.RollMarker) {
+			t.Errorf("%s: roll marker %q is not present in its own seeded agents_md.\n"+
+				"The seeder re-syncs only when the STORED content lacks this fragment, and it looks at "+
+				"agents_md alone — a marker that lives in Role (or anywhere else) strands every "+
+				"already-published worker on the old contract.", w.Name, w.RollMarker)
+		}
+		if !strings.Contains(agents, db.SafetyMarker) {
+			t.Errorf("%s: seeded agents_md is missing the global safety marker", w.Name)
+		}
+		if !strings.Contains(agents, db.SandboxPlaneMarker) {
+			t.Errorf("%s: seeded agents_md is missing the sandbox-plane marker", w.Name)
+		}
+	}
+}
+
+// TestGateWorkersDoNotShareAMarker pins that the two gates roll forward independently. A shared
+// fragment means a change to one gate silently re-rolls the other (re-deriving its text for no reason),
+// and — worse — makes it impossible to reason about which workers a prompt change actually reaches.
+func TestGateWorkersDoNotShareAMarker(t *testing.T) {
+	if db.ReviewerVerdictMarker == db.QAVerifierMarker {
+		t.Fatal("the reviewer and verifier roll markers must differ")
+	}
+	if db.ReviewerVerdictMarker == db.SDLCWorkhorseMarker || db.QAVerifierMarker == db.SDLCWorkhorseMarker {
+		t.Fatal("a gate marker must not collide with the shared work-budget marker")
 	}
 }

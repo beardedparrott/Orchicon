@@ -27,8 +27,12 @@ func brainstormPromptForTest() string {
 // THE STRATEGY IS ASKED, as a choice with all three options named.
 func TestBrainstormPromptAsksForTheGitStrategy(t *testing.T) {
 	p := brainstormPromptForTest()
+	// "GIT STRATEGY" (uppercase) is how the drafting rule spells it; the lowercase spelling this test
+	// used to require came from the `create_project` TOOL DESCRIPTION, which was removed as a duplicate of
+	// the transport's own definition. The CONTRACT is that the strategy is asked for as a real choice, and
+	// that lives in the rule text — so the assertion follows the contract, not the removed duplicate.
 	for _, want := range []string{
-		"git", "strategy",
+		"GIT STRATEGY",
 		"local", "pr", "none",
 		"orchicon_ask_user",
 	} {

@@ -169,6 +169,18 @@ func (m *App) onRailProjects(msg railProjectsMsg) tea.Cmd {
 	}
 	m.railProjects = msg.Projects
 	m.railProjectsLoaded = true
+	// A SELECTION DECIDED BEFORE THE LIST ARRIVED (projectselect.go). A create knows which project it just made
+	// but cannot act until this list exists. Applied before applyLaunchDirScope so the choice is recorded as
+	// DELIBERATE (setProjectScope sets projectScopeChosen), which is the same standing a person's own selection
+	// has; either order reaches the right scope, but this one also suppresses the directory default's
+	// "N conversations not shown" notice, which would be noise about a scope the operator just chose.
+	//
+	// It CONSUMES the request whether or not it matches: a name that matches nothing is a miss, not something
+	// to retry on every later reload.
+	if name := m.pendingProjectName; name != "" {
+		m.pendingProjectName = ""
+		m.selectProjectByName(name)
+	}
 	// THE WORKSPACE FROM THE LAUNCH DIRECTORY, when the operator has not chosen one.
 	//
 	// The operator: "The default project in the TUI should be the one based on the directory you launched it
@@ -183,7 +195,11 @@ func (m *App) onRailProjects(msg railProjectsMsg) tea.Cmd {
 	if m.convSel >= len(m.railRows()) {
 		m.convSel = max(0, len(m.railRows())-1)
 	}
-	return nil
+	// AND THE WORKSPACE REACHES THE SCREENS IN THIS SAME CYCLE. The scope may have just been set above
+	// (a parked selection, or the launch-directory default), and rebindScreens ran BEFORE this handler — so
+	// without this the Work screen would keep showing the previous project's rows until some unrelated
+	// message happened to arrive. A session with nothing else going on may never get one.
+	return m.pushProjectScope()
 }
 
 // applyLaunchDirScope points the rail at the workspace the operator launched from, once, and only while they

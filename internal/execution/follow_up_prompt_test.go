@@ -25,7 +25,7 @@ func TestComposeFollowUpPromptCarriesSharedPrefix(t *testing.T) {
 		"autonomous worker running inside the Orchicon orchestration platform",
 		"## Safety rules (HARD limits)",
 		"## Efficiency — minimize tool output and tool calls",
-		"Batch your tool calls — split calls are FORBIDDEN.",
+		"Batch your tool calls.",
 		"## Runtime environment",
 		"orchicon-dev:latest",
 		"# Role",

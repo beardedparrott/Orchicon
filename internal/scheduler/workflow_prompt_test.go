@@ -199,7 +199,8 @@ func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
 		"## Safety rules (HARD limits)",
 		"## Efficiency — minimize tool output and tool calls",
 		"Minimize tool output.",
-		"Batch your tool calls — split calls are FORBIDDEN.",
+		"Batch your tool calls.",
+		"Your work is checked against the repository",
 		"## Runtime environment",
 	} {
 		if !strings.Contains(prefix, want) {
@@ -267,8 +268,8 @@ func TestCompositePromptEfficiencyAndBatchingDirectives(t *testing.T) {
 		"git status --short",
 		"git log --oneline -5",
 		"`grep` `touched_files`",
-		"Batch your tool calls — split calls are FORBIDDEN.",
-		"every split call multiplies cost",
+		"Batch your tool calls.",
+		"the number of round-trips dominates cost",
 		"you MUST verify state with actual tool calls and never fabricate output",
 	} {
 		if !strings.Contains(out, want) {
@@ -295,8 +296,8 @@ func TestCompositePromptStepOutputDiscipline(t *testing.T) {
 	for _, want := range []string{
 		"## Step output — deliver the decision and the delta, not the journey",
 		"Gather context in one pass.",
-		"Deliver the decision + delta, not the verification.",
-		"Verify once, then stop.",
+		"Deliver the decision + delta, not the verification narrative.",
+		"Confirm the work, then stop.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("composite prompt missing %q; got:\n%s", want, out)

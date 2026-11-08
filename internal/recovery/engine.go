@@ -118,6 +118,18 @@ var deterministicStopErrorPatterns = []string{
 	// adapter CLI never reached the model — a launch/credential failure — so resuming it five times could
 	// only reproduce it, and did.
 	"exited without a terminal result message",
+	// THE PLATFORM REJECTING THE WORK IS A DETERMINISTIC CAUSE, and it was missing from this list — which is
+	// why run 01M6TB0MQ2EXDRW6EX8GAR0DT3 burned six attempts on one objection.
+	//
+	// The reasoning is the same as every other entry here: resuming the SAME model with the SAME brief
+	// against a rejection the PLATFORM made reproduces it. The worker did not crash; it was examined and
+	// refused. Re-running it unchanged is not a retry, it is a repetition.
+	//
+	// Two forms, because the message is written in two places: the evidence gate's own wording, and the
+	// gate's per-check prefix (`not substantiated: …`). Either is proof the platform, not the environment,
+	// rejected the work.
+	"the worker reported success but the evidence contradicts it",
+	"not substantiated:",
 }
 
 // isDeterministicStopError reports whether a failed execution's error is a
@@ -146,7 +158,46 @@ func recoveryStrategyFor(ctx context.Context, tx pgx.Tx, tenantID, taskID, faile
 	if stoppedIdenticallyBefore(ctx, tx, tenantID, taskID, failedExecID) {
 		return RecoveryStrategyStop
 	}
+	// AN EVIDENCE REJECTION GETS EXACTLY ONE MORE ATTEMPT — and only because that attempt now carries the
+	// reason.
+	//
+	// The pattern list makes a rejection stop-class, which is right in principle: resuming the same model
+	// against the same brief against a judgement the PLATFORM made reproduces it. But stopping on the FIRST
+	// rejection throws away the one retry that can now succeed, because the seed carries WHY. So the first
+	// rejection is retried with the reason attached; every subsequent one stops.
+	//
+	// Without this second clause the run would end on the first rejection with no operator signal that a
+	// retry was ever reasonable; without the pattern it would loop six times as it did on
+	// 01M6TB0MQ2EXDRW6EX8GAR0DT3. The pair is the difference between repeating and correcting.
+	if exec != nil && isEvidenceRejection(exec.ErrorMessage) {
+		if prior, _ := countTaskChainRecoveries(ctx, tx, tenantID, taskID); prior >= 1 {
+			return RecoveryStrategyStop
+		}
+		return RecoveryStrategySummarizeRestart
+	}
 	return strategyForFailure(exec, kind)
+}
+
+// isEvidenceRejection reports whether a failure was the PLATFORM refusing the delivered work, rather than a
+// crash, a stall, or an environment fault.
+//
+// The distinction decides whether a resume is a retry or a repetition. A stalled session lost its transcript
+// and may well finish next time; a rejected report was read, judged, and refused — so only a CHANGED report
+// can pass, and change requires knowing the objection.
+func isEvidenceRejection(errText string) bool {
+	if errText == "" {
+		return false
+	}
+	low := strings.ToLower(errText)
+	for _, p := range []string{
+		"the worker reported success but the evidence contradicts it",
+		"not substantiated:",
+	} {
+		if strings.Contains(low, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // stoppedIdenticallyBefore reports whether the PREVIOUS execution of this task failed with the same error text.
@@ -1082,14 +1133,22 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 			failedWorkerID := ""
 			failedWorkerVersion := 0
 			failedAdapter := ""
+			failureReason := ""
 			if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
 				failedWorkerID = failedExec.WorkerID
 				failedWorkerVersion = failedExec.WorkerVersion
 				failedAdapter = adapterRef(failedExec)
+				failureReason = strings.TrimSpace(failedExec.ErrorMessage)
 			}
 			merged["_recovery_worker_id"] = failedWorkerID
 			merged["_recovery_worker_version"] = failedWorkerVersion
 			merged["_recovery_adapter"] = failedAdapter
+			// THE REASON TRAVELS WITH THE IDENTITY, from the SAME read, so the two cannot disagree about
+			// which failure is being described. Written here (not derived later) because this is the only
+			// point that holds the failed execution row while publishing the seed keys.
+			if failureReason != "" {
+				merged["_recovery_failure_reason"] = failureReason
+			}
 			mergedJSON, _ := json.Marshal(merged)
 			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRun.ID, stepRun.Version, db.UpdateWorkflowStepRunFields{
 				Result: &mergedJSON,
@@ -1110,14 +1169,19 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 				failedWorkerID := ""
 				failedWorkerVersion := 0
 				failedAdapter := ""
+				failureReason := ""
 				if failedExec, err := db.GetExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); err == nil {
 					failedWorkerID = failedExec.WorkerID
 					failedWorkerVersion = failedExec.WorkerVersion
 					failedAdapter = adapterRef(failedExec)
+					failureReason = strings.TrimSpace(failedExec.ErrorMessage)
 				}
 				wiResults["_recovery_worker_id"] = failedWorkerID
 				wiResults["_recovery_worker_version"] = failedWorkerVersion
 				wiResults["_recovery_adapter"] = failedAdapter
+				if failureReason != "" {
+					wiResults["_recovery_failure_reason"] = failureReason
+				}
 				wiResultsJSON, _ := json.Marshal(wiResults)
 				_, _ = db.UpdateWorkItem(ctx, ttx.Tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
 					Status:  strPtr(domain.WorkItemReady),
