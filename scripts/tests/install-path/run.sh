@@ -71,15 +71,28 @@ WORK="$(mktemp -d)"
 cleanup() {
   [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null || true
   [ -n "${SRV_PID:-}" ] && wait "$SRV_PID" 2>/dev/null || true
-  [ "${KEEP}" = "1" ] || rm -rf "${WORK}"
+  # THE SANDBOXED HOME MAKES WORK DELETE-RESISTANT: a HOME inside WORK moves Go's module cache with it, and
+  # module-cache files are read-only by design, so a plain rm -rf fails and takes the job's exit code with
+  # it. Restore write permission first, and never let cleanup decide the result.
+  if [ "${KEEP}" != "1" ]; then
+    chmod -R u+w "${WORK}" 2>/dev/null || true
+    rm -rf "${WORK}" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
 # THE INSTALLER WRITES A PATH ENTRY INTO THE LOGIN PROFILE, so this harness must OWN the HOME it writes
 # to. Inheriting the runner's would append a line to whoever ran it — a CI runner's profile, or a
 # developer's own ~/.zprofile — which is a side effect a test must never have.
+# THE GO CACHES ARE CAPTURED FIRST, BEFORE HOME MOVES. A sandboxed HOME relocates GOMODCACHE and GOCACHE
+# into the sandbox: every module re-downloads, and the read-only module files then make the cleanup above
+# fail. The build keeps the caches it had; only the profile write needs the sandbox.
+ORIG_GOMODCACHE="$(go env GOMODCACHE 2>/dev/null || true)"
+ORIG_GOCACHE="$(go env GOCACHE 2>/dev/null || true)"
 export HOME="${WORK}/home"
 mkdir -p "${HOME}"
+[ -n "${ORIG_GOMODCACHE}" ] && export GOMODCACHE="${ORIG_GOMODCACHE}"
+[ -n "${ORIG_GOCACHE}" ] && export GOCACHE="${ORIG_GOCACHE}"
 
 # A version that cannot be mistaken for a release: the assertions below read it back out of the
 # installed binary, so a wrong or defaulted version is caught rather than assumed.
