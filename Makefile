@@ -376,7 +376,7 @@ tidy: ## Run go mod tidy
 # the entries the next build actually wants. Run `clean` when the cache is corrupt, or when
 # you want a guaranteed-cold build (timings, or a suspected bad cache entry). It does NOT
 # touch the DB, container images, or any runtime data.
-.PHONY: clean cache-check cache-trim cache-trim-test
+.PHONY: clean cache-check cache-trim cache-trim-test cleanup cleanup-apply
 clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygiene; see cache-trim)
 	$(GO) clean -cache -testcache
 	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
@@ -413,6 +413,16 @@ clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygien
 # updates on reuse), with a grace window so a build running concurrently is never truncated.
 cache-trim: ## Bound the Go build cache by size, evicting coldest-first (a no-op when under cap)
 	@scripts/gocache-trim.sh "$(GOCACHE)" --cap-mb "$(CACHE_CAP_MB)" $(if $(filter 1,$(cache_dry)),--dry-run,)
+
+# cleanup reclaims the disk that Orchicon's own leftovers hold: go caches, leaked worktrees, stopped
+# runtime containers, telemetry stores and rotated logs. REPORT-ONLY by default — the destructive form
+# is spelled out, because the categories it touches include things (a worktree's unpushed branch) whose
+# loss is not recoverable. See scripts/orchicon-cleanup.sh for the category list and the safety rules.
+cleanup: ## Report the disk Orchicon's leftovers hold (nothing is deleted)
+	@scripts/orchicon-cleanup.sh
+
+cleanup-apply: ## Reclaim every SAFE category (go caches, leaked worktrees, stopped containers, telemetry, logs, scratch)
+	@scripts/orchicon-cleanup.sh --all --apply
 
 # CACHE_CAP_MB is the ceiling `make cache-trim` enforces. 20 GiB is a little over the working set of
 # an active dev loop on this repo (its hot native entries measured ~17 GB over 30h), so a healthy
