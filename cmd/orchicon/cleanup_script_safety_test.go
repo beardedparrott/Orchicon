@@ -205,3 +205,120 @@ func TestCleanupNamesWhyARemovalFailed(t *testing.T) {
 		t.Errorf("the report should carry rm's message so the operator can act on it:\n%s", out)
 	}
 }
+
+// runCleanupCode also reports the exit status, for the paths that must REFUSE.
+func runCleanupCode(t *testing.T, script string, env []string, args ...string) (string, int) {
+	t.Helper()
+	cmd := exec.Command(script, args...)
+	cmd.Env = append(append(os.Environ(), "PATH="+guardFreePath()), env...)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatalf("orchicon-cleanup.sh %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out), code
+}
+
+// THE SCOPE OF THIS SCRIPT IS CACHES AND LEFTOVERS. A container is runtime state and an instance data
+// dir is live data: neither is a cache, so neither may be reachable even by an explicit flag. The flags
+// are gone rather than defaulted off — a flag that offers the deletion is a flag that gets typed.
+func TestCleanupRejectsStateCategories(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns the script six times")
+	}
+	repo, script := cleanupSandbox(t)
+	leaked := filepath.Join(repo, ".orchicon-worktrees", "leaked")
+	if err := os.MkdirAll(leaked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, flag := range []string{"--containers", "--telemetry", "--sessions", "--backups", "--instance-data", "--instance"} {
+		out, code := runCleanupCode(t, script, nil, flag, "--apply")
+
+		if code != 2 {
+			t.Errorf("%s must be refused with exit 2, got %d:\n%s", flag, code, out)
+		}
+		if !strings.Contains(out, "gone") {
+			t.Errorf("%s was refused without saying why — an operator who remembers the flag will read the "+
+				"silence as a typo:\n%s", flag, out)
+		}
+		if _, err := os.Stat(leaked); err != nil {
+			t.Fatalf("%s reached a removal before being refused, so a rejected flag still deleted something", flag)
+		}
+	}
+}
+
+// shellWithoutComments strips `#` comments so a source assertion cannot be satisfied by prose.
+func shellWithoutComments(src string) []string {
+	var out []string
+	for _, line := range strings.Split(src, "\n") {
+		if i := strings.Index(line, "#"); i >= 0 {
+			line = line[:i]
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// THE STRUCTURE, not just the flags: nothing in this script may reach a container engine or an instance
+// data dir. Asserting the property means a future edit that re-adds one fails here rather than being
+// noticed only when someone runs it.
+func TestCleanupRemovalSurfaceIsCachesAndLeftoversOnly(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "orchicon-cleanup.sh"))
+	if err != nil {
+		t.Fatalf("read the cleanup script: %v", err)
+	}
+	lines := shellWithoutComments(string(body))
+
+	for _, tok := range []string{"docker", "podman"} {
+		for i, line := range lines {
+			if strings.Contains(line, tok) {
+				t.Errorf("line %d talks to a container engine (%q): containers are runtime state, not a cache, "+
+					"and removing them belongs to the instance tooling", i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+
+	// The only path inside an instance's data dir this may touch is the ROTATED log. `services.log`
+	// itself does not match the `services.log.*` glob, which is what keeps the live log safe.
+	for i, line := range lines {
+		if !strings.Contains(line, ".local/share/orchicon-") {
+			continue
+		}
+		if !strings.Contains(line, "services.log.") {
+			t.Errorf("line %d reaches into an instance data dir, which holds the live database and secrets: %q",
+				i+1, strings.TrimSpace(line))
+		}
+	}
+}
+
+// AND THE LIVE LOG SURVIVES. The user blessed cleaning rotated logs; the one being written is not one.
+func TestCleanupNeverRemovesTheLiveServicesLog(t *testing.T) {
+	repo, script := cleanupSandbox(t)
+	home := t.TempDir()
+	inst := filepath.Join(home, ".local", "share", "orchicon-dev")
+	if err := os.MkdirAll(inst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(inst, "services.log")
+	rotated := filepath.Join(inst, "services.log.20261108-1200")
+	for _, f := range []string{live, rotated} {
+		if err := os.WriteFile(f, []byte("line\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, code := runCleanupCode(t, script, []string{"HOME=" + home}, "--logs", "--apply", "--project-root", repo)
+	if code != 0 {
+		t.Fatalf("--logs failed (%d):\n%s", code, out)
+	}
+
+	if _, err := os.Stat(live); err != nil {
+		t.Fatalf("the LIVE log was removed — it is being appended to by the running plane:\n%s", out)
+	}
+	if _, err := os.Stat(rotated); err == nil {
+		t.Fatalf("a rotated services.log.* must be reclaimed:\n%s", out)
+	}
+}
