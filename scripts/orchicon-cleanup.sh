@@ -320,12 +320,90 @@ do_instance_data() {
   return 0
 }
 
+# --- inventory ---------------------------------------------------------------
+# WITH NO CATEGORY NAMED, REPORT WHERE THE SPACE IS. This is the command an operator reaches for when
+# the disk is full and they do not yet know why, so it must answer that — not print "reporting the full
+# inventory" and then list nothing. Sizes only: no decisions, no removals, and the three explicit-only
+# categories are marked as such rather than hidden.
+do_inventory() {
+  head1 "where the disk is"
+  local total_kb=0 kb
+  size_line() {
+    local label="$1" path="$2" note="${3:-}"
+    [ -e "$path" ] || return 0
+    local human; human="$(tot "$path")"
+    local k; k="$(du -sk "$path" 2>/dev/null | cut -f1 || echo 0)"
+    total_kb=$(( total_kb + k ))
+    printf '  %-46s %8s  %s\n' "$label" "$human" "$note"
+  }
+
+  local rc="$REPO_ROOT/.dev/tools/gocache"
+  size_line ".dev/tools/gocache"        "$rc"                       "trimmed by --go-cache"
+  size_line "~/.cache/go-build"         "$HOME/.cache/go-build"     "removed by --go-cache"
+  size_line ".dev/tools/gotmp"          "$REPO_ROOT/.dev/tools/gotmp"     "removed by --go-cache"
+  size_line ".dev/tools/gomodcache"     "$REPO_ROOT/.dev/tools/gomodcache" "removed by --go-cache"
+  size_line ".dev/tools/gopath"         "$REPO_ROOT/.dev/tools/gopath"    "removed by --go-cache"
+
+  # Worktrees: total, and how much of it is reclaimable by --worktrees (same rule the sweep applies).
+  local wt_kb=0 wt_n=0 wtroot repo child
+  while IFS= read -r wtroot; do
+    [ -n "$wtroot" ] || continue
+    repo="$(dirname "$wtroot")"
+    for child in "$wtroot"/*; do
+      [ -d "$child" ] || continue
+      case "$(basename "$child")" in _stage-*) continue ;; esac
+      wt_n=$(( wt_n + 1 ))
+      wt_kb=$(( wt_kb + $(du -sk "$child" 2>/dev/null | cut -f1 || echo 0) ))
+    done
+  done < <( for r in "$HOME/projects" "$REPO_ROOT"; do find "$r" -maxdepth 3 -type d -name '.orchicon-worktrees' 2>/dev/null; done )
+  if [ "$wt_n" -gt 0 ]; then
+    total_kb=$(( total_kb + wt_kb ))
+    printf '  %-46s %8s  %s\n' "worktrees ($wt_n)" "$(awk -v k="$wt_kb" 'BEGIN{printf "%.1fG", k/1048576}')" "swept by --worktrees (only ones with no unmerged work)"
+  fi
+
+  local e; e="$(engine)"
+  if [ -n "$e" ]; then
+    local n; n="$($e ps -a --filter label=orchicon.instance --filter status=exited -q 2>/dev/null | wc -l | tr -d ' ')"
+    printf '  %-46s %8s  %s\n' "stopped orchicon containers ($n)" "—" "removed by --containers"
+  fi
+
+  for d in "$HOME"/.local/share/orchicon-*/loki "$HOME"/.local/share/orchicon-*/tempo; do
+    [ -d "$d" ] && size_line "${d#"$HOME"/.local/share/}" "$d" "removed by --telemetry"
+  done
+  local log_kb=0 f
+  for f in "$HOME"/.local/share/orchicon-*/services.log.*; do
+    [ -f "$f" ] || continue
+    log_kb=$(( log_kb + $(du -sk "$f" 2>/dev/null | cut -f1 || echo 0) ))
+  done
+  if [ "$log_kb" -gt 0 ]; then
+    total_kb=$(( total_kb + log_kb ))
+    printf '  %-46s %8s  %s\n' "rotated services.log" "$(awk -v k="$log_kb" 'BEGIN{printf "%.1fG", k/1048576}')" "removed by --logs"
+  fi
+  size_line "tmp/"                     "$REPO_ROOT/tmp"            "removed by --scratch"
+
+  head1 "explicit only — never in --all"
+  size_line ".orchicon/sessions"        "$REPO_ROOT/.orchicon/sessions" "--sessions (run transcripts: no other copy)"
+  for d in "$HOME"/.local/share/orchicon-*/backups; do
+    [ -d "$d" ] && size_line "${d#"$HOME"/.local/share/}" "$d" "--backups (real database dumps)"
+  done
+  for d in "$HOME"/.local/share/orchicon-*; do
+    [ -d "$d" ] && printf '  %-46s %8s  %s\n' "${d#"$HOME"/.local/share/} (whole instance)" "$(tot "$d")" "--instance-data (database, secrets, blobs)"
+  done
+
+  head1 "total, checked categories"
+  printf '  %-46s %8s\n' "sum of the lines above (overlaps possible)" "$(awk -v k="$total_kb" 'BEGIN{printf "%.1fG", k/1048576}')"
+  printf '  %-46s %8s\n' "filesystem available now" "$(df -Ph "$HOME" | awk 'NR==2{print $4}')"
+  return 0
+}
+
 # --- run --------------------------------------------------------------------
 if [ "$APPLY" != true ]; then
   say "${C_YELLOW}DRY RUN${C_RESET} — nothing will be deleted. Re-run with ${C_B}--apply${C_RESET} to act."
 fi
-[ -n "${CATS// /}" ] || dim "no categories selected — reporting the full inventory; pass --all or a category."
 
+if [ -z "${CATS// /}" ]; then
+  do_inventory
+fi
 want go-cache     && do_go_cache      || true
 want worktrees    && do_worktrees     || true
 want containers   && do_containers    || true
@@ -336,6 +414,8 @@ want sessions     && do_sessions      || true
 want backups      && do_backups       || true
 want instance-data && do_instance_data || true
 
+# An inventory-only run already printed its own totals; repeating them is noise.
+if [ -n "${CATS// /}" ]; then
 END_AVAIL="$(df -Pk "$HOME" | awk 'NR==2{print $4}')"
 head1 "result"
 printf '  available now   %s\n' "$(df -Ph "$HOME" | awk 'NR==2{print $4}')"
@@ -351,5 +431,6 @@ fi
 if [ "$APPLY" != true ]; then
   say ""
   say "  This was a REPORT. ${C_B}--apply${C_RESET} performs the removals listed above."
+fi
 fi
 say ""
