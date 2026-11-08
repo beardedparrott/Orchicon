@@ -11,11 +11,15 @@ package main
 // value and says so); this is the POSIX half, and it is why the summary reports an OUTCOME rather than advice.
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // pathHint is WHAT HAPPENED when the install dir was put on the login shell's PATH.
@@ -59,7 +63,7 @@ func ensureLoginProfilePATH(installDir string) pathHint {
 		out.Problem = fmt.Sprintf("could not resolve the home directory: %v", err)
 		return out
 	}
-	profile, shell, ok := loginProfileFor(os.Getenv("SHELL"), home)
+	profile, shell, ok := loginProfileFor(resolveLoginShell(), home)
 	if !ok {
 		out.Problem = fmt.Sprintf("unrecognised shell %q — add %s to its profile by hand", shell, installDir)
 		return out
@@ -121,14 +125,65 @@ func loginProfileFor(shell, home string) (profile, name string, ok bool) {
 	return "", name, false
 }
 
-// mentionsDir reports whether a profile already puts dir on PATH, by any spelling of the line.
+// mentionsDir reports whether a profile already puts dir on PATH, comparing COMPLETE path elements of a
+// live (uncommented) line.
+//
+// NOT A SUBSTRING TEST. `strings.Contains(line, dir)` matched ~/.local/bin-old, a commented-out entry, and
+// even a comment that merely described where the tools live — and each of those suppressed the entry while
+// the operator still had no PATH, which is this whole mechanism failing silently.
 func mentionsDir(profile, dir string) bool {
 	for _, line := range strings.Split(profile, "\n") {
-		if strings.Contains(line, dir) {
-			return true
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue // a commented-out export is not an export
+		}
+		// Split on everything a PATH assignment uses as a separator, then compare elements exactly.
+		for _, tok := range strings.FieldsFunc(t, func(r rune) bool {
+			return r == ':' || r == '"' || r == '\'' || r == ' ' || r == '=' || r == ';'
+		}) {
+			if tok == dir {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// resolveLoginShell names the operator's login shell.
+//
+// $SHELL IS NOT ALWAYS SET — a Finder-launched terminal, a launchd job or a CI runner can have none — and an
+// empty shell meant the PATH entry went unwritten and the summary fell back to advice, which is the failure
+// this file exists to remove. The account's own record is the authority when the environment cannot say.
+func resolveLoginShell() string {
+	if s := strings.TrimSpace(os.Getenv("SHELL")); s != "" {
+		return s
+	}
+	if runtime.GOOS == "darwin" {
+		if home, err := os.UserHomeDir(); err == nil {
+			// dscl reads the directory record for the current account without a password prompt.
+			if out, cerr := procwin.Command("dscl", ".", "-read", home, "UserShell").Output(); cerr == nil {
+				for _, line := range strings.Split(string(out), "\n") {
+					if v, ok := strings.CutPrefix(strings.TrimSpace(line), "UserShell:"); ok {
+						return strings.TrimSpace(v)
+					}
+				}
+			}
+		}
+	}
+	// Anything else POSIX: the passwd entry's last field.
+	if u, err := user.Current(); err == nil {
+		if f, ferr := os.Open("/etc/passwd"); ferr == nil {
+			defer f.Close()
+			sc := bufio.NewScanner(f)
+			for sc.Scan() {
+				fields := strings.Split(sc.Text(), ":")
+				if len(fields) >= 7 && fields[0] == u.Username {
+					return strings.TrimSpace(fields[6])
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // pathExportLine renders the line to append.

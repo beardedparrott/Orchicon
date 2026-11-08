@@ -71,9 +71,28 @@ WORK="$(mktemp -d)"
 cleanup() {
   [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null || true
   [ -n "${SRV_PID:-}" ] && wait "$SRV_PID" 2>/dev/null || true
-  [ "${KEEP}" = "1" ] || rm -rf "${WORK}"
+  # THE SANDBOXED HOME MAKES WORK DELETE-RESISTANT: a HOME inside WORK moves Go's module cache with it, and
+  # module-cache files are read-only by design, so a plain rm -rf fails and takes the job's exit code with
+  # it. Restore write permission first, and never let cleanup decide the result.
+  if [ "${KEEP}" != "1" ]; then
+    chmod -R u+w "${WORK}" 2>/dev/null || true
+    rm -rf "${WORK}" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
+
+# THE INSTALLER WRITES A PATH ENTRY INTO THE LOGIN PROFILE, so this harness must OWN the HOME it writes
+# to. Inheriting the runner's would append a line to whoever ran it — a CI runner's profile, or a
+# developer's own ~/.zprofile — which is a side effect a test must never have.
+# THE GO CACHES ARE CAPTURED FIRST, BEFORE HOME MOVES. A sandboxed HOME relocates GOMODCACHE and GOCACHE
+# into the sandbox: every module re-downloads, and the read-only module files then make the cleanup above
+# fail. The build keeps the caches it had; only the profile write needs the sandbox.
+ORIG_GOMODCACHE="$(go env GOMODCACHE 2>/dev/null || true)"
+ORIG_GOCACHE="$(go env GOCACHE 2>/dev/null || true)"
+export HOME="${WORK}/home"
+mkdir -p "${HOME}"
+[ -n "${ORIG_GOMODCACHE}" ] && export GOMODCACHE="${ORIG_GOMODCACHE}"
+[ -n "${ORIG_GOCACHE}" ] && export GOCACHE="${ORIG_GOCACHE}"
 
 # A version that cannot be mistaken for a release: the assertions below read it back out of the
 # installed binary, so a wrong or defaulted version is caught rather than assumed.
@@ -202,6 +221,29 @@ else
   bad "install.sh exits 0 (got ${RC})"
   sed 's/^/      /' "${LOG}" | tail -20
 fi
+# --- 3a-bis. `orch` IS RUNNABLE AFTERWARDS: the PATH entry is WRITTEN, not advised --------------
+# The reported macOS failure: install.sh printed advice naming ~/.zshrc — a file a LOGIN shell never
+# reads — so a correct install left an unrunnable `orch`. This asserts the file and the line, because
+# "the operator is told" is the failure mode, not the fix.
+INSTALL_DIR_RESOLVED="${DEST}"
+if [ -f "${HOME}/.zprofile" ] || [ -f "${HOME}/.bash_profile" ] || [ -f "${HOME}/.profile" ]; then
+  ok "the install added a PATH entry to a login profile"
+else
+  bad "no login profile was written — the entry was only advised"
+  grep -iE 'PATH|profile' "${LOG}" | sed 's/^/      /' | head -3
+fi
+if grep -rqF "export PATH=\"${INSTALL_DIR_RESOLVED}:\$PATH\"" "${HOME}/.zprofile" "${HOME}/.bash_profile" "${HOME}/.profile" 2>/dev/null; then
+  ok "the entry is the exact line that puts ${INSTALL_DIR_RESOLVED} on PATH"
+else
+  bad "the PATH entry for ${INSTALL_DIR_RESOLVED} is missing or mangled"
+  cat "${HOME}"/.zprofile "${HOME}"/.bash_profile "${HOME}"/.profile 2>/dev/null | sed 's/^/      /' | tail -5
+fi
+if grep -qi '~/.zshrc' "${LOG}"; then
+  bad "the installer named ~/.zshrc, which a LOGIN shell never reads"
+else
+  ok "it does not point the operator at an interactive-only file"
+fi
+
 # It must have gone through the URL we served, not the default base.
 if grep -q "${BASE}/${VERSION}/${ASSET}.tar.gz" "${LOG}"; then
   ok "it downloaded from the served URL (the base override is honoured)"

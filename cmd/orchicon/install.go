@@ -1003,6 +1003,16 @@ func installOrchLauncherFrom(exe, installDir string) orchLauncher {
 		fmt.Printf("warning: sibling orch binary not found next to %s — skipping launcher install (build with `make build` to produce bin/orch)\n", exe)
 		return out
 	}
+	// THE LAUNCHER *IS* THE BINARY WHEN BOTH LIVE IN THE SAME DIRECTORY, and that is the ordinary release
+	// layout: the archive ships orchicon and orch side by side and scripts/install.sh moves both into the
+	// install dir, so link and sibling name ONE path. Removing "the existing launcher" then deletes the only
+	// copy of orch, and symlinking sibling to link leaves a link to itself — `orch` then fails with "Too many
+	// levels of symbolic links". Nothing is placed here that is not already here, so leave it alone.
+	if filepath.Clean(link) == filepath.Clean(sibling) {
+		out.Installed, out.Method = true, "in place"
+		fmt.Printf("orch launcher already installed: %s\n", link)
+		return out
+	}
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		out.Problem = fmt.Sprintf("could not create install dir %s: %v", installDir, err)
 		fmt.Printf("warning: %s\n", out.Problem)

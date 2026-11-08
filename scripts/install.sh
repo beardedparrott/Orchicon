@@ -1391,15 +1391,29 @@ GUIDANCE
       elif [ "$SETUP" = true ]; then
         : # `orchicon install` adds the entry and reports it
       else
+        # --no-setup DOES NOT RUN `orchicon install`, so nothing above has put the entry anywhere. WRITE IT
+        # HERE rather than print the same advice: the binary-only install is the one most likely to run on a
+        # minimal host, and it is the mode CI exercises end to end.
         echo ""
-        info "Orchicon was installed to ${INSTALL_DIR}, which is not on your PATH."
         local profile; profile="$(login_profile)"
-        if [ -n "$profile" ]; then
-          echo -e "  Add it to ${B}${profile}${X} — the file a login shell reads — then open a new terminal:"
+        # THE EXACT LINE, matched exactly (`-x`), so a commented-out export or a sibling path such as
+        # ~/.local/bin-old cannot suppress the entry — and so this agrees with the Go writer, which
+        # appends the identical line.
+        local entry="export PATH=\"${INSTALL_DIR}:\$PATH\""
+        if [ -n "$profile" ] && [ -f "$profile" ] && grep -qxF "$entry" "$profile" 2>/dev/null; then
+          ok "${INSTALL_DIR} is already on your PATH via ${B}${profile}${X}"
+        elif [ -n "$profile" ] && { printf '\n# Orchicon: so `orchicon` and `orch` resolve in a new terminal (added by the installer).\n%s\n' "$entry" >>"$profile"; } 2>/dev/null; then
+          ok "Added ${INSTALL_DIR} to PATH in ${B}${profile}${X}"
+          echo -e "  ${D}Open a NEW terminal for \`orchicon\` and \`orch\` to resolve there — this one kept the PATH it started with.${X}"
         else
-          echo -e "  Add it to your shell's login profile (not ~/.zshrc or ~/.bashrc), then open a new terminal:"
+          info "Orchicon was installed to ${INSTALL_DIR}, which is not on your PATH."
+          if [ -n "$profile" ]; then
+            echo -e "  Could not write ${B}${profile}${X}; add this line to it by hand, then open a new terminal:"
+          else
+            echo -e "  Add it to your shell's login profile (not ~/.zshrc or ~/.bashrc), then open a new terminal:"
+          fi
+          echo -e "  ${D}${entry}${X}"
         fi
-        echo -e "  ${D}export PATH=\"${INSTALL_DIR}:\$PATH\"${X}"
       fi
       ;;
   esac
