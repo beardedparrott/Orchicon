@@ -556,25 +556,6 @@ adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image
 cache-trim-test: ## CI gate: assert the Go cache trim's eviction semantics and its refusals
 	bash scripts/tests/gocache-trim/run.sh
 
-# disk-report answers a question `df` structurally cannot: how much of the filesystem is held by
-# SNAPSHOTS rather than by live files. The two disagree by design, and the gap is invisible —
-# deleting files frees nothing while a snapshot still references the extents. Measured on this
-# machine: 65.6 GB deleted against 7.0 GB freed, with ~58 GB of it sitting in a snapshot, and
-# 343 GiB (67% of all data in use) pinned in total. That is what this reports.
-#
-# WHY IT NEEDS ITS OWN TARGET. Every other hygiene target here measures FILES. This one measures
-# the space where files are not — which is why `du` and `df` both looked healthy while the disk
-# sat at 93%. It is a HOST DIAGNOSTIC, so it describes the machine it runs on and is deliberately
-# never called from CI. disk-report-test is the part that IS a gate: it fakes the inputs and
-# pins the subtraction, because a report that overstates the pinned figure argues the wrong way
-# at exactly the moment someone is deciding whether to delete a snapshot.
-DISK_REPORT_TARGET ?=
-.PHONY: disk-report disk-report-test
-disk-report: ## Report how much of the filesystem is held by btrfs snapshots, not live files
-	@scripts/disk-report.sh $(DISK_REPORT_TARGET)
-
-disk-report-test: ## CI gate: assert disk-report's subtraction, its bounds, and its exit codes
-	bash scripts/tests/disk-report/run.sh
 # install-ps1-test pins the Windows installer's two invisibles, both of which are silent
 # by construction: it must never call `exit` (under `irm … | iex` the file's text runs in
 # the operator's OWN session, so an exit closes the window and takes the diagnosis with
@@ -700,8 +681,7 @@ plane-control-e2e-assertions-test: ## CI gate: the plane-control acceptance harn
 published-archive-e2e-assertions-test: ## CI gate: the published-archive acceptance harness never PASSes on an empty/unverified probe
 	bash scripts/tests/published-archive-e2e-assertions/run.sh
 
-# The MEASUREMENT the epic's "under 1 GB" claim is checked with — measured, not derived
-# (scripts/disk-report.sh answers a different question: btrfs snapshot-pinned bytes).
+# The MEASUREMENT the epic's "under 1 GB" claim is checked with — measured, not derived.
 .PHONY: published-archive-e2e-footprint
 published-archive-e2e-footprint: ## Measure an install's footprint (binaries + host services + instance data, excl. projects/runtime images)
 	bash scripts/e2e/footprint.sh $(if $(INSTANCE),--instance $(INSTANCE),) $(FOOTPRINT_ARGS)
@@ -1597,10 +1577,6 @@ cross-compile: ## Compile the shipped binaries for every release platform plus w
 # loses nothing platform-specific. The guard above the loop refuses an empty list, because
 # `go vet` with no arguments would silently vet the CURRENT DIRECTORY and report success.
 
-# ALL THREE test targets, because each side added one to the same line: this branch adds the
-# two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
-# are independent, so the union is the correct resolution — dropping either side would silently
-# retire a gate that other work depends on.
 # ci-go-base is the gate MINUS cross-compile. It exists so CI can run cross-compile as its OWN job, in
 # PARALLEL with everything else, instead of serially after it — cross-compile is the single slowest target
 # (140 s measured, ~60% of the gate) and it shares nothing with the other checks, so serialising it only
@@ -1611,7 +1587,7 @@ cross-compile: ## Compile the shipped binaries for every release platform plus w
 # plane-control-e2e-assertions-test, published-archive-e2e-assertions-test and desktop-e2e-assertions-test.
 # They are independent, so neither side may be dropped — a gate quietly retired by a merge conflict is the
 # worst possible outcome for a file whose whole purpose is to catch what nobody looked at.
-CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test disk-report-test version-tag-match
+CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test version-tag-match
 
 ci-go-base: $(CI_GO_GATES) ## The Go gate WITHOUT cross-compile (CI runs that as a parallel job)
 
