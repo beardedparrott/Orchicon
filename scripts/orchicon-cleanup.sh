@@ -1,41 +1,38 @@
 #!/usr/bin/env bash
 # ============================================================================
-# orchicon-cleanup.sh — reclaim disk from Orchicon's own garbage.
+# orchicon-cleanup.sh — reclaim disk from Orchicon's own CACHES and LEFTOVERS.
 #
-# WHY THIS EXISTS. A heavy dev host accumulates four kinds of leftover that no single command owns:
+# WHY THIS EXISTS. A heavy dev host accumulates leftovers that no single command owns:
 #
 #   go caches     the compiler's build cache (66 GB measured here), the repo-local `.dev/tools`
 #                 caches, and Go's module cache. Bounded by `make cache-trim`, unbounded otherwise.
 #   worktrees     `.orchicon-worktrees/<id>` — one per run and per capture. A run whose cleanup was
 #                 lost (killed plane, container death) leaves its tree AND its git registration, and
 #                 nothing ever reclaims it because it is a VALID worktree.
-#   containers    a runtime container per workflow execution. One killed mid-run stays as `Exited
-#                 (137)` forever. Measured here: seven of them, 39 hours old.
-#   logs          `services.log.<stamp>` rotations, and the dev instance's own Loki/Tempo stores,
-#                 which are telemetry about local runs and grow without limit.
+#   logs          `services.log.<stamp>` rotations. The live log is never touched.
+#   scratch       the repo's gitignored tmp/.
 #
-# AND THE THING IT DELIBERATELY DOES NOT DO. It never touches a live database, a KEK or a secret, a
-# project directory, or a worktree holding work that exists nowhere else. Deleting the wrong thing
-# here costs hours and, for a worktree's unpushed branch, sometimes everything — so every category is
-# opt-in, the default is a REPORT, and the two that sit next to irreplaceable data (`backups`,
-# `instance-data`) have to be named individually.
+# WHAT IT DOES NOT DO, ON PURPOSE, AND WHY THAT IS NOT CONFIGURABLE. This script removes only what
+# regenerates from a build or from the network. Everything else on a dev host is STATE, not a cache —
+# containers, telemetry stores, run transcripts, database backups, an instance's data dir — and a flag
+# that offers to delete it is a flag that eventually gets typed. Those categories do not exist here.
+# Removing a container or an instance is the operator's job, through the instance tooling that knows
+# what depends on it.
+#
+# What it still refuses: a worktree whose work exists nowhere else — uncommitted files, unmerged
+# commits, or a detached HEAD.
 #
 # USAGE
 #   scripts/orchicon-cleanup.sh                     # report only — nothing is deleted
-#   scripts/orchicon-cleanup.sh --all --apply       # reclaim every SAFE category
+#   scripts/orchicon-cleanup.sh --all --apply       # reclaim every category
 #   scripts/orchicon-cleanup.sh --go-cache --apply  # just one
 #   scripts/orchicon-cleanup.sh --help
 #
 # CATEGORIES
-#   go-cache        $GOCACHE, ~/.cache/go-build, .dev/tools/{gocache,gotmp,gomodcache}
+#   go-cache        $GOCACHE, ~/.cache/go-build, .dev/tools/{gocache,gotmp,gomodcache,gopath}
 #   worktrees       leaked/orphaned .orchicon-worktrees/* across every project root found
-#   containers      stopped orchicon-labelled containers + dangling images (never volumes)
-#   telemetry       instance loki/tempo stores — telemetry ABOUT local runs, not run history
 #   logs            rotated services.log.*
 #   scratch         the repo's tmp/
-#   sessions        .orchicon/sessions — run TRANSCRIPTS. Named explicitly, never in --all.
-#   backups         instance backups/  — REAL database backups. Named explicitly, never in --all.
-#   instance-data   a whole instance's data dir. Named explicitly, never in --all.
 # ============================================================================
 set -euo pipefail
 
@@ -47,7 +44,6 @@ C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_CYAN=$'\033[36m'
 APPLY=false
 CATS=""
 PROJECT_ROOTS=()
-INSTANCES=""
 CACHE_CAP_MB="${CACHE_CAP_MB:-20480}"
 
 say()  { printf '%s\n' "$*"; }
@@ -64,13 +60,14 @@ usage() { sed -n '2,/^# =====/p' "${BASH_SOURCE[0]}" | sed 's/^# \?//;1d;$d'; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --apply|-y|--yes)   APPLY=true; shift ;;
-    --all)              CATS="${CATS} go-cache worktrees containers telemetry logs scratch"; shift ;;
-    --go-cache|--worktrees|--containers|--telemetry|--logs|--scratch)
+    --all)              CATS="${CATS} go-cache worktrees logs scratch"; shift ;;
+    --go-cache|--worktrees|--logs|--scratch)
                         CATS="${CATS} ${1#--}"; shift ;;
-    --backups)          CATS="${CATS} backups"; shift ;;
-    --sessions)         CATS="${CATS} sessions"; shift ;;
-    --instance-data)    CATS="${CATS} instance-data"; shift; INSTANCES="${2:-}"; shift 2 ;;
-    --instance)         INSTANCES="${2:-}"; shift 2 ;;
+    # Named so an operator who remembers them learns WHY they are gone rather than assuming a typo.
+    --containers|--telemetry|--sessions|--backups|--instance-data|--instance)
+                        err "$1 is gone: this script removes CACHES AND LEFTOVERS only." >&2
+                        err "Containers and instance state belong to the operator, via the instance tooling." >&2
+                        exit 2 ;;
     --project-root)     PROJECT_ROOTS+=("${2:-}"); shift 2 ;;
     --cache-cap-mb)     CACHE_CAP_MB="${2:-}"; shift 2 ;;
     --help|-h)          usage; exit 0 ;;
@@ -82,7 +79,6 @@ done
 want() { case " ${CATS} " in *" $1 "*) return 0 ;; esac; return 1; }
 tot()  { du -sh "$1" 2>/dev/null | cut -f1 || echo "?"; }
 gb()   { awk -v k="${1:-0}" 'BEGIN{ if (k<1024) printf "%.0fM", k/1024; else printf "%.1fG", k/1048576 }'; }
-have() { command -v "$1" >/dev/null 2>&1; }
 
 # remove_path is the one destructive primitive. It refuses a path that is a mount point or that sits
 # outside the directories this script is allowed to touch, so a variable that expands to "" or "/" can
@@ -240,52 +236,6 @@ do_worktrees() {
   return 0
 }
 
-# --- containers -------------------------------------------------------------
-# Label-scoped, and containers only when STOPPED. Never volumes: a host-wide `volume prune` removes
-# other projects' data, which is why the repo's own clean-docker target refuses to do it.
-engine() { if have podman; then echo podman; elif have docker; then echo docker; fi; }
-
-do_containers() {
-  head1 "containers and images"
-  local e; e="$(engine)"
-  if [ -z "$e" ]; then skip "no container engine found"; return; fi
-  local ids
-  ids="$($e ps -a --filter label=orchicon.instance --filter status=exited -q 2>/dev/null || true)"
-  if [ -n "$ids" ]; then
-    local n; n="$(printf '%s\n' "$ids" | wc -l | tr -d ' ')"
-    if [ "$APPLY" = true ]; then
-      # shellcheck disable=SC2086
-      $e rm $ids >/dev/null 2>&1 && ok "removed $n stopped orchicon container(s)" || warn "some containers refused removal"
-    else
-      did "would remove $n stopped orchicon container(s)"
-    fi
-  else
-    skip "no stopped orchicon containers"
-  fi
-  if [ "$APPLY" = true ]; then
-    $e image prune -f --filter "dangling=true" >/dev/null 2>&1 && ok "pruned dangling images" || true
-  else
-    did "would prune dangling images"
-  fi
-  dim "volumes are NEVER pruned — they hold other projects' data on a shared host"
-  return 0
-}
-
-# --- telemetry --------------------------------------------------------------
-# Loki and Tempo are logs and traces ABOUT local runs. Run HISTORY lives in Postgres and the
-# .orchicon/ transcripts, so this is not the record of what happened — it is the observability of it.
-do_telemetry() {
-  head1 "telemetry stores (loki / tempo)"
-  local d found=false
-  for d in "$HOME"/.local/share/orchicon-*/loki "$HOME"/.local/share/orchicon-*/tempo; do
-    [ -d "$d" ] || continue
-    found=true
-    remove_path "$d" "telemetry about local runs; the run history is in Postgres"
-  done
-  [ "$found" = true ] || skip "no loki/tempo stores found"
-  return 0
-}
-
 # --- logs -------------------------------------------------------------------
 do_logs() {
   head1 "rotated logs"
@@ -300,54 +250,11 @@ do_logs() {
 }
 
 # --- scratch ----------------------------------------------------------------
-# tmp/ is build scratch. `.orchicon/sessions` is NOT here: it is the transcript history of every run,
-# which is evidence rather than garbage, so it has its own category and is never in --all.
+# tmp/ is build scratch. `.orchicon/sessions` is NOT here and is not a category: it is the transcript
+# history of every run — evidence, not garbage, and the only copy.
 do_scratch() {
   head1 "scratch"
   remove_path "$REPO_ROOT/tmp" "repo scratch"
-  return 0
-}
-
-# --- run transcripts --------------------------------------------------------
-# The per-run conversation transcripts: the planner's reasoning, every tool call, every verdict.
-# Postgres keeps the run and its outputs; it does not keep this. So deleting it is a decision about
-# evidence rather than about disk, and it is never part of --all.
-do_sessions() {
-  head1 "run session transcripts  (HISTORY, not a cache)"
-  local d="$REPO_ROOT/.orchicon/sessions"
-  if [ ! -d "$d" ]; then skip "no session transcripts"; return 0; fi
-  local n; n="$(find "$d" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
-  warn "$d — $n file(s), $(tot "$d"). This is what a run actually did; there is no other copy."
-  remove_path "$d" "run transcripts"
-  return 0
-}
-
-# --- the two that sit next to irreplaceable data -----------------------------
-do_backups() {
-  head1 "instance backups  (REAL database backups)"
-  local d found=false
-  for d in "$HOME"/.local/share/orchicon-*/backups; do
-    [ -d "$d" ] || continue
-    found=true
-    local n; n="$(find "$d" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
-    warn "$d — $n item(s), $(tot "$d"). These are database backups, not caches."
-    remove_path "$d" "operator's database backups"
-  done
-  [ "$found" = true ] || skip "no backups found"
-  return 0
-}
-
-do_instance_data() {
-  head1 "whole instance data dirs"
-  if [ -z "${INSTANCES// /}" ]; then err "--instance-data needs --instance dev|prod|test"; return; fi
-  local inst d
-  for inst in $INSTANCES; do
-    d="$HOME/.local/share/orchicon-$inst"
-    if [ ! -d "$d" ]; then skip "$inst — no data dir"; continue; fi
-    warn "$d — $(tot "$d"). This is the instance's DATABASE, secrets and blobs."
-    dim "stop the instance first: scripts/orchicon.sh stop $inst"
-    remove_path "$d" "instance $inst state"
-  done
   return 0
 }
 
@@ -399,15 +306,6 @@ do_inventory() {
       "$(gb "$wt_r_kb") reclaimable; the rest hold unmerged or unpushed work"
   fi
 
-  local e; e="$(engine)"
-  if [ -n "$e" ]; then
-    local n; n="$($e ps -a --filter label=orchicon.instance --filter status=exited -q 2>/dev/null | wc -l | tr -d ' ')"
-    printf '  %-46s %8s  %s\n' "stopped orchicon containers ($n)" "—" "removed by --containers"
-  fi
-
-  for d in "$HOME"/.local/share/orchicon-*/loki "$HOME"/.local/share/orchicon-*/tempo; do
-    [ -d "$d" ] && size_line "${d#"$HOME"/.local/share/}" "$d" "removed by --telemetry"
-  done
   local log_kb=0 f
   for f in "$HOME"/.local/share/orchicon-*/services.log.*; do
     [ -f "$f" ] || continue
@@ -419,18 +317,11 @@ do_inventory() {
   fi
   size_line "tmp/"                     "$REPO_ROOT/tmp"            "removed by --scratch"
 
-  head1 "explicit only — never in --all"
-  size_line ".orchicon/sessions"        "$REPO_ROOT/.orchicon/sessions" "--sessions (run transcripts: no other copy)"
-  for d in "$HOME"/.local/share/orchicon-*/backups; do
-    [ -d "$d" ] && size_line "${d#"$HOME"/.local/share/}" "$d" "--backups (real database dumps)"
-  done
-  for d in "$HOME"/.local/share/orchicon-*; do
-    [ -d "$d" ] && printf '  %-46s %8s  %s\n' "${d#"$HOME"/.local/share/} (whole instance)" "$(tot "$d")" "--instance-data (database, secrets, blobs)"
-  done
-
-  head1 "total, checked categories"
-  printf '  %-46s %8s\n' "sum of the lines above (overlaps possible)" "$(awk -v k="$total_kb" 'BEGIN{printf "%.1fG", k/1048576}')"
+  head1 "total"
+  printf '  %-46s %8s\n' "sum of the lines above (overlaps possible)" "$(gb "$total_kb")"
   printf '  %-46s %8s\n' "filesystem available now" "$(df -Ph "$HOME" | awk 'NR==2{print $4}')"
+  dim "not listed, because this script cannot remove them: containers, telemetry stores, run"
+  dim "transcripts, database backups, instance data dirs. Those are state, not cache."
   return 0
 }
 
@@ -444,13 +335,8 @@ if [ -z "${CATS// /}" ]; then
 fi
 want go-cache     && do_go_cache      || true
 want worktrees    && do_worktrees     || true
-want containers   && do_containers    || true
-want telemetry    && do_telemetry     || true
 want logs         && do_logs          || true
 want scratch      && do_scratch       || true
-want sessions     && do_sessions      || true
-want backups      && do_backups       || true
-want instance-data && do_instance_data || true
 
 # An inventory-only run already printed its own totals; repeating them is noise.
 if [ -n "${CATS// /}" ]; then
