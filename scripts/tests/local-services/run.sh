@@ -245,7 +245,17 @@ done
 
 # The list spans two recipe lines (a trailing backslash), so both are joined.
 UNSET_LINE="$(printf '%s\n' "$TEST" | grep -A1 -m1 'for v in ORCHICON_GUARD_POLICY' | tr '\n' ' ' || true)"
-check_contains "make test still unsets the ambient config/plane vars" "ORCHICON_SERVE_STATE_DIR; do unset" "$UNSET_LINE"
+# ASSERT EACH NAME, NOT THE ORDERING. This used to require the literal "ORCHICON_SERVE_STATE_DIR; do
+# unset" — the loop's TAIL — so APPENDING a variable to a correct list failed it. That is a gate that
+# fails on a right change, and it did: adding ORCHICON_DATA_DIR (a real leak) turned this red. The
+# authoritative equality check is Go-side (internal/testfixtures/ambient_makefile_test.go, which
+# compares the loop against AmbientConfigEnv in both directions); this stays a smoke test that the
+# loop is present, syntactically intact, and still names each variable.
+check_contains "make test still unsets the ambient config/plane vars" "; do unset" "$UNSET_LINE"
+for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
+         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR; do
+  check_contains "make test unsets $v" "$v" "$UNSET_LINE"
+done
 check_lacks    "ORCHICON_TEST_DSN is not unset (opt-in stays reachable)" "ORCHICON_TEST_DSN" "$UNSET_LINE"
 check_lacks    "ORCHICON_SERVICE_RESIDENCY is not unset (inner loop stays reachable)" "ORCHICON_SERVICE_RESIDENCY" "$UNSET_LINE"
 check_contains "ORCHICON_TEST_DSN is named as reachable in the recipe" "ORCHICON_TEST_DSN" "$TEST"
