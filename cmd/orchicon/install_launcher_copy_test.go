@@ -2,7 +2,7 @@ package main
 
 // install_launcher_copy_test.go — OWNERSHIP OF A COPIED `orch` MUST BE RECOGNISED ON EVERY PLATFORM.
 //
-// Reported from macOS, and BOTH claims in the installer's warning were false: /Users/agent/.local/bin/orch
+// Reported from macOS, and BOTH claims in the installer's warning were false: <home>/.local/bin/orch
 // "exists and was not placed there by this install", and "the TUI is missing". The file was from that very
 // install and it ran.
 //
