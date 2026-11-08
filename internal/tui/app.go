@@ -24,6 +24,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 	"github.com/beardedparrott/orchicon/internal/tui/diffs"
+	"github.com/beardedparrott/orchicon/internal/chatlimits"
 	"github.com/beardedparrott/orchicon/internal/tui/dock"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/automation"
@@ -848,6 +849,9 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		},
 	}
 	m.dock = dock.New()
+	// THE COMPOSER KNOWS THE MESSAGE BOUND, so it can warn BEFORE a send is refused. At 10,000 the limit was
+	// discovered mid-paste, after the text was already in the box and the send button was pressed.
+	m.dock.SetCharLimit(chatlimits.MaxMessageChars)
 	// THE RAIL OPENS ON ALL PROJECTS, which is what the field's own doc has always claimed — and what it must be
 	// for the launch-directory default to be reachable at all.
 	//

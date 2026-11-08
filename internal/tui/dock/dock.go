@@ -49,6 +49,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/beardedparrott/orchicon/internal/chatlimits"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
@@ -189,6 +190,8 @@ type Model struct {
 	Focused bool
 	Chip    string // context chip (what outgoing messages inject)
 	Notice  string // status line (stream state, pointers)
+	// charLimit is the message bound this composer feeds (SetCharLimit); 0 disables the near-limit counter.
+	charLimit int
 	// replyInFlight drives the STOP affordance: while a turn is streaming, the affordance row offers
 	// ctrl+y — the operator's "we need a stop button/control key + hint in composer that can interrupt
 	// the agent mid flight". It is DERIVED from the chat controller's own streaming state by the shell
@@ -977,7 +980,11 @@ func (m *Model) HintRows() int { return len(m.hintLines()) }
 // implement every RPC) had taken the row. A control whose feedback depends on nothing else being wrong
 // is a control that appears broken at exactly the moment the operator needs it.
 func (m *Model) NoticeRows() int {
-	return m.wrapRows(m.Err) + m.wrapRows(m.Notice)
+	n := m.wrapRows(m.Err) + m.wrapRows(m.Notice)
+	if m.charCounter() != "" {
+		n++
+	}
+	return n
 }
 
 // wrapRows is how many rows one strip message occupies at the current width.
@@ -1144,6 +1151,46 @@ func (m *Model) SetError(s string) { m.Err = s }
 
 // SetNotice sets the status strip ("" clears).
 func (m *Model) SetNotice(s string) { m.Notice = s }
+
+// SetCharLimit installs the message bound this composer feeds, so it can show a counter as the bound is
+// APPROACHED rather than only after a send is refused. 0 disables the counter.
+func (m *Model) SetCharLimit(n int) { m.charLimit = n }
+
+// charCounter is the near-limit counter's text, or "" when there is nothing to say.
+//
+// IT DOES NOT APPEAR FOR ORDINARY INPUT, and that is the requirement rather than a nicety: a count under
+// every sentence is noise, and noise is ignored by the time it matters. The threshold lives with the bound
+// (chatlimits.WarnAt) so the composer and the five RPCs that enforce it cannot disagree about the number.
+func (m *Model) charCounter() string {
+	if m.charLimit <= 0 {
+		return ""
+	}
+	n := len([]rune(m.ta.Value()))
+	if n < chatlimits.WarnAt {
+		return ""
+	}
+	s := groupDigits(n) + " / " + groupDigits(m.charLimit) + " characters"
+	if n > m.charLimit {
+		s += " — over the limit; trim before sending"
+	}
+	return s
+}
+
+// groupDigits renders 100000 as 100,000 so a six-figure count is readable at a glance.
+func groupDigits(n int) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
 
 // SendingAck is the transient ack the composer writes the instant Enter fires, so a send that produces no
 // visible reaction cannot be mistaken for a dead key (see the enter case in Update).
@@ -1578,6 +1625,12 @@ func (m *Model) View() string {
 			rows = append(rows, theme.HintText.Render(l))
 		}
 	}
+	// THE COUNTER IS ONE ROW, and NoticeRows counts it, so the shell reserves it and the block stays exactly
+	// Lines() tall. It appears only as the bound is approached (see charCounter) and switches to the error
+	// style past the bound, because from there a send will be refused.
+	if counter := m.charCounter(); counter != "" {
+		rows = append(rows, m.counterRow(counter, inner))
+	}
 	// The affordance row WRAPS (capped) rather than truncating, so the important
 	// shortcuts stay readable on a narrow composer.
 	for _, l := range m.hintLines() {
@@ -1727,4 +1780,23 @@ type dockBlinkMsg struct{}
 // blink interval, and delivering dockBlinkMsg re-arms the next one.
 func dockBlinkTick() tea.Cmd {
 	return tea.Tick(dockBlinkSpeed, func(time.Time) tea.Msg { return dockBlinkMsg{} })
+}
+
+// overLimit reports whether the buffer is past the bound, i.e. a send would be refused.
+func (m *Model) overLimit() bool {
+	return m.charLimit > 0 && len([]rune(m.ta.Value())) > m.charLimit
+}
+
+// counterRow pads the counter to the box's inner width so it sits against the right edge — the conventional
+// place for a count — and keeps the row exactly as tall as the shell reserved for it.
+func (m *Model) counterRow(text string, inner int) string {
+	style := theme.HintText
+	if m.overLimit() {
+		style = theme.ErrorText
+	}
+	pad := inner - lipgloss.Width(text)
+	if pad < 0 {
+		pad = 0
+	}
+	return style.Render(strings.Repeat(" ", pad) + text)
 }

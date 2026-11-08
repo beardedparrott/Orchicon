@@ -3224,6 +3224,12 @@ function MessageBubble({
 
 // --- ChatInputField: auto-resizing textarea with attach/voice/send ---
 
+// THE MESSAGE BOUND THE SERVER ENFORCES, mirrored here so the composer can warn BEFORE a send is refused.
+// The authority is internal/chatlimits (Go); these two numbers must move together, which is why they are
+// named once, here, rather than inlined at the render.
+const MAX_MESSAGE_CHARS = 100_000;
+const CHAR_WARN_AT = Math.floor(MAX_MESSAGE_CHARS * 0.8);
+
 function ChatInputField({
   onSend,
   onStop,
@@ -3980,6 +3986,25 @@ function ChatInputField({
                 set."
                 The comment below already said the chip "is the CONTROL and must survive"; the gate
                 contradicted it. An empty ref is the state that needs the control MOST, not least. */}
+            {/* THE COUNTER APPEARS ONLY AS THE BOUND IS APPROACHED. A count under every sentence is
+                noise, and noise is ignored by the time it matters — so it shows over the last fifth, and
+                turns red once a send would be refused. Before this the limit was 10,000 and the operator
+                met it mid-paste, after the text was already in the box. */}
+            {text.length >= CHAR_WARN_AT && (
+              <span
+                data-testid="composer-char-counter"
+                title={`The server refuses a message longer than ${MAX_MESSAGE_CHARS.toLocaleString()} characters.`}
+                className={cn(
+                  "font-mono text-[11px]",
+                  text.length > MAX_MESSAGE_CHARS
+                    ? "text-destructive"
+                    : "text-muted-foreground",
+                )}
+              >
+                {text.length.toLocaleString()} /{" "}
+                {MAX_MESSAGE_CHARS.toLocaleString()}
+              </span>
+            )}
             <AskModelChip model={modelRef} onModelChange={onModelChange} />
             {statsLine && (
               <span

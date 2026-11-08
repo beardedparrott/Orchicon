@@ -13,13 +13,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 	"github.com/beardedparrott/orchicon/internal/audit"
+	"github.com/beardedparrott/orchicon/internal/chatlimits"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/opencode"
@@ -607,8 +607,8 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 	if req.Msg.ConversationId == "" {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("conversation_id must not be empty"))
 	}
-	if utf8.RuneCountInString(msg) > 10000 {
-		return connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	if err := chatlimits.TooLong(msg); err != nil {
+		return err
 	}
 
 	assistantID, streamEventCh, st, err := s.startConversationTurn(ctx, tenantID, req.Msg.ConversationId, msg, req.Msg.Attachments)
@@ -662,8 +662,8 @@ func (s *Service) InterjectConversationTurn(ctx context.Context, req *connect.Re
 	if req.Msg.ConversationId == "" {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("conversation_id must not be empty"))
 	}
-	if utf8.RuneCountInString(msg) > 10000 {
-		return connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	if err := chatlimits.TooLong(msg); err != nil {
+		return err
 	}
 	if len(req.Msg.Attachments) > 5 {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("too many attachments (max 5)"))

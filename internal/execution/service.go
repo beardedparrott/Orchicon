@@ -22,6 +22,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/chatlimits"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -750,8 +751,8 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 	if q == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
 	}
-	if utf8.RuneCountInString(q) > 10000 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	if err := chatlimits.TooLong(q); err != nil {
+		return nil, err
 	}
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
@@ -1238,8 +1239,8 @@ func (s *Service) SendExecutionMessage(ctx context.Context, req *connect.Request
 	if strings.TrimSpace(msg.Message) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
 	}
-	if utf8.RuneCountInString(msg.Message) > 10000 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	if err := chatlimits.TooLong(msg.Message); err != nil {
+		return nil, err
 	}
 	if s.sendExecMessage == nil {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session transport not available"))
@@ -1340,8 +1341,8 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	if strings.TrimSpace(msg.Message) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
 	}
-	if utf8.RuneCountInString(msg.Message) > 10000 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	if err := chatlimits.TooLong(msg.Message); err != nil {
+		return nil, err
 	}
 	if s.continueSession == nil {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session transport not available"))
