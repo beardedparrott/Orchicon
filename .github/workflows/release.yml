@@ -529,7 +529,17 @@ jobs:
             -t "dist/desktop/orchicon_desktop_${VERSION}_linux_amd64.deb"
           ls -l dist/desktop
 
+      # Same pin and cache as Canary: this is the RELEASE path, so a CDN 504 here costs a release rather
+      # than a canary. Cache key is the digest, so a hit serves the pinned binary with no network.
+      - name: Cache appimagetool
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/orchicon-appimagetool
+          key: appimagetool-x86_64-e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03
+
       - name: Package the AppImage
+        env:
+          APPIMAGETOOL_SHA256: e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03
         run: |
           set -euo pipefail
           bash deploy/desktop/appimage/build.sh
