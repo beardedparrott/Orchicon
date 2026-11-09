@@ -1,13 +1,7 @@
 package main
 
-// services_test.go pins the contract `orchicon services` (the inner-loop verb the
-// Makefile calls) depends on: the port map is DERIVED per instance, an explicit
-// ORCHICON_*_PORT still wins, an unknown instance is REFUSED rather than silently
-// given dev's ports, and an unknown verb is a usage error.
-//
-// HOME is redirected to a temp dir in each test so the instance's OWN port record
-// (ports.json) cannot decide the result: with no record the defaults+overrides
-// path is what runs, which is exactly the developer-who-never-installed case.
+// services_test.go pins the contract `orchicon services` (the inner-loop verb the Makefile calls)
+// depends on: the port map is DERIVED per instance, an explicit ORCHICON_*_PORT still wins.
 
 import (
 	"testing"

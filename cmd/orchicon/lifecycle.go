@@ -89,9 +89,8 @@ func parseInstanceTarget(args []string, fallback string) (string, error) {
 	}
 
 	if positional != "" {
-		// BOTH FORMS AT ONCE IS AMBIGUOUS, and guessing which one the operator meant is
-		// how the wrong instance gets changed. The flag was the explicit request, so this
-		// reports the conflict rather than silently preferring either.
+		// BOTH FORMS AT ONCE IS AMBIGUOUS, and guessing which one the operator meant is how the wrong
+		// instance gets changed.
 		if flagged && positional != instance {
 			return "", fmt.Errorf("both a positional instance (%q) and --%s %q were given — name one",
 				positional, instanceFlag, instance)
@@ -107,12 +106,8 @@ func parseInstanceTarget(args []string, fallback string) (string, error) {
 	return instance, nil
 }
 
-// validateInstanceName refuses a name that could climb out of the instance state
-// directory, because the name forms a DIRECTORY NAME.
-//
-// It is one function rather than the same four lines in `plane`, `restart` and the new
-// verbs: three copies of a path-safety check is three chances for one of them to be
-// edited and the others not.
+// validateInstanceName refuses a name that could climb out of the instance state directory, because
+// the name forms a DIRECTORY NAME.
 func validateInstanceName(instance string) error {
 	if strings.ContainsAny(instance, "/\\") || strings.Contains(instance, "..") {
 		return fmt.Errorf("invalid instance name %q: it forms the instance state directory name, so it "+
@@ -121,9 +116,8 @@ func validateInstanceName(instance string) error {
 	return nil
 }
 
-// awaitHealthy polls the instance's /healthz until it answers or the deadline passes,
-// returning the URL it asked. The caller words the outcome, because "came back after a
-// restart" and "came up on a start" are different claims.
+// awaitHealthy polls the instance's /healthz until it answers or the deadline passes, returning the
+// URL it asked.
 func awaitHealthy(instance string, ports map[string]int, timeout time.Duration) (string, bool) {
 	url := fmt.Sprintf("http://localhost:%d/healthz", ports["ORCHICON_CONTROL_PORT"])
 	deadline := time.Now().Add(timeout)
@@ -137,18 +131,6 @@ func awaitHealthy(instance string, ports map[string]int, timeout time.Duration) 
 }
 
 // instanceExists reports whether anything is actually installed for an instance.
-//
-// THE INSTALL RECORD IS NOT THE TEST, and the first version of these verbs got that
-// wrong in the worst possible way. `ports.json` and the residency record are written by
-// the installer that shipped with #729/#730; every instance installed BEFORE that —
-// including both instances on this operator's own host — has neither, while its plane is
-// demonstrably running and serving. Keying on the record told an operator with a live
-// plane that "nothing is installed for it", which is precisely the class of lie these
-// verbs exist to remove, and it made `orchicon stop dev` a no-op that looked like it
-// worked.
-//
-// The DATA DIRECTORY is the evidence: every install shape creates one, and nothing else
-// does. An absent one really is "nothing here".
 func instanceExists(instance string) bool {
 	dir, err := hostDataDir(instance)
 	if err != nil {
@@ -159,12 +141,6 @@ func instanceExists(instance string) bool {
 }
 
 // instanceResidency is the recorded shape, defaulting to HOST when there is no record.
-//
-// Host is the safe default rather than a guess at the majority: it is the shape the
-// product produces today, and the host arm's primitives (Stop is idempotent, services
-// down verifies the ports) all no-op correctly when there is nothing of that shape. A
-// wrong CONTAINER guess would run an engine command against a container this verb does
-// not own, which is the one outcome worth avoiding.
 func instanceResidency(instance string) string {
 	if residency, ok := recordedResidency(instance); ok {
 		return residency
@@ -172,23 +148,13 @@ func instanceResidency(instance string) string {
 	return residencyHost
 }
 
-// instancePorts is the port set to act on: the RECORDED ports when an install wrote
-// them, else the instance's own column in the port table. servicesPortsFor owns that
-// resolution and is reused rather than re-implemented — `services status` has to answer
-// the same question, and two answers would eventually disagree.
+// instancePorts is the port set to act on: the RECORDED ports when an install wrote them, else the
+// instance's own column in the port table.
 func instancePorts(instance string) (map[string]int, error) {
 	return servicesPortsFor(instance)
 }
 
 // runStart implements `orchicon start [instance]`.
-//
-// IT STARTS WHAT IS ALREADY THERE — it never installs. A start on a machine where the
-// instance has no data directory is refused with the command that would create one,
-// because "start" must not silently initialise a database: that is `install`'s job, and
-// it asks the questions start must not ask.
-//
-// ORDER IS THE DEPENDENCY: the services first (the plane boots against postgres and
-// NATS), then the plane. Reversed, the plane comes up with no database and looks broken.
 func runStart(args []string, log *slog.Logger) error {
 	bin := filepath.Base(os.Args[0])
 	instance, err := parseInstanceTarget(args, env("ORCHICON_INSTANCE", "dev"))
@@ -206,11 +172,7 @@ func runStart(args []string, log *slog.Logger) error {
 	}
 
 	if residency := instanceResidency(instance); residency != residencyHost {
-		// A RECORDED CONTAINER RESIDENCY IS A RETIRED SHAPE, not a shape to act on. There is one shape now —
-		// the plane and its services are host processes, always — and `install` refuses to create anything
-		// else. The only way to hold this value is an instance installed BEFORE the switch, and starting a
-		// single PID-1 container for it would resurrect the very deployment this product retired. So it is
-		// refused in the same words `install` uses, naming the one command that produces a working instance.
+		// A RECORDED CONTAINER RESIDENCY IS A RETIRED SHAPE, not a shape to act on.
 		return fmt.Errorf("instance %q was installed with the retired CONTAINER residency (%s).\n"+
 			"  The plane and its services now always run on the HOST, as host processes. Re-install it:\n"+
 			"    %s install --instance %s",
@@ -264,11 +226,7 @@ func runStart(args []string, log *slog.Logger) error {
 		}
 		if err := startHostPlane(instance, ports, hostDataDirFor(instance),
 			filepath.Join(socketDir(), "runtime.sock"), os.Stdout); err != nil {
-			// SAY WHAT IS STILL RUNNING. The services came up and are now unsupervised by a
-			// plane that failed, and that is a state the operator has to be told about —
-			// particularly because it holds the instance's ports, so the NEXT start fails
-			// with a bind error that names nothing. Observed for real: a start on an
-			// instance whose plane cannot come up leaves postgres and NATS running.
+			// SAY WHAT IS STILL RUNNING.
 			fmt.Fprintf(os.Stderr, "note: the services for %s are still running (postgres :%d, nats :%d).\n"+
 				"      stop them with:  %s services down %s\n",
 				instance, ports["ORCHICON_POSTGRES_PORT"], ports["ORCHICON_NATS_PORT"],
@@ -278,13 +236,6 @@ func runStart(args []string, log *slog.Logger) error {
 	}
 
 	// THE RUNTIME DAEMON IS BEST-EFFORT, and deliberately not fatal.
-	//
-	// `install` treats a daemon that will not come up as a failed install, which is right
-	// for a first run. It is wrong here: "no container engine" is a SUPPORTED shape (that
-	// is the whole no-engine acceptance procedure), and a plane whose runtime containers
-	// are unavailable still serves the UI, the API and every non-container workflow. So a
-	// start reports it and carries on rather than refusing to finish bringing the instance
-	// up over an optional component.
 	if containerEngineAvailable() {
 		if err := ensureInstallDaemon(socketDir()); err != nil {
 			fmt.Fprintf(os.Stderr, "note: the runtime daemon did not come up (%v)\n"+
@@ -304,16 +255,8 @@ func runStart(args []string, log *slog.Logger) error {
 	return nil
 }
 
-// printInstanceGuidance tells the operator where to go next, because "it is serving" is the
-// end of the OUTPUT and not the end of the JOB.
-//
-// REPORTED: "It should start in the background and then tell you how to tail the logs and how to
-// stop/start it." `start` detached the plane correctly and then said nothing else, so the three
-// things an operator wants next — the log path, the status command, the stop command — had to be
-// found in a different command's output.
-//
-// The web UI is named too, because "it is serving <url>" is the plane's internal address and
-// the browser wants the same one; both are printed so neither has to be derived.
+// printInstanceGuidance tells the operator where to go next, because "it is serving" is the end of
+// the OUTPUT and not the end of the JOB.
 func printInstanceGuidance(instance string, ports map[string]int) {
 	bin := filepath.Base(os.Args[0])
 	dir := hostDataDirFor(instance)
@@ -329,16 +272,6 @@ func printInstanceGuidance(instance string, ports map[string]int) {
 }
 
 // runStop implements `orchicon stop [instance]`.
-//
-// STOP IS IDEMPOTENT — stopping what is already stopped is a successful no-op, because
-// a stop is something a person runs when they are unsure whether anything is up, and a
-// command that only works when it was needed is a command nobody can trust in a script.
-// Both primitives underneath already guarantee it (planecontrol.Stop's header, and
-// stopHostServices' "nothing to stop" arm).
-//
-// ORDER IS THE MIRROR OF START, and it matters for a different reason: stopping the
-// SERVICES out from under a live plane leaves it logging connection errors and looking
-// broken, which is precisely the state that makes the next status check lie.
 func runStop(args []string) error {
 	instance, err := parseInstanceTarget(args, env("ORCHICON_INSTANCE", "dev"))
 	if err != nil {
@@ -357,18 +290,13 @@ func runStop(args []string) error {
 	}
 
 	if residency := instanceResidency(instance); residency != residencyHost {
-		// A RECORDED CONTAINER RESIDENCY IS A RETIRED SHAPE. There is no instance container to supervise any
-		// more, so "stop" does the one useful thing left for such an instance: reclaim this instance's ports
-		// from the container-era container if this host still has one, and say plainly that the shape is gone
-		// rather than pretending to stop a container the product no longer runs.
+		// A RECORDED CONTAINER RESIDENCY IS A RETIRED SHAPE.
 		fmt.Printf("instance %s was installed with the retired CONTAINER residency (%s): removing any container-era container\n",
 			instance, residency)
 		stopInstanceContainer(instance, os.Stdout)
 	} else {
 		fmt.Printf("instance %s is host-resident: stopping the plane, then its services\n", instance)
-		// THE ONE WAY DOWN. `stop` and `install`-before-start both call this, so neither can report a
-		// success the other could not back up — which is how "✓ dev is stopped" came to be printed over a
-		// re-parented postgres backend that still held the data directory and port 5432.
+		// THE ONE WAY DOWN.
 		if err := stopInstanceCompletely(instance, ports, os.Stdout); err != nil {
 			return err
 		} // A CONTAINER-ERA INSTANCE CONTAINER STILL OWNS THESE PORTS. It was created by an older install of

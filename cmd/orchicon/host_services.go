@@ -69,20 +69,6 @@ func runHostServices(args []string) int {
 	defer stop()
 
 	// THE SERVICES LOG IS ROTATED, BECAUSE IT IS THE FILE A CRASH-LOOP FILLS.
-	//
-	// This wrote to raw stdout with no ceiling. A launcher redirects stdout to
-	// <dataDir>/services.log, and a component that crash-loops writes a restart cycle every 32s for as
-	// long as the machine is up — so the file has no natural bound.
-	//
-	// MEASURED on a real Windows instance: services.log was 1,560,928,277 bytes (1.45 GB), grown by
-	// Loki and Tempo restarting every 32 seconds for hours, and by nats cycling every 32s behind an
-	// orphaned process that held its port. That is a user-visible disk problem caused by a bug, and it
-	// also makes the file useless for the one job it has: being read when something is wrong.
-	//
-	// The rotation reuses internal/logging's writer — the control plane's own sink, already tested for
-	// size and time rotation, retention and pruning — rather than introducing a second implementation.
-	// If it cannot be opened the services still run on stdout: a logging problem must never stop the
-	// database from starting, and whatever launcher redirected stdout still captures it.
 	log, logCloser := hostServicesLogger(os.Stdout)
 	defer logCloser()
 	log.Info("orchicon host-services starting", "version", version.Current().String())
@@ -95,10 +81,8 @@ func runHostServices(args []string) int {
 		log:     log,
 		dataDir: dataDir,
 		ports:   resolveInternalListenerPorts(servicePortsFromEnv()),
-		// Set BEFORE prepare(): prepare() is what acquires the binaries, and it
-		// must know whether the four telemetry backends are part of this boot —
-		// a plane with ORCHICON_TELEMETRY=none must not download ~300 MB of
-		// backends it will never start.
+		// Set BEFORE prepare(): prepare() is what acquires the binaries, and it must know whether the four
+		// telemetry backends are part of this boot.
 		telemetryEnabled: telemetryMode == "embedded",
 		children:         make(map[string]*procState),
 	}
@@ -107,16 +91,7 @@ func runHostServices(args []string) int {
 		return 1
 	}
 
-	// Critical chain: postgres -> nats. Block on each so neither is raced.
-	//
-	// A FAILURE HERE ENDS THE SUPERVISOR, and that is a correction. These used to log and carry
-	// on, so a supervisor whose DATABASE never started stayed alive: it held the PID file and the
-	// ports, `orchicon status` called it running, and the install — which waits for postgres —
-	// simply timed out and (in the old code) started the plane anyway. The operator's report was
-	// "it seemed to install but nothing is running".
-	//
-	// A supervisor with no database supervises nothing. Exiting makes the failure immediate,
-	// named, and visible in the log the install then quotes back.
+	// Critical chain: postgres -> nats.
 	if err := sup.startAndWait(ctx, sup.postgresProc(), 120*time.Second); err != nil {
 		log.Error("postgres did not become ready — stopping the services; nothing downstream can work", "error", err)
 		return 1
@@ -154,9 +129,7 @@ func runHostServices(args []string) int {
 	return 0
 }
 
-// servicesLogRotation bounds the services log. 100 MiB and 7 daily files is the same shape the plane's
-// own log uses (internal/logging's defaults), so an operator has ONE retention story for both files
-// rather than two.
+// servicesLogRotation bounds the services log.
 var servicesLogRotation = logging.Config{
 	BaseName:      "services.log",
 	MaxSizeBytes:  100 << 20,
@@ -167,14 +140,6 @@ var servicesLogRotation = logging.Config{
 }
 
 // hostServicesLogger returns the logger the supervisor AND its children write to, plus a closer.
-//
-// CHILD OUTPUT GOES THROUGH IT TOO (logPipe writes to s.log), so bounding the file bounds everything:
-// postgres, nats, loki, tempo and the collector all have their stdout piped into this sink. Writing
-// them anywhere else would leave the crash-loop's output — the actual disk consumer — unbounded.
-//
-// A failure to open the rotating file DEGRADES to the given writer instead of failing the boot: the
-// services are more important than their log, and a read-only or full data dir must not turn into a
-// database that will not start.
 func hostServicesLogger(fallback io.Writer) (*slog.Logger, func()) {
 	dir := env(dataDirEnv, defaultDataDirFor())
 	cfg := servicesLogRotation
@@ -201,25 +166,17 @@ type supervisor struct {
 	ports servicePorts
 
 	// telemetryEnabled is whether this boot runs the four telemetry backends
-	// (ORCHICON_TELEMETRY=embedded). It gates ACQUISITION as well as the proc
-	// fleet: the backends are ~300 MB of downloads, and a `none` boot must not
-	// fetch them.
+	// (ORCHICON_TELEMETRY=embedded).
 	telemetryEnabled bool
 
-	// infra is the RESOLVED infrastructure binaries (postgres, initdb, pg_ctl,
-	// pg_isready, createdb, nats-server), set once by prepare() and read by every
-	// service proc below.
-	//
-	// EVERY proc execs these absolute paths rather than a bare name on PATH: a
-	// downloaded binary lives in this instance's data dir, which is not on PATH, so
-	// a bare name would silently run a DIFFERENT postgres from the host (or none).
+	// infra is the RESOLVED infrastructure binaries (postgres, initdb, pg_ctl, pg_isready, createdb,
+	// nats-server), set once by prepare() and read by every service proc below.
 	infra *infraBinaries
 
 	mu       sync.Mutex
 	children map[string]*procState
-	// portOwnerReported remembers which components have already been told that a port they need is
-	// held by another process. ONCE PER COMPONENT, because the crash-loop can produce hundreds of
-	// restarts and the fact does not change between them; repeating it would bury the rest of the log.
+	// portOwnerReported remembers which components have already been told that a port they need is held
+	// by another process.
 	portOwnerReported map[string]bool
 }
 
@@ -273,9 +230,8 @@ type managedProc struct {
 	recoverState func() error
 }
 
-// prepare creates the data/config dirs, writes the embedded config files, then
-// initializes the Postgres data directory. Every dir is created as the invoking
-// user, which owns it already — there is nothing to hand over.
+// prepare creates the data/config dirs, writes the embedded config files, then initializes the
+// Postgres data directory.
 func (s *supervisor) prepare(ctx context.Context) error {
 	s.configDir = filepath.Join(s.dataDir, configDirName)
 	for _, d := range []string{s.dataDir, s.configDir} {
@@ -287,28 +243,11 @@ func (s *supervisor) prepare(ctx context.Context) error {
 		return err
 	}
 
-	// Resolve the infrastructure binaries ONCE, before anything execs them, and
-	// hold the result on the supervisor. This is the authoritative acquisition
-	// point: this process is what actually runs postgres/nats, and it is what owns
-	// the instance data dir the downloaded build is unpacked into.
-	//
-	// The resolved set is also written to <dataDir>/infra-binaries.json, so a
-	// failure here can be diagnosed from the record and so a later process reads
-	// the same answer instead of probing again.
-	//
-	// THE OPTIONS COME FROM THE SHARED CONSTRUCTOR, not assembled here: that is what
-	// makes ORCHICON_SKIP_DOWNLOAD and the URL/checksum overrides mean the same thing
-	// to this boot as they do to `orchicon install`. Two callers assembling their own
-	// options is how one of them silently stops honoring an operator's setting.
-	// A supervisor that already carries a resolved set (a test fixture, or a
-	// caller that resolved earlier) KEEPS it: resolution happens once, and
-	// re-deriving it here would be the second resolution path this record exists
-	// to prevent.
+	// Resolve the infrastructure binaries ONCE, before anything execs them, and hold the result on the
+	// supervisor.
 	if s.infra == nil {
-		// THE ARTIFACT SUBSET IS THIS BOOT'S DECISION, not the resolver's: an
-		// embedded-telemetry boot needs all six artifacts, a `none`/`remote` boot
-		// needs postgres and nats only. Passing the subset keeps a disabled boot
-		// from downloading backends it will never exec (AC7).
+		// THE ARTIFACT SUBSET IS THIS BOOT'S DECISION, not the resolver's: an embedded-telemetry boot needs
+		// all six artifacts, a `none`/`remote` boot needs postgres and nats only.
 		infra, err := acquireInfraBinaries(ctx, defaultAcquireOptions(s.dataDir, s.acquiredArtifacts()...))
 		if err != nil {
 			return fmt.Errorf("acquire infrastructure binaries: %w", err)
@@ -323,12 +262,7 @@ func (s *supervisor) prepare(ctx context.Context) error {
 			"tempo", infra.Tempo, "loki", infra.Loki,
 			"victoria_metrics", infra.VictoriaMetrics, "otel_collector", infra.OTelCollector)
 	}
-	// THE PRIVILEGE GUARD RUNS BEFORE initdb, NOT AFTER IT. Postgres on Windows refuses
-	// to run under an Administrators token, and the refusal would otherwise arrive from
-	// inside initdb with no cause named — the "install that appears to work and then
-	// cannot start the database" failure. This process is what execs initdb and
-	// postgres, so this is the earliest moment that actually matters. It is a no-op on
-	// every platform except an elevated Windows shell (see privilege.go).
+	// THE PRIVILEGE GUARD RUNS BEFORE initdb, NOT AFTER IT.
 	if err := ensureHostPostgresPrivileges(); err != nil {
 		return err
 	}
@@ -360,10 +294,8 @@ func (s *supervisor) prepare(ctx context.Context) error {
 	return nil
 }
 
-// acquiredArtifacts is the artifact subset THIS boot needs: every artifact when
-// telemetry is embedded, postgres + nats alone otherwise. One method rather than
-// an inline slice so the acquisition gate and the proc fleet read the same
-// condition.
+// acquiredArtifacts is the artifact subset THIS boot needs: every artifact when telemetry is
+// embedded, postgres + nats alone otherwise.
 func (s *supervisor) acquiredArtifacts() []string {
 	if s.telemetryEnabled {
 		return nil // every artifact
@@ -371,17 +303,8 @@ func (s *supervisor) acquiredArtifacts() []string {
 	return []string{"postgres", "nats-server"}
 }
 
-// configTokens is the substitution table writeConfigs applies to every embedded
-// config: the data dir plus EVERY port the child binds. ONE TABLE, read by both
-// writeConfigs and the tests, so a token added to a config without a value here
-// fails immediately instead of shipping a literal "@…@" to a child that then
-// refuses to parse its config.
-//
-// THE PORTS ARE HERE AND NOT IN ARGV because that is where tempo/loki/the
-// collector keep them: their listen ports live in the config file. Templating
-// the config from the same servicePorts the readiness probe reads is what makes
-// them movable on a host without breaking the gate — the earlier code could only
-// probe the config's hardcoded port.
+// configTokens is the substitution table writeConfigs applies to every embedded config: the data
+// dir plus EVERY port the child binds.
 func (s *supervisor) configTokens() map[string]string {
 	p := s.ports
 	return map[string]string{
@@ -397,11 +320,8 @@ func (s *supervisor) configTokens() map[string]string {
 		"@COLLECTOR_OTLP_GRPC_PORT@": strconv.Itoa(p.collectorOTLPGRPC),
 		"@COLLECTOR_OTLP_HTTP_PORT@": strconv.Itoa(p.collectorOTLPHTTP),
 		"@COLLECTOR_HEALTH_PORT@":    strconv.Itoa(p.collectorHealth),
-		// The collector's self-metrics exporter is an INTERNAL listener whose
-		// DEFAULT is localhost:8888, so like Tempo's gRPC port it has to be
-		// walked off whatever the previous instance already owns. Nothing in
-		// this repo scrapes it; it is kept (rather than disabled) so an operator
-		// still has the collector's own stats when they want them.
+		// The collector's self-metrics exporter is an INTERNAL listener whose DEFAULT is localhost:8888, so
+		// like Tempo's gRPC port it has to be walked off whatever the previous instance already owns.
 		"@COLLECTOR_SELF_METRICS_PORT@": strconv.Itoa(p.collectorSelfMetrics),
 	}
 }
@@ -436,11 +356,7 @@ func (s *supervisor) configTokens() map[string]string {
 // install predates them (dev's record has no ORCHICON_TEMPO_OTLP_*_PORT), so the
 // shared literal is what a second instance would actually get.
 func resolveInternalListenerPorts(p servicePorts) servicePorts {
-	// ONE PASS, ONE SET OF CLAIMS. internalListenerPort probes and releases, so two
-	// walks inside the same pass can land on the same number if one is pushed onto
-	// another's preferred value — two of OUR OWN children then fight for it, which
-	// is the same crash this function exists to prevent, just self-inflicted. The
-	// taken set makes every port in one pass distinct.
+	// ONE PASS, ONE SET OF CLAIMS.
 	taken := make(map[int]bool, 5)
 	walk := func(preferred int) int {
 		got := internalListenerPort(preferred)
@@ -458,24 +374,8 @@ func resolveInternalListenerPorts(p servicePorts) servicePorts {
 	return p
 }
 
-// internalListenerPort returns a port the child can actually BIND, starting at
-// preferred and walking up until something is free.
-//
-// WHY THIS EXISTS. Every other port in the table is a host port the OPERATOR
-// reaches (the plane, the databases, the telemetry UIs), so the installer
-// assigns each instance a distinct one and a collision would be an install-time
-// error the operator sees. The children's INTERNAL listeners are different:
-// nothing outside the process dials them, so nothing ever assigned them, and
-// two instances on one host both tried to own the same number. Measured on this
-// host: prod running normally on :9095, dev's Tempo crash-looping for ever on
-// "listen tcp :9095: bind: address already in use" — retrying every 32s, with
-// the operator's Traces view reporting the backend unreachable because of it.
-//
-// THE PROBE IS BEST-EFFORT, AND THAT IS DELIBERATE. Freeing the port and letting
-// the child take it is not atomic, so a racing process can still win. The
-// alternative — a permanently, deterministically broken bind for the second
-// instance — is strictly worse, and the failure mode here is the same crash a
-// fixed port produces, not a new one.
+// internalListenerPort returns a port the child can actually BIND, starting at preferred and
+// walking up until something is free.
 func internalListenerPort(preferred int) int {
 	const span = 32
 	for port := preferred; port < preferred+span; port++ {
@@ -493,22 +393,6 @@ func internalListenerPort(preferred int) int {
 }
 
 // applyConfigTokens substitutes the token table into an embedded config.
-//
-// THE CALLER SUBSTITUTES LONGEST FIRST (writeConfigs sorts the keys descending) so a name that is
-// a prefix of another (@TEMPO_OTLP_GRPC_PORT@ vs @TEMPO_OTLP_HTTP_PORT@) can never be partially
-// rewritten by a shorter match.
-//
-// THE VALUE IS ESCAPED, NOT COPIED, and that is what makes a Windows instance possible at all.
-//
-// The templates put tokens into SINGLE-QUOTED YAML scalars (see loki.yaml's path_prefix), which
-// take backslashes literally but in which a lone ' terminates the string. The values here are the
-// instance's DATA DIRECTORY plus ports, and a data directory is whatever the operator's home is —
-// on Windows that is C:\Users\…, which is safe inside single quotes, but an operator whose home
-// contains an apostrophe (C:\Users\O'Brien) or a data dir they chose themselves would break the
-// child's config with a syntax error the supervisor can only report as "exited during startup".
-//
-// So every substituted value is escaped for the quoting context it lands in. Today every token is
-// a path or a port, which is exactly the class that must survive being pasted into a config file.
 func applyConfigTokens(keys []string, body string, tokens map[string]string) string {
 	for _, k := range keys {
 		body = strings.ReplaceAll(body, k, yamlSingleQuoted(tokens[k]))
@@ -516,22 +400,14 @@ func applyConfigTokens(keys []string, body string, tokens map[string]string) str
 	return body
 }
 
-// yamlSingleQuoted escapes a value so it can be placed inside a SINGLE-quoted YAML scalar.
-//
-// Single-quoted YAML has exactly ONE escape: a literal quote is written as two (” ), and a
-// backslash is an ordinary character. That is why the templates use single quotes for paths: the
-// same Windows path is a syntax error inside double quotes and a literal inside single ones.
-//
-// ONLY THE QUOTE IS DOUBLED. Ports and ordinary paths pass through unchanged, so the written
-// config is exactly what a reader (or a test) expects to see; the substitution is not
-// blanket-escaping that would make every generated file unreadable.
+// yamlSingleQuoted escapes a value so it can be placed inside a SINGLE-quoted YAML scalar. ONLY THE
+// QUOTE IS DOUBLED.
 func yamlSingleQuoted(v string) string {
 	return strings.ReplaceAll(v, "'", "''")
 }
 
-// writeConfigs lays out the embedded ServiceConfigsFS into the config dir,
-// substituting the data dir and the resolved port table. The embedded paths
-// start with "deploy/configs/".
+// writeConfigs lays out the embedded ServiceConfigsFS into the config dir, substituting the data
+// dir and the resolved port table.
 func (s *supervisor) writeConfigs() error {
 	const prefix = "deploy/configs/"
 	tokens := s.configTokens()
@@ -562,19 +438,6 @@ func (s *supervisor) writeConfigs() error {
 }
 
 // initPostgres runs initdb on the data dir if it is not yet initialized.
-// Postgres refuses to run as root, so it runs as the INVOKING USER, who owns the
-// data dir.
-//
-// IDEMPOTENT ON EVERY PLATFORM, by the PG_VERSION check below rather than by
-// anything platform-specific: initdb is destructive against an initialized dir, so
-// the check is the whole guard and it reads the same marker on Linux, macOS and
-// Windows.
-//
-// `--auth=trust` IS DELIBERATE: initdb writes LOOPBACK-ONLY HBA rules (pinned by a
-// test), postgresListenAddr keeps postgres on localhost, and the data dir is 0700
-// owned by the invoking user. The code that ADDED wider rules for a published
-// container port (pgHBATrustRules/ensurePostgresHBATrust) was deleted with the
-// single-container deployment, so the HBA stays initdb's default.
 func (s *supervisor) initPostgres() error {
 	dataDir := filepath.Join(s.dataDir, "postgres")
 	initialized := false
@@ -582,16 +445,6 @@ func (s *supervisor) initPostgres() error {
 		initialized = true
 	}
 	// THE RETIRED-CONTAINER CLUSTER GUARD.
-	//
-	// The deleted single-container deployment kept postgres in a container volume,
-	// not in <dataDir>/postgres, and nothing migrated between them. So on a boot
-	// here: with NO cluster, initdb would create an empty database beside the real
-	// one; with a STALE cluster, postgres would start on old data. Both look
-	// healthy from outside, which is why this runs BEFORE initdb and refuses
-	// rather than warns. See postgres_legacy_volume.go.
-	//
-	// It is a no-op for an instance with no container-era volume and for a host
-	// with no engine.
 	if err := guardContainerEraPostgresCluster(s.dataDir, initialized, os.Stderr); err != nil {
 		return err
 	}
@@ -604,18 +457,8 @@ func (s *supervisor) initPostgres() error {
 	// The services run as the invoking user, so the dir is already theirs —
 	// there is nothing to hand over (and chown is impossible without root).
 	if err := hostDataDirWritable(dataDir); err != nil {
-		// CRITERION 3, THE HOST HALF: "a data dir owned by another user produces
-		// an ACTIONABLE error rather than a corruption risk."
-		//
-		// On a host we cannot chown (no root), so an uninitialized dir owned by
-		// someone else is exactly the shape that used to surface as initdb's own
-		// "could not change permissions of directory ...: Operation not permitted"
-		// — or, worse, as a HALF-WRITTEN data dir if initdb got far enough to write
-		// before failing. The probe below touches the dir the same way initdb will,
-		// BEFORE initdb runs, so the failure names the cause and the remedy while
-		// nothing has been created. It is a file create, not a chmod: on Windows a
-		// foreign-owned dir under a different ACL fails the same way and this is the
-		// portable way to observe it.
+		// CRITERION 3, THE HOST HALF: "a data dir owned by another user produces an ACTIONABLE error rather
+		// than a corruption risk."
 		return err
 	}
 	cmd := procwin.Command(s.resolved().Initdb,
@@ -627,44 +470,21 @@ func (s *supervisor) initPostgres() error {
 	return nil
 }
 
-// postgresListenAddr is the single decision point for postgres'
-// listen_addresses: LOOPBACK, always.
-//
-// Nothing forwards to a host process, and the plane reaches postgres over
-// loopback, which initdb --auth=trust already trusts. Widening the address would
-// only expose the database.
+// postgresListenAddr is the single decision point for postgres' listen_addresses: LOOPBACK, always.
 func (s *supervisor) postgresListenAddr() string {
 	return "localhost"
 }
 
-// postgresUIDGID returns the uid/gid the postgres child should run as: the
-// INVOKING USER, because the services ARE that user's processes.
-//
-// THE VALUES COME FROM A PLATFORM SEAM, not os.Getuid()/os.Getgid(), because
-// those return -1 on Windows (os/syscall_windows.go). Windows reports 0 instead,
-// which means "there is no uid to drop to". Nothing chowns with these values — a
-// host cannot chown.
+// postgresUIDGID returns the uid/gid the postgres child should run as: the INVOKING USER, because
+// the services ARE that user's processes.
 func (s *supervisor) postgresUIDGID() (int, int) {
 	return invokingUID(), invokingGID()
 }
 
-// postgresSocketDir is the directory postgres keeps its Unix-domain socket and
-// its .s.PGSQL.<port>.lock in, or "" to leave postgres on its own default.
-//
-// POSTGRES MUST NOT KEEP THE DEFAULT (/var/run/postgresql): it runs as the
-// INVOKING USER, who does not own /var/run/postgresql — the postgres package owns it as postgres:postgres,
-// group-writable only to that group — so postgres refuses to start
-// ("could not create lock file .../.s.PGSQL.<port>.lock: Permission denied")
-// and the readiness gate can never pass. The data dir belongs to the invoking
-// user, so the socket lives there. Same fix, same reason, as the container
-// sandbox plane (internal/runtime/agent.go).
+// POSTGRES MUST NOT KEEP THE DEFAULT (/var/run/postgresql): it runs as the INVOKING USER, who does
+// not own /var/run/postgresql — the postgres package owns it as postgres:postgres.
 func (s *supervisor) postgresSocketDir() string {
-	// WINDOWS HAS NO UNIX-DOMAIN SOCKETS. The Unix socket transport does not exist
-	// there, so the flag must not be passed to postgres.exe at all — at best it is
-	// ignored, at worst it is a startup error, and either way claiming a socket
-	// directory on a platform that has none is a lie the next reader has to disprove.
-	// unixSocketsSupported is the platform seam (true on Linux/macOS, false on
-	// Windows), so this is a compile-time fact rather than a runtime probe.
+	// WINDOWS HAS NO UNIX-DOMAIN SOCKETS.
 	if unixSocketsSupported {
 		return s.dataDir
 	}
@@ -673,14 +493,7 @@ func (s *supervisor) postgresSocketDir() string {
 
 // start spawns a child and begins supervising it (log pipe + exit monitor).
 func (s *supervisor) start(ctx context.Context, p *managedProc) error {
-	// NO CONSOLE WINDOW FOR A SUPERVISED CHILD. The supervisor runs detached (no console), so on
-	// Windows every console-subsystem child it spawns gets a BRAND NEW WINDOW — and reapRestart
-	// gives it another on every restart. That was reported as "a TON of blank command prompt
-	// windows … victoriametrics, otel, and nats … trying to start over and over".
-	//
-	// quietCommandContext rather than exec.CommandContext + setProcAttrNoWindow: this site used to
-	// be the ONLY one that remembered, which is why the same report came back. The attribute is now
-	// applied by the spawn helper for every helper tool the program runs — see quiet.go.
+	// NO CONSOLE WINDOW FOR A SUPERVISED CHILD.
 	cmd := procwin.CommandContext(ctx, p.command, p.args...)
 	cmd.Env = append(os.Environ(), p.env...)
 	cmd.Stdout = s.logPipe(p.name)
@@ -715,11 +528,8 @@ func (s *supervisor) start(ctx context.Context, p *managedProc) error {
 	return nil
 }
 
-// startAndWait spawns a child and blocks until its readiness gate passes
-// (or the timeout elapses, which only logs a warning — the process keeps
-// running and the monitor restarts it if it crashes). It returns early if
-// the child exits during the wait so the caller can proceed to the next
-// dependency and the monitor can restart the dead child.
+// startAndWait spawns a child and blocks until its readiness gate passes (or the timeout elapses,
+// which only logs a warning — the process keeps running and the monitor restarts it if it crashes).
 func (s *supervisor) startAndWait(ctx context.Context, p *managedProc, timeout time.Duration) error {
 	if err := s.start(ctx, p); err != nil {
 		return err
@@ -769,9 +579,8 @@ func (s *supervisor) monitor(ctx context.Context) error {
 	}
 }
 
-// restartBackoff is the delay before the Nth consecutive restart of a crashed
-// child: 2s, then 4, 8, 16, and 32s — capped there so a permanently broken child
-// is retried every 32s instead of hot-looping.
+// restartBackoff is the delay before the Nth consecutive restart of a crashed child: 2s, then 4, 8,
+// 16, and 32s — capped there so a permanently broken child is retried every 32s.
 func restartBackoff(restarts int) time.Duration {
 	return time.Duration(1<<min(restarts, 5)) * time.Second
 }
@@ -799,33 +608,7 @@ func (s *supervisor) reapRestart(ctx context.Context) {
 			backoff := restartBackoff(st.restarts)
 			s.log.Warn("component exited; restarting", "component", st.proc.name,
 				"restarts", st.restarts, "backoff", backoff.String(), "error", err)
-			// PAST THE POINT WHERE A RESTART CAN HELP, TRY TO REPAIR THE STATE.
-			//
-			// Three crashes in a row is the threshold: one crash is a transient
-			// fault and two can be a race, but three consecutive failures of the SAME
-			// child with the SAME backoff means the restart is not converging — the
-			// process is being handed the same unstartable state every time. That is
-			// what a corrupt WAL looks like from here, and no amount of retrying
-			// reaches a different outcome.
-			//
-			// It runs ONCE per recovery generation (the counter resets when the
-			// process comes up, see below), so a component that genuinely cannot run
-			// does not have its state moved aside on every tick — the log records
-			// that recovery was attempted, and the next crashes take the ordinary
-			// backoff path.
-			// SAY WHO ELSE HOLDS THE PORT, ONCE, AT THE THRESHOLD.
-			//
-			// This is the same moment the state-recovery hook fires, and for the same reason: from
-			// here a restart is not converging, so the loop is no longer a transient it can wait
-			// out. A bind conflict and a genuine bug look IDENTICAL from inside this loop — the
-			// child reports a port and a protocol and nothing about WHO — so the most useful thing
-			// this supervisor can add is the owning process. Measured: a 19-hour-old orphaned nats
-			// held 4222/8222 while a fresh supervisor crash-looped 27 times, and the log never once
-			// said another process was involved.
-			//
-			// IT REPORTS AND NEVER ACTS. The holder is very often a SECOND INSTANCE's services,
-			// which is a legitimate thing to be running; killing it would be a destructive act on
-			// something this supervisor did not start.
+			// PAST THE POINT WHERE A RESTART CAN HELP, TRY TO REPAIR THE STATE. IT REPORTS AND NEVER ACTS.
 			if st.restarts == recoveryThreshold {
 				s.reportPortOwner(st.proc.name)
 			}
@@ -842,9 +625,7 @@ func (s *supervisor) reapRestart(ctx context.Context) {
 			if err := s.start(ctx, st.proc); err != nil {
 				s.log.Error("restart failed", "component", st.proc.name, "error", err)
 			} else {
-				// start() installs a FRESH procState (restarts=0). Carry the
-				// consecutive-crash count forward, or the backoff never escalates:
-				// every restart would recompute from 1 and sleep 2s forever.
+				// start() installs a FRESH procState (restarts=0).
 				s.mu.Lock()
 				if ns := s.children[st.proc.name]; ns != nil {
 					ns.restarts = st.restarts
@@ -952,15 +733,7 @@ func httpReady(url string) func(context.Context) bool {
 	}
 }
 
-// resolved returns the infrastructure-binary record, and PANICS when it is
-// missing.
-//
-// THE PANIC IS THE POINT. Every consumer of this record execs a binary, and the
-// only way it can be missing is a supervisor built without prepare() — a
-// programming error. Falling back to the bare name would be a SECOND resolution
-// path (it would find whatever `postgres` happens to be on PATH, which for a
-// downloaded install is the wrong server or none at all), and the whole reason this
-// record exists is that there is exactly one answer.
+// resolved returns the infrastructure-binary record, and PANICS when it is missing.
 func (s *supervisor) resolved() *infraBinaries {
 	if s.infra == nil {
 		panic("supervisor.infrastructure binaries were not resolved — prepare() must run before any service proc")
@@ -984,8 +757,6 @@ func (s *supervisor) postgresProc() *managedProc {
 		ready:   func(ctx context.Context) bool { return tcpReady(ctx, "localhost:"+port) },
 		postReady: func(ctx context.Context) error {
 			// Create the orchicon database on first boot (idempotent).
-			// createdb exits 0 when created and errors on duplicate;
-			// "already exists" is fine.
 			cmd := procwin.CommandContext(ctx, s.resolved().Createdb, "-U", "orchicon", "-h", "localhost", "-p", port, "orchicon")
 			out, err := cmd.CombinedOutput()
 			if err != nil && !strings.Contains(string(out), "already exists") {
@@ -1027,21 +798,6 @@ func (s *supervisor) lokiProc() *managedProc {
 		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.loki) + "/ready"),
 		restart: true,
 		// LOKI IS THE ONE COMPONENT WITH STATE A RESTART CANNOT FIX.
-		//
-		// It refuses to start on a non-sequential WAL, which is what an unclean kill
-		// leaves behind: a segment written but never filled, then a jump in the
-		// numbering. Measured in the field — loki at `restarts=71 backoff=32s`,
-		// retrying for hours while the Logs view reported it unreachable.
-		//
-		// The WAL is quarantined by RENAMING the directory, never deleting it: the
-		// segments are the operator's own telemetry, and a recovery that destroys
-		// data to fix a crash-loop is a worse failure than the loop. Loki starts
-		// clean and writes a fresh WAL; the old one is left beside it for an operator
-		// who wants to recover the bytes.
-		//
-		// Only the WAL is moved. Loki's chunks and its index are readable state that
-		// survives a restart, and moving them would discard logs that are perfectly
-		// good — the corrupt thing is the write-ahead log, so that is all that goes.
 		recoverState: func() error {
 			wal := filepath.Join(s.dataDir, "loki", "wal")
 			if _, err := os.Stat(wal); err != nil {
@@ -1065,18 +821,7 @@ func (s *supervisor) vmProc() *managedProc {
 		command: s.resolved().VictoriaMetrics,
 		args: []string{"-storageDataPath=" + filepath.Join(s.dataDir, "victoriametrics"),
 			"-retentionPeriod=720h",
-			// LOOPBACK, NOT A WILDCARD. This was `-httpListenAddr=:` — every
-			// interface — so metrics were reachable from any machine on the LAN
-			// with no authentication, while every OTHER service this supervisor
-			// starts is loopback-only (postgres, nats, tempo, loki) and
-			// scripts/tests/host-residency/run.sh asserts "nothing may be published
-			// on 0.0.0.0". VictoriaMetrics was the one silent exception: a
-			// wildcard-bound metrics store contradicting the contract the rest of
-			// the stack keeps.
-			//
-			// Nothing needs it externally. The plane reads it over loopback, the
-			// collector exports to it over loopback, and the readiness probe below
-			// asks localhost. Exposing it bought nothing and leaked the topology.
+			// LOOPBACK, NOT A WILDCARD.
 			"-httpListenAddr=127.0.0.1:" + strconv.Itoa(s.ports.vm)},
 		ready:   httpReady("http://localhost:" + strconv.Itoa(s.ports.vm) + "/health"),
 		restart: true,

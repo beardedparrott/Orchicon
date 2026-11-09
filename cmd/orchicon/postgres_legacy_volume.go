@@ -52,23 +52,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// allowFreshPostgresEnv is the explicit opt-out. A postgres volume can exist and
-// still be EMPTY (created by a run that never reached initdb), and the guard
-// cannot see inside one without root — so without an escape hatch it could block
-// a legitimate first start forever. Requiring the operator to say the word turns
-// a silent data loss into a deliberate, visible choice.
+// allowFreshPostgresEnv is the explicit opt-out.
 const allowFreshPostgresEnv = "ORCHICON_ALLOW_FRESH_POSTGRES"
 
-// containerEraPostgresVolume is the docker/podman volume a CONTAINER-era install
-// of this instance kept its cluster in, or "" when the instance has none.
-//
-// It mirrors scripts/lib/instances.sh (PG_VOLUME), including honouring
-// ORCHICON_PG_VOLUME, because the two launchers must describe the SAME volume for
-// one instance — a disagreement here would guard the wrong thing.
-//
-// `test` is deliberately absent: instances.sh gives it PG_VOLUME=fresh, i.e. it
-// is torn down rather than kept, so there is no cluster to protect and no guard
-// to fire.
+// containerEraPostgresVolume is the docker/podman volume a CONTAINER-era install of this instance
+// kept its cluster in, or "" when the instance has none.
 func containerEraPostgresVolume(instance string) string {
 	if v := strings.TrimSpace(os.Getenv("ORCHICON_PG_VOLUME")); v != "" {
 		return v
@@ -83,12 +71,8 @@ func containerEraPostgresVolume(instance string) string {
 }
 
 // postgresVolumeExists is the ENGINE PROBE, kept as a var so tests can stub it.
-// Without the seam every host-residency unit test would consult the real daemon
-// and depend on what this machine happens to have installed.
 var postgresVolumeExists = func(engineBin, name string) bool {
-	// Bounded: a missing or wedged daemon must not delay a plane start. Two
-	// seconds is generous for `volume inspect` on a live socket and short enough
-	// that a host with no engine notices nothing.
+	// Bounded: a missing or wedged daemon must not delay a plane start.
 	cmd := procwin.Command(engineBin, "volume", "inspect", name)
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {
@@ -105,23 +89,7 @@ var postgresVolumeExists = func(engineBin, name string) bool {
 	}
 }
 
-// engineCandidateBins lists the engine binaries whose volume stores could hold a
-// CONTAINER-ERA volume for this instance, most likely first.
-//
-// IT MUST NOT BE THE RUNTIME'S ENGINE ALONE, and that is not hypothetical. The
-// runtime prefers Podman (rootless, ADR-0014) while every container-era instance
-// in the field was created by Docker — so a guard that probed only the resolved
-// runtime engine was blind on exactly the hosts it exists to protect. On this
-// operator's machine `podman volume inspect orchicon-prod_postgres-data` answers
-// "no such volume" while Docker holds the 5.7 GB cluster the guard is about, so
-// the guard stayed silent and a rebuild would have initdb'd an empty database
-// beside it: the failure it was written to prevent, one layer down.
-//
-// WHERE A VOLUME LIVES IS A HISTORICAL FACT about the instance, not a consequence
-// of which engine the runtime now prefers, so every installed engine is asked.
-//
-// A var, so a test pins the candidate set instead of depending on what the
-// machine running it happens to have installed.
+// IT MUST NOT BE THE RUNTIME'S ENGINE ALONE, and that is not hypothetical.
 var engineCandidateBins = func() []string {
 	var bins []string
 	seen := map[string]bool{}
@@ -144,10 +112,8 @@ var engineCandidateBins = func() []string {
 	return bins
 }
 
-// findContainerEraVolume locates the container-era volume in ANY installed engine
-// and reports WHICH engine binary holds it. The engine is returned because the
-// remediation printed on refusal has to name it — telling an operator to run
-// `docker run` against a Podman volume moves no data and looks like it worked.
+// findContainerEraVolume locates the container-era volume in ANY installed engine and reports WHICH
+// engine binary holds it.
 func findContainerEraVolume(volume string) (engineBin string, found bool) {
 	for _, bin := range engineCandidateBins() {
 		if postgresVolumeExists(bin, volume) {
@@ -157,13 +123,8 @@ func findContainerEraVolume(volume string) (engineBin string, found bool) {
 	return "", false
 }
 
-// guardContainerEraPostgresCluster decides whether this host-residency boot may
-// touch <dataDir>/postgres at all, given a container-era volume for the same
-// instance.
-//
-// hostClusterInitialized says whether <dataDir>/postgres already carries a
-// PG_VERSION — the same marker initPostgres uses, so the guard and the action it
-// guards can never disagree about "initialized".
+// guardContainerEraPostgresCluster decides whether this host-residency boot may touch
+// <dataDir>/postgres at all, given a container-era volume for the same instance.
 func guardContainerEraPostgresCluster(hostDataDir string, hostClusterInitialized bool, out io.Writer) error {
 	instance := strings.TrimSpace(os.Getenv("ORCHICON_INSTANCE"))
 	if instance == "" {
@@ -173,9 +134,7 @@ func guardContainerEraPostgresCluster(hostDataDir string, hostClusterInitialized
 	if volume == "" {
 		return nil // nothing this instance could have left behind
 	}
-	// No engine, no evidence. A host with no docker/podman cannot have a volume,
-	// and must never be blocked by one — findContainerEraVolume returns not-found
-	// for an empty candidate set.
+	// No engine, no evidence.
 	engineBin, found := findContainerEraVolume(volume)
 	if !found {
 		return nil
@@ -187,10 +146,7 @@ func guardContainerEraPostgresCluster(hostDataDir string, hostClusterInitialized
 	hostCluster := filepath.Join(hostDataDir, "postgres")
 
 	if hostClusterInitialized {
-		// BOTH exist. Not fatal — the operator may have migrated already and kept
-		// the volume as a backup, which is the safest thing they could have done.
-		// But the plane is now running on the host cluster and the other copy is
-		// invisible from inside it, so say which one is live.
+		// BOTH exist.
 		fmt.Fprintf(out, "note: %s also has a container-era postgres volume (%s, in %s).\n"+
 			"      this plane is running on the HOST cluster %s — the volume is not being read.\n"+
 			"      if the volume holds newer data than the host cluster, stop and migrate it before continuing.\n",

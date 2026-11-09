@@ -2,9 +2,8 @@
 
 package main
 
-// port_owner_windows.go — "who is listening on this port", answered with netstat, which is present on
-// every Windows install. There is no syscall for this that does not require elevation or a driver:
-// the mapping from port to PID lives in the TCP table, and netstat -ano is its documented reader.
+// port_owner_windows.go — "who is listening on this port", answered with netstat, which is present
+// on every Windows install.
 
 import (
 	"strconv"
@@ -14,9 +13,6 @@ import (
 )
 
 // lookupPortOwners returns the process listening on each port, for ports that HAVE a listener.
-//
-// A port with no listener yields no entry — that is the "the port is free, so this is not a bind
-// conflict" answer, and the caller relies on the empty result to say nothing rather than to warn.
 func lookupPortOwners(ports []int) ([]portOwner, error) {
 	want := make(map[int]bool, len(ports))
 	for _, p := range ports {
@@ -31,12 +27,10 @@ func lookupPortOwners(ports []int) ([]portOwner, error) {
 }
 
 // parseNetstatOwners is lookupPortOwners' pure half: given netstat output and the ports we care
-// about, return their listeners. Separated so it can be tested against real output shapes without
-// running netstat — and because the LISTENING filter below is the part that is easy to get wrong.
+// about, return their listeners.
 func parseNetstatOwners(out string, want map[int]bool, nameOf func(int) string) []portOwner {
-	// pid -> name, resolved once: a crash-looping component usually conflicts with a SAME-NAMED
-	// process from a previous run, and "nats-server.exe (pid 26792)" says that at a glance while
-	// "pid 26792" sends the operator to a task manager.
+	// pid -> name, resolved once: a crash-looping component usually conflicts with a SAME-NAMED process
+	// from a previous run.
 	names := map[int]string{}
 	var owners []portOwner
 	seen := map[int]bool{}
@@ -51,11 +45,7 @@ func parseNetstatOwners(out string, want map[int]bool, nameOf func(int) string) 
 		if len(f) >= 5 && !strings.EqualFold(f[len(f)-2], "LISTENING") {
 			continue
 		}
-		// THE PORT IS AFTER THE LAST COLON. An IPv6 local address is "[::]:3100", and splitting on
-		// the FIRST colon yields "::]:3100" — not a number — so every IPv6 listener would be
-		// silently invisible. That is not hypothetical here: on the affected Windows instance the
-		// telemetry children bind [::], so a first-colon split would have found nothing to report
-		// exactly when the diagnosis mattered.
+		// THE PORT IS AFTER THE LAST COLON.
 		i := strings.LastIndex(f[1], ":")
 		if i < 0 {
 			continue

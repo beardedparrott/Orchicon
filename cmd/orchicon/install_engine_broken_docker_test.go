@@ -90,9 +90,8 @@ func TestProvisioningRungIsShared(t *testing.T) {
 		t.Errorf("provisionPodman is defined %d time(s), want exactly 1 — a second rung is how the "+
 			"absent path and the broken path drift in prompting and in reported reasons", n)
 	}
-	// TWO CALL SITES, and the definition is not one of them: it is `provisionPodman := func(why string)`,
-	// which does not match the call pattern. (An earlier version of this assertion expected three and
-	// failed on its own arithmetic, not on the code.)
+	// TWO CALL SITES, and the definition is not one of them: it is `provisionPodman := func(why
+	// string)`, which does not match the call pattern.
 	if n := strings.Count(src, "provisionPodman("); n != 2 {
 		t.Errorf("provisionPodman is CALLED from %d place(s), want 2 — the absent-engine rung and the "+
 			"broken-engine rung", n)
@@ -103,9 +102,7 @@ func TestProvisioningRungIsShared(t *testing.T) {
 		t.Errorf("containerengine.Provision is called from %d place(s); the rungs must demand podman "+
 			"explicitly, or a detected-but-broken engine is returned unchanged and nothing is installed", n)
 	}
-	// AND IT MUST BE THE UNATTENDED FORM. The install never asks: the operator asked for containers by running
-	// it, and a prompt is the step that hung — it was written to a handle nobody could read, so the console
-	// showed a stopped cursor and pressing Enter was the only way forward.
+	// AND IT MUST BE THE UNATTENDED FORM.
 	if n := strings.Count(src, "containerengine.ProvisionEngineUnattended("); n != 1 {
 		t.Errorf("containerengine.ProvisionEngineUnattended is called from %d place(s), want 1", n)
 	}

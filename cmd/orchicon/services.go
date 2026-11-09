@@ -1,25 +1,6 @@
 package main
 
 // `orchicon services up|down|status` — the LOCAL SERVICES the inner loop needs.
-//
-// WHY THIS EXISTS AS A VERB. `make run` starts the control plane from source and
-// `make migrate` applies migrations to a database, and both used to assume the
-// services came from the instance CONTAINER (a published 5432) or from a Postgres
-// the developer installed themselves. Remove the container and neither works: the
-// plane boots with no postgres and no bus, and the migrations have nothing to
-// reach. This verb is what the Makefile calls to bring those two up ON THE HOST,
-// with no container engine and no Postgres installed.
-//
-// IT IS A THIN WRAPPER, NOT A SECOND SUPERVISOR. The de-containerized service
-// layer already ships: `startHostServices` (install_host.go) re-execs this binary
-// as `container` with ORCHICON_SERVICE_RESIDENCY=host, which runs postgres, nats
-// and (optionally) telemetry as DIRECT PROCESSES OF THE INVOKING USER, acquiring
-// the pinned binaries via detect-else-download (binaries.go) when the host has
-// none. Writing another supervisor here would be a second implementation of the
-// same thing — the exact defect the repo's own comments warn against. So this
-// file only decides the PORTS, dispatches the verbs, and adds the two things a
-// raw `container` boot does not do: an idempotent "already running" report, and
-// a stop that VERIFIES the ports came free.
 
 import (
 	"fmt"
@@ -30,13 +11,6 @@ import (
 )
 
 // runServices is the `orchicon services` entrypoint.
-//
-// VERB is up | down | status; a BARE `services` means status, so a no-argument
-// command never starts a database as a side effect.
-//
-// INSTANCE comes from the first positional after the verb, else ORCHICON_INSTANCE,
-// else dev — through parseInstanceTarget, the same resolution every other subcommand
-// uses, so `--instance <name>` works on this verb too.
 func runServices(args []string) int {
 	verb := "status"
 	rest := args
@@ -45,8 +19,7 @@ func runServices(args []string) int {
 		rest = args[1:]
 	}
 	// --force is consumed HERE, before the instance parser, because the parser refuses unknown flags by
-	// design (an ignored flag on a lifecycle verb is how the wrong instance gets changed). Taking it out
-	// first keeps that guarantee and still lets `services down --force prod` mean one thing.
+	// design (an ignored flag on a lifecycle verb is how the wrong instance gets changed).
 	force := false
 	kept := make([]string, 0, len(rest))
 	for _, a := range rest {
@@ -75,17 +48,8 @@ func runServices(args []string) int {
 	}
 }
 
-// servicesPortsFor decides the host ports this instance's local services use.
-//
-// THE RECORD FIRST, THEN DEFAULTS + OVERRIDES, AND NEVER `resolveInstallPorts`.
-// The record (ports.json) is what the instance ACTUALLY bound, so re-running
-// `services up` over a live stack keeps the ports it is already on instead of
-// re-deriving defaults under it. When there is no record — a developer who never
-// ran `orchicon install` — the instance's own column of the shared port table is
-// used, plus the same ORCHICON_*_PORT knobs the installer honours. resolveInstallPorts
-// is deliberately NOT called: it PROMPTS on a terminal when the spec is
-// ambiguous, and a start that asks a question is unusable from a Makefile
-// prerequisite (this is AC5's "no-op that says so", not a dialogue).
+// servicesPortsFor decides the host ports this instance's local services use. THE RECORD FIRST,
+// THEN DEFAULTS + OVERRIDES, AND NEVER `resolveInstallPorts`.
 func servicesPortsFor(instance string) (map[string]int, error) {
 	if err := validateInstance(instance); err != nil {
 		return nil, err
@@ -131,22 +95,15 @@ func servicesPortsFor(instance string) (map[string]int, error) {
 	return ports, nil
 }
 
-// servicesDSN is the Postgres DSN for a resolved port set — DERIVED from the
-// postgres port, never a literal, so the string a developer pastes and the port
-// the services bound cannot disagree.
+// servicesDSN is the Postgres DSN for a resolved port set — DERIVED from the postgres port, never a
+// literal, so the string a developer pastes and the port the services bound cannot disagree.
 func servicesDSN(ports map[string]int) string {
 	return fmt.Sprintf("postgres://orchicon:orchicon@localhost:%d/orchicon?sslmode=disable",
 		ports["ORCHICON_POSTGRES_PORT"])
 }
 
-// telemetryOffForTheInnerLoop turns telemetry OFF unless the operator asked for
-// it, by setting the variable the re-exec'd supervisor inherits.
-//
-// THE INNER LOOP NEEDS THE DB AND THE BUS. The four telemetry backends are
-// ~300 MB of downloads and a wider port set for no inner-loop benefit, and a
-// first `make run` that spends minutes fetching the backends' dependencies before it
-// can serve a request is the wrong default. An explicit ORCHICON_TELEMETRY
-// always wins.
+// telemetryOffForTheInnerLoop turns telemetry OFF unless the operator asked for it, by setting the
+// variable the re-exec'd supervisor inherits.
 func telemetryOffForTheInnerLoop() {
 	if strings.TrimSpace(os.Getenv("ORCHICON_TELEMETRY")) == "" {
 		_ = os.Setenv("ORCHICON_TELEMETRY", "none")
@@ -163,9 +120,8 @@ func servicesUp(instance string) int {
 	telemetryOffForTheInnerLoop()
 	dataDir := hostDataDirFor(instance)
 
-	// startHostServices IS ITSELF IDEMPOTENT: already-ready services are left
-	// running and it says so, which is exactly the "starting what is already
-	// running is a no-op that reports the state" the acceptance criteria ask for.
+	// startHostServices IS ITSELF IDEMPOTENT: already-ready services are left running and it says so,
+	// which is exactly the "starting what is already running is a no-op that reports the state".
 	if err := startHostServices(instance, ports, dataDir, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "orchicon services: %v\n", err)
 		return 1
@@ -179,15 +135,8 @@ func servicesUp(instance string) int {
 	return 0
 }
 
-// servicesDown stops this instance's local services, then VERIFIES the ports came
-// free before reporting success.
-//
-// THE VERIFICATION IS THE POINT. An orphaned Postgres still holding 5432 is the
-// classic way a developer's next start fails confusingly: `services down` would
-// say "stopped", the start would then fail with a bind error that names nothing,
-// and the real cause (a process the pid file no longer knew about) is invisible.
-// So a stop is only successful when the ports are actually free, and when they
-// are not, the port is NAMED.
+// servicesDown stops this instance's local services, then VERIFIES the ports came free before
+// reporting success.
 func servicesDown(instance string, force bool) int {
 	ports, err := servicesPortsFor(instance)
 	if err != nil {
@@ -195,12 +144,7 @@ func servicesDown(instance string, force bool) int {
 		return 1
 	}
 	if err := stopHostServices(instance, os.Stdout); err != nil {
-		// NOT FATAL BY ITSELF. stopHostServices bounds its wait on the supervisor's
-		// PID at 10s, and a supervisor caught mid-restart can take slightly longer
-		// than that even though it IS shutting down (observed: SIGTERM handled, the
-		// process exited a beat after the bound). The AUTHORITATIVE question is
-		// whether the PORTS came free, and that is what decides below — so a bounded
-		// stop is reported, then verified rather than believed.
+		// NOT FATAL BY ITSELF.
 		fmt.Fprintf(os.Stderr, "orchicon services: %v — waiting for the ports to come free\n", err)
 	}
 	pg := ports["ORCHICON_POSTGRES_PORT"]
@@ -211,9 +155,8 @@ func servicesDown(instance string, force bool) int {
 		pgFree := pg <= 0 || portFree(pg)
 		natsFree := nats <= 0 || portFree(nats)
 		if pgFree && natsFree {
-			// A stale record after a slow stop would make a later `services down`
-			// look like there is something to stop; the ports being free is the
-			// truth, so the record follows it.
+			// A stale record after a slow stop would make a later `services down` look like there is something
+			// to stop; the ports being free is the truth, so the record follows it.
 			if pf, perr := hostServicesPIDFile(instance); perr == nil {
 				_ = os.Remove(pf)
 			}
@@ -221,17 +164,11 @@ func servicesDown(instance string, force bool) int {
 			return 0
 		}
 		if time.Now().After(deadline) {
-			// BEFORE FAILING, TAKE BACK WHAT IS OURS. The deadline above only proves that the HOST services
-			// are gone; it says nothing about a container-era instance container, which this product created
-			// and which publishes the same ports. That container is why a host that ever ran the old shape
-			// could never rebuild: the teardown reported "an orphaned process still holds the port" and left
-			// the operator to find a container nothing in the codebase would stop.
+			// BEFORE FAILING, TAKE BACK WHAT IS OURS.
 			reclaimed := stopInstanceContainer(instance, os.Stdout)
 			if force {
 				// --force additionally terminates leftover processes OF THIS INSTANCE that the graceful stop
-				// missed. It is still bounded by identity: a pid is only touched when its executable is one of
-				// our binaries AND it carries this instance's name. An unrelated postgres on :5432 is reported
-				// below, never killed — see cmd/orchicon/reclaim.go for why that boundary is not negotiable.
+				// missed.
 				if killed := forceKillOurLeftovers(instance, os.Stdout); len(killed) > 0 {
 					reclaimed = true
 				}
@@ -257,9 +194,8 @@ func servicesDown(instance string, force bool) int {
 				fmt.Fprintf(os.Stderr, "    pid %d  %s\n", pid.pid, pid.exe)
 			}
 			if len(holders) == 0 {
-				// NOTHING COULD BE IDENTIFIED — which is the NORMAL answer on Windows (no /proc), so the
-				// operator is pointed at a tool that exists on THEIR platform rather than at `ss`/`lsof`.
-				// See reclaim_proc_windows.go.
+				// NOTHING COULD BE IDENTIFIED — which is the NORMAL answer on Windows (no /proc), so the operator
+				// is pointed at a tool that exists on THEIR platform rather than at `ss`/`lsof`.
 				fmt.Fprintf(os.Stderr, "  find the holder with %s\n", portHolderHint(pg))
 			}
 			fmt.Fprintf(os.Stderr, "  nothing was killed: a process this instance does not own may be a database you care about.\n"+
@@ -297,13 +233,7 @@ func servicesStatus(instance string) int {
 	return 1
 }
 
-// portsRecordIsComplete reports whether a recorded port set names EVERY port this instance
-// binds.
-//
-// COMPLETENESS IS THE WHOLE TEST. The record is a per-resolve snapshot, so a re-resolve that
-// moved one port leaves the others' previous values in place — and the record then describes
-// two different instances at once. A record that names every port cannot be mixed like that,
-// because there is nothing left over from an earlier resolve to disagree with.
+// portsRecordIsComplete reports whether a recorded port set names EVERY port this instance binds.
 func portsRecordIsComplete(rec map[string]int) bool {
 	for _, key := range everyServicePortEnv() {
 		if rec[key] <= 0 {

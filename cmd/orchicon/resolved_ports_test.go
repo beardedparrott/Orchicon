@@ -9,15 +9,6 @@ import (
 )
 
 // resolved_ports_test.go — THE INSTALL RECORDS THE PORTS IT BOUND.
-//
-// Why this exists, and it is a real report rather than a hypothetical: installing on Windows, the operator
-// answered 3001 for a published port. `orchicon install` printed 3001, and then scripts/install.ps1 — which prints
-// the "Open from Windows" URLs after the setup step — printed 3002. One run, two contradicting numbers, and
-// the second one was a port nothing had bound.
-//
-// The cause is that a PROMPT cannot be predicted by a wrapper: the resolved ports existed only as output on
-// a stream PowerShell had already consumed, so it re-derived them from the per-instance defaults. These
-// tests pin the record that makes the wrapper's job reading rather than guessing.
 
 // TestWriteResolvedPortsRecordsWhatWasBound is the contract the PowerShell side reads: a JSON object keyed
 // by the ORCHICON_*_PORT names, in the instance's state dir.
@@ -85,9 +76,8 @@ func TestResolvedPortsArePerInstance(t *testing.T) {
 	}
 }
 
-// TestWriteResolvedPortsIsBestEffort — a record that cannot be written must not fail an install that has
-// already resolved everything and pulled its images. The wrapper's fallback is the documented default, so
-// the cost of losing the file is a stale URL, not a broken install.
+// TestWriteResolvedPortsIsBestEffort — a record that cannot be written must not fail an install
+// that has already resolved everything and pulled its images.
 func TestWriteResolvedPortsIsBestEffort(t *testing.T) {
 	// HOME pointing at a path that cannot be created as a directory (a FILE stands where the dir must go).
 	f := filepath.Join(t.TempDir(), "not-a-dir")
@@ -100,16 +90,8 @@ func TestWriteResolvedPortsIsBestEffort(t *testing.T) {
 	writeResolvedPorts("dev", map[string]int{"ORCHICON_CONTROL_PORT": 8080})
 }
 
-// TestTheInstallerNeverTreatsAPresentTagAsCurrent — the regression that made an instance un-upgradable.
-//
-// `pullImageIfAbsent` skipped the pull whenever the tag existed locally, and `:latest` is a MOVABLE pointer:
-// the host kept the layers it first downloaded for ever, the install compared the container against that
-// same stale local image, found them equal, and reported success. The operator's evidence was a container
-// "Up 6 seconds" with "CREATED 11 hours ago" — restarted, never recreated, because nothing newer was ever
-// fetched.
-//
-// It is asserted as an ABSENCE, because that is the shape of the defect: no code path in the installer may
-// decide that a present tag means a current one.
+// TestTheInstallerNeverTreatsAPresentTagAsCurrent — the regression that made an instance
+// un-upgradable.
 func TestTheInstallerNeverTreatsAPresentTagAsCurrent(t *testing.T) {
 	b, err := os.ReadFile("install.go")
 	if err != nil {
@@ -124,8 +106,5 @@ func TestTheInstallerNeverTreatsAPresentTagAsCurrent(t *testing.T) {
 			t.Errorf("install.go is missing %q — the replace-or-refresh path is what keeps an instance upgradeable", want)
 		}
 	}
-	// THE PLANE-IMAGE FALLBACK IS GONE WITH THE PLANE IMAGE. The instance is host processes now, so there is
-	// no instance image to fall back to, and asserting a fallback message would pin a code path that no
-	// longer exists. The absence pins above still hold: the runtime-image fetches that remain go through
-	// ensureImage, so a present tag is still never treated as current.
+	// THE PLANE-IMAGE FALLBACK IS GONE WITH THE PLANE IMAGE.
 }

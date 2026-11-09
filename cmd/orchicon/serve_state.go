@@ -1,9 +1,4 @@
 // Package main — serve state + frontend serving helpers.
-//
-// These used to live in dev.go (the compose dev subcommand); since the
-// single-container deployment replaced the compose workflow, the detached
-// serve helpers and the embedded-SPA wrapper belong to the serve command
-// itself.
 package main
 
 import (
@@ -19,17 +14,7 @@ import (
 
 // serveStateDir returns the detached serve's state root.
 func serveStateDir() string {
-	// THE INSTANCE DECIDES, NOT THE SHELL. The state dir is always <instance data dir>/serve, so when an
-	// instance is named there is nothing to read from the environment and nothing for an ambient value to
-	// get wrong.
-	//
-	// THIS IS THE FIX FOR A REAL CROSS-INSTANCE COLLISION. `plane start dev` run from a shell that carried
-	// a PROD ORCHICON_SERVE_STATE_DIR produced a dev plane whose stdout was
-	// ~/.local/share/orchicon-prod/serve/logs/orchicon.log: dev's own log stopped being written, so the
-	// failure under investigation was invisible while a sibling instance's log filled up. Stripping the
-	// variable at the spawn site was not enough — `getenv` returns the FIRST match, so any path that reads
-	// it before the override lands still sees the ambient value. Deriving it from the instance removes the
-	// question.
+	// THE INSTANCE DECIDES, NOT THE SHELL.
 	if inst := strings.TrimSpace(os.Getenv("ORCHICON_INSTANCE")); inst != "" {
 		return hostDataDirFor(inst) + "/serve"
 	}
@@ -40,18 +25,6 @@ func serveStateDir() string {
 }
 
 // servePIDFile / serveLogFile locate the detached `serve --detach` state.
-//
-// THEY ARE FUNCTIONS, NOT VARS, AND THAT IS LOAD-BEARING. They used to be package
-// vars, which Go resolves BEFORE any init() runs — so a test could not influence
-// them even deliberately: by the time a test binary can unset anything, an
-// operator's ambient ORCHICON_SERVE_STATE_DIR (exported by scripts/container.sh
-// for their live plane) is already baked into both paths. TestServeStatePathsShape
-// asserts the DEFAULT `.dev` shape, so it failed on that machine and passed in CI.
-//
-// Reading the environment at CALL time is what makes the value testable, and it is
-// the same shape the codebase already uses for exactly this reason — internal/tui
-// resolves its collapse prefs and config dir through functions, not vars, because a
-// package var captured at init cannot be isolated by a test.
 func servePIDFile() string { return serveStateDir() + "/pids/orchicon.pid" }
 func serveLogFile() string { return serveStateDir() + "/logs/orchicon.log" }
 
@@ -72,11 +45,7 @@ func procRunning(pidFile string) (string, bool) {
 	return pid, pidAlive(p)
 }
 
-// withFrontend wraps the API handler so that non-API requests serve the
-// embedded SPA. API routes (starting with /orchicon.api.v1) and
-// health/version endpoints are passed through to the API handler. All
-// other paths serve from the embedded frontend/dist, falling back to
-// index.html for client-side routing (docs/10 §9).
+// withFrontend wraps the API handler so that non-API requests serve the embedded SPA.
 func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 	spaFS, err := fs.Sub(assets.FrontendFS, assets.FrontendDir)
 	if err != nil {
@@ -86,15 +55,6 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 	fileServer := http.StripPrefix("/", http.FileServer(http.FS(spaFS)))
 	indexHTML, _ := fs.ReadFile(spaFS, "index.html")
 	// A BINARY WITH NO FRONTEND MUST SAY SO, because the symptom points nowhere near the cause.
-	//
-	// `frontend/dist/.gitkeep` is tracked precisely so `go:embed all:frontend/dist` always has a target, which
-	// means a build that skipped `npm run build` compiles PERFECTLY and embeds only the placeholder. Every UI
-	// request then falls through the `len(indexHTML) > 0` branch below to the API handler, where the auth
-	// middleware answers `{"error":"missing credentials"}`.
-	//
-	// OBSERVED EXACTLY THAT: a canary install replaced a working host plane with such a binary, and the
-	// operator's browser reported "missing credentials" — a credentials-shaped message for a build problem,
-	// with a server that was entirely healthy. This line makes the next occurrence a one-line answer.
 	if len(indexHTML) == 0 {
 		log.Warn("THIS BINARY EMBEDS NO FRONTEND — only the API is served, so the UI at / will report an " +
 			"auth error instead of loading. It was built without `cd frontend && npm run build`; the release " +
@@ -105,25 +65,11 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/orchicon.api.v1") ||
 			strings.HasPrefix(path, "/auth/") ||
-			// THE THREE OPERATIONAL ENDPOINTS. /healthz and /versionz were here; /enginez was
-			// MISSING, and that is the reported bug:
-			//
-			//   "Container availability unknown — the plane did not answer /enginez."
-			//
-			// The plane DID answer — with the SPA's index.html, because this passthrough list is
-			// the only thing standing between an exact-path API route and the frontend catch-all
-			// below. mux.Handle("/enginez", …) registers the handler correctly (internal/api), and
-			// then this wrapper answers 200 text/html for it, so the client's JSON parse fails and
-			// the UI reports the plane as silent. Every instance on every OS showed it.
-			//
-			// A REAL ENDPOINT THAT THE UI CANNOT READ IS WORSE THAN A MISSING ONE: the fetch
-			// succeeds, the status is 200, and the only symptom is "unknown" — which reads like a
-			// network fault and sends the operator to the wrong place. Hence the test next to this
-			// fix: every exact-path handler api.Mount registers must be in this list.
+			// A REAL ENDPOINT THAT THE UI CANNOT READ IS WORSE THAN A MISSING ONE: the fetch succeeds, the
+			// status is 200, and the only symptom is "unknown".
 			path == "/healthz" || path == "/versionz" || path == "/enginez" ||
-			// Embedded OpenID Provider exact paths (internal/auth/op) —
-			// without passthrough the SPA fallback below would swallow
-			// them (they are not /auth/*-prefixed).
+			// Embedded OpenID Provider exact paths (internal/auth/op) — without passthrough the SPA fallback
+			// below would swallow them (they are not /auth/*-prefixed).
 			path == "/.well-known/openid-configuration" ||
 			path == "/authorize" || path == "/authorize/callback" ||
 			path == "/token" || path == "/userinfo" || path == "/jwks" {
@@ -135,9 +81,7 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 		f, err := spaFS.Open(cleanPath)
 		if err == nil {
 			f.Close()
-			// Hashed assets (JS, CSS, images) have unique filenames and
-			// can be cached. HTML files must never be cached so the SPA
-			// picks up new JS bundles on deployment.
+			// Hashed assets (JS, CSS, images) have unique filenames and can be cached.
 			if strings.HasSuffix(path, ".html") || strings.HasSuffix(path, "/") || !strings.Contains(path, ".") {
 				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			}

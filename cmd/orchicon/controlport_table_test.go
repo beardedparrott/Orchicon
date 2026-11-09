@@ -7,15 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/controlport"
 )
 
-// TestControlPortTableMatchesInstaller — the desktop app resolves an instance
-// from the plane's control port, and the numbers it uses must be THE
-// INSTALLER'S, not a copy that will drift.
-//
-// There are already two notions of this table (installerPorts below and
-// scripts/lib/instances.sh), kept equal by
-// TestInstallPortDefaultsMatchShellInstanceTable. internal/controlport is the
-// third consumer — the desktop shell — so it is asserted the same way: against
-// the row the installer actually uses, not against a literal in the test.
+// TestControlPortTableMatchesInstaller — the desktop app resolves an instance from the plane's
+// control port, and the numbers it uses must be THE INSTALLER'S, not a copy that will drift.
 func TestControlPortTableMatchesInstaller(t *testing.T) {
 	var found bool
 	for _, p := range installerPorts() {

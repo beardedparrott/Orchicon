@@ -7,9 +7,8 @@ import (
 	"testing"
 )
 
-// TestInstallOrchLauncherSymlinkBranches exercises the symlink create /
-// refresh / clobber-guard / force-replace branches via installOrchLauncherFrom
-// (os.Executable() is not redirectable, so we pass a controlled exe path).
+// TestInstallOrchLauncherSymlinkBranches exercises the symlink create / refresh / clobber-guard /
+// force-replace branches via installOrchLauncherFrom (os.Executable() is not redirectable.
 func TestInstallOrchLauncherSymlinkBranches(t *testing.T) {
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "bin")
@@ -60,11 +59,8 @@ func TestInstallOrchLauncherSymlinkBranches(t *testing.T) {
 	}
 }
 
-// TestInstallOrchLauncherLeavesAForeignSymlinkAlone is the regression for a bug
-// caught in the wild: an install run from a build directory repointed an
-// existing ~/.local/bin/orch symlink at the BUILD directory's sibling, hijacking
-// a launcher another install owned. The operator then ran `orch` and got a binary
-// they never chose.
+// TestInstallOrchLauncherLeavesAForeignSymlinkAlone is the regression for a bug caught in the wild:
+// an install run from a build directory repointed an existing ~/.local/bin/orch symlink.
 func TestInstallOrchLauncherLeavesAForeignSymlinkAlone(t *testing.T) {
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "build")   // THIS install's sibling

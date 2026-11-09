@@ -76,10 +76,9 @@ func TestPlaneDriftIsUnknownWithoutAPIDFile(t *testing.T) {
 	}
 }
 
-// TestStopHostPlaneNeedsTheInstanceStateDir — the installer previously had NO way to stop a host plane
-// (`serve --stop` appeared nowhere in it), which is why a stale plane could never be corrected. The state dir
-// is what `serve --stop` resolves its PID file from, so passing it is not optional: a bare call looks in the
-// wrong directory and reports success while stopping nothing.
+// TestStopHostPlaneNeedsTheInstanceStateDir — the installer previously had NO way to stop a host
+// plane (`serve --stop` appeared nowhere in it), which is why a stale plane could never be
+// corrected.
 func TestStopHostPlanePassesTheInstanceStateDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -114,9 +113,7 @@ func TestStopHostPlanePassesTheInstanceStateDir(t *testing.T) {
 	}
 }
 
-// TestHostDataDirForNeverFails — the repair path must not be the thing that breaks an install. It is called
-// after the instance is already up and the operator is waiting for a verdict, so a failure to resolve HOME
-// there is reported as a best-effort path rather than an error.
+// TestHostDataDirForNeverFails — the repair path must not be the thing that breaks an install.
 func TestHostDataDirForNeverFails(t *testing.T) {
 	t.Setenv("HOME", "")
 	if got := hostDataDirFor("dev"); got == "" {
@@ -124,14 +121,8 @@ func TestHostDataDirForNeverFails(t *testing.T) {
 	}
 }
 
-// TestInstallConvergesOnARecordedShapeAndLeavesAnUnknownOneAlone is acceptance criterion 6, the property the
-// whole recorded-residency change exists to preserve: RE-RUNNING AN INSTALL ON A HEALTHY INSTANCE CONVERGES,
-// and a plane that CANNOT BE POSITIVELY IDENTIFIED IS LEFT ALONE.
-//
-// The shape used to be read from the container's create-time environment, so the fail-safe lived in an
-// `inspect` that could fail transiently. It is now a record this installer writes, and the fail-safe is the
-// `(string, bool)` return: ok=false NEVER reads as a mismatch, so `!known` takes the "leave it" arm rather than
-// the "recreate a live instance" one.
+// It is now a record this installer writes, and the fail-safe is the `(string, bool)` return:
+// ok=false NEVER reads as a mismatch.
 func TestInstallConvergesOnARecordedShapeAndLeavesAnUnknownOneAlone(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

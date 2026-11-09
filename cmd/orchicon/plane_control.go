@@ -1,26 +1,6 @@
 package main
 
-// plane_control.go — the ONE lifecycle implementation, in internal/planecontrol, reachable from cmd/orchicon
-// under the names it has always used.
-//
-// THE DECISION THIS FILE RECORDS: plane lifecycle control is LOCAL PROCESS INVOCATION ONLY. There is no
-// lifecycle RPC. The API path existed for exactly one consumer — the web app, where a browser cannot spawn a
-// process — and the web app is out of scope for lifecycle control. The desktop app (a Wails Go process), the
-// TUI (`orch`, a separate binary) and the CLI all run on the same host as the plane and invoke the same
-// mechanism directly, so the shared layer is a Go package rather than an RPC. `internal/api/api.go`, the
-// proto and the generated clients are untouched; internal/api's own test asserts the surface did not grow.
-//
-// WHY THE BODIES MOVED OUT OF `package main` AT ALL: a `package main` cannot be imported, so a lifecycle
-// implementation living here was callable by exactly one caller and by neither `cmd/orch` nor a Wails app.
-// The bodies now live in internal/planecontrol (standard library only), and everything below is a ONE-LINE
-// DELEGATION kept so the existing call sites and this package's tests read unchanged. There is no second
-// implementation: the tests assert that the `serve --detach` / `serve --stop` re-execs exist only in the
-// shared package.
-//
-// THE GUARANTEES TRAVEL WITH THE BODIES, not with these names:
-//   - a plane that cannot be identified is LEFT ALONE (planeUnknown / planecontrol.Unknown);
-//   - stop is graceful and BOUNDED, and reports failure rather than hanging;
-//   - every path is per-instance (ORCHICON_SERVE_STATE_DIR is only ever a CHILD env built from it).
+// THE DECISION THIS FILE RECORDS: plane lifecycle control is LOCAL PROCESS INVOCATION ONLY.
 
 import (
 	"io"
@@ -109,12 +89,4 @@ func envWithout(env []string, keys ...string) []string { return planecontrol.Env
 func bridgeIP() (string, error)                        { return planecontrol.BridgeIP() }
 
 // terminateProcessTree stops a process and everything it spawned.
-//
-// THE UNIX HALF IS THE GROUP KILL, and it is exact: the supervisor was started with
-// setProcAttrBackground (the setsid analogue), so it leads its own process group, and signalling
-// that group reaches every child — postgres, nats, the telemetry backends — at once.
-//
-// THAT IS WHY THE WINDOWS HALF NEEDS SOMETHING ELSE. There is no process-group signal to
-// deliver on Windows, and TerminateProcess ends one process, so a stopped supervisor leaves its
-// children running. See planecontrol.TerminateProcessTree.
 func terminateProcessTree(pid int) error { return planecontrol.TerminateProcessTree(pid) }

@@ -87,9 +87,6 @@ func indexHasFiles(t *testing.T, root string) bool {
 }
 
 // AND node_modules IS NOT TRACKED, as a symlink or anything else.
-//
-// The narrow restatement of the same defect: even a RELATIVE tracked node_modules would be wrong, because the
-// directory's contents are machine-installed and must never be committed.
 func TestNodeModulesIsNotTracked(t *testing.T) {
 	root := repoRoot(t)
 	out, err := exec.Command("git", "-C", root, "ls-files").Output()

@@ -1,12 +1,6 @@
 package main
 
 // main_test.go — the SHAPE of a shell's TUI options, pinned at the call site.
-//
-// cmd/orch cannot read tui.App's unexported launchDir/launchPromptArmed (tui is another package), so the
-// BEHAVIOURAL pin — that the second shell still scopes to the launch directory without re-asking — lives in
-// internal/tui/project_scope_reconnect_test.go, which can read those fields. What is checkable HERE is the
-// mechanically verifiable contract of shellLaunchOptions: the DIRECTORY is passed on every shell, and the
-// PROMPT option is added only on the first.
 
 import (
 	"fmt"
@@ -18,10 +12,6 @@ import (
 )
 
 // THE LAUNCH DIRECTORY IS PASSED ON EVERY SHELL; THE PROMPT IS ARMED ONLY ON THE FIRST.
-//
-// This is the split that was collapsed into one decision. On a continuation the old code passed "" as the
-// directory, which tui.WithLaunchDir reads as "do nothing" — so the directory must be present in the option
-// set whether or not this is the first shell, and the extra option must appear only for the first shell.
 func TestShellLaunchOptionsThreadsTheDirectoryOnEveryShell(t *testing.T) {
 	const dir = "/home/me/projects/orch"
 	cases := []struct {
@@ -51,9 +41,7 @@ func TestShellLaunchOptionsThreadsTheDirectoryOnEveryShell(t *testing.T) {
 	}
 }
 
-// THE ARMING OPTION IS ABSENT ON A CONTINUATION. Stated on its own because it is the property that keeps the
-// fix from re-introducing the nagging: if the second option were present on a continuation, the reconnect
-// would re-ask the project question.
+// THE ARMING OPTION IS ABSENT ON A CONTINUATION.
 func TestTheContinuationCarriesNoPromptOption(t *testing.T) {
 	first := shellLaunchOptions(true, "/home/me/projects/orch")
 	cont := shellLaunchOptions(false, "/home/me/projects/orch")
@@ -64,8 +52,6 @@ func TestTheContinuationCarriesNoPromptOption(t *testing.T) {
 		t.Fatalf("the continuation has %d options, want 1 (directory only)", len(cont))
 	}
 	// The directory option is the SAME on both shells: the continuation does not lose it.
-	// (AppOption is an opaque func value in this package, so identity is pinned by count above and by the
-	// behavioural test in internal/tui; here we only assert the option set is non-nil.)
 	if cont[0] == nil {
 		t.Error("the continuation's directory option is nil")
 	}
@@ -93,13 +79,8 @@ func TestParseArgsReadsInstance(t *testing.T) {
 	}
 }
 
-// TestInstanceSelectionSetsTheEnvSoPlaneVerbsAgree — connecting to an instance and
-// ACTING on that instance must be the same answer.
-//
-// internal/tui's instanceForProfile reads ORCHICON_INSTANCE first, before deriving an
-// instance from the profile's port. Without this, `orch --instance prod` would connect
-// to prod while /plane restart acted on whatever the port suggested — or on nothing,
-// leaving the operator believing they had restarted the plane they were looking at.
+// TestInstanceSelectionSetsTheEnvSoPlaneVerbsAgree — connecting to an instance and ACTING on that
+// instance must be the same answer.
 func TestInstanceSelectionSetsTheEnvSoPlaneVerbsAgree(t *testing.T) {
 	t.Setenv("ORCHICON_INSTANCE", "") // start from nothing, and restore afterwards
 	os.Unsetenv("ORCHICON_INSTANCE")

@@ -75,11 +75,8 @@ const (
 	// pinnedPostgresVersion is the release tag of the pinned binaries build.
 	pinnedPostgresVersion = "16.4.0"
 
-	// The four telemetry backends' pinned versions. EACH MUST MATCH THE VERSION
-	// deploy/container/Dockerfile PINS, because the same binaries run in either
-	// shape (that Dockerfile is now the reference, not the source). The pinned
-	// URL is the PUBLISHER'S OWN release asset for that tag — the tag's downloads
-	// page and the archives were checked by hand when this table was written.
+	// EACH MUST MATCH THE VERSION deploy/container/Dockerfile PINS, because the same binaries run in
+	// either shape (that Dockerfile is now the reference, not the source).
 	pinnedTempoVersion           = "2.7.1"
 	pinnedLokiVersion            = "3.4.2"
 	pinnedVictoriaMetricsVersion = "1.111.0"
@@ -94,14 +91,8 @@ const (
 	// infraBinDirName is the subdir of the instance data dir holding downloads.
 	infraBinDirName = "bin"
 
-	// postgresSubdirName is where the downloaded PostgreSQL distribution is
-	// unpacked: <dataDir>/bin/postgres.
-	//
-	// THE WHOLE DISTRIBUTION, NOT JUST bin/. initdb resolves its share directory
-	// relative to its own executable path (/share/postgres.bki) and postgres does
-	// the same for /lib and /share, so a copy that kept only bin/ fails at initdb
-	// with "corrupted installation". Verified: a bin-only copy of a real pinned
-	// build fails exactly that way.
+	// postgresSubdirName is where the downloaded PostgreSQL distribution is unpacked:
+	// <dataDir>/bin/postgres.
 	postgresSubdirName = "postgres"
 
 	// downloadTailLimit is the bounded tail kept so a failed download can still
@@ -113,40 +104,18 @@ const (
 // "the host's copy is broken" — only the former is a reason to download.
 var errInfraAbsent = errors.New("infrastructure binaries not found")
 
-// postgresRequiredBins are the server and client binaries the stack actually execs. A dir
-// with only some of them is a PARTIAL install and is rejected: initdb, pg_ctl,
-// pg_isready, createdb and postgres are each invoked by name somewhere in
-// cmd/orchicon/container.go, so "almost all of them" fails at boot.
-//
-// pg_dump AND psql ARE IN THIS LIST, and that is a fix rather than a tidy-up. They are
-// what `orchicon db backup` and `orchicon db restore` exec (internal/backup: pgToolDump
-// = pg_dump, pgToolRestore = psql), and on a host whose Postgres came from the DOWNLOAD
-// path they were sitting at <DataDir>/bin/postgres/bin/pg_dump while the resolver
-// recorded only the five server binaries — so exec.LookPath("pg_dump") could not see
-// them and EVERY `orchicon db backup` on a downloaded host install failed with
-// "pg_dump is not on this PATH and no Postgres container was reachable to run it in".
-// They are required because the pinned distribution ships them on every platform we
-// pin (verified by listing the unpacked 16.4.0 archives: linux tarball and
-// windows-msvc zip both carry pg_dump, psql and pg_restore in bin/), and a dir that
-// carries the server but not the matching client cannot serve this instance's backups.
+// postgresRequiredBins are the server and client binaries the stack actually execs.
 var postgresRequiredBins = []string{"postgres", "initdb", "pg_ctl", "pg_isready", "createdb", "pg_dump", "psql"}
 
-// postgresOptionalClientBins are recorded when the chosen dir carries them, but are NOT
-// part of the completeness gate: nothing in this binary execs them yet (restore drives
-// psql, not pg_restore), so requiring them would reject a valid server install over a
-// tool we do not call — the trade the required-list comment above warns about. Recorded
-// anyway because the record is the one place a later `orchicon db restore --format=c`
-// would look, and re-probing PATH for it would be the second resolution path this file
-// exists to prevent.
+// postgresOptionalClientBins are recorded when the chosen dir carries them, but are NOT part of the
+// completeness gate: nothing in this binary execs them yet (restore drives psql, not pg_restore).
 var postgresOptionalClientBins = []string{"pg_restore"}
 
 // natsRequiredBins are the binaries the NATS component execs.
 var natsRequiredBins = []string{"nats-server"}
 
-// The four telemetry backends are each a SINGLE STATIC GO BINARY with no
-// initialisation step, so they take the same detect-else-download path as
-// postgres/nats — but they are NOT scattered across a distribution: one
-// required executable each, unpacked flat.
+// The four telemetry backends are each a SINGLE STATIC GO BINARY with no initialisation step, so
+// they take the same detect-else-download path as postgres/nats.
 var (
 	tempoRequiredBins = []string{"tempo"}
 	// Loki's archive members carry a PLATFORM SUFFIX (loki-linux-amd64), so the
@@ -158,18 +127,11 @@ var (
 	otelCollectorRequiredBins = []string{"otelcol-contrib"}
 )
 
-// telemetryArtifactNames are the four artifacts that exist only for an
-// embedded-telemetry boot, in dependency order (the collector's exporters point
-// at the other three). It is the set the supervisor names when it wants every
-// artifact (acquireInfraBinaries treats an empty Only as "all") and the set a
-// test iterates to prove the table is complete.
+// telemetryArtifactNames are the four artifacts that exist only for an embedded-telemetry boot, in
+// dependency order (the collector's exporters point at the other three).
 var telemetryArtifactNames = []string{"tempo", "loki", "victoria-metrics-prod", "otelcol-contrib"}
 
 // infraBinaries is the resolved set — recorded once, read by every service proc.
-//
-// It is deliberately a flat set of ABSOLUTE paths rather than a bin dir to be
-// searched later: a search is a second resolution path, and the record exists so
-// there is only one.
 type infraBinaries struct {
 	Source     string `json:"source"` // "detected" | "downloaded" | "mixed"
 	Postgres   string `json:"postgres"`
@@ -182,10 +144,7 @@ type infraBinaries struct {
 	PgRestore  string `json:"pg_restore,omitempty"`
 	NatsServer string `json:"nats_server"`
 
-	// The four telemetry backends. EMPTY IS A VALID VALUE: a boot with
-	// ORCHICON_TELEMETRY=none never acquires them, and loadInfraBinaries must not
-	// reject that record (the completeness gate for these is at the call site
-	// that actually needs them).
+	// The four telemetry backends.
 	Tempo           string `json:"tempo,omitempty"`
 	Loki            string `json:"loki,omitempty"`
 	VictoriaMetrics string `json:"victoria_metrics,omitempty"`
@@ -200,9 +159,8 @@ type infraBinaries struct {
 	OTelCollectorVersion   string `json:"otel_collector_version,omitempty"`
 }
 
-// acquireOptions carries every host interaction so the mechanism is deterministic
-// under test: no test reaches the network, and no test depends on what happens to
-// be installed on the machine running it.
+// acquireOptions carries every host interaction so the mechanism is deterministic under test: no
+// test reaches the network.
 type acquireOptions struct {
 	// DataDir is the instance data dir; downloads land in <DataDir>/bin and the
 	// record is written to <DataDir>/infra-binaries.json.
@@ -221,22 +179,12 @@ type acquireOptions struct {
 	// SkipDownload makes absence fatal instead of downloading — for a host that
 	// forbids network access at install time.
 	SkipDownload bool
-	// Only restricts resolution to the named artifacts. EMPTY MEANS EVERY
-	// ARTIFACT. It exists because the supervisor knows whether THIS boot runs the
-	// telemetry backends (ORCHICON_TELEMETRY), and a `none` boot must not download
-	// ~300 MB of backends it will never start. It is not a correctness gate: an
-	// artifact named here that is absent is still a hard failure when downloading
-	// is forbidden.
+	// Only restricts resolution to the named artifacts.
 	Only []string
-	// RestrictToPath limits detection to PathEnv ALONE, skipping the platform's
-	// conventional install locations. It exists for tests: a test asserting "absent"
-	// must not accidentally succeed because the machine running it happens to have
-	// /usr/lib/postgresql/*/bin installed.
+	// RestrictToPath limits detection to PathEnv ALONE, skipping the platform's conventional install
+	// locations.
 	RestrictToPath bool
-	// Out is the progress stream. A nil Out means NOTHING is written
-	// (progressOut returns io.Discard); the production constructors
-	// (defaultAcquireOptions) set os.Stdout, and tests that do not care pass
-	// io.Discard explicitly.
+	// Out is the progress stream.
 	Out io.Writer
 }
 
@@ -249,30 +197,21 @@ type infraArtifact struct {
 	// Required are the executable base names (no .exe) that must exist after
 	// acquisition — the same completeness rule detection applies.
 	Required []string
-	// Distribution unpacks a whole tree into <DataDir>/bin/<Name> (PostgreSQL
-	// needs its share/ and lib/ beside its bin/); otherwise the single binary is
-	// installed as <DataDir>/bin/<Name>.
+	// Distribution unpacks a whole tree into <DataDir>/bin/<Name> (PostgreSQL needs its share/ and lib/
+	// beside its bin/); otherwise the single binary is installed as <DataDir>/bin/<Name>.
 	Distribution bool
-	// Nested says the archive wraps everything in ONE top-level directory, which
-	// must be stripped on unpack (today's behaviour, and what PostgreSQL and NATS
-	// both do). FALSE — the four telemetry artifacts — means the binary sits at
-	// the archive ROOT, and stripping a segment would DELETE the binary: the entry
-	// "tempo" has no '/', so the strip yields "" and the entry is skipped.
+	// Nested says the archive wraps everything in ONE top-level directory, which must be stripped on
+	// unpack (today's behaviour, and what PostgreSQL and NATS both do).
 	Nested bool
-	// Members maps "<goos>/<goarch>" to the archive member's BASE NAME, for an
-	// artifact whose member name differs per platform and from the executable
-	// name (Loki ships loki-linux-amd64 / loki-windows-amd64.exe). A platform
-	// absent from the map falls back to exeName(Required[0], goos), which is what
-	// tempo/otelcol/vm need on unix.
+	// Members maps "<goos>/<goarch>" to the archive member's BASE NAME, for an artifact whose member
+	// name differs per platform and from the executable name (Loki ships loki-linux-amd64 /.
 	Members map[string]string
 	// URLs and Checksums are keyed "<goos>/<goarch>".
 	URLs      map[string]string
 	Checksums map[string]string
 }
 
-// infraArtifacts is the pinned table. Every checksum below was taken from the
-// publisher's own release for the pinned version (the .sha256 asset for the
-// PostgreSQL builds, and a download-and-hash of the NATS release artifacts).
+// infraArtifacts is the pinned table.
 var infraArtifacts = []infraArtifact{
 	{
 		Name:         "postgres",
@@ -348,10 +287,8 @@ var infraArtifacts = []infraArtifact{
 		Name:     "loki",
 		Version:  pinnedLokiVersion,
 		Required: lokiRequiredBins,
-		// GRAFANA'S LOKI MEMBERS CARRY A PLATFORM SUFFIX and are NOT the binary's
-		// name, so every platform needs an explicit entry: there is no sane
-		// fallback that would find `loki-linux-amd64`. All five were read from the
-		// archives.
+		// GRAFANA'S LOKI MEMBERS CARRY A PLATFORM SUFFIX and are NOT the binary's name, so every platform
+		// needs an explicit entry: there is no sane fallback that would find `loki-linux-amd64`.
 		Members: map[string]string{
 			"linux/amd64":   "loki-linux-amd64",
 			"linux/arm64":   "loki-linux-arm64",
@@ -378,10 +315,8 @@ var infraArtifacts = []infraArtifact{
 		Name:     "victoria-metrics-prod",
 		Version:  pinnedVictoriaMetricsVersion,
 		Required: vmRequiredBins,
-		// The windows zip's single member is victoria-metrics-windows-amd64-prod.exe;
-		// the unix tarballs carry `victoria-metrics-prod` at the root, which the
-		// required-name fallback resolves. The member is installed under its
-		// CANONICAL name, so every platform ends up exec'ing one predictable path.
+		// The windows zip's single member is victoria-metrics-windows-amd64-prod.exe; the unix tarballs
+		// carry `victoria-metrics-prod` at the root, which the required-name fallback resolves.
 		Members: map[string]string{
 			"windows/amd64": "victoria-metrics-windows-amd64-prod.exe",
 		},
@@ -422,11 +357,6 @@ var infraArtifacts = []infraArtifact{
 }
 
 // parsePostgresMajor extracts the major version from `postgres --version` output.
-//
-// The real line is "postgres (PostgreSQL) 16.4" or "...16.4 (Debian 16.4-1)", and a
-// development build prints "...18devel" - so the version is the FIRST token starting
-// with a digit, and the major is its leading digit run. Pure, so it is unit-tested
-// directly rather than through an exec.
 func parsePostgresMajor(s string) (int, bool) {
 	for _, f := range strings.Fields(s) {
 		f = strings.Trim(f, "(),")
@@ -455,11 +385,7 @@ func exeName(name, goos string) string {
 	return name
 }
 
-// memberFor is the ARCHIVE MEMBER base name an artifact's current platform ships
-// its binary under. An explicit Members entry wins (Loki names its members
-// loki-linux-amd64, which no fallback could guess); otherwise it is the required
-// binary under the platform's executable suffix, which is what tempo,
-// victoria-metrics on unix and otelcol-contrib all use.
+// memberFor is the ARCHIVE MEMBER base name an artifact's current platform ships its binary under.
 func memberFor(a infraArtifact, goos, goarch string) string {
 	if m := a.Members[goos+"/"+goarch]; m != "" {
 		return m
@@ -470,10 +396,8 @@ func memberFor(a infraArtifact, goos, goarch string) string {
 	return exeName(a.Required[0], goos)
 }
 
-// canonicalName is the name an acquired binary is INSTALLED under — always the
-// required base name for this platform, never the archive's member name. That is
-// what lets a flat archive whose member is loki-linux-amd64 land as `loki`, so a
-// single predictable path is exec'd on every platform.
+// canonicalName is the name an acquired binary is INSTALLED under — always the required base name
+// for this platform, never the archive's member name.
 func canonicalName(a infraArtifact, goos string) string {
 	if len(a.Required) == 0 {
 		return ""
@@ -481,9 +405,8 @@ func canonicalName(a infraArtifact, goos string) string {
 	return exeName(a.Required[0], goos)
 }
 
-// selectedArtifacts filters the pinned table to the artifacts this acquisition
-// covers: every one when Only is empty, otherwise exactly the names it lists (in
-// the table's order, so the missing-list order is stable).
+// selectedArtifacts filters the pinned table to the artifacts this acquisition covers: every one
+// when Only is empty, otherwise exactly the names it lists (in the table's order.
 func selectedArtifacts(opt acquireOptions) []infraArtifact {
 	if len(opt.Only) == 0 {
 		return infraArtifacts
@@ -501,10 +424,7 @@ func selectedArtifacts(opt acquireOptions) []infraArtifact {
 	return out
 }
 
-// lookPathIn resolves name against the given dirs, in order. It is a PATH-local
-// lookup rather than exec.LookPath because the probe must honor the PATH the
-// caller passes (tests, and any future per-instance PATH) rather than this
-// process's environment.
+// lookPathIn resolves name against the given dirs, in order.
 func lookPathIn(dirs []string, name, goos string) (string, bool) {
 	name = exeName(name, goos)
 	for _, dir := range dirs {
@@ -527,8 +447,6 @@ func lookPathIn(dirs []string, name, goos string) (string, bool) {
 }
 
 // optionalBin returns path when it names an existing, non-directory file, else "".
-// It exists for postgresOptionalClientBins, whose absence must never make a dir
-// "partial" — see that list's comment.
 func optionalBin(path, goos string) string {
 	if st, err := os.Stat(path); err == nil && !st.IsDir() {
 		return path
@@ -597,9 +515,9 @@ func loadInfraBinaries(dataDir string) (*infraBinaries, error) {
 // DETECT
 // ---------------------------------------------------------------------------
 
-// homeDir returns the operator's home directory, or "" when it cannot be
-// resolved (a service account with no passwd entry) — the conventional install
-// locations simply contribute nothing then.
+// homeDir returns the operator's home directory, or "" when it cannot be resolved (a service
+// account with no passwd entry) — the conventional install locations simply contribute nothing
+// then.
 func homeDir() string {
 	h, err := os.UserHomeDir()
 	if err != nil {
@@ -608,16 +526,8 @@ func homeDir() string {
 	return h
 }
 
-// postgresCandidateDirs is the ordered list of dirs a Postgres server install may
-// live in: the caller's PATH first (an explicit choice wins), then the
-// conventional locations each platform's packager uses.
-//
-// The glob branch is the one that matters in practice: Debian and Ubuntu install
-// the SERVER under /usr/lib/postgresql/<major>/bin and put only the CLIENT tools
-// (/usr/bin/psql, pg_isready, createdb) on PATH — so a PATH-only probe finds a
-// partial install on a host that has a perfectly good server, and would then
-// download a second one over the top of it. Newest-first, mirroring
-// internal/runtime/agent.go's sandboxPgBinDir.
+// postgresCandidateDirs is the ordered list of dirs a Postgres server install may live in: the
+// caller's PATH first (an explicit choice wins).
 func postgresCandidateDirs(opt acquireOptions) []string {
 	var dirs []string
 	dirs = append(dirs, filepath.SplitList(opt.PathEnv)...)
@@ -663,22 +573,15 @@ func postgresCandidateDirs(opt acquireOptions) []string {
 	return dirs
 }
 
-// detectResult is what detection resolved: the absolute paths it found, and the
-// artifact names it did not find at all (the ones to download).
-//
-// The two are kept apart on purpose. "Absent" is a reason to download; "present
-// but broken" is a reason to STOP, and collapsing them would turn a partial
-// install into a silent second install.
+// detectResult is what detection resolved: the absolute paths it found, and the artifact names it
+// did not find at all (the ones to download).
 type detectResult struct {
 	rec     *infraBinaries
 	missing []string
 }
 
-// detectInfraBinaries probes for every SELECTED artifact independently.
-//
-// It returns an error ONLY for a host with a Postgres install we must not use
-// (partial, or too old). A host with no Postgres at all is not an error here — it
-// is the download path's input.
+// detectInfraBinaries probes for every SELECTED artifact independently. It returns an error ONLY
+// for a host with a Postgres install we must not use (partial, or too old).
 func detectInfraBinaries(opt acquireOptions) (*detectResult, error) {
 	res := &detectResult{rec: &infraBinaries{}}
 
@@ -703,10 +606,8 @@ func detectInfraBinaries(opt acquireOptions) (*detectResult, error) {
 				res.missing = append(res.missing, "nats-server")
 			}
 		default:
-			// THE TELEMETRY BACKENDS: single static Go binaries with no
-			// initialisation step, so detection is a PATH-shaped probe and there is
-			// nothing to validate — unlike PostgreSQL there is no share dir, no
-			// minimum version and no partial-install shape.
+			// THE TELEMETRY BACKENDS: single static Go binaries with no initialisation step, so detection is a
+			// PATH-shaped probe and there is nothing to validate — unlike PostgreSQL there is no share dir.
 			if p, version, ok := detectSingleBinary(a, opt); ok {
 				res.rec.setTelemetryArtifact(a.Name, p, version)
 			} else {
@@ -764,10 +665,8 @@ func (rec *infraBinaries) setTelemetryArtifact(name, path, version string) {
 	}
 }
 
-// detectSingleBinary looks for a single-binary artifact on the caller's PATH, in
-// the conventional user/Homebrew locations, and in this instance's own bin dir (a
-// previous run's unpacked download is indistinguishable from an explicit choice).
-// The version is best-effort: an artifact that will not report one still runs.
+// detectSingleBinary looks for a single-binary artifact on the caller's PATH, in the conventional
+// user/Homebrew locations.
 func detectSingleBinary(a infraArtifact, opt acquireOptions) (path, version string, ok bool) {
 	dirs := filepath.SplitList(opt.PathEnv)
 	if !opt.RestrictToPath {
@@ -800,12 +699,6 @@ func detectSingleBinary(a infraArtifact, opt acquireOptions) (path, version stri
 }
 
 // detectPostgresDir finds the first candidate dir holding a `postgres` SERVER.
-//
-// ABSENT AND PARTIAL ARE DIFFERENT ANSWERS. No candidate holds `postgres` at all →
-// errInfraAbsent (download). A candidate holds it but is missing any of the other
-// required binaries → a hard error naming what is missing and where, because
-// satisfying that install would fail at initdb several minutes later with nothing
-// pointing back here.
 func detectPostgresDir(opt acquireOptions) (string, error) {
 	seen := map[string]bool{}
 	var partial []string
@@ -839,11 +732,8 @@ func (rec *infraBinaries) fillPostgres(dir string, opt acquireOptions) error {
 	p := func(name string) string { return filepath.Join(dir, exeName(name, opt.GOOS)) }
 	rec.Postgres, rec.Initdb, rec.PgCtl = p("postgres"), p("initdb"), p("pg_ctl")
 	rec.PgIsReady, rec.Createdb = p("pg_isready"), p("createdb")
-	// THE CLIENT TOOLS COME FROM THE SAME DIR, and that is deliberate: a dir holding
-	// the SERVER is a complete distribution, and its client tools match its server
-	// version exactly. Taking pg_dump from PATH instead is how a host with an older
-	// postgresql-client produces "server version mismatch; aborting" on a backup that
-	// was otherwise fine.
+	// THE CLIENT TOOLS COME FROM THE SAME DIR, and that is deliberate: a dir holding the SERVER is a
+	// complete distribution, and its client tools match its server version exactly.
 	rec.PgDump, rec.Psql = p("pg_dump"), p("psql")
 	rec.PgRestore = optionalBin(p("pg_restore"), opt.GOOS)
 
@@ -878,10 +768,8 @@ func postgresVersionOf(bin string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// detectNatsServer looks for nats-server on the caller's PATH and in the
-// conventional user/Homebrew locations. The version is best-effort: unlike
-// Postgres there is no minimum the plane depends on, and a server that will not
-// report its version still runs.
+// detectNatsServer looks for nats-server on the caller's PATH and in the conventional user/Homebrew
+// locations.
 func detectNatsServer(opt acquireOptions) (path, version string, ok bool) {
 	dirs := filepath.SplitList(opt.PathEnv)
 	if !opt.RestrictToPath {
@@ -922,9 +810,7 @@ func artifactPlatform(opt acquireOptions) (goos, goarch string) {
 // overrideKey is the map key for the per-artifact URL/checksum overrides.
 func overrideKey(name, goos, goarch string) string { return name + "/" + goos + "/" + goarch }
 
-// artifactURL resolves the pinned download URL for an artifact, honoring an
-// override. A platform with no pinned build is a hard error naming the platform —
-// never a silent fallback to another architecture's binary.
+// artifactURL resolves the pinned download URL for an artifact, honoring an override.
 func artifactURL(a infraArtifact, opt acquireOptions) (string, error) {
 	goos, goarch := artifactPlatform(opt)
 	if u := opt.URLs[overrideKey(a.Name, goos, goarch)]; u != "" {
@@ -960,12 +846,8 @@ func artifactFor(name string) (infraArtifact, bool) {
 	return infraArtifact{}, false
 }
 
-// downloadArtifact downloads, verifies and unpacks one artifact, returning the
-// absolute path of each of its required binaries.
-//
-// ORDER IS THE POINT: download → checksum → unpack → completeness. The checksum is
-// checked BEFORE anything is unpacked or executed, so a tampered or truncated
-// artifact never reaches the filesystem in runnable form.
+// downloadArtifact downloads, verifies and unpacks one artifact, returning the absolute path of
+// each of its required binaries.
 func downloadArtifact(ctx context.Context, a infraArtifact, opt acquireOptions) (map[string]string, error) {
 	url, err := artifactURL(a, opt)
 	if err != nil {
@@ -981,16 +863,8 @@ func downloadArtifact(ctx context.Context, a infraArtifact, opt acquireOptions) 
 		return nil, fmt.Errorf("create %s: %w", binDir(opt.DataDir), err)
 	}
 
-	// The archive lands under the data dir (not the system temp dir) so a no-root
-	// host with a small /tmp can still install.
-	//
-	// THE SUFFIX IS COPIED FROM THE URL AND IS NOT COSMETIC: extractArchive picks
-	// tar.gz-vs-zip from this name. A bare ".download" therefore sent EVERY zip
-	// artifact to the gzip reader — Loki on all platforms, and nats-server on
-	// Windows — failing with "read ... as gzip: invalid header" on a download that
-	// had already passed its checksum. Taken from the URL because that is where the
-	// publisher states the format, and a single-binary artifact's format is a
-	// property of the artifact, not of the platform running the install.
+	// The archive lands under the data dir (not the system temp dir) so a no-root host with a small
+	// /tmp can still install.
 	archive := filepath.Join(binDir(opt.DataDir), "."+a.Name+".download"+archiveSuffix(url))
 	defer os.Remove(archive)
 
@@ -1023,11 +897,7 @@ func downloadArtifact(ctx context.Context, a infraArtifact, opt acquireOptions) 
 		if !ok {
 			return nil, fmt.Errorf("the downloaded %s %s archive did not contain %s — refusing to use an incomplete install", a.Name, a.Version, exeName(bin, goos))
 		}
-		// MAKE IT RUNNABLE. writeExtracted only sets 0755 when the ARCHIVE'S OWN
-		// mode carried an exec bit, and the flat single-binary zips Loki publishes
-		// carry 0644 — so without this the download would install a
-		// checksum-perfect `loki` that the supervisor could not exec. Windows has
-		// no executable bit, so it is skipped there rather than fought with.
+		// MAKE IT RUNNABLE.
 		if goos != "windows" {
 			if err := os.Chmod(p, 0o755); err != nil {
 				return nil, fmt.Errorf("make %s executable: %w", p, err)
@@ -1070,9 +940,8 @@ func (o acquireOptions) progressOut() io.Writer {
 	return io.Discard
 }
 
-// downloadToFile fetches url into dst, streaming progress and keeping a bounded
-// tail so a failure can still say WHY — the same posture `pullImage`
-// (install.go:745) takes for image pulls, applied to the download path.
+// downloadToFile fetches url into dst, streaming progress and keeping a bounded tail so a failure
+// can still say WHY — the same posture `pullImage` (install.go:745) takes for image pulls.
 func downloadToFile(ctx context.Context, url, dst string, opt acquireOptions) error {
 	client := opt.HTTPClient
 	if client == nil {
@@ -1115,10 +984,6 @@ func downloadToFile(ctx context.Context, url, dst string, opt acquireOptions) er
 }
 
 // downloadProgress streams a human-readable progress line every few MiB.
-//
-// It is a counter rather than a per-chunk print on purpose: a progress line per
-// read would flood an unattended install's log, which is the same mistake the
-// captured image pull made in the opposite direction.
 
 type downloadProgress struct {
 	out       io.Writer
@@ -1150,10 +1015,6 @@ func (p *downloadProgress) finish() {
 }
 
 // verifyChecksum checks dst against want and DELETES dst on mismatch.
-//
-// THIS IS A HARD FAILURE WITH NO FALLBACK. A checksum exists so a corrupted,
-// truncated or substituted artifact is refused; continuing on an unverified binary
-// would be the exact outcome the check is for.
 func verifyChecksum(path, want string, opt acquireOptions) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -1178,11 +1039,6 @@ func verifyChecksum(path, want string, opt acquireOptions) error {
 }
 
 // extractArchive unpacks archive into dst for artifact a.
-//
-// tar.gz and .zip are both handled because the pinned builds differ by platform.
-// Entries are validated (no absolute paths, no `..`) — an archive is untrusted
-// input even when it is checksummed, and a path escape would write outside the
-// instance data dir.
 func extractArchive(archive string, a infraArtifact, dst, goos string) error {
 	if isZipArchive(archive, a, goos) {
 		return extractZip(archive, a, dst, goos)
@@ -1202,15 +1058,7 @@ func archiveSuffix(url string) string {
 	return ""
 }
 
-// isZipArchive decides the unpacker for an artifact. The PUBLISHED URL is
-// authoritative — that is where the publisher states the format — and the file
-// name is only the fallback for a caller unpacking an untracked fixture.
-//
-// It cannot be read off the download's own file name (which is why the name now
-// carries the URL's suffix): the temporary name used to be a bare ".download", so
-// every ZIP artifact — Loki on every platform, and nats-server on Windows — was
-// handed to the gzip reader and failed with "read ... as gzip: invalid header"
-// AFTER its checksum had passed.
+// isZipArchive decides the unpacker for an artifact.
 func isZipArchive(archive string, a infraArtifact, goos string) bool {
 	if u := artifactURLForFormat(a, goos); u != "" {
 		return strings.HasSuffix(strings.ToLower(u), ".zip")
@@ -1218,10 +1066,8 @@ func isZipArchive(archive string, a infraArtifact, goos string) bool {
 	return strings.HasSuffix(strings.ToLower(archive), ".zip")
 }
 
-// artifactURLForFormat returns one pinned URL for the artifact: the packaging
-// format is the same on every platform, so any entry answers "is this publisher
-// shipping zips?". Operator URL overrides are deliberately NOT consulted — those
-// may point at a mirror, but the format is the publisher's own fact.
+// artifactURLForFormat returns one pinned URL for the artifact: the packaging format is the same on
+// every platform, so any entry answers "is this publisher shipping zips?".
 func artifactURLForFormat(a infraArtifact, goos string) string {
 	if u := a.URLs[goos+"/"+runtime.GOARCH]; u != "" {
 		return u
@@ -1234,13 +1080,8 @@ func artifactURLForFormat(a infraArtifact, goos string) string {
 	return ""
 }
 
-// extractTarGz unpacks a .tar.gz, flattening the archive's single top-level
-// directory.
-//
-// FLATTENING IS REQUIRED, NOT COSMETIC. Both pinned publishers wrap everything in
-// one `<name>-<version>-<platform>/` directory, and PostgreSQL resolves its share
-// and lib directories relative to its own executable — so the tree must end up as
-// <dst>/{bin,lib,share} with nothing in between.
+// extractTarGz unpacks a .tar.gz, flattening the archive's single top-level directory. FLATTENING
+// IS REQUIRED, NOT COSMETIC.
 func extractTarGz(archive string, a infraArtifact, dst, goos string) error {
 	f, err := os.Open(archive)
 	if err != nil {
@@ -1282,12 +1123,8 @@ func extractTarGz(archive string, a infraArtifact, dst, goos string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return fmt.Errorf("create %s: %w", filepath.Dir(target), err)
 			}
-			// A LINK'S TARGET IS UNTRUSTED INPUT TOO, and validating only the entry
-			// NAME above leaves the escape this used to have: a symlink whose target
-			// is outside dst, followed by an entry that writes THROUGH it, lands
-			// outside the instance data dir (probed against a real tampered archive:
-			// it did). So the target is resolved and required to stay inside dst
-			// before anything is created.
+			// A LINK'S TARGET IS UNTRUSTED INPUT TOO, and validating only the entry NAME above leaves the
+			// escape this used to have: a symlink whose target is outside dst.
 			link, base := hdr.Linkname, filepath.Dir(target)
 			if hdr.Typeflag == tar.TypeLink {
 				lrel, lskip, lerr := extractRelPath(link, a, goos)
@@ -1401,17 +1238,8 @@ func extractRelPath(name string, a infraArtifact, goos string) (rel string, skip
 	return wanted, false, nil
 }
 
-// flatMemberRelPath decides whether a flat archive's ROOT entry is the binary we
-// install, and under what name. The member names are matched EXACTLY — tempo's
-// archive also carries tempo-cli and tempo-query, so a prefix or substring match
-// would pick the wrong executable — and the install name is always the CANONICAL
-// one, so `loki-linux-amd64` lands as `loki`.
-//
-// MEMBERS IS CONSULTED FOR EVERY ARCH OF THIS goos, not one arch: extraction is
-// handed only the goos (the caller may be unpacking a fixture for a platform other
-// than the host's), and "which member name does Loki use on linux" has one answer
-// regardless of arm64-vs-amd64 for the name itself. The per-arch key is still what
-// pins each platform's URL and checksum.
+// flatMemberRelPath decides whether a flat archive's ROOT entry is the binary we install, and under
+// what name.
 func flatMemberRelPath(base string, a infraArtifact, goos string) (rel string, skip bool, err error) {
 	if len(a.Required) == 0 {
 		return "", true, nil
@@ -1451,22 +1279,13 @@ func pathIsAbs(n string) bool {
 	return len(n) >= 2 && n[1] == ':'
 }
 
-// secureJoin joins an already-validated entry-relative path onto dst, refusing to
-// TRAVERSE a symlinked component on the way there.
-//
-// VALIDATING THE NAME IS NOT ENOUGH. extractRelPath rejects absolute names and
-// `..` segments, so the joined path is textually inside dst — but a symlink
-// created earlier in the SAME archive can point a later entry's parent back out of
-// dst, and filepath.Join cannot see that. (Probed: a `root/evil -> <a directory
-// outside dst>` symlink followed by `root/evil/pwned` wrote outside dst.) Every
-// component below dst is therefore lstat'd, and a symlink anywhere along the way is
-// a refusal rather than a write.
+// secureJoin joins an already-validated entry-relative path onto dst, refusing to TRAVERSE a
+// symlinked component on the way there.
 func secureJoin(dst, rel string) (string, error) {
 	target := filepath.Join(dst, rel)
 	base := filepath.Clean(dst)
-	// Split on the ARCHIVE's separator ('/'), not the host's: on Windows
-	// filepath.Separator is '\\', so splitting on it would leave the whole relative
-	// path as one segment and silently skip the intermediate-component check.
+	// Split on the ARCHIVE's separator ('/'), not the host's: on Windows filepath.Separator is '\\', so
+	// splitting on it would leave the whole relative path as one segment and silently skip.
 	parts := strings.Split(filepath.ToSlash(filepath.Clean(rel)), "/")
 	cur := base
 	for i, p := range parts {
@@ -1481,13 +1300,8 @@ func secureJoin(dst, rel string) (string, error) {
 	return target, nil
 }
 
-// checkLinkTarget requires a link's resolved target to stay inside dst. An
-// absolute target is legal ONLY when it is already inside dst (a hard link to a
-// sibling we just unpacked); anything pointing out of the instance data dir is
-// refused, never created.
-//
-// An archive is untrusted input even when its checksum matches: the checksum
-// proves WHICH bytes arrived, not that their contents are safe to unpack.
+// An absolute target is legal ONLY when it is already inside dst (a hard link to a sibling we just
+// unpacked); anything pointing out of the instance data dir is refused, never created.
 func checkLinkTarget(dst, base, link string) error {
 	if strings.TrimSpace(link) == "" {
 		return errors.New("refusing a link with an empty target")
@@ -1505,13 +1319,7 @@ func checkLinkTarget(dst, base, link string) error {
 	return fmt.Errorf("refusing a link to %q — it would escape the destination (%s)", link, joined)
 }
 
-// writeExtracted writes one extracted file, clearing the executable bit on
-// demand.
-//
-// THE CHMOD IS EXPLICIT because the process umask applies to the create mode, and
-// this postgres is later exec'd by the supervisor as a DIFFERENT uid (setpriv
-// --reuid=70). A 0700 umask would produce a binary the postgres user cannot run —
-// a failure that would surface as "permission denied" long after the download.
+// writeExtracted writes one extracted file, clearing the executable bit on demand.
 func writeExtracted(target string, r io.Reader, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", filepath.Dir(target), err)
@@ -1541,18 +1349,8 @@ func writeExtracted(target string, r io.Reader, mode os.FileMode) error {
 // ACQUIRE — the one entry point
 // ---------------------------------------------------------------------------
 
-// acquireInfraBinaries is the SINGLE mechanism: detect, else download, else fail;
-// record what was resolved and where; return the record.
-//
-// The artifacts are resolved INDEPENDENTLY on purpose. A host that already has
-// Postgres but not NATS should download one thing, not two — and, more importantly,
-// a host with a BROKEN Postgres install must be told about it rather than have a
-// supported build downloaded over the top, because that would hide the operator's
-// actual problem.
-//
-// ONLY SELECTS THE ARTIFACT SET (see acquireOptions.Only): the supervisor passes
-// postgres+nats alone for an ORCHICON_TELEMETRY=none boot, so a disabled telemetry
-// plane does not download ~300 MB of backends it will never start.
+// ONLY SELECTS THE ARTIFACT SET (see acquireOptions.Only): the supervisor passes postgres+nats
+// alone for an ORCHICON_TELEMETRY=none boot.
 func acquireInfraBinaries(ctx context.Context, opt acquireOptions) (*infraBinaries, error) {
 	if opt.DataDir == "" {
 		return nil, errors.New("no data dir to acquire the infrastructure binaries into")
@@ -1615,15 +1413,10 @@ func acquireInfraBinaries(ctx context.Context, opt acquireOptions) (*infraBinari
 			rec.Createdb = paths["createdb"]
 			rec.PgDump = paths["pg_dump"]
 			rec.Psql = paths["psql"]
-			// The optional extras live beside the resolved server, so the unpacked
-			// target is found relative to it rather than re-derived from the artifact
-			// name (which would be a second opinion about where the download landed).
+			// The optional extras live beside the resolved server, so the unpacked target is found relative to
+			// it rather than re-derived from the artifact name (which would be a second opinion about.
 			rec.PgRestore = optionalBin(filepath.Join(filepath.Dir(rec.Postgres), exeName("pg_restore", opt.GOOS)), opt.GOOS)
-			// ASK THE BINARY, and keep the pinned tag only as a fallback. The record
-			// is read by every later component, so it must mean the SAME thing on
-			// both paths: a detected install records the version its server
-			// reports, and recording the release TAG here (16.4.0 for a binary that
-			// reports 16.4) would make one record carry two different kinds of value.
+			// ASK THE BINARY, and keep the pinned tag only as a fallback.
 			rec.PostgresVersion = artifactReportedVersion(rec.Postgres, a.Version)
 		case "nats-server":
 			rec.NatsServer = paths["nats-server"]
@@ -1637,11 +1430,7 @@ func acquireInfraBinaries(ctx context.Context, opt acquireOptions) (*infraBinari
 
 	rec.Source = sourceOf(sources)
 
-	// 3. THE COMPLETENESS GATE, after both paths, on the RECORD.
-	//
-	// The record is what every consumer reads, so the record is what must be proven
-	// complete. A resolve that produced a record with a hole in it is a bug here, not
-	// a failure five minutes later at initdb.
+	// 3.
 	if err := checkRecordComplete(&rec, opt); err != nil {
 		return nil, err
 	}
@@ -1653,9 +1442,8 @@ func acquireInfraBinaries(ctx context.Context, opt acquireOptions) (*infraBinari
 	return &rec, nil
 }
 
-// artifactReportedVersion runs `<bin> --version` and returns what it says, falling
-// back to the pinned tag when the binary cannot be asked. Version strings in the
-// record must be comparable regardless of which acquisition path produced it.
+// artifactReportedVersion runs `<bin> --version` and returns what it says, falling back to the
+// pinned tag when the binary cannot be asked.
 func artifactReportedVersion(bin, fallback string) string {
 	out, err := procwin.Command(bin, "--version").Output()
 	if err != nil {
@@ -1667,10 +1455,8 @@ func artifactReportedVersion(bin, fallback string) string {
 	return fallback
 }
 
-// sourceOf names where the resolved set came from: "detected", "downloaded", or
-// "mixed" when the host supplied one binary and we fetched the other. The name is
-// in the record because "why is this instance running a downloaded postgres?" is a
-// question that must be answerable after the fact.
+// sourceOf names where the resolved set came from: "detected", "downloaded", or "mixed" when the
+// host supplied one binary and we fetched the other.
 func sourceOf(sources map[string]bool) string {
 	switch {
 	case sources["detected"] && sources["downloaded"]:
@@ -1689,10 +1475,8 @@ func checkRecordComplete(rec *infraBinaries, opt acquireOptions) error {
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	// WHICH ARTIFACTS THIS ACQUISITION COVERED, so the gate proves the record
-	// complete FOR THAT SET and no more. An artifact excluded by Only legitimately
-	// has no path in the record; requiring one anyway would make Only a half-wired
-	// option that fails on the very subset it was asked for.
+	// WHICH ARTIFACTS THIS ACQUISITION COVERED, so the gate proves the record complete FOR THAT SET and
+	// no more.
 	covered := map[string]bool{}
 	for _, name := range selectedArtifactNames(opt) {
 		covered[name] = true
@@ -1724,12 +1508,8 @@ func checkRecordComplete(rec *infraBinaries, opt acquireOptions) error {
 			return fmt.Errorf("resolved nats-server is a directory, not a binary: %s", rec.NatsServer)
 		}
 	}
-	// THE TELEMETRY BACKENDS, checked only for the artifacts THIS acquisition
-	// actually resolved: a boot that was not asked for them legitimately has no
-	// path for any of them, and requiring one here would turn every
-	// ORCHICON_TELEMETRY=none boot into a failed install. The exec bit matters
-	// MORE here than for the others — two of the four ship in zips whose members
-	// carry no exec bit, which is exactly what downloadArtifact chmods around.
+	// THE TELEMETRY BACKENDS, checked only for the artifacts THIS acquisition actually resolved: a boot
+	// that was not asked for them legitimately has no path for any of them.
 	for _, name := range selectedArtifactNames(opt) {
 		p := rec.telemetryPath(name)
 		if p == "" {
@@ -1816,14 +1596,8 @@ func skipDownloadFromEnv() bool {
 	return strings.TrimSpace(os.Getenv(skipDownloadEnv)) == skipDownloadEnvOn
 }
 
-// defaultAcquireOptions builds the options an install or a supervisor boot uses:
-// the instance data dir, the pinned artifacts, and whatever the environment
-// overrides. ONE constructor so a caller cannot accidentally assemble options that
-// disagree with the other caller's.
-//
-// only RESTRICTS THE ARTIFACT SET (empty = every artifact). The supervisor passes
-// the telemetry subset conditionally, so ORCHICON_TELEMETRY=none means neither the
-// procs NOR the downloads. `install` passes nothing and gets everything.
+// defaultAcquireOptions builds the options an install or a supervisor boot uses: the instance data
+// dir, the pinned artifacts, and whatever the environment overrides.
 func defaultAcquireOptions(dataDir string, only ...string) acquireOptions {
 	opt := acquireOptions{
 		DataDir:      dataDir,
@@ -1835,10 +1609,8 @@ func defaultAcquireOptions(dataDir string, only ...string) acquireOptions {
 		Only:         only,
 	}
 	goos, goarch := artifactPlatform(opt)
-	// The OVERRIDE KNOBS ARE READ FOR EVERY PINNED ARTIFACT, not just the selected
-	// ones: a mirror configured for a telemetry backend must still be honoured on
-	// the boot that fetches it, and reading the environment the same way regardless
-	// of the subset is what keeps one constructor honest.
+	// The OVERRIDE KNOBS ARE READ FOR EVERY PINNED ARTIFACT, not just the selected ones: a mirror
+	// configured for a telemetry backend must still be honoured on the boot that fetches it.
 	for _, a := range infraArtifacts {
 		suffix := envNameForArtifact(a.Name)
 		if u := strings.TrimSpace(os.Getenv("ORCHICON_INFRA_URL_" + suffix)); u != "" {
@@ -1851,16 +1623,8 @@ func defaultAcquireOptions(dataDir string, only ...string) acquireOptions {
 	return opt
 }
 
-// checkPostgresShare proves the PostgreSQL install has the share directory initdb
-// needs — the "corrupted installation" failure a bin-only copy produces, caught at
-// acquisition time instead of minutes later.
-//
-// THE SHARE DIR IS NOT ALWAYS A SIBLING OF bin/. Debian and Ubuntu split it out to
-// /usr/share/postgresql/<major> and leave the server binaries under
-// /usr/lib/postgresql/<major>/bin, so assuming `<bindir>/../share` would REJECT a
-// perfectly good distro install and force an unnecessary download. "Complete" here
-// therefore means: consult the install's own pg_config when it has one (it is
-// authoritative), and fall back to the sibling layout only when it does not.
+// checkPostgresShare proves the PostgreSQL install has the share directory initdb needs — the
+// "corrupted installation" failure a bin-only copy produces.
 func checkPostgresShare(initdbPath, goos string) error {
 	bindir := filepath.Dir(initdbPath)
 	var tried []string

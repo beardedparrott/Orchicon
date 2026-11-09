@@ -2,9 +2,7 @@
 
 package main
 
-// port_owner_unix.go — "who is listening on this port" for the POSIX platforms. `lsof` is used
-// because it is the one tool that answers this on Linux, macOS and the BSDs alike; when it is absent
-// the answer is "cannot tell", which the caller treats as no information rather than as a free port.
+// port_owner_unix.go — "who is listening on this port" for the POSIX platforms.
 
 import (
 	"os"
@@ -54,8 +52,7 @@ func lookupPortOwners(ports []int) ([]portOwner, error) {
 }
 
 // processNameUnix is the process's command name, read from /proc where that exists (Linux) and from
-// ps otherwise (macOS has no /proc). An unreadable process yields "" rather than an error: it may
-// simply have exited between lsof and this call.
+// ps otherwise (macOS has no /proc).
 func processNameUnix(pid int) string {
 	if b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm"); err == nil {
 		return strings.TrimSpace(string(b))

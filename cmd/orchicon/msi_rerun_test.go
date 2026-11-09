@@ -42,14 +42,8 @@ func wxsSource(t *testing.T) string {
 func TestMSIRerunDoesNotAskAndReconvergesDev(t *testing.T) {
 	wxs := wxsSource(t)
 
-	// THE INSTANCE PAGE IS GONE, and that is what makes a second run SAFE and simple: there is no question
-	// to mis-answer and no property to lose. The MSI always sets up `dev`, and `orchicon install` is
-	// idempotent — so running the installer twice re-converges one server instead of creating a second
-	// with a name nobody chose.
-	//
-	// THIS SUPERSEDES the earlier wiring that routed a repair through the instance page. That was right
-	// while the page existed; with the page deleted, "ask again" is not available, and the answer is
-	// better anyway: a fresh install and a repair now do the same thing to the same server.
+	// THE INSTANCE PAGE IS GONE, and that is what makes a second run SAFE and simple: there is no
+	// question to mis-answer and no property to lose.
 	if strings.Contains(wxs, `Id="InstanceDlg"`) {
 		t.Error("the installer asks which instance again. MSI properties are session-scoped and a repair " +
 			"skips WelcomeDlg, so that question was answered unreliably at best — a second run created " +
@@ -80,12 +74,9 @@ func TestMSIRerunStillPermitsRemove(t *testing.T) {
 }
 
 // BACK MUST RETURN TO THE PAGE THAT LED HERE.
-//
-// One unconditional Back would send a re-running operator to the licence page they already accepted.
 func TestMSINoPageNavigatesToADeletedDialog(t *testing.T) {
-	// The page whose Back button had to be contextual is gone, so the guard becomes the thing that would
-	// actually break the build — a Publish still pointing at a dialog nobody defines. The schema catches it
-	// too; asserting it HERE names the cause instead of leaving a WIX error to be decoded.
+	// The page whose Back button had to be contextual is gone, so the guard becomes the thing that
+	// would actually break the build — a Publish still pointing at a dialog nobody defines.
 	wxs := wxsSource(t)
 	for _, stale := range []string{`Value="InstanceDlg"`, `Value="PortsDlg"`, `Value="ImagesDlg"`} {
 		if strings.Contains(wxs, stale) {

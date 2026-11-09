@@ -1,17 +1,6 @@
 package main
 
 // install_runtime_images_env_test.go — a GRAPHICAL installer's answer has somewhere to go.
-//
-// THE GAP THIS CLOSES. Every way of choosing runtime images assumed a human or a
-// blanket "yes": the prompt needs a terminal, and ORCHICON_ASSUME_YES means ALL.
-// The Windows MSI asks for a multi-select in its own UI and then runs
-// `orchicon install` with no console — and the non-interactive arm returns "none"
-// BEFORE the recorded-answer file is read, so a wizard's choice of "base + dev"
-// silently fetched nothing. Not an error: an install that just quietly skipped the
-// thing the operator had ticked.
-//
-// The grammar is the prompt's own (parseRuntimeImageSelection), so a command line,
-// the interactive prompt and an installer cannot disagree about "1,3".
 
 import (
 	"bytes"
@@ -20,9 +9,8 @@ import (
 	"testing"
 )
 
-// envAnswersRuntimeImages clears any ambient value first: this suite runs in a
-// shell that may have exported one, and a test that silently inherits it would
-// pass or fail for a reason it never states.
+// envAnswersRuntimeImages clears any ambient value first: this suite runs in a shell that may have
+// exported one, and a test that silently inherits it would pass or fail for a reason it never.
 func envAnswersRuntimeImages(t *testing.T, value string) {
 	t.Helper()
 	t.Setenv(runtimeImagesEnv, value)
@@ -68,9 +56,8 @@ func TestExplicitRuntimeImagesAnswersNonInteractively(t *testing.T) {
 	}
 }
 
-// TestExplicitRuntimeImagesUnsetIsNoAnswer — unset must fall THROUGH, not read as
-// "none": an ordinary install that has not been told anything still has to reach
-// the recorded-answer path and the prompt.
+// TestExplicitRuntimeImagesUnsetIsNoAnswer — unset must fall THROUGH, not read as "none": an
+// ordinary install that has not been told anything still has to reach the recorded-answer path.
 func TestExplicitRuntimeImagesUnsetIsNoAnswer(t *testing.T) {
 	for _, value := range []string{"", "   "} {
 		envAnswersRuntimeImages(t, value)
@@ -99,9 +86,8 @@ func TestExplicitRuntimeImagesRejectsGarbage(t *testing.T) {
 	}
 }
 
-// TestExplicitRuntimeImagesOutranksTheInteractivityGate is the regression itself:
-// resolved through the real entry point, on a NON-INTERACTIVE run, the answer must
-// survive. Before this, the non-interactive arm returned "none" first.
+// TestExplicitRuntimeImagesOutranksTheInteractivityGate is the regression itself: resolved through
+// the real entry point, on a NON-INTERACTIVE run, the answer must survive.
 func TestExplicitRuntimeImagesOutranksTheInteractivityGate(t *testing.T) {
 	envAnswersRuntimeImages(t, "1")
 	var out bytes.Buffer

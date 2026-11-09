@@ -29,12 +29,8 @@ func resolve(tty bool, env envMap) termenv.Profile {
 	return terminalColorProfile(termenv.NewOutput(io.Discard, termenv.WithTTY(tty), termenv.WithEnvironment(env)))
 }
 
-// TestColorProfileFollowsTheTerminal pins the contract this file exists for: the profile is the TERMINAL's
-// advertisement, read the way termenv reads it.
-//
-// The first three cases are the ones the hand-rolled `COLORTERM == "truecolor" || COLORTERM == "24bit"`
-// check this replaced got WRONG — each is marked, so a future "simplification" back to an env equality
-// check fails here instead of quietly returning.
+// TestColorProfileFollowsTheTerminal pins the contract this file exists for: the profile is the
+// TERMINAL's advertisement, read the way termenv reads it.
 func TestColorProfileFollowsTheTerminal(t *testing.T) {
 	cases := []struct {
 		name string
@@ -138,13 +134,11 @@ func TestColorProfileFollowsTheTerminal(t *testing.T) {
 	}
 }
 
-// TestColorProfileIsResolvedNotHardcoded guards the regression the fix removed: main must not pin a profile
-// from an environment variable it reads itself. A `COLORTERM` comparison in cmd/orch is the bug, not a
-// shortcut, because it cannot see the TERM, TERM_PROGRAM, NO_COLOR or TTY facts that decide the answer.
+// TestColorProfileIsResolvedNotHardcoded guards the regression the fix removed: main must not pin a
+// profile from an environment variable it reads itself.
 func TestColorProfileIsResolvedNotHardcoded(t *testing.T) {
-	// An environment with NO colour advert at all, and a TTY: a hand-rolled check has nothing to match on
-	// and would leave lipgloss's implicit default in place, while the real decision still says Ascii for an
-	// unidentifiable terminal — so the two are only distinguishable through the resolver.
+	// An environment with NO colour advert at all, and a TTY: a hand-rolled check has nothing to match
+	// on and would leave lipgloss's implicit default in place.
 	if got := resolve(true, envMap{}); got != termenv.Ascii {
 		t.Errorf("an unidentifiable terminal must resolve to %s, got %s", termenv.Ascii.Name(), got.Name())
 	}

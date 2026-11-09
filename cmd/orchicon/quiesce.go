@@ -60,13 +60,6 @@ import (
 )
 
 // instanceProcessRoots are the directories whose executables belong to ONE instance.
-//
-// IDENTITY IS THE DEPLOYMENT, NOT A NAMING CONVENTION. The binary resolver unpacks postgres, nats and the
-// telemetry children under <dataDir>/bin, and postgres execs its per-connection backends from that same
-// bin directory — so "an executable inside this instance's data dir" is precisely "a process this
-// instance started", with no guessing. It also cannot collide with the operator's own PostgreSQL install
-// (a different directory) or with a sibling instance (a different data dir), which is what makes a kill
-// on this rule safe where a kill by port number would not be.
 func instanceProcessRoots(instance string) []string {
 	dir := hostDataDirFor(instance)
 	return []string{
@@ -76,10 +69,6 @@ func instanceProcessRoots(instance string) []string {
 }
 
 // ownedProcs lists the processes this instance demonstrably owns, across every root.
-//
-// It is deliberately NOT "everything holding my ports": a port's holder may be the operator's own
-// database or a colleague's instance, and killing that is unrecoverable. Ownership is proven by the
-// executable's location, and nothing else.
 func ownedProcs(instance string) []planecontrol.ProcInfo {
 	seen := map[int]bool{}
 	var out []planecontrol.ProcInfo
@@ -118,41 +107,19 @@ type quiesceResult struct {
 // Clean reports whether nothing of this instance is left running and no port of it is still held.
 func (q quiesceResult) Clean() bool { return len(q.Survivors) == 0 && len(q.HeldPorts) == 0 }
 
-// quiesceInstance terminates every process this instance demonstrably owns and WAITS for the ports to
-// come free.
-//
-// IT IS THE STOP PRIMITIVE, and it is used by all three lifecycle entry points — `stop`, `start` (before
-// starting, so a half-dead instance cannot collide with itself) and `install` (before starting, so a
-// reinstall over a running instance is a convergence rather than a second stack racing the first). One
-// implementation is what makes their answers agree; three copies is how one of them came to report
-// success over a running database.
-//
-// ports is what to verify, and it is checked rather than assumed because the port is the thing the next
-// start actually needs.
+// quiesceInstance terminates every process this instance demonstrably owns and WAITS for the ports
+// to come free.
 func quiesceInstance(instance string, ports map[string]int, out io.Writer) quiesceResult {
 	var res quiesceResult
 
 	// A LIVE SUPERVISOR'S CHILDREN ARE NOT LEFTOVERS.
-	//
-	// This is the rule that makes the primitive safe to call from `start` and `install`, and it was learned
-	// the hard way: without it, an install over a RUNNING instance killed every child the supervisor was
-	// managing, the supervisor saw them die and restarted them all with backoff, and the instance churned
-	// through a restart storm (measured: postgres restarts=6, nats=4, loki=3, vm=3, collector=3 — from one
-	// install command).
-	//
-	// The supervisor owns its children: it started them, it restarts them, and it is the thing to stop when
-	// the instance is being stopped. So while it is alive, its fleet is left alone — the caller proceeds to
-	// startHostServices, which already reports "already ready" and leaves it running. Orphans only exist
-	// when there is NO supervisor to own them.
 	if hostServicesAlive(instance) {
 		res.SupervisorAlive = true
 		return res
 	}
 
 	// ONE PASS IS NOT ENOUGH, and the reason is postgres-shaped: terminating the postmaster orphans its
-	// backends, and those are only VISIBLE as this instance's once the enumeration is repeated. So the
-	// loop terminates, re-enumerates, and only stops when a pass finds nothing new — bounded, so a process
-	// that respawns itself cannot spin here for ever.
+	// backends, and those are only VISIBLE as this instance's once the enumeration is repeated.
 	const maxPasses = 4
 	for pass := 0; pass < maxPasses; pass++ {
 		leftovers := ownedProcs(instance)
@@ -195,17 +162,12 @@ func quiesceInstance(instance string, ports map[string]int, out io.Writer) quies
 		}
 	}
 
-	// THE PORTS ARE THE REAL GATE. A terminated process can take a moment to release a socket, and a
-	// socket can outlive the process that opened it, so "all pids are gone" is not the same question as
-	// "the port is free". This is the question the next bind asks, so it is the one answered here.
+	// THE PORTS ARE THE REAL GATE.
 	res.HeldPorts = heldPortsOf(instance, ports, out)
 	return res
 }
 
 // heldPortsOf reports which of the instance's ports are still bound, after a bounded wait.
-//
-// The wait exists because TerminateProcess is asynchronous: the caller re-binds immediately, so it would
-// otherwise race the kernel's teardown and report a conflict that is a microsecond from resolving.
 func heldPortsOf(instance string, ports map[string]int, out io.Writer) []int {
 	relevant := []string{
 		"ORCHICON_POSTGRES_PORT", "ORCHICON_NATS_PORT", "ORCHICON_NATS_MONITOR_PORT",
@@ -228,12 +190,8 @@ func heldPortsOf(instance string, ports map[string]int, out io.Writer) []int {
 	}
 }
 
-// reportQuiesceFailure explains a quiesce that could not finish, naming the pids and ports that survived
-// and — where the platform can say — who holds them.
-//
-// A stop that cannot stop must not print a tick. This is the same posture serveStop takes for the plane
-// ("a stop that cannot stop is not a success"), applied to the services, because a start that follows a
-// fake stop fails with a bind error that names nothing.
+// reportQuiesceFailure explains a quiesce that could not finish, naming the pids and ports that
+// survived and — where the platform can say — who holds them.
 func reportQuiesceFailure(instance string, res quiesceResult, out io.Writer) {
 	if len(res.Survivors) > 0 {
 		fmt.Fprintf(out, "  %d process(es) of %s are STILL RUNNING after the stop", len(res.Survivors), instance)
@@ -255,10 +213,6 @@ func reportQuiesceFailure(instance string, res quiesceResult, out io.Writer) {
 }
 
 // describePortHolder names the process bound to a port, or "" when this platform cannot say.
-//
-// It reuses the crash-loop diagnosis's lookup (service_ports.go) rather than a second netstat parser: the
-// same question deserves one implementation, and that one already handles the IPv6 form the telemetry
-// children bind.
 func describePortHolder(port int) string {
 	owners := portOwners([]int{port})
 	if len(owners) == 0 {
@@ -267,16 +221,8 @@ func describePortHolder(port int) string {
 	return describeOwner(owners[0])
 }
 
-// stopInstanceCompletely brings an instance fully down: the plane, then the supervisor (with its tree), then
-// any leftover that outlived it — and finally verifies the ports.
-//
-// THIS IS THE ONE WAY DOWN, used by `orchicon stop` and by `orchicon install` before it starts a fresh stack.
-// It exists so those two cannot disagree, which is the defect that produced the operator's report: `stop`
-// verified its own pid files while a re-parented postgres backend kept the data directory and port 5432, and
-// an install over that state put a second stack on ports the first was still serving.
-//
-// THE ORDER IS THE DEPENDENCY, MIRRORED: the plane talks to the services, so it goes first; the supervisor
-// owns the services, so it goes next; whatever outlived the supervisor is an orphan and goes last.
+// stopInstanceCompletely brings an instance fully down: the plane, then the supervisor (with its
+// tree), then any leftover that outlived it — and finally verifies the ports.
 func stopInstanceCompletely(instance string, ports map[string]int, out io.Writer) error {
 	if err := stopHostPlane(instance, out); err != nil {
 		return err

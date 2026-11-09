@@ -1,14 +1,6 @@
 package main
 
 // install_path.go — PUT THE INSTALL DIR ON THE PATH, IN THE FILE A LOGIN SHELL ACTUALLY READS.
-//
-// THE REPORTED FAILURE, from a macOS box: `orch` and `orchicon` were installed to ~/.local/bin and neither
-// could be run. macOS does not put ~/.local/bin on PATH, and the installer's whole remedy was a printed hint
-// — naming ~/.zshrc, which a LOGIN shell never reads. So the operator was told to edit a file that would not
-// have helped, by a program that could have made the change itself.
-//
-// Windows already did this properly (scripts/install.ps1's Write-PathHint writes the per-user PATH registry
-// value and says so); this is the POSIX half, and it is why the summary reports an OUTCOME rather than advice.
 
 import (
 	"bufio"
@@ -38,10 +30,6 @@ type pathHint struct {
 }
 
 // ensureLoginProfilePATH puts installDir on the PATH for future LOGIN shells, idempotently.
-//
-// IT IS NOT FATAL ON ANY PATH: an install that cannot write a profile is still an install, and the summary
-// carries the reason. It is also a NO-OP WHEN THE DIR IS ALREADY ON PATH, which is the case that keeps a
-// reinstall from appending a second identical line.
 func ensureLoginProfilePATH(installDir string) pathHint {
 	out := pathHint{Dir: installDir}
 	if strings.TrimSpace(installDir) == "" {
@@ -101,13 +89,6 @@ func ensureLoginProfilePATH(installDir string) pathHint {
 }
 
 // loginProfileFor returns the profile a NEW LOGIN shell reads, for the operator's shell.
-//
-// LOGIN, NOT INTERACTIVE — that is the whole correction. A login shell reads ~/.zprofile, ~/.bash_profile,
-// ~/.bash_login or ~/.profile; it does NOT read ~/.zshrc or ~/.bashrc, which is what the old hint named.
-//
-// THE BASH CHAIN IS WALKED RATHER THAN JUMPED TO THE END: bash login reads the FIRST of .bash_profile,
-// .bash_login, .profile that exists, so creating .bash_profile on a host that already has .profile would
-// SHADOW it — silently dropping whatever the operator's own .profile set up. So an existing file wins.
 func loginProfileFor(shell, home string) (profile, name string, ok bool) {
 	name = strings.TrimPrefix(filepath.Base(strings.TrimSpace(shell)), "-") // login shells report "-zsh"
 	switch name {
@@ -125,12 +106,8 @@ func loginProfileFor(shell, home string) (profile, name string, ok bool) {
 	return "", name, false
 }
 
-// mentionsDir reports whether a profile already puts dir on PATH, comparing COMPLETE path elements of a
-// live (uncommented) line.
-//
-// NOT A SUBSTRING TEST. `strings.Contains(line, dir)` matched ~/.local/bin-old, a commented-out entry, and
-// even a comment that merely described where the tools live — and each of those suppressed the entry while
-// the operator still had no PATH, which is this whole mechanism failing silently.
+// mentionsDir reports whether a profile already puts dir on PATH, comparing COMPLETE path elements
+// of a live (uncommented) line.
 func mentionsDir(profile, dir string) bool {
 	for _, line := range strings.Split(profile, "\n") {
 		t := strings.TrimSpace(line)
@@ -150,10 +127,6 @@ func mentionsDir(profile, dir string) bool {
 }
 
 // resolveLoginShell names the operator's login shell.
-//
-// $SHELL IS NOT ALWAYS SET — a Finder-launched terminal, a launchd job or a CI runner can have none — and an
-// empty shell meant the PATH entry went unwritten and the summary fell back to advice, which is the failure
-// this file exists to remove. The account's own record is the authority when the environment cannot say.
 func resolveLoginShell() string {
 	if s := strings.TrimSpace(os.Getenv("SHELL")); s != "" {
 		return s
@@ -187,9 +160,6 @@ func resolveLoginShell() string {
 }
 
 // pathExportLine renders the line to append.
-//
-// THE PATH IS DOUBLE-QUOTED AND ESCAPED because an install dir may contain a space (a macOS home can), and
-// an unquoted entry would silently export two broken fragments instead of one usable path.
 func pathExportLine(dir string) (string, error) {
 	if strings.ContainsAny(dir, "\n\r") {
 		return "", fmt.Errorf("the install directory contains a newline, so it cannot go in a profile line")
@@ -198,12 +168,8 @@ func pathExportLine(dir string) (string, error) {
 	return `export PATH="` + r.Replace(dir) + `:$PATH"`, nil
 }
 
-// reportLauncherOnly finishes a `--install-launcher` run: it reports the launcher, and then puts the install
-// dir on the login PATH.
-//
-// THE PATH HALF IS PART OF "THE LAUNCHER WORKS", and this mode has no summary to put it in. The summary's own
-// remedy sends an operator here, so leaving PATH out would mean recovering the file and still not being able
-// to run it — the reported failure, one command later.
+// reportLauncherOnly finishes a `--install-launcher` run: it reports the launcher, and then puts
+// the install dir on the login PATH.
 func reportLauncherOnly(l orchLauncher, installDir string) error {
 	if !l.Installed {
 		return fmt.Errorf("the orch launcher could not be installed: %s", l.Problem)
@@ -214,10 +180,6 @@ func reportLauncherOnly(l orchLauncher, installDir string) error {
 }
 
 // printPathHint renders the PATH outcome in the install summary.
-//
-// A ZERO pathHint FALLS BACK TO ADVICE. That is what keeps a host we could not handle — an unrecognised shell,
-// an unwritable profile — actionable instead of silent, and it keeps the summary honest about the difference
-// between "done" and "you need to do this".
 func printPathHint(h pathHint, installDir string) {
 	dir := h.Dir
 	if dir == "" {

@@ -50,9 +50,6 @@ type serviceComponent struct {
 }
 
 // telemetryEmbedded reports whether this install runs the telemetry children at all.
-//
-// THE DEFAULT IS embedded, matching runHostServices, because a wrong answer here makes `status`
-// report four permanently-missing components on an instance that was never meant to have them.
 func telemetryEmbedded() bool {
 	mode := env(telemetryEnv, "embedded")
 	return mode == "" || mode == "embedded"
@@ -67,21 +64,11 @@ type serviceHealthOpinion struct {
 }
 
 // servicesHealth asks every component and returns the per-component answer.
-//
-// A COMPONENT WITH NO HOST ENDPOINT IS NOT ASKED AND IS NOT REPORTED — see the container-resident
-// note on servicesProbeableFromHost. This function only runs for a shape whose ports were resolved,
-// so in practice that is the host shape.
 func servicesHealth(instance string, ports map[string]int) []serviceHealthOpinion {
 	return servicesHealthTimeout(instance, ports, 3*time.Second)
 }
 
 // servicesHealthTimeout is servicesHealth with the per-component probe timeout made explicit.
-//
-// THE WAIT PATH NEEDS A SHORTER ONE, and the reason is a race rather than impatience: runHostServices
-// spawns the four telemetry children only AFTER postgres and nats are ready, and the install's services
-// gate passes the moment those two answer. Asking the optional components at their ordinary 3s timeout
-// therefore guarantees "not answering" for a stack that is a fraction of a second from being fine —
-// measured, twice, as a spurious "DEGRADED — tempo, loki not answering" immediately after a start.
 func servicesHealthTimeout(instance string, ports map[string]int, probeTimeout time.Duration) []serviceHealthOpinion {
 	if !servicesProbeableFromHost(ports) {
 		return nil
@@ -90,43 +77,27 @@ func servicesHealthTimeout(instance string, ports map[string]int, probeTimeout t
 	natsMonitor := ports["ORCHICON_NATS_MONITOR_PORT"]
 
 	// THE TELEMETRY PROBES ARE BUILT ONLY WHEN THE RECORD NAMES A PORT FOR THEM.
-	//
-	// A port of 0 in the record is not "a component on port 0" — it is the ABSENCE OF AN ADDRESS, and
-	// probing it would manufacture a negative: http://127.0.0.1:0/ never answers, so a perfectly
-	// healthy collector would be reported down and every instance would look degraded for ever. That
-	// is exactly what happened when ports.json (correctly, at the time) omitted the internal,
-	// unpublished ports — see everyServicePortEnv. The fail-safe direction is the same one
-	// servicesProbeableFromHost takes: never invent a negative you cannot observe.
 	comps := []serviceComponent{
 		{
 			name: "postgres", required: true,
 			ready: func() bool {
-				// quietCommand, NOT exec.Command: THIS IS THE LOOP THAT MADE THE SCREEN BLINK. The
-				// install and the start gate call this up to sixty times, once a second, from a
-				// process with no console — and every bare exec.Command there opened a window.
+				// quietCommand, NOT exec.Command: THIS IS THE LOOP THAT MADE THE SCREEN BLINK.
 				return procwin.Command(pgIsReadyBin(instance),
 					"-h", "127.0.0.1", "-p", strconv.Itoa(pgPort), "-U", "orchicon").Run() == nil
 			},
 		},
 		{
 			name: "nats", required: true,
-			// The MONITOR port answers /healthz only once the server is actually serving; the
-			// client port accepting a socket is not the same question (a server can bind and
-			// then fail to start JetStream, which is the state this instance needs — its event
-			// bus carries JetStream streams).
+			// The MONITOR port answers /healthz only once the server is actually serving; the client port
+			// accepting a socket is not the same question (a server can bind and then fail to start JetStream.
 			ready: func() bool {
 				return httpHealthy("http://127.0.0.1:"+strconv.Itoa(natsMonitor)+"/healthz", 3*time.Second)
 			},
 		},
 	}
 	if telemetryEmbedded() {
-		// THE ENDPOINTS ARE THE CHILDREN'S OWN READINESS ENDPOINTS, which is the same question
-		// their supervisor's startAndWait asks. Nothing here is a port-reachability stand-in:
-		// Loki's /ready answers 503 while it is still replaying its WAL (measured: 15.3s on a
-		// cold boot), and treating a bound socket as "ready" would report a backend the plane
-		// cannot yet query.
-		// Each entry is added ONLY if the record names a port for it, so a missing key degrades to
-		// "not asked" rather than to "not answering".
+		// Each entry is added ONLY if the record names a port for it, so a missing key degrades to "not
+		// asked" rather than to "not answering".
 		httpComp := func(name, env, path string) (serviceComponent, bool) {
 			port := ports[env]
 			if port <= 0 {
@@ -157,9 +128,6 @@ func servicesHealthTimeout(instance string, ports map[string]int, probeTimeout t
 }
 
 // requiredServicesReady reports whether every REQUIRED component answers.
-//
-// This is the question `orchicon services status`'s exit code and a start's gate ask: a plane with
-// no database is broken, while a plane with no logs is degraded but working.
 func requiredServicesReady(instance string, ports map[string]int) bool {
 	return requiredServicesReadyWithin(instance, ports, 3*time.Second)
 }
@@ -176,10 +144,6 @@ func requiredServicesReadyWithin(instance string, ports map[string]int, probeTim
 }
 
 // degradedServices lists the OPTIONAL components that are not answering, in table order.
-//
-// Empty means either everything is up or telemetry is not embedded. A caller decides how loudly to
-// say it; the install says it once, after the plane is confirmed up, which is the only point where
-// "the instance works but you cannot see its logs" is a fact worth stating.
 func degradedServices(instance string, ports map[string]int) []string {
 	var down []string
 	for _, c := range servicesHealth(instance, ports) {

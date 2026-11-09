@@ -53,10 +53,6 @@ func runScript(t *testing.T, script string, args ...string) (string, int) {
 }
 
 // A LAUNCHER INSTALLED FROM A WORKTREE MUST POINT AT THE MAIN CHECKOUT.
-//
-// This is the reported "orch binary has been deleted" reproduced as a unit: the synthetic layout has a main
-// checkout, a worktree inside it, and a .git FILE in the worktree pointing at <main>/.git/worktrees/<name>
-// — exactly what git creates. The script must resolve the main root from that and point there.
 func TestLauncherFromAWorktreePointsAtTheMainCheckout(t *testing.T) {
 	base := t.TempDir()
 	main := filepath.Join(base, "main")
@@ -88,8 +84,7 @@ func TestLauncherFromAWorktreePointsAtTheMainCheckout(t *testing.T) {
 	}
 
 	// --dry-run, because this sandbox blocks `ln` outright (an ORCHICON GUARD refuses it as destructive
-	// tooling for every child of the test binary). The DECISION is what this test is about: which checkout a
-	// launcher may point at. The link itself is one command whose argument is asserted below.
+	// tooling for every child of the test binary).
 	out, code := runScript(t, "install-launcher.sh", "--root", wt, "--launcher-dir", launchers, "--dry-run", "orch")
 	if code != 0 {
 		t.Fatalf("install-launcher.sh failed (%d):\n%s", code, out)
@@ -159,9 +154,6 @@ func TestFeDepsNamesASelfReferentialNodeModules(t *testing.T) {
 }
 
 // A HEALTHY node_modules — including a WORKTREE'S SYMLINK TO THE MAIN CHECKOUT — passes.
-//
-// The worktree case is the one that must NOT be "repaired": linking the main checkout's dependencies is how
-// a worktree avoids a second install.
 func TestFeDepsAcceptsRealAndLegitimatelyLinkedTrees(t *testing.T) {
 	base := t.TempDir()
 
@@ -272,14 +264,9 @@ func TestFeDepsRepairSequenceIsPresent(t *testing.T) {
 func TestTheRebuildChainRebuildsTheDesktopApp(t *testing.T) {
 	mk := mustRead(t, "../../Makefile")
 
-	// THE CALL, inside full-rebuild — which is the one place all three rebuild-* targets pass
-	// through. Asserting it in rebuild-dev alone would let rebuild-prod drift, and there are
-	// three of them.
+	// THE CALL, inside full-rebuild — which is the one place all three rebuild-* targets pass through.
 	full := makeTarget(t, mk, "full-rebuild")
-	// ASSERT THE INVOCATION, NOT THE NAME. The recipe carries a comment block that names the
-	// target ("see desktop-build-if-possible for the full account"), so a Contains on the bare
-	// name is satisfied by PROSE — measured: deleting the call line left this test green. The
-	// sub-make invocation is the thing that must exist.
+	// ASSERT THE INVOCATION, NOT THE NAME.
 	if !strings.Contains(full, "$(MAKE) desktop-build-if-possible") {
 		t.Errorf("full-rebuild does not invoke desktop-build-if-possible, so `make rebuild-dev` / "+
 			"rebuild-prod / rebuild-test rebuild the plane and leave the desktop app on its older "+
@@ -319,9 +306,7 @@ func TestTheRebuildChainRebuildsTheDesktopApp(t *testing.T) {
 				want.what, want.sub)
 		}
 	}
-	// AND IT MUST STILL BUILD. A guard that skips on every host is a very quiet way to have no
-	// desktop app at all — so the INVOCATION is asserted, not the name (which appears in both this
-	// target's own declaration and its comment).
+	// AND IT MUST STILL BUILD.
 	if !strings.Contains(cond, "$(MAKE) --no-print-directory desktop-build") {
 		t.Error("desktop-build-if-possible never invokes desktop-build, so the chain always skips")
 	}
@@ -355,7 +340,6 @@ func TestTheRebuildChainRebuildsTheDesktopApp(t *testing.T) {
 
 // logicalRecipeGroups splits recipe lines into the scripts make actually runs: a line continues
 // into the next when it ends in a backslash, and each resulting group is ONE shell invocation.
-// Comment-only groups are dropped, since they carry no logic.
 func logicalRecipeGroups(lines []string) []string {
 	var groups []string
 	var cur strings.Builder

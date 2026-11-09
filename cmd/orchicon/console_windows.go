@@ -3,24 +3,6 @@
 package main
 
 // console_windows.go — give the setup its own visible console when it was started without one.
-//
-// WHY THIS EXISTS. The MSI's last step runs `orchicon install`, and the setup asks for host
-// ports and (optionally) runtime images. A Windows Installer custom action has NO CONSOLE, so
-// the previous design reached for `cmd.exe /c start "…" <wrapper>.cmd` to manufacture one —
-// three processes deep, with the wizard's answers threaded through a command line. Every bug
-// in that chain was a quoting bug: an empty `[RUNTIMEIMAGES]` became an empty quoted string,
-// a quote was eaten per hop, and cmd ended up being handed the wrapper's PATH as a command
-// name ("'…orchicon-setup.cmd"  "dev" "' is not recognized as an internal or external
-// command").
-//
-// The fix is to stop building a shell chain and let the program that needs a console make
-// one. `orchicon install` re-executes ITSELF with CREATE_NEW_CONSOLE and exits: one process
-// becomes two, there is no command line to quote, and the answers travel as environment (or
-// as a plain `--instance dev` argument, which has no empty-value case).
-//
-// DETACHED, NOT ATTACHED. The parent (msiexec, or a Burn bundle) is a GUI process with no
-// console to attach to, so CREATE_NEW_CONSOLE is the only option — and it must not be
-// combined with DETACHED_PROCESS, which suppresses exactly the console we are asking for.
 
 import (
 	"os"
@@ -35,14 +17,9 @@ import (
 const consoleRelaunchEnv = "ORCHICON_CONSOLE_RELAUNCH"
 
 // hasConsole reports whether this process already owns a usable console window.
-//
-// GetConsoleWindow() returns NULL when the process has no console. A process started with
-// CREATE_NO_WINDOW or from a GUI parent with none gets NULL; msiexec and a Burn bundle are
-// both GUI subsystem, so the setup starts here.
 func hasConsole() bool {
-	// windows.NewLazySystemDLL, not the plain NewLazyDLL: the latter loads from anywhere on the
-	// search path, which is the DLL-hijack shape. This is the same helper the rest of the
-	// Windows-only code in this package already uses.
+	// windows.NewLazySystemDLL, not the plain NewLazyDLL: the latter loads from anywhere on the search
+	// path, which is the DLL-hijack shape.
 	kernel32 := windows.NewLazySystemDLL("kernel32.dll")
 	getConsoleWindow := kernel32.NewProc("GetConsoleWindow")
 	if err := getConsoleWindow.Find(); err != nil {
@@ -52,12 +29,7 @@ func hasConsole() bool {
 	return hwnd != 0
 }
 
-// relaunchInOwnConsole starts THIS executable again in a NEW visible console and returns
-// true. The caller must then exit without doing any work.
-//
-// argv is passed through verbatim. On Windows a console-subsystem child receives its
-// arguments as the command line the parent wrote, so exec.Command's quoting is exactly what
-// the child's os.Args will see — there is no `cmd` in between to reinterpret anything.
+// relaunchInOwnConsole starts THIS executable again in a NEW visible console and returns true.
 func relaunchInOwnConsole() (bool, error) {
 	self, err := os.Executable()
 	if err != nil {
@@ -66,19 +38,8 @@ func relaunchInOwnConsole() (bool, error) {
 	args := os.Args[1:]
 	cmd := exec.Command(self, args...)
 	cmd.Env = append(os.Environ(), consoleRelaunchEnv+"=1")
-	// NIL STDIO HERE IS CORRECT, AND THE CHILD MUST FIX IT — this comment used to say the
-	// opposite ("no stdio wiring: the child owns its console and prints there"), which was
-	// simply wrong.
-	//
-	// os/exec gives a child whose Stdout/Stderr are nil the NUL DEVICE. That is not a window,
-	// it is nowhere: CREATE_NEW_CONSOLE hands the child a real console, but its handles still
-	// point at NUL, so everything it prints is discarded and every read hits EOF. The result is
-	// an install that opens a window, finishes in seconds and asks nothing — and a person
-	// cannot tell it apart from one that decided not to prompt.
-	//
-	// Inheriting THIS process's handles instead would be no better: msiexec has no console, so
-	// they are invalid or NUL too. The only handle that means anything is the child's OWN
-	// console, which it opens for itself (see reattachConsoleIO).
+	// NIL STDIO HERE IS CORRECT, AND THE CHILD MUST FIX IT — this comment used to say the opposite ("no
+	// stdio wiring: the child owns its console and prints there"), which was simply wrong.
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	cmd.SysProcAttr = &windows.SysProcAttr{
 		// CREATE_NEW_CONSOLE: the whole point. NEW_PROCESS_GROUP so a Ctrl-C in the
@@ -88,9 +49,7 @@ func relaunchInOwnConsole() (bool, error) {
 	if err := cmd.Start(); err != nil {
 		return false, err
 	}
-	// DO NOT WAIT. The parent is a short-lived custom action; waiting would hold the
-	// installer open for the length of a multi-hundred-megabyte download. The child is
-	// independent and writes its own log.
+	// DO NOT WAIT.
 	_ = cmd.Process.Release()
 	return true, nil
 }

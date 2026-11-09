@@ -1,10 +1,6 @@
 package main
 
 // install_path_test.go — the installer must PUT THE DIR ON THE PATH, not print advice about it.
-//
-// Reported from macOS: orch and orchicon went to ~/.local/bin, which macOS does not put on PATH, and the
-// remedy was a printed hint naming ~/.zshrc — a file a login shell never reads. Every test here pins one
-// half of the correction: the right FILE, written ONCE, reported as done.
 
 import (
 	"os"
@@ -264,10 +260,6 @@ func TestTheSummaryReportsTheEntryAsDone(t *testing.T) {
 }
 
 // TestTheLauncherOnlyRemedyAlsoFixesThePath closes the seam the summary's own advice points at.
-//
-// `orchicon install --install-launcher` is what the summary tells an operator to run when the launcher is
-// missing. It returned after placing the file, so the documented remedy recovered `orch` and left it
-// unrunnable — the reported failure, one command later.
 func TestTheLauncherOnlyRemedyAlsoFixesThePath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX login profiles only")

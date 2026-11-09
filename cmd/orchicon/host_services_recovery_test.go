@@ -27,9 +27,8 @@ import (
 	"time"
 )
 
-// TestLokiRecoveryQuarantinesTheWALAndKeepsTheBytes pins the two halves that matter: the corrupt WAL is
-// moved out of the way (so the next start can succeed) and it is NOT deleted (the bytes are the operator's
-// telemetry, and a recovery that destroys data is worse than the crash-loop it fixes).
+// TestLokiRecoveryQuarantinesTheWALAndKeepsTheBytes pins the two halves that matter: the corrupt
+// WAL is moved out of the way (so the next start can succeed) and it is NOT deleted (the bytes.
 func TestLokiRecoveryQuarantinesTheWALAndKeepsTheBytes(t *testing.T) {
 	dir := t.TempDir()
 	s := &supervisor{log: testLogger(), dataDir: dir, infra: testInfra(), ports: servicePortsFromEnv()}

@@ -3,15 +3,6 @@
 package main
 
 // reclaim_proc_unix.go — reclaim's PROCESS IDENTITY, which is /proc-shaped on every Unix.
-//
-// WHAT IT IS FOR. Reclaim may only terminate a process that is VERIFIABLY this instance's own leftover: our
-// binary AND this instance's name AND (for a port holder) the socket it holds. Every one of those three
-// readings is a /proc read — /proc/<pid>/exe, /proc/<pid>/environ, /proc/net/tcp plus /proc/<pid>/fd. That is
-// why the whole layer is behind this build tag rather than in reclaim.go, where it used to sit UNTAGGED and
-// silently identified nothing on Windows.
-//
-// portHolderHint is the platform-reachable way to find a port's holder, so the refusal messages point at a
-// command that exists. reclaim_proc_windows.go is the other half and states what Windows loses (AC8).
 
 import (
 	"fmt"
@@ -21,11 +12,8 @@ import (
 	"strings"
 )
 
-// ourInstanceProcesses lists pids that are VERIFIABLY this instance's: the executable is one of our binaries
-// AND the process carries the instance's name in its environment or argv.
-//
-// Both conditions matter. Our binary alone would match a DIFFERENT instance's plane — killing it would take
-// down a sibling (dev while you meant test); the instance name alone would match nothing useful.
+// ourInstanceProcesses lists pids that are VERIFIABLY this instance's: the executable is one of our
+// binaries AND the process carries the instance's name in its environment or argv.
 func ourInstanceProcesses(instance string) []int {
 	self := os.Getpid()
 	var pids []int
@@ -53,12 +41,8 @@ func ourInstanceProcesses(instance string) []int {
 	return pids
 }
 
-// portHolders names the processes listening on the given ports, so a refusal can say WHO instead of telling
-// the operator to go run `ss` themselves. It reads /proc directly rather than shelling out to ss/lsof:
-// neither is guaranteed present, and the failure path of a teardown must not depend on an optional tool.
-//
-// BEST-EFFORT AND HONEST ABOUT IT: an unreadable /proc (another user's process, a hardened kernel) yields
-// nothing rather than a guess, and the caller's message still stands on its own.
+// portHolders names the processes listening on the given ports, so a refusal can say WHO instead of
+// telling the operator to go run `ss` themselves.
 func portHolders(ports ...int) []portHolder {
 	if len(ports) == 0 {
 		return nil

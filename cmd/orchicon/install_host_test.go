@@ -17,10 +17,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
-// TestResidencyForInstallDefaultsToHost pins the default shape. `host` is the
-// product default (scripts/container.sh residency_for resolves ${...:-host}), and
-// the installer producing the OTHER shape by default was the bug: a fresh
-// install got a self-contained stack while every rebuild gave a host plane.
+// TestResidencyForInstallDefaultsToHost pins the default shape.
 func TestResidencyForInstallDefaultsToHost(t *testing.T) {
 	t.Setenv("ORCHICON_PLANE_RESIDENCY", "")
 	got, err := residencyForInstall()
@@ -32,10 +29,8 @@ func TestResidencyForInstallDefaultsToHost(t *testing.T) {
 	}
 }
 
-// TestResidencyForInstallAcceptsBothShapesAndRefusesJunk pins that an explicit
-// shape is honoured and a typo is refused rather than silently defaulted — a
-// silently-defaulted typo would create an instance of the WRONG shape, and the
-// shape is recorded on the container at create time.
+// TestResidencyForInstallAcceptsBothShapesAndRefusesJunk pins that an explicit shape is honoured
+// and a typo is refused rather than silently defaulted.
 func TestResidencyForInstallAcceptsBothShapesAndRefusesJunk(t *testing.T) {
 	for _, want := range []string{residencyHost, residencyContainer} {
 		t.Setenv("ORCHICON_PLANE_RESIDENCY", want)
@@ -53,10 +48,7 @@ func TestResidencyForInstallAcceptsBothShapesAndRefusesJunk(t *testing.T) {
 	}
 }
 
-// TestActiveInstallPortsPerResidency pins what each shape actually binds. This
-// is the difference the installer was missing: a container-resident instance
-// exposes two ports, a host-resident one exposes the services too (loopback),
-// and the plane port is never published by the container in the host shape.
+// TestActiveInstallPortsPerResidency pins what each shape actually binds.
 func TestActiveInstallPortsPerResidency(t *testing.T) {
 	host := activeInstallPorts(residencyHost)
 	container := activeInstallPorts(residencyContainer)
@@ -91,11 +83,6 @@ func TestActiveInstallPortsPerResidency(t *testing.T) {
 }
 
 // TestPublishArgsShapeAndSafety is the port-mapping contract with docker.
-//
-// Two things must hold: the host half is the RESOLVED port (so an override
-// moves the publish), and every service publish is LOOPBACK-BOUND — postgres is
-// a database and NATS an internal bus, and the supervisor's pg_hba trust rules
-// depend on them never being reachable from the LAN.
 func TestPublishArgsShapeAndSafety(t *testing.T) {
 	ports := map[string]int{
 		"ORCHICON_CONTROL_PORT":      9080,
@@ -135,12 +122,8 @@ func TestPublishArgsShapeAndSafety(t *testing.T) {
 	}
 }
 
-// TestPlaneEnvIsPerInstanceAndComplete pins the host plane's environment: every
-// key the plane needs is present, each is derived from the RESOLVED ports, and
-// the bind and the advertised URL agree.
-//
-// THE BRIDGE IS PINNED, which is also what makes runtimeContainersInUse() true without an engine — a pinned
-// bridge is proof of intent. The no-engine shape is asserted separately (TestInstallShapeWithoutAContainerEngine).
+// TestPlaneEnvIsPerInstanceAndComplete pins the host plane's environment: every key the plane needs
+// is present, each is derived from the RESOLVED ports, and the bind and the advertised URL agree.
 func TestPlaneEnvIsPerInstanceAndComplete(t *testing.T) {
 	t.Setenv("ORCHICON_DOCKER_BRIDGE_IP", "172.99.0.1")
 	t.Setenv("ORCHICON_SECRETS_KEK", "c2VjcmV0LWtleS1tYXRlcmlhbC0zMmJ5dGVzISE=")
@@ -161,10 +144,7 @@ func TestPlaneEnvIsPerInstanceAndComplete(t *testing.T) {
 	joined := strings.Join(env, "\n")
 	for _, want := range []string{
 		"ORCHICON_INSTANCE=dev",
-		// A WILDCARD primary bind on the RESOLVED port. One listener serves
-		// loopback (orch, the TUI, the desktop app), the engine bridge (runtime
-		// containers) and the LAN — it is a strict superset of the
-		// loopback-plus-bridge pair it replaces, so there is no second bind.
+		// A WILDCARD primary bind on the RESOLVED port.
 		"ORCHICON_HTTP_ADDR=:9080",
 		// The ADVERTISED URL is still required: it is what a runtime container is
 		// told to dial, and it must carry THIS instance's port.
@@ -181,37 +161,28 @@ func TestPlaneEnvIsPerInstanceAndComplete(t *testing.T) {
 		"ORCHICON_BLOB_DIR=/home/u/.local/share/orchicon-dev/blobs",
 		"ORCHICON_SERVE_STATE_DIR=/home/u/.local/share/orchicon-dev/serve",
 		"ORCHICON_RUNTIME_SOCKET=/tmp/orchicon-runtime/runtime.sock",
-		// An operator's identity must be INHERITED, not invented: a deployment
-		// that chose its own KEK must keep it or the migrated data will not
-		// decrypt.
+		// An operator's identity must be INHERITED, not invented: a deployment that chose its own KEK must
+		// keep it or the migrated data will not decrypt.
 		"ORCHICON_SECRETS_KEK=c2VjcmV0LWtleS1tYXRlcmlhbC0zMmJ5dGVzISE=",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("plane env is missing %q; got:\n%s", want, joined)
 		}
 	}
-	// THE EXTRA BIND MUST BE ABSENT, and this is the assertion that keeps the
-	// original regression from coming back. A second listener on the bridge
-	// address cannot bind while the wildcard primary owns it, and the plane used
-	// to retry that doomed bind every 30s forever.
+	// THE EXTRA BIND MUST BE ABSENT, and this is the assertion that keeps the original regression from
+	// coming back.
 	if strings.Contains(joined, "ORCHICON_HTTP_EXTRA_BIND=") {
 		t.Errorf("a wildcard primary already serves the bridge address; there must be no extra bind:\n%s", joined)
 	}
-	// The wildcard is DELIBERATE now, not an accident: it is what makes the plane
-	// reachable from other machines. Asserted positively so a future "tighten the
-	// bind" change has to argue with this test rather than silently take the
-	// plane off the LAN again.
+	// The wildcard is DELIBERATE now, not an accident: it is what makes the plane reachable from other
+	// machines.
 	if !strings.Contains(joined, "ORCHICON_HTTP_ADDR=:9080") {
 		t.Errorf("the wildcard primary bind is required for LAN reachability:\n%s", joined)
 	}
 }
 
-// TestPlaneBindAndShape is acceptance criterion 5: WHEN runtime containers ARE in use, the bridge bind and
-// the advertised plane URL are derived from ONE place, share one IP and THIS instance's port, and two
-// instances can never be pointed at each other's plane.
-//
-// It is the successor to TestPlaneEnvRefusesWithoutABridge, whose assertion is now the OPPOSITE for the
-// no-container case: a host with no engine must get NO error, NO bind, and NO wildcard.
+// TestPlaneBindAndShape is acceptance criterion 5: WHEN runtime containers ARE in use, the bridge
+// bind and the advertised plane URL are derived from ONE place.
 func TestPlaneBindAndShape(t *testing.T) {
 	t.Setenv("ORCHICON_DOCKER_BRIDGE_IP", "172.99.0.1")
 	t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
@@ -240,10 +211,6 @@ func TestPlaneBindAndShape(t *testing.T) {
 		t.Fatalf("planeBindEnv = (%q, %q), want one IP and this instance's port", bind, url)
 	}
 	// THE ADVERTISED URL IS EMITTED; THE BIND IS NOT.
-	//
-	// The bind is now INFORMATIONAL — the wildcard primary already serves that
-	// address, so emitting it as a listener would recreate the collision this
-	// change removes. The URL is the half that was ever load-bearing.
 	if !strings.Contains(devJoined, "ORCHICON_PLANE_PUBLIC_URL="+url) {
 		t.Errorf("planeEnv must carry the URL planeBindEnv computed:\n%s", devJoined)
 	}
@@ -265,11 +232,8 @@ func TestPlaneBindAndShape(t *testing.T) {
 	}
 }
 
-// TestInstallShapeWithoutAContainerEngine is acceptance criterion 4: A HOST WITH NO CONTAINER ENGINE installs
-// without a bridge, a bind, or a wildcard — and without an error.
-//
-// This is the shape that used to be impossible: `docker version` was a hard gate, and planeEnv called
-// bridgeIP unconditionally, so a machine with no Docker could not install Orchicon at all.
+// TestInstallShapeWithoutAContainerEngine is acceptance criterion 4: A HOST WITH NO CONTAINER
+// ENGINE installs without a bridge, a bind, or a wildcard — and without an error.
 func TestInstallShapeWithoutAContainerEngine(t *testing.T) {
 	// Case 1: the explicit override, with a bridge pinned to prove the override WINS over the pin.
 	t.Run("explicit override", func(t *testing.T) {
@@ -284,10 +248,8 @@ func TestInstallShapeWithoutAContainerEngine(t *testing.T) {
 	t.Run("no engine on PATH", func(t *testing.T) {
 		t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
 		t.Setenv("ORCHICON_DOCKER_BRIDGE_IP", "")
-		// An EMPTY PATH IS NO LONGER A NO-ENGINE HOST: the installer's detector
-		// (internal/containerengine) probes the platform's conventional locations after
-		// PATH, and a CI runner has /usr/bin/docker. The pin is what makes "no engine" a
-		// property of the fixture instead of a property of the machine running the test.
+		// An EMPTY PATH IS NO LONGER A NO-ENGINE HOST: the installer's detector (internal/containerengine)
+		// probes the platform's conventional locations after PATH, and a CI runner has /usr/bin/docker.
 		t.Setenv(containerengine.EnginePinEnv, string(containerengine.EngineNone))
 		t.Setenv("PATH", t.TempDir())
 		if containerEngineAvailable() {
@@ -313,10 +275,7 @@ func assertNoBridgeShape(t *testing.T) {
 		t.Fatalf("planeEnv must not fail without a bridge: %v", err)
 	}
 	joined := strings.Join(env, "\n")
-	// THE PRIMARY BIND IS A WILDCARD EVEN WITH NO ENGINE. A host with no container
-	// engine still has human clients on other machines, and the wildcard is what
-	// makes the plane reachable from them. The bind does not depend on the engine
-	// at all — only the ADVERTISED URL does.
+	// THE PRIMARY BIND IS A WILDCARD EVEN WITH NO ENGINE.
 	if !strings.Contains(joined, "ORCHICON_HTTP_ADDR=:9080") {
 		t.Errorf("the wildcard primary bind is required:\n%s", joined)
 	}
@@ -328,15 +287,8 @@ func assertNoBridgeShape(t *testing.T) {
 	}
 }
 
-// TestInstallShapeWithAContainerEngine is acceptance criterion 7's other half, and the counterpart of
-// TestInstallShapeWithoutAContainerEngine: WHEN a container engine IS installed the install takes the
-// with-containers shape — the bridge bind and the advertised URL ARE produced, from ONE place, at THIS
-// instance's port — so the two carriers an install can have are both pinned rather than only the new one.
-//
-// The engine probe is asserted to be a PATH LOOKUP and not an engine call, and BEHAVIOURALLY rather than by
-// reading the source: the fake engine RECORDS that it ran, so "the probe never executes docker" is a fact
-// this test measures. That property is what lets a machine with no engine answer "no" without a doomed
-// invocation — the defect this item removes from the install path.
+// TestInstallShapeWithAContainerEngine is acceptance criterion 7's other half, and the counterpart
+// of TestInstallShapeWithoutAContainerEngine.
 func TestInstallShapeWithAContainerEngine(t *testing.T) {
 	bin := t.TempDir()
 	ran := filepath.Join(bin, "ran.txt")
@@ -378,9 +330,8 @@ func TestInstallShapeWithAContainerEngine(t *testing.T) {
 	}
 }
 
-// TestResidencyIsRecordedAndReadBack is acceptance criterion 6's destructive half: a recorded shape that
-// MATCHES converges, an ABSENT/UNREADABLE record reports ok=false, and a caller's `!known` arm therefore
-// leaves a live instance alone rather than recreating it.
+// TestResidencyIsRecordedAndReadBack is acceptance criterion 6's destructive half: a recorded shape
+// that MATCHES converges, an ABSENT/UNREADABLE record reports ok=false.
 func TestResidencyIsRecordedAndReadBack(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -455,15 +406,13 @@ func TestEnsureHostDataDirKeepsAnExistingKEK(t *testing.T) {
 	}
 }
 
-// TestEnsureHostDataDirRefusesToOrphanASecret is acceptance criterion 3's FATAL half: a data dir that holds
-// instance state but no KEK must STOP the install, not warn — minting a fresh KEK there orphans every tenant
-// secret, and a warning on stdout is exactly how that goes unnoticed.
+// TestEnsureHostDataDirRefusesToOrphanASecret is acceptance criterion 3's FATAL half: a data dir
+// that holds instance state but no KEK must STOP the install, not warn.
 func TestEnsureHostDataDirRefusesToOrphanASecret(t *testing.T) {
 	for _, marker := range []string{"blobs", "postgres", "serve", "config"} {
 		t.Run(marker, func(t *testing.T) {
 			// HERMETIC: an operator-managed KEK is key material this guard must NOT read as lost (see
-			// TestEnsureHostDataDirHonoursAnOperatorManagedKEK), so this test states its own environment
-			// rather than inheriting one.
+			// TestEnsureHostDataDirHonoursAnOperatorManagedKEK).
 			t.Setenv("ORCHICON_SECRETS_KEK", "")
 			dir := t.TempDir()
 			var out bytes.Buffer
@@ -485,10 +434,8 @@ func TestEnsureHostDataDirRefusesToOrphanASecret(t *testing.T) {
 	}
 }
 
-// TestEnsureHostDataDirAllowsAFreshInstallMidRun is the FRESH-INSTALL half of the guard, and it pins an
-// ordering property that is easy to break: `orchicon install` writes ports.json (step 1.6) and
-// infra-binaries.json (step 1.7) into this very directory EARLIER in the same run. If either counted as
-// instance state, EVERY fresh install would be refused after having written them — so they must not.
+// TestEnsureHostDataDirAllowsAFreshInstallMidRun is the FRESH-INSTALL half of the guard, and it
+// pins an ordering property that is easy to break.
 func TestEnsureHostDataDirAllowsAFreshInstallMidRun(t *testing.T) {
 	t.Setenv("ORCHICON_SECRETS_KEK", "") // hermetic: this test is about the fresh-dir path, not about an env KEK
 	dir := t.TempDir()
@@ -512,16 +459,8 @@ func TestEnsureHostDataDirAllowsAFreshInstallMidRun(t *testing.T) {
 	}
 }
 
-// TestEnsureHostDataDirHonoursAnOperatorManagedKEK is the third half of criterion 3, and it is the case the
-// guard's own reasoning has to get right: an operator-managed KEK (ORCHICON_SECRETS_KEK) is NOT a lost KEK.
-//
-// secretcrypto.ResolveKEK returns that override VERBATIM and never mints <DataDir>/secrets/kek, so a
-// deployment that supplies it — a documented mode (KMS, a secret manager, one key shared across replicas)
-// that planeEnv deliberately inherits — has a POPULATED data dir and NO key file. Without the arm this test
-// pins, re-running `orchicon install` on such a perfectly healthy instance refuses with "ORPHANS EVERY TENANT
-// SECRET" and sends the operator to look for a secrets/kek backup that never existed. That is the opposite of
-// criterion 6's convergence, and it is the guard firing on the one configuration where the key is provably
-// not lost.
+// TestEnsureHostDataDirHonoursAnOperatorManagedKEK is the third half of criterion 3, and it is the
+// case the guard's own reasoning has to get right.
 func TestEnsureHostDataDirHonoursAnOperatorManagedKEK(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
@@ -574,18 +513,15 @@ func TestEnsureHostDataDirCreatesOnAFreshDir(t *testing.T) {
 	}
 }
 
-// TestInstallHostHasNoDockerInvocation is acceptance criterion 1: install_host.go must contain NO docker
-// invocation. It is read from source because the property IS about the source — a `docker inspect` here would
-// fail silently on a machine with no Docker, which is the whole point of removing it.
+// TestInstallHostHasNoDockerInvocation is acceptance criterion 1: install_host.go must contain NO
+// docker invocation.
 func TestInstallHostHasNoDockerInvocation(t *testing.T) {
 	src, err := os.ReadFile("install_host.go")
 	if err != nil {
 		t.Fatalf("read install_host.go: %v", err)
 	}
 	body := string(src)
-	// EVERY exec.Command IN THIS FILE MUST LAUNCH THIS BINARY (or a service binary), never an engine. Prose
-	// that NAMES docker ("the probes are direct, not `docker exec`") is the opposite of a violation — it is how
-	// the removal is explained — so the assertion is on the CALLEE, not on the word.
+	// EVERY exec.Command IN THIS FILE MUST LAUNCH THIS BINARY (or a service binary), never an engine.
 	for _, m := range regexp.MustCompile(`exec\.Command\(([^,\n]*)`).FindAllStringSubmatch(body, -1) {
 		callee := strings.TrimSpace(m[1])
 		for _, engine := range []string{`"docker"`, `"docker-compose"`, `"podman"`, `"alpine"`, `"sh"`, `"bash"`} {
@@ -595,13 +531,7 @@ func TestInstallHostHasNoDockerInvocation(t *testing.T) {
 		}
 	}
 	// The engine probe DELEGATES to internal/containerengine, which owns the search order (podman
-	// first, then docker), so the installer and the plane's /enginez answer with the same rules. It
-	// is still a PATH/stat probe: containerengine.Detect runs no engine command (the version read is
-	// a separate, opt-in call).
-	//
-	// THE PROBE MOVED WITH THE CODE, and the assertion follows it to its one home. The lifecycle
-	// layer now lives in internal/planecontrol (a `package main` cannot be imported, so the TUI and
-	// the desktop app could not reach it), and containerEngineAvailable moved with it.
+	// first, then docker), so the installer and the plane's /enginez answer with the same rules.
 	shared, err := os.ReadFile(filepath.Join("..", "..", "internal", "planecontrol", "env.go"))
 	if err != nil {
 		t.Fatalf("read internal/planecontrol/env.go: %v", err)
@@ -636,9 +566,8 @@ func TestInstallHostHasNoDockerInvocation(t *testing.T) {
 	}
 }
 
-// TestServicesReadyUsesResolvedPortsAndDirectProbes is acceptance criterion 2: the probe is DIRECT (no
-// `docker exec`), it uses the RESOLVED ports rather than the container's literals, and it returns a boolean
-// the caller acts on.
+// TestServicesReadyUsesResolvedPortsAndDirectProbes is acceptance criterion 2: the probe is DIRECT
+// (no `docker exec`), it uses the RESOLVED ports rather than the container's literals.
 func TestServicesReadyUsesResolvedPortsAndDirectProbes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake-probe fixture is a shell script")
@@ -693,19 +622,8 @@ func TestServicesReadyUsesResolvedPortsAndDirectProbes(t *testing.T) {
 	}
 }
 
-// TestServicesReadyIsNotNegativeForACarrierItCannotProbe is the regression for a false negative this item's own
-// re-signature opened, and it is the reason servicesProbeableFromHost exists.
-//
-// The omitted key used to read as PORT 0 and be probed: a container-RESIDENT instance keeps postgres and nats
-// inside the container's network namespace and publishes neither on a host port, so its resolved port set names
-// only the control port. `planInstallPorts` writes a key only for the ports `activeInstallPorts`
-// yields, so the two service keys are ABSENT — `servicesReady` then ran `pg_isready -p 0` and probed
-// `http://127.0.0.1:0/healthz`, answered false, and the install's own repair gate
-// (`!healthy || !servicesReady(instance, ports)`) fired on EVERY re-run: a `docker restart` of a perfectly
-// healthy instance container, which is the opposite of the convergence criterion 6 requires.
-//
-// The port set is DERIVED FROM THE REAL TABLE rather than hand-written, so a future change to which ports a
-// shape binds moves this test with it instead of leaving it asserting a shape that no longer exists.
+// TestServicesReadyIsNotNegativeForACarrierItCannotProbe is the regression for a false negative
+// this item's own re-signature opened, and it is the reason servicesProbeableFromHost exists.
 func TestServicesReadyIsNotNegativeForACarrierItCannotProbe(t *testing.T) {
 	// The container shape: its services are internal, so NO host service port exists to ask about.
 	containerPorts := map[string]int{}
@@ -755,9 +673,9 @@ func TestServicesReadyIsNotNegativeForACarrierItCannotProbe(t *testing.T) {
 	}
 }
 
-// TestWaitServicesReadyWarnsRatherThanFailing is acceptance criterion 2's posture: the wait ANNOUNCES before
-// it waits (a silent minute reads as a hang), WARNS rather than failing on timeout, and still RETURNS the
-// bool the caller acts on.
+// TestWaitServicesReadyWarnsRatherThanFailing is acceptance criterion 2's posture: the wait
+// ANNOUNCES before it waits (a silent minute reads as a hang), WARNS rather than failing on
+// timeout.
 func TestWaitServicesReadyWarnsRatherThanFailing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir()) // no pg_isready at all
@@ -789,15 +707,8 @@ func TestWaitServicesReadyWarnsRatherThanFailing(t *testing.T) {
 	}
 }
 
-// TestHostInstallRecordsItsShape is the regression for a gap this item's own de-containerization opened. It is
-// a WIRING assertion because the defect was a MISSING CALL rather than a wrong value: `recordResidency` was
-// written ONLY by `ensureInstallContainer`, which the host-services path (a host with no engine) never reaches.
-// A no-engine install therefore finished with no record at all — and `orchicon restart`, which reads the record
-// to decide which carrier to bounce, refused with "no install record for instance %q — nothing is installed for
-// it" over the instance the SAME RUN had just brought up and told the operator to restart.
-//
-// The behavioural half is asserted too: the record the host path writes is exactly the one restart's
-// precondition reads back.
+// It is a WIRING assertion because the defect was a MISSING CALL rather than a wrong value:
+// `recordResidency` was written ONLY by `ensureInstallContainer`.
 func TestHostInstallRecordsItsShape(t *testing.T) {
 	src, err := os.ReadFile("install.go")
 	if err != nil {
@@ -805,13 +716,6 @@ func TestHostInstallRecordsItsShape(t *testing.T) {
 	}
 	body := string(src)
 	// THE FLOW MOVED, SO THE ASSERTION FOLLOWS IT RATHER THAN NAMING ONE FUNCTION.
-	//
-	// This used to slice runInstall's body. runInstall was then split so the setup record could be settled
-	// around it (installProgress, D4), and the flow now lives in runInstallBody — at which point a guard
-	// keyed on the literal name "func runInstall(" fails for a restructure that changed nothing about the
-	// behaviour it protects. Keying on the CALL instead means the next such split does not break it either:
-	// find whichever top-level function starts the host plane, and require the residency record in the same
-	// one. That is the property, and it is what "the install FLOW records the shape it created" means.
 	flow := enclosingFunc(body, "startHostPlane(")
 	// VACUITY GUARD: the assertion below is only meaningful if we found the flow that starts the host plane.
 	if flow == "" {
@@ -832,11 +736,8 @@ func TestHostInstallRecordsItsShape(t *testing.T) {
 	}
 }
 
-// TestNoEngineInstallAdviceNamesAHostLog is the second half of the same defect class, on the install's ADVICE
-// rather than its behaviour: the "the plane is not answering" arm used to print `docker logs --tail 50 <name>`
-// unconditionally. On a host with no engine that names a binary which is not installed — a dead docker
-// invocation in the install path, arriving through its error message. The arm is now shape-aware, and this
-// pins the property that matters: the host arm points at the plane's own log file.
+// TestNoEngineInstallAdviceNamesAHostLog is the second half of the same defect class, on the
+// install's ADVICE rather than its behaviour.
 func TestNoEngineInstallAdviceNamesAHostLog(t *testing.T) {
 	src, err := os.ReadFile("install.go")
 	if err != nil {
@@ -858,10 +759,7 @@ func TestNoEngineInstallAdviceNamesAHostLog(t *testing.T) {
 	if !strings.Contains(arm, "services.log") {
 		t.Errorf("the no-engine advice must name the host services log; got:\n%s", arm)
 	}
-	// THE CONTAINER SHAPE IS RETIRED, so the advice must not name one AT ALL. It used to be shape-guarded
-	// (`docker logs` behind `if residency == residencyHost`); with the instance always host, any mention of
-	// a container here is a command that cannot work. Asserted as an ABSENCE: that is the shape of the
-	// defect this test exists for (advice naming a carrier the install never created).
+	// THE CONTAINER SHAPE IS RETIRED, so the advice must not name one AT ALL.
 	if strings.Contains(arm, "docker logs") {
 		t.Errorf("the advice still names a services CONTAINER, which no longer exists — the instance is host processes; got:\n%s", arm)
 	}
@@ -894,8 +792,7 @@ func TestPgIsReadyPrefersTheRecordedBinary(t *testing.T) {
 }
 
 // TestHostServicesLifecycleIsPerInstanceAndFailsClosed pins the host-services seam: the PID file is
-// per-instance, and stopHostServices on an instance with no record is a NO-OP (not an error) so the repair
-// pass can always act.
+// per-instance, and stopHostServices on an instance with no record is a NO-OP (not an error).
 func TestHostServicesLifecycleIsPerInstanceAndFailsClosed(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	devFile, err := hostServicesPIDFile("dev")
@@ -918,9 +815,8 @@ func TestHostServicesLifecycleIsPerInstanceAndFailsClosed(t *testing.T) {
 	}
 }
 
-// TestHostDataDirIsPerInstance pins that the state dir is derived from the
-// instance — two instances sharing one data dir would share a KEK and a PID
-// file, so stopping one could kill the other.
+// TestHostDataDirIsPerInstance pins that the state dir is derived from the instance — two instances
+// sharing one data dir would share a KEK and a PID file, so stopping one could kill the other.
 func TestHostDataDirIsPerInstance(t *testing.T) {
 	dev, err := hostDataDir("dev")
 	if err != nil {
@@ -944,8 +840,7 @@ func TestHostDataDirIsPerInstance(t *testing.T) {
 }
 
 // TestEnvWithoutStripsOnlyTheNamedKeys pins the container-mode strip: a stray
-// ORCHICON_CONTAINER_MODE in a shell profile must not flip the host plane into
-// container semantics, and nothing else may be dropped.
+// ORCHICON_CONTAINER_MODE in a shell profile must not flip the host plane into container semantics.
 func TestEnvWithoutStripsOnlyTheNamedKeys(t *testing.T) {
 	env := []string{
 		"PATH=/usr/bin",
@@ -967,36 +862,19 @@ func TestEnvWithoutStripsOnlyTheNamedKeys(t *testing.T) {
 	}
 }
 
-// TestMigrateHostDataDirSkipsWhenKekExists was the ORIGINAL pin of the KEK guard. It is superseded by
-// TestEnsureHostDataDirKeepsAnExistingKEK / TestEnsureHostDataDirRefusesToOrphanASecret, which assert the
-// same property (plus the FATAL failure mode) against the function that exists now: with no container-era
-// volume to copy from, the guard is the whole of the behaviour.
+// TestMigrateHostDataDirSkipsWhenKekExists was the ORIGINAL pin of the KEK guard.
 
-// TestResolveInstallPortsNeedsNoEngine is acceptance criterion 4 at the RESOLVER: the port table is resolved
-// on a host with NO container engine, and resolving it must not need one.
-//
-// RUNG 0 OF resolveInstallPorts IS THE ONLY PLACE THE RESOLVER ASKS A CONTAINER ANYTHING — it reads a running
-// instance's published ports back with `docker inspect`. On a host with no engine there is no container to
-// ask, so that rung must be SKIPPED (not attempted and failed): an ungated `docker` invocation on the
-// no-engine path is exactly the silent failure this item removes, and it is the one docker call site the
-// install's residency gate does not otherwise cover. Here PATH holds no docker, so a probe that stayed
-// unguarded could only ever shell a binary that is not there.
+// RUNG 0 OF resolveInstallPorts IS THE ONLY PLACE THE RESOLVER ASKS A CONTAINER ANYTHING — it reads
+// a running instance's published ports back with `docker inspect`.
 func TestResolveInstallPortsNeedsNoEngine(t *testing.T) {
 	// "No engine" is PINNED, not inferred from an empty PATH: the detector also searches the
-	// conventional install locations, so a CI runner's /usr/bin/docker would otherwise make
-	// this fixture a host WITH an engine.
+	// conventional install locations.
 	t.Setenv(containerengine.EnginePinEnv, string(containerengine.EngineNone))
 	t.Setenv("PATH", t.TempDir()) // no docker, no pg_isready — nothing to exec
 	t.Setenv("ORCHICON_STRICT_PORTS", "")
 	t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
-	// AND NO INSTANCE OF THE OPERATOR'S MAY BE VISIBLE. Rung 0 reads back the ports of an instance that is
-	// already RUNNING, which on a host-resident install means the instance's own record and pid file — not a
-	// container. So this test used to pass only while dev happened to be stopped: the moment the developer
-	// started dev (which is most of the time), the resolver legitimately reported "instance dev is already
-	// running" and the assertion below fired, for a reason that has nothing to do with what it pins.
-	//
-	// An isolated HOME removes every instance from view without weakening the claim: PORT RESOLUTION MUST NOT
-	// NEED A CONTAINER ENGINE.
+	// AND NO INSTANCE OF THE OPERATOR'S MAY BE VISIBLE. An isolated HOME removes every instance from
+	// view without weakening the claim: PORT RESOLUTION MUST NOT NEED A CONTAINER ENGINE.
 	t.Setenv("HOME", t.TempDir())
 
 	if containerEngineAvailable() {
@@ -1015,12 +893,8 @@ func TestResolveInstallPortsNeedsNoEngine(t *testing.T) {
 	}
 }
 
-// TestPortResolverGatesItsContainerRead pins the GATE STRUCTURALLY, which is the half the behavioural test
-// above cannot express: with a docker stub on PATH the engine probe is true and rung 0 legitimately runs, so
-// "the read is skipped when there is no engine" has to be asserted against the guard itself.
-//
-// It is deliberately narrow — the read must sit INSIDE `if containerEngineAvailable() {` — because that is
-// the contract: rung 0 asks a CONTAINER, and a container can only be asked when an engine is installed.
+// TestPortResolverGatesItsContainerRead pins the GATE STRUCTURALLY, which is the half the
+// behavioural test above cannot express.
 func TestPortResolverGatesItsContainerRead(t *testing.T) {
 	src, err := os.ReadFile("install_ports.go")
 	if err != nil {
@@ -1036,11 +910,6 @@ func TestPortResolverGatesItsContainerRead(t *testing.T) {
 
 // TestWaitServicesReadyStopsWhenTheSupervisorIsGone — a supervisor that has EXITED cannot become
 // ready, so the wait must stop rather than spend its full budget polling a stack that is not there.
-//
-// MEASURED on the affected machine: `orchicon start dev` in an elevated shell spent a full 60s
-// polling a stack whose supervisor had already exited with "prepare failed" (postgres refuses an
-// Administrators token), and then reported a plane timeout. The real cause was in services.log the
-// whole time — the wait simply had no reason to stop looking.
 func TestWaitServicesReadyStopsWhenTheSupervisorIsGone(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1081,9 +950,6 @@ func TestWaitServicesReadyStopsWhenTheSupervisorIsGone(t *testing.T) {
 }
 
 // THE ABSENCE OF A PID FILE IS NOT EVIDENCE OF DEATH.
-//
-// A stack started outside `orchicon start`/`install` has no recorded PID, and treating that as "it
-// died" would cut every such wait short. This pins the narrow shape of the early exit.
 func TestHostServicesRanAndDiedNeedsARealRecord(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if hostServicesRanAndDied("dev") {
@@ -1092,10 +958,6 @@ func TestHostServicesRanAndDiedNeedsARealRecord(t *testing.T) {
 }
 
 // enclosingFunc returns the body of the top-level function in src that contains needle, or "".
-//
-// It exists so a wiring guard can follow the FLOW rather than name the function that happens to hold it
-// today: a pure restructure (splitting a function, renaming one) is not a behaviour change, and a guard
-// that fails on it trains the next reader to delete the guard.
 func enclosingFunc(src, needle string) string {
 	at := strings.Index(src, needle)
 	if at < 0 {

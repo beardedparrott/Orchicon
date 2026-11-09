@@ -7,15 +7,10 @@ import (
 	"testing"
 )
 
-// Two host-resident planes (dev + prod) must never share a PID file: a
-// `serve --stop` for one instance would kill the other. ORCHICON_SERVE_STATE_DIR
-// makes the state root per instance; its absence must reproduce the previous
-// paths exactly.
+// Two host-resident planes (dev + prod) must never share a PID file: a `serve --stop` for one
+// instance would kill the other.
 func TestServeStateDir(t *testing.T) {
 	// AN INSTANCE NOW OUTRANKS THE OVERRIDE, so these cases must state that no instance is in play.
-	// Without this the test graded the OPERATOR'S shell: run from a session spawned by a prod plane
-	// (ORCHICON_INSTANCE=prod in the environment) every case here saw prod's path and failed — the same
-	// ambient-environment defect this change exists to remove, arriving in the test first.
 	unsetInstance := func(t *testing.T) {
 		t.Helper()
 		t.Setenv("ORCHICON_INSTANCE", "")
@@ -53,12 +48,8 @@ func TestServeStateDir(t *testing.T) {
 		if !strings.Contains(got, "orchicon-dev") {
 			t.Errorf("serveStateDir() = %q, want the dev instance's own state dir", got)
 		}
-		// AND THE FILES, NOT JUST THE DIRECTORY — this is the Windows-detach regression guard, and the bug it
-		// pins was about FILES. `serve --detach` writes the PID file and the child opens the log file, so if
-		// either path were resolved from the ambient override while the state dir was not, one instance's
-		// plane would still write a SIBLING's log or PID file. The Windows detach path calls the same
-		// serveDetach, so this is the assertion that keeps that true on a platform where the collision is
-		// harder to notice.
+		// AND THE FILES, NOT JUST THE DIRECTORY — this is the Windows-detach regression guard, and the bug
+		// it pins was about FILES.
 		for name, path := range map[string]string{"pid": servePIDFile(), "log": serveLogFile()} {
 			if strings.Contains(path, "orchicon-prod") {
 				t.Errorf("serve %s file = %q — it follows the ambient override for ANOTHER instance", name, path)
@@ -80,13 +71,8 @@ func TestServeStateDir(t *testing.T) {
 // The package vars are initialised before any test can set the env, so assert
 // their SHAPE (the env-derived value is covered by TestServeStateDir above).
 func TestServeStatePathsShape(t *testing.T) {
-	// READ AT CALL TIME — these are functions precisely so a test can isolate the
-	// environment before reading them (see servePath's comment in serve_state.go).
-	//
-	// AND WITH NO INSTANCE NAMED, because that is the shape this asserts: the pre-change ".dev" default.
-	// With an instance set the path is <instance data dir>/serve by design, so leaving the ambient
-	// ORCHICON_INSTANCE in place made this test grade the operator's shell (it saw prod's path) instead of
-	// the default it exists to pin.
+	// READ AT CALL TIME — these are functions precisely so a test can isolate the environment before
+	// reading them (see servePath's comment in serve_state.go).
 	t.Setenv("ORCHICON_INSTANCE", "")
 	if err := os.Unsetenv("ORCHICON_INSTANCE"); err != nil {
 		t.Fatal(err)

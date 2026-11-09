@@ -27,17 +27,15 @@ func TestPostgresListenAddrIsLoopback(t *testing.T) {
 	}
 }
 
-// testInfra is a hand-built resolved set for tests that construct a supervisor
-// directly instead of through prepare(). The paths are never executed by these
-// tests — they only prove a proc carries the RESOLVED path rather than a bare name.
+// testInfra is a hand-built resolved set for tests that construct a supervisor directly instead of
+// through prepare().
 func testInfra() *infraBinaries {
 	return &infraBinaries{
 		Source: "detected", Postgres: "/pg/bin/postgres", Initdb: "/pg/bin/initdb",
 		PgCtl: "/pg/bin/pg_ctl", PgIsReady: "/pg/bin/pg_isready", Createdb: "/pg/bin/createdb",
 		NatsServer: "/usr/local/bin/nats-server",
-		// The four telemetry backends, so a proc exec'ing s.resolved().X is
-		// distinguishable from one exec'ing a bare name (the point of routing the
-		// children through the resolved record).
+		// The four telemetry backends, so a proc exec'ing s.resolved().X is distinguishable from one
+		// exec'ing a bare name (the point of routing the children through the resolved record).
 		Tempo: "/inst/bin/tempo", Loki: "/inst/bin/loki",
 		VictoriaMetrics: "/inst/bin/victoria-metrics-prod", OTelCollector: "/inst/bin/otelcol-contrib",
 	}
@@ -166,10 +164,7 @@ func TestDefaultDataDirFor(t *testing.T) {
 	}
 }
 
-// A readiness gate is only meaningful if it probes the port the child REALLY
-// binds. For postgres/nats/vm the supervisor decides the port and passes it in
-// argv, so the bind and the probe read the same field by construction; this
-// asserts BOTH sides of that.
+// A readiness gate is only meaningful if it probes the port the child REALLY binds.
 func TestServiceProbeMatchesItsBindArg(t *testing.T) {
 	s := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(), ports: servicePortsFromEnv()}
 	p := s.ports
@@ -186,13 +181,7 @@ func TestServiceProbeMatchesItsBindArg(t *testing.T) {
 		t.Errorf("nats does not serve monitoring on the probed port %d: %s", p.natsMonitor, nats)
 	}
 	vm := strings.Join(s.vmProc().args, " ")
-	// LOOPBACK, NOT A WILDCARD. This asserted `-httpListenAddr=:<port>`, i.e. it
-	// pinned the wildcard as correct — so the one service that leaked onto every
-	// interface was also the one the test defended. The probe below asks
-	// localhost, so a loopback bind is what keeps the bind and the probe in
-	// agreement AND keeps the metrics store off the LAN, which is the contract
-	// every other service in this supervisor already keeps
-	// (scripts/tests/host-residency/run.sh: "nothing may be published on 0.0.0.0").
+	// LOOPBACK, NOT A WILDCARD.
 	if !strings.Contains(vm, "-httpListenAddr=127.0.0.1:"+strconv.Itoa(p.vm)) {
 		t.Errorf("victoriametrics does not listen on loopback at the probed port %d: %s", p.vm, vm)
 	}
@@ -201,14 +190,8 @@ func TestServiceProbeMatchesItsBindArg(t *testing.T) {
 	}
 }
 
-// reapRestart must escalate the backoff (2,4,8,16,32s cap) across CONSECUTIVE
-// crashes of one child, not restart-loop at a flat 2s.
-//
-// THIS IS THE REGRESSION THE QA PASS FOUND. `start` installs a FRESH procState
-// whose `restarts` is 0, so incrementing the OLD state and then calling
-// `start` threw the count away: every crash recomputed from 0, and a crashed
-// child was retried every 2s forever — the cap never engaged and a permanently
-// broken child hot-looped. The fix carries the count into the new procState.
+// reapRestart must escalate the backoff (2,4,8,16,32s cap) across CONSECUTIVE crashes of one child,
+// not restart-loop at a flat 2s.
 func TestRestartBackoffEscalatesAndCaps(t *testing.T) {
 	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second, 32 * time.Second}
 	for i, w := range want {
@@ -230,9 +213,8 @@ func TestReapRestartCarriesRestartCount(t *testing.T) {
 	}
 }
 
-// postgres runs as the INVOKING USER, who does not own /var/run/postgresql, so the
-// socket lives in the data dir that user owns. On a platform with no Unix-domain
-// sockets the flag must not be passed at all.
+// postgres runs as the INVOKING USER, who does not own /var/run/postgresql, so the socket lives in
+// the data dir that user owns.
 func TestPostgresSocketDir(t *testing.T) {
 	s := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra()}
 	if got := s.postgresSocketDir(); got != s.dataDir {
@@ -244,17 +226,8 @@ func TestPostgresSocketDir(t *testing.T) {
 	}
 }
 
-// embeddedConfigPort resolves the integer a config declares for key, after
-// substituting the @TOKEN@ placeholders the way writeConfigs does. A token is a
-// LEGITIMATE value now: the listen ports are templated from the resolved port
-// table, so a bare strconv.Atoi would fail on "@TEMPO_HTTP_PORT@" and this helper
-// is what keeps the drift check meaningful.
-//
-// nth selects among repeated keys (endpoint: 127.0.0.1: appears for the collector's
-// gRPC receiver, its HTTP receiver and its health extension). It is substituted
-// from the container defaults, so the returned number is the same integer the
-// child would bind in that residency — which is what these tests then compare
-// against servicePortsFor.
+// embeddedConfigPort resolves the integer a config declares for key, after substituting the @TOKEN@
+// placeholders the way writeConfigs does.
 func embeddedConfigPort(t *testing.T, path, key string, nth int, ports servicePorts) int {
 	t.Helper()
 	data, err := assets.ServiceConfigsFS.ReadFile(path)
@@ -292,13 +265,8 @@ func embeddedConfigPort(t *testing.T, path, key string, nth int, ports servicePo
 	return 0
 }
 
-// The telemetry children's listen ports live in an EMBEDDED CONFIG (tempo.yaml,
-// loki.yaml, otel-collector.yaml), NOT in argv. The probe port is
-// therefore only correct because it COPIES the config — so parse the shipped
-// configs (resolving the @TOKEN@s) and pin each field to them, in both
-// residencies. A knob that moved one of these fields without moving the config
-// would leave the gate waiting on a port nothing listens on, and the supervisor
-// would report a healthy child as never-ready forever.
+// The telemetry children's listen ports live in an EMBEDDED CONFIG (tempo.yaml, loki.yaml,
+// otel-collector.yaml), NOT in argv.
 func TestServiceProbesMatchEmbeddedConfigPorts(t *testing.T) {
 	base := servicePortDefaults()
 	cases := []struct {
@@ -328,11 +296,8 @@ func TestServiceProbesMatchEmbeddedConfigPorts(t *testing.T) {
 	}
 }
 
-// The collector's tempo exporter must point at TEMPO's OTLP HTTP receiver, which
-// is OFFSET from the collector's own OTLP HTTP port (they shared one network
-// namespace in the container image). Pinning the offset against the collector's
-// own port is what makes a future "let's just use 4318" cleanup fail loudly
-// instead of silently splitting the pipeline.
+// The collector's tempo exporter must point at TEMPO's OTLP HTTP receiver, which is OFFSET from the
+// collector's own OTLP HTTP port (they shared one network namespace in the container image).
 func TestCollectorPointsAtTempoOffset(t *testing.T) {
 	p := servicePortDefaults()
 	tempoOTLP := embeddedConfigPort(t, "deploy/configs/otel-collector.yaml", "endpoint: http://localhost:", 0, p)
@@ -349,9 +314,8 @@ func TestCollectorPointsAtTempoOffset(t *testing.T) {
 	}
 }
 
-// Retention must be preserved EXACTLY: a lost retention setting is invisible
-// until the disk fills, which is the opposite of what this change is for. Asserted
-// against the shipped configs and the vm argv, not against a comment.
+// Retention must be preserved EXACTLY: a lost retention setting is invisible until the disk fills,
+// which is the opposite of what this change is for.
 func TestRetentionPreserved(t *testing.T) {
 	tempo, err := assets.ServiceConfigsFS.ReadFile("deploy/configs/tempo.yaml")
 	if err != nil {
@@ -376,9 +340,8 @@ func TestRetentionPreserved(t *testing.T) {
 	}
 }
 
-// Every telemetry child execs the path the RESOLVER recorded, never a bare name on
-// PATH: a downloaded binary lives in this instance's data dir, which is not on
-// PATH, so a bare name would silently run a different build (or none).
+// Every telemetry child execs the path the RESOLVER recorded, never a bare name on PATH: a
+// downloaded binary lives in this instance's data dir, which is not on PATH.
 func TestTelemetryChildrenExecResolvedPaths(t *testing.T) {
 	s := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(),
 		ports: servicePortsFromEnv()}
@@ -467,9 +430,6 @@ func TestWriteConfigsResolvesPortTokens(t *testing.T) {
 // telemetry works perfectly.
 func TestNoEmbeddedConfigHardcodesAListenerPort(t *testing.T) {
 	// `key` is the config field that makes the child BIND a socket.
-	// `address: 127.0.0.1:` is the collector's self-metrics exporter (service.telemetry.metrics).
-	// Its ABSENCE is covered separately by TestCollectorDeclaresItsSelfMetricsListener —
-	// this list can only find a literal that is already written down.
 	listenerKeys := []string{"http_listen_port:", "grpc_listen_port:", "endpoint: 127.0.0.1:", `endpoint: "127.0.0.1:`, "address: 127.0.0.1:"}
 	files := []string{"deploy/configs/tempo.yaml", "deploy/configs/loki.yaml", "deploy/configs/otel-collector.yaml"}
 
@@ -512,16 +472,7 @@ func TestNoEmbeddedConfigHardcodesAListenerPort(t *testing.T) {
 func TestTempoGRPCPortComesFromTheTableAndAvoidsACollision(t *testing.T) {
 	base := servicePortDefaults()
 
-	// The value the config carries must be BINDABLE — not merely equal to the
-	// default. Equality is the wrong assertion here and the failure proves it:
-	// on a host where the default is already taken by another instance's Tempo,
-	// the table legitimately resolves to a different number, and a test demanding
-	// the default would forbid the very behaviour that lets the second instance
-	// boot.
-	// THROUGH THE RESOLVER, because that is where the walk happens now: the
-	// token table simply copies the field it is given. Rendering from the raw
-	// defaults would assert against a number the child never binds on a host where
-	// another instance holds it.
+	// The value the config carries must be BINDABLE — not merely equal to the default.
 	resolved := embeddedConfigPort(t, "deploy/configs/tempo.yaml", "grpc_listen_port", 0,
 		resolveInternalListenerPorts(base))
 	if ln, err := net.Listen("tcp", ":"+strconv.Itoa(resolved)); err != nil {
@@ -543,9 +494,7 @@ func TestTempoGRPCPortComesFromTheTableAndAvoidsACollision(t *testing.T) {
 		t.Errorf("tempo.yaml binds gRPC port %d but the knob said %d", got, free)
 	}
 
-	// AN OCCUPIED PORT MUST BE SKIPPED. This is the collision, simulated: hold
-	// the preferred port the way the other instance's Tempo does, then require a
-	// DIFFERENT, bindable one.
+	// AN OCCUPIED PORT MUST BE SKIPPED.
 	holder, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("hold a port: %v", err)
@@ -569,10 +518,6 @@ func TestTempoGRPCPortComesFromTheTableAndAvoidsACollision(t *testing.T) {
 }
 
 // freePortForTest returns a port that was free at the moment it was asked for.
-// The probe-then-release race is acceptable in a test for the same reason it is
-// acceptable in internalListenerPort: the assertion that matters is "not the
-// occupied one", and nothing else on this machine is racing this test for a
-// specific high port.
 func freePortForTest(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", ":0")
@@ -641,9 +586,9 @@ func TestCollectorDeclaresItsSelfMetricsListener(t *testing.T) {
 	}
 }
 
-// The token above must actually be RESOLVED, or the config ships the literal
-// placeholder and the collector fails to parse its own address — a strictly
-// worse failure than the collision it replaced.
+// The token above must actually be RESOLVED, or the config ships the literal placeholder and the
+// collector fails to parse its own address — a strictly worse failure than the collision it
+// replaced.
 func TestCollectorSelfMetricsTokenIsResolved(t *testing.T) {
 	sup := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(), ports: servicePortDefaults()}
 	tokens := sup.configTokens()
@@ -735,16 +680,8 @@ func TestEveryServicePortIsWalkedOrAllocated(t *testing.T) {
 	}
 }
 
-// The walk must actually make the SECOND instance bindable — AND it must cover
-// every port the sets above call "walked".
-//
-// THIS IS DRIVEN BY walkedPorts, NOT BY A HAND-WRITTEN LIST, and that is the
-// point. A hand-written list would pass while the resolver silently forgot an
-// entry: the classification test says "collectorHealth is walked", the resolver
-// does not walk it, and both tests stay green. (That exact hole existed for one
-// revision of this guard — dropping the collectorHealth line from the resolver
-// left every test passing.) Driving the assertion from the same map couples
-// "declared walked" to "is walked".
+// The walk must actually make the SECOND instance bindable — AND it must cover every port the sets
+// above call "walked".
 func TestResolvedInternalPortsMoveOffAHeldPort(t *testing.T) {
 	holder, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -799,11 +736,7 @@ func TestResolvedInternalPortsMoveOffAHeldPort(t *testing.T) {
 	}
 }
 
-// The probes and the configs must read the SAME resolved number. This is the
-// invariant that made resolving in the token table wrong: the collector's
-// readiness probe dials collectorHealth, and if the config bound a walked port
-// while the probe dialled the raw one, a healthy child would read as dead (or
-// the probe would answer from the OTHER instance's collector).
+// The probes and the configs must read the SAME resolved number.
 func TestResolvedPortsReachBothConfigAndProbe(t *testing.T) {
 	sup := &supervisor{
 		log:     testLogger(),
@@ -831,9 +764,7 @@ func TestResolvedPortsReachBothConfigAndProbe(t *testing.T) {
 		}
 	}
 
-	// BEHAVIOURAL half: the collector's readiness probe must dial the RESOLVED
-	// port. Listening on it and expecting ready proves the probe reads the field
-	// the config was templated from, rather than a literal it captured earlier.
+	// BEHAVIOURAL half: the collector's readiness probe must dial the RESOLVED port.
 	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(sup.ports.collectorHealth))
 	if err != nil {
 		t.Skipf("cannot listen on the resolved health port %d: %v", sup.ports.collectorHealth, err)
@@ -845,11 +776,7 @@ func TestResolvedPortsReachBothConfigAndProbe(t *testing.T) {
 	}
 }
 
-// setPort writes one servicePorts field by name. Reflection cannot set an
-// unexported field, so this switch is the test's way in — and an UNKNOWN name
-// fails loudly, which is what forces a newly walked port to be handled here (and
-// therefore looked at in resolveInternalListenerPorts) instead of silently
-// skipping the assertion.
+// setPort writes one servicePorts field by name.
 func setPort(p *servicePorts, name string, v int) bool {
 	switch name {
 	case "postgres":
@@ -935,12 +862,6 @@ func TestEmbeddedConfigsParseWithAWindowsDataDir(t *testing.T) {
 			}
 
 			// WHAT IS ASSERTED IS THE PARSED VALUE, NOT THE RENDERED TEXT.
-			//
-			// A string comparison cannot tell "escaped correctly" from "escaped into a different
-			// directory", and that distinction is the whole point: a config that parses but names
-			// the WRONG path is worse than one that fails to parse, because the backend starts and
-			// writes its data somewhere else. So the path keys are decoded out of the parsed
-			// document and compared with the directory the supervisor actually meant.
 			tempo := render("deploy/configs/tempo.yaml")
 			var tempoDoc struct {
 				Storage struct {
@@ -999,10 +920,6 @@ func TestEmbeddedConfigsParseWithAWindowsDataDir(t *testing.T) {
 }
 
 // applyConfigTokens must escape only what the quoting context requires.
-//
-// A blanket escape would pass the parse test above while making every generated config file
-// unreadable, so the ordinary cases are pinned: a normal path and a port pass through unchanged,
-// and a quote is doubled because that is single-quoted YAML's one escape.
 func TestApplyConfigTokensEscapesOnlyTheQuote(t *testing.T) {
 	tokens := map[string]string{
 		"@DATA_DIR@":       `/home/op-user/.local/share/orchicon-dev`,

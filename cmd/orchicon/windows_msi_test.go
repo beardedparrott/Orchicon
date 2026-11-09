@@ -75,18 +75,10 @@ func TestMSIIsWellFormedXML(t *testing.T) {
 }
 
 // TestMSICarriesEveryShippedBinary is the partial-product guard.
-//
-// The MSI installs three executables and one setup wrapper. A missing component
-// produces a successful install of a product that cannot do its job, which is
-// precisely the class of failure a build cannot see.
 func TestMSICarriesEveryShippedBinary(t *testing.T) {
 	body := readMSIFile(t, wxs())
 
-	// KEYED ON THE Source= WIRING, NOT ON THE FILENAME. Every one of these names also
-	// appears in the file's own prose — the header and the Feature descriptions say
-	// "orch.exe" and "orchicon-desktop.exe" — so a filename match keeps passing after
-	// the COMPONENT is deleted. (Found exactly that way: removing the <Component> for
-	// orch.exe left a grep hit in a comment and this test still went green.)
+	// KEYED ON THE Source= WIRING, NOT ON THE FILENAME.
 	for _, want := range []struct{ src, why string }{
 		{`Source="$(var.SourceDir)\orchicon.exe"`, "the control plane, the CLI and the setup step itself"},
 		{`Source="$(var.SourceDir)\orch.exe"`, "the TUI — without it the package has no remote client"},
@@ -104,12 +96,6 @@ func TestMSICarriesEveryShippedBinary(t *testing.T) {
 }
 
 // TestMSICarriesTheContainerBinaryBesideTheExe — WHERE the file goes is the whole fix.
-//
-// The daemon searches, in order, ORCHICON_RUNTIME_CONTAINER_EXE, then beside its OWN executable, then
-// <data dir>/bin (internal/runtime/exe_resolve.go). The daemon the MSI starts runs out of INSTALLFOLDER,
-// so a binary installed there needs no configuration at all. A component grouped anywhere else — or one
-// whose File lands in a different directory — would install cleanly and be invisible to the daemon, which
-// is the failure this whole class of bug is made of.
 func TestMSICarriesTheContainerBinaryBesideTheExe(t *testing.T) {
 	body := readMSIFile(t, wxs())
 
@@ -133,16 +119,13 @@ func TestMSICarriesTheContainerBinaryBesideTheExe(t *testing.T) {
 	}
 }
 
-// TestCIVerifiesTheInstalledContainerBinary — the MSI job INSTALLS the package and checks the payload by
-// name, which makes it the only place the whole change is proven end to end on real Windows. Binding
-// proves the file is in the package; only an install proves it lands where the daemon looks, and only a
-// magic check proves it is something a Linux kernel can execute.
+// TestCIVerifiesTheInstalledContainerBinary — the MSI job INSTALLS the package and checks the
+// payload by name, which makes it the only place the whole change is proven end to end on real
+// Windows.
 func TestCIVerifiesTheInstalledContainerBinary(t *testing.T) {
 	src := readMSIFile(t, filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
 
-	// SCOPED TO THE INSTALLED-PAYLOAD LIST, not to the file at large. The name appears three times in
-	// this workflow (build, stage, verify), so a whole-file Contains passes even with the VERIFICATION
-	// deleted — measured: removing it from the foreach left this test green.
+	// SCOPED TO THE INSTALLED-PAYLOAD LIST, not to the file at large.
 	listStart := strings.Index(src, "foreach ($f in @(")
 	if listStart < 0 {
 		t.Fatal("ci.yml has no installed-payload file list to assert against")
@@ -162,13 +145,8 @@ func TestCIVerifiesTheInstalledContainerBinary(t *testing.T) {
 	}
 }
 
-// TestEveryMSIBuildSiteStagesTheContainerBinary — a staging step that only exists in ONE workflow is a
-// release that ships the file and a canary that does not, or the reverse, and the difference is invisible
-// until someone installs from the one that forgot.
-//
-// Four sites build this MSI. `wix build` fails at BIND time on a missing Source file, so a forgotten copy is
-// caught on windows-latest — six minutes away, in a job most changes never touch. This check is the local,
-// immediate half of the same guard.
+// TestEveryMSIBuildSiteStagesTheContainerBinary — a staging step that only exists in ONE workflow
+// is a release that ships the file and a canary that does not, or the reverse.
 func TestEveryMSIBuildSiteStagesTheContainerBinary(t *testing.T) {
 	for _, site := range []struct{ what, path string }{
 		{"the Makefile", filepath.Join("..", "..", "Makefile")},
@@ -192,10 +170,8 @@ func TestEveryMSIBuildSiteStagesTheContainerBinary(t *testing.T) {
 	}
 }
 
-// TestMSIPublishesTheVersionAndIcon — the two things a malformed package gets
-// wrong silently: a missing Version makes WiX produce an unversioned package that
-// can never upgrade, and a missing icon leaves a blank entry in Add/Remove
-// Programs.
+// TestMSIPublishesTheVersionAndIcon — the two things a malformed package gets wrong silently: a
+// missing Version makes WiX produce an unversioned package that can never upgrade.
 func TestMSIPublishesTheVersionAndIcon(t *testing.T) {
 	body := readMSIFile(t, wxs())
 
@@ -278,9 +254,8 @@ func TestSetupRelaunchesIntoItsOwnConsole(t *testing.T) {
 		}
 	}
 
-	// DETACHED_PROCESS in the relaunch flags would silently produce NO window — the exact
-	// failure it exists to prevent. It is legitimately used for the runtime DAEMON, so this
-	// check is scoped to relaunchInOwnConsole's own body.
+	// DETACHED_PROCESS in the relaunch flags would silently produce NO window — the exact failure it
+	// exists to prevent.
 	start := strings.Index(src, "func relaunchInOwnConsole()")
 	if start < 0 {
 		t.Fatal("relaunchInOwnConsole is gone")
@@ -307,23 +282,13 @@ func TestSetupRelaunchesIntoItsOwnConsole(t *testing.T) {
 }
 
 // TestBurnBundleWrapsTheMSI — the setup EXPERIENCE a person runs.
-//
-// A bare MSI is the right unit of deployment (Intune, SCCM, Group Policy and `msiexec /qn` all
-// speak it) but a poor experience for a human: it draws the wizard and then hands the
-// interesting part — a long download with prompts — to a console it cannot report on. A Burn
-// bundle owns the UI and chains the MSI, so progress and the log belong to the wizard.
-//
-// IT DOES NOT REPLACE THE MSI. Both artifacts are asserted, not just the new one.
 func TestBurnBundleWrapsTheMSI(t *testing.T) {
 	bundle := stripXMLComments(readMSIFile(t, "..", "..", "deploy", "desktop", "windows", "OrchiconSetup.wxs"))
 
 	for _, want := range []struct{ what, sub string }{
 		{"the MSI is chained in (the bundle wraps it, it does not replace it)", "<MsiPackage"},
-		// THE MSI'S OWN UI IS NOT SHOWN, and in WiX v4+ that is the DEFAULT plus the only
-		// option: `DisplayInternalUI` was REMOVED (v5 rejects it with WIX0004 — it "has
-		// fundamentally changed and requires BootstrapperApplication support"). So the guard
-		// asserts the ABSENCE of the attribute rather than its value, because its presence is
-		// now a build error and its behaviour lives in the BA.
+		// THE MSI'S OWN UI IS NOT SHOWN, and in WiX v4+ that is the DEFAULT plus the only option:
+		// `DisplayInternalUI` was REMOVED (v5 rejects it with WIX0004.
 		{"the instance reaches the MSI (as the setup's default)", `<MsiProperty Name="INSTANCE"`},
 		{"the instance reaches the MSI", `<MsiProperty Name="INSTANCE"`},
 		{"the licence page uses the SAME RTF as the MSI", `LicenseFile="$(var.LicenseRtf)"`},
@@ -334,11 +299,7 @@ func TestBurnBundleWrapsTheMSI(t *testing.T) {
 		}
 	}
 
-	// THE SETUP MUST ACTUALLY RUN. `SKIPSETUP=1` in the bundle is the defect this cost an
-	// install to find: the MSI's last step never fired, so a fresh install finished in seconds,
-	// started no plane, and left the desktop app opening on "the control plane is not reachable".
-	// An installer that leaves the operator with binaries and a list of commands has not
-	// installed the product.
+	// THE SETUP MUST ACTUALLY RUN.
 	if strings.Contains(bundle, `Name="SKIPSETUP"`) {
 		t.Error("OrchiconSetup.wxs passes SKIPSETUP to the MSI, which means the setup NEVER RUNS.\n" +
 			"  That is how a fresh install came to finish in seconds with no plane and no prompts.\n" +
@@ -353,9 +314,7 @@ func TestBurnBundleWrapsTheMSI(t *testing.T) {
 			"decides, and the standard BA does not show a package's internal UI.")
 	}
 
-	// THE INSTANCE VARIABLE MUST BE DECLARED. `[Instance]` in an MsiProperty resolves against
-	// bundle variables, and an UNDECLARED one resolves to an empty string — so every install
-	// would silently become whatever the MSI defaults to, whatever was asked for.
+	// THE INSTANCE VARIABLE MUST BE DECLARED.
 	if !strings.Contains(bundle, `<Variable Name="Instance"`) {
 		t.Error("OrchiconSetup.wxs references [Instance] but never declares it. An undeclared " +
 			"variable resolves to EMPTY, so the wizard's instance choice would be silently dropped.")
@@ -375,9 +334,8 @@ func TestBurnBundleWrapsTheMSI(t *testing.T) {
 			"delete its files.", msiUpgrade[1])
 	}
 
-	// AND EVERY SITE THAT BUILDS IT MUST INSTALL THE BAL EXTENSION FIRST — `-ext` resolves
-	// through WiX's own store, never NuGet, and Bal is a SEPARATE package from the UI extension
-	// the MSI build already installs.
+	// AND EVERY SITE THAT BUILDS IT MUST INSTALL THE BAL EXTENSION FIRST — `-ext` resolves through
+	// WiX's own store, never NuGet.
 	for _, site := range []struct{ what, path string }{
 		{"the Makefile", filepath.Join("..", "..", "Makefile")},
 		{"ci.yml", filepath.Join("..", "..", ".github", "workflows", "ci.yml")},
@@ -402,9 +360,7 @@ func TestBurnBundleWrapsTheMSI(t *testing.T) {
 		}
 	}
 
-	// THE MISMATCHED ID MUST NOT COME BACK. It LOOKS like the right package (it is the one
-	// documented as "the Bal extension") and its DLL is named differently, so WiX reports
-	// WIX0144 and the build dies six minutes in.
+	// THE MISMATCHED ID MUST NOT COME BACK.
 	for _, site := range []string{"Makefile", ".github/workflows/ci.yml",
 		".github/workflows/canary.yml", ".github/workflows/release.yml"} {
 		var body string
@@ -449,11 +405,6 @@ func TestReleaseBuildsAndPublishesTheMSI(t *testing.T) {
 }
 
 // TestCICoversTheWindowsDesktopBuild — this path had never run.
-//
-// `orchicon-desktop.exe` was unexercised code before this job: the only thing that
-// built it was release.yml's desktop-windows job, which fires on a main tag and had
-// not run since windows/amd64 joined the matrix. Making a release its first test is
-// how a release ships a broken installer.
 func TestCICoversTheWindowsDesktopBuild(t *testing.T) {
 	ci := readMSIFile(t, "..", "..", ".github", "workflows", "ci.yml")
 
@@ -672,10 +623,7 @@ func TestMSIDeclaresNoDuplicateIdentifiers(t *testing.T) {
 	var dups []string
 	for el, ids := range counts {
 		for id, n := range ids {
-			// CONTROL IDs ARE SCOPED PER DIALOG. Every dialog has its own Back/Next/Cancel/
-			// Title/Description, so finding those three times is correct — WiX keys Control by
-			// (Dialog_, Control), not by Control alone. Only the globally-unique identifiers are
-			// a duplicate at ×2.
+			// CONTROL IDs ARE SCOPED PER DIALOG.
 			if n > 1 && el != "Control" {
 				dups = append(dups, fmt.Sprintf("%s/@%s ×%d", el, id, n))
 			}
@@ -690,28 +638,14 @@ func TestMSIDeclaresNoDuplicateIdentifiers(t *testing.T) {
 	}
 }
 
-// TestCanaryPublishesTheWindowsDesktopApp — CANARY IS THE DEVELOP INSTALL PATH, and for a
-// Windows operator "the installer" now includes the desktop app.
-//
-// WHY THIS JOB HAD TO EXIST. Canary published the CLI and the TUI only, so the sole place an
-// MSI had ever been built was a pull-request CI run: an artifact that expires, hangs off a
-// branch that is then deleted, and is therefore not an install path an operator can be handed.
-// Canary exists so a REAL installer is exercised against DEVELOP before anything is released.
-//
-// THE ASSERTIONS ARE KEYED ON THE WIRING LINES, NOT ON THE NAMES. That distinction is not
-// pedantry: the publish NOTES in the same file list `orchicon_canary_windows_amd64.msi`, so a
-// guard that merely looked for that string would still pass after the build step lost it — a
-// trap this file's sibling `errfix` controls hit, where a deleted component still matched
-// because its name survived in a comment. Each case below therefore carries a COUNT, and the
-// count is what fails when the wiring goes.
+// TestCanaryPublishesTheWindowsDesktopApp — CANARY IS THE DEVELOP INSTALL PATH, and for a Windows
+// operator "the installer" now includes the desktop app.
 func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 	canary := readMSIFile(t, "..", "..", ".github", "workflows", "canary.yml")
 	release := readMSIFile(t, "..", "..", ".github", "workflows", "release.yml")
 
 	// THE ASSET NAMES ARE A CROSS-FILE CONTRACT: install.ps1 BUILDS the name it will fetch and
-	// canary.yml must publish exactly that. Asserted against install.ps1's own templates rather
-	// than against a literal copied here, so a rename on EITHER side fails this test instead of
-	// silently producing a published installer that no install path resolves.
+	// canary.yml must publish exactly that.
 	installPS1 := readMSIFile(t, "..", "..", "scripts", "install.ps1")
 	for _, tpl := range []struct{ sub, why string }{
 		{`$msiAsset = "orchicon_${versionNum}_windows_${arch}.msi"`,
@@ -746,9 +680,8 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 		{"the Linux AppImage artifact name the publish pattern collects",
 			"name: canary-linux-desktop", 1},
 		{"the AppImage name assertion", "Assert the asset name the installer resolves", 1},
-		// A CANARY .deb WOULD BE A TRAP: its version is the word `canary`, which dpkg orders BELOW
-		// every release, so installing one would make every subsequent real release look like an
-		// upgrade over it. Publishing it from a testing channel is worse than not publishing it.
+		// A CANARY .deb WOULD BE A TRAP: its version is the word `canary`, which dpkg orders BELOW every
+		// release, so installing one would make every subsequent real release look like an upgrade over it.
 		{"no .deb packaging in the canary Linux job", "nfpm", 0},
 		{"the MSI build step", "wix build deploy/desktop/windows/Orchicon.wxs", 1},
 		// install.ps1 probes `orchicon_<version>_windows_<arch>.msi` with version = "canary",
@@ -758,10 +691,8 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 			`"dist/desktop/orchicon_desktop_canary_windows_amd64_installer.exe"`, 1},
 		{"the portable desktop zip",
 			`"dist/desktop/orchicon_desktop_canary_windows_amd64.zip"`, 1},
-		// BOTH publish paths, or a canary that creates the release carries the desktop app — and
-		// this line is now WIDER than Windows: the AppImage joined the same two glob lists, because
-		// a Linux asset that is built but not uploaded is exactly the gap that made `install.sh`
-		// on Linux finish with a CLI and no GUI (see desktop-linux in canary.yml).
+		// BOTH publish paths, or a canary that creates the release carries the desktop app — and this line
+		// is now WIDER than Windows: the AppImage joined the same two glob lists.
 		{"the desktop assets on the UPLOAD path",
 			"gh release upload canary dist/*.tar.gz dist/*.zip dist/*.msi dist/*.exe dist/*.AppImage --clobber", 1},
 		{"the desktop assets on the CREATE path",
@@ -769,20 +700,10 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 		// The publish job's download pattern is `canary-*`; an artifact named anything else is
 		// built, uploaded, and then never reaches the release.
 		{"an artifact name the publish pattern collects", "name: canary-windows-desktop", 1},
-		// THREE now: desktop-windows and desktop-macos upload zips/exes, and desktop-linux uploads
-		// the AppImage. All three are gates on publish, so a failed one cannot publish a canary
-		// carrying the PREVIOUS merge's installer.
+		// THREE now: desktop-windows and desktop-macos upload zips/exes, and desktop-linux uploads the
+		// AppImage.
 		{"the desktop artifact upload paths", "path: dist/desktop/*", 3},
-		// THE LINUX APPIMAGE, named the way install.sh resolves it. This is the artifact the
-		// operator's report was about: it did not exist, so the Linux install path silently
-		// installed a CLI and no GUI.
-		//
-		// FOUR occurrences: the assertion on the built file (want=…), the AppImage's name in the
-		// published-asset list, the RELEASE NOTE, and — since the publish job gained an asset guard —
-		// the required-assets list that refuses to publish a partial set. The note is documentation a
-		// reader needs so the asset is not a mystery; pinning the count keeps any of them from being
-		// deleted silently, and the sub-assertions below prove the functional ones are really doing
-		// their job rather than being satisfied by prose.
+		// THE LINUX APPIMAGE, named the way install.sh resolves it.
 		{"the Linux AppImage the installer probes",
 			"orchicon_desktop_canary_linux_amd64.AppImage", 4},
 	} {
@@ -795,14 +716,7 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 	}
 
 	// THE PUBLISH JOB MUST ASSERT THE ASSET SET, because the needs-gate above is a statement about JOB
-	// STATUS and the hazard is about FILES. They are not the same, and the gap is not theoretical: a
-	// macOS job that is CANCELLED for runner capacity reports neither success nor a build failure, and
-	// this file's own annotations show it happening ("The job was not acquired by Runner of type hosted
-	// even after multiple attempts"), which skipped publish three merges running.
-	//
-	// `gh release upload --clobber` replaces the names it is given and LEAVES EVERY OTHER NAME IN PLACE,
-	// so publishing with an asset missing ships this merge's tag carrying the previous merge's copy of
-	// it. The guard is the only thing that turns that into a failure instead of a lie.
+	// STATUS and the hazard is about FILES.
 	for _, want := range []struct{ what, sub string }{
 		{"the asset-set guard step", "Assert the full canary asset set exists"},
 		{"its refusal (a partial set must NOT publish)", "Refusing to publish"},
@@ -824,21 +738,9 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 		t.Errorf("the asset-set guard does not precede the upload (guard at %d, upload at %d)", gi, ai)
 	}
 
-	// THE PUBLISH JOB MUST WAIT FOR THE DESKTOP BUILD. `gh release upload --clobber` replaces
-	// matching names and leaves everything else, so a publish that ran while the desktop job
-	// failed would keep the PREVIOUS merge's installer under a tag claiming this commit.
-	// A canary that lies about its own contents is worse than no canary.
-	// (the dependency is asserted as a SET elsewhere in this test; this older literal is gone
-	// because macOS joined the list)
+	// THE PUBLISH JOB MUST WAIT FOR THE DESKTOP BUILD.
 
 	// THE MSI VERSION MUST BE NUMERIC AND MUST INCREASE.
-	//
-	// Numeric because an MSI ProductVersion is major.minor.build — "canary" is rejected outright.
-	// Increasing because the .wxs declares <MajorUpgrade>: with a fixed 0.0.0 every canary would be
-	// the SAME product version, so reinstalling after the next merge would not upgrade anything —
-	// Windows would report "already installed" or leave the previous build in place, which is
-	// precisely the re-test canary exists to make possible. github.run_number is monotonic per
-	// workflow and stays far below WiX's 65535 ceiling for the build field.
 	for _, want := range []struct{ what, sub string }{
 		{"a NUMERIC MSI version", `-d "Version=0.0.${{ github.run_number }}"`},
 		{"the Wails CLI pinned to the release's version", "wails@v2.17.0"},
@@ -908,10 +810,8 @@ func nsisBuildLines(body string) []string {
 	return out
 }
 
-// TestEveryNSISBuildInstallsMakensis: EVERY workflow that asks for `-nsis` must also install
-// NSIS, put it on PATH for the build step, and assert the artifact came out. The third part is
-// not redundant with the first two — a makensis that is present and still emits nothing is the
-// same failure.
+// TestEveryNSISBuildInstallsMakensis: EVERY workflow that asks for `-nsis` must also install NSIS,
+// put it on PATH for the build step, and assert the artifact came out.
 func TestEveryNSISBuildInstallsMakensis(t *testing.T) {
 	workflows := []string{"ci.yml", "release.yml", "canary.yml"}
 	builds := map[string]bool{}
@@ -940,10 +840,7 @@ func TestEveryNSISBuildInstallsMakensis(t *testing.T) {
 			}
 		}
 	}
-	// CI CARRIES THE COVERAGE CLAIM. Release and canary run on a tag and on a merge to
-	// develop; a pull request — where this class of fault should be found — only runs CI.
-	// If ci.yml stops building the installer, the next makensis-class regression first
-	// surfaces on a merge to develop, which is how this one surfaced.
+	// CI CARRIES THE COVERAGE CLAIM.
 	if !builds["ci.yml"] {
 		t.Error("ci.yml no longer runs `wails build ... -nsis`, so no pull request exercises the " +
 			"NSIS installer. Release and canary are the only remaining runs, i.e. the fault " +
@@ -956,13 +853,7 @@ func TestEveryNSISBuildInstallsMakensis(t *testing.T) {
 }
 
 // rtfPlainText reduces an RTF file to its visible text so a test can compare it with a plain
-// source. Deliberately small: drop the font/colour tables by NAME, turn the two line controls
-// into newlines, strip the remaining control words, and unescape what RTF escapes.
-//
-// NOT a general group stripper, and that matters: a loop that removes {…} groups one layer at a
-// time removes the DOCUMENT group last and takes every character with it — which reads as "the
-// RTF is empty" and would make this guard fail on a correct file. The tables are named instead,
-// because they are the only groups that must go.
+// source.
 func rtfPlainText(src string) string {
 	s := strings.ReplaceAll(src, `\par`, "\n")
 	s = strings.ReplaceAll(s, `\line`, "\n")
@@ -990,21 +881,8 @@ func rtfPlainText(src string) string {
 	return s
 }
 
-// stripXMLComments removes <!-- … --> so a guard can look for an ELEMENT without matching the
-// prose that explains why that element is wrong.
-//
-// THIS IS NOT PEDANTRY. The Orchicon.wxs now carries a comment quoting the exact
-// <Property Id="WixUILicenseRtf" …/> element this file forbids; a guard that scanned the raw
-// text matched the comment and failed a correct file. That is the third time in this file's
-// history a check was satisfied (or defeated) by prose, so comment-stripping is the default.
-// stripBatchComments removes REM/:: comment lines so an assertion about what a .cmd
-// DOES is not satisfied by a comment describing it.
-//
-// THIS IS NOT HYPOTHETICAL: the guard for the silent registry read looked for `2^>nul`
-// in the whole file, and it stayed green after that token was deleted from the `reg
-// query` line — because the comment explaining it still said `2^>nul`. A detector
-// satisfied by prose is a detector that has stopped detecting, which by now is this
-// file's most-repeated lesson.
+// stripXMLComments removes <!-- … --> so a guard can look for an ELEMENT without matching the prose
+// that explains why that element is wrong.
 func stripBatchComments(s string) string {
 	var out []string
 	for _, line := range strings.Split(s, "\n") {
@@ -1031,9 +909,8 @@ func stripXMLComments(s string) string {
 
 // collapseSpace makes two texts comparable regardless of where either wrapped.
 func collapseSpace(s string) string {
-	// The license file uses a dash where the RTF needs plain ASCII, and a non-breaking
-	// space survives copy-paste from a browser. Normalising BOTH sides means the guard
-	// compares words, not byte-for-byte typography.
+	// The license file uses a dash where the RTF needs plain ASCII, and a non-breaking space survives
+	// copy-paste from a browser.
 	s = strings.ReplaceAll(s, "\u2014", "-")
 	s = strings.ReplaceAll(s, "\u2013", "-")
 	s = strings.ReplaceAll(s, "\u00a0", " ")
@@ -1138,13 +1015,8 @@ func TestMSILicensePageCarriesOurLicenseText(t *testing.T) {
 		}
 	}
 
-	// (5) AND IT IS ACTUALLY INFORMATIVE, which is the other half of the report ("we should put
-	// some kind of actual information in there"). A page that is only legalese tells the
-	// operator nothing about what they just installed.
-	// EVERY BINARY BY NAME, not one of them: a first cut asserted only "orchicon.exe", so
-	// deleting the whole inventory still passed — the word survives elsewhere on the page.
-	// A section that is meant to tell the operator what they just installed is only tested by
-	// requiring what it lists.
+	// (5) AND IT IS ACTUALLY INFORMATIVE, which is the other half of the report ("we should put some
+	// kind of actual information in there").
 	for _, want := range []struct{ what, sub string }{
 		{"the control plane binary", "orchicon.exe"},
 		{"the TUI binary", "orch.exe"},
@@ -1188,12 +1060,7 @@ func TestWizardArtIsOurs(t *testing.T) {
 		w, h  int
 		file  string
 	}{
-		// THESE ARE THE MSI WIZARD'S OWN CONTROL SIZES, not the Burn theme's. They were 493x58 /
-		// 493x312 — the sizes the BURN standard BA draws into, which is a DIFFERENT wizard — so
-		// the artwork was being scaled into a smaller box and looked squashed and misaligned:
-		//
-		//   LicenseAgreementDlg: <Control Id="BannerBitmap" Width="370" Height="44" />
-		//   WelcomeDlg:         <Control Id="Bitmap"       Width="370" Height="234" />
+		// THESE ARE THE MSI WIZARD'S OWN CONTROL SIZES, not the Burn theme's.
 		{"WixUIBannerBmp", 370, 44, "wizard-banner.bmp"},
 		{"WixUIDialogBmp", 370, 234, "wizard-dialog.bmp"},
 	} {
@@ -1249,14 +1116,8 @@ func TestWizardArtIsOurs(t *testing.T) {
 	}
 }
 
-// TestWindowsReadmeDoesNotPromiseAPlaneItCannotStart — the shipped README claimed the desktop
-// app "starts one for you if none is running". It does not: cmd/orchicon-desktop has no
-// plane-starting code at all. An operator reads that file precisely when something is wrong, so
-// a promise in it is not marketing — it is the thing they will act on, and it sent one of them
-// looking at the app instead of at the plane.
-//
-// Asserted on the FILE because the claim is prose: no unit test of the shell can see it, and
-// the false sentence survived several releases.
+// TestWindowsReadmeDoesNotPromiseAPlaneItCannotStart — the shipped README claimed the desktop app
+// "starts one for you if none is running".
 func TestWindowsReadmeDoesNotPromiseAPlaneItCannotStart(t *testing.T) {
 	readme := readMSIFile(t, "..", "..", "deploy", "desktop", "windows", "README-WINDOWS.txt")
 
@@ -1278,12 +1139,6 @@ func TestWindowsReadmeDoesNotPromiseAPlaneItCannotStart(t *testing.T) {
 	}
 
 	// AND THE SAME CLAIM WAS IN THE MAIN DOCS, WHICH THIS GUARD DID NOT COVER.
-	//
-	// The sentence "if none is running it starts one for you — which takes a few seconds on
-	// first launch" appeared verbatim in README.md and USERGUIDE.md while nothing in
-	// internal/desktop or cmd/orchicon-desktop starts a plane. Fixing only the file this test
-	// watched is exactly how a guard gives false comfort, so the sweep now covers every doc a
-	// user is likely to read first.
 	for _, doc := range []string{"README.md", "USERGUIDE.md"} {
 		body := readMSIFile(t, "..", "..", doc)
 		if regexp.MustCompile(`(?i)starts one for\s+you|starts a plane (for you )?if`).MatchString(body) {
@@ -1295,11 +1150,6 @@ func TestWindowsReadmeDoesNotPromiseAPlaneItCannotStart(t *testing.T) {
 }
 
 // TestInstallerKeepsTheMSILog — the one record of what Windows Installer did must survive the run.
-//
-// install.ps1 wrote the MSI log into its scratch directory and deleted that directory seconds
-// later, so a report of a wizard failure arrived with NOTHING to read. That was felt directly:
-// "orchicon-setup.cmd could not be found" came with no log, and the question "did the file fail
-// to install, or was it launched wrongly?" could not be answered from the evidence.
 func TestInstallerKeepsTheMSILog(t *testing.T) {
 	ps1 := readMSIFile(t, "..", "..", "scripts", "install.ps1")
 	if !strings.Contains(ps1, `"/l*v", "`+"`"+`"$msiLog`+"`"+`""`) {
@@ -1319,17 +1169,8 @@ func TestInstallerKeepsTheMSILog(t *testing.T) {
 	}
 }
 
-// TestCIInstallsTheMSIPackage — the package had only ever been BUILT, so its first real run was
-// on an operator's machine, where the wizard's last step could not find orchicon-setup.cmd.
-//
-// Building it proves the .wxs compiles and the cab is populated. It does not prove InstallFiles
-// puts the files where the custom action looks — only running `msiexec /i` proves that.
-//
-// THE ASSERTIONS ARE SCOPED TO THE STEP, and that is not tidiness. Checking the whole file first
-// let TWO of these controls pass after their flag was deleted, because the sibling UNINSTALL step
-// uses the same tokens ('/qn', and the path): the guard was satisfied by a different occurrence
-// than the one doing the installing. A file-wide containment check cannot tell those apart, so
-// this one slices the step out by name and asserts inside it.
+// TestCIInstallsTheMSIPackage — the package had only ever been BUILT, so its first real run was on
+// an operator's machine, where the wizard's last step could not find orchicon-setup.cmd.
 func TestCIInstallsTheMSIPackage(t *testing.T) {
 	ci := readMSIFile(t, "..", "..", ".github", "workflows", "ci.yml")
 	step := workflowStep(t, ci, "Install the MSI per-user")
@@ -1337,10 +1178,7 @@ func TestCIInstallsTheMSIPackage(t *testing.T) {
 		{"installs the package", "'/i',"},
 		{"unattended, so it cannot block on a wizard", "'/qn',"},
 		{"with the setup hand-off suppressed (it would download ~540 MB)", "'SKIPSETUP=1'"},
-		// THE FILE THE WIZARD'S LAST STEP RUNS. It used to be the orchicon-setup.cmd wrapper;
-		// the hand-off now uses FileRef="OrchiconExeFile" and runs orchicon.exe itself, so the
-		// wrapper is gone (see TestSetupRunsTheInstalledExeDirectly) and asserting it would
-		// assert a file that must not exist.
+		// THE FILE THE WIZARD'S LAST STEP RUNS.
 		{"verifies the binary the hand-off runs, by name", "'orchicon.exe'"},
 		{"fails the job when the install fails", "ExitCode -ne 0"},
 	} {
@@ -1364,7 +1202,7 @@ func TestCIInstallsTheMSIPackage(t *testing.T) {
 
 // workflowStep extracts one named step's text (from its `- name:` to the next step), so an
 // assertion lands on the step that does the work rather than on any other step that happens to
-// share a token.
+// share.
 func workflowStep(t *testing.T, workflow, namePrefix string) string {
 	t.Helper()
 	lines := strings.Split(workflow, "\n")
@@ -1418,19 +1256,16 @@ func TestWorkflowPwshStepsParse(t *testing.T) {
 		"HKLM": true, "HKCU": true, "cert": true, "wsman": true, "Alias": true,
 		"Env": true, "Function": true, "Variable": true,
 	}
-	// $NAME: where NAME is an identifier immediately followed by a colon INSIDE a double-quoted
-	// string — which is where the subexpression is ambiguous. `$x:` outside a string is a
-	// different (also broken) form; this catches both.
+	// $NAME: where NAME is an identifier immediately followed by a colon INSIDE a double-quoted string
+	// — which is where the subexpression is ambiguous.
 	ref := regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*):`)
 
 	for _, wf := range []string{"ci.yml", "canary.yml", "release.yml"} {
 		body := readMSIFile(t, "..", "..", ".github", "workflows", wf)
 		for i, line := range strings.Split(body, "\n") {
 			trimmed := strings.TrimSpace(line)
-			// A COMMENT IS NOT CODE, and this scan has to say so explicitly: the comment that
-			// DOCUMENTS this very defect quotes the broken form, so scanning raw text flags the
-			// explanation and fails a correct file. That is the fourth time in this file's
-			// history prose has defeated a check; the default is now to strip it first.
+			// A COMMENT IS NOT CODE, and this scan has to say so explicitly: the comment that DOCUMENTS this
+			// very defect quotes the broken form.
 			if strings.HasPrefix(trimmed, "#") {
 				continue
 			}
@@ -1452,22 +1287,6 @@ func TestWorkflowPwshStepsParse(t *testing.T) {
 
 // TestSetupHandoffRunsAfterTheFilesExist — the hand-off must be scheduled After="InstallFinalize",
 // not After="InstallFiles".
-//
-// MSI RUNS THE EXECUTE SEQUENCE TWICE. The IMMEDIATE pass walks it and builds a script; the
-// DEFERRED pass runs that script and copies the files. An IMMEDIATE custom action runs in the
-// immediate pass — so one placed After="InstallFiles" runs when InstallFiles has merely been
-// SCHEDULED, and the payload is not on disk yet.
-//
-// That is the reported bug, and it is why the report looked self-contradictory. The wizard
-// reached Finish, the hand-off fired, and Windows raised "cannot find
-// C:\Users\...\Orchicon\orchicon-setup.cmd" — while every later inspection, including this
-// repository's own CI install, finds the file there (2428 bytes, same directory). Nothing was
-// missing; the launch simply happened first.
-//
-// InstallFinalize is after the deferred script completes, so the payload is committed by the
-// time the action runs. A DEFERRED action would also work in principle, but a deferred one
-// cannot read [INSTANCE]/[RUNTIMEIMAGES] without CustomActionData, so the sequence placement is
-// the right lever for this action.
 func TestSetupHandoffRunsAfterTheFilesExist(t *testing.T) {
 	body := stripXMLComments(readMSIFile(t, wxs()))
 
@@ -1522,12 +1341,6 @@ func TestEngineCallsAreBounded(t *testing.T) {
 }
 
 // TestInstallAsksWhichInstance — the installer must PUT the instance question to a human.
-//
-// The instance decides the whole stack: its ports, its data directory, its plane. Until now the
-// only thing that ever asked was scripts/install.ps1; `orchicon install` — which is what the MSI
-// hand-off and the Burn bundle actually run — silently took the default. So a person who
-// installed from the wizard got `dev` without being told, which is the opposite of an installer
-// that takes someone all the way to a working product.
 func TestInstallAsksWhichInstance(t *testing.T) {
 	install := readMSIFile(t, "..", "..", "cmd", "orchicon", "install.go")
 	if !strings.Contains(install, "askInstance(") {
@@ -1555,9 +1368,8 @@ func TestInstallAsksWhichInstance(t *testing.T) {
 		}
 	}
 
-	// THE READER IS UNBUFFERED ON A TERMINAL, deliberately: resolveInstallPorts wraps the same
-	// *os.File in its own bufio.Reader, and a second buffered reader would read ahead and swallow
-	// the keystrokes meant for the port prompts.
+	// THE READER IS UNBUFFERED ON A TERMINAL, deliberately: resolveInstallPorts wraps the same *os.File
+	// in its own bufio.Reader.
 	if !strings.Contains(body, "*os.File") {
 		t.Error("askInstance does not special-case *os.File — a buffered reader over the same " +
 			"terminal as the port prompts can consume input intended for them")
@@ -1565,19 +1377,6 @@ func TestInstallAsksWhichInstance(t *testing.T) {
 }
 
 // TestSetupConsoleChildGetsWorkingStdio — the relaunched setup must be able to PRINT and ASK.
-//
-// CREATE_NEW_CONSOLE gives the child a console. It does NOT give it handles: os/exec gives a
-// child whose Stdout/Stderr are nil the NUL DEVICE, so an install that "has a console" still
-// writes every prompt into nowhere and reads EOF for every answer. It then finishes in seconds
-// having asked nothing — which is reported as "it never prompted me for instance or any other
-// options" rather than as an I/O fault.
-//
-// Inheriting the parent's handles is no better: msiexec has no console, so those are invalid or
-// NUL too. The only handle that means anything is the child's OWN console, so the child opens
-// CONIN$/CONOUT$ for itself.
-//
-// Asserted on the source because the failure is invisible on any host that has a console —
-// which is every host this test could otherwise run on.
 func TestSetupConsoleChildGetsWorkingStdio(t *testing.T) {
 	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "console_windows.go")
 
@@ -1620,20 +1419,8 @@ func TestSetupConsoleChildGetsWorkingStdio(t *testing.T) {
 	}
 }
 
-// TestPromptsAreWrittenToAStreamThatCanBeWritten — the port prompt must not be written to a
-// console INPUT handle.
-//
-// THE REPORT: "After choosing dev as the instance, it just hangs and doesn't do anything else."
-//
-// On Windows promptTerminal() cannot open /dev/tty (it does not exist), so it falls back to
-// os.Stdin when that is a character device — which, after the setup reattaches CONIN$, it is.
-// The caller then did `if tty != nil { promptOut = tty }`, i.e. it wrote the port banner to
-// CONIN$: an INPUT handle. The text goes nowhere, and resolveInstallPorts blocks reading an
-// answer to a question nobody can see. The install stops dead immediately after the instance
-// prompt — exactly where it was reported to stop.
-//
-// The distinction that matters is `ttyOwned`: only a /dev/tty we OPENED OURSELVES is
-// read-write. In the os.Stdin fallback the console's OUTPUT is os.Stdout.
+// TestPromptsAreWrittenToAStreamThatCanBeWritten — the port prompt must not be written to a console
+// INPUT handle.
 func TestPromptsAreWrittenToAStreamThatCanBeWritten(t *testing.T) {
 	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "install.go")
 
@@ -1661,15 +1448,6 @@ func TestPromptsAreWrittenToAStreamThatCanBeWritten(t *testing.T) {
 
 // TestWizardAnswersReachTheInstallNonInteractively — the wizard's answers must ARRIVE, and the
 // setup must not ask again.
-//
-// REPORTED: "Once I hit install, it still brought up the script and still asked me to fill in all
-// of the same information which is redundant." The MSI had carried a SKIPCONFIG property for
-// exactly this; NOTHING IN THE GO CODE EVER READ IT. The wizard collected everything and the setup
-// then re-opened a console and put the same questions — so the pages were worse than useless, they
-// were a second round of the same form.
-//
-// Two halves, and both are needed: the action passes --non-interactive, and the install HONOURS it
-// (no console relaunch, no prompts). Either alone reproduces the bug.
 func TestWizardAnswersReachTheInstallNonInteractively(t *testing.T) {
 	wxsBody := stripXMLComments(readMSIFile(t, wxs()))
 	ca := regexp.MustCompile(`<CustomAction Id="LaunchSetup"[\s\S]*?/>`).FindString(wxsBody)
@@ -1682,12 +1460,6 @@ func TestWizardAnswersReachTheInstallNonInteractively(t *testing.T) {
 	}
 
 	// THE WIZARD ASKS NOTHING NOW, so the hand-off must carry no interpolated answer.
-	//
-	// This is the inverse of what it used to assert, and the inversion is the design: instance, ports and
-	// images were three pages of questions a person installing Orchicon has no basis to answer, and the
-	// port page in particular is what produced the 5433 bug (an install that renumbered an existing
-	// instance's database because it offered "5432 in use — use 5433?"). The installer now installs
-	// `dev` with defaults, and the Servers page changes any of it afterwards.
 	for _, gone := range []string{"[INSTANCE]", "[CONTROLPORT]", "[POSTGRESPORT]", "[LOKIPORT]", "[TEMPOPORT]", "[RUNTIMEIMAGES]"} {
 		if strings.Contains(ca, gone) {
 			t.Errorf("LaunchSetup still interpolates %s:\n  %s\n"+
@@ -1728,22 +1500,8 @@ func TestDialogTextHasNoStrayAccelerators(t *testing.T) {
 
 // TestImagePageOffersMoreThanTheExtremes — "none" and "all" covered the ends and nothing between,
 // and "some" is the common case.
-//
-// REPORTED: "The image screen only has None or ALL images. We should try and see if we can do a
-// checkbox type selector." The `--runtime-images 1,3` list form was built for this from the start;
-// the page simply never used it.
-//
-// The risk this guards is subtler than "the boxes are missing": three ticked ticks that never
-// compose RUNTIMEIMAGES install nothing and report nothing wrong.
 func TestImagePageOffersMoreThanTheExtremes(t *testing.T) {
 	// SUPERSEDED BY THE DESIGN, and the replacement is the useful guard: the images page is GONE.
-	//
-	// It asked which runtime images to pull before a machine had ever run Orchicon. Runtime images are for
-	// per-workflow containers, they are gigabytes, and nothing needs one to have a working server — so the
-	// question moved to where it belongs (the app, per project) and the installer stopped asking.
-	//
-	// The regression this catches is not "the labels are wrong" but "the page came back": a wizard that
-	// asks a question nobody can answer is the class of defect this whole change removes.
 	body := stripXMLComments(readMSIFile(t, wxs()))
 	for _, gone := range []string{`Id="ImagesDlg"`, `Property="IMAGESMODE"`, `Property="IMAGE1"`} {
 		if strings.Contains(body, gone) {
@@ -1774,9 +1532,7 @@ func TestInstallFailsWhenTheServicesDoNotComeUp(t *testing.T) {
 	host := readMSIFile(t, "..", "..", "cmd", "orchicon", "install_host.go")
 	for _, want := range []struct{ what, sub string }{
 		{"it names the services log", `filepath.Join(hostDataDir, "services.log")`},
-		// THE CALL, NOT THE DEFINITION. `"tailLines("` is satisfied by `func tailLines(` alone, so
-		// emptying the call still passed — a control caught it. The argument list is what
-		// distinguishes a function that is called from one that merely exists.
+		// THE CALL, NOT THE DEFINITION.
 		{"it quotes the tail of that log", "tailLines(logPath"},
 		{"it treats a MISSING log as its own finding", "did not start"},
 		{"it says the install is resumable", "orchicon install"},
@@ -1839,18 +1595,6 @@ func TestTailLinesIsABoundedTail(t *testing.T) {
 }
 
 // TestSupervisedChildrenGetNoConsoleWindow — the supervisor's children must not open windows.
-//
-// REPORTED: "It also popped up a TON of blank command prompt windows that wouldn't go away until I
-// killed them… victoriametrics, otel, and nats. They seem to be trying to start over and over."
-//
-// That is exactly what the code did. The supervisor runs DETACHED (no console), and a
-// console-subsystem child of a process with no console gets a BRAND NEW WINDOW. Every nats /
-// victoriametrics / loki / tempo / otelcol start opened one, and reapRestart opened another on each
-// restart (backoff 2s, 4s, 8s…), so a child that crashed on boot produced a window every couple of
-// seconds for ever.
-//
-// CREATE_NO_WINDOW is the fix, and it is NOT DETACHED_PROCESS: these children stay attached to the
-// supervisor (their stdout is piped to its log) and must die with it.
 func TestSupervisedChildrenGetNoConsoleWindow(t *testing.T) {
 	svc := readMSIFile(t, "..", "..", "cmd", "orchicon", "host_services.go")
 	i := strings.Index(svc, "func (s *supervisor) start(")
@@ -1861,11 +1605,7 @@ func TestSupervisedChildrenGetNoConsoleWindow(t *testing.T) {
 	if end := strings.Index(body, "\n}"); end > 0 {
 		body = body[:end]
 	}
-	// TWO SANCTIONED ROUTES, ONE OUTCOME. The attribute may be applied directly or by the spawn helper
-	// that exists to apply it (quiet.go). What must NOT happen is a bare exec.CommandContext — which is
-	// precisely what this guard originally caught, and what a later round of probes reintroduced
-	// elsewhere. Asserting the ATTRIBUTE rather than one spelling of it is what keeps this guard
-	// pointing at the behaviour instead of at a line of code.
+	// TWO SANCTIONED ROUTES, ONE OUTCOME.
 	if !strings.Contains(body, "procwin.CommandContext(") && !strings.Contains(body, "setProcAttrNoWindow(cmd)") {
 		t.Error("supervisor.start neither uses quietCommandContext nor calls setProcAttrNoWindow. Every " +
 			"child it spawns on Windows opens its own console window, and reapRestart opens another on " +
@@ -1949,14 +1689,6 @@ func TestBothPlaneStartPathsMigrate(t *testing.T) {
 }
 
 // TestDialogControlsDoNotOverlap — the wizard must not paint one control through another.
-//
-// REPORTED: "the images screen also has some weird graphical glitches to where you can't read
-// all of the images." The hint Text sat at Y=150 and the third checkbox at Y=156, so the sentence
-// was drawn straight through the last row. Nothing failed — MSI happily paints overlapping
-// controls — and I cannot see a dialog from here, so this is checked geometrically instead.
-//
-// Only the controls that carry TEXT or INPUT are compared: the banner bitmap, its line and the
-// bottom rule are full-width decorations that legitimately sit under everything else.
 func TestDialogControlsDoNotOverlap(t *testing.T) {
 	body := stripXMLComments(readMSIFile(t, wxs()))
 
@@ -1967,11 +1699,6 @@ func TestDialogControlsDoNotOverlap(t *testing.T) {
 
 	dialogRe := regexp.MustCompile(`(?s)<Dialog Id="([A-Za-z]+)"(.*?)</Dialog>`)
 	// THE OPENING TAG IS ENOUGH, self-closing or not.
-	//
-	// This used to require "/>" so it matched only controls with no children — which silently excluded every
-	// BUTTON, because a button carries its <Publish> children. The vacuity guard below is what caught it:
-	// "found no dialogs to check — the matcher is wrong". A geometry check that skips the buttons is a check
-	// that cannot see the controls an operator clicks.
 	controlRe := regexp.MustCompile(`<Control Id="([A-Za-z0-9_]+)"([^>]*)>`)
 	attr := func(s, name string) (int, bool) {
 		m := regexp.MustCompile(name + `="([0-9]+)"`).FindStringSubmatch(s)
@@ -2028,26 +1755,10 @@ func TestDialogControlsDoNotOverlap(t *testing.T) {
 }
 
 // TestPortLabelsNameTheirDefault — "so people aren't guessing what they are setting".
-//
-// The port fields started as bare labels with empty boxes: an operator had to know that 8080 is
-// dev's control port and 8092 is prod's. The default now appears IN the label, and it is three
-// numbers because the default depends on the instance chosen on the previous page — dev, test and
-// prod are offset by design so two stacks on one machine never collide.
 
 // TestPortLabelsNameTheirDefault — "so people aren't guessing what they are setting".
-//
-// The port fields started as bare labels with empty boxes: an operator had to know that 8080 is
-// dev's control port and 8092 is prod's. The default now appears IN the label, and it is three
-// numbers because the default depends on the instance chosen on the previous page — dev, test and
-// prod are offset by design so two stacks on one machine never collide.
 func TestPortLabelsNameTheirDefault(t *testing.T) {
-	// SUPERSEDED BY THE DESIGN. The port page is gone, and the guard that matters is that it stays gone
-	// AND that the install is never handed a port it did not resolve itself.
-	//
-	// THE 5433 BUG IS WHY THIS IS ASSERTED RATHER THAN REMEMBERED. The wizard offered
-	// "PostgreSQL: port 5432 is in use — suggesting 5433?", accepted its own suggestion on a
-	// non-interactive run, and PERSISTED it: the operator's database moved, and every later start waited
-	// on a port postgres would never bind.
+	// SUPERSEDED BY THE DESIGN.
 	body := stripXMLComments(readMSIFile(t, wxs()))
 	if strings.Contains(body, `Id="PortsDlg"`) {
 		t.Error("the installer asks about ports again. Every port is derivable from the instance, and " +
@@ -2064,11 +1775,6 @@ func TestPortLabelsNameTheirDefault(t *testing.T) {
 
 func TestImageLabelsNameTheRealVariants(t *testing.T) {
 	// SUPERSEDED BY TestImagePageOffersMoreThanTheExtremes, which now asserts the page is absent.
-	//
-	// Kept as a NAMED function rather than deleted so the suite reports the intent explicitly: the labels
-	// it used to check cannot exist on a page that does not, and a silent deletion would look like the
-	// coverage was never there. If runtime images ever return to the installer, this is the name to
-	// repoint.
 	body := stripXMLComments(readMSIFile(t, wxs()))
 	if strings.Contains(body, `Id="ImagesDlg"`) {
 		t.Fatal("the image page is back. Repoint THIS guard at it (its old assertions checked the labels " +
@@ -2080,9 +1786,7 @@ func TestImageLabelsNameTheRealVariants(t *testing.T) {
 func TestAPartialPortRecordIsNeverUsed(t *testing.T) {
 	src := readMSIFile(t, "..", "..", "cmd", "orchicon", "services.go")
 
-	// THE CALL SITE, NOT THE HELPER'S EXISTENCE. A first draft of this guard only looked for
-	// the helper being DEFINED, so reverting the call site left the helper in place and the
-	// guard went green — a control caught it. The definition proves nothing; the USE does.
+	// THE CALL SITE, NOT THE HELPER'S EXISTENCE.
 	if !strings.Contains(src, "err == nil && portsRecordIsComplete(rec)") {
 		t.Error("services.go does not check whether the port record is COMPLETE before using it.\n" +
 			"  A record that has postgres and nats but is missing the rest describes two\n" +
@@ -2090,12 +1794,6 @@ func TestAPartialPortRecordIsNeverUsed(t *testing.T) {
 			"  database is. That is the reported \"postgres :5433, nats :4222\".")
 	}
 	// AND THE CHECK MUST BE COMPLETENESS, not a spot check of two ports.
-	//
-	// It iterates everyServicePortEnv — EVERY port in the table, published or not. It used to
-	// iterate activeInstallPorts, which filters out the five ports a host shape binds but does not
-	// PUBLISH (Tempo's gRPC listener and its two OTLP receivers, the collector's health extension and
-	// self-metrics exporter). No real ports.json ever named those, so the completeness test answered
-	// false for every CORRECT install and the record was never trusted at all.
 	if !strings.Contains(src, "for _, key := range everyServicePortEnv()") {
 		t.Error("portsRecordIsComplete does not require EVERY port to be present.\n" +
 			"  Two ports checked and the rest unchecked is the defect itself — and checking only the\n" +
@@ -2151,10 +1849,6 @@ func TestStoppingTheServicesKillsTheirChildren(t *testing.T) {
 }
 
 // TestAStalePostmasterLockIsClearedBeforeInitdb — a leftover lock must not stop the database.
-//
-// The decision is platform-NEUTRAL even though the sweep is only NEEDED on Windows: a bug here
-// is a database that cannot start, and a test that only ran on the one platform nobody has in
-// CI is a test nobody runs.
 func TestAStalePostmasterLockIsClearedBeforeInitdb(t *testing.T) {
 	lock := readMSIFile(t, "..", "..", "cmd", "orchicon", "postgres_lock.go")
 
@@ -2165,11 +1859,6 @@ func TestAStalePostmasterLockIsClearedBeforeInitdb(t *testing.T) {
 			"not staleness: postgres refuses to start for a LIVE postmaster on purpose.")
 	}
 	// And the sweep must run BEFORE initdb, or the new postgres still meets the lock.
-	//
-	// THE ORDER IS COMPARED IN THE FUNCTION THAT DOES BOTH, not in the file: a first draft
-	// compared the FIRST index of each name in the whole file, so moving the sweep after
-	// initdb — within the same function — still passed. A control caught that. The window
-	// between the two calls is what matters.
 	host := readMSIFile(t, "..", "..", "cmd", "orchicon", "host_services.go")
 	pre := host[strings.Index(host, "func (s *supervisor) prepare("):]
 	end := strings.Index(pre, "\nfunc ")
@@ -2283,20 +1972,6 @@ func TestInstallDoesNotFailOnAMissingRuntimeDaemon(t *testing.T) {
 }
 
 // TestUninstallStopsThePlaneBeforeRemovingFiles — the reported "the system would need to reboot".
-//
-// THE MECHANISM. The stop action was sequenced After="InstallFinalize", which on the REMOVE path is after
-// the deferred script has finished — i.e. after RemoveFiles already tried to delete the binaries. So the
-// uninstall verb, the one thing that stops the plane, was asked to run a binary Installer had just tried to
-// remove. With the plane still running out of the install directory, RemoveFiles could not delete
-// orchicon.exe, Windows Installer scheduled it in PendingFileRenameOperations, and the wizard reported that a
-// restart was needed. Return="ignore" then hid the failure, so the services were never stopped either.
-//
-// An action sequenced BEFORE RemoveFiles runs in the IMMEDIATE pass while the payload is still on disk, so it
-// stops the plane first and every file is unlocked by the time Installer touches them.
-//
-// THE INSTALL PATH KEEPS After="InstallFinalize" and must — LaunchSetup needs the payload committed. The
-// asymmetry is the fix, so both halves are asserted: moving both would break the install hand-off, and
-// moving neither leaves the reboot claim.
 func TestUninstallStopsThePlaneBeforeRemovingFiles(t *testing.T) {
 	wxs, err := os.ReadFile("../../deploy/desktop/windows/Orchicon.wxs")
 	if err != nil {

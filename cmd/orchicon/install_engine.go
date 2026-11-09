@@ -14,12 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// engineCLI is the binary the INSTALL PATH drives for image and container operations,
-// set once by resolveContainerEngine when the ladder reached "ready".
-//
-// It used to be the literal "docker" in every call site, which made "containers available"
-// mean "docker installed" no matter what the resolver said. The resolver now owns the
-// decision (podman first, docker second).
+// engineCLI is the binary the INSTALL PATH drives for image and container operations, set once by
+// resolveContainerEngine when the ladder reached "ready".
 var engineCLI string
 
 // engineResolved / engineMu memoise the LAZY resolution below (see engineBinary).
@@ -29,15 +25,6 @@ var (
 )
 
 // engineBinary is the engine binary to invoke.
-//
-// THE INSTALL'S DECISION WINS (engineCLI, set by resolveContainerEngine). Everything else —
-// `orchicon restart` on a recorded container shape, the bridge probe, the port read-back —
-// never runs the ladder, and those paths must NOT default to the literal "docker": on the
-// podman-only host this feature exists to produce, `docker restart` is a command-not-found
-// and an instance that cannot be restarted. So the default is resolved LAZILY with the same
-// rules (podman first, then docker), memoised because a restart asks more than once, and
-// still "docker" when Detect cannot see anything — which is exactly what those paths did
-// before this change.
 func engineBinary() string {
 	if engineCLI != "" {
 		return engineCLI
@@ -75,29 +62,19 @@ const engineCommandTimeout = 20 * time.Second
 // engineCommand is an engine invocation through the resolved binary, with a deadline.
 func engineCommand(args ...string) *exec.Cmd {
 	ctx, cancel := context.WithTimeout(context.Background(), engineCommandTimeout)
-	// Cancel when the process is waited on; exec.Cmd does not expose a completion hook, so the
-	// timer is released by the deadline expiring at worst. The leak window is one timer per
-	// call, and calls are few and sequential.
+	// Cancel when the process is waited on; exec.Cmd does not expose a completion hook, so the timer is
+	// released by the deadline expiring at worst.
 	_ = cancel
 	// quietCommandContext, because the install makes MANY engine calls and runs with no console
 	// of its own (instancectl spawns it detached). Each bare one was another window.
 	return procwin.CommandContext(ctx, engineBinary(), args...)
 }
 
-// engineStatus is the availability decision the install MADE, cached for the summary. It is a
-// decision, not a re-probe: an install summary that re-detected could describe a carrier the
-// install never created (the same defect printInstallInfo's containersUsed comment records).
-//
-// The plane's /enginez is a SEPARATE, live probe (internal/api/engine_status.go) — the two
-// agree because both go through internal/containerengine, not because they share a file.
+// engineStatus is the availability decision the install MADE, cached for the summary.
 var engineStatus containerengine.Status
 
-// resolveContainerEngine is the whole engine decision, as SIX RUNGS whose every failure is
-// a warning that falls through to the local shape (AC6): detect → minimum version → opt-in
-// provisioning → `podman machine` → verify-by-running-a-container → available.
-//
-// The ONE fatal case is an explicit ORCHICON_CONTAINER_ENGINE pin: an operator who named the
-// engine asked for it, so quietly installing in local mode would be ignoring them.
+// resolveContainerEngine is the whole engine decision, as SIX RUNGS whose every failure is a
+// warning that falls through to the local shape (AC6).
 func resolveContainerEngine() (bool, error) {
 	p := containerengine.DefaultProbe()
 	pin := strings.ToLower(strings.TrimSpace(os.Getenv(containerengine.EnginePinEnv)))
@@ -130,16 +107,6 @@ func resolveContainerEngine() (bool, error) {
 		return unavailable("no container engine: %v", err)
 	}
 	// A BRAND-NEW ENGINE INSTALL IS NOT ON THIS PROCESS'S PATH YET.
-	//
-	// winget/brew/npm commit their changes to the REGISTRY (or the shell profile), not to the environment of the
-	// process that ran them. So the first detect after installing podman reports "none" and every later rung
-	// fails on a host where podman is, in fact, installed — the operator ends up with no engine recorded, no
-	// runtime daemon (install.go skips it when no engine is available), and a container fetch that fails with a
-	// socket error, having done nothing wrong.
-	//
-	// The narrowing is deliberate: only a fast re-probe, and only when the binary has appeared at its
-	// CONVENTIONAL location too, so a winget stub that happens to be on PATH cannot masquerade as a working
-	// engine. If it is still not there, we fall through to the normal "no engine" path.
 	if e.Name == containerengine.EngineNone {
 		if re, ok := e.WaitForBinary(p); ok {
 			e = re
@@ -147,25 +114,10 @@ func resolveContainerEngine() (bool, error) {
 		}
 	}
 
-	// 2. ABSENT → OPT-IN PROVISIONING (AC2). The command is always printed; the prompt goes
-	// to the controlling terminal and a run with no terminal prints and declines, so a piped
-	// install can never install a VM image silently.
-	// provisionPodman is the ONE provisioning rung, used from two places: nothing detected at
-	// all (below), and an engine that was detected but cannot run a container (step 5).
+	// 2.
 	provisionPodman := func(why string) (containerengine.Engine, error) {
 		installPhase(why)
 		// THERE IS NO PROMPT ANY MORE, AND THAT IS THE FIX.
-		//
-		// The reported symptom was a cursor stopping with nothing on screen: "it was stuck at this prompt until
-		// I hit enter. Nowhere in that prompt does it make it obvious that is what you have to do. It looks like
-		// the installer crashed/hung." The prompt existed, but it was written to the handle promptTerminal
-		// returns — which on Windows is stdin OPENED FOR INPUT, so the text went nowhere while the read still
-		// blocked. Prettifying the message could not fix that: a prompt cannot be shown through a stream that is
-		// not writable.
-		//
-		// So the question is gone: ProvisionEngineUnattended takes no confirm func, so there is nothing to read
-		// and nothing to wait for. The operator asked for containers by running the installer; asking again is
-		// the step that hangs.
 		prov, perr := containerengine.ProvisionEngineUnattended(context.Background(), p, os.Stdout, containerengine.EnginePodman)
 		if perr != nil {
 			return containerengine.Engine{Name: containerengine.EngineNone}, perr
@@ -234,12 +186,6 @@ func resolveContainerEngine() (bool, error) {
 			fmt.Fprintf(os.Stdout, "orchicon: %s is installed but cannot run a container\n", e.Name)
 			prov, perr := provisionPodman("installing podman instead — it needs no pre-existing daemon")
 			// PROVISIONING RETURNING IS NOT PODMAN BEING USABLE.
-			//
-			// ProvisionEngine reports what it INSTALLED, and a package manager commits to the registry — not to
-			// this process's PATH — so the binary is often not resolvable yet (WaitForBinary handles that).
-			// Continuing on the OLD engine here is exactly the measured failure: "checking the podman machine"
-			// and "verifying podman" both ran against docker, and the error named docker's pipe while the log
-			// claimed podman. So the identity is CHECKED rather than assumed.
 			if perr == nil && prov.Name != containerengine.EnginePodman {
 				perr = fmt.Errorf("provisioning did not produce podman (got %q)", prov.Name)
 			}
@@ -292,9 +238,8 @@ func declinedReason(err error) string {
 	return msg
 }
 
-// describeEngineStatus renders the availability decision as ONE line for the install summary:
-// ready (with the version and the machine state), provisioning, or unavailable WITH the
-// reason. A bare "unavailable" is exactly the "green but broken" summary this repo removes.
+// describeEngineStatus renders the availability decision as ONE line for the install summary: ready
+// (with the version and the machine state), provisioning, or unavailable WITH the reason.
 func describeEngineStatus(st containerengine.Status) string {
 	if st.Available {
 		machine := ""
@@ -309,14 +254,9 @@ func describeEngineStatus(st containerengine.Status) string {
 	if st.Reason != "" {
 		return "unavailable — " + st.Reason
 	}
-	// NO REASON RECORDED BUT NOT AVAILABLE is the silent case this summary exists to prevent: nothing decided
-	// anything, so the operator would read "install succeeded" and discover the gap as a socket error later.
-	//
-	// IT USED TO SAY "re-run with -Containers", WHICH IS NOT A THING ANY MORE. Containers became the default and
-	// -Containers was reduced to an inert no-op, so the one instruction this line gave was to pass a flag that
-	// does nothing — the operator would re-run, get the same summary, and have no idea why. A remedy has to name
-	// something that exists; ORCHICON_CONTAINER_ENGINE=podman is what makes "not detected" FATAL (resolveContainerEngine's
-	// pin), so a host that genuinely cannot find the engine gets its reason instead of this generic line.
+	// NO REASON RECORDED BUT NOT AVAILABLE is the silent case this summary exists to prevent: nothing
+	// decided anything, so the operator would read "install succeeded" and discover the gap as a
+	// socket.
 	return "unavailable — the container engine was not detected, so there are no runtime containers and no " +
 		"runtime daemon. Re-run `orchicon install` (containers are provisioned by default), or set " +
 		"ORCHICON_CONTAINER_ENGINE=podman to make a missing engine an error that names the cause"

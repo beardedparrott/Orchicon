@@ -1,12 +1,7 @@
 package main
 
-// msi_launch_handover_test.go — the installer must hand over to the app on the Servers page (design of
-// record, D7), and it must do it in the supported way.
-//
-// THE OPERATOR'S BAR: "on a clean Windows install ... it automatically launches the desktop app on a fresh
-// install and lands on the server management page". A silent auto-launch from a custom action races the
-// wizard — the window can appear behind the dialog, in the wrong session, or before the firewall prompt —
-// so the supported mechanism is a CHECKED checkbox on the Finish page. This asserts that shape.
+// msi_launch_handover_test.go — the installer must hand over to the app on the Servers page (design
+// of record, D7), and it must do it in the supported way.
 
 import (
 	"regexp"
@@ -57,11 +52,8 @@ func TestHandoverIsTheInstallsJobNotTheWizards(t *testing.T) {
 		t.Errorf("LaunchSetup does not pass the launch flag, so a wizard install never opens the app:\n  %s", ca)
 	}
 
-	// THE WIZARD MUST NOT TRY TO HOST IT ANY MORE. A custom exit page is a page WixUI will not navigate to,
-	// and leaving one in the package is how the last three attempts looked wired while doing nothing.
-	// CODE ONLY: this function's own explanation NAMES the property it removed, so a raw scan would fail on
-	// the documentation of the fix. That is the fourth time in this file's history prose has defeated a
-	// check — strip it first, as the other MSI guards do.
+	// THE WIZARD MUST NOT TRY TO HOST IT ANY MORE. CODE ONLY: this function's own explanation NAMES the
+	// property it removed, so a raw scan would fail on the documentation of the fix.
 	code := stripXMLComments(wxs)
 	for _, gone := range []struct{ what, sub string }{
 		{"a custom exit page", `Dialog Id="OrchiconFinishDlg"`},

@@ -1,14 +1,6 @@
 package main
 
 // uninstall_test.go — an uninstall must remove the SOFTWARE and keep the DATA.
-//
-// The operator: "an uninstall should clean all services/infrastructure. The only thing it technically
-// should leave is the data. We may want to put some options in the installer when someone uninstalls, it
-// gives them the option to also destroy data and do a nuke options with the wizard."
-//
-// Until this verb existed there was NO uninstall path at all: the MSI's setup action is conditioned on
-// NOT REMOVE, so uninstalling removed the binaries and left a live supervisor, a live plane, postgres
-// holding 5432, and the whole state directory. The next install inherited that orphan.
 
 import (
 	"bytes"
@@ -24,12 +16,7 @@ func seedInstance(t *testing.T, root string) string {
 	t.Helper()
 	t.Setenv("HOME", root)
 	t.Setenv("USERPROFILE", root)
-	// PIN EVERY PORT TO SOMETHING FREE. servicesPortsFor falls back to the instance defaults (5432,
-	// 4222, …), and on a developer machine those are very likely the REAL dev instance's — the
-	// quiesce's port verification would then (correctly) report them held and the uninstall would
-	// (correctly) refuse, which would make this test measure the host rather than the code.
-	// DERIVED, NOT INVENTED: a fixed range can collide with another package's test in a parallel
-	// `go test ./...` run, and the failure then reads as a timeout rather than a port clash.
+	// PIN EVERY PORT TO SOMETHING FREE.
 	for _, env := range []string{
 		"ORCHICON_POSTGRES_PORT", "ORCHICON_NATS_PORT", "ORCHICON_NATS_MONITOR_PORT",
 		"ORCHICON_TEMPO_PORT", "ORCHICON_LOKI_PORT", "ORCHICON_VM_PORT",
@@ -116,9 +103,6 @@ func TestUninstallPurgeRemovesTheWholeInstance(t *testing.T) {
 }
 
 // AN UNINSTALL MUST NOT DELETE A RUNNING INSTANCE'S FILES.
-//
-// Removing a live postgres's data directory is corruption, not uninstallation — so a stop that cannot
-// stop aborts the uninstall rather than proceeding.
 func TestUninstallRefusesWhenItCannotStop(t *testing.T) {
 	src := readGoFileFor(t, "uninstall.go")
 	if !strings.Contains(src, "return fmt.Errorf(\"could not stop instance") {
@@ -199,18 +183,6 @@ func TestInstallClearsItsPreviousRunBeforeResolvingPorts(t *testing.T) {
 }
 
 // --ALL MUST REACH AN INSTANCE THE MSI DID NOT CREATE.
-//
-// This is the operator's multi-instance question: "if someone has a prod instance and a dev instance and
-// they run the installer, can they remove just dev and just the postgres, etc. for dev and vice versa?"
-//
-// The MSI's uninstall used to pass [INSTANCE] — the instance the WIZARD chose. But MSI properties are
-// SESSION-SCOPED, so on uninstall that fell back to the property's default ("dev"): an operator who chose
-// prod had `uninstall --instance dev` run instead, removing the wrong instance or nothing while reporting
-// success. Worse, an instance created by hand (`orchicon install --instance mine`) was unreachable.
-//
-// --all ENUMERATES the instance directories, so it reaches every instance that actually exists. It has to,
-// because the action is about to delete orchicon.exe: an instance whose services are still running after
-// that has no CLI to stop them.
 func TestUninstallAllReachesEveryInstanceOnTheMachine(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)

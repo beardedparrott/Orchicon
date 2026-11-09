@@ -41,9 +41,8 @@ func TestProcNetTCPMatchesThePortItIsGiven(t *testing.T) {
 			t.Errorf("missing %s (the LISTEN row for 8091); got %v", want, got)
 		}
 	}
-	// The ESTABLISHED row to 8091 (state 01) is NOT a holder, and only its own inode would appear under a
-	// different port anyway — but assert the state filter explicitly, because "a connection to the port" and
-	// "a listener on the port" are different questions and only one of them is a conflict.
+	// The ESTABLISHED row to 8091 (state 01) is NOT a holder, and only its own inode would appear under
+	// a different port anyway — but assert the state filter explicitly.
 	if got["socket:[1268969630]"] {
 		t.Error("an ESTABLISHED connection (state 01) was reported as holding the port")
 	}

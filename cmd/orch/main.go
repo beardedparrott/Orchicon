@@ -44,19 +44,13 @@ import (
 // flags carries CLI overrides (env still wins — see resolveProfile).
 type flags struct {
 	url string
-	// profile selects a NAMED profile for this process (one instance per process). It is
-	// the flag form of ORCHICON_PROFILE, and the env wins over it for the same reason
-	// ORCHICON_URL wins over --url: a launcher can pin an instance without the caller
-	// being able to override it by accident.
+	// profile selects a NAMED profile for this process (one instance per process).
 	profile  string
 	token    string
 	insecure bool
 	showVer  bool
-	// instance names a LOCAL Orchicon instance (dev|prod|test) to connect to, resolved
-	// through the SHARED control-port table — the same one the desktop app and the
-	// installer use, so "dev" is the same port on every surface. It is the flag form of
-	// ORCHICON_INSTANCE, and it SETS that variable for this process so the plane
-	// lifecycle verbs act on the instance the shell is connected to.
+	// instance names a LOCAL Orchicon instance (dev|prod|test) to connect to, resolved through the
+	// SHARED control-port table — the same one the desktop app and the installer use.
 	instance string
 }
 
@@ -92,12 +86,7 @@ func main() {
 	}
 }
 
-// disableAutoWrap turns the terminal's own line wrap OFF and returns the
-// restore func. A fullscreen TUI paints every cell up to the terminal's
-// last column; with auto-wrap enabled the cursor is left wrap-pending on
-// the final row, and the next line feed scrolls the frame by one row —
-// the unpainted hairline that appears along the bottom of the display.
-// Non-TTY stdout (pipes, CI) is left untouched.
+// disableAutoWrap turns the terminal's own line wrap OFF and returns the restore func.
 func disableAutoWrap() func() {
 	fi, err := os.Stdout.Stat()
 	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
@@ -171,24 +160,8 @@ Create an API key in the web GUI (Settings → API keys) with read
 scopes for the areas orch displays.
 `
 
-// run resolves the profile then either launches the connection screen
-// (first run / missing credential) or the app shell directly.
-// selectInstance validates --instance, pins the process to it, and returns the control
-// URL it names.
-//
-// IT VALIDATES AGAINST THE SHARED TABLE (internal/controlport) — the one the installer
-// owns and the desktop app already consumes — so "prod" cannot mean 8091 here and
-// something else there, and this file cannot invent a fifth instance.
-//
-// AN UNKNOWN NAME IS A REFUSAL, NOT A FALLBACK. Silently connecting to a default is how
-// an operator who typed `prod` ends up reading dev's conversations and then blaming the
-// TUI for showing the wrong thing; internal/controlport states the same rule for the
-// same reason.
-//
-// IT ALSO SETS ORCHICON_INSTANCE FOR THIS PROCESS, which is what makes the plane verbs
-// agree with the connection: internal/tui's instanceForProfile reads that variable
-// first. Without it, `orch --instance prod` would connect to prod while /plane restart
-// acted on whatever the profile's port suggested — or left the plane alone.
+// run resolves the profile then either launches the connection screen (first run / missing
+// credential) or the app shell directly.
 func selectInstance(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -210,22 +183,6 @@ func run(fl *flags) error {
 	}
 	cfg, err := config.Load(path)
 	// AN UNREADABLE CONFIG IS PRESERVED, NEVER SILENTLY OVERWRITTEN.
-	//
-	// The recovery below is "start from an empty config" — and the connection screen then
-	// SAVES one, which would destroy whatever the unreadable file held. That is right for a
-	// genuinely corrupt file and WRONG for a file this build merely cannot parse, which is
-	// reachable in ordinary operation: the parser rejects an unknown key on purpose
-	// (config.TestUnknownKeyStillRejected for why), and this repo deliberately keeps TWO
-	// orch vintages sharing ONE config file — the dev-tracked `orch` symlink and the frozen
-	// prod snapshot, whose Makefile target exists precisely so the prod snapshot "moves
-	// only on prod rebuild". A key the newer client writes therefore makes every launch of
-	// the older one look exactly like corruption.
-	//
-	// So the file is moved aside first: the wipe becomes visible, reversible, and provable
-	// against what was actually there. The reason is carried into the connection screen
-	// rather than printed, because the TUI takes over the terminal immediately and anything
-	// written to stderr would be painted over — and a preserved file with no explanation is
-	// its own kind of silent.
 	loadWarning := ""
 	if err != nil {
 		if backup, berr := config.PreserveUnreadable(path); berr == nil {
@@ -235,22 +192,14 @@ func run(fl *flags) error {
 		}
 		cfg = &config.Config{Profiles: map[string]*config.Profile{}}
 	}
-	// WHICH INSTANCE THIS PROCESS TALKS TO. ORCHICON_PROFILE pins it BY NAME, and the env
-	// wins over the flag for the same reason ORCHICON_URL does; with neither, the file's
-	// `active` decides, exactly as before.
-	//
-	// This is what makes several orch processes possible at once. `active` is ONE global
-	// slot — it is written by every connect and read by every process — so it can never
-	// express "this process is the dev one". A named selection is process state.
+	// WHICH INSTANCE THIS PROCESS TALKS TO.
 	requested := strings.TrimSpace(os.Getenv(config.EnvProfile))
 	if requested == "" {
 		requested = strings.TrimSpace(fl.profile)
 	}
 	profile := config.ResolveNamed(cfg, requested)
 	if requested != "" && profile == nil {
-		// SAY SO, AND DO NOT SUBSTITUTE ANOTHER INSTANCE. Falling back to `active` here is
-		// how an operator who asked for prod ends up reading dev's conversations — and then
-		// blaming the TUI for showing the wrong thing.
+		// SAY SO, AND DO NOT SUBSTITUTE ANOTHER INSTANCE.
 		msg := fmt.Sprintf("no profile named %q in %s — connect to that instance once (it is saved under its host:port), or correct ORCHICON_PROFILE/--profile", requested, path)
 		if loadWarning != "" {
 			loadWarning += "; also, " + msg
@@ -258,17 +207,7 @@ func run(fl *flags) error {
 			loadWarning = msg
 		}
 	}
-	// WHICH LOCAL INSTANCE. --instance names one of dev/prod/test and resolves it through
-	// the SHARED control-port table (internal/controlport), which the installer owns and the
-	// desktop app already consumes — so the two surfaces cannot mean different ports by
-	// "prod", and this file cannot invent a fifth one.
-	//
-	// IT ALSO SETS ORCHICON_INSTANCE FOR THIS PROCESS. That is what makes the plane verbs
-	// agree with the connection: internal/tui's instanceForProfile reads that variable
-	// FIRST (before deriving an instance from the profile's port). Without it, `orch
-	// --instance prod` would connect to prod while /plane restart acted on whatever the
-	// profile's port suggested, or on nothing at all — the exact mismatch the flag exists
-	// to remove. Set once, here, so every later reader sees one answer.
+	// WHICH LOCAL INSTANCE.
 	target, err := selectInstance(fl.instance)
 	if err != nil {
 		return err
@@ -278,15 +217,6 @@ func run(fl *flags) error {
 		profile = &config.Profile{URL: strings.TrimRight(fl.url, "/"), AuthMethod: config.AuthAPIKey, Token: fl.token, InsecureSkipVerify: fl.insecure}
 	}
 	// THE INSTANCE RETARGETS THE CONNECTION, AND REUSES THE CREDENTIAL ALREADY SAVED FOR IT.
-	//
-	// --url WINS: it is the finer escape hatch (a tunnel, a moved port, another host) and
-	// the desktop app gives its --plane URL the same precedence over --instance.
-	//
-	// When a credential is already saved for that instance it is kept — the operator
-	// connected to dev once, and making them sign in again for asking by NAME would be a
-	// worse answer than the URL/port one. Absent a saved profile the session still TARGETS
-	// the instance (empty token), so the connection screen collects the credential against
-	// the right host instead of the wrong one.
 	if target != "" && fl.url == "" {
 		if profile == nil {
 			profile = config.ProfileForInstance(cfg, fl.instance)
@@ -313,31 +243,9 @@ func run(fl *flags) error {
 		}
 		profile = p
 	}
-	// Apply the stored palette preference to the FINAL profile, AFTER the
-	// connection branch.
-	//
-	// It used to be applied BEFORE that branch, to the pre-connection profile —
-	// which the branch then REPLACED with the profile the connection screen built.
-	// Any launch that passed through that screen (first run, or an env-driven
-	// launch with no token in the env: notably the orch-dev/orch-prod launchers,
-	// which preset ORCHICON_URL) therefore lost its saved theme for the entire
-	// session even though the config still held it. Applying it here cannot be
-	// undone by anything downstream.
-	//
-	// The preference lives at the config's TOP LEVEL so it survives without a
-	// saved profile (env-driven sessions and first runs never write one).
-	// ORCHICON_THEME wins over the file, so a palette can be pinned where the
-	// config is not persisted.
+	// Apply the stored palette preference to the FINAL profile, AFTER the connection branch.
 	applyStoredTheme(profile, cfg)
-	// The launch DIRECTORY is computed ONCE here and passed to EVERY shell in this
-	// session. It is a fact about the process (os.Getwd): the rail derives its workspace
-	// default from it, so a post-/connect continuation needs it just as much as the first
-	// launch does. os.Getwd can fail (a deleted cwd); that is not worth failing a launch
-	// over — no directory simply means no default and no question.
-	//
-	// The launch PROMPT is a separate, first-shell-only decision: shellLaunchOptions arms
-	// it only on the first shell, so a reconnect never re-asks. Gating the directory on
-	// that same decision is what silently lost the workspace default after a reconnect.
+	// The launch DIRECTORY is computed ONCE here and passed to EVERY shell in this session.
 	launchDir, _ := os.Getwd()
 	firstShell := true
 	for {
@@ -347,9 +255,8 @@ func run(fl *flags) error {
 		if !reconnect {
 			return err
 		}
-		// The shell exited for re-auth (/connect) — or the launch-time credential
-		// check rejected a stored session. Reopen the connection screen,
-		// pre-filled with the current profile and SAYING WHY, then loop.
+		// The shell exited for re-auth (/connect) — or the launch-time credential check rejected a stored
+		// session.
 		p, cerr := runConnection(path, profile, reauthReason)
 		if cerr != nil {
 			return cerr
@@ -375,12 +282,8 @@ func applyFlags(p *config.Profile, fl *flags) {
 	}
 }
 
-// runConnection shows the first-run screen; on success it persists the
-// profile (unless env-driven) and returns it.
-// reauthReason is the WHY shown on the connection screen when the shell
-// bounces the operator back here: a stored session that cannot authenticate is
-// not a first run, and being asked for credentials with no explanation reads
-// as the tool having lost them for no reason.
+// runConnection shows the first-run screen; on success it persists the profile (unless env-driven)
+// and returns it.
 const reauthReason = "the saved session could not be authenticated — sign in again"
 
 func runConnection(path string, existing *config.Profile, reason string) (*config.Profile, error) {
@@ -411,11 +314,8 @@ func runConnection(path string, existing *config.Profile, reason string) (*confi
 	return res.Profile, nil
 }
 
-// applyStoredTheme resolves the TUI palette preference onto the profile that will
-// actually be used: the config's top-level theme, overridden by ORCHICON_THEME.
-// It is applied to the FINAL profile (after any connection-screen rebuild), because
-// the connection screen returns a freshly built profile and anything set before it
-// is discarded.
+// applyStoredTheme resolves the TUI palette preference onto the profile that will actually be used:
+// the config's top-level theme, overridden by ORCHICON_THEME.
 func applyStoredTheme(p *config.Profile, cfg *config.Config) {
 	if p == nil {
 		return
@@ -458,13 +358,7 @@ func shellLaunchOptions(firstShell bool, launchDir string) []tui.AppOption {
 	return opts
 }
 
-// runShell probes /versionz, builds the client set, and runs the app
-// shell until the user quits. Returns (reconnect=true, nil) when the
-// shell exited for re-auth (/connect) — main's loop then re-runs the
-// connection screen with the updated profile.
-//
-// opts are the shell's TUI options (see shellLaunchOptions): the launch directory on
-// every shell, and the prompt armed only on the first.
+// runShell probes /versionz, builds the client set, and runs the app shell until the user quits.
 func runShell(profile *config.Profile, opts ...tui.AppOption) (bool, error) {
 	vr, err := client.Ping(context.Background(), profile.URL, profile.InsecureSkipVerify)
 	if err != nil {
@@ -481,24 +375,10 @@ func runShell(profile *config.Profile, opts ...tui.AppOption) (bool, error) {
 		Token:              profile.Token,
 		InsecureSkipVerify: profile.InsecureSkipVerify,
 		Timeout:            30 * time.Second,
-		// Password mode: auto-refresh the 900s access token with the
-		// stored 24h refresh token (Phase 2b). Empty in api-key mode —
-		// the refresh interceptor is inert.
+		// Password mode: auto-refresh the 900s access token with the stored 24h refresh token (Phase 2b).
 		RefreshToken: profile.RefreshToken,
 	})
 	// Launch-time credential check.
-	//
-	// The operator's rule: user+password against the built-in IdP is the NORMAL
-	// way to use orch, so a session that has lost its credentials must ASK for
-	// them at launch rather than entering a shell that 401s silently on every
-	// send. This probe runs THROUGH the client's refresh interceptor (an expired
-	// access token with a working refresh token refreshes and retries here), so
-	// it only fires when the session genuinely cannot authenticate.
-	//
-	// Only Unauthenticated counts as a credential failure. PermissionDenied means
-	// the credential IS valid and the entitlement is not; bouncing that back to
-	// the connection screen would ask for credentials that are already correct
-	// and loop forever.
 	identity, probeErr := probeIdentity(cl)
 	if probeErr != nil && connect.CodeOf(probeErr) == connect.CodeUnauthenticated {
 		return true, nil // main reopens the connection screen, with a reason
@@ -512,10 +392,8 @@ func runShell(profile *config.Profile, opts ...tui.AppOption) (bool, error) {
 	app.SwitchTo(tui.TabAsk)
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion(),
 		tea.WithReportFocus(),
-		// THE PROGRAM INPUT IS PLATFORM-SPECIFIC, and on Windows it is not merely decorated stdin: bubbletea
-		// picks its whole input PATH by comparing the reader's fd to stdin's, and the path that stdin lands
-		// on there cannot report Shift+Enter and disables bracketed paste. See input_other.go /
-		// input_windows.go for each platform's answer, and internal/tui/input for the byte rewrites.
+		// THE PROGRAM INPUT IS PLATFORM-SPECIFIC, and on Windows it is not merely decorated stdin:
+		// bubbletea picks its whole input PATH by comparing the reader's fd to stdin's.
 		tea.WithInput(programInput()))
 	_, err = prog.Run()
 	if err != nil {
@@ -528,13 +406,8 @@ func runShell(profile *config.Profile, opts ...tui.AppOption) (bool, error) {
 	return false, nil
 }
 
-// probeIdentity resolves the footer identity display name (best effort:
-// admin-gated RPC — an empty string just hides the identity chip).
-// probeIdentity makes one cheap AUTHENTICATED call and returns the caller's
-// display name. The error is returned rather than swallowed so the caller can
-// tell "this credential is dead" from "this instance is unreachable": the
-// first must ASK for credentials before entering the shell, the second must
-// still open the shell degraded (a stale config is non-blocking by design).
+// probeIdentity resolves the footer identity display name (best effort: admin-gated RPC — an empty
+// string just hides the identity chip).
 func probeIdentity(cl *client.Clients) (string, error) {
 	resp, err := cl.Auth.ListIdentities(context.Background(), connect.NewRequest(&apiv1.ListIdentitiesRequest{PageSize: 1}))
 	if err != nil {

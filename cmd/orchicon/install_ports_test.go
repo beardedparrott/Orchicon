@@ -29,16 +29,7 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 	}
 	script := string(src)
 
-	// 0. THE ENUMERATION ITSELF. Everything below asserts port VALUES; this
-	// asserts the SET OF INSTANCES the two sides define, in both directions.
-	//
-	// It is the part the old containment check could not do: "contains these
-	// literals" passes while one side grows an instance the other has never heard
-	// of, and then a `test` prompt offers a column the launcher refuses (or a
-	// launcher starts an instance `orchicon install` cannot address). The shell
-	// enumeration lives in ONE place per side — ORCHICON_INSTANCES here,
-	// instanceOrder in install_ports.go — and they cannot share a constant, so
-	// the agreement is asserted rather than assumed.
+	// 0.
 	var shellInstances []string
 	for _, line := range strings.Split(script, "\n") {
 		line = strings.TrimSpace(line)
@@ -56,17 +47,13 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 		t.Fatalf("instance set drifted: scripts/lib/instances.sh has %q, install_ports.go instanceOrder has %q", got, want)
 	}
 	// Direction two: every Go column must have a REAL case arm in the shell table.
-	// Without this the scalar above could list an instance the table does not
-	// resolve, and every lookup for it would fall into the error arm at runtime.
 	for _, inst := range instanceOrder {
 		if !strings.Contains(script, "\n    "+inst+")") {
 			t.Errorf("install_ports.go defines the %q column but scripts/lib/instances.sh's instance_info has no case arm for it", inst)
 		}
 	}
 
-	// 1. The per-instance defaults the shell instance table must still carry. The service
-	// entries matter as much as the plane ones now: host residency PUBLISHES them,
-	// so a drift there means the two launchers bind different loopback ports.
+	// 1.
 	for _, want := range []string{
 		"PLANE_HTTP_PORT=8080",
 		"PLANE_HTTP_PORT=8091",
@@ -110,9 +97,8 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 		}
 	}
 
-	// The container-side ports this table mirrors must match instances.sh's
-	// SERVICE_PORTS composition: these are the in-container listeners a host
-	// publish maps ONTO, so a wrong pair sends a host port to the wrong service.
+	// The container-side ports this table mirrors must match instances.sh's SERVICE_PORTS composition:
+	// these are the in-container listeners a host publish maps ONTO.
 	for _, want := range []string{
 		`SERVICE_PORTS="-p 127.0.0.1:$PG_PORT:5432"`,
 		`-p 127.0.0.1:$NATS_PORT:4222 -p 127.0.0.1:$NATS_MON_PORT:8222`,
@@ -125,9 +111,7 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 		}
 	}
 
-	// ...and EVERY entry of the Go table must agree with those defaults. The
-	// expected map is the gate: an entry added to installerPorts without being
-	// listed here fails, so a new port cannot skip the cross-language check.
+	// ...and EVERY entry of the Go table must agree with those defaults.
 	type wantCase struct{ dev, prod, test, container int }
 	wantDefaults := map[string]wantCase{
 		"ORCHICON_CONTROL_PORT":      {8080, 8091, 8092, 8080},
@@ -136,9 +120,8 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 		"ORCHICON_NATS_MONITOR_PORT": {8222, 8223, 8224, 8222},
 		"ORCHICON_OTLP_GRPC_PORT":    {4317, 4319, 4321, 4317},
 		"ORCHICON_OTLP_HTTP_PORT":    {4318, 4320, 4322, 4318},
-		// The offset receivers and the collector health endpoint: no container-side
-		// publish, but they still need per-instance host defaults or two host
-		// instances collide on the same number.
+		// The offset receivers and the collector health endpoint: no container-side publish, but they still
+		// need per-instance host defaults or two host instances collide on the same number.
 		"ORCHICON_TEMPO_OTLP_GRPC_PORT": {14317, 14318, 14319, 14317},
 		"ORCHICON_TEMPO_OTLP_HTTP_PORT": {14318, 14319, 14320, 14318},
 		"ORCHICON_OTEL_HEALTH_PORT":     {13133, 13134, 13135, 13133},
@@ -165,10 +148,7 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 		t.Errorf("installerPorts() is missing %s", env)
 	}
 
-	// STRUCTURAL: every row must define EVERY column. This is the check that
-	// catches a row gaining a column on one side only, and it is what a third
-	// instance makes easy to get wrong — a row copied without its new entry looks
-	// complete and resolves to a zero default.
+	// STRUCTURAL: every row must define EVERY column.
 	for _, p := range installerPorts() {
 		for _, inst := range instanceOrder {
 			if _, ok := p.Defaults[inst]; !ok {
@@ -177,10 +157,7 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 		}
 	}
 
-	// DISJOINTNESS: no two instances may share a port on the same row. The whole
-	// point of the table is that one host can run these side by side, and a shared
-	// port is exactly the collision it exists to prevent — easy to introduce by
-	// copying a row and forgetting to increment.
+	// DISJOINTNESS: no two instances may share a port on the same row.
 	for _, p := range installerPorts() {
 		seen := map[int]string{}
 		for _, inst := range instanceOrder {
@@ -192,9 +169,7 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 		}
 	}
 
-	// 2. The override knobs must be applied in instances.sh under exactly the
-	// names the Go resolver uses, or setting one moves the port in only one
-	// launcher. Asserted as whole shell lines so a rename on either side fails.
+	// 2.
 	for _, want := range []string{
 		`PLANE_HTTP_PORT="${ORCHICON_CONTROL_PORT:-$PLANE_HTTP_PORT}"`,
 	} {
@@ -203,16 +178,13 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 		}
 	}
 
-	// The publishes must be COMPOSED from those variables: a literal beside them
-	// is how an override silently leaves `up` on the old number. There is ONE publish left (the
-	// plane) because Grafana's 3002/3003/3004 row was retired — those ports are RESERVED, not free.
+	// The publishes must be COMPOSED from those variables: a literal beside them is how an override
+	// silently leaves `up` on the old number.
 	if !strings.Contains(script, `PORTS="-p $PLANE_HTTP_PORT:8080"`) {
 		t.Error("instances.sh's PORTS must be composed from PLANE_HTTP_PORT, not written as a literal")
 	}
 
-	// ...and the Go table must agree with the defaults above. Rows are found by
-	// ENV, never by position: removing a row must not silently re-point the
-	// assertions at a different port.
+	// ...and the Go table must agree with the defaults above.
 	control := portByEnv(t, "ORCHICON_CONTROL_PORT")
 	postgres := portByEnv(t, "ORCHICON_POSTGRES_PORT")
 	if control.Defaults["dev"] != 8080 || control.Defaults["prod"] != 8091 || control.Defaults["test"] != 8092 {
@@ -233,9 +205,7 @@ func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 	}
 }
 
-// portByEnv finds an installerPorts row by its env knob. Position-based
-// lookups (installerPorts()[1]) break silently whenever a row is removed, which
-// is exactly how a retired port would sneak back into the assertions.
+// portByEnv finds an installerPorts row by its env knob.
 func portByEnv(t *testing.T, env string) installPort {
 	t.Helper()
 	for _, p := range installerPorts() {
@@ -258,10 +228,9 @@ func freeExcept(taken ...int) func(int) bool {
 	return func(p int) bool { return !blocked[p] }
 }
 
-// TestPlanInstallPortsDefaultsNonInteractive pins the headless path: with no
-// terminal and free ports, every port takes its per-instance default and the
-// choices are STATED (an operator must never have to infer what a headless
-// install bound).
+// TestPlanInstallPortsDefaultsNonInteractive pins the headless path: with no terminal and free
+// ports, every port takes its per-instance default and the choices are STATED (an operator must
+// never.
 func TestPlanInstallPortsDefaultsNonInteractive(t *testing.T) {
 	var out bytes.Buffer
 	got, err := planInstallPorts("dev", installerPorts(), nil, alwaysFree, nil, &out)
@@ -292,11 +261,8 @@ func TestPlanInstallPortsProdDefaults(t *testing.T) {
 	}
 }
 
-// TestPlanInstallPortsUnknownInstanceIsRefused replaces the old
-// fall-through-to-dev behaviour — which is precisely the bug the table now
-// prevents. An instance the table does not define was handed dev's 8080, so
-// adding a THIRD instance silently collided with dev on every port. It must now
-// be an explicit refusal that names the knob to set.
+// TestPlanInstallPortsUnknownInstanceIsRefused replaces the old fall-through-to-dev behaviour —
+// which is precisely the bug the table now prevents.
 func TestPlanInstallPortsUnknownInstanceIsRefused(t *testing.T) {
 	var out bytes.Buffer
 	_, err := planInstallPorts("staging", installerPorts(), nil, alwaysFree, nil, &out)
@@ -311,9 +277,8 @@ func TestPlanInstallPortsUnknownInstanceIsRefused(t *testing.T) {
 	}
 }
 
-// TestResolveInstallPortsRefusesUnknownInstance pins the refusal at the resolver,
-// BEFORE anything is probed or asked — so a typo cannot walk the operator through
-// a prompt sequence and then fail.
+// TestResolveInstallPortsRefusesUnknownInstance pins the refusal at the resolver, BEFORE anything
+// is probed or asked — so a typo cannot walk the operator through a prompt sequence and then fail.
 func TestResolveInstallPortsRefusesUnknownInstance(t *testing.T) {
 	var out bytes.Buffer
 	if _, err := resolveInstallPorts("staging", residencyHost, &out, nil); err == nil {
@@ -334,9 +299,9 @@ func TestValidateInstanceAcceptsExactlyTheTableColumns(t *testing.T) {
 	}
 }
 
-// TestPlanInstallPortsConflictSuggestsNext is the auto-enumeration the operator
-// asked for: 8080 taken means the default becomes 8081 — but the conflict is
-// ANNOUNCED rather than silently absorbed.
+// TestPlanInstallPortsConflictSuggestsNext is the auto-enumeration the operator asked for: 8080
+// taken means the default becomes 8081 — but the conflict is ANNOUNCED rather than silently
+// absorbed.
 func TestPlanInstallPortsConflictSuggestsNext(t *testing.T) {
 	var out bytes.Buffer
 	got, err := planInstallPorts("dev", installerPorts(), nil, freeExcept(8080), nil, &out)
@@ -351,9 +316,8 @@ func TestPlanInstallPortsConflictSuggestsNext(t *testing.T) {
 	}
 }
 
-// TestPlanInstallPortsConflictSkipsRunawayPorts walks further than one step: if
-// 8081 is ALSO taken the suggestion must reach 8082, not stop at the first
-// candidate.
+// TestPlanInstallPortsConflictSkipsRunawayPorts walks further than one step: if 8081 is ALSO taken
+// the suggestion must reach 8082, not stop at the first candidate.
 func TestPlanInstallPortsConflictSkipsRunawayPorts(t *testing.T) {
 	var out bytes.Buffer
 	got, err := planInstallPorts("dev", installerPorts(), nil, freeExcept(8080, 8081, 8082), nil, &out)
@@ -379,11 +343,8 @@ func TestPlanInstallPortsStrictRefuses(t *testing.T) {
 	}
 }
 
-// TestPlanInstallPortsPinWinsAndIsNotPrompted pins automation: an explicit pin
-// is used as-is and skips the prompt entirely. EVERY active port is pinned here,
-// because a pin covers one port and the others would still legitimately prompt —
-// the reader fails the test if it is consulted at all, which is what proves the
-// pins bypassed the prompt rather than merely being overridden by it.
+// TestPlanInstallPortsPinWinsAndIsNotPrompted pins automation: an explicit pin is used as-is and
+// skips the prompt entirely.
 func TestPlanInstallPortsPinWinsAndIsNotPrompted(t *testing.T) {
 	specs := activeInstallPorts(residencyHost)
 	var out bytes.Buffer
@@ -412,10 +373,8 @@ func TestPlanInstallPortsPinWinsAndIsNotPrompted(t *testing.T) {
 	}
 }
 
-// TestPlanInstallPortsPinnedConflictWarnsNotReassigns closes the gap that a pin
-// used to pass through silently: an explicitly pinned port that is ALREADY BUSY
-// must be reported, but must still be honoured — silently moving a pinned
-// number would break the automation contract the pin exists to provide.
+// TestPlanInstallPortsPinnedConflictWarnsNotReassigns closes the gap that a pin used to pass
+// through silently: an explicitly pinned port that is ALREADY BUSY must be reported.
 func TestPlanInstallPortsPinnedConflictWarnsNotReassigns(t *testing.T) {
 	var out bytes.Buffer
 	pinned := map[string]int{
@@ -482,9 +441,8 @@ func TestPlanInstallPortsTypedOverride(t *testing.T) {
 	}
 }
 
-// TestAskInstallPort covers the reader's edge cases, including the one that
-// matters for a closed or degenerate terminal: EOF must fall back to the
-// default rather than spin or crash.
+// TestAskInstallPort covers the reader's edge cases, including the one that matters for a closed or
+// degenerate terminal: EOF must fall back to the default rather than spin or crash.
 func TestAskInstallPort(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -534,16 +492,8 @@ func TestParseInstancePorts(t *testing.T) {
 	}
 }
 
-// TestParseInstancePortsRealHostResidencyBindings uses the binding set observed
-// on a REAL host-resident instance (captured from `docker inspect` on a live dev
-// instance), because the shape the parser will actually meet is the one worth
-// pinning.
-//
-// The `8080/tcp` entry is `null` — exposed but NOT published, because the host
-// plane owns that port — and the whole point is that it must NOT be read back as
-// a value: reporting it would invent a container-published port that does not
-// exist, and the control port's real value has to come from resolving the
-// override instead.
+// TestParseInstancePortsRealHostResidencyBindings uses the binding set observed on a REAL
+// host-resident instance (captured from `docker inspect` on a live dev instance).
 func TestParseInstancePortsRealHostResidencyBindings(t *testing.T) {
 	raw := []byte(`{
 		"3000/tcp":[{"HostIp":"127.0.0.1","HostPort":"3002"}],
@@ -584,9 +534,8 @@ func TestParseInstancePortsRealHostResidencyBindings(t *testing.T) {
 	}
 }
 
-// TestPortFreeSeesAHeldPort is the one test that touches a real socket, because
-// the probe's whole job is to collide with a real listener — and TestNextFree
-// proves the upward walk then steps past it.
+// TestPortFreeSeesAHeldPort is the one test that touches a real socket, because the probe's whole
+// job is to collide with a real listener.
 func TestPortFreeSeesAHeldPort(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -607,9 +556,8 @@ func TestPortFreeSeesAHeldPort(t *testing.T) {
 	}
 }
 
-// TestNextFreePortHonoursClaimed proves the walk also skips a port that is free
-// on the host but already assigned to another Orchicon port in the same run —
-// otherwise two prompts could resolve onto one number.
+// TestNextFreePortHonoursClaimed proves the walk also skips a port that is free on the host but
+// already assigned to another Orchicon port in the same run.
 func TestNextFreePortHonoursClaimed(t *testing.T) {
 	got, ok := nextFreePortFor(7000, map[int]bool{7000: true, 7001: true}, func(int) bool { return true })
 	if !ok {
@@ -620,22 +568,8 @@ func TestNextFreePortHonoursClaimed(t *testing.T) {
 	}
 }
 
-// TestRerunOnARunningHostInstanceKeepsItsPorts is acceptance criterion 6 at the PORT RESOLVER: a re-run on a
-// healthy no-engine instance CONVERGES — it keeps the ports the instance is already bound on rather than
-// re-resolving them away.
-//
-// WHY THIS EXISTS, and it was measured rather than reasoned about. Rung 0 of resolveInstallPorts ("a running
-// instance of ours owns its ports") asked a CONTAINER, so the de-containerization gated it behind the engine
-// probe — correct, since `docker inspect` may not run on a host with no engine — but left the no-engine host
-// with NO rung 0 at all. A re-run then went straight to fresh resolution and probed the instance's OWN
-// listeners as conflicts: control 8092→8093, postgres 5434→5435, VM 8430→8431. Downstream that is not
-// merely cosmetic: startHostServices' readiness probe asks the SHIFTED ports, finds nothing, and starts a
-// SECOND host stack beside the running one, while startHostPlane tries a second plane. Two stacks on one
-// instance is the opposite of convergence, and the ports the operator sees change under them.
-//
-// The instance is made "running" with the records a real install leaves and the liveness the real probes read:
-// the plane's PID file names THIS test process (a certainly-alive PID, exactly as install_converge_test.go
-// does), and the instance's ports are held by real listeners so a re-resolution WOULD move them.
+// TestRerunOnARunningHostInstanceKeepsItsPorts is acceptance criterion 6 at the PORT RESOLVER: a
+// re-run on a healthy no-engine instance CONVERGES.
 func TestRerunOnARunningHostInstanceKeepsItsPorts(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -705,9 +639,8 @@ func TestRerunOnARunningHostInstanceKeepsItsPorts(t *testing.T) {
 		}
 	}
 
-	// A STOPPED INSTANCE IS NOT PROTECTED BY ITS STALE RECORD: with nothing of ours alive, the resolver must
-	// fall through and resolve fresh (here onto the same free defaults), never bind a port on the strength of a
-	// file alone. The listeners are released first so this half is a stopped instance, not a held port set.
+	// A STOPPED INSTANCE IS NOT PROTECTED BY ITS STALE RECORD: with nothing of ours alive, the resolver
+	// must fall through and resolve fresh (here onto the same free defaults).
 	for _, l := range held {
 		_ = l.Close()
 	}

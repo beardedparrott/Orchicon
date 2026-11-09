@@ -2,21 +2,6 @@ package main
 
 // operational_endpoints_passthrough_test.go — EVERY exact-path API handler must be in the SPA
 // passthrough list, or the browser silently receives index.html instead of JSON.
-//
-// REPORTED: "Both in Windows and Linux I see the following on the project page under the runtime
-// 'Container availability unknown — the plane did not answer /enginez.'"
-//
-// THE PLANE DID ANSWER. internal/api mounts `/enginez` correctly; cmd/orchicon's withFrontend wrapper
-// then answered that path with the SPA's index.html, because its passthrough list named /healthz and
-// /versionz but not /enginez. So the fetch returned 200 with HTML, the client's JSON parse failed, and
-// the UI reported the plane as silent — a network-shaped message for a routing bug, and it sent the
-// operator looking at the wrong thing on two operating systems.
-//
-// THIS IS A CLASS, NOT ONE PATH. The same mistake will be made again by anyone who adds an exact-path
-// handler to api.Mount, so the assertion is derived from the REGISTRATIONS rather than restating a
-// list: every `mux.HandleFunc("/x"` and `mux.Handle("/x"` in internal/api must appear in the
-// passthrough set in cmd/orchicon. A new endpoint that forgets it fails here instead of on an
-// operator's screen.
 
 import (
 	"regexp"
@@ -25,10 +10,6 @@ import (
 )
 
 // exactPathMounts pulls every literal exact-path handler out of internal/api/api.go.
-//
-// PREFIX HANDLERS ARE SKIPPED: the connect handlers are mounted on their service prefixes
-// (/orchicon.api.v1...), which the passthrough already matches by prefix, and a test that demanded
-// each of those be listed individually would be noise.
 func exactPathMounts(t *testing.T, src string) []string {
 	t.Helper()
 	// mux.HandleFunc("/healthz", …)  and  mux.Handle("/enginez", …)

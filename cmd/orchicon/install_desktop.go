@@ -88,10 +88,7 @@ func launchDesktop() bool {
 
 	// NO --route. See above: the app's own start page is the one that works whether or not a session exists.
 	cmd := exec.Command(desktop)
-	// AN EXPLICIT WORKING DIRECTORY. The app must not inherit the install's — an install runs DETACHED, and a
-	// GUI whose cwd is a directory that later disappears cannot start its own children on Windows
-	// (CREATE_ERROR, "The directory name is invalid"), which is the reported "it complained about … the
-	// directory the desktop ran from". The install directory is where this binary lives, so it exists.
+	// AN EXPLICIT WORKING DIRECTORY.
 	cmd.Dir = filepath.Dir(exe)
 	// DETACHED, so the window outlives this process: install exits immediately after printing its summary, and
 	// a GUI that died with it would be worse than not launching one at all.

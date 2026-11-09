@@ -1,10 +1,6 @@
 package main
 
 // project_roots_db_test.go — the SOURCE must return real project directories, not compile-only.
-//
-// The daemon-side tests prove a source's roots are honoured; this proves the source the daemon is actually
-// given reads project_dir from the database. Without it the wiring could be a function that always returns nil
-// and every test above would still pass.
 
 import (
 	"context"
@@ -66,11 +62,6 @@ func TestProjectDirRootsReadsTheDatabase(t *testing.T) {
 }
 
 // TestProjectDirRootsIncludesANonActiveProject is the "already set, still valid" case.
-//
-// The plane does not gate dispatch on project status when it resolves a project_dir
-// (internal/scheduler/reconciler.go: SELECT project_dir FROM projects WHERE id = $1). A mount gate that DID
-// gate on status would refuse containers for runs the plane is happy to start — stricter than the thing it is
-// meant to protect, which is how a security check becomes a bug.
 func TestProjectDirRootsIncludesANonActiveProject(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {
@@ -162,11 +153,6 @@ func TestProjectDirRootsIgnoresARelativeDir(t *testing.T) {
 }
 
 // TestInstancePostgresDSNUsesTheInstancesRecord is the "works on a real install" guard.
-//
-// The daemon is started by `orchicon install` and does NOT receive ORCHICON_POSTGRES_DSN; the plane's DSN is
-// built from the instance's RESOLVED port. So config.Default()'s localhost:5432 is right only for a default
-// install — on any other port the daemon would look for the database in the wrong place and the only symptom
-// would be project directories quietly missing from the mount allowlist.
 func TestInstancePostgresDSNUsesTheInstancesRecord(t *testing.T) {
 	if _, err := readResolvedPorts(env("ORCHICON_INSTANCE", "dev")); err != nil {
 		t.Skipf("no resolved-ports record for this instance (%v) — nothing to assert against", err)

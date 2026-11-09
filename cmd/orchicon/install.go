@@ -23,15 +23,6 @@ import (
 )
 
 // installProgress is the ACTIVE install's setup record, or nil when no install is running.
-//
-// A PACKAGE-LEVEL SEAM RATHER THAN A PARAMETER THREADED THROUGH EVERY CALL, and that is a deliberate
-// trade: installPhase is called from ten-plus sites across three files, and adding an argument to each
-// would be churn in the one file where churn is most dangerous (every line of it is an install path).
-// The variable is written in exactly two places — set at the start of runInstall and cleared on the way
-// out — so the lifetime is the install's, which is also the lifetime of the record it feeds.
-//
-// A nil tracker makes installPhase a no-op for progress, so a caller that is not an install (a test, or
-// any future phase banner) keeps the plain banner.
 var installProgress *setupTracker
 
 // setupTracker writes the machine-readable progress record (design of record, D4) beside the instance's
@@ -40,17 +31,9 @@ type setupTracker struct {
 	instance  string
 	lastPhase string
 	// startedAt is when THIS install began, carried through every write.
-	//
-	// LEARNED FROM A REAL RUN: the terminal records were written as fresh structs, so WriteSetupProgress
-	// stamped started_at = now on each one and the record ended up saying the install STARTED at the moment
-	// it FINISHED. A GUI showing "elapsed: 0s" for a six-minute download is the kind of small lie that makes
-	// the whole record untrustworthy.
 	startedAt string
-	// pid is this install process, so "is setup actually running?" is answered by the PROCESS TABLE rather
-	// than by guesswork about a file's age.
-	//
-	// ALSO FROM A REAL RUN: without it the record carried pid 0 on every write, so staleness fell back to
-	// the timestamp alone — the weaker of the two signals the design specifies.
+	// pid is this install process, so "is setup actually running?" is answered by the PROCESS TABLE
+	// rather than by guesswork about a file's age.
 	pid int
 }
 
@@ -63,9 +46,8 @@ func beginSetup(instance string) *setupTracker {
 	return t
 }
 
-// write is the ONE place a record is written, so every field that must persist (started_at, pid) persists
-// on every state — which is exactly what the two real-run gaps were: fields set in one writer and dropped
-// in another.
+// write is the ONE place a record is written, so every field that must persist (started_at, pid)
+// persists on every state — which is exactly what the two real-run gaps.
 func (t *setupTracker) write(state, phase, label string, percent int, errText string) {
 	if t == nil {
 		return
@@ -128,48 +110,14 @@ func slug(msg string) string {
 func oneLineProgress(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // installPhase prints a phase banner for `orchicon install`.
-//
-// It exists because the one-command install is minutes long and largely unattended:
-// with no spine through its output, the operator's only evidence that it is working
-// is that nothing has failed yet, and the only way to describe a failure is "during
-// install". Naming each phase as it starts makes progress visible, and puts a failure
-// under the step that caused it.
-//
-// IT ALSO FEEDS THE SETUP RECORD when an install is running (see installProgress), so the same banner that
-// serves the terminal serves a GUI that has no terminal to read.
 func installPhase(msg string) {
 	fmt.Printf("== %s\n", msg)
 	installProgress.phase(msg)
 }
 
-// runInstall implements `orchicon install` — the one-command setup for a
-// fresh machine. It pulls the published images, starts the host-side
-// runtime daemon, creates + starts the single-container instance, and
-// prints connection / management info. The one-line installers
-// (scripts/install.sh / install.ps1) call this after dropping the binary
-// in place, so `curl https://orchicon.dev/install | bash` brings up the
-// whole stack.
-//
-// It shells out to the Docker CLI (same trust model as container.sh) and
-// is idempotent: re-running reports the existing instance instead of
-// creating a duplicate.
+// runInstall implements `orchicon install` — the one-command setup for a fresh machine.
 func runInstall(args []string, log *slog.Logger) error {
-	// THE SETUP MAY HAVE BEEN STARTED WITHOUT A CONSOLE, and the only caller that does that is
-	// the Windows MSI's last step (a custom action has no console). Rather than manufacture one
-	// through `cmd.exe /c start <wrapper>.cmd` — three processes and a command line that ate a
-	// quote per hop — the program re-executes ITSELF in a new console and exits. On every other
-	// platform this is a no-op.
-	//
-	// BEFORE the instance is parsed, deliberately: the relaunched child gets the same argv, so
-	// parsing here as well would be harmless — but doing the work twice is not the point. This
-	// is a hand-off, and a hand-off that has already started acting is not one.
-	// A NON-INTERACTIVE RUN NEVER RELAUNCHES FOR A CONSOLE. It has nothing to ask, so opening a
-	// window would be the one thing it must not do — that is the "brought up the script and asked
-	// me everything again" report, and it is why this precedes the relaunch.
-	// A RUN THAT MUST OUTLIVE ITS PARENT ASKS FOR A CONSOLE OF ITS OWN.
-	//
-	// `interactiveAllowed` is what the relaunched child will see: it must keep answering nothing when the
-	// caller said --non-interactive. A console is a place to PRINT, not an invitation to ask.
+	// A NON-INTERACTIVE RUN NEVER RELAUNCHES FOR A CONSOLE.
 	interactiveAllowed := !hasNonInteractiveFlag(args)
 	//
 	// THE MSI'S INSTALL WAS DYING WITH THE WIZARD. Its custom action is
@@ -196,15 +144,6 @@ func runInstall(args []string, log *slog.Logger) error {
 		return nil
 	}
 	// THE WIZARD'S ANSWERS COME IN AS FLAGS AND BECOME THE ENVIRONMENT THIS INSTALL ALREADY READS.
-	//
-	// The MSI's custom action runs this binary directly (FileRef — no shell, by design) and can
-	// pass ARGUMENTS but cannot set a child's ENVIRONMENT. So the wizard's pages reach us here.
-	//
-	// THEY ARE TRANSLATED RATHER THAN THREADED THROUGH. Each flag sets the very variable the
-	// install already consults (ORCHICON_<X>_PORT for a port, ORCHICON_INSTALL_RUNTIME_IMAGES
-	// for the image choice), so there is ONE code path and one meaning per value — a second,
-	// parallel way to reach the resolver is how the wizard and the CLI start disagreeing about
-	// what was actually chosen.
 	flags, rest, err := parseInstallFlags(args)
 	if err != nil {
 		return err
@@ -220,16 +159,9 @@ func runInstall(args []string, log *slog.Logger) error {
 			return fmt.Errorf("apply --runtime-images: %w", err)
 		}
 	}
-	// THE ARGUMENTS ARE PARSED, AND THAT IS A FIX RATHER THAN A TIDY-UP. `install` used to
-	// accept `args` and never read a byte of them, so `orchicon install --instance prod`
-	// installed (or REPAIRED) `dev` while the operator believed they had chosen prod. The
-	// installer's own `--instance` flag worked, which made the binary's silence worse: the
-	// flag existed one layer up and did nothing here.
+	// THE ARGUMENTS ARE PARSED, AND THAT IS A FIX RATHER THAN A TIDY-UP.
 	if flags.LauncherOnly {
-		// THE ESCAPE HATCH FOR THE ONE FAILURE THAT LEAVES A HEALTHY PLANE. Everything else in an install is
-		// convergent and idempotent, but the launcher can be missing for a reason nothing else shares (Windows
-		// symlink privilege), and re-running the whole multi-minute install to recover a file copy is not a
-		// reasonable thing to ask. Returns after placing it — no ports, no engine, no services.
+		// THE ESCAPE HATCH FOR THE ONE FAILURE THAT LEAVES A HEALTHY PLANE.
 		installDir := env("ORCHICON_INSTALL_DIR", defaultInstallDir())
 		return reportLauncherOnly(installOrchLauncher(installDir), installDir)
 	}
@@ -239,20 +171,6 @@ func runInstall(args []string, log *slog.Logger) error {
 	}
 
 	// THE PROGRESS RECORD'S LIFETIME IS THIS INSTALL'S (design of record, D4).
-	//
-	// It starts here, once the instance is known, and is settled by the deferred pair below on BOTH exits:
-	// a clean finish records "done", a returned error records "failed" WITH the reason. Without the failure
-	// arm the record would be left claiming "running" by an install that gave up — the eternal-spinner state
-	// the staleness rule exists to catch, which should never be the normal way a failure is reported.
-	//
-	// beginSetup CLEARS any older record first, so a finished one from a previous run cannot be read as this
-	// run's progress.
-	// THE TRACKER IS CAPTURED IN A LOCAL, and that is what preserves its fields for the settle path.
-	//
-	// The first version called a helper to rebuild a tracker after nil-ing the package variable, so the
-	// terminal records were written by a FRESH tracker with no pid and no start time — the finished record
-	// claimed pid 0 and stated that the install had started at the moment it finished. Measured on a real
-	// run. Holding the original is both simpler and the only version that keeps its state.
 	tracker := beginSetup(instance)
 	installProgress = tracker
 	// THE RESULT IS THE WHOLE POINT OF NAMING IT. A defer cannot see an unnamed return, and "did this install
@@ -281,60 +199,26 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 	dataVolume := "orchicon-cnt-" + instance + "-data"
 	socketDir := env("ORCHICON_RUNTIME_SOCKET_DIR", filepath.Join(os.TempDir(), "orchicon-runtime"))
 
-	// 1. THE CONTAINER ENGINE IS OPTIONAL, AND ITS ABSENCE IS A MODE, NOT A FAILURE.
-	//
-	// This used to call `docker version` unconditionally and return a hard error, so a machine with no Docker
-	// could not install Orchicon at all. With the container removed from the install path there is a second,
-	// complete shape: the services run as HOST processes of the invoking user and the plane runs on the host.
-	//
-	// The gate is a PATH PROBE (containerEngineAvailable), never an engine call — absence must be answerable
-	// without a daemon. `docker version` runs ONLY when the binary is present, so a host with no engine never
-	// sees a doomed docker invocation, and a host WITH one still gets the loud "installed but not answering".
-	//
-	// THE DECISION IS NOW SIX RUNGS, and every one of them falls through to that local shape
-	// rather than failing the install (see resolveContainerEngine): detect → minimum version →
-	// opt-in provisioning → `podman machine` → a trivial container run → available. The old
-	// hard error for "an engine is installed but not answering" survives only as the
-	// explicit-pin case, because an operator who set ORCHICON_CONTAINER_ENGINE asked for it.
+	// 1.
 	containersUsed, err := resolveContainerEngine()
 	if err != nil {
 		return err
 	}
 
-	// 1.5. An external adapter CLI is OPTIONAL. Orchicon ships its own runtime
-	// engine, so this install is complete without one and nothing below needs
-	// opencode on the host. Report it when present, so the operator knows it will
-	// be used, and say nothing when it is absent — there is nothing to fix.
-	//
-	// THIS USED TO FAIL THE INSTALL. It called requireAdapterCLI("opencode") and
-	// returned the error, so `orchicon install` refused to proceed on any host
-	// without an external adapter — a hard prerequisite that stopped being true
-	// once the plane gained its own engine. The binary is still mounted from the
-	// host when present (below), which is what keeps the images redistributable,
-	// but that is a capability rather than a requirement.
+	// 1.5.
 	if adapterCLIPresent("opencode") {
 		reportAdapterCLI("opencode")
 	} else {
 		fmt.Println("orchicon: no external adapter CLI found — the built-in engine will run sessions (nothing to install)")
 	}
 
-	// 1.6. Plane residency, then host-side ports — both resolved BEFORE the image
-	// pull, because the pull can take minutes and an operator must never be asked
-	// a question after waiting for it. The residency comes first because it decides
-	// WHICH ports the instance binds. The terminal is opened and closed here; a nil
-	// tty means "no terminal", which takes the defaults rather than blocking a
-	// headless install.
+	// 1.6.
 	installPhase("resolving the plane residency and host ports")
 	residency, err := residencyForInstall()
 	if err != nil {
 		return err
 	}
-	// THE PLANE AND ITS SERVICES ALWAYS RUN ON THE HOST. A container is now used for exactly ONE thing:
-	// a workflow's runtime container. It is no longer a carrier for the instance.
-	//
-	// This is a REFUSAL rather than a silent override, because silently installing the host shape for
-	// someone who asked for a container would leave them reading a summary that describes something they
-	// did not choose. The container shape is retired; saying so once, loudly, is the honest answer.
+	// THE PLANE AND ITS SERVICES ALWAYS RUN ON THE HOST.
 	if residency == residencyContainer {
 		return fmt.Errorf("ORCHICON_PLANE_RESIDENCY=%s is no longer supported: the plane and its services now\n"+
 			"  always run on the HOST. Containers are used only for a workflow's runtime container.\n"+
@@ -342,12 +226,7 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 			residencyContainer, residencyHost)
 	}
 	residency = residencyHost
-	// 1.6a. THE PRIVILEGE GUARD COMES BEFORE ANYTHING ELSE THAT COSTS ANYTHING.
-	// Postgres refuses to run under an Administrators token on Windows, and an
-	// elevated `orchicon install` would otherwise spend the image pull, write the
-	// dirs, resolve the binaries and report success — and then be unable to start the
-	// database. Failing here names the cause and the remedy while nothing has been
-	// created yet. It is a no-op on Linux and macOS (privilege.go).
+	// 1.6a.
 	if err := ensureHostPostgresPrivileges(); err != nil {
 		return err
 	}
@@ -355,32 +234,7 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 	if ttyOwned {
 		defer tty.Close()
 	}
-	// 1.6a-bis. WHICH INSTANCE, ASKED OUT LOUD WHEN THERE IS SOMEBODY TO ASK.
-	//
-	// The instance decides the whole stack — its ports, its data dir, its plane — and until now
-	// the only place it was ever PUT TO a person was scripts/install.ps1. A run driven by the MSI
-	// (or by `orchicon install` straight from a fresh console) silently took the default, so an
-	// operator who expected to be asked got `dev` without being told.
-	//
-	// THE INSTALLER IS SUPPOSED TO BE ALL ENCOMPASSING, so it asks here too. `instance` is
-	// whatever the flag, the environment or the MSI property already decided, and it is offered
-	// as the DEFAULT — pressing ENTER keeps it, which is what makes an unattended run and an
-	// answered run agree. promptOut is used rather than stdout so the question lands on the
-	// terminal even when stdout is captured.
-	// AN INSTANCE THAT IS ALREADY SET UP IS NOT ASKED ABOUT AGAIN.
-	//
-	// REPORTED: the MSI runs `orchicon install`, and then the operator ran `orchicon install` themselves and was
-	// taken through the whole interrogation a second time — "this should have happened automatically with the
-	// install that gets kicked off with the MSI. Not sure how many people are going to want to do a second
-	// install after another. It doesn't make logical sense."
-	//
-	// So a run whose instance ALREADY has host state (a data dir with this instance's KEK) and is already
-	// answering skips the questions and keeps the recorded decisions. It is the same principle as ports being
-	// record-first: an answered install stays answered.
-	//
-	// It does NOT skip the WORK — the install still converges what is there (an engine installed since the last
-	// run is picked up, a stopped service is started). It skips only the ASKING, which is what a second
-	// invocation has no business doing.
+	// 1.6a-bis.
 	alreadySetUp := instanceAlreadyProvisioned(instance)
 	if tty != nil && !flags.NonInteractive && !alreadySetUp {
 		if chosen, ok := askInstance(tty, instance); ok {
@@ -391,26 +245,12 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 			"(pass --reconfigure to be asked again)\n", instance)
 	}
 	// THE PROMPT GOES TO A STREAM THAT CAN BE WRITTEN, WHICH IS NOT ALWAYS THE ONE WE READ.
-	//
-	// This used to say `if tty != nil { promptOut = tty }`, on the reasoning that a terminal is
-	// a terminal. It is not, on Windows:
-	//
-	//   promptTerminal() tries /dev/tty, which does not exist there, and falls back to
-	//   os.Stdin when it is a character device. So `tty` IS os.Stdin — a console INPUT handle.
-	//   Writing the port banner to it goes nowhere, and resolveInstallPorts then blocks reading
-	//   answers to a question nobody can see. The install hangs immediately after the instance
-	//   prompt, which is exactly where it was reported to stop.
-	//
-	// `ttyOwned` is the distinction that matters: only a /dev/tty we OPENED OURSELVES is
-	// read-write. In the os.Stdin fallback the console's OUTPUT is os.Stdout (CONOUT$ once the
-	// setup has reattached its stdio), so that is where the prompt belongs.
 	promptOut := io.Writer(os.Stdout)
 	if ttyOwned {
 		promptOut = tty
 	}
-	// A NON-INTERACTIVE RUN PASSES NO READER, so planInstallPorts takes the record or the
-	// defaults and PRINTS which ports it used. That is the difference between "the wizard's
-	// answers were honoured" and "a console asked again over the top of them".
+	// A NON-INTERACTIVE RUN PASSES NO READER, so planInstallPorts takes the record or the defaults and
+	// PRINTS which ports it used.
 	promptTTY := tty
 	if flags.NonInteractive {
 		promptTTY = nil
@@ -456,48 +296,10 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 		return err
 	}
 	// WRITE THE PORTS DOWN, because the operator can CHANGE them and a wrapper that re-prints them has
-	// nothing to read. This is the bug it fixes, seen on Windows: the operator answered 3001 for a port,
-	// this installer printed 3001, and then scripts/install.ps1 — which re-prints the URLs after the setup
-	// step — printed a hardcoded 3002, because the resolved values existed only as output on a stream it
-	// had already consumed. It is the same class of defect the port table itself was introduced to fix
-	// ("a URL pointing at a port this install never bound"): every port the operator is PROMPTED for is a
-	// port a wrapper cannot guess.
-	//
-	// The instance's own state dir is the right home for it — it is the record of what THIS instance
-	// bound. Failure is a warning rather than fatal: an unwritable home directory must not fail an install
-	// that has already resolved everything, and the wrapper's fallback is the documented default.
-	// THE RECORD IS COMPLETE, INCLUDING THE PORTS THIS SHAPE DOES NOT PUBLISH.
-	//
-	// `ports` above holds what the install PROMPTS for and publishes. The instance also BINDS
-	// internal listeners that are never exposed — Tempo's gRPC port, its two OTLP receivers, the
-	// collector's health extension and its self-metrics exporter — and those are exactly the ports a
-	// readiness probe needs by number. Recording only the published half left every record
-	// INCOMPLETE (portsRecordIsComplete answered false for every correct install, so the record was
-	// never trusted and the defaults were silently re-derived), and anything asking the record for
-	// ORCHICON_OTEL_HEALTH_PORT got 0 and reported a healthy collector as "not answering".
-	//
-	// The values are the SAME resolution the host-services child receives (servicesPortsFor's rule:
-	// the record, else the instance defaults, overridden by an explicit ORCHICON_*_PORT), so the
-	// written record and the child cannot disagree.
+	// nothing to read.
 	writeResolvedPorts(instance, withUnpublishedPorts(instance, ports))
 
-	// 1.7. RESOLVE THE INFRASTRUCTURE BINARIES. The services container needs a
-	// PostgreSQL server and a NATS server, and there is no image carrying them any
-	// more — so this is the step that decides whether a normal person can install
-	// Orchicon at all.
-	//
-	// IT RUNS HERE, ON THE HOST, BEFORE THE CONTAINER EXISTS, for two reasons that
-	// are both about the operator rather than about tidiness. First, the download is
-	// the second-slowest part of a fresh install after the image pull, and an
-	// operator must see it start before being asked nothing else. Second, the host
-	// path needs NO ROOT: the build lands under the instance's own state dir, which
-	// the operator already owns, so this works on a machine where `sudo` is not
-	// available. (The services container used to mount that dir; the instance is host
-	// the services container runs the SAME binaries rather than downloading a second
-	// copy of them.)
-	//
-	// A failure here is fatal, deliberately: "the instance came up with no database"
-	// is a much worse outcome than "the install stopped and said why".
+	// 1.7.
 	installPhase("resolving the infrastructure binaries (postgres, nats)")
 	{
 		opt := defaultAcquireOptions(hostDataDirFor(instance))
@@ -509,25 +311,12 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 			infra.Source, infra.PostgresVersion, infra.Postgres, infra.NatsVersion, infra.NatsServer)
 	}
 
-	// 2. RUNTIME IMAGES ONLY. The instance no longer has an image: the plane and its services are host
-	// processes. What remains is the per-workflow runtime container's image, and that is fetched ON DEMAND
-	// (the Runtime Images page, or the moment a project opts into runtime containers) — never required by
-	// an install. A project starts in execution_mode=local, so a user who never opts in needs no image at
-	// all, and pulling multi-GB layers up front made every install pay for a feature it might not use.
-	//
-	// With no engine there is nothing to pull and nothing to run it in, so the step is skipped rather
-	// than failed: absence of an engine is a supported mode, not a broken host.
+	// 2. RUNTIME IMAGES ONLY.
 	if containersUsed {
 		installPhase("runtime images (optional)")
-		// ASKED ONCE PER INSTANCE, then answered from the record. An install runs on every instance-up and
-		// every rebuild, so re-asking made a rebuild an interactive command — and reboots/CI/scripts have no
-		// one to answer. ORCHICON_RUNTIME_IMAGES_ASK=1 forces the question back for a deliberate change.
+		// ASKED ONCE PER INSTANCE, then answered from the record.
 		forceAsk := strings.TrimSpace(os.Getenv("ORCHICON_RUNTIME_IMAGES_ASK")) != ""
-		// THE ANSWER IS READ FROM THE TERMINAL, NOT FROM STDIN. Under `curl … | bash` (and this script's own
-		// `curl … | bash -s -- …`) STDIN IS THE INSTALLER SCRIPT, already at EOF — so a prompt reading stdin
-		// would render and then answer "none" by itself, without ever having asked. It is the same defect the
-		// port prompt documents in install_ports.go promptTerminal, and the same fix: the tty opened above
-		// when there is one, stdin only when there is genuinely nothing else.
+		// THE ANSWER IS READ FROM THE TERMINAL, NOT FROM STDIN.
 		answerIn := io.Reader(os.Stdin)
 		if tty != nil {
 			answerIn = tty
@@ -616,19 +405,7 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 		}
 	}
 
-	// 4. THE HOST DATA DIR IS PREPARED BEFORE ANYTHING ELSE TOUCHES IT, and the order is load-bearing in TWO
-	// ways.
-	//
-	// FIRST, the KEK. The plane loads <DataDir>/secrets/kek on boot, so this must precede the plane's start or
-	// a fresh empty host dir would mint a NEW KEK and orphan every tenant secret.
-	//
-	// SECOND, and this was wrong before: it must precede the SERVICES, because a services boot writes its own
-	// state (a postgres cluster, config/) into the data dir — so a guard that ran afterwards would inspect the
-	// instance's OWN fresh boot state rather than what was there before. Observed on a real install: a
-	// no-op migration dressed as a real one, moments after the volume it "migrated" had been created.
-	//
-	// It is resolved whenever the plane is host-resident, because that is the only shape that reads this dir
-	// (the container shape mounts a volume instead).
+	// 4.
 	var hostDir string
 	if residency == residencyHost {
 		var err error
@@ -679,8 +456,7 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 	installPhase("stopping anything already running for this instance")
 	if err := stopInstanceCompletely(instance, ports, os.Stdout); err != nil {
 		// NOT FATAL HERE: the instance may have been half-up, and `startHostServices` below reports what it
-		// finds. A stop that could not finish is stated, and the start that follows fails honestly if it
-		// must — which is better than aborting an install that is otherwise complete.
+		// finds.
 		fmt.Printf("note: %v — continuing the install over what is left\n", err)
 	}
 
@@ -692,40 +468,20 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 	// 4c. The services are up, so wait for them and then start the plane on THIS host. Waiting first keeps the
 	// plane's migrations from racing a half-started postgres.
 	{
-		// THE RETURN VALUE IS THE POINT, AND IT USED TO BE THROWN AWAY.
-		//
-		// This read `waitServicesReady(instance, ports, os.Stdout)` and ignored the bool, so an
-		// install whose DATABASE NEVER CAME UP went on to start the plane anyway, found nothing
-		// to talk to, and reported success. The operator's experience was an installer that
-		// finished cleanly and a product where nothing ran — with the real cause buried in a
-		// services log nobody had been told about.
-		//
-		// A services stack that is not up makes the rest of the install meaningless, so this is
-		// now fatal, and it names the log that says why.
+		// This read `waitServicesReady(instance, ports, os.Stdout)` and ignored the bool, so an install
+		// whose DATABASE NEVER CAME UP went on to start the plane anyway, found nothing to talk.
 		if !waitServicesReady(instance, ports, os.Stdout) {
 			return servicesNotReadyError(instance, hostDataDirFor(instance))
 		}
 		if err := startHostPlane(instance, ports, hostDir, filepath.Join(socketDir, "runtime.sock"), os.Stdout); err != nil {
 			return err
 		}
-		// THE HOST SHAPE IS RECORDED HERE. It is the ONLY shape now, and the record is still the thing
-		// `orchicon restart` (and every other plane-lifecycle surface that reuses startHostPlane/stopHostPlane)
-		// has to decide which carrier to bounce.
-		//
-		// WITHOUT THIS THE HOST-SERVICES PATH LEFT NO RECORD AT ALL. The record was written only by the
-		// container arm, which a host with no engine never reaches: so an install with no engine SUCCEEDED,
-		// printed a summary whose own restart recipe is `orchicon restart`, and that command then answered
-		// "no install record for instance %q — nothing is installed for it" over the instance this very run
-		// had just brought up. Observed by reading the flow, not by a user — the same class of defect as the
-		// dead `docker inspect`, arriving through the command the installer recommends.
+		// It is the ONLY shape now, and the record is still the thing `orchicon restart` (and every other
+		// plane-lifecycle surface that reuses startHostPlane/stopHostPlane) has to decide which carrier.
 		recordResidency(instance, residency)
 	}
 
-	// 5. Wait for the control plane to serve health, ON THE PORT THIS INSTALL
-	// PUBLISHED — read back from the resolved set rather than re-derived from
-	// the instance name. Re-deriving is how a moved port gets probed at the old
-	// one, and a neighbouring instance answering there would report a healthy
-	// install that is not this one.
+	// 5.
 	controlPort := fmt.Sprintf("%d", ports["ORCHICON_CONTROL_PORT"])
 	healthURL := "http://localhost:" + controlPort + "/healthz"
 	healthWait := 90 * time.Second
@@ -744,17 +500,8 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 		}
 		time.Sleep(2 * time.Second)
 	}
-	// A TIMEOUT IS NOT SUCCESS, and reporting one as success is the worst outcome
-	// available: the operator is told the install is running, opens a URL that does
-	// not answer, and is given nothing to go on. Say what happened, say where the
-	// reason is, and let the summary describe the install honestly — see
-	// printInstallInfo's healthy flag.
-	// ONE REPAIR ATTEMPT. An install that leaves a broken instance without trying to fix it is what the
-	// operator hit — "said it was complete but no auth works" — so a plane that does not answer, or a
-	// services stack that is not ready, gets one bounded restart before the install reports honestly.
-	//
-	// ONE, not a loop: a plane that cannot come up twice is a defect to report, not to retry, and an
-	// installer that keeps bouncing an instance is worse than one that says what it found.
+	// A TIMEOUT IS NOT SUCCESS, and reporting one as success is the worst outcome available: the
+	// operator is told the install is running, opens a URL that does not answer.
 	if !healthy || !servicesReady(instance, ports) {
 		if !healthy {
 			fmt.Printf("warning: the control plane did not answer %s within %s\n", healthURL, healthWait)
@@ -804,28 +551,14 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 
 	if !healthy {
 		fmt.Printf("warning: the control plane did not answer %s within %s\n", healthURL, healthWait)
-		// POINT AT THE LOG THAT EXISTS ON THIS HOST. `docker logs` is the right answer for exactly one of the
-		// three combinations — a plane running in the instance container — and on a host with no engine it
-		// names a binary that is not installed. That is the same defect this item removes from the install
-		// path, so it is removed from the install's ADVICE too: the host plane writes to the instance state
-		// dir, and the services write to services.log when they are host processes.
+		// POINT AT THE LOG THAT EXISTS ON THIS HOST.
 		fmt.Println("  the instance itself is up. find out why the plane is not:")
 		fmt.Printf("    %s\n", filepath.Join(hostDataDirFor(instance), "serve", "logs", "orchicon.log"))
 		fmt.Printf("    %s   (the host services)\n", filepath.Join(hostDataDirFor(instance), "services.log"))
 		fmt.Println("  then re-run `orchicon install` — it is idempotent")
 	}
 
-	// 5b. SAY WHICH OPTIONAL COMPONENTS ARE NOT ANSWERING.
-	//
-	// This runs AFTER the plane is confirmed up, and that ordering is the point: a plane that
-	// answers /healthz but has no Loki is a WORKING instance whose Logs view is dead, and that is
-	// worth stating plainly — but it is not a failed install, so it must not turn into a non-zero
-	// exit over the whole run.
-	//
-	// WHY IT IS SAID AT ALL. `services: up` used to mean only "postgres and nats answer", so an
-	// install could bring up a stack whose entire telemetry plane had crash-looped and finish with
-	// no indication of it. The operator found out by opening the Logs view and being told the
-	// backend was unreachable. Four words here replace that hunt.
+	// 5b.
 	if down := degradedServices(instance, ports); len(down) > 0 {
 		fmt.Printf("note: %s is up, but these telemetry components are not answering: %s\n",
 			instance, strings.Join(down, ", "))
@@ -836,46 +569,24 @@ func runInstallBody(args []string, log *slog.Logger, instance string, flags inst
 			filepath.Base(os.Args[0]), instance)
 	}
 
-	// 6. Install/refresh the `orch` companion launcher on PATH (the thin
-	// remote TUI client). Non-fatal: a missing sibling binary or a clobber
-	// guard only warns.
+	// 6.
 	installDir := env("ORCHICON_INSTALL_DIR", defaultInstallDir())
-	// THE OUTCOME IS CARRIED INTO THE SUMMARY, not discarded. This is the seam the "orch launcher: ..." lie came
-	// through: the installer knew the launcher was not placed, printed a warning nobody could see behind the
-	// banner, and then reported success in the box below.
+	// THE OUTCOME IS CARRIED INTO THE SUMMARY, not discarded.
 	launcher := installOrchLauncher(installDir)
-	// THE PATH ENTRY IS MADE HERE FOR THE SAME REASON, AND THE SUMMARY RENDERS THE OUTCOME. Advice was the old
-	// behaviour: on macOS it named ~/.zshrc, which a login shell never reads, so a correct install left an
-	// unrunnable `orch` behind a note nobody could act on.
+	// THE PATH ENTRY IS MADE HERE FOR THE SAME REASON, AND THE SUMMARY RENDERS THE OUTCOME.
 	pathOutcome := ensureLoginProfilePATH(installDir)
 
 	printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir, launcher, pathOutcome, ports, containersUsed, healthy, engineStatus)
 
-	// THE HANDOVER, AND IT HAPPENS HERE BECAUSE THE FACT IS KNOWN HERE.
-	//
-	// `healthy` above is the result of WAITING for the control plane to answer /healthz — so this is the one
-	// place in the product that knows the environment is actually up. The wizard's Finish page never could:
-	// WixUI owns that navigation, and three attempts to put a launch there failed (install_desktop.go records
-	// them). The installer stops asking and the thing that did the work opens the app.
-	//
-	// ONLY ON A HEALTHY INSTALL. Opening a GUI onto a plane that is not answering would show the operator the
-	// failure inside a window with no context — worse than not opening it.
-	//
-	// The flag OR the environment, so a shell script can request the same thing the MSI does.
+	// THE HANDOVER, AND IT HAPPENS HERE BECAUSE THE FACT IS KNOWN HERE. ONLY ON A HEALTHY INSTALL.
 	if (flags.LaunchDesktop || env(desktopLauncherEnv, "") == "1") && healthy {
 		launchDesktop()
 	}
 	return nil
 }
 
-// resolvedPortsFile is where an install records the host ports it actually bound, as JSON keyed by the
-// ORCHICON_*_PORT names. Read back by wrappers that print connection info (scripts/install.ps1) and by
-// anything else that needs "what did this instance end up on" without re-deriving it.
-//
-// IT IS NAMED "ports.json" AND LIVES IN THE INSTANCE STATE DIR, which matters to uninstall: a state dir
-// containing ONLY this file is not an instance, and the shell installer's instance_exists must not treat
-// it as one — otherwise installing to a scratch dir would look like another instance still needed the
-// binaries. See scripts/install.sh.
+// IT IS NAMED "ports.json" AND LIVES IN THE INSTANCE STATE DIR, which matters to uninstall: a state
+// dir containing ONLY this file is not an instance.
 func resolvedPortsFile(instance string) (string, error) {
 	dir, err := hostDataDir(instance)
 	if err != nil {
@@ -884,9 +595,7 @@ func resolvedPortsFile(instance string) (string, error) {
 	return filepath.Join(dir, "ports.json"), nil
 }
 
-// writeResolvedPorts records the ports this install bound. Best-effort: it returns nothing and a failure
-// is a warning, because the install has already succeeded by this point and losing the record costs the
-// operator only a stale URL in a wrapper's summary.
+// writeResolvedPorts records the ports this install bound.
 func writeResolvedPorts(instance string, ports map[string]int) {
 	path, err := resolvedPortsFile(instance)
 	if err != nil {
@@ -911,10 +620,6 @@ func writeResolvedPorts(instance string, ports map[string]int) {
 
 // withUnpublishedPorts fills in the ports this instance BINDS but does not PUBLISH, so the record
 // is a complete picture of the instance rather than only its public half.
-//
-// A port already in ports is kept as-is: the operator's answer for a published port is authoritative
-// and must not be second-guessed by a default. Everything else comes from the same per-instance
-// default table the install and the supervisor share.
 func withUnpublishedPorts(instance string, ports map[string]int) map[string]int {
 	out := make(map[string]int, len(ports)+8)
 	for k, v := range ports {
@@ -976,18 +681,8 @@ func installOrchLauncher(installDir string) orchLauncher {
 	return installOrchLauncherFrom(exe, installDir)
 }
 
-// installOrchLauncherFrom places the sibling `orch` binary next to the given executable path into installDir.
-// Split out so tests can pass a controlled executable path (os.Executable() is not redirectable).
-//
-// TWO MECHANISMS, AND WINDOWS NEEDS THE SECOND ONE. A symlink is preferred on POSIX because a reinstall
-// refreshes it in place. Windows refuses os.Symlink without SeCreateSymbolicLinkPrivilege, so there a COPY is
-// the only mechanism that works for an ordinary account — and a copy is exactly what the PowerShell installer
-// already does (scripts/install.ps1 copies orch.exe into the install dir). Falling back to it removes the
-// installer's hidden dependency on Developer Mode, which nobody would guess from a "could not symlink" warning.
-//
-// THE CLOBBER GUARD IS UNCHANGED AND STILL MATTERS: an existing launcher that this install does not own is left
-// alone with a warning unless ORCHICON_FORCE_LAUNCHER=1, because installing must never relocate someone else's
-// launcher (a build-dir install used to hijack a release install's ~/.local/bin/orch).
+// installOrchLauncherFrom places the sibling `orch` binary next to the given executable path into
+// installDir.
 func installOrchLauncherFrom(exe, installDir string) orchLauncher {
 	sibling := filepath.Join(filepath.Dir(exe), "orch")
 	if runtime.GOOS == "windows" {
@@ -1003,11 +698,9 @@ func installOrchLauncherFrom(exe, installDir string) orchLauncher {
 		fmt.Printf("warning: sibling orch binary not found next to %s — skipping launcher install (build with `make build` to produce bin/orch)\n", exe)
 		return out
 	}
-	// THE LAUNCHER *IS* THE BINARY WHEN BOTH LIVE IN THE SAME DIRECTORY, and that is the ordinary release
-	// layout: the archive ships orchicon and orch side by side and scripts/install.sh moves both into the
-	// install dir, so link and sibling name ONE path. Removing "the existing launcher" then deletes the only
-	// copy of orch, and symlinking sibling to link leaves a link to itself — `orch` then fails with "Too many
-	// levels of symbolic links". Nothing is placed here that is not already here, so leave it alone.
+	// THE LAUNCHER *IS* THE BINARY WHEN BOTH LIVE IN THE SAME DIRECTORY, and that is the ordinary
+	// release layout: the archive ships orchicon and orch side by side and scripts/install.sh moves
+	// both.
 	if filepath.Clean(link) == filepath.Clean(sibling) {
 		out.Installed, out.Method = true, "in place"
 		fmt.Printf("orch launcher already installed: %s\n", link)
@@ -1019,15 +712,6 @@ func installOrchLauncherFrom(exe, installDir string) orchLauncher {
 		return out
 	}
 	// An existing path at the launcher location.
-	//
-	// A LAUNCHER POINTING ELSEWHERE IS NOT OURS TO REPOINT, and that was a real bug caught in the wild:
-	// `orchicon install` run from a build directory refreshed the symlink to point at ITS OWN sibling, silently
-	// hijacking a launcher that another install — or a development checkout — had put there. The operator then
-	// ran `orch` and got a binary they never chose, with the thing they DID choose quietly detached.
-	//
-	// So only an artefact that is already ours is treated as a no-op refresh. Anything else — a foreign symlink,
-	// a foreign file — is left alone with a warning, and ORCHICON_FORCE_LAUNCHER=1 is the explicit opt-in to
-	// replace it.
 	if st, err := os.Lstat(link); err == nil {
 		force := os.Getenv("ORCHICON_FORCE_LAUNCHER") == "1"
 		switch {
@@ -1045,15 +729,8 @@ func installOrchLauncherFrom(exe, installDir string) orchLauncher {
 			}
 			fmt.Printf("replacing existing %s (ORCHICON_FORCE_LAUNCHER=1)\n", link)
 		case isOurCopy(link, sibling):
-			// A COPY WE — OR THE SHELL INSTALLER — MADE. It is byte-identical to this install's own sibling
-			// `orch`, so it IS this build, whatever platform wrote it. Without this arm every reinstall hits the
-			// foreign-file guard below and refuses to refresh our own launcher.
-			//
-			// THE GATE HERE WAS WINDOWS-ONLY, WHICH MADE THE GUARD ACCUSE OUR OWN FILE ON macOS.
-			// scripts/install.sh `mv`s the archive's `orch` into the install dir as a REGULAR FILE, so the next
-			// `orchicon install` found a file at that path, recognised ownership only on Windows, and reported
-			// "exists and was not placed there by this install" about its own launcher — then declared the TUI
-			// missing while `orch` sat there and ran. Matching on content everywhere makes the rerun converge.
+			// A COPY WE — OR THE SHELL INSTALLER — MADE. THE GATE HERE WAS WINDOWS-ONLY, WHICH MADE THE GUARD
+			// ACCUSE OUR OWN FILE ON macOS.
 			fmt.Printf("refreshing the copied orch launcher at %s\n", link)
 		default:
 			if !force {
@@ -1092,15 +769,6 @@ func installOrchLauncherFrom(exe, installDir string) orchLauncher {
 }
 
 // resolvesTo reports whether a launcher's recorded symlink TARGET names the same file as sibling.
-//
-// filepath.Clean alone is not enough — it compares STRINGS, so a target recorded as "./orch", or reached through
-// a symlinked parent directory, or differing only in case on a case-insensitive volume, would read as foreign and
-// our own launcher would be refused as if someone else owned it. os.Stat resolves all of that. The cleaned-string
-// compare stays as a fast path and as the answer when either side cannot be stat'd, which is never worse than the
-// string compare it replaces.
-//
-// NOT runtime.go's sameFile: that one answers "identical CONTENT" and is used to decide whether a running daemon
-// matches the binary on disk. This one answers "the same file OBJECT", which is the question a symlink asks.
 func resolvesTo(target, sibling string) bool {
 	if filepath.Clean(target) == filepath.Clean(sibling) {
 		return true
@@ -1113,26 +781,13 @@ func resolvesTo(target, sibling string) bool {
 	return os.SameFile(ti, si)
 }
 
-// isOurCopy reports whether path is a copy of sibling that THIS installer placed there.
-//
-// IT CANNOT BE A PERFECT TEST, AND PRETENDING OTHERWISE WOULD BE WORSE THAN THE LIMIT. A copy carries no record of
-// its origin, so "ours" is decided by what an installer's own artefact necessarily has: the same file NAME, and
-// byte-identical CONTENT to the sibling it would be refreshed from. The content compare is runtime.go's sameFile,
-// so this inherits its size short-circuit and chunked read rather than reinventing a weaker check. A file that
-// matches both is, by construction, the same binary.
-//
-// The alternative — treating every regular file as foreign — breaks the one rule a second install must obey:
-// converge what is there. That is not hypothetical: a reinstall refused to refresh the launcher it had itself
-// copied, which is the bug this arm prevents.
+// isOurCopy reports whether path is a copy of sibling that THIS installer placed there. IT CANNOT
+// BE A PERFECT TEST, AND PRETENDING OTHERWISE WOULD BE WORSE THAN THE LIMIT.
 func isOurCopy(path, sibling string) bool {
 	return filepath.Base(path) == filepath.Base(sibling) && sameFile(path, sibling)
 }
 
 // copyLauncher copies src to dst, replacing dst, and marks the result executable.
-//
-// MODE 0o755 IS NOT COSMETIC ON POSIX: a copy without the execute bit is a launcher that exists and cannot run,
-// which is the same user-facing outcome as no launcher at all but much harder to notice. Windows ignores the
-// mode, so this costs nothing there.
 func copyLauncher(src, dst string) error {
 	b, err := os.ReadFile(src)
 	if err != nil {
@@ -1144,39 +799,21 @@ func copyLauncher(src, dst string) error {
 	return os.Chmod(dst, 0o755)
 }
 
-// adapterCLIPresent reports whether an adapter CLI is installed on the host
-// (on PATH or at ~/.<name>/bin/<name>).
-//
-// IT IS A PRESENCE CHECK, NOT A REQUIREMENT. It was requireAdapterCLI and returned
-// an error, which made `orchicon install` refuse to run on a host with no external
-// adapter — true when opencode was the only way to run anything, and false since the
-// plane gained its own engine. When the binary IS present it is still bind-mounted
-// into the containers (see the mount list above), so its absence costs the operator
-// only that capability, never the install.
+// adapterCLIPresent reports whether an adapter CLI is installed on the host (on PATH or at
+// ~/.<name>/bin/<name>).
 func adapterCLIPresent(name string) bool {
 	cands := adapterCandidates(name)
 	return len(cands) > 0
 }
 
-// adapterCandidates is EVERY place the adapter was found, with provenance — the surface that makes discovery
-// visible instead of magic.
-//
-// IT REPLACES A BARE BOOL, and the reason is a reported experience: an operator who has the CLI installed and
-// working in their shell was told it was not found, with no way to see WHERE we looked or WHAT we would run.
-// A list answers both questions, and it is the only form that can tell them two installs exist.
-//
-// Returns nil when nothing was found (an empty list is normal — an adapter is optional).
+// adapterCandidates is EVERY place the adapter was found, with provenance — the surface that makes
+// discovery visible instead of magic.
 func adapterCandidates(name string) []adapter.Candidate {
 	home, _ := os.UserHomeDir()
 	return adapter.Candidates(adapter.HostGOOS(), home, name, os.Getenv)
 }
 
 // reportAdapterCLI prints what was found, and is DELIBERATELY CHATTY about ambiguity.
-//
-// ONE INSTALL names the path. TWO OR MORE is the case that must never be silent: different installs are
-// different versions and possibly different credentials, so the operator needs to see both and choose — a
-// silent pick is how a session signs in as the wrong account. It does not refuse the install (the adapter is
-// optional and a container can still run), it makes the choice visible.
 func reportAdapterCLI(name string) {
 	cands := adapterCandidates(name)
 	switch {
@@ -1210,15 +847,7 @@ func containerNote(c adapter.Candidate) string {
 	return " — NOT usable in runtime containers (Linux containers cannot execute it)"
 }
 
-// ensureInstallDaemon starts the runtime daemon if its socket is not
-// healthy. The daemon owns the Docker socket and spawns per-workflow
-// runtime containers; the supervisor container mounts its socket dir.
-// reportContainerBinary says whether container execution can work on this host, and never fails the install.
-//
-// A runtime container is Linux and runs the orchicon binary INSIDE it, so a host whose own executable is a PE
-// (Windows) or a Mach-O (macOS) needs a linux/amd64 build for the daemon to mount. install.ps1 fetches that
-// file; this command does not, and the MSI runs THIS command — so an MSI install would otherwise reach a failed
-// container create with no idea why. Saying it here makes every install path state the same fact.
+// ensureInstallDaemon starts the runtime daemon if its socket is not healthy.
 func reportContainerBinary() {
 	if runtime.GOOS == "linux" {
 		fmt.Println("container execution: ready (this host's own binary is the container's)")
@@ -1238,18 +867,6 @@ func reportContainerBinary() {
 func ensureInstallDaemon(socketDir string) error {
 	socketPath := filepath.Join(socketDir, "runtime.sock")
 	// HEALTHY IS NOT THE SAME AS CURRENT.
-	//
-	// This used to return early on any live socket, which let a daemon started from an older binary
-	// outlive every upgrade. REPORTED as "runtime image fetch failed for orchicon-runtime:local:
-	// runtime image pull: runtime daemon: request failed", diagnosed on the reporting host: the
-	// daemon had been up 8d19h with /proc/<pid>/exe pointing at a DELETED inode, so it did not have
-	// the /v1/images/pull route the current client calls — and it answered 404, which the client then
-	// flattened into "request failed". A liveness-only check cannot see any of that.
-	//
-	// SO THE BUILD IS COMPARED. /v1/health reports the daemon's tag+commit (internal/runtime), and a
-	// mismatch means this install wrote a newer binary than the one serving the socket: stop it and
-	// start the new one. That is safe here because the daemon spawns per-workflow containers and
-	// holds no durable state of its own — the images live in the engine, not in the process.
 	if socketHealthy(socketPath) {
 		if current, running := daemonBuildMatches(socketPath); current {
 			fmt.Println("runtime daemon already running")
@@ -1279,9 +896,7 @@ func ensureInstallDaemon(socketDir string) error {
 	if err := startDetachedDaemon(self, []string{"runtime-daemon"}, filepath.Join(socketDir, "runtime-daemon.log")); err != nil {
 		return fmt.Errorf("start runtime daemon: %w", err)
 	}
-	// Wait for the daemon to answer /v1/health. Said out loud, because ten silent
-	// seconds is indistinguishable from a hang — the same reason every other wait in
-	// this command now announces itself.
+	// Wait for the daemon to answer /v1/health.
 	fmt.Println("waiting for the runtime daemon to answer /v1/health …")
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1294,10 +909,8 @@ func ensureInstallDaemon(socketDir string) error {
 	return fmt.Errorf("runtime daemon did not become ready — see %s/runtime-daemon.log", socketDir)
 }
 
-// daemonBuildMatches reports whether the daemon on socketPath was built from the same source as THIS
-// binary. current is true when it matches (or when the socket is unanswerable, in which case the
-// caller starts a fresh one anyway); running is the daemon's tag+commit, empty when it predates the
-// build being reported at all.
+// daemonBuildMatches reports whether the daemon on socketPath was built from the same source as
+// THIS binary.
 func daemonBuildMatches(socketPath string) (current bool, running string) {
 	out, err := daemonHealth(socketPath)
 	if err != nil {
@@ -1340,11 +953,6 @@ func daemonHealth(socketPath string) (map[string]string, error) {
 }
 
 // stopDaemon stops the runtime daemon by asking it to exit, then removes the stale socket.
-//
-// BY HTTP, NOT BY SIGNAL, and not by process name: a signal would have to find the pid (unavailable
-// on Windows, where this runs too) and a name match could hit a second instance's daemon. The daemon
-// already serves a shutdown route for exactly this; if it does not answer, the socket is unlinked so
-// the next start is not blocked by a dead listener.
 func stopDaemon(socketPath string) error {
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -1437,9 +1045,7 @@ func runtimeVariantRef(variant, imageTag string) string {
 	return runtimeVariantRefIn(runtimeImageRepo, variant, imageTag)
 }
 
-// runtimeImageRepo is the DEFAULT published repository. It is a default, not a constant of the system: a host may
-// point ORCHICON_RUNTIME_IMAGE at a mirror, and the variant tags must follow that repository rather than silently
-// naming ghcr.io. That is why the rule below is parameterised by repo and this is only the two-argument shorthand.
+// runtimeImageRepo is the DEFAULT published repository.
 const runtimeImageRepo = "ghcr.io/beardedparrott/orchicon-runtime"
 
 // runtimeVariantRefIn is THE rule, for a given repository: a release tag has no variant prefix beyond the
@@ -1452,21 +1058,6 @@ func runtimeVariantRefIn(repo, variant, imageTag string) string {
 }
 
 // ensureImage makes the local copy of ref CURRENT, pulling it.
-//
-// A LOCAL TAG IS NOT EVIDENCE OF CURRENCY, and assuming it was is what shipped a container that could never
-// be upgraded. `pullImageIfAbsent` skipped the pull whenever the tag existed locally, so `:latest` — a
-// MOVABLE pointer — stayed at whatever the host first downloaded, for ever. An install then pulled nothing,
-// compared the container against that same stale local image, found them equal, and correctly concluded
-// there was no drift: the instance kept running 11-hour-old layers across any number of installs, which is
-// exactly the report ("the container was restarted but the created date still has 11 hours ago").
-//
-// SO THE RULE IS: ASK THE REGISTRY. A tag can be repointed at any time; only a DIGEST is immutable, and only
-// a digest may be trusted from the local cache. There is no tag-name heuristic here (not "latest is
-// floating, vX.Y.Z is pinned") on purpose: a release tag can be re-pushed too, and a rule that guesses
-// which tags move is a rule that is wrong silently. A pull of an unchanged image is a manifest check.
-//
-// It is safe to insist on the pull because nothing else calls this installer with a locally-built image:
-// `scripts/container.sh` builds and runs its own containers for dev and never invokes `orchicon install`.
 func ensureImage(ref string) error {
 	if strings.Contains(ref, "@sha256:") {
 		if imagePresent(ref) {
@@ -1482,12 +1073,7 @@ func ensureImage(ref string) error {
 // pullImage runs `docker pull` for ref, streaming its progress.
 func pullImage(img string) error {
 	fmt.Printf("pulling %s …\n", img)
-	// THE PULL'S OUTPUT IS STREAMED, NOT CAPTURED. This is the longest stretch of a
-	// first install — four images, hundreds of megabytes — and it used to be
-	// swallowed: CombinedOutput held docker's progress until the command finished, so
-	// a working install was indistinguishable from a hung one until it was over.
-	// docker's progress now goes to this process's stdout as docker writes it, and a
-	// bounded tail is kept so a failure can still say WHY.
+	// THE PULL'S OUTPUT IS STREAMED, NOT CAPTURED.
 	cmd := engineCommand("pull", img)
 	tail := &tailWriter{limit: 4096}
 	cmd.Stdout = io.MultiWriter(os.Stdout, tail)
@@ -1516,16 +1102,8 @@ func (w *tailWriter) Write(p []byte) (int, error) {
 
 func (w *tailWriter) String() string { return string(w.buf) }
 
-// containerImageCurrent reports whether the running container's image IS the target image, compared by
-// IMAGE ID rather than by tag.
-//
-// A tag is a movable pointer: `:latest` (and every version tag this project publishes) can be repointed at
-// a new build while a container created from the previous one keeps running the old layers. Comparing IDs is
-// what makes "is this instance up to date?" a fact rather than a guess.
-//
-// An unreadable state answers TRUE — "leave it alone" — deliberately: recreating a live instance because a
-// docker inspect failed transiently is worse than leaving a stale one for the operator to see, which is the
-// same call recordedResidency makes about the SHAPE.
+// containerImageCurrent reports whether the running container's image IS the target image, compared
+// by IMAGE ID rather than by tag.
 func containerImageCurrent(name, target string) bool {
 	cur, err := engineCommand("inspect", "--format", "{{.Image}}", name).Output()
 	if err != nil {
@@ -1557,15 +1135,8 @@ func containerExists(name string) (bool, error) {
 }
 
 func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthURL, runtimeImage, installDir string, launcher orchLauncher, path pathHint, ports map[string]int, containersUsed, healthy bool, engine containerengine.Status) {
-	// WHERE THE SERVICES RUN follows from the shape and the host: a host-resident plane has its services as
-	// host processes when there is no engine to put them in a container, and in the instance container when
-	// there is.
-	//
-	// THE ENGINE DECISION IS THE INSTALL'S OWN, THREADED IN RATHER THAN RE-PROBED. This used to call
-	// containerEngineAvailable() again right here, which is a SECOND decision that can disagree with the one
-	// the install actually acted on (a PATH that changes mid-run, a probe that answers differently) — so the
-	// summary could describe a carrier the install never created. The install decides this ONCE; the summary
-	// reports THAT decision.
+	// WHERE THE SERVICES RUN follows from the shape and the host: a host-resident plane has its
+	// services as host processes when there is no engine to put them in a container.
 	hostServices := true
 	// Read back the ports this install actually bound: re-deriving them from the
 	// instance name would print a URL pointing at a port we never bound.
@@ -1581,13 +1152,8 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 		fmt.Println("│  answering yet — the URLs below will fail until then.       │")
 		fmt.Println("└─────────────────────────────────────────────────────────────┘")
 	}
-	// State the SHAPE, because it decides where the plane lives and therefore how
-	// the operator restarts it — a host plane is a process on this machine, not
-	// something the container brings back on `docker start`.
-	//
-	// AND STATE WHERE THE SERVICES RUN, because the restart RECIPE differs: a container shape's services come
-	// back with `docker start <name>`, while host services are processes of this user that a container command
-	// cannot touch at all.
+	// State the SHAPE, because it decides where the plane lives and therefore how the operator restarts
+	// it — a host plane is a process on this machine.
 	if residency == residencyHost {
 		fmt.Printf("  Plane residency: host — the control plane runs on this host,\n")
 		if hostServices {
@@ -1608,17 +1174,12 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 	fmt.Printf("  Control plane:  http://localhost:%s\n", controlPort)
 	fmt.Printf("  Health check:   curl %s\n", healthURL)
 	fmt.Println()
-	// The manage-the-instance block names the commands that actually apply to this shape: a container shape is
-	// managed with docker, a host shape with the orchestration verbs (a host plane is not something `docker
-	// start` brings back, and there may be no docker at all).
+	// The manage-the-instance block names the commands that actually apply to this shape: a container
+	// shape is managed with docker.
 	fmt.Println("  Manage the instance:")
 	if hostServices {
 		fmt.Println("    Restart: orchicon restart   (stops and restarts the host plane and services)")
-		// THE STATE DIR IS NAMED, NOT ASSUMED. `serve --stop` resolves its PID file from
-		// ORCHICON_SERVE_STATE_DIR, whose default is a RELATIVE `.dev` — so a bare
-		// `orchicon serve --stop` run from any other directory looks in the wrong place and answers
-		// "serve is not running" over a plane that is very much up. The install already knows the
-		// per-instance state dir, so it prints the command that actually stops THIS instance.
+		// THE STATE DIR IS NAMED, NOT ASSUMED.
 		fmt.Printf("    Stop:    ORCHICON_SERVE_STATE_DIR=%s/serve orchicon serve --stop\n", hostDataDirFor(instance))
 		fmt.Printf("    Logs:    %s/serve/logs/orchicon.log and %s/services.log\n", hostDataDirFor(instance), hostDataDirFor(instance))
 	} else {
@@ -1627,13 +1188,8 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 		fmt.Printf("    Logs:   docker logs -f %s\n", name)
 	}
 	fmt.Println()
-	// PER-WORKFLOW RUNTIME CONTAINERS BELONG TO THE CONTAINER ENGINE, so this block reports the shape the
-	// install actually produced. It used to be unconditional, and on a host with no engine that made the
-	// summary CONTRADICT the install: the same run printed "runtime containers are unavailable (work runs
-	// in-process)" in step 1 and then closed by promising "every execution runs in its own short-lived
-	// container" and reporting a runtime daemon that will never launch one. The daemon process does run on
-	// such a host, but it has no engine to spawn containers with — describing it as the container carrier is
-	// exactly the kind of dead-container claim this item removes from the install path.
+	// PER-WORKFLOW RUNTIME CONTAINERS BELONG TO THE CONTAINER ENGINE, so this block reports the shape
+	// the install actually produced.
 	if containersUsed {
 		fmt.Printf("  Runtime daemon (per-workflow runtime containers): running\n")
 		fmt.Printf("    socket: %s/runtime.sock   runtime image: %s\n", socketDir, runtimeImage)
@@ -1641,9 +1197,8 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 		fmt.Println("  Runtime daemon: running, but there is NO usable container engine on this host —")
 		fmt.Println("    per-workflow runtime containers cannot be launched, so work runs in-process.")
 	}
-	// THE AVAILABILITY LINE IS THE INSTALL'S OWN DECISION (ready / provisioning / unavailable
-	// with the reason), threaded in rather than re-probed — the summary must describe the
-	// carrier this run produced, never a fresh guess (AC5).
+	// THE AVAILABILITY LINE IS THE INSTALL'S OWN DECISION (ready / provisioning / unavailable with the
+	// reason), threaded in rather than re-probed.
 	fmt.Printf("  Container engine: %s\n", describeEngineStatus(engine))
 	if hostServices {
 		fmt.Printf("  Data: host data dir (see above; the KEK lives in its secrets/)\n")
@@ -1652,20 +1207,12 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 	}
 	fmt.Println()
 	// THE LAUNCHER LINE REPORTS WHAT HAPPENED, NOT WHAT WAS ATTEMPTED.
-	//
-	// It used to print "<installDir>/orch (remote TUI client)" UNCONDITIONALLY. On Windows that line was a lie:
-	// os.Symlink needs SeCreateSymbolicLinkPrivilege, an ordinary account has none, and the operator was left
-	// with no launcher and a summary naming one. Two independent claims are made here — that the file is there,
-	// and that it is on PATH — so both are answered from the outcome and from the real PATH, never assumed.
 	if launcher.Installed {
 		fmt.Printf("  orch launcher: %s (remote TUI client, %s)\n", launcher.Path, launcher.Method)
 	} else if launcher.Path != "" {
 		fmt.Printf("  orch launcher: NOT installed — %s\n", launcher.Problem)
 		fmt.Printf("    The plane itself is up and complete; only the `orch` TUI client is missing.\n")
-		// THE REMEDY NAMES THE THING THAT ACTUALLY STANDS IN THE WAY, per platform. On Windows it is the
-		// symlink privilege, and an ELEVATED shell does not help — the install refuses one for a good reason
-		// (Postgres will not run as Administrator). Saying "run it non-elevated" to a POSIX user would be
-		// nonsense, and saying "by hand" to a Windows user without naming WHICH files is barely better.
+		// THE REMEDY NAMES THE THING THAT ACTUALLY STANDS IN THE WAY, per platform.
 		if runtime.GOOS == "windows" {
 			fmt.Printf("    Retry just the launcher with `orchicon install --install-launcher` from a NON-elevated\n")
 			fmt.Printf("    shell (do not use \"Run as administrator\" — Postgres will not run elevated), or copy\n")
@@ -1687,9 +1234,8 @@ func printInstallInfo(instance, residency, name, dataVolume, socketDir, healthUR
 	}
 }
 
-// instanceAlreadyProvisioned reports whether an instance has already been set up on this host: it has host state
-// (its data dir carries a KEK) AND a recorded port set. Both are needed — a KEK alone could be a half-finished
-// first run, and a port record alone could be a stale one from an instance since wiped.
+// instanceAlreadyProvisioned reports whether an instance has already been set up on this host: it
+// has host state (its data dir carries a KEK) AND a recorded port set.
 func instanceAlreadyProvisioned(instance string) bool {
 	dir, err := hostDataDir(instance)
 	if err != nil || dir == "" {

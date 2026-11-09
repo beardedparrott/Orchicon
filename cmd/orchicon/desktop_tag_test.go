@@ -36,9 +36,7 @@ import (
 	"testing"
 )
 
-// wailsReservedTags is the set Wails REMOVES before generating bindings (bindings.go). A package gated on
-// any of these is invisible to the bindings generator, so `wails build` fails with "build constraints
-// exclude all Go files" and no flag can help.
+// wailsReservedTags is the set Wails REMOVES before generating bindings (bindings.go).
 var wailsReservedTags = []string{"desktop", "production", "debug", "dev", "bindings"}
 
 // desktopEntryTag reads the build tag on the Wails entry point.
@@ -82,9 +80,7 @@ func TestDesktopBuildTagIsNotReservedByWails(t *testing.T) {
 	}
 }
 
-// AND wails.json AGREES WITH main.go. `wails build` with no flags takes its tags from `build:tags`, which
-// is what the operator runs; if the two disagree, the documented local build fails while CI stays green —
-// which is precisely the shape of the bug above.
+// AND wails.json AGREES WITH main.go.
 func TestWailsJSONTagsMatchTheEntryPointTag(t *testing.T) {
 	tag := desktopEntryTag(t)
 	// The project's own tag is the one that is not a Wails internal or a platform selector.
@@ -183,20 +179,6 @@ func TestWailsJSONCarriesTheProjectTags(t *testing.T) {
 }
 
 // TestDesktopShipsOurIcon — the app must carry the ORCHICON mark, not Wails'.
-//
-// THE BUG THIS PINS. `cmd/orchicon-desktop/build/appicon.png` did not exist, so
-// Wails fell back to its own default: a generic yellow square. The operator saw
-// exactly that on the task bar and asked for our logo.
-//
-// WHY AN ASSERTION AND NOT JUST THE FILE. Two silent ways for it to disappear:
-// `build/` is a gitignored BINARY directory, so a `.gitignore` edit (or a clean
-// clone that never had the exception) drops the icon from the tree without
-// anything failing; and Wails does not warn — it substitutes its default. The
-// app then looks unbranded and no gate notices.
-//
-// PNG specifically: Wails generates the .ico/.icns and the window icon FROM this
-// file, and it must be a raster image. A committed .svg here would be ignored by
-// the CLI just as quietly.
 func TestDesktopShipsOurIcon(t *testing.T) {
 	path := filepath.Join("..", "orchicon-desktop", "build", "appicon.png")
 	b, err := os.ReadFile(path)
@@ -236,18 +218,8 @@ func minInt(a, b int) int {
 	return b
 }
 
-// TestDesktopWindowIconIsSet — the RUNNING window must carry our icon, not the
-// desktop environment's fallback.
-//
-// THE BUG THIS PINS. build/appicon.png fed only the PACKAGER (the .ico, the .icns,
-// the .deb/.AppImage art). On Linux the window icon is options.Linux.Icon — a
-// []byte the app must supply — and we passed no Linux options at all, so the
-// window had none and the task bar drew a generic square. The operator saw the
-// Wails-yellow default while a packaged build would have shown our mark.
-//
-// Asserted at the source for the same reason the tag tests are: nothing else in
-// the gate can see it. The app compiles, the shell guards pass, `wails build`
-// packages a correctly-branded .deb — and the running window is still icon-less.
+// TestDesktopWindowIconIsSet — the RUNNING window must carry our icon, not the desktop
+// environment's fallback.
 func TestDesktopWindowIconIsSet(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "orchicon-desktop", "main.go"))
 	if err != nil {
@@ -269,9 +241,8 @@ func TestDesktopWindowIconIsSet(t *testing.T) {
 	if !strings.Contains(src, "Icon:") || !strings.Contains(src, "appIcon") {
 		t.Error("options.Linux sets no Icon from the embedded appIcon")
 	}
-	// Setting options.Linux non-nil CHANGES the WebviewGpuPolicy default (Wails
-	// documents nil => Never, wails#2977). Leaving it unstated would silently turn
-	// hardware acceleration back on.
+	// Setting options.Linux non-nil CHANGES the WebviewGpuPolicy default (Wails documents nil => Never,
+	// wails#2977).
 	if !strings.Contains(src, "WebviewGpuPolicy") {
 		t.Error("options.Linux does not state WebviewGpuPolicy. Passing a non-nil options.Linux " +
 			"changes the default away from WebviewGpuPolicyNever (wails#2977), so adding an icon " +
@@ -318,16 +289,6 @@ func TestDevRebuildRefreshesThePlaneBinary(t *testing.T) {
 	body := src[start : start+end]
 
 	// THE MECHANISM MOVED, THE PROPERTY DID NOT.
-	//
-	// This used to assert the literal `ln -sfn "$(BIN_DIR)/orchicon" "$(LAUNCHER_DIR)/orchicon"` inside the
-	// target. That direct symlink is exactly what repointed the operator's launchers into a THROWAWAY
-	// WORKTREE when a rebuild ran from one — so deleting the worktree deleted them ("my orch binary has been
-	// deleted"). The linking now goes through scripts/dev/install-launcher.sh, which decides WHICH CHECKOUT a
-	// launcher may point at.
-	//
-	// So the assertion splits in two, over the two places the property now lives:
-	//   1. the TARGET must still refresh orchicon (the stale-plane bug this guard was written for);
-	//   2. the SCRIPT must still create a SYMLINK to a repo build rather than a copy (a copy goes stale).
 	if !strings.Contains(body, "install-launcher.sh") || !strings.Contains(body, "orchicon") {
 		t.Errorf("orch-launcher-dev does not refresh the orchicon launcher.\n"+
 			"A dev rebuild then leaves the plane binary a THIN CLIENT resolves from $PATH untouched, so\n"+
@@ -351,19 +312,8 @@ func TestDevRebuildRefreshesThePlaneBinary(t *testing.T) {
 	}
 }
 
-// TestDesktopEntryMatchesTheAppID — the .desktop must key off the SAME app_id the
-// app sets, and must name an icon.
-//
-// THE BUG THIS PINS, on the operator's Wayland session: the taskbar showed the
-// generic (Wails) icon while the binary embedded our mark correctly. Wails sets
-// the window icon with gtk_window_set_icon, which publishes the X11
-// _NET_WM_ICON property — and a Wayland compositor IGNORES it. KDE resolves a
-// task's icon as app_id -> .desktop -> Icon=, so with no .desktop installed the
-// entry falls back regardless of what the binary carries. Launching from a
-// terminal makes it more visible, not more true: the association is the same.
-//
-// The app_id is options.Linux.ProgramName. If these two ever disagree the icon
-// silently stops resolving, which is why it is asserted rather than documented.
+// TestDesktopEntryMatchesTheAppID — the .desktop must key off the SAME app_id the app sets, and
+// must name an icon.
 func TestDesktopEntryMatchesTheAppID(t *testing.T) {
 	mainSrc, err := os.ReadFile(filepath.Join("..", "orchicon-desktop", "main.go"))
 	if err != nil {
@@ -414,16 +364,13 @@ func TestDesktopInstallInstallsAnIconAndMenuEntry(t *testing.T) {
 	body := src[start : start+end]
 
 	for _, want := range []struct{ needle, why string }{
-		// KEYED ON THE COMMAND, NOT ON THE PATH: the target's own comments and its
-		// closing echo both mention these paths, so a path-only assertion still
-		// passes after the copy is deleted — a guard that cannot fail is worse than
-		// none, because it reports coverage it does not have.
+		// KEYED ON THE COMMAND, NOT ON THE PATH: the target's own comments and its closing echo both
+		// mention these paths, so a path-only assertion still passes after the copy is deleted.
 		{"cp -f $(DESKTOP_PROJECT)/build/appicon.png", "it must COPY our appicon.png into the hicolor theme"},
 		{"hicolor/512x512/apps/orchicon-desktop.png", "the icon must land under the name Icon= expects"},
 		{"applications/orchicon-desktop.desktop", "the entry must land in the user's applications dir"},
-		// The shipped entry says bare `orchicon-desktop`, which is not on PATH for a
-		// dev build — so the target must REWRITE Exec, and this is the only line
-		// that does it (the echoes mention the path but never the sed script).
+		// The shipped entry says bare `orchicon-desktop`, which is not on PATH for a dev build — so the
+		// target must REWRITE Exec.
 		{"s|^Exec=", "it must rewrite Exec to this checkout's binary"},
 	} {
 		if !strings.Contains(body, want.needle) {

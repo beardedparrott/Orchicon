@@ -1,11 +1,7 @@
 package main
 
-// install_setup_record_test.go — the installer must WRITE the setup record a GUI polls (design of record,
-// D4).
-//
-// The record is only worth having if the thing doing the work fills it in. A reader with no writer is a
-// progress bar that never moves — the same "seam nothing calls" failure as a wizard page with no route to
-// it.
+// install_setup_record_test.go — the installer must WRITE the setup record a GUI polls (design of
+// record, D4).
 
 import (
 	"strings"
@@ -16,9 +12,8 @@ import (
 func TestInstallFeedsTheSetupRecord(t *testing.T) {
 	body := readGoFile(t, "install.go")
 
-	// The PROPERTY, not the exact statement: a record must be begun for the parsed instance and installed as
-	// the active tracker. Naming the assignment literally would fail on a refactor that captured the tracker
-	// in a local first — which is a change this file's own comment recommends.
+	// The PROPERTY, not the exact statement: a record must be begun for the parsed instance and
+	// installed as the active tracker.
 	if !strings.Contains(body, "beginSetup(instance)") {
 		t.Error("runInstall never starts a setup record, so a GUI polling setup-progress.json sees " +
 			"nothing for the whole install")
@@ -26,9 +21,7 @@ func TestInstallFeedsTheSetupRecord(t *testing.T) {
 	if !strings.Contains(body, "installProgress = tracker") && !strings.Contains(body, "installProgress = beginSetup(instance)") {
 		t.Error("the begun tracker is never installed as the active one, so installPhase cannot feed it")
 	}
-	// BOTH terminal states. Without the failure arm a failed install leaves a record claiming to be
-	// running for ever — the eternal spinner the staleness rule exists to CATCH, which should never be the
-	// normal way a failure is reported.
+	// BOTH terminal states.
 	if !strings.Contains(body, ".fail(err)") {
 		t.Error("the install does not record its failure, so a GUI cannot say WHY setup stopped")
 	}

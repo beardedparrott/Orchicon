@@ -45,13 +45,6 @@ import (
 )
 
 // clearStalePostmasterLock removes a postmaster.pid whose process is gone.
-//
-// It returns an error only for a lock it cannot READ. A live process's lock is left alone (and
-// postgres refuses, with a better diagnosis than this could compose); a dead process's lock is
-// removed and the caller continues.
-//
-// enabled is false on the platforms where the tree kill makes an orphan impossible — there the
-// lock cannot survive a stop, and the sweep would be dead code that still had to be right.
 func clearStalePostmasterLock(dataDir string, out io.Writer, enabled bool) error {
 	if !enabled {
 		return nil
@@ -74,9 +67,7 @@ func clearStalePostmasterLock(dataDir string, out io.Writer, enabled bool) error
 		}
 	}
 	if pid <= 0 {
-		// UNPARSEABLE: treat it as stale. A lock file that cannot say which process it
-		// protects is protecting nothing, and refusing to start over it would make the
-		// database unrecoverable without hand-editing the data directory.
+		// UNPARSEABLE: treat it as stale.
 		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove the unreadable postgres lock file %s: %w", lockPath, err)
 		}
@@ -85,9 +76,7 @@ func clearStalePostmasterLock(dataDir string, out io.Writer, enabled bool) error
 	}
 
 	if pidAlive(pid) {
-		// A LIVE PROCESS HOLDS IT. Leave it: postgres will refuse to start, and its refusal
-		// names the pid and the directory, which is the diagnosis. Silently removing a live
-		// process's lock would let a second postmaster start on the same data directory.
+		// A LIVE PROCESS HOLDS IT.
 		return nil
 	}
 
@@ -163,11 +152,8 @@ func survivorsOlderThanBoot(dataDir string, cutoff time.Time) []planecontrol.Pro
 	return out
 }
 
-// ownedProcsForDataDir lists processes whose executable lives inside this instance's data directory.
-//
-// The data dir is the root, not a name: everything the resolver unpacks lives under <dataDir>/bin, so an
-// executable inside it is this instance's process by construction. Nothing outside it can match, which is
-// what keeps this from ever touching the operator's own PostgreSQL.
+// ownedProcsForDataDir lists processes whose executable lives inside this instance's data
+// directory.
 func ownedProcsForDataDir(dataDir string) []planecontrol.ProcInfo {
 	var out []planecontrol.ProcInfo
 	seen := map[int]bool{}
@@ -195,9 +181,6 @@ func pidsOf(procs []planecontrol.ProcInfo) []int {
 	return pids
 }
 
-// staleLockSweepNeeded reports whether this platform can leave an orphaned postgres behind.
-//
-// TRUE ONLY ON WINDOWS. There, terminating the supervisor terminates ONE process, so its children
-// survive it; on Unix the supervisor leads its own process group and the group kill takes every
-// child with it, so the lock cannot survive a stop.
+// staleLockSweepNeeded reports whether this platform can leave an orphaned postgres behind. TRUE
+// ONLY ON WINDOWS.
 func staleLockSweepNeeded() bool { return runtime.GOOS == "windows" }
