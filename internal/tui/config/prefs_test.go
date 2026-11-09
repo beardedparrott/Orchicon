@@ -1,13 +1,6 @@
 package config
 
 // prefs_test.go — the display preferences that have to survive a relaunch.
-//
-// The operator: "Conversation categories don't stay collapsed when you leave orch and come back in."
-//
-// The collapse lived in a session-only map, so a restart forgot it. These pin the file format that fixes
-// that — and, more importantly, that adding it cannot DAMAGE the credentials the same file holds. A
-// display preference is the least important thing in that document and must never be able to stop the
-// operator connecting.
 
 import (
 	"os"
@@ -17,9 +10,7 @@ import (
 	"testing"
 )
 
-// A CREDENTIAL SURVIVES A PREFERENCE ROUND TRIP. This is the assertion that matters: the same
-// Load/Save path writes tokens, so a preference that rendered or parsed badly could take the
-// credential with it.
+// A CREDENTIAL SURVIVES A PREFERENCE ROUND TRIP.
 func TestCollapsedGroupsRoundTripWithoutDisturbingCredentials(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config")

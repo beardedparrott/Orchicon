@@ -1,14 +1,6 @@
 package containerengine
 
 // detect_wait_test.go — AN ENGINE INSTALLED A MOMENT AGO IS NOT ON THIS PROCESS'S PATH.
-//
-// The failure this covers: `winget install RedHat.Podman` succeeds, `podman --version` works in a NEW shell, and
-// the installer — still the process that ran winget — reports "no container engine". install.go then skips the
-// runtime daemon (it is gated on the engine), and the operator's container fetch fails on a socket that will never
-// exist, after an install that said it worked.
-//
-// The probe is deliberately narrow, and these tests pin both halves: it must FIND a real install, and it must NOT
-// accept a name that merely resolves on PATH.
 
 import (
 	"context"
@@ -83,9 +75,8 @@ func TestWaitForBinaryFindsAFreshlyInstalledEngine(t *testing.T) {
 	}
 }
 
-// TestWaitForBinaryRejectsAPathOnlyHit is the safety half: a name that resolves on PATH but is NOT at the
-// engine's conventional location must not satisfy the probe. That is how a winget App Execution Alias, or a stub
-// left by a half-finished install, would otherwise masquerade as a working engine.
+// TestWaitForBinaryRejectsAPathOnlyHit is the safety half: a name that resolves on PATH but is NOT
+// at the engine's conventional location must not satisfy the probe.
 func TestWaitForBinaryRejectsAPathOnlyHit(t *testing.T) {
 	goos := runtime.GOOS
 	p := newWaitProbe(goos, map[string]string{"podman": filepath.Join(t.TempDir(), "podman")})

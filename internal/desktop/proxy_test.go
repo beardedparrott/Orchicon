@@ -15,9 +15,7 @@ import (
 	"time"
 )
 
-// testSPA is a minimal stand-in for the built bundle. Tests inject it because
-// frontend/dist holds only .gitkeep in a checkout that has not run
-// `npm run build` — and the shell refuses to start without an index.html.
+// testSPA is a minimal stand-in for the built bundle.
 func testSPA() fstest.MapFS {
 	return fstest.MapFS{
 		"index.html":    &fstest.MapFile{Data: []byte("<!doctype html><html><head><title>orchicon</title></head><body><div id=root></div></body></html>")},
@@ -44,12 +42,6 @@ func newTestShell(t *testing.T, planeURL string) *Shell {
 }
 
 // THE STREAMING ASSERTION — the highest-value test in this package.
-//
-// The SPA reads a Connect server-stream for the life of an execution
-// (frontend/src/api/useStream.ts). A proxy that buffers, or a server with a
-// WriteTimeout, turns that into a view that silently stops updating — the
-// failure mode the brief names as most likely. So this asserts the OBSERVABLE
-// property: frame 1 is readable from the shell origin BEFORE frame 2 exists.
 func TestProxyStreamsIncrementally(t *testing.T) {
 	release := make(chan struct{})
 	plane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -104,9 +96,8 @@ func TestProxyStreamsIncrementally(t *testing.T) {
 	}
 }
 
-// Auth is NOT the shell's business: the bearer token, the cookie jar and the
-// HttpOnly refresh cookie all have to survive the hop untouched, or the SPA's
-// 401-refresh-and-retry (frontend/src/api/clients.ts) can never work.
+// Auth is NOT the shell's business: the bearer token, the cookie jar and the HttpOnly refresh
+// cookie all have to survive the hop untouched.
 func TestProxyForwardsAuthHeadersVerbatim(t *testing.T) {
 	plane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/versionz" {
@@ -169,9 +160,8 @@ func TestProxyDoesNotServeThePlaneUI(t *testing.T) {
 	}
 }
 
-// The origin decision must not quietly become a CORS decision: the shell adds
-// no Access-Control-* headers, because same-origin needs none and adding them
-// would widen what the plane accepts.
+// The origin decision must not quietly become a CORS decision: the shell adds no Access-Control-*
+// headers, because same-origin needs none and adding them would widen what the plane accepts.
 func TestShellAddsNoCORSHeaders(t *testing.T) {
 	plane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"version":"v-test"}`))
@@ -205,10 +195,9 @@ func coveredByProxy(p string) bool {
 	return false
 }
 
-// TestProxyPrefixesCoverPlanePassthrough reads the PLANE'S OWN definition of
-// "not the SPA" (withFrontend's passthrough list in cmd/orchicon/serve_state.go)
-// and asserts the shell forwards every path on it. If the plane adds one and the
-// shell does not, the app gets index.html where it expected JSON.
+// TestProxyPrefixesCoverPlanePassthrough reads the PLANE'S OWN definition of "not the SPA"
+// (withFrontend's passthrough list in cmd/orchicon/serve_state.go) and asserts the shell forwards
+// every.
 func TestProxyPrefixesCoverPlanePassthrough(t *testing.T) {
 	src := readFile(t, filepath.Join("..", "..", "cmd", "orchicon", "serve_state.go"))
 	start := strings.Index(src, "func withFrontend(")
@@ -235,9 +224,8 @@ func TestProxyPrefixesCoverPlanePassthrough(t *testing.T) {
 	}
 }
 
-// TestProxyCoversEveryPlaneRoute reads the routes internal/api actually registers
-// and asserts the shell forwards each one, so a new plane route is a failing test
-// rather than a blank page in the app.
+// TestProxyCoversEveryPlaneRoute reads the routes internal/api actually registers and asserts the
+// shell forwards each one.
 func TestProxyCoversEveryPlaneRoute(t *testing.T) {
 	apiSrc := readFile(t, filepath.Join("..", "api", "api.go"))
 	routeRe := regexp.MustCompile(`mux\.(?:Handle|HandleFunc)\("([^"]+)"`)

@@ -8,13 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// RecurringRunHistoryRow is the data-access shape of a recurring_run_history
-// row — the per-fire ledger for recurring work items (feature 4.2). Status is
-// the fire dispatch outcome ('fired' | 'failed'); WorkflowRunID is set after a
-// successful dispatch (leaf run / sequence parent run) and NULL when the fire
-// failed before a run existed. Started/end + execution ids/outputs are NOT
-// duplicated here: they live in the run graph (workflow_runs, worker_executions)
-// and are joined at read time (ListRecurringRunHistory).
+// RecurringRunHistoryRow is the data-access shape of a recurring_run_history row — the per-fire
+// ledger for recurring work items (feature 4.2).
 type RecurringRunHistoryRow struct {
 	ID            string
 	TenantID      string
@@ -66,11 +61,8 @@ type RecurringRunHistoryEntry struct {
 	Executions    []RecurringRunExecution
 }
 
-// ListRecurringRunHistory returns the per-fire ledger for a recurring work
-// item, newest first, each joined to its workflow run (status, started_at,
-// ended_at) and that run's worker executions (execution ids, outputs). A fire
-// that failed before a run exists yields one entry with WorkflowRunID == ""
-// (RunStatus/Executions empty) whose Error carries the dispatch error.
+// ListRecurringRunHistory returns the per-fire ledger for a recurring work item, newest first, each
+// joined to its workflow run (status, started_at.
 func ListRecurringRunHistory(ctx context.Context, tx pgx.Tx, tenantID, workItemID string) ([]RecurringRunHistoryEntry, error) {
 	const q = `SELECT h.id, h.fire_at, h.status, COALESCE(h.workflow_run_id, ''), COALESCE(h.error, ''),
 	             COALESCE(r.status, ''), r.started_at, r.ended_at

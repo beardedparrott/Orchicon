@@ -85,18 +85,13 @@ func TestBaseKeysAndMouseAgreeOnRegion(t *testing.T) {
 	b.AddSource("workers", "Workers", nil)
 	b.SetSize(80, 24)
 
-	// TAB must NOT toggle the pane: it used to share the enter/space case, which
-	// made it a list↔detail focus toggle that the SCREEN consumed — so the shell's
-	// tab-bar ring never saw the key. On the Work tab the operator's report was
-	// "the tabbing between the left and right pane breaks the tab path in the top
-	// of the tab menu and grabs focus". Tab is now left alone for the global ring.
+	// TAB must NOT toggle the pane: it used to share the enter/space case, which made it a list↔detail
+	// focus toggle that the SCREEN consumed — so the shell's tab-bar ring never saw the key.
 	if handled, _ := b.updateKeyHandled(t, "tab"); handled {
 		t.Fatal("tab must fall through to the shell's focus ring, not be consumed by the pane")
 	}
 
-	// SHIFT+TAB must ALSO fall through. It used to cycle this screen's region ring
-	// in reverse, which consumed it on every kit2 screen — so the tab bar could not
-	// be walked backwards from any pane ("Projects screen is stealing shift+tab").
+	// SHIFT+TAB must ALSO fall through.
 	if handled, _ := b.updateKeyHandled(t, "shift+tab"); handled {
 		t.Fatal("shift+tab must fall through to the shell's reverse focus ring")
 	}
@@ -422,14 +417,8 @@ func TestAllWidgetsRenderAtFloorSizes(t *testing.T) {
 	}
 }
 
-// Regression: with HideSources the detail pane fills the region, so a click in
-// the LEFT half must not select a row in the (invisible) source table.
-//
-// View() renders the detail only, but mouseRegion kept a two-pane split, so any
-// left-half click resolved to "the focused source pane", ran table.Click(row)
-// against a table nobody can see, and called loadDetail. On the Ask tab that
-// table is the conversations list — so clicking the launch page silently OPENED
-// an arbitrary old conversation instead of doing nothing.
+// Regression: with HideSources the detail pane fills the region, so a click in the LEFT half must
+// not select a row in the (invisible) source table.
 func TestHiddenSourcesClickDoesNotSelectAnInvisibleRow(t *testing.T) {
 	b := &Base{}
 	b.AddSource("conversations", "Conversations", nil)
@@ -448,9 +437,8 @@ func TestHiddenSourcesClickDoesNotSelectAnInvisibleRow(t *testing.T) {
 		}
 	}
 
-	// And behaviourally, at a Y that REALLY maps onto a row (the earlier version
-	// of this test clicked a row index outside the table, so it passed even with
-	// the bug present).
+	// And behaviourally, at a Y that REALLY maps onto a row (the earlier version of this test clicked a
+	// row index outside the table, so it passed even with the bug present).
 	before := b.ActiveTable().SelectedID()
 	clickY := b.tableTopRow() // the first data row
 	if clickY >= b.height {
@@ -465,16 +453,8 @@ func TestHiddenSourcesClickDoesNotSelectAnInvisibleRow(t *testing.T) {
 	}
 }
 
-// DetailWidth must agree with the pane the detail is actually drawn in, the
-// moment the layout is applied — not one render later.
-//
-// HideSources renders the detail at the FULL width, while SetSize used to store
-// the SPLIT width and leave the correction to the next render. Callers use
-// DetailWidth() as their WRAP width, so until that render ran the content was
-// laid out for a different pane than it was drawn in: a wrap width wider than
-// the pane gets truncated at the right edge (cutting a right-aligned line — an
-// operator's own chat message — down to its leading whitespace), and a narrower
-// one wastes the pane.
+// DetailWidth must agree with the pane the detail is actually drawn in, the moment the layout is
+// applied — not one render later.
 func TestDetailWidthMatchesTheRenderedPaneWhenSourcesAreHidden(t *testing.T) {
 	b := &Base{HideSources: true}
 	b.width, b.height = 80, 20
@@ -571,18 +551,8 @@ func TestExpandingAFieldDoesNotDisturbOthers(t *testing.T) {
 	}
 }
 
-// The cursor must step over EVERY visible row, including a second row that
-// shares the first one's id.
-//
-// Every cursor operation used to route through the row's ID (cursorVis →
-// setCursorToID), and that round trip is not injective: visIndexOf returns the
-// FIRST match and setCursorToID seats the cursor on the FIRST match. So a step
-// ONTO a duplicated id landed back on its twin and the cursor FROZE — the
-// operator's "if you move the arrow key down to one of them, it highlights both
-// work items and then will not let you continue to hit the down key to move past
-// them". Distinct work items legitimately share a TITLE (3 items titled "test"
-// in the live tenant), and the fetch layer can emit rows that collide by id, so
-// movement must not depend on ID uniqueness.
+// The cursor must step over EVERY visible row, including a second row that shares the first one's
+// id.
 func TestCursorStepsPastDuplicatedRowIDs(t *testing.T) {
 	tb := &Table{Width: 40, Height: 20}
 	tb.SetItems([]Item{

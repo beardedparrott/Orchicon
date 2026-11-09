@@ -27,13 +27,8 @@ import (
 	"testing"
 )
 
-// withVolumeProbe stubs the engine probe AND the candidate engine set so these
-// tests never consult a real daemon — otherwise they would pass or fail according
-// to what the machine running them happens to have installed.
-//
-// The candidate set is stubbed too, and that is the point of the regression test
-// below: the probe's answer was always stubbed, but WHICH ENGINE was asked was
-// not, so the tests could not see that the guard asked the wrong one.
+// withVolumeProbe stubs the engine probe AND the candidate engine set so these tests never consult
+// a real daemon — otherwise they would pass or fail according to what the machine running them.
 func withVolumeProbe(t *testing.T, exists bool) {
 	t.Helper()
 	prev := postgresVolumeExists
@@ -42,9 +37,7 @@ func withVolumeProbe(t *testing.T, exists bool) {
 	withEngineCandidates(t, "/usr/bin/docker")
 }
 
-// withEngineCandidates pins the engines the guard will ask. Zero arguments means
-// "no engine installed on this host", which is a real, healthy case that must not
-// be expressed by mutating PATH.
+// withEngineCandidates pins the engines the guard will ask.
 func withEngineCandidates(t *testing.T, bins ...string) {
 	t.Helper()
 	prev := engineCandidateBins
@@ -52,9 +45,7 @@ func withEngineCandidates(t *testing.T, bins ...string) {
 	t.Cleanup(func() { engineCandidateBins = prev })
 }
 
-// withPerEngineProbe answers per engine binary. It is the only way to describe the
-// shape that actually bit us: the volume lives in ONE engine while the runtime
-// prefers the OTHER.
+// withPerEngineProbe answers per engine binary.
 func withPerEngineProbe(t *testing.T, fn func(bin string) bool) {
 	t.Helper()
 	prev := postgresVolumeExists
@@ -126,19 +117,8 @@ func TestGuardRefusesFreshClusterWhenContainerEraVolumeExists(t *testing.T) {
 	}
 }
 
-// THE REGRESSION THIS PINS — found hours after the guard shipped, on the
-// operator's own host, by asking it a question it could not answer: "the volumes
-// are in DOCKER, are you sure you are looking?".
-//
-// The guard resolved the RUNTIME's engine (Podman is the default, ADR-0014) and
-// asked only that engine about the volume. Both real instances keep their cluster
-// in DOCKER, so `podman volume inspect orchicon-prod_postgres-data` answered "no
-// such volume", the guard returned nil, and a host-residency rebuild would have
-// initdb'd an EMPTY database beside the 5.7 GB one — precisely the failure the
-// guard exists to prevent, one layer down and completely silent.
-//
-// The previous tests could not catch it: the probe's ANSWER was stubbed, but the
-// engine it was ASKED about was left to the machine's defaults.
+// THE REGRESSION THIS PINS — found hours after the guard shipped, on the operator's own host, by
+// asking it a question it could not answer: "the volumes are in DOCKER.
 func TestGuardFindsTheVolumeInAnEngineOtherThanTheRuntimeEngine(t *testing.T) {
 	// The runtime's default (podman) is deliberately NOT pinned, because the defect
 	// was that the default was trusted.
@@ -170,9 +150,8 @@ func TestGuardFindsTheVolumeInAnEngineOtherThanTheRuntimeEngine(t *testing.T) {
 	}
 }
 
-// The escape hatch, for a volume that exists but is genuinely empty (created by a
-// run that never reached initdb). The guard cannot see inside one without root, so
-// it must let the operator say the word rather than block forever.
+// The escape hatch, for a volume that exists but is genuinely empty (created by a run that never
+// reached initdb).
 func TestGuardAllowsFreshClusterWithExplicitOptOut(t *testing.T) {
 	withEngine(t)
 	withVolumeProbe(t, true)
@@ -189,9 +168,7 @@ func TestGuardAllowsFreshClusterWithExplicitOptOut(t *testing.T) {
 	}
 }
 
-// THE WRONG-DATA CASE. A host cluster exists AND a container-era volume exists ⇒
-// warn, naming which one is live. Not fatal: the operator may have migrated and
-// kept the volume as a backup, which is the safest thing they could have done.
+// THE WRONG-DATA CASE.
 func TestGuardWarnsWhenBothClustersExist(t *testing.T) {
 	withEngine(t)
 	withVolumeProbe(t, true)
@@ -286,10 +263,8 @@ func TestGuardRunsBeforeInitdb(t *testing.T) {
 	}
 }
 
-// And a pin that NOTHING can route around it: there is one service shape, so the
-// guard must not be gated on anything a caller could switch off. (The retired
-// container-resident supervisor kept its cluster in a volume by design and skipped
-// the guard; that shape no longer exists.)
+// And a pin that NOTHING can route around it: there is one service shape, so the guard must not be
+// gated on anything a caller could switch off.
 func TestGuardIsUnconditional(t *testing.T) {
 	src := string(readSupervisorGo(t))
 	fn := strings.Index(src, "func (s *supervisor) initPostgres() error {")
@@ -305,10 +280,7 @@ func TestGuardIsUnconditional(t *testing.T) {
 	}
 }
 
-// readSupervisorGo reads host_services.go from this package's directory. The
-// placement assertions above are source-level on purpose: a guard that exists but
-// runs AFTER initdb leaves the defect fully intact, and no behavioural test can see
-// ordering.
+// readSupervisorGo reads host_services.go from this package's directory.
 func readSupervisorGo(t *testing.T) []byte {
 	t.Helper()
 	b, err := os.ReadFile("host_services.go")

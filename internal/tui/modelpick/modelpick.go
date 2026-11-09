@@ -41,20 +41,12 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// NativeAdapterKind is the adapter kind whose models resolve from the providers
-// service rather than CLI discovery (ADR-0004 D1). The picker lists it FIRST and
-// defaults a fresh selection to it (ADR-0005 D5) — the operator's "select
-// orchicon (first in the list) or opencode".
+// NativeAdapterKind is the adapter kind whose models resolve from the providers service rather than
+// CLI discovery (ADR-0004 D1).
 const NativeAdapterKind = "orchicon"
 
-// catalogSourcedKinds is the set of adapter kinds whose MODEL tier resolves
-// from the providers SOURCING view instead of opencode-CLI discovery.
-//
-// It is built from internal/adapter.CatalogSourcedAdapterKinds() — the SAME
-// predicate the server publishes to the GUI (ListAdapterKindsResponse.
-// sourcing_kinds) — so the TUI cannot drift from the plane's own answer. The
-// GUI reads the wire field; the TUI derives from the predicate; a parity test
-// (TestCatalogSourcedParity) pins them together.
+// catalogSourcedKinds is the set of adapter kinds whose MODEL tier resolves from the providers
+// SOURCING view instead of opencode-CLI discovery.
 var catalogSourcedKinds = func() map[string]bool {
 	set := make(map[string]bool)
 	for _, k := range adapter.CatalogSourcedAdapterKinds() {
@@ -63,10 +55,8 @@ var catalogSourcedKinds = func() map[string]bool {
 	return set
 }()
 
-// UsesCatalogSourcing reports whether an adapter kind's model tier comes from
-// the providers sourcing view (vendored catalog ⊕ probe ⊕ manual) rather than
-// opencode-CLI discovery. Provider tier is a SEPARATE question: only the native
-// kind uses the merged Providers view (see FetchProviders).
+// UsesCatalogSourcing reports whether an adapter kind's model tier comes from the providers
+// sourcing view (vendored catalog ⊕ probe ⊕ manual) rather than opencode-CLI discovery.
 func UsesCatalogSourcing(kind string) bool { return catalogSourcedKinds[kind] }
 
 // KindsMsg carries the registered adapter kinds.
@@ -92,14 +82,8 @@ type ModelsMsg struct {
 	Err      error
 }
 
-// SplitRef parses a stored ref into the picker's three segments using the SAME
-// grammar authority the server validates with (internal/adapter), so the picker
-// can never disagree with what the plane accepts.
-//
-// A nil registry is deliberate: this is a structural read of an ALREADY-STORED
-// value, and the registry's known-provider checks would reject a legacy ref the
-// plane still legitimately holds. An empty or malformed ref seeds an empty
-// selection, so the operator re-chooses instead of being handed a guess.
+// SplitRef parses a stored ref into the picker's three segments using the SAME grammar authority
+// the server validates with (internal/adapter).
 func SplitRef(ref string) (kind, provider, model string) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -152,9 +136,7 @@ func FetchProviders(ctx context.Context, cl *client.Clients, kind string) ([]kit
 	return ProviderOptionsGateway(resp.Msg.GetProviders()), nil
 }
 
-// FetchModels loads one provider's model list for the chosen adapter. The model
-// VALUE is always the bare model id — never the legacy 2-segment model_ref — so
-// the picker's join produces exactly adapter/provider/model.
+// FetchModels loads one provider's model list for the chosen adapter.
 func FetchModels(ctx context.Context, cl *client.Clients, kind, provider string) ([]kit2.PickerOption, bool, error) {
 	if UsesCatalogSourcing(kind) {
 		if cl == nil || cl.Providers == nil {
@@ -220,9 +202,7 @@ func ProviderOptionsGateway(provs []*apiv1.AIProvider) []kit2.PickerOption {
 	return out
 }
 
-// ModelOptionsNative projects the providers SOURCING view. A HIDDEN model is
-// dropped (the operator re-enables it in Settings → Adapters), and a model with
-// no context hint is ANNOTATED rather than dropped.
+// ModelOptionsNative projects the providers SOURCING view.
 func ModelOptionsNative(models []*apiv1.ProviderModel) []kit2.PickerOption {
 	out := make([]kit2.PickerOption, 0, len(models))
 	for _, mo := range models {
@@ -238,9 +218,7 @@ func ModelOptionsNative(models []*apiv1.ProviderModel) []kit2.PickerOption {
 	return out
 }
 
-// ModelOptionsDiscovery projects opencode-CLI discovery models. The VALUE is the
-// bare model id — never the legacy 2-segment model_ref, which would produce a
-// bogus 4-segment ref when the picker joins the segments.
+// ModelOptionsDiscovery projects opencode-CLI discovery models.
 func ModelOptionsDiscovery(models []*apiv1.OpenCodeModel) []kit2.PickerOption {
 	out := make([]kit2.PickerOption, 0, len(models))
 	for _, mo := range models {
@@ -332,15 +310,8 @@ func cliModelContext(ctx context.Context, cl *client.Clients, kind, provider, mo
 
 // --- display helpers --------------------------------------------------------
 
-// ModelMeta is a model row's dim right-hand context: the context window the
-// compaction math depends on, the reasoning flag, the missing-context warning
-// (ADR-0006 D8: a model without a context hint stays SELECTABLE but is
-// annotated, never silently dropped), and the ORIGIN of those numbers.
-//
-// Naming the origin is the point. A hand-authored snapshot and a maintained
-// registry both render as "1.0M ctx", which is exactly how a wrong value goes
-// unnoticed — the operator cannot tell a verified number from a typed one. With
-// the source shown, the claim is checkable.
+// ModelMeta is a model row's dim right-hand context: the context window the compaction math depends
+// on, the reasoning flag, the missing-context warning (ADR-0006 D8.
 func ModelMeta(contextTokens int64, reasoning, warnNoContext bool, source string) string {
 	parts := make([]string, 0, 4)
 	switch {
@@ -358,9 +329,7 @@ func ModelMeta(contextTokens int64, reasoning, warnNoContext bool, source string
 	return strings.Join(parts, " · ")
 }
 
-// shortSource renders a provenance for a picker row. The provider's own probe is
-// the unremarkable default (the provider answering for its own model) and gets no
-// annotation, so the row only grows when the number came from somewhere else.
+// shortSource renders a provenance for a picker row.
 func shortSource(source string) string {
 	switch {
 	case source == "", source == "probe":
@@ -393,25 +362,6 @@ func FriendlyErr(err error) string {
 	low := strings.ToLower(txt)
 	if strings.Contains(low, "unimplemented") || strings.Contains(low, "not configured") {
 		// THE PLANE'S OWN HINT IS THE ACTIONABLE PART, and this used to THROW IT AWAY.
-		//
-		// The plane answers with the remedy in a parenthetical: `model discovery is not configured (set
-		// ORCHICON_OPENCODE_BIN or install opencode on PATH)`. This returned "model discovery is not
-		// configured on this plane" instead, which is a DEAD END — reported verbatim by the operator
-		// selecting the opencode adapter: "it says 'model discovery is not configured on this plane'".
-		//
-		// THE RESTART SENTENCE IS GONE, AND THAT IS THE FIX RATHER THAN A TIDY-UP.
-		//
-		// It used to end "... — then restart the plane", and it was TRUE: the discoverer was built
-		// once at boot, so installing opencode while the plane ran changed nothing until a restart.
-		// Reported as "It should be auto discovering the location of opencode ... This should happen
-		// automatically when someone selects the opencode adapter" — and it now does, because the
-		// plane re-resolves on the request that a selection makes (internal/aigateway's lazy
-		// discoverer). Telling the operator to restart after that would be an instruction to do
-		// something that no longer helps, which is worse than saying nothing: they would restart,
-		// see the same message if the binary genuinely is absent, and blame the restart.
-		//
-		// So the remedy keeps its two real forms and ends with RETRY, which is now the action that
-		// actually re-probes.
 		hint := planeHint(txt)
 		if hint == "" {
 			hint = "install opencode on the plane's PATH, or set ORCHICON_OPENCODE_BIN"
@@ -421,9 +371,8 @@ func FriendlyErr(err error) string {
 	return txt
 }
 
-// planeHint extracts the trailing parenthetical from a plane error, which is where every not-configured
-// message this client shows puts its remedy. The parentheses are stripped so the result reads as a sentence.
-// Returns "" when the message carries no hint.
+// planeHint extracts the trailing parenthetical from a plane error, which is where every
+// not-configured message this client shows puts its remedy.
 func planeHint(txt string) string {
 	i := strings.LastIndex(txt, "(")
 	j := strings.LastIndex(txt, ")")

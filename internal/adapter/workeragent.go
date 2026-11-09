@@ -3,14 +3,6 @@ package adapter
 import "strings"
 
 // workeragent.go — the per-WORKER agent definition an opencode serve carries.
-//
-// IT LIVES IN THIS PACKAGE FOR THE IMPORT GRAPH, not because it is an adapter
-// concern. Both consumers need it and neither can import the other: the opencode
-// config builder writes the agents into the serve document, and `runtime` (the
-// plane's lifecycle) is what resolves the run's step workers and hands them over
-// — but internal/opencode imports internal/runtime, so runtime cannot name a
-// type declared there. internal/adapter imports neither, and both import it, so
-// it is the only package where the shared declaration can sit.
 
 // WorkerAgent is one step worker's agent definition: the agent a session for
 // that worker is switched to, carrying the worker's REAL system prompt.
@@ -52,12 +44,6 @@ type WorkerAgent struct {
 }
 
 // WorkerAgentName derives the agent id for a step worker.
-//
-// DETERMINISTIC AND DERIVED, never transmitted: the plane writes the agents into
-// the serve config and the execution selects one at start, and the two only
-// agree if both compute the same name from the same worker id. Lowercased
-// because an agent id is a lookup key (opencode derives ids from file names) and
-// our worker ids are upper-case ULIDs.
 func WorkerAgentName(workerID string) string {
 	id := strings.ToLower(strings.TrimSpace(workerID))
 	id = strings.Map(func(r rune) rune {

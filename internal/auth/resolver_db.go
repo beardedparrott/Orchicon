@@ -7,12 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// Resolver resolves an authenticated subject into the full identity
-// context (tenant + entitlements). It is shared by the auth HTTP
-// handlers (login/refresh issue tokens with the resolved context) and
-// the middleware (per-request resolution from an access token or API
-// key). All DB access is tenant-scoped via BeginTenantTx so RLS is the
-// backstop (docs/09 §8.5).
+// Resolver resolves an authenticated subject into the full identity context (tenant +
+// entitlements).
 type Resolver struct {
 	pool *db.Pool
 }
@@ -34,10 +30,8 @@ func (r *Resolver) ResolveIdentity(ctx context.Context, tenantID, identityID str
 	return db.ListIdentityEntitlements(ctx, ttx.Tx, tenantID, identityID)
 }
 
-// EnsureIdentityForSubject upserts an identity row for the given OIDC
-// subject within a tenant, returning the identity id. When create is
-// true the caller should also seed a default role binding (the dev flow
-// binds the admin role; production binds a configured default role).
+// EnsureIdentityForSubject upserts an identity row for the given OIDC subject within a tenant,
+// returning the identity id.
 func (r *Resolver) EnsureIdentityForSubject(ctx context.Context, tenantID, subject, displayName, identityType string) (db.IdentityRow, bool, error) {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -54,20 +48,13 @@ func (r *Resolver) EnsureIdentityForSubject(ctx context.Context, tenantID, subje
 	return row, created, nil
 }
 
-// ResolveApiKey looks up an active API key by its hash (no tenant scope
-// — the key identifies the tenant). Returns the row + the key's own
-// scopes as the effective entitlement set. An API key is a
-// least-privilege machine credential: its scopes ARE the entitlements,
-// and it is never an admin (admins bypass per-call checks — a machine
-// credential must declare exactly what it may do, docs/07 §6.1).
+// ResolveApiKey looks up an active API key by its hash (no tenant scope — the key identifies the
+// tenant).
 func (r *Resolver) ResolveApiKey(ctx context.Context, hash string) (db.ApiKeyRow, []string, bool, error) {
 	keyRow, err := db.LookupApiKeyByHash(ctx, r.pool, hash)
 	if err != nil {
 		return db.ApiKeyRow{}, nil, false, err
 	}
-	// The key's scopes are the effective entitlement set. We do NOT
-	// union the identity's role entitlements — that would widen the
-	// key beyond its declared scope and defeat least-privilege. The
-	// identity is only used to resolve the tenant + record the caller.
+	// The key's scopes are the effective entitlement set.
 	return keyRow, keyRow.Scopes, false, nil
 }

@@ -9,10 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// TestSummaryWordIsSingleDecisionSignal verifies the core contract: the
-// workflow decision comes ONLY from the first word after ORCHICON WORKER
-// SUMMARY:. A standalone `_decision:` line or a stray `_issues:` block
-// must never override it.
+// TestSummaryWordIsSingleDecisionSignal verifies the core contract: the workflow decision comes
+// ONLY from the first word after ORCHICON WORKER SUMMARY:.
 func TestSummaryWordIsSingleDecisionSignal(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -173,13 +171,9 @@ func TestMergeBudgets(t *testing.T) {
 	}
 }
 
-// TestCountReaskRuns verifies the re-ask budget counts ACTUAL reviewer
-// re-asks (step runs created by reaskDecisionStep with StepName
-// "Reviewer (re-ask)") — NOT the reviewer's loop iteration count. A
-// reviewer that looped back via explicit _decision: failure decisions was
-// never re-asked and must not consume the budget; otherwise a truncated
-// final turn (missing signal) fails on a pre-spent budget without ever
-// getting a genuine re-ask.
+// TestCountReaskRuns verifies the re-ask budget counts ACTUAL reviewer re-asks (step runs created
+// by reaskDecisionStep with StepName "Reviewer (re-ask)") — NOT the reviewer's loop iteration
+// count.
 func TestCountReaskRuns(t *testing.T) {
 	ordinary := db.WorkflowStepRunRow{StepName: "PR Reviewer"}
 	loop := db.WorkflowStepRunRow{StepName: "PR Reviewer (loop)"}
@@ -196,9 +190,8 @@ func TestCountReaskRuns(t *testing.T) {
 	}
 }
 
-// TestAggregateLoopDecisions verifies the fan-in gate aggregation: ANY
-// upstream failure loops back (failure is decisive), otherwise the gate
-// proceeds only when ALL upstreams succeeded; empty means no decision.
+// TestAggregateLoopDecisions verifies the fan-in gate aggregation: ANY upstream failure loops back
+// (failure is decisive), otherwise the gate proceeds only when ALL upstreams succeeded.
 func TestAggregateLoopDecisions(t *testing.T) {
 	const (
 		fail = "failure"
@@ -240,10 +233,8 @@ func TestCapSummaryNarrativeShortSummaryPassthrough(t *testing.T) {
 	}
 }
 
-// TestCapSummaryNarrativePreservesFactsAndRouting verifies the structural
-// preservation contract: the cap strips narrative verbosity but NEVER strips
-// FACTS LEARNED lines or the ORCHICON WORKER SUMMARY routing line. The facts
-// must remain extractable via extractFactsLearned after the cap.
+// TestCapSummaryNarrativePreservesFactsAndRouting verifies the structural preservation contract:
+// the cap strips narrative verbosity but NEVER strips FACTS LEARNED lines or the ORCHICON WORKER.
 func TestCapSummaryNarrativePreservesFactsAndRouting(t *testing.T) {
 	narrative := strings.Repeat("long rambling narrative line that pads the summary with filler words\n", 200) // ~11k chars
 	lastNarrativeLine := "long rambling narrative line that pads the summary with filler words"
@@ -286,9 +277,8 @@ func TestCapSummaryNarrativePreservesFactsAndRouting(t *testing.T) {
 	}
 }
 
-// TestCapSummaryNarrativeAllFactsNoTruncation verifies a summary that is
-// entirely facts exceeds the byte budget yet must be returned verbatim — the
-// cap only ever truncates narrative, never structural content.
+// TestCapSummaryNarrativeAllFactsNoTruncation verifies a summary that is entirely facts exceeds the
+// byte budget yet must be returned verbatim — the cap only ever truncates narrative.
 func TestCapSummaryNarrativeAllFactsNoTruncation(t *testing.T) {
 	var sb strings.Builder
 	for i := 0; i < 30; i++ {
@@ -306,9 +296,9 @@ func TestCapSummaryNarrativeAllFactsNoTruncation(t *testing.T) {
 	}
 }
 
-// TestExtractFactsLearned verifies the facts-ledger extraction: only
-// FACTS LEARNED lines are captured, case-insensitively, with bullet and
-// marker prefixes stripped, while other lines are ignored.
+// TestExtractFactsLearned verifies the facts-ledger extraction: only FACTS LEARNED lines are
+// captured, case-insensitively, with bullet and marker prefixes stripped, while other lines are
+// ignored.
 func TestExtractFactsLearned(t *testing.T) {
 	summary := "Verified the boot sequence live.\n" +
 		"FACTS LEARNED: the supervisor runs the pre-feature daemon self-copy (old binary), so the sandbox plane does not auto-boot until the daemon rebuilds.\n" +
@@ -512,10 +502,8 @@ func TestExtractPRFieldsHTTPSAndHTTP(t *testing.T) {
 	}
 }
 
-// TestParsePRLine verifies the tab-separated output parser for the
-// deterministic gh-based PR branch check (deterministicPRForBranch). The
-// platform queries GitHub itself — it does not rely on the worker's
-// self-reported PR_URL marker to decide a PR step's success.
+// TestParsePRLine verifies the tab-separated output parser for the deterministic gh-based PR branch
+// check (deterministicPRForBranch).
 func TestParsePRLine(t *testing.T) {
 	// Happy path: url<TAB>state as emitted by `gh ... --jq '@tsv'`.
 	if u, s := parsePRLine("https://github.com/OWNER/REPO/pull/42\tMERGED"); u != "https://github.com/OWNER/REPO/pull/42" || s != "merged" {
@@ -546,10 +534,8 @@ func TestParsePRLine(t *testing.T) {
 	}
 }
 
-// TestDeterministicPRForBranchUnverifiable verifies the deterministic PR
-// check returns verified=false (never a false "no PR") when it cannot run —
-// missing repo slug or branch. In that case the step gate degrades to
-// recorded sources instead of failing a possibly-valid run.
+// TestDeterministicPRForBranchUnverifiable verifies the deterministic PR check returns
+// verified=false (never a false "no PR") when it cannot run — missing repo slug or branch.
 func TestDeterministicPRForBranchUnverifiable(t *testing.T) {
 	if u, s, v := deterministicPRForBranch("", "some-branch"); u != "" || s != "" || v {
 		t.Errorf("empty repo slug: got (%q, %q, %v), want (\"\", \"\", false)", u, s, v)

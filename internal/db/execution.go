@@ -9,10 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ExecutionRow is the data-access shape of a worker_executions table row
-// (docs/02 §2.7, docs/09 §3.3). A concrete invocation of a Worker
-// against a Task on an adapter. Created by the TaskReconciler at
-// dispatch; owns the adapter session.
+// ExecutionRow is the data-access shape of a worker_executions table row (docs/02 §2.7, docs/09
+// §3.3).
 type ExecutionRow struct {
 	ID             string
 	TenantID       string
@@ -49,9 +47,7 @@ type ExecutionRow struct {
 	UpdatedAt      time.Time
 }
 
-// CreateExecution inserts a new worker execution row
-// (docs/03 §4: createWorkerExecution). The caller controls the
-// transaction so the outbox row can be enqueued atomically.
+// CreateExecution inserts a new worker execution row (docs/03 §4: createWorkerExecution).
 func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionRow, error) {
 	const q = `INSERT INTO worker_executions
 		(id, tenant_id, project_id, task_id, worker_id, worker_version,
@@ -126,9 +122,8 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 	return e, nil
 }
 
-// ListExecutionsFilter scopes a list query to a tenant, optionally
-// filtered by project/task/status/workflow_run_id, with free-text
-// search and sort.
+// ListExecutionsFilter scopes a list query to a tenant, optionally filtered by
+// project/task/status/workflow_run_id, with free-text search and sort.
 type ListExecutionsFilter struct {
 	TenantID        string
 	ProjectID       string
@@ -214,8 +209,6 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	}
 	if f.AfterID != "" {
 		// Keyset pagination on the (sort key, id) tuple of the cursor row.
-		// This replaces the old bare `id > $n` cursor, which contradicted the
-		// default created_at DESC ordering and re-returned page 1 on page 2.
 		cmp := "<"
 		if f.SortOrder == "asc" {
 			cmp = ">"
@@ -279,8 +272,6 @@ type UpdateExecutionFields struct {
 }
 
 // UpdateExecution applies a partial update with optimistic concurrency.
-// The tenant_id is injected into the WHERE clause. Returns ErrNotFound
-// if no row matches the id+tenant+version.
 func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, f UpdateExecutionFields) (ExecutionRow, error) {
 	q := `UPDATE worker_executions SET updated_at = now(), version = version + 1`
 	args := []any{tenantID, id, expectedVersion}
@@ -397,19 +388,12 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	return e, nil
 }
 
-// activeExecutionStatuses is the SQL form of the non-terminal execution
-// set the concurrency guard counts: dispatching / running / healthy /
-// stalled / unhealthy / terminating. Any other status (succeeded, failed,
-// failed_to_start, terminated) has released its dispatch slot. Every
-// per-project dispatch-limit COUNT query MUST use this constant so the
-// "active execution" definition stays in one place.
+// Every per-project dispatch-limit COUNT query MUST use this constant so the "active execution"
+// definition stays in one place.
 const activeExecutionStatuses = "('dispatching','running','healthy','stalled','unhealthy','terminating')"
 
-// CountActiveExecutionsForProject returns the number of currently active
-// (non-terminal) executions for a project. It is the per-project admission
-// measure for the max-concurrent-runs dispatch guard: when the count is at
-// or above a project's effective limit, the TaskReconciler holds the next
-// dispatch until a running execution releases its slot.
+// CountActiveExecutionsForProject returns the number of currently active (non-terminal) executions
+// for a project.
 func CountActiveExecutionsForProject(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error) {
 	var count int
 	err := tx.QueryRow(ctx,
@@ -465,25 +449,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 	return out, rows.Err()
 }
 
-// ListRunningExecutions returns the executions the execution-liveness reaper
-// must examine: every non-terminal execution that still HOLDS A DISPATCH SLOT
-// (docs/03 §6 liveness).
-//
-// IT USES activeExecutionStatuses, NOT AN ENUMERATION, and that is the whole
-// point. The old list spelled out ('running','healthy','dispatching') — the
-// states an execution is USUALLY in — while the dispatch-limit guard counts
-// activeExecutionStatuses, which ALSO includes 'unhealthy', 'stalled' and
-// 'terminating'. So an execution that left the running set the moment a
-// liveness probe failed it became INVISIBLE TO THE REAPER while still counting
-// against the cap: nothing could ever release its slot. Observed in the field:
-// ten such executions, the oldest from 2026-09-06, pinned a project at its
-// 10/10 max-concurrent-runs cap, so every later dispatch was deferred forever
-// and the epic's run sat "waiting for dispatch" with no execution anywhere.
-//
 // The invariant is: ANYTHING THAT CAN HOLD A SLOT MUST BE REAP-CHECKABLE.
-// Listing decides only ELIGIBILITY TO BE CHECKED; liveness is decided
-// separately by the reaper's `active` probe, so a genuinely-live execution in
-// one of these states is skipped rather than reaped.
 func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]ExecutionRow, error) {
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
@@ -523,9 +489,8 @@ func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]E
 	return out, rows.Err()
 }
 
-// ListReadyTasks returns work items in "ready" status for a tenant,
-// ordered by priority (docs/03 §3: scheduling input). The TaskReconciler
-// processes these for dispatch.
+// ListReadyTasks returns work items in "ready" status for a tenant, ordered by priority (docs/03
+// §3: scheduling input).
 func ListReadyTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
@@ -570,11 +535,8 @@ func DeleteExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) error 
 	return nil
 }
 
-// ListBlockedTasks returns work items in "blocked" status for a tenant,
-// ordered by priority — the TaskReconciler scan complement to
-// ListReadyTasks. Blocked tasks are re-evaluated on every pass so a newly
-// satisfied dependency gate flips them back to ready (and dispatches in
-// the same pass) without any new notifier wiring.
+// ListBlockedTasks returns work items in "blocked" status for a tenant, ordered by priority — the
+// TaskReconciler scan complement to ListReadyTasks.
 func ListBlockedTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
@@ -606,23 +568,14 @@ func ListBlockedTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkIt
 	return out, rows.Err()
 }
 
-// terminalSuccessStatuses is the SQL form of
-// domain.WorkItemIsTerminalSuccess: a work item is terminal-success for
-// dependency/arming purposes exactly when its status is one of these.
-// Every SQL dependency gate MUST use this constant (and stay in lockstep
-// with the Go predicate) so skip-status and depends_on share one
-// terminal-success definition. failed/cancelled are NOT listed — they
-// keep dependents blocked.
+// Every SQL dependency gate MUST use this constant (and stay in lockstep with the Go predicate) so
+// skip-status and depends_on share one terminal-success definition.
 const terminalSuccessStatuses = "('succeeded','skipped')"
 
-// CheckDependenciesSatisfied returns true if all dependency edges pointing
-// TO the given work item have their source (from_id) in a terminal-success
-// state (succeeded or skipped). A task is only dispatched when its
-// dependencies are satisfied (docs/02 §4 invariant #1, docs/03 §4).
+// CheckDependenciesSatisfied returns true if all dependency edges pointing TO the given work item
+// have their source (from_id) in a terminal-success state (succeeded or skipped).
 func CheckDependenciesSatisfied(ctx context.Context, tx pgx.Tx, tenantID, workItemID string) (bool, error) {
-	// A work item is ready to dispatch if:
-	// 1. It has no blocking dependencies (no from_id edges where type in blocks/depends_on), OR
-	// 2. All blocking dependencies point to items in a terminal-success state.
+	// A work item is ready to dispatch if: 1.
 	const q = `WITH blocking_deps AS (
 		SELECT from_id FROM work_item_dependencies
 		WHERE tenant_id = $1 AND to_id = $2
@@ -678,29 +631,12 @@ func GetLatestExecutionForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID 
 	return e, nil
 }
 
-// stuckExecutionStatuses is the SQL form of the slot-holding statuses the
-// liveness layer has ALREADY marked not-well: 'unhealthy' and 'stalled' are
-// recorded liveness-probe verdicts, and 'terminating' is an execution on its
-// way out that never finished leaving. An execution in one of these holds a
-// dispatch slot while being known bad — exactly the set that pinned a project
-// at its cap in the field (ten rows, the oldest three weeks old, none reaped,
-// so every later dispatch was deferred forever).
-//
-// DELIBERATELY EXCLUDES 'running'/'healthy'/'dispatching'. Those hold slots
-// too, but they may be perfectly alive, and NOTHING here may treat them as
-// dead: only the reaper's own liveness probe decides that. This set is a
-// reporting and candidate set, never a kill list.
+// stuckExecutionStatuses is the SQL form of the slot-holding statuses the liveness layer has
+// ALREADY marked not-well: 'unhealthy' and 'stalled' are recorded liveness-probe verdicts.
 const stuckExecutionStatuses = "('unhealthy','stalled','terminating')"
 
-// ListStuckExecutionsForProject returns the project's slot-holding executions
-// that carry a status the liveness layer has already marked not-well
-// (stuckExecutionStatuses), oldest first.
-//
-// This is the DIAGNOSTIC view — "here is what is holding your project's slots
-// and is known bad" — for the run-view blockage card. It is NOT the reaper's
-// input: the reaper lists every slot holder (ListRunningExecutions) and lets
-// its liveness probe decide, which is the only thing entitled to. Keeping the
-// two apart is what lets the card be specific without ever authorising a kill.
+// ListStuckExecutionsForProject returns the project's slot-holding executions that carry a status
+// the liveness layer has already marked not-well (stuckExecutionStatuses), oldest first.
 func ListStuckExecutionsForProject(ctx context.Context, tx pgx.Tx, tenantID, projectID string) ([]ExecutionRow, error) {
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
@@ -739,13 +675,8 @@ func ListStuckExecutionsForProject(ctx context.Context, tx pgx.Tx, tenantID, pro
 	return out, rows.Err()
 }
 
-// ListRunningExecutionsForProject is ListRunningExecutions scoped to one
-// project — every execution holding a dispatch slot for that project, which is
-// the candidate set an operator-invoked release examines.
-//
-// It is the SAME activeExecutionStatuses set the cap counts and the same one
-// ListRunningExecutions uses: the reaper must be able to examine exactly the
-// executions that can hold a slot, or it cannot release the ones that hold one.
+// ListRunningExecutionsForProject is ListRunningExecutions scoped to one project — every execution
+// holding a dispatch slot for that project.
 func ListRunningExecutionsForProject(ctx context.Context, tx pgx.Tx, tenantID, projectID string) ([]ExecutionRow, error) {
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,

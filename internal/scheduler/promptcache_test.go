@@ -1,8 +1,7 @@
 package scheduler
 
-// Tests for ADR-0009 D5: context-file fingerprinting + the rendered
-// context-section prefix cache (hit → verbatim reuse; miss → re-render
-// with an attributable per-path diff).
+// Tests for ADR-0009 D5: context-file fingerprinting + the rendered context-section prefix cache
+// (hit → verbatim reuse; miss → re-render with an attributable per-path diff).
 
 import (
 	"fmt"
@@ -125,12 +124,6 @@ func TestPromptSectionCacheHitReuseVerbatim(t *testing.T) {
 }
 
 // TestCacheDoesNotConfuseTheTwoPolicies pins that the policy is part of the cache identity.
-//
-// The cache is keyed on (tenant, project, rootNote, fingerprint). Two sections can share ALL of those — the
-// skills union and the context union are derived from the same project selection and can hash to the same
-// stamps — while rendering DIFFERENT bytes, because one inlines a large file and the other degrades it to a
-// reference. Without the policy in the key the second caller is served the first's bytes: the skill section
-// would silently come back as a context listing, which is the exact defect this change removes.
 func TestCacheDoesNotConfuseTheTwoPolicies(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "big.md")

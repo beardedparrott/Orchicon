@@ -1,16 +1,5 @@
-// Package project implements the ProjectService Connect handler
-// (docs/07_API_Specification.md §3.1). It is the API-layer boundary
-// between the generated Connect handlers and the data-access layer.
-//
-// Responsibilities:
-//   - validate and sanitize all inputs (the security boundary),
-//   - resolve the tenant from the request context,
-//   - perform the mutation + outbox enqueue in one transaction,
-//   - map db row types to the generated proto types.
-//
-// No business logic lives here beyond input validation and lifecycle
-// transitions; reconcilers and policy engines govern deeper behavior
-// (AGENTS.md invariant #1).
+// Package project implements the ProjectService Connect handler (docs/07_API_Specification.md
+// §3.1).
 package project
 
 import (
@@ -46,10 +35,8 @@ const (
 	maxDirEntries   = 10000   // max entries returned by listDirectory
 )
 
-// slugRE defines the canonical slug character set: lowercase alphanumerics
-// and hyphens, must start and end alphanumeric. This is the security
-// gate that rejects path-traversal or injection-laden slugs before they
-// reach the database.
+// slugRE defines the canonical slug character set: lowercase alphanumerics and hyphens, must start
+// and end alphanumeric.
 var slugRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // validateName trims and bounds-checks a project name. An empty name
@@ -60,15 +47,6 @@ func validateName(name string) (string, error) {
 		return "", errors.New("name must not be empty")
 	}
 	// A CONTROL CHARACTER IS REFUSED HERE, WITH ITS NAME, rather than by Postgres with a byte offset.
-	//
-	// REPORTED (Windows TUI, creating a project): `internal: db: create project: ERROR: invalid byte
-	// sequence for encoding "UTF8": 0x00 (SQLSTATE 22021)`. Two things made that message useless: it names
-	// no field, and the offending byte is INVISIBLE — the operator's name read "Temp" on screen. A text
-	// column cannot hold U+0000 at all, so this can never succeed; the only question is whether the client
-	// learns which field to fix.
-	//
-	// The TUI no longer puts one in a form field (kit2.sanitizeInput), but this boundary is the guarantee:
-	// the driver error must not be reachable from ANY client, including one written later.
 	if i := strings.IndexFunc(name, isControlRune); i >= 0 {
 		r := []rune(name)[i]
 		return "", fmt.Errorf("name must not contain control characters (found %#U at character %d); "+
@@ -96,9 +74,8 @@ func validateSlug(slug string) (string, error) {
 	return slug, nil
 }
 
-// normalizeSlug validates the slug if provided; otherwise derives one
-// from the name (lowercased, spaces → hyphens, non-safe chars stripped).
-// The result is always slugRE-matched before returning.
+// normalizeSlug validates the slug if provided; otherwise derives one from the name (lowercased,
+// spaces → hyphens, non-safe chars stripped).
 func normalizeSlug(slug, name string) (string, error) {
 	slug = strings.TrimSpace(slug)
 	if slug == "" {
@@ -113,10 +90,8 @@ func normalizeSlug(slug, name string) (string, error) {
 	return slug, nil
 }
 
-// deriveSlug produces a best-effort slug from a name: lowercase, replace
-// whitespace runs with single hyphens, drop characters outside [a-z0-9-].
-// The result is guaranteed to match slugRE (a fully-stripped name falls
-// back to "project" so the unique index never sees an empty slug).
+// deriveSlug produces a best-effort slug from a name: lowercase, replace whitespace runs with
+// single hyphens, drop characters outside [a-z0-9-].
 func deriveSlug(name string) string {
 	s := strings.ToLower(strings.TrimSpace(name))
 	var b strings.Builder
@@ -204,10 +179,7 @@ func goalsToFields(goals string) ([]*apiv1.GoalField, error) {
 	return fields, nil
 }
 
-// requireTenant resolves the tenant id from the context. The middleware
-// (internal/middleware/tenant.go) stores it; if it is missing the
-// request was unscoped, which is an internal error (the middleware
-// should have rejected it).
+// requireTenant resolves the tenant id from the context.
 func requireTenant(ctx context.Context) (string, error) {
 	id := tenant.FromContext(ctx)
 	if id == "" {
@@ -236,8 +208,6 @@ func statusFromProto(status apiv1.ProjectStatus) string {
 }
 
 // statusToProto maps a domain status string to the proto enum value.
-// Unknown statuses map to UNSPECIFIED so the API never crashes on a row
-// with an unexpected status (defensive — the DB should prevent this).
 func statusToProto(status string) int32 {
 	switch status {
 	case domain.ProjectDrafting:
@@ -256,9 +226,6 @@ func statusToProto(status string) int32 {
 }
 
 // validateProjectDir validates and cleans a project directory path.
-// It resolves the path to an absolute path (expanding ~ and symlinks),
-// verifies it exists and is a directory, and prevents path-traversal
-// attacks. Returns the cleaned absolute path.
 func validateProjectDir(dir string) (string, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
@@ -286,11 +253,8 @@ func validateProjectDir(dir string) (string, error) {
 		return "", fmt.Errorf("resolve absolute path: %w", err)
 	}
 	abs = filepath.Clean(abs)
-	// In the single-container deployment the project_dir is a HOST path that
-	// is only mounted after `scripts/container.sh up` re-creates the
-	// container. It may not exist inside the container yet, so don't require
-	// it here — existence is enforced at dispatch (the adapter fails the
-	// execution if the dir is never mounted).
+	// In the single-container deployment the project_dir is a HOST path that is only mounted after
+	// `scripts/container.sh up` re-creates the container.
 	if os.Getenv("ORCHICON_CONTAINER_MODE") == "1" {
 		return abs, nil
 	}
@@ -307,11 +271,7 @@ func validateProjectDir(dir string) (string, error) {
 	return abs, nil
 }
 
-// validateContextFiles validates a list of context file paths. Each path
-// must be non-empty, not exceed the max length, must be absolute, and
-// must not contain path-traversal components like "..". Delegates to the
-// shared contextfiles.Validate so projects and work items use ONE
-// validator (AGENTS.md: fix the whole class, not just one instance).
+// validateContextFiles validates a list of context file paths.
 func validateContextFiles(files []string) error {
 	return contextfiles.Validate(files)
 }
@@ -327,15 +287,6 @@ func contextFilesFromJSON(data []byte) ([]string, error) {
 }
 
 // listDirectory returns the immediate children of a directory path.
-// Skips entries that fail to stat (permission denied, deleted, etc.).
-//
-// subpath IS NOT ALWAYS RELATIVE-ONLY IN PRACTICE. Entries carry an ABSOLUTE Path, and the
-// picker echoes that path straight back to expand a directory, so this is regularly handed an
-// absolute path inside rootDir. Joining it blindly doubled the root
-// (filepath.Join("/p", "/p/skills") == "/p/p/skills") and the expansion failed with a stat on a
-// path that never existed. ResolveWithin is the one shared containment path: it accepts an
-// absolute path inside the root and a relative one, and rejects ".."/symlink escapes that the
-// previous bare Join allowed.
 func listDirectory(rootDir string, relPath string) (string, string, []*apiv1.FileTreeEntry, error) {
 	absRoot, err := filepath.Abs(rootDir)
 	if err != nil {
@@ -403,9 +354,8 @@ func rowToProto(p db.ProjectRow) *apiv1.Project {
 		UpdatedAt:    timestamppb.New(p.UpdatedAt),
 		ProjectDir:   p.ProjectDir,
 		ContextFiles: contextFilesFromJSONOrEmpty(p.ContextFiles),
-		// SkillFiles is the SELECTABLE skill path array (distinct from the
-		// free-text `skills` prompt section); same best-effort JSON decode as
-		// context_files so a corrupt payload degrades to empty, never a crash.
+		// SkillFiles is the SELECTABLE skill path array (distinct from the free-text `skills` prompt
+		// section); same best-effort JSON decode as context_files so a corrupt payload degrades to empty.
 		SkillFiles:          contextFilesFromJSONOrEmpty(p.SkillFiles),
 		MaxConcurrentRuns:   int32(p.MaxConcurrentRuns),
 		RepoSlug:            stringOrEmpty(p.RepoSlug),
@@ -444,9 +394,7 @@ func stringOrEmpty(s *string) string {
 	return *s
 }
 
-// contextFilesFromJSONOrEmpty is a best-effort parser for the context_files
-// JSONB column. Returns empty slice on any error so the API never crashes
-// on corrupt data.
+// contextFilesFromJSONOrEmpty is a best-effort parser for the context_files JSONB column.
 func contextFilesFromJSONOrEmpty(data []byte) []string {
 	files, err := contextFilesFromJSON(data)
 	if err != nil {

@@ -7,13 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// TestReplyPermissionAskAnswersAQuestion is the PAUSE's server contract: a
-// clarifying question is answered with CONTENT, not a permission choice, and the
-// answer is recorded where the drain loop reads it (so it becomes the ask_user tool
-// result and the paused turn resumes).
-//
-// Without this branch the RPC rejected an unspecified choice outright, so a blocking
-// question could never be answered at all.
+// TestReplyPermissionAskAnswersAQuestion is the PAUSE's server contract: a clarifying question is
+// answered with CONTENT, not a permission choice.
 func TestReplyPermissionAskAnswersAQuestion(t *testing.T) {
 	svc := testConsentService()
 	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
@@ -52,9 +47,8 @@ func TestReplyPermissionAskAnswersAQuestion(t *testing.T) {
 	}
 }
 
-// TestReplyPermissionAskRejectsAnEmptyQuestionAnswer: an empty answer would resume
-// the model with a blank tool result, which reads as "the operator said nothing"
-// when in fact nothing was submitted.
+// TestReplyPermissionAskRejectsAnEmptyQuestionAnswer: an empty answer would resume the model with a
+// blank tool result, which reads as "the operator said nothing" when in fact nothing.
 func TestReplyPermissionAskRejectsAnEmptyQuestionAnswer(t *testing.T) {
 	svc := testConsentService()
 	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
@@ -72,9 +66,8 @@ func TestReplyPermissionAskRejectsAnEmptyQuestionAnswer(t *testing.T) {
 	}
 }
 
-// TestReplyPermissionAskAnswerIsIdempotent: a second answer to the same question is
-// reported expired rather than overwriting the first — the same rule a permission
-// decision follows, and the reason the operator's click cannot double-apply.
+// TestReplyPermissionAskAnswerIsIdempotent: a second answer to the same question is reported
+// expired rather than overwriting the first — the same rule a permission decision follows.
 func TestReplyPermissionAskAnswerIsIdempotent(t *testing.T) {
 	svc := testConsentService()
 	ct := newTestConsentTurn(svc, "/p/proj", true, nil)
@@ -100,9 +93,8 @@ func TestReplyPermissionAskAnswerIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestRaiseQuestionRefusesAnEmptyQuestionAndTooFewOptions pins the fail-loud rule:
-// a question with no text is not answerable and must be REFUSED rather than raised
-// as a card the operator cannot complete.
+// TestRaiseQuestionRefusesAnEmptyQuestionAndTooFewOptions pins the fail-loud rule: a question with
+// no text is not answerable and must be REFUSED rather than raised as a card the operator cannot.
 func TestRaiseQuestionRefusesAnEmptyQuestionAndTooFewOptions(t *testing.T) {
 	svc := testConsentService()
 	ct := newTestConsentTurn(svc, "/p/proj", true, nil)

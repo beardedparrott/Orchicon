@@ -1,24 +1,7 @@
 package scheduler
 
-// diff_ledger_wiring_test.go — A BRIDGE GETS DIFF SUPPORT BY REGISTERING.
-//
-// THE OPERATOR: "I don't see ANY files under diff viewer right now in this ask
-// session", and then: "ensure every adapter and provider is supported for diff
-// viewer in ask sessions and executions. Having something more standard that
-// works across the board would be nice if we can."
-//
-// THE DEFECT THIS PINS. The diff-ledger hook was applied ONE BRIDGE AT A TIME in
-// server construction, and the Ask half was applied to exactly one of the three
-// Ask-capable adapters. `opencode` and `claude` BOTH implement ChatTurnClient —
-// both serve Ask conversations — and neither had an Ask hook, so those
-// conversations recorded no file edits at all and the diff pane stayed empty.
-// Nothing was wrong with either adapter; a wiring step was simply never taken
-// for them, and a fourth adapter would have inherited the same gap.
-//
-// So the property worth pinning is NOT "the hook can be set" (it always could).
-// It is that REGISTRATION IS THE ONLY STEP REQUIRED: a bridge that can ledger
-// receives the callbacks when it is registered, whichever order the server
-// happens to wire things in, and one that cannot is left alone without a panic.
+// It is that REGISTRATION IS THE ONLY STEP REQUIRED: a bridge that can ledger receives the
+// callbacks when it is registered, whichever order the server happens to wire things.
 
 import (
 	"context"
@@ -84,9 +67,7 @@ func TestRegisteringAppliesTheDiffLedger(t *testing.T) {
 	}
 }
 
-// ORDER INDEPENDENCE: a bridge registered BEFORE the ledger is installed still
-// receives it. Without this, a server that registers first would silently leave
-// every adapter out — the same class of omission, one step earlier.
+// ORDER INDEPENDENCE: a bridge registered BEFORE the ledger is installed still receives it.
 func TestInstallingTheLedgerAfterRegistrationAlsoApplies(t *testing.T) {
 	d := NewDispatcher()
 	b := &fakeLedgerBridge{}
@@ -105,9 +86,7 @@ func TestInstallingTheLedgerAfterRegistrationAlsoApplies(t *testing.T) {
 	}
 }
 
-// A BRIDGE THAT CANNOT LEDGER IS LEFT ALONE, WITHOUT A PANIC. This is the
-// optional-capability discipline the repo uses for MessageInjector/Aborter: a
-// bridge that does not implement the interface is simply not a sink.
+// A BRIDGE THAT CANNOT LEDGER IS LEFT ALONE, WITHOUT A PANIC.
 func TestABridgeWithoutTheCapabilityIsNotForced(t *testing.T) {
 	d := NewDispatcher()
 	d.SetDiffLedger(
@@ -123,9 +102,8 @@ func TestABridgeWithoutTheCapabilityIsNotForced(t *testing.T) {
 	}
 }
 
-// CAPABILITY IS ASKABLE PER KIND, so "does this adapter support the diff pane?"
-// has an answer for an adapter nobody thought to check — the question that was
-// never asked about opencode and claude.
+// CAPABILITY IS ASKABLE PER KIND, so "does this adapter support the diff pane?" has an answer for
+// an adapter nobody thought to check — the question that was never asked about opencode and claude.
 func TestDiffLedgerCapabilityIsAskablePerKind(t *testing.T) {
 	d := NewDispatcher()
 	d.Register("can", &fakeLedgerBridge{})

@@ -2,12 +2,8 @@
 
 package planecontrol
 
-// hostproc_windows_test.go — the Windows process-identity probes, asserted on a real Windows host (this file is
-// COMPILED by `make cross-compile`'s go vet and RUN only where the platform exists).
-//
-// WHAT IT PINS, and why each case is here rather than in an untagged test: the previous Windows
-// implementation was four stubs that returned "nothing" for everything, which made `plane status` report no
-// PID for a running plane and `plane stop` a silent no-op. These cases fail if that ever comes back.
+// hostproc_windows_test.go — the Windows process-identity probes, asserted on a real Windows host
+// (this file is COMPILED by `make cross-compile`'s go vet and RUN only where the platform exists).
 
 import (
 	"bytes"
@@ -90,9 +86,8 @@ func TestServingPlanePIDRejectsAStalePIDFile(t *testing.T) {
 	}
 }
 
-// TestDriftIsCurrentForOurOwnBinaryAndNeverDrifted: `Current` when a live PID file names this binary, and NEVER
-// `Drifted` — a running Windows image cannot be unlinked, so the Unix drift fingerprint cannot arise (see
-// hostproc_windows.go). The second half is the property a future reader would otherwise have to rediscover.
+// TestDriftIsCurrentForOurOwnBinaryAndNeverDrifted: `Current` when a live PID file names this
+// binary, and NEVER `Drifted` — a running Windows image cannot be unlinked.
 func TestDriftIsCurrentForOurOwnBinaryAndNeverDrifted(t *testing.T) {
 	seedPlanePIDFile(t, "win-drift", os.Getpid())
 	var out bytes.Buffer

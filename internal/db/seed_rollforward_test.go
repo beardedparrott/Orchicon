@@ -1,21 +1,6 @@
 package db
 
 // seed_rollforward_test.go — A PROMPT CHANGE THAT NEVER REACHES A WORKER IS NOT A CHANGE.
-//
-// The seeder syncs a canned worker's role/skills/behavior/agents_md onto its current published version, so a
-// prompt fix in this package reaches a live worker only if the seeder DECIDES to sync. That decision used to be
-// keyed on hand-written marker strings — seedSafetyMarker, sandboxPlaneMarker, and a per-worker RollMarker.
-//
-// A marker is a presence check. It can only notice a change someone invented a new marker for, so an ordinary
-// edit to a prompt left every existing install running the old text with no log line and no error.
-//
-// MEASURED on exactly that: the Quick Software Engineer's shipping section was rewritten to be mode-aware
-// (commit-only for a `local` project, push + PR only when there is a remote). Its RollMarker is the static
-// phrase "GATED ON A GREEN RESULT", which the edit left in place — so the seeder saw nothing to do, and the
-// fix was dead on every pre-existing install. Testing the prompt TEXT could not catch it: the source was
-// right; the delivery path was not.
-//
-// These assertions are on the decision, which is the seam the failure lived in.
 
 import (
 	"strings"
@@ -122,12 +107,6 @@ func TestDroppedSafetyStillRollsForward(t *testing.T) {
 }
 
 // TestTheQuickProfileDoesNotAssertThePRFlowUnconditionally — the profile is prompt text.
-//
-// WorkerIdentityBlock renders Role/Skills/Behavior/AGENTS.md into every composite prompt, so the Quick worker's
-// Behavior line IS an instruction the worker reads. It said "push to origin, then open a PR into develop and
-// merge it" with no notion of strategy, which directly contradicted the mode-aware shipping section in the same
-// prompt for a project with no remote — and a worker reading two conflicting instructions follows the one it
-// read last, or worse, tries both.
 func TestTheQuickProfileDoesNotAssertThePRFlowUnconditionally(t *testing.T) {
 	w := quickCanned(t)
 	profile := w.Description + "\n" + w.Purpose + "\n" + w.Behavior

@@ -1,22 +1,11 @@
 package db
 
 // pool_sizing_test.go — THE POOL MUST COVER THE PLANE'S OWN PINNED CONNECTIONS.
-//
-// THE FAILURE THIS PINS, measured on a 6-CPU macOS host: sign-up and local-login hung until the client gave
-// up (`db: begin tx: context canceled` in the log) while /healthz returned 200 and the UI loaded. Nobody could
-// create an account, so nobody could log in.
-//
-// The cause was arithmetic. leaderElection (internal/reconciler/manager.go) holds a dedicated *pgxpool.Conn
-// per reconciler kind for the process lifetime — pg_try_advisory_lock is session-scoped, so 7 kinds means 7
-// connections that never come back. pgx's default ceiling is `max(4, NumCPU)`; with 6 CPUs that is 6, so the
-// seven reconcilers took every connection and every request waited forever. A 12-16 CPU workstation leaves
-// headroom, which is why the same code was fine on the operator's Windows box and broken on the Mac.
 
 import "testing"
 
-// reconcilerKinds is the count today (server.go registers task, workflow, recovery, scheduled-run, sequence,
-// recurring-fire and worktree). Kept as a constant here so the floor assertion below fails loudly if the
-// reconciler set grows past what the pool can carry.
+// reconcilerKinds is the count today (server.go registers task, workflow, recovery, scheduled-run,
+// sequence, recurring-fire and worktree).
 const reconcilerKinds = 7
 
 // dispatchConcurrencyDefault mirrors config.Default()'s DispatchConcurrency, each in-flight item holding one

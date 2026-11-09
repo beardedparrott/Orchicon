@@ -1,13 +1,6 @@
 package kit2
 
 // refresh_key_test.go — `r` must re-read the OPEN DETAIL, not just the list.
-//
-// REPORTED: "Hitting 'r' in the tui to refresh a workflow run is not working."
-//
-// It was doing something; it was doing the wrong thing. `r` called Refresh(activeSource), which reloads the
-// source LIST — and a run's detail (its step flow, its statuses, its new error field) is produced by the
-// DETAIL function, which only RefreshView re-requests. So on a run row the key re-read the list, which is
-// invisible because the cursor re-seats by id, and left the detail stale. From the operator's side: nothing.
 
 import (
 	"context"
@@ -53,10 +46,6 @@ func TestRefreshKeyReRequestsTheOpenDetail(t *testing.T) {
 		t.Fatal("`r` produced no command — nothing would be re-read, which is the reported 'does nothing'")
 	}
 	// The command must actually re-fetch: RUN it and assert the DETAIL function was called again.
-	//
-	// tea.Batch resolves to a BatchMsg, which only the Bubble Tea runtime expands into its parts — so a test
-	// that simply calls Update(batch) executes NOTHING and would "pass" while nothing happened. Draining it
-	// here is what makes this assertion about behaviour rather than about the shape of a return value.
 	drain(t, b, cmd)
 	if calls <= before {
 		t.Fatalf("`r` re-read the list but NOT the open detail (%d -> %d calls) — a run's step flow would "+

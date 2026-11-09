@@ -1,16 +1,6 @@
 package screenkit
 
 // format_test.go — TIMES ARE LOCAL AND ALWAYS LABELLED.
-//
-// The operator: "I also would like all times in orch to actually show local time and print the time zone
-// by the time so people truly know what timezone it is reporting in. This should be able to be gathered
-// from the system."
-//
-// THESE ASSERTIONS ARE DELIBERATELY WRITTEN TO HOLD IN WHATEVER ZONE THE MACHINE IS IN, because that is
-// the entire point of the change: the formatter reports the SYSTEM's zone rather than assuming one. A
-// test that hard-coded "EDT" would pass only on the author's laptop — and it would be asserting the
-// wrong property anyway, since the defect being fixed is not "it printed the wrong zone", it is "it
-// printed UTC and said nothing".
 
 import (
 	"strings"
@@ -40,9 +30,7 @@ func TestFmtTimeRendersTheLocalWallClockWithItsZone(t *testing.T) {
 	}
 }
 
-// THE DEFECT THIS REPLACED, pinning the exact output. FmtTime used to be
-// `ts.AsTime().UTC().Format("2006-01-02 15:04")`, so this is the string it produced: a bare UTC wall
-// clock with nothing saying so.
+// THE DEFECT THIS REPLACED, pinning the exact output.
 func TestFmtTimeIsNotTheUnlabelledUTCForm(t *testing.T) {
 	got := FmtTime(timestamppb.New(time.Date(2026, time.January, 2, 3, 4, 0, 0, time.UTC)))
 	if got == "2026-01-02 03:04" {
@@ -58,9 +46,7 @@ func TestFmtTimeAbsentMarkerUnchanged(t *testing.T) {
 	}
 }
 
-// THE ZONE LABEL NAMES THE ZONE AND GIVES ITS OFFSET. Driven with FIXED zones so the expectation is a
-// constant rather than a property of the machine — including the half-hour offset, which a naive
-// "hours only" implementation renders as the wrong time entirely.
+// THE ZONE LABEL NAMES THE ZONE AND GIVES ITS OFFSET.
 func TestZoneLabelNamesTheZoneAndItsOffset(t *testing.T) {
 	for _, c := range []struct {
 		what string
@@ -82,13 +68,9 @@ func TestZoneLabelNamesTheZoneAndItsOffset(t *testing.T) {
 	}
 }
 
-// THE OFFSET COMES FROM THE INSTANT, NOT FROM "NOW". Asking the machine for its offset today and
-// applying it to a date on the other side of a DST boundary prints the wrong offset on one of them —
-// off by an hour and confidently so, which is the worst kind of wrong for a time.
+// THE OFFSET COMES FROM THE INSTANT, NOT FROM "NOW".
 func TestZoneLabelIsReadFromTheInstantNotFromNow(t *testing.T) {
-	// Two instants a year apart in a DST-observing zone. Their offsets must be whatever EACH instant's
-	// zone says; the assertion is that the label follows the instant, so the two labels in a DST zone
-	// differ, and the label of a past instant is not simply today's.
+	// Two instants a year apart in a DST-observing zone.
 	cet, err := time.LoadLocation("Europe/Berlin")
 	if err != nil {
 		t.Skip("no zone database on this machine — the instant-vs-now property is unobservable here")
@@ -189,8 +171,8 @@ func TestFmtElapsedMatchesTheGUIsForms(t *testing.T) {
 }
 
 // A NEGATIVE SPAN IS CLAMPED, not printed as a minus sign: an end before its start is a clock
-// disagreement between this machine and the plane, and the operator needs to know the job is running.
-// The GUI clamps the same way (LiveDuration's Math.max(0, …)).
+// disagreement between this machine and the plane, and the operator needs to know the job is
+// running.
 func TestFmtElapsedClampsANegativeSpan(t *testing.T) {
 	if got := FmtElapsed(-30 * time.Second); got != "<1s" {
 		t.Errorf("FmtElapsed(-30s) = %q, want the clamp (\"<1s\")", got)

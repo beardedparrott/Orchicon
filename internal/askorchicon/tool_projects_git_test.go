@@ -42,9 +42,7 @@ func askCreateProjectRaw(t *testing.T, pool *db.Pool, args string) map[string]an
 	return m
 }
 
-// A NON-REPO DIRECTORY OUTSIDE ANY REPOSITORY. t.TempDir() would live inside this project's own checkout, where
-// `git rev-parse` finds the enclosing repository and the directory therefore looks git-backed — the opposite of
-// what these tests need.
+// A NON-REPO DIRECTORY OUTSIDE ANY REPOSITORY.
 func bareDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "orchicon-ask-git-")

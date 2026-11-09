@@ -1,16 +1,6 @@
 package tui
 
 // transcript_wrap_wiring_test.go — THE WIRING, WHICH NOTHING ELSE COVERED.
-//
-// kit2's stream_wrap_test.go proves the stream CAN wrap an over-wide line — but
-// it calls WrapOverflow() itself, so it proves nothing about whether anything in
-// production ever does. The transcript is the caller that matters, and its
-// opt-in was a bare line inside a large paint method.
-//
-// That made the fix unguarded in the exact way it arrived: delete
-// WrapOverflow() from the builder and every test in the repo still passes, while
-// the operator's "sentences cut mid-word" bug comes back silently — no error, no
-// failing test, just text quietly missing from the end of long lines.
 
 import (
 	"strings"

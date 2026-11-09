@@ -9,13 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 )
 
-// buildEmbeddedOP constructs the in-process OpenID Provider (zitadel/oidc
-// v3 pkg/op) and wires it + its login bridge into the auth handler. It is
-// called from NewHandler when ORCHICON_OP_ENABLED. The provider derives
-// its ES256 signing key deterministically from the auth signing key (so
-// the JWKS never leaks the HMAC secret and stays stable across restarts)
-// and resolves identity claims live from Postgres via the tenant-scoped
-// resolver.
+// buildEmbeddedOP constructs the in-process OpenID Provider (zitadel/oidc v3 pkg/op) and wires it +
+// its login bridge into the auth handler.
 func (h *Handler) buildEmbeddedOP() error {
 	prov, err := authop.NewProvider(authop.Config{
 		SigningKey:    h.cfg.SigningKey,
@@ -35,11 +30,6 @@ func (h *Handler) buildEmbeddedOP() error {
 }
 
 // opRedirectURIs computes the built-in client's registered redirect URIs.
-// An explicit ORCHICON_OP_REDIRECT_URIS wins; otherwise the default is the
-// auth RedirectURL (the SPA dev callback) plus, when the OP issuer is
-// pinned, the plane-origin /auth/callback if it differs. A dynamic issuer
-// (no OPIssuer) has no static plane origin, so only the RedirectURL is
-// registered.
 func opRedirectURIs(cfg config.AuthConfig) []string {
 	if cfg.OPRedirectURIs != "" {
 		parts := strings.Split(cfg.OPRedirectURIs, ",")
@@ -52,11 +42,7 @@ func opRedirectURIs(cfg config.AuthConfig) []string {
 		return uris
 	}
 	uris := []string{cfg.RedirectURL}
-	// THE PLANE'S OWN ORIGIN, ALWAYS. It used to be added only when OPIssuer was pinned, so a local
-	// install (dynamic issuer) registered the Vite dev-server callback and NOTHING ELSE — and the
-	// browser's login was rejected with "The requested redirect_uri is missing in the client
-	// configuration" before any credential was checked. The plane serves the SPA at its own port, so
-	// that origin is a first-class callback, not a consequence of pinning the issuer.
+	// THE PLANE'S OWN ORIGIN, ALWAYS.
 	add := func(u string) {
 		u = strings.TrimSpace(u)
 		if u == "" {

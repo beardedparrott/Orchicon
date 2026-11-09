@@ -47,12 +47,6 @@ func roleFixture() []*apiv1.Role {
 }
 
 // THE CREATE FORM CARRIES WHAT THE GUI'S CREATE PAGE CARRIES.
-//
-// Measured before this: the create form offered 7 of the GUI's 16 writable
-// fields, missing slug, role_ref, agents_md, permissions, gated_tools,
-// budget_overrides, context_sources, concurrency_limit and version_note. The
-// operator creates workers in both clients, so a field the GUI writes and the TUI
-// cannot is a field that goes missing the moment they use the keyboard.
 func TestWorkerCreateFormCarriesTheGuiFieldSet(t *testing.T) {
 	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1"}, nil)
 
@@ -133,15 +127,6 @@ func TestWorkerCreateFormCarriesTheGuiFieldSet(t *testing.T) {
 }
 
 // HEADER TEXT IS OFFERED UNLESS THE WORKER IS RETIRED.
-//
-// internal/db/worker.go's UpdateWorker gate is `status <> 'retired' OR role-only`,
-// so a published worker DOES accept header text (and may carry the role binding
-// in the same request). It used to be offered only for a draft, which — because
-// workers.status never returns to draft — meant the name/purpose/description of
-// every published worker were uneditable in the TUI, and the fields were not even
-// drawn. Two bugs from that first version are pinned here: the absent fields read
-// as empty strings, which compared "changed" against the real name and fired a
-// header write the server refused.
 func TestWorkerEditFormOffersHeaderTextUnlessRetired(t *testing.T) {
 	versions := []*apiv1.WorkerVersion{pubV("v1", 1, "orchicon/deepseek/deepseek-flash")}
 
@@ -240,12 +225,6 @@ func TestWorkerEditFormOffersHeaderTextUnlessRetired(t *testing.T) {
 }
 
 // THE ROLE BINDING SAVES IN THE SAME REQUEST AS THE HEADER TEXT.
-//
-// It is the one header field a PUBLISHED worker has always accepted, and the
-// server accepts it alongside name/description/purpose on any non-retired worker
-// (db.UpdateWorker). The pair used to need two calls because it was refused
-// together; now one call carries both, so a rename and a rebind cannot half-apply
-// (the role saving while the name failed, or the reverse).
 func TestWorkerEditSavesRoleAndTextInOneRequest(t *testing.T) {
 	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1"}, nil)
 	var headerWrites []*apiv1.UpdateWorkerRequest
@@ -282,11 +261,6 @@ func TestWorkerEditSavesRoleAndTextInOneRequest(t *testing.T) {
 }
 
 // A ROLE THE TENANT NO LONGER RETURNS IS STILL OFFERED.
-//
-// A select can only submit a value it holds, so dropping an unrecognised current
-// binding would silently CLEAR it on the next save — losing a binding the operator
-// never touched. Roles get renamed and deleted; the worker keeps pointing at the
-// old id until someone changes it deliberately.
 func TestWorkerRolePickerKeepsAnUnknownCurrentBinding(t *testing.T) {
 	opts := roleOptions(roleFixture(), "r_deleted")
 	found := false
@@ -313,11 +287,6 @@ func TestWorkerRolePickerKeepsAnUnknownCurrentBinding(t *testing.T) {
 }
 
 // THE NEW-VERSION FORM CREATES NOTHING UNTIL ctrl+s, then creates PUBLISHED.
-//
-// This is the operator's requirement 3 and 4 in one test: opening the form is
-// read-only, so a cancel cannot leave the unpublished draft that an abandoned
-// "New version" leaves today (20 of them on the dev tenant); and saving makes the
-// new version the LIVE one in a single call.
 func TestWorkerNewVersionFormCreatesNothingUntilSave(t *testing.T) {
 	w := &apiv1.Worker{Id: "w1", Name: "writer", Status: apiv1.WorkerStatus_WORKER_STATUS_PUBLISHED}
 	m, _, _ := crudExec(t, w, []*apiv1.WorkerVersion{pubV("v1", 1, "orchicon/deepseek/deepseek-flash")})
@@ -369,14 +338,6 @@ func TestWorkerNewVersionFormCreatesNothingUntilSave(t *testing.T) {
 }
 
 // THE FORM FOLLOWS ITS CURSOR.
-//
-// A worker form is taller than the detail pane on a laptop-sized terminal
-// (createWorkerForm renders 10 rows before this change and ~20 after; the edit
-// form 15). The pane used to build a fresh Panel on every frame, and
-// Panel.SetContent CLAMPS a scroll that starts at 0 — so the lower fields were not
-// merely off-screen, they were UNREACHABLE: the operator was typing into fields
-// they could not see. The assertion is the operator-facing one: move the cursor
-// and the field you are on is on screen.
 func TestWorkerFormScrollsToFollowTheCursor(t *testing.T) {
 	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1"}, nil)
 	// A SHORT pane, which is the terminal shape the operator actually edits in.
@@ -406,13 +367,6 @@ func TestWorkerFormScrollsToFollowTheCursor(t *testing.T) {
 }
 
 // THE FULL OPERATOR PATH FOR Esc: screen → kit2.Base → the form.
-//
-// The operator: "Esc is not only escaping out of the field but also the edit form."
-// kit2.Base now gives the form first refusal on Esc (43101764), and the screen
-// defers to Base while an editor is open — but each link is a place the key could be
-// intercepted, and this test exists because I have twice now fixed a form-level
-// behaviour that the HOST never let run. Unit coverage at the form level cannot see
-// an interception above it.
 func TestScreenEscReleasesTheLockWithoutClosingTheWorkerForm(t *testing.T) {
 	w := &apiv1.Worker{Id: "w1", Name: "writer", Status: apiv1.WorkerStatus_WORKER_STATUS_PUBLISHED}
 	m, _, _ := crudExec(t, w, []*apiv1.WorkerVersion{pubV("v1", 1, "orchicon/deepseek/deepseek-flash")})

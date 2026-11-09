@@ -19,11 +19,8 @@ func (s *ctxStubScreen) ActiveItem() (screenkit.Item, bool) {
 	return screenkit.Item{ID: "sel-1", Title: s.title}, true
 }
 
-// Regression for the operator's report: a message sent from Ask Orchicon
-// carried "[context: Conversations: <the conversation's own title>]". The Ask
-// tab's conversations list is the chat's own conversation, so its title is
-// self-referential — it must not be injected as context (and the dock chip
-// must not claim it will be).
+// Regression for the operator's report: a message sent from Ask Orchicon carried "[context:
+// Conversations: <the conversation's own title>]".
 func TestAskConversationContextIsNotInjected(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabAsk, &ctxStubScreen{

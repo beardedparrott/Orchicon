@@ -160,10 +160,8 @@ func TestModelMetaAndFmtTokens(t *testing.T) {
 	}
 }
 
-// The ORIGIN of a number must be visible, because "1.0M ctx" looks identical
-// whether it came from the provider, a maintained registry, or a hand-authored
-// snapshot — and being unable to tell those apart is exactly how a wrong value
-// goes unnoticed (the operator's "Do NOT hardcode values I tell you").
+// The ORIGIN of a number must be visible, because "1.0M ctx" looks identical whether it came from
+// the provider, a maintained registry, or a hand-authored snapshot.
 func TestModelMetaNamesTheOriginOfTheNumber(t *testing.T) {
 	// The provider answering for its own model is the unremarkable default: no
 	// extra noise on the row.
@@ -197,20 +195,14 @@ func TestFriendlyErrExplainsAnUnconfiguredDiscoverer(t *testing.T) {
 	if got := FriendlyErr(errText("rpc error: code = Unimplemented desc = boom")); !strings.Contains(got, "not configured") {
 		t.Errorf("FriendlyErr(unimplemented) = %q, want a configuration hint", got)
 	}
-	// THE PLANE'S OWN REMEDY MUST SURVIVE. The plane names the fix in a parenthetical, and this client used to
-	// replace the whole message with a dead end — reported verbatim by the operator selecting the opencode
-	// adapter: "it says 'model discovery is not configured on this plane'".
+	// THE PLANE'S OWN REMEDY MUST SURVIVE.
 	plane := errText("rpc error: code = Unimplemented desc = model discovery is not configured (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
 	got := FriendlyErr(plane)
 	if !strings.Contains(got, "ORCHICON_OPENCODE_BIN") || !strings.Contains(got, "install opencode on PATH") {
 		t.Errorf("FriendlyErr dropped the plane's remedy (got %q) — that parenthetical is the only actionable part", got)
 	}
 	// RETRY, NOT RESTART — and the assertion is INVERTED on purpose, which is worth reading before
-	// "fixing" it back. This used to REQUIRE the word "restart", because the discoverer was built once
-	// at boot and installing opencode changed nothing until the plane restarted. The plane now
-	// re-resolves on the request a selection makes (internal/aigateway's lazy discoverer), so a restart
-	// is no longer the step — and instructing one would send the operator to do something that does not
-	// help, then blame it when the message legitimately returns.
+	// "fixing" it back.
 	if strings.Contains(got, "restart") {
 		t.Errorf("FriendlyErr still tells the operator to restart the plane (got %q). Discovery is "+
 			"re-resolved on the next request, so the instruction is stale: it sends them to restart, "+
@@ -238,11 +230,8 @@ type errText string
 
 func (e errText) Error() string { return string(e) }
 
-// The MODEL-tier classification: `claude` must resolve from the providers
-// SOURCING view, because on a plane with no opencode binary the CLI branch
-// (AIGatewayService.ListOpenCodeModels) returns Unimplemented — claude would be
-// selectable but UNLISTABLE. `orchicon` shares the classification; `opencode`
-// must NOT (its models ARE the CLI's discovery).
+// The MODEL-tier classification: `claude` must resolve from the providers SOURCING view, because on
+// a plane with no opencode binary the CLI branch (AIGatewayService.ListOpenCodeModels) returns.
 func TestUsesCatalogSourcing(t *testing.T) {
 	for _, kind := range []string{NativeAdapterKind, adapter.KindClaude} {
 		if !UsesCatalogSourcing(kind) {
@@ -256,10 +245,8 @@ func TestUsesCatalogSourcing(t *testing.T) {
 	}
 }
 
-// PARITY GUARD: the TUI's set must equal the predicate the server publishes to
-// the GUI (adapter.CatalogSourcedAdapterKinds → ListAdapterKindsResponse.
-// sourcing_kinds). Without this, claude could be catalog-sourced in one picker
-// and CLI-discovered in the other — the divergence this item exists to close.
+// PARITY GUARD: the TUI's set must equal the predicate the server publishes to the GUI
+// (adapter.CatalogSourcedAdapterKinds → ListAdapterKindsResponse.
 func TestCatalogSourcedParity(t *testing.T) {
 	want := map[string]bool{}
 	for _, k := range adapter.CatalogSourcedAdapterKinds() {
@@ -278,10 +265,8 @@ func TestCatalogSourcedParity(t *testing.T) {
 	}
 }
 
-// The claude path, end to end at the seam the TUI owns: the sourcing view's
-// anthropic list projects to a NON-EMPTY option list on an opencode-free plane,
-// the model VALUE stays the bare id, and the picker's join commits exactly
-// `claude/anthropic/<model>` — the ref the grammar (and the plane) accepts.
+// The claude path, end to end at the seam the TUI owns: the sourcing view's anthropic list projects
+// to a NON-EMPTY option list on an opencode-free plane, the model VALUE stays the bare id.
 func TestClaudeKindListsCatalogModelsAndCommitsAThreeSegmentRef(t *testing.T) {
 	if !UsesCatalogSourcing(adapter.KindClaude) {
 		t.Fatal("claude must take the providers-sourcing branch (the CLI branch returns Unimplemented with no opencode binary)")

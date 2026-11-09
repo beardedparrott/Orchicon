@@ -1,15 +1,7 @@
 package work
 
 // detail_names_test.go — Concern 2: the work-item DETAIL pane resolves the identifiers it carries
-// into the NAMES an operator reads, with the raw id retained beside the name and the RAW ID as the
-// fallback when nothing resolves.
-//
-// The operator: "in the TUI under work items, it is showing all guids in the display instead of the
-// actual names. That won't mean anything to anyone. We need to resolve the real names in the cases
-// where they have them."
-//
-// These tests drive the REAL detail fetch (Base.RequestDetail → the screen's DetailFn) and read what
-// the pane would DRAW — asserting on the rendered field values, not on the index internals.
+// into the NAMES an operator reads.
 
 import (
 	"strings"
@@ -169,13 +161,6 @@ func TestDetailShortensTheWorkflowRunID(t *testing.T) {
 
 // THE WORKER FIELD IS GONE FROM THE DETAIL PANE, and asserted as an ABSENCE — the strongest form
 // available for a removed surface.
-//
-// The operator: "work items in the TUI are still showing the worker field. This is not necessary ...
-// Work is set via WORKFLOWS and not individual workers. That I believe was left over from old original
-// code." It is the same disposition that already removed the assign ACTION (see
-// TestAssignIsRemovedFromWorkItems): the ref survives as a nullable column for historical rows, and the TUI
-// stops presenting it as a live field of a work item. The item still carries a worker ref in the payload —
-// which is exactly why a prompt-level assertion is not enough, and why this checks the RENDERED pane.
 func TestDetailDoesNotShowAWorkerField(t *testing.T) {
 	p, m := detailPlane(t)
 	load(t, m, srcWorkItems)
@@ -206,10 +191,7 @@ func TestDetailDoesNotShowAWorkerField(t *testing.T) {
 }
 
 // The WORKFLOW name must resolve on a COLD screen — from the list fetch alone, with NO form ever
-// opened. The detail pane is drawn the moment the items land, so a name that only exists after a
-// form prep is a name the operator does not have in the flow they actually use (open the tab, look
-// at the pane). The GUI resolves it from the workflow list its page loads on entry; this is the
-// TUI's parity half, and it must stay ONE cached fetch — never one per row.
+// opened.
 func TestDetailResolvesWorkflowNameOnAColdScreen(t *testing.T) {
 	p, m := detailPlane(t)
 	// Exactly the shell's own screen load: page 1 of every source, nothing else. No 'n', no 'e'.

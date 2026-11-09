@@ -1,11 +1,6 @@
 package planebind
 
 // wiring_test.go — the binding must actually be BOUND by the desktop shell.
-//
-// The Wails shell task lands on its own branch, so on a branch without it this test
-// SKIPS — a deferral, not a pass: the moment cmd/orchicon-desktop/main.go exists, an
-// unbound planebind.Service is a RED test, because a page whose actions cannot reach
-// the binding is a page that lies about being able to start a plane.
 
 import (
 	"os"

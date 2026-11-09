@@ -1,10 +1,6 @@
 package dock
 
 // composer_charcounter_test.go — THE COMPOSER WARNS AS THE MESSAGE BOUND IS APPROACHED.
-//
-// The bound was 10,000 and the composer said nothing about it, so the operator met it mid-paste with the text
-// already in the box. The counter must show over the last fifth, not from the first character, and it must be
-// counted by NoticeRows or the composer's height budget silently overflows the rows the shell reserved.
 
 import (
 	"strings"

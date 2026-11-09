@@ -41,10 +41,8 @@ func (f *fakeAuthService) ListIdentities(ctx context.Context, req *connect.Reque
 	}), nil
 }
 
-// TestStoreResolveTenantAndFetch verifies the architect-flagged wiring: the
-// pane resolves its tenant via Auth.ListIdentities, caches it, and passes it
-// (non-empty) to GetSessionFileEdits — so the RPC never 400s with
-// "tenant_id must not be empty".
+// TestStoreResolveTenantAndFetch verifies the architect-flagged wiring: the pane resolves its
+// tenant via Auth.ListIdentities, caches it, and passes it (non-empty) to GetSessionFileEdits.
 func TestStoreResolveTenantAndFetch(t *testing.T) {
 	ff := &fakeFileEditService{}
 	fp, fpHandler := apiv1connect.NewFileEditServiceHandler(ff)

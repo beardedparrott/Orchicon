@@ -1,11 +1,5 @@
-// Package policy implements the PolicyService Connect handler
-// (docs/07_API_Specification.md §3.5) and the Rego-based Policy Engine.
-//
-// The service is the API-layer boundary: validate + sanitize inputs,
-// resolve the tenant, perform the mutation + outbox enqueue in one
-// transaction, enforce the Policy lifecycle (draft → published →
-// superseded) and versioning model (docs/02 §2.5). The Engine performs
-// Rego evaluation.
+// Package policy implements the PolicyService Connect handler (docs/07_API_Specification.md §3.5)
+// and the Rego-based Policy Engine.
 package policy
 
 import (
@@ -499,9 +493,8 @@ func (s *Service) GetDecision(ctx context.Context, req *connect.Request[apiv1.Ge
 
 // --- helpers + mappers -----------------------------------------------------
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -525,9 +518,7 @@ func policyAuditSnapshot(p db.PolicyRow) map[string]any {
 	}
 }
 
-// policyVersionAuditSnapshot is the non-secret projection of a policy
-// version. The rego module + query can embed secrets (policy bodies are
-// tenant-authored); excluded here.
+// policyVersionAuditSnapshot is the non-secret projection of a policy version.
 func policyVersionAuditSnapshot(v db.PolicyVersionRow) map[string]any {
 	return map[string]any{
 		"id":             v.ID,

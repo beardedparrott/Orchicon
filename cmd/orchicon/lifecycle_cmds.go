@@ -2,17 +2,6 @@ package main
 
 // lifecycle_cmds.go — the two verbs an operator reaches for that had no top-level spelling:
 // `orchicon status` and `orchicon logs`.
-//
-// REPORTED: "Running orchicon.exe bare with a start/stop/status should do the full gambit (start
-// services in background, start serve in background, and print where you can get the logs and how
-// to stop/start it again)."
-//
-// `start` and `stop` already existed and already did the right thing. `status` existed only as
-// `plane status`, and NOTHING tailed the logs — so the answer to "what is the plane doing" was a
-// file path printed by another command, which the operator then had to open by hand.
-//
-// These are deliberately thin: they delegate to the implementations that already exist, so there
-// is one behaviour and two spellings of it.
 
 import (
 	"fmt"
@@ -41,15 +30,8 @@ func runStatus(args []string) error {
 		fmt.Printf("  plane      : %s\n", planeLine(plane))
 	}
 
-	// Then the services, because a plane with no database is the failure that looks like a
-	// working plane.
-	//
-	// AND THEN EACH COMPONENT THAT IS NOT ANSWERING, BY NAME. `services: up` used to mean only
-	// "postgres and nats answer", so an instance whose Loki, Tempo, VictoriaMetrics and collector
-	// had all crash-looped reported itself completely healthy — the operator's Logs and Traces
-	// views were dead while this command said "up". The one-line summary stays (it is what a first
-	// glance reads), and a component that is down gets its own line, because "something is
-	// degraded" is not an actionable report and "loki is not answering" is.
+	// Then the services, because a plane with no database is the failure that looks like a working
+	// plane.
 	ports, err := servicesPortsFor(instance)
 	if err != nil {
 		fmt.Printf("  services   : unknown (%v)\n", err)
@@ -92,10 +74,6 @@ func serviceList(health []serviceHealthOpinion) string {
 }
 
 // planeLine renders the plane's state as one readable phrase.
-//
-// FOUR STATES, because "running" and "working" are different: a plane whose process is alive but
-// whose /healthz does not answer is the failure that looks like a working plane, and it is the
-// one the operator most needs named.
 func planeLine(st planecontrol.Status) string {
 	switch {
 	case st.Alive && st.Healthy:

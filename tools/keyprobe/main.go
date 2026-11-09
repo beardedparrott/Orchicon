@@ -80,9 +80,8 @@ func (p probe) View() string {
 }
 
 func main() {
-	// The SAME options the real client uses: these decide which keyboard protocol
-	// the terminal engages, so a probe with different options could report a
-	// different encoding than the TUI sees.
+	// The SAME options the real client uses: these decide which keyboard protocol the terminal engages,
+	// so a probe with different options could report a different encoding than the TUI sees.
 	p := tea.NewProgram(&probe{},
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),

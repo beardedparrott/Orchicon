@@ -1,12 +1,6 @@
 package askorchicon
 
 // quickwork_tools_test.go — THE TOOLS QUICK WORK CANNOT WORK WITHOUT, PINNED.
-//
-// Reversing the model rule (the worker model is now a per-dispatch QUESTION) and making the git strategy and
-// branches an explicit confirmation only work if the mode can actually READ the facts it must ask about and
-// actually PUBLISH what it builds. The three tools below are that capability, and each is asserted on the three
-// surfaces a capability has to reach to be real: the registry (so the advertised name dispatches), the mode gate
-// (so no future deny-list edit silently starves the mode), and the persona itself (so the model knows it exists).
 
 import (
 	"context"
@@ -15,9 +9,6 @@ import (
 )
 
 // THE THREE TOOLS RESOLVE, both as the prompt advertises them and by their bare registry name.
-//
-// A tool the prompt names but the registry does not carry is worse than a missing tool: the model calls it, the
-// call fails, and the failure looks like a platform fault rather than a typo in a prompt.
 func TestQuickWorkToolsResolveInTheRegistry(t *testing.T) {
 	r := NewToolRegistry(nil, nil, nil)
 	for _, name := range []string{
@@ -34,9 +25,7 @@ func TestQuickWorkToolsResolveInTheRegistry(t *testing.T) {
 	}
 }
 
-// AND THE MODE GATE ALLOWS THEM. Quick Work's policy denies only the ACTION phase (write/edit/batch_write/bash);
-// the platform tools stay available. Asserted rather than assumed because these three are the difference between a
-// mode that can dispatch a runnable workflow and one that builds a draft nothing can start.
+// AND THE MODE GATE ALLOWS THEM.
 func TestQuickWorkToolsAreAllowedInQuickWorkMode(t *testing.T) {
 	for _, name := range []string{"publish_workflow_version", "get_current_conversation", "list_project_branches"} {
 		ok, refusal := modeAllowsTool(modeQuickWork, name)
@@ -62,11 +51,6 @@ func TestThePromptAdvertisesTheQuickWorkTools(t *testing.T) {
 }
 
 // THE CONVERSATION RIDES THE CONTEXT, next to the mode and by the same mechanism.
-//
-// This is what makes get_current_conversation possible at all: the tool is handed a context, not a parameter, so
-// the session it is describing has to be ON that context. A future refactor that stamps the mode and drops the
-// conversation id would break the model question silently — the tool would still resolve, and would fail loud for
-// every real turn.
 func TestTheConversationRidesTheContext(t *testing.T) {
 	ctx := withAskConversation(context.Background(), "conv_123")
 	if got := askConversationFromContext(ctx); got != "conv_123" {
@@ -91,13 +75,6 @@ func TestTheConversationRidesTheContext(t *testing.T) {
 }
 
 // THE MODEL LOOKUP FAILS LOUD WHEN IT CANNOT IDENTIFY THE SESSION.
-//
-// The tempting alternative — answer from the tenant default anyway — is the one behaviour this tool must NOT have:
-// a confident model_ref for a session it could not name gets pinned into a worker, and a worker's model has no
-// failover. An error the caller can see beats a wrong answer the caller cannot.
-//
-// The pool is nil on purpose: the conversation check runs BEFORE any database access, so this asserts the order
-// as well as the message.
 func TestGetCurrentConversationFailsLoudWithoutAConversation(t *testing.T) {
 	_, err := toolGetCurrentConversation(context.Background(), nil, nil)
 	if err == nil {

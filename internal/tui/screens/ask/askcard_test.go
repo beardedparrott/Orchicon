@@ -112,14 +112,8 @@ func TestTheOtherRowIsReachable(t *testing.T) {
 	}
 }
 
-// TestTypingHandsTheKeysBackAndIsNotSwallowed — THE DEPARTURE FROM THE PERMISSION CARD, and the reason it
-// exists.
-//
-// The permission card claims the keyboard absolutely and swallows every key it does not use, because a live
-// turn is blocked on it. A recorded card sits in an IDLE conversation, where the operator may well want to
-// keep typing: an absolute claim would read as a composer that stopped working. So a printable character
-// releases the claim AND is delivered, rather than eaten — losing the first letter of the next message was
-// the obvious wrong answer.
+// TestTypingHandsTheKeysBackAndIsNotSwallowed — THE DEPARTURE FROM THE PERMISSION CARD, and the
+// reason it exists.
 func TestTypingHandsTheKeysBackAndIsNotSwallowed(t *testing.T) {
 	m, _ := newTestModel(t)
 	items := []chat.ChatItem{pendingCard()}
@@ -149,10 +143,6 @@ func TestTypingHandsTheKeysBackAndIsNotSwallowed(t *testing.T) {
 }
 
 // TestEscapeReleasesWithoutDismissing — Escape on a question must never record an answer.
-//
-// On a PERMISSION card Escape denies, and on a consent QUESTION it records "dismissed — no answer sent".
-// Neither belongs here: this card is inside an idle conversation, nothing is blocked on it, and a question
-// must not be closed by the keystroke the operator used to get their keyboard back.
 func TestEscapeReleasesWithoutDismissing(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{pendingCard()}
@@ -255,16 +245,8 @@ func TestTheFreeTextRowOutranksTheCursor(t *testing.T) {
 	}
 }
 
-// TestEnterAnswersTheAskRatherThanSendingAMessage pins that Enter ANSWERS the ask rather than sending a
-// message.
-//
-// THE DEFECT THIS PINS, and it is the whole of "I answer it and it asks again": answering a RECORDED
-// card used to go out as ConsentSend — an ordinary next message. The transcript's awaiting marker was
-// therefore never cleared, so the card was still open to every other client and came back on the next
-// reload, while the operator's answer sat beside it as a message. The marker IS the card's state.
-//
-// The answer must be a REPLY addressed to the ask's id, and it must NOT also send a message (that would
-// deliver the answer twice: once as the reply's turn, once as a message).
+// TestEnterAnswersTheAskRatherThanSendingAMessage pins that Enter ANSWERS the ask rather than
+// sending a message.
 func TestEnterAnswersTheAskRatherThanSendingAMessage(t *testing.T) {
 	m, h := newTestModel(t)
 	card := pendingCard()
@@ -291,10 +273,6 @@ func TestEnterAnswersTheAskRatherThanSendingAMessage(t *testing.T) {
 }
 
 // TestACardWithNoIDStillAnswers — the degraded path, kept deliberately.
-//
-// A row recorded before ParsedAsk carried its id has nothing to address a reply to, so the old
-// send-the-label path is the only thing that can work. A degraded answer beats a card that cannot be
-// answered at all — and the failure mode of dropping this fallback is a silently dead card.
 func TestACardWithNoIDStillAnswers(t *testing.T) {
 	m, h := newTestModel(t)
 	card := pendingCard() // no ID set
@@ -326,8 +304,7 @@ func TestTheFreeTextRowAlsoReplies(t *testing.T) {
 		t.Fatal("precondition: Enter on Other opens the free-text row")
 	}
 	// THE WAKE THAT FOLLOWS THE REPAINT, reproduced: opening the row returns a repaint, the shell then
-	// re-renders the transcript, and SyncAskDraft is what ADOPTS the item's ParsedAsk so the keys have
-	// somewhere to land. Without it the screen holds no draft and every keystroke falls through.
+	// re-renders the transcript.
 	m.RenderTranscript(items, chat.Conversation{}, false)
 	typeInto(m, "release-candidate")
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // submits it

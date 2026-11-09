@@ -1,12 +1,6 @@
 package tui
 
-// fullsend_test.go — the TUI's half of FULLSEND: the `/fullsend` toggle and the composer
-// indicator.
-//
-// The mode itself is enforced server-side (see internal/askorchicon/fullsend.go); what is
-// pinned here is the part the operator relies on to KNOW it is on. A permission bypass whose
-// indicator is wrong is worse than one with no indicator at all, because the operator reads
-// "the gate is up" from it and proceeds on that basis.
+// fullsend_test.go — the TUI's half of FULLSEND: the `/fullsend` toggle and the composer indicator.
 
 import (
 	"strings"
@@ -15,11 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// TestFullsendSlashTogglesAndSendsTheValue — the operator's "if you type /fullsend again,
-// it will set it to off".
-//
-// The WIRE CARRIES A VALUE, not a toggle request, and the value is derived from the state
-// the shell can SEE. That is what stops two taps from flipping against a stale local belief.
+// TestFullsendSlashTogglesAndSendsTheValue — the operator's "if you type /fullsend again, it will
+// set it to off".
 func TestFullsendSlashTogglesAndSendsTheValue(t *testing.T) {
 	m, stub := newAskApp(t)
 	m.chatConvID = "c1"
@@ -60,10 +51,6 @@ func TestFullsendSlashTogglesAndSendsTheValue(t *testing.T) {
 }
 
 // TestFullsendSlashRefusesWithNoConversation — there is deliberately no PENDING form.
-//
-// The conversation MODE had one, and the leak it caused (changing an open chat also changed
-// what the NEXT one would be created with) is the reason this refuses instead. A permission
-// bypass armed for a chat the operator has not opened is one they did not knowingly turn on.
 func TestFullsendSlashRefusesWithNoConversation(t *testing.T) {
 	m, stub := newAskApp(t)
 	m.chatConvID = ""
@@ -84,10 +71,6 @@ func TestFullsendSlashRefusesWithNoConversation(t *testing.T) {
 }
 
 // TestFullsendBadgeIsSilentWhenOffAndLoudWhenOn — the indicator is the safety feature.
-//
-// OFF shows NOTHING (the mode is the ABSENCE of asking, so there is nothing to draw while
-// the gate does its job), and ON shows a token the operator cannot miss. A permanent
-// "FULLSEND OFF" would train the eye to ignore the field that must never be ignored.
 func TestFullsendBadgeIsSilentWhenOffAndLoudWhenOn(t *testing.T) {
 	m, _ := newAskApp(t)
 
@@ -115,19 +98,14 @@ func TestFullsendBadgeIsSilentWhenOffAndLoudWhenOn(t *testing.T) {
 	if !strings.Contains(view, "FULLSEND") {
 		t.Fatalf("the ON indicator must be rendered in the composer:\n%s", view)
 	}
-	// AND THE INDICATOR ALONE RESERVES THE ROW: fullsend is the only field set here, so if
-	// StatsRows did not count it the badge would be drawn on a line the shell never
-	// allocated — clipped away exactly when it matters most.
+	// AND THE INDICATOR ALONE RESERVES THE ROW: fullsend is the only field set here, so if StatsRows
+	// did not count it the badge would be drawn on a line the shell never allocated.
 	if rows := m.dock.StatsRows(); rows != 1 {
 		t.Fatalf("StatsRows = %d with only the badge set, want 1 — the row must be reserved", rows)
 	}
 }
 
 // TestFullsendBadgeReadsTheServersStateNotTheClientsMemory — the freshness property.
-//
-// The indicator is read from the conversation row the SERVER computes, which is what lets a
-// toggle made in the GUI show up here on the next rail reload. A client that remembered its
-// own last write would render the gate as open after the GUI closed it.
 func TestFullsendBadgeReadsTheServersStateNotTheClientsMemory(t *testing.T) {
 	m, _ := newAskApp(t)
 	m.chatConvID = "c1"
@@ -215,11 +193,7 @@ func TestFullsendIsToggleableWhileATurnIsBlockedOnACard(t *testing.T) {
 		t.Fatalf("sent (%q, %v), want (c1, true)", stub.fullsendID, stub.fullsendSet)
 	}
 
-	// AND THE OPERATOR IS TOLD WHAT HAPPENS TO THE CARD. The mode CLEARS it (the operator's
-	// decision: "Clear it too — fullsend means stop asking"), and the notice must ALSO say that a
-	// QUESTION is not cleared — its reply is the operator's own words, which the mode cannot
-	// supply. A mode that appears to do something it did not is worse than one that explains
-	// itself.
+	// AND THE OPERATOR IS TOLD WHAT HAPPENS TO THE CARD.
 	notice := m.dock.View()
 	if !strings.Contains(notice, "approved") {
 		t.Fatalf("the notice must say the open permission card is approved:\n%s", notice)

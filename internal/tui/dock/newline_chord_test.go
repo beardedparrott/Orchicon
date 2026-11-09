@@ -42,10 +42,8 @@ func TestCtrlJInsertsNewlineOnWindows(t *testing.T) {
 	}
 }
 
-// TestCtrlJSurvivesTheEnterArms is the ordering proof, and the reason this test exists rather than trusting the
-// one above: `enterKey` treats ctrl+j as Enter on purpose (so a terminal that reports Enter as LF still sends).
-// If the ctrl+j newline branch were placed BELOW the enterKey arms it would never be reached, and the mode would
-// change the hint while the key kept sending.
+// TestCtrlJSurvivesTheEnterArms is the ordering proof, and the reason this test exists rather than
+// trusting the one above.
 func TestCtrlJSurvivesTheEnterArms(t *testing.T) {
 	for _, mode := range []NewlineMode{NewlineCtrlJ, NewlineBoth} {
 		m := New()
@@ -154,11 +152,8 @@ func TestOtherModesAreUnaffected(t *testing.T) {
 
 // --- a profile written on another platform ----------------------------------------------------------
 
-// TestADeadChordIsRefusedPerPlatform pins the cross-platform case, which defaulting alone does NOT cover.
-//
-// A profile saved on Linux carries `newline = "alt+enter"`. Opened on Windows that setting would activate a chord
-// Windows Terminal has already claimed (toggleFullscreen), leaving the operator with NO working newline chord and
-// a hint naming a key that resizes their window. The shell therefore asks ChordReachesOrch before assigning it.
+// TestADeadChordIsRefusedPerPlatform pins the cross-platform case, which defaulting alone does NOT
+// cover.
 func TestADeadChordIsRefusedPerPlatform(t *testing.T) {
 	cases := []struct {
 		mode NewlineMode
@@ -200,23 +195,14 @@ func TestOnlyAltEnterIsLostOnWindows(t *testing.T) {
 
 // --- HOW WINDOWS ACTUALLY DELIVERS IT --------------------------------------------------------------
 
-// windowsCtrlJ is the Ctrl+J key message the WINDOWS CONSOLE reader produces, and it is not KeyCtrlJ.
-//
-// The console reports the CHARACTER a chord produced, not a key code: Ctrl+J produces LF (0x0A), so the message
-// arrives as KeyRunes("\n"). The ANSI byte reader — Linux, macOS — decodes the same character to KeyCtrlJ
-// instead. Same keystroke, two message shapes, decided by the input path.
+// windowsCtrlJ is the Ctrl+J key message the WINDOWS CONSOLE reader produces, and it is not
+// KeyCtrlJ.
 func windowsCtrlJ() tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("\n")}
 }
 
-// TestCtrlJAsWindowsDeliversIt is the test the earlier change was missing, and the operator found the gap the
-// only way it can be found: by pressing the key.
-//
-// "I did try ctrl+J already and it still submitted enter instead of a newline."
-//
-// The previous test built KeyMsg{Type: KeyCtrlJ} — the ANSI path's shape — so it proved the BRANCH works rather
-// than that the chord is recognised on the platform it was written for. A key test that constructs the message it
-// expects can only ever agree with itself.
+// TestCtrlJAsWindowsDeliversIt is the test the earlier change was missing, and the operator found
+// the gap the only way it can be found: by pressing the key.
 func TestCtrlJAsWindowsDeliversIt(t *testing.T) {
 	m := New()
 	m.Focus()

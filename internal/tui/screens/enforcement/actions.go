@@ -28,26 +28,12 @@ import (
 // rpcTimeout bounds each write RPC (the plane answers in-band).
 const rpcTimeout = 20 * time.Second
 
-// NOTE: the POLICY EDITOR (create/edit/publish/version-inspect) was removed from this screen
-// when policies became a "coming soon" placeholder. The operator: "the form is weird and I
-// have never tested it ... just say 'Coming soon...' for now."
-//
-// It is deleted rather than parked because a form nobody can reach is the same class of thing
-// as a knob nothing honours: it invites someone to re-wire an unsettled design instead of
-// designing it. The plane-side capability is untouched — ListPolicies / CreatePolicy /
-// UpdatePolicyVersion / PublishPolicy / ListPolicyVersions all remain in the generated client,
-// and the Rego expression that parses into these types is in git history at the commit that
-// removed the editor.
-//
-// What remains here is the APPROVALS and RECOVERIES write surface, both of which the operator
-// uses.
+// NOTE: the POLICY EDITOR (create/edit/publish/version-inspect) was removed from this screen when
+// policies became a "coming soon" placeholder.
 
 // --- action keys -----------------------------------------------------------
 
-// handleActionKey dispatches the screen's write chords for the focused
-// source. It returns handled=false for every other key so Base keeps
-// owning navigation. While a write is in flight the chords are inert
-// (idempotent-safe on double-press).
+// handleActionKey dispatches the screen's write chords for the focused source.
 func (m *Model) handleActionKey(k tea.KeyMsg) (bool, tea.Cmd) {
 	if m.ov != nil {
 		return false, nil // the overlay owns every key while it is open
@@ -61,9 +47,7 @@ func (m *Model) handleActionKey(k tea.KeyMsg) (bool, tea.Cmd) {
 			return true, m.beginApprove(false)
 		}
 	case "policies":
-		// NO chords. The pane is a "coming soon" placeholder: it lists nothing, so every
-		// write chord would have nothing to act on. An unbound key falls through to the
-		// shared navigation layer, which is the honest behaviour for an inert pane.
+		// NO chords.
 		return false, nil
 	case "recoveries":
 		switch k.String() {
@@ -116,9 +100,8 @@ func (m *Model) beginApprove(approved bool) tea.Cmd {
 
 // --- recoveries ------------------------------------------------------------
 
-// recoveryActionAvailable reports whether the plane's action surface allows
-// act on the recovery currently selected (from the cached recovery + the
-// continuation-plan status the detail fetch recorded).
+// recoveryActionAvailable reports whether the plane's action surface allows act on the recovery
+// currently selected (from the cached recovery + the continuation-plan status the detail fetch.
 func (m *Model) recoveryActionAvailable(r *apiv1.RecoveryExecution, act string) error {
 	if r == nil {
 		return fmt.Errorf("no recovery selected")
@@ -412,10 +395,6 @@ func (m *Model) handleFormKey(k tea.KeyMsg) tea.Cmd {
 }
 
 // selectOverlayItem opens the inspector for the highlighted picker row.
-//
-// The only picker this screen still opens is the recovery-plan actor list, which has no
-// inspector: closing is the whole action. (The policy VERSIONS picker that used to inspect a
-// Rego body went with the policy editor — see the note at the top of this file.)
 func (m *Model) selectOverlayItem() tea.Cmd {
 	m.ov = nil
 	return nil
@@ -472,10 +451,8 @@ func (m *Model) submitOverlay() tea.Cmd {
 
 // --- dock surface (mutate.Sink) --------------------------------------------
 
-// Progress / Fail / Notice implement mutate.Sink: the executor's feedback
-// lands in the composer dock through the shell's hooks. A refusal is passed
-// through VERBATIM — an approval/policy decision the plane rejects is never a
-// silent no-op.
+// Progress / Fail / Notice implement mutate.Sink: the executor's feedback lands in the composer
+// dock through the shell's hooks.
 func (m *Model) Progress(msg string) {
 	m.lastOK = msg
 	m.lastErr = ""

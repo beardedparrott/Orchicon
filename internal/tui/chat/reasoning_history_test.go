@@ -1,22 +1,6 @@
 package chat
 
 // reasoning_history_test.go — THE DURABLE REASONING REACHES THE TRANSCRIPT.
-//
-// The operator: "All I am seeing is 'Orchicon is thinking...' in the TUI. I am not seeing your
-// thinking or reasoning. I can see this in the GUI. I already reported this and you said I was
-// wrong. Here is the screenshot for proof."
-//
-// THEY WERE RIGHT AND I WAS WRONG. ChatMessage.reasoning is a `repeated string` the proto
-// documents as "rendered by the frontend as thinking bubbles", and the GUI reads it — but
-// conversationItems read only GetContent(), so every durable reasoning part was DROPPED the
-// moment the transcript was loaded from history. The live stream chunks were the only path that
-// ever produced a reasoning item, and the completion poll REPLACES the live buffer with the
-// durable list (chatStore.replace), so the reasoning the operator had just watched arrive
-// vanished the instant the turn finished. The thinking NOTICE, which is live, survived — which is
-// exactly what they described seeing.
-//
-// These tests live beside conversationItems because that function is where the data was lost;
-// the rendering of a reasoning ITEM was already correct and already covered.
 
 import (
 	"testing"
@@ -28,10 +12,6 @@ import (
 )
 
 // EVERY REASONING PART BECOMES AN ITEM, and it comes BEFORE the words it produced.
-//
-// Order is asserted separately from presence because it is the half that is easy to get wrong
-// while looking right: reasoning rendered AFTER the answer reads as an afterthought rather than
-// as the thinking that preceded it.
 func TestDurableReasoningBecomesItemsBeforeTheText(t *testing.T) {
 	at := timestamppb.New(time.Unix(1_700_000_000, 0))
 	page := []*apiv1.ChatMessage{
@@ -70,10 +50,6 @@ func TestDurableReasoningBecomesItemsBeforeTheText(t *testing.T) {
 }
 
 // KEYS ARE STABLE ACROSS LOADS, derived from the message id and the part index.
-//
-// This is not cosmetic: a reasoning block's collapsed/expanded state is held per ITEM KEY
-// (chatStore.foldedReasoning), so a key that changed between loads would spring every collapsed
-// block open again on every refresh — the operator folds a long block away and it comes back.
 func TestReasoningKeysAreStableAndUnique(t *testing.T) {
 	at := timestamppb.New(time.Unix(1_700_000_000, 0))
 	page := []*apiv1.ChatMessage{
@@ -98,10 +74,7 @@ func TestReasoningKeysAreStableAndUnique(t *testing.T) {
 				"block would reopen on every refresh", i, it.Key, second[i].Key)
 		}
 	}
-	// The text row keeps its own key, so a reasoning key can never collide with it. The
-	// convention is "m-" + the message id for the text row, and "m-" + id + "-r" + index for
-	// each part — asserted as the real strings rather than a prefix check, because the two must
-	// stay distinguishable for the fold state (keyed per item) to land on the right row.
+	// The text row keeps its own key, so a reasoning key can never collide with it.
 	if !seen["m-m1"] {
 		t.Errorf("the assistant text row's key %q is missing; keys seen: %v", "m-m1", seen)
 	}
@@ -111,9 +84,6 @@ func TestReasoningKeysAreStableAndUnique(t *testing.T) {
 }
 
 // A BLANK OR ABSENT REASONING PART IS NOT A BLOCK.
-//
-// An empty reasoning entry would render an empty bubble — a fold affordance over nothing — and
-// every turn with no reasoning at all would grow one.
 func TestBlankReasoningPartsAreSkipped(t *testing.T) {
 	at := timestamppb.New(time.Unix(1_700_000_000, 0))
 	page := []*apiv1.ChatMessage{

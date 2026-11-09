@@ -1,9 +1,6 @@
 package verify
 
 // declaration_test.go — THE OLD FILE FORMAT KEEPS WORKING, and the new one is strict.
-//
-// The first test is the compatibility guarantee: every project that already has a one-line `.orchicon/verify`
-// must behave identically after this change. The rest pin the opt-in.
 
 import (
 	"strings"
@@ -62,12 +59,8 @@ path    = report.xml
 	}
 }
 
-// A BARE COMMAND CONTAINING '=' IS NOT MISTAKEN FOR A KEY — `GOFLAGS=-count=1 go test ./...` is legal shell and
-// its first token looks exactly like a key.
-//
-// THIS IS THE BUG THE KNOWN-KEY RULE EXISTS FOR: a parser that splits on the first '=' would read the key as
-// "GOFLAGS" and either take `-count=1 go test ./...` as the COMMAND (dropping the real one) or report an
-// unknown key. Both leave the project unmeasured while looking configured.
+// A BARE COMMAND CONTAINING '=' IS NOT MISTAKEN FOR A KEY — `GOFLAGS=-count=1 go test ./...` is
+// legal shell and its first token looks exactly like a key.
 func TestAnEnvironmentPrefixIsNotAKey(t *testing.T) {
 	d, err := ParseDeclaration("GOFLAGS=-count=1 go test ./...")
 	if err != nil {

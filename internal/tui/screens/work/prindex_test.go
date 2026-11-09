@@ -1,11 +1,6 @@
 package work
 
 // prindex_test.go — THE PR SURFACE: the list mark, the details URL, and the rules between them.
-//
-// The operator: "Work items in the TUI need to have some kind of status mark on them showing if a PR was merged
-// similar to the GUI. I don't really care about viewing the priority levels in the work item list. Let's remove
-// the priority level in list and put PR Merged if a PR has merged and add a field at the top of the details pane
-// that shows the URL." — and, on the multi-run case: "For PR I want the PR Merged if any has it."
 
 import (
 	"strings"
@@ -17,10 +12,6 @@ import (
 // --- the index rules, without a model -------------------------------------------------------
 
 // ANY merged run marks the item, even when the MOST RECENT run did not merge.
-//
-// This is the operator's rule and the reason the index is a list rather than a "latest" value: a re-run after a
-// failed PR leaves the earlier merge standing, and an indicator that went dark on the next run would be lying
-// about work that had landed.
 func TestPRIndexMergedIsTrueWhenAnyRunMerged(t *testing.T) {
 	idx := prIndex{
 		"wi-1": []prRun{

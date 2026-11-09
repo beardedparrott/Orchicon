@@ -5,11 +5,7 @@ import (
 	"testing"
 )
 
-// TestNewIDConcurrent exercises NewID from many goroutines. The entropy
-// source is ulid.Monotonic (NOT safe for concurrent use) — without the
-// mutex in newULID this races on the shared crypto/rand bufio buffer and
-// panics with "slice bounds out of range [:8192] with capacity 4096".
-// Run with -race to detect the corruption deterministically.
+// TestNewIDConcurrent exercises NewID from many goroutines.
 func TestNewIDConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	ids := make([]string, 0, 2000)

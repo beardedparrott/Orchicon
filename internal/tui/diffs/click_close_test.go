@@ -11,11 +11,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// TestClickCloseButton: the docked "✕" is the mouse toggle area. A left
-// click on it (terminal X = glyphX()+1, content-relative + the left border)
-// sets a close request the shell consumes to close the pane. A click on a
-// tab label still switches the tab and must NOT close. A click on the
-// trailing inert padding (well right of the glyph) must NOT close.
+// TestClickCloseButton: the docked "✕" is the mouse toggle area.
 func TestClickCloseButton(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
@@ -67,9 +63,8 @@ func TestClickCloseRequestClearedOnce(t *testing.T) {
 	_ = tea.KeyMsg{}
 }
 
-// TestClickCloseTabBarNotWide: the tab bar width (glyph included) must not
-// exceed the pane content width — the close button must never push the pane
-// beyond its rail (no horizontal overflow / tearing).
+// TestClickCloseTabBarNotWide: the tab bar width (glyph included) must not exceed the pane content
+// width — the close button must never push the pane beyond its rail (no horizontal overflow /.
 func TestClickCloseTabBarNotWide(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
@@ -81,12 +76,8 @@ func TestClickCloseTabBarNotWide(t *testing.T) {
 	}
 }
 
-// TestClickRowThenClose pins that the pane's hit-tests still hit AFTER the
-// automatic select-and-focus tab switch: a Timeline row click switches the
-// pane to the Diff tab, which re-renders the tab bar with a DIFFERENT active
-// tab — the docked ✕ and the three tab labels must still land at their
-// coordinates. glyphX() is called AFTER the row click so the assertion
-// measures the re-rendered bar (that is the point of the test).
+// TestClickRowThenClose pins that the pane's hit-tests still hit AFTER the automatic
+// select-and-focus tab switch: a Timeline row click switches the pane to the Diff tab.
 func TestClickRowThenClose(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })

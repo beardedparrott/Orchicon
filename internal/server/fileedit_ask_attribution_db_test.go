@@ -1,22 +1,7 @@
 package server
 
-// QA regression pin (DB-backed, real service): the NATIVE Ask path's live
-// file-edit hook must ledger under the exact owner TUPLE both clients query
-// — (ask_conversation, <conversation id>) — through the PRODUCTION
-// constructor + a real PG-backed fileedit.Service + the real fetch RPC.
-//
-// Why this exists ON TOP of the in-memory tuple tests: the earlier version of
-// this work item's tests passed while the attribution was WRONG, because they
-// asserted "a row was written" rather than the tuple a client queries by. The
-// git reconciler writes correct rows under the right owner, so only a
-// TUPLE-keyed fetch can distinguish a live, correctly-attributed hook row.
-// This test drives the real constructor with the real store and reads the row
-// back through the SAME query the GUI/TUI Ask panes issue
-// (ownerKind=ask_conversation, ownerId=<convID>), plus the delta-proof that
-// the row's tool names the causing tool (write) and is NOT the sweep's
-// `reconcile:git`.
-//
-// DB-backed; skips without ORCHICON_TEST_DSN (sandbox-plane test DB).
+// QA regression pin (DB-backed, real service): the NATIVE Ask path's live file-edit hook must
+// ledger under the exact owner TUPLE both clients query — (ask_conversation, <conversation id>).
 
 import (
 	"context"
@@ -59,12 +44,8 @@ func fetchTuples(t *testing.T, rpc *fileedit.RPCService, tenant, ownerKind, owne
 	return res.Msg.Edits
 }
 
-// TestAskLiveHookRowIsRetrievableByClientTuple is the real-service delta-proof:
-// the PRODUCTION constructor, built for the Ask owner, ledgers the engine
-// payload under (ask_conversation, <convID>) and the row comes back through the
-// client's own query — with tool=write (the LIVE hook's tag), never
-// reconcile:git. A NON-GIT temp dir is used throughout, so the post-turn git
-// sweep would produce NOTHING here: this cannot be masked.
+// TestAskLiveHookRowIsRetrievableByClientTuple is the real-service delta-proof: the PRODUCTION
+// constructor, built for the Ask owner, ledgers the engine payload under (ask_conversation.
 func TestAskLiveHookRowIsRetrievableByClientTuple(t *testing.T) {
 	pool := askAttributionPool(t)
 	ctx := context.Background()
@@ -77,9 +58,8 @@ func TestAskLiveHookRowIsRetrievableByClientTuple(t *testing.T) {
 	// The exact production wiring for the native Ask path (server.go:733-ish).
 	askHook := newFileEditHook(svc, slog.Default(), db.FileEditOwnerAskConversation)
 
-	// executeToolCalls calls the hook with (execDir == "") — the engine payload
-	// is exact ground truth and needs no repo. A non-git temp dir is the AC's
-	// "no project dir / not a git repo" case.
+	// executeToolCalls calls the hook with (execDir == "") — the engine payload is exact ground truth
+	// and needs no repo.
 	nonRepo := t.TempDir()
 	askHook(ctx, convID, tenant, "", "write",
 		map[string]any{"filePath": "notes/a.txt"}, engineWriteOutput)
@@ -108,10 +88,8 @@ func TestAskLiveHookRowIsRetrievableByClientTuple(t *testing.T) {
 	}
 }
 
-// TestExecutionLiveHookRowIsUnchangedByAskWiring is the no-regression half,
-// real-service: the SAME constructor built for the execution owner still
-// ledgers under (execution, <execution id>) and is NOT retrievable by the Ask
-// pane's query. The two populations must stay distinct.
+// TestExecutionLiveHookRowIsUnchangedByAskWiring is the no-regression half, real-service: the SAME
+// constructor built for the execution owner still ledgers under (execution.
 func TestExecutionLiveHookRowIsUnchangedByAskWiring(t *testing.T) {
 	pool := askAttributionPool(t)
 	ctx := context.Background()

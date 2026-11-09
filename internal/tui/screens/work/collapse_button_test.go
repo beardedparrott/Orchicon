@@ -24,10 +24,8 @@ func treePlane(t *testing.T) *Model {
 	return m
 }
 
-// archiveTreePlane is treePlane's archive counterpart: an archived EPIC with an
-// archived child, so the archive view has a real parent/child edge to draw. The
-// archived epic's own parent ("root") stays ACTIVE, which is what exercises the
-// ghost-anchor chain.
+// archiveTreePlane is treePlane's archive counterpart: an archived EPIC with an archived child, so
+// the archive view has a real parent/child edge to draw.
 func archiveTreePlane(t *testing.T) *Model {
 	t.Helper()
 	p := newPlane()
@@ -45,9 +43,8 @@ func archiveTreePlane(t *testing.T) *Model {
 	return m
 }
 
-// findText locates a literal substring in the RENDERED frame, returning its
-// absolute (x, y) — so a click test aims at what is actually on screen rather
-// than at coordinates duplicated from the layout code.
+// findText locates a literal substring in the RENDERED frame, returning its absolute (x, y) — so a
+// click test aims at what is actually on screen rather than at coordinates duplicated.
 func findText(t *testing.T, view, want string) (x, y int) {
 	t.Helper()
 	for i, line := range strings.Split(view, "\n") {
@@ -60,9 +57,7 @@ func findText(t *testing.T, view, want string) (x, y int) {
 	return 0, 0
 }
 
-// clickAt presses the left mouse button at an absolute TERMINAL cell. A screen
-// renders from its own row 0, so the shell's chrome is added to the row a
-// screen-level test measured.
+// clickAt presses the left mouse button at an absolute TERMINAL cell.
 func clickAt(t *testing.T, m *Model, x, y int) {
 	t.Helper()
 	m.Update(tea.MouseMsg{
@@ -71,9 +66,8 @@ func clickAt(t *testing.T, m *Model, x, y int) {
 	})
 }
 
-// The operator: "There is still no collapse all button at the top of work
-// items." The Tree pane carries a CLICKABLE control on its top row, and its
-// label states what pressing it will do.
+// The operator: "There is still no collapse all button at the top of work items." The Tree pane
+// carries a CLICKABLE control on its top row, and its label states what pressing it will do.
 func TestCollapseAllButtonRendersAndWorks(t *testing.T) {
 	m := treePlane(t)
 	tbl := m.Base.ActiveTable()
@@ -108,19 +102,16 @@ func TestCollapseAllButtonRendersAndWorks(t *testing.T) {
 	}
 }
 
-// THE ARCHIVE VIEW CARRIES THE CONTROL TOO — it is a tree now, which is the
-// change that makes the button meaningful there. The operator's report was that
-// the archive view "is still not a tree view"; this is the same fix seen from the
-// control's side.
+// THE ARCHIVE VIEW CARRIES THE CONTROL TOO — it is a tree now, which is the change that makes the
+// button meaningful there.
 func TestCollapseAllButtonWorksInTheArchiveView(t *testing.T) {
 	m := archiveTreePlane(t)
 	if m.ViewMode() != viewArchive {
 		t.Fatalf("fixture: expected the archive view, got %q", m.ViewMode())
 	}
 	tbl := m.Base.ActiveTable()
-	// The archive opens EXPANDED (its roots are ghost anchors — see archiveRows), so the
-	// whole hierarchy is already on screen here.
-	// Ghost anchor ("Active Root") + the archived feature + the archived task.
+	// The archive opens EXPANDED (its roots are ghost anchors — see archiveRows), so the whole
+	// hierarchy is already on screen here.
 	if n := len(tbl.VisibleRows()); n != 3 {
 		t.Fatalf("archive visible rows = %d, want 3 (root anchor, feature, task):\n%s",
 			n, ansi.Strip(m.View()))
@@ -131,9 +122,7 @@ func TestCollapseAllButtonWorksInTheArchiveView(t *testing.T) {
 	if tbl.AllExpanded() {
 		t.Fatal("the archive view's control must collapse its nodes")
 	}
-	// Collapsing every parent leaves only the TOP-LEVEL rows. Here that is the ghost
-	// anchor alone: the archived feature sits under it, and the archived task under
-	// the feature — so one visible row is the correct, fully-collapsed archive.
+	// Collapsing every parent leaves only the TOP-LEVEL rows.
 	if n := len(tbl.VisibleRows()); n != 1 {
 		t.Fatalf("collapsed archive visible rows = %d, want 1 (the root anchor)", n)
 	}
@@ -152,10 +141,8 @@ func TestCollapseAllButtonWorksInTheArchiveView(t *testing.T) {
 	}
 }
 
-// A pane with NO parent draws no control: on a flat list it would do nothing, and
-// a dead control is worse than none. (This replaces a test that asserted the
-// control was absent in the ARCHIVE view, on the premise that the archive was
-// flat — the premise item 3 removes.)
+// A pane with NO parent draws no control: on a flat list it would do nothing, and a dead control is
+// worse than none.
 func TestCollapseAllButtonAbsentOnAFlatList(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -175,11 +162,9 @@ func TestCollapseAllButtonAbsentOnAFlatList(t *testing.T) {
 	}
 }
 
-// addArchive seeds an ARCHIVED work item — one with archived_at set, which is what
-// the plane's archive partition is actually keyed on (the fake's ListWorkItems
-// filters on `ArchivedAt != nil != include_archived`). Without the timestamp the
-// item would land in the ACTIVE view and the archive fixture would be testing the
-// wrong set entirely.
+// addArchive seeds an ARCHIVED work item — one with archived_at set, which is what the plane's
+// archive partition is actually keyed on (the fake's ListWorkItems filters on `ArchivedAt != nil
+// !=.
 func (p *fakePlane) addArchive(w *apiv1.WorkItem) *apiv1.WorkItem {
 	w.ArchivedAt = timestamppb.Now()
 	return p.addItem(w)

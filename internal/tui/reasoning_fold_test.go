@@ -1,13 +1,6 @@
 package tui
 
 // reasoning_fold_test.go — THE ARROW ON THE REASONING BLOCK.
-//
-// The operator: "Yes I would like to get the collapsible reasoning block but I don't want it to look fully
-// like the execution page. It should still have the same 'bubbles' it has now with the user and orchicon
-// chat and reasoning should look similar but have a arrow on the left to expand and collapse."
-//
-// So: an ARROW on the left, the bubbles unchanged, and the fold state living on the shell (which owns the
-// conversation) rather than in the renderer (which is a pure function of its input).
 
 import (
 	"strings"
@@ -81,9 +74,7 @@ func TestFoldingHidesTheBodyAndKeepsTheHeader(t *testing.T) {
 	}
 }
 
-// THE BUBBLES ARE UNCHANGED. The operator asked for the reasoning block to look SIMILAR to the existing
-// chat bubbles rather than adopting the execution pane's card layout, so the user and model bands must
-// still render exactly as they did.
+// THE BUBBLES ARE UNCHANGED.
 func TestFoldingDoesNotChangeTheChatBubbles(t *testing.T) {
 	items := []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "my question", Key: "u1"},

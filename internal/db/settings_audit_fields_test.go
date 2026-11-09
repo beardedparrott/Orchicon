@@ -1,15 +1,6 @@
 package db_test
 
 // settings_audit_fields_test.go — the audited shape of a settings row.
-//
-// WHY THIS IS A PURE TEST, and why it matters more than it looks. The operator asked, of a stall window
-// they had set and later found unset: "I set 600 seconds in the TUI under settings edit and saved it yet
-// you said you had to set it." The honest answer was that the trail could not say — `settings.updated`
-// recorded the default models and the session TTLs and NOTHING ELSE, so a changed or blanked stall window
-// left no trace, and neither could the agent-facing `update_settings` tool be seen to have written at all.
-//
-// This pins the SHAPE both write paths now record (db.TenantSettingsRow.AuditFields), because the shape is
-// the diagnostic: every stall knob present, and a NULL preserved as null rather than collapsed.
 
 import (
 	"encoding/json"
@@ -52,11 +43,6 @@ func TestAuditFieldsRecordEveryStallKnob(t *testing.T) {
 }
 
 // A BLANK WINDOW AND A DISABLED ONE MUST BE DISTINGUISHABLE IN THE SNAPSHOT.
-//
-// These columns are nullable precisely because NULL means "use the built-in default" while 0 means
-// DISABLED — two different instructions an operator may have chosen deliberately. Flattening a nil to 0 (or
-// omitting the key) would make the snapshot unable to answer the ONE question it exists for: was this
-// window blanked by a save, or set to off on purpose?
 func TestAuditFieldsDistinguishBlankFromDisabled(t *testing.T) {
 	disabled := int64(0)
 	configured := int64(600)
@@ -77,12 +63,7 @@ func TestAuditFieldsDistinguishBlankFromDisabled(t *testing.T) {
 		t.Errorf("the configured window recorded as %v, want 600", got)
 	}
 
-	// THE KEY IS PRESENT AND MARSHALS TO null — not absent. An absent key reads as "this build does not
-	// record that field"; a null reads as "recorded, and blank". The two are different diagnoses, and the
-	// MARSHALLED form is what an auditor actually reads, so that is what is asserted.
-	//
-	// (A typed nil pointer does not compare equal to nil as an `any`, so checking the map value directly
-	// would report a correct null as "not nil" — the assertion has to go through the JSON.)
+	// THE KEY IS PRESENT AND MARSHALS TO null — not absent.
 	raw, err := json.Marshal(fields)
 	if err != nil {
 		t.Fatalf("marshal the snapshot: %v", err)

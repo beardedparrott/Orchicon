@@ -24,10 +24,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// deleteProbeConversations removes exactly the rows a run created, and COMMITS. The delete
-// is a tenant-scoped statement (RLS covers these tables, so a bare pool.Exec sees nothing),
-// and it must be committed — rolling back the transaction would discard the DELETE and leave
-// the probe rows in the tenant, which is the pollution that filled the rail's window.
+// deleteProbeConversations removes exactly the rows a run created, and COMMITS.
 func deleteProbeConversations(t *testing.T, pool *db.Pool, tenant string, ids []string) {
 	t.Helper()
 	if len(ids) == 0 {
@@ -54,9 +51,7 @@ func TestListConversationsPaginationLosesNothingAcrossTies(t *testing.T) {
 	ctx := context.Background()
 	const tenant = "tnt_dev"
 
-	// FIVE conversations created in ONE transaction, so every one of them carries the SAME
-	// updated_at. This is not contrived: the E2E fixtures write conversations in batches, and
-	// any bulk create shares a transaction timestamp.
+	// FIVE conversations created in ONE transaction, so every one of them carries the SAME updated_at.
 	const n = 5
 	ids := make([]string, 0, n)
 	ttx, err := pool.BeginTenantTx(ctx, tenant)
@@ -82,9 +77,7 @@ func TestListConversationsPaginationLosesNothingAcrossTies(t *testing.T) {
 		deleteProbeConversations(t, pool, tenant, ids)
 	})
 
-	// Confirm the premise: THESE rows really do share a timestamp. Scoped by id, not by
-	// title — a leftover row from an earlier run (or a concurrent one) would otherwise make
-	// this read as "not tied" and quietly retire the guard.
+	// Confirm the premise: THESE rows really do share a timestamp.
 	var distinct int
 	if err := pool.QueryRow(ctx,
 		`SELECT COUNT(DISTINCT updated_at) FROM ask_orchicon_conversations

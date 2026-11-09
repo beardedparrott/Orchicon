@@ -8,11 +8,6 @@ import (
 )
 
 // TestTodosFromSnapshotMapsTheProtoShape pins the run-state source's mapping.
-//
-// It is deliberately asserted through the SAME status/priority mappers the
-// transcript parser uses: the panel must not render the same list differently
-// depending on which source answered, and two independent mapping tables is
-// exactly how that drifts.
 func TestTodosFromSnapshotMapsTheProtoShape(t *testing.T) {
 	snap := []worktree.TodoItem{
 		{Content: "first", Status: "in_progress", Priority: "high"},

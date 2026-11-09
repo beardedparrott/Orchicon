@@ -93,16 +93,10 @@ const (
 	// claudeCatalogDomain is the signature's domain-separation prefix. See the
 	// file header: without it nothing verifies.
 	claudeCatalogDomain = "claude-code-model-catalog-v1\x00"
-	// ClaudeCatalogSurface is the surface Orchicon drives. The document carries
-	// five (cc, ccd, ccr, chat, cowork) with slightly different sets; `cc` is
-	// Claude Code's.
+	// ClaudeCatalogSurface is the surface Orchicon drives.
 	ClaudeCatalogSurface = "cc"
 
-	// claudeCatalogFetchTimeout bounds the cold fetch. Deliberately short: this
-	// runs on the model-picker path, and an unbounded fetch is the shape of the
-	// 45-second stall this package was just fixed for. Well inside the picker's
-	// 45s read budget, and a failure falls back to the vendored catalog
-	// immediately.
+	// claudeCatalogFetchTimeout bounds the cold fetch.
 	claudeCatalogFetchTimeout = 6 * time.Second
 	// claudeCatalogMinTTL floors the cache so a document with a nonsense
 	// expires_at cannot cause a fetch per request.
@@ -112,11 +106,8 @@ const (
 	claudeCatalogMaxTTL = 24 * time.Hour
 )
 
-// claudeCatalogPublicKeyPEM is the release signing key, PINNED IN THE BINARY and
-// extracted from it (2.1.261). Its SPKI SHA-256 is
-// 89a24e2e18d2f8fa4627a0a47cf76c3682aef237b60d2cd115d6f5202e2e9896, which is what
-// the live sidecar declares — the two agreeing is how the key was confirmed to be
-// the right one rather than merely the first present in the binary.
+// claudeCatalogPublicKeyPEM is the release signing key, PINNED IN THE BINARY and extracted from it
+// (2.1.261).
 const claudeCatalogPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
 MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAp28rSV5I8HmK8CK9GixB
 UZR/gtJxeOCsRXO4EJiej40jzBmQA3cWXGosVO82ZfFsRKVTtMC5iB/HH9sxjncr
@@ -180,20 +171,12 @@ func sha256Sum(b []byte) []byte {
 }
 
 // VerifyClaudeCatalog checks a catalog document against its detached signature.
-//
-// `wantKeySha256` (when non-empty) must equal the fingerprint of the key we pin,
-// so a sidecar signed under a DIFFERENT key is refused even if that key is
-// otherwise valid. The signature is then verified over
-// (domain-prefix || raw) — see the file header; the raw bytes alone do NOT
-// verify.
 func VerifyClaudeCatalog(raw []byte, sig claudeCatalogSig, wantKeySha256 string) error {
 	return verifyClaudeCatalogWith(raw, sig, wantKeySha256, true)
 }
 
-// verifyClaudeCatalogWith is VerifyClaudeCatalog with the domain prefix made
-// optional, so a test can DEMONSTRATE that the prefix is load-bearing (without
-// it, a valid document does not verify) rather than merely asserting it in a
-// comment. Production always passes true.
+// verifyClaudeCatalogWith is VerifyClaudeCatalog with the domain prefix made optional, so a test
+// can DEMONSTRATE that the prefix is load-bearing (without it.
 func verifyClaudeCatalogWith(raw []byte, sig claudeCatalogSig, wantKeySha256 string, withDomainPrefix bool) error {
 	if !strings.Contains(strings.ToUpper(sig.Algorithm), "PKCS1") {
 		return fmt.Errorf("claude catalog: unsupported signature algorithm %q", sig.Algorithm)
@@ -235,14 +218,6 @@ func verifyClaudeCatalogWith(raw []byte, sig claudeCatalogSig, wantKeySha256 str
 }
 
 // ParseClaudeCatalog extracts one surface's models as ModelInfo rows.
-//
-// `tools` is set true: every model this catalog offers is a Claude Code model,
-// and Claude Code is an agentic tool-user by definition. Reasoning follows the
-// effort levels — a model with none is not a reasoning model, which is the
-// document's own signal rather than a guess.
-//
-// IDS ARE BARE (no `anthropic/` prefix), matching ModelInfo.ID's contract; the
-// provider is applied by the caller.
 func ParseClaudeCatalog(raw []byte, surface string) ([]ModelInfo, error) {
 	var doc claudeCatalogDoc
 	if err := json.Unmarshal(raw, &doc); err != nil {
@@ -294,16 +269,8 @@ var claudeCatalogState claudeCatalogCache
 // setClaudeCatalogClientForTest swaps the HTTP client (tests only).
 var claudeCatalogClient = &http.Client{Timeout: claudeCatalogFetchTimeout}
 
-// SetClaudeCatalogClientForTest swaps the HTTP client this package fetches the
-// managed catalog with, returning a restore function. It exists so a caller whose
-// subject is the OFFLINE behaviour (e.g. the picker's vendored-snapshot seed) can
-// pin the "live source unreachable" condition instead of depending on the ambient
-// network: on a plane WITH egress the managed catalog answers and replaces the
-// snapshot, so such a test would assert something other than its subject.
-//
-// It is exported because the callers are in OTHER packages (providers_test), which
-// cannot reach the unexported var above. Test-only in intent and in use: nothing on
-// a production path calls it.
+// SetClaudeCatalogClientForTest swaps the HTTP client this package fetches the managed catalog
+// with, returning a restore function.
 func SetClaudeCatalogClientForTest(c *http.Client) (restore func()) {
 	prev := claudeCatalogClient
 	if c != nil {
@@ -312,13 +279,8 @@ func SetClaudeCatalogClientForTest(c *http.Client) (restore func()) {
 	return func() { claudeCatalogClient = prev }
 }
 
-// ClaudeCatalogModels returns the managed catalog's models for the `anthropic`
-// provider, with pricing merged from the vendored catalog.
-//
-// Cached until the document's own `expires_at` (bounded). Returns nil when the
-// catalog cannot be fetched or VERIFIED — a failed signature is treated exactly
-// like a network failure, because an unverified document is not a source — and
-// the caller falls back to the vendored list rather than showing nothing.
+// ClaudeCatalogModels returns the managed catalog's models for the `anthropic` provider, with
+// pricing merged from the vendored catalog.
 func ClaudeCatalogModels(ctx context.Context) []ModelInfo {
 	if cached, ok := claudeCatalogFromCache(); ok {
 		return cached
@@ -425,13 +387,6 @@ func claudeCatalogGet(ctx context.Context, url string) ([]byte, error) {
 }
 
 // mergeClaudePricing copies vendored pricing onto catalog rows by id.
-//
-// A model with no vendored entry keeps a nil Pricing, and that is a statement
-// about THIS CATALOG rather than about the model being unpriced: the recorded
-// cost for a claude turn comes from the CLI's own `total_cost_usd` whenever the
-// catalog declines (see the file header), so a row newer than the snapshot is
-// still costed at runtime. This function only decides which authored rates the
-// picker prefers where we have them.
 func mergeClaudePricing(models []ModelInfo) []ModelInfo {
 	byID := map[string]*Pricing{}
 	for _, m := range CatalogModelsForProvider("anthropic") {

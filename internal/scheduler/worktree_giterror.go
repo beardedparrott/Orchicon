@@ -18,14 +18,9 @@ package scheduler
 import "strings"
 
 // GitError is a failed git invocation WITH the output that explains it.
-//
-// Output is git's combined stdout+stderr (see runGit), which is where `fatal:` lines live. It is retained
-// verbatim — trimming it would risk removing the leading newline some git messages start with, and the whole
-// point is that nothing is dropped.
 type GitError struct {
 	// Args is the argument list as passed, WITHOUT the `-C <dir>` prefix, so a call site can add the
-	// directory it actually ran in (which is the thing that is wrong in a surprising number of Windows
-	// failures).
+	// directory it actually ran in (which is the thing that is wrong in a surprising number of Windows.
 	Args []string
 	// Dir is the working directory the command ran in, or ""
 	// when it ran without one.
@@ -38,11 +33,8 @@ type GitError struct {
 	Err error
 }
 
-// Error renders the failure the way a diagnosis needs it: the COMMAND, the DIRECTORY, and what git SAID.
-//
-// The summary deliberately leads with git's own `fatal:` line when there is one, because that is the
-// sentence that names the cause and it is the first thing a reader needs. The full output follows for the
-// cases where the useful line is not first (a multi-line hint block, an auth prompt, a lock failure).
+// Error renders the failure the way a diagnosis needs it: the COMMAND, the DIRECTORY, and what git
+// SAID.
 func (e *GitError) Error() string {
 	if e == nil {
 		return ""
@@ -72,10 +64,6 @@ func (e *GitError) Error() string {
 }
 
 // FatalLine returns git's own `fatal:` (or `error:`) line from Output, or "".
-//
-// git prints the cause on that line; everything after it is usually advice. Returning it separately lets a
-// caller put the CAUSE in a one-line field (a run_context value an operator reads in a list) while the full
-// output stays available for the log.
 func (e *GitError) FatalLine() string {
 	if e == nil {
 		return ""
@@ -93,23 +81,12 @@ func (e *GitError) FatalLine() string {
 func (e *GitError) Unwrap() error { return e.Err }
 
 // gitError builds a GitError from a failed run, preferring the output git actually produced.
-//
-// The `-C <dir>` prefix runGit adds is stripped from Args: Dir already carries it, and repeating it in the
-// rendered command reads as though the caller passed it.
 func gitError(dir string, args []string, out string, err error) *GitError {
 	return &GitError{Args: args, Dir: dir, Output: out, Err: err}
 }
 
-// worktreeProvisionError is the failure a run or step-run records when it could not create its working tree.
-//
-// It names EVERY input the attempt used — strategy, branch, base ref and the directory the command ran in —
-// because the acceptance criterion for a worktree failure is that the record is enough to diagnose it. The
-// base ref and the branch are the two values a wrong default-branch resolution corrupts, and the directory
-// is what a surprising cwd (a Windows path, a mapped drive, a repo reached over a UNC share) turns into a
-// fatal 128 with no other clue.
-//
-// weight: the SHORT form (one line, including git's fatal line) is what goes into run_context, because that
-// is what an operator reads in a run list. The long form goes to the log.
+// worktreeProvisionError is the failure a run or step-run records when it could not create its
+// working tree.
 func worktreeProvisionError(gitErr error, strategy, branch, base, projectDir string) string {
 	var b strings.Builder
 	b.WriteString("could not create the run worktree")

@@ -8,10 +8,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// busToolRunning builds a tool-part bus event with a NON-terminal status — the
-// shape the serve emits while a tool call is executing (and the exact shape
-// LegacyEventFromBus drops, so the stall monitor must be fed proactively via
-// observeToolStart).
+// busToolRunning builds a tool-part bus event with a NON-terminal status — the shape the serve
+// emits while a tool call is executing (and the exact shape LegacyEventFromBus drops.
 func busToolRunning(sessionID, tool string) opencode.BusEvent {
 	return opencode.BusEvent{
 		Type: "message.part.updated",
@@ -25,10 +23,8 @@ func busToolRunning(sessionID, tool string) opencode.BusEvent {
 	}
 }
 
-// TestToolWedgeDetectsUnresolvedTool verifies the AC1 MCP-wedge signal: a tool
-// call issued but never resolved trips toolWedge after the wedge window, and
-// names the stalled tool. This is the signal no_progress cannot see (a wedged
-// tool emits no completed tool_use, so LegacyEventFromBus never reports it).
+// TestToolWedgeDetectsUnresolvedTool verifies the AC1 MCP-wedge signal: a tool call issued but
+// never resolved trips toolWedge after the wedge window, and names the stalled tool.
 func TestToolWedgeDetectsUnresolvedTool(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "5s")
 	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", nil)
@@ -49,9 +45,8 @@ func TestToolWedgeDetectsUnresolvedTool(t *testing.T) {
 	}
 }
 
-// TestToolWedgeClearedByActivity verifies a legitimately slow tool that still
-// streams activity never trips the wedge: a completed text (or any non-tool
-// event) closes the open tool, so toolWedge returns false afterward.
+// TestToolWedgeClearedByActivity verifies a legitimately slow tool that still streams activity
+// never trips the wedge: a completed text (or any non-tool event) closes the open tool.
 func TestToolWedgeClearedByActivity(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "5s")
 	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", nil)
@@ -70,9 +65,7 @@ func TestToolWedgeClearedByActivity(t *testing.T) {
 }
 
 // TestActiveToolNameNonTerminal verifies the raw-bus tool-start classification
-// (opencode.ToolStartFromBus — the wedge monitor's signal): a non-terminal tool
-// part is detected, a completed/errored one is not (that is LegacyEventFromBus's
-// job), and a non-tool part is ignored.
+// (opencode.ToolStartFromBus — the wedge monitor's signal): a non-terminal tool part is detected.
 func TestActiveToolName(t *testing.T) {
 	if name, ok := opencode.ToolStartFromBus(busToolRunning("s", "read_file")); !ok || name != "read_file" {
 		t.Fatalf("ToolStartFromBus(running) = (%q,%v), want (read_file,true)", name, ok)
@@ -92,11 +85,8 @@ func TestActiveToolName(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyRecyclesWedgedSession is the end-to-end AC1
-// regression: a tool call that is issued and never resolves is detected as a
-// wedge, the wedged session is aborted + recycled to a FRESH seeded session,
-// and the SAME user message is re-dispatched and completes — no manual
-// restart, no failure surfaced to the user.
+// TestCollectConversationReplyRecyclesWedgedSession is the end-to-end AC1 regression: a tool call
+// that is issued and never resolves is detected as a wedge.
 func TestCollectConversationReplyRecyclesWedgedSession(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "500ms")
 	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "1500ms")
@@ -148,12 +138,8 @@ func TestCollectConversationReplyRecyclesWedgedSession(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyReconnectBudgetIsBounded verifies the 2026-09-09
-// recycle contract: with the reconnect budget at 0, a tool-wedge NEVER fails
-// the turn and NEVER recycles the session — the collector keeps listening on
-// the live session inside the reply window, and the turn COMPLETES with the
-// reply when the (slow) tool completes. The budget bounds ABORT+re-dispatch
-// recycles only; it is never a death sentence.
+// TestCollectConversationReplyReconnectBudgetIsBounded verifies the 2026-09-09 recycle contract:
+// with the reconnect budget at 0, a tool-wedge NEVER fails the turn and NEVER recycles the session.
 func TestCollectConversationReplyReconnectBudgetIsBounded(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "300ms")
 	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "1500ms")

@@ -2,18 +2,6 @@ package tui
 
 // execution_session_test.go — the durable-transcript fetch must read the TAIL of an execution, not
 // its opening.
-//
-// The operator: "I don't think it is showing the entire execution. In fact, I don't think any of the
-// executions in the TUI are showing the entire execution."
-//
-// The fetch asked for Limit: 200 with NO before_seq, which the server answers with the FIRST 200
-// parts in sequence order (db.ListExecutionSessionParts: `ORDER BY seq` when before_seq is unset).
-// The execution the report named has 17,574 parts, so the pane showed its opening 200 and nothing
-// else — no late tool calls, no final answer, no follow-up reply. The GUI asks for the tail instead
-// (beforeSeq = max int64, limit 10000, then reverses to chronological), and so does this now.
-//
-// These tests assert the REQUEST, because that is where the defect was: the response handling was
-// never wrong, it was simply being handed the wrong end of the transcript.
 
 import (
 	"context"

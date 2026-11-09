@@ -1,16 +1,6 @@
 package execution
 
 // grouping_test.go — category grouping in the Workers and Workflows panes.
-//
-// The operator: "None of the GUI categories are coming up for Workers or Workflows in the TUI" … "When an
-// item (conversation, worker, workflow) is in a category, it should create a little arrow dropdown in
-// their respective lists that can be collapsed or expanded."
-//
-// THE ARRANGEMENT (which row is a folder, which are members, how they nest) is screenkit's job and is
-// tested there. What can only be tested here is the WIRING, and the wiring is where the operator's bug
-// lived: the panes used to read the SHELL'S CACHE, which is loaded once at startup, so a grouping created
-// in the GUI while the TUI was running never reached them. They now group from THE RESPONSE'S OWN
-// categories — which is why the test below fetches with the shell's cache deliberately EMPTY.
 
 import (
 	"context"
@@ -22,9 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 )
 
-// groupSpy is a shell that answers the MANAGE hooks (rename/delete a grouping) and records the categorize
-// hook. It deliberately offers NO read side any more: the panes build their folders from the response, so
-// a spy that could serve them would be testing a path that no longer exists.
+// groupSpy is a shell that answers the MANAGE hooks (rename/delete a grouping) and records the
+// categorize hook.
 type groupSpy struct {
 	*categorizeSpy
 	// renamed / deleted record the manage calls, so a test can assert the pane reached the shell with
@@ -90,11 +79,6 @@ func TestGroupedIsInertWithNoCategories(t *testing.T) {
 }
 
 // TestWorkerPaneGroupsFromItsOwnResponse is the WIRING, driven end to end through the real fetch.
-//
-// The shell's category cache is DELIBERATELY EMPTY (`crudExec` never loads one) while the response carries
-// a grouping. Before the fix the pane consulted the cache and rendered a flat list; now the folders come
-// from the response, so they appear regardless of what the shell happens to hold — which is what makes a
-// grouping created in the GUI show up without restarting the TUI.
 func TestWorkerPaneGroupsFromItsOwnResponse(t *testing.T) {
 	m, _, _ := crudExec(t, nil, nil)
 	m.SetShell(&groupSpy{categorizeSpy: &categorizeSpy{}})
@@ -165,10 +149,7 @@ func TestCategorizeRefusesACategoryRow(t *testing.T) {
 	}
 }
 
-// TestWorkerWriteChordsRefuseACategoryRow: the item ops must not act on a grouping. `e` and `x` are
-// EXEMPT because they legitimately apply to the FOLDER the cursor is on (rename it, delete it) — that is
-// the GUI's own placement — while publish / set-active / version have no meaning for a grouping and would
-// otherwise ask the server to publish one.
+// TestWorkerWriteChordsRefuseACategoryRow: the item ops must not act on a grouping.
 func TestWorkerWriteChordsRefuseACategoryRow(t *testing.T) {
 	m, writes, _ := crudExec(t, &apiv1.Worker{Id: "w1"}, nil)
 	if !m.Base.SelectSource(srcWorkers) {
@@ -194,9 +175,8 @@ func TestWorkerWriteChordsRefuseACategoryRow(t *testing.T) {
 	}
 }
 
-// TestCategoryRowChordsManageTheGrouping: `e` renames and `x` deletes the GROUPING behind the row — the
-// GUI's per-folder affordances, reachable from the pane instead of from a special section. The shell must
-// be handed the CATEGORY ID, not the synthetic row id, or the write would go to an unknown entity.
+// TestCategoryRowChordsManageTheGrouping: `e` renames and `x` deletes the GROUPING behind the row —
+// the GUI's per-folder affordances, reachable from the pane instead of from a special section.
 func TestCategoryRowChordsManageTheGrouping(t *testing.T) {
 	m, writes, _ := crudExec(t, &apiv1.Worker{Id: "w1"}, nil)
 	if !m.Base.SelectSource(srcWorkers) {
@@ -245,10 +225,8 @@ func TestCategoryRowChordsDoNotFireOnAnItem(t *testing.T) {
 	}
 }
 
-// TestCollapseSurvivesAReload pins the reason collapse has to persist across a reload at all: the rolling
-// refresh reloads every list every few seconds, so a folder that re-opened on each load would spring open
-// under the operator's cursor and collapsing would be unusable. It asserts the VISIBLE ROW COUNT, which is
-// what "collapsed" actually means — the children are not drawn.
+// TestCollapseSurvivesAReload pins the reason collapse has to persist across a reload at all: the
+// rolling refresh reloads every list every few seconds.
 func TestCollapseSurvivesAReload(t *testing.T) {
 	folderID := screenkit.GroupRowID("catA")
 	rows := func() []screenkit.Item {
@@ -298,12 +276,8 @@ func TestANewFolderStartsOpen(t *testing.T) {
 
 // --- bulk delete on the Workers and Workflows panes ----------------------------------------------
 
-// TestMarkingWorkersOffersABulkDelete is the operator's report: "There doesn't seem to be a bulk delete on
-// workflows or workers. We should have the ctrl+x there as well."
-//
-// The mechanism was already shared (SPACE marks, BulkIDs reports a selection, actionsForSelection lets a
-// source replace its single-row actions); only the branch was missing, so marking rows highlighted them
-// and offered nothing.
+// TestMarkingWorkersOffersABulkDelete is the operator's report: "There doesn't seem to be a bulk
+// delete on workflows or workers.
 func TestMarkingWorkersOffersABulkDelete(t *testing.T) {
 	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1", Name: "one"}, nil)
 	if !m.Base.SelectSource(srcWorkers) {
@@ -319,9 +293,7 @@ func TestMarkingWorkersOffersABulkDelete(t *testing.T) {
 	if acts := m.actionsForSelection(); hasAction(acts, "delete 1 selected") {
 		t.Fatalf("one mark must not offer a bulk delete: %+v", acts)
 	}
-	// TWO marks is a selection, and the bulk delete replaces them. The marks are made with the REAL
-	// gesture (space on the cursor row, which then advances), so this pins the wiring end to end rather
-	// than handing the screen a prepared set.
+	// TWO marks is a selection, and the bulk delete replaces them.
 	press(t, m, " ")
 	acts := m.actionsForSelection()
 	if !hasAction(acts, "delete 2 selected") {
@@ -377,13 +349,8 @@ func TestBulkDeleteWorkersWritesEachAndCountsRefusals(t *testing.T) {
 	}
 }
 
-// TestBulkDeleteSkipsACategoryFolder: a folder is a ROW and can be marked like any other, but its id is
-// synthetic — so it must not be written, and the confirm's count must not include it.
-//
-// THREE rows are marked (the folder and BOTH of its members) because of the shared threshold: after the
-// folder is filtered out, two real entities remain. Marking the folder plus ONE member would leave a
-// single entity, which is correctly NOT a bulk selection — one row is not a selection, it is the row the
-// cursor is on.
+// TestBulkDeleteSkipsACategoryFolder: a folder is a ROW and can be marked like any other, but its
+// id is synthetic — so it must not be written, and the confirm's count must not include it.
 func TestBulkDeleteSkipsACategoryFolder(t *testing.T) {
 	m, _, writes := crudExec(t, &apiv1.Worker{Id: "w1"}, nil)
 	if !m.Base.SelectSource(srcWorkers) {

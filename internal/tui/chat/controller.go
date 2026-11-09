@@ -35,10 +35,8 @@ import (
 //     | heartbeat | error (current impl emits TurnStarted + live chunks
 //     + heartbeat; ListMessages remains authoritative for final text).
 
-// IsAuthExpired reports whether err is a Connect UNAUTHENTICATED (401 —
-// the re-auth prompt shape every dock RPC failure funnels through).
-// Non-connect errors carrying the marker in their text classify too
-// (wrapped errors lose the connect type).
+// IsAuthExpired reports whether err is a Connect UNAUTHENTICATED (401 — the re-auth prompt shape
+// every dock RPC failure funnels through).
 func IsAuthExpired(err error) bool {
 	if err == nil {
 		return false
@@ -54,106 +52,36 @@ type convState struct {
 	streaming      bool
 	reconnecting   bool
 	pendingReplyID string
-	// gen identifies the stream this slot currently belongs to. It is bumped by every SEND, and each
-	// stream carries the generation it started under, so a stream that has been SUPERSEDED cannot tear
-	// down the slot its successor owns.
-	//
-	// WITHOUT IT, AN INTERJECTION KILLED ITS OWN TURN'S STATE. An interjection opens a SECOND stream for the
-	// same conversation, and the supersede path it used to take closed the old one — that close arrives as
-	// StreamDoneMsg and cleared `streaming` and `pendingReplyID` for the conversation, i.e. for the turn the
-	// operator was still watching. The visible effects are exactly the reported ones: the thinking indicator
-	// and the watchdog vanished the moment the interjection was accepted, the poll fell to the
-	// non-streaming REPLACE path and discarded the live reply, and the transcript could keep a half-merged
-	// copy of both turns. A generation turns "a stream ended" into "THIS stream ended", which is the fact
-	// the slot actually needs.
-	//
-	// IT STILL MATTERS AFTER THE MOVE TO INJECTION: there is no supersede on the healthy path, so the
-	// original stream stays open alongside the interjection's and only the generation decides which one owns
-	// the slot.
+	// gen identifies the stream this slot currently belongs to.
 	gen uint64
-	// optimisticUser is the not-yet-persisted sent text (rendered
-	// immediately; replaced by the transcript row once ListMessages
-	// returns it).
+	// optimisticUser is the not-yet-persisted sent text (rendered immediately; replaced by the
+	// transcript row once ListMessages returns it).
 	optimisticUser string
 	sentText       string
 	// attempt is the turn the slot's CURRENT stream attempt was opened for.
-	//
-	// IT EXISTS FOR ONE FAILURE: the server refusing the attempt because a reply is already running on
-	// this conversation (its one-turn gate, see dropStream). That refusal is curable — the remedy is the
-	// interject RPC, which now ADDS the message to the running turn instead of replacing it — and curing it
-	// needs the very message the attempt carried, which is otherwise gone by the time the refusal arrives.
-	// retried caps the remedy at one re-issue, so a failure that path cannot fix is reported rather than
-	// retried forever.
 	attempt streamAttempt
 	// authDead records that this conversation's last transcript read was rejected as UNAUTHENTICATED.
-	//
-	// IT STOPS THE POLL. Reported: a TUI whose access token had expired kept polling ListMessages for an
-	// hour, one socket per attempt, until the host had no ephemeral ports left and every later `bind()`
-	// failed. The re-auth banner WAS shown — the operator simply was not looking at that terminal — so a
-	// passive banner is not enough: a 401 is PERMANENT until someone re-authenticates, and retrying it at
-	// full rate buys nothing except sockets.
-	//
-	// A fresh credential clears it (see SetToken's OnRefreshed path via markAuthOK), so a successful refresh
-	// or a re-connect resumes polling normally.
 	authDead bool
 	// lastActivity is the UnixMilli of the most recent event from the stream — a text chunk, a
-	// reasoning chunk, a tool event or a HEARTBEAT. The liveness watchdog reads it (see
-	// runLivenessWatch); without it, a stream whose socket died silently is indistinguishable
-	// from a turn that is simply thinking.
+	// reasoning chunk, a tool event or a HEARTBEAT.
 	lastActivity int64
 	// serverTimeMs and serverRecvMonoMs are the SERVER's clock, and the moment THIS client heard it,
-	// captured together from Heartbeat.server_time_unix_ms — a field the server already emits and both
-	// clients used to discard.
-	//
-	// THEY EXIST FOR THE ACTIVITY VERB ROTATION. The word the line shows is verbAt(server-time), a PURE
-	// function of the server's clock (see verbs.go), so two clients draw the same word with no shared
-	// state and no new RPC. A heartbeat is the only place that clock arrives, so these two numbers are
-	// the whole of the slot's knowledge about it. serverRecvMonoMs is a LOCAL receipt instant used only
-	// as a DELTA — `serverTimeMs + (now() - serverRecvMonoMs)` — which keeps the word advancing between
-	// the 15s heartbeats WITHOUT ever letting the client's own (possibly skewed) wall clock become the
-	// source of the word. serverTimeMs == 0 means "no heartbeat yet": the caller falls back to the
-	// list's first word rather than to an empty line.
+	// captured together from Heartbeat.server_time_unix_ms.
 	serverTimeMs     int64
 	serverRecvMonoMs int64
 }
 
-// askStreamStallTimeout is how long a streaming turn may go with NO event at all before the
-// stream is declared dead and re-dialled.
-//
-// THE SERVER SENDS A HEARTBEAT EVERY 15 SECONDS (askHeartbeatInterval), so a live stream is never
-// quiet for anything close to this. Two intervals plus slack means one missed heartbeat does not
-// trip it, while a genuinely dead socket is caught in well under a minute. Without this the TUI
-// waited forever — see runLivenessWatch for the failure that produced it.
+// askStreamStallTimeout is how long a streaming turn may go with NO event at all before the stream
+// is declared dead and re-dialled.
 const askStreamStallTimeout = 40 * time.Second
 
-// askLivenessCheckInterval is how often the watchdog looks. Small relative to the timeout so the
-// re-dial happens promptly once the turn is stale, and cheap enough to be irrelevant (it reads one
-// int64 under a mutex).
+// askLivenessCheckInterval is how often the watchdog looks.
 const askLivenessCheckInterval = 5 * time.Second
 
 // askTurnPollInterval is how often a STREAMING turn re-reads its durable transcript.
-//
-// THIS IS THE ROBUST HALF OF LIVE STREAMING, and it exists because the live half cannot be trusted
-// on its own. The server mirrors the running turn's collected text, reasoning and tool ledger into
-// the ACKED assistant message every 250ms (askorchicon.upsertPartialMessage — the mechanism built so
-// "a client that lost the live stream (refresh, another tab/device) polls ListMessages and watches
-// the reply grow"). A poll DURING the turn therefore renders the same progress the socket would
-// deliver, over a plain unary RPC that cannot be half-open, cannot be buffered mid-body by a proxy,
-// and cannot go quiet without an error.
-//
-// The operator, on a stream that delivered heartbeats but no reply: "I don't even care if you have to
-// find a brand new method." This is that method — and it is not a fallback bolted on beside the
-// stream: both feed the SAME merge (mergeHistory), so whichever arrives first paints, and a turn
-// where either path is broken still streams through the other.
-//
-// One second: the mirror flushes at 250ms, so this is four mirror generations per poll — the reply
-// reads as live rather than as a slideshow. The cost is one bounded ListMessages a second while a
-// turn is in flight, for one conversation.
 const askTurnPollInterval = time.Second
 
-// Controller owns Ask Orchicon conversation state + streaming for the
-// TUI. It is a plain struct with tea.Cmd factories — the shell owns
-// dispatching its messages back in.
+// Controller owns Ask Orchicon conversation state + streaming for the TUI.
 type Controller struct {
 	cl  *client.Clients
 	reg Registrar // nilable; subscription re-arm hook
@@ -164,27 +92,20 @@ type Controller struct {
 	active string
 	err    string // last dock-visible error ("" = none)
 
-	// pendingModel / pendingMode are the model + persona a NEW conversation
-	// is created with (the Ask-model picker + /mode). The Ask API has no
-	// update-model RPC, so a model change applies to the next new
-	// conversation (model_ref on CreateConversation) — matching the GUI's
-	// New chat, which also only sets model_ref at create time.
+	// pendingModel / pendingMode are the model + persona a NEW conversation is created with (the
+	// Ask-model picker + /mode).
 	pendingModel string
 	pendingMode  apiv1.ConversationMode
 
 	seq int // chunk key sequence (st-/sr- keys like the GUI)
 
-	// store receives live chunks (the chat view); cmds receives follow-up
-	// tea.Cmds produced by goroutines (watch re-dials). Both are set via
-	// Bind by the shell — the package cannot import bubbletea's program
-	// channel directly.
+	// store receives live chunks (the chat view); cmds receives follow-up tea.Cmds produced by
+	// goroutines (watch re-dials).
 	store EventStore
 	cmds  chan tea.Cmd
 }
 
-// Bind wires the controller to the view's event store and the shell's
-// cmd sink. Goroutine-produced follow-ups (watch re-dials) are pushed
-// into cmds; the shell drains them via NextBoundCmd messages.
+// Bind wires the controller to the view's event store and the shell's cmd sink.
 func (c *Controller) Bind(store EventStore, cmds chan tea.Cmd) {
 	c.mu.Lock()
 	c.store, c.cmds = store, cmds
@@ -199,38 +120,22 @@ type Conversation struct {
 	MessageN  int32
 	ModelRef  string
 	Mode      apiv1.ConversationMode
-	// Fullsend is whether this conversation is in FULLSEND: the operator has waived the
-	// permission PROMPT for it. Read from the conversation row the server computes at read
-	// time, so the composer indicator tracks the SERVER's state — including a toggle made in
-	// the GUI — on the same conversation-list reload the mode pill already follows.
+	// Fullsend is whether this conversation is in FULLSEND: the operator has waived the permission
+	// PROMPT for it.
 	Fullsend bool
-	// ProjectID is the project this conversation belongs to, or "" when unassigned (the API's empty string, kept
-	// as-is rather than normalized into a sentinel so the rail and the GUI agree on what "unassigned" looks like).
-	//
-	// It is what the rail GROUPS BY: the operator's "second higher level in organization for conversations ...
-	// associated with Projects in a parent category". A plain field on the row rather than a map beside it,
-	// because every site that renders a conversation needs it and a parallel map is one more thing that can
-	// disagree with the list it describes.
+	// ProjectID is the project this conversation belongs to, or "" when unassigned (the API's empty
+	// string, kept as-is rather than normalized into a sentinel so the rail and the GUI agree on what.
 	ProjectID string
 	// SkillFiles is the conversation's skill_files path list (Conversation.skill_files) — the
-	// conversation-level half of the skills feature, union-ed with the project's by the same
-	// contextfiles renderer. Read at list time so the composer can report it without a second
-	// fetch, exactly as ProjectID above.
+	// conversation-level half of the skills feature.
 	SkillFiles []string
-	// PendingReplyID is the acked assistant message id of a turn the SERVER reports as still running, or "".
-	//
-	// IT IS WHAT LETS THIS CLIENT RE-ATTACH TO ITS OWN TURN, which is the reported bug: "When I leave an chat
-	// and go back into it, it loses the 'orchicon is thinking...' and watchdog." The server-side turn registry
-	// is the authority and it survives leaving the pane (and a refresh, and another device); without this field
-	// the shell had nothing to restore FROM, so re-entering a conversation mid-turn showed an idle pane with a
-	// reply that was quietly still being written. turn_in_flight alone is not enough — the Watch RPC needs the
-	// assistant message id, which is what makes the re-attach address THIS turn and not a stale one.
+	// PendingReplyID is the acked assistant message id of a turn the SERVER reports as still running,
+	// or "".
 	PendingReplyID string
 }
 
-// Registrar is the minimal subscription hook the controller needs
-// (*subs.Registry satisfies it) — kept as an interface so controller
-// tests need no registry.
+// Registrar is the minimal subscription hook the controller needs (*subs.Registry satisfies it) —
+// kept as an interface so controller tests need no registry.
 type Registrar interface{}
 
 // NewController builds the chat controller.
@@ -240,16 +145,8 @@ func NewController(cl *client.Clients) *Controller {
 
 // --- tea.Msgs the controller emits (shell dispatches them back) --------
 
-// TurnAckedMsg reports that a dispatched turn has been ACCEPTED by the server — the stream acked it with
-// TurnStarted, so the send has resolved and the turn is genuinely under way.
-//
-// IT EXISTS TO SETTLE THE COMPOSER'S SEND ACK. The dock writes "sending …" the instant Enter fires, and
-// until now only two outcomes replaced it: a FAILURE (setChatError) and a NEW conversation landing
-// (chatConvCreatedMsg). A second message in an EXISTING conversation therefore left the ack on screen for
-// good — the operator's "I also notice a 'sending ...' underneath the composer even when the model is
-// done". Completion is a terminal outcome like any other, so it settles the ack here (the ack is exactly
-// "the send has been handed over and nothing has come back yet") and again on the turn's end, belt and
-// braces, in onStreamDone.
+// TurnAckedMsg reports that a dispatched turn has been ACCEPTED by the server — the stream acked it
+// with TurnStarted, so the send has resolved and the turn is genuinely under way.
 type TurnAckedMsg struct {
 	ConvID string
 }
@@ -259,11 +156,6 @@ type ConversationsMsg struct {
 	Convs []Conversation
 	Err   string
 	// Categories and Assignments are the CONVERSATION groupings the SAME response carried.
-	//
-	// They are here because the list is the freshest place the rail can learn its groupings from: the
-	// shell's cache is loaded once at startup, so a grouping created in the GUI while the TUI runs never
-	// reached the rail. Passing them through the message also keeps the read on the MAIN LOOP, where the
-	// cache lives — the fetch itself runs on a goroutine.
 	Categories  []*apiv1.Category
 	Assignments []*apiv1.CategoryAssignment
 }
@@ -275,39 +167,21 @@ type TranscriptMsg struct {
 	Items  []ChatItem
 	// ToolCalls are the durable tool-call rows of the page just loaded, in ledger order, for the
 	// activity line's rolling counter (internal/toolclass.SummarizeCalls).
-	//
-	// THEY ARE DELIBERATELY NOT RENDERED. conversationItems emits no KindTool row on purpose: the
-	// GUI's Ask transcript draws no tool bubbles, and ask_parity_test.go pins that TUI<->GUI parity,
-	// so emitting durable tool rows would be a visible, parity-breaking change. The counter needs
-	// only the name and the issue stamp, so it rides this sibling field instead.
 	ToolCalls []toolclass.Call
 	// SettledAsks are the asks this page records an OUTCOME for: the durable `permission.<outcome>`
 	// rows, paired with the ask id each one settles.
-	//
-	// AN OPEN CARD HAS NO DURABLE ROW, which is why this is the SETTLE half and not the reveal half.
-	// The transcript records the OUTCOME of a decision (permission.allow / .deny / .expired), never
-	// the open ask — see DiscoverPendingAsks for the query that reveals one. Carrying these on the
-	// message lets the shell settle a card from the SAME rows the GUI's settleFromLedger reads,
-	// instead of inferring it from a stream closing.
 	SettledAsks []AskOutcome
 	Err         string
 }
 
 // AskOutcome is one ask the durable transcript has ALREADY settled: the ask's id, and the outcome
 // the server recorded for it.
-//
-// The outcome is carried rather than assumed because it is the operator's own decision
-// (allow_once / allow_session / deny) or one no client can infer from its own state (expired,
-// answered) — see consentDecisionFromOutcome for why an unrecognised value settles the card WITHOUT
-// claiming a decision.
 type AskOutcome struct {
 	AskID   string
 	Outcome string
 }
 
-// chatEventMsg forwards one ChatStreamResponse oneof event. ConvID tags
-// the producing conversation so a stale stream can never write into
-// another conversation's slot.
+// chatEventMsg forwards one ChatStreamResponse oneof event.
 type chatEventMsg struct {
 	ConvID string
 	Ev     *apiv1.ChatStreamResponse
@@ -316,9 +190,8 @@ type chatEventMsg struct {
 	err  error
 }
 
-// TurnResolvedMsg fires when the ListMessages poll observes the acked
-// reply row while the turn is no longer in flight — the completion
-// authority (GUI completion effect).
+// TurnResolvedMsg fires when the ListMessages poll observes the acked reply row while the turn is
+// no longer in flight — the completion authority (GUI completion effect).
 type TurnResolvedMsg struct {
 	ConvID  string
 	Failed  bool
@@ -326,13 +199,6 @@ type TurnResolvedMsg struct {
 }
 
 // ErrMsg carries a dock-visible failure (send/interject/watch/list).
-//
-// CONVID IS THE CONVERSATION THE FAILURE BELONGS TO, or "" when there is none (a failed create). It exists
-// so the shell can put the failure ON THE TRANSCRIPT and not only on the composer strip: a PRE-ACK send
-// failure writes NO durable row anywhere (the service refuses/aborts before the turn is registered), so
-// unlike a failed TURN — which is persisted as an error row and now draws through conversationItems — this
-// one has nothing to be found by the row-rendering fix. Without it the operator's message vanished with
-// only a strip that a transcript reader is not looking at. See App.surfaceTurnFailure.
 type ErrMsg struct {
 	Where  string
 	Err    error
@@ -361,15 +227,13 @@ type ConversationMutatedMsg struct {
 	Op  string // "rename" | "delete" | "mode" | "compact"
 	ID  string
 	Err string
-	// Detail is the outcome text for ops that report one (compact): a one-line,
-	// user-facing explanation shown verbatim, including WHY compaction declined
-	// and the measured context size around it when the server reported one.
+	// Detail is the outcome text for ops that report one (compact): a one-line, user-facing explanation
+	// shown verbatim, including WHY compaction declined and the measured context size around it.
 	Detail string
 }
 
-// StreamDoneMsg marks the goroutine forwarding loop ended (exported —
-// the shell's dispatch consumes it). Gen is the generation of the stream that ended, so a stream
-// superseded by an interjection cannot clear the slot of the turn that replaced it.
+// StreamDoneMsg marks the goroutine forwarding loop ended (exported — the shell's dispatch consumes
+// it).
 type StreamDoneMsg struct {
 	ConvID string
 	Gen    uint64
@@ -378,8 +242,7 @@ type StreamDoneMsg struct {
 func (s StreamDoneMsg) isMsg() {}
 
 // AbortTurnMsg reports the outcome of a Stop (the composer's ctrl+y) so the shell can settle the
-// composer's affordance row and repaint the transcript. ConvID is echoed so a stale abort for a
-// conversation the operator has since left cannot retitle the pane.
+// composer's affordance row and repaint the transcript.
 type AbortTurnMsg struct {
 	ConvID string
 	Err    string
@@ -468,21 +331,11 @@ func (c *Controller) PendingMode() apiv1.ConversationMode {
 	return c.pendingMode
 }
 
-// ModeNames lists the persona spellings the operator can type, in the order the
-// help text shows them. ONE list, so the `/mode` help, the error message and the
-// parser cannot drift apart — the failure mode this codebase keeps producing.
-//
-// The order is the escalation of agency: think it through, do it with me, or
-// dispatch it.
+// ModeNames lists the persona spellings the operator can type, in the order the help text shows
+// them.
 func ModeNames() []string { return []string{"brainstorm", "iteration", "quick_work"} }
 
 // ParseMode maps a user-typed persona to the proto enum (case-insensitive).
-//
-// "quick work" and "quick_work" both parse: the enum's own name is QUICK_WORK, the
-// label is "Quick Work", and an operator typing it into a chat box will use
-// whichever of those feels natural. Rejecting one of them for a spelling the UI
-// itself uses would be a spelling test, which is exactly what the mode command is
-// meant to avoid.
 func ParseMode(s string) (apiv1.ConversationMode, bool) {
 	norm := strings.ToLower(strings.TrimSpace(s))
 	// Collapse the separators so "quick work", "quick_work", "quick-work" and
@@ -499,11 +352,8 @@ func ParseMode(s string) (apiv1.ConversationMode, bool) {
 	return apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED, false
 }
 
-// CreateConversation creates a conversation with the given model + persona
-// (the GUI's New chat: model_ref + mode are create-time fields).
-//
-// projectID places it in a project from birth — the TUI's "create in this project folder". An empty id creates
-// an unassigned conversation, which is what every other caller wants.
+// CreateConversation creates a conversation with the given model + persona (the GUI's New chat:
+// model_ref + mode are create-time fields).
 func (c *Controller) CreateConversation(modelRef string, mode apiv1.ConversationMode, initialMessage, projectID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -522,10 +372,8 @@ func (c *Controller) CreateConversation(modelRef string, mode apiv1.Conversation
 	}
 }
 
-// SetConversationProject moves a conversation into a project (or unassigns it with an
-// empty id) — SetConversationProject. It is what the rail's /project command and its
-// create-in-folder gesture both resolve to, so the TUI cannot disagree with the GUI
-// about what "belongs to a project" means.
+// SetConversationProject moves a conversation into a project (or unassigns it with an empty id) —
+// SetConversationProject.
 func (c *Controller) SetConversationProject(id, projectID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -542,9 +390,8 @@ func (c *Controller) SetConversationProject(id, projectID string) tea.Cmd {
 }
 
 // SetConversationSkillFiles REPLACES the conversation's skill_files path list
-// (SetConversationSkillFiles; an empty list clears it) — the conversation-level half
-// of the skills feature, and the exact mirror of SetConversationProject above.
-// Rendered by the same contextfiles.RenderManifest as the project's, union-ed with it.
+// (SetConversationSkillFiles; an empty list clears it) — the conversation-level half of the skills
+// feature.
 func (c *Controller) SetConversationSkillFiles(id string, files []string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -576,13 +423,6 @@ func (c *Controller) RenameConversation(id, title string) tea.Cmd {
 }
 
 // CanCompact reports whether the conversation may be compacted right now.
-// Empty string means yes; otherwise it returns the operator-facing reason it
-// must not.
-//
-// The one refusal: a turn is in flight. Compaction rewrites the very history the
-// running turn is generating from, so compacting underneath it would corrupt an
-// answer in progress. This lives on the controller (not the slash command) so the
-// policy is testable and any future caller inherits it.
 func (c *Controller) CanCompact(convID string) string {
 	if convID == "" {
 		return "no conversation open — /new or pick one from the rail"
@@ -593,18 +433,13 @@ func (c *Controller) CanCompact(convID string) string {
 	return ""
 }
 
-// CompactConversation compacts the conversation's accumulated context
-// (CompactConversation) so a long session can continue inside the model's
-// context window. The server owns the policy: it declines (compacted=false with
-// a reason in Detail) when the conversation is too short to be worth a lossy
-// collapse, and returns the MEASURED context sizes when it did compact. This is
-// a synchronous RPC — compaction is one bounded operation, so there is no stream
-// and no turn is dispatched.
+// CompactConversation compacts the conversation's accumulated context (CompactConversation) so a
+// long session can continue inside the model's context window.
 func (c *Controller) CompactConversation(id string) tea.Cmd {
 	return func() tea.Msg {
-		// Compaction may run a summarize model turn, so the deadline is
-		// deliberately generous (the same 2-minute class as a summarize call)
-		// rather than the 20s used by the pure-CRUD conversation writes.
+		// Compaction may run a summarize model turn, so the deadline is deliberately generous (the same
+		// 2-minute class as a summarize call) rather than the 20s used by the pure-CRUD conversation
+		// writes.
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		resp, err := c.cl.Ask.CompactConversation(ctx, connect.NewRequest(&apiv1.CompactConversationRequest{
@@ -634,15 +469,6 @@ const (
 )
 
 // DeleteMessage removes one message, or that message and everything after it.
-//
-// IT IS A SYNCHRONOUS RPC WITH NO TURN — like compaction, it rewrites the stored history and the caller
-// re-polls. The server also RECYCLES the conversation's model session, which is the half that makes the
-// removal real: turns are continued on a stored session id, so deleting rows alone would take the message off
-// the screen while leaving it in what the model reasons about. The response says whether that happened, so the
-// dock can report it rather than the operator assuming.
-//
-// The 20s deadline is the pure-CRUD class: this is two DELETEs and one UPDATE, and a busy wait here would read
-// as a hang.
 func (c *Controller) DeleteMessage(conversationID, messageID string, mode apiv1.MessageDeleteMode) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -666,10 +492,9 @@ func (c *Controller) DeleteMessage(conversationID, messageID string, mode apiv1.
 	}
 }
 
-// compactionDetail renders a CompactConversationResponse for the dock notice:
-// the server's own detail line, plus the measured context sizes when it reported
-// them (0 means "unknown" and is omitted rather than shown as zero — the server
-// never estimates, so a zero here would read as a real measurement of nothing).
+// compactionDetail renders a CompactConversationResponse for the dock notice: the server's own
+// detail line, plus the measured context sizes when it reported them (0 means "unknown" and is
+// omitted.
 func compactionDetail(r *apiv1.CompactConversationResponse) string {
 	if r == nil {
 		return ""
@@ -718,11 +543,7 @@ func (c *Controller) SetConversationMode(id string, mode apiv1.ConversationMode)
 	}
 }
 
-// SetConversationModel retargets an OPEN conversation's model_ref
-// (SetConversationModel). The change applies from the NEXT message; an empty
-// ref CLEARS the per-conversation override so the tenant default applies.
-// This is the /models write path — it is what lets the operator retarget a
-// chat in place instead of abandoning it for a new one.
+// SetConversationModel retargets an OPEN conversation's model_ref (SetConversationModel).
 func (c *Controller) SetConversationModel(id, modelRef string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -738,13 +559,8 @@ func (c *Controller) SetConversationModel(id, modelRef string) tea.Cmd {
 	}
 }
 
-// SetConversationFullsend turns FULLSEND on or off for one conversation — the TUI's
-// `/fullsend` write path.
-//
-// IT IS AN EXPLICIT BOOLEAN, never a toggle request: the caller decides from the state it
-// can currently SEE and sends the value it wants, so a retry after a dropped response
-// cannot flip the mode by accident. The OPERATOR's intent is the toggle; the WIRE carries
-// a value.
+// SetConversationFullsend turns FULLSEND on or off for one conversation — the TUI's `/fullsend`
+// write path.
 func (c *Controller) SetConversationFullsend(id string, enabled bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -760,27 +576,13 @@ func (c *Controller) SetConversationFullsend(id string, enabled bool) tea.Cmd {
 	}
 }
 
-// convRailPageSize is the page the rail asks for. The server CLAMPS a larger request down to ITS OWN
-// default (askorchicon.Service.ListConversations turns anything over 100 into 50), so 100 is both the
-// ceiling and the only correct ask.
+// convRailPageSize is the page the rail asks for.
 const convRailPageSize = 100
 
-// convRailMaxPages bounds the paging loop. The rail is a COMPLETE list with no "load more" affordance,
-// so it pages to exhaustion; this cap is the backstop that keeps a pathological tenant from turning the
-// 5s rolling refresh into an unbounded RPC chain.
+// convRailMaxPages bounds the paging loop.
 const convRailMaxPages = 20
 
 // LoadConversations fetches the conversation rail.
-//
-// IT PAGES TO EXHAUSTION, and that is a defect fix rather than a nicety. This used to ask for ONE page of
-// 100 and DISCARD `next_page_token` — the only conversation loader in the TUI that did (the screenkit
-// screens all page). So the rail was a fixed "newest 100" window over an unlimited table: every
-// conversation past rank 100 became UNREACHABLE, with no affordance saying so, while the same rows stayed
-// visible in the GUI. The operator, on a tenant holding 184 conversations of which 132 were newer test
-// rows: "ALL conversations except this one disappeared from the conversation rail". The conversations were
-// never deleted — the rail could not ask for them.
-//
-// The cost is one RPC per 100 conversations, on the same 5s cadence as before (two for that tenant).
 func (c *Controller) LoadConversations() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -814,9 +616,8 @@ func (c *Controller) LoadConversations() tea.Cmd {
 					PendingReplyID: cv.GetPendingAssistantMessageId(),
 				})
 			}
-			// The grouping set is the TENANT's and is identical on every page, so it is taken once from
-			// the first — a later page cannot legitimately differ, and reading it per page would let an
-			// empty tail response clobber it.
+			// The grouping set is the TENANT's and is identical on every page, so it is taken once from the
+			// first — a later page cannot legitimately differ.
 			if page == 0 {
 				categories = resp.Msg.GetCategories()
 				assignments = resp.Msg.GetAssignments()
@@ -830,16 +631,9 @@ func (c *Controller) LoadConversations() tea.Cmd {
 }
 
 // ConsentRepliedMsg reports the SERVER's answer to a permission decision.
-//
-// It exists so a decision that did NOT apply is visible. A reply can legitimately
-// lose — the ask expired, the turn ended, another reply won — and the server says so
-// (`applied: false`, `expired: true`) rather than reporting a silent success. Without
-// this the operator's click looked like an approval while the call was denied.
 type ConsentRepliedMsg struct {
 	ConvID string
-	// AskID names the ask the verdict is about, so the shell can settle the ONE card that asked it. It is
-	// what makes a decision the server REFUSED stop being recorded as a session grant locally: the grant may
-	// only be written on the APPLIED verdict, and the verdict has to name its ask to find it.
+	// AskID names the ask the verdict is about, so the shell can settle the ONE card that asked it.
 	AskID   string
 	Applied bool
 	Expired bool
@@ -848,12 +642,6 @@ type ConsentRepliedMsg struct {
 }
 
 // PermissionGrantsMsg carries the conversation's ACTIVE session grants, as the server holds them.
-//
-// Grants are the SERVER's fact — its store is what decides whether the next tool call asks, and it is in
-// memory, so it changes without this client doing anything (a plane restart drops it; the GUI granting one
-// adds to it). The client therefore never keeps a copy: every list is fetched, and every revoke returns the
-// refreshed list (see RevokePermissionGrant). Notice carries a one-line outcome for the dock when the fetch
-// was triggered by a write.
 type PermissionGrantsMsg struct {
 	ConvID string
 	Grants []SessionGrant
@@ -879,12 +667,8 @@ func (c *Controller) LoadPermissionGrants(convID string) tea.Cmd {
 	}
 }
 
-// RevokePermissionGrant drops one session grant ON THE SERVER and returns the refreshed list.
-//
-// THE TUI ONLY EVER DROPPED IT LOCALLY, which is why revoking did nothing: the server's store still held the
-// grant, so the very next tool call for that directory proceeded without asking — while the client's own list
-// showed the grant gone. Revoking is the operator withdrawing a permission, so it has to reach the thing that
-// enforces it.
+// THE TUI ONLY EVER DROPPED IT LOCALLY, which is why revoking did nothing: the server's store still
+// held the grant, so the very next tool call for that directory proceeded without asking.
 func (c *Controller) RevokePermissionGrant(convID, directory string) tea.Cmd {
 	if convID == "" || directory == "" {
 		return nil
@@ -925,18 +709,8 @@ func sessionGrantsFromProto(gs []*apiv1.SessionPermissionGrant) []SessionGrant {
 	return out
 }
 
-// ReplyPermissionAsk answers a pending permission ask ON THE SERVER.
-//
-// THE TUI NEVER DID THIS, WHICH IS WHY APPROVING A CARD DID NOTHING. ConsentResolve
-// recorded a LOCAL session grant and showed a notice, then repainted — while the
-// server's ask stayed open until its wait expired, so the call was denied and the
-// transcript recorded a denial the operator never made. The operator: "it accepted my
-// click … also for some reason the history says I denied it."
-//
-// The GUI has always called this RPC (`askOrchiconClient.replyPermissionAsk`); the TUI
-// had no equivalent, so a permission could be decided in the browser and never from
-// the terminal. The local grant is still recorded (it is what silences the NEXT card
-// for that directory without a round trip) but it is no longer the whole story.
+// ReplyPermissionAsk answers a pending permission ask ON THE SERVER. THE TUI NEVER DID THIS, WHICH
+// IS WHY APPROVING A CARD DID NOTHING.
 func (c *Controller) ReplyPermissionAsk(convID, askID string, choice apiv1.PermissionChoice, answer string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -971,9 +745,7 @@ func (c *Controller) OpenConversation(id string) tea.Cmd {
 			PageSize:       200,
 		}))
 		if err != nil {
-			// A REJECTED CREDENTIAL STOPS THE POLL. Every retry costs a connection and cannot succeed until a
-			// human re-authenticates, so the loop is told to stand down rather than hammer (see
-			// convState.authDead). Any other error is transient by comparison and keeps polling.
+			// A REJECTED CREDENTIAL STOPS THE POLL.
 			c.markAuthFailure(id, err)
 			return TranscriptMsg{ConvID: id, Err: err.Error()}
 		}
@@ -990,14 +762,7 @@ func (c *Controller) OpenConversation(id string) tea.Cmd {
 }
 
 // pageToolCalls collects the page's tool calls for the activity line's rolling counter, as the
-// shape the shared summarizer takes (toolclass.Call). It reads the SAME ListMessages page the
-// transcript is built from — no extra RPC, no new poll — and reads only the two fields the counter
-// needs: the name to classify and the issue stamp to place in the window.
-//
-// ORDER DOES NOT MATTER: SummarizeCalls counts buckets and takes the NEWEST stamp, so a page in any
-// order yields the same string. Entries with no stamp (AtMs 0 — a row persisted before child 1
-// added the field) are carried through and SKIPPED by the summarizer, which is what keeps an old
-// conversation from rendering a wrong count.
+// shape the shared summarizer takes (toolclass.Call).
 func pageToolCalls(msgs []*apiv1.ChatMessage) []toolclass.Call {
 	var out []toolclass.Call
 	for _, m := range msgs {
@@ -1011,29 +776,11 @@ func pageToolCalls(msgs []*apiv1.ChatMessage) []toolclass.Call {
 	return out
 }
 
-// askOutcomeFromLedgerRow maps one ledger row's function name to the outcome it settles, or ("", false)
-// when the row is not a resolution at all.
-//
-// IT IS AN ALLOWLIST, AND THAT IS THE ENTIRE POINT — the first version of this was a PREFIX MATCH, and
-// that shipped a worse bug than the one it was written to fix. The ledger carries rows that are NOT
-// outcomes: an ask being RAISED is recorded as `permission.ask` (and a question as
-// `permission.question`) BY the very code that raises the card, carrying the card's own ask id — see
-// consentTurn.record, called with verdict "ask"/"question" at the raise sites. A prefix match reads a
-// raise as a resolution, so the next transcript load settled the card the instant it was drawn, `replace`
-// then dropped the settled card, and the 5s discovery re-armed it — a card that appeared and vanished on
-// a ~2s cycle, impossible to click. The operator: "permission cards are popping up and then going away
-// almost immediately before I can click on them and it seems to rotate every few seconds."
-//
-// The GUI's lib/ask-consent.ts outcomeFromRecord has ALWAYS been an allowlist for exactly this reason;
-// this is a deliberate port of that list rather than a re-derivation, because the deviation is what
-// broke it. Anything not named here settles NOTHING, which is the safe direction: an unsettled card can
-// still be answered, while a wrongly-settled one is a click the operator cannot make.
+// askOutcomeFromLedgerRow maps one ledger row's function name to the outcome it settles, or ("",
+// false) when the row is not a resolution at all.
 func askOutcomeFromLedgerRow(functionName string) (string, bool) {
 	switch functionName {
-	// An approval. `user_PERMISSION_CHOICE_ALLOW_ONCE` is the enum spelling the operator's own click
-	// records; `fullsend_approved` is a card the operator cleared by waiving prompts; `answered` is a
-	// QUESTION's answer, which is content rather than a permission outcome but settles the card the same
-	// way (there is no choice text on this path, and the card must not stay live).
+	// An approval.
 	case "permission.user_PERMISSION_CHOICE_ALLOW_ONCE", "permission.fullsend_approved", "permission.fullsend", "permission.answered":
 		return "allow_once", true
 	case "permission.user_PERMISSION_CHOICE_ALLOW_SESSION":
@@ -1052,14 +799,8 @@ func askOutcomeFromLedgerRow(functionName string) (string, bool) {
 	return "", false
 }
 
-// settledAsksFromPage reads the asks the page has already RESOLVED, from its ledger rows — the TUI's half
-// of the rule the GUI's lib/ask-consent.ts settleFromLedger applies to the same page. Both clients settle
-// a card from the SERVER's record of what happened to it, rather than from a guess about why a stream
-// closed.
-//
-// THE FIRST RESOLUTION WINS, mirroring the GUI: a later record for one ask must not overwrite what
-// actually happened to it (a grant is recorded once; a re-issued ask gets a new id). Rows with no id, or
-// that are not resolutions, settle nothing.
+// settledAsksFromPage reads the asks the page has already RESOLVED, from its ledger rows — the
+// TUI's half of the rule the GUI's lib/ask-consent.ts settleFromLedger applies to the same page.
 func settledAsksFromPage(msgs []*apiv1.ChatMessage) []AskOutcome {
 	var out []AskOutcome
 	seen := map[string]bool{}
@@ -1083,43 +824,8 @@ func settledAsksFromPage(msgs []*apiv1.ChatMessage) []AskOutcome {
 	return out
 }
 
-// conversationItems converts a ListMessages page into transcript items in
-// CHRONOLOGICAL (oldest-first) order.
-//
-// The server returns messages NEWEST-first — db.ListMessages orders by
-// created_at DESC and askorchicon.Service passes those rows straight through —
-// so the page MUST be reversed here. The GUI does exactly this
-// (frontend/src/api/askOrchicon.ts: "(res.messages ?? []).reverse()"); the TUI
-// skipped it and rendered the whole transcript INVERTED, putting the model's
-// reply above the operator's message.
-//
-// Timestamps are taken at MILLISECOND precision. created_at is truncated to
-// whole seconds by GetSeconds(), which tied messages written in the same second
-// together and left a stable sort unable to separate them — so reversal here is
-// load-bearing, not merely cosmetic.
-//
-// REASONING IS CARRIED HERE TOO, and its absence was the operator's "No reasoning
-// block" report — which I initially and wrongly told them was not happening.
-// ChatMessage.reasoning is a `repeated string` the proto documents as "rendered by
-// the frontend as thinking bubbles", and the GUI reads it; this function read only
-// GetContent(), so EVERY durable reasoning part was dropped the moment the
-// transcript loaded from history. The live stream chunks were the only path that
-// ever produced a reasoning item, and the completion poll then REPLACES the live
-// buffer with this durable list (chatStore.replace) — so the reasoning the operator
-// had watched arrive disappeared the instant the turn finished. That is exactly "All
-// I am seeing is 'Orchicon is thinking...'": the thinking NOTICE is live and
-// survives, while the reasoning body does not.
-//
-// ONE ITEM PER PART, the shape the proto preserves ("one entry per reasoning part
-// received that turn, boundaries preserved") and the shape the live path already
-// produces, so GroupByPhase coalesces them into one bubble per phase exactly as it
-// does for a streamed turn. They are emitted BEFORE the message's text because
-// thinking precedes the words it produced, and they share the message's timestamp:
-// SortChronologically is a STABLE sort, so same-instant order is preserved.
-//
-// Keys come from the message id and the part index, NOT from a counter: a fold's
-// state is held per item key (chatStore foldedReasoning), so a key that changed on
-// every load would spring a collapsed reasoning block open on every refresh.
+// The server returns messages NEWEST-first — db.ListMessages orders by created_at DESC and
+// askorchicon.Service passes those rows straight through — so the page MUST be reversed here.
 func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 	items := make([]ChatItem, 0, len(msgs))
 	for i := len(msgs) - 1; i >= 0; i-- {
@@ -1131,40 +837,15 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 		case "error":
 			kind = KindError
 		case "system":
-			// A NOTICE, not the model's words. Without this case the row fell
-			// through to KindText — the assistant's own band — so a compaction
-			// record read as though Orchicon had said it.
+			// A NOTICE, not the model's words.
 			kind = KindNotice
 		}
 		// THE METADATA ERROR IS CONSULTED BEFORE THE ASSISTANT DEFAULT, and the ORDER is the fix — the SAME
-		// order as the GUI's bubbleKindFor (frontend/src/lib/ask-bubble.ts): the two NAMED speakers first,
-		// then the error, then everything else as the model's reply, which is the correct default here
-		// because every other row this service writes IS the model's reply.
-		//
-		// THE TUI DISPATCHED ON ROLE ALONE and that is why a failed turn was SILENT. The server persists a
-		// failed turn as an assistant row with EMPTY content and metadata.error set (proto: "The message
-		// content is empty in that case; the frontend renders an error bubble with a retry affordance").
-		// `assistant` matched no case, so it fell through to KindText and — with empty content — drew
-		// nothing at all: two failed sends left the transcript reading as a conversation that simply
-		// stopped, the operator's "The TUI just drops with no indication as to why." The GUI decides this
-		// through bubbleKindFor, a pure function written for exactly this miss (its header: "the
-		// fall-through was a lie" — an unnamed role used to land in the assistant's bubble). This is the
-		// same class of miss running the OTHER way: a row that IS an error never reached the error
-		// renderer. Do not "simplify" this back to a role-only switch.
+		// order as the GUI's bubbleKindFor (frontend/src/lib/ask-bubble.ts).
 		text := m.GetContent()
 		at := m.GetCreatedAt().AsTime().UnixMilli()
-		// A FAILED TURN IS TWO ROWS, NOT ONE: the prose the model managed to produce, then the failure.
-		//
-		// The operator, on the shipped shape: "It is showing thinking text after that is also red and on
-		// the same line as the error." The partial reply and the failure had been folded into ONE
-		// KindError item, so `renderBubble` put the `error` label in front of the FIRST LINE OF THE
-		// PROSE and painted the model's own words in the error's red — the label identified the wrong
-		// text and the band said "error" over prose that was merely unfinished.
-		//
 		// THE PROSE IS THE MODEL'S WORDS, so it rides the model's band (KindText) exactly as an ordinary
-		// reply does; the error row then carries ONLY the failure and the model that refused, and its
-		// label labels the thing it names. This is also the GUI's shape (its ErrorBubble draws the error
-		// alone, and the partial reply is separate assistant content).
+		// reply does; the error row then carries ONLY the failure and the model that refused.
 		if kind != KindUser && kind != KindNotice {
 			if errText := m.GetMetadata().GetError(); errText != "" {
 				if partial := strings.TrimSpace(m.GetContent()); partial != "" {
@@ -1192,22 +873,7 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 				Key:  "m-" + m.GetId() + "-r" + itoa(int64(j)),
 			})
 		}
-		// A recorded ask_user call renders as a clarifying-question card. Keyed by
-		// message id + "-ask" so a fold/refresh keeps a stable key (same reason as
-		// the reasoning keys above).
-		//
-		// IT IS EMITTED LAST — after the message's own text — because the card is
-		// the thing the operator ACTS ON, not a transcript record of something that
-		// already happened. The operator: "I see the Orchicon asks box but … it is ON
-		// TOP of a bunch of other text you sent. That is not intuitive. It should be
-		// at the bottom (newest/recent)." Chronologically the tool call precedes the
-		// prose that follows it, so the card used to sit above the reply; the reading
-		// order the operator needs is the opposite, because the question is the last
-		// thing in the turn from their point of view.
-		//
-		// (With the turn PAUSED on the question — see the tool's own docs — there is
-		// normally no prose after it at all, and this ordering makes the card the
-		// bottom line either way.)
+		// A recorded ask_user call renders as a clarifying-question card.
 		items = append(items, ChatItem{
 			Kind:      kind,
 			Text:      text,
@@ -1253,28 +919,17 @@ func (c *Controller) AnswerQuestion(convID, askID, label string) tea.Cmd {
 		return c.Send(convID, label, "")
 	}
 	// UNSPECIFIED is the choice for a QUESTION: its outcome is the operator's words, not a grant
-	// decision. The reply delivers the answer as the conversation's next turn, which is what the
-	// tool's own contract promises.
+	// decision.
 	return c.ReplyPermissionAsk(convID, askID, apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED, label)
 }
 
-// Send dispatches a turn: InterjectConversationTurn when the
-// conversation already has an in-flight turn (supersede), ChatStream
-// otherwise — exactly the GUI's mode selection. The returned Cmd starts
-// the event-forwarding goroutine. contextPreamble is the bracketed
-// context line prepended to the message (the only context shape the
-// API accepts).
+// Send dispatches a turn: InterjectConversationTurn when the conversation already has an in-flight
+// turn (supersede), ChatStream otherwise — exactly the GUI's mode selection.
 func (c *Controller) Send(convID, text, contextPreamble string) tea.Cmd {
 	return c.SendWithAttachments(convID, text, contextPreamble, nil)
 }
 
 // SendWithAttachments is Send with file/image attachments for the turn.
-//
-// An attachment is BYTES on the wire (AttachmentInput.data), and it is converted to the request message
-// HERE — the same place every other field of the turn is built — so the two send paths (a fresh send and
-// an interject/supersede) cannot disagree about how a turn is shaped. The server does the rest: it
-// validates the caps, persists them with the message, describes them in the system prompt, and forwards
-// each as an OpenCode FilePartInput (a data: URL), which is how a screenshot becomes a vision part.
 func (c *Controller) SendWithAttachments(convID, text, contextPreamble string, files []*apiv1.AttachmentInput) tea.Cmd {
 	full := text
 	if contextPreamble != "" {
@@ -1292,8 +947,7 @@ func (c *Controller) SendWithAttachments(convID, text, contextPreamble string, f
 	st.sentText = text
 	st.optimisticUser = text
 	// THE TURN IS REMEMBERED FOR THE ONE RETRY THAT IS POSSIBLE (see dropStream): a stream the server
-	// refuses because a reply is already running is re-issued on the supersede path, and that needs the
-	// request verbatim. A fresh attempt always clears the retried flag, so each send gets its own retry.
+	// refuses because a reply is already running is re-issued on the supersede path.
 	st.attempt = streamAttempt{full: full, files: files}
 	if interject {
 		// Superseding turn: clear the old slot's reply pointer (the new
@@ -1307,31 +961,12 @@ func (c *Controller) SendWithAttachments(convID, text, contextPreamble string, f
 		call = "interject"
 	}
 	// ARM THE WATCHDOG AND THE DURABLE POLL HERE — NOT INSIDE THE STREAM'S COMMAND.
-	//
-	// THIS IS THE FIX, and it explains why the poll did not help when it was first added. Both
-	// goroutines used to be armed inside startStream's command, AFTER `ChatStream` returned — so they
-	// started only if the streaming call actually OPENED. And that call is precisely what fails: it
-	// blocks until the server's response headers arrive, and if a proxy buffers the streaming response
-	// those headers never come, so it blocks forever. The result was the operator's exact report:
-	// `streaming` is set true above and stays true, so the pane shows the thinking notice and its
-	// watchdog age and NOTHING ELSE, while `consume` never runs and NO mechanism that could save it —
-	// the poll included — was ever started. Every safety net was gated behind the failure it existed to
-	// cover.
-	//
-	// Armed here, at the moment the operator SENT, both run regardless of the transport. The poll then
-	// drives rendering from the durable store — the reply still grows on screen even if the stream
-	// never opens a socket at all — and the watchdog's clock is stamped BY THE SEND, so a handshake
-	// that never completes is caught as silence rather than waiting forever on a stream that will never
-	// start.
-	//
-	// (Watch re-arms both, for the same reason: a re-dial is a NEW attempt whose liveness must be
-	// watched from the re-dial, not from the original send.)
 	c.mu.Lock()
 	if st := c.state[convID]; st != nil {
 		st.lastActivity = now()
 		// A NEW GENERATION FOR EVERY SEND: the stream this command is about to open owns the slot from
 		// here, so any stream already running belongs to the previous generation and its end must be
-		// ignored (see convState.gen).
+		// ignored.
 		st.gen++
 	}
 	gen := c.state[convID].gen
@@ -1341,9 +976,8 @@ func (c *Controller) SendWithAttachments(convID, text, contextPreamble string, f
 	return c.startStream(convID, full, call, files, gen)
 }
 
-// startStream opens the ChatStream/InterjectConversationTurn and returns
-// a Cmd whose first message is a synthetic turnStarted placeholder (the
-// actual ack arrives via the forwarding goroutine). — gen is the slot generation this stream owns.
+// startStream opens the ChatStream/InterjectConversationTurn and returns a Cmd whose first message
+// is a synthetic turnStarted placeholder (the actual ack arrives via the forwarding goroutine).
 func (c *Controller) startStream(convID, full, call string, files []*apiv1.AttachmentInput, gen uint64) tea.Cmd {
 	ctx := context.Background()
 	return func() tea.Msg {
@@ -1364,21 +998,14 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 				Attachments:    files,
 			}))
 		}
-		// A REFUSAL OF THIS SEND IS NOT HANDLED HERE — DELIBERATELY. This is a server-STREAMING RPC, so
-		// the server's one-turn refusal ('a reply is still in progress for this conversation') does NOT
-		// come back as a call error: the call returns a healthy stream and the error arrives ON the
-		// stream, in consume → dropStream. That is where the send is re-issued on the supersede path (see
-		// dropStream) — and the same refusal seen HERE would be the very same fact only for a transport
-		// that reports it up front, which this client's connect stack does not.
+		// A REFUSAL OF THIS SEND IS NOT HANDLED HERE — DELIBERATELY.
 		if err != nil {
 			c.failStream(convID, err)
 			return ErrMsg{Where: call, Err: err, ConvID: convID}
 		}
 		go c.consume(convID, gen, stream)
 		// RE-ARM BOTH, and HERE it is correct to arm after the call returns: this is a RE-DIAL of a turn
-		// that was already acknowledged, so a failed re-dial is already covered by the poll running since
-		// the original send (see SendWithAttachments). Arming on success keeps each liveness watch tied
-		// to an attempt that actually started.
+		// that was already acknowledged.
 		c.mu.Lock()
 		if st := c.state[convID]; st != nil {
 			st.lastActivity = now()
@@ -1390,13 +1017,8 @@ func (c *Controller) startStream(convID, full, call string, files []*apiv1.Attac
 	}
 }
 
-// consume forwards stream events into the tea channel via the returned
-// messages (bubbletea re-dispatches what the Cmd returns; extra events
-// ride the channel the program gave us at NewController time).
-//
-// gen is the slot generation this stream belongs to, and it is carried into every terminal outcome
-// below so a stream that was SUPERSEDED mid-flight (an interjection) cannot clear or tear down the
-// slot the replacement turn owns.
+// consume forwards stream events into the tea channel via the returned messages (bubbletea
+// re-dispatches what the Cmd returns.
 func (c *Controller) consume(convID string, gen uint64, stream *connect.ServerStreamForClient[apiv1.ChatStreamResponse]) {
 	for stream.Receive() {
 		c.handleEvent(convID, stream.Msg())
@@ -1431,13 +1053,7 @@ func (c *Controller) Watch(convID, assistantMessageID string) tea.Cmd {
 	}
 }
 
-// currentGen reads the slot's generation without bumping it. A RE-DIAL (Watch) belongs to the turn it
-// is re-attaching to, so it must adopt that generation rather than mint a new one — minting one would
-// make the live turn's own stream look superseded.
-//
-// Exported because the SHELL needs it too: EndStream is generation-guarded, so any caller outside this
-// package that legitimately ends the current turn (a Stop, or a test driving this path) has to name the
-// generation it means rather than leaving it implicit.
+// currentGen reads the slot's generation without bumping it.
 func (c *Controller) CurrentGen(convID string) uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1447,21 +1063,8 @@ func (c *Controller) CurrentGen(convID string) uint64 {
 	return 0
 }
 
-// Reattach restores the stream slot for a turn the SERVER reports as running, when this client has no live
-// stream for it. It returns the Watch command (nil when there was nothing to re-attach to).
-//
-// THE OPERATOR: "When I leave an chat and go back into it, it loses the 'orchicon is thinking...' and
-// watchdog." Leaving the pane does not stop the turn — the collector runs on the server and mirrors its
-// progress into the acked assistant row every 250ms — but the CLIENT's slot is what drives the thinking
-// notice, the watchdog age and the completion poll, and nothing restored it. Returning to the conversation
-// therefore looked like an idle chat whose reply happened to appear later.
-//
-// A LIVE LOCAL SLOT ALWAYS WINS. Server state only fills a gap, exactly as the GUI's re-attach effect does: a
-// turn started in this client keeps its own stream until it completes, and re-attaching would replace a
-// working stream with a second one.
-//
-// gen is NOT bumped. This is not a new send — it adopts the generation of the turn it is re-attaching to, so
-// the live turn's own stream (if any arrives later) is not treated as superseded.
+// Reattach restores the stream slot for a turn the SERVER reports as running, when this client has
+// no live stream for it.
 func (c *Controller) Reattach(convID, pendingReplyID string) tea.Cmd {
 	if convID == "" || pendingReplyID == "" {
 		return nil
@@ -1482,9 +1085,8 @@ func (c *Controller) Reattach(convID, pendingReplyID string) tea.Cmd {
 	st.lastActivity = now()
 	gen := st.gen
 	c.mu.Unlock()
-	// ARM BOTH, for the same reason the send path does: the thinking notice and the stall detection have to
-	// run for a turn this client did not start, and the poll is what actually paints the reply — the Watch
-	// stream is the bonus.
+	// ARM BOTH, for the same reason the send path does: the thinking notice and the stall detection
+	// have to run for a turn this client did not start, and the poll is what actually paints the reply.
 	go c.runLivenessWatch(convID, gen)
 	go c.runTurnPoll(convID)
 	return c.Watch(convID, pendingReplyID)
@@ -1499,40 +1101,8 @@ func (c *Controller) pollTranscript(convID string) tea.Cmd {
 // Poll is the exported poll hook (shell-side turn resolution).
 func (c *Controller) Poll(convID string) tea.Cmd { return c.pollTranscript(convID) }
 
-// DiscoverPendingAsks asks the SERVER which asks are still open for a conversation and
-// raises a card for each.
-//
-// THE BUG IT FIXES, in the operator's words: "you sent numerous permission card requests
-// and user ask card requests. ALL of them reached the GUI conversation just fine, however,
-// they did not all reach the TUI… it appeared you were stalled. So I went into the GUI and
-// lo and behold, a permissions card was waiting."
-//
-// An ask reached the TUI only through consume(), which runs for a conversation the TUI is
-// ACTIVELY streaming — and the shell only re-attaches to a turn the server's conversation
-// row says is in flight WITH a pending reply id. A turn the TUI never started (or one it
-// stopped tracking) therefore had no path for a card at all, while the SERVER kept the turn
-// parked waiting for an answer that had no card to give it. That is the stall.
-//
-// So this is a QUERY, not another live event: the state has always been on the server
-// (askorchicon.pendingAskRegistry) and was only ever replayed to a late watcher of the
-// stream. Asking for it directly makes a card DISCOVERABLE rather than merely deliverable,
-// which removes the dependency on "is this client streaming right now?" — the variable that
-// has broken this every time it was fixed.
-//
-// It is IDEMPOTENT by construction: the result is fed through the same ShowConsentAsk path
-// the wire arm uses, and the store's drawConsentAsk refuses an ask id it already holds. So a
-// card that arrives twice — once discovered, once streamed — is drawn once, and calling this
-// on every attach, re-attach and poll costs nothing.
-//
-// IT IS ALSO THE SETTLE AUTHORITY. The list it just fetched is the SERVER's answer to "which asks are
-// still open", so it is the evidence a card is settled on — every pending card whose id is NOT in the list
-// is reconciled away (store.ReconcilePendingAsks), BEFORE the open ones are drawn. That is what replaced
-// the old sweep that fired on a client-side guess about the turn (see chatStore.settleStaleConsent): an
-// ask this client wrongly retired is recovered here the moment the server still lists it. A FAILED query
-// settles nothing — absence of evidence is not evidence of absence.
-//
-// Best-effort, like every live signal here: a failure returns nil and the next attach or
-// poll tries again. It must never fail a turn.
+// DiscoverPendingAsks asks the SERVER which asks are still open for a conversation and raises a
+// card for each.
 func (c *Controller) DiscoverPendingAsks(convID string) tea.Cmd {
 	if convID == "" || c.cl == nil || c.cl.Ask == nil {
 		return nil
@@ -1547,14 +1117,11 @@ func (c *Controller) DiscoverPendingAsks(convID string) tea.Cmd {
 		if err != nil || resp == nil {
 			return nil
 		}
-		// Straight to the store, NOT the command channel: the store is an in-process sink
-		// whose delivery cannot fail, which is the lesson the wire arm learned (a 16-slot
-		// channel the turn poll also writes to dropped cards silently). See
-		// EventStore.ShowConsentAsk.
+		// Straight to the store, NOT the command channel: the store is an in-process sink whose delivery
+		// cannot fail, which is the lesson the wire arm learned (a 16-slot channel the turn poll also
+		// writes.
 		if store != nil {
-			// ONE STORE CALL, ONE REPAINT. Drawing is all this does now — the open-id list is not used to
-			// settle anything, because ABSENCE IS NOT EVIDENCE (see ShowDiscoveredAsks: a poll that
-			// answers empty must not retire a live card).
+			// ONE STORE CALL, ONE REPAINT.
 			asks := make([]PermissionAsk, 0, len(resp.Msg.GetAsks()))
 			for _, p := range resp.Msg.GetAsks() {
 				ask := PermissionAskFromProto(p)
@@ -1569,14 +1136,8 @@ func (c *Controller) DiscoverPendingAsks(convID string) tea.Cmd {
 	}
 }
 
-// EndStream clears a conversation's stream slot when the server closed
-// the stream cleanly (consume's EOF path pushed StreamDoneMsg). The
-// ListMessages poll that follows is the completion authority.
-//
-// gen MUST MATCH THE SLOT'S. This is the guard that makes interjection work: the superseded turn's
-// stream also closes cleanly, and without the check that close would clear the slot belonging to the
-// turn that replaced it — killing the thinking indicator, the watchdog and the pending-reply id the
-// moment the operator interjected.
+// EndStream clears a conversation's stream slot when the server closed the stream cleanly
+// (consume's EOF path pushed StreamDoneMsg).
 func (c *Controller) EndStream(convID string, gen uint64) bool {
 	ended := false
 	c.mu.Lock()
@@ -1587,11 +1148,8 @@ func (c *Controller) EndStream(convID string, gen uint64) bool {
 		ended = true
 	}
 	c.mu.Unlock()
-	// IT REPORTS WHETHER IT ENDED THE SLOT so a caller can act on "this turn is over"
-	// without re-deriving it. The generation guard is the whole reason to ask: a
-	// SUPERSEDED stream closes too, and its close must not clear state belonging to
-	// the turn that replaced it — including the stale-consent sweep, which would
-	// otherwise settle a live card on a still-running turn.
+	// IT REPORTS WHETHER IT ENDED THE SLOT so a caller can act on "this turn is over" without
+	// re-deriving it.
 	return ended
 }
 
@@ -1629,9 +1187,7 @@ func (c *Controller) AbortTurn(convID string) tea.Cmd {
 	}
 }
 
-// clearReconnecting drops the EVENT STORE's reconnect banner for a conversation. EndStream clears the
-// controller's own flag; the store's is a separate surface (the chat view's banner), and a stop that
-// left the banner up would report a connection loss that is no longer true.
+// clearReconnecting drops the EVENT STORE's reconnect banner for a conversation.
 func (c *Controller) clearReconnecting(convID string) {
 	c.mu.Lock()
 	store := c.store
@@ -1643,9 +1199,7 @@ func (c *Controller) clearReconnecting(convID string) {
 
 // --- stream event handling -----------------------------------------------
 
-// EventStore is where the controller appends live chunks so the view can
-// render them. The shell's chat view implements it; controller tests use
-// an in-memory recorder.
+// EventStore is where the controller appends live chunks so the view can render them.
 type EventStore interface {
 	// AppendLiveItem adds one live ChatItem for the conversation (in
 	// arrival order; the view applies phase grouping).
@@ -1653,30 +1207,12 @@ type EventStore interface {
 	// SetReconnecting flips the conversation's reconnecting banner.
 	SetReconnecting(convID string, on bool)
 	// ShowConsentAsk surfaces a pending permission ask (or a clarifying question) as a card.
-	//
-	// IT IS ON THE STORE, NOT THE COMMAND CHANNEL, AND THAT IS THE POINT. A card used to be delivered as a
-	// tea.Cmd through the shell's shared command channel with a NON-BLOCKING send — the buffer is 16 slots
-	// and the 1s turn poll writes to it too — so a card could be DROPPED IN SILENCE, with no error, no
-	// retry, and no way for the operator to know a decision was ever asked for. On a healthy stream nothing
-	// re-dials either, so the loss was permanent for that turn: the pane sat at "orchicon is thinking"
-	// while the turn parked on the server waiting for an answer that had no card to give it. The store is an
-	// in-process sink (the same one AppendLiveItem already uses from this goroutine), so delivery cannot
-	// fail; the repaint is a coalescing wake poke, where DROPPING one is harmless because the next poke
-	// repaints everything.
 	ShowConsentAsk(ask PermissionAsk)
-	// SettleConsentAsk records an ask that was settled SOMEWHERE ELSE — the other client, or the collector
-	// expiring it — so this client's copy of the card stops being a choice. Same reasoning as above: a
-	// resolution that is dropped leaves a live-looking, inert card behind.
+	// SettleConsentAsk records an ask that was settled SOMEWHERE ELSE — the other client, or the
+	// collector expiring it — so this client's copy of the card stops being a choice.
 	SettleConsentAsk(convID, askID, outcome, answer string)
 	// ShowDiscoveredAsks draws the open asks the server reported for a conversation. IT ONLY ADDS — it
 	// never settles a card, whatever the list does or does not contain.
-	//
-	// ABSENCE IS NOT A SETTLE AUTHORITY, and that is the whole rule. This used to take the open-id list
-	// and settle every pending card missing from it, which retired LIVE cards whenever a poll answered
-	// empty or partial; the next poll drew them back, and the card flickered at poll cadence. The GUI has
-	// always worked the other way — it adds what discovery returns and retires nothing — so the TUI now
-	// matches it. A card is settled only by POSITIVE evidence: a recorded outcome in the durable page, or
-	// a decision this client made. See appEventStore.ShowDiscoveredAsks.
 	ShowDiscoveredAsks(convID string, asks []PermissionAsk)
 }
 
@@ -1686,9 +1222,7 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 	if ev == nil {
 		return
 	}
-	// EVERY EVENT STAMPS THE CLOCK, including the ones that carry no content. This is the input the
-	// liveness watchdog reads, and a heartbeat is exactly as much evidence of a live stream as a
-	// text chunk is — arguably more, since it is the only event a silently-thinking model emits.
+	// EVERY EVENT STAMPS THE CLOCK, including the ones that carry no content.
 	c.mu.Lock()
 	if st := c.state[convID]; st != nil {
 		st.lastActivity = now()
@@ -1703,12 +1237,8 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 			st.optimisticUser = "" // the user row is now persisted
 		}
 		c.mu.Unlock()
-		// THE ACK IS THE ONE EVENT THAT SAYS THE SEND RESOLVED, so the shell is told about it — this runs on
-		// the stream's own goroutine, and the message settles the composer's "sending …" (see TurnAckedMsg).
-		//
-		// A NON-BLOCKING send, deliberately: the ack is a UI nicety and must never wedge the goroutine that is
-		// draining the turn. A drop here costs nothing — onStreamDone settles the ack on the turn's end — which
-		// is exactly why the settle exists in two places rather than one.
+		// THE ACK IS THE ONE EVENT THAT SAYS THE SEND RESOLVED, so the shell is told about it — this runs
+		// on the stream's own goroutine.
 		if c.cmds != nil {
 			select {
 			case c.cmds <- func() tea.Msg { return TurnAckedMsg{ConvID: convID} }:
@@ -1729,11 +1259,7 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 			if st.reconnecting {
 				st.reconnecting = false
 			}
-			// THE SERVER'S CLOCK, RECORDED WITH THE INSTANT WE HEARD IT. These two lines are the entire
-			// clock of the activity-verb rotation: server_time_unix_ms is already on the wire (chat.go
-			// emits it precisely so "the client [can] measure socket age/skew") and this client used to
-			// throw it away, clearing only the reconnect flag. Guarded on ts > 0 so a server that sends
-			// a zero stamp cannot plant a bogus anchor; the zero anchor stays "no stamp yet".
+			// THE SERVER'S CLOCK, RECORDED WITH THE INSTANT WE HEARD IT.
 			if ts := e.Heartbeat.GetServerTimeUnixMs(); ts > 0 {
 				st.serverTimeMs = ts
 				st.serverRecvMonoMs = now()
@@ -1766,19 +1292,6 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		}, Key: "tcr-" + id})
 	case *apiv1.ChatStreamResponse_PermissionAskResolved:
 		// THE OTHER CLIENT DECIDED.
-		//
-		// An ask is delivered to EVERY watcher of a turn, but only the client that
-		// ANSWERED it cleared its own copy — so a decision made in the TUI left the
-		// GUI showing a live-looking, inert card, and vice versa. Clients cannot infer
-		// it: a permission ask has no durable per-ask row to reconcile against (the
-		// transcript records the outcome, not the open ask). The collector publishes
-		// this the moment it APPLIES a decision, so every watcher can settle.
-		//
-		// Without this the TUI's card stayed pending until the turn ended. Now the
-		// convergence path for a client that missed the message is the SERVER's own
-		// answers rather than a turn-end sweep: DiscoverPendingAsks/ReconcilePendingAsks
-		// settles any ask the open-ask list no longer contains, and the durable page's
-		// recorded outcome settles the rest.
 		if r := e.PermissionAskResolved; r != nil && r.GetAskId() != "" && c.store != nil {
 			// STRAIGHT TO THE STORE, not through the command channel: a dropped resolution leaves a
 			// live-looking, inert card on screen in whichever client did not answer (see
@@ -1787,30 +1300,13 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		}
 	case *apiv1.ChatStreamResponse_PermissionAsk:
 		// THE PERMISSION CARD'S WIRE ARM.
-		//
-		// This was the missing link: the server builds the ask
-		// (askorchicon.permissionAskEvent), the proto carries it
-		// (ChatStreamResponse.PermissionAsk), and the shell has a hook for it
-		// (App.ShowConsentAsk, whose own comment says it fires "once the sibling
-		// lands the wire arm") — but nothing on the client ever read the field, so
-		// the card was complete and permanently starved. No adapter's ask could
-		// reach the TUI, this one's or opencode's.
-		//
-		// Best-effort like the other live signals: a dropped ask is re-sent on
-		// re-attach (the server's replay path emits the identical shape), so it
-		// cannot be lost permanently.
 		ask := PermissionAskFromProto(e.PermissionAsk)
-		// The ask names its OWN conversation, so the shell appends the card to the
-		// conversation that asked rather than to whichever one is on screen (see
-		// ShowConsentAsk). The wire carries it; this is the fallback for a producer that
-		// omitted it, where the turn's own id is the only correct answer.
+		// The ask names its OWN conversation, so the shell appends the card to the conversation that asked
+		// rather than to whichever one is on screen (see ShowConsentAsk).
 		if ask.ConvID == "" {
 			ask.ConvID = convID
 		}
-		// DELIVERED TO THE STORE, NOT THE COMMAND CHANNEL — this was the silent drop. A non-blocking send
-		// onto a 16-slot channel that the 1s turn poll also writes to, with no error and no retry, so a card
-		// could vanish while the turn parked on the server waiting for an answer that had no card to give it.
-		// The store is an in-process sink, so delivery cannot fail. See EventStore.ShowConsentAsk.
+		// DELIVERED TO THE STORE, NOT THE COMMAND CHANNEL — this was the silent drop.
 		if c.store != nil {
 			c.store.ShowConsentAsk(ask)
 		}
@@ -1841,19 +1337,12 @@ type streamAttempt struct {
 }
 
 // isTurnGateRefusal reports whether err is the server's ONE-TURN-PER-CONVERSATION refusal.
-//
-// The service answers a second ChatStream for a conversation whose reply is still running with
-// CodeFailedPrecondition ('a reply is still in progress for this conversation — wait for it to
-// complete or stop it first': internal/askorchicon/chat.go, turnRegistry.register). The SAME code is
-// also how an unresolvable adapter is reported (chat.go, resolveChatClient), which is why the remedy in
-// dropStream is capped at ONE re-issue and a second failure is reported to the operator instead.
 func isTurnGateRefusal(err error) bool {
 	return err != nil && connect.CodeOf(err) == connect.CodeFailedPrecondition
 }
 
-// failStream handles a pre-ack send/interject failure: when the turn was
-// acked the slot goes reconnecting (the server-side collector still
-// runs), otherwise it tears down and the caller's ErrMsg surfaces.
+// failStream handles a pre-ack send/interject failure: when the turn was acked the slot goes
+// reconnecting (the server-side collector still runs).
 func (c *Controller) failStream(convID string, err error) {
 	c.mu.Lock()
 	st := c.state[convID]
@@ -1875,14 +1364,8 @@ func (c *Controller) failStream(convID string, err error) {
 	}
 }
 
-// dropStream handles a socket drop mid-stream (stream.Err() after the
-// receive loop): acked turns re-dial WatchTurnStream; the poll remains
-// the completion authority either way.
-//
-// gen GUARDS THE TEARDOWN. A drop from a stream that has already been superseded must not touch the
-// slot: the pre-ack branch below CLEARS `streaming`, which for a superseding interjection would end
-// the turn the operator had just started. The acked branch is guarded too, for the same reason — its
-// Watch would re-attach to the OLD turn's assistant id, which no longer exists.
+// dropStream handles a socket drop mid-stream (stream.Err() after the receive loop): acked turns
+// re-dial WatchTurnStream; the poll remains the completion authority either way.
 func (c *Controller) dropStream(convID string, gen uint64, err error) {
 	c.mu.Lock()
 	st := c.state[convID]
@@ -1903,30 +1386,7 @@ func (c *Controller) dropStream(convID string, gen uint64, err error) {
 			st.reconnecting = true
 			watch = st.pendingReplyID
 		case isTurnGateRefusal(err) && st.attempt.full != "" && !st.attempt.retried:
-			// THE SERVER'S ONE-TURN GATE REFUSED THE OPERATOR'S SEND — SO IT IS DELIVERED ON THE SUPERSEDE
 			// PATH INSTEAD OF BOUNCED.
-			//
-			// The service allows ONE turn per conversation and answers a second ChatStream with
-			// FailedPrecondition ("a reply is still in progress for this conversation — wait for it to
-			// complete or stop it first"), naming the remedy in the same breath: the client interjects
-			// (supersedes) instead. That is already the rule this client documents — "sending while a reply
-			// streams interjects (supersedes the turn) instead" (help.go) — and it is the whole point of the
-			// `interject` decision in SendWithAttachments.
-			//
-			// THAT DECISION IS GUESSED FROM THIS CLIENT'S OWN SLOT, AND THE SLOT GOES STALE — WHICH IS WHY
-			// THE OPERATOR HIT THIS AT ALL: "if I leave a conversation in the TUI and come back, it doesn't
-			// actually send my message and I have to send it twice." Leaving and returning is exactly when
-			// the slot and the server disagree: a stream that died before its ack tears the slot down while
-			// the server's DETACHED turn keeps running (chat.go registers the turn under
-			// context.WithoutCancel, "alive across a stream disconnect / tab close"), and the only re-sync is
-			// reattachRunningTurn — which reads the RAIL row, so a row that predates the turn leaves the
-			// client saying "idle" while the server says "busy". The send then went out as a plain
-			// ChatStream, was refused, and the operator's message never left the machine.
-			//
-			// THE SERVER'S GATE IS THE AUTHORITY, so honour it rather than retry the same guess: re-issue the
-			// very same turn on the supersede path, whose whole contract is that it cancels the running turn
-			// and dispatches this message. The slot is NOT torn down — the retry owns it — and the generation
-			// advances so the stream that just failed cannot touch it.
 			st.attempt.retried = true
 			st.gen++
 			st.reconnecting = false
@@ -1935,12 +1395,6 @@ func (c *Controller) dropStream(convID string, gen uint64, err error) {
 			retry = c.startStream(convID, st.attempt.full, "interject", st.attempt.files, gen)
 		default:
 			// pre-ack failure: tear down (GUI fail() with no reply id).
-			//
-			// AND IF THAT LOST TURN WAS THE OPERATOR'S OWN SEND, THEY ARE TOLD. This path used to leave the
-			// message nowhere — the composer empty, no turn on the wire, and only the controller's sticky
-			// error (which nothing reads) — and a send that fails silently is the same defect class as the
-			// send that never went out. ErrMsg is the shell's existing failed-send path: the dock's error
-			// strip, and the draft back in the composer (see App.setChatError / dock.RestoreDraft).
 			if st.attempt.full != "" {
 				report = func() tea.Msg { return ErrMsg{Where: "send", Err: err, ConvID: convID} }
 			}
@@ -1972,21 +1426,6 @@ func (c *Controller) dropStream(convID string, gen uint64, err error) {
 
 // runTurnPoll keeps a streaming turn's transcript fresh from the DURABLE store, on a timer, until
 // the turn ends.
-//
-// WHY THIS EXISTS RATHER THAN TRUSTING THE STREAM: the operator's evidence was a pane that showed
-// heartbeats — the watchdog's age kept resetting — but never the reply, because the socket was
-// delivering only the keepalives. Nothing about that is diagnosable from the client side, and it does
-// not need to be: the server mirrors the partial reply into the assistant message every 250ms, so a
-// unary poll renders the same content. Independence from the stream IS the fix.
-//
-// IT PUSHES A COMMAND rather than emitting a message directly, because the shell owns the tea loop:
-// pollTranscript returns a tea.Cmd and the shell runs it exactly as it runs the completion poll. The
-// non-blocking send matches the wake channel's contract — a full channel means the shell is busy, and
-// the next tick tries again.
-//
-// It stops as soon as the slot is no longer streaming, so a finished turn costs nothing and the
-// goroutine cannot outlive the turn it serves. Dropping a POLL is harmless in a way dropping a chunk
-// is not: the next one returns a superset of this one.
 func (c *Controller) runTurnPoll(convID string) {
 	ticker := time.NewTicker(askTurnPollInterval)
 	defer ticker.Stop()
@@ -1996,9 +1435,7 @@ func (c *Controller) runTurnPoll(convID string) {
 		streaming := st != nil && st.streaming
 		dead := st != nil && st.authDead
 		c.mu.Unlock()
-		// A DEAD CREDENTIAL ENDS THE POLL, not just this iteration. The banner is already up, and every
-		// further tick would open another connection to a server that will keep rejecting it — the leak that
-		// exhausted the host's ephemeral ports.
+		// A DEAD CREDENTIAL ENDS THE POLL, not just this iteration.
 		if !streaming || dead || c.cmds == nil {
 			return
 		}
@@ -2010,36 +1447,7 @@ func (c *Controller) runTurnPoll(convID string) {
 }
 
 // runLivenessWatch is the CLIENT-SIDE stream watchdog, and its absence was the streaming report.
-//
-// THE OPERATOR'S EVIDENCE, side by side: the GUI showed the reply streaming, a reasoning block, and
-// the banner "Connection interrupted — still working… Output continues below." with "Last activity 1s
-// ago" beneath it. The TUI, in the same turn, showed nothing but "Orchicon is thinking…" — until the
-// conversation was re-entered, which runs a fresh ListMessages and paints the durable reply.
-//
-// WHAT WAS HAPPENING. A connection through the container network can die HALF-OPEN: no FIN reaches
-// the client, so `stream.Receive()` blocks indefinitely. There is no error and no EOF, so consume()
-// never returns, dropStream never runs, and the slot stays `streaming` forever. Nothing retries —
-// the re-dial path exists (dropStream -> Watch) but only a RETURNING stream could reach it. The turn
-// itself completes server-side, so the durable reply is there for the next load, which is exactly
-// why re-entering the pane "fixed" it.
-//
-// THE SIGNAL WAS ALREADY ARRIVING AND SIMPLY UNUSED: the server sends a Heartbeat every 15 seconds,
-// and the TUI RECEIVED them — handleEvent's Heartbeat case only cleared a flag. A heartbeat IS the
-// server saying "this stream is alive", so its absence is the death signal. This watchdog turns that
-// into the re-dial the GUI's own footer performs.
-//
-// It runs as a goroutine rather than a tea.Cmd chain on purpose: it must be checking even while the
-// shell is idle waiting on the stream, which is precisely the state being detected — a timer that
-// had to be re-armed by messages would be re-armed by the very messages that are not arriving.
-//
-// SILENCE IS ONLY A FAULT WHILE STREAMING, and the check stops as soon as the slot is not. That is
-// also why it cannot re-dial a COMPLETED turn: completion clears `streaming` (EndStream, on the poll
-// resolution) before the timeout could fire.
-//
-// gen IS THE GENERATION IT WATCHES. The watch belongs to ONE send, so it stops when the slot has moved
-// on instead of reporting on whatever turn happens to be current. Without that, a watch armed for a turn
-// that was superseded (an interjection) would eventually judge the NEW turn's slot stale and tear it
-// down — the watchdog causing the very failure it exists to prevent.
+// SILENCE IS ONLY A FAULT WHILE STREAMING, and the check stops as soon as the slot is not.
 func (c *Controller) runLivenessWatch(convID string, gen uint64) {
 	ticker := time.NewTicker(askLivenessCheckInterval)
 	defer ticker.Stop()
@@ -2055,11 +1463,8 @@ func (c *Controller) runLivenessWatch(convID string, gen uint64) {
 	}
 }
 
-// livenessCheck reports (stop, stale) for one tick: stop when there is nothing left to watch,
-// stale when the stream has gone quiet past the timeout.
-//
-// SEPARATE FROM THE LOOP so the DECISION is testable without waiting on real timers — 40 seconds
-// per case is not a test, and the decision is the whole behaviour.
+// livenessCheck reports (stop, stale) for one tick: stop when there is nothing left to watch, stale
+// when the stream has gone quiet past the timeout.
 func (c *Controller) livenessCheck(convID string) (stop, stale bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -2083,9 +1488,8 @@ func livenessVerdict(st *convState) (stop, stale bool) {
 	if st == nil || !st.streaming {
 		return true, false // the turn is over, stopped, or the slot is gone
 	}
-	// lastActivity == 0 means the stream has not delivered its first event yet — that is "not
-	// started", not "silent", so it is not given the watchdog's verdict. A turn torn down during
-	// its own handshake would be the watchdog causing the very failure it exists to fix.
+	// lastActivity == 0 means the stream has not delivered its first event yet — that is "not started",
+	// not "silent", so it is not given the watchdog's verdict.
 	if st.lastActivity == 0 {
 		return false, false
 	}
@@ -2100,15 +1504,6 @@ func (c *Controller) streamIsStale(convID string) bool {
 
 // SilenceSince reports how long the conversation's stream has been quiet — the gap since the most
 // recent event from the server (a text chunk, a reasoning chunk, a tool event or a HEARTBEAT).
-//
-// It returns 0 when there is nothing to report: no slot, not streaming, or no event yet. Zero means
-// "no information", never "silent forever", so a caller cannot mistake an unstarted stream for a
-// stalled one — the same distinction livenessCheck makes.
-//
-// THIS IS THE READ SIDE OF THE WATCHDOG. The watchdog acts on silence; this reports it, so the pane
-// can say that a turn is still alive and how fresh its last event was. Without it the operator has
-// two indistinguishable states — working and wedged — which is the whole difficulty of a streaming
-// failure from the outside.
 func (c *Controller) SilenceSince(convID string) time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -2123,10 +1518,8 @@ func (c *Controller) SilenceSince(convID string) time.Duration {
 	return time.Duration(d) * time.Millisecond
 }
 
-// SetServerTimeForTest plants the server clock the way a Heartbeat does, so a test can assert the word
-// the activity line draws for a KNOWN server time without standing up a stream. It is the same pair of
-// writes handleEvent's Heartbeat arm makes (serverTimeMs + the local receipt instant), so a test cannot
-// exercise a state the wire cannot produce. Production never calls it.
+// SetServerTimeForTest plants the server clock the way a Heartbeat does, so a test can assert the
+// word the activity line draws for a KNOWN server time without standing up a stream.
 func (c *Controller) SetServerTimeForTest(convID string, serverTimeUnixMs int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -2138,12 +1531,8 @@ func (c *Controller) SetServerTimeForTest(convID string, serverTimeUnixMs int64)
 	st.serverRecvMonoMs = now()
 }
 
-// seedTurnForTest materialises the slot a SEND would have made for this conversation — streaming, and with
-// every field the two readers below touch — and returns it with the lock held. It exists so the activity
-// line's clock can be driven without opening a socket: starting a real stream in a test arms the liveness
-// watch and the durable poll, whose background goroutines then fetch the plane and repaint under the
-// assertions. The fields it writes are exactly the ones SendWithAttachments sets, so a test cannot exercise a
-// state the send path cannot produce. Production never calls it.
+// seedTurnForTest materialises the slot a SEND would have made for this conversation — streaming,
+// and with every field the two readers below touch — and returns it with the lock held.
 func (c *Controller) seedTurnForTest(convID string) *convState {
 	st := c.state[convID]
 	if st == nil {
@@ -2158,10 +1547,8 @@ func (c *Controller) seedTurnForTest(convID string) *convState {
 	return st
 }
 
-// SetSilenceForTest back-dates the watchdog's clock by d, which is the ONLY way to drive the activity
-// line's silence bands without sleeping 35 seconds. It writes the SAME field every event stamps
-// (lastActivity), so a test exercises the real SilenceSince path rather than a parallel one. Production
-// never calls it.
+// SetSilenceForTest back-dates the watchdog's clock by d, which is the ONLY way to drive the
+// activity line's silence bands without sleeping 35 seconds.
 func (c *Controller) SetSilenceForTest(convID string, d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -2169,18 +1556,8 @@ func (c *Controller) SetSilenceForTest(convID string, d time.Duration) {
 	st.lastActivity = now() - d.Milliseconds()
 }
 
-// ServerTimeSince reports the SERVER's clock, extrapolated to right now — the value the activity verb
-// rotation indexes on. It returns (0, false) when no heartbeat has ever been recorded for the
-// conversation, which is the caller's cue to use the list's first word (VerbAt(0)); a real server stamp is
-// Unix milliseconds and always positive, so 0 is unambiguous.
-//
-// THE LOCAL CLOCK IS A DELTA, NOT THE SOURCE. The returned value is `serverTimeMs + (now() - recvMono)`,
-// where `recvMono` was taken the moment the stamp arrived: only the time since OUR OWN receipt is added,
-// so a client whose wall clock is skewed by hours still sees the SAME word as every other client for the
-// same server time (the skew cancels out of the delta), while the word still advances smoothly between
-// the 15s heartbeats, so it never lags a whole period behind a late heartbeat.
-//
-// IT IS READ UNDER THE SAME MUTEX AS THE WRITE, so a heartbeat landing mid-render cannot tear the pair.
+// ServerTimeSince reports the SERVER's clock, extrapolated to right now — the value the activity
+// verb rotation indexes on.
 func (c *Controller) ServerTimeSince(convID string) (int64, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -2195,19 +1572,13 @@ func (c *Controller) ServerTimeSince(convID string) (int64, bool) {
 	return st.serverTimeMs + delta, true
 }
 
-// errStreamStalled reports a stream that stopped sending anything. It is not a failure the operator
-// sees as one: dropStream treats an acked turn as RECONNECTING (the server-side collector is still
-// running), so the pane shows the connection banner and re-attaches — the same outcome as a socket
-// that broke loudly.
+// errStreamStalled reports a stream that stopped sending anything.
 var errStreamStalled = errors.New("stream stalled: no event within the liveness timeout")
 
 func now() int64 { return time.Now().UnixMilli() }
 
-// markAuthFailure records that a transcript read was rejected as unauthenticated, which stops the turn poll
-// until the credential is replaced.
-//
-// ONLY 401 STOPS IT. Every other failure is a transient worth retrying (a restarting plane, a dropped socket),
-// and treating those as terminal would strand a live turn on a blip.
+// markAuthFailure records that a transcript read was rejected as unauthenticated, which stops the
+// turn poll until the credential is replaced. ONLY 401 STOPS IT.
 func (c *Controller) markAuthFailure(convID string, err error) {
 	if !IsAuthExpired(err) {
 		return

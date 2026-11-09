@@ -1,23 +1,7 @@
 package tui
 
-// resize_probe.go — the shell-side half of the terminal-size probe, on every platform.
-//
-// WHAT IT IS FOR. On Windows, bubbletea's resize detection is a console INPUT event, and the input path that
-// makes bracketed paste and Shift+Enter work is the one that bypasses it (reader_windows.go). So the shell
-// re-derives the size itself, on a chain of its own.
-//
-// ITS OWN CHAIN, NOT THE REFRESH TICK. The shell already has a rolling refresh window (refresh.go), and at
-// first glance this belongs on it. It does not: that tick re-reads the ACTIVE VIEW — real queries against the
-// plane — and it is deliberately polite. Running it four times a second to serve a resize probe would
-// multiply backend load for a cosmetic need. A size probe is one ioctl, so it gets its own cheap timer and
-// leaves the refresh cadence alone.
-//
-// ONLY A CHANGE IS FORWARDED. The standard renderer repaints on every WindowSizeMsg, so emitting one per tick
-// would repaint an idle chat several times a second for no reason.
-//
-// THE TYPE AND THE COMPARISON LIVE HERE, UNTAGGED, because the shell handles the message on every platform;
-// only the POLLING differs (resize_windows.go polls term.GetSize, resize_other.go returns nil because
-// SIGWINCH already reaches the shell).
+// resize_probe.go — the shell-side half of the terminal-size probe, on every platform. ONLY A
+// CHANGE IS FORWARDED.
 
 import (
 	"time"
@@ -30,9 +14,6 @@ import (
 var terminalSizeProbeInterval = 250 * time.Millisecond
 
 // terminalSizeProbeMsg carries a freshly observed terminal size.
-//
-// width/height are 0 when the size could not be read — "no information", which is not the same as "size 0"
-// and must not be acted on.
 type terminalSizeProbeMsg struct {
 	width, height int
 }

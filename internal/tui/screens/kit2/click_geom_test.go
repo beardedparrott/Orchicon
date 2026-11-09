@@ -6,12 +6,6 @@ import (
 )
 
 // Regression for the operator's "I have to click above the item to select it".
-//
-// The click row must count EVERY row the pane draws above its first data row:
-// the shell chrome, the panel's top border, and whatever the embedded table
-// adds. The embedded table hides its own title (the panel border shows it, so
-// rendering both duplicated the title AND shifted the hit-test by one) and does
-// not draw an empty column header.
 func TestTableTopRowMatchesRenderedRows(t *testing.T) {
 	b := &Base{}
 	b.AddSource("a", "A", func(ctx context.Context, pageToken string) ([]Item, string, error) { return nil, "", nil })
@@ -45,9 +39,8 @@ func TestTableTopRowMatchesRenderedRows(t *testing.T) {
 	}
 }
 
-// The X hit-test must describe the TWO-pane layout View() renders, not the old
-// all-panes grid: the left pane is the focused source, everything past the gap
-// is the detail.
+// The X hit-test must describe the TWO-pane layout View() renders, not the old all-panes grid: the
+// left pane is the focused source, everything past the gap is the detail.
 func TestMouseRegionMatchesTwoPaneLayout(t *testing.T) {
 	b := &Base{}
 	for _, n := range []string{"a", "b", "c"} {
@@ -65,14 +58,8 @@ func TestMouseRegionMatchesTwoPaneLayout(t *testing.T) {
 	}
 }
 
-// Regression for the operator's "the conversation opened up a conversation pane
-// there taking over the details pane of theme view".
-//
-// Detail payloads are produced by ASYNCHRONOUS cmds. Ask's
-// RequestDetail("conversations", id) can resolve after the operator has switched
-// tabs, and the shell routes the message to whichever screen is active — which
-// then painted another screen's conversation into its own detail pane. A screen
-// must only accept details for a source it owns.
+// Regression for the operator's "the conversation opened up a conversation pane there taking over
+// the details pane of theme view".
 func TestForeignDetailIsRejected(t *testing.T) {
 	b := &Base{}
 	b.AddSource("themes", "Themes", func(ctx context.Context, pageToken string) ([]Item, string, error) { return nil, "", nil })

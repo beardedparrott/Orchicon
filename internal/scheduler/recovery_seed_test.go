@@ -31,9 +31,8 @@ func recoveryResultJSON(summary, execID, workerID string) []byte {
 	return b
 }
 
-// TestRecoverySeedForMatch verifies the predicate returns a seed for a
-// same-worker recovery-resumed dispatch, reading keys from either the
-// step-run result (workflow) or the work item results (standalone).
+// TestRecoverySeedForMatch verifies the predicate returns a seed for a same-worker recovery-resumed
+// dispatch, reading keys from either the step-run result (workflow) or the work item results.
 func TestRecoverySeedForMatch(t *testing.T) {
 	runResult := recoveryResultJSON("exec abc failed", "exec-1", "w1")
 	seed := recoverySeedFor(runResult, nil, "w1")
@@ -101,9 +100,8 @@ func TestEnsureRecoveryFileReference(t *testing.T) {
 	}
 }
 
-// TestBuildRecoveryFileContent verifies the file shape: header first,
-// ## Recovery section with the directive, transcript tail, and the footer
-// as the LAST lines (the system-side cleanup matcher depends on it).
+// TestBuildRecoveryFileContent verifies the file shape: header first, ## Recovery section with the
+// directive, transcript tail.
 func TestBuildRecoveryFileContent(t *testing.T) {
 	seed := &recoverySeed{Summary: "exec abc failed", FailedExecID: "exec-1", FailedWorkerID: "w1"}
 	content := buildRecoveryFileContent("Architect", seed, "ASSISTANT: did stuff\n\n")
@@ -145,9 +143,8 @@ func TestBuildRecoveryFileContentEmptyTail(t *testing.T) {
 	}
 }
 
-// TestBuildCompositePromptRecoveryBlock verifies the workflow path renders
-// the ## Recovery file reference for a same-worker seed and keeps the
-// summary-only narrative (NO file reference) for a different worker.
+// TestBuildCompositePromptRecoveryBlock verifies the workflow path renders the ## Recovery file
+// reference for a same-worker seed and keeps the summary-only narrative (NO file reference).
 func TestBuildCompositePromptRecoveryBlock(t *testing.T) {
 	ctx := context.Background()
 	item := db.WorkItemRow{
@@ -216,15 +213,8 @@ func TestRemoveRecoveryFileMatching(t *testing.T) {
 	}
 }
 
-// TestSeedRecoveryFileDispatch verifies the dispatch-time HARD GATE end to
-// end: a same-worker recovery writes + verifies the file (header + directive
-// + fail-fast + footer) and appends the composite reference; a fresh or
-// different-worker dispatch leaves the prompt AND any existing file
-// untouched (no blind sweep — a file may belong to another in-flight
-// recovery); a foreign-seed file with no resolvable (terminal) owner blocks
-// the dispatch with an error. A closed pool exercises the no-DB path (the
-// fast-path keys resolve the seed; worker name falls back to the worker id,
-// empty transcript).
+// TestSeedRecoveryFileDispatch verifies the dispatch-time HARD GATE end to end: a same-worker
+// recovery writes + verifies the file (header + directive + fail-fast + footer) and appends.
 func TestSeedRecoveryFileDispatch(t *testing.T) {
 	p, err := pgxpool.New(context.Background(), "postgres://nohost:5432/nope?sslmode=disable")
 	if err != nil {
@@ -283,9 +273,8 @@ func TestSeedRecoveryFileDispatch(t *testing.T) {
 		t.Fatal("same-footer reuse must not delete the file")
 	}
 
-	// A different worker assigned to the same task → no file reference, and
-	// the existing file (which belongs to w1) is LEFT ALONE (never swept —
-	// it may be a live foreign seed).
+	// A different worker assigned to the same task → no file reference, and the existing file (which
+	// belongs to w1) is LEFT ALONE (never swept — it may be a live foreign seed).
 	other := db.WorkerVersionRow{WorkerID: "w2", Version: 1}
 	out3, err := r.seedRecoveryFile(ctx, exec, task, other, dir, nil, prompt)
 	if err != nil {
@@ -311,9 +300,8 @@ func TestSeedRecoveryFileDispatch(t *testing.T) {
 		t.Error("fresh dispatch must NOT sweep an existing file")
 	}
 
-	// Foreign-seed collision: a file whose footer belongs to ANOTHER
-	// recovery with no resolvable owner (closed pool → owner lookup fails)
-	// must BLOCK the dispatch with an error — never clobber, never launch.
+	// Foreign-seed collision: a file whose footer belongs to ANOTHER recovery with no resolvable owner
+	// (closed pool → owner lookup fails) must BLOCK the dispatch with an error — never clobber.
 	if err := os.RemoveAll(orchDir); err != nil {
 		t.Fatal(err)
 	}
@@ -332,9 +320,8 @@ func TestSeedRecoveryFileDispatch(t *testing.T) {
 	}
 }
 
-// TestSeedRecoveryFileWorkflowResultKey verifies the workflow path passes
-// the step-run result (which carries the seed keys) rather than the work
-// item's Results.
+// TestSeedRecoveryFileWorkflowResultKey verifies the workflow path passes the step-run result
+// (which carries the seed keys) rather than the work item's Results.
 func TestSeedRecoveryFileWorkflowResultKey(t *testing.T) {
 	stepResult := recoveryResultJSON("exec abc failed", "exec-1", "w1")
 	seed := recoverySeedFor(stepResult, nil, "w1")
@@ -346,9 +333,8 @@ func TestSeedRecoveryFileWorkflowResultKey(t *testing.T) {
 	}
 }
 
-// TestRecoveringStepResult verifies the recovering-transition result records
-// the dead-execution identity + strategy + worker pin so the seed stays
-// resolvable after WorkerExecutionID is cleared at re-dispatch.
+// TestRecoveringStepResult verifies the recovering-transition result records the dead-execution
+// identity + strategy + worker pin so the seed stays resolvable after WorkerExecutionID is cleared.
 func TestRecoveringStepResult(t *testing.T) {
 	prev, _ := json.Marshal(map[string]any{"_worker_id": "w1", "_worker_version": 1})
 	res := recoveringStepResult(context.Background(), nil, "tnt_test", "wi-1", "exec-9", "summarize_restart", prev)
@@ -377,9 +363,8 @@ func TestRecoveringStepResult(t *testing.T) {
 	}
 }
 
-// TestRecoveryIdentityFromResult verifies the resolution order:
-// _failed_execution_id wins over _recovery_execution_id, and both are read
-// from the step-run result before the work-item results.
+// TestRecoveryIdentityFromResult verifies the resolution order: _failed_execution_id wins over
+// _recovery_execution_id, and both are read from the step-run result before the work-item results.
 func TestRecoveryIdentityFromResult(t *testing.T) {
 	stepResult := recoveryResultJSON("s", "exec-1", "w1")
 	withFailed := map[string]any{"_failed_execution_id": "exec-0", "_recovery_execution_id": "exec-1"}
@@ -411,9 +396,8 @@ func TestParseRecoveryFileFooter(t *testing.T) {
 	}
 }
 
-// TestRecoveryFileReferenceBlockFailFast verifies the composite ## Recovery
-// block carries the worker-side fail-fast directive (the last line of
-// defense against a cold restart).
+// TestRecoveryFileReferenceBlockFailFast verifies the composite ## Recovery block carries the
+// worker-side fail-fast directive (the last line of defense against a cold restart).
 func TestRecoveryFileReferenceBlockFailFast(t *testing.T) {
 	block := recoveryFileReferenceBlock(&recoverySeed{Summary: "s", FailedExecID: "e", FailedWorkerID: "w1"})
 	for _, want := range []string{"recovery seed file missing", "do NOT redo work", "fail"} {
@@ -426,9 +410,8 @@ func TestRecoveryFileReferenceBlockFailFast(t *testing.T) {
 	}
 }
 
-// TestResolveRecoverySeedFastPath verifies the shared resolver returns the
-// fast-path seed without touching the DB (nil tx), and nil for a
-// fresh/different-worker dispatch.
+// TestResolveRecoverySeedFastPath verifies the shared resolver returns the fast-path seed without
+// touching the DB (nil tx), and nil for a fresh/different-worker dispatch.
 func TestResolveRecoverySeedFastPath(t *testing.T) {
 	runResult := recoveryResultJSON("exec abc failed", "exec-1", "w1")
 	if seed := resolveRecoverySeed(context.Background(), nil, "tnt_test", "wi-1", runResult, nil, "w1"); seed == nil {
@@ -458,9 +441,8 @@ func churnOpenerTextPart(seq int64, variant string) db.SessionPart {
 	return db.SessionPart{Seq: seq, Kind: db.SessionPartText, Payload: []byte(`{"part":{"text":` + strconv.Quote(txt) + `}}`)}
 }
 
-// TestTailIsBootstrapChurn verifies the churn floor: >=2 recovery-opener
-// parts with no tool_use, no file-diff evidence, and no substantive text;
-// and that productive tails never classify as churn.
+// TestTailIsBootstrapChurn verifies the churn floor: >=2 recovery-opener parts with no tool_use, no
+// file-diff evidence, and no substantive text; and that productive tails never classify as churn.
 func TestTailIsBootstrapChurn(t *testing.T) {
 	churn := []db.SessionPart{}
 	var seq int64 = 1
@@ -542,10 +524,8 @@ func TestLastProductiveWindow(t *testing.T) {
 	}
 }
 
-// TestResolveRecoveryTailContent verifies the substance filter end to end:
-// a productive tail seeds unchanged; a churn tail with a productive window
-// walks back to it (with the churn note); a churn-only transcript reports
-// churnOnly so the prior seed is carried instead of the churn.
+// TestResolveRecoveryTailContent verifies the substance filter end to end: a productive tail seeds
+// unchanged; a churn tail with a productive window walks back to it (with the churn note).
 func TestResolveRecoveryTailContent(t *testing.T) {
 	// Genuinely productive tail -> unchanged (no churn note).
 	productive := []db.SessionPart{
@@ -602,12 +582,8 @@ func TestExtractRecoveryTailSection(t *testing.T) {
 	}
 }
 
-// TestChurnOnlySeedCarriesPriorTail verifies the churn-only seed decision
-// at the content level: a churn-only successor must NOT overwrite the prior
-// seed's transcript — the carried content names the carried tail and the
-// NEW footer, while a churn-only successor with no prior transcript carries
-// the explicit churn marker. The header/footer/directive contract is
-// unchanged in both cases.
+// TestChurnOnlySeedCarriesPriorTail verifies the churn-only seed decision at the content level: a
+// churn-only successor must NOT overwrite the prior seed's transcript.
 func TestChurnOnlySeedCarriesPriorTail(t *testing.T) {
 	prior := buildRecoveryFileContent("Architect", &recoverySeed{Summary: "prior failed", FailedExecID: "exec-0", FailedWorkerID: "w1"}, "TOOL CALL: bash\n\nASSISTANT: real prior work\n\n")
 	priorTail := extractRecoveryTailSection(prior)
@@ -643,9 +619,8 @@ func TestChurnOnlySeedCarriesPriorTail(t *testing.T) {
 	}
 }
 
-// TestTheReasonReachesTheResumedAgent is the proof for the whole change: the objection that failed the
-// original run must appear in what the resumed agent is given, and the "do not redo" advice must be
-// corrected for this failure class.
+// TestTheReasonReachesTheResumedAgent is the proof for the whole change: the objection that failed
+// the original run must appear in what the resumed agent is given.
 func TestTheReasonReachesTheResumedAgent(t *testing.T) {
 	const reason = "the worker reported success but the evidence contradicts it — not substantiated: project_gate: the project's declared gate FAILED"
 	seed := &recoverySeed{
@@ -697,11 +672,6 @@ func TestNoReasonSaysSoRatherThanAssumingNothingWasWrong(t *testing.T) {
 }
 
 // TestTheReasonSurvivesTheRecoveringTransition guards the most fragile part of carrying the reason.
-//
-// entering `recovering` REPLACES the step run's result JSON (recoveringStepResult starts from a fresh map),
-// and the keys are copied back only if they are named in recoveryResultKeys. A key missing from that list is
-// silently destroyed — so the reason would reach the seed on the FIRST read and vanish on the re-dispatch,
-// leaving the agent blind again with no error anywhere.
 func TestTheReasonSurvivesTheRecoveringTransition(t *testing.T) {
 	found := false
 	for _, k := range recoveryResultKeys {
@@ -715,10 +685,8 @@ func TestTheReasonSurvivesTheRecoveringTransition(t *testing.T) {
 			"it and the resumed agent would be told nothing, which is the defect this change exists to fix")
 	}
 
-	// End to end: a SECOND recovery re-enters the recovering transition with a result that already carries a
-	// reason, and recoveringStepResult rebuilds the map from scratch. Without the carry-forward the FIRST
-	// attempt's reason is wiped before the second attempt is dispatched — so the one retry this policy allows
-	// would go out blind, which is the whole feature failing quietly.
+	// End to end: a SECOND recovery re-enters the recovering transition with a result that already
+	// carries a reason, and recoveringStepResult rebuilds the map from scratch.
 	prev := []byte(`{"_recovery_failure_reason":"project_gate: the project's declared gate FAILED","_worker_id":"w1"}`)
 	out := recoveringStepResult(context.Background(), nil, "tnt", "wi1", "exec1", strategySummarizeRestart, prev)
 	if !strings.Contains(string(out), "project_gate: the project's declared gate FAILED") {

@@ -11,10 +11,9 @@ func part(seq int64, kind, payload string) db.SessionPart {
 	return db.SessionPart{Seq: seq, Kind: kind, Payload: []byte(payload)}
 }
 
-// TestRenderTailSkippedKinds verifies the recovery-tail renderer skips the
-// low-signal kinds (reasoning, step start/finish, system_prompt,
-// session_info) and keeps user messages, assistant text, tool calls, and
-// errors.
+// TestRenderTailSkippedKinds verifies the recovery-tail renderer skips the low-signal kinds
+// (reasoning, step start/finish, system_prompt, session_info) and keeps user messages, assistant
+// text.
 func TestRenderTailSkippedKinds(t *testing.T) {
 	parts := []db.SessionPart{
 		part(1, db.SessionPartSystemPrompt, `{"text":"big system prompt"}`),

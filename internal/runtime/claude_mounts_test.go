@@ -9,9 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
-// claudeHome builds a temp HOME that mimics the operator's claude install:
-// ~/.claude (transcript home), ~/.claude.json, the launcher symlink under
-// ~/.local/bin, and its install root under ~/.local/share/claude.
+// claudeHome builds a temp HOME that mimics the operator's claude install: ~/.claude (transcript
+// home), ~/.claude.json, the launcher symlink under ~/.local/bin.
 func claudeHome(t *testing.T) string {
 	t.Helper()
 	home := canonicalTempHome(t)
@@ -50,10 +49,8 @@ func mustWrite(t *testing.T, p, body string) {
 	}
 }
 
-// TestAdapterInstallsClaudeFindable asserts the CLI is FINDABLE: the launcher
-// AND its install root are declared alongside the config/transcript home, and
-// the symlink target's ROOT is among the mounted dirs so the launcher cannot
-// dangle in-container.
+// TestAdapterInstallsClaudeFindable asserts the CLI is FINDABLE: the launcher AND its install root
+// are declared alongside the config/transcript home.
 func TestAdapterInstallsClaudeFindable(t *testing.T) {
 	home := claudeHome(t)
 	paths, declared := adapterInstallPaths(home, adapter.KindClaude)
@@ -97,12 +94,8 @@ func TestAdapterInstallsClaudeFindable(t *testing.T) {
 	}
 }
 
-// TestAdapterHostMountsReadWriteSplit asserts that NO host bind is writable, and that the writable state the
-// CLI needs is delivered as a PRIVATE per-container directory instead.
-//
-// The config/transcript home WAS a read-write host bind, which meant every concurrent container wrote into one
-// tree on the operator's machine. Private per container is the fix: the CLI still gets a writable
-// ~/.claude (a tmpfs of its own, uid-owned), and the host's copy is never touched by a container.
+// TestAdapterHostMountsReadWriteSplit asserts that NO host bind is writable, and that the writable
+// state the CLI needs is delivered as a PRIVATE per-container directory instead.
 func TestAdapterHostMountsReadWriteSplit(t *testing.T) {
 	home := claudeHome(t)
 	args := adapterHostMounts(home, adapter.KindClaude)
@@ -151,16 +144,8 @@ func TestAdapterBakeNeedlesClaudeBenign(t *testing.T) {
 	}
 }
 
-// TestAdapterPathPrefixPerKind asserts PATH comes from the demanded kind's mounted bin dir, filtered to
-// EXISTING dirs (never an absent host dir).
-//
-// CLAUDE'S HOST DIR IS NOW INCLUDED. The preference was the image's, on the grounds that a host dir in the
-// prefix would shadow the image's adapter — but the adapter's argv[0] then went to the IMAGE by name, and a
-// stale image with no CLI in it killed every session with `executable file not found in $PATH` while the
-// operator's own install sat mounted and unreferenced. The prefix now follows the same gate as argv[0]
-// (adapter.PreferHostAdapterInContainer), so the two cannot disagree about who supplies the CLI.
-//
-// THE OTHER KINDS KEEP THE IMAGE-FIRST RULE: their container route is not a plain exec of a mounted binary.
+// TestAdapterPathPrefixPerKind asserts PATH comes from the demanded kind's mounted bin dir,
+// filtered to EXISTING dirs (never an absent host dir).
 func TestAdapterPathPrefixPerKind(t *testing.T) {
 	home := claudeHome(t)
 	dirs := adapterPathPrefixFor(home, "linux", adapter.KindClaude)
@@ -179,9 +164,8 @@ func TestAdapterPathPrefixPerKind(t *testing.T) {
 	if got := adapterPathPrefixFor(home, "linux", adapter.KindClaude); len(got) != 1 || got[0] != filepath.Join(home, ".local", "bin") {
 		t.Fatalf("with %s set, adapterPathPrefix(claude) = %v, want the host dir", adapter.BinEnv(adapter.KindClaude), got)
 	}
-	// OPENCODE TOO, AND FOR THE OTHER HALF OF THE SAME PROBLEM: its container child is `opencode serve`,
-	// exec'd BY NAME by the supervisor, so the PATH prefix is the only place the host's install can win.
-	// Without it an image carrying no CLI answers `opencode: not found` at serve time.
+	// OPENCODE TOO, AND FOR THE OTHER HALF OF THE SAME PROBLEM: its container child is `opencode
+	// serve`, exec'd BY NAME by the supervisor.
 	t.Setenv(adapter.BinEnv(adapter.KindClaude), "")
 	ocHome := home
 	if err := os.MkdirAll(filepath.Join(ocHome, ".opencode", "bin"), 0o755); err != nil {

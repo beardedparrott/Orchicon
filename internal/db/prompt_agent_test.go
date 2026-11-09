@@ -6,20 +6,7 @@ import (
 	"testing"
 )
 
-// TestAgentSystemPromptIsTheExactCompositePrefix is the BYTE-CONTRACT test for
-// the prompt split.
-//
-// AgentSystemPrompt (stable prefix + worker identity) must be a byte-identical
-// PREFIX of the composite prompt, because the opencode adapter bakes exactly
-// these bytes into a worker's agent on 2.x and then trims them back off the
-// message it sends. The expected value below is written out LONGHAND — the same
-// literal headings and spacing the composite builder originally emitted inline —
-// so this fails if either side's format drifts.
-//
-// A DRIFT IS NOT CATASTROPHIC, and the direction matters: TrimPrefix simply does
-// not match, so the full composite travels on the message (duplicated against
-// the agent) rather than being silently truncated. Losing prompt text is the
-// failure this guards against; duplicating it is the safe degradation.
+// TestAgentSystemPromptIsTheExactCompositePrefix is the BYTE-CONTRACT test for the prompt split.
 func TestAgentSystemPromptIsTheExactCompositePrefix(t *testing.T) {
 	v := WorkerVersionRow{
 		Role:     "the role",
@@ -42,11 +29,8 @@ func TestAgentSystemPromptIsTheExactCompositePrefix(t *testing.T) {
 	}
 }
 
-// TestAgentSystemPromptOmitsAbsentIdentitySections pins that an empty field
-// contributes NOTHING — not a heading with no body. A worker with no AGENTS.md
-// must not gain an empty "## AGENTS.md" section, because the adapter trims these
-// bytes off the message: an emitted-but-empty heading would have to match on
-// both sides forever.
+// TestAgentSystemPromptOmitsAbsentIdentitySections pins that an empty field contributes NOTHING —
+// not a heading with no body.
 func TestAgentSystemPromptOmitsAbsentIdentitySections(t *testing.T) {
 	got := AgentSystemPrompt(WorkerVersionRow{Role: "only a role"}, "img", "")
 	want := StablePromptPrefix("img", "") + "# Role\n\nonly a role\n\n"
@@ -60,10 +44,8 @@ func TestAgentSystemPromptOmitsAbsentIdentitySections(t *testing.T) {
 	}
 }
 
-// TestWorkerIdentityBlockTrimsWhitespace pins the TrimSpace the composite builder
-// applied to each field before emitting it: a worker whose role has leading
-// newlines must produce the same bytes as one whose role does not, or the agent
-// and the composite would disagree about those bytes.
+// TestWorkerIdentityBlockTrimsWhitespace pins the TrimSpace the composite builder applied to each
+// field before emitting it.
 func TestWorkerIdentityBlockTrimsWhitespace(t *testing.T) {
 	a := WorkerIdentityBlock(WorkerVersionRow{Role: "  the role  \n"})
 	b := WorkerIdentityBlock(WorkerVersionRow{Role: "the role"})

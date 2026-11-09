@@ -50,28 +50,16 @@ func streamIdleTimeout() time.Duration {
 	return defaultStreamIdleTimeout
 }
 
-// idleWatchBody wraps a stream body: every delivered chunk re-arms an idle
-// timer that aborts the connection on silence. A pump goroutine performs
-// the actual reads (a body Read cannot safely be raced against a timer
-// from the reader goroutine); the wrapper's Read selects over the pump
-// channel and the fired signal. Single-reader contract: the SSE reader is
-// the only consumer, so a 1-deep chunk handoff suffices.
-//
-// Timer discipline: one NEW AfterFunc per chunk (never Timer.Reset — its
-// stale-fire semantics would need a generation check anyway). Each timer
-// closure captures the generation it armed at; a fire only acts when its
-// generation is still current, so a chunk arriving exactly as the idle
-// budget expires can never spuriously kill a live stream.
+// idleWatchBody wraps a stream body: every delivered chunk re-arms an idle timer that aborts the
+// connection on silence.
 type idleWatchBody struct {
 	rc   io.ReadCloser
 	idle time.Duration
 	ch   chan idleRead
 	errc chan error
 
-	// pend holds the unconsumed remainder of a pumped chunk when the
-	// consumer's buffer is smaller than the chunk (short reads are legal
-	// io.Reader semantics — bufio.Scanner starts with a small buffer and
-	// grows; dropping the tail would corrupt the stream).
+	// pend holds the unconsumed remainder of a pumped chunk when the consumer's buffer is smaller than
+	// the chunk (short reads are legal io.Reader semantics.
 	pend []byte
 
 	fireOnce sync.Once
@@ -96,12 +84,8 @@ func newIdleWatchBody(rc io.ReadCloser, idle time.Duration) io.ReadCloser {
 	w := &idleWatchBody{
 		rc:   rc,
 		idle: idle,
-		// UNBUFFERED handoff: the pump can only be one read ahead of the
-		// consumer, so a terminal body error (io.EOF) is only queued AFTER
-		// the previous chunk was received — chunk and EOF can never be
-		// simultaneously ready in Read's select. A buffered channel here
-		// raced exactly that way: select could serve the EOF and silently
-		// drop the final chunk (truncated stream, lost message_stop).
+		// UNBUFFERED handoff: the pump can only be one read ahead of the consumer, so a terminal body error
+		// (io.EOF) is only queued AFTER the previous chunk was received.
 		ch:       make(chan idleRead),
 		errc:     make(chan error, 1),
 		fired:    make(chan struct{}),
@@ -112,10 +96,8 @@ func newIdleWatchBody(rc io.ReadCloser, idle time.Duration) io.ReadCloser {
 	return w
 }
 
-// pump performs the blocking reads off-body; each chunk or terminal error
-// is handed to the single consumer. Exits when the body errors, when the
-// watchdog fires (the fire closes the body, unblocking the read), or when
-// the wrapper is torn down.
+// pump performs the blocking reads off-body; each chunk or terminal error is handed to the single
+// consumer.
 func (w *idleWatchBody) pump() {
 	defer close(w.pumpDone)
 	buf := make([]byte, 64*1024)
@@ -165,13 +147,10 @@ func (w *idleWatchBody) fire() {
 }
 
 // Read yields one pumped chunk, re-arming the idle timer per delivery.
-// The FIRST delivery also arms the watchdog — pre-first-byte silence (the
-// prefill) never trips it.
 func (w *idleWatchBody) Read(p []byte) (int, error) {
 	if len(w.pend) > 0 {
-		// Leftover from a previous short read: drain it first (no new
-		// chunk delivery, no re-arm — the timer for the original chunk
-		// still governs).
+		// Leftover from a previous short read: drain it first (no new chunk delivery, no re-arm — the timer
+		// for the original chunk still governs).
 		n := copy(p, w.pend)
 		w.pend = w.pend[n:]
 		return n, nil
@@ -185,10 +164,8 @@ func (w *idleWatchBody) Read(p []byte) (int, error) {
 		}
 		return n, nil
 	case err := <-w.errc:
-		// The watchdog's fire CLOSES the body, which makes the pump's
-		// in-flight Read return an error — so when both are ready, the
-		// idle signal is the root cause and must win over the raw
-		// close-induced error.
+		// The watchdog's fire CLOSES the body, which makes the pump's in-flight Read return an error — so
+		// when both are ready, the idle signal is the root cause and must win over the raw close-induced.
 		select {
 		case <-w.fired:
 			return 0, ErrStreamIdle

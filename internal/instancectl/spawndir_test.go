@@ -1,16 +1,6 @@
 package instancectl
 
 // spawndir_test.go — a child must never inherit the app's working directory.
-//
-// REPORTED: "When trying to create a test environment in the desktop in windows (with the desktop launched
-// from the installer), it complained about not being able to create it due to the directory the desktop ran
-// from. If I closed out of the desktop and launched it from the start menu, then it did allow me to create
-// test with no issues."
-//
-// Nothing in `orchicon install` reads its cwd; every child it started INHERITED the app's, because no spawn
-// site set cmd.Dir. On Windows a process cannot be created when the inherited directory no longer exists
-// (ERROR_DIRECTORY, "The directory name is invalid") — so a GUI launched out of an installer's staging area
-// could not start ANY child, while the same app from the Start menu could. That is the whole difference.
 
 import (
 	"os"
@@ -20,10 +10,6 @@ import (
 )
 
 // TestSpawnDirSurvivesADeletedWorkingDirectory is the reported condition, reproduced.
-//
-// The process is put into a directory and that directory is then removed — which is what a launch from an
-// installer's cleaned-up staging area leaves behind. os.Getwd then fails, and on Windows every spawn from
-// here fails too. spawnDir must still answer with a real directory, so the child starts.
 func TestSpawnDirSurvivesADeletedWorkingDirectory(t *testing.T) {
 	gone := t.TempDir()
 	// t.Chdir restores the previous directory at cleanup, and makes this test non-parallel-safe by design:
@@ -47,9 +33,8 @@ func TestSpawnDirSurvivesADeletedWorkingDirectory(t *testing.T) {
 	}
 }
 
-// TestUnusableCwdExplainsTheWin32Error pins the diagnostic, because the message it replaces is useless:
-// "The directory name is invalid" names nothing an operator can act on, and the reporter went looking at the
-// INSTANCE rather than at how they had launched the app.
+// TestUnusableCwdExplainsTheWin32Error pins the diagnostic, because the message it replaces is
+// useless: "The directory name is invalid" names nothing an operator can act.
 func TestUnusableCwdExplainsTheWin32Error(t *testing.T) {
 	gone := t.TempDir()
 	t.Chdir(gone)

@@ -83,9 +83,8 @@ func testReconciler() *WorktreeReconciler {
 	return &WorktreeReconciler{log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))}
 }
 
-// TestResolveBaseRefSucceedsWithoutRemoteHeadSymref is defect 2's first acceptance criterion: resolution works
-// with `origin/HEAD` ABSENT. This is the hand-built repository, and it must resolve to the pushed branch rather
-// than to the echoed literal "origin/HEAD".
+// TestResolveBaseRefSucceedsWithoutRemoteHeadSymref is defect 2's first acceptance criterion:
+// resolution works with `origin/HEAD` ABSENT.
 func TestResolveBaseRefSucceedsWithoutRemoteHeadSymref(t *testing.T) {
 	requireGit(t)
 	workDir, _ := handBuiltRepo(t, "develop")
@@ -105,8 +104,7 @@ func TestResolveBaseRefSucceedsWithoutRemoteHeadSymref(t *testing.T) {
 		t.Fatal("resolved to the literal string origin/HEAD — the rev-parse echo trap")
 	}
 	// `remote show origin` may or may not reach the remote here (a local path, so it will), and the
-	// configured-default step also knows `develop`; either provenance is acceptable, but the RESULT must be a
-	// ref that really is a commit.
+	// configured-default step also knows `develop`; either provenance is acceptable.
 	if ok, _ := r.refIsCommit(context.Background(), workDir, ref); !ok {
 		t.Fatalf("resolved base %q (%s) is not a commit", ref, how)
 	}
@@ -115,21 +113,14 @@ func TestResolveBaseRefSucceedsWithoutRemoteHeadSymref(t *testing.T) {
 	}
 }
 
-// TestResolveBaseRefSurvivesDanglingBareHead is defect 2's second shape: `origin/HEAD -> master` where master
-// does not exist. The symref RESOLVES, so a resolver that stops at it returns an invalid ref — this pins that
-// the commit guard catches it and the chain moves on.
+// TestResolveBaseRefSurvivesDanglingBareHead is defect 2's second shape: `origin/HEAD -> master`
+// where master does not exist.
 func TestResolveBaseRefSurvivesDanglingBareHead(t *testing.T) {
 	requireGit(t)
 	workDir, bareDir := handBuiltRepo(t, "develop")
 
 	// Give the BARE origin a HEAD pointing at a branch that will never exist, and create the local
 	// remote-HEAD symref that follows it — the exact "HEAD -> master, master does not exist" state.
-	//
-	// The symref is written DIRECTLY, not via `git remote set-head origin master`: that command refuses a
-	// ref it cannot find ("error: Not a valid ref: refs/remotes/origin/master"), which is exactly why a
-	// real hand-built repo ends up with this state through other means (a deleted branch on the remote, a
-	// stale local symref, a bare repo whose HEAD was moved). Writing it directly is what reproduces the
-	// shape the resolver has to survive.
 	gitIn(t, bareDir, "symbolic-ref", "HEAD", "refs/heads/master")
 	gitIn(t, workDir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
 
@@ -146,9 +137,8 @@ func TestResolveBaseRefSurvivesDanglingBareHead(t *testing.T) {
 	}
 }
 
-// TestResolveBaseRefFailsNamingEveryAttempt is the acceptance criterion for the UNRESOLVABLE case: it must
-// fail, and it must say what was tried. `could not resolve` alone would be the same silence as `exit status
-// 128`, one layer up.
+// TestResolveBaseRefFailsNamingEveryAttempt is the acceptance criterion for the UNRESOLVABLE case:
+// it must fail, and it must say what was tried.
 func TestResolveBaseRefFailsNamingEveryAttempt(t *testing.T) {
 	requireGit(t)
 	// An empty repository: no commit, no branch, no remote. Nothing can satisfy any step.

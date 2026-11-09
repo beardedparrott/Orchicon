@@ -45,14 +45,7 @@ func TestReleaseWorkflowPublishesOnlyTheBase(t *testing.T) {
 		}
 	}
 
-	// And no UNPUBLISHED variant may be pushed. This is the licensing half: pushing it would make
-	// Orchicon a distributor of a third-party CLI.
-	//
-	// MATCH ON THE PUSHED REF, not on a substring of it. The first version of this looked for
-	// `push "orchicon-runtime:dev"` and sailed past the real line
-	// `docker push "ghcr.io/beardedparrott/orchicon-runtime:dev"`, because the registry prefix sits
-	// between "push" and the name — a guard that cannot see the thing it guards. It now extracts every
-	// pushed tag and compares TAG NAMES.
+	// And no UNPUBLISHED variant may be pushed.
 	pushedTags := map[string]bool{}
 	for _, line := range strings.Split(src, "\n") {
 		trimmed := strings.TrimSpace(line)

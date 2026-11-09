@@ -5,17 +5,15 @@ import (
 	"testing"
 )
 
-// Tag fragments for tests are derived from the runtime constants (sliced),
-// never typed verbatim — raw markup gets rewritten in transit through
-// some tooling paths.
+// Tag fragments for tests are derived from the runtime constants (sliced), never typed verbatim —
+// raw markup gets rewritten in transit through some tooling paths.
 var (
 	tOpen  = thinkOpenTag
 	tClose = thinkCloseTag
 )
 
-// collect flattens one splitter run into "T:text"/"R:reasoning" segments,
-// merging adjacent same-kind deltas the way the renderer downstream does
-// (sessionItems merges consecutive live text/reasoning chunks).
+// collect flattens one splitter run into "T:text"/"R:reasoning" segments, merging adjacent
+// same-kind deltas the way the renderer downstream does (sessionItems merges consecutive live.
 func collect(t *testing.T, chunks []string) string {
 	t.Helper()
 	sp := newThinkSplitter()

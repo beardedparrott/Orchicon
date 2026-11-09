@@ -13,19 +13,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// S3Store implements Store over S3-compatible storage (AWS S3, MinIO,
-// etc.). The bucket + endpoint are configured via BlobStoreConfig. If
-// the endpoint is empty the default AWS S3 endpoint is used.
+// S3Store implements Store over S3-compatible storage (AWS S3, MinIO, etc.).
 type S3Store struct {
 	client *s3.Client
 	bucket string
 }
 
-// NewS3Store constructs an S3 store. region + bucket are required;
-// endpoint is optional (set for MinIO/other S3-compatible services).
-// Static credentials may be provided via the standard AWS env vars
-// (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN); when
-// absent the default credential chain is used.
+// NewS3Store constructs an S3 store.
 func NewS3Store(ctx context.Context, bucket, region, endpoint string) (*S3Store, error) {
 	if bucket == "" {
 		return nil, errors.New("blobstore: s3 store requires a bucket")

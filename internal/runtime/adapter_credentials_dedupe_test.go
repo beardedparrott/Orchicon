@@ -1,17 +1,7 @@
 package runtime
 
-// adapter_credentials_dedupe_test.go — two provider ids, ONE environment variable, and the right one wins.
-//
-// opencode's console issues SEPARATE integrations for `opencode` and `opencode-go`, and BOTH map to
-// OPENCODE_API_KEY. The emitter used to append one pair per provider id, so that variable appeared TWICE. The
-// child takes the last assignment and the pairs are sorted as strings, so the winner was decided by the
-// credential's own TEXT — deterministic, arbitrary, and invisible.
-//
-// MEASURED on the reporting host: `opencode` still held a key from a September auth.json (sha 66b335081f) and
-// `opencode-go` held the key rotated in October (sha 8f28a2cf64). Both were emitted, and the serve could run on
-// the expired one — which is exactly the reported "This API key has expired" failure.
-//
-// The most recently WRITTEN credential is the one the operator just refreshed, so it wins.
+// adapter_credentials_dedupe_test.go — two provider ids, ONE environment variable, and the right
+// one wins.
 
 import (
 	"database/sql"

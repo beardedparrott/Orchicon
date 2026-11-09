@@ -40,9 +40,8 @@ func fakeOIDCServer(t *testing.T, codeChallengeMethods []string) *httptest.Serve
 	return srv
 }
 
-// TestRPNoPKCEWhenNotAdvertised proves the BYO-IdP flow is unchanged when
-// the IdP's discovery does not advertise PKCE at all: no code_challenge is
-// sent on the wire (capability-gated D6).
+// TestRPNoPKCEWhenNotAdvertised proves the BYO-IdP flow is unchanged when the IdP's discovery does
+// not advertise PKCE at all: no code_challenge is sent on the wire (capability-gated D6).
 func TestRPNoPKCEWhenNotAdvertised(t *testing.T) {
 	srv := fakeOIDCServer(t, nil)
 	ver := NewOIDCVerifier(srv.URL, "client", "secret", "http://localhost:5173/auth/callback")

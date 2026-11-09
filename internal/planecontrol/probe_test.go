@@ -1,10 +1,7 @@
 package planecontrol
 
-// probe_test.go — the four connection states have to start somewhere honest, and
-// this is that place: Probe must SEPARATE "nothing answers" from "something
-// answers and is not well". Healthy() collapsed both into false, which is fine for
-// a lifecycle verb (it proceeds or it does not) and useless for a screen that has
-// to tell the operator which fix to apply.
+// probe_test.go — the four connection states have to start somewhere honest, and this is that
+// place: Probe must SEPARATE "nothing answers" from "something answers and is not well".
 
 import (
 	"net/http"

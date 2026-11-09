@@ -26,20 +26,14 @@ type stubHost struct {
 	store       chat.PermissionStore
 	storeOK     bool
 	revoked     []string
-	// asked records every AskReply the screen issued — the REPLY path a RECORDED card answers
-	// through. It is separate from sent so a test can tell "answered the ask" from "sent a message",
-	// which is exactly the distinction the recorded card got wrong.
+	// asked records every AskReply the screen issued — the REPLY path a RECORDED card answers through.
 	asked []askReply
-	// repaints counts the RepaintTranscript calls the screen made. repaint() returns nil for a host that
-	// does not implement the hook, so WITHOUT this a test cannot tell "the row asked for a repaint" from
-	// "the row forgot to" — and forgetting is the difference between a paste that shows and one that
-	// silently does nothing.
+	// repaints counts the RepaintTranscript calls the screen made.
 	repaints int
 }
 
-// RepaintTranscript mirrors the production host: the ask screen asks it to redraw the transcript, which is
-// where the card (and its input row) is drawn.
-// askReply is one AskReply the screen issued: the ask it addressed and the words it carried.
+// RepaintTranscript mirrors the production host: the ask screen asks it to redraw the transcript,
+// which is where the card (and its input row) is drawn.
 type askReply struct{ id, answer string }
 
 // AskReply mirrors the production host: it replies to the ask through ReplyPermissionAsk, which is
@@ -100,9 +94,8 @@ func newTestModel(t *testing.T) (*Model, *stubHost) {
 	return m, h
 }
 
-// TestConsentCardIsAdoptedAndClaimsKeys pins that a pending ask in the
-// transcript (a) becomes the screen's card and (b) makes the screen own the
-// keyboard.
+// TestConsentCardIsAdoptedAndClaimsKeys pins that a pending ask in the transcript (a) becomes the
+// screen's card and (b) makes the screen own the keyboard.
 func TestConsentCardIsAdoptedAndClaimsKeys(t *testing.T) {
 	m, _ := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
@@ -119,9 +112,8 @@ func TestConsentCardIsAdoptedAndClaimsKeys(t *testing.T) {
 	}
 }
 
-// TestConsentEscapeDeniesAndReleasesTheClaim pins the recorded rule: Escape
-// DENIES (it does not silently dismiss), and the claim is released so the turn
-// stays usable.
+// TestConsentEscapeDeniesAndReleasesTheClaim pins the recorded rule: Escape DENIES (it does not
+// silently dismiss), and the claim is released so the turn stays usable.
 func TestConsentEscapeDeniesAndReleasesTheClaim(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{
@@ -209,14 +201,8 @@ func TestConsentCtrlGRecordsNoDecision(t *testing.T) {
 	if items[0].Consent == nil || !items[0].Consent.Pending() {
 		t.Fatal("the card must still be PENDING after the focus chord — nothing was decided and nothing was dropped")
 	}
-	// THE CLAIM IS RELEASED, which is what makes the chord USEFUL: the composer is the DEFAULT
-	// focus, so the claim is the only thing making the card own the keys — releasing it is how
-	// the operator types (to answer, or to reach /fullsend while the card is up).
-	//
-	// Letting a focused composer outrank the claim instead (which I tried first) broke the card
-	// outright, because the default focus already IS the composer: every claimed key went to the
-	// composer and the card could not be answered at all. Releasing the claim for THIS ask is the
-	// narrow version, and the shell test proves typing works after the chord.
+	// THE CLAIM IS RELEASED, which is what makes the chord USEFUL: the composer is the DEFAULT focus,
+	// so the claim is the only thing making the card own the keys.
 	if m.ClaimsKeys() {
 		t.Fatal("the claim must be released so the composer can take the keys")
 	}
@@ -236,9 +222,8 @@ func TestConsentCtrlGRecordsNoDecision(t *testing.T) {
 	}
 }
 
-// TestConsentReconcileReleasesAStaleCard pins decision 7: an ask that the
-// transcript no longer carries (turn ended / superseded / aborted) drops the
-// card and its claim, so the composer becomes typable again.
+// TestConsentReconcileReleasesAStaleCard pins decision 7: an ask that the transcript no longer
+// carries (turn ended / superseded / aborted) drops the card and its claim.
 func TestConsentReconcileReleasesAStaleCard(t *testing.T) {
 	m, _ := newTestModel(t)
 	m.RenderTranscript([]chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a7", Kind: chat.AskTool, Tool: "write", Target: "/p/x.go"}, 1000)}, chat.Conversation{}, false)
@@ -293,9 +278,7 @@ func TestQuestionCardOptionSendsTheChoice(t *testing.T) {
 // directories are countable in the header and listable, and revocable.
 func TestGrantsRollUpIsVisible(t *testing.T) {
 	m, h := newTestModel(t)
-	// The rows are the SERVER's fields: a directory and when it was granted. It used to also carry a tool and a
-	// count accrued locally from the cards this client answered — a second record of grants the plane owns, and
-	// the reason a revoke from this list revoked nothing.
+	// The rows are the SERVER's fields: a directory and when it was granted.
 	now := time.Now().Unix()
 	h.grants = []chat.SessionGrant{{Directory: "/p", GrantedAt: now}, {Directory: "/q", GrantedAt: now}}
 	h.grantAvail = true
@@ -335,9 +318,8 @@ func TestGrantsRollUpSaysUnavailableRatherThanFabricating(t *testing.T) {
 	}
 }
 
-// TestPermissionsListIsListableRemovableAndAddable pins criterion 5's TUI half:
-// the persistent list is shown, a row is removable, and a rule is addable — all
-// through the store (the file), never a local copy.
+// TestPermissionsListIsListableRemovableAndAddable pins criterion 5's TUI half: the persistent list
+// is shown, a row is removable, and a rule is addable — all through the store (the file).
 func TestPermissionsListIsListableRemovableAndAddable(t *testing.T) {
 	m, h := newTestModel(t)
 	st := &stubStore{rules: []chat.PolicyRule{{Effect: "deny", Tool: "write", Pattern: "/etc/**"}}}
@@ -379,17 +361,8 @@ func TestPermissionsSaysUnavailableWithoutAStore(t *testing.T) {
 	}
 }
 
-// TestConsentScreenOwnsTabWhileClaiming pins the OTHER half of the key-ownership
-// hook, against the shell's real tab chord.
-//
-// THE CLAIM ALONE DOES NOT TAKE TAB: the shell handles the tab chord ABOVE the
-// ClaimsKeys gate (router.go, the focus-chord switch), so `ClaimsKeys() == true`
-// left tab falling through to tabRingNext — press one moved the keyboard to the
-// tab bar, press two rotated the active screen out from under a still-pending
-// card (and, because the gate reads m.screens[m.active], the card then lost the
-// keyboard entirely). Tab IS a card key: handleConsentKey binds tab/shift+tab to
-// row movement. OwnsTab is the shell's own hook for exactly this (see
-// execution.Model.OwnsTab).
+// TestConsentScreenOwnsTabWhileClaiming pins the OTHER half of the key-ownership hook, against the
+// shell's real tab chord.
 func TestConsentScreenOwnsTabWhileClaiming(t *testing.T) {
 	m, _ := newTestModel(t)
 	if m.OwnsTab() {
@@ -420,16 +393,8 @@ func TestConsentScreenOwnsTabWhileClaiming(t *testing.T) {
 	}
 }
 
-// TestAskOverlaysAreVisibleInTheViewsRealFrame is the SURFACE half of criteria 4
-// and 5, and it is the assertion the overlay tests were missing: the list
-// surfaces must actually REACH THE SCREEN.
-//
-// They did not. Base.View() already fills the region the shell sizes the screen
-// to (app.go baseView normalizes the screen's render to exactly that many rows),
-// so the overlay APPENDED after the pane landed past the last row and was dropped
-// — `/grants` and `/permissions` opened a list that rendered NOTHING. Asserting
-// the overlay's own View (what the other tests do) could not catch that; this
-// asserts the screen's real frame, which is what the operator sees.
+// TestAskOverlaysAreVisibleInTheViewsRealFrame is the SURFACE half of criteria 4 and 5, and it is
+// the assertion the overlay tests were missing: the list surfaces must actually REACH THE SCREEN.
 func TestAskOverlaysAreVisibleInTheViewsRealFrame(t *testing.T) {
 	m, h := newTestModel(t)
 	h.grantAvail = true
@@ -465,10 +430,8 @@ func TestAskOverlaysAreVisibleInTheViewsRealFrame(t *testing.T) {
 	}
 }
 
-// TestAskListOverlayShowsEveryRowNotOne pins the row budget: kit2.Table windows
-// its body to Height-3 with a floor of ONE row, and the overlays never set Height,
-// so `/permissions` and `/grants` drew a single row no matter how much room the
-// pane had ("1-1/2" beside one of two rules).
+// TestAskListOverlayShowsEveryRowNotOne pins the row budget: kit2.Table windows its body to
+// Height-3 with a floor of ONE row, and the overlays never set Height.
 func TestAskListOverlayShowsEveryRowNotOne(t *testing.T) {
 	m, h := newTestModel(t)
 	h.grantAvail = true
@@ -489,10 +452,7 @@ func TestAskListOverlayShowsEveryRowNotOne(t *testing.T) {
 	}
 }
 
-// The grants roll-up must not claim the operator has allowed NOTHING before it has asked. "No grants" and "not
-// asked yet" look identical in an empty list, and the header reported the first for both — a claim about the
-// operator's permissions that nothing supported, at the exact moment the conversation might be allowed a great
-// deal. The same distinction is why a FAILED fetch says so instead of showing an empty list.
+// The grants roll-up must not claim the operator has allowed NOTHING before it has asked.
 func TestGrantsHeaderDoesNotGuessBeforeTheFetch(t *testing.T) {
 	m, h := newTestModel(t)
 

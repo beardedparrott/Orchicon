@@ -1,18 +1,6 @@
 package kit2
 
 // base_edit_esc_test.go — Esc through the HOST, not just through the form.
-//
-// WHY THIS FILE EXISTS AS A SEPARATE THING FROM form_edit_lock_test.go. The form's
-// Esc handling (release the edit lock, close the markdown preview) was written and
-// tested at the FORM level, by calling f.HandleKey directly. The host never let it
-// run: Base.Update intercepts "esc" while an inline editor is open and closes the
-// editor outright, before consulting the form. So the operator's real experience was
-// "Esc is not only escaping out of the field but also the edit form" — while every
-// form-level test passed.
-//
-// A test that drives f.HandleKey proves what the FORM does with a key. It says
-// nothing about what the OPERATOR gets, because the key may never reach the form.
-// These tests drive b.Update, which is the path a keystroke actually takes.
 
 import (
 	"strings"

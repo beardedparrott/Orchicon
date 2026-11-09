@@ -1,15 +1,6 @@
 package tui
 
 // slash_after_text_test.go — A SLASH MID-SENTENCE IS PUNCTUATION, NOT A COMMAND.
-//
-// The operator: "When typing in the composer, if you type a / in your prompt after there is already
-// text in the screen, we should assume the user is NOT trying to run a slash command and should NOT
-// pop up the slash command reference box."
-//
-// The palette is a MODAL over a live transcript, so opening it unasked over someone's sentence is
-// the steals-your-keystrokes class of annoyance — and a slash is ordinary in a path, a date or
-// "and/or". The rule is the composer's state, not the character: an EMPTY composer opening with "/"
-// is someone starting a command; anything else is prose.
 
 import (
 	"strings"

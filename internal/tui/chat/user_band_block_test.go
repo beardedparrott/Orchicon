@@ -1,18 +1,6 @@
 package chat
 
 // user_band_block_test.go — THE OPERATOR'S BAND IS A BLOCK, NOT ONE RIGHT-ALIGNED ROW PER LINE.
-//
-// The operator, with a screenshot of a wrapped message: "See how when it drops a line it starts from the right and
-// not the left? It leaves a large whitespace in front of the subsequent lines."
-//
-// Right-aligning each row INDIVIDUALLY is what produced that: every line was pushed flush right on its own, so
-// each line began at a different column and the shorter ones started far across the pane — the second line of a
-// two-line message could begin half-way in.
-//
-// The fix is a right-aligned BLOCK: one left edge shared by every row, which is how the GUI's bubble works (its
-// text is left-aligned inside a box that sits on the right). These assertions are chosen to DISCRIMINATE the two
-// shapes rather than merely to pass: per-row right alignment makes the leading columns DIFFER, and makes the
-// short lines start deep in the pane.
 
 import (
 	"fmt"
@@ -82,9 +70,8 @@ func TestAWrappedUserMessageSharesOneLeftEdge(t *testing.T) {
 	}
 }
 
-// AND A SHORT MESSAGE IS STILL FLUSH RIGHT, which is the shape the operator asked for and the sibling test
-// (TestUserBubbleRightAlignedModelLeftAligned) pins. The block rule must not have quietly turned the operator's
-// band into a left-aligned one.
+// AND A SHORT MESSAGE IS STILL FLUSH RIGHT, which is the shape the operator asked for and the
+// sibling test (TestUserBubbleRightAlignedModelLeftAligned) pins.
 func TestAShortUserMessageIsStillFlushRight(t *testing.T) {
 	const pane = 60
 	out := RenderItems([]ChatItem{{Kind: KindUser, Text: "short"}}, pane)
@@ -99,13 +86,9 @@ func TestAShortUserMessageIsStillFlushRight(t *testing.T) {
 	}
 }
 
-// AND NOTHING IS CUT OFF THE FIRST LINE. The label used to be paid for by TRUNCATING row 0 after the wrap, which
-// silently dropped up to a label's worth of characters from the first line of a long message. The body is now
-// wrapped to a width that already excludes the label, so every word survives.
+// AND NOTHING IS CUT OFF THE FIRST LINE.
 func TestNoWordIsLostFromTheFirstLineOfALongMessage(t *testing.T) {
-	// Distinct, countable words: every one must appear in the render. The tokens are ZERO-PADDED so no one of
-	// them is a substring of another — otherwise a dropped "tok1" would be found inside "tok10" and the test
-	// would pass on the very bug it exists to catch.
+	// Distinct, countable words: every one must appear in the render.
 	var words []string
 	for i := 0; i < 40; i++ {
 		words = append(words, fmt.Sprintf("tok%02d", i))

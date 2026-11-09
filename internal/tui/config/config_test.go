@@ -64,14 +64,8 @@ func TestSavePermsAndRoundTrip(t *testing.T) {
 }
 
 func TestResolveEnvWinsAndNeverPersists(t *testing.T) {
-	// A NAMED SELECTION OUTRANKS THE ACTIVE PROFILE, so a suite that ran with
-	// ORCHICON_PROFILE exported in the operator's shell would resolve a different profile
-	// than these tests mean — and ORCHICON_PROFILE is now the DOCUMENTED way to pin a
-	// process, so exporting it is normal rather than exotic. Cleared explicitly here (and in
-	// the sibling Resolve tests) so the contract under test is the one with nothing named.
-	//
-	// NOTE: ORCHICON_URL/ORCHICON_TOKEN have the same latent exposure and are NOT cleared
-	// anywhere in this suite — a pre-existing gap, left alone here rather than widened.
+	// A NAMED SELECTION OUTRANKS THE ACTIVE PROFILE, so a suite that ran with ORCHICON_PROFILE exported
+	// in the operator's shell would resolve a different profile than these tests mean.
 	t.Setenv(EnvProfile, "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, FileName)
@@ -152,12 +146,7 @@ func TestResolveNothingConfigured(t *testing.T) {
 	}
 }
 
-// Regression for the operator's "themes are not saving when you exit orch and
-// re-enter". The palette lived only inside [profiles.<active>], so it was lost
-// whenever no profile was written — env-driven sessions (which resolve to a
-// synthetic "env" profile that is deliberately never persisted) and first runs
-// with no config file. A display preference must not depend on a credential
-// being saved.
+// Regression for the operator's "themes are not saving when you exit orch and re-enter".
 func TestThemePersistsWithoutAProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 
@@ -201,16 +190,8 @@ func TestThemePersistsWithoutAProfile(t *testing.T) {
 	}
 }
 
-// ORCHICON_CONFIG_DIR relocates the config, so a machine whose $HOME is not
-// writable can still persist anything at all.
-//
-// The default path is $HOME/.orchicon/config. In the dev container $HOME is
-// ROOT-OWNED, so the directory cannot be created and EVERY save fails — profile,
-// token, theme, newline mode — which is why themes stopped surviving rebuilds.
-// The TUI already reports the failure ("this run only — cannot write <path>"),
-// but reporting is not fixing: this variable is the way to say where the config
-// may live. It must be a directory the user owns AND that survives a container
-// restart (/tmp is a tmpfs the restart wipes).
+// ORCHICON_CONFIG_DIR relocates the config, so a machine whose $HOME is not writable can still
+// persist anything at all.
 func TestDefaultPathHonoursEnvConfigDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(EnvConfigDir, dir)
@@ -312,15 +293,6 @@ func cfgWithToken(tok string) *Config {
 }
 
 // THE WRITE REPLACES THE FILE; IT DOES NOT TRUNCATE IT IN PLACE.
-//
-// This is what makes a second orch process safe to run, and it is observable WITHOUT the
-// platform's inode API — which matters, because this repo builds for Windows too and
-// syscall.Stat_t.Ino does not exist there. A handle opened BEFORE a save keeps pointing
-// at the OLD file, so after the save it must still read the OLD complete document. Under
-// os.WriteFile the same handle would see the NEW bytes, and a reader that chanced on the
-// window between truncate and write would see a PARTIAL document — which the launch path
-// treats as corruption, starts from an empty config, and then SAVES over the other
-// instance's profile.
 func TestSaveReplacesTheFileInsteadOfTruncatingIt(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, FileName)
@@ -418,14 +390,8 @@ func TestPreserveUnreadableMovesTheFileAside(t *testing.T) {
 	}
 }
 
-// The parser still REJECTS a genuinely unknown key: the new case must not have loosened the default.
-//
-// That strictness is deliberate and is NOT relaxed by the multi-instance work: the
-// per-key cases above are what make a new field a compile-visible obligation, and a
-// tolerated typo would silently drop a credential. What multi-instance needed instead is
-// that an unreadable file is PRESERVED rather than overwritten — see
-// config.PreserveUnreadable and the launch path's use of it — so the strictness costs an
-// operator a re-login and never an unexplained wipe of the other instance's profile.
+// The parser still REJECTS a genuinely unknown key: the new case must not have loosened the
+// default.
 func TestUnknownKeyStillRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	if err := os.WriteFile(path, []byte("active = \"x\"\nsome_future_key = \"v\"\n"), 0o600); err != nil {
@@ -438,12 +404,6 @@ func TestUnknownKeyStillRejected(t *testing.T) {
 }
 
 // A NAMED SELECTION PINS THIS PROCESS, AND DOES NOT TOUCH THE SHARED `active` SLOT.
-//
-// That separation is the whole reason ORCHICON_PROFILE exists: `active` is one global
-// value written by every connect and read by every process, so it cannot say "this
-// process is the dev one". A named selection is process state, so two orch processes can
-// hold two instances at once — the operator's "orch should have no issues running more
-// than one orch running on different ports".
 func TestANamedProfilePinsTheProcessRegardlessOfActive(t *testing.T) {
 	t.Setenv(EnvURL, "")
 	t.Setenv(EnvToken, "")
@@ -492,9 +452,8 @@ func TestAnUnknownProfileNameResolvesToNothing(t *testing.T) {
 	}
 }
 
-// A named profile plus an env URL mixes the two in the documented way: the credential
-// identifies WHO (the profile), the URL says WHERE (the environment). Pinned because it is
-// the only combination that combines an explicit selection with an override.
+// A named profile plus an env URL mixes the two in the documented way: the credential identifies
+// WHO (the profile), the URL says WHERE (the environment).
 func TestANamedProfileKeepsItsCredentialUnderAnEnvURL(t *testing.T) {
 	t.Setenv(EnvProfile, "")
 	t.Setenv(EnvToken, "")

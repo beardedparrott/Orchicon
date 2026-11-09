@@ -48,9 +48,8 @@ func toolGhostTestPool(t *testing.T) *db.Pool {
 	return pool
 }
 
-// toolGhostEnv returns a fresh tenant, a tenant-scoped ctx carrying a
-// seeded identity (the audit FK target), and the pool — one tenant per
-// test so audit rows from sibling tests never bleed across.
+// toolGhostEnv returns a fresh tenant, a tenant-scoped ctx carrying a seeded identity (the audit FK
+// target), and the pool — one tenant per test so audit rows from sibling tests never bleed across.
 func toolGhostEnv(t *testing.T) (*db.Pool, context.Context, string) {
 	t.Helper()
 	pool := toolGhostTestPool(t)
@@ -182,11 +181,8 @@ func TestToolCreateWorkerComposesPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get latest version: %v", err)
 	}
-	// The structured prompt fields are the persisted source of truth;
-	// dispatch composes the system prompt from them (composeWorkerPrompt).
-	// Note: worker_versions.system_prompt is not written by ANY create
-	// path (db.CreateWorkerVersion omits the column), so parity means the
-	// structured fields land verbatim.
+	// The structured prompt fields are the persisted source of truth; dispatch composes the system
+	// prompt from them (composeWorkerPrompt).
 	if ver.Role != "You plan research." || ver.Skills != "Go, SQL" {
 		t.Fatalf("structured prompt fields not persisted: role=%q skills=%q", ver.Role, ver.Skills)
 	}

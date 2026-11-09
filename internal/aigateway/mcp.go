@@ -81,19 +81,12 @@ type mcpEntry struct {
 // fetchMCPs shells out to `opencode debug config` and reads the resolved
 // config JSON, which includes the full (merged) MCP server list.
 func (d *MCPDiscoverer) fetchMCPs(ctx context.Context) ([]*apiv1.OpenCodeMCP, error) {
-	// A GENEROUS TIMEOUT, matching the model discoverer's reasoning: this command reaches the same managed
-	// service, which lazily re-boots after an eviction, and the first call after a boot can spend real time
-	// getting it up. 15s was measured against a WARM service and reported spurious failures on a cold one.
+	// A GENEROUS TIMEOUT, matching the model discoverer's reasoning: this command reaches the same
+	// managed service, which lazily re-boots after an eviction.
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
-	// RETRIED, WHICH IT WAS NOT. The model discoverer beside this one retried a transient failure and this
-	// one retried nothing, on the same CLI, the same service and the same eviction window — so a blip the
-	// model list absorbed as a retry surfaced here as a failure. That asymmetry is what this closes: one
-	// policy (cliresilience.go) for every CLI call the gateway makes, rather than one per discoverer.
-	//
-	// emptyIsTransient is FALSE here: an empty config is a legitimate answer (no MCP servers configured),
-	// unlike an empty model catalog, which is the documented mid-boot race.
+	// RETRIED, WHICH IT WAS NOT.
 	var out []byte
 	_, err := withCLIRetries(ctx, d.log, "mcp config", false, func() (int, error) {
 		b, cerr := runOpencodeCLI(ctx, d.binary, homeDir(), "debug", "config")
@@ -158,9 +151,7 @@ func homeDir() string {
 	return os.Getenv("HOME")
 }
 
-// wellKnownMCPs is a curated list of common MCP servers available for
-// workers. These are merged with the user's configured servers so they
-// are always selectable in the MCP picker regardless of local config.
+// wellKnownMCPs is a curated list of common MCP servers available for workers.
 var wellKnownMCPs = []*apiv1.OpenCodeMCP{
 	{Id: "context7", Command: "https://mcp.context7.com/mcp", Status: "available"},
 	{Id: "gh_grep", Command: "https://mcp.grep.app", Status: "available"},

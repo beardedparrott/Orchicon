@@ -1,17 +1,6 @@
 package tui
 
 // ember_styling_test.go — THE TRANSCRIPT'S STRUCTURAL COLOUR.
-//
-// The operator: "I would like to see about adding some more 'pizaz' to conversations in the TUI ... Notice
-// the various colors, etc.? I would like to make it more enhanced." Then, having been shown the menu:
-// "Let's do 1-4 and then I can judge it after rebuild."
-//
-// So: headings, list markers and inline code take the theme's ACCENT, and a tool row carries its own
-// token. Colour cannot be judged from a log, so these assert the actual SGR sequences — which is also the
-// only way to pin that the accent reaches the text rather than the attribute set merely claiming it.
-//
-// THE PALETTE IS EMBER, whose accent is #f38435 → SGR `38;2;243;132;53`, and whose Tool token is the busy
-// hue #22d3ee → `38;2;34;211;238`.
 
 import (
 	"strings"
@@ -97,13 +86,6 @@ func TestInlineCodeTakesTheAccentChip(t *testing.T) {
 }
 
 // AND A TOOL ROW IS PAINTED BY ITS OWN TOKEN.
-//
-// Asserted on the STYLE's foreground rather than on rendered output, and that is a deliberate choice about
-// what is testable here: this row is painted with lipgloss, and lipgloss STRIPS colour when the terminal
-// profile has none — which is the profile a test binary has. (The heading, list and chip assertions above
-// can read real escape codes because md writes SGR itself.) So the link asserted is the one that can
-// break: the token reaches the style that paints the row — for EVERY registered theme, which is where the
-// bug was: ember had a Tool token and the hand-written palettes did not.
 func TestAToolRowIsPaintedByItsOwnToken(t *testing.T) {
 	for _, name := range theme.Names() {
 		if !theme.Use(name) {

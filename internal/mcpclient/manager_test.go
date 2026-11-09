@@ -290,9 +290,8 @@ func (s *stubScopeResolver) ResolveScope(_ context.Context, _ ScopeRef) (Resolut
 	return s.res, nil
 }
 
-// TestScopeResolverStubShape pins the seam: a resolver returns the union's
-// servers with provenance, and the no-op resolver resolves every scope to
-// nothing (never an error).
+// TestScopeResolverStubShape pins the seam: a resolver returns the union's servers with provenance,
+// and the no-op resolver resolves every scope to nothing (never an error).
 func TestScopeResolverStubShape(t *testing.T) {
 	var src ScopeResolver = &stubScopeResolver{res: Resolution{
 		Servers: []ScopedServer{{

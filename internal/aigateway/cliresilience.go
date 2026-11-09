@@ -31,19 +31,13 @@ import (
 	"time"
 )
 
-// cliRetryAttempts and cliRetryDelay bound a retry of a TRANSIENT CLI failure. The window matches the model
-// discoverer's (five attempts over ~4s), because the phenomenon is the same one: opencode's managed service
-// evicts a location and lazily re-boots it, and a call landing in that window fails or comes back empty.
+// cliRetryAttempts and cliRetryDelay bound a retry of a TRANSIENT CLI failure.
 const (
 	cliRetryAttempts = 5
 	cliRetryDelay    = 900 * time.Millisecond
 )
 
 // retryableCLIError reports whether a CLI failure is worth another attempt.
-//
-// It is CONSERVATIVE in the same direction as the provider layer: it retries only what it can positively
-// identify as transient, and treats everything else as deterministic. A false "permanent" costs a retry the
-// operator never sees; a false "transient" turns a clear error into a slow one and buries the diagnosis.
 func retryableCLIError(err error) bool {
 	if err == nil {
 		return false
@@ -62,19 +56,15 @@ func retryableCLIError(err error) bool {
 		return true
 	}
 
-	// A STRUCTURED CLI FAILURE: the wrapper recorded whether the CLI explained itself, so the decision is a
-	// FACT rather than a reading of the prose. This replaced a phrase/length heuristic that mis-classified the
-	// case a retry exists for — see cliError's note.
+	// A STRUCTURED CLI FAILURE: the wrapper recorded whether the CLI explained itself, so the decision
+	// is a FACT rather than a reading of the prose.
 	var ce *cliError
 	if errors.As(err, &ce) {
 		return ce.detail == ""
 	}
 
-	// A PARSE OR CONFIG FAILURE from our own code is deterministic: the output was read and could not be
-	// understood, so another attempt reads the same bytes.
-	//
-	// The error TYPE is the right signal here (unlike for a CLI exit, where the type says nothing about why),
-	// and the decision is made on it BEFORE any text matching.
+	// A PARSE OR CONFIG FAILURE from our own code is deterministic: the output was read and could not
+	// be understood, so another attempt reads the same bytes.
 	msg := err.Error()
 	if cliParseFailure(msg) {
 		return false
@@ -93,11 +83,8 @@ func retryableCLIError(err error) bool {
 	return true
 }
 
-// cliParseFailure reports whether an error is our own code failing to UNDERSTAND the CLI's output, which is
-// deterministic whatever produced it.
-//
-// These markers are the discoverers' own wrapping of a read-and-could-not-parse outcome, and they are checked
-// because such a failure is not a *cliError at all — it is produced after a SUCCESSFUL invocation.
+// cliParseFailure reports whether an error is our own code failing to UNDERSTAND the CLI's output,
+// which is deterministic whatever produced it.
 func cliParseFailure(msg string) bool {
 	low := strings.ToLower(msg)
 	for _, marker := range []string{
@@ -113,12 +100,8 @@ func cliParseFailure(msg string) bool {
 	return false
 }
 
-// withCLIRetries runs fn, retrying a TRANSIENT failure and returning a deterministic one immediately.
-//
-// emptyIsTransient tells the loop how to treat a nil error with an empty payload: for the model catalog an
-// empty list is a known race (errNoModels), while for a config read an empty result means something else.
-// The caller states which it is rather than this loop guessing, because the same shape means different things
-// on different commands.
+// withCLIRetries runs fn, retrying a TRANSIENT failure and returning a deterministic one
+// immediately.
 func withCLIRetries(ctx context.Context, log interface {
 	Info(string, ...any)
 }, what string, emptyIsTransient bool, fn func() (int, error)) (int, error) {
@@ -153,9 +136,5 @@ func withCLIRetries(ctx context.Context, log interface {
 	}
 	return 0, lastErr
 }
-// withCLIRetries runs fn, retrying a TRANSIENT failure and returning a deterministic one immediately.
-//
-// emptyIsTransient tells the loop how to treat a nil error with an empty payload: for the model catalog an
-// empty list is a known race (errNoModels), while for a config read an empty result means something else.
-// The caller states which it is rather than this loop guessing, because the same shape means different things
-// on different commands.
+// withCLIRetries runs fn, retrying a TRANSIENT failure and returning a deterministic one
+// immediately.

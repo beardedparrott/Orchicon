@@ -1,12 +1,6 @@
 package claude
 
 // worker_union_test.go — AC 1 (claude half) and AC 2's claude leg.
-//
-// The claude WORKER path must resolve at the WORKER scope — the project's owned
-// definitions ∪ THE EXECUTING VERSION's inline specs, the latter carried on
-// ExecutionManifest.Permissions — and must LOG what it resolved WITH provenance,
-// so an absent or mis-scoped MCP surface is falsifiable instead of showing up
-// only as the model saying it cannot call a tool.
 
 import (
 	"bytes"
@@ -20,9 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// recordingScopeResolver is a ScopeResolver that CAPTURES the ref it was asked
-// for and returns a fixed resolution — so a test can assert both WHAT was
-// resolved and WHICH scope the adapter asked about.
+// recordingScopeResolver is a ScopeResolver that CAPTURES the ref it was asked for and returns a
+// fixed resolution — so a test can assert both WHAT was resolved and WHICH scope the adapter asked.
 type recordingScopeResolver struct {
 	ref mcpclient.Resolution
 	got mcpclient.ScopeRef
@@ -58,9 +51,8 @@ func captureLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// AC 2 (claude leg): a worker execution resolves the WORKER scope, carrying the
-// version's inline permissions, and the version's spec reaches the
-// `--mcp-config` claude is actually launched with.
+// AC 2 (claude leg): a worker execution resolves the WORKER scope, carrying the version's inline
+// permissions, and the version's spec reaches the `--mcp-config` claude is actually launched with.
 func TestWorkerArgvResolvesTheWorkerScopeWithVersionSpecs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

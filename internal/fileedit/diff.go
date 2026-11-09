@@ -1,8 +1,5 @@
-// Package fileedit implements the diff pipeline: server-computed, ground-truth
-// unified diffs for every file a session edits. Diffs are computed from real
-// file state (snapshot pairs / in-memory before+after), never parsed from tool
-// output prose; the ledger rows persist to file_edit_ledger and reconcile
-// against the run worktree's git state on completion.
+// Package fileedit implements the diff pipeline: server-computed, ground-truth unified diffs for
+// every file a session edits.
 package fileedit
 
 import (
@@ -12,9 +9,7 @@ import (
 
 // Caps and detection thresholds (see architecture-notes/diff-pipeline-file-edit-ledger-server-computed-diffs.md §5).
 const (
-	// maxDiffBytes caps a single ledger entry's unified diff. Beyond it the
-	// diff is cut (truncated=true) so one giant rewrite cannot blow up the
-	// ledger, the event stream, or a renderer.
+	// maxDiffBytes caps a single ledger entry's unified diff.
 	maxDiffBytes = 256 << 10 // 256 KiB
 	// binaryProbeLen is how many leading bytes are probed for a NUL to
 	// classify content as binary — git's heuristic.
@@ -44,11 +39,7 @@ type DiffResult struct {
 	Truncated bool
 }
 
-// ComputeUnifiedDiff computes a ground-truth unified diff between two file
-// content snapshots. before==nil means the file did not exist (create);
-// after==nil means it was deleted. Byte-identical pairs yield "" (no entry):
-// callers skip ledger rows for no-op edits. UTF-8 passes through untouched —
-// diffing is strictly line-level, never byte- or rune-rewriting.
+// ComputeUnifiedDiff computes a ground-truth unified diff between two file content snapshots.
 func ComputeUnifiedDiff(before, after []byte, path string) DiffResult {
 	beforeExisted := before != nil
 	afterExisted := after != nil
@@ -127,10 +118,7 @@ type dline struct {
 	hasEOL bool
 }
 
-// splitLines splits content into lines. A trailing "\n" does NOT produce an
-// extra empty line — n lines = n "\n"-separated fragments, the convention
-// unified diffs count with. The final fragment without a newline keeps
-// hasEOL=false so the "\ No newline at end of file" marker can be emitted.
+// splitLines splits content into lines.
 func splitLines(c []byte) []dline {
 	if len(c) == 0 {
 		return nil
@@ -157,12 +145,7 @@ type op struct {
 	bIdx int
 }
 
-// dlineEqual reports whether two lines are byte-identical for the purpose of
-// the edit script. It compares BOTH the text AND the trailing-newline flag:
-// a change that only toggles a trailing newline is a real, diff-visible
-// change (git emits a hunk with the "\ No newline at end of file" marker),
-// so the two lines must NOT be treated as a common keep. Comparing text alone
-// would swallow those edits and produce a header-only (empty) diff.
+// dlineEqual reports whether two lines are byte-identical for the purpose of the edit script.
 func dlineEqual(a, b dline) bool { return a.text == b.text && a.hasEOL == b.hasEOL }
 
 // diffOps computes a minimal edit script via Myers' O((N+M)D) greedy
@@ -190,14 +173,8 @@ func diffOps(a, b []dline) []op {
 	return ops
 }
 
-// opsMyers runs Myers' greedy algorithm on the middle (non-trimmed) section
-// and returns ops with absolute indices (prefix lines already consumed).
-// A budget guard falls back to a naive whole-middle replace when the edit
-// distance explodes (a near-total rewrite): Myers' O(D·(N+M)) work and
-// per-round trace snapshots are unbounded otherwise, and for a near-total
-// rewrite the naive "-"-all/"+"-all script IS what a minimal diff renders
-// anyway. Correctness is unchanged — only minimality is given up, and the
-// 256 KiB entry cap bounds the text either way.
+// opsMyers runs Myers' greedy algorithm on the middle (non-trimmed) section and returns ops with
+// absolute indices (prefix lines already consumed).
 func opsMyers(a, b []dline, prefix, suffix int) []op {
 	n, m := len(a), len(b)
 	if n == 0 && m == 0 {
@@ -263,10 +240,7 @@ find:
 	x, y := n, m
 	for d := len(trace) - 1; d >= 0; d-- {
 		if d == 0 {
-			// The origin IS the distance-0 endpoint — every op was already
-			// consumed by rounds d>=1. Computing prevK against the zeroed
-			// snapshot here would fabricate phantom ops (and negative
-			// indices) for shared prefixes.
+			// The origin IS the distance-0 endpoint — every op was already consumed by rounds d>=1.
 			continue
 		}
 		vv := trace[d]
@@ -324,9 +298,8 @@ func writeHunks(w *bytes.Buffer, a, b []dline) {
 	ops := diffOps(a, b)
 	ctx := diffContext
 
-	// Group the ops into hunks: walk the op list, opening a hunk at the
-	// first change and extending it while another change arrives within
-	// 2*ctx keeps of the previous one.
+	// Group the ops into hunks: walk the op list, opening a hunk at the first change and extending it
+	// while another change arrives within 2*ctx keeps of the previous one.
 	type hunk struct{ from, to int } // [from, to) into ops
 	var hunks []hunk
 	i := 0
@@ -368,10 +341,8 @@ func writeHunks(w *bytes.Buffer, a, b []dline) {
 	}
 
 	for _, h := range hunks {
-		// Hunk header line numbers: the first A-consuming op fixes startA,
-		// the first B-consuming op fixes startB. A hunk of only additions
-		// (only deletions) starts at the A (B) cursor position with count 0
-		// — git's convention, matching "@@ -0,0 +1,N @@" for creates.
+		// Hunk header line numbers: the first A-consuming op fixes startA, the first B-consuming op fixes
+		// startB.
 		countA, countB := 0, 0
 		var startA, startB int
 		first := true

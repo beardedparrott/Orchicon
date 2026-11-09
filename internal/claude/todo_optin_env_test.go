@@ -1,16 +1,6 @@
 package claude
 
 // todo_optin_env_test.go — the ENV half of the todo/task opt-in (AC1).
-//
-// The launch-shape half (the PreToolUse matcher + permissions.allow) is pinned
-// by TestTodoTrackToolsAreOptedIn. This file pins the half that decides whether
-// the tools exist at ALL: claude 2.1.261 REMOVES the todo/task family from the
-// tool registry on Sonnet 5 / Opus 4.8 / Fable 5 / Mythos 5 and newer unless
-// CLAUDE_CODE_ENABLE_TODO_TOOLS is set (verified in the installed binary's own
-// release notes and its `todoToolsEnabled()` gate — see TodoToolsEnv). A
-// permission allow cannot conjure a tool the CLI never offers, so omitting this
-// env var makes the whole parity feature silently inert on the models orchicon
-// runs claude workers with.
 
 import (
 	"strings"
@@ -20,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// TestChildEnvOptsIntoTheTodoToolFamily pins the env opt-in on BOTH transports:
-// the local host subprocess and the in-container child (the runtime daemon
-// forwards spec.Env into the container, so the same env must carry it).
+// TestChildEnvOptsIntoTheTodoToolFamily pins the env opt-in on BOTH transports: the local host
+// subprocess and the in-container child (the runtime daemon forwards spec.Env into the container.
 func TestChildEnvOptsIntoTheTodoToolFamily(t *testing.T) {
 	local, localCleanup := childEnvFor(t, scheduler.ExecutionManifest{ProjectDir: t.TempDir()})
 	defer localCleanup()
@@ -42,9 +31,8 @@ func TestChildEnvOptsIntoTheTodoToolFamily(t *testing.T) {
 	}
 }
 
-// TestChildEnvForcesTheTodoOptInOn pins that an AMBIENT toggle can never turn
-// the family off for an orchicon claude worker: the supervisor/container env is
-// not the operator's, so a stray `=0` must be overridden rather than inherited.
+// TestChildEnvForcesTheTodoOptInOn pins that an AMBIENT toggle can never turn the family off for an
+// orchicon claude worker: the supervisor/container env is not the operator's.
 func TestChildEnvForcesTheTodoOptInOn(t *testing.T) {
 	t.Setenv(TodoToolsEnv, "0")
 	env, cleanup := childEnvFor(t, scheduler.ExecutionManifest{ProjectDir: t.TempDir()})

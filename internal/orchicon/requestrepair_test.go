@@ -1,11 +1,7 @@
 package orchicon
 
-// requestrepair_test.go — A REPAIRABLE REQUEST IS RESHAPED AND RESENT; A TRANSIENT ONE IS RETRIED; A FATAL ONE
-// IS SURFACED. All three, because the value of the distinction is that it does not blur.
-//
-// The operator: "if we run into an error about prompts/requests then we should reshape them automatically to
-// fix the underlying issue and resend." The risk of doing that carelessly is rewriting requests that were
-// fine, so every case below pins a REFUSAL as well as a repair.
+// requestrepair_test.go — A REPAIRABLE REQUEST IS RESHAPED AND RESENT; A TRANSIENT ONE IS RETRIED;
+// A FATAL ONE IS SURFACED.
 
 import (
 	"context"
@@ -75,9 +71,7 @@ func TestClassifyRepairableRequiresTheProvidersOwnWords(t *testing.T) {
 
 // ── the repair must CHANGE something, or it must refuse ───────────────────────────────────────────────────
 
-// A REPAIR THAT CHANGES NOTHING MUST REFUSE. Resending identical bytes collects the identical error, so the
-// caller would burn its budget on a problem that cannot resolve — this is the property that keeps the loop
-// from being a spin.
+// A REPAIR THAT CHANGES NOTHING MUST REFUSE.
 func TestRepairRefusesWhenItWouldChangeNothing(t *testing.T) {
 	// reasoning_content demanded, but the request carries no reasoning to replay.
 	req := TurnRequest{Messages: []Message{

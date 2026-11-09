@@ -10,11 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// MinReadableCodeWidth is the number of CODE cells (after the line-number gutter
-// and its separating space) that make a side-by-side column worth drawing. It is
-// the MEASURE the collapse is keyed off, not the pane width: a column narrower
-// than this cannot show a line of Go or TypeScript, so the pane is better off as
-// one wide unified column than as two unreadable slivers.
+// MinReadableCodeWidth is the number of CODE cells (after the line-number gutter and its separating
+// space) that make a side-by-side column worth drawing.
 const MinReadableCodeWidth = 19
 
 // MinSideBySideWidth is the BODY-CONTENT width (cells) at or above which the
@@ -47,20 +44,15 @@ const MinSideBySideWidth = 2*(lineNumWidth+1+MinReadableCodeWidth) + 3
 // sideSep separates the old and new columns.
 const sideSep = " │ "
 
-// sideSepWidth is the DISPLAY width of sideSep (3), measured rather than
-// assumed: `len(sideSep)` would be 5 (the │ is 3 bytes) and would misbudget
-// every cell by two.
+// sideSepWidth is the DISPLAY width of sideSep (3), measured rather than assumed: `len(sideSep)`
+// would be 5 (the │ is 3 bytes) and would misbudget every cell by two.
 var sideSepWidth = ansi.StringWidth(sideSep)
 
 // lineNumWidth is the padded width of each line-number gutter.
 const lineNumWidth = 4
 
-// RenderLines renders rows to the pane's PHYSICAL lines: a row that wraps to
-// several terminal lines contributes several entries. This is the SINGLE SCROLL
-// TRUTH — the body viewport slices it and Model.visibleLines derives the scroll
-// clamp from it, so the two can never disagree (they used to: Scroll clamped
-// against len(rows) while the body sliced RENDERED lines, which diverges the
-// moment a row wraps). `width` is the pane's CONTENT width.
+// RenderLines renders rows to the pane's PHYSICAL lines: a row that wraps to several terminal lines
+// contributes several entries.
 func RenderLines(rows []Row, width int, profile termenv.Profile) []string {
 	lipgloss.SetColorProfile(profile)
 	if width < MinSideBySideWidth {
@@ -69,19 +61,13 @@ func RenderLines(rows []Row, width int, profile termenv.Profile) []string {
 	return renderSideBySideLines(rows, width)
 }
 
-// RenderPane renders rows into the pane's frame as a single string (the joined
-// RenderLines). `width` is the pane's content width; `profile` is the termenv
-// color profile (truecolor / 256 / 16 / ascii) at which lipgloss renders.
+// RenderPane renders rows into the pane's frame as a single string (the joined RenderLines).
 func RenderPane(rows []Row, width int, profile termenv.Profile) string {
 	return strings.Join(RenderLines(rows, width, profile), "\n")
 }
 
-// renderSideBySide lays out two columns (old | new), each with a line-number
-// gutter and line-level red/green. Paired line numbers (blank when a side has
-// no line) align via a fixed-width gutter. Hunk rows are never rendered.
-// Both columns and the header are derived from the actual pane width so the
-// output never exceeds the pane (no horizontal overflow / tearing) and the
-// two columns of every row line up (each cell is exactly colW cells).
+// renderSideBySide lays out two columns (old | new), each with a line-number gutter and line-level
+// red/green.
 func renderSideBySide(rows []Row, width int) string {
 	return strings.Join(renderSideBySideLines(rows, width), "\n")
 }
@@ -138,9 +124,8 @@ func renderUnifiedRows(rows []Row, width int) []string {
 	return out
 }
 
-// renderUnifiedLines renders one unified row to its physical lines: the leading
-// line-number/sign gutter on the first line, indented continuation lines for a
-// wrapped row. Each line is exactly `width` cells (never wider).
+// renderUnifiedLines renders one unified row to its physical lines: the leading line-number/sign
+// gutter on the first line, indented continuation lines for a wrapped row.
 func renderUnifiedLines(r Row, width int) []string {
 	oldNo := ""
 	if r.HasOld {
@@ -185,20 +170,14 @@ func renderUnifiedLines(r Row, width int) []string {
 		default:
 			styled = theme.DiffCtx.Render(pre + seg)
 		}
-		// fitToWidth, not padToWidth: the width invariant must hold even when a
-		// single wide rune cannot fit its reserved cell, so no line ever exceeds
-		// the pane.
+		// fitToWidth, not padToWidth: the width invariant must hold even when a single wide rune cannot fit
+		// its reserved cell, so no line ever exceeds the pane.
 		out = append(out, fitToWidth(styled, width))
 	}
 	return out
 }
 
-// renderCellLines renders one half (old or new) of a side-by-side row to its
-// physical lines. When the row has no line on that side, it emits a single blank
-// gutter + cell so the two columns stay aligned. Each returned line is exactly
-// `width` printable columns (the cell body is wrapped/padded to the column), so
-// the two cells of a row always line up and the separator stays in a fixed
-// column — no tearing or truncation artifacts from a wide diff line.
+// renderCellLines renders one half (old or new) of a side-by-side row to its physical lines.
 func renderCellLines(r Row, old bool, width int) []string {
 	gutter := ""
 	var text string
@@ -263,9 +242,8 @@ func renderCellLines(r Row, old bool, width int) []string {
 	return out
 }
 
-// cellAt returns physical line `i` of a rendered cell, or a blank cell of the
-// same width when the cell has fewer lines than its opposite side (the height
-// pairing that keeps the separator in a fixed column).
+// cellAt returns physical line `i` of a rendered cell, or a blank cell of the same width when the
+// cell has fewer lines than its opposite side (the height pairing that keeps the separator.
 func cellAt(cell []string, i, width int) string {
 	if i < len(cell) {
 		return padToWidth(cell[i], width)
@@ -278,10 +256,8 @@ func blankCell(width int) string {
 	return padToWidth(theme.DiffGutter.Render(pad("", lineNumWidth-1))+" "+theme.DiffCtx.Render(""), width)
 }
 
-// padToWidth right-pads a rendered cell to exactly `w` printable columns so
-// the two side-by-side columns align (the separator stays in a fixed column).
-// ansi.StringWidth ignores SGR escape codes, so emphasis/reverse styling does
-// not skew the alignment.
+// padToWidth right-pads a rendered cell to exactly `w` printable columns so the two side-by-side
+// columns align (the separator stays in a fixed column).
 func padToWidth(cell string, w int) string {
 	if cur := ansi.StringWidth(cell); cur < w {
 		return cell + strings.Repeat(" ", w-cur)
@@ -325,18 +301,7 @@ func pad(s string, w int) string {
 	return s + strings.Repeat(" ", w-len(s))
 }
 
-// truncate clips `s` to `w` printable columns, appending an ellipsis when it
-// does not fit. It delegates to ansi.Truncate so wide/multi-byte runes (CJK,
-// emoji) are never split mid-character — the previous byte-length slicing
-// emitted invalid UTF-8 on narrow panes (a truncation artifact the acceptance
-// criteria forbid). ansi.Truncate also measures column width (not bytes), so
-// a wide CJK/emoji line truncates to the actual cell budget instead of
-// overflowing the pane.
-//
-// It is intentionally NOT used for diff content any more: diff lines WRAP (see
-// wrapByColumns) so no byte of the diff is destroyed. It remains for the
-// Tree/Timeline file-list rows (an index entry, not a diff line) and the error
-// banner, where a one-line ellipsized row is the right shape.
+// truncate clips `s` to `w` printable columns, appending an ellipsis when it does not fit.
 func truncate(s string, w int) string {
 	if w <= 0 {
 		return ""

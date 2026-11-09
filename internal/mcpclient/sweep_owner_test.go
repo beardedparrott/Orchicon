@@ -37,9 +37,6 @@ func deadPID(t *testing.T) int {
 }
 
 // spawnMarkedChild starts the fixture child with an explicit OWNER marker and returns its pid.
-//
-// The child's real parent is THIS test process (alive, not pid 1) — which is exactly the reported shape:
-// by the old ppid rule it looks owned, and only the recorded owner tells the truth.
 func spawnMarkedChild(t *testing.T, ownerEnv ...string) int {
 	t.Helper()
 	argv := fixtureArgs()
@@ -49,10 +46,7 @@ func spawnMarkedChild(t *testing.T, ownerEnv ...string) int {
 		"ORCHICON_MCP_SERVER_ID=owner-test",
 	)
 	cmd.Env = append(cmd.Env, ownerEnv...)
-	// STDIN MUST STAY OPEN. The fixture server blocks until stdin closes, and a child that exits
-	// immediately is a ZOMBIE whose /proc/<pid>/environ is EMPTY — so the sweep could not read its markers
-	// even in principle, and the test would be asserting against a process that is not a leaked server at
-	// all. (Found the hard way: the first version of this test read len=0.)
+	// STDIN MUST STAY OPEN.
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("stdin pipe: %v", err)
@@ -70,10 +64,6 @@ func spawnMarkedChild(t *testing.T, ownerEnv ...string) int {
 }
 
 // processGone reports whether pid no longer names a RUNNING process.
-//
-// kill(pid, 0) ALONE IS NOT ENOUGH: it succeeds for a ZOMBIE, and this test's child is never Wait()ed by
-// the test (the sweep kills it, so nobody reaps it), which made a correctly-killed child read as still
-// alive. The /proc state field is what tells the two apart — 'Z' means "dead, awaiting its parent".
 func processGone(pid int, within time.Duration) bool {
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
@@ -150,10 +140,6 @@ func TestSweepTreatsAReusedPIDAsADeadOwner(t *testing.T) {
 }
 
 // THE LEAK ITSELF: a start that times out must not leave a live child behind.
-//
-// The go-sdk's client.Connect returns the handshake error WITHOUT closing the transport, so before
-// killStopsTheChild every failed start leaked a process — which is how one was found running 18 hours
-// later.
 func TestAFailedStartDoesNotLeakTheChild(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {

@@ -75,9 +75,8 @@ func draftVersionCount(t *testing.T, pool *db.Pool, tenantID, workerID string) i
 	return n
 }
 
-// workerVersionRole returns a version's stored `role` prompt field — the field
-// the republish tests actually change, so "the edit was saved" is observable
-// independently of the status assertions.
+// workerVersionRole returns a version's stored `role` prompt field — the field the republish tests
+// actually change, so "the edit was saved" is observable independently of the status assertions.
 func workerVersionRole(t *testing.T, pool *db.Pool, tenantID, workerID string, ver int) string {
 	t.Helper()
 	var role string
@@ -91,10 +90,8 @@ func workerVersionRole(t *testing.T, pool *db.Pool, tenantID, workerID string, v
 	return role
 }
 
-// forceVersionStatus puts a single version into a lifecycle state the API
-// cannot reach directly (there is no "deprecate this version" RPC on this
-// service, only worker-level deprecation), so the deprecated-version guard can
-// be exercised.
+// forceVersionStatus puts a single version into a lifecycle state the API cannot reach directly
+// (there is no "deprecate this version" RPC on this service, only worker-level deprecation).
 func forceVersionStatus(t *testing.T, pool *db.Pool, tenantID, workerID string, ver int, status string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
@@ -105,9 +102,7 @@ func forceVersionStatus(t *testing.T, pool *db.Pool, tenantID, workerID string, 
 	}
 }
 
-// assertNoDrafts is the shared invariant: after ANY save, the worker has no
-// draft version. A stray draft is what the per-gesture flow produced, and it is
-// the state the operator asked us never to leave behind.
+// assertNoDrafts is the shared invariant: after ANY save, the worker has no draft version.
 func assertNoDrafts(t *testing.T, pool *db.Pool, tenantID, workerID, after string) {
 	t.Helper()
 	if n := draftVersionCount(t, pool, tenantID, workerID); n != 0 {
@@ -115,10 +110,8 @@ func assertNoDrafts(t *testing.T, pool *db.Pool, tenantID, workerID, after strin
 	}
 }
 
-// TestRepublishPublishedVersionIsOneAtomicSave is requirement 2: editing a
-// published worker and saving republishes the SAME version in place. The
-// version number must not advance and current_version must not move, because
-// the operator edited the current version rather than creating a new one.
+// TestRepublishPublishedVersionIsOneAtomicSave is requirement 2: editing a published worker and
+// saving republishes the SAME version in place.
 func TestRepublishPublishedVersionIsOneAtomicSave(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWorker(t, ctx, s, "republish-published")
@@ -139,9 +132,8 @@ func TestRepublishPublishedVersionIsOneAtomicSave(t *testing.T) {
 		t.Fatalf("republish save on a published worker: %v", err)
 	}
 
-	// The response describes the version as PUBLISHED, not as the draft it was
-	// briefly during the transaction: the caller must never see the
-	// intermediate state.
+	// The response describes the version as PUBLISHED, not as the draft it was briefly during the
+	// transaction: the caller must never see the intermediate state.
 	if got := resp.Msg.Version.GetStatus(); got != apiv1.WorkerVersionStatus_WORKER_VERSION_STATUS_PUBLISHED {
 		t.Errorf("response version status = %v, want PUBLISHED (the intermediate draft must not be observable)", got)
 	}
@@ -172,9 +164,8 @@ func TestRepublishPublishedVersionIsOneAtomicSave(t *testing.T) {
 	}
 }
 
-// TestRepublishDraftVersionPublishesInPlace: when the latest version is already
-// a draft, a republish save updates it and publishes it — the same "one save
-// and the worker is live" outcome, reached without a revert.
+// TestRepublishDraftVersionPublishesInPlace: when the latest version is already a draft, a
+// republish save updates it and publishes it — the same "one save and the worker is live" outcome.
 func TestRepublishDraftVersionPublishesInPlace(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createDraftWorker(t, ctx, s, "republish-draft")
@@ -202,16 +193,8 @@ func TestRepublishDraftVersionPublishesInPlace(t *testing.T) {
 	}
 }
 
-// TestRepublishFailureLeavesTheWorkerPublished is requirement 1's server-side
-// guarantee, and the reason the whole sequence lives in one transaction.
-//
-// The failure is forced AFTER the revert: a model_ref longer than maxNameLen
-// fails validation, and model validation runs strictly after
-// RevertWorkerVersionToDraft. If the revert were not transactional (the
-// per-gesture flow), the worker would now be stranded in draft — unpublished,
-// invisible, and skipped by every latest-published resolution. Asserting it is
-// still published is therefore a real assertion about the transaction boundary,
-// not a restatement of the happy path.
+// TestRepublishFailureLeavesTheWorkerPublished is requirement 1's server-side guarantee, and the
+// reason the whole sequence lives in one transaction.
 func TestRepublishFailureLeavesTheWorkerPublished(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWorker(t, ctx, s, "republish-rollback")
@@ -240,10 +223,8 @@ func TestRepublishFailureLeavesTheWorkerPublished(t *testing.T) {
 	}
 }
 
-// TestRepublishFlagAbsentKeepsTheDraftOnlyContract: without the flag,
-// UpdateWorkerVersion behaves exactly as before — a published version is
-// refused. Callers that did not opt in must not gain the ability to write to a
-// published version.
+// TestRepublishFlagAbsentKeepsTheDraftOnlyContract: without the flag, UpdateWorkerVersion behaves
+// exactly as before — a published version is refused.
 func TestRepublishFlagAbsentKeepsTheDraftOnlyContract(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWorker(t, ctx, s, "republish-optin")
@@ -265,10 +246,8 @@ func TestRepublishFlagAbsentKeepsTheDraftOnlyContract(t *testing.T) {
 	assertNoDrafts(t, pool, tenantID, id, "after a refused non-republish edit")
 }
 
-// TestRepublishRejectsDeprecatedVersion: a deprecated version cannot be
-// reverted to draft (RevertWorkerVersionToDraft only matches 'published'), so
-// republish must refuse rather than silently do something else. The refusal is
-// the original FailedPrecondition — no half-applied edit.
+// TestRepublishRejectsDeprecatedVersion: a deprecated version cannot be reverted to draft
+// (RevertWorkerVersionToDraft only matches 'published').
 func TestRepublishRejectsDeprecatedVersion(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWorker(t, ctx, s, "republish-deprecated")
@@ -290,9 +269,8 @@ func TestRepublishRejectsDeprecatedVersion(t *testing.T) {
 	}
 }
 
-// TestCreateWorkerVersionPublishMakesItLive is requirement 4: a new version
-// saved with publish becomes the live version in one call — the number
-// advances, the worker is published, and no draft is left over.
+// TestCreateWorkerVersionPublishMakesItLive is requirement 4: a new version saved with publish
+// becomes the live version in one call — the number advances, the worker is published.
 func TestCreateWorkerVersionPublishMakesItLive(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWorker(t, ctx, s, "create-publish-live")
@@ -336,12 +314,7 @@ func TestCreateWorkerVersionPublishMakesItLive(t *testing.T) {
 	}
 }
 
-// TestCreateWorkerVersionWithoutPublishStillDrafts is requirement 3's
-// server-side half. The TUI satisfies "new version, then cancel" by simply not
-// calling this RPC until save — so a cancel creates nothing at all. This test
-// pins the behaviour that makes that safe: with publish absent the call is
-// UNCHANGED, drafting a version and leaving current_version pointing at the
-// still-live published one.
+// TestCreateWorkerVersionWithoutPublishStillDrafts is requirement 3's server-side half.
 func TestCreateWorkerVersionWithoutPublishStillDrafts(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWorker(t, ctx, s, "create-draft-only")

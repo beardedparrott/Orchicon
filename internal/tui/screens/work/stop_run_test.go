@@ -1,16 +1,7 @@
 package work
 
-// stop_run_test.go — A RUNNING ITEM CAN BE STOPPED FROM THE PANE IT IS RUNNING IN,
-// AND THE COMPOSER SAYS SO.
-//
-// REPORTED: an operator watching a run escalate could not stop it. There was no
-// chord on the Work pane and nothing on the composer's affordance row. The only
-// cancel lived on the Executions pane (`c`), described only on that pane's hint.
-//
-// These tests pin the three things that were missing: the action exists, it
-// cancels the LIVE EXECUTION (not just the item's status), and the guidance is
-// DERIVED — advertised on a running row, absent otherwise, so it never teaches a
-// dead key.
+// stop_run_test.go — A RUNNING ITEM CAN BE STOPPED FROM THE PANE IT IS RUNNING IN, AND THE COMPOSER
+// SAYS SO.
 
 import (
 	"context"
@@ -71,9 +62,8 @@ func TestStopRunIsOfferedOnARunningItem(t *testing.T) {
 	}
 }
 
-// TestStopRunCancelsTheExecutionNotJustTheItem: cancelling the ITEM is a status
-// change; the worker keeps going and keeps spending. The operator's "stop" means
-// the execution.
+// TestStopRunCancelsTheExecutionNotJustTheItem: cancelling the ITEM is a status change; the worker
+// keeps going and keeps spending.
 func TestStopRunCancelsTheExecutionNotJustTheItem(t *testing.T) {
 	p, m := runningPlane(t)
 	if err := m.rpcStopRun(context.Background(), "wi-run"); err != nil {
@@ -123,9 +113,7 @@ func TestStopHintIsAdvertisedOnlyWhileRunning(t *testing.T) {
 		t.Errorf("StopRunHint() on a RUNNING item = %q, want it to name %q — the composer had no stop "+
 			"guidance at all, which is what the operator reported", got, keyStopRun)
 	}
-	// ASSERT THE SEGMENT, NOT THE BARE KEY. keyStopRun is "x", which is a substring of the
-	// unrelated "ctrl+x: delete" — a Contains(hint, "x") check would pass on a row that
-	// advertises nothing (it did, on the first run of this test).
+	// ASSERT THE SEGMENT, NOT THE BARE KEY.
 	if !strings.Contains(running.HintLine(), keyStopRun+": stop execution") {
 		t.Errorf("the pane's hint line does not name %q on a running row: %q", keyStopRun+": stop execution", running.HintLine())
 	}

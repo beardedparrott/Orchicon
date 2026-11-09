@@ -1,17 +1,6 @@
 package client
 
 // refresh_transport_test.go — the refresh path must not leak a connection per attempt.
-//
-// THE INCIDENT. A TUI whose access token had expired sat polling for about an hour. `RefreshToken` built a
-// `&http.Transport{}` PER CALL and never closed it, so every failed refresh abandoned a transport AND its
-// connection. Measured on the reporting machine: one TUI held 28,226 ESTABLISHED sockets to the plane's
-// control port; the host's ephemeral range was full (28,333 in use of 28,231 available) and every later
-// `bind()` on the machine failed — which is how it surfaced, as a `make rebuild-dev` unable to open a single
-// listener.
-//
-// REPRODUCED in isolation before the fix: 40 calls in the old shape left 40 connections established and
-// nothing closed them. These assert the opposite, by counting REAL server-side connections rather than by
-// reasoning about the code.
 
 import (
 	"context"

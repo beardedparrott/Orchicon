@@ -1,21 +1,6 @@
 package main
 
 // Host-resident plane support for `orchicon install`.
-//
-// WHY THIS IS IN GO AND NOT A CALL TO scripts/container.sh. The launcher owns
-// the host-residency implementation in bash — plane_env, bridge_bind_env,
-// plane_start, migrate_host_data_dir — but container.sh is NOT IN THE RELEASE
-// ARCHIVE (install.sh extracts only `orchicon` and `orch`, and the Makefile
-// builds only ./cmd/orchicon and ./cmd/orch); the binary EMBEDS what it needs
-// instead. So a curl-installed host has the one-command installer and no shell
-// library behind it, and the only way `orchicon install` can produce the same
-// shape as the launcher is to implement it here.
-//
-// The semantics are mirrored deliberately, not approximated: the same variable
-// names, the same per-instance ports, the same "loopback + docker bridge" bind
-// pair, and the same refusal to guess a bridge address. Anything that disagrees
-// with container.sh would show up as an instance whose shape depends on which
-// launcher created it.
 
 import (
 	"errors"
@@ -54,19 +39,7 @@ func ensureHostDataDir(instance, hostDataDir string, out io.Writer) error {
 		return nil
 	}
 	// AN OPERATOR-MANAGED KEK IS KEY MATERIAL, and it never lands in the file checked above: ResolveKEK
-	// returns the ORCHICON_SECRETS_KEK override verbatim. So a deployment that supplies it (KMS, a secret
-	// manager, one key shared across replicas — a mode planeEnv deliberately carries through) arrives here
-	// with blobs/, serve/ and a postgres cluster on disk and NO secrets/kek.
-	//
-	// THAT IS NOT A LOST KEK, so the guard below must not fire. Refusing here would break convergence for
-	// exactly the deployment the guard protects: a re-run of a healthy env-KEK install would stop with
-	// "ORPHANS EVERY TENANT SECRET" and tell the operator to restore a file that was never part of it. The
-	// rule is unchanged for the case that matters — state with NEITHER a key file NOR an override is still
-	// FATAL, because there a fresh KEK really would orphan stored secrets.
-	//
-	// The override is deliberately NOT validated here: a malformed one is the plane's warning to give
-	// (server.go logs "secrets KEK unavailable" and disables the store), and an install must not be refused
-	// over a setting.
+	// returns the ORCHICON_SECRETS_KEK override verbatim.
 	if strings.TrimSpace(os.Getenv("ORCHICON_SECRETS_KEK")) != "" {
 		fmt.Fprintf(out, "the KEK for %s is supplied by ORCHICON_SECRETS_KEK — no secrets/kek file is minted or expected\n", hostDataDir)
 		return nil
@@ -86,17 +59,8 @@ func ensureHostDataDir(instance, hostDataDir string, out io.Writer) error {
 	return nil
 }
 
-// hostDataDirInstanceState names the entries that prove a data dir belongs to a LIVE instance rather than
-// being a directory an install is still filling. It is deliberately a small, explicit list: these are the
-// artifacts the plane and its services create, and finding any of them without a KEK means the KEK was LOST
-// rather than never created.
-//
-// ports.json AND infra-binaries.json ARE NOT IN IT, and that is a correctness requirement rather than a
-// judgement call: `orchicon install` writes BOTH of them into this very directory EARLIER in the same run
-// (step 1.6 records the resolved ports, step 1.7 resolves the infra binaries) — before this guard is reached.
-// Counting them as instance state would refuse EVERY fresh install. They are records an install lays down,
-// not state an instance produces, and resolvedPortsFile says as much: "a state dir containing ONLY this file
-// is not an instance".
+// They are records an install lays down, not state an instance produces, and resolvedPortsFile says
+// as much: "a state dir containing ONLY this file is not an instance".
 func hostDataDirInstanceState(hostDataDir string) []string {
 	var found []string
 	for _, name := range []string{"blobs", "serve", "postgres", "config"} {
@@ -107,24 +71,16 @@ func hostDataDirInstanceState(hostDataDir string) []string {
 	return found
 }
 
-// waitServicesReady waits for an instance's services and REPORTS whether they came up. It used to return
-// nothing, so a caller could not act on "the stack is not ready" — which is one of the states the install's
-// repair pass exists to fix.
-//
-// A timeout WARNS rather than failing: a slow first boot should not abort an install that is otherwise
-// complete, and the plane's own retries cover a backend that comes up late. The WAIT is announced first,
-// because a silent minute reads as a hang.
+// waitServicesReady waits for an instance's services and REPORTS whether they came up.
 func waitServicesReady(instance string, ports map[string]int, out io.Writer) bool {
 	return waitServicesReadyFor(instance, ports, 60, time.Second, out)
 }
 
-// waitServicesReadyFor is waitServicesReady with the retry count and interval made explicit, so a test can
-// assert the announce-then-warn posture without sitting through a real minute. The exported behaviour is
-// exactly the wrapper above: announce → poll → warn → return whether it came up.
+// waitServicesReadyFor is waitServicesReady with the retry count and interval made explicit, so a
+// test can assert the announce-then-warn posture without sitting through a real minute.
 func waitServicesReadyFor(instance string, ports map[string]int, tries int, sleep time.Duration, out io.Writer) bool {
-	// NO HOST ENDPOINT TO WAIT ON: see servicesReady for why this carrier cannot be probed from here, and why
-	// that is NOT the same as "not ready". There is deliberately no wait at all in that case — announcing one
-	// would print a countdown against port 0, i.e. a wait on nothing dressed as a wait.
+	// NO HOST ENDPOINT TO WAIT ON: see servicesReady for why this carrier cannot be probed from here,
+	// and why that is NOT the same as "not ready".
 	if !servicesProbeableFromHost(ports) {
 		fmt.Fprintf(out, "%s services run inside the instance container and are published on no host port — "+
 			"their readiness is the plane's own health\n", instance)
@@ -141,18 +97,6 @@ func waitServicesReadyFor(instance string, ports map[string]int, tries int, slee
 			return true
 		}
 		// A DEAD SUPERVISOR CANNOT BECOME READY, SO STOP WAITING FOR IT.
-		//
-		// The supervisor exits immediately when it cannot prepare — an elevated shell is the reported
-		// case (postgres refuses an Administrators token), as is a data dir it cannot create. Waiting
-		// the full minute after that is pure delay in front of a certain failure, and it makes the
-		// failure look like a slow boot rather than a refusal.
-		//
-		// MEASURED: `orchicon start dev` in an elevated shell spent 60s polling a stack whose
-		// supervisor had already exited with "prepare failed", then reported the timeout.
-		//
-		// It returns false only when a supervisor PID was RECORDED and that process is gone. A start
-		// invoked outside `orchicon start`/`install` (no PID file) must still get its full wait — the
-		// pid file is written by whoever launched it, and its absence is not evidence of death.
 		if hostServicesRanAndDied(instance) {
 			fmt.Fprintf(out, "%s services supervisor exited during startup — it cannot become ready.\n", instance)
 			return false
@@ -165,10 +109,6 @@ func waitServicesReadyFor(instance string, ports map[string]int, tries int, slee
 }
 
 // hostServicesRanAndDied reports that a supervisor was launched for this instance and is now gone.
-//
-// It is deliberately narrow: a MISSING pid file answers false ("we did not observe a death"), so a
-// caller that never had one keeps the ordinary wait. Only a recorded pid that is no longer alive
-// counts, which is exactly the "it started and then refused" case.
 func hostServicesRanAndDied(instance string) bool {
 	pidFile, err := hostServicesPIDFile(instance)
 	if err != nil {
@@ -185,75 +125,26 @@ func hostServicesRanAndDied(instance string) bool {
 	return !pidAlive(pid)
 }
 
-// servicesReady asks the instance's services the same two questions the waiting loop does, as a boolean: is
-// Postgres accepting connections, and is the NATS monitor healthy.
-//
-// THE PROBES ARE DIRECT, NOT `docker exec`. Asking the container was how the installer learned about the
-// services, and it encoded WHERE they live into the question — so a host with no container could not ask it
-// at all. These two probes work for BOTH host-reachable carriers (a 127.0.0.1 loopback publish from the
-// instance container in HOST residency, or a host process from host service residency), because they reach
-// the RESOLVED host ports either way.
-//
-// IT MUST NOT REPORT "NOT READY" FOR A CARRIER IT HAS NO HOST ENDPOINT FOR, and that is a real bug this
-// function used to have. A container-RESIDENT plane keeps postgres and nats in the container's OWN network
-// namespace and publishes NEITHER on a host port (install_ports.go: their ContainerBind is bindNone), so the
-// resolved port set for that shape names only the control port — the service keys are
-// ABSENT, read as port 0, and the probe then asked a nonexistent endpoint and answered false. Consequence:
-// the install's own repair gate (`!healthy || !servicesReady(instance, ports)`) fired on EVERY
-// container-resident install, `docker restart`ing the instance container — and the plane inside it — on every
-// re-run over a perfectly healthy instance. That is the exact opposite of the convergence criterion 6 asks
-// for, and it is why the missing key answers TRUE below rather than false.
-//
-// TRUE IS ALSO TRUE IN SUBSTANCE THERE: container.go blocks the plane's boot on postgres → nats ("Block on
-// each so the plane never boots without its backends"), so a container-resident plane that answers /healthz
-// has its backends up, and the plane's health is the gate that actually applies to that carrier.
+// IT MUST NOT REPORT "NOT READY" FOR A CARRIER IT HAS NO HOST ENDPOINT FOR, and that is a real bug
+// this function used to have.
 func servicesReady(instance string, ports map[string]int) bool {
 	if !servicesProbeableFromHost(ports) {
 		// No host-visible endpoint: this is not this function's question. The fail-safe direction is the same
 		// one recordedResidency takes — never manufacture a negative you cannot observe (see above).
 		return true
 	}
-	// THE WHOLE SET, NOT THE CRITICAL CHAIN. This used to ask postgres and nats and nothing else, so
-	// a stack whose four telemetry children had all crash-looped was reported ready — and that is
-	// precisely what a Windows install did: Loki and Tempo died on a config they could not parse,
-	// while the install said "services ready" and moved on to the plane.
-	//
-	// It asks for the REQUIRED components only. A required one that is down is a broken instance;
-	// an optional one that is down is a degradation the install reports separately (see
-	// degradedServices) rather than a reason to refuse to finish. services_health.go owns both
-	// questions so no caller can answer them differently.
-	// A SHORT PROBE TIMEOUT, BECAUSE THIS GATE ASKS IMMEDIATELY AFTER SPAWNING THE SUPERVISOR.
-	//
-	// runHostServices brings postgres and nats up before it spawns the four telemetry children, so at the
-	// instant this gate first passes, the optional components have not been started yet. A 3s probe against
-	// them would answer "not answering" for a stack that is moments from healthy and — measured twice —
-	// produced a spurious "DEGRADED — tempo, loki not answering" on an instance that was fine.
-	//
-	// 500ms is enough to tell "this endpoint is up" from "this endpoint is not yet listening", without
-	// turning the gate's own loop into a slow one.
+	// THE WHOLE SET, NOT THE CRITICAL CHAIN. It asks for the REQUIRED components only.
 	return requiredServicesReadyWithin(instance, ports, 500*time.Millisecond)
 }
 
-// servicesProbeableFromHost reports whether this instance has a host endpoint to ask at all, i.e. whether its
-// Postgres and NATS are published on a resolved host port.
-//
-// THE RESOLVED PORT SET IS THE RIGHT SIGNAL because it IS the carrier: activeInstallPorts gives the host
-// shape the service ports (they are published on 127.0.0.1 so a host plane can reach them) and gives the
-// container-resident shape only the control port (its services are internal). Keying on the
-// ports rather than on a residency string keeps the one place that decides which ports exist
-// (install_ports.go's table) authoritative.
+// servicesProbeableFromHost reports whether this instance has a host endpoint to ask at all, i.e.
+// whether its Postgres and NATS are published on a resolved host port.
 func servicesProbeableFromHost(ports map[string]int) bool {
 	return ports["ORCHICON_POSTGRES_PORT"] > 0 && ports["ORCHICON_NATS_MONITOR_PORT"] > 0
 }
 
-// pgIsReadyBin resolves the `pg_isready` to probe with — the one belonging to the PostgreSQL the install
-// actually resolved (recorded in the instance's infra-binaries.json), falling back to PATH.
-//
-// THE RECORDED BINARY FIRST, because the point of the record is that both server and client tools come from
-// THE SAME distribution: probing PATH on a host whose PATH holds an older postgres would ask a client that
-// does not match the server, and "is postgres ready" would answer for the wrong build. The PATH fallback
-// covers a hand-run instance that never went through the resolver — the same shape loadInfraBinaries already
-// accommodates.
+// pgIsReadyBin resolves the `pg_isready` to probe with — the one belonging to the PostgreSQL the
+// install actually resolved (recorded in the instance's infra-binaries.json), falling back to PATH.
 func pgIsReadyBin(instance string) string {
 	rec, err := loadInfraBinaries(hostDataDirFor(instance))
 	if err == nil && rec.PgIsReady != "" {
@@ -272,10 +163,8 @@ func hostServicesPIDFile(instance string) (string, error) {
 	return filepath.Join(dir, "serve", "services.pid"), nil
 }
 
-// hostServicesAlive reports whether the host-services supervisor this installer started is still running, from
-// the PID file startHostServices records. A missing/unreadable/stale PID file is false, never an error: it is
-// the same "is anything of ours up?" question servingPlaneAlive answers for the plane, and the two together
-// are what let a re-run tell "this instance is running" from "this instance's records merely exist".
+// hostServicesAlive reports whether the host-services supervisor this installer started is still
+// running, from the PID file startHostServices records.
 func hostServicesAlive(instance string) bool {
 	pidFile, err := hostServicesPIDFile(instance)
 	if err != nil {
@@ -293,8 +182,7 @@ func hostServicesAlive(instance string) bool {
 }
 
 // hostServicesPortEnvs are the port knobs the host-services supervisor reads (residency.go's
-// servicePortsFor), in the exact names install_ports.go and scripts/container.sh already use — so a
-// host-resident install needs no second vocabulary.
+// servicePortsFor), in the exact names install_ports.go and scripts/container.sh already use.
 var hostServicesPortEnvs = []string{
 	"ORCHICON_POSTGRES_PORT",
 	"ORCHICON_NATS_PORT",
@@ -309,26 +197,12 @@ var hostServicesPortEnvs = []string{
 	"ORCHICON_OTEL_HEALTH_PORT",
 	// EVERY KNOB servicePortsFromEnv HONOURS MUST BE FORWARDED, OR THE TWO HALVES OF ONE INSTANCE
 	// DISAGREE — which is the class of bug this whole file's port handling exists to prevent.
-	//
-	// These two were missing. The supervisor's child would then pick its own value: Tempo's gRPC
-	// listener and the collector's self-metrics exporter are both INTERNAL listeners, so nothing
-	// outside the process dials them and an instance whose gate and child disagreed would look
-	// perfectly healthy while writing its data on a port the other half never expected. The tempos
-	// are harmless today only because each child's default is the same number the table holds —
-	// which is exactly the coincidence this list forbids anyone from relying on.
 	"ORCHICON_TEMPO_GRPC_PORT",
 	"ORCHICON_OTEL_SELF_METRICS_PORT",
 }
 
-// startHostServices starts the instance's SERVICES as HOST PROCESSES, detached, and records the PID.
-//
-// WHY A RE-EXEC AS `host-services`: host_services.go's supervisor ALREADY implements exactly this —
-// runHostServices runs postgres, nats and the telemetry children as processes of the invoking user, with NO
-// control-plane child and no container engine. Writing a second supervisor here would be a second
-// implementation of the same thing, so this re-execs this binary.
-//
-// IT IS IDEMPOTENT: already-ready services are left alone, which is what keeps a re-run a convergence rather
-// than a second stack racing the first for the same ports.
+// startHostServices starts the instance's SERVICES as HOST PROCESSES, detached, and records the
+// PID.
 func startHostServices(instance string, ports map[string]int, hostDataDir string, out io.Writer) error {
 	if servicesReady(instance, ports) {
 		fmt.Fprintf(out, "host services for %s are already ready — leaving them running\n", instance)
@@ -362,21 +236,16 @@ func startHostServices(instance string, ports map[string]int, hostDataDir string
 	if err != nil {
 		return fmt.Errorf("start the host services for %s: %w", instance, err)
 	}
-	// THE PID IS RECORDED because there is no pre-written PID file to read the way `serve --detach` has one:
-	// stopHostServices needs to know which process it may signal, and guessing by port owner would signal
-	// something this installer did not start.
+	// THE PID IS RECORDED because there is no pre-written PID file to read the way `serve --detach` has
+	// one: stopHostServices needs to know which process it may signal.
 	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("record the host-services PID at %s: %w", pidFile, err)
 	}
 	return nil
 }
 
-// stopHostServices stops the host-services supervisor this installer started, so the caller can start it
-// again on the installed binaries.
-//
-// A MISSING PID FILE IS NOT AN ERROR: an instance whose services were never started as host processes (or
-// were already stopped) has nothing to stop, and failing here would make the repair pass refuse to act.
-// A process that will not die IS an error — the port is still held and a start would fail.
+// stopHostServices stops the host-services supervisor this installer started, so the caller can
+// start it again on the installed binaries.
 func stopHostServices(instance string, out io.Writer) error {
 	pidFile, err := hostServicesPIDFile(instance)
 	if err != nil {
@@ -416,9 +285,8 @@ func stopHostServices(instance string, out io.Writer) error {
 	if err := terminateProcessTree(pid); err != nil {
 		return fmt.Errorf("stop the host services for %s (pid %d): %w", instance, pid, err)
 	}
-	// BOUNDED, so a supervisor that ignores SIGTERM is REPORTED rather than slept through — the same posture
-	// stopHostPlane takes, and for the same reason: the ports are still held until it exits, so the start
-	// that follows would fail with a bind error that names nothing.
+	// BOUNDED, so a supervisor that ignores SIGTERM is REPORTED rather than slept through — the same
+	// posture stopHostPlane takes, and for the same reason: the ports are still held until it exits.
 	for i := 0; i < 40; i++ {
 		if !pidAlive(pid) {
 			_ = os.Remove(pidFile)
@@ -429,15 +297,8 @@ func stopHostServices(instance string, out io.Writer) error {
 	return fmt.Errorf("the host services for %s (pid %d) did not stop — they may still be shutting down", instance, pid)
 }
 
-// servicesNotReadyError is the failure an install reports when the services it started never
-// became reachable — and it carries the tail of the services log, because that log is the only
-// place the real cause is written.
-//
-// WHY THIS EXISTS. The install used to discard waitServicesReady's result: it started the plane
-// on top of a stack that was not there, then reported success. The operator saw a clean finish
-// and a product where nothing ran, and the cause ("postgres did not become ready", with the
-// initdb or pg_ctl error above it) sat in a file nobody had been pointed at. A failure that
-// names nothing is indistinguishable from a product that does not work.
+// servicesNotReadyError is the failure an install reports when the services it started never became
+// reachable — and it carries the tail of the services log.
 func servicesNotReadyError(instance, hostDataDir string) error {
 	logPath := filepath.Join(hostDataDir, "services.log")
 
@@ -465,9 +326,7 @@ func servicesNotReadyError(instance, hostDataDir string) error {
 	return errors.New(b.String())
 }
 
-// tailLines returns the last n lines of a file, or "" when it cannot be read. Best-effort by
-// design: this runs on a failure path, and a log that cannot be read must not replace the real
-// error with a second one.
+// tailLines returns the last n lines of a file, or "" when it cannot be read.
 func tailLines(path string, n int) string {
 	f, err := os.Open(path)
 	if err != nil {

@@ -32,11 +32,6 @@ type Service struct {
 	policyPath string
 
 	// validationRegistry is the model-ref validation catalog (ADR-0003).
-	// nil = the static builtin catalog. The server injects a CLI-aware
-	// registry so the validator agrees with the picker: CLI-discovered
-	// providers (e.g. deepseek) validate as opencode-adapter providers,
-	// and orchicon/custom providers validate via the merged registry the
-	// server composes (builtin ∪ tenant customs ∪ CLI ids).
 	validationRegistry adapter.ProviderRegistry
 	apiv1connect.UnimplementedSettingsServiceHandler
 }
@@ -47,9 +42,8 @@ func New(pool *db.Pool, log *slog.Logger, dsn string) *Service {
 	return &Service{pool: pool, log: log, dsn: dsn}
 }
 
-// SetValidationRegistry injects the model-ref validation catalog (test /
-// server seam, mirroring worker.SetModelRefRegistry). nil restores the
-// static builtin catalog.
+// SetValidationRegistry injects the model-ref validation catalog (test / server seam, mirroring
+// worker.SetModelRefRegistry).
 func (s *Service) SetValidationRegistry(reg adapter.ProviderRegistry) {
 	s.validationRegistry = reg
 }
@@ -82,11 +76,8 @@ func (s *Service) GetSettings(ctx context.Context, req *connect.Request[apiv1.Ge
 	}), nil
 }
 
-// validateModelRef checks a tenant-default model ref against the
-// adapter/provider/model grammar (ADR-0003) via the injected registry
-// (builtin ∪ CLI-discovered ∪ tenant-custom providers) — never the bare
-// static catalog, or CLI-namespace refs the picker happily offered would
-// be rejected at save ("provider not found"). Empty means unset — valid.
+// validateModelRef checks a tenant-default model ref against the adapter/provider/model grammar
+// (ADR-0003) via the injected registry (builtin ∪ CLI-discovered ∪ tenant-custom providers).
 func (s *Service) validateModelRef(ref string) error {
 	if strings.TrimSpace(ref) == "" {
 		return nil
@@ -104,13 +95,8 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	}
 
 	// Validate session TTLs and default model refs before touching the DB.
-	// (Local named `ts`, not `s`: `s` shadows the *Service receiver, which
-	// made the validateModelRef call resolve against the proto message.)
 	if ts := req.Msg.Settings; ts != nil {
-		// Validate the stall thresholds before touching the DB. Blank (absent) is
-		// valid and means "use the built-in default"; 0 is valid and means
-		// "disabled"; a negative has no meaning under either convention and would
-		// store a window that no consumer can honour.
+		// Validate the stall thresholds before touching the DB.
 		if err := validateStallSettings(ts); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -133,46 +119,25 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	}
 	defer ttx.Rollback(ctx)
 
-	// The typed budget columns are written unconditionally on upsert, so
-	// begin from the current row and overlay the client's budget JSON on top.
-	// Absent JSON keys therefore leave the current ladder/gates untouched
-	// (partial update); present keys (including an explicit 0 to disable a
-	// gate) are applied.
+	// The typed budget columns are written unconditionally on upsert, so begin from the current row and
+	// overlay the client's budget JSON on top.
 	cur, err := db.GetTenantSettings(ctx, ttx.Tx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("settings: get current for budget merge: %w", err))
 	}
 	inRow := settingsProtoToRow(req.Msg.Settings)
 	inRow.Budget = cur.Budget
-	// Same partial-update semantics for the compaction/memory policy (D4):
-	// absent context_compaction/memory keys in the client JSON must leave
-	// the persisted typed columns untouched. Seed from the current row
-	// before ApplyBudgetJSON overlays whatever the client sent.
+	// Same partial-update semantics for the compaction/memory policy (D4): absent
+	// context_compaction/memory keys in the client JSON must leave the persisted typed columns
+	// untouched.
 	inRow.ContextCompactionEnabled = cur.ContextCompactionEnabled
 	inRow.ContextCompactionPressureFrac = cur.ContextCompactionPressureFrac
 	inRow.ContextRecentTurns = cur.ContextRecentTurns
 	inRow.MemoryEnabled = cur.MemoryEnabled
 	inRow.MemoryDigestEntries = cur.MemoryDigestEntries
 
-	// THE STALL THRESHOLDS ARE MERGED TOO, and this is the fix for "I have it set to 600 seconds"
-	// still producing a two-minute stall.
-	//
-	// db.UpdateTenantSettings writes these columns FROM THIS ROW, so an absent proto field arrives
-	// here as nil and lands in the database as NULL — which the schema defines as "use the built-in
-	// default". That is only safe if every caller sends the WHOLE form. ONE DOES NOT: the Settings
-	// page's Backup panel has its OWN Save button that sends
-	// {backup_schedule, backup_retention_days, backup_directory} and nothing else. Saving the backup
-	// schedule therefore BLANKED every stall window, and the operator's 600s no-progress window
-	// silently reverted to the 120s built-in default — the window that then killed a turn waiting on
-	// a consent card and reported it as a cancelled APPROVAL.
-	//
-	// The tool layer (askorchicon/tool_diagnostics.go) already guards against exactly this, and its
-	// comment claims verbatim-write is "correct for the Settings form (a full-form save: what you see
-	// is what you send)". That premise is FALSE for this page, which is why the guard belongs HERE,
-	// where every client — GUI, TUI, and the agent tool — is covered at once.
-	//
-	// AN ABSENT FIELD MEANS UNCHANGED; a PRESENT one is applied, including 0, which the stall settings
-	// define as DISABLED. The distinction survives because the proto fields are `optional`.
+	// THE STALL THRESHOLDS ARE MERGED TOO, and this is the fix for "I have it set to 600 seconds" still
+	// producing a two-minute stall.
 	mergeStallSettingsFromCurrent(&inRow, req.Msg.Settings, cur)
 	if err := inRow.ApplyBudgetJSON(inRow.DefaultBudgetOverrides); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("settings: invalid default_budget_overrides: %w", err))
@@ -182,10 +147,8 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// THE SNAPSHOT IS THE ROW'S OWN SHAPE (db.TenantSettingsRow.AuditFields), so this path and the agent's
-	// `update_settings` tool record the SAME fields and neither can drift from the other. It used to name
-	// only the models and the session TTLs, which is why an operator asking "did my stall window save?"
-	// could not be answered from the audit trail: the trail never recorded it.
+	// THE SNAPSHOT IS THE ROW'S OWN SHAPE (db.TenantSettingsRow.AuditFields), so this path and the
+	// agent's `update_settings` tool record the SAME fields and neither can drift from the other.
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "settings.updated", "settings", tenantID,
 		nil, audit.Snapshot(row.AuditFields())); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit settings.updated: %w", err))
@@ -198,9 +161,8 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	}), nil
 }
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -215,16 +177,6 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 }
 
 // recordAuditShort writes an audit row in its own short tenant tx.
-//
-// DELIBERATE DEVIATION from the transactional-outbox AC (audit row in the
-// same tx as the mutation): backup create/restore/delete have NO tenant
-// tx to join. CreateBackup/DeleteBackup mutate only the filesystem
-// (backup.Create/Delete); RestoreBackup re-runs a full DB restore over a
-// separate connection, so an audit row written "inside the restore"
-// would itself be wiped by the restore. The audit row is therefore
-// written best-effort in its own short tx after the filesystem/DB op
-// succeeds. A record failure here is logged, not fatal — there is no
-// state to roll back (the mutation already happened on the filesystem).
 func (s *Service) recordAuditShort(ctx context.Context, action string, before, after json.RawMessage) {
 	tenantID := tenant.FromContext(ctx)
 	if tenantID == "" {
@@ -254,9 +206,8 @@ func requireTenant(ctx context.Context) (string, error) {
 }
 
 func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
-	// max_concurrent_runs is an optional (oneof) field so the client can
-	// distinguish "set to 0 (no cap)" from "leave unchanged"; the server
-	// always fills it with the persisted value.
+	// max_concurrent_runs is an optional (oneof) field so the client can distinguish "set to 0 (no
+	// cap)" from "leave unchanged"; the server always fills it with the persisted value.
 	maxConcurrentRuns := int32(r.MaxConcurrentRuns)
 	return &apiv1.TenantSettings{
 		DefaultWorkerModel:               r.DefaultWorkerModel,
@@ -290,21 +241,7 @@ func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
 }
 
 // mergeStallSettingsFromCurrent fills every stall column the request OMITTED with the value already
-// stored, and leaves a field the client SENT alone — including an explicit 0, which these settings
-// define as DISABLED rather than "unset".
-//
-// WHY IT EXISTS, precisely: db.UpdateTenantSettings writes these columns FROM THE ROW IT IS HANDED, so
-// an absent proto field becomes nil and lands as NULL, which the schema reads as "use the built-in
-// default". That is only sound when EVERY caller sends the whole form. ONE DOES NOT — the Settings
-// page's Backup panel saves on its own with {backup_schedule, backup_retention_days, backup_directory}
-// — so saving a backup schedule silently reverted the operator's 600s no-progress window to the 120s
-// built-in default. That 120s window then killed a turn that was waiting on a consent card and
-// reported it as a cancelled APPROVAL, which is how "I have it set to 600seconds" and a two-minute
-// stall error appear together.
-//
-// It lives HERE rather than in each client so that the GUI, the TUI and the agent tool are all covered
-// by one rule: none of them can destroy a value another set by not mentioning it. A nil request object
-// asserts nothing about the stall windows and so blanks none of them.
+// stored, and leaves a field the client SENT alone — including an explicit 0.
 func mergeStallSettingsFromCurrent(inRow *db.TenantSettingsRow, want *apiv1.TenantSettings, cur db.TenantSettingsRow) {
 	if inRow == nil {
 		return
@@ -356,15 +293,11 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 	}
 	budget := s.DefaultBudgetOverrides
 	if strings.TrimSpace(budget) == "" {
-		// The column is jsonb NOT NULL DEFAULT '{}'; an empty string is
-		// invalid JSON. Treat an unset field as "no override" so a client
-		// that only edits log settings doesn't break the update.
+		// The column is jsonb NOT NULL DEFAULT '{}'; an empty string is invalid JSON.
 		budget = "{}"
 	}
-	// max_concurrent_runs is optional in the proto; a nil pointer means the
-	// client did not send it and the persisted value must be left untouched
-	// (0 IS meaningful — it clears the cap). The *_Set flag carries that
-	// distinction into the ON CONFLICT CASE in db.UpdateTenantSettings.
+	// max_concurrent_runs is optional in the proto; a nil pointer means the client did not send it and
+	// the persisted value must be left untouched (0 IS meaningful — it clears the cap).
 	var maxConcurrentRuns int
 	maxConcurrentRunsSet := false
 	if s.MaxConcurrentRuns != nil {
@@ -493,13 +426,7 @@ func containsPathSeparator(s string) bool {
 	return false
 }
 
-// validateStallSettings rejects a NEGATIVE stall threshold. Blank (absent) and
-// zero are both legitimate — blank is "use the built-in default", zero is
-// "disabled" — so the only invalid input is a negative, which under the previous
-// convention silently meant "disabled" and under this one means nothing at all.
-// Rejecting it is a deliberate break from that old spelling: an operator who
-// types -1 gets told what the two real options are rather than a stored value
-// that no window resolver can honour.
+// validateStallSettings rejects a NEGATIVE stall threshold.
 func validateStallSettings(ts *apiv1.TenantSettings) error {
 	if ts == nil {
 		return nil
@@ -545,9 +472,6 @@ const (
 )
 
 // validateSessionTTLs validates the session TTL fields from the proto.
-// Zero values are allowed (meaning "leave unchanged" on update).
-// Access TTL must be in [30s, 86400s]; refresh TTL in [300s, 31536000s].
-// If both are non-zero, refresh TTL must exceed access TTL.
 func validateSessionTTLs(accessTTL, refreshTTL int64) error {
 	if accessTTL != 0 {
 		if accessTTL < minSessionAccessTokenTTLSeconds || accessTTL > maxSessionAccessTokenTTLSeconds {
@@ -559,13 +483,8 @@ func validateSessionTTLs(accessTTL, refreshTTL int64) error {
 			return fmt.Errorf("session: refresh token TTL must be between %d and %d seconds", minSessionRefreshTokenTTLSeconds, maxSessionRefreshTokenTTLSeconds)
 		}
 	}
-	// Only enforce refresh > access when both are explicitly set (non-zero)
-	// AND refresh is strictly above its minimum. A refresh at exactly the
-	// documented floor (minSessionRefreshTokenTTLSeconds) is a valid "use the
-	// minimum refresh lifetime" choice even though it sits below an access
-	// TTL — the contract (and the test) allow a refresh of 300 with an access
-	// of 900. Only a refresh the operator is actively choosing above the
-	// floor must exceed access.
+	// Only enforce refresh > access when both are explicitly set (non-zero) AND refresh is strictly
+	// above its minimum.
 	if accessTTL != 0 && refreshTTL != 0 && refreshTTL > minSessionRefreshTokenTTLSeconds && refreshTTL <= accessTTL {
 		return fmt.Errorf("session: refresh token TTL must exceed access token TTL")
 	}

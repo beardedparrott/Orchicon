@@ -16,42 +16,18 @@ import (
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
-// cannedTenant is where canned (stock) runtime image rows are seeded. Both
-// the dev and prod instances run the same boot seeder against their own DB,
-// so each gets its own independent set of canned rows — instances are never
-// shared. Mirrors the canned-worker seeder (SeedDevWorkers).
+// cannedTenant is where canned (stock) runtime image rows are seeded.
 const cannedTenant = "tnt_dev"
 
-// cannedSeedMarker prefixes the versioned seed marker comment the seeder
-// appends to a canned row's dockerfile_override. A stock row carrying the
-// CURRENT marker whose dockerfile_override is byte-identical to the shipped
-// template is "pristine + current" — the seeder preserves it untouched. A
-// stock row whose override differs (user edited it but kept the marker) is
-// user-diverged — the seeder never touches it. A stock row missing the
-// marker is a stale seed (or an edit that dropped the marker) — it is rolled
-// forward to the current template, which bumps `version` so the row is
-// rebuilt.
+// cannedSeedMarker prefixes the versioned seed marker comment the seeder appends to a canned row's
+// dockerfile_override.
 const cannedSeedMarker = "orchicon.seed"
 
-// stockSlug is a variant's stable row identity. It is the KEY the catalogue is reconciled by: the row is
-// found by slug, never by tag, so a variant that is known by two tags (a local build and the published
-// one) stays ONE row.
+// stockSlug is a variant's stable row identity.
 func stockSlug(v stockVariant) string { return "stock-" + v.Variant }
 
-// EnsureCatalogRows re-creates any MISSING published catalogue row, in the not-downloaded state.
-//
-// REPORTED: "I think we need to make the runtime image page pull every runtime image record that is
-// available in our repo and if they don't exist (been deleted) add them in a non-downloaded state. This
-// should happen upon launching the runtime images page in the web, desktop or TUI pages."
-//
-// IT ONLY CREATES WHAT IS ABSENT AND NEVER TOUCHES A ROW THAT EXISTS. That is what makes it safe to call
-// on a READ path: a page load cannot flip a ready row to absent, cannot start a build, cannot change a
-// tag, and cannot roll a seed forward. Seeding proper — tags, local presence, roll-forward — stays at
-// boot in SeedCannedImages; this is only the part that has to survive a delete.
-//
-// It is called from ListRuntimeImages, which is the ONE seam every client goes through: the web page, the
-// desktop app and the TUI all list images to draw themselves, so the catalogue cannot be correct in one
-// and stale in another.
+// This should happen upon launching the runtime images page in the web, desktop or TUI pages." IT
+// ONLY CREATES WHAT IS ABSENT AND NEVER TOUCHES A ROW THAT EXISTS.
 func EnsureCatalogRows(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 	if pool == nil {
 		return
@@ -75,14 +51,7 @@ func EnsureCatalogRows(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 		}
 		_, removed, err := stockRowForVariant(ctx, ttx.Tx, variant, tag, log)
 		if err == nil {
-			// THE ROW EXISTS. Its STATUS is the operator's business and a page load never touches it — but a
-			// collapsed DUPLICATE is not status, it is a second row for one variant, and the deletes
-			// stockRowForVariant just staged must be COMMITTED or the collapse is discarded with the
-			// transaction.
-			//
-			// MEASURED: that rollback is why a long-lived instance kept showing `stock-dev` twice — the
-			// boot seeder would have cleaned it, but an instance that is not re-seeded only ever ran this
-			// read path, which found the duplicate, staged its removal, and rolled it back on the next line.
+			// THE ROW EXISTS.
 			if removed > 0 {
 				if cerr := ttx.Commit(ctx); cerr != nil {
 					if log != nil {
@@ -121,9 +90,8 @@ func EnsureCatalogRows(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 	}
 }
 
-// cannedRowRow is the row a shipped variant is created with: source='stock', the pristine template plus
-// its seed marker, and the NOT-DOWNLOADED status, because a row created by a reconcile has no local image
-// behind it by definition.
+// cannedRowRow is the row a shipped variant is created with: source='stock', the pristine template
+// plus its seed marker, and the NOT-DOWNLOADED status.
 func cannedRowRow(v stockVariant, ref string, content []byte, baseRef string) db.RuntimeImageRow {
 	return db.RuntimeImageRow{
 		ID:                 db.NewID(),
@@ -143,10 +111,8 @@ func cannedRowRow(v stockVariant, ref string, content []byte, baseRef string) db
 	}
 }
 
-// stockVariants are the shipped runtime-image templates, in build order
-// (base first; :gui/:dev derive FROM it). The daemon reports them via the
-// ORCHICON_RUNTIME_IMAGE / ORCHICON_RUNTIME_IMAGES allowlist. Indexes are
-// referenced by variant resolution (base = the daemon's default image).
+// stockVariants are the shipped runtime-image templates, in build order (base first; :gui/:dev
+// derive FROM it).
 type stockVariant struct {
 	File    string // embedded template path (assets.RuntimeImageTemplatesFS)
 	Variant string // "base" | "gui" | "dev" | "web-research"
@@ -155,16 +121,7 @@ type stockVariant struct {
 }
 
 // PublishedTag returns the registry tag this variant is actually published at, and false when it is
-// NOT published.
-//
-// BASE ONLY, AND THE OTHERS ARE DELIBERATELY NOT PUBLISHED. release.yml used to push ":latest", ":gui"
-// and ":dev"; it now pushes the base alone. The reason is not size or speed — it is that the variants
-// carry third-party adapter CLIs (opencode, claude), and an image Orchicon builds and serves is Orchicon
-// DISTRIBUTING them. Built on the operator's machine from a shipped template instead, the operator
-// installs for themselves, which is the same line this project already draws for host-installed
-// adapters.
-//
-// A variant with no published tag is not "missing" — see LocalTag, which is where it lives instead.
+// NOT published. BASE ONLY, AND THE OTHERS ARE DELIBERATELY NOT PUBLISHED.
 func (v stockVariant) PublishedTag(repo string) (string, bool) {
 	if v.Variant == stockVariants[0].Variant {
 		return repo + ":latest", true
@@ -174,15 +131,6 @@ func (v stockVariant) PublishedTag(repo string) (string, bool) {
 
 // LocalTag is the tag an unpublished variant is fetched at: BUILT on this host from the shipped
 // template, never pulled.
-//
-// THE NAME MATTERS, and it is the same class of mistake this file has already recorded twice. It must be
-// a SHORT NAME (no registry, no owner) so that FetchRuntimeImage's isRegistryRef routes it to BUILD
-// rather than PULL — that routing is what makes "fetch" mean the right thing per row. And it must be
-// distinct from the daemon's base tag, or the catalogue would carry two rows for one artifact.
-//
-// The local repository is the published one, minus its registry prefix: "ghcr.io/org/orchicon-runtime"
-// becomes "orchicon-runtime", so a locally-built variant is "orchicon-runtime:dev". That keeps the
-// family legible in `podman images` while removing every suggestion that something is being downloaded.
 func (v stockVariant) LocalTag(repo string) string {
 	repo = strings.TrimSpace(repo)
 	if i := strings.LastIndexByte(repo, '/'); i >= 0 {
@@ -197,9 +145,8 @@ func (v stockVariant) LocalTag(repo string) string {
 	return repo + ":" + v.Variant
 }
 
-// CatalogTag is where this variant lives FOR THIS HOST: its published ref when it has one, else its local
-// build tag. Everything that seeds, reconciles or restores a catalogue row asks this, so the two states
-// cannot drift.
+// CatalogTag is where this variant lives FOR THIS HOST: its published ref when it has one, else its
+// local build tag.
 func (v stockVariant) CatalogTag(repo string) string {
 	if tag, ok := v.PublishedTag(repo); ok {
 		return tag
@@ -208,17 +155,14 @@ func (v stockVariant) CatalogTag(repo string) string {
 }
 
 // TagSuffix is the "<variant>-" segment a published tag carries before the version, matching the
-// daemon's convention ("ghcr.io/.../orchicon-runtime:gui-latest"). The base variant has NO suffix —
-// it IS the repository's default tag — which is why this returns "" for it rather than "base-".
+// daemon's convention ("ghcr.io/.../orchicon-runtime:gui-latest").
 func (v stockVariant) TagSuffix() string {
 	if v.Variant == stockVariants[0].Variant {
 		return ""
 	}
 	// THE DAEMON'S OWN SPELLING, verified against a live /v1/images rather than inferred from the
 	// variant NAME: cmd/orchicon's runtimeImagesAllowlist emits "<repo>:gui-<tag>" and
-	// "<repo>:dev-<tag>" — so the development image is ":dev-latest", NOT ":orchicon-dev-latest".
-	// The first version of this returned the display name's spelling, which would have seeded a
-	// SECOND row for the same artifact and split the catalog in two.
+	// "<repo>:dev-<tag>".
 	return v.Variant + "-"
 }
 
@@ -256,17 +200,6 @@ var stockVariants = []stockVariant{
 // A missing daemon (headless serve) skips seeding entirely.
 func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *runtime.Client) error {
 	// NO DAEMON IS NOT "NO CATALOG" — that conflation is the whole Windows report.
-	//
-	// This used to return here, and it is the branch a Windows host takes: no container engine means
-	// no runtime daemon ("runtime daemon not configured"), so the seeder skipped entirely and the
-	// Runtime Images page — which lists ROWS — showed NOTHING. "In Windows, it doesn't have ANY of the
-	// runtime images." With no rows there is no fetch button either, so it was a dead end rather than
-	// a missing feature, and no amount of fixing the fetch would have made it reachable.
-	//
-	// The shipped variants and their templates are compile-time facts. Only their LOCAL PRESENCE needs
-	// a daemon. So the catalog is seeded from the published tags as rows with no built_version, which
-	// is precisely the "available to download, not downloaded" state the page must be able to show —
-	// and which the presence check already understands.
 	if rt == nil {
 		log.Info("runtime daemon not configured — seeding the published runtime-image catalog so the images stay fetchable")
 		return seedPublishedCatalog(ctx, pool, log, nil)
@@ -274,22 +207,6 @@ func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *
 	imgs, err := rt.Images(ctx)
 	if err != nil || imgs == nil {
 		// THE CATALOG MUST NOT DISAPPEAR WHEN THE DAEMON DOES.
-		//
-		// REPORTED: "In Windows, it doesn't have ANY of the runtime images." That is this branch: a
-		// host whose container engine is not set up yet has no daemon, so the daemon cannot report
-		// which stock images it knows — and the Runtime Images page, which lists ROWS, showed nothing
-		// at all. The operator then has no fetch button to press because there is nothing to press it
-		// on, which is a dead end rather than a missing feature.
-		//
-		// The shipped variants and their templates are COMPILE-TIME facts (stockVariants +
-		// assets.RuntimeImageTemplatesFS); only their LOCAL PRESENCE depends on the daemon. So they are
-		// seeded regardless, as rows with no built_version — "available to download, not downloaded" —
-		// which is precisely the state the page has to be able to show.
-		//
-		// THE TAG FALLBACK IS THE PUBLISHED ONE. Without a daemon there is no locally-built tag to ask
-		// about, so the row gets the released reference the image would be pulled from
-		// (publishedStockTags). On a host that later gets an engine, the next boot re-seeds from the
-		// daemon — which reconciles by TAG, so a locally-built tag wins and the row moves to it.
 		log.Warn("canned runtime image seed: daemon images unavailable — seeding the published catalog so the images stay fetchable", "error", err)
 		return seedPublishedCatalog(ctx, pool, log, rt)
 	}
@@ -310,20 +227,6 @@ func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *
 		}
 	}
 	// THEN THE PUBLISHED CATALOGUE FILLS THE GAPS.
-	//
-	// REPORTED: "I think we need to make the runtime image page pull every runtime image record that is
-	// available in our repo and if they don't exist (been deleted) add them in a non-downloaded state."
-	//
-	// The catalogue used to be derived ENTIRELY from what the daemon reported, and the daemon reports what
-	// is on THIS host's disk. So the set of rows the page showed was a function of local disk state: an
-	// image nobody had downloaded had no row at all (nothing to fetch), and a row whose image stayed local
-	// re-materialised on every boot — which is precisely the operator's "it did remove them from the
-	// console, and then on restart they came back".
-	//
-	// The published variants are COMPILE-TIME facts (stockVariants + release.yml), so they are the floor of
-	// the catalogue and local presence is the separate axis that decides READY vs NOT DOWNLOADED. Seeding
-	// them AFTER the daemon loop — and only for variants the daemon did not cover — keeps the daemon's own
-	// evidence authoritative, so this can never contradict a present image.
 	base := firstPublishedTag()
 	for _, tag := range catalogStockTags() {
 		variant, ok := resolveVariant(tag, base)
@@ -340,8 +243,7 @@ func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *
 }
 
 // seedPublishedCatalog seeds one row per shipped variant from the PUBLISHED tags, with no daemon
-// involved. It is the path a host takes before it has a container engine, and the fallback when the
-// daemon is unreachable — one implementation for both, so the two cannot seed different sets.
+// involved.
 func seedPublishedCatalog(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *runtime.Client) error {
 	svc := &Service{pool: pool, log: log, rt: rt}
 	base := firstPublishedTag()
@@ -359,9 +261,7 @@ func seedPublishedCatalog(ctx context.Context, pool *db.Pool, log *slog.Logger, 
 	return nil
 }
 
-// PublishedStockBase is the registry reference the released runtime images live at. It mirrors the
-// daemon's own default (cmd/orchicon/runtime.go: ORCHICON_RUNTIME_IMAGE), because a row seeded from it
-// and a daemon image must name the SAME artifact — two spellings would seed the catalog twice.
+// PublishedStockBase is the registry reference the released runtime images live at.
 const PublishedStockBase = "ghcr.io/beardedparrott/orchicon-runtime:latest"
 
 // splitImageRef splits "repo:tag" into its parts. A ref with no tag yields "latest", matching the
@@ -382,13 +282,8 @@ func firstPublishedTag() string {
 	return tags[0]
 }
 
-// catalogStockTags lists the tag every shipped variant lives at on THIS host, base first: the published
-// ref for the base, and a local build tag for the variants that are no longer published.
-//
-// IT REPLACES publishedStockTags AT EVERY CATALOGUE CALL SITE. publishedStockTags answered "what is
-// released", and once the variants stopped being released that answer became "the base only" — which
-// silently DELETED gui/dev/web-research from the catalogue. The question the catalogue actually asks is
-// "what can this host end up with", so that is now the question it gets.
+// catalogStockTags lists the tag every shipped variant lives at on THIS host, base first: the
+// published ref for the base, and a local build tag for the variants that are no longer published.
 func catalogStockTags() []string {
 	repo, _ := splitImageRef(PublishedStockBase)
 	out := make([]string, 0, len(stockVariants))
@@ -432,16 +327,9 @@ func publishedStockTags() []string {
 	return out
 }
 
-// NOTE: there is deliberately no second variant resolver here. resolveVariant already maps a tag to
-// its shipped variant and handles every spelling in use (:gui-, :dev-, :orchicon-dev-, :web-research-),
-// including the ones an operator sets through ORCHICON_RUNTIME_IMAGES. A second mapping is how the
-// catalog path and the daemon path would come to disagree about which variant a tag names — and that
-// disagreement seeds the same artifact twice.
+// NOTE: there is deliberately no second variant resolver here.
 
-// resolveVariant maps a daemon stock tag to its shipped variant. The base is
-// the daemon's default image; :gui / :orchicon-dev are matched by tag suffix
-// (same rule as GetStockImageTemplate). Unknown tags (operator-added
-// ORCHICON_RUNTIME_IMAGES with no shipped template) return ok=false.
+// resolveVariant maps a daemon stock tag to its shipped variant.
 func resolveVariant(ref, defaultRef string) (stockVariant, bool) {
 	if ref == defaultRef {
 		return stockVariants[0], true
@@ -464,17 +352,7 @@ func resolveVariant(ref, defaultRef string) (stockVariant, bool) {
 }
 
 // stockRowForVariant finds THE stock row for a variant, collapsing duplicates left by the old
-// tag-keyed seeding. Returns db.ErrNotFound when there is none yet.
-//
-// COLLAPSING IS DELIBERATE AND IS NOT DATA LOSS. These rows are machine-managed (source='stock') and
-// the catalog is theirs to manage; the image itself lives in the container engine, not in the row, so
-// removing a duplicate record does not untag or delete anything. Only PRISTINE seeds are removed —
-// a row whose Dockerfile an operator edited is theirs and is never touched, matching the seeder's
-// standing rule.
-//
-// When duplicates exist the survivor is: the one already carrying the preferred tag if there is one
-// (so nothing has to move), else the most-built one, so the row that records real work is the one
-// kept.
+// tag-keyed seeding.
 func stockRowForVariant(ctx context.Context, tx pgx.Tx, variant stockVariant, ref string, log *slog.Logger) (db.RuntimeImageRow, int, error) {
 	slug := stockSlug(variant)
 	rows, err := db.ListRuntimeImages(ctx, tx, db.RuntimeImageFilter{TenantID: cannedTenant, Source: "stock"})
@@ -491,9 +369,8 @@ func stockRowForVariant(ctx context.Context, tx pgx.Tx, variant stockVariant, re
 		return db.RuntimeImageRow{}, 0, db.ErrNotFound
 	}
 	removed := 0
-	// Prefer, in order: the row already on the preferred tag (nothing has to move, so the rename
-	// cannot collide with a sibling that still holds that tag), then the one furthest through its
-	// build, so the row recording real work survives.
+	// Prefer, in order: the row already on the preferred tag (nothing has to move, so the rename cannot
+	// collide with a sibling that still holds that tag), then the one furthest through its build.
 	preferred := ref
 	keep := mine[0]
 	score := func(r db.RuntimeImageRow) int {
@@ -531,25 +408,13 @@ func stockRowForVariant(ctx context.Context, tx pgx.Tx, variant stockVariant, re
 }
 
 // seedOneCannedImage creates or reconciles one canned stock row for a tag.
-// See SeedCannedImages for the contract. `info` is the daemon's version-label
-// view of the local image (may be all-empty when the image is missing).
-//
-// The seed-pristine test is self-consistent: the seeder writes the marker as
-// sha12 of the exact template body it embeds, so a row whose override body
-// hashes to its own marker is "a seed, some generation" — current markers are
-// reconciled in place, stale markers are rolled forward (version bumps →
-// rebuild). Any override whose body does not hash to its own marker is a user
-// edit (or a marker the user removed) — the seeder never touches it, so user
-// modifications survive seed bumps exactly like edited canned workers.
 func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant stockVariant, info runtime.ImageInfo, defaultRef string) error {
 	content, err := assets.RuntimeImageTemplatesFS.ReadFile(variant.File)
 	if err != nil {
 		return fmt.Errorf("read stock template %s: %w", variant.File, err)
 	}
-	// The shipped Dockerfiles end with a newline, so the marker forms its own
-	// final line: `...# \n# orchicon.seed=<sha12-of-content>\n`. seedState
-	// extracts the body as everything before the marker, which is then exactly
-	// the embedded template content — so hashing it reproduces the marker.
+	// The shipped Dockerfiles end with a newline, so the marker forms its own final line: `...# \n#
+	// orchicon.seed=<sha12-of-content>\n`.
 	seedDockerfile := string(content) + fmt.Sprintf("# %s=%s\n", cannedSeedMarker, seedVersion(content))
 
 	ttx, err := svc.pool.BeginTenantTx(ctx, cannedTenant)
@@ -559,16 +424,6 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 	defer ttx.Rollback(ctx)
 
 	// LOOK UP BY VARIANT (slug), NOT BY TAG — and that is the fix for the duplicated rows.
-	//
-	// REPORTED with a screenshot: six rows for three images, each variant listed TWICE — one
-	// "not downloaded" (the published tag this catalog seeded) and one "ready" (the local tag the
-	// daemon reported). Keying on the tag creates a NEW row for every tag the same variant is known
-	// by, so a host that first seeded from the published catalog and later got a container engine
-	// ends up with both.
-	//
-	// The identity that matters is the VARIANT: stock-base is stock-base whether it is called
-	// orchicon-runtime:local or ghcr.io/...:latest. So the row is found by slug, its tag is
-	// RECONCILED to the preferred one, and any duplicates left by the old behaviour are collapsed.
 	row, duplicatesRemoved, err := stockRowForVariant(ctx, ttx.Tx, variant, ref, svc.log)
 	if errors.Is(err, db.ErrNotFound) {
 		row, err = db.CreateRuntimeImage(ctx, ttx.Tx, db.RuntimeImageRow{
@@ -610,15 +465,6 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 	reconciled := false
 
 	// RECONCILE THE TAG, so one row tracks whichever tag this variant is known by NOW.
-	//
-	// This is the other half of the duplication fix: a row found by slug may still carry the tag it
-	// was created under — the published one, from a boot before this host had a container engine. Left
-	// alone it would be a row whose tag no local image answers to, so a fetch would try to pull a
-	// registry ref for an image that is already built here. Moving the tag onto the preferred one also
-	// keeps built_version meaningful, because built_version describes the image behind THAT tag.
-	//
-	// A tag move does NOT bump `version`: the spec did not change, only which local name it refers to.
-	// StatusOnly is exactly that statement.
 	if row.Tag != ref {
 		newTag := ref
 		moved, terr := db.UpdateRuntimeImage(ctx, ttx.Tx, cannedTenant, row.ID, row.Version,
@@ -633,10 +479,8 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 
 	rolledForward := false
 	if !current {
-		// Pristine row from an older seed generation: roll the seed forward —
-		// replace the override with the current template + marker. This is a
-		// spec edit, so `version` bumps and built_version lags — the row needs
-		// a rebuild.
+		// Pristine row from an older seed generation: roll the seed forward — replace the override with the
+		// current template + marker.
 		status := "draft"
 		row, err = db.UpdateRuntimeImage(ctx, ttx.Tx, cannedTenant, row.ID, row.Version,
 			db.UpdateRuntimeImageFields{DockerfileOverride: &seedDockerfile, Status: &status})
@@ -648,13 +492,7 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 
 	switch decideSeedAction(row, info, variant, pristine, current) {
 	case seedSkip:
-		// Nothing to reconcile. A roll-forward still has to be persisted, or
-		// the next boot would roll it forward again (and bump `version` a
-		// second time). The same is true of a TAG RECONCILIATION and of the
-		// duplicate deletes above: they live in this transaction, so returning
-		// without committing discards them — which is exactly what happened
-		// when this was first written (the DB was unchanged after a reseed that
-		// had logged the rename).
+		// Nothing to reconcile.
 		if rolledForward || reconciled || duplicatesRemoved > 0 {
 			if err := ttx.Commit(ctx); err != nil {
 				return err
@@ -678,10 +516,7 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 	if err := ttx.Commit(ctx); err != nil {
 		return err
 	}
-	// Auto-build asynchronously so plane boot stays fast. The build core
-	// re-checks status under the row lock, so concurrent boots/Deploys are
-	// serialized; on success built_version = version and the daemon's
-	// post-build prune drops the previous version of the tag.
+	// Auto-build asynchronously so plane boot stays fast.
 	go func() {
 		ctx := context.Background()
 		if _, _, err := svc.buildCore(ctx, cannedTenant, row.ID, nil); err != nil {
@@ -710,20 +545,12 @@ const (
 	seedBuild
 )
 
-// RuntimeImageStatusAbsent is the runtime_images.status of a row whose spec is
-// correct but whose image is not present locally and is not being built.
-// Distinct from `draft` (never built) and `failed` (a build was attempted and
-// failed), and stored as free text — the status column has no CHECK
-// constraint, so this needs no migration.
+// RuntimeImageStatusAbsent is the runtime_images.status of a row whose spec is correct but whose
+// image is not present locally and is not being built.
 const RuntimeImageStatusAbsent = "absent"
 
-// decideSeedAction is the WHOLE canned-row reconciliation policy, as a pure
-// function: no DB, no engine, no goroutines. That is the seam AC 10/11 are
-// tested through.
-//
-// `info` is the daemon's report for the row's tag and `pristine`/`current`
-// come from seedState. `row` is the row as it stands AFTER any roll-forward
-// the caller applied.
+// decideSeedAction is the WHOLE canned-row reconciliation policy, as a pure function: no DB, no
+// engine, no goroutines.
 func decideSeedAction(row db.RuntimeImageRow, info runtime.ImageInfo, variant stockVariant, pristine, current bool) seedAction {
 	if row.Source != "stock" {
 		// A tenant-created row owns this tag — never touch it.
@@ -738,9 +565,7 @@ func decideSeedAction(row db.RuntimeImageRow, info runtime.ImageInfo, variant st
 		return seedSkip
 	}
 	if row.Status == "failed" {
-		// A previous auto-build failed — never auto-retry every boot; the user
-		// rebuilds via Deploy. Kept ABOVE the absent case on purpose: a failed
-		// build must not be silently reclassified as "not downloaded".
+		// A previous auto-build failed — never auto-retry every boot; the user rebuilds via Deploy.
 		return seedSkip
 	}
 	if info.Present && stockImageCurrent(info, variant) {
@@ -749,17 +574,12 @@ func decideSeedAction(row db.RuntimeImageRow, info runtime.ImageInfo, variant st
 		return seedMarkReady
 	}
 	if !info.Present {
-		// THE TRAP, CLOSED. Nothing is downloaded for this tag, so there is
-		// nothing to reconcile: mark the row absent and DO NOT BUILD. Building
-		// here would compile Go, Node, PostgreSQL and Playwright on a first boot
-		// that deliberately pulled nothing — far slower and heavier than the
-		// pull this whole change exists to avoid, and it would happen silently
-		// in the background. The image is fetched at opt-in time instead.
+		// THE TRAP, CLOSED. Nothing is downloaded for this tag, so there is nothing to reconcile: mark the
+		// row absent and DO NOT BUILD.
 		return seedMarkAbsent
 	}
-	// Present but not current: a stale seed (roll-forward) or a locally-built
-	// image carrying no version label. Both keep the pre-change behaviour —
-	// auto-build — so only true ABSENCE changes.
+	// Present but not current: a stale seed (roll-forward) or a locally-built image carrying no version
+	// label.
 	return seedBuild
 }
 
@@ -783,9 +603,7 @@ func seedState(override string, currentContent []byte) (pristine, current bool) 
 		end = len(rest)
 	}
 	marker := strings.TrimSpace(rest[:end])
-	// The marker must be the LAST content of the override. Anything after it
-	// (an edit appended below the marker line, e.g. the UI textarea cursor
-	// landing at the end) means the user changed the file — back off.
+	// The marker must be the LAST content of the override.
 	if strings.TrimSpace(rest[end:]) != "" {
 		return false, false
 	}
@@ -795,12 +613,8 @@ func seedState(override string, currentContent []byte) (pristine, current bool) 
 	return true, body == string(currentContent)
 }
 
-// markAbsent records a canned row as ABSENT: its spec is correct, but the
-// image is not present locally and no build was started for it. It mirrors
-// markReady exactly (same tenant tx, StatusOnly — no version bump) and
-// deliberately leaves built_version alone: absence is not a build outcome, and
-// keeping the last built version is what lets a later fetch/Deploy prove it
-// produced the version the row asked for.
+// markAbsent records a canned row as ABSENT: its spec is correct, but the image is not present
+// locally and no build was started for it.
 func markAbsent(ctx context.Context, pool *db.Pool, log *slog.Logger, row db.RuntimeImageRow) {
 	status := RuntimeImageStatusAbsent
 	ttx, err := pool.BeginTenantTx(ctx, cannedTenant)
@@ -837,10 +651,8 @@ func markReady(ctx context.Context, pool *db.Pool, row db.RuntimeImageRow) {
 	_ = ttx.Commit(ctx)
 }
 
-// seedVersion is the versioned marker value for a shipped template: the first
-// 12 hex chars of its SHA-256. Any template change alters the marker, so
-// pristine rows roll forward (and rebuild) exactly when the shipped image
-// definition changes — never on every boot.
+// seedVersion is the versioned marker value for a shipped template: the first 12 hex chars of its
+// SHA-256.
 func seedVersion(content []byte) string {
 	return sha12String(string(content))
 }
@@ -858,16 +670,8 @@ func sha12Of(file string) string {
 	return seedVersion(content)
 }
 
-// stockImageCurrent reports whether the local image `info` describes already
-// matches the runtime version container.sh / the release workflow would build
-// for this variant. Accepts both label formats: the release workflow's
-// (<version>, <version>-gui, <version>-dev) and container.sh's content-hashed
-// (<version>-<baseSha12>[-<variantSha12>]).
-//
-// An image with NO version label reports false — but that is NOT a verdict
-// that it must be built: "present without a version label" is a locally-built
-// image, not a missing one. Whether the image exists at all is
-// ImageInfo.Present, which the seeder's decideSeedAction consults first.
+// stockImageCurrent reports whether the local image `info` describes already matches the runtime
+// version container.sh / the release workflow would build for this variant.
 func stockImageCurrent(info runtime.ImageInfo, variant stockVariant) bool {
 	if info.RuntimeVersion == "" {
 		return false

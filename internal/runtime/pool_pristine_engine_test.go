@@ -1,26 +1,7 @@
 package runtime
 
-// pool_pristine_engine_test.go — AC 1's REAL-ENGINE tier.
-//
-// pool_reset_test.go proves the reset ORDER hermetically (remove → wait for the
-// name → create from a fresh name with the identical spec → serve probe before
-// pool entry). What it CANNOT prove is the property the sandbox's premise rests
-// on: that a real engine's `rm -f` + recreate really hands back a container with
-// nothing carried over — installed packages, /tmp contents, and opencode
-// session/data all gone.
-//
-// That needs a real engine, so this test is GATED on ORCHICON_RUNTIME_TEST_ENGINE
-// (podman|docker) and SKIPS with an explicit reason when it is unset — the CI
-// runtime container has no engine binary. THE SKIP MUST BE STATED WHEREVER THIS
-// SUITE IS REPORTED: a green run that never touched a container is not evidence
-// for AC 1, and this file's skip reason says exactly that.
-//
-//   ORCHICON_RUNTIME_TEST_ENGINE=podman go test ./internal/runtime/ -run TestPristineResetRealEngine -v
-//   (optional) ORCHICON_RUNTIME_TEST_IMAGE=<image with /bin/sh + sleep>
-//
-// If a target engine ever reuses an overlay upper across same-name containers,
-// THIS TEST IS WHERE IT SHOWS UP, and it is BF-3(b): a blocking finding for that
-// platform, recorded rather than worked around.
+// What it CANNOT prove is the property the sandbox's premise rests on: that a real engine's `rm -f`
+// + recreate really hands back a container with nothing carried over — installed packages.
 
 import (
 	"fmt"
@@ -32,9 +13,8 @@ import (
 	"time"
 )
 
-// pristineStateProbes are the three classes of state a run leaves behind, each
-// expressed as a shell test that must SUCCEED (i.e. the path is absent) in the
-// container that run B receives.
+// pristineStateProbes are the three classes of state a run leaves behind, each expressed as a shell
+// test that must SUCCEED (i.e. the path is absent) in the container that run B receives.
 var pristineStateProbes = []string{
 	"test ! -e /tmp/ac1-marker",                                     // /tmp contents
 	"test ! -e /tmp/ac1-installed-package",                          // an "installed package"
@@ -49,9 +29,9 @@ mkdir -p /tmp/ac1-pkgdir && echo pkg > /tmp/ac1-installed-package
 mkdir -p "$HOME/.local/share/opencode/storage" && echo session > "$HOME/.local/share/opencode/storage/ac1-session"
 `
 
-// TestPristineResetRealEngine writes state in run A, releases (the pool's removal
-// primitive), receives the recreated container as run B, and asserts every piece
-// of run A's state is gone (AC 1).
+// TestPristineResetRealEngine writes state in run A, releases (the pool's removal primitive),
+// receives the recreated container as run B, and asserts every piece of run A's state is gone (AC
+// 1).
 func TestPristineResetRealEngine(t *testing.T) {
 	requested := strings.TrimSpace(os.Getenv("ORCHICON_RUNTIME_TEST_ENGINE"))
 	if requested == "" {
@@ -79,10 +59,8 @@ func TestPristineResetRealEngine(t *testing.T) {
 	}
 
 	name := fmt.Sprintf("orchicon-pristine-%d", time.Now().UnixNano())
-	// containerID reads the engine's id for the container, so run A and run B can
-	// be shown to be DIFFERENT containers (a "reset" that resumed the previous
-	// one would keep its id — and its writable layer — and the state probes below
-	// would be the only thing standing between a restart and a false pass).
+	// containerID reads the engine's id for the container, so run A and run B can be shown to be
+	// DIFFERENT containers (a "reset" that resumed the previous one would keep its id.
 	containerID := func() string {
 		t.Helper()
 		out, err := d.engine("inspect", "--format", "{{.Id}}", name)
@@ -91,16 +69,7 @@ func TestPristineResetRealEngine(t *testing.T) {
 		}
 		return strings.TrimSpace(out)
 	}
-	// createRun runs ONE container from the same name + spec — the "identical
-	// spec" half of the reset. It returns the argv it used so run A and run B are
-	// provably created the same way.
-	//
-	// `fatal` distinguishes the two calls, and it matters: run A's failure can
-	// legitimately mean "this image has no /bin/sh + sleep" (an honest skip), but
-	// by run B the image and the engine are PROVEN — so a failed recreate is the
-	// podman hazard this tier exists to catch (a name the engine had not really
-	// released after `rm -f`). Reporting that as a skip would mask exactly the
-	// failure the test was written for, so run B's failure is fatal.
+	// createRun runs ONE container from the same name + spec — the "identical spec" half of the reset.
 	createRun := func(fatal bool) []string {
 		t.Helper()
 		args := []string{"run", "-d", "--name", name,
@@ -146,9 +115,7 @@ func TestPristineResetRealEngine(t *testing.T) {
 			"recreate on podman", eng.EngineNameForError(), name)
 	}
 
-	// RUN B: the same spec from the same name. A fresh container, not a restart —
-	// so its engine id must differ from run A's (a resumed container would keep
-	// the id AND the writable layer).
+	// RUN B: the same spec from the same name.
 	runBArgs := createRun(true)
 	if idB := containerID(); idB == idA {
 		t.Fatalf("run B is the SAME container as run A (id %s) — the removal primitive did not recreate "+

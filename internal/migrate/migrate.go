@@ -1,12 +1,4 @@
-// Package migrate applies embedded SQL migrations to the Postgres
-// database. It is the in-binary replacement for `atlas migrate apply`
-// so that `orchicon dev start` does not require the Atlas CLI on the
-// user's PATH (AGENTS.md §Dev Control Script).
-//
-// Migrations follow the hybrid additive-only + paired down convention
-// (Option C). Up migrations are additive-only (no destructive DDL).
-// Each migration may have a paired _down.sql file that reverses it,
-// enabling safe rollback between binary versions.
+// Package migrate applies embedded SQL migrations to the Postgres database.
 package migrate
 
 import (
@@ -20,8 +12,6 @@ import (
 )
 
 // Run applies all pending up migrations from the embedded filesystem.
-// Already-applied migrations are skipped. The migrations table is
-// created on first run.
 func Run(ctx context.Context, pool *db.Pool, fsys fs.FS, dir string) error {
 	if err := ensureMigrationsTable(ctx, pool); err != nil {
 		return fmt.Errorf("migrate: ensure table: %w", err)
@@ -51,12 +41,7 @@ func Run(ctx context.Context, pool *db.Pool, fsys fs.FS, dir string) error {
 	return nil
 }
 
-// RunDown reverts migrations down to (but not including) the target
-// version. The target is the migration name (timestamp prefix) to stop
-// at. For example, RunDown(ctx, pool, fsys, dir,
-// "20260731000000") reverts everything after that migration.
-// An empty target reverts all migrations. Migrations are reverted in
-// reverse order of application, using their paired _down.sql files.
+// RunDown reverts migrations down to (but not including) the target version.
 func RunDown(ctx context.Context, pool *db.Pool, fsys fs.FS, dir, target string) error {
 	if err := ensureMigrationsTable(ctx, pool); err != nil {
 		return fmt.Errorf("migrate: ensure table: %w", err)

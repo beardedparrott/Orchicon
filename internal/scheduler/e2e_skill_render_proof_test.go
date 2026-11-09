@@ -1,22 +1,6 @@
 package scheduler
 
-// e2e_skill_render_proof_test.go — AC 1's SKILL half, proven where the render
-// actually happens.
-//
-// WHY IT LIVES HERE AND NOT IN THE NATIVE LEG. buildCompositePrompt is
-// UNEXPORTED in this package (workflow_reconciler.go:2947), and it is the ONE
-// place the worker-side skill section is produced: the project's skill_files and
-// the version's skill_files are unioned and rendered by the shared
-// contextfiles.RenderManifest, then consumed VERBATIM as part of the composite
-// prompt every adapter receives. Duplicating that assertion in another package
-// would assert a copy, not the path. So the skill half is proven ONCE, here,
-// against the SAME seed shape (a real project row + a real skill file on disk)
-// the native MCP leg uses.
-//
-// Everything is a real DB row read back inside the reconciler's own read path;
-// nothing is hand-built.
-//
-// Gate: ORCHICON_TEST_DSN (inherits approvalTestPool from approval_no_clone_test.go).
+// e2e_skill_render_proof_test.go — AC 1's SKILL half, proven where the render actually happens.
 
 import (
 	"context"
@@ -29,9 +13,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/testfixtures"
 )
 
-// e2eSkillSetup creates a project (with a real project_dir), a work item in it,
-// and a worker version — the same shape testfixtures.SeedProjectWithServerAndSkill
-// builds, reduced to what the prompt render reads.
+// e2eSkillSetup creates a project (with a real project_dir), a work item in it, and a worker
+// version — the same shape testfixtures.SeedProjectWithServerAndSkill builds.
 func e2eSkillSetup(t *testing.T, slug string) (r *WorkflowReconciler, ctx context.Context, ttx *db.TenantTx, proj db.ProjectRow, item db.WorkItemRow, root string) {
 	t.Helper()
 	pool := approvalTestPool(t)
@@ -60,10 +43,8 @@ func e2eSkillSetup(t *testing.T, slug string) (r *WorkflowReconciler, ctx contex
 	return &WorkflowReconciler{pool: pool}, ctx, ttx, proj, item, root
 }
 
-// AC 1 (skill half): the project's SELECTED skill FILE — a real file inside the
-// project dir — reaches the worker's composite prompt, with its path AND its
-// body. This is the worker-side half of "has its skill file available": the
-// prompt the worker model receives references it and carries it inline.
+// AC 1 (skill half): the project's SELECTED skill FILE — a real file inside the project dir —
+// reaches the worker's composite prompt, with its path AND its body.
 func TestE2ESkillFileReachesTheWorkerPrompt(t *testing.T) {
 	r, ctx, ttx, proj, item, root := e2eSkillSetup(t, "e2e-skill-render")
 	defer ttx.Rollback(ctx)
@@ -110,9 +91,8 @@ func TestE2ESkillFileReachesTheWorkerPrompt(t *testing.T) {
 	})
 }
 
-// AC 1 (skill half, NEGATIVE): a skill OUTSIDE the project dir is dropped at the
-// render boundary, so the criterion is not satisfied by a prompt that would
-// render a dead "could not read" note.
+// AC 1 (skill half, NEGATIVE): a skill OUTSIDE the project dir is dropped at the render boundary,
+// so the criterion is not satisfied by a prompt that would render a dead "could not read" note.
 func TestE2EOutOfProjectSkillFileIsDropped(t *testing.T) {
 	r, ctx, ttx, proj, item, _ := e2eSkillSetup(t, "e2e-skill-outside")
 	defer ttx.Rollback(ctx)

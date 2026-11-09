@@ -1,11 +1,7 @@
 package askorchicon
 
-// consent_grants_service_test.go — the session-grant wire surface: the store's
-// revoke/list behaviour (with timestamps) and the two RPCs the GUI drives.
-//
-// The AC these cover: "active session grants are listed with a revoke action
-// that takes effect on the next tool call", and "the file is the source of
-// truth" for the persistent list (that half is permpolicy's own suite).
+// consent_grants_service_test.go — the session-grant wire surface: the store's revoke/list
+// behaviour (with timestamps) and the two RPCs the GUI drives.
 
 import (
 	"context"
@@ -17,9 +13,8 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// TestGrantStore_ListCarriesTheGrantTimeAndRevokeRemovesIt: the store records
-// WHEN a directory was granted (the client lists it), lists in a stable order,
-// and a revoke drops exactly that directory.
+// TestGrantStore_ListCarriesTheGrantTimeAndRevokeRemovesIt: the store records WHEN a directory was
+// granted (the client lists it), lists in a stable order.
 func TestGrantStore_ListCarriesTheGrantTimeAndRevokeRemovesIt(t *testing.T) {
 	g := newGrantStore()
 	g.Grant("conv-1", "/p/zeta")
@@ -105,9 +100,8 @@ func TestListPermissionGrantsRPC(t *testing.T) {
 	}
 }
 
-// TestRevokePermissionGrantRPCTakesEffectOnTheNextToolCall: the AC's "revoke
-// takes effect on the next tool call" — after the revoke, the guard shim's read
-// no longer carries the directory AND the consent path asks again for it.
+// TestRevokePermissionGrantRPCTakesEffectOnTheNextToolCall: the AC's "revoke takes effect on the
+// next tool call" — after the revoke.
 func TestRevokePermissionGrantRPCTakesEffectOnTheNextToolCall(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -157,10 +151,9 @@ func TestRevokePermissionGrantRPCTakesEffectOnTheNextToolCall(t *testing.T) {
 	}
 }
 
-// TestDecideCarriesTheDenyEntriesBelowTheGrantKey is the precedence the card
-// must state: a deny entry under the directory a session grant would cover is
-// still carried on the ask (Decide refuses a DENIED TARGET outright and raises
-// no ask at all, so this is the only reachable case).
+// TestDecideCarriesTheDenyEntriesBelowTheGrantKey is the precedence the card must state: a deny
+// entry under the directory a session grant would cover is still carried on the ask (Decide
+// refuses.
 func TestDecideCarriesTheDenyEntriesBelowTheGrantKey(t *testing.T) {
 	isolatedPolicy(t, "deny:\n  - \"/p/sibling/private/**\"\n")
 	svc := testConsentService()

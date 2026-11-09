@@ -34,9 +34,7 @@ import (
 	"testing"
 )
 
-// instrumentCall matches an OTel instrument constructor. The NAME is the first
-// string literal after it — which is how every call site in internal/ is
-// written (with or without a metric.WithDescription option argument).
+// instrumentCall matches an OTel instrument constructor.
 var instrumentCall = regexp.MustCompile(
 	`(?:Int64Counter|Float64Counter|Int64Gauge|Float64Gauge|Int64UpDownCounter|Float64UpDownCounter|` +
 		`Int64Histogram|Float64Histogram|Int64ObservableGauge|Float64ObservableGauge|` +
@@ -139,9 +137,8 @@ func TestMetricsPageQueriesEveryEmittedInstrument(t *testing.T) {
 	}
 }
 
-// TestMetricsPageDoesNotQueryInstrumentsThatDoNotExist is the other half: a name
-// in the list with no instrument behind it is a permanently empty chart, which
-// reads as "the feature is broken" rather than "nothing emitted".
+// TestMetricsPageDoesNotQueryInstrumentsThatDoNotExist is the other half: a name in the list with
+// no instrument behind it is a permanently empty chart.
 func TestMetricsPageDoesNotQueryInstrumentsThatDoNotExist(t *testing.T) {
 	declared := declaredInstruments(t)
 	queried := queriedMetrics(t)

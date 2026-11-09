@@ -40,14 +40,6 @@ func fakeBinaries(present ...string) func(string) bool {
 }
 
 // TestClipboardTextCommandCoversWindows pins the branch whose ABSENCE was the bug.
-//
-// It also pins the FLAGS, because each is load-bearing and none of them is cosmetic:
-//   - -NoProfile for CORRECTNESS: anything a profile prints goes to stdout and becomes pasted text.
-//   - -STA because Get-Clipboard needs a single-threaded apartment and fails under MTA.
-//   - -Raw so the clipboard comes back as ONE string rather than a line-split list rejoined with newlines.
-//
-// It must not depend on "pwsh": PowerShell 7 is an optional install, and choosing it would leave the one
-// platform this branch exists for with no reader at all.
 func TestClipboardTextCommandCoversWindows(t *testing.T) {
 	got := clipboardTextCommandFor("windows", "", fakeBinaries())
 	if len(got) == 0 {
@@ -59,8 +51,7 @@ func TestClipboardTextCommandCoversWindows(t *testing.T) {
 			"optional install and must not be required)", got[0])
 	}
 	// Assert over the JOINED argv, not element-by-element: the cmdlet and its flags live in the single
-	// -Command payload ("Get-Clipboard -Raw"), so -Raw is a token inside one argument rather than an argv
-	// element of its own. Checking element prefixes would report a correct command as missing -Raw.
+	// -Command payload ("Get-Clipboard -Raw").
 	joined := strings.Join(got, " ")
 	for _, want := range []string{"-NoProfile", "-STA", "-NoLogo", "Get-Clipboard -Raw"} {
 		if !strings.Contains(joined, want) {
@@ -108,10 +99,8 @@ func TestClipboardTextCommandKeepsTheOtherPlatformsUnchanged(t *testing.T) {
 // TestClipboardHintForWindowsDoesNotSendTheOperatorToAUnixTool pins the message, because a wrong hint is
 // worse than none: it would tell a Windows operator to install xclip.
 func TestClipboardHintForWindowsDoesNotSendTheOperatorToAUnixTool(t *testing.T) {
-	// The hint is selected by runtime.GOOS, so this asserts the CONTRACT rather than the branch: on Windows
-	// the text reader needs no install, and naming a Unix tool would be an instruction they cannot follow.
-	// The value is checked through the helper the error actually uses, on this host, only to prove it never
-	// returns "".
+	// The hint is selected by runtime.GOOS, so this asserts the CONTRACT rather than the branch: on
+	// Windows the text reader needs no install.
 	if clipboardHelperHint() == "" {
 		t.Fatal("clipboardHelperHint must always name something")
 	}

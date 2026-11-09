@@ -7,10 +7,8 @@ import (
 	"syscall"
 )
 
-// setProcessGroup makes the engine CLI the leader of its own process group,
-// so the whole build/pull tree can be signalled at once. Podman and Docker
-// both run the real builder as a CHILD of the CLI; killing only the parent
-// leaves the builder running and the image half-written.
+// setProcessGroup makes the engine CLI the leader of its own process group, so the whole build/pull
+// tree can be signalled at once.
 func setProcessGroup(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -18,9 +16,7 @@ func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = true
 }
 
-// killGroup SIGKILLs the command's whole process group (see
-// setProcessGroup). Falls back to killing just the process when the group is
-// already gone.
+// killGroup SIGKILLs the command's whole process group (see setProcessGroup).
 func killGroup(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil

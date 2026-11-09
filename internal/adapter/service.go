@@ -1,11 +1,5 @@
-// Package adapter implements the public-facing RuntimeAdapterService
-// Connect handler (docs/07_API_Specification.md §3.7). It exposes the
-// adapter registry: list registered adapters, inspect capabilities.
-//
-// The gRPC sidecar contract (Register/Heartbeat/Execute) lives
-// separately in orchicon.adapter.v1 and is implemented by the adapter
-// process, not the control plane (docs/07 §10). This public service is
-// what the UI and API clients call.
+// Package adapter implements the public-facing RuntimeAdapterService Connect handler
+// (docs/07_API_Specification.md §3.7).
 package adapter
 
 import (

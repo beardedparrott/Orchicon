@@ -15,12 +15,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// sessionRun is the per-execution state for the session transport: one
-// persistent opencode session, driven entirely through the serve's
-// HTTP+SSE API instead of a one-shot `opencode run` subprocess. The goal
-// is the first user message; liveness nudges and mid-run human messages
-// (SendExecutionMessage) are later turns on the SAME session, serialized
-// by the server's per-session prompt queue.
+// sessionRun is the per-execution state for the session transport: one persistent opencode session,
+// driven entirely through the serve's HTTP+SSE API instead of a one-shot `opencode run`.
 type sessionRun struct {
 	a         *Adapter
 	parentCtx context.Context // clean ctx for DB writebacks (never deadline-exhausted)
@@ -53,80 +49,40 @@ type sessionRun struct {
 	lastNudgeAt   time.Time
 	probeDeadline time.Time
 	probePending  bool
-	// probeGracePending is set while a completion-probe grace timer is armed:
-	// session.idle fired without the decision marker, but we are giving the
-	// trailing SSE events (the final text part that usually carries the
-	// marker) a short window to land before committing to a probe. Any
-	// mid-generation activity during the grace cancels it (resolveProbe), so
-	// a model that is merely still streaming is never interjected.
+	// probeGracePending is set while a completion-probe grace timer is armed: session.idle fired
+	// without the decision marker.
 	probeGracePending bool
 
 	// Session-scoped nudge tuning (manifest value first, env fallback).
-	// Populated by initNudgeTuning before the monitor starts. These drive
-	// both the advisory-stall nudge path and the completion-probe path.
 	nudgeMaxVal         int
 	nudgeReplyWindowVal time.Duration
 	nudgeCooldownVal    time.Duration
 
-	// tuningInit records that the three fields above hold RESOLVED values
-	// (initNudgeTuning ran). It exists so the accessors can return an explicit
-	// 0 — which now means "disabled" — instead of mistaking it for "never
-	// initialised" and substituting the package default, which is exactly what
-	// made "0 = disabled" impossible to express before.
+	// tuningInit records that the three fields above hold RESOLVED values (initNudgeTuning ran).
 	tuningInit bool
 
-	// In-flight tool-hang watchdog (Tier A): a tool call with no events for
-	// longer than toolHangWindowVal is aborted-and-redirected — only the
-	// in-flight turn is cancelled (session + history preserved) and a
-	// course-correcting redirect is injected as the next user turn.
-	// Latched once per session; an unheeded hang escalates to the
-	// stall/liveness layer (probe → fatal). toolHangWindowVal <= 0
-	// disables the watchdog.
+	// In-flight tool-hang watchdog (Tier A): a tool call with no events for longer than
+	// toolHangWindowVal is aborted-and-redirected.
 	toolHangWindowVal time.Duration
 	hangLatched       bool
 	hangMu            sync.Mutex
-	// tool tracking for the hang watchdog: the currently in-flight tool
-	// (name + last-activity time). Guarded by hangMu. Mirrored into the
-	// progressMonitor (the detection owner) when one is attached; the
-	// hangMu copy is the fallback for runs/tests without a monitor.
+	// tool tracking for the hang watchdog: the currently in-flight tool (name + last-activity time).
 	toolTrackName   string
 	toolTrackAt     time.Time
 	toolInFlightNow bool
-	// v2Tools remembers what 2.x announces in SEPARATE events from the one that
-	// resolves a call: the tool NAME (session.tool.input.started) and its INPUT
-	// (session.tool.called). The resolution carries only the call id, so this map is
-	// what lets a 2.x tool card show its name and, more importantly, keeps the
-	// repetition signature per-CALL rather than per-tool (with no input, every call
-	// of one tool shares a signature and a busy worker trips the repetition stall).
-	// Entries are consumed and deleted on resolution, so it holds only in-flight
-	// calls. Guarded by hangMu.
+	// v2Tools remembers what 2.x announces in SEPARATE events from the one that resolves a call: the
+	// tool NAME (session.tool.input.started) and its INPUT (session.tool.called).
 	v2Tools map[string]v2ToolAnnounce
-	// workStarted (probe-startup guard, 2026-09-09): set true the first
-	// time the session produces WORK evidence — a tool call or any
-	// substantive text output (a non-empty completed text part beyond a
-	// bare greeting is not tracked; the tool signal is the reliable one).
-	// While FALSE, the completion-probe gate is DISARMED: a session that
-	// has not yet done any tool work cannot be "cut off mid-summary" —
-	// probing it (the 15:20:19 probe, 6s after dispatch, before the
-	// model's first token) demands summary-or-WORKING against a worker
-	// that never got to start. The gate only arms after the session has
-	// demonstrably begun (or once output exists to judge, see
-	// maybeProbeCompletion). Guarded by hangMu.
+	// workStarted (probe-startup guard, 2026-09-09): set true the first time the session produces WORK
+	// evidence — a tool call or any substantive text output (a non-empty completed text part beyond.
 	workStarted bool
-	// hangAbortAt records the last Abort WE initiated (tool-hang or
-	// stream-retry). A `session.error: Aborted` arriving within
-	// hangAbortEchoWindow of it is the serve echoing our own cancel —
-	// never session death, never a stall trigger. Guarded by hangMu.
+	// hangAbortAt records the last Abort WE initiated (tool-hang or stream-retry).
 	hangAbortAt time.Time
 
-	// streamRetries counts same-session stream-drop turn retries (Tier B),
-	// bounded by maxStreamRetries before falling through to the existing
-	// kill path. A DEDICATED budget — truncation is transport failure, not
-	// worker misbehavior, so it never touches nudgesSent. Guarded by mu.
+	// streamRetries counts same-session stream-drop turn retries (Tier B), bounded by maxStreamRetries
+	// before falling through to the existing kill path.
 	streamRetries int
-	// eventGen counts routed bus events; lastIdleAt marks the last
-	// session.idle. The SSE reconnect-drop detector uses them to tell a
-	// mid-turn transport blip from a clean finish. Guarded by mu.
+	// eventGen counts routed bus events; lastIdleAt marks the last session.idle.
 	eventGen   int64
 	lastIdleAt time.Time
 
@@ -137,24 +93,11 @@ type sessionRun struct {
 	seq          int64
 	pendingParts []db.SessionPart
 
-	// thinkState demuxes folded think blocks out of completed text parts
-	// (think_demux.go): GLM-style models emit thinking INLINE wrapped in
-	// the "think" tag pair, and a completed text part carrying such a
-	// block would otherwise persist verbatim into the transcript and
-	// render raw in the execution chat. Lazily initialized on the event
-	// loop (nil-safe via splitThink) so test-constructed runs work
-	// without a constructor change.
+	// thinkState demuxes folded think blocks out of completed text parts (think_demux.go): GLM-style
+	// models emit thinking INLINE wrapped in the "think" tag pair.
 	thinkState *completedThinkDemux
 
-	// Unified warn→escalate→abort budget ladder (see compact.go). budget is
-	// the per-execution spend accumulator fed on each step_finish via
-	// parseEvent; budgetSpec is the parsed merged budget. startedAt anchors
-	// the wall-clock dimension; firedWarn[dim][stage] latches each warning
-	// tier so a stage is injected exactly once per execution (never
-	// re-spammed every step once crossed). compactsPerformed +
-	// lastCompactStep implement the "at most once per step, never before
-	// the minimum-turn floor, re-arms only across normal forward progress"
-	// latch that prevents a compact loop.
+	// Unified warn→escalate→abort budget ladder (see compact.go).
 	budget            *budgetAccumulator
 	budgetSpec        budgetSpec
 	startedAt         time.Time
@@ -171,24 +114,17 @@ const (
 	defaultNudgeCooldown    = 60 * time.Second
 	defaultSettleAfterIdle  = 1 * time.Second
 	defaultSSEReconnectMax  = 10 * time.Second
-	// defaultCompletionProbeGrace is how long the completion probe waits
-	// after a markerless session.idle before interjecting, giving the serve's
-	// trailing final-text part (which usually carries the ORCHICON WORKER
-	// SUMMARY marker) time to flush. See maybeProbeCompletion. 30s (raised
-	// from 3s per the 2026-09-09 liveness-kill incident): a busy serve can
-	// legitimately take tens of seconds to flush a long final turn; probing
-	// at 3s interjected actively-streaming sessions mid-token.
+	// defaultCompletionProbeGrace is how long the completion probe waits after a markerless
+	// session.idle before interjecting.
 	defaultCompletionProbeGrace = 30 * time.Second
 	// maxStreamRetries bounds Tier B same-session stream-drop turn retries
 	// before falling through to the existing kill path.
 	maxStreamRetries = 2
-	// hangAbortEchoWindow is how long after an Abort WE initiated a
-	// `session.error: Aborted` echo is ignored (it is our own cancel
-	// landing, not session death).
+	// hangAbortEchoWindow is how long after an Abort WE initiated a `session.error: Aborted` echo is
+	// ignored (it is our own cancel landing, not session death).
 	hangAbortEchoWindow = 30 * time.Second
-	// defaultStreamDropQuiet is how long the SSE reconnect-drop detector
-	// waits for fresh events on the new subscription before concluding the
-	// turn was cut mid-stream and retrying it.
+	// defaultStreamDropQuiet is how long the SSE reconnect-drop detector waits for fresh events on the
+	// new subscription before concluding the turn was cut mid-stream and retrying it.
 	defaultStreamDropQuiet = 30 * time.Second
 )
 
@@ -213,15 +149,8 @@ func completionProbeGrace() time.Duration {
 	return envDuration("ORCHICON_COMPLETION_PROBE_GRACE", defaultCompletionProbeGrace)
 }
 
-// initNudgeTuning resolves the session's nudge knobs: manifest (tenant
-// settings) value first, env-var fallback, then code default. Zero in the
-// manifest means "use the env var or code default". Called once before the
-// monitor starts so the session's nudge budget is stable for its lifetime.
-// toolHangWindow returns the in-flight tool-hang watchdog window:
-// canonical env ORCHICON_STALL_TOOL_HANG_WINDOW first, deprecated
-// ORCHICON_TOOL_HANG_WINDOW fallback (kept for one release), else the code
-// default 180s. A value <= 0 disables the watchdog (0/negative per the
-// platform stall setting contract).
+// initNudgeTuning resolves the session's nudge knobs: manifest (tenant settings) value first,
+// env-var fallback, then code default.
 func toolHangWindow() time.Duration {
 	if v := os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -244,9 +173,8 @@ func (r *sessionRun) initNudgeTuning() {
 	// From here the fields above hold RESOLVED values, so the accessors can tell
 	// an explicit 0 (DISABLED) from "never initialised".
 	r.tuningInit = true
-	// Manifest fields are POINTERS: nil = the tenant left it BLANK, so the
-	// env/code default above stands; non-nil = an explicit value, and 0 means
-	// DISABLED. The accessors return it verbatim; every consumer gates on > 0.
+	// Manifest fields are POINTERS: nil = the tenant left it BLANK, so the env/code default above
+	// stands; non-nil = an explicit value, and 0 means DISABLED.
 	if m := r.manifest.StallNudgeMax; m != nil && os.Getenv("ORCHICON_STALL_NUDGE_MAX") == "" {
 		r.nudgeMaxVal = int(*m)
 	}
@@ -263,11 +191,8 @@ func (r *sessionRun) initNudgeTuning() {
 	}
 }
 
-// startToolHangWatchdog arms the in-flight tool-hang watchdog for this
-// session: a background goroutine that watches for a tool call that has
-// been silent for longer than toolHangWindowVal. It latches once per
-// session (the first hang is aborted-and-redirected; a second unheeded hang
-// escalates to the stall/liveness layer). Returns a stop func.
+// startToolHangWatchdog arms the in-flight tool-hang watchdog for this session: a background
+// goroutine that watches for a tool call that has been silent for longer than toolHangWindowVal.
 func (r *sessionRun) startToolHangWatchdog(ctx context.Context) func() {
 	stop := make(chan struct{})
 	go func() {
@@ -291,14 +216,8 @@ func (r *sessionRun) startToolHangWatchdog(ctx context.Context) func() {
 	return func() { close(stop) }
 }
 
-// checkToolHang is the Tier A ACTUATOR for the progressMonitor tool-hang
-// signal: when a tool call has produced no events for longer than the
-// window, it latches once and (a) records the hang, (b) aborts ONLY the
-// in-flight turn (esc-esc: the session and its history are kept), and
-// (c) injects a course-correcting redirect as the next user turn. The
-// execution stays running — finish() is never called here. A second
-// unheeded hang escalates through the stall/liveness layer (probe → fatal)
-// via the monitor's latch: only the first trip reaches this actuator.
+// checkToolHang is the Tier A ACTUATOR for the progressMonitor tool-hang signal: when a tool call
+// has produced no events for longer than the window, it latches once and (a) records the hang.
 func (r *sessionRun) checkToolHang() {
 	r.hangMu.Lock()
 	if r.finished || r.hangLatched || r.toolHangWindowVal <= 0 {
@@ -325,9 +244,8 @@ func (r *sessionRun) checkToolHang() {
 	if !tripped {
 		return
 	}
-	// The latch lives in actuateToolHang (single owner): pre-latching here
-	// would make the actuator below a no-op and the redirect would never
-	// send.
+	// The latch lives in actuateToolHang (single owner): pre-latching here would make the actuator
+	// below a no-op and the redirect would never send.
 	r.a.log.Warn("tool hang detected — aborting in-flight turn and redirecting",
 		"execution", r.execRow.ID, "tool", tool, "window", r.toolHangWindowVal)
 	r.callbacks.OnStall(r.parentCtx, r.execRow.ID, "stalled:tool_hang:"+tool, false)
@@ -335,13 +253,7 @@ func (r *sessionRun) checkToolHang() {
 	r.actuateToolHang(tool)
 }
 
-// actuateToolHang performs the Tier A abort-and-redirect intervention,
-// latched once per execution. Abort FIRST (esc-esc: cancels only the
-// in-flight turn, keeps the session + history + cache prefix), THEN queue
-// the redirect. Never finish() — the execution stays running. A
-// still-stuck worker escalates through the existing probe →
-// liveness_probe_no_response → kill path (the latches ensure only the
-// first trip actuates; onStall routes repeat trips here and they no-op).
+// actuateToolHang performs the Tier A abort-and-redirect intervention, latched once per execution.
 func (r *sessionRun) actuateToolHang(tool string) {
 	r.hangMu.Lock()
 	if r.finished || r.hangLatched {
@@ -373,16 +285,12 @@ func (r *sessionRun) actuateToolHang(tool string) {
 	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": redirect, "source": "tool_hang_redirect"})
 }
 
-// observeToolStart records that a tool call began (called from handleEvent
-// on the raw tool-start event). Arms the Tier A hang window in the
-// progressMonitor (the detection owner) and mirrors the name/time into the
-// hangMu fallback for runs without a monitor. A new start supersedes the
-// previous slot — only the longest/single in-flight call is tracked.
+// observeToolStart records that a tool call began (called from handleEvent on the raw tool-start
+// event).
 func (r *sessionRun) observeToolStart(name string) {
 	r.hangMu.Lock()
-	// A v2 `session.tool.called` start carries NO name (2.x puts it on
-	// input.started), so an empty one must not erase a name already remembered —
-	// the eventual hang/redirect message would lose its noun.
+	// A v2 `session.tool.called` start carries NO name (2.x puts it on input.started), so an empty one
+	// must not erase a name already remembered.
 	if name != "" {
 		r.toolTrackName = name
 	}
@@ -397,9 +305,8 @@ func (r *sessionRun) observeToolStart(name string) {
 	}
 }
 
-// observeToolEnd records that the in-flight tool produced a completion
-// event (or the call resolved); the hang window resets. Feeds the
-// progressMonitor (detection owner) and clears the hangMu fallback.
+// observeToolEnd records that the in-flight tool produced a completion event (or the call
+// resolved); the hang window resets.
 func (r *sessionRun) observeToolEnd() {
 	r.hangMu.Lock()
 	r.toolInFlightNow = false
@@ -409,11 +316,8 @@ func (r *sessionRun) observeToolEnd() {
 	}
 }
 
-// noteToolActivity refreshes the Tier A hang window without disarming:
-// the in-flight call (or the session around it) produced an event, so the
-// zero-events-only trip condition restarts. Feeds the monitor when one is
-// attached; otherwise refreshes the hangMu fallback. Never arms an idle
-// slot.
+// noteToolActivity refreshes the Tier A hang window without disarming: the in-flight call (or the
+// session around it) produced an event, so the zero-events-only trip condition restarts.
 func (r *sessionRun) noteToolActivity() {
 	if r.monitor != nil {
 		r.monitor.noteToolActivity()
@@ -476,10 +380,8 @@ func (r *sessionRun) rememberV2Tool(id, name, input any) {
 	r.v2Tools[sid] = cur
 }
 
-// fillV2Tool applies the remembered name and input to a resolved 2.x tool_use part
-// and forgets the entry (so the map holds only in-flight calls). A no-op for
-// anything that is not a tool_use, and for a v1 tool part that already carries
-// both.
+// fillV2Tool applies the remembered name and input to a resolved 2.x tool_use part and forgets the
+// entry (so the map holds only in-flight calls).
 func (r *sessionRun) fillV2Tool(legacy map[string]any) {
 	if t, _ := legacy["type"].(string); t != evtToolUse {
 		return
@@ -520,11 +422,7 @@ func toolHangRedirectMessage(tool string, window time.Duration) string {
 		"background-and-poll, or a bounded retry — then move on. Do not repeat the identical hung call."
 }
 
-// nudgeMax returns the session's resolved nudge budget (manifest value first,
-// env fallback). Falls back to the package default only when the session was
-// constructed without initNudgeTuning (e.g. tests): a RESOLVED 0 is returned as
-// 0, because 0 means "disabled" — escalate on the first advisory stall instead
-// of nudging — and must not be replaced by the default.
+// nudgeMax returns the session's resolved nudge budget (manifest value first, env fallback).
 func (r *sessionRun) nudgeMax() int {
 	if r.tuningInit {
 		return r.nudgeMaxVal
@@ -548,22 +446,13 @@ func (r *sessionRun) nudgeCooldown() time.Duration {
 	return nudgeCooldown()
 }
 
-// decisionMarker is the single marker signal every worker execution ends
-// with (docs: the first word after it is success|failure). The completion
-// probe and the settle-time success guard check for its presence so a
-// session that ended without delivering the signal is never recorded as a
-// clean success.
+// decisionMarker is the single marker signal every worker execution ends with (docs: the first word
+// after it is success|failure).
 const decisionMarker = "ORCHICON WORKER SUMMARY:"
 
-// afterCompactReminderText is interjected into the session immediately
-// after a mid-flight compaction (compact.go maybeCompact) so the model
-// that just had its context summarized is reminded of the ORCHICON WORKER
-// SUMMARY contract and the todowrite obligation before it continues. A
-// summarized session otherwise can drift into "write a plan for the final
-// summary" and echo the marker as a literal template — which extraction
-// then parses as a fake `success` (see placeholderMarkerBody). The
-// reminder keeps the deliverable, its final line, and the live todo list
-// in view for the resumed turns.
+// afterCompactReminderText is interjected into the session immediately after a mid-flight
+// compaction (compact.go maybeCompact) so the model that just had its context summarized is
+// reminded.
 const afterCompactReminderText = "Your conversation was just compacted to keep it within budget — your task and progress notes are preserved in the compacted summary. " +
 	"Continue working on your task exactly as before. " +
 	"Resume your `todowrite` list NOW: emit a fresh full replacement array (`pending | in_progress | completed | cancelled`) reflecting current progress, and keep emitting it after every turn while you work — never wait until the end. " +
@@ -571,24 +460,14 @@ const afterCompactReminderText = "Your conversation was just compacted to keep i
 	"ORCHICON WORKER SUMMARY: success — <your summary of what you did>  (or  ORCHICON WORKER SUMMARY: failure — <the blocker>). " +
 	"Do NOT emit that line as part of a plan; emit it only as your final sign-off when the deliverable is complete."
 
-// placeholderMarkerBody reports whether the text following an
-// ORCHICON WORKER SUMMARY marker is a doc/plan placeholder ("success — <summary>",
-// "<reason>", an empty body) rather than a real worker-written summary. A
-// worker that echoes the marker as an example inside its plan must not be
-// treated as having delivered the signal — both the completion probe
-// (completionProbeDecision) and settle-time success guard must ignore it.
+// placeholderMarkerBody reports whether the text following an ORCHICON WORKER SUMMARY marker is a
+// doc/plan placeholder ("success — <summary>", "<reason>".
 func placeholderMarkerBody(rest string) bool {
 	rest = strings.TrimSpace(rest)
 	if rest == "" {
 		return true
 	}
-	// Inline code (backtick-quoted) markers are seed/instruction echo, never a
-	// real sign-off. The recovery seed writes `` `ORCHICON WORKER SUMMARY:
-	// failure` reason `recovery seed file missing` `` and system prompts quote
-	// `` `ORCHICON WORKER SUMMARY: success` `` as an example. The body right
-	// after the marker is a backtick-wrapped word (e.g. "`failure`" or
-	// "failure` reason ..."), so strip a leading backtick from the first word:
-	// a bare `success`/`failure` in backticks is a placeholder, not a delivery.
+	// Inline code (backtick-quoted) markers are seed/instruction echo, never a real sign-off.
 	words := strings.Fields(rest)
 	if len(words) > 0 {
 		raw := words[0]
@@ -614,9 +493,8 @@ func placeholderMarkerBody(rest string) bool {
 	return false
 }
 
-// realDecisionMarkerIn reports the index of the LAST real ORCHICON WORKER
-// SUMMARY marker in output — one whose body is actual content, not a
-// placeholder/template echo. Returns -1 when no real marker exists.
+// realDecisionMarkerIn reports the index of the LAST real ORCHICON WORKER SUMMARY marker in output
+// — one whose body is actual content, not a placeholder/template echo.
 func realDecisionMarkerIn(output string) int {
 	idx := strings.LastIndex(output, decisionMarker)
 	for idx >= 0 {
@@ -631,13 +509,9 @@ func realDecisionMarkerIn(output string) int {
 }
 
 // probeReplyKind classifies the model's reply to a completion probe.
-// 2026-09-09 probe-loop parity with the native adapter
-// (internal/orchicon/completion.go completionProbeReply).
 const (
-	// probeReplyNone — no answer to the probe in the output (a bare
-	// status-line reply is NOT an answer: it must not reset the probe
-	// budget, otherwise the probe re-arms instantly and the model is
-	// trapped answering probes forever — transcript 01M23C2MTF1ZYYHE8ACK17PMKV).
+	// probeReplyNone — no answer to the probe in the output (a bare status-line reply is NOT an answer:
+	// it must not reset the probe budget.
 	probeReplyNone = iota
 	// probeReplySummary — the output carries a REAL decision marker.
 	probeReplySummary
@@ -650,17 +524,14 @@ const (
 // offers a still-working model. Word-bounded so "networking" never matches.
 const probeWorkingToken = "working"
 
-// completionProbeReply classifies whether the session output ANSWERS a
-// completion probe: (probeReplySummary, idx>=0) for a real marker,
-// (probeReplyWorking, idx>=0) for the standalone WORKING token, and
-// (probeReplyNone, -1) otherwise.
+// completionProbeReply classifies whether the session output ANSWERS a completion probe:
+// (probeReplySummary, idx>=0) for a real marker, (probeReplyWorking.
 func completionProbeReply(output string) (int, int) {
 	if idx := realDecisionMarkerIn(output); idx >= 0 {
 		return probeReplySummary, idx
 	}
-	// WORKING token: word-bounded scan of the output TAIL only (the probe
-	// reply is by construction the latest turn; earlier turns may
-	// legitimately contain the word).
+	// WORKING token: word-bounded scan of the output TAIL only (the probe reply is by construction the
+	// latest turn; earlier turns may legitimately contain the word).
 	tail := output
 	if len(tail) > 200 {
 		tail = tail[len(tail)-200:]
@@ -692,22 +563,15 @@ func completionProbeReply(output string) (int, int) {
 	return probeReplyNone, -1
 }
 
-// completionProbeText is sent on session.idle when the worker's turn ended
-// WITHOUT the decision marker — e.g. the final model response was truncated
-// mid-stream (a step_finish with reason "unknown"/0 tokens), so the worker
-// never delivered its ORCHICON WORKER SUMMARY. Interjecting a prompt asks
-// the (still-live) session to finish the signal instead of recording a
-// hollow success; a session that still cannot produce the marker fails.
+// completionProbeText is sent on session.idle when the worker's turn ended WITHOUT the decision
+// marker — e.g. the final model response was truncated mid-stream (a step_finish with reason.
 const completionProbeText = "Your response appears to have been cut off before your final ORCHICON WORKER SUMMARY was captured. " +
 	"Please do not restart your work and do NOT reply with a status update. " +
 	"Your NEXT reply must be one of exactly two things: " +
 	"(1) your final summary, in this form: ORCHICON WORKER SUMMARY: success — <summary>  (or  failure — <reason>), or " +
 	"(2) the single word WORKING (nothing else) if you still have work to do — you will then be left alone to continue working."
 
-// streamRetryText is the short continue-turn re-prompt for a stream-drop
-// retry (Tier B). The partial turn's parts are already in the transcript,
-// so this appends exactly ONE user turn asking the model to continue — no
-// history is duplicated and the cache prefix is preserved.
+// streamRetryText is the short continue-turn re-prompt for a stream-drop retry (Tier B).
 const streamRetryText = "Your previous turn was cut off mid-stream (model response stream truncated or event dropped). " +
 	"Continue from where you stopped without repeating completed work. " +
 	"If you had finished, reply with your final ORCHICON WORKER SUMMARY now."
@@ -716,19 +580,15 @@ func streamDropQuietWindow() time.Duration {
 	return envDuration("ORCHICON_STREAM_DROP_QUIET_WINDOW", defaultStreamDropQuiet)
 }
 
-// run executes the whole session lifecycle. It returns nil once the
-// execution has completed (OnResult fired). A non-nil error means the
-// session transport could not be set up — with the one-shot path removed,
-// the caller surfaces it as a failed execution.
+// run executes the whole session lifecycle.
 func (r *sessionRun) run() error {
 	client := r.client
 	// The durable transcript writer must be set before any recordPart
 	// (the session_info entry is the first one).
 	r.store = r.a.sessionStore
 
-	// The serve's published port can be refused for a beat after the
-	// docker-proxy binds it; retry the session create briefly so a
-	// converging serve doesn't fail the execution.
+	// The serve's published port can be refused for a beat after the docker-proxy binds it; retry the
+	// session create briefly so a converging serve doesn't fail the execution.
 	var sid string
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -747,15 +607,7 @@ func (r *sessionRun) run() error {
 	}
 	r.sessionID = sid
 	r.a.log.Info("opencode session created", "execution", r.execRow.ID, "session", sid, "serve", client.BaseURL())
-	// Switch the session to THIS execution's worker agent. On 2.x that is what carries the
-	// worker's run-level prompt (see adapter.WorkerAgent); on v1 it is a no-op and the prompt
-	// travels in the goal message instead.
-	//
-	// THE RESULT GATES THE MESSAGE TRIM BELOW, and that coupling is the safety property here: the
-	// prefix may only be removed from the message when the agent that carries it is actually in
-	// force. A failed selection falls back to the serve's default agent — the tool shell, which
-	// does NOT carry the worker's identity — so trimming there would DELETE those instructions
-	// rather than move them. Logged rather than swallowed for the same reason.
+	// Switch the session to THIS execution's worker agent.
 	agentPromptCarried := false
 	if client.AgentSelectionSupported() {
 		agentName := adapter.WorkerAgentName(r.manifest.WorkerID)
@@ -766,19 +618,15 @@ func (r *sessionRun) run() error {
 			agentPromptCarried = true
 		}
 	}
-	// Persist the opencode session identity so the UI can show which
-	// serve/session a worker ran on (troubleshooting + follow-up seed).
-	// adapter_kind records WHICH ADAPTER the session belongs to, so a
-	// follow-up resolves the transport from the execution's adapter rather
-	// than from the (per-boot dynamic) serve URL.
+	// Persist the opencode session identity so the UI can show which serve/session a worker ran on
+	// (troubleshooting + follow-up seed).
 	r.recordPart(db.SessionPartSessionInfo, map[string]any{
 		"session_id":   sid,
 		"serve_url":    client.BaseURL(),
 		"adapter_kind": adapter.KindOpencode,
 	})
-	// Persist the full system prompt sent to the worker (the per-message
-	// `system` field) so the session chat can show exactly what the worker
-	// was told — the goal bubble alone (the task title) carries very little.
+	// Persist the full system prompt sent to the worker (the per-message `system` field) so the session
+	// chat can show exactly what the worker was told.
 	if r.system != "" {
 		r.recordPart(db.SessionPartSystemPrompt, map[string]any{"text": r.system})
 	}
@@ -797,10 +645,7 @@ func (r *sessionRun) run() error {
 		r.a.mu.Unlock()
 	}()
 
-	// Progress monitor: same stall signals as the one-shot path (which
-	// shares the guardrails). Advisory
-	// (no_file_progress) trips a liveness probe; fatal signals abort the
-	// session and fail the execution.
+	// Progress monitor: same stall signals as the one-shot path (which shares the guardrails).
 	r.initNudgeTuning()
 	r.monitor = newProgressMonitor(r.execRow.ID, stallWindowsFromManifest(r.manifest))
 	go r.monitor.run(r.parentCtx,
@@ -844,11 +689,6 @@ func (r *sessionRun) run() error {
 
 	r.callbacks.OnStarted(r.parentCtx, r.execRow.ID)
 
-	// The goal is the first user message of the session — AND ON A SURFACE WITH NO `system` FIELD IT
-	// IS ALSO WHERE THE SYSTEM PROMPT IS DELIVERED. A session is always CREATED immediately above, so
-	// this is genuinely the first message and the prompt cannot already be present (unlike the
-	// follow-up path, which attaches to an existing session and must not re-send it).
-	//
 	// The RUN-LEVEL prefix travels here ONLY when the agent selected above did not take it: if the
 	// agent carries it, it is trimmed off so the same text is not sent twice.
 	goalSystem := r.system
@@ -875,11 +715,8 @@ func (r *sessionRun) run() error {
 	if r.lastStreamErr != "" {
 		parts = append(parts, r.lastStreamErr)
 	}
-	// A stream that ended mid-step or on a truncated final step is NOT a
-	// success — unless the output still carries the decision signal (the
-	// completion probe may have salvaged it, or the summary was delivered
-	// before the trailing step event was lost). A missing signal means the
-	// worker's final response never completed.
+	// A stream that ended mid-step or on a truncated final step is NOT a success — unless the output
+	// still carries the decision signal (the completion probe may have salvaged it.
 	if r.stats.unfinished() && realDecisionMarkerIn(r.output.String()) < 0 {
 		ok = false
 		parts = append(parts, "execution ended before the final model step completed (model response stream truncated or event dropped)")
@@ -897,9 +734,7 @@ func (r *sessionRun) run() error {
 // handleEvent routes one SSE bus event for this session.
 func (r *sessionRun) handleEvent(evt BusEvent) {
 	// Props(), NOT Properties: the props live under `properties` on v1 and under `data` on v2, and
-	// reading the wrong one yields an EMPTY map rather than an error. On the session filter that is
-	// the difference between "ignore another session's events" and "process them", so it is a
-	// correctness matter, not a tidiness one.
+	// reading the wrong one yields an EMPTY map rather than an error.
 	props := evt.Props()
 	if sid, _ := props["sessionID"].(string); sid != "" && sid != r.sessionID {
 		return
@@ -919,19 +754,8 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		// Lifecycle signal. The turn's END is a terminal event, not this.
 		return
 	}
-	// THE TURN'S TERMINAL EVENTS, ON EITHER SURFACE — and the vocabulary lives in ONE
-	// place (terminalTurnKind) rather than in these arms, because that is what makes it
-	// checkable. A turn ends when the serve's per-session queue has fully drained, so
-	// EVERY message we sent (goal, nudges, human) has been answered.
-	//
-	// v1 says so with `session.idle` and reports a failure with `session.error`; v2 says
-	// so with `session.execution.succeeded` and reports a failure with
-	// `session.execution.failed` / `session.step.failed`, and NEVER emits a bare
-	// `session.idle` (measured on 2.0.26). Knowing only the v1 verbs is what hung a 2.x
-	// execution: the turn ended, nothing here recognised it, and the run waited for a
-	// signal that surface does not send — for a SUCCESSFUL turn as much as a failed one.
-	// Its text and tool parts still arrived through LegacyEventFromBus, which is why such
-	// a run looks alive and productive in its transcript while never finishing.
+	// THE TURN'S TERMINAL EVENTS, ON EITHER SURFACE — and the vocabulary lives in ONE place
+	// (terminalTurnKind) rather than in these arms, because that is what makes it checkable.
 	switch terminalTurnKind(evt.Type) {
 	case turnEnd:
 		r.turnEnded()
@@ -940,47 +764,24 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		r.recordStreamError(evt)
 		return
 	}
-	// Mid-generation token deltas (streamed text/reasoning) are LIVENESS
-	// evidence: feed them to the progress monitor so a long, slow local-model
-	// generation counts as progress and never false-trips stalled:no_progress.
-	// This must happen BEFORE the LegacyEventFromBus dispatch so deltas never
-	// reach parseEvent / the transcript / the UI (completed parts carry the
-	// durable record — see TokenDeltaFromBus).
+	// Mid-generation token deltas (streamed text/reasoning) are LIVENESS evidence: feed them to the
+	// progress monitor so a long.
 	if _, ok := TokenDeltaFromBus(evt); ok {
 		r.resolveProbe()
 		r.noteSessionProgress()
-		// Token deltas are MODEL generation — the model only generates
-		// between tool calls, never while a tool is in flight (it waits for
-		// the result). A delta therefore proves no tool is currently hung:
-		// disarm the hang watchdog so a long post-tool generation can never
-		// false-trip it, even if the tool's completed part was dropped from
-		// the SSE bus (the bus drops telemetry events when full — see
-		// Subscription.read).
+		// Token deltas are MODEL generation — the model only generates between tool calls, never while a
+		// tool is in flight (it waits for the result).
 		r.observeToolEnd()
 		if r.monitor != nil {
-			// observe("text") advances lastStepFinish — the no_progress
-			// signal — without touching lastMeaningfulAction, so the
-			// text_loop guard (an infinite single-step reasoning loop) is
-			// unchanged (D4). The part arg is nil: for "text" the monitor
-			// ignores it, so we avoid a per-delta allocation (D3). The
-			// delta text itself is liveness evidence only — the completed
-			// part carries the durable record.
+			// observe("text") advances lastStepFinish — the no_progress signal — without touching
+			// lastMeaningfulAction, so the text_loop guard (an infinite single-step reasoning loop) is
+			// unchanged (D4).
 			r.monitor.observe("text", nil)
 		}
 		return
 	}
-	// Feed the in-flight tool-hang watchdog (D6) from the RAW bus event,
-	// BEFORE the LegacyEventFromBus completed/error filter: a tool part in
-	// flight (status "running" / no status) is the tool-START signal the
-	// hang window arms on. The legacy mapping only ever emits COMPLETED
-	// tool parts, so a tool stuck at "running" would otherwise never arm
-	// the watchdog that exists to interrupt exactly that hang (D6 review
-	// finding). The resolution — the completed/error legacy event — disarms
-	// it below.
-	// 2.x announces a tool call across THREE events: its NAME on
-	// session.tool.input.started, its INPUT on session.tool.called, and only its id
-	// when it resolves. Remember whatever arrived so the resolved tool_use can carry
-	// a name and an input (see v2ToolLegacyEvent / fillV2Tool).
+	// Feed the in-flight tool-hang watchdog (D6) from the RAW bus event, BEFORE the LegacyEventFromBus
+	// completed/error filter.
 	switch evt.Type {
 	case "session.tool.input.started":
 		r.rememberV2Tool(props["id"], props["name"], nil)
@@ -992,31 +793,21 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 	}
 	if legacy, ok := LegacyEventFromBus(evt); ok {
 		r.fillV2Tool(legacy)
-		// ANY telemetry activity (text/tool/step/reasoning) after a probe
-		// is evidence the worker is alive — resolve the probe and revive
-		// without waiting for a full turn (the false-positive case: an
-		// analyst producing output but not touching files). It is also
-		// evidence the serve's model path is healthy — reset the
-		// consecutive-session-error counter so a single transient failure
-		// never triggers a container recycle.
+		// ANY telemetry activity (text/tool/step/reasoning) after a probe is evidence the worker is alive —
+		// resolve the probe and revive without waiting for a full turn (the false-positive case.
 		r.resolveProbe()
 		r.noteSessionProgress()
-		// A resolved tool part (completed/error) disarms the hang window;
-		// any other legacy telemetry (text/step/reasoning) after a tool
-		// start is post-tool model generation — the in-flight call is done.
+		// A resolved tool part (completed/error) disarms the hang window; any other legacy telemetry
+		// (text/step/reasoning) after a tool start is post-tool model generation — the in-flight call is
+		// done.
 		if t, _ := legacy["type"].(string); t == evtToolUse {
 			r.observeToolEnd()
 		} else if t != "" {
 			r.observeToolEnd()
 		}
-		// Folded-think segmentation (think_demux.go): a completed text part
-		// carrying a GLM-style inline think block must not reach the output
-		// accumulator, the live UI, or the durable transcript verbatim.
-		// Strip the blocks BEFORE parseEvent so all three see clean text,
-		// and persist each block body as its own reasoning part — the same
-		// channel native reasoning parts use (no dedupe: folded blocks and
-		// native reasoning parts are distinct segments). A part that carried
-		// nothing but thinking skips text handling entirely.
+		// Folded-think segmentation (think_demux.go): a completed text part carrying a GLM-style inline
+		// think block must not reach the output accumulator, the live UI, or the durable transcript
+		// verbatim.
 		evtType, _ := legacy["type"].(string)
 		var thinkBodies []string
 		if evtType == evtText {
@@ -1039,10 +830,8 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		if hasCleanText {
 			r.a.parseEvent(r.parentCtx, r.execRow, r.manifest, legacy, r.callbacks,
 				r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats, r.budget)
-			// Record the raw part for the durable transcript, with the tool
-			// OUTPUT capped like the live forward (a follow-up or a
-			// recovery-resumed session re-seeds this transcript as context, so
-			// an uncapped giant build log would re-inflate it).
+			// Record the raw part for the durable transcript, with the tool OUTPUT capped like the live forward
+			// (a follow-up or a recovery-resumed session re-seeds this transcript as context.
 			if t, _ := legacy["type"].(string); t != "" {
 				r.recordPart(t, map[string]any{"part": r.a.capPartOutput(legacy["part"], r.execRow.ID, executionDir(r.manifest)), "error": legacy["error"]})
 			}
@@ -1053,20 +842,12 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 				r.monitor, &r.output, &r.lastStreamErr, &r.textSeq, r.stats, r.budget)
 			r.recordPart(evtReasoning, map[string]any{"part": r.a.capPartOutput(thinkLegacy["part"], r.execRow.ID, executionDir(r.manifest))})
 		}
-		// Unified warn→escalate→abort budget ladder, evaluated on its own
-		// event boundary: step_finish feeds the spend accumulator and then
-		// drives the tokens/cost/time dimensions (the subsequent turn
-		// resends `system`, so goal/AC survive a lossy compact); tool_use
-		// drives the tool-call dimension (no "compact away a tool call").
+		// Unified warn→escalate→abort budget ladder, evaluated on its own event boundary: step_finish feeds
+		// the spend accumulator and then drives the tokens/cost/time dimensions (the subsequent turn.
 		switch et, _ := legacy["type"].(string); et {
 		case evtStepFinish:
-			// Tier B (b): a truncated mid-turn step-finish (reason
-			// unknown/empty + zero tokens) is a stream drop, not a clean
-			// turn end — retry the turn on the same session instead of
-			// letting the finalize step-balance guard fail the run.
-			// Only mid-turn (a turn is still outstanding); a trailing
-			// truncated finish after idle belongs to the completion
-			// probe / finalize path.
+			// Tier B (b): a truncated mid-turn step-finish (reason unknown/empty + zero tokens) is a stream
+			// drop, not a clean turn end.
 			if part, _ := legacy["part"].(map[string]any); isTruncatedStepFinish(part) {
 				r.mu.Lock()
 				pend, fin := r.pendingTurns, r.finished
@@ -1087,9 +868,7 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 	}
 }
 
-// splitThink demuxes folded think blocks out of one completed text part
-// (think_demux.go). The splitter is lazily initialized: production runs
-// flow through run(), but tests construct sessionRun literals directly.
+// splitThink demuxes folded think blocks out of one completed text part (think_demux.go).
 func (r *sessionRun) splitThink(text string) (string, []string) {
 	if r.thinkState == nil {
 		r.thinkState = newCompletedThinkDemux()
@@ -1154,22 +933,13 @@ func (r *sessionRun) flushParts() {
 	}
 }
 
-// resolveProbe clears a pending liveness probe and revives the execution
-// (the advisory stall notice clears and every stall window restarts). A
-// probe is resolved by the worker producing ANY activity after it was
-// sent, or by the whole queue draining (session.idle). This is the
-// active-prompt-bump semantics: the worker does not need to answer a full
-// turn to prove liveness — continued output is proof enough.
+// resolveProbe clears a pending liveness probe and revives the execution (the advisory stall notice
+// clears and every stall window restarts).
 func (r *sessionRun) resolveProbe() {
 	r.mu.Lock()
 	if !r.probePending {
-		// No probe is outstanding, but a completion-probe grace may be armed
-		// (session.idle fired without the marker and we are waiting for the
-		// trailing final text to land). Any telemetry activity during that
-		// window is evidence the model is still talking/finishing — cancel
-		// the pending probe so a still-streaming response is never
-		// interrupted. The next marker-bearing text part (arriving soon) will
-		// let the following session.idle settle normally.
+		// No probe is outstanding, but a completion-probe grace may be armed (session.idle fired without
+		// the marker and we are waiting for the trailing final text to land).
 		r.probeGracePending = false
 		r.mu.Unlock()
 		return
@@ -1177,16 +947,8 @@ func (r *sessionRun) resolveProbe() {
 	r.probePending = false
 	r.probeGracePending = false
 	r.lastNudgeAt = time.Now()
-	// 2026-09-09 probe-loop fix (transcript 01M23C2MTF1ZYYHE8ACK17PMKV,
-	// native parity): the budget does NOT reset on mere activity. The old
-	// version reset nudgesSent on ANY reply, so a model that answered each
-	// probe with a bare status line re-armed the probe forever — the
-	// worker never started (15 probes in ~50s, zero tool calls). Now only
-	// a REAL ANSWER resets the budget: the decision marker, or the
-	// WORKING token (the probe's explicit mid-task continue, which disarms
-	// the gate so the model can work and deliver the marker later). A
-	// status-line reply keeps the budget spent → after nudgeMax probes the
-	// session fails honestly instead of looping probes forever.
+	// 2026-09-09 probe-loop fix (transcript 01M23C2MTF1ZYYHE8ACK17PMKV, native parity): the budget does
+	// NOT reset on mere activity.
 	if kind, idx := completionProbeReply(r.output.String()); kind != probeReplyNone && idx >= 0 {
 		if kind == probeReplySummary || kind == probeReplyWorking {
 			r.nudgesSent = 0
@@ -1200,9 +962,8 @@ func (r *sessionRun) resolveProbe() {
 	}
 }
 
-// allTurnsDone forces the outstanding-turn counter to zero and settles —
-// called from session.idle, which the server emits only once every queued
-// prompt has been answered.
+// allTurnsDone forces the outstanding-turn counter to zero and settles — called from session.idle,
+// which the server emits only once every queued prompt has been answered.
 func (r *sessionRun) allTurnsDone() {
 	r.mu.Lock()
 	if r.pendingTurns > 0 {
@@ -1214,9 +975,8 @@ func (r *sessionRun) allTurnsDone() {
 	r.mu.Unlock()
 }
 
-// settleFinish finishes the execution after a short delay if no new
-// message has arrived (a just-sent human message bumps pendingTurns and
-// cancels the settle). Caller holds r.mu.
+// settleFinish finishes the execution after a short delay if no new message has arrived (a
+// just-sent human message bumps pendingTurns and cancels the settle).
 func (r *sessionRun) settleFinish() {
 	go func() {
 		time.Sleep(defaultSettleAfterIdle)
@@ -1229,15 +989,10 @@ func (r *sessionRun) settleFinish() {
 	}()
 }
 
-// sessionErrorMessage extracts the human-readable reason from a
-// session.error bus event. Provider errors nest the readable message at
-// error.data.message (e.g. OpenRouter 500s) — fall back to that when the
-// top-level error.message is absent so the failure reason is diagnosable
-// instead of a generic "opencode session error".
+// sessionErrorMessage extracts the human-readable reason from a session.error bus event.
 func sessionErrorMessage(evt BusEvent) string {
 	// Props(), NOT Properties — see handleEvent: on v2 the props live under `data`, so reading
-	// Properties here would lose the reason and report a generic "opencode session error" for
-	// exactly the failures an operator most needs named.
+	// Properties here would lose the reason and report a generic "opencode session error" for exactly.
 	props := evt.Props()
 	if errObj, ok := props["error"].(map[string]any); ok {
 		if m, ok2 := errObj["message"].(string); ok2 && m != "" {
@@ -1252,27 +1007,17 @@ func sessionErrorMessage(evt BusEvent) string {
 	return "opencode session error"
 }
 
-// recordStreamError handles a session.error bus event: the turn failed at
-// the model/API level. Order: (1) finished/abort-echo guard → ignore;
-// (2) clean auth/permission errors → existing fail path; (3) stream-drop
-// signature → bounded same-session turn retry (Tier B); (4) else the
-// existing infra-recycle/wedge-recycle/fail path.
+// recordStreamError handles a session.error bus event: the turn failed at the model/API level.
 func (r *sessionRun) recordStreamError(evt BusEvent) {
 	msg := sessionErrorMessage(evt)
 	r.a.log.Warn("opencode session error", "execution", r.execRow.ID, "message", msg)
-	// Abort-echo guard: when the session was already terminated (e.g. a
-	// fatal stall recorded its reason and Abort'd the session), the
-	// `session.error: Aborted` echo must not re-mark health, bump the
-	// recycle counter, or overwrite the terminal reason. The true cause
-	// (e.g. stalled:no_progress) is already recorded by finish().
+	// Abort-echo guard: when the session was already terminated (e.g. a fatal stall recorded its reason
+	// and Abort'd the session), the `session.error: Aborted` echo must not re-mark health.
 	if r.isFinished() {
 		return
 	}
-	// Our-own-Abort echo guard (Tier A/B): an `Aborted` error arriving
-	// within hangAbortEchoWindow of an Abort WE initiated is the serve
-	// echoing our own cancel — not session death, not a stall trigger, not
-	// a recycle trigger. Same pattern as the fatal-stall finish()-first
-	// ordering; aborted-turn events never settle/fail the run.
+	// Our-own-Abort echo guard (Tier A/B): an `Aborted` error arriving within hangAbortEchoWindow of an
+	// Abort WE initiated is the serve echoing our own cancel — not session death.
 	if isAbortEcho(msg) && r.recentOwnAbort() {
 		r.a.log.Info("ignoring own-abort echo", "execution", r.execRow.ID)
 		return
@@ -1297,11 +1042,8 @@ func (r *sessionRun) recordStreamError(evt BusEvent) {
 	r.finish(false, "opencode_session_error: "+msg)
 }
 
-// isAbortEcho reports whether a session.error message is the serve echoing
-// a turn abort (our own Abort or a user-initiated cancel). Any message
-// containing "abort"/"cancel" is an abort echo — never session death,
-// never a stall trigger. (Explicit Contains chain: Go's && binds tighter
-// than ||, so the old mixed chain mis-grouped the wrapped form.)
+// isAbortEcho reports whether a session.error message is the serve echoing a turn abort (our own
+// Abort or a user-initiated cancel).
 func isAbortEcho(msg string) bool {
 	m := strings.ToLower(strings.TrimSpace(msg))
 	if m == "" {
@@ -1318,11 +1060,8 @@ func (r *sessionRun) recentOwnAbort() bool {
 	return !r.hangAbortAt.IsZero() && time.Since(r.hangAbortAt) <= hangAbortEchoWindow
 }
 
-// isStreamDropError classifies a session.error message as a premature
-// stream end (truncation / dropped events / transport reset) rather than a
-// clean error. Clean errors (auth/404/permission/rate-limit/quota/policy)
-// and abort echoes are never stream drops. Enumerated explicitly so a new
-// provider error shape defaults to the existing fail path, not a retry.
+// isStreamDropError classifies a session.error message as a premature stream end (truncation /
+// dropped events / transport reset) rather than a clean error.
 func isStreamDropError(msg string) bool {
 	if msg == "" || isAbortEcho(msg) {
 		return false
@@ -1356,9 +1095,8 @@ func isStreamDropError(msg string) bool {
 	return false
 }
 
-// isTruncatedStepFinish reports whether a step-finish part is a truncated
-// mid-turn end: reason unknown/empty with zero tokens (the signature of an
-// interrupted response — the failing run's last part was exactly that).
+// isTruncatedStepFinish reports whether a step-finish part is a truncated mid-turn end: reason
+// unknown/empty with zero tokens (the signature of an interrupted response.
 func isTruncatedStepFinish(part map[string]any) bool {
 	if part == nil {
 		return false
@@ -1371,13 +1109,8 @@ func isTruncatedStepFinish(part map[string]any) bool {
 	return allTokensZero(tokens)
 }
 
-// retryStreamTurn retries a dropped turn against the SAME session (Tier B):
-// Abort any still-in-flight turn, then send the short continue-turn so the
-// model resumes where it stopped. The partial turn's parts already recorded
-// stay — the retry appends exactly ONE user turn (source=stream_retry), so
-// history is never duplicated. Bounded by maxStreamRetries on a DEDICATED
-// counter (never nudgesSent); when the budget is spent the run falls
-// through to the existing kill path (finish(false) + Abort).
+// retryStreamTurn retries a dropped turn against the SAME session (Tier B): Abort any
+// still-in-flight turn, then send the short continue-turn so the model resumes where it stopped.
 func (r *sessionRun) retryStreamTurn(reason string) {
 	r.mu.Lock()
 	if r.finished {
@@ -1424,20 +1157,8 @@ func (r *sessionRun) retryStreamTurn(reason string) {
 	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": streamRetryText, "source": "stream_retry"})
 }
 
-// recycleOnWedgedServe recycles the workflow's runtime container after a
-// run of CONSECUTIVE model-layer session errors. The observed wedge: a
-// serve whose /global/health answers (so the supervisor's health watchdog
-// never fires) but whose model turns fail instantly — every auto-retry
-// then re-uses the same poisoned serve and fails in ~80ms. Killing the
-// container makes the next dispatch's Create build a fresh serve, which is
-// exactly what un-wedged the field incident (a manual RetryFailedWorkflowRun
-// re-created the container and succeeded on the first try).
-//
-// The threshold is consecutive across executions — a wedge is serve-wide,
-// not execution-specific, so counting within one session would never fire
-// (the first failed execution fails fast and its retries are new sessions).
-// Reset to zero on any non-error progress (a step, tool call, or message
-// completing) so transient single failures never recycle.
+// recycleOnWedgedServe recycles the workflow's runtime container after a run of CONSECUTIVE
+// model-layer session errors.
 func (r *sessionRun) recycleOnWedgedServe(msg string) {
 	threshold := sessionErrorRecycleThreshold()
 	if threshold < 1 || r.manifest.RuntimeWorkflowID == "" || r.a.rt == nil {
@@ -1459,25 +1180,8 @@ func (r *sessionRun) recycleOnWedgedServe(msg string) {
 	}
 }
 
-// recycleOnInfraModelTurn recycles the workflow's runtime container on the
-// FIRST model-turn failure whose root is a socket/transport connect error
-// (see isInfraModelTurnError). This is the sibling of recycleOnWedgedServe
-// but it does NOT wait for a run of consecutive errors: a model call that
-// cannot reach the model API at the socket layer (e.g. "Cannot connect to
-// API: Unable to connect. Is the computer able to access the url?") is the
-// same TCP-class as a session-create "connection refused", and burning the
-// 3-consecutive recycle gate would waste further dead-API turns before a
-// fresh serve arrives. Recycling on the first such failure means the next
-// dispatch's Create rebuilds the container with a fresh serve + store.
-//
-// Unlike the session-create infra path this is NOT dispatched-controllable by
-// an infra threshold, so it is still bounded by the per-dispatch repair
-// budget (sessionRepairBudget / ORCHICON_SESSION_REPAIR_ATTEMPTS) via a
-// dedicated infraModelTurnRecycles counter, reset on any progress. When the
-// budget is spent the step still fails (finish(false) in recordStreamError),
-// but further infra-model-turn recycles are suppressed so we never churn the
-// container unboundedly — the failure surfaces as the terminal
-// "opencode_session_error" reason instead.
+// recycleOnInfraModelTurn recycles the workflow's runtime container on the FIRST model-turn failure
+// whose root is a socket/transport connect error (see isInfraModelTurnError).
 func (r *sessionRun) recycleOnInfraModelTurn(msg string) {
 	budget := sessionRepairBudget()
 	if budget < 1 || r.manifest.RuntimeWorkflowID == "" || r.a.rt == nil {
@@ -1504,11 +1208,8 @@ func (r *sessionRun) recycleOnInfraModelTurn(msg string) {
 	}
 }
 
-// countSessionError increments the consecutive session-error counter and
-// returns true once the recycle threshold is reached (the counter is then
-// reset so a still-wedged serve re-arms on later dispatches). Returns
-// false before the threshold; a disabled threshold (<1) always returns
-// false.
+// countSessionError increments the consecutive session-error counter and returns true once the
+// recycle threshold is reached (the counter is then reset so a still-wedged serve re-arms on later.
 func (a *Adapter) countSessionError() bool {
 	threshold := sessionErrorRecycleThreshold()
 	if threshold < 1 {
@@ -1556,11 +1257,8 @@ func (a *Adapter) incrInfraModelTurnRecycles() {
 	a.infraModelTurnRecycles++
 }
 
-// noteSessionProgress resets the consecutive-session-error counter and the
-// infra-model-turn per-dispatch recycle budget on any non-error session
-// progress (a step, tool call, or message completing), so a healthy step
-// never inherits a prior dispatch's spent budget. Both counters are reset
-// regardless of the wedge-recycle threshold: they gate independent classes.
+// noteSessionProgress resets the consecutive-session-error counter and the infra-model-turn
+// per-dispatch recycle budget on any non-error session progress (a step, tool call.
 func (r *sessionRun) noteSessionProgress() {
 	r.a.mu.Lock()
 	r.a.consecutiveSessionErrors = 0
@@ -1568,27 +1266,8 @@ func (r *sessionRun) noteSessionProgress() {
 	r.a.mu.Unlock()
 }
 
-// maybeCompact evaluates the soft-first compact gate at a quiet step
-// boundary (after a step_finish feeds the spend accumulator). It fires on
-// EITHER of two independent triggers — a cost/token budget breach
-// (budgetBreached; the accumulator is cumulative, so once tripped it stays
-// tripped), or the turn-count gate (effectiveCompactMaxTurns; steps since
-// the last compact reaching the configured/default turn cap) — so a chatty
-// session gets compacted periodically even when per-turn spend never crosses
-// the cost gate. On either trigger it calls Compact once and CONTINUES —
-// best-effort, never a hard abort, never a failure. The shared min-turn
-// floor/re-arm latch (never at start, never immediately after a prior
-// compact within minT turns) applies to both triggers, so a fresh
-// post-compact summary is never immediately re-collapsed (the compact
-// loop), and the per-execution cap (compactMax) is the coarse safety
-// ceiling on top of that. The session's resolved provider/model is passed
-// so the compaction runs under the model the session actually uses.
-// maybeCompact is the context-hygiene compact gate, kept from the old model
-// but now firing ONLY on the turn-count trigger (compact_max_turns), NOT on
-// spend. Spend is handled by maybeEnforceLadder below (which compacts on
-// escalate1/escalate2 and aborts at the limit). It runs at a quiet step
-// boundary after a step_finish, respects the min-turn floor/re-arm latch and
-// the per-execution cap (compactMax), and is best-effort (never a failure).
+// maybeCompact evaluates the soft-first compact gate at a quiet step boundary (after a step_finish
+// feeds the spend accumulator).
 func (r *sessionRun) maybeCompact() {
 	r.mu.Lock()
 	if r.finished || r.budget == nil {
@@ -1624,10 +1303,8 @@ func (r *sessionRun) maybeCompact() {
 	r.doCompact(steps, "turn_count")
 }
 
-// doCompact performs one best-effort context compaction (the summarize
-// round-trip) and, on success, re-states the summary contract so the
-// resumed turns finish correctly. Used by BOTH the turn-count hygiene gate
-// and the escalate1/escalate2 tiers of the budget ladder.
+// doCompact performs one best-effort context compaction (the summarize round-trip) and, on success,
+// re-states the summary contract so the resumed turns finish correctly.
 func (r *sessionRun) doCompact(steps int, reason string) {
 	r.mu.Lock()
 	if r.compactsPerformed >= compactMax() {
@@ -1659,10 +1336,7 @@ func (r *sessionRun) doCompact(steps int, reason string) {
 // sendAfterCompactReminder re-states the summary contract + todowrite
 // obligation after a lossy compact so the resumed turns finish correctly.
 func (r *sessionRun) sendAfterCompactReminder(steps int) {
-	// CARRIES THE SYSTEM PROMPT, and after a compact that is the point of it. A compact summarizes the
-	// conversation away — including the first message the prompt travelled in on — so without
-	// re-stating it the resumed turns run with no standing instructions while appearing to continue
-	// normally. One extra copy per compact is the accepted cost; a silently un-prompted worker is not.
+	// CARRIES THE SYSTEM PROMPT, and after a compact that is the point of it.
 	if err := r.client.SendMessageCarryingSystem(r.parentCtx, r.sessionID, r.system, r.modelRef, afterCompactReminderText); err != nil {
 		r.a.log.Warn("post-compact reminder send failed (best-effort)",
 			"execution", r.execRow.ID, "error", err)
@@ -1718,14 +1392,8 @@ func (r *sessionRun) maybeEnforceLadder(d budgetDimension) {
 	}
 	r.firedWarn[d][idx] = true
 	msg := r.budgetSpec.message(d, level, frac)
-	// Whether this tier ALSO compacts is gated on the operator's per-tier
-	// compact_tiers policy, the per-dimension compact_dims policy (so e.g. a
-	// tool-call-budget warning never triggers a lossy collapse that would
-	// force yet more tool calls), AND the shared re-arm latch. A tier ALWAYS
-	// injects its warning message when crossed; compaction is the lossy,
-	// mid-flight-interrupting action. canCompactNow takes r.mu itself, so it
-	// must run AFTER the unlock below — otherwise it deadlocks re-locking the
-	// mutex the caller already holds.
+	// Whether this tier ALSO compacts is gated on the operator's per-tier compact_tiers policy, the
+	// per-dimension compact_dims policy (so e.g. a tool-call-budget warning never triggers a lossy.
 	compactPolicy := r.budgetSpec.compactsAt(level) && r.budgetSpec.compactsDim(d)
 	r.mu.Unlock()
 
@@ -1735,14 +1403,8 @@ func (r *sessionRun) maybeEnforceLadder(d budgetDimension) {
 	}
 }
 
-// canCompactNow reports whether a context compaction is currently allowed:
-// under the per-execution cap, past the min-turn floor, and more than
-// min-turn turns since the last compact. It is shared by the turn-count
-// hygiene gate (maybeCompact) and the spend-ladder tiers
-// (maybeEnforceLadder) so compacts from DIFFERENT triggers cannot fire
-// back-to-back on consecutive steps — the exact "compactions stepping on
-// each other" failure where one trigger collapses context and the next, a
-// step later, collapses it again before the worker can rebuild.
+// canCompactNow reports whether a context compaction is currently allowed: under the per-execution
+// cap, past the min-turn floor, and more than min-turn turns since the last compact.
 func (r *sessionRun) canCompactNow() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1776,9 +1438,7 @@ func (r *sessionRun) injectBudgetWarning(d budgetDimension, level warnLevel, msg
 	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": msg, "source": "budget_warning"})
 }
 
-// abortForLadder is the HARD-abort terminal for a dimension that reached
-// its ceiling. finish() first (so the true reason survives the serve's
-// session.error echo), then Abort.
+// abortForLadder is the HARD-abort terminal for a dimension that reached its ceiling.
 func (r *sessionRun) abortForLadder(d budgetDimension) {
 	reason := "budget_abort:" + dimName(d)
 	r.a.log.Warn("budget limit reached — aborting session",
@@ -1800,10 +1460,8 @@ func (r *sessionRun) abortForLadder(d budgetDimension) {
 func (r *sessionRun) onStall(reason string) {
 	fatal := isFatalStall(reason)
 	r.callbacks.OnStall(r.parentCtx, r.execRow.ID, reason, fatal)
-	// Tier A: the tool-hang signal is owned by the abort-and-redirect
-	// actuator, NOT the nudge path — a nudge would queue behind the hung
-	// turn and never land. The monitor latches, so only the first trip
-	// actuates; repeats no-op inside actuateToolHang.
+	// Tier A: the tool-hang signal is owned by the abort-and-redirect actuator, NOT the nudge path — a
+	// nudge would queue behind the hung turn and never land.
 	if tool, ok := strings.CutPrefix(reason, "stalled:tool_hang:"); ok {
 		r.a.log.Warn("tool hang via monitor — aborting in-flight turn and redirecting",
 			"execution", r.execRow.ID, "tool", tool)
@@ -1812,11 +1470,8 @@ func (r *sessionRun) onStall(reason string) {
 	}
 	if fatal {
 		r.a.log.Warn("fatal stall — aborting session", "execution", r.execRow.ID, "reason", reason)
-		// Record the terminal reason FIRST so the true cause survives the
-		// `session.error: Aborted` echo that the serve emits when Abort
-		// lands below — finish() is first-arrival-wins, and without this
-		// ordering the SSE-triggered recordStreamError could win the race
-		// and mask the real reason with "opencode_session_error: Aborted".
+		// Record the terminal reason FIRST so the true cause survives the `session.error: Aborted` echo
+		// that the serve emits when Abort lands below — finish() is first-arrival-wins.
 		r.finish(false, reason)
 		_ = r.client.Abort(r.parentCtx, r.sessionID)
 		return
@@ -1824,11 +1479,8 @@ func (r *sessionRun) onStall(reason string) {
 	r.maybeNudge(reason)
 }
 
-// stallNudgeMessages returns the escalating liveness/stall messages, one per
-// nudge attempt (index 0..nudgeMax-1). Each is deliberately demanding and
-// frames the stall as the worker's fault that must be remedied immediately
-// or the session is killed. The last entry is the FINAL warning before the
-// abort.
+// stallNudgeMessages returns the escalating liveness/stall messages, one per nudge attempt (index
+// 0..nudgeMax-1).
 var stallNudgeMessages = []string{
 	"WARNING: You have gone quiet and are not making progress. You MUST work quickly and finish your work. " +
 		"Continue your task NOW — if you stall again your session will be KILLED.",
@@ -1836,14 +1488,8 @@ var stallNudgeMessages = []string{
 		"You MUST work quickly and finish your work to avoid exceeding your budget — your session WILL BE KILLED if you do not continue immediately.",
 }
 
-// maybeNudge injects an escalating liveness warning when an advisory stall
-// (text_loop / repetition / no_file_progress) trips and the nudge
-// budget/cooldown allow it. The message gets harsher with each nudge (see
-// stallNudgeMessages). When the budget is spent and the worker is STILL
-// tripping the same advisory signal, it escalates to a fatal kill +
-// recovery instead of silently dropping the signal (the nudge-first
-// reframe, now with escalating scary messages under the same warn→escalate→
-// abort model as the budget ladder).
+// maybeNudge injects an escalating liveness warning when an advisory stall (text_loop / repetition
+// / no_file_progress) trips and the nudge budget/cooldown allow it.
 func (r *sessionRun) maybeNudge(reason string) {
 	r.mu.Lock()
 	if r.finished || r.probePending {
@@ -1852,9 +1498,8 @@ func (r *sessionRun) maybeNudge(reason string) {
 	}
 	now := time.Now()
 	if r.nudgesSent >= r.nudgeMax() || now.Sub(r.lastNudgeAt) < r.nudgeCooldown() {
-		// Nudge budget spent (or inside the cooldown) and the worker is
-		// still tripping the advisory signal — escalate to fatal. The
-		// worker has had its nudges and has not broken the pattern.
+		// Nudge budget spent (or inside the cooldown) and the worker is still tripping the advisory signal
+		// — escalate to fatal.
 		r.mu.Unlock()
 		r.a.log.Warn("advisory stall budget exhausted — escalating to fatal",
 			"execution", r.execRow.ID, "reason", reason, "nudges", r.nudgesSent, "max", r.nudgeMax())
@@ -1918,53 +1563,27 @@ func completionProbeDecision(output string, nudgesSent int, lastNudgeAt, now tim
 		return false, false
 	}
 	if nudgesSent >= nudgeMax {
-		// Probe budget spent AND the marker is still absent: the worker was
-		// given every chance (probes + full reply windows) and never
-		// delivered the sign-off — fail honestly.
+		// Probe budget spent AND the marker is still absent: the worker was given every chance (probes +
+		// full reply windows) and never delivered the sign-off — fail honestly.
 		return false, true
 	}
 	if now.Sub(lastNudgeAt) < nudgeCooldown {
-		// Inside the cooldown after the last nudge/probe. This is NOT a
-		// terminal condition: the model may be mid-reply to the previous
-		// probe right now (any activity since then clears lastNudgeAt via
-		// resolveProbe). Treat as "wait" — return probe=true so the idle
-		// defers to the grace/next-turn path instead of instantly failing
-		// an actively-streaming session (the observed kill: probe → model
-		// answers within seconds → next idle → cooldown branch → fail).
+		// Inside the cooldown after the last nudge/probe.
 		return true, false
 	}
 	return true, false
 }
 
-// maybeProbeCompletion decides whether a session that went idle WITHOUT the
-// ORCHICON WORKER SUMMARY decision signal can still be completed. The most
-// common cause is the final model turn being truncated mid-stream (a
-// step_finish with reason "unknown"/0 tokens), so the worker never delivered
-// its summary. The session is still live at idle, so a completion probe
-// (a fresh prompt_async turn) asks it to finish the signal — the reply either
-// carries the marker (the next idle settles normally) or counts as the
-// liveness evidence that clears the probe. When the probe budget is
-// exhausted and the marker is still absent, the run FAILS instead of being
-// recorded as a hollow success (the workflow's loop decision / re-ask / fail
-// path is the correct owner of a missing signal).
-//
-// Returns true when the caller must NOT settle: either a probe was sent and
-// is being awaited, or the run was already failed for the missing signal.
+// maybeProbeCompletion decides whether a session that went idle WITHOUT the ORCHICON WORKER SUMMARY
+// decision signal can still be completed.
 func (r *sessionRun) maybeProbeCompletion() bool {
 	r.mu.Lock()
 	if r.finished || r.probePending {
 		r.mu.Unlock()
 		return false
 	}
-	// Probe-startup guard (2026-09-09, transcript 01M23C2MTF1ZYYHE8ACK17PMKV):
-	// the probe fired 6s after dispatch, BEFORE the model had streamed a
-	// single token — the first turn ended empty/instantly and the gate read
-	// it as a "cut-off summary". A session with NO work evidence (no tool
-	// call yet) cannot be "cut off mid-summary"; probing it demands
-	// summary-or-WORKING against a worker that never got to start. While
-	// workStarted is false, a markerless idle simply WAITS (the run stays
-	// alive; the wall-clock budget ladder is the backstop). The gate arms
-	// from the first tool call (observeToolStart).
+	// Probe-startup guard (2026-09-09, transcript 01M23C2MTF1ZYYHE8ACK17PMKV): the probe fired 6s after
+	// dispatch, BEFORE the model had streamed a single token.
 	r.hangMu.Lock()
 	started := r.workStarted
 	r.hangMu.Unlock()
@@ -1979,25 +1598,12 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 		return true
 	}
 	probe, fail := completionProbeDecision(r.output.String(), r.nudgesSent, r.lastNudgeAt, time.Now(), r.nudgeMax(), r.nudgeCooldown())
-	// A run that has been compacted is, by contract, mid-task: the compact
-	// fired on a cost / turn-count breach DURING the work, and the post-compact
-	// reminder explicitly tells the worker to keep going. Its session.idle
-	// after a compact is a boundary between work segments — the NORMAL pause of
-	// a resumed worker, not a truncated final turn. Treating that markerless
-	// idle as a missing decision interjects the "cut off" probe into a healthy,
-	// still-running session (the reported repro: the probe fires on every
-	// compacted run). So while compacted: a markerless idle waits for the next
-	// turn, while a marker-present idle still settles (return false). A
-	// compacted run that is genuinely truncated is still failed honestly by the
-	// unfinished-guard in finish() when the serve's stream ends.
+	// A run that has been compacted is, by contract, mid-task: the compact fired on a cost / turn-count
+	// breach DURING the work, and the post-compact reminder explicitly tells the worker to keep going.
 	if r.compactsPerformed > 0 {
 		r.mu.Unlock()
 		if probe || fail {
 			// Marker absent (probe or fail is only set on a markerless idle).
-			// A compacted run is mid-task, so this is a pause between work
-			// segments, not a truncated final turn: wait for the next turn
-			// rather than interjecting the "cut off" probe or failing on the
-			// exhausted budget.
 			r.a.log.Info("session idle without decision marker after compact — mid-task pause, waiting for the next turn",
 				"execution", r.execRow.ID, "nudges", r.nudgesSent)
 			return true
@@ -2018,20 +1624,7 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 		return false
 	}
 
-	// A probe is warranted, but do NOT fire it immediately. The opencode
-	// serve can emit session.idle a beat BEFORE the final text part that
-	// actually carries the ORCHICON WORKER SUMMARY marker has been flushed
-	// through the event stream — so a session whose model is still finishing
-	// its (long) final response could be interjected mid-token with the
-	// "your response appears cut off" probe, which is disruptive and, worse,
-	// can make a model that WAS about to deliver the marker re-plan instead.
-	// Arm a short grace timer; any mid-generation activity (a text/tool/step
-	// part arriving) cancels it via resolveProbe, and the NEXT session.idle
-	// re-enters this decision with the now-complete output. After the grace,
-	// if the session is genuinely idle with no marker, but the output was
-	// updated during the window (a marker-bearing tail landed), the probe is
-	// skipped. Only a session that stays silent and markerless through the
-	// grace is actually probed.
+	// A probe is warranted, but do NOT fire it immediately.
 	if !r.probeGracePending {
 		r.probeGracePending = true
 		grace := completionProbeGrace()
@@ -2062,9 +1655,7 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 				return
 			}
 			if !probe2 {
-				// Marker present now — the trailing text landed during the
-				// grace. Settle normally (the ordinary session.idle-finish
-				// path); do NOT interject a probe.
+				// Marker present now — the trailing text landed during the grace.
 				r.a.log.Info("decision marker landed during completion-probe grace — settling",
 					"execution", r.execRow.ID)
 				r.allTurnsDone()
@@ -2078,9 +1669,8 @@ func (r *sessionRun) maybeProbeCompletion() bool {
 	return true
 }
 
-// sendCompletionProbe sends the completion-probe interjection (the
-// "your response appears to have been cut off" message) once the session has
-// been genuinely idle and markerless through the completion-probe grace.
+// sendCompletionProbe sends the completion-probe interjection (the "your response appears to have
+// been cut off" message) once the session has been genuinely idle and markerless through.
 func (r *sessionRun) sendCompletionProbe() {
 	r.mu.Lock()
 	if r.finished || r.probePending {
@@ -2106,10 +1696,7 @@ func (r *sessionRun) sendCompletionProbe() {
 	r.bumpPending()
 	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": completionProbeText, "source": "nudge"})
 
-	// Verdict: no reply within the window → fail. Any reply resolves the
-	// probe (resolveProbe fires on telemetry activity) and the next
-	// session.idle re-enters maybeProbeCompletion with the accumulated
-	// output — so a successful summary probe settles normally.
+	// Verdict: no reply within the window → fail.
 	go func() {
 		select {
 		case <-r.done:
@@ -2168,11 +1755,7 @@ func (r *sessionRun) runSSE() {
 		if r.isFinished() {
 			return
 		}
-		// Tier B (c): the SSE transport dropped. When a turn was still
-		// outstanding this may be a mid-turn blip (not a clean finish).
-		// Wait a quiet window for fresh events on the new subscription;
-		// when none arrive and no idle landed, retry the turn on the same
-		// session instead of failing the execution.
+		// Tier B (c): the SSE transport dropped.
 		r.mu.Lock()
 		pend := r.pendingTurns
 		genBefore := r.eventGen
@@ -2234,15 +1817,8 @@ func (r *sessionRun) finish(ok bool, errMsg string) {
 	close(r.done)
 }
 
-// trimCarriedAgentPrompt removes the run-level prompt prefix from the message when
-// the selected agent already carries it.
-//
-// THE LENGTH IS EXACT FOR A COMPOSITE THIS PLANE BUILT — it is recorded by the very
-// builder that assembled the prompt — and it is still VERIFIED here, because a trim
-// that lands in the wrong place silently deletes the beginning of the task. The
-// remainder must begin with the task section the builder always writes next; on any
-// mismatch the FULL prompt is sent. The two failures are not equivalent: a
-// duplicated prefix costs tokens, a truncated one costs the worker its instructions.
+// trimCarriedAgentPrompt removes the run-level prompt prefix from the message when the selected
+// agent already carries it.
 func trimCarriedAgentPrompt(log *slog.Logger, execID, system string, n int) string {
 	if n <= 0 || n >= len(system) {
 		return system
@@ -2256,21 +1832,8 @@ func trimCarriedAgentPrompt(log *slog.Logger, execID, system string, n int) stri
 	return rest
 }
 
-// turnEnd and turnFailure are the two terminal classes an opencode stream can end on,
-// and terminalTurnKind is the ONE table mapping a raw event type to them.
-//
-// WHY A TABLE RATHER THAN SWITCH ARMS. The bug this was written for was a terminal event
-// that every consumer needed and one consumer's switch silently lacked: v1 ends a turn
-// with `session.idle` and reports a failure with `session.error`, v2 ends one with
-// `session.execution.succeeded` and reports a failure with `session.execution.failed` or
-// `session.step.failed` — and the runner knew only the v1 verbs. A 2.x execution therefore
-// never learned its turn had ended, for a successful turn as much as a failed one, and the
-// visible symptom was a run that looked productive (its text and tool parts flowed) and
-// never finished. A missing switch arm is invisible; a missing table row is a failing test
-// (TestTerminalEventsAreClassified).
-//
-// MEASURED against 2.0.26 and 1.18.34. Adding a surface's verb HERE is what makes it work:
-// the runner consumes this function, so there is no second place to remember.
+// turnEnd and turnFailure are the two terminal classes an opencode stream can end on, and
+// terminalTurnKind is the ONE table mapping a raw event type to them.
 const (
 	turnEnd     = "end"
 	turnFailure = "failure"

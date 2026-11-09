@@ -93,9 +93,8 @@ func TestRejectedWriteReportsOnTheDock(t *testing.T) {
 	}
 }
 
-// The operator: "Sort is working but jumping to the bottom of the screen." The
-// reload after a sort must start at the TOP, not restore the old row's new
-// position and scroll to keep it visible.
+// The operator: "Sort is working but jumping to the bottom of the screen." The reload after a sort
+// must start at the TOP, not restore the old row's new position and scroll to keep it visible.
 func TestSortResetsTheCursorToTheTop(t *testing.T) {
 	m := createPlane(t)
 	tbl := m.Base.ActiveTable()

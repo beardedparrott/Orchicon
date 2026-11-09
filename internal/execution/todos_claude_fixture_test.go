@@ -1,10 +1,7 @@
 package execution
 
-// todos_claude_fixture_test.go — AC2/AC3: a claude task list must be readable by
-// the ONE existing parse site. These fixtures are the EXACT durable envelopes a
-// claude TaskCreate/TaskUpdate sequence persists (produced by the claude mapper's
-// emitTodos, byte-shape-identical to opencode's todowrite part); latestTodos must
-// read them with no adapter-specific branch. There is no second parser.
+// todos_claude_fixture_test.go — AC2/AC3: a claude task list must be readable by the ONE existing
+// parse site.
 
 import (
 	"testing"

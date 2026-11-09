@@ -15,29 +15,8 @@ import (
 )
 
 // Host-input fingerprinting for the warm pool.
-//
-// A runtime container caches, at create time, a set of read-once HOST
-// artifacts: the opencode config (~/.config/opencode/opencode.json(c)), the
-// provider auth (~/.local/share/opencode/auth.json, copied into the ephemeral
-// XDG dir at container start), the mounted adapter CLI install
-// (~/.opencode), and the resolved GH token. The pool folds a fingerprint of
-// these into the environment key (see poolEnvKey) so ANY change to a read-once
-// host input forces the next checkout to create a fresh container instead of
-// silently reusing a warm one serving the stale value.
-//
-// The fingerprint is computed daemon-side from d.HostHome — the same trust
-// domain as the mounts — and is gated on the SAME existence checks
-// createContainer uses (daemon.go:369-406), so the key always agrees with what
-// is actually mounted into the container. No secret content ever appears in
-// the key or the logs: config/auth feed a digest, and the GH token feeds a
-// length+prefix digest only.
 
-// hashFileContent returns the hex SHA-256 of a file's bytes. A file that
-// exists but cannot be read contributes a distinct sentinel (never an empty
-// "absent" value), so a permission/read failure changes the fingerprint →
-// pool miss → fresh container. Failing toward a fresh container is the safe
-// direction: a container created under a config it could not read is
-// suspect.
+// hashFileContent returns the hex SHA-256 of a file's bytes.
 func hashFileContent(path string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -47,11 +26,8 @@ func hashFileContent(path string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// ghTokenFingerprint fingerprints the resolved GH token WITHOUT exposing it:
-// only the token LENGTH and its first 12 characters feed the digest, so any
-// rotation (different length or prefix) changes the fingerprint while the full
-// token never appears in the key or any log. Returns "" for an empty token (no
-// GH_TOKEN in the container — nothing to fingerprint).
+// ghTokenFingerprint fingerprints the resolved GH token WITHOUT exposing it: only the token LENGTH
+// and its first 12 characters feed the digest.
 func ghTokenFingerprint(tok string) string {
 	if tok == "" {
 		return ""
@@ -68,12 +44,8 @@ func ghTokenFingerprint(tok string) string {
 // pathological tree (a huge node_modules) cannot balloon per-checkout cost.
 const maxAdapterFingerprintEntries = 50000
 
-// adapterInstallFingerprint fingerprints every mounted adapter CLI install
-// declared in the install table (opencode + claude) with STAT-ONLY metadata:
-// sorted (relpath, size, mtime-ns, mode-type) tuples hashed. No file content
-// is read — the adapter binaries and provider packages can be large;
-// metadata changes on any upgrade, install, or reinstall. Returns "" when no
-// fingerprinted root exists.
+// adapterInstallFingerprint fingerprints every mounted adapter CLI install declared in the install
+// table (opencode + claude) with STAT-ONLY metadata: sorted (relpath, size, mtime-ns.
 func adapterInstallFingerprint(home string) string {
 	roots := adapterFingerprintRoots(home)
 	var entries []string
@@ -108,11 +80,8 @@ func adapterInstallFingerprint(home string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// adapterFingerprintRoots walks the declared install table (the SAME
-// declaration the daemon mounts from) and returns every tree marked
-// fingerprint. Config/transcript homes (~/.claude*) are deliberately NOT
-// marked: they change every session and must never churn a warm container.
-// A kind that declares no fingerprint roots (native) contributes none.
+// adapterFingerprintRoots walks the declared install table (the SAME declaration the daemon mounts
+// from) and returns every tree marked fingerprint.
 func adapterFingerprintRoots(home string) []string {
 	if home == "" {
 		return nil
@@ -138,13 +107,8 @@ func adapterFingerprintRoots(home string) []string {
 	return out
 }
 
-// hostInputsFingerprint builds the combined fingerprint of the read-once host
-// inputs under home, gated on the SAME existence checks createContainer uses
-// for the mounts so the pool key always agrees with what the container
-// actually mounts/copies. ghFp is the pre-computed non-sensitive GH-token
-// fingerprint (from ghTokenFingerprint). Returns "" when home is empty or no
-// fingerprinted input applies — the pool key then reduces to image+mounts
-// (unchanged behavior when nothing is mounted from HostHome).
+// hostInputsFingerprint builds the combined fingerprint of the read-once host inputs under home,
+// gated on the SAME existence checks createContainer uses for the mounts so the pool key always.
 func hostInputsFingerprint(home, ghFp string) string {
 	if home == "" {
 		return ""
@@ -175,12 +139,7 @@ func hostInputsFingerprint(home, ghFp string) string {
 		add("auth", hashFileContent(auth))
 	}
 
-	// 3. adapter install — stat-only fingerprint of the declared adapter CLI
-	// install trees (~/.opencode + ~/.local/share/claude). The serve execs
-	// the opencode binary and the claude bridge execs the claude binary; an
-	// upgrade or a newly installed provider package is invisible to warm
-	// containers. A home with nothing installed yields "" (today's
-	// behavior).
+	// 3.
 	if fp := adapterInstallFingerprint(home); fp != "" {
 		add("adapter", fp)
 	}

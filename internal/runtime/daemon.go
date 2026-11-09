@@ -26,44 +26,22 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// Daemon is the host-side runtime orchestrator. It is the ONLY process
-// with access to the container engine (podman by default, docker supported):
-// it creates/kills runtime containers
-// and warms/leases them through the warm pool. The control plane reaches
-// it over a unix socket mounted into the supervisor container (see
-// client.go).
-//
-// Every request is validated against a closed allowlist so the control
-// plane cannot use the daemon to create arbitrary containers, mount
-// arbitrary paths, or run arbitrary binaries.
+// It is the ONLY process with access to the container engine (podman by default, docker supported):
+// it creates/kills runtime containers and warms/leases them through the warm pool.
 type Daemon struct {
 	// ContainerExeDataDir is the daemon's state dir, used only to NAME a durable location in the refusal's
 	// remedy (exe_resolve.go). Never the daemon's own path: on Windows that is the %TEMP% self-copy.
 	ContainerExeDataDir string
-	// ContainerExeRequired says this host's own executable CANNOT be the container's entrypoint, so an empty
-	// ContainerExe is a refusal rather than a fallback.
-	//
-	// TRUE ON WINDOWS, where the daemon is a PE file and the container is Linux. The daemon sets it from
-	// runtime.ResolveContainerExe's result, so the rule lives in one place and the create path enforces it
-	// instead of discovering it as a readiness timeout.
+	// ContainerExeRequired says this host's own executable CANNOT be the container's entrypoint, so an
+	// empty ContainerExe is a refusal rather than a fallback.
 	ContainerExeRequired bool
 	// ContainerExe is the executable bind-mounted into runtime containers at /usr/local/bin/orchicon.
-	//
-	// DISTINCT FROM ExePath ON WINDOWS. The container is Linux and runs `orchicon runtime-supervisor`, so it needs
-	// a linux/amd64 binary; on a Linux host that is ExePath itself, but on Windows ExePath is a PE file the
-	// container cannot execute (see exe_resolve.go). Empty means "use ExePath", which keeps a Linux daemon
-	// exactly as it was.
 	ContainerExe string
-	// Paths expresses host paths the way the ENGINE'S VM sees them (pathmap.go). Nil means identity, which is
-	// correct on Linux. On Windows the engine runs in a WSL-backed machine and the filesystem it shares is
-	// addressed as /mnt/c/..., so every path handed to it must be mapped or the container cannot see its own
-	// project directory.
+	// Paths expresses host paths the way the ENGINE'S VM sees them (pathmap.go).
 	Paths *PathMapper
 
 	SocketPath string
-	// Engine is the container engine this daemon drives (podman by default,
-	// docker supported). Its identity and resolved binary live in one place
-	// (engine.go) so no call site can name a container engine of its own.
+	// Engine is the container engine this daemon drives (podman by default, docker supported).
 	Engine       Engine
 	Image        string   // image + tag, e.g. orchicon-runtime:local
 	Images       []string // additional allowlisted stock image tags (base is always included)
@@ -73,57 +51,31 @@ type Daemon struct {
 	AllowedRoots []string // host prefixes a project mount may be under
 	// AllowedRootsSource, when set, supplies the roots to ADD to AllowedRoots on every check — the
 	// project directories this plane knows about.
-	//
-	// IT IS A SOURCE, NOT A STARTUP LIST, because "a project's directory is allowed" has to become true the
-	// moment the project_dir is SET. A list captured at daemon start would silently refuse a project created
-	// a minute later, which is the same class of bug this whole area keeps producing: a capability that
-	// depends on when something was configured rather than on what is configured.
-	//
-	// Read per check rather than cached, for the same reason. The lookup is one indexed query against a
-	// handful of rows, and create is not a hot path — a container is built in seconds.
-	//
-	// A nil source means "operator roots only", which is the previous behaviour exactly.
 	AllowedRootsSource func(ctx context.Context) ([]string, error)
-	// ExePath is the daemon's own executable, bind-mounted read-only into
-	// every runtime container at /usr/local/bin/orchicon so the container can
-	// exec `orchicon runtime-supervisor` / `runtime-client` without the
-	// binary being baked into the image — a rebuilt daemon binary is picked
-	// up by every newly-created container with no image rebuild (the same
-	// "mount, never bake" pattern as the adapter CLIs). The CLI copies the
-	// running binary to a STABLE path next to the socket at startup
-	// (cmd/orchicon/runtime.go copySelf), so dev hygiene that deletes the
-	// original (`make clean`) can never orphan the mount — the copy is what
-	// gets mounted.
+	// ExePath is the daemon's own executable, bind-mounted read-only into every runtime container at
+	// /usr/local/bin/orchicon so the container can exec `orchicon runtime-supervisor` /
+	// `runtime-client`.
 	ExePath   string
 	CPUs      string
 	Memory    string
 	TmpfsSize string
-	// HomeTmpfsSize sizes the uid-owned tmpfs mounted at the runtime uid's
-	// $HOME, and at a private adapter data home. $HOME cannot be left to
-	// the engine's default root:0755 creation — see standardHostMountArgs.
+	// HomeTmpfsSize sizes the uid-owned tmpfs mounted at the runtime uid's $HOME, and at a private
+	// adapter data home.
 	HomeTmpfsSize string
-	// MaxAge / SweepInterval are retained for config compatibility; the
-	// warm pool's idle-reap now owns container cleanup (the pool is reset
-	// wholesale at daemon start, which covers the plane-down leak case).
+	// MaxAge / SweepInterval are retained for config compatibility; the warm pool's idle-reap now owns
+	// container cleanup (the pool is reset wholesale at daemon start.
 	MaxAge        time.Duration
 	SweepInterval time.Duration
 	Log           *slog.Logger
 	// pool leases/resets warm runtime containers (internal/runtime/pool.go).
 	pool *daemonPool
-	// createMu serializes createContainer so concurrent checkouts cannot
-	// race `run` on the same name (the pool names are unique, but
-	// serializing the engine create path keeps the engine itself calm).
+	// createMu serializes createContainer so concurrent checkouts cannot race `run` on the same name
+	// (the pool names are unique, but serializing the engine create path keeps the engine itself calm).
 	createMu sync.Mutex
 	// activeBuilds tracks in-flight engine builds by tag so Cancel can kill them.
 	buildMu      sync.Mutex
 	activeBuilds map[string]*exec.Cmd
-	// shutdown cancels the serve loop. Set by ListenAndServe; non-nil only while serving.
-	//
-	// IT EXISTS SO AN UPGRADE CAN RETIRE A STALE DAEMON PORTABLY. The daemon outlives installs (it
-	// held the socket for 8d19h on the reporting host, from a deleted inode), so it kept serving a
-	// route set older than the binary beside it — and /v1/images/pull 404'd. Stopping it by pid or
-	// signal is Unix-only and racy (a name match can hit another instance's daemon); asking the
-	// process to exit over the socket it already serves is neither.
+	// shutdown cancels the serve loop.
 	shutdownFn func()
 	// Test seams: unexported func fields that override the production
 	// implementations. Nil (the default) = production behavior.
@@ -131,14 +83,12 @@ type Daemon struct {
 	createFn        func(name string, req CreateRequest) (*CreateResponse, error) // overrides createContainer()
 	ghTokenFn       func() string                                                 // overrides the ghToken resolver (default hostGHToken)
 	engineVersionFn func() string                                                 // overrides the engine client-version probe (default: exec the engine)
-	// engine fingerprint cache: resolved ONCE per daemon process (the pool key's
-	// engine= / shape= terms). A daemon restart re-resolves it, and the pool is
-	// reset wholesale at daemon start, so a stale term can never serve.
+	// engine fingerprint cache: resolved ONCE per daemon process (the pool key's engine= / shape=
+	// terms).
 	engineFpOnce sync.Once
 	engineFp     string
-	// ghToken cache: daemon-resident, TTL-bounded (ORCHICON_RUNTIME_GH_TOKEN_FP_TTL,
-	// default 60s) so the pool key and the created container's GH_TOKEN come
-	// from the SAME resolution without spawning `gh auth token` per checkout.
+	// ghToken cache: daemon-resident, TTL-bounded (ORCHICON_RUNTIME_GH_TOKEN_FP_TTL, default 60s) so
+	// the pool key and the created container's GH_TOKEN come from the SAME resolution without spawning.
 	ghTokenMu   sync.Mutex
 	ghTokenVal  string
 	ghTokenTime time.Time
@@ -156,44 +106,22 @@ type CreateRequest struct {
 	WorkflowID string      `json:"workflow_id"`
 	Image      string      `json:"image"`
 	Mounts     []MountSpec `json:"mounts"`
-	// InstanceID labels the runtime container with the requesting
-	// instance (dev/prod) so each control plane only reaps its OWN
-	// containers — two instances sharing one daemon must not fight over
-	// each other's orphans.
+	// InstanceID labels the runtime container with the requesting instance (dev/prod) so each control
+	// plane only reaps its OWN containers.
 	InstanceID string `json:"instance_id,omitempty"`
-	// ServeConfig, when non-empty, requests the opencode serve inside the
-	// container: the OPENCODE_CONFIG_CONTENT JSON the serve boots with
-	// (permission rules + MCP servers; the plane builds it). ProjectDir is
-	// the container-side project path the serve runs in (executions' bash/
-	// file tools resolve against each session's directory). When set, the
-	// daemon starts the serve, publishes its port on the host loopback,
-	// and returns ServePort/ServePassword in the response.
+	// ServeConfig, when non-empty, requests the opencode serve inside the container: the
+	// OPENCODE_CONFIG_CONTENT JSON the serve boots with (permission rules + MCP servers; the plane
+	// builds it).
 	ServeConfig string `json:"serve_config,omitempty"`
 	// HOST path; converted before anything reads it (hostpaths.go).
 	ProjectDir string `json:"project_dir,omitempty" orchicon:"hostpath"`
 	// Secrets are tenant secrets to inject as container env at create time.
 	// Decrypted plane-side, never stored in image; same pattern as GH_TOKEN.
 	Secrets map[string]string `json:"secrets,omitempty"`
-	// GitStrategy is the effective workflow git strategy (local|pr|none)
-	// resolved for the run. It gates whether the runtime container is given
-	// a push-capable GH_TOKEN and the git identity/credential mounts: a
-	// "none" (ephemeral, detached-HEAD) run must never be able to push, so
-	// it gets neither and cannot create a branch ref locally or on origin.
-	// Empty does not default here — the daemon treats "" as "not none" so a
-	// request that omits it retains today's conditional token injection.
+	// GitStrategy is the effective workflow git strategy (local|pr|none) resolved for the run.
 	GitStrategy string `json:"git_strategy,omitempty"`
-	// AdapterKinds is the run's BOOT PROFILE: the set of adapter kinds its
-	// step workers resolve to (adapter.AdapterKind over each step worker's
-	// model_ref), sorted and deduped by the plane. The daemon derives from it
-	// which adapter installs to mount (the opencode config/auth/CLI mounts are
-	// conditional — AC 1/AC 3) and which in-container serves to warm (AC 2).
-	//
-	// A NIL profile is the legacy/unspecified case (a pre-change plane) and
-	// means the default kind (opencode) is demanded, preserving today's
-	// unconditional mounts + serve across a mixed-version rollout. A non-nil
-	// profile is honored verbatim, so an explicitly empty profile mounts
-	// nothing. Deliberately NO omitempty: the nil-vs-empty distinction is the
-	// rollout signal and must survive the wire.
+	// AdapterKinds is the run's BOOT PROFILE: the set of adapter kinds its step workers resolve to
+	// (adapter.AdapterKind over each step worker's model_ref), sorted and deduped by the plane.
 	AdapterKinds []string `json:"adapter_kinds"`
 }
 
@@ -202,22 +130,13 @@ type CreateResponse struct {
 	ContainerID string `json:"container_id"`
 	Name        string `json:"name"`
 	Running     bool   `json:"running"`
-	// ServePort is the HOST port the plane dials for the container's opencode
-	// serve: 127.0.0.1:<ServePort> under podman (the port published on loopback
-	// at create time), the container's own port under docker. ServePassword is
-	// its basic-auth password. ServeURL is the full plane-reachable base URL —
-	// http://127.0.0.1:<published port> on podman, http://<container ip>:<port>
-	// on docker, which is reachable from BOTH a host-plane and a containerized
-	// plane. A serve that cannot be brought up is zero/empty here — the run-start
-	// gate then fails loudly rather than dispatching into a dead serve.
+	// ServePort is the HOST port the plane dials for the container's opencode serve:
+	// 127.0.0.1:<ServePort> under podman (the port published on loopback at create time).
 	ServePort     int    `json:"serve_port,omitempty"`
 	ServePassword string `json:"serve_password,omitempty"`
 	ServeURL      string `json:"serve_url,omitempty"`
-	// PlaneURL is the sandbox plane's /healthz base URL — http://<container
-	// ip>:8080 under docker, http://127.0.0.1:<published port> under podman —
-	// set when the container's image boots the in-container Orchicon control
-	// plane (dev images: postgres + nats-server present). Empty on base/gui
-	// images: the run-start gate probes the plane only when this is set.
+	// PlaneURL is the sandbox plane's /healthz base URL — http://<container ip>:8080 under docker,
+	// http://127.0.0.1:<published port> under podman.
 	PlaneURL string `json:"plane_url,omitempty"`
 }
 
@@ -272,13 +191,8 @@ func (d *Daemon) ListenAndServe(ctx context.Context) error {
 		<-stop.Done()
 		srv.Close()
 	}()
-	// Warm-pool lifecycle: leases are daemon-resident, so the pool starts
-	// EMPTY — but it deliberately does NOT remove containers here. A daemon
-	// restart is host-wide while the containers belong to individual instances,
-	// so a wholesale sweep would kill a sibling instance's live run. Pre-restart
-	// containers are reconciled per instance by sweepPreRestartOrphans, triggered
-	// by that instance's own first lease request; idle-reap then keeps the pool
-	// bounded periodically.
+	// Warm-pool lifecycle: leases are daemon-resident, so the pool starts EMPTY — but it deliberately
+	// does NOT remove containers here.
 	d.pool = newDaemonPool(d)
 	d.pool.resetPool()
 	go func() {
@@ -297,11 +211,7 @@ func (d *Daemon) ListenAndServe(ctx context.Context) error {
 	return srv.Serve(l)
 }
 
-// handleShutdown asks the daemon to exit. POST only, on the unix socket, which is already the
-// daemon's own local control surface — the same trust boundary as every other /v1 route.
-//
-// IT RESPONDS FIRST AND EXITS AFTER, so the caller sees an answer rather than a reset connection: a
-// client that got no reply cannot tell "asked to stop" from "was already dead".
+// handleShutdown asks the daemon to exit.
 func (d *Daemon) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST required"})
@@ -320,12 +230,7 @@ func (d *Daemon) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 	// THE BUILD IS PART OF "HEALTHY", and its absence is why an eight-day-old daemon survived every
-	// upgrade. REPORTED as "runtime image fetch failed for orchicon-runtime:local: runtime image pull:
-	// runtime daemon: request failed" — the daemon answered /v1/images/pull with 404 because that
-	// route did not exist in the binary it was started from (it was running from a DELETED inode,
-	// 8d19h old, while the plane beside it had been rebuilt). A liveness-only probe cannot tell the
-	// difference between "up and current" and "up and three releases behind", so the caller had no
-	// way to decide it needed restarting.
+	// upgrade.
 	v := version.Current()
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "ok",
@@ -360,11 +265,8 @@ func (d *Daemon) handleRuntimes(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		// Reconcile THIS instance's pre-restart containers before leasing, so a
-		// container left by the previous daemon process is neither handed out nor
-		// left leaking. Scoped to the requesting instance (and to the same label
-		// value the create path writes) and claimed once per daemon lifetime; see
-		// sweepPreRestartOrphans for why the trigger is what makes it safe.
+		// Reconcile THIS instance's pre-restart containers before leasing, so a container left by the
+		// previous daemon process is neither handed out nor left leaking.
 		d.pool.sweepPreRestartOrphans(instanceID(req.InstanceID))
 		resp, err := d.pool.checkout(r.Context(), req.WorkflowID, req)
 		if err != nil {
@@ -403,9 +305,8 @@ func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case action == "" && r.Method == http.MethodDelete:
-		// Release the run's lease: the container is removed and reset in the
-		// background back into the warm pool (pristine + serve warmed). A
-		// run with no lease (already released / never leased) is a no-op.
+		// Release the run's lease: the container is removed and reset in the background back into the warm
+		// pool (pristine + serve warmed).
 		d.pool.release(id)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
 	case action == "exec" && r.Method == http.MethodPost:
@@ -417,10 +318,8 @@ func (d *Daemon) handleRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ExecRequest is the body of POST /v1/runtimes/{id}/exec: one shell
-// command to run inside the run's leased container (always-container
-// native transport). Command/Env/Cwd ride the supervisor's AgentRequest
-// "exec" shape; ProjectDir scopes the execution-guard shim.
+// ExecRequest is the body of POST /v1/runtimes/{id}/exec: one shell command to run inside the run's
+// leased container (always-container native transport).
 type ExecRequest struct {
 	Command string   `json:"command"`
 	Env     []string `json:"env,omitempty"`
@@ -429,21 +328,16 @@ type ExecRequest struct {
 	ProjectDir string `json:"project_dir,omitempty" orchicon:"hostpath"`
 }
 
-// ExecResult is the terminal result of an exec: collected stdout/stderr
-// plus the exit code (a non-zero exit is a worker-visible RESULT, not a
-// transport error).
+// ExecResult is the terminal result of an exec: collected stdout/stderr plus the exit code (a
+// non-zero exit is a worker-visible RESULT, not a transport error).
 type ExecResult struct {
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
 	ExitCode int    `json:"exit_code"`
 }
 
-// handleRuntimeExec runs one shell command in the run's leased container
-// and streams the supervisor's JSON-lines AgentEvents back to the plane.
-// The container name resolves from the warm pool's lease table (the run
-// MUST hold a lease — ensured at run start by EnsureForRun), never from
-// a caller-supplied name, so the control plane cannot exec into an
-// arbitrary container.
+// The container name resolves from the warm pool's lease table (the run MUST hold a lease — ensured
+// at run start by EnsureForRun), never from a caller-supplied name.
 func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID string) {
 	var req ExecRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -456,19 +350,15 @@ func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID
 	}
 	name := d.pool.containerForRun(runID)
 	if name == "" {
-		// LOGGED, because this handler logged nothing and that silence is what made
-		// a wedged dispatch invisible: an execution sat in `dispatching` for twenty
-		// minutes with an empty container and no line anywhere explaining it. The
-		// caller is naming an id the daemon does not lease — usually an EXECUTION id
-		// where a RUN id belongs.
+		// LOGGED, because this handler logged nothing and that silence is what made a wedged dispatch
+		// invisible: an execution sat in `dispatching` for twenty minutes with an empty container and no
+		// line.
 		d.Log.Warn("runtime stdio: no runtime container leased for this id — the caller must name the RUN, not the execution",
 			"run", runID)
 		httpError(w, http.StatusNotFound, "no runtime container leased for run "+runID)
 		return
 	}
-	// EVERY HOST PATH ON THE REQUEST IS CONVERTED HERE, BEFORE IT BECOMES A CONTAINER COMMAND.
-	// Cwd un-mapped is the reported failure: a Linux container cannot chdir to C:\... , and a process that
-	// treats such a path as relative litters the mount with a literal directory of that name (hostpaths.go).
+	// Cwd un-mapped is the reported failure: a Linux container cannot chdir to C:\...
 	mapHostPathFields(d.Paths, &req)
 	reqJSON, err := json.Marshal(AgentRequest{
 		Cmd:        "exec",
@@ -495,9 +385,8 @@ func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	fl, _ := w.(http.Flusher)
-	// Relay the supervisor's JSON-lines AgentEvents verbatim: the plane
-	// client reassembles {stream,data} chunks and the terminal
-	// {event:exit}/{event:error}. Flush per line so output streams live.
+	// Relay the supervisor's JSON-lines AgentEvents verbatim: the plane client reassembles
+	// {stream,data} chunks and the terminal {event:exit}/{event:error}.
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
@@ -509,13 +398,8 @@ func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID
 	_ = cmd.Wait()
 }
 
-// handleRuntimeStdio opens a long-lived DUPLEX streaming child in the run's
-// leased container: the claude adapter's transport. The first frame is the
-// `stdio` start request; every later frame on the same request body is a
-// follow-up control frame (stdin/signal/close) the supervisor consumes on
-// the SAME connection. The supervisor's JSON-lines AgentEvents stream back
-// verbatim. EnableFullDuplex is required so the handler can read the body
-// while streaming the response (Go >= 1.21).
+// handleRuntimeStdio opens a long-lived DUPLEX streaming child in the run's leased container: the
+// claude adapter's transport.
 func (d *Daemon) handleRuntimeStdio(w http.ResponseWriter, r *http.Request, runID string) {
 	// The container MUST resolve from the lease table — the plane can never
 	// exec into an arbitrary container (identical gate to handleRuntimeExec).
@@ -620,11 +504,7 @@ func relayNDJSON(r io.Reader, w io.Writer, fl http.Flusher) {
 	}
 }
 
-// mountArgv renders the request's bind mounts as `-v <src>:<dst>[:ro]` argv. It
-// is a helper rather than an inline loop so the SHAPE of every mount argv is
-// testable: validateCreate admits only ABSOLUTE host paths (no named volumes — a
-// volume survives the pristine container reset, ADR-0013 §6), and
-// TestCreateMountArgvUsesHostPathsOnly pins that the argv carries exactly that.
+// mountArgv renders the request's bind mounts as `-v <src>:<dst>[:ro]` argv.
 func mountArgv(mounts []MountSpec) []string {
 	out := make([]string, 0, 2*len(mounts))
 	for _, m := range mounts {
@@ -695,16 +575,12 @@ func guestifyCreateArgv(m *PathMapper, argv []string) ([]string, error) {
 	return out, nil
 }
 
-// guestifyTmpfsSpec maps the DEST of a `dest[:opts]` tmpfs value, and verifies nothing host-form survives.
-//
-// A tmpfs has no source side, so this is simpler than a volume spec — but the failure is identical, because
-// the drive-letter colon is a field separator to the engine either way.
+// guestifyTmpfsSpec maps the DEST of a `dest[:opts]` tmpfs value, and verifies nothing host-form
+// survives.
 func guestifyTmpfsSpec(m *PathMapper, spec string) (string, error) {
 	dest := spec
 	opts := ""
-	// THE SEPARATOR IS THE FIRST COLON THAT IS NOT A DRIVE LETTER. `C:\Users\x:rw` has a colon of its own at
-	// index 1, and splitting there yields dest="C" — which is precisely the malformed argument the engine
-	// rejects, so a naive Index would reproduce the bug inside its own fix.
+	// THE SEPARATOR IS THE FIRST COLON THAT IS NOT A DRIVE LETTER.
 	for j := 0; j < len(spec); j++ {
 		if spec[j] != ':' {
 			continue
@@ -724,9 +600,6 @@ func guestifyTmpfsSpec(m *PathMapper, spec string) (string, error) {
 }
 
 // guestifyMountSpec maps BOTH fields of one `src:dst[:opts]` that are still host paths.
-//
-// IT IS IDEMPOTENT, which is what lets it run after producers that already mapped: a value already in guest form
-// has no drive letter, so there is nothing to rewrite.
 func guestifyMountSpec(m *PathMapper, spec string) (string, error) {
 	rest := spec
 	opts := ""
@@ -801,9 +674,8 @@ func (d *Daemon) validateCreate(ctx context.Context, req CreateRequest) error {
 	if !validWorkflowID(req.WorkflowID) {
 		return fmt.Errorf("invalid workflow_id")
 	}
-	// Image allowlist: the base image, operator-configured stock images,
-	// or any image carrying the inherited runtime-base label (UI-built
-	// custom images). The base is always allowed.
+	// Image allowlist: the base image, operator-configured stock images, or any image carrying the
+	// inherited runtime-base label (UI-built custom images).
 	if req.Image != "" && !d.imageAllowed(req.Image) {
 		return fmt.Errorf("image not allowed: %s", req.Image)
 	}
@@ -814,12 +686,7 @@ func (d *Daemon) validateCreate(ctx context.Context, req CreateRequest) error {
 		if m.Source == "" {
 			return fmt.Errorf("mount source required")
 		}
-		// NO NAMED VOLUMES (ADR-0013 §6, BF-3(a)): every mount source must be an
-		// ABSOLUTE HOST PATH. A bare volume name ("orchicon-data") would ask the
-		// engine for engine-managed storage, which survives `rm` and therefore
-		// survives the pristine reset — the run boundary would leak. Rejected
-		// explicitly rather than left implied by the allowed-roots check, because
-		// that implication is what the argv test pins.
+		// NO NAMED VOLUMES (ADR-0013 §6, BF-3(a)): every mount source must be an ABSOLUTE HOST PATH.
 		if !filepath.IsAbs(m.Source) {
 			return fmt.Errorf("mount source must be an absolute host path, never a named volume (a volume survives the pristine container reset): %s", m.Source)
 		}
@@ -827,9 +694,8 @@ func (d *Daemon) validateCreate(ctx context.Context, req CreateRequest) error {
 		if err != nil {
 			return fmt.Errorf("bad mount source: %w", err)
 		}
-		// CHECKED IN THE ENGINE'S VIEW (withinAllowedRootsIn): on Windows the host path and the guest path have no
-		// string relationship, so comparing the host form against host roots refuses every mount once mapping is
-		// on. The error names BOTH forms, because the operator configured the one and the engine got the other.
+		// CHECKED IN THE ENGINE'S VIEW (withinAllowedRootsIn): on Windows the host path and the guest path
+		// have no string relationship.
 		roots := d.effectiveAllowedRoots(ctx)
 		if !withinRootsIn(d.Paths, abs, roots) {
 			return fmt.Errorf("mount source outside allowed roots: %s (as the container engine sees it: %s; "+
@@ -841,12 +707,8 @@ func (d *Daemon) validateCreate(ctx context.Context, req CreateRequest) error {
 			return fmt.Errorf("mount dest required")
 		}
 	}
-	// Boot profile: every demanded adapter kind must be a known adapter kind
-	// (the builtin provider catalog). An unknown kind is a plane bug or a
-	// stale/foreign plane — reject it rather than silently mounting nothing
-	// (or warming nothing) for a kind whose dispatch path is unknown. Blank
-	// entries are ignored (the plane never sends them; requestedKinds folds
-	// them to the default kind anyway).
+	// Boot profile: every demanded adapter kind must be a known adapter kind (the builtin provider
+	// catalog).
 	known := adapter.BuiltinAdapterKinds()
 	for _, k := range req.AdapterKinds {
 		k = strings.TrimSpace(k)
@@ -912,22 +774,12 @@ func (d *Daemon) effectiveAllowedRoots(ctx context.Context) []string {
 	return append(roots, extra...)
 }
 
-// createContainer creates a runtime container with the given pool-managed
-// name, warms its opencode serve (when ServeConfig is set), and returns its
-// state. Container creation is serialized with createMu so concurrent
-// checkouts/resets cannot race `run` on the same name.
+// createContainer creates a runtime container with the given pool-managed name, warms its opencode
+// serve (when ServeConfig is set), and returns its state.
 func (d *Daemon) createContainer(name string, req CreateRequest) (*CreateResponse, error) {
 	resp, err := d.createContainerInner(name, req)
 	if err != nil {
 		// THE DAEMON MUST RECORD ITS OWN FAILURES.
-		//
-		// REPORTED: a failed base-image container create appeared in the PLANE log and had no entry at all in
-		// runtime-daemon.log — which is where the argv is built, and therefore the one log an operator would
-		// look at. The argv was added to the returned ERROR earlier, which only helps a caller that surfaces
-		// it; the daemon's own record is what survives a run that never reports back.
-		//
-		// One wrapper rather than a log line per return: this function has a dozen refusal paths, and a
-		// per-path line is a line someone forgets.
 		d.Log.Error("runtime container create failed", "name", name, "image", req.Image,
 			"error", err, "engine", d.Engine.EngineNameForError())
 	}
@@ -949,20 +801,14 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 	// Nothing has failed on it yet only because creation was failing earlier for other reasons; it is mapped
 	// HERE, before anything reads it, so every forwarding path below is correct by the time it matters.
 	mapHostPathFields(d.Paths, &req)
-	// Fast, ACTIONABLE auth preflight: a claude-demanding run on a host with
-	// no reachable Claude credential must fail with the exact sign-in command,
-	// never silently start a container whose sessions then hang or fail with a
-	// misleading generic error. The session authenticates with the mounted
-	// host login, so this only rejects the case where no credential exists at
-	// all to mount.
+	// Fast, ACTIONABLE auth preflight: a claude-demanding run on a host with no reachable Claude
+	// credential must fail with the exact sign-in command.
 	if demandsKind(req, "claude") && !d.claudeAuthAvailable(req) {
 		return nil, fmt.Errorf(adapter.ClaudeAuthRequiredMessage)
 	}
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
-	// A stopped/crashed container with this name blocks recreation
-	// ("name already in use"). Remove it first so the pool always gets a
-	// fresh runtime (leftover-container hygiene).
+	// A stopped/crashed container with this name blocks recreation ("name already in use").
 	if exists, _ := d.containerExists(name); exists {
 		d.Log.Warn("removing stale runtime container", "name", name)
 		if out, err := d.engine("rm", "-f", name); err != nil {
@@ -975,44 +821,14 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 		image = d.Image
 	}
 	// AN UNRUNNABLE ADAPTER IS REFUSED HERE, BEFORE THE CONTAINER EXISTS.
-	//
-	// A Windows .exe resolves perfectly on this host and cannot execute inside a Debian container. Creating
-	// the container anyway means it starts, the supervisor runs, and the first session spawn fails inside
-	// the container with an exec-format error that points at nothing the operator did. Reported from the
-	// host's own adapter installs, both of which are Windows artifacts.
-	//
-	// The refusal names the remedy per kind, because "not installed" and "installed but the wrong binary"
-	// call for different actions.
 	if problems := CheckAdaptersForContainerWith(d.HostHome, requestedKinds(req)...); len(problems) > 0 {
 		return nil, fmt.Errorf("cannot run this workflow's adapter inside a Linux runtime container: %s",
 			strings.Join(problems, "; "))
 	}
 	args := d.createFlagArgs(name, req)
 	// -v <src>:<dst>[:ro] — preserved byte-identically for both engines here.
-	//
-	// STATED ADJUSTMENT (AC 3): ADR-0013 D3.2 wants a shared SELinux relabel
-	// (`:ro,z` / `,z`) on every real bind under podman on Linux, and this block
-	// — with adapterHostMounts' `:ro`/`:rw` suffix — is where it lands. It is a
-	// DELIBERATE non-adjustment in the engine-swap change (architecture note
-	// D-4): it belongs to the file/credential-ingress slice, and shipping it
-	// here would make this change's argv identical to that one's and force both
-	// to re-baseline the same six mount tests. The consequence is named rather
-	// than hidden: on an SELinux-enforcing host (Fedora/RHEL default) rootless
-	// podman denies access to these unrelabelled binds until that slice lands.
-	// Nothing about it is docker-specific, so no engine branch is needed now.
-	// MAPPED, NOT PASSED THROUGH. On Windows the engine is inside a Linux VM whose shared filesystem is
-	// /mnt/<drive>/..., so `C:\projects\app` would be a source it cannot resolve (pathmap.go, and podman's
-	// own machine-init docs). Identity on Linux, so this is a no-op for every existing host.
 	args = append(args, mountArgv(mapMounts(d.Paths, req.Mounts))...)
-	// Standard host-home mounts. The ADAPTER installs (opencode
-	// config/auth/CLI today) are CONDITIONAL on the run's boot profile
-	// (AC 1/AC 3): a native-only run mounts nothing opencode-related, so the
-	// host's model config and provider auth never leak into a container that
-	// cannot use them. The git identity/credential surface is NOT
-	// adapter-dependent (every worker pushes through the same git mounts) and
-	// keeps its own git-strategy gate. The mount set is derived from the SAME
-	// declaration the mount-never-bake guard reads, so the mounted set and the
-	// forbidden-bake set cannot drift.
+	// Standard host-home mounts.
 	args = append(args, d.standardHostMountArgs(req)...)
 	for k, v := range req.Secrets {
 		if k == "" || v == "" {
@@ -1020,28 +836,8 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 		}
 		args = append(args, "-e", k+"="+v)
 	}
-	// The daemon's own executable: bind-mounted read-only at
-	// /usr/local/bin/orchicon so the container can exec `orchicon
-	// runtime-supervisor` (PID 1 entrypoint below) and `orchicon
-	// runtime-client` (engine exec paths). The binary is deliberately not
-	// baked into the image; the engine resolves bind sources at `run`
-	// time, so a rebuilt bin/orchicon is picked up by newly-created
-	// containers without an image rebuild. This mount is a HARD dependency:
-	// the entrypoint is `orchicon runtime-supervisor`, so a container
-	// created without it would exec a missing binary and die — a confusing
-	// failure an operator would have to dig out of container logs. Fail the
-	// create with a clear error when the executable cannot be mounted
-	// instead of silently skipping.
-	// THE CONTAINER BINARY, which is not necessarily this daemon's own executable: the container is Linux, and on
-	// Windows the daemon's own file is a PE image a Linux container cannot run (exe_resolve.go). Empty keeps a
-	// Linux daemon — where the two ARE the same file — exactly as it was.
-	// THE FALLBACK USED TO BE HARMLESS AND IS NOW A TRAP. `d.ExePath` is the DAEMON'S OWN executable, which on
-	// Windows is a PE file — mounting it as the entrypoint gives `exec format error`, the supervisor dies, its
-	// socket never appears, and the operator gets "supervisor socket not ready" with no cause. MEASURED: the
-	// mounted file began `MZ\x90\x00\x03\x00`, 96.7 MiB, the Windows build.
-	//
-	// So there is NO fallback to the host binary when the host platform is not the container's. An empty
-	// ContainerExe on such a host is a REFUSAL with the reason and the remedy, not a mount that cannot work.
+	// The daemon's own executable: bind-mounted read-only at /usr/local/bin/orchicon so the container
+	// can exec `orchicon runtime-supervisor` (PID 1 entrypoint below) and `orchicon runtime-client`.
 	containerExe := d.ContainerExe
 	if containerExe == "" {
 		if d.ContainerExeRequired {
@@ -1057,9 +853,8 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 	if st, err := os.Stat(containerExe); err != nil || st.IsDir() {
 		return nil, fmt.Errorf("runtime container executable %s missing — cannot create runtime container: the orchicon binary is bind-mounted into every runtime container, never baked", containerExe)
 	}
-	// AND WHEN THE DAEMON KNOWS IT NEEDS A LINUX BINARY, IT DOES NOT TRUST THE RESOLUTION BLINDLY: a PE at this
-	// path is the reported failure arriving by another route (a stale copy, a misconfigured override), and
-	// catching it here turns a 30-second readiness timeout into one sentence.
+	// AND WHEN THE DAEMON KNOWS IT NEEDS A LINUX BINARY, IT DOES NOT TRUST THE RESOLUTION BLINDLY: a PE
+	// at this path is the reported failure arriving by another route (a stale copy.
 	if d.ContainerExeRequired && !isELFFile(containerExe) {
 		return nil, fmt.Errorf("%w: %s is not a linux/amd64 binary (a Linux container cannot execute it, so "+
 			"its supervisor would die on exec format error). %s",
@@ -1092,26 +887,10 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 			"boot_profile", strings.Join(requestedKinds(req), ","),
 			"adapter_mounts", strings.Join(describeAdapterMounts(d.HostHome, requestedKinds(req)...), ","))
 	}
-	// Create the container, retrying past name conflicts. A container that was
-	// just removed (an `rm -f` during a rebuild / orphan sweep) is still
-	// settling inside the ENGINE: `ps`/`inspect` already report it gone, but
-	// `run` then fails with the engine's own name-still-in-use wording —
-	// docker says "Conflict ... is already in use" / "removal ... in progress",
-	// podman says `creating container storage: the container name "x" is
-	// already in use by y` and, right after a removal, "container is in use".
-	// The predicate therefore comes from the ENGINE (Engine.NameInUseTokens)
-	// and covers both engines' wordings: podman's teardown is slower on a
-	// macOS/Windows machine (VM-backed storage), so an unadjusted predicate
-	// turns a recoverable clash into a failed create and silently churns
-	// containers. Remove any leftover and retry — the remove-before-create is
-	// also what keeps the pristine-reset guarantee honest.
-	// THE LAST LINE OF DEFENCE ON PATHS. Every producer above is supposed to map, and on Linux identity hides
-	// any that forgets — so the whole argv is swept once, here, where the engine is about to see it.
+	// Create the container, retrying past name conflicts.
 	args, gerr := guestifyCreateArgv(d.Paths, args)
 	if gerr != nil {
-		// THE ARGV IS IN THE MESSAGE. The reported failure named only "invalid container path \"C\"" and left
-		// the operator (and the next agent) to guess which argument was malformed, because the create argv was
-		// never logged anywhere. That omission is the reason this class of bug takes a round trip to diagnose.
+		// THE ARGV IS IN THE MESSAGE.
 		return nil, fmt.Errorf("create runtime %s: %w\n  engine argv: %s", name, gerr, describeCreateArgv(args))
 	}
 	var out string
@@ -1138,40 +917,20 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 			name, out, err, describeCreateArgv(args))
 	}
 
-	// Wait for the in-container supervisor socket to answer pings. The
-	// supervisor starts immediately; opencode/lazy deps are not required
-	// for readiness.
+	// Wait for the in-container supervisor socket to answer pings.
 	deadline := time.Now().Add(supervisorReadyWindow)
 	for time.Now().Before(deadline) {
 		if d.pingRuntime(name) {
 			resp := &CreateResponse{Name: name, Running: true}
-			// Warm the IN-CONTAINER serves the run's boot profile needs
-			// (AC 2/AC 5). The supervisor multiplexes one serve per
-			// serve-dependent kind (keyed on the request's adapter kind)
-			// while native steps keep using the one-shot exec path with no
-			// serve at all. serveKindsFor yields at most the opencode serve
-			// today, so an opencode-demanding run is unchanged. The
-			// `ServeConfig != ""` guard is kept verbatim: an empty config
-			// still means "no serve", so only a demanding profile warms one.
+			// Warm the IN-CONTAINER serves the run's boot profile needs (AC 2/AC 5).
 			if req.ServeConfig != "" {
 				for _, kind := range serveKindsFor(requestedKinds(req)) {
-					// Start the adapter's serve inside the container and
-					// publish its port. A serve that cannot come up is a hard
-					// dispatch error — the one-shot degradation was removed,
-					// so the adapter surfaces this as failed_to_start →
-					// workflow recovery. The container stays up so the
-					// watchdog / a later retry can converge it.
+					// Start the adapter's serve inside the container and publish its port.
 					port, pw, planeEnabled, serr := d.startServe(name, kind, req)
 					if serr != nil {
 						return nil, fmt.Errorf("start %s serve in runtime %s: %w", kind, name, serr)
 					}
-					// Resolve where the plane DIALS this serve. Under podman that
-					// is the loopback port published at create time (the container
-					// IP is not host-routable); under docker it is the bridge IP,
-					// unchanged. ServePort is the HOST port in both cases —
-					// lifecycle.go and the opencode adapter build
-					// `http://127.0.0.1:<ServePort>` from it, so handing back the
-					// container port would point them at nothing under podman.
+					// Resolve where the plane DIALS this serve.
 					serveBase, hostPort, berr := d.hostBaseURL(name, port)
 					if berr != nil {
 						return nil, fmt.Errorf("resolve host address for %s serve in runtime %s: %w", kind, name, berr)
@@ -1180,9 +939,8 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 					resp.ServePassword = pw
 					resp.ServeURL = serveBase
 					if planeEnabled {
-						// The supervisor booted the sandbox plane (dev image);
-						// the run-start gate verifies its /healthz before any
-						// execution dispatches.
+						// The supervisor booted the sandbox plane (dev image); the run-start gate verifies its /healthz
+						// before any execution dispatches.
 						planeBase, _, perr := d.hostBaseURL(name, sandboxPlanePort)
 						if perr != nil {
 							return nil, fmt.Errorf("resolve host address for the sandbox plane in runtime %s: %w", name, perr)
@@ -1195,25 +953,12 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	// A TIMEOUT WITH NO CAUSE IS THE REPORTED COMPLAINT. The container started and the supervisor never
-	// answered, and all the operator got was "supervisor socket not ready" — which names the symptom and
-	// nothing else. MEASURED on Windows: the supervisor was a PE binary the Linux container could not exec,
-	// so it died instantly with `exec format error`, and that fact was only visible in
-	// `podman logs <container>`.
-	//
-	// The exec bits that matter are cheap to collect here: the container's state (and exit code, when it has
-	// already exited), plus the LAST lines of its output. That turns an opaque 30-second timeout into a
-	// diagnosis the operator can act on — and it is what makes the entrypoint class of bug self-evident
-	// instead of a round trip.
+	// A TIMEOUT WITH NO CAUSE IS THE REPORTED COMPLAINT.
 	return nil, fmt.Errorf("runtime %s started but its supervisor never answered within %s%s",
 		name, supervisorReadyWindow, d.supervisorFailureDetail(name))
 }
 
 // supervisorFailureDetail is the WHY behind a supervisor readiness timeout, appended to the error.
-//
-// It never guesses. Each fact is one engine call, and anything that cannot be read contributes nothing —
-// a diagnostic that invents a cause is worse than a bare timeout, because it sends the operator after the
-// wrong thing.
 func (d *Daemon) supervisorFailureDetail(name string) string {
 	var b strings.Builder
 	if out, err := d.engine("inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", name); err == nil {
@@ -1224,9 +969,8 @@ func (d *Daemon) supervisorFailureDetail(name string) string {
 			}
 		}
 	}
-	// The last few lines of the container's own output. The failure that motivated this — exec format
-	// error on a PE entrypoint — appears ONLY here, because the process died before it could log anything
-	// of its own.
+	// The failure that motivated this — exec format error on a PE entrypoint — appears ONLY here,
+	// because the process died before it could log anything of its own.
 	if out, err := d.engine("logs", "--tail", "5", name); err == nil {
 		if line := firstNonEmptyLine(out); line != "" {
 			b.WriteString("; last output: " + line)
@@ -1242,9 +986,6 @@ func (d *Daemon) supervisorFailureDetail(name string) string {
 const supervisorReadyWindow = 30 * time.Second
 
 // firstNonEmptyLine returns the first non-blank line of s, trimmed, or "".
-//
-// LOCAL ON PURPOSE. internal/containerengine has a firstLine, but this package does not import that one for
-// a diagnostic helper — and a one-line dependency is not worth the coupling.
 func firstNonEmptyLine(s string) string {
 	for _, line := range strings.Split(s, "\n") {
 		if t := strings.TrimSpace(line); t != "" {
@@ -1318,60 +1059,27 @@ func (d *Daemon) createFlagArgs(name string, req CreateRequest) []string {
 	return args
 }
 
-// standardHostMountArgs returns the daemon-appended host-home arg block for
-// a create request: the ADAPTER install mounts (conditional on the run's
-// boot profile — AC 1/AC 3), the git identity/credential mounts and the
-// push-capable GH_TOKEN (gated on the run's git strategy, NOT
-// adapter-dependent), HOME, and the mounted adapter CLI's PATH prefix
-// (conditional on the same demand as the mounts, so the prefix never points
-// at an absent host dir).
-//
-// Factored out of createContainer so the mount conditionality is unit
-// testable without an engine. The adapter mount set comes from the SAME
-// declaration the mount-never-bake guard reads, so the mounted set and the
-// forbidden-bake set cannot drift.
+// standardHostMountArgs returns the daemon-appended host-home arg block for a create request: the
+// ADAPTER install mounts (conditional on the run's boot profile — AC 1/AC 3).
 func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 	if d.HostHome == "" {
 		return nil
 	}
 	var args []string
-	// Adapter installs — mounted ONLY when the run's boot profile demands
-	// the kind. A native-only run gets none: the host's model config and
-	// provider auth never leak into a container that cannot use them.
+	// Adapter installs — mounted ONLY when the run's boot profile demands the kind.
 	args = append(args, mapMountArgv(d.Paths, adapterHostMounts(d.HostHome, requestedKinds(req)...))...)
-	// PRIVATE adapter directories: a demand whose install is declared private
-	// gets a writable, runtime-uid-owned directory at the same path instead of
-	// a host bind, plus its declared credential file read-only inside it.
+	// PRIVATE adapter directories: a demand whose install is declared private gets a writable,
+	// runtime-uid-owned directory at the same path instead of a host bind.
 	for _, ph := range adapterPrivateHomes(d.HostHome, requestedKinds(req)...) {
-		// A PRIVATE FILE IS CONFIG, NOT A HOME. It cannot be tmpfs'd (tmpfs takes a directory, and masking
-		// its parent would hide everything else there), so it is bound READ-WRITE from the host at the
-		// identical absolute path.
-		//
-		// WRITABLE IS DELIBERATE AND IS THE REPORTED REQUIREMENT: the CLI rewrites ~/.claude.json on start
-		// and on settings changes, so a read-only bind leaves it unable to persist and — for a config the
-		// CLI insists on owning — unable to run. The cost is that concurrent containers share this one file,
-		// which is acceptable for CONFIG in a way it is not for the credential (see the credential bind
-		// below): config is last-writer-wins with no secret in it.
+		// A PRIVATE FILE IS CONFIG, NOT A HOME.
 		if ph.isFile {
 			args = append(args, "-v", d.Paths.Map(ph.dir)+":"+d.Paths.Map(ph.dir)+":rw")
 			continue
 		}
-		// MAPPED, LIKE EVERY OTHER PATH THIS FUNCTION EMITS. This was the ONE host-form argument left in the
-		// argv — every -v beside it was already /mnt/c/... — so the reported failure was a lone `--tmpfs
-		// C:\Users\operator\.local\share\opencode:...`, which podman reads as the container path "C".
-		//
-		// It was invisible for the same reason the whole class is: on Linux the mapping is identity, so an
-		// unmapped tmpfs is byte-identical to a correct one.
+		// MAPPED, LIKE EVERY OTHER PATH THIS FUNCTION EMITS.
 		args = append(args, "--tmpfs", d.tmpfsOwned(d.Paths.Map(ph.dir), d.HomeTmpfsSize))
 		if ph.authFile != "" {
-			// THE SOURCE IS A HOST PATH THE ENGINE MUST RESOLVE; the destination is already a guest path
-			// (ph.dir lives under the host home, so it is mapped too — see mapMountArgv). os.Stat above ran
-			// against the real host path, which is why only the ARGS are mapped.
 			// WRITABLE ONLY WHEN THE ADAPTER DECLARES IT NEEDS TO BE (adapterInstall.authWritable).
-			// opencode only reads its auth.json, so a read-only bind there keeps a worker from modifying the
-			// operator's credential. The Claude Code CLI rewrites .credentials.json on token refresh, and a
-			// read-only bind turns that into EACCES inside the container — the adapter then exits 1 with no
-			// terminal result message and never reaches the API.
 			mode := ":ro"
 			if ph.authWritable {
 				mode = ":rw"
@@ -1380,12 +1088,8 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 				d.Paths.Map(filepath.Join(ph.dir, filepath.Base(ph.authFile)))+mode)
 		}
 	}
-	// Git identity/credential + push-capable GH_TOKEN are gated on the run's
-	// effective git strategy: a "none" (ephemeral detached-HEAD) run must
-	// never be able to create or push a branch, so it gets NO
-	// .gitconfig/.git-credentials/gh mounts and NO GH_TOKEN. Every worker —
-	// native or adapter — pushes through this same surface, so it is not
-	// adapter-gated.
+	// Git identity/credential + push-capable GH_TOKEN are gated on the run's effective git strategy: a
+	// "none" (ephemeral detached-HEAD) run must never be able to create or push a branch.
 	if req.GitStrategy != "none" {
 		for _, f := range []string{".gitconfig", ".git-credentials"} {
 			if st, err := os.Stat(filepath.Join(d.HostHome, f)); err == nil && !st.IsDir() {
@@ -1393,10 +1097,7 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 				args = append(args, "-v", d.Paths.Map(hp)+":"+d.Paths.Map(hp)+":ro")
 			}
 		}
-		// GitHub CLI auth + state (read-only — PR/merge workers run
-		// `gh pr create`/`gh repo create`). Without the hosts.yml mount gh
-		// reports "not authenticated" inside the container even though the
-		// operator is logged in on the host.
+		// GitHub CLI auth + state (read-only — PR/merge workers run `gh pr create`/`gh repo create`).
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".config", "gh")); err == nil && st.IsDir() {
 			hp := filepath.Join(d.HostHome, ".config", "gh")
 			args = append(args, "-v", d.Paths.Map(hp)+":"+d.Paths.Map(hp)+":ro")
@@ -1405,14 +1106,8 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 			hp := filepath.Join(d.HostHome, ".local", "share", "gh")
 			args = append(args, "-v", d.Paths.Map(hp)+":"+d.Paths.Map(hp)+":ro")
 		}
-		// The operator's gh token often lives in the OS keyring, which is NOT
-		// available inside containers — hosts.yml alone has no token, so `gh`
-		// reports "not authenticated". Resolve the host's effective token and
-		// pass it as GH_TOKEN so PR/merge workers can actually create PRs.
-		// Best-effort: no gh / no auth / keyring locked → skip. d.ghToken()
-		// is TTL-cached and shared with the pool key fingerprint so the
-		// container's env and the pool key always agree on the token (no
-		// wasteful fresh-create from a mid-checkout rotation race).
+		// The operator's gh token often lives in the OS keyring, which is NOT available inside containers —
+		// hosts.yml alone has no token, so `gh` reports "not authenticated".
 		if tok := d.ghToken(); tok != "" {
 			args = append(args, "-e", "GH_TOKEN="+tok)
 		}
@@ -1462,11 +1157,8 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 		args = append(args, "--tmpfs", d.tmpfsOwned(hd.path, hd.size))
 	}
 	args = append(args, "-e", "HOME="+d.Paths.Map(d.HostHome))
-	// Put every MOUNTED adapter CLI on PATH so the supervisor's
-	// procwin.Command("opencode", ...) / procwin.Command("claude", ...) resolves
-	// it. Per-kind (not just the default kind), and ONLY for a demanded
-	// kind whose host bin dir actually exists — the prefix never points at
-	// an absent host dir (the invariant above).
+	// Per-kind (not just the default kind), and ONLY for a demanded kind whose host bin dir actually
+	// exists — the prefix never points at an absent host dir (the invariant above).
 	kinds := requestedKinds(req)
 	if dirs := adapterPathPrefix(d.HostHome, kinds...); len(dirs) > 0 {
 		args = append(args, "-e", "PATH="+strings.Join(dirs, string(os.PathListSeparator))+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
@@ -1474,16 +1166,12 @@ func (d *Daemon) standardHostMountArgs(req CreateRequest) []string {
 		// so a CHILD process gets the same bin dirs prepended.
 		args = append(args, "-e", "ORCHICON_ADAPTER_KINDS="+strings.Join(kinds, ","))
 	}
-	// TELL THE SUPERVISOR WHICH HOST PATHS ARE MOUNTED WHERE, so it can repoint the worktree `.git` pointers the
-	// plane provisioned on this side (gitdir.go). Derived from the SAME mount list createContainer is building,
-	// so the pairs cannot drift from what is actually mounted — and only for mounts whose host and guest forms
-	// DIFFER, which on Linux (identity mode) is none of them.
+	// TELL THE SUPERVISOR WHICH HOST PATHS ARE MOUNTED WHERE, so it can repoint the worktree `.git`
+	// pointers the plane provisioned on this side (gitdir.go).
 	if mapping := gitdirMappingEnv(req.Mounts, d.Paths); mapping != "" {
 		args = append(args, "-e", mapping)
 	}
-	// Provider credentials for a demanded adapter, as ENVIRONMENT. This is the
-	// only channel opencode 1.x and 2.x BOTH honour — 2.x does not read
-	// auth.json at all — so no version branch is needed (adapterCredentialEnv).
+	// Provider credentials for a demanded adapter, as ENVIRONMENT.
 	if pairs, unusable := adapterCredentialEnv(d.HostHome, kinds...); len(pairs) > 0 {
 		for _, p := range pairs {
 			args = append(args, "-e", p)
@@ -1559,12 +1247,8 @@ func (d *Daemon) tmpfsOwned(path, size string) string {
 	return opt
 }
 
-// claudeAuthAvailable reports whether the host has a usable Claude credential,
-// so a claude-demanding create can fail ACTIONABLY instead of hanging: the
-// persisted claude.ai host login (~/.claude/.credentials.json, written by the
-// operator's own `claude` sign-in), an ANTHROPIC_API_KEY in the daemon env, or
-// an ANTHROPIC_API_KEY supplied as a create secret. It never reads credential
-// CONTENT — only presence. Orchicon stores no Anthropic credential of its own.
+// claudeAuthAvailable reports whether the host has a usable Claude credential, so a
+// claude-demanding create can fail ACTIONABLY instead of hanging.
 func (d *Daemon) claudeAuthAvailable(req CreateRequest) bool {
 	if d.HostHome != "" {
 		if st, err := os.Stat(filepath.Join(d.HostHome, ".claude", ".credentials.json")); err == nil && !st.IsDir() {
@@ -1578,10 +1262,8 @@ func (d *Daemon) claudeAuthAvailable(req CreateRequest) bool {
 	return ok
 }
 
-// hostGHToken resolves the operator's effective GitHub CLI token
-// (`gh auth token`), which may live in the OS keyring rather than
-// hosts.yml. Bounded + best-effort: returns "" when gh is absent, not
-// authenticated, or the keyring is locked.
+// hostGHToken resolves the operator's effective GitHub CLI token (`gh auth token`), which may live
+// in the OS keyring rather than hosts.yml.
 func hostGHToken() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -1593,14 +1275,8 @@ func hostGHToken() string {
 	return strings.TrimSpace(string(out))
 }
 
-// ghToken returns the host's effective GH token, cached for
-// ORCHICON_RUNTIME_GH_TOKEN_FP_TTL (default 60s). The cache is
-// daemon-resident, so the pool key (hostInputsFingerprint) and every
-// container's GH_TOKEN always come from the SAME resolution, without spawning
-// `gh auth token` (up to an 8s keyring-bound subprocess) per checkout. A
-// daemon restart resets the pool wholesale, so a stale in-memory token can
-// never hand out a stale container. Best-effort: "" when gh is absent,
-// unauthenticated, or the keyring is locked.
+// ghToken returns the host's effective GH token, cached for ORCHICON_RUNTIME_GH_TOKEN_FP_TTL
+// (default 60s).
 func (d *Daemon) ghToken() string {
 	d.ghTokenMu.Lock()
 	defer d.ghTokenMu.Unlock()
@@ -1619,16 +1295,8 @@ func (d *Daemon) ghToken() string {
 	return d.ghTokenVal
 }
 
-// engineInputFingerprint is the pool key's ENGINE term (ADR-0013 D7.1/D7.2):
-// the engine family, its client version, and the create-time SHAPE of a
-// container under it. Resolved ONCE per daemon process (sync.Once): an engine
-// switch or a podman upgrade on a live host must miss every warm container that
-// engine did not create, and the version must never be re-exec'd per checkout.
-//
-// The version NEVER degrades to "": an empty term would fold away and silently
-// stop covering the engine — the exact failure a fingerprint exists to prevent.
-// Unresolvable (no binary on PATH, or the exec failed) is the literal "unknown",
-// which still keys distinctly from any resolved version.
+// The version NEVER degrades to "": an empty term would fold away and silently stop covering the
+// engine — the exact failure a fingerprint exists to prevent.
 func (d *Daemon) engineInputFingerprint() string {
 	d.engineFpOnce.Do(func() {
 		ver := ""
@@ -1647,37 +1315,15 @@ func (d *Daemon) engineInputFingerprint() string {
 	return d.engineFp
 }
 
-// hostInputsFingerprint computes a fresh-per-checkout fingerprint of the
-// read-once HOST inputs baked into every runtime container at create time:
-// the DAEMON BINARY (bind-mounted read-only at /usr/local/bin/orchicon —
-// the MCP sidecar and supervisor inside the container run it; a warm pooled
-// container pinned to a pre-fix binary served the 2026-08-31 04:12 spawn
-// with a stale create envelope that a spawning worker misread as IDEA
-// confirmation), opencode config, provider auth, the adapter install, and
-// the resolved GH token (see hostfp.go). The warm pool folds it into the
-// environment key, so ANY change to a read-once host input — a rebuilt
-// binary included — forces the next checkout to create a fresh container
-// instead of reusing a warm one serving the stale value. The binary term is
-// ALWAYS present ("absent" when the exe cannot be stat'd), so the key never
-// silently reverts to image+mounts on a fingerprint gap; bind-mount
-// resolution at container-create time additionally picks up a rebuilt binary for
-// freshly-created containers.
-//
-// The ENGINE term (engineInputFingerprint) is folded in here too: the pool key
-// pins the engine family, its client version, and the create-time SHAPE, so an
-// engine switch or an engine upgrade on a live host cannot hand out a warm
-// container the new engine did not create (ADR-0013 D7.1/D7.2).
+// hostInputsFingerprint computes a fresh-per-checkout fingerprint of the read-once HOST inputs
+// baked into every runtime container at create time.
 func (d *Daemon) hostInputsFingerprint() string {
-	// Binary fingerprint FIRST — the bind-mount applies to EVERY runtime
-	// container (createContainer hard-fails without it), so it must color
-	// the pool key even when HostHome is unset.
+	// Binary fingerprint FIRST — the bind-mount applies to EVERY runtime container (createContainer
+	// hard-fails without it), so it must color the pool key even when HostHome is unset.
 	var binFp string
 	if st, err := os.Stat(d.ExePath); err == nil && !st.IsDir() {
-		// Content hash of the daemon's own executable (hashFileContent
-		// returns a distinct sentinel when the file exists but cannot be
-		// read — never an empty "absent" value). A missing/unreadable
-		// binary still changes the fingerprint, so the pool misses toward
-		// a fresh container — the safe direction.
+		// Content hash of the daemon's own executable (hashFileContent returns a distinct sentinel when the
+		// file exists but cannot be read — never an empty "absent" value).
 		binFp = fmt.Sprintf("size=%d|%s", st.Size(), hashFileContent(d.ExePath))
 	} else {
 		binFp = "absent"
@@ -1689,17 +1335,13 @@ func (d *Daemon) hostInputsFingerprint() string {
 	return hostFp + "|" + binFp + "|" + d.engineInputFingerprint()
 }
 
-// startServe asks the in-container supervisor to bring up `opencode
-// serve` (idempotent — the supervisor owns the password and reports it
-// back), then resolves the published host loopback port. Returns the
-// host port + the container's serve password, plus whether the image
-// boots the sandbox plane (the daemon publishes its /healthz URL).
+// startServe asks the in-container supervisor to bring up `opencode serve` (idempotent — the
+// supervisor owns the password and reports it back), then resolves the published host loopback
+// port.
 func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, bool, error) {
 	reqJSON, err := json.Marshal(AgentRequest{
 		Cmd: "serve",
-		// The demanded adapter kind whose serve this starts. The supervisor
-		// keys its per-adapter serve state on it, so a future adapter's
-		// serve can be multiplexed alongside opencode's (empty → opencode).
+		// The demanded adapter kind whose serve this starts.
 		AdapterKind: kind,
 		Argv:        []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"},
 		Env: []string{
@@ -1742,19 +1384,15 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 		return 0, "", false, fmt.Errorf("serve handshake: incomplete serve event (port=%d)", port)
 	}
 
-	// Resolve where the plane reaches this serve: podman's published loopback
-	// port, or docker's container IP. Resolved AFTER the handshake above (the
-	// in-container listener is already up) and validated by the usability probe
-	// below before the plane ever sees it — ordering answers the published-port
-	// race rather than a docker-proxy assumption (ADR-0013 D2.2).
+	// Resolve where the plane reaches this serve: podman's published loopback port, or docker's
+	// container IP.
 	serveBase, _, berr := d.hostBaseURL(name, port)
 	if berr != nil {
 		return 0, "", false, fmt.Errorf("resolve serve address for %s: %w", name, berr)
 	}
 
-	// The serve's cold start answers /global/health before it can handle
-	// sessions (providers/MCP load); gate on the serve being USABLE — a
-	// real session create round-trip — before handing it to the plane.
+	// The serve's cold start answers /global/health before it can handle sessions (providers/MCP load);
+	// gate on the serve being USABLE — a real session create round-trip.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if serveUsableAt(serveBase, password) {
@@ -1767,24 +1405,12 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 	return 0, "", false, fmt.Errorf("serve %s did not become usable within 30s", serveBase)
 }
 
-// serveUsableAt is the L1 serve-readiness probe (the workflow run-start
-// gate): the serve must answer /global/health AND accept a real
-// session-create round-trip. A cold-starting serve answers health before
-// its session machinery is up, so health alone is not "usable" for
-// dispatch. The probe session is left for the serve's own cleanup; the
-// plane's lifecycle gate uses the same probe via the same helper.
+// serveUsableAt is the L1 serve-readiness probe (the workflow run-start gate): the serve must
+// answer /global/health AND accept a real session-create round-trip.
 func serveUsableAt(baseURL, password string) bool {
 	client := &http.Client{Timeout: 3 * time.Second}
 
-	// EACH STEP TRIES EVERY PATH A SERVE MAY EXPOSE (see opencodeapi.go). ONE serve answers one of
-	// them, so this asks the gate's real question — "is this serve usable?" — without a version probe
-	// (an engine exec per run start) and without a cached verdict that can go stale when the
-	// container's binary is replaced.
-	//
-	// THE HARDCODED v1 PAIR IS WHAT BROKE EXECUTIONS ON 2.x: `POST /session` is answered with 405 by
-	// the newer surface, so the require-200 below never passed and this returned false for ever —
-	// reported to the operator as "serve did not become usable within 30s" on every dispatch. Ask
-	// Orchicon kept working because it uses the session client, which was fixed; this gate does not.
+	// EACH STEP TRIES EVERY PATH A SERVE MAY EXPOSE (see opencodeapi.go).
 	if !anyPathOK(client, baseURL, password, http.MethodGet, OpenCodeHealthPaths(), nil, func(code int) bool {
 		return code == http.StatusOK
 	}) {
@@ -1798,10 +1424,8 @@ func serveUsableAt(baseURL, password string) bool {
 		OpenCodeSessionCreatePaths(), []byte(body), opencodeAcceptableCreateStatus)
 }
 
-// anyPathOK issues the request against each candidate path until one answers acceptably, and reports
-// whether any did. A path that errors, 404s or answers with the wrong surface's status is simply the
-// next candidate's turn — which is what makes this tolerant of BOTH api generations without needing
-// to know which one it is talking to.
+// anyPathOK issues the request against each candidate path until one answers acceptably, and
+// reports whether any did.
 func anyPathOK(client *http.Client, baseURL, password, method string, paths []string, body []byte, accept func(int) bool) bool {
 	for _, path := range paths {
 		var rdr io.Reader
@@ -1832,16 +1456,8 @@ func anyPathOK(client *http.Client, baseURL, password, method string, paths []st
 	return false
 }
 
-// hostBaseURL resolves the host-reachable base URL for one of a container's
-// ports, plus the host port to ADVERTISE.
-//
-// Podman: the port published on the host loopback at create time (`-p
-// 127.0.0.1::<cport>`), because a rootless container's IP lives in a per-user
-// network namespace and is NOT host-routable — on macOS/Windows it is inside
-// the Podman machine VM. Docker: the container's bridge IP and the container
-// port itself, exactly as before (the grandfathered containerized-plane case
-// depends on it). Both answers come from Engine.HostEndpoint, so the two
-// branches live side by side in engine.go.
+// hostBaseURL resolves the host-reachable base URL for one of a container's ports, plus the host
+// port to ADVERTISE.
 func (d *Daemon) hostBaseURL(name string, cport int) (string, int, error) {
 	host, port, err := d.Engine.HostEndpoint(name, cport, d.engine)
 	if err != nil {
@@ -1880,11 +1496,8 @@ func (d *Daemon) containerExists(name string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
-// containerGoneWording reports whether an engine error means the container is
-// ALREADY GONE — success for a removal's purposes. The phrasings differ by
-// engine (docker: "Error: No such container: x"; podman: "Error: no container
-// with name or ID x: no such container"), and the comparison is case-insensitive
-// because the engines capitalise differently.
+// containerGoneWording reports whether an engine error means the container is ALREADY GONE —
+// success for a removal's purposes.
 func containerGoneWording(out string) bool {
 	lower := strings.ToLower(out)
 	for _, t := range []string{"no such container", "no container with name", "does not exist", "no such object"} {
@@ -1895,10 +1508,7 @@ func containerGoneWording(out string) bool {
 	return false
 }
 
-// waitContainerGone polls until the engine reports the container absent or the
-// timeout expires. `inspect` is answered by both engines, so no engine-specific
-// `container exists` subcommand is needed; an inspect ERROR is read as "not
-// visible yet" and the poll simply continues to its deadline.
+// waitContainerGone polls until the engine reports the container absent or the timeout expires.
 func (d *Daemon) waitContainerGone(name string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -1913,14 +1523,8 @@ func (d *Daemon) waitContainerGone(name string, timeout time.Duration) bool {
 	}
 }
 
-// removeContainer discards a runtime container and WAITS until the engine has
-// released the NAME, because the pristine reset recreates from a fresh name and a
-// lingering name turns a reset into a failed create (ADR-0013 §6, D5.2: podman
-// keeps the name reserved for a moment after `rm -f`).
-//
-// Best-effort by design: a removal that cannot prove the container gone returns
-// false and the CALLER drops the pool entry (the next checkout creates fresh)
-// rather than blocking dispatch on a wedged engine.
+// removeContainer discards a runtime container and WAITS until the engine has released the NAME,
+// because the pristine reset recreates from a fresh name and a lingering name turns a reset.
 func (d *Daemon) removeContainer(name string) bool {
 	if out, err := d.engine("rm", "-f", name); err != nil && !containerGoneWording(out) {
 		d.Log.Warn("remove runtime container", "container", name, "engine", strings.TrimSpace(out), "error", err)
@@ -1937,9 +1541,8 @@ func (d *Daemon) removeContainer(name string) bool {
 	return gone
 }
 
-// listRuntimes returns runtime container names, optionally scoped to one
-// instance (empty instance = all instances). Instance scoping keeps two
-// control planes sharing one daemon from reaping each other's containers.
+// listRuntimes returns runtime container names, optionally scoped to one instance (empty instance =
+// all instances).
 func (d *Daemon) listRuntimes(instance string) ([]string, error) {
 	args := []string{"ps", "-a", "--filter", "label=orchicon.workflow"}
 	if instance != "" {
@@ -1959,9 +1562,8 @@ func (d *Daemon) listRuntimes(instance string) ([]string, error) {
 	return names, nil
 }
 
-// pingRuntime runs a bounded readiness ping against the container's
-// supervisor socket via `orchicon runtime-client`. The client exits 0 on
-// success; a missing container/socket or timeout returns false.
+// pingRuntime runs a bounded readiness ping against the container's supervisor socket via `orchicon
+// runtime-client`.
 func (d *Daemon) pingRuntime(name string) bool {
 	req, _ := json.Marshal(AgentRequest{Cmd: "ping"})
 	cmd := procwin.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
@@ -1980,10 +1582,7 @@ func (d *Daemon) pingRuntime(name string) bool {
 	}
 }
 
-// engine runs ONE container-engine CLI invocation and returns its combined
-// stdout+stderr. This is the only place the daemon executes the engine binary:
-// the engine's identity and resolved path come from Engine (engine.go), so no
-// call site can name a container engine of its own.
+// engine runs ONE container-engine CLI invocation and returns its combined stdout+stderr.
 func (d *Daemon) engine(args ...string) (string, error) {
 	if d.engineFn != nil {
 		return d.engineFn(args...)
@@ -2032,12 +1631,8 @@ func httpErrorCode(w http.ResponseWriter, code int, msg, errCode string) {
 	writeJSON(w, code, map[string]string{"error": msg, "code": errCode})
 }
 
-// describeAdapterMounts lists the HOST paths this create would mount for the demanded adapter kinds, so a missing
-// one is visible in the log rather than inferred from its absence in a string search.
-//
-// It reports the same two sources the mount builder uses — the declared installs and the private homes — through
-// the SAME functions, so the log and the argv cannot disagree about what was resolved. Paths only: no file
-// contents, no credential values.
+// describeAdapterMounts lists the HOST paths this create would mount for the demanded adapter
+// kinds, so a missing one is visible in the log rather than inferred from its absence in a string.
 func describeAdapterMounts(home string, kinds ...string) []string {
 	if home == "" {
 		return nil
@@ -2063,12 +1658,8 @@ func describeAdapterMounts(home string, kinds ...string) []string {
 	return out
 }
 
-// describeCreateArgv renders a create argv for an error message: one argument per line, REDACTED.// describeCreateArgv renders a create argv for an error message: one argument per line, REDACTED.
-//
-// REDACTION IS NOT OPTIONAL. This vector carries `-e KEY=VALUE` entries — the operator's GH_TOKEN and any
-// tenant secret the plane injected — so the whole point of logging it would be undone by printing it raw. Only
-// the VALUE of an `-e`/`--env` argument is withheld; the mount arguments, which are what a path bug involves,
-// are printed in full.
+// describeCreateArgv renders a create argv for an error message: one argument per line, REDACTED.//
+// describeCreateArgv renders a create argv for an error message: one argument per line, REDACTED.
 func describeCreateArgv(argv []string) string {
 	var b strings.Builder
 	for i, a := range argv {
@@ -2092,11 +1683,8 @@ func redactEnvArg(a string) string {
 	return a
 }
 
-// gitdirMappingEnv renders the host|guest prefix pairs for the mounts whose two sides DIFFER.
-//
-// ONLY DIFFERING MOUNTS ARE EMITTED. In identity mode (Linux) host and guest are the same string, so this
-// returns "" and the supervisor does no rewriting at all — the fix is a no-op on the platform that never had the
-// bug, rather than a traversal that always finds nothing.
+// gitdirMappingEnv renders the host|guest prefix pairs for the mounts whose two sides DIFFER. ONLY
+// DIFFERING MOUNTS ARE EMITTED.
 func gitdirMappingEnv(mounts []MountSpec, m *PathMapper) string {
 	if m == nil || m.Mode() == PathModeIdentity {
 		return ""
@@ -2107,10 +1695,7 @@ func gitdirMappingEnv(mounts []MountSpec, m *PathMapper) string {
 		if ms.Source == "" || ms.Dest == "" {
 			continue
 		}
-		// THE HOST SIDE IS THE RAW SOURCE. createFlagArgs is given the UNMAPPED request (mapMounts runs later,
-		// when the argv is assembled), so Source is already the host form — mapping it here would produce the
-		// guest path on both sides and the pair would collapse. A caller that ever pre-maps is tolerated by
-		// reversing it first, so this cannot silently emit nothing.
+		// THE HOST SIDE IS THE RAW SOURCE.
 		host := strings.TrimRight(ms.Source, "/")
 		if back, ok := m.Unmap(host); ok {
 			host = strings.TrimRight(back, "/")

@@ -7,10 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtime"
 )
 
-// TestDecideSeedActionAbsentStartsNoBuild is AC 10/11: the criterion that stops
-// the on-demand-image change from making the install SLOWER instead of
-// lighter. With nothing downloaded, the row must be marked absent and NO build
-// may be started — the decision returns seedMarkAbsent, never seedBuild.
+// TestDecideSeedActionAbsentStartsNoBuild is AC 10/11: the criterion that stops the on-demand-image
+// change from making the install SLOWER instead of lighter.
 func TestDecideSeedActionAbsentStartsNoBuild(t *testing.T) {
 	variant := stockVariants[0]
 	row := db.RuntimeImageRow{Source: "stock", Status: "draft", Version: 1}
@@ -26,9 +24,8 @@ func TestDecideSeedActionAbsentStartsNoBuild(t *testing.T) {
 	}
 }
 
-// TestDecideSeedAction distinguishes absent-and-not-building from
-// stale-needing-roll-forward: a PRESENT but stale image keeps the pre-change
-// auto-build.
+// TestDecideSeedAction distinguishes absent-and-not-building from stale-needing-roll-forward: a
+// PRESENT but stale image keeps the pre-change auto-build.
 func TestDecideSeedActionStalePresentStillBuilds(t *testing.T) {
 	variant := stockVariants[0]
 	row := db.RuntimeImageRow{Source: "stock", Status: "draft", Version: 2}

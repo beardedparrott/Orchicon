@@ -1,15 +1,6 @@
 package orchicon
 
 // reasoning_replay_test.go — a thinking-mode provider must get its reasoning back.
-//
-// REPORTED: "provider stream failed: provider status 400 400 Bad Request: The reasoning_content in the
-// thinking mode must be passed back to the API." on a WORKER execution through the Orchicon adapter against
-// DeepSeek.
-//
-// The Ask path had always attached reasoning to the assistant message (chatturn.go appendAssistantTurn); the
-// WORKER loop's appendAssistantToolUse did not, so every second round of a worker turn went out without it.
-// The existing repair could not help: repairRequest(RepairReasoningContent) looks for reasoning to replay and
-// correctly found none, because none had been stored. The 400 was unrepairable by construction.
 
 import (
 	"encoding/json"

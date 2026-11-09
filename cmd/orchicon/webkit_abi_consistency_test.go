@@ -73,8 +73,6 @@ func abiFromTags(tags string) string {
 }
 
 // declaredABI maps nfpm's `depends:` entries to the ABI family they name.
-// libwebkit2gtk-4.0-37 is Ubuntu's runtime package for 4.0; libwebkit2gtk-4.1-0
-// is the one for 4.1.
 func declaredABI(nfpm string) string {
 	switch {
 	case strings.Contains(nfpm, "libwebkit2gtk-4.1-0"):
@@ -85,13 +83,8 @@ func declaredABI(nfpm string) string {
 	return ""
 }
 
-// TestNoImpossibleWebkitSONAME is the sweep: EVERY SONAME-looking literal in the
-// repository must be one that exists.
-//
-// It is a sweep rather than a per-file assertion because the bad name was written
-// in four different places (two checks, one bundle list, two messages) from one
-// mistaken mental model — "the families differ by version number" — and fixing
-// them one at a time is how the fifth gets missed.
+// TestNoImpossibleWebkitSONAME is the sweep: EVERY SONAME-looking literal in the repository must be
+// one that exists.
 func TestNoImpossibleWebkitSONAME(t *testing.T) {
 	root := filepath.Join("..", "..")
 	// Files that ship or describe the packaging. Deliberately excludes testdata
@@ -120,10 +113,8 @@ func TestNoImpossibleWebkitSONAME(t *testing.T) {
 		}
 		inspected++
 		for _, line := range strings.Split(string(b), "\n") {
-			// COMMENT LINES ARE SKIPPED: a name in prose is not executed, and these files
-			// deliberately RECORD the historical bad name so the next reader does not
-			// reintroduce it. The behavioural half of this guard (below) is what proves
-			// the checks actually accept a real 4.1.
+			// COMMENT LINES ARE SKIPPED: a name in prose is not executed, and these files deliberately RECORD
+			// the historical bad name so the next reader does not reintroduce it.
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
 				continue
@@ -146,12 +137,8 @@ func TestNoImpossibleWebkitSONAME(t *testing.T) {
 	}
 }
 
-// TestPackageDependencyMatchesTheBuildTags — the .deb's declared runtime
-// dependency must name the ABI its binary actually LINKS.
-//
-// This is the pairing that broke: nfpm.yaml declared 4.0 while the tags (via
-// wails.json) selected 4.1. A package that depends on a library the binary does
-// not use installs cleanly and then fails at the loader.
+// TestPackageDependencyMatchesTheBuildTags — the .deb's declared runtime dependency must name the
+// ABI its binary actually LINKS.
 func TestPackageDependencyMatchesTheBuildTags(t *testing.T) {
 	nfpm := mustRead(t, "../../deploy/desktop/nfpm.yaml")
 	declared := declaredABI(nfpm)
@@ -176,9 +163,8 @@ func TestPackageDependencyMatchesTheBuildTags(t *testing.T) {
 			"not match the binary or omits the one it needs.", declared, built, projectTags, jobTags)
 	}
 
-	// And the ABI tag must NOT be baked into wails.json: it is a HOST property for a
-	// local build and an ARTIFACT decision for packaging. Baking it in made one of
-	// the two jobs impossible to build.
+	// And the ABI tag must NOT be baked into wails.json: it is a HOST property for a local build and an
+	// ARTIFACT decision for packaging.
 	if strings.Contains(projectTags, "webkit2_") {
 		t.Errorf("wails.json build:tags = %q carries the ABI tag.\n"+
 			"EVERY `wails build` inherits this file, and the two desktop jobs need DIFFERENT "+
@@ -190,9 +176,6 @@ func TestPackageDependencyMatchesTheBuildTags(t *testing.T) {
 }
 
 // TestDesktopBuildDetectsTheABI — the local target must ASK the host, not assume.
-//
-// Hardcoding webkit2_41 is the mirror image of the wails.json bug: correct on a
-// modern host, an immediate pkg-config failure on Ubuntu 22.04 / Debian 12.
 func TestDesktopBuildDetectsTheABI(t *testing.T) {
 	mk := mustRead(t, "../../Makefile")
 
@@ -213,9 +196,8 @@ func TestDesktopBuildDetectsTheABI(t *testing.T) {
 	}
 }
 
-// jsonBuildTags extracts build:tags from wails.json without a JSON dependency
-// (the file is two fields and a comment-free object; a regex keeps this test
-// readable and independent of the struct the app uses).
+// jsonBuildTags extracts build:tags from wails.json without a JSON dependency (the file is two
+// fields and a comment-free object.
 func jsonBuildTags(t *testing.T, wailsJSON string) string {
 	t.Helper()
 	m := regexp.MustCompile(`"build:tags"\s*:\s*"([^"]*)"`).FindStringSubmatch(wailsJSON)
@@ -252,19 +234,11 @@ func tagsFromJob(t *testing.T, workflow, jobHeader, command string) string {
 	return ""
 }
 
-// TestWebkitChecksAcceptEveryRealSONAME is the BEHAVIOURAL half of the sweep: the
-// detection pattern the launcher and the AppImage actually run must MATCH a real
-// SONAME from either family, and must not match the impossible one.
-//
-// String-scanning the files (above) cannot prove this — it only proves nobody
-// wrote a bad literal. This proves the checks WORK, which is the property that was
-// broken: `libwebkit2gtk-4\.[01]\.so\.37` reads as "either family" and matches
-// only 4.0, so on a 4.1-only distro the launcher refused to start a system that
-// had WebKitGTK installed.
+// TestWebkitChecksAcceptEveryRealSONAME is the BEHAVIOURAL half of the sweep: the detection pattern
+// the launcher and the AppImage actually run must MATCH a real SONAME from either family.
 func TestWebkitChecksAcceptEveryRealSONAME(t *testing.T) {
-	// THE PATTERNS AS SHIPPED, copied from the two scripts' single source of truth:
-	// their `ldconfig -p | grep -qE ...` line. Kept in sync by the sweep above
-	// failing if a script gains a literal that is not real.
+	// THE PATTERNS AS SHIPPED, copied from the two scripts' single source of truth: their `ldconfig -p
+	// | grep -qE ...` line.
 	shipped := []struct{ file, pattern string }{
 		{"../../deploy/desktop/linux/orchicon-desktop", `libwebkit2gtk-4\.0\.so\.37|libwebkit2gtk-4\.1\.so\.0`},
 		{"../../deploy/desktop/appimage/AppRun", `libwebkit2gtk-4\.0\.so\.37|libwebkit2gtk-4\.1\.so\.0`},
@@ -287,10 +261,8 @@ func TestWebkitChecksAcceptEveryRealSONAME(t *testing.T) {
 			t.Fatalf("%s ships an invalid pattern %q: %v", sh.file, shippedPattern, err)
 		}
 
-		// ONLY the webkit2gtk SONAMEs: the launcher's job is to detect the missing
-		// WEBVIEW before the loader fails. JavaScriptCore is webkit's own dependency
-		// and is not something this check should require separately — the bundle list
-		// below is where JSC matters.
+		// ONLY the webkit2gtk SONAMEs: the launcher's job is to detect the missing WEBVIEW before the
+		// loader fails.
 		for _, family := range webkitSONAMEs {
 			for _, so := range family {
 				if !strings.HasPrefix(so, "libwebkit2gtk-") {
@@ -312,13 +284,8 @@ func TestWebkitChecksAcceptEveryRealSONAME(t *testing.T) {
 	}
 }
 
-// TestAppImageBundlesBothFamiliesCompletely — the bundle list must carry BOTH
-// libraries for each ABI family, because webkit links JavaScriptCore.
-//
-// The list previously asked for `libwebkit2gtk-4.1.so.37`, which does not exist, so
-// on a 4.1-only host the copy loop matched nothing, the directory stayed empty, and
-// the build died on its own "no libwebkit2gtk found to bundle" guard — an AppImage
-// that could not be built exactly where it is most needed.
+// TestAppImageBundlesBothFamiliesCompletely — the bundle list must carry BOTH libraries for each
+// ABI family, because webkit links JavaScriptCore.
 func TestAppImageBundlesBothFamiliesCompletely(t *testing.T) {
 	src := mustRead(t, "../../deploy/desktop/appimage/build.sh")
 

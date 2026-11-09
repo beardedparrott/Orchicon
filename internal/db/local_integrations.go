@@ -33,26 +33,14 @@ const (
 	// LocalIntegrationPending means the obligation exists and the work has not landed. It BLOCKS the
 	// project's queue: a later run must not cut a branch over work that is still waiting to land.
 	LocalIntegrationPending = "pending"
-	// LocalIntegrationIntegrating means an attempt is IN FLIGHT. Written before the ref moves, so a plane that
-	// dies mid-merge leaves a record saying "an attempt was interrupted" rather than one that looks untouched —
-	// the difference between a state that survives a restart and one inferred from a timestamp.
+	// LocalIntegrationIntegrating means an attempt is IN FLIGHT.
 	LocalIntegrationIntegrating = "integrating"
-	// LocalIntegrationVerified means it landed AND the result was proven: the branch is an ancestor of the
-	// integration branch, and (when the main checkout is on that branch) the tree is materialised — index
-	// matching HEAD, no tracked file missing from disk — plus the project's own check when one is declared.
-	//
-	// THIS IS THE ONLY SUCCESS. A ref that moved is not a delivery: six runs merged correctly and left the
-	// operator's checkout at the initial empty commit, so `ls` showed nothing and the whole cycle read as a
-	// total failure. `merged` was true and useless.
+	// THIS IS THE ONLY SUCCESS.
 	LocalIntegrationVerified = "verified"
-	// LocalIntegrationFailed means the merge may have moved the ref but the RESULT is not usable — the tree is
-	// not materialised, or the project's own check failed. The work is not lost (the branch and commit remain);
-	// what is missing is a state anything can build on. It BLOCKS the queue, which is the requested behaviour:
-	// "a failing check must not be recorded as success and must not let the next run start".
+	// LocalIntegrationFailed means the merge may have moved the ref but the RESULT is not usable — the
+	// tree is not materialised, or the project's own check failed.
 	LocalIntegrationFailed = "failed"
-	// LocalIntegrationMerged is the LEGACY pre-verification success. Rows carrying it landed but were never
-	// proven, so they are treated as NOT verified and re-examined — which is also how a project that already
-	// has a stale checkout gets repaired instead of quietly staying broken.
+	// LocalIntegrationMerged is the LEGACY pre-verification success.
 	LocalIntegrationMerged = "merged"
 	// LocalIntegrationConflicted means a real merge conflict. Nothing was changed and a human must resolve
 	// it. It KEEPS BLOCKING — branching past a conflict is what makes the next merge un-mergeable too.
@@ -61,14 +49,7 @@ const (
 	// branch already gone, or already an ancestor when the record was first written).
 	LocalIntegrationSkipped = "skipped"
 	// LocalIntegrationAdopted is work the platform RECOGNISED but did not itself record at the time: a
-	// completed, branch-bearing run with no obligation row — a run from before this table existed, or one that
-	// finished while the plane was down.
-	//
-	// IT IS DRAINED BUT IT DOES NOT BLOCK, and the distinction is the whole point. The obligation is real and
-	// must still be landed, so it belongs in the queue. But a project upgrading with fifty historical branches
-	// would otherwise STALL every new run behind an archaeology exercise — and if any one of those older
-	// branches conflicts, the project would never accept new work again. A live obligation (written at terminal
-	// success, by this build) blocks; recognised history is worked off in the background.
+	// completed, branch-bearing run with no obligation row — a run from before this table existed.
 	LocalIntegrationAdopted = "adopted"
 )
 
@@ -78,9 +59,7 @@ type LocalIntegrationRow struct {
 	TenantID string
 	ProjectID string
 	WorkflowRunID string
-	// ExecutionID is the worker execution that produced the commit. Recorded because it is the thing an
-	// operator actually asks about ("which worker wrote this, and did it land"), not because the merge needs
-	// it — the RUN owns the branch.
+	// ExecutionID is the worker execution that produced the commit.
 	ExecutionID string
 	Branch string
 	BaseCommit string
@@ -110,11 +89,6 @@ func scanLocalIntegration(row pgx.Row) (LocalIntegrationRow, error) {
 }
 
 // EnqueueLocalIntegration records the obligation for one run, idempotently.
-//
-// ON CONFLICT DO NOTHING, deliberately: the row's STATUS is the record of what happened to the work, so a
-// second enqueue — a retried run, two triggers racing, a backfill overlapping the live path — must never
-// reset `merged` to `pending` or overwrite a conflict with a fresh attempt. Returns the row that now exists
-// (the pre-existing one when there was one), so the caller can see the real state rather than assume.
 func EnqueueLocalIntegration(ctx context.Context, tx pgx.Tx, tenantID, projectID, runID, executionID, branch, baseCommit string) (LocalIntegrationRow, error) {
 	const q = `INSERT INTO local_integrations
 		(id, tenant_id, project_id, workflow_run_id, execution_id, branch, base_commit, status)
@@ -153,10 +127,6 @@ func GetLocalIntegrationForRun(ctx context.Context, tx pgx.Tx, tenantID, runID s
 }
 
 // ListLocalIntegrationsByStatus returns one project's records in a given status, OLDEST FIRST.
-//
-// Oldest-first is not cosmetic: it is what makes the queue converge. Merging run N+1's branch before run N's
-// leaves N divergent, and a divergent branch needs a real conflict merge — the very thing a missed
-// integration costs. Creation order is production order, so creation order is merge order.
 func ListLocalIntegrationsByStatus(ctx context.Context, tx pgx.Tx, tenantID, projectID string, statuses []string, limit int) ([]LocalIntegrationRow, error) {
 	if len(statuses) == 0 {
 		return nil, nil
@@ -185,13 +155,8 @@ func ListLocalIntegrationsByStatus(ctx context.Context, tx pgx.Tx, tenantID, pro
 	return out, rows.Err()
 }
 
-// CountBlockingLocalIntegrations reports how many of a project's records are still holding the queue: anything
-// not PROVEN GOOD. `pending` (not landed), `integrating` (attempt in flight), `conflicted` (needs a human),
-// `failed` (merged but unverifiable), and legacy `merged` (landed, never proven). This is THE gate — a run about
-// to cut a branch asks this question about its own project and waits while the answer is non-zero.
-//
-// `adopted` is deliberately NOT counted: recognised history is drained in the background, but stalling new work
-// behind it would mean a project can never accept a run again until every historical branch is reconciled.
+// CountBlockingLocalIntegrations reports how many of a project's records are still holding the
+// queue: anything not PROVEN GOOD.
 func CountBlockingLocalIntegrations(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error) {
 	const q = `SELECT count(*) FROM local_integrations
 		WHERE tenant_id = $1 AND project_id = $2 AND status = ANY($3)`
@@ -202,9 +167,7 @@ func CountBlockingLocalIntegrations(ctx context.Context, tx pgx.Tx, tenantID, pr
 			LocalIntegrationIntegrating,
 			LocalIntegrationConflicted,
 			LocalIntegrationFailed,
-			// LEGACY: landed but never verified. It must be re-examined — leaving it unblocked would let a
-			// project keep branching on top of an unproven result, which is the state that produced an empty
-			// checkout nobody noticed.
+			// LEGACY: landed but never verified.
 			LocalIntegrationMerged,
 		}).Scan(&n); err != nil {
 		return 0, fmt.Errorf("db: count blocking local integrations: %w", err)
@@ -213,17 +176,11 @@ func CountBlockingLocalIntegrations(ctx context.Context, tx pgx.Tx, tenantID, pr
 }
 
 // SetLocalIntegrationStatus writes the outcome of one attempt.
-//
-// ATTEMPTS IS INCREMENTED, never set: it is the count of times the platform TRIED, which is what tells an
-// operator whether a stuck record is being retried at all or has been abandoned.
 func SetLocalIntegrationStatus(ctx context.Context, tx pgx.Tx, tenantID, id, status, mergeCommit, lastError, integrationBranch string) error {
 	return SetLocalIntegrationStatusWithDetail(ctx, tx, tenantID, id, status, mergeCommit, lastError, "", integrationBranch)
 }
 
 // SetLocalIntegrationStatusWithDetail writes the outcome together with what the verification found.
-//
-// `merged`, `verified` and `failed` all stamp attempts and merged_at where they apply, so "did this ever land,
-// and was it ever checked" is answerable from the row rather than reconstructed from logs.
 func SetLocalIntegrationStatusWithDetail(ctx context.Context, tx pgx.Tx, tenantID, id, status, mergeCommit, lastError, verificationDetail, integrationBranch string) error {
 	var mergedAt, verifiedAt *time.Time
 	now := time.Now().UTC()
@@ -252,20 +209,14 @@ func SetLocalIntegrationStatusWithDetail(ctx context.Context, tx pgx.Tx, tenantI
 	return nil
 }
 
-// ListRunsNeedingLocalIntegration returns completed branch-bearing runs of one project that have NO record
-// yet, oldest first. The caller records them as `adopted` — recognised, drained, non-blocking.
-//
-// THE BACKFILL PATH, and it is what makes the record self-healing. Without it a run that completed while the
-// control plane was down, or before this table existed, would simply never appear in the queue — the same
-// silence in a new place. The live path enqueues at terminal success; this catches everything that ever
-// arrived another way.
+// ListRunsNeedingLocalIntegration returns completed branch-bearing runs of one project that have NO
+// record yet, oldest first.
 func ListRunsNeedingLocalIntegration(ctx context.Context, tx pgx.Tx, tenantID, projectID string, limit int) ([]WorkflowRunRow, error) {
 	if limit <= 0 {
 		limit = 16
 	}
-	// work_item_id is a NULLABLE text column, and a plain scan of it fails the whole read on a run that has none
-	// (found by running this against a real database). bound_worker_ref is JSONB and needs no COALESCE — its
-	// zero value scans as NULL bytes fine; coalescing it to '' would be INVALID JSON and fail the same read.
+	// work_item_id is a NULLABLE text column, and a plain scan of it fails the whole read on a run that
+	// has none (found by running this against a real database).
 	const q = `SELECT r.id, r.tenant_id, r.workflow_id, r.workflow_version, r.project_id, r.status,
 		current_step, r.run_context, COALESCE(r.work_item_id, ''), r.bound_worker_ref, r.runtime_image,
 		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch, r.error_message, r.error_kind,
@@ -303,10 +254,8 @@ func ListRunsNeedingLocalIntegration(ctx context.Context, tx pgx.Tx, tenantID, p
 	return out, rows.Err()
 }
 
-// ExecutionIDForRun returns the worker execution that produced this run's work ("" when none is recorded).
-//
-// Prefers the step run that produced a WORKTREE BRANCH — on a parallel-branch workflow the interesting
-// execution is the branch child's — and falls back to the run's first execution.
+// ExecutionIDForRun returns the worker execution that produced this run's work ("" when none is
+// recorded).
 func ExecutionIDForRun(ctx context.Context, tx pgx.Tx, tenantID, runID string) string {
 	const q = `SELECT worker_execution_id FROM workflow_step_runs
 		WHERE tenant_id = $1 AND workflow_run_id = $2 AND worker_execution_id <> ''
@@ -348,13 +297,8 @@ func MarshalLocalIntegration(r LocalIntegrationRow) map[string]any {
 	return out
 }
 
-// ListProjectsWithPendingLocalIntegration returns the projects that have work waiting to land, oldest-obligation
-// first, so the periodic backstop can drain exactly those and nothing else.
-//
-// IT REPLACES A TENANT-WIDE RUN PAGE. Selecting candidate RUNS by ended_at with a LIMIT meant a busy tenant could
-// fill the page with other projects' work, expire the pass budget, and leave the project that was about to cut a
-// branch untouched — the mechanism behind "every run that did not integrate started before its predecessor
-// finished integrating". Asking which PROJECTS owe work is the same question with the queue as its index.
+// ListProjectsWithPendingLocalIntegration returns the projects that have work waiting to land,
+// oldest-obligation first, so the periodic backstop can drain exactly those and nothing else.
 func ListProjectsWithPendingLocalIntegration(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 32

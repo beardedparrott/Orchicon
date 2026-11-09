@@ -23,18 +23,12 @@ type IdentityRow struct {
 	Version      int
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
-	// Username is the local-account login handle bound to this identity via
-	// local_credentials, populated by the LEFT JOIN on the identity read
-	// paths (GetIdentity/ListIdentities). Empty when the identity has no
-	// local credential. Only the username is projected — never
-	// password_hash (the credential boundary, docs/07 §6.1).
+	// Username is the local-account login handle bound to this identity via local_credentials,
+	// populated by the LEFT JOIN on the identity read paths (GetIdentity/ListIdentities).
 	Username string
 }
 
-// GetOrCreateIdentity finds an identity by (tenant_id, subject), or
-// creates one if none exists. Used by the auth middleware on first OIDC
-// login to provision the identity row. The caller controls the
-// transaction so the outbox row can be enqueued atomically.
+// GetOrCreateIdentity finds an identity by (tenant_id, subject), or creates one if none exists.
 func GetOrCreateIdentity(ctx context.Context, tx pgx.Tx, tenantID, subject, displayName, identityType string) (IdentityRow, bool, error) {
 	const sel = `SELECT id, tenant_id, subject, display_name, identity_type, status, version,
 		created_at, updated_at
@@ -72,9 +66,7 @@ func GetOrCreateIdentity(ctx context.Context, tx pgx.Tx, tenantID, subject, disp
 	return row, true, nil
 }
 
-// GetIdentity fetches a single identity by id within the tenant scope. The
-// local_credentials username is LEFT JOINed in (username only, never the
-// hash) so the read path surfaces the identity's local login handle.
+// GetIdentity fetches a single identity by id within the tenant scope.
 func GetIdentity(ctx context.Context, tx pgx.Tx, tenantID, id string) (IdentityRow, error) {
 	const q = `SELECT i.id, i.tenant_id, i.subject, i.display_name, i.identity_type,
 		i.status, i.version, i.created_at, i.updated_at, lc.username
@@ -107,10 +99,7 @@ type ListIdentitiesFilter struct {
 	AfterID  string
 }
 
-// ListIdentities returns a page of identities for the tenant. The
-// local_credentials username is LEFT JOINed in (username only, never the
-// hash) so the admin identities list surfaces each identity's local login
-// handle.
+// ListIdentities returns a page of identities for the tenant.
 func ListIdentities(ctx context.Context, tx pgx.Tx, f ListIdentitiesFilter) ([]IdentityRow, error) {
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
@@ -143,10 +132,7 @@ func ListIdentities(ctx context.Context, tx pgx.Tx, f ListIdentitiesFilter) ([]I
 	return out, rows.Err()
 }
 
-// CreateIdentity inserts a new identity row for the tenant. The id is
-// server-assigned and the version starts at 1. A duplicate
-// (tenant_id, subject) surfaces as a unique-constraint error the
-// caller maps to CodeAlreadyExists.
+// CreateIdentity inserts a new identity row for the tenant.
 func CreateIdentity(ctx context.Context, tx pgx.Tx, r IdentityRow) (IdentityRow, error) {
 	if r.ID == "" {
 		r.ID = NewID()
@@ -171,11 +157,7 @@ func CreateIdentity(ctx context.Context, tx pgx.Tx, r IdentityRow) (IdentityRow,
 	return r, nil
 }
 
-// UpdateIdentityDisplayName edits an identity's display name with
-// optimistic concurrency. expectedVersion < 0 disables the version
-// check (the caller supplied none); a non-negative value must match the
-// current row version or the update touches nothing and ErrNotFound is
-// returned. The version column is bumped on every successful update.
+// UpdateIdentityDisplayName edits an identity's display name with optimistic concurrency.
 func UpdateIdentityDisplayName(ctx context.Context, tx pgx.Tx, tenantID, id, displayName string, expectedVersion int) (IdentityRow, error) {
 	const q = `UPDATE identities SET display_name = $1, updated_at = now(), version = version + 1
 		WHERE tenant_id = $2 AND id = $3 AND ($4 < 0 OR version = $4)
@@ -194,10 +176,8 @@ func UpdateIdentityDisplayName(ctx context.Context, tx pgx.Tx, tenantID, id, dis
 	return r, nil
 }
 
-// SetIdentityStatus flips an identity between "active" and "disabled"
-// with optimistic concurrency (expectedVersion < 0 disables the check).
-// The service validates the status value before this is reached; the
-// column is unconstrained text so the data-access layer stores it as-is.
+// SetIdentityStatus flips an identity between "active" and "disabled" with optimistic concurrency
+// (expectedVersion < 0 disables the check).
 func SetIdentityStatus(ctx context.Context, tx pgx.Tx, tenantID, id, status string, expectedVersion int) (IdentityRow, error) {
 	const q = `UPDATE identities SET status = $1, updated_at = now(), version = version + 1
 		WHERE tenant_id = $2 AND id = $3 AND ($4 < 0 OR version = $4)
@@ -216,11 +196,7 @@ func SetIdentityStatus(ctx context.Context, tx pgx.Tx, tenantID, id, status stri
 	return r, nil
 }
 
-// DeleteIdentity hard-deletes an identity plus the dependent rows that
-// reference it. role_bindings and api_keys carry no FK to identities
-// (only local_credentials does, with ON DELETE CASCADE), so the cleanup
-// is explicit and tenant-scoped — the whole delete happens in the
-// caller's transaction. 0 rows affected on the identity row → ErrNotFound.
+// DeleteIdentity hard-deletes an identity plus the dependent rows that reference it.
 func DeleteIdentity(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	for _, q := range []string{
 		`DELETE FROM role_bindings WHERE tenant_id = $1 AND identity_id = $2`,
@@ -256,10 +232,7 @@ type TenantRow struct {
 	UpdatedAt time.Time
 }
 
-// ListTenants returns a page of tenants. The tenants table has no
-// tenant_id (it IS the tenant — docs/09 §3.1) so it is not RLS-enabled;
-// an admin listing reads all tenants. The caller must have verified the
-// identity is an admin (the RBAC layer enforces this at the API).
+// ListTenants returns a page of tenants.
 func ListTenants(ctx context.Context, p *Pool, pageSize int, afterID string) ([]TenantRow, error) {
 	if pageSize <= 0 || pageSize > 1000 {
 		pageSize = 100
@@ -285,11 +258,6 @@ func ListTenants(ctx context.Context, p *Pool, pageSize int, afterID string) ([]
 }
 
 // CreateTenant inserts a new tenant row within the caller's transaction.
-// The id is server-assigned (a ULID) and the version starts at 1. Returns
-// the persisted row. The tenants table has no tenant_id column and no RLS
-// so this is an admin-only path (the API enforces auth:write /
-// tenant:create entitlement); taking a pgx.Tx lets the caller commit the
-// audit row atomically with the tenant creation.
 func CreateTenant(ctx context.Context, tx pgx.Tx, slug, name, budgetEnvelopeJSON string) (TenantRow, error) {
 	if budgetEnvelopeJSON == "" {
 		budgetEnvelopeJSON = "{}"
@@ -380,9 +348,8 @@ func GetRole(ctx context.Context, tx pgx.Tx, tenantID, id string) (RoleRow, erro
 	return r, nil
 }
 
-// UpdateRole edits a role's name and entitlements with optimistic
-// concurrency (expectedVersion < 0 disables the version check). The
-// service re-validates name + entitlements before this is reached.
+// UpdateRole edits a role's name and entitlements with optimistic concurrency (expectedVersion < 0
+// disables the version check).
 func UpdateRole(ctx context.Context, tx pgx.Tx, tenantID, id, name string, entitlements []string, expectedVersion int) (RoleRow, error) {
 	ent, err := json.Marshal(entitlements)
 	if err != nil {
@@ -406,11 +373,7 @@ func UpdateRole(ctx context.Context, tx pgx.Tx, tenantID, id, name string, entit
 	return r, nil
 }
 
-// DeleteRole hard-deletes a role. The caller must ensure it is not the
-// admin role before this is reached; the data-access layer deletes the
-// role's bindings in the same statement as a cleanup (role_bindings has
-// no FK to roles, so orphaned rows would otherwise silently stop
-// contributing entitlements).
+// DeleteRole hard-deletes a role.
 func DeleteRole(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	const q = `DELETE FROM roles WHERE tenant_id = $1 AND id = $2`
 	ct, err := tx.Exec(ctx, q, tenantID, id)
@@ -423,9 +386,7 @@ func DeleteRole(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	return nil
 }
 
-// DeleteRoleBindingsByRole removes all role bindings referencing a role
-// within the tenant scope. Used to keep role_bindings clean when a role
-// is deleted (no FK exists, so this prevents dangling rows).
+// DeleteRoleBindingsByRole removes all role bindings referencing a role within the tenant scope.
 func DeleteRoleBindingsByRole(ctx context.Context, tx pgx.Tx, tenantID, roleID string) error {
 	const q = `DELETE FROM role_bindings WHERE tenant_id = $1 AND role_id = $2`
 	if _, err := tx.Exec(ctx, q, tenantID, roleID); err != nil {
@@ -553,11 +514,8 @@ func ListRoleBindings(ctx context.Context, tx pgx.Tx, tenantID, identityID strin
 	return out, rows.Err()
 }
 
-// ListIdentityEntitlements returns the set of entitlements granted to an
-// identity across all its active role bindings, plus the direct scopes on
-// any API keys (the latter enforced at the API-key resolution path).
-// An identity with the "admin" role (name="admin") is an admin and
-// bypasses per-call checks.
+// ListIdentityEntitlements returns the set of entitlements granted to an identity across all its
+// active role bindings, plus the direct scopes on any API keys (the latter enforced at the API-key.
 func ListIdentityEntitlements(ctx context.Context, tx pgx.Tx, tenantID, identityID string) (ents []string, isAdmin bool, err error) {
 	const q = `SELECT r.name, r.entitlements
 		FROM role_bindings b
@@ -593,9 +551,7 @@ func ListIdentityEntitlements(ctx context.Context, tx pgx.Tx, tenantID, identity
 
 // --- api_keys --------------------------------------------------------------
 
-// ApiKeyRow is the data-access shape of an api_keys table row. KeyHash
-// is the only secret material stored (the plaintext is shown once on
-// create and never persisted — AGENTS.md security standards).
+// ApiKeyRow is the data-access shape of an api_keys table row.
 type ApiKeyRow struct {
 	ID         string
 	TenantID   string
@@ -734,10 +690,8 @@ func RotateApiKeyHash(ctx context.Context, tx pgx.Tx, tenantID, id, prefix, hash
 	return r, nil
 }
 
-// LookupApiKeyByHash finds an active API key by its hash (no tenant
-// scope — the key identifies the tenant). Used by the auth middleware
-// for API-key bearer tokens. The read is not RLS-scoped (the middleware
-// does not yet know the tenant); this is the bootstrap resolution.
+// LookupApiKeyByHash finds an active API key by its hash (no tenant scope — the key identifies the
+// tenant).
 func LookupApiKeyByHash(ctx context.Context, p *Pool, hash string) (ApiKeyRow, error) {
 	const q = `SELECT id, tenant_id, identity_id, name, key_prefix, key_hash, scopes, status, expires_at,
 		last_used_at, version, created_at, updated_at

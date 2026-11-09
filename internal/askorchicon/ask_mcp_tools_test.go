@@ -1,15 +1,6 @@
 package askorchicon
 
 // ask_mcp_tools_test.go — THE TWO ANSWERS THAT CONTRADICTED EACH OTHER.
-//
-// REPORTED, and this is the root cause of a wasted session: for a conversation whose MCP servers all come from its
-// PROJECT, `list_mcp_servers` with the conversation id answered "none". The tool passed only the conversation to
-// ListForScope, so the query's project arm matched nothing — while the TURN resolved project ∪ conversation
-// (mcpsettings.Resolver.resolveConversation) and registered two servers, which the platform log shows.
-//
-// The model believed the tool, concluded its mcp__aseprite__* tools were unavailable, and drove the server over
-// bash for the rest of the session. So these assertions are about AGREEMENT as much as about output: a tool that
-// contradicts the runtime is worse than no tool, because it is confidently wrong.
 
 import (
 	"context"
@@ -25,9 +16,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/testfixtures"
 )
 
-// projectOnlyConversation is THE REPORTED SHAPE: a conversation with no definitions of its own, whose PROJECT
-// supplies an MCP server. The fixture is the platform's own end-to-end seed, so the server is a real
-// streamable-HTTP one that answers tools/list.
+// projectOnlyConversation is THE REPORTED SHAPE: a conversation with no definitions of its own,
+// whose PROJECT supplies an MCP server.
 func projectOnlyConversation(t *testing.T, pool *db.Pool) (convID, projectID string, serverID string) {
 	t.Helper()
 	url := mcpclient.E2EHTTPFixtureT(t)
@@ -185,10 +175,6 @@ func TestAskMCPToolsSaysWhyNothingIsOffered(t *testing.T) {
 }
 
 // TestTheToolIsOfferedInEveryMode — it must never be the thing a model cannot find.
-//
-// The probe is read-only, and a mode that cannot act is exactly where a model reasons hardest about capability.
-// A self-check that vanished in Brainstorm would leave the mode most likely to plan around a phantom gap without
-// the means to falsify it.
 func TestTheToolIsOfferedInEveryMode(t *testing.T) {
 	pool := chatDBTestPool(t)
 	_ = pool

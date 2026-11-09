@@ -1,19 +1,7 @@
 package askorchicon
 
-// ask_file_scope_statement_test.go — THE PROMPT TELLS THE TRUTH ABOUT REACH, and it agrees with the tool layer.
-//
-// Two claims used to be wrong in the same direction. The prompt described the file/shell suite as scoped to a
-// project directory, which an agent reads as "you are confined to that tree" — untrue of a host process that
-// reaches the operator's whole filesystem, and the kind of untruth that costs turns (the agent discovers the
-// boundary by probing it, or declines a path it was allowed to read). And nothing anywhere told the agent WHEN
-// the suite asks: reads never do; writes and executions do unless they land in the conversation's own
-// pre-approved project directory.
-//
-// The statement is ONE function (writeSuiteReachBlock) emitted through every mode's persona, so these tests
-// iterate everyMode rather than naming one. The last test is the one the work item asks for by name: the
-// PROMPT's project statement and the TOOL layer's resolved default directory must agree for an assigned AND an
-// unassigned conversation — the same pairing conversation_project_test.go uses, extended from "is it named?" to
-// "is what it CLAIMS about scope the same thing the tool layer resolved?".
+// ask_file_scope_statement_test.go — THE PROMPT TELLS THE TRUTH ABOUT REACH, and it agrees with the
+// tool layer.
 
 import (
 	"context"
@@ -48,12 +36,8 @@ func askRootEnvelope(t *testing.T, ctx context.Context) map[string]string {
 	return env
 }
 
-// EVERY MODE STATES THE SCOPE AND THE REACH — the work item's first acceptance criterion, iterated over the
-// roster so a mode added later is covered without anyone remembering to add it here.
-//
-// The write sentence is DERIVED, not hand-written (writeSuiteReachBlock reads askmode.Allows) and that is
-// asserted here too: a mode that cannot write must be told the platform REFUSES the tools, because telling it
-// "writes ask" would promise a consent that cannot unlock anything.
+// EVERY MODE STATES THE SCOPE AND THE REACH — the work item's first acceptance criterion, iterated
+// over the roster so a mode added later is covered without anyone remembering to add it here.
 func TestEveryModeStatesTheScopeAndTheReach(t *testing.T) {
 	dir := t.TempDir()
 	convProject := fmt.Sprintf("This chat belongs to the project **Orchicon** (ID p1, status active), whose "+
@@ -91,9 +75,7 @@ func TestEveryModeStatesTheScopeAndTheReach(t *testing.T) {
 	}
 }
 
-// THE FALSE CLAIM IS GONE EVERYWHERE IT APPEARED, not just where it was loudest. The repo's convention is to fix
-// the class, and the prompt is assembled from more than one file, so this reads the SOURCES of the prompt half
-// and fails if the assignment comes back anywhere in them.
+// THE FALSE CLAIM IS GONE EVERYWHERE IT APPEARED, not just where it was loudest.
 func TestTheFalseScopeClaimIsGoneEverywhere(t *testing.T) {
 	banned := []string{"first active project", "scoped to the tenant's"}
 	for _, f := range []string{"agent.go", "chat.go"} {
@@ -143,10 +125,8 @@ func TestUnassignedIsNeverPresentedAsScoped(t *testing.T) {
 	}
 }
 
-// THE PROMPT'S PROJECT STATEMENT AND THE TOOL LAYER'S RESOLVED DIRECTORY AGREE — for an assigned conversation and
-// for an unassigned one, driven from ONE fixture value per case so the two halves cannot be satisfied by two
-// different directories. The prompt half is buildSystemPrompt's; the tool half is ask_file_root's envelope, the
-// same probe the agent is told to call.
+// THE PROMPT'S PROJECT STATEMENT AND THE TOOL LAYER'S RESOLVED DIRECTORY AGREE — for an assigned
+// conversation and for an unassigned one.
 func TestPromptStatementAgreesWithTheToolScope(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -176,9 +156,8 @@ func TestPromptStatementAgreesWithTheToolScope(t *testing.T) {
 		}
 	}
 
-	// UNASSIGNED: a directory still resolves (the relative-path anchor) but NOTHING is approved, and the prompt
-	// must claim exactly that — the trap this pins is the prompt calling the anchor the chat's scope while the
-	// tool layer hands back `tenant_fallback`.
+	// UNASSIGNED: a directory still resolves (the relative-path anchor) but NOTHING is approved, and
+	// the prompt must claim exactly.
 	restoreAnchor := askFileRootStub(func(_ context.Context, _ *db.Pool) (AskFileScope, error) {
 		return AskFileScope{Dir: dir}, nil
 	})

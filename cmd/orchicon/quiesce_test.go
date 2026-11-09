@@ -1,10 +1,6 @@
 package main
 
 // quiesce_test.go — the stop primitive, and the two defects it exists to fix.
-//
-// The failures below were reproduced on a real Windows machine using nothing but `orchicon stop` and
-// `orchicon start`. They are asserted here as PROPERTIES of the code rather than as one machine's story,
-// because the machine is not in CI and the next regression will not reproduce the same pids.
 
 import (
 	"os"
@@ -39,15 +35,10 @@ func TestStopConsultsTheQuiesceAndRefusesToLie(t *testing.T) {
 }
 
 // A START AFTER AN UNCLEAN EXIT MUST CLEAR THE INSTANCE'S OWN LEFTOVERS FIRST.
-//
-// Without it the new supervisor's postgres meets the old run's orphan and refuses — the FATAL /
-// "lock file postmaster.pid already exists" the operator saw — and the report blames the services
-// pipeline instead of naming a process.
 func TestStartClearsLeftoversBeforeStartingServices(t *testing.T) {
 	src := readGoFile(t, "lifecycle.go")
-	// runStart uses a BARE quiesce, and that is correct: a live supervisor's children are left alone by the
-	// quiesce's own rule, so what it clears is genuinely an orphan. Either call shape is acceptable here —
-	// what matters is that it happens BEFORE the services start.
+	// runStart uses a BARE quiesce, and that is correct: a live supervisor's children are left alone by
+	// the quiesce's own rule, so what it clears is genuinely an orphan.
 	q := callSite(t, src, "quiesceInstance(instance, ports, os.Stdout)")
 	if q < 0 {
 		q = callSite(t, src, "stopInstanceCompletely(instance, ports, os.Stdout)")
@@ -84,10 +75,6 @@ func TestInstallQuiescesBeforeStartingServices(t *testing.T) {
 }
 
 // OWNERSHIP IS THE DEPLOYMENT, NOT A PORT NUMBER.
-//
-// instanceProcessRoots must be inside the instance's OWN data dir. A kill justified by "it holds my port"
-// would reach the operator's own PostgreSQL or a sibling instance's services — the boundary reclaim.go
-// draws, and the reason this is asserted rather than reviewed.
 func TestInstanceProcessRootsAreInsideTheInstancesOwnDataDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -109,9 +96,6 @@ func TestInstanceProcessRootsAreInsideTheInstancesOwnDataDir(t *testing.T) {
 }
 
 // A LIVE CHILD MUST PROTECT ITS DATA DIRECTORY EVEN WHEN THE LOCK NAMES A DEAD PARENT.
-//
-// This is the corruption guard, and it is the highest-stakes assertion here: removing postmaster.pid while
-// a re-parented backend still has the cluster open is how two postmasters end up on one data directory.
 func TestStaleLockIsNotBrokenWhileTheInstanceStillRuns(t *testing.T) {
 	src := readGoFile(t, "postgres_lock.go")
 	if !strings.Contains(src, "survivorsOlderThanBoot(dataDir, bootCutoff())") {
@@ -131,10 +115,6 @@ func TestStaleLockIsNotBrokenWhileTheInstanceStillRuns(t *testing.T) {
 }
 
 // AN EXISTING INSTANCE'S PORT MUST NEVER BE RENUMBERED BY A RE-RUN.
-//
-// Measured: 5432 was held by an unidentifiable leftover, so planInstallPorts walked to 5433 and — because
-// the MSI runs --non-interactive — PERSISTED it. Every later start then waited on 5433 where postgres
-// would never listen. The database port of an installed instance is a decision, not a suggestion.
 func TestRecordedPortIsNeverImplicitlyRenumbered(t *testing.T) {
 	src := readGoFile(t, "install_ports.go")
 	if !strings.Contains(src, "An existing instance's port is not renumbered by a re-run") {
@@ -166,9 +146,7 @@ func readGoFile(t *testing.T, name string) string {
 }
 
 // callSite returns the byte offset of the first line that ASSIGNS from a call, so a guard cannot be
-// satisfied by the same string appearing inside a comment. Every guard in this file that asks "is this
-// call present, and where" uses it for that reason: a control run proved a plain substring match stayed
-// green after the call was deleted, because the explanation of the defect still named it.
+// satisfied by the same string appearing inside a comment.
 func callSite(t *testing.T, src, call string) int {
 	t.Helper()
 	for _, line := range strings.Split(src, "\n") {
@@ -358,11 +336,6 @@ func readFileBytes(t *testing.T, path string) string {
 }
 
 // THE SERVICES GATE MUST NOT PROBE THE TELEMETRY CHILDREN AT THEIR ORDINARY TIMEOUT.
-//
-// runHostServices brings postgres and nats up BEFORE it spawns the four telemetry children, and this gate
-// first passes the moment those two answer. Asking the optional components at their usual 3s timeout here
-// therefore guarantees "not answering" for a stack that is a fraction of a second from fine — measured
-// twice as a spurious "DEGRADED — tempo, loki not answering" immediately after a successful start.
 func TestServicesGateUsesAShortOptionalProbe(t *testing.T) {
 	src := readGoFile(t, "install_host.go")
 	if !strings.Contains(src, "requiredServicesReadyWithin(instance, ports, 500*time.Millisecond)") {

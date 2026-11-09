@@ -2,22 +2,8 @@
 
 package adapter
 
-// freshpath_other.go — THERE IS NO SINGLE AUTHORITATIVE PATH STORE ON POSIX, and this file says so rather than
-// pretending otherwise.
-//
-// A login shell composes PATH from profile files this process has already sourced, so "the real PATH" has no
-// answer a background service could act on. Two things ARE readable and worth having:
-//
-//   - /etc/paths (macOS) — the system's ordered list, which is the closest thing to a store.
-//   - /etc/environment (Linux) — a simple KEY=value file some distros use for a system-wide PATH.
-//
-// THEY ARE A PARTIAL ANSWER, STATED PLAINLY: neither captures what a user's `.profile`/`.zshrc` adds, so on
-// POSIX this narrows the gap rather than closing it. The honest remedy there remains the one every error
-// message names — install under $HOME where the candidates live, or set the adapter's ORCHICON_*_BIN.
-//
-// The value is still real: a plane started by a service manager (systemd, launchd) very often does NOT have
-// /etc/paths' entries in its own environment, so reading them recovers installs that would otherwise be
-// invisible to it.
+// freshpath_other.go — THERE IS NO SINGLE AUTHORITATIVE PATH STORE ON POSIX, and this file says so
+// rather than pretending otherwise.
 
 import (
 	"os"

@@ -61,13 +61,8 @@ func qaApp(t *testing.T) (*App, *httptest.Server) {
 	return m, srv
 }
 
-// openPaneViaD presses D and consumes the fetch cmd (bubbletea runs Cmds
-// off-loop), returning the updated App.
-//
-// A cmd may be a tea.Batch (the shell batches any staged command with the
-// dispatch's own — e.g. the composer's caret-blink starter), and bubbletea
-// expands a BatchMsg into its members before delivering them. The helper
-// mirrors that: it runs each member and feeds each resulting message back in.
+// openPaneViaD presses D and consumes the fetch cmd (bubbletea runs Cmds off-loop), returning the
+// updated App.
 func openPaneViaD(m *App) *App {
 	// The diff pane is CTRL+D now; `d`/`D` are plain letters again (see the
 	// "toggle diff sidebar" route).

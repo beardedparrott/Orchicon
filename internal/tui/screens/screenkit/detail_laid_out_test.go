@@ -104,9 +104,8 @@ func TestTheSameBodyIsFlattenedWhenNotDeclaredLaidOut(t *testing.T) {
 	}
 }
 
-// AND MARKDOWN SOURCE IS STILL RENDERED — the fix must not disable the feature the markdown commit added.
-// A work item's description is authored markdown: its blockquote is attribution and its headings are
-// headings, and the operator asked for both.
+// AND MARKDOWN SOURCE IS STILL RENDERED — the fix must not disable the feature the markdown commit
+// added.
 func TestMarkdownSourceIsStillRendered(t *testing.T) {
 	body := strings.Join([]string{
 		"# Feature: Composer 2.0",
@@ -132,13 +131,7 @@ func TestMarkdownSourceIsStillRendered(t *testing.T) {
 	}
 }
 
-// A DECLARATION DOES NOT STICK ACROSS CALLS. The pane is shared, so a screen that sets a laid-out body and
-// then a markdown one (or the reverse) must get the treatment the LATEST call asked for — otherwise the
-// first caller's choice would silently govern every later body.
-//
-// Asserted through View() rather than bodyContent(), because bodyContent depends on the viewport's width and
-// the viewport is sized during a render: calling it first would test an un-initialised pane rather than the
-// flag.
+// A DECLARATION DOES NOT STICK ACROSS CALLS.
 func TestTheDeclarationIsPerCall(t *testing.T) {
 	var d Detail
 	d.Width, d.Height = 80, 24

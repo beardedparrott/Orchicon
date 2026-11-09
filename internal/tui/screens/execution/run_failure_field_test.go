@@ -1,10 +1,6 @@
 package execution
 
 // run_failure_field_test.go — a FAILED run must say why, in the TUI, without decoding anything.
-//
-// The GUI half is RunFailureCard; this is the TUI half of the same gap. A run that fails PREFLIGHT never
-// produces an execution, so there is no worker summary to read and the blockage card is silent (nothing can
-// block a run that is already terminal).
 
 import (
 	"strings"

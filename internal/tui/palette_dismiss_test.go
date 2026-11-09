@@ -35,17 +35,11 @@ import (
 )
 
 // paletteBoxUp reports whether the chooser is open OR still drawn in the frame.
-// Both, deliberately: the operator's report is about what is ON SCREEN, and a
-// state flag that disagrees with the render is the same bug wearing a different
-// shape.
 func paletteBoxUp(m *App) bool {
 	return m.palette.PaletteOpen() || strings.Contains(m.View(), "command palette")
 }
 
 // THE REPORTED CASE: a command WITH AN ARGUMENT runs and the box goes away.
-//
-// Every one of these empties the candidate list (the argument matches no
-// command name), which is precisely the condition that used to leave the box up.
 func TestSlashCommandWithAnArgumentDismissesThePalette(t *testing.T) {
 	for _, line := range []string{
 		"/find foo",
@@ -79,9 +73,7 @@ func TestSlashCommandWithAnArgumentDismissesThePalette(t *testing.T) {
 	}
 }
 
-// THE OTHER SPELLING OF ENTER. ctrl+j is the LF some terminals send; the palette
-// forwards it to the composer, so it never reaches the palette's own `enter`
-// case. The fix has to hold for it too, or the box returns for those operators.
+// THE OTHER SPELLING OF ENTER.
 func TestCtrlJDismissesThePaletteToo(t *testing.T) {
 	m := phase3App(120, 40)
 	m = typeInto(t, m, "/find foo")
@@ -114,9 +106,7 @@ func TestSelectingFromThePaletteStillDismisses(t *testing.T) {
 	}
 }
 
-// AN UNKNOWN COMMAND STILL DISMISSES AND EXPLAINS. The chooser has served its
-// purpose once the operator has committed to a line; a box left floating over
-// the error it produced hides the very explanation the operator needs.
+// AN UNKNOWN COMMAND STILL DISMISSES AND EXPLAINS.
 func TestUnknownCommandDismissesAndExplains(t *testing.T) {
 	m := phase3App(120, 40)
 	m = typeInto(t, m, "/nosuchthing")

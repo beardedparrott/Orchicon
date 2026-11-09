@@ -48,11 +48,6 @@ func sendApp(t *testing.T) (*App, *fakeAskPlane) {
 }
 
 // typeInto feeds runes one per key message, KEEPING each Update result.
-//
-// The result must be kept: App.Update has a value receiver, so a discarded
-// return leaves the App as it was and only partially-mutated shared state (the
-// textarea's internal slices) survives — which silently scrambles the buffer.
-// That is how typing "test" once produced "tset" in a throwaway harness.
 func typeInto(t *testing.T, m *App, s string) *App {
 	t.Helper()
 	for _, r := range s {
@@ -89,11 +84,6 @@ func runCmd(t *testing.T, m *App, cmd tea.Cmd) *App {
 }
 
 // Enter on the launch page must CREATE a conversation and send the message.
-//
-// This is the path the operator exercises first, so it gets a real regression
-// test: the composer accepts the text, Enter produces the send command, and that
-// command reaches CreateConversation. (The multi-step async chain after that —
-// transcript load, live stream, rail reconcile — is covered by their own tests.)
 func TestLaunchPageEnterCreatesTheConversation(t *testing.T) {
 	m, plane := sendApp(t)
 
@@ -131,8 +121,7 @@ func TestLaunchPageEnterCreatesTheConversation(t *testing.T) {
 }
 
 // An empty composer must not create anything on Enter: the shell claims
-// Enter-with-an-empty-composer to open the active tab's menu
-// (menuActivationKey), so it never reaches the composer's send branch at all.
+// Enter-with-an-empty-composer to open the active tab's menu (menuActivationKey).
 func TestEnterOnAnEmptyComposerDoesNotCreate(t *testing.T) {
 	m, plane := sendApp(t)
 	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -147,11 +136,6 @@ func TestEnterOnAnEmptyComposerDoesNotCreate(t *testing.T) {
 }
 
 // The same send must work when the terminal spells Enter as LF.
-//
-// bubbletea reports CR (0x0D) as KeyEnter and LF (0x0A) as KeyCtrlJ — different
-// KeyTypes. Some terminals and PTY configurations send LF, and with only the
-// KeyEnter branch those terminals pressed Enter and got NOTHING at all. This
-// drives the full shell path (composer -> dispatch -> create) with an LF Enter.
 func TestLaunchPageLFEnterCreatesTheConversation(t *testing.T) {
 	if tea.KeyEnter == tea.KeyCtrlJ {
 		t.Fatal("fixture: KeyEnter and KeyCtrlJ are the same KeyType — vacuous test")

@@ -72,16 +72,8 @@ func (d DriftState) String() string {
 	}
 }
 
-// instanceEnvKeys are the variables that decide WHICH INSTANCE a lifecycle command acts on, and they are
-// STRIPPED from the ambient environment before this package sets its own.
-//
-// Because getenv returns the FIRST match, appending a value to a slice that already carries a different one
-// does NOT override it — the ambient value wins. That is how a dev plane came up writing its logs into a
-// PROD log file: the shell that started it carried ORCHICON_SERVE_STATE_DIR for prod, EnvWithout stripped
-// only ORCHICON_CONTAINER_MODE, and PlaneEnv's correct value sat second in the slice, unread. Two instances'
-// diagnostics collided, and the failure being debugged was invisible while a sibling's log filled up.
-//
-// A lifecycle command that has DECIDED which instance it drives must not let the caller's shell disagree.
+// instanceEnvKeys are the variables that decide WHICH INSTANCE a lifecycle command acts on, and
+// they are STRIPPED from the ambient environment before this package sets its own.
 var instanceEnvKeys = []string{
 	"ORCHICON_CONTAINER_MODE",
 	ServeStateDirEnv,
@@ -125,10 +117,8 @@ var (
 	driftProbe   = Drift         // (string, io.Writer) DriftState
 	planeAlive   = ServingPlaneAlive
 	healthyProbe = Healthy
-	// unrecordedPlane / terminateProcess / pidAlive belong to the ONE case where the PID file is not the
-	// answer: a plane that outlived it (see hostproc_unix.go). They are seams for the same reason the rest of
-	// this block is — the state can only otherwise be produced by really leaving a stale plane serving, which
-	// a test must not need to do.
+	// unrecordedPlane / terminateProcess / pidAlive belong to the ONE case where the PID file is not
+	// the answer: a plane that outlived it (see hostproc_unix.go).
 	unrecordedPlane  = unrecordedPlanePID
 	terminateProcess = TerminateProcess
 	pidAlive         = PidAlive
@@ -142,10 +132,6 @@ var (
 const planeBinaryName = "orchicon"
 
 // recordedControlPort is the control port this instance's record says it serves on, 0 when unknown.
-//
-// SHARED RATHER THAN PER-PLATFORM because it reads only the instance's port record. The platform halves need
-// it to say WHICH port they are looking for, and a copy in each would be a second definition of "this
-// instance's control port" — the exact drift the shared port table exists to prevent.
 func recordedControlPort(instance string) int {
 	ports, err := ReadPorts(instance)
 	if err != nil {
@@ -159,31 +145,10 @@ func recordedControlPort(instance string) int {
 var planeBinary = resolvePlaneBinary
 
 // PlaneBinary is where the INSTALLED `orchicon` binary is, resolved for a thin client.
-//
-// EXPORTED FOR internal/instancectl, which needs to run the CLI's own verbs rather than reimplement them.
-// The resolution, and every reason behind it, lives in resolvePlaneBinary above — including the case that
-// matters most here: a GUI or TUI is a CLIENT, so re-execing SELF would ask a thin client to serve, and
-// `orch serve --detach` is not a subcommand.
-//
-// An error is returned rather than a fallback to self, and its text already names the remedy.
 func PlaneBinary() (string, error) { return planeBinary() }
 
-// resolvePlaneBinary answers "which binary runs the plane?" — which is NOT always "the binary that called
-// this package".
-//
-// THIS IS THE THIN-CLIENT CASE, AND IT IS THE NORMAL ONE FOR TWO OF THE THREE SURFACES. `orch` (the TUI) is
-// a REMOTE CLIENT by design (cmd/orch's package doc: "a client of the plane, exactly like the web GUI",
-// zero control-plane code), and the desktop app is the same shape. Re-execing SELF from either of them asks
-// a thin client to serve: `orch serve --detach` is not a subcommand, so the shell ignores the arguments and
-// launches a second TUI, the health wait then times out, and `serve --stop` never reaches the plane at all —
-// every lifecycle verb fails with a misleading "the host plane did not answer" message.
-//
-// So: the plane binary is THIS one only when this IS `orchicon` (the CLI/admin path, and the installer), and
-// otherwise it is the INSTALLED `orchicon` — from PATH first (the installer puts it in ~/.local/bin), then
-// ~/.local/bin by absolute path for a GUI/TUI launched with a login shell's PATH missing.
-//
-// AN UNRESOLVABLE PLANE BINARY IS AN ERROR, NOT A FALLBACK TO SELF: re-execing the caller would repeat the
-// bug this function exists to fix, and the message names the remedy instead.
+// resolvePlaneBinary answers "which binary runs the plane?" — which is NOT always "the binary that
+// called this package".
 func resolvePlaneBinary() (string, error) {
 	self, err := executable()
 	if err != nil {
@@ -206,10 +171,8 @@ func resolvePlaneBinary() (string, error) {
 		self, filepath.Base(self), planeBinaryName)
 }
 
-// runSelf re-execs the PLANE binary (never merely "this" binary — see resolvePlaneBinary) with args and env —
-// the mechanism by which `serve --detach` and `serve --stop` are performed. Re-exec is what makes a
-// curl-installed host sufficient: the installed `orchicon` is the one binary needed, with no sibling script
-// or build.
+// runSelf re-execs the PLANE binary (never merely "this" binary — see resolvePlaneBinary) with args
+// and env — the mechanism by which `serve --detach` and `serve --stop` are performed.
 func runSelf(args []string, env []string, out io.Writer) error {
 	self, err := planeBinary()
 	if err != nil {
@@ -217,17 +180,10 @@ func runSelf(args []string, env []string, out io.Writer) error {
 		// "run `serve --detach`: …" prefix in front of it only buries the remedy in the dock strip.
 		return err
 	}
-	// quietCommand, because THIS PROCESS MAY HAVE NO CONSOLE. runSelf is how the desktop app starts and
-	// stops a plane, and the app is a GUI: a console-subsystem child of a console-less parent is given a
-	// brand new window by Win32, so every Start pressed in the app flashed one. The child's own detach
-	// (serve --detach) happens INSIDE it and cannot help with the window it was born with.
+	// quietCommand, because THIS PROCESS MAY HAVE NO CONSOLE.
 	cmd := procwin.Command(self, args...)
 	cmd.Env = env
-	// THE PLANE'S OWN WORKING DIRECTORY, NOT THIS CALLER'S. runSelf is how the DESKTOP APP starts and stops
-	// a plane, and a GUI can be launched with a working directory that is not its own (an installer's staging
-	// area, a directory since removed). Windows refuses to create a child when the inherited directory does
-	// not exist (ERROR_DIRECTORY, "The directory name is invalid"), so a Start pressed in the app would fail
-	// for a reason that has nothing to do with the plane. The binary's own directory always exists.
+	// THE PLANE'S OWN WORKING DIRECTORY, NOT THIS CALLER'S.
 	cmd.Dir = filepath.Dir(self)
 	cmd.Stdout = out
 	cmd.Stderr = out
@@ -355,18 +311,8 @@ func StatusOf(opts Options) (Status, error) {
 			st.HealthURL = fmt.Sprintf("http://localhost:%d/healthz", st.ControlPort)
 		}
 	}
-	// THE BINARY, NOT JUST THE PORT: a PID plus /proc/<pid>/exe is the only pair that says WHICH process is
-	// serving. A version endpoint would answer with whatever the OLD process believes about itself.
-	//
-	// effectivePlanePID ALSO FINDS A PLANE THAT OUTLIVED ITS PID FILE (see hostproc_unix.go). Without that,
-	// `status` reported "stopped" for a plane answering /healthz — a screen contradicting the machine — and
-	// every caller downstream concluded there was nothing to stop.
-	//
-	// THE TWO SOURCES GET DIFFERENT VERDICTS, and that is not fussiness — it is a pinned contract. When the
-	// PID file names the process, `planeAlive` alone decides Alive, so a platform whose liveness probe is
-	// weaker than Unix's still reports the PID and the binary instead of "no plane here"
-	// (TestStatusReportsThePIDFileEvenWhenTheLivenessSeamSaysNo). When identity was RECOVERED FROM THE PORT
-	// there is no file to ask, so the OS answers directly — and `Alive` beside a PID means what it says.
+	// THE BINARY, NOT JUST THE PORT: a PID plus /proc/<pid>/exe is the only pair that says WHICH
+	// process is serving.
 	if pid, ok := ServingPlanePID(o.Instance); ok {
 		st.PID = pid
 		st.Alive = planeAlive(o.Instance)
@@ -387,15 +333,7 @@ func StatusOf(opts Options) (Status, error) {
 	return st, nil
 }
 
-// Start launches the HOST plane for an instance, detached, and waits for its /healthz. Idempotent: an
-// already-healthy plane running the installed binary is left alone.
-//
-// THE BINARY IS THIS ONE, which is what makes the release archive sufficient: the installed `orchicon`
-// re-execs itself as `serve --detach`, so no sibling build or script is required.
-//
-// ORCHICON_CONTAINER_MODE is REMOVED from the inherited environment: a stray export in a shell profile must
-// never flip the HOST plane into container semantics — it would then rewrite custom provider URLs that are
-// already correct on the host.
+// Start launches the HOST plane for an instance, detached, and waits for its /healthz.
 func Start(opts Options) error {
 	o, err := opts.resolve()
 	if err != nil {
@@ -404,16 +342,6 @@ func Start(opts Options) error {
 	healthURL := fmt.Sprintf("http://localhost:%d/healthz", o.Ports["ORCHICON_CONTROL_PORT"])
 
 	// A PLANE THAT ANSWERS IS NOT NECESSARILY THE PLANE WE JUST INSTALLED.
-	//
-	// This used to be `if Healthy(...) { "already serving"; return nil }`, which asks whether SOMETHING is
-	// listening — not whether the listening process is the binary in hand. An install replaces that binary, so
-	// the old process keeps serving revised code from a replaced (unlinked) executable, and the installer
-	// reports success over an instance that was never upgraded. Reported: "said it was complete but no auth
-	// works and the previous dev container has been up for two hours".
-	//
-	// So the SERVING PROCESS is asked what it is running: the instance's own PID file names it, and
-	// /proc/<pid>/exe answers with the path — or with a `(deleted)` suffix once that path has been replaced
-	// underneath it, which is precisely the state an install creates.
 	if healthyProbe(healthURL, healthProbeTimeout) {
 		switch driftProbe(o.Instance, o.Out) {
 		case Current:
@@ -428,15 +356,13 @@ func Start(opts Options) error {
 			}
 		default:
 			// The serving process cannot be identified (no PID file, unreadable /proc — another OS, a
-			// container-resident plane). Leave it ALONE: a restart we cannot justify is a blip on a working
-			// instance, and the health check a few lines below still reports whether it is serving.
+			// container-resident plane).
 			fmt.Fprintf(o.Out, "host plane already serving %s (could not identify the process; leaving it)\n", healthURL)
 			return nil
 		}
 	}
-	// A host plane its own workers cannot reach is worse than one that refuses to start: every plane-channel
-	// MCP call in every dispatched run would time out. There is no loopback-only fallback, so an unresolvable
-	// bridge is fatal here (PlaneEnv is what raises it).
+	// A host plane its own workers cannot reach is worse than one that refuses to start: every
+	// plane-channel MCP call in every dispatched run would time out.
 	env, err := PlaneEnv(o.Instance, o.Ports, o.HostDataDir, o.runtimeSocket())
 	if err != nil {
 		return fmt.Errorf("refusing to start the host plane: %w", err)
@@ -457,31 +383,14 @@ func Start(opts Options) error {
 		healthURL, filepath.Join(o.HostDataDir, "serve"))
 }
 
-// Stop stops the instance's detached host plane, so the caller can start it on the installed binary.
-//
-// WHY IT RE-EXECS RATHER THAN SIGNALLING: `serve --stop` is the ONE implementation of a graceful stop — it
-// sends SIGTERM, waits the supervisor's shutdown window, escalates to SIGKILL, and exits non-zero if a process
-// survives. It re-execs THIS binary with the instance's state dir, because `serve --stop` resolves its PID
-// file from ORCHICON_SERVE_STATE_DIR and a bare call would look in the wrong place.
-//
-// STOP IS IDEMPOTENT: stopping an instance that is not running is a no-op, not a failure. `serve --stop`
-// exits 1 with "serve is not running" for that case, and a `down`, a rebuild and a `plane stop` all have to be
-// safe to run twice — reporting failure there turned every `scripts/container.sh down` on a stopped instance
-// into an error.
+// Stop stops the instance's detached host plane, so the caller can start it on the installed
+// binary.
 func Stop(opts Options) error {
 	o := opts.normalized()
 	cmdEnv := append(EnvWithout(os.Environ(), instanceEnvKeys...),
 		ServeStateDirEnv+"="+filepath.Join(o.HostDataDir, "serve"))
 	if err := runCommand([]string{"serve", "--stop"}, cmdEnv, o.Out); err != nil {
 		// A THIRD CASE, AND THE ONE THAT BLOCKED A REBUILD: the PID file is GONE but the plane is not.
-		//
-		// `serve --stop` resolves the SAME PID file this layer does (ServeStateDirEnv is what makes it so), so
-		// a missing file makes it answer "serve is not running" — and the caller then reported that a
-		// rebuild over a serving plane had nothing to stop, while :8091 kept answering. Measured: a plane
-		// five days old whose binary a rebuild had replaced, with serve/pids/ empty.
-		//
-		// The listener on the instance's recorded control port is verified as our own (binary AND instance
-		// tag, never the port alone — see unrecordedPlanePID) before anything is signalled.
 		if pid, ok := unrecordedPlane(o.Instance); ok {
 			fmt.Fprintf(o.Out, "host plane for %s has no PID file but is serving on %d (pid %d) — stopping it\n",
 				o.Instance, recordedControlPort(o.Instance), pid)
@@ -497,9 +406,7 @@ func Stop(opts Options) error {
 			return fmt.Errorf("the host plane for %s (pid %d) did not stop — it may still be shutting down",
 				o.Instance, pid)
 		}
-		// TELL "NOTHING TO STOP" APART FROM "IT WOULD NOT STOP". The PID file this layer reads is the SAME
-		// one `serve --stop` resolved (ServeStateDirEnv is what makes it so), so no live process there IS the
-		// nothing-to-stop case — while a process still in the file is a stop that FAILED, and stays an error.
+		// TELL "NOTHING TO STOP" APART FROM "IT WOULD NOT STOP".
 		if !planeAlive(o.Instance) {
 			return nil
 		}
@@ -516,12 +423,8 @@ func Stop(opts Options) error {
 	return fmt.Errorf("the host plane for %s did not stop — it may still be shutting down", o.Instance)
 }
 
-// Restart stops and starts the instance's HOST plane, so it re-reads its environment (a newly installed
-// adapter CLI on PATH, for instance) without re-resolving anything or asking a question.
-//
-// A CONTAINER-RESIDENT instance is refused rather than silently ignored: its plane is inside a container this
-// local mechanism does not own, and `orchicon restart` is the verb that handles that shape. Guessing here is
-// exactly the "control a plane you cannot identify" failure the fail-safe exists to prevent.
+// Restart stops and starts the instance's HOST plane, so it re-reads its environment (a newly
+// installed adapter CLI on PATH, for instance) without re-resolving anything or asking a question.
 func Restart(opts Options) error {
 	o, err := opts.resolve()
 	if err != nil {

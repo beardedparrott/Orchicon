@@ -1,14 +1,7 @@
 package scheduler
 
-// standalone_dispatch_retired_test.go — the v0.1 standalone dispatch path is
-// retired (workflow-first execution). These tests prove a work item with NO
-// workflow binding can never reach a runnable/executed state through ANY
-// path: the TaskReconciler scan (dispatch), the recurring-fire backstop, the
-// scheduled-run backstop, and the sequence arm/validation path. Every path
-// must fail LOUDLY with an actionable reason surfaced on the item, and must
-// never create a WorkerExecution.
-//
-// DB-backed; skipped without ORCHICON_TEST_DSN.
+// standalone_dispatch_retired_test.go — the v0.1 standalone dispatch path is retired
+// (workflow-first execution).
 
 import (
 	"context"
@@ -23,9 +16,8 @@ import (
 
 const noWorkflowReasonFragment = "no workflow is set"
 
-// seedWorkflowLessReadyTask creates a ready task with an assigned worker and
-// NO workflow binding — precisely the retired standalone dispatch shape
-// (what ListReadyTasks used to pick up).
+// seedWorkflowLessReadyTask creates a ready task with an assigned worker and NO workflow binding —
+// precisely the retired standalone dispatch shape (what ListReadyTasks used to pick up).
 func seedWorkflowLessReadyTask(t *testing.T, pool *db.Pool, projectID string) db.WorkItemRow {
 	t.Helper()
 	ctx := context.Background()
@@ -72,9 +64,8 @@ func setItemStatus(t *testing.T, pool *db.Pool, id, status string) {
 	}
 }
 
-// TestWorkflowLessItemCannotDispatch (AC 2 + AC 5): the TaskReconciler's scan
-// dispatch creates NO execution for a no-workflow item and fails the item
-// loudly with an actionable reason instead of silently arming a zombie.
+// TestWorkflowLessItemCannotDispatch (AC 2 + AC 5): the TaskReconciler's scan dispatch creates NO
+// execution for a no-workflow item and fails the item loudly with an actionable reason.
 func TestWorkflowLessItemCannotDispatch(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
@@ -97,9 +88,8 @@ func TestWorkflowLessItemCannotDispatch(t *testing.T) {
 	}
 }
 
-// TestWorkflowLessItemCannotFireRecurring (AC 4): the recurring-fire backstop
-// no longer logs a warning and moves on — it fails the item loudly, records
-// the failed fire in the ledger, and starts no workflow.
+// TestWorkflowLessItemCannotFireRecurring (AC 4): the recurring-fire backstop no longer logs a
+// warning and moves on — it fails the item loudly, records the failed fire in the ledger.
 func TestWorkflowLessItemCannotFireRecurring(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
@@ -141,13 +131,8 @@ func TestWorkflowLessItemCannotFireRecurring(t *testing.T) {
 	}
 }
 
-// TestWorkflowLessItemCannotFireScheduled (AC 4): the scheduled-run backstop
-// fails a due workflow-less item loudly instead of skipping it. The scan's
-// own WHERE admits only rows with a non-NULL workflow_id (or a sequence
-// parent), so the observed branch is the legacy EMPTY-STRING binding — a
-// cleared binding that is still "not NULL". That is precisely the zombie row
-// the belt-and-suspenders backstop exists for: it must fail loudly, not
-// silently skip.
+// TestWorkflowLessItemCannotFireScheduled (AC 4): the scheduled-run backstop fails a due
+// workflow-less item loudly instead of skipping it.
 func TestWorkflowLessItemCannotFireScheduled(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
@@ -186,10 +171,8 @@ func TestWorkflowLessItemCannotFireScheduled(t *testing.T) {
 		t.Fatalf("results must surface the actionable reason, got %s", got.Results)
 	}
 
-	// The NULL-workflow scheduled LEAF is the shape the retired standalone
-	// dispatch used to run, and the shape the scan previously EXCLUDED via
-	// `workflow_id IS NOT NULL` — it sat in 'scheduled' forever: due, never
-	// run, never surfaced. It must now be admitted and failed loudly.
+	// The NULL-workflow scheduled LEAF is the shape the retired standalone dispatch used to run, and
+	// the shape the scan previously EXCLUDED via `workflow_id IS NOT NULL`.
 	nullItem := createScheduledItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "No-Workflow Scheduled (NULL)", nil, nil)
 	if res := r.Reconcile(ctx, ""); res.Error != nil {
 		t.Fatalf("scanAndFire: %v", res.Error)
@@ -203,10 +186,8 @@ func TestWorkflowLessItemCannotFireScheduled(t *testing.T) {
 	}
 }
 
-// TestWorkflowLessItemCannotJoinSequence (AC 1 + AC 6): a workflow-less item
-// is rejected by the sequence/schedule validation, and the sequence ARM path
-// fails a workflow-less child loudly instead of arming a run that cannot
-// exist (the delivered loud path, asserted here as a regression guard).
+// TestWorkflowLessItemCannotJoinSequence (AC 1 + AC 6): a workflow-less item is rejected by the
+// sequence/schedule validation.
 func TestWorkflowLessItemCannotJoinSequence(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()

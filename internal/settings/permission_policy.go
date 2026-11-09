@@ -12,24 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 )
 
-// permission_policy.go: the plane API for the operator's persistent
-// permission policy (the deny/accept YAML file).
-//
-// WHY ON SettingsService AND NOT A SERVICE OF ITS OWN. The policy is
-// instance state the operator writes once, exactly like settings; hanging
-// it here means both clients reuse the settings client they already have,
-// and no new RBAC mapping is needed (rbac.serviceToResource has no
-// SettingsService arm, so these RPCs carry today's settings entitlement).
-//
-// THE FILE IS THE SOURCE OF TRUTH, THE PLANE IS THE SINGLE WRITER. Every
-// handler reads the file, mutates the parsed struct, writes it back, and
-// returns the REFRESHED policy — a client never patches its own copy, so a
-// hand-edit and a GUI change cannot diverge.
-//
-// No DB transaction here: the mutation is a file write (see WriteFile's
-// atomic temp+rename), so the audit row is written in its own short tenant
-// tx via recordAuditShort — the same deliberate deviation the backup
-// handlers document.
+// permission_policy.go: the plane API for the operator's persistent permission policy (the
+// deny/accept YAML file).
 
 // SetPermissionPolicyPath injects the resolved policy file path (server
 // wiring). An empty path falls back to permpolicy.DefaultPath().
@@ -37,9 +21,8 @@ func (s *Service) SetPermissionPolicyPath(p string) {
 	s.policyPath = p
 }
 
-// permissionStore is the ONE accessor, resolved per call: the file is read
-// fresh on every request, so an edit made by hand is visible to the very
-// next API call (the live-read acceptance criterion).
+// permissionStore is the ONE accessor, resolved per call: the file is read fresh on every request,
+// so an edit made by hand is visible to the very next API call (the live-read acceptance.
 func (s *Service) permissionStore() *permpolicy.Store {
 	path := strings.TrimSpace(s.policyPath)
 	if path == "" {
@@ -80,9 +63,8 @@ func (s *Service) AddPermissionPolicyEntry(ctx context.Context, req *connect.Req
 	}
 	before := policyJSON(p)
 
-	// Idempotent: re-adding an entry already present is not an error (a UI
-	// that double-submits must not have to special-case it), but it must not
-	// either duplicate the rule in the file.
+	// Idempotent: re-adding an entry already present is not an error (a UI that double-submits must not
+	// have to special-case it), but it must not either duplicate the rule in the file.
 	if !containsEntry(p, list, pattern) {
 		if list == permpolicy.ListDeny {
 			p.Deny = append(p.Deny, pattern)
@@ -104,9 +86,8 @@ func (s *Service) AddPermissionPolicyEntry(ctx context.Context, req *connect.Req
 	}), nil
 }
 
-// RemovePermissionPolicyEntry removes one entry from the named list and
-// returns the refreshed policy. A missing entry is NotFound (the client is
-// telling the operator something that is not there).
+// RemovePermissionPolicyEntry removes one entry from the named list and returns the refreshed
+// policy.
 func (s *Service) RemovePermissionPolicyEntry(ctx context.Context, req *connect.Request[apiv1.RemovePermissionPolicyEntryRequest]) (*connect.Response[apiv1.RemovePermissionPolicyEntryResponse], error) {
 	if _, err := requireTenant(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -141,11 +122,7 @@ func (s *Service) RemovePermissionPolicyEntry(ctx context.Context, req *connect.
 	}), nil
 }
 
-// entryArgs normalises and validates the (pattern, list) pair both mutating
-// RPCs take. Whitespace is trimmed (an entry with a trailing space would
-// match nothing) and an empty pattern is refused rather than written: an
-// empty deny entry would be a rule that matches nothing while looking like
-// a rule.
+// entryArgs normalises and validates the (pattern, list) pair both mutating RPCs take.
 func entryArgs(pattern, list string) (string, permpolicy.List, error) {
 	pat := strings.TrimSpace(pattern)
 	if pat == "" {
@@ -201,10 +178,7 @@ func without(xs []string, drop string) ([]string, bool) {
 	return out, found
 }
 
-// policyToProto renders the policy for the wire, deny first. A deny entry
-// is reported overridable=false: that is the UI's cue to say a session
-// grant cannot override it, instead of offering a grant the refusal will
-// ignore.
+// policyToProto renders the policy for the wire, deny first.
 func policyToProto(path string, p permpolicy.Policy) *apiv1.GetPermissionPolicyResponse {
 	resp := &apiv1.GetPermissionPolicyResponse{
 		Path:    path,

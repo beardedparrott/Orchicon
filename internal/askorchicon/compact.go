@@ -8,18 +8,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// listCap caps the number of rows any list tool returns in one call. A list
-// is for orienting and choosing — the model branches to the corresponding
-// get_* tool (or narrows with search/status filters) for detail. Returning
-// hundreds of FULL rows (a work item row carries description, acceptance
-// criteria, budgets, context files, worker refs…) blows the context for no
-// value: the "the list is HUGE, let me search for a specific item" failure
-// mode Ask Orchicon and workers hit on the real backlog.
+// listCap caps the number of rows any list tool returns in one call.
 const listCap = 25
 
-// compactList is the envelope every list tool returns: a bounded set of
-// compact rows plus an explicit note when more exist, so the model can
-// decide to narrow or branch instead of assuming it saw everything.
+// compactList is the envelope every list tool returns: a bounded set of compact rows plus an
+// explicit note when more exist.
 type compactList struct {
 	Count     int    `json:"count"`
 	Truncated bool   `json:"truncated"`
@@ -31,8 +24,6 @@ type compactList struct {
 }
 
 // newCompactList wraps rows in the compact envelope, capping at listCap.
-// detailTool names the get_* tool to branch to for full detail ("" when no
-// detail tool exists — the note then points at the list's own filters).
 func newCompactList(rows []any, detailTool string) compactList {
 	out := compactList{Count: len(rows), Items: rows}
 	if len(rows) > listCap {
@@ -50,12 +41,8 @@ func newCompactList(rows []any, detailTool string) compactList {
 	return out
 }
 
-// setNextPage records the cursor for the next page (the last shown row's ID)
-// and appends a paging hint to the note. It is a no-op on a NON-truncated
-// list: if the whole result fit in the page there is no next page, so the
-// envelope must never carry a next_page_token. (`list_secrets` sets the
-// token directly — its cursor comes from the secrets service's own paging,
-// which can be non-empty independently of this envelope's cap.)
+// setNextPage records the cursor for the next page (the last shown row's ID) and appends a paging
+// hint to the note.
 func (c *compactList) setNextPage(token string) {
 	if token == "" || !c.Truncated {
 		return
@@ -86,10 +73,7 @@ func compactProject(r db.ProjectRow) map[string]any {
 	if len(r.Goals) > 0 {
 		_ = json.Unmarshal(r.Goals, &goals)
 	}
-	// GitStrategy and RepoSlug are carried on the COMPACT row on purpose. GitStrategy decides whether a run
-	// pushes a branch, opens a PR, or gets neither (db.EffectiveGitStrategy), so a caller that must confirm the
-	// strategy before dispatching cannot do it from a list that hides the field — it would have to branch to
-	// get_project for every project just to say which strategy is in force.
+	// GitStrategy and RepoSlug are carried on the COMPACT row on purpose.
 	row := map[string]any{
 		"ID": r.ID, "Name": r.Name, "Slug": r.Slug, "Status": r.Status,
 		"ProjectDir": r.ProjectDir, "Goals": goals, "GitStrategy": r.GitStrategy,

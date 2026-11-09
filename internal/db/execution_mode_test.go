@@ -2,10 +2,8 @@ package db
 
 import "testing"
 
-// TestEffectiveExecutionModeValue pins the precedence decision at every level of
-// the chain: ITEM -> PROJECT -> tenant default. It is a pure table test (no
-// database) precisely because this function is what every dispatch site
-// ultimately agrees on.
+// TestEffectiveExecutionModeValue pins the precedence decision at every level of the chain: ITEM ->
+// PROJECT -> tenant default.
 func TestEffectiveExecutionModeValue(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -31,12 +29,8 @@ func TestEffectiveExecutionModeValue(t *testing.T) {
 	}
 }
 
-// TestDefaultExecutionModeIsTheLastLeg pins the tenant default and that it is
-// what an execution with neither an item nor a readable project resolves to.
-//
-// The local-default decision flipped this constant to local; this assertion is
-// the ONE place in the resolver's own tests that moved with it, and it stays in
-// lockstep with db.DefaultExecutionMode rather than restating the literal.
+// TestDefaultExecutionModeIsTheLastLeg pins the tenant default and that it is what an execution
+// with neither an item nor a readable project resolves to.
 func TestDefaultExecutionModeIsTheLastLeg(t *testing.T) {
 	if DefaultExecutionMode != ExecutionModeLocal {
 		t.Fatalf("DefaultExecutionMode = %q, want %q (containers are opt-in)", DefaultExecutionMode, ExecutionModeLocal)
@@ -46,9 +40,9 @@ func TestDefaultExecutionModeIsTheLastLeg(t *testing.T) {
 	}
 }
 
-// TestEphemeralExecutionModeIsLocal pins the Quick Work decision (local, and
-// therefore engine-less-safe) so an accidental change to it is a test failure
-// rather than a LOUD runtime failure in an invisible item.
+// TestEphemeralExecutionModeIsLocal pins the Quick Work decision (local, and therefore
+// engine-less-safe) so an accidental change to it is a test failure rather than a LOUD runtime
+// failure.
 func TestEphemeralExecutionModeIsLocal(t *testing.T) {
 	if got := EphemeralExecutionMode(); got != ExecutionModeLocal {
 		t.Fatalf("EphemeralExecutionMode() = %q, want local", got)

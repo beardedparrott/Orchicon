@@ -1,21 +1,5 @@
-// Package automation implements the Automation screen: workflows,
-// recurring work items (the Recurring Items surface) and the Idea Cloud
-// triage list.
-//
-// Recurring items have no dedicated service — they are work items with a
-// recurring_schedule (work_item.proto recurring_schedule/next_run_at)
-// listed via ListWorkItems with RecurringFilter_ONLY_RECURRING, exactly how
-// the GUI surfaces them (frontend/src/api/workItems.ts recurringFilter).
-// Their mutations are WorkItemService.CreateWorkItem / UpdateWorkItem
-// (recurring_schedule + recurring_enabled) / DeleteWorkItem, all through
-// the kit2 mutation executor. Per-fire run history comes from
-// GetWorkItemRunHistory.
-//
-// Ideas are idea-state work items surfaced by ListIdeas: idea_state_scope
-// ACTIVE is the Idea Cloud (awaiting triage), REJECTED is the durable
-// dismissed-spawn history the automation dedupe gate consults. PromoteIdea
-// is the ONLY sanctioned path out of idea state (→ normal pending work
-// item); DismissIdea maps to cancelled (leave every active view).
+// PromoteIdea is the ONLY sanctioned path out of idea state (→ normal pending work item);
+// DismissIdea maps to cancelled (leave every active view).
 package automation
 
 import (
@@ -81,25 +65,12 @@ type Model struct {
 
 	// dtPicker is the open combined CALENDAR + CLOCK modal (a KDateTime field activated), layered above
 	// the form that opened it; dtStartField/dtEndField are the two fields it writes back into.
-	//
-	// ONE MODAL EDITS BOTH FIELDS, because a recurrence's start is a DATE AND A TIME and the schedule
-	// stores them as two strings (start_date "YYYY-MM-DD", start_time "HH:MM"). The operator asked for
-	// the combined control on this form ("I wonder if we should combine start date and time in the same
-	// type of calendar picker you made for work item schedules. That would be nice."), so the modal
-	// commits an instant and the host SPLITS it back into the pair the wire wants — rather than making
-	// the operator visit two controls that describe one moment.
 	dtPicker     *kit2.DateTimePicker
 	dtStartField string
 	dtEndField   string
 
 	// formZone is the IANA zone the open recurring form's wall-clock fields are expressed in, captured
 	// when the form is BUILT so the submit handler writes back the same zone the labels showed.
-	//
-	// It is a Model field rather than a closure capture because the two paths seed it differently and
-	// that difference is the whole point: a CREATE stamps the operator's system zone, while an EDIT
-	// PRESERVES whatever the schedule already carries — including empty, which means UTC. Stamping an
-	// edit with the system zone would silently MOVE an existing legacy schedule's fire time, and the
-	// operator asked for those to keep firing exactly as they do today.
 	formZone  string
 	dateField string
 	// rpcPromote/rpcDismiss are thunks so a bulk triage is testable without a
@@ -117,10 +88,8 @@ type Model struct {
 func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m := &Model{cl: cl, reg: reg, tenantID: tenantID}
 	m.NameStr = "automation"
-	// Workflows are NOT a source here: they belong to the Execution domain (the
-	// operator's "Workflows should be under Execution not Automation"). Automation
-	// keeps the recurring items that BIND a workflow — its create form still
-	// fetches workflow options for the binding field.
+	// Workflows are NOT a source here: they belong to the Execution domain (the operator's "Workflows
+	// should be under Execution not Automation").
 	m.AddSource(srcRecurring, "Recurring Items", m.fetchSchedules)
 	m.AddSource(srcIdeas, "Idea Cloud", m.fetchIdeas)
 	m.AddSource(srcRejected, "Rejected Ideas", m.fetchRejected)
@@ -160,32 +129,20 @@ func (m *Model) Init() tea.Cmd {
 	return m.Load()
 }
 
-// ClaimsKeys reports whether the screen owns every key right now (an open
-// form or confirmation dialog). The shell consults it before its own routes
-// so a typed character is never stolen ('q' would quit, space would open
-// the tab menu, '/' the palette).
+// ClaimsKeys reports whether the screen owns every key right now (an open form or confirmation
+// dialog).
 func (m *Model) ClaimsKeys() bool {
 	return m.form != nil || m.Open != nil || m.datePicker != nil || m.dtPicker != nil || m.Base.EditingDetail()
 }
 
-// ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one
-// state where Tab belongs to the form (field advance) rather than to the shell's
-// tab ring. See router.go's tab chord.
-// FormOpen reports whether a FORM is open. While one is up, Tab moves through the
-// form's FIELDS rather than the tab ring.
-// FORM-TAB: while a form is open Tab moves through its FIELDS, and an inline
-// details-pane editor counts — the earlier rule only yielded to a centred window,
-// which let Tab escape this host.
+// ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one state where Tab
+// belongs to the form (field advance) rather than to the shell's tab ring.
 func (m *Model) FormOpen() bool {
 	return m.form != nil || m.datePicker != nil || m.dtPicker != nil || m.Base.EditingDetail()
 }
 
-// ActiveForm returns the open form (nil when closed) — tests and the shell
-// read the in-progress input through it.
-// ActiveForm returns the form the operator is currently editing, whichever host
-// holds it — the legacy modal field or the inline details-pane editor. Tests drive
-// writes through this, so they assert WHAT is being edited rather than WHERE it is
-// drawn: the host is a presentation choice, not part of the contract.
+// ActiveForm returns the open form (nil when closed) — tests and the shell read the in-progress
+// input through it.
 func (m *Model) ActiveForm() *kit2.Form {
 	if m.form != nil {
 		return m.form
@@ -331,10 +288,8 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			return "", nil, "", err
 		}
 		w := resp.Msg.GetWorkItem()
-		// 'recurring' IS the pause flag — the same RecurringEnabled the edit form's
-		// "Enabled" checkbox and the row's p (pause/resume) both write. Say so on
-		// the pane, because "what is enabled in the edit menu? is that the same as
-		// pause?" is exactly the question a bare "active" invites.
+		// 'recurring' IS the pause flag — the same RecurringEnabled the edit form's "Enabled" checkbox and
+		// the row's p (pause/resume) both write.
 		state := "PAUSED — not firing (p resumes)"
 		if w.GetRecurringEnabled() {
 			state = "active — firing (p pauses)"
@@ -389,9 +344,8 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 	return "", nil, "", nil
 }
 
-// runHistory renders the per-fire ledger: each fire's status + fire time,
-// the bound workflow run (id + status, start → end), and that run's
-// executions/outputs.
+// runHistory renders the per-fire ledger: each fire's status + fire time, the bound workflow run
+// (id + status, start → end), and that run's executions/outputs.
 func (m *Model) runHistory(ctx context.Context, id string) string {
 	h, err := m.cl.WorkItems.GetWorkItemRunHistory(ctx, connect.NewRequest(&apiv1.GetWorkItemRunHistoryRequest{Id: id}))
 	if err != nil {
@@ -495,23 +449,12 @@ func (m *Model) newCreateForm() *kit2.Form {
 	for _, w := range m.workflows {
 		wfOpts = append(wfOpts, kit2.Option{Value: w.Name, Label: w.Name})
 	}
-	// LOCAL, not UTC. The default start DATE is the one field here the operator reads and accepts
-	// without thinking, and it was derived from time.Now().UTC() — so a user behind UTC got the WRONG
-	// DAY pre-filled for part of every day: in Central (UTC-6) any time after 18:00 local is already
-	// tomorrow in UTC, so an evening "nightly sweep" defaulted to tomorrow's date. A default the
-	// operator has to notice and correct is worse than no default.
+	// LOCAL, not UTC.
 	now := time.Now()
 	// The operator's zone, stamped onto the schedule and NAMED on the field below.
-	//
-	// A wall clock with no zone is not a time, and this form asks for exactly a wall clock — so the zone
-	// the operator is typing in has to be both stored and visible. Empty means the system could not be
-	// asked (see screenkit.SystemZoneName); the label says so rather than quietly implying it is local,
-	// because a silent UTC default is the bug this field exists to fix.
 	m.formZone = screenkit.SystemZoneName()
 	// THE LABEL NAMES THE ZONE WITHOUT REPEATING THE LEGACY SPEECH, because the combined field's own
-	// value line below already prints it (displayScheduleStart). Saying "no zone set (legacy schedule)"
-	// twice in one form is noise, and the operator's report on this exact screen was that it is too
-	// crowded to read.
+	// value line below already prints it (displayScheduleStart).
 	zoneLabel := m.formZone
 	if zoneLabel == "" {
 		zoneLabel = "UTC"
@@ -528,21 +471,11 @@ func (m *Model) newCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "days", Label: "Days (space toggles)", Kind: kit2.KMultiSelect, Options: weekdayOptions()},
 		// A DATE AND A TIME, chosen from ONE modal calendar + clock — the operator's "combine start date
 		// and time in the same type of calendar picker".
-		//
-		// The field holds the INSTANT the schedule's wall clock denotes in the schedule's zone, which the
-		// label names; the modal commits a moment, and the host splits it back into the
-		// start_date/start_time pair the wire wants. scheduleFromValues ALSO derives the pair from this
-		// value, so a create whose modal was never opened is still complete rather than submitting an
-		// empty start_time.
 		kit2.FieldSpec{Name: "start_date", Label: "Start date & time (" + zoneLabel + ")", Kind: kit2.KDateTime, Required: true,
 			Initial: scheduleSeedInitial(m.formZone, now, "09:00"),
 			Display: func(v string) string { return displayScheduleStart(v, m.formZone) }},
 		kit2.FieldSpec{Name: "outputs", Label: "Outputs", Kind: kit2.KSelect, Options: selOptions("standard", "idea", "none"), Initial: "standard"},
-		// The WINDOW confines fires to a daily interval [start, end). Both empty =
-		// 24/7 (the legacy behaviour); both set = a half-open window, which the
-		// server validates as end > start on the SAME day (wrapping midnight is
-		// out of scope in v1) and, for daily/weekly/monthly, requires start_time
-		// to lie INSIDE it.
+		// The WINDOW confines fires to a daily interval [start, end).
 		kit2.FieldSpec{Name: "window_start", Label: "Window start (HH:MM, empty = 24/7)", Kind: kit2.KText, Placeholder: "09:00", Validate: validateClock},
 		kit2.FieldSpec{Name: "window_end", Label: "Window end (HH:MM, exclusive)", Kind: kit2.KText, Placeholder: "17:00", Validate: validateClock},
 	)
@@ -557,11 +490,7 @@ func (m *Model) newEditForm(w *apiv1.WorkItem) *kit2.Form {
 	if s == nil {
 		return nil
 	}
-	// THE ZONE IS PRESERVED, NEVER RE-STAMPED on an edit. A schedule written before the timezone field
-	// existed carries an empty one, which the server reads as UTC so that its fire time is unchanged;
-	// overwriting that with the system zone here would move it — and the operator explicitly asked for
-	// existing schedules to be left alone. The label states the legacy case so the wall clocks on screen
-	// are not mistaken for local ones.
+	// THE ZONE IS PRESERVED, NEVER RE-STAMPED on an edit.
 	m.formZone = strings.TrimSpace(s.GetTimezone())
 	// The legacy case (no zone) is stated by the field's own value line — see the create form's note.
 	zoneLabel := m.formZone
@@ -598,14 +527,11 @@ func (m *Model) wireForm(f *kit2.Form, mode, id string) {
 	// A KDate field opens the host's calendar instead of accepting text.
 	f.OnOpenDatePicker = m.openDatePicker
 	// The recurring form's START is a combined date+time field, so it opens the merged calendar + clock
-	// rather than that calendar plus a bare time box. Wired HERE because every recurring form — create
-	// and edit — comes through this function, and a hook installed at one call site is a field that
-	// silently stops opening on the other.
+	// rather than that calendar plus a bare time box.
 	f.OnOpenDateTimePicker = m.openScheduleStart
 	f.OnSubmit = func(v map[string]string, multi map[string][]string) (tea.Cmd, error) {
-		// One gate for BOTH modes: the window rules are the server's
-		// (internal/workitem/validate.go), and catching them here reports them at
-		// the form rather than coming back as a failed mutation.
+		// One gate for BOTH modes: the window rules are the server's (internal/workitem/validate.go), and
+		// catching them here reports them at the form rather than coming back as a failed mutation.
 		if err := validateScheduleWindow(v); err != nil {
 			return nil, err
 		}
@@ -669,8 +595,6 @@ func (m *Model) wireForm(f *kit2.Form, mode, id string) {
 // ---------------- entity actions (pause/resume, delete, promote, dismiss) ----------------
 
 // actionsForSelection builds the entity-bound actions for the selected row.
-// Destructive actions carry a confirmation; every RPC runs through the
-// mutation executor with an optimistic apply + rollback.
 func (m *Model) actionsForSelection() []kit2.Action {
 	item, ok := m.ActiveItem()
 	if !ok {
@@ -813,9 +737,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			m.notice = "couldn't open the form: " + msg.err.Error()
 			return m, nil
 		}
-		// The forms open IN THE DETAILS PANE, not a modal — the same host the
-		// work-item, worker and Control forms use, so the keys, validation and submit
-		// path cannot diverge between screens.
+		// The forms open IN THE DETAILS PANE, not a modal — the same host the work-item, worker and Control
+		// forms use, so the keys, validation and submit path cannot diverge between screens.
 		switch msg.mode {
 		case formCreate:
 			if len(msg.projects) == 0 {
@@ -851,14 +774,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			_, cmd := m.dtPicker.HandleKey(msg)
 			return m, tea.Batch(cmd, m.finishDateTimePicker())
 		}
-		// The INLINE details-pane editor owns every key while it is up — it is the
-		// focused surface, so this comes FIRST.
-		//
-		// It has to: handleKey answers 'e' (edit), 'n' (new) and 'p'/'x'
-		// (promote/dismiss), so with a form open in the pane a plain letter fired a
-		// CHORD instead of being typed. That is why typing "Nightly triage sweep"
-		// into the title lost every 'e' — each one re-prepared the edit form and
-		// discarded the text so far.
+		// The INLINE details-pane editor owns every key while it is up — it is the focused surface, so this
+		// comes FIRST.
 		if m.Base.EditingDetail() {
 			if handled, cmd := m.Base.Update(msg); handled {
 				return m, cmd
@@ -906,9 +823,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return m.prepEdit(), true
 		}
 	case "A":
-		// BULK triage on the Idea Cloud: 'A' accepts every listed idea, 'R'
-		// rejects them all. Triage is the reason the cloud exists, and a run that
-		// spawned eight ideas should not ask for eight keystrokes.
+		// BULK triage on the Idea Cloud: 'A' accepts every listed idea, 'R' rejects them all.
 		if src == srcIdeas {
 			return m.acceptAllIdeas(), true
 		}
@@ -1007,9 +922,7 @@ func (m *Model) acceptAllIdeas() tea.Cmd {
 	return m.bulkIdeaDecision(items, true)
 }
 
-// rejectAllIdeas dismisses every idea currently listed. Confirmed, because a
-// dismissal is durable rejection history — the dedupe gate will not re-propose
-// them — so it is not the kind of thing to do by accident.
+// rejectAllIdeas dismisses every idea currently listed.
 func (m *Model) rejectAllIdeas() tea.Cmd {
 	items := m.visibleItems(srcIdeas)
 	if len(items) == 0 {
@@ -1033,11 +946,6 @@ func (m *Model) rejectAllIdeas() tea.Cmd {
 }
 
 // bulkIdeaDecision runs accept-or-reject over a set, ONE mutation per idea.
-//
-// Not a single batched request: PromoteIdea/DismissIdea are per-item RPCs, and a
-// batch that reports only overall success would hide a partial failure — which is
-// exactly the case that matters here, since the operator has to know WHICH ideas
-// are still awaiting a decision.
 func (m *Model) bulkIdeaDecision(items []screenkit.Item, accept bool) tea.Cmd {
 	ids := make([]string, 0, len(items))
 	for _, it := range items {
@@ -1079,9 +987,8 @@ type ideaBulkDoneMsg struct {
 	failed []string
 }
 
-// onIdeaBulkDone surfaces the outcome and reloads the sources: the optimistic
-// removal is only safe if a failure puts the rows back, and the durable truth is
-// the server's list.
+// onIdeaBulkDone surfaces the outcome and reloads the sources: the optimistic removal is only safe
+// if a failure puts the rows back, and the durable truth is the server's list.
 func (m *Model) onIdeaBulkDone(msg ideaBulkDoneMsg) tea.Cmd {
 	verb := "rejected"
 	if msg.accept {
@@ -1118,10 +1025,8 @@ func (m *Model) visibleItems(src string) []screenkit.Item {
 
 // ---------------- helpers ----------------
 
-// recurringZoneLabel renders the zone a stored schedule's wall clocks are expressed in, for the detail
-// pane. It SPEAKS THE LEGACY CASE OUT LOUD: an empty zone is read as UTC by the server (deliberately, so
-// an existing fire time never moves), and an operator looking at times on screen has to be able to tell
-// that they are not local.
+// recurringZoneLabel renders the zone a stored schedule's wall clocks are expressed in, for the
+// detail pane.
 func recurringZoneLabel(zone string) string {
 	if strings.TrimSpace(zone) == "" {
 		return "UTC — no zone set (legacy schedule)"
@@ -1131,10 +1036,6 @@ func recurringZoneLabel(zone string) string {
 
 // scheduleSeedInitial is the combined start field's Initial seed: the RFC3339 instant the pair (a
 // calendar day plus a wall clock) denotes in the schedule's zone.
-//
-// IT TAKES THE PAIR RATHER THAN BEING GIVEN AN INSTANT for the create path, where the seed is "today at
-// 09:00" — a WALL CLOCK, not a moment, and one that has to be read in the schedule's zone or a legacy
-// UTC form would open the modal on the operator's local reading of a UTC clock.
 func scheduleSeedInitial(zone string, at time.Time, clock string) string {
 	loc := scheduleZoneLocation(zone)
 	date := at.In(loc).Format("2006-01-02")
@@ -1145,13 +1046,8 @@ func scheduleSeedInitial(zone string, at time.Time, clock string) string {
 	return seed.Format(time.RFC3339)
 }
 
-// displayScheduleStart renders the field's stored INSTANT as the wall clock it means in the SCHEDULE's
-// zone — the local time WITH the zone named, which is the operator's ask for every time in the TUI.
-//
-// The zone is a parameter because the field's value is an instant while its meaning is the schedule's:
-// a legacy schedule's 09:00 is 09:00 UTC, and rendering it with screenkit.FmtLocalFull would print the
-// OPERATOR's local conversion of it — a different wall clock from the one the schedule stores, which
-// would then be read back and saved. It has to be shown in the zone it is kept in.
+// displayScheduleStart renders the field's stored INSTANT as the wall clock it means in the
+// SCHEDULE's zone — the local time WITH the zone named.
 func displayScheduleStart(v, zone string) string {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -1167,9 +1063,8 @@ func displayScheduleStart(v, zone string) string {
 	return t.In(loc).Format("2006-01-02 15:04 MST") + "  (" + scheduleZoneLabel(zone) + ")"
 }
 
-// scheduleZoneLabel names the zone the form's wall clocks are expressed in, speaking the legacy case out
-// loud. An empty zone is read as UTC by the server (deliberately, so an existing fire time never moves),
-// and an operator looking at times on screen has to be able to tell that they are not local.
+// scheduleZoneLabel names the zone the form's wall clocks are expressed in, speaking the legacy
+// case out loud.
 func scheduleZoneLabel(zone string) string {
 	if strings.TrimSpace(zone) == "" {
 		return "UTC — no zone set (legacy schedule)"
@@ -1182,19 +1077,13 @@ func scheduleFromValues(v map[string]string, multi map[string][]string, zone str
 	if interval < 1 {
 		interval = 1
 	}
-	// Days come from the MULTI-SELECT, in the field's option order (Mon..Sun) —
-	// deterministic, unlike the map iteration it replaced. The legacy typed form is
-	// still parsed so a value already stored that way keeps working.
+	// Days come from the MULTI-SELECT, in the field's option order (Mon..Sun) — deterministic, unlike
+	// the map iteration it replaced.
 	days := multi["days"]
 	if len(days) == 0 {
 		days = splitDays(v["days"])
 	}
-	// THE WIRE'S PAIR, DERIVED FROM THE ONE FIELD. The form's start is a single date+time field holding
-	// an INSTANT; the schedule stores the wall clock it means as start_date + start_time. Splitting is
-	// done here rather than relying on the modal having written the pair, because the field's value is
-	// what the operator sees and confirms — a form submitted WITHOUT opening the modal (the common case)
-	// never fires the modal's split, and reading a stale pair would send whatever was there before the
-	// field was changed, or nothing at all on a create.
+	// THE WIRE'S PAIR, DERIVED FROM THE ONE FIELD.
 	loc := scheduleZoneLocation(zone)
 	startDate := ""
 	startTime := ""
@@ -1222,9 +1111,7 @@ func scheduleFromValues(v map[string]string, multi map[string][]string, zone str
 	}
 }
 
-// weekdayOptions is the Mon..Sun option set, in calendar order. The VALUES are the
-// wire spelling the schedule stores (and the server validates), so they are also
-// what the toggle writes — no translation layer to drift.
+// weekdayOptions is the Mon..Sun option set, in calendar order.
 func weekdayOptions() []kit2.Option {
 	names := []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
 	out := make([]kit2.Option, 0, len(names))
@@ -1294,13 +1181,6 @@ func validateClock(v string) error {
 }
 
 // scheduleStartClock reads the WALL CLOCK a submit's start denotes: minutes past midnight.
-//
-// IT NEEDS NO ZONE, and that is not a shortcut. The stored value is RFC3339 written in the SCHEDULE's own
-// zone (both the picker's Value and scheduleSeedInitial format it that way), so its offset IS the
-// schedule's zone — and a parsed time's own Hour()/Minute() are therefore the operator's wall clock
-// already. Converting it into another location here would BE the bug rather than the fix.
-//
-// The bare start_time branch keeps the legacy typed shape working.
 func scheduleStartClock(v map[string]string) (int, bool) {
 	if at, err := time.Parse(time.RFC3339, strings.TrimSpace(v["start_date"])); err == nil {
 		return at.Hour()*60 + at.Minute(), true
@@ -1312,11 +1192,8 @@ func scheduleStartClock(v map[string]string) (int, bool) {
 	return st.Hour()*60 + st.Minute(), true
 }
 
-// validateScheduleWindow mirrors the SERVER's rules (internal/workitem/validate.go:
-// 555-587) so a window the plane would reject is caught at the field instead of
-// coming back as a failed mutation. The rules are: both-or-neither, both HH:MM, end
-// strictly after start on the SAME day (wrapping midnight is out of scope in v1),
-// and for daily/weekly/monthly the anchor time must lie INSIDE the window.
+// validateScheduleWindow mirrors the SERVER's rules (internal/workitem/validate.go: 555-587) so a
+// window the plane would reject is caught at the field instead of coming back as a failed mutation.
 func validateScheduleWindow(v map[string]string) error {
 	ws := strings.TrimSpace(v["window_start"])
 	we := strings.TrimSpace(v["window_end"])
@@ -1377,10 +1254,7 @@ func cadence(s *apiv1.RecurringSchedule) string {
 	if d := s.GetDays(); len(d) > 0 {
 		out += " on " + strings.Join(d, ",")
 	}
-	// THE TIME CARRIES ITS ZONE. It used to read "at 09:00" with nothing saying where, which is the
-	// same unlabelled-time ambiguity this whole piece of work removed from the rest of the TUI — and it
-	// matters most HERE, because a legacy schedule's 09:00 is 09:00 UTC and the operator is in Central,
-	// so a bare "09:00" on this row is a wall clock they would have to convert in their head.
+	// THE TIME CARRIES ITS ZONE.
 	if t := s.GetStartTime(); t != "" {
 		out += " at " + t + " " + shortZoneLabel(s.GetTimezone())
 	}
@@ -1392,9 +1266,6 @@ func cadence(s *apiv1.RecurringSchedule) string {
 
 // shortZoneLabel renders a schedule's zone for a dense context: the zone name, or "UTC" when the
 // schedule carries none (the legacy reading).
-//
-// It does NOT spell out "no zone set (legacy schedule)" — that sentence belongs on the detail pane's own
-// timezone field, where there is room for it, not inside a one-line cadence that sits in a list row.
 func shortZoneLabel(zone string) string {
 	if strings.TrimSpace(zone) == "" {
 		return "UTC"
@@ -1491,9 +1362,8 @@ func (m *Model) openDatePicker(field, current string) tea.Cmd {
 	return nil
 }
 
-// finishDatePicker closes the calendar when it reports Done and writes the chosen
-// date into the field that opened it. The SCREEN owns the close (see
-// kit2.ModelPicker.Done for why a host callback cannot).
+// finishDatePicker closes the calendar when it reports Done and writes the chosen date into the
+// field that opened it.
 func (m *Model) finishDatePicker() tea.Cmd {
 	if m.datePicker == nil || !m.datePicker.Done() {
 		return nil

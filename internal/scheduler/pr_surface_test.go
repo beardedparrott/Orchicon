@@ -14,9 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// TestExtractPRFieldsInlineMarker verifies the fallback extracts a
-// PR_URL:/PR_STATE: marker glued mid-sentence (the 4.2 / 01M10WE9VWWF5GRQGZSAV57YWB
-// case), where the line-anchored pass would silently drop it.
+// TestExtractPRFieldsInlineMarker verifies the fallback extracts a PR_URL:/PR_STATE: marker glued
+// mid-sentence (the 4.2 / 01M10WE9VWWF5GRQGZSAV57YWB case).
 func TestExtractPRFieldsInlineMarker(t *testing.T) {
 	output := "The PR was opened at PR_URL: https://github.com/OWNER/REPO/pull/42 and then PR_STATE: merged - see the run notes."
 	prURL, prState := extractPRFields(output)
@@ -42,9 +41,8 @@ func TestMarkerPRStateInline(t *testing.T) {
 	}
 }
 
-// TestDeterministicPRForBranchVerified stubs the gh binary to assert the
-// verified path returns the gh-confirmed URL/state, and the unverifiable
-// path (empty repo/branch) degrades to verified=false.
+// TestDeterministicPRForBranchVerified stubs the gh binary to assert the verified path returns the
+// gh-confirmed URL/state, and the unverifiable path (empty repo/branch) degrades to verified=false.
 func TestDeterministicPRForBranchVerified(t *testing.T) {
 	stubGH(t, "verify")
 	url, state, verified := deterministicPRForBranch("beardedparrott/Orchicon", "some-branch")
@@ -66,9 +64,9 @@ func TestDeterministicPRForBranchVerified(t *testing.T) {
 	}
 }
 
-// TestPRStepSuccessStampsVerifiedPR verifies that a succeeded PR-requiring
-// step on a git_strategy=pr run with a gh-verified PR leaves its execution
-// row (and run_context) with the verified pr_url/pr_state.
+// TestPRStepSuccessStampsVerifiedPR verifies that a succeeded PR-requiring step on a
+// git_strategy=pr run with a gh-verified PR leaves its execution row (and run_context) with the
+// verified.
 func TestPRStepSuccessStampsVerifiedPR(t *testing.T) {
 	stubGH(t, "verify")
 	pool, rc, runID, execID := seedPRStepFixture(t, "PR_URL: https://github.com/OWNER/REPO/pull/999\nPR_STATE: open\nORCHICON WORKER SUMMARY: success\n")
@@ -85,9 +83,8 @@ func TestPRStepSuccessStampsVerifiedPR(t *testing.T) {
 	}
 }
 
-// TestPRStepSuccessFallbackMarkerWhenUnverified verifies that when the
-// deterministic check cannot verify (gh unavailable), the worker-marker
-// fallback still captures the PR — including a marker glued mid-sentence.
+// TestPRStepSuccessFallbackMarkerWhenUnverified verifies that when the deterministic check cannot
+// verify (gh unavailable), the worker-marker fallback still captures the PR.
 func TestPRStepSuccessFallbackMarkerWhenUnverified(t *testing.T) {
 	stubGH(t, "fail")
 	marker := "opened the PR at PR_URL: https://github.com/OWNER/REPO/pull/555 which is PR_STATE: merged now."
@@ -104,9 +101,8 @@ func TestPRStepSuccessFallbackMarkerWhenUnverified(t *testing.T) {
 	}
 }
 
-// stubGH writes a fake gh binary that either returns a fixed PR (mode
-// "verify") or fails (mode "fail"), so deterministicPRForBranch can be
-// driven deterministically in tests.
+// stubGH writes a fake gh binary that either returns a fixed PR (mode "verify") or fails (mode
+// "fail"), so deterministicPRForBranch can be driven deterministically in tests.
 func stubGH(t *testing.T, mode string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -127,9 +123,8 @@ func stubGH(t *testing.T, mode string) {
 	t.Cleanup(func() { ghBin = old })
 }
 
-// seedPRStepFixture seeds a git_strategy=pr project, a succeeded PR step
-// execution, and the surrounding run/step-run/ticket, then returns the pool,
-// reconciler, run id, and execution id.
+// seedPRStepFixture seeds a git_strategy=pr project, a succeeded PR step execution, and the
+// surrounding run/step-run/ticket, then returns the pool, reconciler, run id, and execution id.
 func seedPRStepFixture(t *testing.T, markerOutput string) (*db.Pool, *WorkflowReconciler, string, string) {
 	t.Helper()
 	pool := approvalTestPool(t)
@@ -156,9 +151,8 @@ func seedPRStepFixture(t *testing.T, markerOutput string) (*db.Pool, *WorkflowRe
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	// CreateProject does not INSERT repo_slug; set it via the git-detection
-	// updater so the deterministic PR check can resolve the repo from the
-	// project row.
+	// CreateProject does not INSERT repo_slug; set it via the git-detection updater so the
+	// deterministic PR check can resolve the repo from the project row.
 	if _, err := db.UpdateProjectGitDetection(ctx, ttx.Tx, approvalTestTenant, proj.ID, proj.Version, false, "beardedparrott/Orchicon"); err != nil {
 		t.Fatalf("set project repo_slug: %v", err)
 	}

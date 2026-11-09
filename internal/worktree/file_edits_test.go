@@ -10,10 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/testfixtures"
 )
 
-// TestBatchWriteFileEditsPayload asserts the engine's structured file_edits
-// output: every applied op yields a per-path ground-truth record (create /
-// modify kinds, real before/after sizes, exact unified diff) — computed from
-// the in-memory snapshot pair the engine already holds, not from re-reads.
+// TestBatchWriteFileEditsPayload asserts the engine's structured file_edits output: every applied
+// op yields a per-path ground-truth record (create / modify kinds, real before/after sizes.
 func TestBatchWriteFileEditsPayload(t *testing.T) {
 	base := t.TempDir()
 	if err := os.WriteFile(filepath.Join(base, "mod.txt"), []byte("line1\nline2\nline3\n"), 0o644); err != nil {
@@ -78,9 +76,8 @@ func TestBatchWriteFileEditsPayload(t *testing.T) {
 	}
 }
 
-// TestBatchWriteFileEditsSharedVectors drives the engine through the SAME
-// shared test vectors the ledger engine + TS renderer use: the file_edits
-// unified_diff must byte-equal the fixture's expected diff.
+// TestBatchWriteFileEditsSharedVectors drives the engine through the SAME shared test vectors the
+// ledger engine + TS renderer use.
 func TestBatchWriteFileEditsSharedVectors(t *testing.T) {
 	vecs, err := testfixtures.LoadFileEditVectors()
 	if err != nil {
@@ -95,10 +92,8 @@ func TestBatchWriteFileEditsSharedVectors(t *testing.T) {
 			continue // only byte-exact, untruncated vectors are engine-assertable
 		}
 		if v.ExpectedKind == "delete" {
-			// The engine's batch_write has no delete mode (create|overwrite|
-			// edit|append) — deletion truth is produced by the ledger
-			// engine's ComputeUnifiedDiff (asserted in internal/fileedit) and
-			// git reconciliation, not by a write op.
+			// The engine's batch_write has no delete mode (create|overwrite| edit|append) — deletion truth is
+			// produced by the ledger engine's ComputeUnifiedDiff (asserted in internal/fileedit) and git.
 			continue
 		}
 		t.Run(v.Name, func(t *testing.T) {

@@ -1,15 +1,7 @@
 package server
 
-// Regression test for PR-Reviewer blocker B1: the native session engine
-// (adapter kind "orchicon") must be registered as a ready runtime
-// adapter row (adp_orchicon_dev) so the TaskReconciler's selectAdapter
-// can dispatch native workers (model_ref orchicon/<provider>/<model> —
-// the ref's adapter segment is the dispatch kind).
-// Before this fix the DB only ever had adp_opencode_dev, so a native
-// worker found no ready adapter and the task requeued forever.
-//
-// DB-backed (skips without ORCHICON_TEST_DSN), following the
-// approvalTestPool pattern from internal/scheduler.
+// Regression test for PR-Reviewer blocker B1: the native session engine (adapter kind "orchicon")
+// must be registered as a ready runtime adapter row (adp_orchicon_dev) so the TaskReconciler's.
 
 import (
 	"context"
@@ -36,12 +28,8 @@ func TestSeedNativeAdapterRegistersOrchiconKind(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	// The BOOT path (seedAllDevAdapters, the only seeder) is idempotent, so
-	// calling it twice must not error and must leave exactly one ready row per
-	// kind. Exercising the real boot path here — rather than a per-kind wrapper —
-	// is the point: this test would have caught the claude omission.
-	// A real (discard) logger is required — seedDevAdapterKind writes a Warn
-	// through it when the kind row already exists, and a nil logger panics.
+	// The BOOT path (seedAllDevAdapters, the only seeder) is idempotent, so calling it twice must not
+	// error and must leave exactly one ready row per kind.
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	seedAllDevAdapters(ctx, pool, logger)
 	seedAllDevAdapters(ctx, pool, logger)
@@ -93,10 +81,8 @@ func TestEveryBuiltinAdapterKindHasASeededRow(t *testing.T) {
 		t.Fatalf("the builtin catalog declared only %d adapter kinds — the live kind source shrank, so this guard proves nothing", len(kinds))
 	}
 	for kind := range kinds {
-		// A kind that is NOT an in-process bridge would legitimately have no dev
-		// seed — it would heartbeat itself over the adapter lease path. None exist
-		// today; adding one means adding it to this exclusion list DELIBERATELY,
-		// with a comment saying why, which is the point of the guard.
+		// A kind that is NOT an in-process bridge would legitimately have no dev seed — it would heartbeat
+		// itself over the adapter lease path.
 		const remoteKinds = ""
 		if remoteKinds == kind {
 			continue
@@ -131,9 +117,8 @@ func TestEveryBuiltinAdapterKindHasASeededRow(t *testing.T) {
 	}
 }
 
-// The claude row specifically:
-// a claude worker's model_ref (claude/<provider>/<model>) resolves kind "claude",
-// so selectAdapter must find adp_claude_dev.
+// The claude row specifically: a claude worker's model_ref (claude/<provider>/<model>) resolves
+// kind "claude", so selectAdapter must find adp_claude_dev.
 func TestSeedClaudeAdapterRegistersClaudeKind(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {

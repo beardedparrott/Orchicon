@@ -31,8 +31,6 @@ import (
 )
 
 // TestLateVerdictContradictsRun enumerates every (run status, verdict) pair.
-// The rule is small enough that exhaustiveness is cheap, and the pair that
-// caused the incident must be the loud one.
 func TestLateVerdictContradictsRun(t *testing.T) {
 	cases := []struct {
 		runStatus string
@@ -80,9 +78,9 @@ func TestStaleVersionRetryConverges(t *testing.T) {
 	}
 }
 
-// TestStaleVersionRetryDoesNotRetryOtherErrors: a genuine failure must surface
-// immediately — retrying it would turn a fast error into a slow one and could
-// mask a real problem behind the backoff.
+// TestStaleVersionRetryDoesNotRetryOtherErrors: a genuine failure must surface immediately —
+// retrying it would turn a fast error into a slow one and could mask a real problem behind the
+// backoff.
 func TestStaleVersionRetryDoesNotRetryOtherErrors(t *testing.T) {
 	t.Setenv("ORCHICON_STALE_VERSION_RETRY_DELAY", "0s")
 	nopLog := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -219,9 +217,8 @@ func itemStatusNow(t *testing.T, pool *db.Pool, itemID string) string {
 	return wi.Status
 }
 
-// TestLateFailureVerdictDoesNotOverwriteCompletedRun is the incident itself:
-// the reaper fails a superseded execution of a run that already COMPLETED and
-// whose item already succeeded. The item must stay succeeded.
+// TestLateFailureVerdictDoesNotOverwriteCompletedRun is the incident itself: the reaper fails a
+// superseded execution of a run that already COMPLETED and whose item already succeeded.
 func TestLateFailureVerdictDoesNotOverwriteCompletedRun(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
@@ -277,18 +274,16 @@ func TestVerdictForActiveRunDoesNotDecideTheItem(t *testing.T) {
 	}
 }
 
-// A source-level pin on PLACEMENT: the guard must consult the terminal-run
-// check BEFORE any work-item status write. The helper existing is not enough —
-// a version placed after the write would leave the defect fully intact.
+// A source-level pin on PLACEMENT: the guard must consult the terminal-run check BEFORE any
+// work-item status write.
 func TestTerminalRunGuardPrecedesTheStatusWrite(t *testing.T) {
 	raw, err := os.ReadFile("reconciler.go")
 	if err != nil {
 		t.Fatalf("read reconciler.go: %v", err)
 	}
 	src := string(raw)
-	// Scope to the FUNCTION — "status := domain.WorkItemFailed" also appears in
-	// earlier functions on this file, so a whole-file index would compare the
-	// guard against the wrong write.
+	// Scope to the FUNCTION — "status := domain.WorkItemFailed" also appears in earlier functions on
+	// this file, so a whole-file index would compare the guard against the wrong write.
 	fnStart := strings.Index(src, "func (r *TaskReconciler) transitionWorkItemOnResult(")
 	if fnStart < 0 {
 		t.Fatal("transitionWorkItemOnResult is gone")

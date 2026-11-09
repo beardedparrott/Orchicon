@@ -17,11 +17,7 @@ func (s *loadCountScreen) Init() tea.Cmd {
 	return func() tea.Msg { return nil }
 }
 
-// Regression: activating a tab MUST run that screen's first load exactly
-// once. Screens are constructed eagerly for the nav registry, so before
-// ensureLoaded only the startup tab ever fetched — every other tab
-// rendered "nothing here" with no error (the operator's Control
-// screenshot).
+// Regression: activating a tab MUST run that screen's first load exactly once.
 func TestSwitchToRunsScreenFirstLoadOnce(t *testing.T) {
 	m := newTestApp()
 	ctrl := &loadCountScreen{}
@@ -112,11 +108,7 @@ func TestNewChatSlashResetsConversation(t *testing.T) {
 	}
 }
 
-// Regression for "themes are still not saving". The shell reference was injected
-// by hand inside each factory and CONTROL's was missing, so Control.Shell()
-// returned nil: its Themes pane switched the palette in-session but could never
-// persist it (applyTheme fell through to theme.Use), and its notices were
-// silently dropped. Every screen must be constructed with a shell.
+// Regression for "themes are still not saving".
 func TestEveryScreenGetsTheShellReference(t *testing.T) {
 	m := newTestApp()
 	for _, tab := range Tabs {

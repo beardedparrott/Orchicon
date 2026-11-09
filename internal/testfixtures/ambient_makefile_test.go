@@ -87,16 +87,8 @@ func TestTheMakefileUnsetsEveryAmbientVariable(t *testing.T) {
 	}
 }
 
-// TestTheModelRegistryPackageIsIsolated pins the ONE omission this file was written for.
-//
-// THE CLASS IS COVERED BY THE MAKEFILE GATE ABOVE; this pins the individual fix, because `make test` is not the
-// only way the suite runs — a bare `go test ./...` from an operator's shell is, and no Makefile reaches it.
-//
-// WHY ONLY THIS PACKAGE, RATHER THAN A LIST OF EVERY ONE. A hand-maintained "every package that resolves an
-// ambient default" registry drifts in exactly the way the Makefile's copy just did, and worse: it fails on a
-// false signal the day a package legitimately stops needing isolation, which teaches people to delete the
-// gate. So the *class* is guarded where it can be derived (the Makefile, against AmbientConfigEnv) and the
-// *fix* is guarded here by name.
+// TestTheModelRegistryPackageIsIsolated pins the ONE omission this file was written for. WHY ONLY
+// THIS PACKAGE, RATHER THAN A LIST OF EVERY ONE.
 func TestTheModelRegistryPackageIsIsolated(t *testing.T) {
 	path := filepath.Join("..", "orchicon", "isolate_test.go")
 	body, err := os.ReadFile(path)

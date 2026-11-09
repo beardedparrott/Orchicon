@@ -30,9 +30,8 @@ import (
 	"testing"
 )
 
-// orphanSeams installs the fakes for a plane whose PID file is gone, and returns a cleanup that restores the
-// real functions. It deliberately does NOT touch the PID-file seams: the whole point is that no PID file names
-// anything.
+// orphanSeams installs the fakes for a plane whose PID file is gone, and returns a cleanup that
+// restores the real functions.
 func orphanSeams(t *testing.T, pid int, terminateErr error, stillAlive bool) *int {
 	t.Helper()
 	oldUnrec, oldTerm, oldPID := unrecordedPlane, terminateProcess, pidAlive
@@ -151,17 +150,6 @@ func TestStatusOfReportsTheOrphanedPlane(t *testing.T) {
 }
 
 // TestDriftResolvesThePlaneThroughTheRecoverableIdentity is a WIRING guard, and deliberately so.
-//
-// Drift's whole body resolves `planeBinary()` and calls procExe on the pid — neither of which is a seam, so a
-// unit test cannot drive its verdict without resolving a real plane binary, and one that tried would be
-// testing the test host rather than the code. What CAN be pinned is the line the fix turned on: Drift asks
-// effectivePlanePID (PID file, then the verified listener) instead of ServingPlanePID (PID file only). Asking
-// the latter is what answered Unknown and let `Start` leave a superseded binary serving while reporting
-// success.
-//
-// The behaviour itself is recorded from a LIVE measurement in the fix that introduced this: for the reported
-// plane — five days old, PID file gone, /proc/<pid>/exe reading "(deleted)" — StatusOf reported PID 595842,
-// Alive true, Drift "binary superseded".
 func TestDriftResolvesThePlaneThroughTheRecoverableIdentity(t *testing.T) {
 	src, err := os.ReadFile("hostproc_unix.go")
 	if err != nil {

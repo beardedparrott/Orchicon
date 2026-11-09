@@ -54,9 +54,7 @@ func modeValues(f *kit2.Form) []string {
 	return out
 }
 
-// openCreateFormP seeds two projects with DIFFERENT modes and opens the create form on `n`. The
-// ordered pair matters: the first project is what the form opens on, the second is what a project
-// change must be able to reach.
+// openCreateFormP seeds two projects with DIFFERENT modes and opens the create form on `n`.
 func openCreateFormP(t *testing.T) (*Model, *kit2.Form, *fakePlane) {
 	t.Helper()
 	p := newPlane()
@@ -223,8 +221,7 @@ func TestEditFormSeedsTheOverrideOrInherit(t *testing.T) {
 }
 
 // AC3 — an UNTOUCHED edit changes nothing: the item keeps its runtime override and the request
-// carries no clear. This is the "forms reset what you did not touch" failure class the file already
-// documents for the reference pickers (workitems.go).
+// carries no clear.
 func TestUntouchedEditKeepsTheOverride(t *testing.T) {
 	runtimeOverride := apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME
 	m, f, p := openItemEditorWithMode(t, &runtimeOverride)
@@ -336,10 +333,7 @@ func TestDetailPaneShowsTheEffectiveMode(t *testing.T) {
 }
 
 // AC11 — THE OUTERMOST PROOF: the control is reachable and works through the surface an operator
-// actually drives, not merely as a field spec. Everything below goes through the screen's own keys
-// (`n` create, `e` edit, `space` to cycle a select, `ctrl+s` to submit) and is asserted on the
-// RENDERED dialog (the same `m.View()` the TUI paints into the terminal) as well as on the request
-// the plane received.
+// actually drives, not merely as a field spec.
 func TestOperatorDrivesExecutionModeFromTheWorkTab(t *testing.T) {
 	// THE SCREEN REGION the operator is looking at, so a failure prints what was actually painted
 	// instead of "want string, got string".

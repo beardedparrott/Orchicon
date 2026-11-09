@@ -67,10 +67,7 @@ func TestSplitPersistedPathExpandsAndFilters(t *testing.T) {
 		}
 	}
 
-	// THE UNEXPANDED REFERENCE IS DROPPED, and that is deliberate rather than incidental. A literal
-	// directory named "%NOT_A_REAL_VARIABLE%\bin" cannot hold opencode, so probing it is a wasted
-	// stat on every resolution forever. The alternative — keeping it — would also make the failure
-	// message claim it looked somewhere it could never have found anything.
+	// THE UNEXPANDED REFERENCE IS DROPPED, and that is deliberate rather than incidental.
 	for _, dir := range got {
 		if strings.Contains(dir, "%") {
 			t.Errorf("an unexpanded reference survived into the probe list: %q", dir)
@@ -81,8 +78,7 @@ func TestSplitPersistedPathExpandsAndFilters(t *testing.T) {
 func TestSplitPersistedPathIsCaseInsensitiveOnVariableNames(t *testing.T) {
 	// WINDOWS ENVIRONMENT NAMES ARE CASE-INSENSITIVE, and the registry routinely disagrees with the
 	// process about spelling: a persisted Path says %SystemRoot% while the process exports
-	// "SYSTEMROOT". A case-sensitive lookup expands nothing, drops the directory, and silently stops
-	// finding a real install. Measured failure mode, not a hypothetical.
+	// "SYSTEMROOT".
 	got := SplitPersistedPath(`%SystemRoot%\system32;%windir%`, envList(map[string]string{
 		"SYSTEMROOT": `C:\Windows`,
 		"WinDir":     `C:\Windows`,
@@ -117,9 +113,8 @@ func TestTheWindowsCandidateTablesCoverTheGlobalInstalls(t *testing.T) {
 		"LOCALAPPDATA": `C:\Users\me\AppData\Local`,
 	})
 
-	// EXPECTATIONS ARE BUILT WITH filepath.Join, never as backslash literals: this test runs on
-	// Linux, where filepath.Join separates with "/", and a literal would fail for a reason that has
-	// nothing to do with the table. Same convention as binary_platform_test.go.
+	// EXPECTATIONS ARE BUILT WITH filepath.Join, never as backslash literals: this test runs on Linux,
+	// where filepath.Join separates with "/".
 	cands := openCodePlatformCandidates("windows", env)
 	for _, want := range []struct{ what, path string }{
 		// npm's global prefix on Windows. It normally holds a .cmd shim, but a package that ships the
@@ -156,14 +151,6 @@ func TestTheWindowsCandidateTablesCoverTheGlobalInstalls(t *testing.T) {
 }
 
 // TestAShimOnPathDoesNotCountAsAResolvedBinary — the hole the candidate tables could not close.
-//
-// internal/opencode's own rule is that a Windows npm install's `opencode.cmd` must NOT be resolved:
-// Go cannot CreateProcess a .cmd, so resolving it means discovery starts offering models and the
-// first execution dies somewhere unrelated. The candidate tables enforce that by naming .exe only.
-//
-// BUT LookPath RUNS FIRST and has no such opinion. A PATH carrying the npm prefix returns the shim,
-// which sailed past the policy entirely — the rule only held for paths the tables happened to find.
-// That is the operator's shape of install ("I can run it from anywhere"), so it is worth closing.
 func TestAShimOnPathDoesNotCountAsAResolvedBinary(t *testing.T) {
 	for _, p := range []string{`C:\Users\me\AppData\Roaming\npm\opencode.cmd`, `C:\x\opencode.BAT`, `C:\x\opencode.ps1`} {
 		if launchableResolved("windows", p) {
@@ -177,9 +164,7 @@ func TestAShimOnPathDoesNotCountAsAResolvedBinary(t *testing.T) {
 			t.Errorf("launchableResolved(%q) = false — a real executable must be accepted", p)
 		}
 	}
-	// UNIX IS UNTOUCHED. A shell script IS executable there, and an extension allow-list would be
-	// wrong for the same reason it would be wrong to name ".exe" as the only valid Unix suffix: it
-	// is a normal directory name. So the filter is Windows-only and the Unix answer never changes.
+	// UNIX IS UNTOUCHED.
 	for _, p := range []string{"/usr/local/bin/opencode", "/home/me/.opencode/bin/opencode.cmd"} {
 		if !launchableResolved("linux", p) {
 			t.Errorf("launchableResolved(linux, %q) = false — the shim filter must not change Unix "+
@@ -190,21 +175,13 @@ func TestAShimOnPathDoesNotCountAsAResolvedBinary(t *testing.T) {
 
 // TestResolutionRecoversWithoutARestartAfterAnInstall is the operator's flow, end to end: the plane
 // cannot resolve opencode, they install it, and the NEXT LOOK finds it.
-//
-// THE SECOND HALF IS THE FIX. Before this cycle, resolution happened once at plane boot, so the only
-// thing a retry could do was return the same answer — which is why the message told the operator to
-// restart. The resolver itself was already re-callable; what changed is that the plane now calls it
-// again (internal/aigateway's lazy discoverer). This pins the resolver half so the two cannot drift:
-// if resolution ever becomes cache-on-first-failure again, this test says so at the layer where the
-// mistake would be made.
 func TestResolutionRecoversWithoutARestartAfterAnInstall(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv(OpenCodeBinEnv, "")
 	// PATH is EMPTIED for this simulation: the machine running the test may genuinely have opencode
-	// installed, which would short-circuit the "nothing installed yet" step and make the test pass
-	// without exercising anything.
+	// installed, which would short-circuit the "nothing installed yet" step and make the test pass.
 	t.Setenv("PATH", t.TempDir())
 
 	if _, err := resolveOpenCodeBinary(); err == nil {
@@ -258,10 +235,7 @@ func TestAnNpmGlobalInstallResolvesToTheRealBinary(t *testing.T) {
 	prefix := filepath.Join(home, "AppData", "Roaming", "npm")
 	env["APPDATA"] = filepath.Join(home, "AppData", "Roaming")
 
-	// npm's three shims for this one bin entry. None is launchable, and the .ps1 is the one the
-	// operator actually quoted.
-	// REAL shim bodies: the derivation now PARSES the shim for the target it names, so a fake
-	// "shim\n" body has nothing to point at (which is correct, and is why these were updated).
+	// npm's three shims for this one bin entry.
 	mustWrite(t, filepath.Join(prefix, "opencode.ps1"),
 		"& \"$basedir/node_modules/opencode-ai/bin/opencode.exe\"   $args\n")
 	mustWrite(t, filepath.Join(prefix, "opencode.cmd"),
@@ -373,9 +347,7 @@ func TestTheOperatorsNpmInstallResolvesEndToEnd(t *testing.T) {
 	})
 
 	prefix := filepath.Join(roaming, "npm")
-	// npm's three shims for the one bin entry. None is launchable.
-	// REAL shim bodies: the derivation now PARSES the shim for the target it names, so a fake
-	// "shim\n" body has nothing to point at (which is correct, and is why these were updated).
+	// npm's three shims for the one bin entry.
 	mustWrite(t, filepath.Join(prefix, "opencode.ps1"),
 		"& \"$basedir/node_modules/opencode-ai/bin/opencode.exe\"   $args\n")
 	mustWrite(t, filepath.Join(prefix, "opencode.cmd"),
@@ -384,8 +356,6 @@ func TestTheOperatorsNpmInstallResolvesEndToEnd(t *testing.T) {
 	real := filepath.Join(prefix, "node_modules", "opencode-ai", "bin", "opencode.exe")
 
 	// (a) SHIMS ONLY: postinstall did not run, so the 479-byte stub's directory holds no exe at all.
-	// Resolution must fail AND the message must name the path that would fix it — "install opencode"
-	// is useless advice to someone who installed it.
 	if _, err := resolveOpenCodeBinaryFor("windows", getenv, nil); err == nil {
 		t.Fatal("resolution succeeded with no real binary present — a shim was accepted as the " +
 			"executable, which Go cannot launch")

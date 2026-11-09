@@ -1,17 +1,6 @@
 package runtime
 
 // lifecycle_planecred_test.go — AC 3 for the PLANE-CHANNEL case.
-//
-// The sibling TestRunServeConfigProviderIsDeterministicForARun uses a worker
-// with NO role_ref, so mintPlaneCredential short-circuits to nil and never
-// exercises its mint. But mintPlaneCredential MINTS A FRESH RANDOM API KEY on
-// every call, and RunServeConfig is invoked from the adapter's PER-EXECUTION
-// self-heal path — so a plane-channel run (a published, role-bound worker)
-// emitted a DIFFERENT config on every dispatch. That (a) breaks the
-// determinism AC 3 requires, (b) changes the daemon's serve-config pool key so
-// the run's already-warmed container is not reused, and (c) leaks one
-// api_keys row per execution. This test pins the fix (the per-run
-// planeCredCache memo).
 
 import (
 	"context"
@@ -66,9 +55,7 @@ func TestRunServeConfigDeterministicWithPlaneCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	// A PUBLISHED, ROLE-BOUND worker: this is what grants the plane channel
-	// (deny-by-default). Without RoleRef the mint short-circuits and the bug
-	// this test exists for is invisible.
+	// A PUBLISHED, ROLE-BOUND worker: this is what grants the plane channel (deny-by-default).
 	suffix := db.NewID()[10:22]
 	w, err := db.CreateWorker(ctx, ttx.Tx, db.WorkerRow{
 		ID: "w-" + suffix, TenantID: devTenantID, Name: "plane-det-" + suffix[:6],

@@ -19,9 +19,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/verify"
 )
 
-// The scheduler-side tests cover two things the pure package cannot: the POLICY (which verdict changes
-// which status) and the PARSING of a project's real gate output. Both are places where a quiet edit
-// would re-open the defect without breaking a compile.
+// The scheduler-side tests cover two things the pure package cannot: the POLICY (which verdict
+// changes which status) and the PARSING of a project's real gate output.
 
 // TestApplyVerdictPolicy pins the entire policy in one table, because it is the whole behavioural
 // contract of this feature and every row was a deliberate decision.
@@ -103,12 +102,6 @@ func indexOf(h, n string) int {
 }
 
 // THE GATE IS READ IN THE FORMAT THE PROJECT DECLARES, not guessed from its output.
-//
-// These replace the three tests that pinned the old line parser. The parser is gone: pattern-matching log lines
-// was wrong in principle (a log line is a rendering, not a contract) and broken in practice (raw `node --test`
-// TAP keyed its failure on the test number and dropped it). The format layer's own tests live in
-// internal/verify/results_test.go; what is pinned HERE is the scheduler's wiring — that the declaration's format
-// and path are what actually get used.
 func TestTheGateIsReadInTheDeclaredFormat(t *testing.T) {
 	dir := t.TempDir()
 	decl := verify.Declaration{Command: "make test", Format: verify.FormatJSON}
@@ -229,10 +222,6 @@ func TestPathSet(t *testing.T) {
 }
 
 // TestStepDeclaresDeliverableExemptions pins WHICH steps are exempt from the commit check.
-//
-// The default is true on purpose: wrongly expecting a deliverable produces a loud, fixable "no
-// commits", whereas wrongly exempting a code step silently removes the only universal check there is.
-// So the exemption list must stay short and each entry justified.
 func TestStepDeclaresDeliverableExemptions(t *testing.T) {
 	r := &TaskReconciler{}
 	cases := []struct {
@@ -342,10 +331,8 @@ func TestFormatVerificationSummary(t *testing.T) {
 	})
 }
 
-// TestAppendACReportCheck pins how the worker's own acceptance-criteria report folds into the verdict.
-//
-// This is the one semantic-adjacent check in the system, so its posture is deliberate: it surfaces what
-// the worker admitted rather than judging whether the work is good.
+// TestAppendACReportCheck pins how the worker's own acceptance-criteria report folds into the
+// verdict.
 func TestAppendACReportCheck(t *testing.T) {
 	base := func() verify.Result {
 		r := verify.Result{}
@@ -393,26 +380,15 @@ func TestAppendACReportCheck(t *testing.T) {
 	}
 }
 
-// THE COMPLETION GATE CARRIES NO INVENTED TIME LIMIT — the operator's rule, and the one thing this file used to
-// pin the OPPOSITE of.
-//
-// The gate runs SYNCHRONOUSLY inside OnResult, and the old code answered that by inventing a 3-minute ceiling
-// (then, before that, borrowing the integration path's 10-minute one). Both are gone. A ceiling nobody configured
-// is a hidden policy that fails good work on a slow machine, and it is not the mechanism for a runaway: stall
-// detection, tool-hang cancellation and the execution reaper are, and each of them acts on evidence of being stuck
-// rather than on elapsed time.
-//
-// WHAT REPLACES IT IS CANCELLABILITY, and that is a real property worth pinning: the run's own context reaches the
-// command, so an operator's cancel, a container going away, or a budget the OPERATOR set all stop the gate. That
-// bound is somebody's decision; a number in this file is not.
+// THE COMPLETION GATE CARRIES NO INVENTED TIME LIMIT — the operator's rule, and the one thing this
+// file used to pin the OPPOSITE of.
 func TestTheCompletionGateHasNoInventedTimeout(t *testing.T) {
 	src, err := os.ReadFile("verify_evidence.go")
 	if err != nil {
 		t.Fatalf("read verify_evidence.go: %v", err)
 	}
-	// A SOURCE ASSERTION, and legitimately so: the property is the ABSENCE of a local deadline, and there is no
-	// runtime seam that can observe a timeout that never fires. This proves the wiring is gone; the cancellation
-	// half is proved by TestTheCompletionGateHonoursCancellation below.
+	// A SOURCE ASSERTION, and legitimately so: the property is the ABSENCE of a local deadline, and
+	// there is no runtime seam that can observe a timeout that never fires.
 	for _, banned := range []string{"context.WithTimeout", "context.WithDeadline", "time.AfterFunc"} {
 		if strings.Contains(string(src), banned) {
 			t.Errorf("verify_evidence.go still arms a local bound (%s); the run's own context is the only "+
@@ -422,9 +398,6 @@ func TestTheCompletionGateHasNoInventedTimeout(t *testing.T) {
 }
 
 // AND THE BOUND THAT DOES EXIST IS THE CALLER'S: a cancelled run context stops the gate.
-//
-// This is the property the removed timeouts were trying to buy, obtained the right way — from the context that
-// already knows the execution was cancelled.
 func TestTheCompletionGateHonoursCancellation(t *testing.T) {
 	r := &TaskReconciler{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -467,19 +440,8 @@ func TestCompletionGateTimeoutAbstainsNotFails(t *testing.T) {
 	_ = r
 }
 
-// TestBaselineCaptureAgainstARealRepo is the outermost proof for the baseline half, and it is a REAL
-// integration test rather than a fixture on purpose: the mechanism's whole claim is that it can measure
-// an arbitrary project's gate, and a synthetic Baseline map would prove only that the map round-trips.
-//
-// It is skipped unless a declared gate is present above the test directory, so it is inert in a checkout
-// that has no `.orchicon/verify` — which is most of them.
-//
-// THE GATE IS NARROWED VIA THE PROJECT DIRECTORY, and getting that wrong is what this test got wrong
-// first. captureBaseline reads its command from projectDir/.orchicon/verify, so pointing projectDir back
-// at the repository root made it run the project's FULL gate — 100+ packages, and enough output to trip
-// the truncation cap. The test therefore passes a SCRATCH project dir carrying a one-package gate. This is
-// also why the truncation bug it exposed was a real find and not a test artifact: production hits the same
-// cap with the full gate.
+// TestBaselineCaptureAgainstARealRepo is the outermost proof for the baseline half, and it is a
+// REAL integration test rather than a fixture on purpose.
 func TestBaselineCaptureAgainstARealRepo(t *testing.T) {
 	// OPT-IN, and it is opt-in for a concrete reason that cost a real rebuild: this test creates a git
 	// worktree and runs a real Go test invocation inside it. Even narrowed to two packages that is tens of
@@ -514,18 +476,13 @@ func TestBaselineCaptureAgainstARealRepo(t *testing.T) {
 	}
 	ref := strings.TrimSpace(string(refOut))
 
-	// A scratch project dir whose ONLY job is to carry a narrowed gate. captureBaseline resolves its
-	// command from here and its scratch checkout under here, so the test measures the MECHANISM against a
-	// real repository without running this repository's whole suite.
+	// A scratch project dir whose ONLY job is to carry a narrowed gate.
 	scratch := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(scratch, ".orchicon"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// The narrowed gate must run in the CHECKOUT (which is a worktree of the real repo), not in the
 	// scratch dir — so it is expressed as a real command the checkout can satisfy.
-	// THE DECLARATION NOW CARRIES A FORMAT, because the platform no longer guesses one out of the output. `go test
-	// -json` is Go's own machine-readable form, so this measures the real path a Go project would use with no
-	// wrapper installed.
 	declBody := "command = go test -json ./internal/verify/ ./internal/workitem/\nformat = json\n"
 	if err := os.WriteFile(filepath.Join(scratch, ".orchicon", "verify"), []byte(declBody), 0o644); err != nil {
 		t.Fatal(err)
@@ -535,10 +492,8 @@ func TestBaselineCaptureAgainstARealRepo(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// The scratch checkout is created from the REPO, so pass the repo as the git project and the scratch
-	// dir as the gate declaration. captureBaseline takes one dir for both, so the helper below performs
-	// the same two steps explicitly — the point is to exercise the real scratchCheckout + runGateCommand +
-	// parseGateResults path, not to re-test the wiring.
+	// The scratch checkout is created from the REPO, so pass the repo as the git project and the
+	// scratch dir as the gate declaration.
 	dir, cleanup, cerr := r.scratchCheckout(ctx, repo, ref)
 	if cerr != nil {
 		t.Fatalf("scratchCheckout: %v", cerr)
@@ -578,17 +533,8 @@ func TestBaselineCaptureAgainstARealRepo(t *testing.T) {
 	}
 }
 
-// THE OUTPUT CAP CANNOT COST A MEASUREMENT ANY MORE, and that is a stronger guarantee than the old fix.
-//
-// THE BUG THIS REPLACES: the cap used to be a FRONT cut, so a transcript larger than 64KB silently lost every
-// result after the cut. On `make rebuild-dev` the baseline ended at internal/runtimeimage and everything after it
-// vanished from BOTH sides of the comparison — so a pre-existing failure got blamed on the step, and a genuine
-// regression read as "no new failures". The first fix kept "result-shaped lines" from the elided middle, which
-// worked but meant the cap had to know the result FORMAT — the pattern-matching defect this change removes.
-//
-// THE STRUCTURAL FIX: parsing happens on the FULL transcript and the cap is applied only to what the RECORD
-// keeps. So a transcript of any size yields every result, and the cap becomes a record-size decision that cannot
-// change a verdict.
+// THE OUTPUT CAP CANNOT COST A MEASUREMENT ANY MORE, and that is a stronger guarantee than the old
+// fix.
 func TestAHugeTranscriptStillYieldsEveryResult(t *testing.T) {
 	// A NDJSON stream (go test -json) whose bulk dwarfs the cap, with packages spread first to last.
 	var b strings.Builder
@@ -631,17 +577,8 @@ func TestCapGateOutputIsIdentityWhenSmall(t *testing.T) {
 	}
 }
 
-// TestInterruptedGateProducesNoBaseline is the regression test for the bug `make rebuild-dev` exposed.
-//
-// THE BUG: captureBaseline accepted any non-zero exit WITH parseable output as a valid baseline. But a
-// gate that was KILLED (timeout) also exits non-zero and also prints the packages that finished before
-// the kill. So a partial run was recorded as a complete baseline, cached per commit, and every package
-// that never ran became invisible to the differential — because NewFailures skips keys absent from the
-// baseline. A regression in an unmeasured package could then NEVER be reported. That is a false negative
-// in a verification system, the worst failure available, and it is silent.
-//
-// Observed exactly: the test's own context expired at 300s mid-run; ~50 packages were parsed; the stored
-// baseline ended at internal/runtimeimage with internal/verify missing.
+// TestInterruptedGateProducesNoBaseline is the regression test for the bug `make rebuild-dev`
+// exposed. A regression in an unmeasured package could then NEVER be reported.
 func TestInterruptedGateProducesNoBaseline(t *testing.T) {
 	// A cancelled context is the interruption signal that matters most.
 	t.Run("cancelled context", func(t *testing.T) {
@@ -672,9 +609,8 @@ func TestInterruptedGateProducesNoBaseline(t *testing.T) {
 	})
 }
 
-// TestNotApplicableIsRenderedDistinctly pins that the operator can tell the three states apart in the
-// acceptance review. Counting a not-applicable step as "verified" would inflate the confirmed total, and
-// counting it as "unverified" would train the operator to ignore that word where it matters.
+// TestNotApplicableIsRenderedDistinctly pins that the operator can tell the three states apart in
+// the acceptance review.
 func TestNotApplicableIsRenderedDistinctly(t *testing.T) {
 	mk := func(name, verdict string) db.WorkflowStepRunRow {
 		raw, _ := json.Marshal(map[string]any{
@@ -747,10 +683,6 @@ func TestPreExistingRedGateStillFailsARegression(t *testing.T) {
 }
 
 // NOTHING THE VERIFIER FINDS CAN FAIL A STEP — the operator's rule, asserted over EVERY verdict.
-//
-// This is the test that would have caught the "too strict" product defect: whatever the evidence says, the step's
-// status is the worker's and the process's to decide. A regression in applyVerdict that reintroduced a downgrade
-// would fail here, for every verdict at once, rather than only for the one case someone remembered.
 func TestNoVerdictCanFailAStep(t *testing.T) {
 	for _, v := range []verify.Verdict{
 		verify.VerdictVerified, verify.VerdictUnverified,
@@ -770,11 +702,8 @@ func TestNoVerdictCanFailAStep(t *testing.T) {
 	}
 }
 
-// AND THE ONE CASE THAT USED TO FAIL NOW LANDS GREEN WITH A NOTICE ATTACHED — stated explicitly, because it is the
-// cost of the rule above and it should not be discovered later by surprise.
-//
-// A worker reports success having changed nothing. The evidence says so (work_present failed, verdict
-// unsubstantiated). The step is SUCCEEDED, and the only trace is the notice.
+// AND THE ONE CASE THAT USED TO FAIL NOW LANDS GREEN WITH A NOTICE ATTACHED — stated explicitly,
+// because it is the cost of the rule above and it should not be discovered later by surprise.
 func TestAnEmptyClaimLandsGreenWithANotice(t *testing.T) {
 	res := verify.Collect(context.Background(), verify.Evidence{
 		GitReadable: true, BaseRef: "develop", CommitsAhead: 0,
@@ -801,18 +730,8 @@ func TestAnEmptyClaimLandsGreenWithANotice(t *testing.T) {
 	}
 }
 
-// THE SCRATCH CHECKOUT MUST BE ABLE TO RUN THE PROJECT'S GATE — the operator's "stop assuming the gate can run
-// with nothing installed in a scratch worktree".
-//
-// A git worktree carries TRACKED files only, so node_modules, .dev, vendor and every build cache are absent and a
-// gate that needs any of them dies instantly. That failure would be recorded AS the baseline, which is worse than
-// no baseline: it looks like a measurement.
-//
-// MEASURED BEFORE THE FIX: `npx vitest --version` in a fresh scratch checkout of this repository exited 1 with
-// "npx canceled due to missing packages", because nothing had linked frontend/node_modules in.
-//
-// SKIPPED when the repository has no ignored dependency tree to link — it is a real integration test that needs a
-// real checkout, and most test runs have neither.
+// THE SCRATCH CHECKOUT MUST BE ABLE TO RUN THE PROJECT'S GATE — the operator's "stop assuming the
+// gate can run with nothing installed in a scratch worktree".
 func TestTheScratchCheckoutCanRunTheProjectsGate(t *testing.T) {
 	repo, err := filepath.Abs("../..")
 	if err != nil {
@@ -853,9 +772,7 @@ func TestTheScratchCheckoutCanRunTheProjectsGate(t *testing.T) {
 	}
 }
 
-// THE REVIEW SAYS NOTHING WAS FAILED. An operator opening the acceptance review of a run whose steps carry
-// unverified or unsupported evidence must not read those marks as failures the platform chose to tolerate — the
-// platform is not acting on them at all, and the review has to say so.
+// THE REVIEW SAYS NOTHING WAS FAILED.
 func TestTheReviewSaysTheSectionIsAdvisory(t *testing.T) {
 	mk := func(name, verdict, reason string) db.WorkflowStepRunRow {
 		raw, _ := json.Marshal(map[string]any{

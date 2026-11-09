@@ -1,13 +1,5 @@
-// Package approval implements the ApprovalService Connect handler for
-// human-in-the-loop approval gates in workflow steps.
-//
-// An APPROVAL step in a workflow blocks at approval_pending until a
-// human reviews and approves/rejects it. The decision is written to
-// .orchicon/ files so downstream workers and loop-back steps can read
-// the outcome.
-//
-// Future: notifications (SMS, email, browser), RBAC enforcement
-// (which users/groups can approve at project/work-item scope).
+// Package approval implements the ApprovalService Connect handler for human-in-the-loop approval
+// gates in workflow steps.
 package approval
 
 import (
@@ -57,9 +49,6 @@ func NewService(pool *db.Pool, log *slog.Logger) *Service {
 }
 
 // ApproveStep resolves a workflow step that is awaiting human approval.
-// On approval the step transitions to succeeded; on rejection it also
-// succeeds but carries the rejection reason as data so a downstream
-// LOOP_DECISION can branch on the decision.
 func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.ApproveStepRequest]) (*connect.Response[apiv1.ApproveStepResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -104,12 +93,8 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 		decisionStatus = "rejected"
 	}
 
-	// An exhausted LOOP_DECISION gate escalated to human review is
-	// kind-sensitive: approving it SUCCEEDS the gate (the run completes),
-	// while rejecting it FAILS the gate (the run fails — the human
-	// determined the loop cannot be resolved within budget). A plain
-	// approval step keeps the old behavior: both outcomes succeed the step
-	// and branch downstream on the decision.
+	// An exhausted LOOP_DECISION gate escalated to human review is kind-sensitive: approving it
+	// SUCCEEDS the gate (the run completes), while rejecting it FAILS the gate (the run fails.
 	newStatus := domain.StepRunSucceeded
 	if sr.StepKind == domain.StepKindLoopDecision && decisionStatus == "rejected" {
 		newStatus = domain.StepRunFailed
@@ -147,8 +132,6 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 	}
 
 	// Enqueue a step_succeeded event so the reconciler progresses the DAG.
-	// An exhausted loop_decision gate that is rejected fails (step_failed)
-	// so the reconciler terminalizes the run.
 	evtType := domain.WorkflowEventStepSucceeded
 	if newStatus == domain.StepRunFailed {
 		evtType = domain.WorkflowEventStepFailed
@@ -207,9 +190,8 @@ func (s *Service) ApproveStep(ctx context.Context, req *connect.Request[apiv1.Ap
 	return connect.NewResponse(&apiv1.ApproveStepResponse{}), nil
 }
 
-// writeApprovalOrchiconFiles writes the approval decision to .orchicon/
-// files in the project directory so downstream workers can read them, and
-// persists any attached files/screenshots under .orchicon/<run_id>/attachments/.
+// writeApprovalOrchiconFiles writes the approval decision to .orchicon/ files in the project
+// directory so downstream workers can read them.
 func (s *Service) writeApprovalOrchiconFiles(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow, approved bool, reason string, attachments []*apiv1.ApprovalAttachment) error {
 	// Find the workflow run to get the project ID.
 	run, err := db.GetWorkflowRun(ctx, tx, tenantID, sr.WorkflowRunID)
@@ -244,9 +226,8 @@ func (s *Service) writeApprovalOrchiconFiles(ctx context.Context, tx pgx.Tx, ten
 	writeFile("status", map[bool]string{true: "success", false: "failure"}[approved])
 	writeFile("summary", reason)
 
-	// Persist attached files/screenshots so downstream workers can read them
-	// (the runtime container mounts the project dir). Filenames are already
-	// sanitized by validateAttachments.
+	// Persist attached files/screenshots so downstream workers can read them (the runtime container
+	// mounts the project dir).
 	if len(attachments) > 0 {
 		attDir := filepath.Join(orchDir, "attachments")
 		if err := os.MkdirAll(attDir, 0755); err != nil {
@@ -342,9 +323,8 @@ type approvalItemRow struct {
 	CreatedAt        time.Time
 }
 
-// listApprovalItems queries step runs in approval_pending status and joins
-// with workflow_runs, workflows, projects, and work_items to resolve
-// display names.
+// listApprovalItems queries step runs in approval_pending status and joins with workflow_runs,
+// workflows, projects, and work_items to resolve display names.
 func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *apiv1.ListPendingStepApprovalsRequest) ([]*apiv1.ApprovalItem, error) {
 	// Build the query dynamically based on filters.
 	q := `SELECT
@@ -497,9 +477,8 @@ func listApprovalItems(ctx context.Context, tx pgx.Tx, tenantID string, req *api
 
 // --- helpers ---------------------------------------------------------------
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -527,9 +506,8 @@ func strPtr(s string) *string { return &s }
 // plus a single extension separator — no slashes, no "..", no control chars.
 var safeFilenameRe = regexp.MustCompile(`^[A-Za-z0-9._ -]+$`)
 
-// validateAttachments checks each attached file/screenshot: count, per-file
-// size (images get a slightly larger budget), and a safe filename. Returns
-// the sanitized list (basename only, no path components).
+// validateAttachments checks each attached file/screenshot: count, per-file size (images get a
+// slightly larger budget), and a safe filename.
 func validateAttachments(in []*apiv1.ApprovalAttachment) ([]*apiv1.ApprovalAttachment, error) {
 	if len(in) > maxAttachments {
 		return nil, fmt.Errorf("too many attachments (max %d)", maxAttachments)

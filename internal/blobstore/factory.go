@@ -7,9 +7,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 )
 
-// New constructs the BlobStore selected by BlobStoreConfig. "local" uses
-// the production-viable filesystem store; "s3" uses S3-compatible
-// storage.
+// New constructs the BlobStore selected by BlobStoreConfig.
 func New(ctx context.Context, cfg config.BlobStoreConfig) (Store, error) {
 	switch cfg.Kind {
 	case "local", "":

@@ -231,11 +231,7 @@ func TestHiddenRequiredFieldDoesNotBlockSubmit(t *testing.T) {
 		t.Fatalf("the loop form failed validation on fields it does not show: %v", f.Errors)
 	}
 
-	// And the SUBMIT writes the loop's keys. A task's `recovery` block is LEFT IN PLACE on
-	// purpose: mergeStepConfig preserves whatever the fields do not model, so a config key
-	// the other kind does not read survives the switch (the same rule that keeps a legacy
-	// retry_delay_seconds). The loop simply does not consult it, and switching back to a
-	// task restores the policy rather than losing it.
+	// And the SUBMIT writes the loop's keys.
 	m, saved := cfgEditorModel(t, `[{"id":"a","name":"Step","kind":"task","ref":"w_x","config":"{\"recovery\":{\"strategy\":\"stop\",\"max_attempts\":2}}","depends_on":[]},
 	                               {"id":"b","name":"B","kind":"end","config":"{}","depends_on":["a"]}]`)
 	form := m.editStepForm(m.rawFlowSteps()[0])

@@ -36,9 +36,8 @@ import (
 	"testing"
 )
 
-// wailsGeneratedDir is where the Wails CLI writes its TypeScript bindings,
-// relative to the frontend root. Not configurable in wails.json; the CLI always
-// uses <frontend:dir>/wailsjs.
+// wailsGeneratedDir is where the Wails CLI writes its TypeScript bindings, relative to the frontend
+// root.
 const wailsGeneratedDir = "wailsjs"
 
 func readRepoFile(t *testing.T, parts ...string) string {
@@ -75,9 +74,8 @@ func TestWailsGeneratedBindingsAreLintIgnored(t *testing.T) {
 	}
 }
 
-// TestWailsGeneratedBindingsAreGitIgnored pins the entry that keeps generated
-// code out of the repository. Committing it would freeze a snapshot of the Go
-// API that goes stale silently the first time a bound type changes.
+// TestWailsGeneratedBindingsAreGitIgnored pins the entry that keeps generated code out of the
+// repository.
 func TestWailsGeneratedBindingsAreGitIgnored(t *testing.T) {
 	gitignore := readRepoFile(t, "..", "..", ".gitignore")
 
@@ -101,11 +99,8 @@ func TestWailsGeneratedBindingsAreGitIgnored(t *testing.T) {
 	}
 }
 
-// TestWailsGeneratedBindingsStayOutOfTheTypecheck is the third side of the same
-// invariant, and the reason the typecheck did NOT break when lint did: the app
-// tsconfig includes only `src`, so frontend/wailsjs is already outside it. If a
-// future change widens that include to the frontend root, generated bindings
-// enter `tsc -b` and the same class of failure returns through fe-typecheck.
+// TestWailsGeneratedBindingsStayOutOfTheTypecheck is the third side of the same invariant, and the
+// reason the typecheck did NOT break when lint did: the app tsconfig includes only `src`.
 func TestWailsGeneratedBindingsStayOutOfTheTypecheck(t *testing.T) {
 	cfg := readRepoFile(t, "..", "..", "frontend", "tsconfig.app.json")
 

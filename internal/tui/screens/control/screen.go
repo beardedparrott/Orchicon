@@ -58,10 +58,7 @@ type adminSurface struct {
 	meta  string
 }
 
-// adminSurfaces is the admin inventory the TUI advertises. Every row is
-// admin-gated on the plane; the pane's FIRST row carries the live permission
-// state so a credential without the admin scope sees an explicit "permission
-// required" state instead of a silent empty pane.
+// adminSurfaces is the admin inventory the TUI advertises.
 var adminSurfaces = []adminSurface{
 	{"admin-identities", "Identities", "auth · admin"},
 	{"admin-roles", "Roles & bindings", "auth · admin"},
@@ -82,10 +79,7 @@ type Model struct {
 	bar  *kit2.ActionBar
 	form *kit2.Form
 
-	// modelPicker is the open three-tier MODEL picker (adapter → provider →
-	// model, with search). It is the SCREEN's modal, layered ABOVE m.form:
-	// the model choice needs its own room (three tiers, a search box and a
-	// list) and a form field cannot host mouse-driven tier navigation.
+	// modelPicker is the open three-tier MODEL picker (adapter → provider → model, with search).
 	modelPicker *kit2.ModelPicker
 	// modelField names the form field a committed ref is written back to.
 	modelField string
@@ -95,27 +89,20 @@ type Model struct {
 	// pending carries the action awaiting dialog confirmation.
 	pending *kit2.Action
 
-	// list-response caches: the list RPCs carry the rich rows and v1 has no
-	// Get-RPC for providers / webhooks / deliveries, so the list hit is the
-	// detail source of truth (same pattern as the enforcement screen).
+	// list-response caches: the list RPCs carry the rich rows and v1 has no Get-RPC for providers /
+	// webhooks / deliveries, so the list hit is the detail source of truth (same pattern.
 	webhooks  map[string]*apiv1.WebhookSubscription
 	providers map[string]*apiv1.ProviderEntry
 	adapters  map[string]*apiv1.RuntimeAdapter
 	// secretNames is the set of secret NAMES the tenant holds (never values — the list API does not
-	// return them). The provider forms use it to say whether a token is already stored, which is the
-	// one thing a masked field cannot tell the operator.
+	// return them).
 	secretNames map[string]bool
 	settings    *apiv1.TenantSettings
-	// permissionPolicy is the operator's durable deny/accept policy as last
-	// read (the pane renders each row's "can a session grant override this?"
-	// from the entry itself, never from a guess).
+	// permissionPolicy is the operator's durable deny/accept policy as last read (the pane renders each
+	// row's "can a session grant override this?" from the entry itself, never from a guess).
 	permissionPolicy *apiv1.GetPermissionPolicyResponse
 
 	// adapterDisabled is the LOCAL dispatch toggle for a registered adapter.
-	// The public RuntimeAdapterService is read-only (ListAdapters +
-	// GetAdapterCapabilities); adapters register themselves over the sidecar
-	// gRPC contract, so the TUI's enable/disable is a client-side dispatch
-	// filter, not a plane write.
 	adapterDisabled map[string]bool
 
 	// rpc* are the write/read thunks. They are fields so tests can assert the
@@ -141,9 +128,7 @@ type Model struct {
 	rpcUpdateSecret                func(ctx context.Context, r *apiv1.UpdateSecretRequest) error
 	rpcDeleteSecret                func(ctx context.Context, id string) error
 
-	// Model-picker loads (model_picker.go). Thunks for the same reason as the
-	// rest: a test asserts the per-adapter branch and the payload without a live
-	// plane.
+	// Model-picker loads (model_picker.go).
 	rpcModelKinds     func(ctx context.Context) ([]string, []string, error)
 	rpcModelProviders func(ctx context.Context, adapter string) ([]kit2.PickerOption, error)
 	rpcModelModels    func(ctx context.Context, adapter, provider string) ([]kit2.PickerOption, bool, error)
@@ -153,9 +138,7 @@ type Model struct {
 // Option configures the screen at construction.
 type Option func(*Model)
 
-// WithServers enables the Servers source. Pass true only when the shell is connected to a LOCAL instance:
-// installing or removing a server is a host operation, and offering it against a remote plane would either
-// fail per-button or, worse, act on the wrong machine.
+// WithServers enables the Servers source.
 func WithServers(enabled bool) Option { return func(m *Model) { m.serversEnabled = enabled } }
 
 func New(cl *client.Clients, reg *subs.Registry, opts ...Option) *Model {
@@ -169,26 +152,16 @@ func New(cl *client.Clients, reg *subs.Registry, opts ...Option) *Model {
 		secretNames:     map[string]bool{},
 	}
 	m.NameStr = "control"
-	// Workers live on the Execution tab and Runtime Images on the Work tab
-	// (both match the GUI nav-config group placement); Control keeps only the
-	// surfaces the GUI files under Control.
+	// Workers live on the Execution tab and Runtime Images on the Work tab (both match the GUI
+	// nav-config group placement); Control keeps only the surfaces the GUI files under Control.
 	m.AddSource("secrets", "Secrets (names only)", m.fetchSecrets)
-	// NO "mcp" SOURCE, DELIBERATELY. A definition is OWNER-SCOPED now (project /
-	// conversation / worker version) and there is no tenant-level MCP pane: the
-	// unscoped ListMCPServers this source used is the whole-tenant view the epic
-	// removed, and the same reasoning deleted the GUI's Settings MCP tab. The
-	// capability did not leave the TUI — it moved to the three scopes through
-	// screens/mcpforms (and the conversation's /mcp slash command).
+	// NO "mcp" SOURCE, DELIBERATELY.
 	m.AddSource("providers", "Providers", m.fetchProviders)
 	m.AddSource("webhooks", "Webhooks", m.fetchWebhooks)
 	m.AddSource("adapters", "Adapters", m.fetchAdapters)
 	m.AddSource("settings", "Settings", m.fetchSettings)
-	// Permissions is the DURABLE operator policy (the deny/accept YAML on the
-	// control plane), NOT a session grant: it is instance state the operator
-	// writes once, so it belongs beside Settings. It is a full CRUD surface —
-	// the same entries the GUI's Settings → Permissions tab manages, through
-	// the same plane API, so a change in either client is a change in the one
-	// file both clients read.
+	// Permissions is the DURABLE operator policy (the deny/accept YAML on the control plane), NOT a
+	// session grant: it is instance state the operator writes once, so it belongs beside Settings.
 	m.AddSource("permissions", "Permissions", m.fetchPermissions)
 	for _, opt := range opts {
 		opt(m)
@@ -198,14 +171,11 @@ func New(cl *client.Clients, reg *subs.Registry, opts ...Option) *Model {
 	if m.serversEnabled {
 		m.AddSource(serversSourceName, "Servers (this machine)", m.fetchServers)
 	}
-	// Themes is a Control surface (Settings → Themes in the GUI sense): the TUI
-	// owns its palette set, and this is where the operator picks one. Selecting
-	// a row and pressing the action key applies + persists it.
+	// Themes is a Control surface (Settings → Themes in the GUI sense): the TUI owns its palette set,
+	// and this is where the operator picks one.
 	m.AddSource("themes", "Themes", m.fetchThemes)
-	// The Themes list has NO bulk operations: the operator's "spacebar does
-	// multi-select even on theme lists. That doesn't make any sense as there isn't
-	// any bulk operations on themes." Space activates here instead of marking (see
-	// Base's space case), which is the gesture it replaced anyway.
+	// The Themes list has NO bulk operations: the operator's "spacebar does multi-select even on theme
+	// lists.
 	m.Base.SetMarkable("themes", false)
 	m.AddSource("admin", "Admin", m.fetchAdmin)
 	m.SetDetail(m.detail)
@@ -214,10 +184,8 @@ func New(cl *client.Clients, reg *subs.Registry, opts ...Option) *Model {
 	m.bar = kit2.NewActionBar()
 	// Every write goes through the ONE mutation executor.
 	m.SetExecutor(&mutate.Executor{Sink: m})
-	// Enter/Space on a row does the natural thing for the focused pane: on
-	// Themes it APPLIES the highlighted palette (the selection IS the intent —
-	// matching the GUI, where clicking a theme switches to it), elsewhere it
-	// opens the row's detail.
+	// Enter/Space on a row does the natural thing for the focused pane: on Themes it APPLIES the
+	// highlighted palette (the selection IS the intent — matching the GUI.
 	m.OnActivate = func() (bool, tea.Cmd) {
 		if m.ActiveSourceName() != "themes" {
 			return false, nil // not ours: fall through to the default detail focus
@@ -231,19 +199,11 @@ func New(cl *client.Clients, reg *subs.Registry, opts ...Option) *Model {
 			// do nothing rather than look like a broken apply.
 			return true, nil
 		}
-		// THE COMMIT. The cursor has ALREADY previewed this palette (OnHighlight -> previewTheme), so
-		// "it is already the active palette" is the NORMAL state here and must NOT short-circuit: Enter is
-		// the gesture that KEEPS the choice — the shell binds it to the active project, or writes the
-		// default when no project is in scope (see App.SetTheme). The notice comes from that write, so it
-		// can say WHERE the choice landed rather than only that something happened.
+		// THE COMMIT.
 		return true, m.commitTheme(item.ID)
 	}
 
-	// MOVING THROUGH THE THEMES APPLIES THEM. This is the hook that makes the themes list a PREVIEW rather
-	// than a set of labels to pick from: the operator asked for exactly that — "auto switch to the theme as
-	// the user is moving through them with the arrow keys or clicking on them as opposed to having to hit
-	// enter to select" — and it mirrors the GUI, where clicking a theme switches to it. Enter still applies
-	// (above) and is still the only gesture that also writes the notice.
+	// MOVING THROUGH THE THEMES APPLIES THEM.
 	m.Base.OnHighlight = func() tea.Cmd { return m.previewTheme() }
 
 	m.rpcAdminProbe = func(ctx context.Context) error {
@@ -420,10 +380,7 @@ func (m *Model) Name() string { return "control" }
 // Close unsubscribes (no live subs on this screen in v1).
 func (m *Model) Close() { m.reg.CloseAll() }
 
-// SetSize lays out the panes across the whole content region. (The old
-// Activity stream panel that stole 7 rows was removed: mutation feedback
-// already goes to the always-present dock, so the panel was a second,
-// redundant surface that shrank every pane.)
+// SetSize lays out the panes across the whole content region.
 func (m *Model) SetSize(w, h int) {
 	m.w, m.h = w, h
 	m.Base.SetSize(w, h)
@@ -439,21 +396,14 @@ func (m *Model) Init() tea.Cmd { return m.Load() }
 // bodyHeight is the height of the pane row (the whole content region).
 func (m *Model) bodyHeight() int { return m.h }
 
-// ClaimsKeys reports whether the screen owns the keyboard: while a form or a
-// Confirm dialog is open the shell hands over every key verbatim, so a secret
-// value or a URL containing q / d / / is never eaten by a global chord.
+// ClaimsKeys reports whether the screen owns the keyboard: while a form or a Confirm dialog is open
+// the shell hands over every key verbatim.
 func (m *Model) ClaimsKeys() bool {
 	return m.form != nil || m.Open != nil || m.modelPicker != nil || m.Base.EditingDetail()
 }
 
-// ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one
-// state where Tab belongs to the form (field advance) rather than to the shell's
-// tab ring. See router.go's tab chord.
-// FormOpen reports whether a FORM is open — modal OR inline details-pane editor
-// (plus the model picker, which is a modal layered over a form). While one is up,
-// Tab moves through the form's FIELDS rather than the tab ring: "when in an edit
-// form, tab should move through the fields of the form just like up/down keys ...
-// Tabs should only move to the next menu item if you are NOT in edit mode."
+// ModalFormOpen reports a form drawn as its own centred WINDOW, which is the one state where Tab
+// belongs to the form (field advance) rather than to the shell's tab ring.
 func (m *Model) FormOpen() bool {
 	return m.form != nil || m.modelPicker != nil || m.Base.EditingDetail()
 }
@@ -524,9 +474,7 @@ func (m *Model) fetchSecrets(ctx context.Context, pageToken string) ([]kit2.Item
 		return nil, "", err
 	}
 	items := make([]kit2.Item, 0, len(resp.Msg.Secrets))
-	// Remember the NAMES (never the values — the API does not return them). The provider forms ask
-	// whether CUSTOM_<REF>_API_KEY already exists so a blank token field can say "stored" instead of
-	// leaving the operator to guess; the name is what that question is answered from.
+	// Remember the NAMES (never the values — the API does not return them).
 	m.secretNames = make(map[string]bool, len(resp.Msg.Secrets))
 	for _, s := range resp.Msg.Secrets {
 		m.secretNames[s.GetName()] = true
@@ -602,14 +550,8 @@ func (m *Model) fetchAdapters(ctx context.Context, pageToken string) ([]kit2.Ite
 	return items, "", nil
 }
 
-// fetchThemes lists the TUI's OWN palette set (internal/tui/theme), GROUPED into
-// dark and light sections — the operator's "Themes should be separated by light
-// and dark themes (two sections but same screen)". The palettes are chosen and
-// contrast-validated for terminals rather than ported from the GUI's CSS tokens.
-//
-// A section row carries an EMPTY id, so selecting one is inert: applying a theme
-// only ever resolves a real palette name (applyTheme refuses an empty or unknown
-// name), so a heading can never be mistaken for a theme.
+// fetchThemes lists the TUI's OWN palette set (internal/tui/theme), GROUPED into dark and light
+// sections — the operator's "Themes should be separated by light and dark themes (two sections.
 func (m *Model) fetchThemes(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	active := theme.Active().Name
 	names := theme.Names()
@@ -652,30 +594,15 @@ func (m *Model) fetchThemes(ctx context.Context, pageToken string) ([]kit2.Item,
 	return items, "", nil
 }
 
-// projectThemer is the shell's project-binding surface (see tui.projecttheme.go). A separate interface
-// from applyTheme's local `themer` because binding is a DIFFERENT action from applying: the preview path
-// never touches it (criterion 2).
+// projectThemer is the shell's project-binding surface (see tui.projecttheme.go).
 type projectThemer interface {
 	BindProjectTheme(name string) (label string, ok bool)
 	UnbindProjectTheme() (label string, ok bool)
 	CurrentProjectTheme() (label, bound string, hasProject bool)
 }
 
-// applyTheme applies the palette under the cursor as a LIVE PREVIEW — what moving through the list does.
-// It goes through the shell (which owns the profile and the construction-captured styles) and reconciles
-// this pane so the active marker moves.
-//
-// IT DELIBERATELY DOES NOT COMMIT. The preview must not persist anything: routing it through SetTheme made
-// merely BROWSING the list rewrite a project's binding, or the shared default, on every cursor move — which
-// is half of the operator's report (a theme "changed" in one project that they had only looked at, and that
-// then followed them into another). commitTheme is the gesture that keeps a choice.
-//
-// IT RETURNS THE RECONCILE COMMAND rather than discarding it. `m.Refresh(name)` only STAGES the reload and
-// hands back the command that performs it, so the previous `m.Refresh("themes")` — whose return value went
-// nowhere — left the pane showing the palette that WAS active until something else happened to refresh it.
-// Invisible while a theme switch was a deliberate Enter press the operator followed with a glance; obvious
-// now that moving the cursor applies live, where the "active" marker tracking the cursor IS the feedback
-// that the preview took.
+// applyTheme applies the palette under the cursor as a LIVE PREVIEW — what moving through the list
+// does.
 func (m *Model) applyTheme(name string) tea.Cmd {
 	type previewer interface{ PreviewTheme(string) bool }
 	if sh, ok := m.Shell().(previewer); ok {
@@ -686,9 +613,8 @@ func (m *Model) applyTheme(name string) tea.Cmd {
 	return m.Refresh("themes")
 }
 
-// commitTheme KEEPS the highlighted palette: the shell binds it to the active project when there is one, and
-// otherwise writes the persisted default that unbound projects inherit (see App.SetTheme). This is Enter in
-// this pane, and the same write `/theme <name>` performs.
+// commitTheme KEEPS the highlighted palette: the shell binds it to the active project when there is
+// one, and otherwise writes the persisted default that unbound projects inherit (see.
 func (m *Model) commitTheme(name string) tea.Cmd {
 	type committer interface{ SetTheme(string) bool }
 	if sh, ok := m.Shell().(committer); ok {
@@ -742,15 +668,8 @@ func (m *Model) fetchSettings(ctx context.Context, pageToken string) ([]kit2.Ite
 	return []kit2.Item{{ID: "tenant-settings", Title: "Tenant Settings", Meta: "e: edit & save"}}, "", nil
 }
 
-// fetchPermissions lists the operator's persistent permission policy: one row
-// per entry, the deny list first (precedence order). The row's Meta states the
-// one thing that decides what the operator may do about it — a DENY entry
-// cannot be overridden by a session grant, an accept entry never asks — so the
-// pane never offers a grant the refusal would ignore.
-//
-// Read through the SAME API the GUI uses; the server reads the file per call,
-// so a hand-edit shows up on the next refresh and an entry added here is
-// immediately visible in the browser (and vice versa).
+// fetchPermissions lists the operator's persistent permission policy: one row per entry, the deny
+// list first (precedence order).
 func (m *Model) fetchPermissions(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	resp, err := m.cl.Settings.GetPermissionPolicy(ctx, connect.NewRequest(&apiv1.GetPermissionPolicyRequest{}))
 	if err != nil {
@@ -773,9 +692,8 @@ func (m *Model) fetchPermissions(ctx context.Context, pageToken string) ([]kit2.
 	return items, "", nil
 }
 
-// permissionItemID encodes (list, pattern) into one row id; the pattern itself
-// may contain any character, so the list is a fixed prefix and the pattern is
-// everything after it.
+// permissionItemID encodes (list, pattern) into one row id; the pattern itself may contain any
+// character, so the list is a fixed prefix and the pattern is everything after it.
 func permissionItemID(list, pattern string) string {
 	if list == "" {
 		list = "deny"
@@ -803,9 +721,8 @@ func permissionEntryParts(id string) (string, string) {
 	return "", ""
 }
 
-// fetchAdmin probes an admin-gated read and reports the resulting permission
-// state as the pane's FIRST row. A refusal is rendered EXPLICITLY (never a
-// silent empty pane); the pane itself carries no error state.
+// fetchAdmin probes an admin-gated read and reports the resulting permission state as the pane's
+// FIRST row.
 func (m *Model) fetchAdmin(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	// short is the row title (visible even in a narrow pane); full is the
 	// Meta + detail state.
@@ -1028,11 +945,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "entry", Value: pattern},
 			{Key: "list", Value: list},
 			{Key: "grant", Value: override},
-			// THE PROJECT RUNG IS NOT IN THIS CHAIN, and it used to be printed here. The
-			// conversation's own project WAS a pre-approved default scope, and the operator removed it:
-			// "any directory should ask before allowing on write/execute, project or otherwise". The
-			// string kept advertising a rung that no longer exists — worse, one that reads as "your
-			// project is already approved", which is the opposite of what they asked for.
+			// THE PROJECT RUNG IS NOT IN THIS CHAIN, and it used to be printed here.
 			{Key: "precedence", Value: "never-allow binaries > deny > session grant > accept > ask"},
 			{Key: "policy file", Value: permissionPolicyPath(m.permissionPolicy)},
 			{Key: "actions", Value: action},
@@ -1139,9 +1052,7 @@ func (m *Model) adminRowsForTest() []kit2.Item {
 
 // --- actions ------------------------------------------------------------
 
-// actionsForSelection builds the entity-bound RPC/toggle actions for the
-// currently selected row. Every action carries confirm + optimistic apply +
-// rollback and runs through the mutation executor.
+// actionsForSelection builds the entity-bound RPC/toggle actions for the currently selected row.
 func (m *Model) actionsForSelection() []kit2.Action {
 	item, ok := m.ActiveItem()
 	if !ok {
@@ -1153,10 +1064,8 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		if pattern == "" {
 			return nil
 		}
-		// Removal is CONFIRMED and never optimistic-then-silent: dropping a
-		// deny entry re-opens a path the operator excluded, which is exactly
-		// the change that must be deliberate. The apply/rollback pair keeps
-		// the row gone on success and puts it back on failure.
+		// Removal is CONFIRMED and never optimistic-then-silent: dropping a deny entry re-opens a path the
+		// operator excluded, which is exactly the change that must be deliberate.
 		return []kit2.Action{{
 			Label: "remove", Key: "x", Danger: true, Source: "permissions",
 			Confirm: "Remove the " + list + " entry " + pattern + "?\n" +
@@ -1186,9 +1095,7 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			})
 		}
 		// BIND/UNBIND are DELIBERATE actions, distinct from the cursor preview above (previewTheme calls
-		// applyTheme, never these) — criterion 2: moving through the list must never silently rebind a
-		// project. Offered only while the scope names a real project (All projects / No project have
-		// nothing to bind to).
+		// applyTheme, never these) — criterion 2.
 		if pt, ok := m.Shell().(projectThemer); ok {
 			if _, bound, hasProject := pt.CurrentProjectTheme(); hasProject {
 				if bound == id {
@@ -1444,15 +1351,10 @@ func (m *Model) editFormForSource() *kit2.Form {
 	return nil
 }
 
-// formOpen reports whether ANY form is open — the legacy modal or the inline
-// details-pane editor. Most forms now open in the pane, so a check that only
-// looked at the modal field would report "not open" for an open editor.
+// formOpen reports whether ANY form is open — the legacy modal or the inline details-pane editor.
 func (m *Model) formOpen() bool { return m.form != nil || m.Base.EditingDetail() }
 
-// activeForm is the form the operator is currently editing, whichever host holds
-// it. Tests drive writes through this, so they assert WHAT is being edited rather
-// than WHERE it is drawn — which is the point of the change: the host is a
-// presentation choice, not part of the contract.
+// activeForm is the form the operator is currently editing, whichever host holds it.
 func (m *Model) activeForm() *kit2.Form {
 	if m.form != nil {
 		return m.form
@@ -1536,9 +1438,7 @@ func (m *Model) editWebhookForm(item kit2.Item) *kit2.Form {
 	return f
 }
 
-// settingsForm edits and saves the tenant settings. Model refs are validated
-// inline (before submit); only non-empty / non-zero fields are sent, matching
-// the merge semantics of UpdateSettings.
+// settingsForm edits and saves the tenant settings.
 func (m *Model) settingsForm() *kit2.Form {
 	s := m.settings
 	if s == nil {
@@ -1565,10 +1465,8 @@ func (m *Model) settingsForm() *kit2.Form {
 		return fallback
 	}
 	f := kit2.NewForm("Edit tenant settings",
-		// Model refs are CHOSEN, not typed: a kit2.KModel field opens the
-		// three-tier ModelPicker (adapter → provider → model) and then DISPLAYS
-		// the committed ref. The validator stays as the backstop for a stored
-		// value the picker did not produce.
+		// Model refs are CHOSEN, not typed: a kit2.KModel field opens the three-tier ModelPicker (adapter →
+		// provider → model) and then DISPLAYS the committed ref.
 		kit2.FieldSpec{Name: "default_worker_model", Label: "Default worker model", Kind: kit2.KModel, Initial: s.GetDefaultWorkerModel(), Validate: validModelRef, Placeholder: "— none — (enter to choose a model)"},
 		kit2.FieldSpec{Name: "default_ask_model", Label: "Default ask model", Kind: kit2.KModel, Initial: s.GetDefaultAskOrchiconModel(), Validate: validModelRef, Placeholder: "— none — (enter to choose a model)"},
 		kit2.FieldSpec{Name: "max_concurrent_runs", Label: "Max concurrent runs", Kind: kit2.KNumber, Initial: i32(s.GetMaxConcurrentRuns())},
@@ -1578,28 +1476,14 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "stall_repetition_count", Label: "Stall repetition count (blank=def 0=off)", Kind: kit2.KNumber, Initial: stallCountInitial(s.StallRepetitionCount)},
 		kit2.FieldSpec{Name: "stall_repetition_window_seconds", Label: "Stall repetition window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallRepetitionWindowSeconds)},
 		kit2.FieldSpec{Name: "stall_nudge_max", Label: "Stall nudge max (blank=def 0=off)", Kind: kit2.KNumber, Initial: stallCountInitial(s.StallNudgeMax)},
-		// THE NUDGE TIMERS WERE THE ONLY TWO STALL KNOBS WITH NO FIELD, so they could be neither seen nor set
-		// from the TUI — and, before the settings merge, EVERY TUI save silently blanked them (they are
-		// written verbatim from the submitted row, so a field the form never sent arrived as NULL = "use the
-		// built-in default"). They are liveness-probe timers, not merely cosmetic: how long a probe is
-		// awaited, and how long between probes, decide whether a stalled session is nudged or reaped.
+		// THE NUDGE TIMERS WERE THE ONLY TWO STALL KNOBS WITH NO FIELD, so they could be neither seen nor
+		// set from the TUI — and, before the settings merge.
 		kit2.FieldSpec{Name: "stall_nudge_reply_window_seconds", Label: "Stall nudge reply window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallNudgeReplyWindowSeconds)},
 		kit2.FieldSpec{Name: "stall_nudge_cooldown_seconds", Label: "Stall nudge cooldown (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallNudgeCooldownSeconds)},
 		kit2.FieldSpec{Name: "stall_tool_hang_seconds", Label: "Stall tool-hang window (s; blank=def 0=off)", Kind: kit2.KNumber, Initial: stallDimInitial(s.StallToolHangSeconds)},
 		kit2.FieldSpec{Name: "execution_reap_grace_seconds", Label: "Exec reap grace (s)", Kind: kit2.KNumber, Initial: num(s.GetExecutionReapGraceSeconds())},
 		kit2.FieldSpec{Name: "execution_reap_consecutive_failures", Label: "Exec reap consecutive failures", Kind: kit2.KNumber, Initial: i32(s.GetExecutionReapConsecutiveFailures())},
 		// --- Execution budget gates ---
-		//
-		// These used to be ONE json blob. The operator: "Currently default budget
-		// overrides is one big JSON blob. This should be expanded out into
-		// individual fields with short details on what each field is similar to
-		// the stall settings."
-		//
-		// The blob is a TRANSPORT shape over typed columns (db.BudgetLadder is the
-		// source of truth), so each field here is one key of it. An EMPTY gate
-		// means "built-in default" and an explicit 0 DISABLES it — which is why
-		// they are left blank rather than zero-filled: blank and 0 mean different
-		// things, and every placeholder says which is which.
 		kit2.FieldSpec{Name: "budget_tokens", Label: "Budget - tokens (blank = no limit)", Kind: kit2.KNumber, Initial: bi("budget_tokens", ""), Placeholder: "all tokens at full weight, cache included"},
 		kit2.FieldSpec{Name: "budget_cost_usd", Label: "Budget - cost USD (blank = no limit)", Kind: kit2.KNumber, Initial: bi("budget_cost_usd", ""), Placeholder: "priced cost, a separate gate from tokens"},
 		kit2.FieldSpec{Name: "budget_wall_clock_seconds", Label: "Budget - wall clock (s, blank = none)", Kind: kit2.KNumber, Initial: bi("budget_wall_clock_seconds", ""), Placeholder: "max runtime before the run is aborted"},
@@ -1612,18 +1496,6 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "warn_frac_tools", Label: "Ladder - tool calls: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_tools", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},
 		kit2.FieldSpec{Name: "warn_frac_time", Label: "Ladder - wall clock: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_time", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},
 		// --- The warning TEXT (the ladder's other half) ---
-		//
-		// The fractions above decide WHEN each stage fires; these are the words
-		// INJECTED INTO THE SESSION at that stage — the message the worker actually
-		// reads when it crosses a threshold. They are the remaining keys of the blob,
-		// so without them an operator could tune the thresholds from the TUI but not
-		// the instruction the worker obeys. The GUI has shipped these all along
-		// (frontend/src/routes/settings.tsx, BudgetWarningsEditor: one message per tier
-		// per dimension), which is what made their absence here a parity gap.
-		//
-		// `{pct}` is substituted with the percentage of that dimension's limit already
-		// consumed. They are KTextArea because the real copy is a paragraph, not a
-		// label; ctrl+e expands the focused field to a wrapped editor.
 		kit2.FieldSpec{Name: "warn_msg_tokens", Label: "Warning text - tokens: WARN", Kind: kit2.KTextArea, Initial: bi("warn_msg_tokens", ""), Placeholder: "sent at the first threshold; {pct} = % of the token limit used"},
 		kit2.FieldSpec{Name: "esc_msg_tokens", Label: "Warning text - tokens: ESCALATE", Kind: kit2.KTextArea, Initial: bi("esc_msg_tokens", ""), Placeholder: "a firmer restatement; the worker has not corrected course"},
 		kit2.FieldSpec{Name: "final_msg_tokens", Label: "Warning text - tokens: FINAL", Kind: kit2.KTextArea, Initial: bi("final_msg_tokens", ""), Placeholder: "the last message before the limit ABORTS the run"},
@@ -1680,11 +1552,8 @@ func (m *Model) settingsForm() *kit2.Form {
 		out.StallToolHangSeconds = optI64(v["stall_tool_hang_seconds"])
 		out.ExecutionReapGraceSeconds = i64Of0(v["execution_reap_grace_seconds"])
 		out.ExecutionReapConsecutiveFailures = int32(i64Of0(v["execution_reap_consecutive_failures"]))
-		// The individual fields are composed back into the transport JSON the server
-		// merges into its typed columns. Absent keys are OMITTED rather than sent
-		// as zero: the server treats an absent gate as "keep the current value" and
-		// an explicit 0 as "disable it", so a blank field must not silently turn a
-		// gate off.
+		// The individual fields are composed back into the transport JSON the server merges into its typed
+		// columns.
 		out.DefaultBudgetOverrides = buildBudgetJSON(v)
 		out.BackupSchedule = v["backup_schedule"]
 		out.BackupRetentionDays = int32(i64Of0(v["backup_retention_days"]))
@@ -1736,15 +1605,7 @@ func (m *Model) newProviderForm() *kit2.Form {
 		kit2.FieldSpec{Name: "ref_id", Label: "Ref id", Kind: kit2.KText, Required: true, Placeholder: "local-ollama"},
 		kit2.FieldSpec{Name: "base_url", Label: "Base URL", Kind: kit2.KText, Required: true, Validate: validURL, Placeholder: "http://127.0.0.1:11434"},
 		kit2.FieldSpec{Name: "auth_mode", Label: "Auth mode", Kind: kit2.KSelect, Initial: providers.AuthModeNone, Options: authModeOptions()},
-		// THE TOKEN IS A FIELD HERE, not a separate `s` chord. The operator: "We should get rid of the 's'
-		// to set a token on providers and have that as just another inline field in the edit/new." It
-		// was a second form reached by a chord the hint had to explain, for a value that belongs to the
-		// same object — and setting it needed the provider to exist FIRST, so the two steps were never
-		// really independent.
-		//
-		// OPTIONAL by design: a provider may legitimately have no token (auth mode `none`), and a
-		// blank field must not block the create. It is a KSecret, so the value is masked in the view
-		// and never read back.
+		// THE TOKEN IS A FIELD HERE, not a separate `s` chord.
 		kit2.FieldSpec{Name: "token", Label: "API token (optional)", Kind: kit2.KSecret,
 			Placeholder: "paste the key — stored as CUSTOM_<REF>_API_KEY, never read back"},
 	)
@@ -1759,9 +1620,8 @@ func (m *Model) newProviderForm() *kit2.Form {
 			BaseUrl:     v["base_url"],
 			AuthMode:    v["auth_mode"],
 		}
-		// The token is TWO RPCs on the server's side — create, then set the token against the
-		// provider's ref id (the same two calls the GUI makes) — so both ride in ONE mutation, in
-		// order, and a failure of either surfaces as one failure of "create provider".
+		// The token is TWO RPCs on the server's side — create, then set the token against the provider's
+		// ref id (the same two calls the GUI makes) — so both ride in ONE mutation, in order.
 		tok := strings.TrimSpace(v["token"])
 		refID := strings.TrimSpace(v["ref_id"])
 		return m.Mutate(mutate.Request{
@@ -1782,9 +1642,7 @@ func (m *Model) newProviderForm() *kit2.Form {
 	return f
 }
 
-// editProviderForm edits a provider. Built-ins take the settings-update path
-// (enabled + base_url_override); custom providers additionally take the
-// custom-update path (display name / base url / auth mode).
+// editProviderForm edits a provider.
 func (m *Model) editProviderForm(item kit2.Item) *kit2.Form {
 	p := m.providers[item.ID]
 	dn, bu, am, ov := "", "", "none", ""
@@ -1810,9 +1668,7 @@ func (m *Model) editProviderForm(item kit2.Item) *kit2.Form {
 		kit2.FieldSpec{Name: "base_url_override", Label: "Base URL override", Kind: kit2.KText, Initial: ov},
 		kit2.FieldSpec{Name: "enabled", Label: "Enabled", Kind: kit2.KCheckbox, Initial: enabled},
 		// The token is a field HERE too, so "change the provider's auth" is one form rather than a form
-		// plus a chord. BLANK MEANS LEAVE IT ALONE: a KSecret is never read back, so an empty field is
-		// indistinguishable from "unchanged" and must be treated as such — otherwise merely editing a
-		// base URL would wipe the stored token.
+		// plus a chord.
 		kit2.FieldSpec{Name: "token", Label: "API token (blank = unchanged)", Kind: kit2.KSecret,
 			Placeholder: m.tokenPlaceholder(item.ID)},
 	)
@@ -1850,9 +1706,7 @@ func (m *Model) editProviderForm(item kit2.Item) *kit2.Form {
 		for _, r := range reqs {
 			cmds = append(cmds, m.Mutate(r))
 		}
-		// THE TOKEN, ONLY WHEN TYPED. A KSecret is never read back, so a blank field carries no
-		// information — treating it as "clear the token" would silently wipe the credential of anyone
-		// who edited only the base URL.
+		// THE TOKEN, ONLY WHEN TYPED.
 		if tok := strings.TrimSpace(v["token"]); tok != "" {
 			cmds = append(cmds, m.Mutate(mutate.Request{
 				Name: "store provider token " + item.Title, Source: "providers",
@@ -1865,12 +1719,6 @@ func (m *Model) editProviderForm(item kit2.Item) *kit2.Form {
 }
 
 // tokenPlaceholder states whether a token is already stored for this provider.
-//
-// A secret's value is never readable, so without this the operator cannot tell "I already gave this
-// provider a token" from "I never did" — and the two call for opposite actions when the field is
-// blank. The token's secret NAME is derived from the ref id (`CUSTOM_<REF uppercased, - → _>_API_KEY`,
-// providers.CustomSecretName), so asking the secrets list for it answers the question without ever
-// touching the value.
 func (m *Model) tokenPlaceholder(providerID string) string {
 	want := providers.CustomSecretName(providerID)
 	if m.secretNames[want] {
@@ -1899,9 +1747,7 @@ func (m *Model) newSecretForm() *kit2.Form {
 	return f
 }
 
-// newPermissionForm adds one entry to the operator's persistent permission
-// policy. A CREATE form (no selected row needed): an entry is a new rule, and
-// the list it belongs to is part of the entry.
+// newPermissionForm adds one entry to the operator's persistent permission policy.
 func (m *Model) newPermissionForm() *kit2.Form {
 	f := kit2.NewForm("Add permission policy entry",
 		kit2.FieldSpec{Name: "pattern", Label: "Entry", Kind: kit2.KText, Required: true,
@@ -1923,9 +1769,8 @@ func (m *Model) newPermissionForm() *kit2.Form {
 		}
 		return m.Mutate(mutate.Request{
 			Name: "add " + list + " entry " + pattern, Source: "permissions",
-			// No optimistic row: the server returns the refreshed policy and
-			// the pane reconciles from it, so a form-added entry can never be
-			// shown as present when the write failed.
+			// No optimistic row: the server returns the refreshed policy and the pane reconciles from it, so a
+			// form-added entry can never be shown as present when the write failed.
 			Do: func(ctx context.Context) error {
 				return m.rpcAddPermissionPolicyEntry(ctx, &apiv1.AddPermissionPolicyEntryRequest{
 					Pattern: pattern,
@@ -1984,9 +1829,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, m.HandleMutation(msg)
 	}
 
-	// The MODEL PICKER is a modal layered ABOVE the form that opened it: while it
-	// is up it owns every key and the mouse, so a keystroke aimed at the picker
-	// can never act on the form underneath it.
+	// The MODEL PICKER is a modal layered ABOVE the form that opened it: while it is up it owns every
+	// key and the mouse, so a keystroke aimed at the picker can never act on the form underneath it.
 	if mp := m.modelPicker; mp != nil {
 		switch msg := msg.(type) {
 		case modelKindsMsg:
@@ -2004,13 +1848,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		}
 	}
 
-	// The INLINE details-pane editor owns every key while it is up — it is the
-	// focused surface, so it comes BEFORE the screen's own chords.
-	//
-	// It has to: the chords below answer 'n' (new), 'e' (edit) and 's' (set
-	// credential), so with a form open in the pane a plain letter fired a chord
-	// instead of being typed — every 'n', 'e' or 's' in a typed value re-opened a
-	// form and discarded the input.
+	// The INLINE details-pane editor owns every key while it is up — it is the focused surface, so it
+	// comes BEFORE the screen's own chords.
 	if m.Base.EditingDetail() {
 		if k, ok := msg.(tea.KeyMsg); ok {
 			if handled, cmd := m.Base.Update(k); handled {
@@ -2019,10 +1858,7 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		}
 	}
 
-	// The LEGACY modal host owns every key while it is up. Forms open in the
-	// details pane now (see the n/e/s chords), so this path is normally inert — it
-	// is kept for the hosts that still use it, and checks m.form directly rather
-	// than formOpen() so an INLINE editor is not mistaken for it.
+	// The LEGACY modal host owns every key while it is up.
 	if m.form != nil {
 		if k, ok := msg.(tea.KeyMsg); ok {
 			if k.String() == "esc" {
@@ -2038,15 +1874,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, nil
 	}
 
-	// Screen chords run only when no modal dialog is open (the dialog owns
-	// every key through the kit2 base, layered over the focus ring).
-	//
-	// CREATE and EDIT open in the DETAILS PANE, not a modal. The operator: "Edit
-	// Tenant settings is popping up as a separate modal. We should not do that. It
-	// should be edited in the details pane just like anything else." A modal covers
-	// the list AND the detail it is editing; the pane keeps both visible, and it is
-	// the same host the work-item and worker forms already use, so the keys,
-	// validation and submit path cannot diverge between them.
+	// Screen chords run only when no modal dialog is open (the dialog owns every key through the kit2
+	// base, layered over the focus ring).
 	if m.Open == nil {
 		if k, ok := msg.(tea.KeyMsg); ok {
 			switch k.String() {
@@ -2081,13 +1910,6 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 }
 
 // secretFormForSource opens the credential form for panes that store secrets.
-//
-// NO PANE ANSWERS ANY MORE, and that is the point rather than a gap. The MCP pane it used to serve
-// is gone (a definition is OWNER-SCOPED — project / conversation / worker version — so there is no
-// tenant-level MCP list to hang a credential off), and the provider token became a field on the
-// provider forms. The method is kept, and kept answering nil for every pane, because the `s` chord
-// is part of the screen's Update loop; a pane that grows a credential surface again re-registers
-// here rather than re-inventing the chord.
 func (m *Model) secretFormForSource() *kit2.Form {
 	return nil
 }
@@ -2108,9 +1930,7 @@ func (m *Model) View() string {
 		box := m.Open.Box(min(60, m.w-4), 9)
 		out = kit2.Center(kit2.FitLines(out, m.w, m.h), box, m.w, m.h)
 	}
-	// The model picker is spliced LAST so it layers ABOVE the form that opened
-	// it. It is re-sized here from the same w×h Center() uses, so its mouse
-	// hit-testing addresses the box that was actually drawn.
+	// The model picker is spliced LAST so it layers ABOVE the form that opened it.
 	if m.modelPicker != nil {
 		m.modelPicker.SetScreen(m.w, m.h)
 		out = kit2.Center(kit2.FitLines(out, m.w, m.h), m.modelPicker.View(), m.w, m.h)
@@ -2176,14 +1996,7 @@ func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDet
 // --- helpers ------------------------------------------------------------
 
 // validModelRef validates a model reference against the PINNED grammar
-// (internal/adapter.ParseModelRef) — the same parser the server validates with,
-// so the TUI can never accept a ref the plane would reject, or reject one it
-// would accept.
-//
-// This replaced a hand-rolled SplitN("/", 2) splitter that disagreed with the
-// grammar in BOTH directions: it accepted malformed 4-segment junk ("a/b/c/d"
-// split as "a" + "b/c/d" and passed) and rejected a legal 1-segment bare model
-// id, which the grammar explicitly allows.
+// (internal/adapter.ParseModelRef) — the same parser the server validates.
 func validModelRef(v string) error {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -2198,18 +2011,8 @@ func validModelRef(v string) error {
 	return nil
 }
 
-// validSecretName rejects a name the secrets store will refuse, AT THE POINT OF ENTRY.
-//
-// It calls the SERVER'S OWN validator (secrets.ValidateName) rather than restating the rule, so the
-// two can never drift — the same reasoning the model picker uses for a context window. That matters
-// because the rule is not obvious: it is `^[A-Z][A-Z0-9_]+$`, i.e. UPPERCASE ONLY, and a lowercase
-// name is the natural thing to type.
-//
-// WHY THIS IS A BUG FIX AND NOT POLISH. Without it the form accepted `my_token`, CLOSED as if it had
-// saved, and only then did the server reject it — leaving the operator with a closed form, no row,
-// and a transient dock error. That is the operator's report exactly: "I tried adding a secret and a
-// provider in the TUI and saved it, yet they were never actually created." A validation error the
-// form can see is one the form can SHOW, next to the field, before it closes.
+// That matters because the rule is not obvious: it is `^[A-Z][A-Z0-9_]+$`, i.e. UPPERCASE ONLY, and
+// a lowercase name is the natural thing to type.
 func validSecretName(v string) error {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -2235,20 +2038,8 @@ func validURL(v string) error {
 	return nil
 }
 
-// buildBudgetJSON composes the individual budget fields back into the transport
-// JSON the Settings API expects.
-//
-// An EMPTY field is OMITTED, never sent as zero: the server stores an absent gate
-// as NULL ("built-in default") and an explicit 0 as a real value that DISABLES the
-// gate, so writing 0 for a blank field would turn gates off whenever the operator
-// saved the form without touching them.
-// budgetInitials reads the transport blob into the individual field values the
-// form edits.
-//
-// The blob is the API's ONLY representation of the budget (the typed columns are
-// the DB's source of truth, but TenantSettings exposes just the JSON), so the form
-// has to read it — and write it back through buildBudgetJSON. The two functions
-// are exact inverses for the keys the form covers.
+// The blob is the API's ONLY representation of the budget (the typed columns are the DB's source of
+// truth, but TenantSettings exposes just the JSON), so the form has to read it.
 func budgetInitials(blob string) map[string]string {
 	out := map[string]string{}
 	var raw struct {
@@ -2322,9 +2113,8 @@ func budgetInitials(blob string) map[string]string {
 		out[d.final] = msgFor(d.key, 2)
 	}
 
-	// The tier toggles default OFF/ON/ON when absent — the built-in policy, whose
-	// WARN tier is off because a lossy collapse at the first warning interrupts the
-	// worker mid-flight.
+	// The tier toggles default OFF/ON/ON when absent — the built-in policy, whose WARN tier is off
+	// because a lossy collapse at the first warning interrupts the worker mid-flight.
 	warn, escal, final := false, true, true
 	if len(raw.CompactTiers) == 3 {
 		warn, escal, final = raw.CompactTiers[0], raw.CompactTiers[1], raw.CompactTiers[2]
@@ -2382,14 +2172,7 @@ func buildBudgetJSON(v map[string]string) string {
 			fractions[key] = tri
 		}
 	}
-	// The warning TEXT. A dimension is written only when at least ONE of its three
-	// messages is non-blank, and then all three go together — the rule the GUI's
-	// buildBudgetDefaults applies, and the one the server's ApplyBudgetJSON expects,
-	// because it reads `warnings.messages.<dim>` as a whole triple. So blanking every
-	// tier of a dimension leaves the stored copy untouched (the key is omitted, and
-	// an absent key means "keep"), while blanking a single tier in an otherwise
-	// populated dimension SILENCES just that tier — the adapter assigns each string
-	// verbatim, so "" injects nothing. That is a real edit, not a fallback.
+	// The warning TEXT.
 	messages := map[string]any{}
 	for key, fields := range map[string][3]string{
 		"tokens":             {"warn_msg_tokens", "esc_msg_tokens", "final_msg_tokens"},
@@ -2454,9 +2237,7 @@ func buildBudgetJSON(v map[string]string) string {
 	return string(b)
 }
 
-// parseFractionTriple reads "a,b,c" into the [warn, escalate, final] triple an
-// adapter expects. An unparseable or short triple yields ok=false, so the key is
-// omitted rather than half-written.
+// parseFractionTriple reads "a,b,c" into the [warn, escalate, final] triple an adapter expects.
 func parseFractionTriple(raw string) ([3]float64, bool) {
 	var out [3]float64
 	parts := strings.Split(strings.TrimSpace(raw), ",")
@@ -2529,11 +2310,6 @@ func i64Of0(s string) int64 {
 }
 
 // optI64 maps a Settings form field to an OPTIONAL proto value.
-//
-// A BLANK field means "use the built-in default" and must travel as ABSENT
-// (nil), never as 0 — for the stall thresholds 0 is a real, different
-// instruction: DISABLED. i64Of0's collapse-to-zero is therefore wrong for these
-// fields, and i64Of is what tells the two apart.
 func optI64(s string) *int64 {
 	if strings.TrimSpace(s) == "" {
 		return nil
@@ -2555,9 +2331,8 @@ func optI32(s string) *int32 {
 	return nil
 }
 
-// stallDimInitial renders a stall window into its form field: BLANK for "the
-// tenant left this unset" (which the server stores as NULL and the adapters
-// read as the built-in default), "0" for an explicit disable, else the value.
+// stallDimInitial renders a stall window into its form field: BLANK for "the tenant left this
+// unset" (which the server stores as NULL and the adapters read as the built-in default).
 func stallDimInitial(v *int64) string {
 	if v == nil {
 		return ""
@@ -2573,10 +2348,7 @@ func stallCountInitial(v *int32) string {
 	return fmt.Sprintf("%d", *v)
 }
 
-// fmtStallDim renders a stall threshold for the read-only Settings list. A
-// BLANK field is shown WITH the built-in default it resolves to, because
-// "blank" is only meaningful if the operator can see what it falls back to; an
-// explicit 0 is shown as Disabled so the two states are never confused.
+// fmtStallDim renders a stall threshold for the read-only Settings list.
 func fmtStallDim(v *int64, defaultSecs int64) string {
 	switch {
 	case v == nil:
@@ -2608,13 +2380,6 @@ func min(a, b int) int {
 }
 
 // normalizeAuthMode maps a STORED auth mode onto one the form can offer.
-//
-// WHY THIS IS NOT JUST DEFENSIVE PADDING. A select whose Initial is not one of its Options fails
-// validation with "unknown option", so it cannot be submitted at all — the operator would be unable
-// to edit that provider by ANY route. A value outside {none, token} is either legacy or invented (the
-// form used to offer `bearer` and `api_key`, neither of which the server accepts), so the only
-// submit-able repair is a value the server accepts: the stored one is normalised to `none`, and the
-// operator sees the choices that actually work.
 func normalizeAuthMode(mode string) string {
 	if providers.ValidateAuthMode(mode) == nil {
 		return mode
@@ -2622,19 +2387,8 @@ func normalizeAuthMode(mode string) string {
 	return providers.AuthModeNone
 }
 
-// authModeOptions is the provider auth-mode choice, built from the SERVER'S OWN constants.
-//
-// It offered `none`, `bearer` and `api_key`. The server accepts exactly TWO values —
-// providers.AuthModeNone ("none") and providers.AuthModeToken ("token") — and rejects anything else
-// with `auth_mode must be "none" or "token"`. So BOTH extra options were unusable, and the one value
-// every existing provider actually uses, `token` (the GUI offers only none|token, and the live table
-// holds 2×token, 1×none and ZERO bearer/api_key), could not be chosen at all.
-//
-// That is the second half of the operator's "I tried adding a secret and a provider in the TUI and
-// saved it, yet they were never actually created": picking `bearer` produced a provider the server
-// refused. The options come from the exported constants rather than from string literals here, so the
-// list CANNOT drift from what the server honours — the same reasoning as validSecretName calling the
-// secrets store's validator.
+// The options come from the exported constants rather than from string literals here, so the list
+// CANNOT drift from what the server honours.
 func authModeOptions() []kit2.Option {
 	return []kit2.Option{
 		{Value: providers.AuthModeNone, Label: providers.AuthModeNone},

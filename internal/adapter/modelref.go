@@ -5,19 +5,11 @@ import (
 	"strings"
 )
 
-// DefaultAdapterKind is the adapter kind assumed when a model_ref has no
-// explicit adapter segment (a 1- or 2-segment legacy ref). Legacy refs like
-// "opencode/deepseek-v4-flash-free" and "anthropic/claude-sonnet-4" keep
-// dispatching exactly as they did before the adapter namespace landed.
-//
-// IT IS THE LEGACY INFERENCE, NOT THE PRODUCT DEFAULT. The default adapter for a FRESH selection is
-// NativeAdapterKind — see ProductDefaultAdapterKind, and never use this constant to seed a picker:
-// it names the serve-backed adapter, which is precisely the one a fresh install may not have.
+// DefaultAdapterKind is the adapter kind assumed when a model_ref has no explicit adapter segment
+// (a 1- or 2-segment legacy ref).
 const DefaultAdapterKind = "opencode"
 
-// NativeAdapterKind is the in-process adapter that runs a session inside the control plane. It needs
-// no external binary, so it is the only kind that is always dispatchable on a fresh install — which
-// is why it, and not DefaultAdapterKind, is the product default for a fresh selection (ADR-0005 D5).
+// NativeAdapterKind is the in-process adapter that runs a session inside the control plane.
 const NativeAdapterKind = "orchicon"
 
 // ProductDefaultAdapterKind is what a picker seeds when nothing is stored yet.
@@ -63,28 +55,11 @@ func IsFreeTierOnly(model string) bool {
 	return false
 }
 
-// The adapter kinds wired into the dispatcher. KindOpencode is the
-// serve-backed session adapter; KindOrchicon is the native in-process
-// engine that runs sessions inside the control plane. These are the values
-// recorded under `adapter_kind` in an execution transcript's session_info
-// part, so a follow-up can tell whether the recorded session identity
-// (session_id/serve_url) belongs to the adapter resolving it — another
-// adapter's session is never re-attached.
+// The adapter kinds wired into the dispatcher.
 const (
 	KindOpencode = "opencode"
 	KindOrchicon = "orchicon"
-	// KindClaude is the Claude Code CLI adapter ("claude"). It is NOT
-	// "anthropic": anthropic is a PROVIDER segment (it is also a provider
-	// of opencode), and the 2-segment ref "anthropic/<model>" must keep
-	// inferring kind opencode (modelref_test.go). The Claude adapter is a
-	// streaming-stdio adapter with no in-container HTTP serve.
-	//
-	// MODEL tier: it is a catalog-sourced kind (CatalogSourcedAdapterKinds)
-	// — its models are the anthropic provider catalog's, not opencode's —
-	// so `claude` still lists and dispatches on a plane with no opencode
-	// binary. This classification is about the MODEL namespace only, and
-	// decides nothing about Ask: that comes from the ChatTurnClient
-	// assertion, which claude satisfies (internal/claude/ask.go).
+	// KindClaude is the Claude Code CLI adapter ("claude").
 	KindClaude = "claude"
 )
 
@@ -156,20 +131,15 @@ func ParseModelRef(ref string, reg ProviderRegistry) (ModelRef, error) {
 		}
 		return ModelRef{Adapter: DefaultAdapterKind, Provider: seg1, Model: seg2}, nil
 	}
-	// 3+ segments: left-greedy. Segment 1 = adapter, segment 2 = provider,
-	// the remainder = model VERBATIM (internal slashes preserved — the
-	// pinned fix for slashed model ids like Command Code's).
+	// 3+ segments: left-greedy.
 	if reg != nil && !reg.IsKnownAdapter(seg1) {
 		return ModelRef{}, fmt.Errorf("unknown adapter %q in model ref %q — register an adapter of that kind, or use adapter/provider/model with a known adapter (e.g. %s/provider/model)", seg1, ref, DefaultAdapterKind)
 	}
 	return ModelRef{Adapter: seg1, Provider: seg2, Model: modelRest}, nil
 }
 
-// AdapterKind extracts the adapter kind from a model ref WITHOUT
-// validation — the routing view used by the dispatcher/reconciler (an
-// unknown kind surfaces its actionable "register an adapter" error at
-// Resolve). Left-greedy: segment 1 of a 3+ segment ref; DefaultAdapterKind
-// for a 1- or 2-segment legacy ref; "" for an empty/malformed ref.
+// AdapterKind extracts the adapter kind from a model ref WITHOUT validation — the routing view used
+// by the dispatcher/reconciler (an unknown kind surfaces its actionable "register an adapter".
 func AdapterKind(ref string) string {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -202,25 +172,8 @@ func AdapterKind(ref string) string {
 	return seg1
 }
 
-// SplitForServe splits a model ref into the provider/model pair the serve
-// API expects (opencode serve still receives {"providerID","modelID"};
-// the adapter segment is consumed by the control plane and dropped before
-// the serve call — ADR-0003 D1/D6). Left-greedy over the first two
-// segments: a 3+ segment ref uses segment 2 as the provider and the
-// verbatim remainder as the model; a legacy 2-segment ref uses segment 1
-// as the provider and segment 2 as the model. ok=false when no
-// provider/model can be derived (empty or 1-segment ref).
-//
-// The 3+-segment branch assumes CANONICAL refs (adapter/provider/model).
-// Pre-namespace legacy refs with a slashed head (e.g. "commandcode/a/b")
-// are NOT canonical: their head is a legacy provider id, not an adapter
-// kind, and left-greedy would yield provider=seg2 — the WRONG serve pair.
-// The canonicalize-pre-namespace-refs migration (20260917000000) rewrites
-// such rows into canonical form, and worker validation's phantom-kind rule
-// (internal/worker/validate.go) rejects new saves of that shape, so this
-// path only ever sees canonical 3+-segment refs in practice. It is kept
-// purely structural (no registry access) because serve/usage callers deep
-// in the adapter layer have no tenant registry.
+// SplitForServe splits a model ref into the provider/model pair the serve API expects (opencode
+// serve still receives {"providerID","modelID"}.
 func SplitForServe(ref string) (provider, model string, ok bool) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -300,10 +253,8 @@ func NormalizeRef(ref string, knownKinds map[string]struct{}) string {
 	return DefaultAdapterKind + "/" + ref
 }
 
-// NormalizeRefForMigration is NormalizeRef for the data migration: it
-// reports (normalized, changed) — changed=true only when the normalized
-// form differs from the input, so the migration skips canonical and
-// empty/malformed rows untouched.
+// NormalizeRefForMigration is NormalizeRef for the data migration: it reports (normalized, changed)
+// — changed=true only when the normalized form differs from the input.
 func NormalizeRefForMigration(ref string, knownKinds map[string]struct{}) (string, bool) {
 	out := NormalizeRef(ref, knownKinds)
 	if out == "" {

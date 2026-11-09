@@ -9,10 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 )
 
-// newLogoutServer builds a live mux server with the auth endpoints registered
-// (the same path the control plane serves) and no database: /auth/logout is
-// pure cookie-clearing and never touches the resolver/pool. The embedded OP
-// and OIDC construction are skipped via the flags NewHandler gates on.
+// newLogoutServer builds a live mux server with the auth endpoints registered (the same path the
+// control plane serves) and no database.
 func newLogoutServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	cfg := config.Default()
@@ -29,11 +27,8 @@ func newLogoutServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// TestLogoutClearsRefreshCookie pins the contract the frontend relies on:
-// POST /auth/logout must emit a Set-Cookie that expires the HttpOnly refresh
-// cookie (empty value + negative MaxAge + the same Path/HttpOnly attributes
-// it was set with), so a later /auth/refresh has nothing to exchange and the
-// signed-out browser stays signed out across reloads.
+// TestLogoutClearsRefreshCookie pins the contract the frontend relies on: POST /auth/logout must
+// emit a Set-Cookie that expires the HttpOnly refresh cookie (empty value + negative MaxAge +.
 func TestLogoutClearsRefreshCookie(t *testing.T) {
 	srv := newLogoutServer(t)
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/auth/logout", nil)

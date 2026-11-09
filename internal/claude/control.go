@@ -41,13 +41,11 @@ const (
 	// BehaviorAllow proceeds with the call. When UpdatedInput is set the CLI
 	// runs the MODIFIED input instead of what the model proposed.
 	BehaviorAllow = "allow"
-	// BehaviorDeny refuses the call. Message is REQUIRED: the CLI surfaces it
-	// to the model as the tool result, so a deny the model cannot act on is a
-	// worse outcome than the refusal itself.
+	// BehaviorDeny refuses the call. Message is REQUIRED: the CLI surfaces it to the model as the tool
+	// result, so a deny the model cannot act on is a worse outcome than the refusal itself.
 	BehaviorDeny = "deny"
-	// BehaviorCancelled retires an ask without answering it — used when the
-	// turn is superseded or the conversation is deleted and the card on screen
-	// is no longer answerable.
+	// BehaviorCancelled retires an ask without answering it — used when the turn is superseded or the
+	// conversation is deleted and the card on screen is no longer answerable.
 	BehaviorCancelled = "cancelled"
 )
 
@@ -68,26 +66,19 @@ const (
 	DecisionUserReject = "user_reject"
 )
 
-// ControlVerdict is the object the CLI validates. Field presence follows the
-// CLI's own union: `message` is meaningful only for a deny (it is what the
-// model reads), and `updatedInput` only for an allow.
+// ControlVerdict is the object the CLI validates.
 type ControlVerdict struct {
 	Behavior string `json:"behavior"`
 	// Message is the human/model-readable reason. REQUIRED on deny; omitted on
 	// allow so the frame matches the schema's allow arm exactly.
 	Message string `json:"message,omitempty"`
 	// UpdatedInput replaces the model's proposed input for an allowed call.
-	// Unused today (the ask transport approves or refuses as asked) and carried
-	// so the encoder is complete rather than silently dropping a field the
-	// protocol defines.
 	UpdatedInput map[string]any `json:"updatedInput,omitempty"`
 	// DecisionClassification records the KIND of decision (see the constants).
 	DecisionClassification string `json:"decisionClassification,omitempty"`
 }
 
-// controlResponseDoc is the outer frame. It is a struct rather than a map so the
-// nesting that the CLI matches on cannot be flattened by a later refactor into
-// what looks like tidier JSON.
+// controlResponseDoc is the outer frame.
 type controlResponseDoc struct {
 	Type     string               `json:"type"`
 	Response controlResponseInner `json:"response"`
@@ -100,9 +91,6 @@ type controlResponseInner struct {
 }
 
 // EncodePermissionResponse builds the FULL control_response frame for one ask.
-// requestID is the `request_id` of the can_use_tool control_request being
-// answered (StreamEvent.ControlRequestID) — echoing it is what correlates the
-// answer to the parked tool call.
 func EncodePermissionResponse(requestID string, verdict ControlVerdict) []byte {
 	doc := controlResponseDoc{
 		Type: "control_response",

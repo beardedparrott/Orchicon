@@ -32,13 +32,8 @@ import (
 	"strings"
 )
 
-// claudeWindowsCandidates lists the places a Windows claude CODE CLI lands, per-user first because that
-// needs no elevation and is what a desktop machine has.
-//
-// EACH ENTRY IS EVIDENCE, not a guess: the WinGet shape is the operator's own reported path (with the
-// package-directory suffix that WinGet appends), %LOCALAPPDATA%\Programs is where a per-user installer
-// puts things, and %ProgramFiles% covers an all-users install. The bare home candidates mirror the POSIX
-// list so a Windows machine that uses a Unix-style layout still resolves.
+// claudeWindowsCandidates lists the places a Windows claude CODE CLI lands, per-user first because
+// that needs no elevation and is what a desktop machine has.
 func claudeWindowsCandidates(goos string, getenv func(string) string) []string {
 	if goos != "windows" {
 		return nil
@@ -56,19 +51,13 @@ func claudeWindowsCandidates(goos string, getenv func(string) string) []string {
 		return filepath.Join(append([]string{base}, parts...)...) + string(os.PathSeparator) + "claude.exe"
 	}
 	var out []string
-	// WINGET. The package directory name embeds a source and a hash, so it is found by WALKING the WinGet
-	// Packages root for a directory whose name starts with the publisher prefix — the exact shape in the
-	// operator's report. The non-package spellings are also probed: WinGet's "Links" shim directory holds
-	// an alias, and a hand-installed copy may sit directly under the WinGet root.
+	// WINGET.
 	out = append(out, claudeWinGetCandidates(env)...)
 	out = append(out, join(env("LOCALAPPDATA"), "Microsoft", "WinGet", "Links"))
 	out = append(out, join(env("LOCALAPPDATA"), "Programs", "claude"))
 	out = append(out, join(env("ProgramFiles"), "Claude"))
 	out = append(out, join(env("ProgramFiles(x86)"), "Claude"))
-	// DIRECTORIES WHOSE CONTENTS ARE SCANNED, not probed for one fixed name. A fixed name assumes the
-	// install layout we guessed — which is exactly the assumption that produced "installed but not
-	// found". An alias/MSIX-style install puts its launcher in one of these with a name we cannot
-	// enumerate ahead of time, so the scan is bounded by an explicit name set instead.
+	// DIRECTORIES WHOSE CONTENTS ARE SCANNED, not probed for one fixed name.
 	for _, dir := range claudeAliasDirs(env) {
 		out = append(out, claudeExesIn(dir)...)
 	}
@@ -88,17 +77,9 @@ func claudeWindowsCandidates(goos string, getenv func(string) string) []string {
 }
 
 // claudeWinGetPackagePrefix is the directory-name prefix WinGet gives the Claude Code package.
-//
-// MEASURED from the operator's own output: `Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe`.
-// The prefix is stable (publisher.package); the suffix is the source and a hash, which is why the match is
-// a prefix rather than an equality.
 const claudeWinGetPackagePrefix = "Anthropic.ClaudeCode"
 
 // claudeWinGetCandidates finds the executable inside a WinGet PACKAGE directory.
-//
-// The package directory is content-addressed, so it cannot be spelled out — it is enumerated. A missing
-// WinGet root is not an error: it simply contributes nothing, and the caller falls through to the other
-// locations.
 func claudeWinGetCandidates(env func(string) string) []string {
 	root := env("LOCALAPPDATA")
 	if root == "" {
@@ -131,11 +112,8 @@ func claudeWinGetCandidates(env func(string) string) []string {
 	return out
 }
 
-// claudeShimHint reports a shim that WOULD have been resolved and explains where the real binary is.
-//
-// It exists for the same reason opencode's foundElsewhereHint does: "not found" is a lie when the operator
-// can see `claude` in their shell. Naming the shim, and the executable it stands for, turns an
-// install-something-you-already-installed message into an actionable one.
+// claudeShimHint reports a shim that WOULD have been resolved and explains where the real binary
+// is.
 func claudeShimHint(goos string, getenv func(string) string) string {
 	if goos != "windows" {
 		return ""
@@ -177,14 +155,8 @@ func claudeShimHint(goos string, getenv func(string) string) string {
 	return ""
 }
 
-// claudeAliasDirs are the directories whose CONTENTS are scanned for an executable, rather than probed
-// for one fixed file name.
-//
-// WHY A SCAN. A fixed file name assumes the install is the layout we guessed, and that assumption is what
-// produced "installed but not found" in the first place. An MSIX/alias-style install (which is what a
-// `Get-Command claude` resolving into an AppData package path looks like) can name its launcher something
-// we cannot enumerate ahead of time. The scan is BOUNDED — a small explicit directory list and an explicit
-// name set — so it stays deterministic rather than hunting the filesystem.
+// claudeAliasDirs are the directories whose CONTENTS are scanned for an executable, rather than
+// probed for one fixed file name.
 func claudeAliasDirs(env func(string) string) []string {
 	var dirs []string
 	if root := env("LOCALAPPDATA"); root != "" {
@@ -202,10 +174,8 @@ func claudeAliasDirs(env func(string) string) []string {
 	return dirs
 }
 
-// claudeExesIn returns the executables in dir named claude or claude-<something>.
-//
-// ONLY .exe: a shim is never a candidate (the file header explains why Go cannot run one). SORTED, so a
-// machine with two installs resolves the same one every time instead of depending on directory order.
+// claudeExesIn returns the executables in dir named claude or claude-<something>. ONLY .exe: a shim
+// is never a candidate (the file header explains why Go cannot run one).
 func claudeExesIn(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

@@ -1,9 +1,5 @@
-// Package mutate is the single write path for the TUI: one executor runs
-// every mutating RPC, reports progress in the dock, surfaces failures,
-// rolls the local model back on error, and reconciles the affected source.
-//
-// No screen calls a write RPC directly — a screen builds a mutate.Request
-// (via a kit2.Action) and hands it here.
+// Package mutate is the single write path for the TUI: one executor runs every mutating RPC,
+// reports progress in the dock, surfaces failures, rolls the local model back on error.
 package mutate
 
 import (
@@ -74,9 +70,8 @@ func (e *Executor) Run(req Request) tea.Cmd {
 	}
 }
 
-// Apply handles a Result: on error it rolls the local model back and pins
-// the failure into the dock; on success it clears progress and reconciles
-// the affected source. Returns the reconcile cmd (nil when none).
+// Apply handles a Result: on error it rolls the local model back and pins the failure into the
+// dock; on success it clears progress and reconciles the affected source.
 func (e *Executor) Apply(res Result) tea.Cmd {
 	if res.Err != nil {
 		if res.Rollback != nil {

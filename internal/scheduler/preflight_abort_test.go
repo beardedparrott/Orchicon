@@ -1,14 +1,6 @@
 package scheduler
 
 // preflight_abort_test.go — A FAILED PREFLIGHT MUST ABORT THE RUN.
-//
-// REPORTED, run 01M6FT6RQ4GVX0M7BAH215S6B4: the provisioner refused at 22:20:47 and recorded
-// worktree_status=failed. The worker's step dispatched at 22:20:50 anyway, ran 3m50s and SUCCEEDED. The run
-// was then marked failed 183ms later, when the NEXT step hit the failed status. A run carried status=failed, a
-// SUCCEEDED execution, and an error for something that did not happen.
-//
-// The mechanism was an ORDER: the dispatch gate was `if worktreePath != "" { dispatch }`, so a failed worktree
-// that still recorded a PATH — which mark() writes, and which a retry kept — skipped the status switch.
 
 import (
 	"os"
@@ -107,9 +99,6 @@ func TestDispatchStillHoldsForPendingAndPruned(t *testing.T) {
 }
 
 // THE RETRY PATH must re-provision a FAILED worktree, not leave it failed-with-a-path.
-//
-// That state is what (a) skipped the dispatch gate and (b) made the provisioner treat the run's own leftover as
-// foreign. PRUNED was reset on retry; FAILED is the same need and was missed.
 func TestRetryResetsAFailedWorktreeToPending(t *testing.T) {
 	src, err := os.ReadFile("../workflow/service.go")
 	if err != nil {

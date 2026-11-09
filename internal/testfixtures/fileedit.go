@@ -1,7 +1,4 @@
-// Package testfixtures holds the shared diff-pipeline test vectors. ONE JSON
-// file per vector drives BOTH the Go pipeline tests (internal/fileedit) and
-// the TS renderer tests (frontend/src/lib/fileedit) — the same fixture must
-// produce byte-identical diff text in both implementations.
+// Package testfixtures holds the shared diff-pipeline test vectors.
 package testfixtures
 
 import (

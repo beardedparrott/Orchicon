@@ -16,10 +16,8 @@ import (
 	"github.com/zitadel/oidc/v3/pkg/op"
 )
 
-// DefaultTenantID is the tenant an embedded-OP login binds identities to
-// when the provider is wired without an explicit deployment tenant id.
-// The OP is served by the control plane itself, which is single-tenant for
-// the auth flow; identities resolve within this tenant.
+// DefaultTenantID is the tenant an embedded-OP login binds identities to when the provider is wired
+// without an explicit deployment tenant id.
 const DefaultTenantID = "tnt_dev"
 
 // IdentityClaims are the OIDC user claims resolved live from Postgres for
@@ -30,15 +28,11 @@ type IdentityClaims struct {
 	Username string
 }
 
-// IdentityResolver resolves an identity by ULID within a tenant into the
-// claims an ID token / userinfo response carries. Wired in internal/auth
-// to the tenant-scoped DB access layer (db.GetIdentity); a failure makes
-// the OP treat the subject as unknown.
+// IdentityResolver resolves an identity by ULID within a tenant into the claims an ID token /
+// userinfo response carries.
 type IdentityResolver func(ctx context.Context, tenantID, identityID string) (IdentityClaims, error)
 
-// TTLs bound every piece of in-memory protocol state; the sweeper purges
-// expired entries. Auth requests and one-time codes are single-use; opaque
-// access tokens live 15 minutes (matching the plane's own AccessTTL).
+// TTLs bound every piece of in-memory protocol state; the sweeper purges expired entries.
 const (
 	authRequestTTL  = 10 * time.Minute
 	codeTTL         = 5 * time.Minute
@@ -55,9 +49,7 @@ var (
 	ErrRefreshTokenInvalid = op.ErrInvalidRefreshToken
 )
 
-// Storage implements op.Storage entirely in memory with short TTLs + a
-// background sweeper. Identity claims resolve live from Postgres via the
-// injected resolver — no new tables, no RLS surface.
+// Storage implements op.Storage entirely in memory with short TTLs + a background sweeper.
 type Storage struct {
 	mu           sync.RWMutex
 	authRequests map[string]*authRequest
@@ -68,10 +60,8 @@ type Storage struct {
 	key     *ecdsa.PrivateKey
 	resolve IdentityResolver
 	log     *slog.Logger
-	// tenantID is the deployment tenant id (ORCHICON_DEPLOYMENT_TENANT_ID)
-	// identities resolve into when an auth/refresh request carries no
-	// explicit tenant; DefaultTenantID when the provider is wired without
-	// one (standalone op wiring / tests).
+	// tenantID is the deployment tenant id (ORCHICON_DEPLOYMENT_TENANT_ID) identities resolve into when
+	// an auth/refresh request carries no explicit tenant.
 	tenantID string
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -85,9 +75,6 @@ type codeEntry struct {
 }
 
 // accessToken is the opaque-bearer record the storage mints per flow.
-// tokenID (a random id) is the value encrypted inside the opaque access
-// token the library hands to the RP; the userinfo endpoint decrypts it
-// back and looks the record up here.
 type accessToken struct {
 	ID        string
 	Subject   string
@@ -96,10 +83,7 @@ type accessToken struct {
 	ExpiresAt time.Time
 }
 
-// refreshToken is a rotation-free refresh-token record. The embedded OP
-// only mints refresh tokens when a client asks for offline_access AND has
-// the refresh_token grant registered; the built-in first-party client does
-// neither, so this stays unused in practice.
+// refreshToken is a rotation-free refresh-token record.
 type refreshToken struct {
 	Token     string
 	Subject   string
@@ -108,9 +92,7 @@ type refreshToken struct {
 	ExpiresAt time.Time
 }
 
-// NewStorage constructs the in-memory OP storage. resolve must be non-nil.
-// tenantID is the deployment tenant id; an empty value falls back to
-// DefaultTenantID so standalone wiring and op-package tests keep working.
+// NewStorage constructs the in-memory OP storage.
 func NewStorage(key *ecdsa.PrivateKey, resolve IdentityResolver, log *slog.Logger, tenantID string) *Storage {
 	if resolve == nil {
 		resolve = func(context.Context, string, string) (IdentityClaims, error) {
@@ -198,9 +180,7 @@ func (s *Storage) KeySet(context.Context) ([]op.Key, error) {
 
 // --- AuthStorage -----------------------------------------------------------
 
-// CreateAuthRequest stores a parsed + validated authorize request. prompt=none
-// is always denied — there is no silent-auth path; every authorize must go
-// through the interactive Orchicon-session bridge.
+// CreateAuthRequest stores a parsed + validated authorize request.
 func (s *Storage) CreateAuthRequest(_ context.Context, req *oidc.AuthRequest, userID string) (op.AuthRequest, error) {
 	if len(req.Prompt) == 1 && req.Prompt[0] == oidc.PromptNone {
 		return nil, oidc.ErrLoginRequired().WithDescription("prompt=none is not supported")
@@ -228,9 +208,8 @@ func (s *Storage) AuthRequestByID(_ context.Context, id string) (op.AuthRequest,
 	return req, nil
 }
 
-// AuthRequestByCode returns the auth request a one-time code was issued
-// for, consuming the code on read (replay-safe: a second exchange of the
-// same code fails with ErrCodeNotFound).
+// AuthRequestByCode returns the auth request a one-time code was issued for, consuming the code on
+// read (replay-safe: a second exchange of the same code fails with ErrCodeNotFound).
 func (s *Storage) AuthRequestByCode(_ context.Context, code string) (op.AuthRequest, error) {
 	s.mu.Lock()
 	entry, ok := s.codes[code]
@@ -283,13 +262,9 @@ func (s *Storage) CreateAccessToken(_ context.Context, req op.TokenRequest) (str
 	return t.ID, exp, nil
 }
 
-// CreateAccessAndRefreshTokens is required by the interface but never
-// triggered in practice: refresh tokens are only produced when a client
-// registers the refresh_token grant AND the request asks for offline_access
-// (op.needsRefreshToken). The built-in client does neither and
-// GrantTypeRefreshToken is false, so the token endpoint refuses the grant.
-// Implemented defensively: an offline_access request gets a refresh token,
-// otherwise it degrades to an access-token-only response.
+// CreateAccessAndRefreshTokens is required by the interface but never triggered in practice:
+// refresh tokens are only produced when a client registers the refresh_token grant AND the request
+// asks.
 func (s *Storage) CreateAccessAndRefreshTokens(ctx context.Context, req op.TokenRequest, currentRefreshToken string) (accessTokenID, newRefreshToken string, expiration time.Time, err error) {
 	accessTokenID, expiration, err = s.CreateAccessToken(ctx, req)
 	if err != nil {

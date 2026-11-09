@@ -65,9 +65,7 @@ func TestRepairCandidatesKeepsLocalPortFallback(t *testing.T) {
 	}
 }
 
-// mustTryLocalPorts is the gate itself, so it is pinned directly. A false
-// NEGATIVE here would re-introduce the stall; a false POSITIVE would only cost a
-// pointless probe for a genuinely local-looking name.
+// mustTryLocalPorts is the gate itself, so it is pinned directly.
 func TestMustTryLocalPorts(t *testing.T) {
 	local := map[string]bool{
 		"":                                  true, // portless parse: historical behaviour
@@ -95,9 +93,8 @@ func TestMustTryLocalPorts(t *testing.T) {
 	}
 }
 
-// The budget must be small enough to leave room for the catalog seed inside the
-// picker's read budget. The picker uses 45s; anything approaching that would
-// re-create the bug this bound exists to prevent.
+// The budget must be small enough to leave room for the catalog seed inside the picker's read
+// budget.
 func TestRepairBudgetLeavesRoomForTheSeed(t *testing.T) {
 	const pickerBudget = 45 * 1e9 // 45s, internal/tui/models.go's model-load timeout
 	if int64(repairBudget) >= pickerBudget/3 {

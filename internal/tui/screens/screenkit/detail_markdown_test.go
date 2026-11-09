@@ -8,9 +8,7 @@ import (
 )
 
 // TestDetailBodyRendersMarkdownForWorkItems is the work-item surface: a description and acceptance
-// criteria are AUTHORED MARKDOWN, and the GUI renders them through markdown.tsx. The TUI showed the
-// source, so a quoted operator requirement read as "> ..." — punctuation noise that also loses the
-// attribution the marker encodes.
+// criteria are AUTHORED MARKDOWN, and the GUI renders them through markdown.tsx.
 func TestDetailBodyRendersMarkdownForWorkItems(t *testing.T) {
 	body := strings.Join([]string{
 		"# Feature: Composer 2.0",
@@ -46,9 +44,7 @@ func TestDetailBodyRendersMarkdownForWorkItems(t *testing.T) {
 }
 
 // TestNonMarkdownBodyIsPassedThroughUntouched is the safety property of rendering in this ONE pane:
-// it serves every list+detail screen, and several of them put a log dump, a trace, a JSON blob or a
-// pre-composed key/value block in the body. Rendering those through markdown would CONSUME characters
-// (emphasis and link markers vanish) — and a log line is evidence.
+// it serves every list+detail screen, and several of them put a log dump, a trace.
 func TestNonMarkdownBodyIsPassedThroughUntouched(t *testing.T) {
 	bodies := []string{
 		`{"level":"info","msg":"started","args":["a","b"]}`,
@@ -71,9 +67,8 @@ func TestNonMarkdownBodyIsPassedThroughUntouched(t *testing.T) {
 	}
 }
 
-// TestDetailBodyIsLaidOutToThePane: this pane never wrapped — it handed the raw string to a viewport,
-// which does not reflow, so a long description was CUT at the pane's edge with nothing to scroll
-// horizontally. Rendering lays every line to the width.
+// TestDetailBodyIsLaidOutToThePane: this pane never wrapped — it handed the raw string to a
+// viewport, which does not reflow.
 func TestDetailBodyIsLaidOutToThePane(t *testing.T) {
 	body := "> " + strings.Repeat("quoted words ", 20) + "\n\n| a | b |\n|---|---|\n| " + strings.Repeat("x", 60) + " | y |"
 	for _, w := range []int{40, 60, 100} {
@@ -88,12 +83,8 @@ func TestDetailBodyIsLaidOutToThePane(t *testing.T) {
 	}
 }
 
-// TestDetailReRendersWhenTheWidthChanges: markdown is laid out at a CONCRETE width, so a resize must
-// invalidate the rendered lines even though the SOURCE is unchanged — otherwise the pane keeps the
-// previous width's line breaks, which are either too short or (worse) too wide for the new pane.
-//
-// The RENDERED CONTENT is measured, not the number of rows View() prints: the viewport clips to its
-// height, so counting visible rows would report 17 either way and the assertion would be vacuous.
+// TestDetailReRendersWhenTheWidthChanges: markdown is laid out at a CONCRETE width, so a resize
+// must invalidate the rendered lines even though the SOURCE is unchanged.
 func TestDetailReRendersWhenTheWidthChanges(t *testing.T) {
 	body := "> " + strings.Repeat("word ", 30)
 

@@ -53,9 +53,7 @@ func TestTransposeForContainerRewritesLoopback(t *testing.T) {
 	}
 }
 
-// THE STORED URL IS NOT TOUCHED. The transposition is a VIEW for one consumer, not
-// a write — that is the whole point of doing it here rather than in the provider
-// row, and it is what keeps the host-plane consumer working.
+// THE STORED URL IS NOT TOUCHED.
 func TestTransposingDoesNotMutateTheStoredValue(t *testing.T) {
 	stored := "http://127.0.0.1:8741/v1"
 	_ = TransposeForContainer(stored)
@@ -68,10 +66,8 @@ func TestTransposingDoesNotMutateTheStoredValue(t *testing.T) {
 	}
 }
 
-// The target must be the address CONTAINERS can dial — asserted explicitly, because
-// getting this wrong in EITHER direction is the bug being fixed: host.docker.internal
-// does not resolve on this host (verified), and 127.0.0.1 does not reach the host
-// from a container (verified).
+// The target must be the address CONTAINERS can dial — asserted explicitly, because getting this
+// wrong in EITHER direction is the bug being fixed.
 func TestTheContainerTargetIsTheBridgeAddress(t *testing.T) {
 	got := TransposeForContainer("http://127.0.0.1:8741/v1")
 	if got != "http://172.17.0.1:8741/v1" {

@@ -1,16 +1,7 @@
 package runtime
 
-// images_gate_test.go — the CREATE GATE is a security control, not a
-// convenience: it is what stops the plane from creating an arbitrary
-// container image on the host. AC 2 of the Podman image-path change requires a
-// test that asserts the REJECTION (not just that the allowlist helper returns
-// a list), and that the decision is made against the engine under both
-// engines' wording — Podman says "image not known", Docker says "No such
-// image", and an image that is present but carries no
-// org.orchicon.runtime-base marker must be refused just like a missing one.
-//
-// Every case drives the REAL gate (validateCreate -> imageAllowed) with the
-// engine seam (Daemon.engineFn) so no container engine is needed.
+// images_gate_test.go — the CREATE GATE is a security control, not a convenience: it is what stops
+// the plane from creating an arbitrary container image on the host.
 
 import (
 	"context"
@@ -23,9 +14,8 @@ import (
 	"testing"
 )
 
-// gateEngine builds an engineFn that records the inspect it was asked to run
-// and answers with the given label value / error, which is exactly the shape
-// `image inspect --format '{{index .Config.Labels "..."}}' <ref>` produces.
+// gateEngine builds an engineFn that records the inspect it was asked to run and answers with the
+// given label value / error.
 func gateEngine(t *testing.T, wantRef, labelOut, stderr string, err error) (*[]string, func(args ...string) (string, error)) {
 	t.Helper()
 	var calls []string
@@ -45,9 +35,9 @@ func gateEngine(t *testing.T, wantRef, labelOut, stderr string, err error) (*[]s
 	return &calls, fn
 }
 
-// TestCreateGateRejectsAnImageWithoutTheMarker is AC 2: an image that is
-// neither the base, a configured stock variant, nor locally-present WITH the
-// inherited runtime-base marker cannot be used to create a container.
+// TestCreateGateRejectsAnImageWithoutTheMarker is AC 2: an image that is neither the base, a
+// configured stock variant, nor locally-present WITH the inherited runtime-base marker cannot be
+// used.
 func TestCreateGateRejectsAnImageWithoutTheMarker(t *testing.T) {
 	const base = "orchicon-runtime:base"
 	const stock = "ghcr.io/beardedparrott/orchicon-runtime:gui"
@@ -62,8 +52,6 @@ func TestCreateGateRejectsAnImageWithoutTheMarker(t *testing.T) {
 		err      error
 		wantErr  string // "" means the gate must ALLOW
 		// wantInspect: the decision must come from an engine label read.
-		// The base and configured stock variants short-circuit on the
-		// allowlist and must NOT touch the engine at all.
 		wantInspect bool
 	}{
 		{
@@ -147,11 +135,9 @@ func TestCreateGateRejectsAnImageWithoutTheMarker(t *testing.T) {
 	}
 }
 
-// TestImageInspectJoinsPresenceAndLabels pins the single inspect that reports
-// presence + both version labels for GET /v1/images (AC 7): a missing image
-// must report Present=false with NO error, and a present one must report both
-// labels — that is what lets the stock seeder tell "not downloaded" apart from
-// "stale, roll it forward".
+// TestImageInspectJoinsPresenceAndLabels pins the single inspect that reports presence + both
+// version labels for GET /v1/images (AC 7): a missing image must report Present=false with NO
+// error.
 func TestImageInspectJoinsPresenceAndLabels(t *testing.T) {
 	d := &Daemon{Engine: Engine{Name: "podman", Bin: "podman"}}
 	d.engineFn = func(args ...string) (string, error) {
@@ -180,10 +166,8 @@ func TestImageInspectJoinsPresenceAndLabels(t *testing.T) {
 	}
 }
 
-// TestRemoveImageIsIdempotentAndRefusesJunk is the daemon half of AC 5: the
-// removal path runs `rmi -f` for a plain image ref, reports "gone" when the
-// engine says the image was never there (both engines' wording), and never
-// reaches the engine for a ref that is not a plain tag.
+// TestRemoveImageIsIdempotentAndRefusesJunk is the daemon half of AC 5: the removal path runs `rmi
+// -f` for a plain image ref.
 func TestRemoveImageIsIdempotentAndRefusesJunk(t *testing.T) {
 	const ref = "orchicon-runtime-custom:qa"
 
@@ -227,10 +211,8 @@ func TestRemoveImageIsIdempotentAndRefusesJunk(t *testing.T) {
 	}
 }
 
-// TestBuildStreamsAndPrunesDangling is AC 3's positive half on the daemon
-// side: a successful build relays the engine's stdout AND stderr as
-// {stream,data} events, ends with an exit event, and prunes dangling images
-// afterwards so repeated builds of one tag do not pile up layers.
+// TestBuildStreamsAndPrunesDangling is AC 3's positive half on the daemon side: a successful build
+// relays the engine's stdout AND stderr as {stream,data} events, ends with an exit event.
 func TestBuildStreamsAndPrunesDangling(t *testing.T) {
 	dir := t.TempDir()
 	engine := filepath.Join(dir, "engine")

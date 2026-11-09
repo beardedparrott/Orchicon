@@ -7,9 +7,7 @@ import (
 	"os/exec"
 )
 
-// osProbe on macOS has nothing to look for: WKWebView is part of the OS. The
-// capability set is still populated so a future check (e.g. "is the app
-// quarantined") has somewhere to live.
+// osProbe on macOS has nothing to look for: WKWebView is part of the OS.
 func osProbe() Probe {
 	return Probe{
 		Lookup: exec.LookPath,

@@ -11,10 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Manager runs registered reconcilers, each with its own work queue
-// and per-kind leadership election via Postgres advisory locks
-// (docs/03_Scheduler_and_Runtime_Design.md §2). Concrete reconcilers
-// arrive in later phases; the framework ships now.
+// Manager runs registered reconcilers, each with its own work queue and per-kind leadership
+// election via Postgres advisory locks (docs/03_Scheduler_and_Runtime_Design.md §2).
 type Manager struct {
 	pool *db.Pool
 	log  *slog.Logger
@@ -50,10 +48,7 @@ func (m *Manager) Register(r Reconciler) {
 	})
 }
 
-// Run starts all registered reconcilers. It blocks until ctx is
-// cancelled. Each reconciler runs in its own goroutine: the leader
-// heartbeat maintains the advisory lock, and the work queue processes
-// enqueued keys. Non-leader replicas stand by (docs/03 §2.3).
+// Run starts all registered reconcilers.
 func (m *Manager) Run(ctx context.Context) error {
 	m.log.Info("reconciler manager started", "reconcilers", len(m.jobs))
 	var wg sync.WaitGroup
@@ -64,10 +59,8 @@ func (m *Manager) Run(ctx context.Context) error {
 			m.runReconciler(ctx, j)
 		}(&m.jobs[i])
 	}
-	// If there are no reconcilers registered yet, block on context so
-	// the manager doesn't exit immediately (which would cause the server
-	// to treat it as an error). Concrete reconcilers arrive in later
-	// phases (Phase 5+).
+	// If there are no reconcilers registered yet, block on context so the manager doesn't exit
+	// immediately (which would cause the server to treat it as an error).
 	if len(m.jobs) == 0 {
 		<-ctx.Done()
 		m.log.Info("reconciler manager stopped")
@@ -135,12 +128,8 @@ func (m *Manager) processQueue(ctx context.Context, j *job) {
 			j.queue.requeueAfter(key, result.RequeueAfter)
 		}
 	}
-	// Scan pass: when the work queue is empty, let the reconciler
-	// discover new work by calling Reconcile with an empty key
-	// (docs/03 §2.1). Reconcilers that don't implement scanning return
-	// an empty Result for an empty key (no-op). This lets the
-	// WorkflowReconciler scan pending runs and the TaskReconciler scan
-	// ready tasks without an explicit enqueue path.
+	// Scan pass: when the work queue is empty, let the reconciler discover new work by calling
+	// Reconcile with an empty key (docs/03 §2.1).
 	if !didWork {
 		ctx, span := startReconcileSpan(ctx, j.rec.Kind(), "scan")
 		result := j.rec.Reconcile(ctx, "")
@@ -181,14 +170,8 @@ func (m *Manager) Enqueue(kind, key string) {
 	}
 }
 
-// FailRun records a failure for one key discovered by a SCAN pass, giving it the same treatment a queued
-// failure gets: exponential backoff before the next attempt, and — after maxRetry — ONE "degraded" line
-// instead of a warning per heartbeat.
-//
-// IT EXISTS BECAUSE A SCAN BYPASSED ALL OF THIS. WorkflowReconciler.scanRuns calls reconcileRun directly for
-// every pending run, so a run that could not progress was logged and retried on every 200ms heartbeat with no
-// backoff, no cap and no terminal signal — 5552 identical warnings in 22 minutes on a real Windows host. The
-// queued path was always correct; the scan simply was not on it.
+// FailRun records a failure for one key discovered by a SCAN pass, giving it the same treatment a
+// queued failure gets: exponential backoff before the next attempt, and — after maxRetry.
 func (m *Manager) FailRun(kind, key string, err error) {
 	m.mu.Lock()
 	var j *job
@@ -237,9 +220,7 @@ func newWorkQueue(kind string) *workQueue {
 	}
 }
 
-// enqueue adds a key to the work queue. If the key is already pending,
-// this is a no-op (de-duplication — docs/03 §2.2: "A single enqueue per
-// object ID per tick collapses coalesced events").
+// enqueue adds a key to the work queue.
 func (q *workQueue) enqueue(key string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -247,16 +228,8 @@ func (q *workQueue) enqueue(key string) {
 		return
 	}
 	now := time.Now()
-	// A FAILURE ALREADY RECORDED FOR THIS KEY DECIDES WHEN IT MAY RUN AGAIN, and this used to be discarded:
-	// readyAt was unconditionally `now`, so every re-enqueue threw away the exponential backoff markFailed had
-	// just computed.
-	//
-	// THAT MATTERS BECAUSE THE SCAN PASS RE-ENQUEUES THE SAME BROKEN RUN EVERY HEARTBEAT. With readyAt reset,
-	// the backoff never applied and a persistently failing run was retried — and logged — every 200ms for as
-	// long as it stayed broken. MEASURED: 5552 identical "workflow run reconcile failed" lines in 22 minutes.
-	//
-	// The backoff lives in q.fail and is NOT cleared here; markDone clears it when the key finally succeeds,
-	// so a recovered run goes back to its ordinary cadence.
+	// A FAILURE ALREADY RECORDED FOR THIS KEY DECIDES WHEN IT MAY RUN AGAIN, and this used to be
+	// discarded: readyAt was unconditionally `now`.
 	ready := now
 	if f := q.fail[key]; f > 0 {
 		ready = now.Add(backoffFor(f))
@@ -265,9 +238,8 @@ func (q *workQueue) enqueue(key string) {
 	q.ordered = append(q.ordered, key)
 }
 
-// backoffFor is the single definition of the retry delay: exponential from one second, capped at five
-// minutes. It was inline in markFailed; naming it is what lets enqueue and markFailed agree, which is the
-// whole point of the fix above.
+// backoffFor is the single definition of the retry delay: exponential from one second, capped at
+// five minutes.
 func backoffFor(failures int) time.Duration {
 	if failures <= 0 {
 		return 0
@@ -280,14 +252,6 @@ func backoffFor(failures int) time.Duration {
 }
 
 // dequeue returns the next ready key, or ok=false if the queue is empty.
-//
-// The scan is bounded to one pass over the queue: a not-ready key is
-// rotated to the back so FIFO order is preserved across calls, but the
-// loop stops after visiting every key once. It must NOT re-scan a
-// not-ready key until the caller comes back — capturing `now` once and
-// re-appending the same key to the end makes a single not-ready key an
-// infinite busy loop that pins a core and starves the reconciler
-// (observed in the field: 150% CPU, advisory lock never renewed).
 func (q *workQueue) dequeue() (string, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -319,9 +283,8 @@ func (q *workQueue) markDone(key string) {
 	delete(q.fail, key)
 }
 
-// markFailed increments the failure count for the key and re-enqueues
-// it with exponential backoff (docs/03 §1: "Backoff on error:
-// exponential with jitter, capped").
+// markFailed increments the failure count for the key and re-enqueues it with exponential backoff
+// (docs/03 §1: "Backoff on error: exponential with jitter, capped").
 func (q *workQueue) markFailed(key string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -333,14 +296,6 @@ func (q *workQueue) markFailed(key string) {
 		return
 	}
 	// NOT PENDING — INCREMENT ANYWAY, BECAUSE A SCAN PASS REPORTS KEYS IT NEVER DEQUEUED.
-	//
-	// WorkflowReconciler.scanRuns calls reconcileRun directly for every pending run, so its failures arrive
-	// for keys that were never in this queue at all. The old body required a pending entry and therefore
-	// recorded NOTHING for them, which made the backoff below a no-op precisely on the path that needed it —
-	// the one that was retrying and warning every 200ms (5552 times in 22 minutes, measured).
-	//
-	// The count lives in q.fail and is read by enqueue, so the next enqueue for this key is delayed. markDone
-	// clears it on success.
 	q.fail[key]++
 }
 
@@ -370,18 +325,8 @@ func (q *workQueue) failures(key string) int {
 
 // --- Leader Election (docs/03 §2.3) ------------------------------------------
 
-// leaderElection uses Postgres advisory locks for per-kind leadership
-// with a pinned connection from the pool (docs/03 §2.3).
-//
-// pg_try_advisory_lock is session-level — it persists on the connection
-// that acquired it. Using QueryRow (acquire + release) in the old code
-// meant the lock lived on an idle connection in the pool; subsequent
-// heartbeats that drew a different connection found the lock already held
-// and got FALSE, starving the reconciler for seconds at a time.
-//
-// Fix: hold a dedicated *pgxpool.Conn for the duration of leadership.
-// Each heartbeat reuses the same connection; pg_try_advisory_lock returns
-// TRUE for a nested acquisition. On shutdown, release the connection.
+// leaderElection uses Postgres advisory locks for per-kind leadership with a pinned connection from
+// the pool (docs/03 §2.3).
 type leaderElection struct {
 	pool     *db.Pool
 	kind     string
@@ -397,17 +342,10 @@ func newLeaderElection(pool *db.Pool, kind string) *leaderElection {
 	}
 }
 
-// tryAcquireOrRenew attempts to acquire or renew the advisory lock for
-// this kind. Returns true if this replica is the leader for this kind.
-// It pinches a connection from the pool on first acquisition and reuses
-// it across heartbeats so the session-level lock stays valid.
+// tryAcquireOrRenew attempts to acquire or renew the advisory lock for this kind.
 func (l *leaderElection) tryAcquireOrRenew(ctx context.Context) (bool, error) {
 	if l.heldConn != nil {
-		// Already the leader — the lock is held on our pinned
-		// connection. pg_try_advisory_lock returns TRUE for a nested
-		// acquisition by the same session, confirming the lock is
-		// still live. If the connection died, this errors and we
-		// fall through to re-acquire.
+		// Already the leader — the lock is held on our pinned connection.
 		var acquired bool
 		err := l.heldConn.QueryRow(ctx,
 			"SELECT pg_try_advisory_lock($1)", l.lockKey,
@@ -452,10 +390,7 @@ func (l *leaderElection) release(ctx context.Context) {
 	l.heldConn = nil
 }
 
-// hashKind produces a stable int64 hash of the kind string for use as
-// the advisory lock key. Uses FNV-1a (32-bit, cast to int64) for
-// determinism and to stay within the int64 range that
-// pg_try_advisory_lock accepts.
+// hashKind produces a stable int64 hash of the kind string for use as the advisory lock key.
 func hashKind(kind string) int64 {
 	var h uint32 = 2166136261
 	for _, c := range kind {

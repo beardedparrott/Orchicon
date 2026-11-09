@@ -1,17 +1,6 @@
 package askorchicon
 
 // interject_no_error_test.go — the reported GUI failure, pinned.
-//
-// REPORTED: "It gave an error message saying the message could not be sent and would be saved, then it left the
-// text in the composer, and then it looked like it sent it after the model's turn was done with a user card but
-// then it didn't appear to be sent to the user… What should happen, is it should send it immediately into the
-// chat, no error message, and then fit it into the context when it is possible (a turn occurs)."
-//
-// THE CAUSE. Interjecting delivered with SendTurnMessage against the live session. Correct for opencode, whose
-// serve queues a prompt to the running turn's boundary. WRONG for the native bridge, which emulates a session:
-// its SendTurnMessage starts a NEW provider turn and takes over the running turn's cancel handle, so mid-turn —
-// and especially while the turn was blocked on an ask_user answer — the second stream was rejected, and the
-// operator got an error for a message that should simply have waited.
 
 import (
 	"log/slog"
@@ -49,18 +38,8 @@ func TestQueuesPromptsRespectsTheDeclaration(t *testing.T) {
 	}
 }
 
-// TestTheNativeBridgeDeclaresItQueues is the contract that makes an interjection JOIN the running turn,
-// asserted where the behaviour lives rather than only in this package's fakes.
-//
-// IT USED TO ASSERT `return false`, and that was right at the time: SendTurnMessage started a provider turn,
-// so delivering mid-turn ran a SECOND concurrent stream that the provider rejected. So askorchicon HELD the
-// message until the next turn — the behaviour the operator reported as "it doesn't get seen until the turn is
-// completely stopped".
-//
-// TRUE is correct now because the bridge has its own queue (askInjections): dispatchTurnMessage enqueues when a
-// turn is live, and the turn loop drains it into the history re-sent on the next provider call. Asserted as a
-// PAIR with the queue's existence, because the declaration alone would let a refactor delete the queue and
-// leave askorchicon sending into nothing.
+// TestTheNativeBridgeDeclaresItQueues is the contract that makes an interjection JOIN the running
+// turn, asserted where the behaviour lives rather than only in this package's fakes.
 func TestTheNativeBridgeDeclaresItQueues(t *testing.T) {
 	src := readSource(t, "../../internal/orchicon/chatturn.go")
 	if !containsStr(src, "func (b *NativeBridge) QueuesPrompts() bool { return true }") {

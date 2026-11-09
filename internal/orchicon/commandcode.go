@@ -11,11 +11,9 @@ import (
 	"sync"
 )
 
-// CommandCodeClient is the dual-transport Command Code provider (D6): one
-// Bearer key, transport selected PER REQUEST by model id — `claude-*` →
-// POST {base}/provider/v1/messages (Anthropic wire); everything else →
-// POST {base}/provider/v1/chat/completions (OpenAI wire). The legacy
-// /alpha/generate envelope is the Go-plan / 403-flip fallback.
+// CommandCodeClient is the dual-transport Command Code provider (D6): one Bearer key, transport
+// selected PER REQUEST by model id — `claude-*` → POST {base}/provider/v1/messages (Anthropic
+// wire).
 type CommandCodeClient struct {
 	BaseURL string // default https://api.commandcode.ai (env COMMANDCODE_API_BASE)
 	APIKey  string
@@ -53,9 +51,7 @@ func (c *CommandCodeClient) Capabilities() Capabilities {
 	return Capabilities{Streaming: true, Tools: true, ReasoningEfforts: true}
 }
 
-// ListModels resolves through the sourcing service. NO catalog fallback:
-// per the no-synthesized-models directive, a failed sourcing probe yields
-// no models — never the vendored snapshot.
+// ListModels resolves through the sourcing service.
 func (c *CommandCodeClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if c.ModelsFn != nil {
 		return c.ModelsFn(ctx)
@@ -74,9 +70,8 @@ func (c *CommandCodeClient) getenv(k string) string {
 // (per the reference plugin: modelId starting with `claude-`).
 func isClaudeModel(model string) bool { return strings.HasPrefix(model, "claude-") }
 
-// resolvePlan implements the documented order: explicit override →
-// COMMANDCODE_PLAN env → cached GET {base}/alpha/whoami → default provider.
-// Cached per provider instance (fetched at most once).
+// resolvePlan implements the documented order: explicit override → COMMANDCODE_PLAN env → cached
+// GET {base}/alpha/whoami → default provider.
 func (c *CommandCodeClient) resolvePlan(ctx context.Context) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -222,8 +217,7 @@ func (c *CommandCodeClient) streamLegacy(ctx context.Context, req TurnRequest) (
 
 	var resp *http.Response
 	// Shared send loop (requestrepair.go): transient failures are retried, request-shape 400s are
-	// repaired and resent, everything else surfaces. One loop for every client so resilience cannot be
-	// added to one and forgotten in another.
+	// repaired and resent, everything else surfaces.
 	resp, serr := sendWithRepair(ctx, c.Retry, c.Logf,
 		func(ctx context.Context, b []byte) (*http.Response, error) {
 			return postJSON(ctx, httpc, url, c.legacyHeaders(), b)

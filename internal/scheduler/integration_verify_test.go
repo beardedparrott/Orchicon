@@ -26,12 +26,6 @@ import (
 )
 
 // THE FIRST DEFECT: OUR OWN ARTIFACT DIRECTORY READ AS THE OPERATOR'S UNCOMMITTED WORK.
-//
-// `.orchicon-worktrees/` is created by the platform in the project root. A worker prompt has claimed for a long
-// time that it "is already gitignored" — nothing writes that entry into a project, so on a project without it
-// `git status` reports `?? .orchicon-worktrees/`. The old detector answered "the working tree has untracked
-// files", the refresh was refused, and the log blamed the operator. Six integrations then moved develop six
-// times while the checkout stayed at the initial empty commit.
 func TestOurOwnArtifactDirsAreNotTheOperatorsUncommittedWork(t *testing.T) {
 	// Exactly what our own directories look like in `git status --porcelain`.
 	for _, artifact := range []string{
@@ -55,13 +49,6 @@ func TestOurOwnArtifactDirsAreNotTheOperatorsUncommittedWork(t *testing.T) {
 }
 
 // THE SECOND DEFECT: THE STALE SHAPE A REF MOVE ACTUALLY PRODUCES WAS REFUSED.
-//
-// This platform advances the integration branch with `git update-ref`, which never touches a working tree. The
-// resulting state — HEAD ahead of a stale index — reports `D  <path>` (deletion STAGED into the index), and the
-// old detector's `switch` sent that to `default:` with the message "the working tree has staged or modified
-// changes". So the ONE state a hard reset exists to repair was the one it refused to repair, on every pass.
-//
-// The two lines below are taken verbatim from a real repository put into exactly this state.
 func TestBothStaleShapesAreRepairable(t *testing.T) {
 	cases := map[string]string{
 		"index behind HEAD (a ref moved with update-ref)": "D  f1.txt\nD  f2.txt\nD  src/app.js\n",
@@ -139,9 +126,6 @@ func TestARefMoveWithNoCheckoutLeavesStagedDeletionsAndIsRepairable(t *testing.T
 }
 
 // VERIFICATION REFUSES TO CALL A MERGE A SUCCESS WITHOUT A MATERIALISED TREE.
-//
-// This is the requirement: verify, and do not advance until verified. The failing case here is the reported
-// one — the branch contains the file, the checkout does not.
 func TestVerificationFailsWhenTheTreeIsNotMaterialised(t *testing.T) {
 	h := newIntegrateHarness(t)
 	ctx := context.Background()
@@ -224,9 +208,6 @@ func TestDeclaredVerifyCommandIsRunAndCanFailTheIntegration(t *testing.T) {
 }
 
 // A CHECKOUT LEFT ALONE BECAUSE THE OPERATOR HAS UNCOMMITTED WORK IS NOT A FAILURE.
-//
-// The platform deliberately does not touch their tree. Demanding it match the branch would fail an integration
-// for the operator's own edits, which would block their whole project — the opposite of the intent.
 func TestAnUntouchedCheckoutIsNotAVerificationFailure(t *testing.T) {
 	h := newIntegrateHarness(t)
 	ctx := context.Background()
@@ -256,10 +237,6 @@ func TestAnUntouchedCheckoutIsNotAVerificationFailure(t *testing.T) {
 }
 
 // A MALFORMED WORKTREE REGISTRATION IS DETECTED AND LOGGED.
-//
-// The report's leading candidate for the strip was a registry entry with a full Windows path appended after the
-// worktree id. It is NOT the cause of the empty tree (the two detector defects above explain that), and this
-// file does not claim otherwise — but "no trace was left" is its own problem, so the next occurrence leaves one.
 func TestMalformedWorktreeRegistrationIsDetected(t *testing.T) {
 	cases := map[string]bool{
 		// The reported shape: a worktree path with an absolute path appended under it.

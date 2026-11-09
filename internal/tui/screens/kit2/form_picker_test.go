@@ -24,12 +24,7 @@ func pickerForm() *Form {
 	return f
 }
 
-// The operator: "The Parent work item requires an ID. There is no way a human is
-// going to know this ... if you type a letter another box comes up similar to
-// the slash command that has all work items that can be selected."
-//
-// So typing must OPEN a filtered list, and the committed value must be the
-// option's ID — chosen from the list, never typed.
+// The operator: "The Parent work item requires an ID.
 func TestPickerTypesToFilterAndCommitsTheID(t *testing.T) {
 	f := pickerForm()
 
@@ -127,9 +122,8 @@ func TestPickerCanChooseNone(t *testing.T) {
 	}
 }
 
-// The operator wants a picker value to be CUSTOMIZABLE, not only selectable:
-// typing a value that matches no option and pressing enter commits the typed
-// text as the value (the field's own validator then judges it).
+// The operator wants a picker value to be CUSTOMIZABLE, not only selectable: typing a value that
+// matches no option and pressing enter commits the typed text as the value (the field's own.
 func TestPickerAcceptsACustomValue(t *testing.T) {
 	f := NewForm("Schedule",
 		FieldSpec{Name: "at", Label: "Start", Kind: KPicker, Options: []Option{

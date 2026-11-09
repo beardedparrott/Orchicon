@@ -1,24 +1,7 @@
 package scheduler
 
-// verify_baseline.go — CAPTURE THE BASELINE BEFORE THE WORK, CACHE IT PER COMMIT.
-//
-// THE ORDERING IS THE WHOLE POINT. "Is this test failure pre-existing?" is only answerable by measuring
-// the gate at the commit the work was cut from — BEFORE the worker touches anything. Measured
-// afterwards, it measures the worker's own tree and the question becomes circular. This is why the
-// capture is kicked off at DISPATCH, not at completion.
-//
-// IT CANNOT BLOCK DISPATCH. A project's gate can take many minutes (this repository's own go-ci job
-// runs ~13 minutes), and holding a dispatch behind it would delay every run in the queue. So the
-// capture runs in the background and writes a cache file keyed by commit SHA. The completion path
-// reads that cache; if the capture has not finished (or never started), the differential ABSTAINS —
-// which lands the step in `unverified`, which is honest, rather than guessing.
-//
-// CACHED PER COMMIT because the answer for a commit never changes. The first run cut from a given
-// develop tip pays for the capture; every sibling run cut from the same tip reuses it. On a busy
-// repository that turns an N× cost into roughly 1× per commit.
-//
-// FAILURE IS SILENT-AND-VISIBLE: a failed capture leaves no cache entry, the differential abstains,
-// and one Info line records why. It never fails a dispatch and never fails a step.
+// verify_baseline.go — CAPTURE THE BASELINE BEFORE THE WORK, CACHE IT PER COMMIT. IT CANNOT BLOCK
+// DISPATCH.
 
 import (
 	"context"
@@ -41,9 +24,8 @@ const baselineCacheDir = "baselines"
 // cache is the expensive case, but still bounded so a wedged gate cannot leak a goroutine forever.
 const baselineCaptureTimeout = 20 * time.Minute
 
-// baselineInFlight is the single-flight guard: one capture per (project, commit) across the process.
-// Without it, ten runs dispatched from the same tip would each spawn a capture of the whole gate — the
-// exact thundering herd that makes people disable this kind of measurement.
+// baselineInFlight is the single-flight guard: one capture per (project, commit) across the
+// process.
 var baselineInFlight sync.Map // key string -> struct{}
 
 // baselineCachePath returns the cache file for a commit.
@@ -58,10 +40,6 @@ func baselineCachePath(projectDir, commit string) string {
 }
 
 // loadCachedBaseline reads a previously captured baseline, or nil when absent/corrupt.
-//
-// A CORRUPT FILE IS TREATED AS ABSENT, never as "everything passed". The distinction matters: a
-// half-written JSON file that decoded to an empty result set would read as a clean baseline and make
-// every subsequent failure look like a regression.
 func loadCachedBaseline(projectDir, commit string) *verify.Baseline {
 	if strings.TrimSpace(projectDir) == "" || strings.TrimSpace(commit) == "" {
 		return nil
@@ -103,8 +81,6 @@ func storeCachedBaseline(projectDir string, b *verify.Baseline) error {
 
 // startBaselineCapture kicks off a background capture for ref, unless one is already running or a
 // cached result exists.
-//
-// It returns immediately. The caller is a dispatch path and must not wait for a gate to run.
 func (r *TaskReconciler) startBaselineCapture(projectDir, ref string) {
 	if strings.TrimSpace(projectDir) == "" || strings.TrimSpace(ref) == "" {
 		return
@@ -112,9 +88,7 @@ func (r *TaskReconciler) startBaselineCapture(projectDir, ref string) {
 	if loadCachedBaseline(projectDir, ref) != nil {
 		return // already measured for this commit
 	}
-	// THE GATE IS ASKED OF THE REF, NOT OF THE OPERATOR'S CHECKOUT. The checkout can be on a different branch, so
-	// asking it would skip the capture for a base commit that DOES declare a gate — or start one for a commit that
-	// declares none. The ref being measured is the only authority.
+	// THE GATE IS ASKED OF THE REF, NOT OF THE OPERATOR'S CHECKOUT.
 	if !r.refDeclaresGate(context.Background(), projectDir, ref) {
 		return // nothing declared at the base commit; the differential says so, and it is the honest answer
 	}
@@ -124,9 +98,7 @@ func (r *TaskReconciler) startBaselineCapture(projectDir, ref string) {
 	}
 	go func() {
 		defer baselineInFlight.Delete(key)
-		// A DETACHED CONTEXT, deliberately: the capture must outlive the dispatch call that started
-		// it. Deriving from the request context would cancel the capture the moment dispatch returns,
-		// which is exactly the wrong lifetime. Bounded by its own timeout so it cannot run forever.
+		// A DETACHED CONTEXT, deliberately: the capture must outlive the dispatch call that started it.
 		ctx, cancel := context.WithTimeout(context.Background(), baselineCaptureTimeout)
 		defer cancel()
 		b := r.captureBaseline(ctx, projectDir, ref, "")
@@ -143,11 +115,7 @@ func (r *TaskReconciler) startBaselineCapture(projectDir, ref string) {
 	}()
 }
 
-// captureBaselineForDispatch is the dispatch-path entry point. It records the BASE REF on the step run
-// so the completion path knows what to compare against, and starts the capture.
-//
-// The base ref is the run branch's own start point: for a git-backed run the worktree was cut from the
-// integration branch, so the merge-base of the worktree with that branch is the honest answer.
+// captureBaselineForDispatch is the dispatch-path entry point.
 func (r *TaskReconciler) captureBaselineForDispatch(ctx context.Context, projectDir, worktreePath, worktreeBranch string) {
 	if strings.TrimSpace(projectDir) == "" {
 		return
@@ -184,9 +152,6 @@ func (r *TaskReconciler) captureBaselineForDispatch(ctx context.Context, project
 }
 
 // baselineForEvidence returns the cached baseline for a step's base ref, if one was captured.
-//
-// This is the read side used by the completion path. It looks up the base ref the same way the capture
-// did, so the two agree; a miss abstains.
 func (r *TaskReconciler) baselineForEvidence(ctx context.Context, projectDir, worktreePath string) *verify.Baseline {
 	if strings.TrimSpace(projectDir) == "" {
 		return nil
@@ -219,13 +184,6 @@ func describeBaselineCache(projectDir string) string {
 }
 
 // refDeclaresGate reports whether the commit at ref declares a gate.
-//
-// It reads the file OUT OF THE COMMIT (`git show ref:.orchicon/verify`) rather than from a working tree, because no
-// working tree is guaranteed to be on that ref — the operator's checkout is on whatever branch they left it on, and
-// a run worktree is on the run's branch, not the base.
-//
-// AN UNREADABLE REF IS TREATED AS "DECLARES NOTHING", which only costs a baseline: the differential then says it
-// has nothing to compare against, which is true.
 func (r *TaskReconciler) refDeclaresGate(ctx context.Context, projectDir, ref string) bool {
 	out, err := runGit(ctx, projectDir, "show", ref+":.orchicon/verify")
 	if err != nil {

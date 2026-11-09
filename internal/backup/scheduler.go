@@ -21,9 +21,7 @@ func NewScheduler(dsn, dir string, log *slog.Logger) *Scheduler {
 	return &Scheduler{dsn: dsn, dir: dir, log: log}
 }
 
-// Start launches a background goroutine that checks for scheduled backups
-// every 60 seconds. The schedule and retention are read from a provider
-// function so they reflect live settings changes without restarting.
+// Start launches a background goroutine that checks for scheduled backups every 60 seconds.
 func (s *Scheduler) Start(ctx context.Context, getSettings func() (schedule string, retentionDays int)) {
 	ctx, cancel := context.WithCancel(ctx)
 	s.stop = cancel
@@ -78,8 +76,6 @@ func (s *Scheduler) tryBackup(ctx context.Context, getSettings func() (string, i
 }
 
 // shouldRunNow checks the cron schedule against the current time.
-// Supports simplified 5-field cron: minute hour day month weekday.
-// Returns true only within the first 60-second window of each match.
 func shouldRunNow(schedule string) bool {
 	fields := strings.Fields(schedule)
 	if len(fields) != 5 {

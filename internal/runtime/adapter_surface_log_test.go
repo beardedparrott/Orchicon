@@ -69,9 +69,6 @@ func TestDescribeAdapterMountsIsEmptyWithoutAHome(t *testing.T) {
 }
 
 // TestDescribeAdapterMountsCarriesNoCredentials — paths only.
-//
-// The line is logged on every create, so it must never carry file CONTENTS: the credential lives at a path and
-// naming the path is the diagnosis; logging the value would be the leak.
 func TestDescribeAdapterMountsCarriesNoCredentials(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {

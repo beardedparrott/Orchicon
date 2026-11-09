@@ -72,10 +72,7 @@ func countConsent(s *chatStore, convID, askID string) int {
 	return n
 }
 
-// THE REGRESSION (AC1/AC2). The whole reported sequence, driven through the real close path: a PENDING
-// card is up while the server still lists the ask; a stream close lands with runningFor false; a durable
-// re-read follows — and through NONE of it does the card stop being pending. On the old code the first
-// step settled it (the failure is the card COPY changing state, not a return value).
+// THE REGRESSION (AC1/AC2).
 func TestAGhostCardSurvivesTheReportedSequenceWhileTheServerStillListsIt(t *testing.T) {
 	m, ask := ghostApp(t)
 	if dec, ok := consentCopy(m.chatStore, "c1", "ask-1"); !ok || dec != "" {
@@ -165,15 +162,7 @@ func TestAnsweringFromThisClientStillSettlesAndReplies(t *testing.T) {
 	}
 }
 
-// AC4. A GENUINELY-FINISHED ASK STILL SETTLES — by the page RECORDING an outcome, which is the one
-// authority left now that absence does not settle. Without this the rule would be "never settle" and a
-// dead card would live forever.
-//
-// THE "SERVER NO LONGER LISTS IT" HALF IS GONE ON PURPOSE. It used to settle here, and it is exactly what
-// made the TUI flicker (see TestDiscoveryOnlyAddsAndNeverSettles): the open-ask list is a point-in-time
-// read over a poll, so a transient empty answer retired live cards. The GUI never settled that way and
-// never flickered. A card the server has genuinely dropped but that no outcome record covers now stays
-// answerable — clickable, and resolving to "already answered" server-side.
+// AC4.
 func TestAGenuinelyFinishedAskStillSettles(t *testing.T) {
 	// (i) a recorded outcome on the durable page (answered elsewhere / expired at finalize).
 	m2, _ := ghostApp(t)
@@ -186,9 +175,7 @@ func TestAGenuinelyFinishedAskStillSettles(t *testing.T) {
 	}
 }
 
-// AC5. A settle is VISIBLE AS SETTLED, not a disappearance — and never drawn TWICE once its durable twin
-// lands. A permission ask has no durable rendering row, so its record persists; a question HAS a durable
-// KindAsk twin, so its record is de-duped away.
+// AC5.
 func TestASettledCardStaysAsARecordAndNeverDoubles(t *testing.T) {
 	// (a) no durable twin: the record persists through replace.
 	s := newTestChatStore()
@@ -218,19 +205,10 @@ func TestASettledCardStaysAsARecordAndNeverDoubles(t *testing.T) {
 }
 
 // DISCOVERY ONLY ADDS — it can never retire a card, which is the rule the GUI has always followed.
-//
-// This is the TUI-only flicker: "Looks like just in the TUI." The TUI settled every pending card ABSENT
-// from the server's open-ask list, and a poll that answered empty or partial (a read racing the raise, a
-// conversation still being indexed) retired a LIVE card; the next poll drew it back. Settle → redraw, at
-// poll cadence.
-//
-// The card is settled instead by POSITIVE evidence, and this pins both halves.
 func TestDiscoveryOnlyAddsAndNeverSettles(t *testing.T) {
 	m, keep := ghostApp(t)
 
-	// A card the server no longer lists. Under the old rule it would be settled by the next poll; under
-	// this one it stays ANSWERABLE, because "the list did not mention it" is not evidence. A stale card
-	// the operator can still click is a far smaller harm than a live turn behind a card nobody can see.
+	// A card the server no longer lists.
 	drop := chat.PermissionAsk{
 		ID: "ask-dropped", Kind: chat.AskTool, Tool: "write",
 		Target: "/home/ops/project/gone.go", Directory: "/home/ops/project",
@@ -254,9 +232,7 @@ func TestDiscoveryOnlyAddsAndNeverSettles(t *testing.T) {
 		t.Errorf("repeated discovery must not duplicate a card: got %d for one ask", n)
 	}
 
-	// AND THE POSITIVE EVIDENCE STILL SETTLES. The durable page's recorded outcome is what retires a card
-	// now — the path that survives a reload and covers an expiry at finalize or a decision taken in the
-	// other client. Without this the rule would leak cards forever.
+	// AND THE POSITIVE EVIDENCE STILL SETTLES.
 	m.chatStore.settleAsk("c1", "ask-dropped", "allow_once", "")
 	if dec, ok := consentCopy(m.chatStore, "c1", "ask-dropped"); !ok || dec != chat.DecisionAllowOnce {
 		t.Errorf("a RECORDED outcome must still settle the card, got (dec=%q present=%v)", dec, ok)

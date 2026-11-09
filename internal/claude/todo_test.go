@@ -1,13 +1,7 @@
 package claude
 
-// todo_test.go — the claude TASK-FAMILY todo parity suite. It runs on canned
-// stream-json fixtures alone (no live API session, zero Anthropic spend) and
-// proves that a claude TaskCreate/TaskUpdate lifecycle lands on the EXACT
-// todowrite envelope internal/execution/todos.go parses, correlated by
-// tool_use_id, with the same sidecar snapshot opencode writes.
-//
-// The live counterpart is TestClaudeTaskTodoLiveSmoke in live_smoke_test.go,
-// gated ONLY by ORCHICON_TEST_LIVE_CLAUDE=1.
+// todo_test.go — the claude TASK-FAMILY todo parity suite. The live counterpart is
+// TestClaudeTaskTodoLiveSmoke in live_smoke_test.go, gated ONLY by ORCHICON_TEST_LIVE_CLAUDE=1.
 
 import (
 	"encoding/json"
@@ -20,11 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
-// latestTodoWire decodes the LATEST todowrite envelope's todos out of the
-// recorded tool_use parts, reading it EXACTLY the way internal/execution/todos.go
-// does (envelope {"part":…}, part.tool=="todowrite", items under part.state.input.todos).
-// Newest wins (replacement semantics). It fails the test when no todowrite
-// envelope was ever recorded — which is itself the parity failure.
+// latestTodoWire decodes the LATEST todowrite envelope's todos out of the recorded tool_use parts,
+// reading it EXACTLY the way internal/execution/todos.go does (envelope {"part":…}.
 func latestTodoWire(t *testing.T, rec *captureCallbacks) []map[string]any {
 	t.Helper()
 	parts := rec.partsOfKind(db.SessionPartToolUse)
@@ -67,9 +58,9 @@ func todoByContent(todos []map[string]any) map[string]map[string]any {
 	return out
 }
 
-// TestMapperTaskFamilyLifecycle drives create → activate → complete → remove and
-// asserts the rendered list at each step, including that a removal DROPS the row
-// (rather than leaving a stale one).
+// TestMapperTaskFamilyLifecycle drives create → activate → complete → remove and asserts the
+// rendered list at each step, including that a removal DROPS the row (rather than leaving a stale
+// one).
 func TestMapperTaskFamilyLifecycle(t *testing.T) {
 	m, rec := newTestMapper(t, scheduler.ExecutionManifest{})
 
@@ -130,11 +121,8 @@ func TestMapperTaskFamilyLifecycle(t *testing.T) {
 	}
 }
 
-// TestMapperTaskFamilyCorrelatesAllocatedIDViaToolUseID proves the create→id
-// correlation: the allocated id NEVER rides the tool_use block, so it is taken
-// from the paired tool_result (matched by tool_use_id). After correlation an
-// update by the ALLOCATED id hits the row, and the pre-correlation tool_use id
-// no longer does.
+// TestMapperTaskFamilyCorrelatesAllocatedIDViaToolUseID proves the create→id correlation: the
+// allocated id NEVER rides the tool_use block.
 func TestMapperTaskFamilyCorrelatesAllocatedIDViaToolUseID(t *testing.T) {
 	m, rec := newTestMapper(t, scheduler.ExecutionManifest{})
 	feed(t, m,
@@ -156,11 +144,8 @@ func TestMapperTaskFamilyCorrelatesAllocatedIDViaToolUseID(t *testing.T) {
 	}
 }
 
-// TestMapperTaskFamilyFieldNameVariants covers the defensive spellings
-// (taskId / task_id / id, activeForm / active_form), numeric and string ids,
-// subject / content / description labels, and raw string statuses — an unknown
-// status must be preserved verbatim and "cancelled" must remain VISIBLE (it is a
-// real terminal status, not a removal).
+// TestMapperTaskFamilyFieldNameVariants covers the defensive spellings (taskId / task_id / id,
+// activeForm / active_form), numeric and string ids, subject / content / description labels.
 func TestMapperTaskFamilyFieldNameVariants(t *testing.T) {
 	m, rec := newTestMapper(t, scheduler.ExecutionManifest{})
 	feed(t, m,
@@ -197,9 +182,8 @@ func TestMapperTaskFamilyFieldNameVariants(t *testing.T) {
 	}
 }
 
-// TestMapperTaskFamilyWritesSnapshot pins AC4: a claude task op leaves the SAME
-// on-disk artifact an opencode todowrite does (.orchicon/todos.json), via the
-// same worktree.SaveTodoSnapshot site.
+// TestMapperTaskFamilyWritesSnapshot pins AC4: a claude task op leaves the SAME on-disk artifact an
+// opencode todowrite does (.orchicon/todos.json), via the same worktree.SaveTodoSnapshot site.
 func TestMapperTaskFamilyWritesSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	m, _ := newTestMapper(t, scheduler.ExecutionManifest{ProjectDir: dir})
@@ -214,11 +198,8 @@ func TestMapperTaskFamilyWritesSnapshot(t *testing.T) {
 	}
 }
 
-// TestTodoTrackToolsAreOptedIn pins AC1 at the launch-shape layer: the
-// task/todo tools are named in the PreToolUse matcher AND pre-approved in
-// permissions.allow, both NON-BYPASS. (The behavioural half — the installed CLI
-// actually streaming them — is the env-gated live smoke; the CLI is absent from
-// this container.)
+// TestTodoTrackToolsAreOptedIn pins AC1 at the launch-shape layer: the task/todo tools are named in
+// the PreToolUse matcher AND pre-approved in permissions.allow, both NON-BYPASS.
 func TestTodoTrackToolsAreOptedIn(t *testing.T) {
 	for _, n := range TodoTrackToolNames {
 		if !strings.Contains(HookToolMatcher, n) {
@@ -238,9 +219,8 @@ func TestTodoTrackToolsAreOptedIn(t *testing.T) {
 	}
 }
 
-// TestCanonicalToolNameLeavesTheTaskFamilyVerbatim proves the task family is NOT
-// remapped, so the workerrestrict subagent deny (exact "Task"/"Agent") is
-// neither widened nor narrowed by this feature.
+// TestCanonicalToolNameLeavesTheTaskFamilyVerbatim proves the task family is NOT remapped, so the
+// workerrestrict subagent deny (exact "Task"/"Agent") is neither widened nor narrowed by this.
 func TestCanonicalToolNameLeavesTheTaskFamilyVerbatim(t *testing.T) {
 	for _, n := range []string{"TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput"} {
 		if got := canonicalToolName(n); got != n {
@@ -249,12 +229,8 @@ func TestCanonicalToolNameLeavesTheTaskFamilyVerbatim(t *testing.T) {
 	}
 }
 
-// TestTodoTaskFamilyIsNotDeniedByTheAuthorityLayer pins the OTHER half of the
-// opt-in: naming the tools in the matcher is worthless if the AUTHORITY layer
-// then refuses them. The subagent deny is an EXACT match on "Task"/"Agent", so a
-// PrefixMatch on "Task" would silently deny TaskCreate/TaskUpdate and kill the
-// feature end to end — this test fails loudly if that ever changes, and pins
-// that `--disallowedTools` (Task Agent) does not shadow the task family either.
+// TestTodoTaskFamilyIsNotDeniedByTheAuthorityLayer pins the OTHER half of the opt-in: naming the
+// tools in the matcher is worthless if the AUTHORITY layer then refuses them.
 func TestTodoTaskFamilyIsNotDeniedByTheAuthorityLayer(t *testing.T) {
 	for _, n := range TodoTrackToolNames {
 		if workerrestrict.IsSubagentTool(n) {

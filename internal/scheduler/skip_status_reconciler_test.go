@@ -13,18 +13,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
-// Skip-status interplay tests (D3 producer): the WorkflowReconciler's
-// run-completion path distinguishes a run that completes with a skipped
-// step from a fully-succeeded run. A bound work item whose active step
-// run is StepRunSkipped must terminalize as WorkItemSkipped (never
-// conflated with succeeded), and a skipped sequence child must still
-// advance its parent's chain — skipped/terminal-success never blocks
-// dependents.
+// Skip-status interplay tests (D3 producer): the WorkflowReconciler's run-completion path
+// distinguishes a run that completes with a skipped step from a fully-succeeded run.
 
-// TestRunCompletionWithSkippedStepMarksWorkItemSkipped verifies the
-// skipped producer: a bound run whose every active step is terminal-
-// success with at least one skipped completes the bound work item as
-// "skipped" (not "succeeded").
+// TestRunCompletionWithSkippedStepMarksWorkItemSkipped verifies the skipped producer: a bound run
+// whose every active step is terminal- success with at least one skipped completes the bound work.
 func TestRunCompletionWithSkippedStepMarksWorkItemSkipped(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -103,10 +96,8 @@ func TestRunCompletionWithSkippedStepMarksWorkItemSkipped(t *testing.T) {
 	}
 }
 
-// TestRunCompletionSkippedChildAdvancesParentChain verifies a skipped
-// bound child still advances its parent's sequence chain: the completion
-// path marks the child skipped and the sequence notifier arms the next
-// strict sibling (skipped/terminal-success never blocks dependents).
+// TestRunCompletionSkippedChildAdvancesParentChain verifies a skipped bound child still advances
+// its parent's sequence chain.
 func TestRunCompletionSkippedChildAdvancesParentChain(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()

@@ -6,11 +6,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// bridge_usage_integration_test.go is QA's end-to-end usage check: a CANNED
-// claude stream-json turn is driven through the REAL Bridge / session / Mapper
-// path (fake proc, no live session, no spend), and the sampled usage must reach
-// the bridge's UsageRecorder as ONE record with the four Anthropic buckets
-// DISTINCT, attributed to THIS execution, through the SHARED transform.
+// bridge_usage_integration_test.go is QA's end-to-end usage check: a CANNED claude stream-json turn
+// is driven through the REAL Bridge / session / Mapper path (fake proc, no live session.
 
 const (
 	// The partial-message stream's opening sample for msg_1.

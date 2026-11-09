@@ -37,9 +37,7 @@ import (
 	"strings"
 )
 
-// Runner executes a command in a directory and returns combined output. Injected so the collector
-// can be tested without spawning processes, and so the reconciler can pass the same procwin-based
-// runner it uses elsewhere (a bare exec here would pop a console window on Windows).
+// Runner executes a command in a directory and returns combined output.
 type Runner func(ctx context.Context, dir, command string) (output string, err error)
 
 // Evidence is everything the collector could learn about one completed step. A field that could not
@@ -89,21 +87,13 @@ type Evidence struct {
 	// DirtySummary names what is dirty, for the failure detail.
 	DirtySummary string
 
-	// StepDeclaresDeliverable reports whether this step is expected to produce changes at all. A
-	// plan-only or review-only step legitimately produces none, and failing it for "no commits"
-	// would punish correct behaviour — the check is skipped, not abstained.
+	// StepDeclaresDeliverable reports whether this step is expected to produce changes at all.
 	StepDeclaresDeliverable bool
 	// SkipReason explains WHY the deliverable checks are skipped, for the record.
 	SkipReason string
 }
 
 // Baseline is the recorded outcome of the project's gate at a specific commit.
-//
-// It is a SET of named results rather than a single pass/fail because the entire point is the
-// DIFFERENCE between two runs. A single boolean at each end cannot distinguish "this was already
-// broken" from "this is now broken", which is exactly the judgement every worker has been making
-// unaided — and, per the 1,643 lines of FACTS LEARNED on this platform, getting argued about on
-// almost every run.
 type Baseline struct {
 	// Commit is the ref the baseline was measured at.
 	Commit string
@@ -111,8 +101,7 @@ type Baseline struct {
 	// "ok <package>" / "FAIL <package>"; for the declared command it is "declared".
 	Results map[string]bool
 	// Detail carries anything the measurement could not express as pass/fail (a build failure that
-	// prevented the run). Non-empty means the baseline is INCOMPLETE and the differential check must
-	// abstain rather than treat missing entries as "was passing".
+	// prevented the run).
 	Detail string
 }
 
@@ -120,10 +109,6 @@ type Baseline struct {
 func (b *Baseline) Incomplete() bool { return b == nil || b.Detail != "" || len(b.Results) == 0 }
 
 // Collect assembles the evidence and decides.
-//
-// The order of the checks is the order they are appended, which is also the order they render in the
-// record. It runs cheapest-and-most-universal first so a contradiction is found without shelling out
-// to the project's whole gate.
 func Collect(ctx context.Context, ev Evidence) Result {
 	var r Result
 
@@ -161,12 +146,7 @@ func collectGitInvariants(r *Result, ev Evidence) {
 		return
 	}
 
-	// 1. WORK PRESENT — did HEAD actually move off the base?
-	//
-	// THIS IS THE CHECK THAT CATCHES THE REPORTED CASE. A worker that reads the tree, decides the
-	// fix is "already merged", and reports success without changing anything is exactly what
-	// produced a green acceptance review for work item 01M5X62Z1X8N08KD7KAY0G6FSV. Under the old
-	// rule its summary word was the whole verdict; here the repository contradicts it.
+	// 1.
 	switch {
 	case !ev.StepDeclaresDeliverable:
 		reason := strings.TrimSpace(ev.SkipReason)
@@ -187,14 +167,7 @@ func collectGitInvariants(r *Result, ev Evidence) {
 		r.Add("work_present", CheckPass, fmt.Sprintf("%d commit(s) on top of %s", ev.CommitsAhead, shortRef(ev.BaseRef)))
 	}
 
-	// 2. CLAIMED FILES ARE RECORDED — a cross-check between two independent signals.
-	//
-	// The worker's report says which files it touched; git says which files changed. For a claim to
-	// be substantiated they must be consistent. This catches the "I fixed X" with no file touched,
-	// and — more usefully — the worker that edited one file and reported five.
-	//
-	// ONLY A CONTRADICTION FAILS. A file changed but not claimed is normal (regenerated code, a
-	// formatter, a test the worker did not think worth mentioning) and must not fail an honest step.
+	// 2. ONLY A CONTRADICTION FAILS.
 	switch {
 	case !ev.StepDeclaresDeliverable:
 		// already skipped above
@@ -215,12 +188,7 @@ func collectGitInvariants(r *Result, ev Evidence) {
 		}
 	}
 
-	// 3. TREE CLEAN — is the work actually persisted, or sitting as uncommitted edits?
-	//
-	// Uncommitted work is invisible to every later step (each step runs in a pristine sibling
-	// worktree) and to the operator, so a step that reports success with a dirty tree has not handed
-	// anything over. This is the check that turns the prompt's "commit everything" INSTRUCTION into
-	// something the platform actually knows.
+	// 3.
 	switch {
 	case ev.StepDeclaresDeliverable:
 		if ev.TreeClean == nil {
@@ -266,9 +234,6 @@ func collectDeclaredCommand(_ context.Context, r *Result, ev Evidence, regressed
 	switch {
 	case !ev.StepDeclaresDeliverable:
 		// A step that owes no code cannot move the gate, so the check does not apply — SKIP, not abstain.
-		// Skipping keeps the verdict decided by the checks that DO apply, which is what lets a plan-only
-		// step be verified on the evidence it can offer. (An abstention here would hold every architect step
-		// at `unverified` forever for a question never asked of it.)
 		reason := strings.TrimSpace(ev.SkipReason)
 		if reason == "" {
 			reason = "this step does not declare a code deliverable"
@@ -277,11 +242,7 @@ func collectDeclaredCommand(_ context.Context, r *Result, ev Evidence, regressed
 		r.Add("no_new_failures", CheckSkip, reason)
 		return
 	case strings.TrimSpace(ev.DeclaredCommand) == "":
-		// The project declares no gate. This is a legitimate configuration, and it is also the
-		// single biggest reason a step cannot be verified — so it ABSTAINS rather than silently
-		// passing. That is the whole design: an absent check must cost the step its "verified"
-		// status, or every project without a gate would look as good as one with a comprehensive
-		// suite.
+		// The project declares no gate.
 		r.Add("project_gate", CheckAbstain,
 			"the project declares no gate (no .orchicon/verify), so nothing can be confirmed passing")
 	case !ev.DeclaredRan:
@@ -303,9 +264,7 @@ func collectDeclaredCommand(_ context.Context, r *Result, ev Evidence, regressed
 			"the gate is not fully green, but it is identically not-green at the baseline (%d pre-existing "+
 				"failure(s)) — nothing here is attributable to this step", existing))
 	default:
-		// Red and unattributable: no baseline, or HEAD could not be re-measured. Unverified, not failed.
-		// Blaming a step for a failure the platform cannot place is the defect this whole package exists
-		// to remove, and the honest answer is that we do not know.
+		// Red and unattributable: no baseline, or HEAD could not be re-measured.
 		detail := "the gate is red and there is no baseline to attribute it against, so it is not assigned " +
 			"to this step"
 		if d := strings.TrimSpace(ev.DeclaredDetail); d != "" {
@@ -340,16 +299,11 @@ func collectDifferential(r *Result, ev Evidence, regressed []string) {
 	if !ev.StepDeclaresDeliverable {
 		return
 	}
-	// ONE CAUSE, ONE LINE. When the project declares no gate at all, `project_gate` already says exactly that.
-	// Adding "no baseline was captured" on top reports the same absence twice and reads as two problems — which is
-	// what execution 01M6W2KC1CQCH6FFZ99G132F6S showed the operator.
+	// ONE CAUSE, ONE LINE.
 	if strings.TrimSpace(ev.DeclaredCommand) == "" {
 		return
 	}
-	// NOTHING FAILED, SO NOTHING REGRESSED. A differential exists to tell "already broken" from "broken by this
-	// step"; when the gate is fully green at HEAD there is no failure to place, so the question does not arise.
-	// Abstaining here used to demote a step whose whole suite passed to `unverified`, which is noise dressed as
-	// caution — and again, it was HALF of a two-line notice about one green gate.
+	// NOTHING FAILED, SO NOTHING REGRESSED.
 	if ev.HeadMeasured && len(ev.HeadResults) > 0 && !anyFailing(ev.HeadResults) {
 		r.Add("no_new_failures", CheckPass, fmt.Sprintf(
 			"the gate is fully green at this step's HEAD (%d check(s)), so nothing regressed", len(ev.HeadResults)))
@@ -385,21 +339,11 @@ func collectDifferential(r *Result, ev Evidence, regressed []string) {
 }
 
 // resultPrefixes are the leading tokens a raw test-runner line carries BEFORE the identity it is
-// reporting on. They are stripped by normalizeResultKey.
-//
-// THIS IS NOT COSMETIC. `go test` prints `ok pkg/b` when a package passes and `FAIL pkg/b` when it
-// fails, so the OUTCOME IS PART OF THE LINE. Keying a result map on the raw line makes a regression
-// look like one entry disappearing and an unrelated one appearing — never "this used to pass and now
-// fails" — and the differential silently reports no new failures. Caught by
-// TestNewFailureFailsEvenWhenDeclaredGatePasses, which is exactly the case that must not be missed.
+// reporting on.
 var resultPrefixes = []string{"ok", "FAIL", "--- FAIL:", "--- PASS:", "?"}
 
 // normalizeResultKey reduces a result line to the IDENTITY it reports on, so the same subject
 // compares equal across a change of outcome.
-//
-// The separator after a prefix is WHITESPACE of any kind, not a single space: `go test` separates
-// with a TAB ("FAIL\tpkg") in its package lines and with a space in others, so matching a literal
-// "FAIL " leaves the tab-terminated form intact and the outcome stays glued to the key.
 func normalizeResultKey(name string) string {
 	// Fields collapses every run of whitespace, so "FAIL\tpkg [build failed]" and
 	// "FAIL  pkg  0.1s" both become ["FAIL", "pkg", ...] regardless of which separator was used.
@@ -426,9 +370,7 @@ func isResultPrefix(s string) bool {
 	return s == "FAIL:" || s == "PASS:"
 }
 
-// normalizeResults rewrites a raw results map to identity-keyed form. When two raw entries normalise
-// to the same identity the FAILURE wins: collapsing a pass and a fail into one entry must never
-// manufacture a green.
+// normalizeResults rewrites a raw results map to identity-keyed form.
 func normalizeResults(in map[string]bool) map[string]bool {
 	if in == nil {
 		return nil
@@ -458,14 +400,6 @@ func regressionsAgainstBaseline(ev Evidence) []string {
 }
 
 // NewFailures returns the checks that pass in the baseline and fail at HEAD, sorted.
-//
-// SET ARITHMETIC, not counts. The predecessor of this function would have been "does the suite
-// exit 0", which is unusable on a repository with any pre-existing breakage — and every real
-// repository has some. Comparing keyed results makes the comparison independent of how many checks
-// there are, so a project that adds tests between the two measurements is still comparable.
-//
-// BOTH SIDES ARE IDENTITY-NORMALISED before comparison (see normalizeResultKey): a caller may pass
-// raw runner lines ("ok pkg/a") or pre-normalised identities ("pkg/a") and get the same answer.
 func NewFailures(baseline, head map[string]bool) []string {
 	if baseline == nil || head == nil {
 		return nil
@@ -505,12 +439,6 @@ func NewPasses(baseline, head map[string]bool) []string {
 }
 
 // missingPaths returns the claimed paths that are absent from changed, sorted.
-//
-// PATH COMPARISON IS NORMALISED, because the two sides are produced by different mechanisms: the
-// claim comes from the worker's prose (which writes "./internal/foo.go" or "internal/foo.go" or an
-// absolute path), and git reports repository-relative paths. A naive set difference would fail an
-// honest worker for a leading "./", which is the worst kind of bug in a verification system: it
-// punishes correctness.
 func missingPaths(claimed, changed map[string]struct{}) []string {
 	norm := make(map[string]struct{}, len(changed))
 	for p := range changed {
@@ -528,16 +456,6 @@ func missingPaths(claimed, changed map[string]struct{}) []string {
 
 // normalisePath reduces a path to its most specific repository-relative form, so the same file
 // claimed in one spelling and recorded in another compares equal.
-//
-// THE THREE SPELLINGS ARE REAL, not hypothetical: a worker writing prose says
-// "./internal/foo.go", "/home/user/projects/repo/internal/foo.go", or "internal/foo.go", and git
-// reports exactly one of those (the last). Failing a step because a worker used an absolute path
-// would be a false accusation, which is the worst failure mode a verification system can have — it
-// teaches the operator to ignore the verdict.
-//
-// The absolute case keeps everything after the FIRST segment that looks like a project directory.
-// That is a heuristic, and it is deliberately biased toward MATCHING: a missed real discrepancy only
-// costs one un-caught fabrication, whereas a false accusation costs the whole mechanism's credibility.
 func normalisePath(p string) string {
 	p = filepath.ToSlash(strings.TrimSpace(p))
 	p = strings.TrimPrefix(p, "./")
@@ -570,8 +488,7 @@ func sourceRootSegment(s string) bool {
 }
 
 // hasSuffixPath reports whether claimed p is recorded in changed either exactly (after
-// normalisation) or as a unique path-suffix of a changed entry. Used instead of a bare map lookup so
-// an absolute or root-truncated claim is still matched against the git path it names.
+// normalisation) or as a unique path-suffix of a changed entry.
 func hasSuffixPath(p string, changed map[string]struct{}) bool {
 	if _, ok := changed[p]; ok {
 		return true
@@ -663,9 +580,7 @@ func joinCapped(items []string, max int) string {
 	return strings.Join(items[:max], ", ") + fmt.Sprintf(" (+%d more)", len(items)-max)
 }
 
-// ErrNoRepo is returned by a collector when the directory is not a git work tree. It exists so the
-// caller can distinguish "not a repository" (a legitimate configuration — git_strategy=none) from
-// "could not read the repository" (a real problem).
+// ErrNoRepo is returned by a collector when the directory is not a git work tree.
 var ErrNoRepo = errors.New("not a git work tree")
 
 // ReadFileTrimmed reads a small file and trims it, treating absence as empty. Used for the project's

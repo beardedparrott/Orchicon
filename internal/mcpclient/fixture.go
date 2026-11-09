@@ -10,15 +10,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Fixture server: an in-repo MCP server used by the tests over BOTH
-// transports (stdio via TestMain re-exec, streamable HTTP via
-// httptest + NewStreamableHTTPHandler). No external network.
-//
-// Tools:
-//   - echo: returns the `message` argument verbatim.
-//   - fail: returns a tool error (IsError) with a fixed message.
-//   - slow: sleeps for `seconds` then returns "slow done".
-//   - die:  causes the server process to exit.
+// Fixture server: an in-repo MCP server used by the tests over BOTH transports (stdio via TestMain
+// re-exec, streamable HTTP via httptest + NewStreamableHTTPHandler).
 
 const (
 	fixtureToolEcho = "echo"
@@ -27,9 +20,8 @@ const (
 	fixtureToolDie  = "die"
 )
 
-// fixtureRun is the re-exec entry point: run the fixture MCP server over
-// stdio until the transport closes. It returns (rather than os.Exit) so it
-// is also callable from the re-exec test hook.
+// fixtureRun is the re-exec entry point: run the fixture MCP server over stdio until the transport
+// closes.
 func fixtureRun() {
 	server := fixtureServer()
 	ts := &mcp.StdioTransport{}
@@ -105,9 +97,8 @@ func fixtureServer() *mcp.Server {
 		}
 	})
 
-	// die is registered but intentionally not used by the stdio tests via
-	// re-exec (the child exits when the transport closes); it exists so the
-	// HTTP transport can exercise server-side termination.
+	// die is registered but intentionally not used by the stdio tests via re-exec (the child exits when
+	// the transport closes); it exists so the HTTP transport can exercise server-side termination.
 	_ = fixtureToolDie
 
 	return server

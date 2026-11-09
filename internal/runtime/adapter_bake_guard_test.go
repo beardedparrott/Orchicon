@@ -142,11 +142,6 @@ func TestAdapterCLINeverBaked(t *testing.T) {
 
 // publishedDockerfiles returns the Dockerfiles release.yml actually BUILDS — the set the invariant
 // applies to.
-//
-// IT IS DERIVED FROM THE WORKFLOW, not hardcoded, because the boundary between "a template the operator
-// builds" and "an image we distribute" IS the publish step. Hardcoding the list would let a template
-// graduate into a published image with this guard still passing, which is precisely the regression it
-// exists to prevent.
 func publishedDockerfiles(t *testing.T) map[string]bool {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
@@ -172,11 +167,8 @@ func publishedDockerfiles(t *testing.T) map[string]bool {
 	return out
 }
 
-// adapterBakeNeedles derives the forbidden substrings for one adapter kind
-// from the SHARED install-path declaration (adapterInstallPaths — the same
-// source the daemon mounts from), so the mounted set and the forbidden-bake
-// set can never drift. A kind with no install paths (orchicon: the product
-// binary, bind-mounted by the daemon) contributes NO needles.
+// adapterBakeNeedles derives the forbidden substrings for one adapter kind from the SHARED
+// install-path declaration (adapterInstallPaths — the same source the daemon mounts from).
 func adapterBakeNeedles(kind string, installPaths []string) []string {
 	if len(installPaths) == 0 {
 		return nil
@@ -202,9 +194,8 @@ func adapterBakeNeedles(kind string, installPaths []string) []string {
 	return uniq
 }
 
-// dockerfilesUnder returns every file under root whose base name starts with
-// "Dockerfile", skipping nothing else — the committed binaries in
-// deploy/container/ have unrelated names and are therefore never opened.
+// dockerfilesUnder returns every file under root whose base name starts with "Dockerfile", skipping
+// nothing else — the committed binaries in deploy/container/ have unrelated names.
 func dockerfilesUnder(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
@@ -227,10 +218,8 @@ func dockerfilesUnder(t *testing.T, root string) []string {
 	return out
 }
 
-// logicalInstructions returns the Dockerfile INSTRUCTION lines (comments and
-// blanks dropped), with line continuations joined, so a needle cannot hide on
-// a backslash-continued line. `#` inside an instruction is preserved — only
-// a line whose first non-space character is `#` is a comment.
+// logicalInstructions returns the Dockerfile INSTRUCTION lines (comments and blanks dropped), with
+// line continuations joined, so a needle cannot hide on a backslash-continued line.
 func logicalInstructions(body string) []string {
 	var out []string
 	var cur string
@@ -256,13 +245,8 @@ func logicalInstructions(body string) []string {
 	return out
 }
 
-// TestClaudeBakeNeedlesNoVersionString pins the constraint that no claude
-// probe may name a version directory: adapterBakeNeedles derives needles from
-// probe BASENAMES, and a probe like ".../versions/2.1.261" would survive the
-// >=3-char filter and become a forbidden-bake needle that false-positives on
-// an unrelated Dockerfile line. The four claude installs must therefore probe
-// only ~/.claude, ~/.claude.json, ~/.local/bin/claude and
-// ~/.local/share/claude — all with the benign basename "claude"/".claude".
+// TestClaudeBakeNeedlesNoVersionString pins the constraint that no claude probe may name a version
+// directory: adapterBakeNeedles derives needles from probe BASENAMES.
 func TestClaudeBakeNeedlesNoVersionString(t *testing.T) {
 	const fakeHome = "/home/orchicon-host"
 	paths, declared := adapterInstallPaths(fakeHome, "claude")

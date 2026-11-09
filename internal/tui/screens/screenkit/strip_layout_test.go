@@ -6,10 +6,7 @@ import (
 	"testing"
 )
 
-// Phase-3.5 finding 4: the Control screen's 7 sources must not push the
-// detail off-screen. The single-pane layout (strip + active pane +
-// detail) guarantees the detail keeps >= 20 columns at 60/90/120 wide,
-// and strip clicks switch the list pane.
+// Phase-3.5 finding 4: the Control screen's 7 sources must not push the detail off-screen.
 func TestStripLayoutShowsDetail(t *testing.T) {
 	b := &Base{}
 	for _, s := range []struct{ name, title string }{

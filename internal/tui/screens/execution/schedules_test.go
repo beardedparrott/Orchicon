@@ -1,15 +1,6 @@
 package execution
 
 // schedules_test.go — the Schedules pane: three lenses, a delete, and the jump to the run.
-//
-// The operator: "I noticed I don't see any 'Schedules' section in the TUI under Executions. We
-// need to implement this in the TUI. We should be able to see upcoming, running, and finished
-// just like the GUI and we should have delete operations, bulk delete operations, and a key that
-// takes you to the workflow run."
-//
-// "Just like the GUI" is a testable claim, so the membership predicates are asserted against the
-// same shapes the GUI handles: a SCHEDULED item is upcoming, a run-bound active item (or an
-// active sequence parent) is running, and a run that has actually RUN is finished.
 
 import (
 	"context"
@@ -453,12 +444,6 @@ func TestScheduleHintFollowsTheView(t *testing.T) {
 
 // A REMOVAL CLEARS THE WHOLE SCHEDULE AND PERSISTS — asserted against the plane's STORED row and a
 // re-query of the pane, not against the request or an optimistic list.
-//
-// REPRODUCED BEFORE THE FIX (acceptance criterion 1, case (c)): the RPC succeeded and the row came
-// back. The request carried only recurring_schedule/next_run_at + the run unbind, so
-// scheduled_start_at survived and the item stayed in the Schedules membership. This fixture is a
-// RECURRING item (the schedule the Schedules screen actually removes from history), whose cleared
-// state demotes it out of the scheduled/recurring sets.
 func TestScheduleRemovalPersistsAndLeavesTheSchedulesSet(t *testing.T) {
 	next := timestamppb.Now()
 	p := &fakePlane{
@@ -514,10 +499,6 @@ func TestScheduleRemovalPersistsAndLeavesTheSchedulesSet(t *testing.T) {
 }
 
 // ONE MARKED SCHEDULE ROW IS A TARGET, NOT A REFUSAL.
-//
-// REPRODUCED BEFORE THE FIX (case (a), the TUI): the operator marked a row and pressed the documented
-// chord `x`; the shared "one mark is not a bulk selection" guard refused and sent NO request, so on
-// the pane the delete looked broken. A single marked row must act on THAT row — never on the cursor's.
 func TestOneMarkedScheduleRowIsDeletedByTheChord(t *testing.T) {
 	p := schedPlane()
 	m := newModel(t, p)

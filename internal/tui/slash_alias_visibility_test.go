@@ -24,10 +24,6 @@ import (
 )
 
 // paletteFor opens the palette seeded from the composer text, the way typing "/" does.
-//
-// The size is set the way the shell tests do: the palette clamps its content width, so a 0x0
-// fixture renders a row narrower than any real terminal would and would assert against an
-// artifact rather than against what the operator sees.
 func paletteFor(t *testing.T, value string) *App {
 	t.Helper()
 	m := NewApp(&client.Clients{}, &config.Profile{URL: "http://x", Token: "t"}, "v9.9.9")
@@ -92,9 +88,7 @@ func TestPaletteRowShowsTheAlias(t *testing.T) {
 	if !strings.Contains(view, "/exit") {
 		t.Errorf("the palette row for /quit does not show its /exit alias:\n%s", view)
 	}
-	// AND THE ALIAS MUST COME BEFORE THE DESCRIPTION. The content is truncated to the palette
-	// width, and a long description is common — appending the alias after it would let a wide
-	// row slice the alias off the end, which is the very "doesn't get displayed" this fixes.
+	// AND THE ALIAS MUST COME BEFORE THE DESCRIPTION.
 	row := ""
 	for _, l := range strings.Split(view, "\n") {
 		if strings.Contains(l, "/quit") {

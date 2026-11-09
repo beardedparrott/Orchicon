@@ -10,9 +10,8 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// TestUsageCostFromCatalog pins the pure pricing function: prices are
-// per-million-tokens, so the token-weighted sum is divided by 1e6. A nil cost
-// reports usedCatalog=false so the caller falls back to adapter cost.
+// TestUsageCostFromCatalog pins the pure pricing function: prices are per-million-tokens, so the
+// token-weighted sum is divided by 1e6.
 func TestUsageCostFromCatalog(t *testing.T) {
 	in := UsageInput{PromptTokens: 1000, CacheReadTokens: 5000, CacheWriteTokens: 200, CompletionTokens: 800}
 
@@ -40,9 +39,8 @@ func TestUsageCostFromCatalogNil(t *testing.T) {
 	}
 }
 
-// TestUsageCostFromCatalogFreeModel pins that a genuinely free model is
-// authoritative at $0: the catalog returns (0, true), so an adapter-reported
-// nonzero is never substituted for a free model.
+// TestUsageCostFromCatalogFreeModel pins that a genuinely free model is authoritative at $0: the
+// catalog returns (0, true), so an adapter-reported nonzero is never substituted for a free model.
 func TestUsageCostFromCatalogFreeModel(t *testing.T) {
 	in := UsageInput{PromptTokens: 100, CompletionTokens: 50}
 	cost := &apiv1.ModelCost{} // all rates $0
@@ -55,10 +53,8 @@ func TestUsageCostFromCatalogFreeModel(t *testing.T) {
 	}
 }
 
-// TestRecordPricingCatalogAuthoritative pins that a wired pricing resolver with
-// catalog pricing overrides the adapter-reported cost, and that the row carries
-// the catalog cost (both the Postgres row value and the OTel-emitted value are
-// derived from it).
+// TestRecordPricingCatalogAuthoritative pins that a wired pricing resolver with catalog pricing
+// overrides the adapter-reported cost.
 func TestRecordPricingCatalogAuthoritative(t *testing.T) {
 	rec := NewUsageRecorder(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	rec.SetPricingResolver(func(ctx context.Context, provider, model string) (*apiv1.ModelCost, bool) {
@@ -100,9 +96,8 @@ func TestRecordPricingFallback(t *testing.T) {
 	}
 }
 
-// TestRecordPricingNilResolverPinsFallback pins that without a wired resolver
-// the adapter-reported cost is untouched (no behavior change for recorder
-// instances without catalog wiring).
+// TestRecordPricingNilResolverPinsFallback pins that without a wired resolver the adapter-reported
+// cost is untouched (no behavior change for recorder instances without catalog wiring).
 func TestRecordPricingNilResolverPinsFallback(t *testing.T) {
 	rec := NewUsageRecorder(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	in := UsageInput{
@@ -118,9 +113,8 @@ func TestRecordPricingNilResolverPinsFallback(t *testing.T) {
 	}
 }
 
-// TestRecordPricingFreeModelStaysZero pins the free-model guarantee: a $0
-// catalog model is authoritative — an adapter-reported nonzero cost for a
-// genuinely free model must not leak into the ledger.
+// TestRecordPricingFreeModelStaysZero pins the free-model guarantee: a $0 catalog model is
+// authoritative — an adapter-reported nonzero cost for a genuinely free model must not leak.
 func TestRecordPricingFreeModelStaysZero(t *testing.T) {
 	rec := NewUsageRecorder(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	rec.SetPricingResolver(func(ctx context.Context, provider, model string) (*apiv1.ModelCost, bool) {

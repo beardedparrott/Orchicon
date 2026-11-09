@@ -103,8 +103,7 @@ func TestRunningRowShowsTheCurrentRunningTime(t *testing.T) {
 	}
 
 	// UPCOMING IS UNCHANGED: nothing has run, so there is no time to report and the row keeps its
-	// scheduled-start wording. (A "<1s" here would be a fabricated measurement.) The elapsed is
-	// appended as " · <span>", so its absence is exactly the absence of that separator.
+	// scheduled-start wording.
 	m.sched.scheduleView = schedUpcoming
 	for id, meta := range rowMeta(t, m) {
 		if strings.Contains(meta, " · ") {
@@ -141,9 +140,7 @@ func TestHistoryRowShowsTimeSoFarForALiveRun(t *testing.T) {
 	}
 }
 
-// THE DETAIL SAYS THE SPAN *AND* WHAT IT IS MEASURED FROM. The running number is derived from the
-// item's own timestamps (a WorkItem has no run-start field), so the pane names the timestamp it used
-// instead of presenting an approximation as a stored fact.
+// THE DETAIL SAYS THE SPAN *AND* WHAT IT IS MEASURED FROM.
 func TestScheduleDetailShowsTheRunningSpanAndItsSource(t *testing.T) {
 	m := newModel(t, spanPlane())
 	m.sched.scheduleView = schedRunning

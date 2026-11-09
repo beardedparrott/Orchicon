@@ -46,9 +46,7 @@ func auditCreateConversation(t *testing.T, pool *db.Pool, tenantID string) strin
 		t.Fatalf("begin tx: %v", err)
 	}
 	defer ttx.Rollback(ctx)
-	// A MODEL, OR EVERY DISPATCH FAILS BEFORE IT REACHES WHAT IS UNDER TEST. An unseeded tenant has no
-	// DefaultAskOrchiconModel, so a conversation created with ModelRef "" cannot send at all — these
-	// audit tests were silently never running for exactly that reason.
+	// A MODEL, OR EVERY DISPATCH FAILS BEFORE IT REACHES WHAT IS UNDER TEST.
 	row, err := db.CreateConversation(ctx, ttx.Tx, db.ConversationRow{
 		ID: db.NewID(), TenantID: tenantID, ModelRef: testInterjectModelRef,
 	})
@@ -61,9 +59,8 @@ func auditCreateConversation(t *testing.T, pool *db.Pool, tenantID string) strin
 	return row.ID
 }
 
-// auditConvEnv wires the service over a migration-applied pool with the
-// fake session client and seeds the actor identity + a conversation, all in
-// the given tenant.
+// auditConvEnv wires the service over a migration-applied pool with the fake session client and
+// seeds the actor identity + a conversation, all in the given tenant.
 func auditConvEnv(t *testing.T, tenantID string) (*db.Pool, *Service, *fakeSessionClient, string, string, string) {
 	t.Helper()
 	pool := chatDBTestPool(t)
@@ -86,10 +83,8 @@ func auditConvEnv(t *testing.T, tenantID string) (*db.Pool, *Service, *fakeSessi
 	return pool, s, client, tenantID, actor.ID, convID
 }
 
-// auditChatStream drives the REAL ChatStream RPC through a connect handler
-// (httptest + generated client) so the assertion covers the full handler
-// path, not just the dispatch core. The turn is fed to completion so the
-// stream closes and the RPC returns.
+// auditChatStream drives the REAL ChatStream RPC through a connect handler (httptest + generated
+// client) so the assertion covers the full handler path, not just the dispatch core.
 func auditChatStream(t *testing.T, s *Service, client *fakeSessionClient, tenantID, actorID, convID, message string) {
 	t.Helper()
 	handler := connect.NewServerStreamHandler(apiv1connect.AskOrchiconServiceChatStreamProcedure,
@@ -128,9 +123,8 @@ func auditChatStream(t *testing.T, s *Service, client *fakeSessionClient, tenant
 	}
 }
 
-// waitForSendNoFatal polls the fake client for n send calls without
-// failing the test (callable from a goroutine; a stuck turn is caught by
-// the stream-drain deadline instead).
+// waitForSendNoFatal polls the fake client for n send calls without failing the test (callable from
+// a goroutine; a stuck turn is caught by the stream-drain deadline instead).
 func waitForSendNoFatal(client *fakeSessionClient, n int, seconds int) {
 	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
 	for time.Now().Before(deadline) {
@@ -174,19 +168,7 @@ func TestAuditServiceChatStreamMessageSent(t *testing.T) {
 	}
 }
 
-// TestAuditServiceInterjectMessageSent asserts one conversation.message_sent
-// row per InterjectConversationTurn send, and that the after snapshot reports
-// WHAT ACTUALLY HAPPENED (single implementation point, D8).
-//
-// THE ASSERTION USED TO READ superseded=true, WHICH WAS NEVER TRUE HERE. This test drives the
-// no-turn-running case — its own second comment says so: "there is nothing to inject into and nothing to
-// supersede" — yet it demanded the flag that says something WAS superseded. Under the old code the flag was
-// set unconditionally, so the assertion matched a lie; once interjecting stopped aborting a healthy turn,
-// the honest value (both flags false) surfaced it.
-//
-// The two flags are now asserted TOGETHER, because they are a pair describing one decision: injected means
-// the message joined a live turn's session, superseded means a turn was cancelled to make room. Exactly one
-// of them can be true for a given send, and for THIS send neither is.
+// THE ASSERTION USED TO READ superseded=true, WHICH WAS NEVER TRUE HERE.
 func TestAuditServiceInterjectMessageSent(t *testing.T) {
 	pool, s, client, tenantID, actorID, convID := auditConvEnv(t, "tnt_audit_chat_interj")
 

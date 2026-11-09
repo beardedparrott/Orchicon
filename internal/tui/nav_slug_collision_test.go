@@ -51,9 +51,6 @@ func collectSources(t *testing.T, m *App) map[string][]string {
 }
 
 // NO TWO SCREENS MAY SHARE A SOURCE NAME.
-//
-// A duplicate is not merely confusing: the nav dedupe turns it into a missing menu entry on the
-// later tab, which is invisible from the code and from the earlier tab.
 func TestSourceNamesAreGloballyUnique(t *testing.T) {
 	m := newTestApp()
 	for name, tabs := range collectSources(t, m) {
@@ -66,12 +63,6 @@ func TestSourceNamesAreGloballyUnique(t *testing.T) {
 }
 
 // EVERY SOURCE REACHES THE MENU, ON ITS OWN TAB.
-//
-// The dedupe is silent by construction, so this asserts the OUTCOME: the nav entry for a
-// source must exist AND belong to the tab that declares it. Checking only that the slug exists
-// somewhere would pass for a collision — the slug IS present, just owned by the other tab,
-// which is precisely how Recurring Items vanished from Automation while "/schedules" still
-// resolved.
 func TestEveryScreenSourceHasANavEntry(t *testing.T) {
 	m := newTestApp()
 	entries := buildNavEntries(m)
@@ -114,10 +105,6 @@ func TestEveryScreenSourceHasANavEntry(t *testing.T) {
 }
 
 // The TWO sources this work touched, pinned by their GUI slugs.
-//
-// The GUI routes are /schedules (the schedules page) and /recurring-items (the recurring items
-// page) — different subjects, different pages. The TUI's slugs must say the same thing, or the
-// two clients cannot be reasoned about together.
 func TestSchedulesAndRecurringItemsHaveDistinctSlugs(t *testing.T) {
 	m := newTestApp()
 	entries := buildNavEntries(m)

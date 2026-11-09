@@ -27,10 +27,6 @@ import (
 
 // THE REGRESSION (criterion 7): the second, continuation shell still scopes the rail to the launch
 // directory's project.
-//
-// THIS TEST FAILS WITHOUT THE FIX: on a build that passes "" as the directory on a continuation, the second
-// shell's projectScope is projectScopeAll (All projects) because launchDir is empty and the default is
-// unreachable.
 func TestAReconnectShellStillScopesToTheLaunchDirectory(t *testing.T) {
 	projects := &stubProjectList{
 		names:  []string{"Orchicon", "ai-tools"},
@@ -52,9 +48,7 @@ func TestAReconnectShellStillScopesToTheLaunchDirectory(t *testing.T) {
 			"fire when checkLaunchProject reports no need")
 	}
 
-	// SHELL 2 — the CONTINUATION a /connect reconnect produces: SAME directory, prompt NOT armed. A fresh App
-	// is exactly what runShell builds on the second pass round main's loop, and it starts at projectScopeAll
-	// with nothing remembered.
+	// SHELL 2 — the CONTINUATION a /connect reconnect produces: SAME directory, prompt NOT armed.
 	second := appWithProjectServiceOpts(t, projects,
 		WithLaunchDir("/home/me/projects/Orchicon"),
 	)

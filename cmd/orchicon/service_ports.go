@@ -32,16 +32,9 @@ import (
 )
 
 // portOwnerEnv names the environment variable that disables owner reporting for a port.
-//
-// A test whose fake child "cannot bind" a port would otherwise spend the bind-timeout asking the OS
-// about a port it made up, on every restart.
 const portOwnerEnv = "ORCHICON_SKIP_PORT_OWNER_LOOKUP"
 
 // reportPortOwner explains, ONCE per component, why it probably cannot bind.
-//
-// It is called from reapRestart after the crash-loop threshold, not on the first failure: a
-// legitimate transient bind (a previous instance of the same child still shutting down) resolves
-// itself, and reporting every one would train the operator to ignore the message.
 func (s *supervisor) reportPortOwner(component string) {
 	if s.portOwnerReported == nil {
 		s.portOwnerReported = make(map[string]bool)
@@ -55,10 +48,7 @@ func (s *supervisor) reportPortOwner(component string) {
 	}
 	owners := portOwners(ports)
 	if len(owners) == 0 {
-		// NOTHING ELSE HOLDS IT. That is itself the finding: the port is free, so the failure is
-		// not a conflict and the child's own message is the whole story. Saying "no owner" would
-		// be noise, so it is not said — but the ABSENCE is recorded at debug level so a support
-		// case can tell "we looked and found nothing" from "we never looked".
+		// NOTHING ELSE HOLDS IT.
 		s.log.Debug("crash-looping component's ports are free — this is not a bind conflict",
 			"component", component, "ports", ports)
 		return
@@ -68,10 +58,6 @@ func (s *supervisor) reportPortOwner(component string) {
 }
 
 // componentPorts is the set of host ports a supervised component binds.
-//
-// It reads s.ports — the SAME table that produced the child's argv and its readiness probe — so the
-// port named in the diagnosis is the port the child actually failed to take, not a guess from the
-// component's name.
 func (s *supervisor) componentPorts(component string) []int {
 	switch component {
 	case "postgres":
@@ -98,9 +84,7 @@ type portOwner struct {
 	Name string
 }
 
-// portOwners asks the platform who owns each port. Implemented per-OS (port_owner_windows.go,
-// port_owner_unix.go); an unsupported platform yields nil rather than an error, because the caller
-// is producing a DIAGNOSIS and must never fail the supervisor for lack of one.
+// portOwners asks the platform who owns each port.
 func portOwners(ports []int) []portOwner {
 	if env(portOwnerEnv, "") != "" {
 		return nil

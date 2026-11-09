@@ -34,9 +34,7 @@ func TestAWSLPathIsPreferred(t *testing.T) {
 	}
 }
 
-// THE ARM THAT MUST NOT REGRESS, AND CANNOT BE SEEN ON A LINUX CI HOST: macOS. A Darwin build is a Mach-O
-// binary with no ".exe" suffix, so ContainerUsable's shape check passes it — only the host GOOS stops it.
-// Modelled rather than skipped, so the defect fails here too.
+// THE ARM THAT MUST NOT REGRESS, AND CANNOT BE SEEN ON A LINUX CI HOST: macOS.
 func TestADarwinHostInstallIsNotPreferred(t *testing.T) {
 	ok, why := PreferHostAdapterInContainer("darwin", "/Users/op/.local/bin/claude")
 	if ok {

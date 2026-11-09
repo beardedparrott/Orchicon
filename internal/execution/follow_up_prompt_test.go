@@ -7,12 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// TestComposeFollowUpPromptCarriesSharedPrefix verifies that a follow-up
-// session's per-message system prompt opens with the same stable prompt
-// prefix as the composite prompt: the stored AGENTS.md no longer carries the
-// safety rules (seedAgentsMD strips them at persistence), so the follow-up
-// prompt must supply them via db.StablePromptPrefix or every follow-up turn
-// would silently lose the HARD-limit safety block.
+// TestComposeFollowUpPromptCarriesSharedPrefix verifies that a follow-up session's per-message
+// system prompt opens with the same stable prompt prefix as the composite prompt.
 func TestComposeFollowUpPromptCarriesSharedPrefix(t *testing.T) {
 	v := db.WorkerVersionRow{
 		Role:     "You are a senior full-stack engineer.",

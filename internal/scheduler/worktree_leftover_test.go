@@ -1,15 +1,7 @@
 package scheduler
 
-// worktree_leftover_test.go — the PRUNE side of worktree ownership.
-//
-// REPORTED: "refusing to remove non-worktree directory on <step run id>" fired repeatedly, so worktree
-// cleanup never completed. Measured on the real install: the recorded worktree path held an EMPTY
-// directory with no `.git` file. The prune path asked the narrow isOrchiconWorktreeArtifact question,
-// which REQUIRES that `.git` file — so a worktree that was never fully created, or whose admin data an
-// earlier `git worktree prune` already swept, could never satisfy it and was refused forever. The
-// provision path had always used the richer isOrchiconContainer predicate; the two disagreed.
-//
-// These tests drive the predicate directly against a real git repo, so they need no database.
+// The prune path asked the narrow isOrchiconWorktreeArtifact question, which REQUIRES that `.git`
+// file — so a worktree that was never fully created.
 
 import (
 	"context"
@@ -61,8 +53,7 @@ func TestPruneLeftoverAcceptsAPartialWorktreeArtifact(t *testing.T) {
 }
 
 // THE SAFETY HALF, and the reason the predicate is not simply "delete anything under this path": a
-// directory holding something that is NOT provably ours is still refused, because deleting user data is
-// the one unrecoverable mistake available here.
+// directory holding something that is NOT provably ours is still refused.
 func TestPruneLeftoverRefusesADirectoryHoldingForeignContent(t *testing.T) {
 	projectDir := newTestRepo(t)
 	r := &WorktreeReconciler{}

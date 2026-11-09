@@ -1,11 +1,7 @@
 package instancectl
 
-// service.go — the package functions behind a TYPE, so a GUI's transport can depend on an interface.
-//
-// The package-level functions are the implementation (List, Status, Install, …). This type exists only so
-// a binding layer can hold something and a test can substitute it: Go interfaces are satisfied by types,
-// and the desktop's control surface takes an interface by design so it never links the real thing in a
-// test. Nothing here adds behaviour — every method delegates.
+// service.go — the package functions behind a TYPE, so a GUI's transport can depend on an
+// interface.
 
 import "io"
 

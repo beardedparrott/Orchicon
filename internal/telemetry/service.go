@@ -16,13 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Service implements the TelemetryService Connect handler
-// (apiv1connect.TelemetryServiceHandler). It proxies tenant-scoped
-// queries to the telemetry backends (Tempo/Loki/VictoriaMetrics,
-// docs/07 §3.9, docs/08 §5) so users explore traces/metrics/logs without
-// leaving the Orchicon shell. The tenant_id filter is injected from the
-// request context so a client cannot read another tenant's telemetry
-// (AGENTS.md tenant isolation).
+// Service implements the TelemetryService Connect handler (apiv1connect.TelemetryServiceHandler).
 type Service struct {
 	pool       *db.Pool
 	query      *QueryClient
@@ -134,9 +128,8 @@ func (s *Service) QueryLogs(ctx context.Context, req *connect.Request[apiv1.Quer
 	return connect.NewResponse(out), nil
 }
 
-// StreamTelemetry streams live telemetry updates (usage/cost events +
-// metric samples) from NATS to connected clients (docs/07 §4, docs/10
-// §4). The stream fans out orchicon.events.usage.> events.
+// StreamTelemetry streams live telemetry updates (usage/cost events + metric samples) from NATS to
+// connected clients (docs/07 §4, docs/10 §4).
 func (s *Service) StreamTelemetry(ctx context.Context, req *connect.Request[apiv1.StreamTelemetryRequest], stream *connect.ServerStream[apiv1.StreamTelemetryResponse]) error {
 	if s.subscriber == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("event streaming is unavailable (NATS subscriber not connected)"))
@@ -178,20 +171,15 @@ func (s *Service) StreamTelemetry(ctx context.Context, req *connect.Request[apiv
 	}
 }
 
-// GetDashboard returns an Orchicon-specific telemetry dashboard: a
-// curated roll-up built custom on the Orchicon domain model (cost,
-// executions) — raw exploration uses the Telemetry page
-// (docs/10 §11). Reads Postgres (usage_records — source of truth).
+// GetDashboard returns an Orchicon-specific telemetry dashboard: a curated roll-up built custom on
+// the Orchicon domain model (cost, executions).
 func (s *Service) GetDashboard(ctx context.Context, req *connect.Request[apiv1.GetDashboardRequest]) (*connect.Response[apiv1.GetDashboardResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// The default window is all-time: a zero start flows to the SQL
-	// unbounded sentinel (`$n::timestamptz <= 'epoch'::timestamptz`),
-	// exactly like AIGateway.GetCost, so the Overview total matches the
-	// Cost Explorer's per-model sum. Only `end` defaults to now so a nil
-	// end still means "up to now".
+	// The default window is all-time: a zero start flows to the SQL unbounded sentinel
+	// (`$n::timestamptz <= 'epoch'::timestamptz`), exactly like AIGateway.GetCost.
 	start, end := tsToTime(req.Msg.Start), tsToTime(req.Msg.End)
 	if end.IsZero() {
 		end = time.Now()
@@ -236,16 +224,8 @@ func (s *Service) GetDashboard(ctx context.Context, req *connect.Request[apiv1.G
 	return connect.NewResponse(out), nil
 }
 
-// GetTelemetryReport returns a summarised window over the Orchicon domain
-// model: token usage, cost, duration and failure rate per project or per
-// workflow. It reads Postgres only (usage_records + worker_executions +
-// workflow_runs — the source of truth), so reports keep working when a
-// telemetry store is down. That is what makes the UI's "partial" state
-// truthful: graphs go degraded, the report does not.
-//
-// The window is explicit on purpose: a zero start means "24h before end"
-// (never "all time"), so window_start/window_end in the response are always
-// meaningful for the caller.
+// GetTelemetryReport returns a summarised window over the Orchicon domain model: token usage, cost,
+// duration and failure rate per project or per workflow.
 func (s *Service) GetTelemetryReport(ctx context.Context, req *connect.Request[apiv1.GetTelemetryReportRequest]) (*connect.Response[apiv1.GetTelemetryReportResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -285,9 +265,8 @@ func (s *Service) GetTelemetryReport(ctx context.Context, req *connect.Request[a
 
 	switch req.Msg.GetGroupBy() {
 	case apiv1.TelemetryReportGroupBy_TELEMETRY_REPORT_GROUP_BY_WORKFLOW:
-		// Cost and duration are scoped identically: a workflow row that
-		// answered the project filter with project-scoped run times but
-		// tenant-wide spend would be quietly wrong.
+		// Cost and duration are scoped identically: a workflow row that answered the project filter with
+		// project-scoped run times but tenant-wide spend would be quietly wrong.
 		costs, err := db.GetWorkflowAggregateCosts(ctx, ttx.Tx, tenantID, projectID, workItemID, executionID, start, end)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
@@ -363,11 +342,8 @@ func (s *Service) GetTelemetryReport(ctx context.Context, req *connect.Request[a
 	}
 	out.Totals = totals
 
-	// Outcomes and models are answered independently of the grouping: "how
-	// much work finished, and how" is the same question whether the table is
-	// grouped by project or by workflow. They read different tables from the
-	// rows above, so a failure here fails the report rather than quietly
-	// returning zeroes an operator would read as "nothing finished".
+	// Outcomes and models are answered independently of the grouping: "how much work finished, and how"
+	// is the same question whether the table is grouped by project or by workflow.
 	outcomes, err := db.GetOutcomeCounts(ctx, ttx.Tx, tenantID, projectID, workItemID, start, end)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -384,10 +360,8 @@ func (s *Service) GetTelemetryReport(ctx context.Context, req *connect.Request[a
 		WorkflowsRunning:   outcomes.WorkflowsRunning,
 	}
 
-	// The model leaderboard is the existing per-model cost roll-up, scoped by
-	// the SAME filters as the rows so the two halves of one screen cannot
-	// disagree: a model total that ignored the project filter would answer a
-	// different question than the table beside it.
+	// The model leaderboard is the existing per-model cost roll-up, scoped by the SAME filters as the
+	// rows so the two halves of one screen cannot disagree.
 	models, err := db.GetCostRollup(ctx, ttx.Tx, tenantID, db.RollupModel, projectID, workItemID, executionID, start, end)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -405,9 +379,8 @@ func (s *Service) GetTelemetryReport(ctx context.Context, req *connect.Request[a
 	return connect.NewResponse(out), nil
 }
 
-// failRateDenominator picks how many finished units a failure rate (and the
-// average duration) divides by: workflow runs when the grouping produced
-// them, otherwise executions. Zero means "nothing finished" → rate 0.
+// failRateDenominator picks how many finished units a failure rate (and the average duration)
+// divides by: workflow runs when the grouping produced them, otherwise executions.
 func failRateDenominator(runs, executions int32) int32 {
 	if runs > 0 {
 		return runs

@@ -27,20 +27,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
-// runServe loads configuration from the environment, applies pending
-// migrations, constructs the control plane server, wraps it with the
-// embedded frontend SPA, and runs until SIGTERM or SIGINT.
-// It is the production-like server mode — no Compose management, no
-// process forking. Used headless (`orchicon serve --detach`) and as the
-// control-plane child of the single-container supervisor (`orchicon
-// container`, which spawns `orchicon serve`).
-//
-// Migrations are run here (the embedded runner writes the
-// _orchicon_migrations tracking table) so every boot path — headless,
-// detached, or container — stays consistent.
-// serveEnvDetached marks a serve subprocess that was forked by `serve
-// --detach`; it tells the child to run the server directly instead of
-// forking again.
+// runServe loads configuration from the environment, applies pending migrations, constructs the
+// control plane server, wraps it with the embedded frontend SPA, and runs until SIGTERM or SIGINT.
 const serveEnvDetached = "ORCHICON_SERVE_DETACHED"
 
 // serveEnvLogFile tells the serve child where to write its rotating log
@@ -70,11 +58,7 @@ func runServe(args []string) int {
 		case "--status":
 			return serveStatus()
 		case "--start", "-start":
-			// THERE IS NO `serve --start`. Without this arm an unrecognised flag falls through to
-			// serveForeground() below and silently runs a BLOCKING foreground plane — the opposite of
-			// starting an instance, and the caller appears to hang. The verb that starts an instance is
-			// `orchicon start` (services then plane) or `orchicon plane start` (the plane alone).
-			// Exit 2 is a usage error, distinct from 1 = "not running", so no script's rc reading moves.
+			// THERE IS NO `serve --start`.
 			bin := filepath.Base(os.Args[0])
 			fmt.Fprintf(os.Stderr, "✗ `serve --start` does not exist — start an instance with:\n"+
 				"    %s start [instance]        # services, then the plane\n"+
@@ -85,16 +69,7 @@ func runServe(args []string) int {
 	return serveForeground()
 }
 
-// serveForeground runs the server until SIGTERM/SIGINT. Also the body of
-// the forked child started by serveDetach (the ORCHICON_SERVE_DETACHED
-// env var short-circuits the dispatch above so the child never re-forks).
-//
-// When ORCHICON_SERVE_LOG_FILE is set (detached mode), the JSON slog
-// output goes through a rotating file writer (size + time ceiling,
-// retention pruning — internal/logging) instead of stdout, and the log
-// file is dup2'd onto fds 1/2 so panics and stray prints land in the
-// current log. The log rotation config is layered from env/config at
-// boot; the server live-applies Settings → Defaults changes afterwards.
+// serveForeground runs the server until SIGTERM/SIGINT.
 func serveForeground() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer cancel()
@@ -105,9 +80,7 @@ func serveForeground() int {
 		cfg := config.Default()
 		rw, err := logging.New(loggingFromEnv(cfg, logPath))
 		if err != nil {
-			// Detached: stdout/stderr are /dev/null, so a silent fallback
-			// would lose every log line. Surface the failure at the log
-			// path the operator is already watching, then bail.
+			// Detached: stdout/stderr are /dev/null, so a silent fallback would lose every log line.
 			if ferr, e2 := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); e2 == nil {
 				fmt.Fprintf(ferr, "failed to open rotating log file: %v\n", err)
 				ferr.Close()
@@ -136,25 +109,8 @@ func serveForeground() int {
 	}
 
 	// THE PERSISTENT PERMISSION POLICY, CHECKED BEFORE ANYTHING SERVES.
-	//
-	// Boot installs the shipped preset when that is the rule (no explicit
-	// ORCHICON_PERMISSION_POLICY and no file yet) and then strict-loads the
-	// file. A MALFORMED policy stops the boot here, naming the path and the
-	// parse error: a policy file that silently parses to nothing is worse
-	// than no file at all, because the operator believes the exclusions are
-	// in force. Failing loud is the only safe reading.
 	if err := permpolicy.Boot(cfg.PermissionPolicyPath); err != nil {
-		// TWO DIFFERENT FAILURES REACH HERE, and conflating them sends the operator to the wrong
-		// place. A MALFORMED file is a policy problem — "invalid permission policy" plus the path
-		// and the parse error, which is the loud failure the comment above is about, and which a
-		// malformed-policy boot test pins. An UNWRITABLE DATA DIRECTORY is an environment problem:
-		// the policy is not at fault and may not even exist yet, so reporting it this way sent an
-		// operator to inspect a file that was fine.
-		//
-		// THE REPORTED CASE: `orchicon serve` run by hand in WSL. DataDir then defaults to
-		// /var/lib/orchicon, which is right INSIDE the container image and needs root on the host —
-		// where the installer supplies a per-instance directory instead. The message below names
-		// the directory that is actually wrong, because that is the thing to change.
+		// TWO DIFFERENT FAILURES REACH HERE, and conflating them sends the operator to the wrong place.
 		if errors.Is(err, fs.ErrPermission) {
 			log.Error("the data directory is not writable, so the permission policy cannot be stored",
 				"data_dir", cfg.DataDir,
@@ -170,10 +126,8 @@ func serveForeground() int {
 	}
 	log.Info("permission policy loaded", "path", cfg.PermissionPolicyPath)
 
-	// Run embedded migrations before the server starts, using the same
-	// tracking table (_orchicon_migrations) that devStartParent uses.
-	// This ensures consistency regardless of whether the user calls
-	// orchicon-prod start (parent path) or orchicon-prod serve directly.
+	// Run embedded migrations before the server starts, using the same tracking table
+	// (_orchicon_migrations) that devStartParent uses.
 	if !migrateOnBoot(ctx, cfg, log) {
 		return 1
 	}
@@ -195,16 +149,8 @@ func serveForeground() int {
 	return 0
 }
 
-// serveDetach forks the server into the background (own process group,
-// logs to the rotating file at serveLogFile), writes the PID file, and
-// returns immediately — the caller must NOT block, because a tool or
-// script waiting on this command would hang until the server exits. The
-// caller polls /healthz (see serveStatus / docs).
-//
-// The child (not the parent) owns the log file: serveForeground opens a
-// rotating writer on ORCHICON_SERVE_LOG_FILE, redirects its own fd 1/2
-// to it, and live-applies Settings → Defaults log management. The parent
-// only passes the path and creates the directory.
+// serveDetach forks the server into the background (own process group, logs to the rotating file at
+// serveLogFile), writes the PID file, and returns immediately — the caller must NOT block.
 func serveDetach() int {
 	if pid, running := procRunning(servePIDFile()); running {
 		fmt.Fprintf(os.Stderr, "✗ serve is already running (PID %s)\n", pid)
@@ -224,19 +170,6 @@ func serveDetach() int {
 	cmd := exec.Command(os.Args[0], "serve")
 	// THE INSTANCE'S OWN STATE DIR IS PINNED, NOT INHERITED, and both log destinations are passed
 	// explicitly.
-	//
-	// OBSERVED: a dev plane (ORCHICON_INSTANCE=dev, serving :8080) had fd 1 and fd 2 open on
-	// ~/.local/share/orchicon-prod/serve/logs/orchicon.log. Its own log had not been written to for hours,
-	// so the failure being debugged was invisible while a SIBLING instance's log filled up — two instances'
-	// diagnostics colliding, which is exactly the confusion the per-instance state dir exists to prevent.
-	//
-	// Inheriting the ambient environment means whichever shell started the plane decides where its output
-	// lands. Pinning both variables to the values THIS process resolved removes the ambient variable from
-	// the decision entirely.
-	// ALL THREE ARE PER-PROCESS AND NONE MAY BE INHERITED. `envWithout` clears them, then this process
-	// states them explicitly — including ORCHICON_SERVE_DETACHED, which must be 1 for the child (it is the
-	// marker that stops the child re-forking) but must come from US rather than from whatever the caller's
-	// shell happened to carry.
 	cmd.Env = append(envWithout(os.Environ(), serveStateDirEnv, serveEnvLogFile, serveEnvDetached,
 		"ORCHICON_INSTANCE"),
 		"ORCHICON_INSTANCE="+instanceForServe(),
@@ -268,39 +201,16 @@ func serveDetach() int {
 }
 
 // serveStop sends SIGTERM to a detached serve and clears the PID file.
-// serveStopGrace is how long a plane is given to exit on SIGTERM before it is killed.
-//
-// A server that closes listeners, drains connections and closes its pools needs more than an instant; one
-// that is refusing to die needs to be escalated to. 10s is the same order the container's own stop
-// grace takes, and it is a variable only so a test does not have to wait it out.
 var serveStopGrace = 10 * time.Second
 
-// serveStop signals the detached plane to stop, WAITS for it to actually go, ESCALATES if it does not, and
-// reports only what it verified.
-//
-// WHY WAITING AND ESCALATING ARE THE WHOLE POINT. This used to send SIGTERM, delete the PID file
-// unconditionally, and print "✓ serve stopped" — never checking. A plane that ignored SIGTERM (a goroutine
-// wedged in a blocked write, a stuck shutdown hook, a process parked on a socket) therefore SURVIVED while
-// the command reported success AND THREW AWAY THE PID FILE. After that there was no way back with this
-// tool: `--stop` and `--status` both resolve from the PID file, so both then answered "serve is not
-// running" while the old process still owned the port and kept serving its old binary.
-//
-// OBSERVED, REPEATEDLY, BY THE OPERATOR: "I did that and the serve was still running and I had to do a
-// kill -9 on the PIDs... I have run into this problem a few times now where I thought I was on the newest
-// code but was still running a stale binary." The stale binary was this bug: a rebuild would stop nothing,
-// start a second binary, lose the race for the port, and leave the OLD plane serving the OLD UI while every
-// command said the restart had succeeded.
-//
-// SO: the PID file is removed ONLY when the process is confirmed gone, and a survivor is reported as a
-// FAILURE (non-zero) so the caller — `scripts/container.sh plane_stop`, `make rebuild-*` — cannot continue
-// as though the plane were down. A stop that cannot stop is not a success.
+// SO: the PID file is removed ONLY when the process is confirmed gone, and a survivor is reported
+// as a FAILURE (non-zero) so the caller — `scripts/container.sh plane_stop`, `make rebuild-*`.
 func serveStop() int {
 	pidFile := servePIDFile()
 	pid, running := procRunning(pidFile)
 	if !running {
 		// A PID FILE NAMING NOTHING IS STALE STATE, not merely an absent plane: it is what makes `--status`
-		// keep claiming a plane exists. Clearing it here is safe precisely because we have just proved the
-		// process is not running — and it cannot mask a survivor, since a survivor is `running`.
+		// keep claiming a plane exists.
 		if _, err := os.Stat(pidFile); err == nil {
 			_ = os.Remove(pidFile)
 		}
@@ -360,10 +270,7 @@ func serveStop() int {
 		staleState()
 		return 1
 	}
-	// THE SIGNAL NAMES ARE PLATFORM-DEPENDENT and live in signals_unix.go / signals_windows.go. Unix sends
-	// SIGTERM, waits, then SIGKILL. Windows has no SIGTERM: the graceful attempt is a Ctrl-Break to the
-	// plane's process group, which usually cannot be delivered to a DETACHED plane (its own console), so the
-	// ladder escalates to a force stop and SAYS SO rather than claiming SIGTERM was ignored.
+	// THE SIGNAL NAMES ARE PLATFORM-DEPENDENT and live in signals_unix.go / signals_windows.go.
 	graceful := sendGracefulStop(proc)
 	if errors.Is(graceful, os.ErrProcessDone) {
 		fmt.Printf("✓ serve was already gone (PID %d)\n", pidNum)
@@ -418,23 +325,13 @@ func waitForExit(pid int, grace time.Duration) bool {
 	}
 }
 
-// procRunningPID reports whether a PID is a running process, independent of any PID FILE — the check
-// waitForExit needs, since the file it started from may already be gone. It shares pidAlive's definition of
-// "running" (a zombie is not), so the stop path and --status cannot disagree.
+// procRunningPID reports whether a PID is a running process, independent of any PID FILE — the
+// check waitForExit needs, since the file it started from may already be gone.
 func procRunningPID(pid int) (string, bool) {
 	return strconv.Itoa(pid), pidAlive(pid)
 }
 
-// serveStatus reports the instance's plane through the SHARED status surface — the same call
-// `orchicon plane status` makes — so the two spellings cannot disagree about the instance, the PID,
-// the serving binary, drift or health. A second implementation is exactly the defect being removed
-// here: two status surfaces that agree only by discipline.
-//
-// THE EXIT CODE IS A CONTRACT AND MUST NOT CHANGE. `scripts/orchicon.sh` (plane_status_out, and the
-// post-stop verification in stop_host) machine-reads it: 0 means the PID file names a LIVE process.
-// StatusOf never fails for want of a port record or a PID file — those are states, not errors — so it
-// returns Status{PID: 0} when nothing runs, which is why PID > 0 is the whole of the success
-// condition. A richer exit scheme would break the script's own "is it running?" reading.
+// THE EXIT CODE IS A CONTRACT AND MUST NOT CHANGE.
 func serveStatus() int {
 	st, err := planecontrol.StatusOf(planecontrol.Defaults(instanceForServe(), os.Stdout))
 	if err != nil {
@@ -448,12 +345,7 @@ func serveStatus() int {
 	return 1
 }
 
-// loggingFromEnv layers the log rotation config for a given log file
-// path. Precedence: ORCHICON_LOG_* env vars, then built-in defaults. The
-// DB-backed Settings → Defaults values are applied live by the server
-// after boot (server.New + Run). logPath wins as the directory/base even
-// when ORCHICON_LOG_DIR is set, because it is the path serveDetach
-// actually opened for the PID/log contract.
+// loggingFromEnv layers the log rotation config for a given log file path.
 func loggingFromEnv(cfg config.Config, logPath string) logging.Config {
 	c := logging.DefaultConfig()
 	if d := os.Getenv("ORCHICON_LOG_DIR"); d != "" {
@@ -489,20 +381,8 @@ func loggingFromEnv(cfg config.Config, logPath string) logging.Config {
 	return c
 }
 
-// instanceForServe names the instance this plane belongs to, for the child's environment. The state dir is
-// derived from it, so it must be explicit rather than inherited.
-// serveStopMayDiscover reports whether `serve --stop` is allowed to fall back to discovering a plane by
-// PORT when the PID file names nothing.
-//
-// IT IS TRUE ONLY WHEN THE PID FILE WE JUST READ IS THE INSTANCE'S CANONICAL ONE. Two paths can disagree:
-// servePIDFile() is derived from serveStateDir(), which a caller can redirect, while the plane the fallback
-// would signal is identified through planecontrol's instance-scoped records. When they disagree, the PID
-// file we read belongs to some OTHER state root, and its emptiness says nothing about whether this
-// instance's plane is running.
-//
-// This is the guard that keeps the fix for "a plane that outlived its PID file" from becoming "a plane
-// that was never ours gets killed". Erroring toward NOT stopping is the only safe direction: a refused
-// stop is reported to the operator, while a wrong stop takes down a live control plane.
+// instanceForServe names the instance this plane belongs to, for the child's environment. IT IS
+// TRUE ONLY WHEN THE PID FILE WE JUST READ IS THE INSTANCE'S CANONICAL ONE.
 func serveStopMayDiscover() bool {
 	inst := instanceForServe()
 	return servePIDFile() == planecontrol.ServePIDFile(inst)
@@ -515,18 +395,8 @@ func instanceForServe() string {
 	return "dev"
 }
 
-// migrateOnBoot applies the embedded migrations before the server starts, and reports whether it
-// is safe to continue.
-//
-// IT IS A FUNCTION BECAUSE THERE ARE TWO WAYS TO START THIS PLANE, and only one of them migrated.
-// `serve` (and therefore `serve --detach`, which is what `orchicon install`, `orchicon start` and
-// the supervisor all use) ran the migrations; the BARE `orchicon` path in main.go constructed the
-// server directly and never did. So a plane started by hand came up against an EMPTY DATABASE and
-// every reconciler failed with "relation \"work_items\" does not exist (SQLSTATE 42P01)" — which
-// is what an operator reported after installing, starting the services by hand, and running
-// `orchicon`.
-//
-// One implementation, called by both paths, is the only way they cannot drift again.
+// migrateOnBoot applies the embedded migrations before the server starts, and reports whether it is
+// safe to continue.
 func migrateOnBoot(ctx context.Context, cfg config.Config, log *slog.Logger) bool {
 	if !cfg.MigrateOnBoot {
 		return true

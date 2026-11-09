@@ -1,13 +1,7 @@
 package main
 
-// privilege_test.go — the elevated-shell guard, criterion 2 and the "elevated-shell
-// detection" half of criterion 8.
-//
-// WHY THIS IS TESTABLE ON LINUX. The detection itself is a Windows syscall, so a test
-// that called it would only ever exercise one platform. `elevated` is the seam
-// (privilege.go), so the table below drives BOTH branch outcomes on the Linux gate —
-// which is what makes "host + elevated produces an actionable error" a pinned
-// behaviour rather than a claim in a comment.
+// privilege_test.go — the elevated-shell guard, criterion 2 and the "elevated-shell detection" half
+// of criterion 8.
 
 import (
 	"os"
@@ -24,18 +18,14 @@ func useElevated(t *testing.T, v bool) {
 	t.Cleanup(func() { elevated = old })
 }
 
-// TestEnsureHostPostgresPrivileges is the elevation table. There is ONE service
-// shape now (host processes of the invoking user), so residency is no longer an
-// axis: an elevated shell is the one state that must refuse.
+// TestEnsureHostPostgresPrivileges is the elevation table.
 func TestEnsureHostPostgresPrivileges(t *testing.T) {
 	cases := []struct {
 		name     string
 		elevated bool
 		wantErr  bool
 	}{
-		// ELEVATED IS THE ONE STATE THAT MUST REFUSE. Postgres itself will not run
-		// under an Administrators token, so starting the services anyway means an
-		// install that reports success and then cannot start the database.
+		// ELEVATED IS THE ONE STATE THAT MUST REFUSE.
 		{name: "elevated", elevated: true, wantErr: true},
 		// A normal shell: the supported shape, and it must not be disturbed.
 		{name: "normal", elevated: false, wantErr: false},
@@ -53,9 +43,8 @@ func TestEnsureHostPostgresPrivileges(t *testing.T) {
 			if !c.wantErr {
 				return
 			}
-			// CRITERION 2 IS ABOUT THE MESSAGE, not just the refusal: it must name
-			// the CAUSE and the REMEDY, or the operator is back to decoding a cryptic
-			// failure three steps later.
+			// CRITERION 2 IS ABOUT THE MESSAGE, not just the refusal: it must name the CAUSE and the REMEDY, or
+			// the operator is back to decoding a cryptic failure three steps later.
 			msg := err.Error()
 			// Case-insensitively, because "NON-elevated" and "non-elevated" are the
 			// same instruction and the assertion is about the CONTENT, not the casing.
@@ -82,9 +71,8 @@ func TestRunningElevatedIsFalseOnUnix(t *testing.T) {
 	}
 }
 
-// The Unix uid/gid seam is the invoking process's own ids — the values host residency
-// hands to postgresUIDGID. Windows reports 0 instead (privilege_windows.go); this pins
-// the Unix half so a later edit cannot make the two disagree silently.
+// The Unix uid/gid seam is the invoking process's own ids — the values host residency hands to
+// postgresUIDGID.
 func TestInvokingIDsAreThisProcessesIDs(t *testing.T) {
 	if got, want := invokingUID(), os.Getuid(); got != want {
 		t.Errorf("invokingUID = %d, want os.Getuid() = %d", got, want)
@@ -95,10 +83,6 @@ func TestInvokingIDsAreThisProcessesIDs(t *testing.T) {
 }
 
 // THE POSTGRES IDENTITY NEVER YIELDS A NEGATIVE UID.
-//
-// The bug this pins: os.Getuid()/os.Getgid() return -1 on Windows. The seam returns 0
-// there instead, and this asserts the shape from the Unix side (the Windows side is the
-// same property, checked by the compiler).
 func TestPostgresUIDGIDNeverUsesTheWindowsSentinel(t *testing.T) {
 	host := &supervisor{}
 	uid, gid := host.postgresUIDGID()
@@ -111,10 +95,8 @@ func TestPostgresUIDGIDNeverUsesTheWindowsSentinel(t *testing.T) {
 	}
 }
 
-// unixSocketsSupported is the compile-time platform fact postgresSocketDir gates on, and
-// the gate is the fix for the Windows argv: a Unix socket directory must NOT be passed
-// to postgres.exe. Asserted here so the constant cannot be flipped without the socket
-// test noticing.
+// unixSocketsSupported is the compile-time platform fact postgresSocketDir gates on, and the gate
+// is the fix for the Windows argv: a Unix socket directory must NOT be passed to postgres.exe.
 func TestUnixSocketsSupportedMatchesTheSocketDir(t *testing.T) {
 	if !unixSocketsSupported {
 		t.Skip("windows-only property; the compiler checks it there")
@@ -146,10 +128,8 @@ func TestHostDataDirWritablePassesAndCleansUp(t *testing.T) {
 	}
 }
 
-// An unwritable data dir must be refused BEFORE initdb, and the refusal must name
-// the cause (the dir belongs to a different user) and a remedy (repoint the data
-// dir, or hand this one to the account) — criterion 3's "actionable error rather
-// than a corruption risk".
+// An unwritable data dir must be refused BEFORE initdb, and the refusal must name the cause (the
+// dir belongs to a different user) and a remedy (repoint the data dir.
 func TestHostDataDirWritableRefusesForeignOwnedDirWithARemedy(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: no directory is unwritable, so the refusal is unreachable")
@@ -173,22 +153,13 @@ func TestHostDataDirWritableRefusesForeignOwnedDirWithARemedy(t *testing.T) {
 	}
 }
 
-// initPostgres must CONSULT the probe in host residency, so the guard is wired
-// rather than merely present. The seeded PG_VERSION makes initPostgres return
-// early, which is the idempotency path — the probe lives on the other branch, so
-// this pins the wiring by asserting an uninitialized foreign-owned dir is refused
-// BEFORE any initdb binary is needed.
+// initPostgres must CONSULT the probe in host residency, so the guard is wired rather than merely
+// present.
 func TestInitPostgresRefusesForeignOwnedDirBeforeInitdb(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: no directory is unwritable, so the refusal is unreachable")
 	}
-	// HERMETIC ABOUT THE CONTAINER-ERA VOLUME, because this test is about the
-	// WRITABILITY guard. On a host that still has a legacy postgres volume (the
-	// operator's own machine has two), the container-era guard refuses first and
-	// this assertion would fail for a reason that has nothing to do with what it
-	// pins — a test that only passes on a host with no history. Saying "no engine
-	// is installed here" removes the volume from the picture without touching the
-	// probe this test is actually exercising.
+	// HERMETIC ABOUT THE CONTAINER-ERA VOLUME, because this test is about the WRITABILITY guard.
 	withEngineCandidates(t)
 	s := &supervisor{log: testLogger(), dataDir: t.TempDir()}
 	dir := filepath.Join(s.dataDir, "postgres")

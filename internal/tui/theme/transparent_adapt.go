@@ -37,11 +37,8 @@ import (
 //     code span: those are content, not surfaces, and they must keep a fill to function. They are self-contained
 //     (their text is chosen against them, already gated), so the terminal under them does not matter.
 
-// SetTerminalBgEnv names the override for the detected ground.
-//
-// IT EXISTS FOR THE TERMINALS THAT CANNOT ANSWER. A transparent terminal has, by definition, been configured so
-// that its "background colour" is not what is behind it — so the OSC reply is either absent or a lie, and the
-// operator is the only reliable source. "light" or "dark"; anything else is treated as unset.
+// SetTerminalBgEnv names the override for the detected ground. IT EXISTS FOR THE TERMINALS THAT
+// CANNOT ANSWER.
 const SetTerminalBgEnv = "ORCHICON_TERMINAL_BG"
 
 // terminalGroundHex is the background a transparent theme's foregrounds are measured against, as the WORST CASE
@@ -59,36 +56,18 @@ func terminalGroundHex() string {
 	return "#ffffff"
 }
 
-// PrimeTerminalGround asks the terminal for its background ONCE, at a point where nothing else is reading stdin.
-//
-// The query writes an escape sequence and reads the reply from the tty, so it must not happen while bubbletea is
-// draining that same tty — it would race for the bytes. `theme.Use` is the natural place to need the answer, and
-// a session that STARTS on a solid palette and switches to a transparent one later would otherwise trigger the
-// query mid-session. Priming it in NewApp (before tea.NewProgram) puts the one query in the safe window, and
-// termenv caches the answer for the life of the process, so every later call is free.
+// PrimeTerminalGround asks the terminal for its background ONCE, at a point where nothing else is
+// reading stdin.
 func PrimeTerminalGround() { _ = terminalGroundHex() }
 
-// readableOn returns c nudged AWAY from bg until it clears floor, or c unchanged when it already clears it.
-//
-// "Away" means toward white on a dark ground and toward black on a light one — the direction that raises
-// contrast — and the blend preserves the palette's own hue for as long as the floor allows rather than
-// substituting a flat white or black. That is the same trade the message bands make (see bubbleText), applied
-// to the ground the terminal supplies.
+// readableOn returns c nudged AWAY from bg until it clears floor, or c unchanged when it already
+// clears it.
 func readableOn(c, bg string, floor float64) string {
 	return readableOnAll(c, []string{bg}, floor)
 }
 
-// readableOnAll nudges c until it clears floor against EVERY target, and returns c untouched when it already
-// does.
-//
-// IT TAKES SEVERAL TARGETS BECAUSE A TRANSPARENT THEME DRAWS ON MORE THAN THE TERMINAL. The ground is the
-// terminal's background, but the code chip, the code block and the diff lines draw on the RAISED fill, which sits
-// a little away from the ground — so a text colour chosen to clear the floor against the ground alone can sit at
-// 3.9:1 on the chip above it. Measured exactly that on the light palettes, whose chip fill lifts toward their
-// accent and swallows a near-white foreground.
-//
-// The floor is therefore met against the HARDEST of the targets, which is the same conservative direction the
-// ground itself is chosen in (see terminalGroundHex).
+// readableOnAll nudges c until it clears floor against EVERY target, and returns c untouched when
+// it already does.
 func readableOnAll(c string, targets []string, floor float64) string {
 	clears := func(v string) bool {
 		for _, bg := range targets {
@@ -116,13 +95,8 @@ func readableOnAll(c string, targets []string, floor float64) string {
 	return target
 }
 
-// adaptTransparentForTerminal returns a copy of a transparent palette whose FOREGROUNDS are legible on the
-// terminal's own background. Its fills are untouched.
-//
-// The copy's Bg and Surface are set to the GROUND, which is not a colour anything paints (both are left
-// unpainted — see buildStyles) but IS what every contrast gate measures against. That is the point: the gates
-// iterate the registry and read the ACTIVE palette, so reporting the real ground here means they measure the
-// pairing the operator actually sees, with no special case in any gate.
+// adaptTransparentForTerminal returns a copy of a transparent palette whose FOREGROUNDS are legible
+// on the terminal's own background.
 func adaptTransparentForTerminal(src *Theme) *Theme {
 	ground := terminalGroundHex()
 	dark := isDarkHex(ground)
@@ -137,13 +111,8 @@ func adaptTransparentForTerminal(src *Theme) *Theme {
 	cp := *src
 	cp.Bg = lipgloss.Color(ground)
 	cp.Surface = lipgloss.Color(ground)
-	// THE RAISED FILL STAYS PAINTED, and it is a lift AWAY FROM THE GROUND rather than a blend toward the accent.
-	// It has to be: a code span, a code block and a diff line all draw through it, and it must read as a raised
-	// block on whatever the terminal is — while staying close enough to the ground that the text above it can
-	// still clear its floor against BOTH. Blending the palette's accent in (which is what the first version did)
-	// lifted a LIGHT palette's chip toward white on a dark terminal, and the adapted near-white body text landed
-	// on it at 3.94:1. The measured failure is why this is a neutral lift, and why the text below is measured
-	// against it as well as against the ground.
+	// THE RAISED FILL STAYS PAINTED, and it is a lift AWAY FROM THE GROUND rather than a blend toward
+	// the accent.
 	lift := "#ffffff"
 	if !dark {
 		lift = "#000000"
@@ -169,8 +138,7 @@ func adaptTransparentForTerminal(src *Theme) *Theme {
 	cp.Busy = lipgloss.Color(readableOn(string(src.Busy), ground, statusFloor))
 	cp.Tool = lipgloss.Color(readableOn(string(src.Tool), ground, statusFloor))
 
-	// Select is deliberately NOT adapted: it is a fill that carries white text, it is gated against that
-	// (TestSelectionFillCarriesWhiteText), and its whole job is to be unmistakably different from whatever is
-	// behind it — which the operator wants to be able to see.
+	// Select is deliberately NOT adapted: it is a fill that carries white text, it is gated against
+	// that (TestSelectionFillCarriesWhiteText).
 	return &cp
 }

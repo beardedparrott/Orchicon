@@ -7,9 +7,8 @@ import (
 	"testing"
 )
 
-// flattenWire flattens a drained stream into "T:text"/"R:reasoning"
-// segments (same merge rule as collect in thinksplit_test.go) and
-// reports whether a Finish event arrived.
+// flattenWire flattens a drained stream into "T:text"/"R:reasoning" segments (same merge rule as
+// collect in thinksplit_test.go) and reports whether a Finish event arrived.
 func flattenWire(t *testing.T, ts TurnStream) (string, bool) {
 	t.Helper()
 	evs, err := drainStream(t, ts)

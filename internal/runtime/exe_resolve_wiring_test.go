@@ -22,9 +22,6 @@ import (
 )
 
 // TestResolveContainerExeIsActuallyCalled is the wiring assertion.
-//
-// The resolver was written, documented, tested by hand, and never invoked — so the daemon mounted the PE. A
-// test of the resolver alone cannot catch that; only one that asserts the CALL exists can.
 func TestResolveContainerExeIsActuallyCalled(t *testing.T) {
 	b, err := os.ReadFile("../../cmd/orchicon/runtime.go")
 	if err != nil {
@@ -79,9 +76,6 @@ func TestTheEntrypointRefusalIsActionable(t *testing.T) {
 }
 
 // TestNoFallbackToTheHostBinaryOnAWindowsShapedHost pins the change from fallback to refusal.
-//
-// Before, an empty ContainerExe fell back to d.ExePath — which is exactly how the PE got mounted. The fallback
-// is only safe when the host IS the container's platform.
 func TestNoFallbackToTheHostBinaryOnAWindowsShapedHost(t *testing.T) {
 	b, err := os.ReadFile("daemon.go")
 	if err != nil {

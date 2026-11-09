@@ -42,8 +42,7 @@ func TestInstallIsInteractive(t *testing.T) {
 }
 
 // THE ONE THAT MATTERS: with stdout redirected (a log, a pipe — every build and every backgrounded
-// rebuild), the install must NOT be interactive, because the /dev/tty it would open belongs to whatever
-// else is on that terminal.
+// rebuild), the install must NOT be interactive.
 func TestInstallIsNonInteractiveWhenStdoutIsNotATerminal(t *testing.T) {
 	t.Setenv("ORCHICON_INSTALL_INTERACTIVE", "")
 	if err := os.Unsetenv("ORCHICON_INSTALL_INTERACTIVE"); err != nil {

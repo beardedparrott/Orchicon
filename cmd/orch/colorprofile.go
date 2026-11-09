@@ -9,37 +9,13 @@ import (
 )
 
 // The true-colour advertisement, and the one place it goes missing.
-//
-// WHY THIS IS HERE AND NOT IN A WINDOWS LAUNCHER. `orch` on Windows is a NATIVE binary now —
-// release.yml ships windows/amd64 as a zip of orchicon.exe/orch.exe — but the `.exe` has no launcher of
-// its own to set the environment in, and a user who runs it inside the WSL2 distro (where the runtime
-// containers live) would not see a Windows-side variable anyway: WSL relays a specific set of variables
-// and requires WSLENV to relay more.
-//
-// SO THE FIX IS IN-PROCESS, and it SUPPLIES AN ADVERTISEMENT rather than forcing a
-// profile. That distinction is the whole reason this is safe where the removed
-// hand-rolled override was not (see terminalColorProfile below): we set COLORTERM
-// and then let termenv's own detection decide, so NO_COLOR still wins (EnvColorProfile
-// checks EnvNoColor first), the GNU screen degradation still applies, and the value
-// is lowercased the same way termenv lowercases it.
-//
-// WHAT ACTUALLY GOES WRONG, measured on this repo's own palettes. The xterm-256
-// cube's first non-zero level is 95/255 (~L37%), so its only dark entries are
-// GREYS: every dark ground in every theme — forest's #0e1511 (L7), teal's #152322
-// (L11) — quantises to grey 233/234, which is black. So below true colour a dark
-// ground cannot be tinted AT ANY LIGHTNESS and the palette is not the thing to
-// change. Windows Terminal supports 24-bit and does not reliably advertise it to a
-// WSL shell, so the profile lands on ANSI256 and the theme looks broken.
 const colorTermEnv = "COLORTERM"
 
 // wslEnvMarkers are the variables WSL sets in the distro's own environment. Any
 // one of them means we are inside WSL.
 var wslEnvMarkers = []string{"WSL_DISTRO_NAME", "WSL_INTEROP"}
 
-// TrueColorOptOut disables the WSL true-colour default. It exists because this
-// code decides something on the operator's behalf, and a decision with no way to
-// contradict it is the kind of help that becomes an obstacle. Any other value
-// (or unset) leaves the default in place.
+// TrueColorOptOut disables the WSL true-colour default.
 const TrueColorOptOut = "ORCHICON_TRUECOLOR"
 
 // needsWSLTrueColor reports whether the app should supply the true-colour
@@ -79,23 +55,15 @@ func needsWSLTrueColor(tty bool, getenv func(string) string) bool {
 	return false
 }
 
-// applyWSLTrueColorDefault supplies the advertisement when WSL is running us in a
-// terminal that can take 24-bit colour but did not say so. Called from main BEFORE
-// applyTerminalColorProfile, because termenv reads the environment at
-// NewOutput/EnvColorProfile time (its environ is a live view of os.Getenv, and the
-// resolution in applyTerminalColorProfile runs immediately after).
+// applyWSLTrueColorDefault supplies the advertisement when WSL is running us in a terminal that can
+// take 24-bit colour but did not say so.
 func applyWSLTrueColorDefault() {
 	if v := wslTrueColorDefault(stdoutIsTTY(), os.Getenv); v != "" {
 		_ = os.Setenv(colorTermEnv, v)
 	}
 }
 
-// wslTrueColorDefault returns the COLORTERM value to supply, or "" to leave the
-// environment alone. Splitting the DECISION out of the applier is what makes the
-// whole chain assertable: the tests drive this with a described terminal and then
-// feed the result through the REAL termenv resolution, so what is pinned is the
-// outcome — 'WSL terminal that did not advertise' reaches TrueColor — rather than
-// the shape of an if-statement.
+// wslTrueColorDefault returns the COLORTERM value to supply, or "" to leave the environment alone.
 func wslTrueColorDefault(tty bool, getenv func(string) string) string {
 	if needsWSLTrueColor(tty, getenv) {
 		return "truecolor"

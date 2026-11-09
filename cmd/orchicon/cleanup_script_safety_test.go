@@ -1,15 +1,7 @@
 package main
 
-// cleanup_script_safety_test.go — the sweep may remove a worktree only when its content exists elsewhere,
-// and the report must not promise space the sweep will keep.
-//
-// Both properties were asserted by the script's own header and by nothing else, so both were false: a clean
-// DETACHED-HEAD worktree holds commits that appear on no branch, and `git worktree remove` left them with
-// nothing to recover from; and the inventory summed every worktree while labelling the total "swept by
-// --worktrees". A destructive script whose only guard is a comment is a script with no guard.
-//
-// Each test copies the script beside the sandbox so REPO_ROOT resolves there: the inventory otherwise reads
-// the operator's real .dev/tools and telemetry, which is both slow and ambient.
+// cleanup_script_safety_test.go — the sweep may remove a worktree only when its content exists
+// elsewhere, and the report must not promise space the sweep will keep.
 
 import (
 	"os"
@@ -37,9 +29,7 @@ func sandboxCleanup(t *testing.T, sandbox string) string {
 	return dst
 }
 
-// guardFreePath drops the agent runtime's guard shim from PATH. The shim BLOCKS `rm` whenever the guard
-// env is absent — and this package's init() unsets exactly that env — so the script would meet a refusal
-// here that never exists in CI.
+// guardFreePath drops the agent runtime's guard shim from PATH.
 func guardFreePath() string {
 	var kept []string
 	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
@@ -175,9 +165,7 @@ func TestCleanupInventoryCountsOnlyReclaimableWorktrees(t *testing.T) {
 	}
 }
 
-// A REFUSED REMOVAL MUST NAME ITS CAUSE. rm's stderr was discarded and every failure — a session guard
-// rejecting the command, an immutable file, a read-only parent — printed as "(permissions?)", which is
-// right for exactly one of them.
+// A REFUSED REMOVAL MUST NAME ITS CAUSE.
 func TestCleanupNamesWhyARemovalFailed(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions, so the removal cannot be made to fail")
@@ -221,9 +209,7 @@ func runCleanupCode(t *testing.T, script string, env []string, args ...string) (
 	return string(out), code
 }
 
-// THE SCOPE OF THIS SCRIPT IS CACHES AND LEFTOVERS. A container is runtime state and an instance data
-// dir is live data: neither is a cache, so neither may be reachable even by an explicit flag. The flags
-// are gone rather than defaulted off — a flag that offers the deletion is a flag that gets typed.
+// THE SCOPE OF THIS SCRIPT IS CACHES AND LEFTOVERS.
 func TestCleanupRejectsStateCategories(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns the script six times")
@@ -262,9 +248,8 @@ func shellWithoutComments(src string) []string {
 	return out
 }
 
-// THE STRUCTURE, not just the flags: nothing in this script may reach a container engine or an instance
-// data dir. Asserting the property means a future edit that re-adds one fails here rather than being
-// noticed only when someone runs it.
+// THE STRUCTURE, not just the flags: nothing in this script may reach a container engine or an
+// instance data dir.
 func TestCleanupRemovalSurfaceIsCachesAndLeftoversOnly(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "orchicon-cleanup.sh"))
 	if err != nil {

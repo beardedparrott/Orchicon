@@ -12,10 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/testfixtures"
 )
 
-// TestRenderPaneDegradation verifies the truecolor → 256 → 16 → ascii
-// degradation path the acceptance criteria call out: add/del lines carry a
-// distinct SGR color in color profiles, and the ascii profile emits no raw
-// color escape codes.
+// TestRenderPaneDegradation verifies the truecolor → 256 → 16 → ascii degradation path the
+// acceptance criteria call out: add/del lines carry a distinct SGR color in color profiles.
 func TestRenderPaneDegradation(t *testing.T) {
 	vecs, err := testfixtures.LoadFileEditVectors()
 	if err != nil {
@@ -62,9 +60,8 @@ func TestRenderPaneDegradation(t *testing.T) {
 	}
 }
 
-// TestRenderPaneSideBySideVsUnified asserts the narrow-pane collapse: at a
-// wide width the pane renders two columns, at a narrow width it renders
-// unified (single-column) — mirroring the GUI's DiffView breakpoint.
+// TestRenderPaneSideBySideVsUnified asserts the narrow-pane collapse: at a wide width the pane
+// renders two columns, at a narrow width it renders unified (single-column).
 func TestRenderPaneSideBySideVsUnified(t *testing.T) {
 	vecs, err := testfixtures.LoadFileEditVectors()
 	if err != nil {
@@ -85,9 +82,8 @@ func TestRenderPaneSideBySideVsUnified(t *testing.T) {
 	if wide == "" || narrow == "" {
 		t.Fatal("render produced empty output")
 	}
-	// The wide layout's header shows both an "old" and a "new" column; the
-	// unified layout collapses to a single column (line-number gutter pair
-	// per row, no column separator header).
+	// The wide layout's header shows both an "old" and a "new" column; the unified layout collapses to
+	// a single column (line-number gutter pair per row, no column separator header).
 	if !strings.Contains(wide, "old") || !strings.Contains(wide, "new") {
 		t.Errorf("wide render missing column headers:\n%s", wide)
 	}
@@ -96,12 +92,9 @@ func TestRenderPaneSideBySideVsUnified(t *testing.T) {
 	}
 }
 
-// TestRenderPaneTruncatesUtf8Cleanly guards the truncation fix: a narrow pane
-// must clip a wide multi-byte line (CJK / emoji from the unicode fixture) to
-// the column budget WITHOUT splitting a rune in half. The previous byte-slicing
-// truncate emitted invalid UTF-8 (a truncation artifact the acceptance
-// criteria forbid). Every rendered line must remain valid UTF-8 and never
-// exceed the pane width.
+// TestRenderPaneTruncatesUtf8Cleanly guards the truncation fix: a narrow pane must clip a wide
+// multi-byte line (CJK / emoji from the unicode fixture) to the column budget WITHOUT splitting a
+// rune.
 func TestRenderPaneTruncatesUtf8Cleanly(t *testing.T) {
 	vecs, err := testfixtures.LoadFileEditVectors()
 	if err != nil {

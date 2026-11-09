@@ -1,10 +1,7 @@
 package tui
 
-// slash.go — the slash command framework (plan §4): commands parse
-// before send; unknown /word gives usage feedback instead of being sent
-// as a chat message; `\/` escapes a literal slash. One registry, two
-// frontdoors: the composer (any screen) and the help overlay (rendered
-// FROM the registry so it cannot drift).
+// slash.go — the slash command framework (plan §4): commands parse before send; unknown /word gives
+// usage feedback instead of being sent as a chat message; `\/` escapes a literal slash.
 
 import (
 	"fmt"
@@ -35,13 +32,8 @@ type SlashCommand struct {
 // panes with no TUI surface).
 func (c SlashCommand) NoticeOnly() bool { return c.Usage == "" }
 
-// MatchesQuery reports whether a typed slash word (WITHOUT the leading slash) names this
-// command — by its primary spelling OR any ALIAS.
-//
-// Aliases are not decoration: "/exit" resolves and RUNS, so a palette that cannot find it is
-// telling the operator a working command does not exist. That was the reported inconsistency
-// — "/exit works but doesn't get displayed in the slash command list as a valid slash
-// command" — and it happened because the filter matched `c.Name` alone.
+// MatchesQuery reports whether a typed slash word (WITHOUT the leading slash) names this command —
+// by its primary spelling OR any ALIAS.
 func (c SlashCommand) MatchesQuery(q string) bool {
 	if strings.Contains(c.Name, q) {
 		return true
@@ -54,9 +46,8 @@ func (c SlashCommand) MatchesQuery(q string) bool {
 	return false
 }
 
-// AliasLabel renders the aliases for display, in one shared form so /help and the palette
-// cannot drift apart — the exact drift that produced this report (helpLines showed the alias,
-// the palette row did not).
+// AliasLabel renders the aliases for display, in one shared form so /help and the palette cannot
+// drift apart — the exact drift that produced this report (helpLines showed the alias.
 func (c SlashCommand) AliasLabel() string {
 	if len(c.Aliases) == 0 {
 		return ""
@@ -74,10 +65,7 @@ type slashRegistry struct {
 	names  []string // primary names, sorted for /help
 }
 
-// ParseSlash parses composer input: "/word ..." at buffer start →
-// (name, args). Returns ok=false when the text is not a command (plain
-// chat). A leading backslash before the slash (`\/…`) escapes the
-// slash — the text is sent literally with the backslash stripped.
+// ParseSlash parses composer input: "/word ..." at buffer start → (name, args).
 func ParseSlash(text string) (name string, args []string, escaped bool, ok bool) {
 	if strings.HasPrefix(text, "\\/") {
 		return "", nil, true, false // literal slash message, backslash stripped by caller
@@ -92,10 +80,8 @@ func ParseSlash(text string) (name string, args []string, escaped bool, ok bool)
 	return fields[0], fields[1:], false, true
 }
 
-// buildSlashRegistry assembles the full command set: nav-generated
-// entries (from the screens' Sources() — no drift from real screens),
-// hand-listed GUI-mirror entries, arg jumps, aliases, and system
-// commands.
+// buildSlashRegistry assembles the full command set: nav-generated entries (from the screens'
+// Sources() — no drift from real screens), hand-listed GUI-mirror entries, arg jumps, aliases.
 func buildSlashRegistry(m *App) *slashRegistry {
 	reg := &slashRegistry{byName: map[string]*SlashCommand{}}
 
@@ -122,22 +108,7 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		})
 	}
 
-	// 2. Entity commands generated from the screens' Sources() — every
-	// TUI list pane gets one, so the set cannot drift from real screens.
-	//
-	// The consent surfaces are SLASH COMMANDS, not bare letters: the conversations rail's keys are
-	// composer-driven (UPDATES rows 296/300/303), so a bare letter there is TYPED. /grants is the
-	// session roll-up (revocable); /permissions is the persistent allow/deny list, deliberately NOT
-	// /policy — the GUI's /policies route is the Rego policy ENGINE, a different concept.
-	// 3. EDITING THE TRANSCRIPT — the keyboard route to the same menu the right-click opens.
-	//
-	// THE OPERATOR ASKED FOR "a slash command or two" alongside the mouse gesture. Both commands act on the MOST
-	// RECENT of the operator's own messages, which is the one a keyboard route can identify without asking; a
-	// specific message is reached by right-clicking it.
-	//
-	// NEITHER EXECUTES. They OPEN THE MENU WITH THE ENTRY ARMED, so the operator confirms once and every deletion
-	// goes through the one dispatch point in msgmenu.go. A command that deleted on Enter would be a second path
-	// to an irreversible act, and the second path is always the one that forgets the confirmation.
+	// 2.
 	add(SlashCommand{
 		Name:  "/undo",
 		Usage: "/undo",
@@ -193,10 +164,8 @@ func buildSlashRegistry(m *App) *slashRegistry {
 			Usage: "/" + e.Cmd + e.ArgsHint,
 			Desc:  "open " + e.Label,
 			Run: func(m *App, args []string) tea.Cmd {
-				// A VERB row (Ask's New / Conversations) runs its action instead of
-				// focusing a source — otherwise /conversations would switch tabs
-				// and focus a source the Ask screen never renders (its list is the
-				// right rail).
+				// A VERB row (Ask's New / Conversations) runs its action instead of focusing a source — otherwise
+				// /conversations would switch tabs and focus a source the Ask screen never renders (its list.
 				if eCopy.Action != nil {
 					return eCopy.Action(m)
 				}
@@ -213,10 +182,7 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		})
 	}
 
-	// 3. GUI-mirror notice-only panes were removed (QA finding 4). The
-	// registry now builds commands only from real screens + system commands;
-	// no command surfaces a "use the web GUI" notice. GUI panes without a
-	// TUI source are documented in docs/tui-parity.md as child work items.
+	// 3.
 
 	// 4. Arg-jump aliases (navigate straight to the detail view).
 	jump := func(name, alias, usage string) {
@@ -247,9 +213,7 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		Name: "/connect", Usage: "/connect",
 		Desc: "reopen the connection/auth screen",
 		Run: func(m *App, _ []string) tea.Cmd {
-			// In-place overlay: NEVER exits the process or tears down
-			// alt-screen. The main.go reconnect loop remains only the first-run
-			// fallback (no profile yet).
+			// In-place overlay: NEVER exits the process or tears down alt-screen.
 			m.reconnectRequested = true
 			return m.runConnectCommand()
 		},
@@ -311,16 +275,8 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 
-	// PLANE LIFECYCLE (plane_lifecycle.go). THE TUI IS ONE OF THE TWO USER-FACING CONTROL SURFACES
-	// (with the desktop app; the web app carries none by design) — so for a terminal-first operator
-	// this is the ONLY place a plane they just stopped can be started again.
-	//
-	// These call internal/planecontrol DIRECTLY: there is no lifecycle RPC to call, and the same Go
-	// package is what `orchicon plane start|stop|restart` and the desktop app invoke.
-	//
-	// FOUR commands, not one with verbs: SlashCommand.Run does not receive the invoked name, so an
-	// alias could not tell which verb was asked for — and four names are four entries the drift test
-	// can assert against every surface that enumerates commands.
+	// THE TUI IS ONE OF THE TWO USER-FACING CONTROL SURFACES (with the desktop app; the web app carries
+	// none by design) — so for a terminal-first operator this is the ONLY place a plane they just.
 	add(SlashCommand{
 		Name: "/plane", Usage: "/plane [start | stop | restart]",
 		Desc: "plane state for the connected local instance; a verb runs the same plane control the CLI and desktop app call (not the plane's API)",
@@ -354,9 +310,8 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 
-	// New chat / conversation management / ask-model + mode (parity with the
-	// GUI's Ask Orchicon surface). All writes go through the chat controller
-	// (the shell's single Ask write path).
+	// New chat / conversation management / ask-model + mode (parity with the GUI's Ask Orchicon
+	// surface).
 	add(SlashCommand{
 		Name: "/new", Usage: "/new",
 		Desc: "start a new conversation (the first send creates it)",
@@ -367,21 +322,14 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		},
 	})
 	// /rename OPENS A PREFILLED FORM with no arguments, and writes directly with one.
-	//
-	// The direct form was the only way in, which is the operator's report — "We can't rename
-	// conversations in the TUI" — because a command you must know, that cannot show you the current
-	// title, is not a rename UI. With no arguments it now opens the same modal `ctrl+n` opens, so the
-	// palette (the documented command surface) is a real route to it, and the current title is there
-	// to edit rather than retype.
 	add(SlashCommand{
 		Name: "/rename", Usage: "/rename [title]",
 		Desc: "rename the open conversation — with no title, opens a prefilled box (UpdateConversationTitle)",
 		Run: func(m *App, args []string) tea.Cmd {
 			id := m.chatConvID
 			if id == "" {
-				// The open conversation is the target by default, but if the operator has only the
-				// RAIL loaded (a conversation selected, none "open"), that selection is what they are
-				// looking at — use it rather than refusing.
+				// The open conversation is the target by default, but if the operator has only the RAIL loaded (a
+				// conversation selected, none "open"), that selection is what they are looking.
 				if m.railVisible() && m.active == TabAsk && m.convSel >= 0 && m.convSel < len(m.railRows()) {
 					id = m.conversations[m.railConvIndexAt(m.convSel)].ID
 				}
@@ -423,27 +371,11 @@ func buildSlashRegistry(m *App) *slashRegistry {
 	add(SlashCommand{
 		// THE NAME IS THE SINGULAR, AND THAT IS A DELIBERATE LINE: /project SWITCHES the workspace,
 		// /projects NAVIGATES to the Projects pane.
-		//
-		// The operator drew it: "make /project be the command to switch projects and /projects is the slash command
-		// to go to the projects screen."
-		//
-		// IT ALSO FIXES A SHADOWING BUG THIS COMMAND CAUSED. The Work screen declares a "projects" source
-		// (screens/work/screen.go: AddSource(srcProjects, "Projects", …)), so the slash registry GENERATES a
-		// /projects that switches to the Work area and focuses that pane. buildSlashRegistry adds its generated
-		// commands FIRST and its explicit ones after, and `add` overwrites by name — so a picker named /projects
-		// took the name for good, and the Projects pane became unreachable by command. The plural now belongs to
-		// the pane it was always meant for.
 		Name: "/project", Usage: "/project [<filter>]",
 		Desc:    "switch the PROJECT WORKSPACE the conversations rail shows (type text to filter the list)",
 		MinArgs: 0,
 		Run: func(m *App, args []string) tea.Cmd {
-			// BARE, OR WITH A FILTER, IT OPENS THE LIST. The operator: "When you type /project it should
-			// automatically show you the list of projects to choose from (i.e. If I type '/project Orch', it
-			// would show me the project Orchicon."
-			//
-			// So the argument is a FILTER, not a selection: it narrows the list and the operator still picks
-			// from it. Narrowing rather than auto-selecting also keeps a prefix from being a commitment — "Orch"
-			// matching two projects shows both rather than guessing.
+			// BARE, OR WITH A FILTER, IT OPENS THE LIST.
 			return m.openProjectPickerFiltered("", strings.TrimSpace(strings.Join(args, " ")))
 		},
 	})
@@ -452,10 +384,7 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		Desc:    "move the OPEN conversation into another project workspace",
 		MinArgs: 0,
 		Run: func(m *App, args []string) tea.Cmd {
-			// A SEPARATE NAME RATHER THAN AN ARGUMENT ON /project. Both open the same list and the picker's
-			// title says which question it is asking, but the two acts are different — a VIEW versus a WRITE —
-			// and overloading one name made "/project Orch" ambiguous between "filter to Orch" and "move this
-			// chat to Orch".
+			// A SEPARATE NAME RATHER THAN AN ARGUMENT ON /project.
 			if m.chatConvID == "" {
 				m.dock.SetError("no conversation is open — /project chooses the workspace")
 				return nil
@@ -491,31 +420,19 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		MinArgs: 0,
 		Run: func(m *App, args []string) tea.Cmd {
 			if len(args) == 0 {
-				// BARE /mode REPORTS AND LISTS. The composer's stat row carries the
-				// mode pill (the TUI's counterpart to the GUI's dropdown), and the
-				// list is what makes the command self-teaching: an operator who does
-				// not already know the mode names cannot guess them.
+				// BARE /mode REPORTS AND LISTS.
 				m.dock.SetNotice("mode: " + m.currentModeLabel() + "  (available: " +
 					strings.Join(chat.ModeNames(), ", ") + " — /mode <name> to switch)")
 				return nil
 			}
-			// THE MODE NAME MAY CONTAIN A SPACE, so the arguments are JOINED rather
-			// than taken one at a time: the slash layer splits on whitespace, which
-			// would hand "quick work" to the parser as "quick" and reject it — a mode
-			// the UI itself lists as untypeable. Joining is a no-op for a single-word
-			// mode, so /mode brainstorm and /mode quick_work keep working unchanged.
+			// THE MODE NAME MAY CONTAIN A SPACE, so the arguments are JOINED rather than taken one at a time:
+			// the slash layer splits on whitespace.
 			mode, ok := chat.ParseMode(strings.Join(args, " "))
 			if !ok {
 				m.dock.SetError("unknown mode " + args[0] + " — available: " + strings.Join(chat.ModeNames(), ", "))
 				return nil
 			}
 			// THE PENDING MODE IS ONLY SET WHEN THERE IS NOTHING OPEN TO SET IT ON.
-			//
-			// It used to be set unconditionally, so switching the mode of the conversation you were in ALSO
-			// changed what the NEXT new conversation would be created with — the mode leaked forward. The
-			// operator: "When someone creates a new conversation, it should always default back to brainstorm
-			// unless they do /mode again." Pending is for the pre-conversation choice (the launch page's mode
-			// selector, which is legitimate and kept); changing an OPEN conversation is about that conversation.
 			if m.chatConvID == "" {
 				m.chat.SetPendingMode(mode)
 				m.dock.SetNotice("mode " + m.currentModeLabel() + " applies to the next new conversation")
@@ -543,10 +460,7 @@ func buildSlashRegistry(m *App) *slashRegistry {
 	// are the words an operator will actually type, and a name that opens the thing you want is not
 	// duplication — it is the difference between a command that has to be learned and one that is found.
 	scopeCmd := func(m *App, args []string) tea.Cmd {
-		// NO ARGUMENTS, AND THAT IS THE POINT: the grammar is gone. An argument is REFUSED rather than
-		// silently ignored, and the refusal names the modal's key for each verb — so an operator who
-		// types the old `/mcp define` is told where define went in one line instead of watching the modal
-		// open and wondering why "define" did nothing.
+		// NO ARGUMENTS, AND THAT IS THE POINT: the grammar is gone.
 		if len(args) > 0 {
 			m.dock.SetError("/" + strings.TrimPrefix(args[0], "/") + " is not a subcommand any more — " +
 				"the scope modal has every one of them as a key: a add · c catalog · enter/e edit · " +
@@ -561,17 +475,14 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		Run:  scopeCmd,
 	})
 	add(SlashCommand{
-		// /mcp KEEPS THE NAME THE OPERATOR ALREADY KNOWS. It is the conversation's MCP half of the scope
-		// modal; the tenant-level "mcp" source it once shadowed was REMOVED (a definition is
-		// OWNER-SCOPED), so this name was free and already means MCP to the operator.
+		// /mcp KEEPS THE NAME THE OPERATOR ALREADY KNOWS.
 		Name: "/mcp", Usage: "/mcp",
 		Desc: "open the scope modal at this conversation's MCP servers (same modal as /scope)",
 		Run:  scopeCmd,
 	})
 	add(SlashCommand{
 		// /skills WITH NO ARGUMENT opens the same modal; WITH a path list it writes directly, because a
-		// typed list is a complete statement and does not need a modal in between. Validation is the
-		// SERVER'S either way (contextfiles), so the two paths cannot disagree about what is valid.
+		// typed list is a complete statement and does not need a modal in between.
 		Name: "/skills", Usage: "/skills [<path>[, <path>…] | clear]",
 		Desc:    "this conversation's skill FILES — no argument opens the scope modal; paths (or clear) write directly",
 		MinArgs: 0,
@@ -590,32 +501,19 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		Name: "/fullsend", Usage: "/fullsend",
 		Desc: "toggle FULLSEND for this conversation: stop asking for permission (a deny entry and the never-allow class still refuse)",
 		Run: func(m *App, _ []string) tea.Cmd {
-			// NO PENDING FORM, deliberately. The conversation MODE had a pending value for a
-			// chat that did not exist yet, and that leak — changing an open conversation also
-			// changed what the NEXT one would be created with — is exactly the bug this
-			// refuses to repeat. A permission bypass armed for a conversation the operator has
-			// not looked at is one they did not knowingly turn on.
+			// NO PENDING FORM, deliberately.
 			if m.chatConvID == "" {
 				m.dock.SetError("no conversation open — /fullsend applies to one conversation, and there is no pending form: a bypass must not be armed for a chat you have not opened")
 				return nil
 			}
-			// THE OPERATOR'S INTENT IS A TOGGLE; THE WIRE CARRIES A VALUE. The state is read
-			// from the shell's list (the server's answer), so two /fullsend taps cannot flip
-			// it back and forth against a stale local belief.
+			// THE OPERATOR'S INTENT IS A TOGGLE; THE WIRE CARRIES A VALUE.
 			on := !m.fullsendOn()
 			switch {
 			case !on:
 				m.dock.SetNotice("FULLSEND off — this conversation asks for permission again")
 			case m.chatStore.hasPendingConsent(m.chatConvID):
-				// A CARD ALREADY ON SCREEN IS CLEARED TOO — the operator's call: "Clear it too —
-				// fullsend means stop asking." It is also the consistent behaviour: a card exists
-				// only because fullsend was OFF when the call was raised, so approving it is what
-				// fullsend would have decided a moment earlier. Leaving it would keep the turn
-				// blocked on a decision the operator has just said to stop making.
-				//
-				// A QUESTION IS NOT A PERMISSION and is not cleared: its reply is the operator's
-				// own words, which the mode cannot supply. The notice says both, because a mode
-				// that appears to do something it did not is worse than one that explains itself.
+				// A CARD ALREADY ON SCREEN IS CLEARED TOO — the operator's call: "Clear it too — fullsend means
+				// stop asking." It is also the consistent behaviour.
 				m.dock.SetNotice("⚠ FULLSEND ON — open permission cards are approved and asks from here on are skipped. A question still needs your answer. Your deny list and sudo-class binaries still refuse.")
 			default:
 				m.dock.SetNotice("⚠ FULLSEND ON — Orchicon stops asking for permission in this conversation. Your deny list and sudo-class binaries still refuse. /fullsend again turns it off.")
@@ -640,11 +538,7 @@ func buildSlashRegistry(m *App) *slashRegistry {
 		Desc:    "attach a file to the next message",
 		MinArgs: 1,
 		Run: func(m *App, args []string) tea.Cmd {
-			// THE TUI CAN ATTACH. This delegates to the SAME reader the ctrl+f route used to use
-			// (attachFileFromPrompt), so the pending-attachment strip and the "lands on the NEXT
-			// message" contract are unchanged. The file is read OFF THE DISK in a command (it can be
-			// megabytes), never on the tea loop; because a SlashCommand.Run RETURNS a tea.Cmd, it is
-			// dispatched directly rather than staged through pendingAttachCmd.
+			// THE TUI CAN ATTACH.
 			return attachFileFromPrompt(strings.Join(args, " "))
 		},
 	})
@@ -698,10 +592,8 @@ func (m *App) slashHelpText() string {
 	return strings.Join(m.slash.helpLines(), " · ")
 }
 
-// findInTranscript is the SHARED transcript-search entry point for the TERM-AT-HAND case:
-// /find <text> and the find box both land here, so the two surfaces can never drift. The box
-// (findbox.go) calls this on every keystroke and on commit, which is what makes /find, the box and
-// the n/N chords one search with one definition of a match.
+// findInTranscript is the SHARED transcript-search entry point for the TERM-AT-HAND case: /find
+// <text> and the find box both land here, so the two surfaces can never drift.
 func (m *App) findInTranscript(q string) {
 	if m.chatConvID == "" {
 		m.dock.SetError("no conversation open — nothing to search")
@@ -726,8 +618,6 @@ func (m *App) findInTranscript(q string) {
 }
 
 // dispatchSlash parses and runs a slash command from the composer.
-// Returns (handled, cmd): handled=false means the text is a chat
-// message (or an escaped literal) and should be sent.
 func (m *App) dispatchSlash(text string) (bool, tea.Cmd) {
 	name, args, escaped, ok := ParseSlash(text)
 	if escaped {
@@ -737,23 +627,8 @@ func (m *App) dispatchSlash(text string) (bool, tea.Cmd) {
 	if !ok {
 		return false, nil
 	}
-	// A COMMAND DISMISSES THE CHOOSER. It is closed here, at the ONE place text becomes a command,
-	// rather than in the palette's own Enter arm — because Enter is not the only way in.
-	//
-	// THE BUG THIS FIXES. The palette's `enter` case closed itself ONLY when it had a selected
-	// candidate (palette.go: `if c == nil { return false, nil }`). The filter is computed from the WHOLE
-	// composer line, so typing a command WITH AN ARGUMENT matches nothing ("find foo" is not a command
-	// name) — the candidate list empties, Enter falls through to send the text, the command RUNS, and the
-	// box is left floating over a composer that has already been sent. The operator: "some slash commands
-	// leaves a box up after I initiate the command and I have to hit Esc to get rid of it" — precisely the
-	// argument-taking commands, and precisely because the command succeeded rather than failed.
-	//
-	// Closing HERE is the shape fix, not the instance fix: the palette forwards every key it does not case
-	// itself to the composer (see paletteHandleKey's default arm), and that set includes the dock's SECOND
-	// spelling of Enter — ctrl+j, the LF some terminals send. That path never reaches the `enter` case, so
-	// fixing the fall-through there would have left the same box behind for an operator whose terminal
-	// sends LF. Every route to a dispatched command passes through this function, so this is the one place
-	// the invariant "a command dismisses the chooser" can be true by construction.
+	// A COMMAND DISMISSES THE CHOOSER. The palette's `enter` case closed itself ONLY when it had a
+	// selected candidate (palette.go: `if c == nil { return false, nil }`).
 	m.closePalette()
 	cmd := m.slash.resolve(name)
 	if cmd == nil {
@@ -795,13 +670,8 @@ func runContextCmd(m *App, args []string) tea.Cmd {
 	return nil
 }
 
-// runThemeCmd switches the TUI theme ("/theme" lists, "/theme <name>"
-// switches + persists to the profile). Persisting keeps the selection
-// across launches; the profile is saved best-effort at the config path.
-// runThemeCmd switches the TUI theme. The palette set is TUI-OWNED (see
-// internal/tui/theme) and validated for terminal contrast. "/theme" lists them;
-// "/theme <name>" is a COMMIT — it binds the palette to the active PROJECT, or
-// saves it as the shared default when no project is in scope (see SetTheme).
+// runThemeCmd switches the TUI theme ("/theme" lists, "/theme <name>" switches + persists to the
+// profile).
 func runThemeCmd(m *App, args []string) tea.Cmd {
 	if len(args) == 0 {
 		names := make([]string, 0, len(m.themes))
@@ -879,10 +749,9 @@ func (m *App) SetTheme(name string) bool {
 	if m.profile != nil {
 		m.profile.Theme = name
 	}
-	// Report WHERE the choice is persisted so a non-persisting environment is
-	// visible instead of mysterious: the operator's "themes are not saving" is
-	// unsolvable without knowing the config path (a launcher with an ephemeral
-	// HOME writes somewhere that does not survive the run).
+	// Report WHERE the choice is persisted so a non-persisting environment is visible instead of
+	// mysterious: the operator's "themes are not saving" is unsolvable without knowing the config path
+	// (a.
 	path, pathErr := config.DefaultPath()
 	if pathErr != nil {
 		m.dock.SetNotice("theme: " + name + " (this run only — no config path: " + pathErr.Error() + ")")
@@ -907,14 +776,8 @@ func (m *App) SetTheme(name string) bool {
 	return true
 }
 
-// PreviewTheme applies a palette WITHOUT persisting or binding anything: the Themes pane's live preview as
-// the cursor moves (control/screen.go's OnHighlight -> previewTheme -> applyTheme). Reports false for an
-// unknown name.
-//
-// IT IS A SEPARATE ENTRY POINT FROM SetTheme, and that separation is the fix for the other half of the same
-// report. The preview used to go through SetTheme, so merely BROWSING the palette list rewrote the persisted
-// default on every cursor move — leaving the config on whatever row the cursor happened to stop at, which
-// the next launch in ANY unbound project then inherited.
+// PreviewTheme applies a palette WITHOUT persisting or binding anything: the Themes pane's live
+// preview as the cursor moves (control/screen.go's OnHighlight -> previewTheme -> applyTheme).
 func (m *App) PreviewTheme(name string) bool {
 	return m.applyThemeAndRefresh(name)
 }

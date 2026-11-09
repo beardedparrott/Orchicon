@@ -12,9 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// parseStreamLine unmarshals a JSON event line and feeds it through the
-// session-transport dispatch (parseEvent), the single path the adapter uses
-// now that the legacy stdout-line parser is gone.
+// parseStreamLine unmarshals a JSON event line and feeds it through the session-transport dispatch
+// (parseEvent), the single path the adapter uses now that the legacy stdout-line parser is gone.
 func parseStreamLine(t *testing.T, a *Adapter, ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, line string, output *strings.Builder, lastStreamErr *string, textSeq *int, stats *execStreamState) {
 	t.Helper()
 	var evt map[string]any
@@ -24,9 +23,8 @@ func parseStreamLine(t *testing.T, a *Adapter, ctx context.Context, execRow db.E
 	a.parseEvent(ctx, execRow, manifest, evt, nil, nil, output, lastStreamErr, textSeq, stats, nil)
 }
 
-// TestExecStreamStateBalancedSteps verifies that a run which emits matching
-// step_start/step_finish pairs is NOT flagged as having an unfinished step —
-// a normal completion must stay "succeeded".
+// TestExecStreamStateBalancedSteps verifies that a run which emits matching step_start/step_finish
+// pairs is NOT flagged as having an unfinished step — a normal completion must stay "succeeded".
 func TestExecStreamStateBalancedSteps(t *testing.T) {
 	a := &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	stats := &execStreamState{}
@@ -48,10 +46,8 @@ func TestExecStreamStateBalancedSteps(t *testing.T) {
 	}
 }
 
-// TestExecStreamStateUnfinishedStep verifies that a step_start with no
-// matching step_finish (e.g. the final model response was dropped) is
-// detectable so the caller can downgrade the result to a failure instead of
-// reporting an empty run as a clean success.
+// TestExecStreamStateUnfinishedStep verifies that a step_start with no matching step_finish (e.g.
+// the final model response was dropped) is detectable so the caller can downgrade the result.
 func TestExecStreamStateUnfinishedStep(t *testing.T) {
 	a := &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	stats := &execStreamState{}
@@ -72,11 +68,8 @@ func TestExecStreamStateUnfinishedStep(t *testing.T) {
 	}
 }
 
-// TestExecStreamStateTruncatedFinish verifies that a step_finish with reason
-// "unknown" and zero tokens — the signature of an interrupted/truncated model
-// turn — is flagged as truncated even though the step counters are balanced
-// (the original bug: a 38/38 stream where the FINAL turn was cut off was
-// recorded as a clean success with no decision signal).
+// TestExecStreamStateTruncatedFinish verifies that a step_finish with reason "unknown" and zero
+// tokens — the signature of an interrupted/truncated model turn.
 func TestExecStreamStateTruncatedFinish(t *testing.T) {
 	a := &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	stats := &execStreamState{}
@@ -101,9 +94,8 @@ func TestExecStreamStateTruncatedFinish(t *testing.T) {
 	}
 }
 
-// TestExecStreamStateNormalFinishNotTruncated verifies a NORMAL step_finish
-// (non-empty reason, real tokens) is NOT flagged as truncated — so a healthy
-// completion stays "succeeded".
+// TestExecStreamStateNormalFinishNotTruncated verifies a NORMAL step_finish (non-empty reason, real
+// tokens) is NOT flagged as truncated — so a healthy completion stays "succeeded".
 func TestExecStreamStateNormalFinishNotTruncated(t *testing.T) {
 	a := &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	stats := &execStreamState{}

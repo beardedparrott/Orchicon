@@ -35,10 +35,7 @@ func (f *fakeAsk) GetConversation(_ context.Context, req *connect.Request[apiv1.
 	}), nil
 }
 
-// ListMessages is implemented ON PURPOSE. Left unimplemented, the old
-// body-building code would have hit an error and produced "" anyway — so the test
-// below would pass even with the duplicate renderer still present. Serving the rows
-// makes it a real negative control: re-adding the body makes the test fail.
+// ListMessages is implemented ON PURPOSE.
 func (f *fakeAsk) ListMessages(_ context.Context, _ *connect.Request[apiv1.ListMessagesRequest]) (*connect.Response[apiv1.ListMessagesResponse], error) {
 	return connect.NewResponse(&apiv1.ListMessagesResponse{Messages: f.msgs}), nil
 }
@@ -53,15 +50,6 @@ func newAskModelWithPlane(t *testing.T, f *fakeAsk) *Model {
 }
 
 // The transcript BODY has exactly ONE renderer: the shell.
-//
-// This screen used to build a second, competing copy from ListMessages — and
-// because the server returns that page NEWEST-FIRST (db.ListMessages orders
-// created_at DESC), that copy was INVERTED: the model's reply printed ABOVE the
-// operator's message, and a long reply pushed that message out of the visible
-// area, which is why the operator kept reporting "my initial user message is
-// still not showing up". The sibling conversationItems had been fixed for exactly
-// this ordering; this path had not. The duplicate is deleted rather than fixed, so
-// the pane can only ever be painted by the live, scroll-preserving renderer.
 func TestConversationDetailLeavesTheBodyToTheShell(t *testing.T) {
 	// The fake still OFFERS messages — the point is that this screen no longer
 	// asks for them.
@@ -119,13 +107,6 @@ func TestRenderTranscriptServesTheCachedHeader(t *testing.T) {
 }
 
 // The cached header must not go STALE.
-//
-// detail() caches what its one-shot GetConversation returned at the instant the
-// pane opened. For a brand-new conversation that is before the title is assigned
-// and before the first message is written, and nothing re-reads it — so the pane
-// reported "title —" and "messages 0" for a conversation that plainly had both,
-// while the conversations rail showed the real title right beside it. The shell's
-// live list row (reloaded after every send) must win.
 func TestRenderTranscriptOverlaysTheLiveConversation(t *testing.T) {
 	m := New(nil, nil)
 	// The stale cache: what a too-early GetConversation returns.
@@ -177,18 +158,6 @@ func (f *fakeShell) OpenAskConversation(id string) tea.Cmd {
 }
 
 // ENTER ON A CONVERSATION OPENS IT — end to end through the screen.
-//
-// The operator: "In Ask Orchicon, hitting enter on a conversation doesn't bring it
-// up. Only clicking on it does."
-//
-// kit2.Base's enter case now loads the selected row (4d0e73c5), and the two hops
-// after that are what actually OPEN a conversation: the load lands as a detailMsg,
-// which fires onDetail → shell.OpenAskConversation. This test drives that whole
-// chain — Enter at the screen, through the detail round trip, into the shell — because
-// the earlier fixes in this area were each correct at one level and never ran at the
-// next: form-level Esc that the host swallowed, and a form height the host never
-// supplied. A kit2-level test would have passed while the conversation still did not
-// open.
 func TestEnterOnAConversationOpensItThroughTheShell(t *testing.T) {
 	m := newAskModelWithPlane(t, &fakeAsk{})
 	shell := &fakeShell{}

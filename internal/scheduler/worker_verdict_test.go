@@ -1,11 +1,7 @@
 package scheduler
 
-// worker_verdict_test.go — the work item's outcome must follow the WORKER'S verdict, not the process exit.
-//
-// REPORTED: a run ended with "ORCHICON WORKER SUMMARY: failure — Nothing implemented or committed" (every
-// write had been permission-refused) and was recorded Status: succeeded, workflow run completed, work item
-// succeeded at v4 — where it sat in a success terminal state for ~6.5 hours. The summary word WAS captured
-// the whole time (into `_decision`, for the run view); nothing consulted it before writing the status.
+// worker_verdict_test.go — the work item's outcome must follow the WORKER'S verdict, not the
+// process exit.
 
 import (
 	"testing"

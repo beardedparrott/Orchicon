@@ -1,14 +1,6 @@
 package instancectl
 
 // progress.go — the machine-readable SETUP PROGRESS record (design of record, D4).
-//
-// WHY A FILE AND NOT A RETURN VALUE. Install is minutes of downloading and cluster initialisation, so a
-// GUI cannot hold a call open for it — the MSI already proved that from the other side: its setup action
-// is `asyncNoWait` precisely because holding a wizard for the download makes it look hung. Once the work
-// is detached, the only honest way to report it is a record the reader can poll.
-//
-// The file lives beside ports.json, which is the same convention every other piece of instance state
-// follows, so "where is this instance's state" has one answer.
 
 import (
 	"encoding/json"
@@ -34,8 +26,7 @@ const (
 	// SetupCancelled means an operator stopped it.
 	SetupCancelled = "cancelled"
 	// SetupStale is COMPUTED, never written: a "running" record whose process is gone, or whose
-	// updated_at has not moved. It exists as a state because "the file says running and nothing is
-	// happening" is the one condition a spinning progress bar cannot distinguish by itself.
+	// updated_at has not moved.
 	SetupStale = "stale"
 )
 
@@ -71,10 +62,7 @@ func SetupProgressPath(name string) string {
 	return filepath.Join(planecontrol.HostDataDirFor(name), "setup-progress.json")
 }
 
-// ReadSetupProgress reads an instance's record. A missing file is not an error — it means no setup has
-// run here, which is the ordinary state of a machine that has never installed this instance.
-//
-// A COMPUTED Stale is set on the returned value, so the caller does not have to reproduce the rule.
+// ReadSetupProgress reads an instance's record.
 func ReadSetupProgress(name string) (*SetupProgress, error) {
 	b, err := os.ReadFile(SetupProgressPath(name))
 	if err != nil {
@@ -91,13 +79,8 @@ func ReadSetupProgress(name string) (*SetupProgress, error) {
 	return &p, nil
 }
 
-// EffectiveState returns the state to RENDER: the written state, unless the record claims to be running
-// while nothing is.
-//
-// THIS IS THE WHOLE REASON THE RECORD IS TRUSTWORTHY. A detached setup that is killed outright cannot
-// write "failed" — it is dead. The record is then a `running` line with a frozen timestamp, which renders
-// as an eternally-spinning bar and tells the operator nothing. Two independent tests catch it: the
-// recorded PID is gone, or the timestamp has not moved.
+// EffectiveState returns the state to RENDER: the written state, unless the record claims to be
+// running while nothing is.
 func (p *SetupProgress) EffectiveState() string {
 	if p == nil {
 		return ""
@@ -131,10 +114,6 @@ func progressIsStale(p *SetupProgress) bool {
 }
 
 // pidAlive reports whether a PID is a running process.
-//
-// The zero case answers TRUE ("not a reason to call it dead"): a record written by a caller that does not
-// track a PID — or one read in a test — must not be declared stale because it has no pid. Staleness then
-// rests on the timestamp, which is the signal that cannot be faked.
 func pidAlive(pid int) bool {
 	if pid <= 0 {
 		return true
@@ -143,9 +122,6 @@ func pidAlive(pid int) bool {
 }
 
 // WriteSetupProgress writes a record atomically, so a reader never sees a half-written file.
-//
-// It is used by the INSTALLER (cmd/orchicon), which is why it is exported: the writer lives where the
-// work happens, and this package owns only the format.
 func WriteSetupProgress(name string, p SetupProgress) error {
 	p.Instance = name
 	p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)

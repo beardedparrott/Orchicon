@@ -1,12 +1,6 @@
 package opencode
 
-// TestFileEditHookSkipsNonCompletedStatus: only completed tool calls reach
-// the file-edit hook. An error/failed/in-flight tool_use event carries no
-// ground truth — failed edits must never create phantom ledger rows (AC 4).
-// The hook previously fired for EVERY tool_use regardless of status; the
-// tolerance of the parse funnel happened to drop most of them, but an error
-// output that still embeds a file_edits payload (retry tail, partial write)
-// would have ledgered a lie. The gate is explicit now.
+// TestFileEditHookSkipsNonCompletedStatus: only completed tool calls reach the file-edit hook.
 import (
 	"context"
 	"strings"
@@ -61,15 +55,8 @@ func TestFileEditHookSkipsNonCompletedStatus(t *testing.T) {
 	}
 }
 
-// TestFileEditHookFiresBeforeWriteArtifactBreak: the `write` artifact branch
-// (adapter.go) breaks out of the tool_use switch for every write carrying a
-// `content` input — that shape covers BOTH the opencode built-in writer AND
-// the worktree engine's single-op `write` wrapper ({filePath, content}). The
-// ledger hook must run BEFORE that early break, or every successful engine
-// single-op write is silently dropped from the ledger (the exact live-run gap
-// this change fixes). A built-in-shaped write ({path, content}, no file_edits
-// payload) must also reach the hook (observer fallback), not just engine
-// writes.
+// TestFileEditHookFiresBeforeWriteArtifactBreak: the `write` artifact branch (adapter.go) breaks
+// out of the tool_use switch for every write carrying a `content` input.
 func TestFileEditHookFiresBeforeWriteArtifactBreak(t *testing.T) {
 	execDir := t.TempDir()
 	manifest := scheduler.ExecutionManifest{ProjectDir: execDir}

@@ -24,9 +24,6 @@ import (
 )
 
 // TestLauncherOutcomeIsReportedNotAssumed is the lie itself.
-//
-// With no sibling binary there is nothing to install, and the outcome must therefore say so. Before the fix a
-// caller had no way to know: the function only printed, and the summary printed its own unconditional line.
 func TestLauncherOutcomeIsReportedNotAssumed(t *testing.T) {
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "bin", "orchicon")
@@ -78,12 +75,8 @@ func TestLauncherOutcomeNamesTheMechanism(t *testing.T) {
 	}
 }
 
-// TestLauncherCopyFallbackWorksWhenSymlinkIsImpossible is the stock-Windows case, exercised on EVERY platform.
-//
-// It calls the copy path directly rather than trying to make os.Symlink fail, because the failure being defended
-// against is a PRIVILEGE the test host may well have — so a test that waited for it would pass on CI and prove
-// nothing about the machine the bug came from. What must hold everywhere is that a copy produces a runnable
-// launcher and reports itself as one.
+// TestLauncherCopyFallbackWorksWhenSymlinkIsImpossible is the stock-Windows case, exercised on
+// EVERY platform.
 func TestLauncherCopyFallbackWorksWhenSymlinkIsImpossible(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "orch")
@@ -119,10 +112,6 @@ func TestLauncherCopyFallbackWorksWhenSymlinkIsImpossible(t *testing.T) {
 }
 
 // TestReinstallRefreshesOurOwnCopy is the converge rule for the copy mechanism.
-//
-// The foreign-file guard is important (a build-dir install must never hijack a release launcher), but a guard that
-// cannot tell OUR copy from someone else's makes the second install refuse to refresh what the first install put
-// there. isOurCopy is what separates the two, and this pins it in both directions.
 func TestReinstallRefreshesOurOwnCopy(t *testing.T) {
 	dir := t.TempDir()
 	sibling := filepath.Join(dir, "bin", "orch")
@@ -161,10 +150,8 @@ func TestReinstallRefreshesOurOwnCopy(t *testing.T) {
 	}
 }
 
-// TestLauncherOnlyIsAConsumedFlag keeps --install-launcher from becoming the next `unknown flag "--console"`.
-//
-// `rest` reaches parseInstanceTarget, which rejects every flag it does not recognize, so a flag the install acts
-// on but does not consume kills the run it was added to save.
+// TestLauncherOnlyIsAConsumedFlag keeps --install-launcher from becoming the next `unknown flag
+// "--console"`.
 func TestLauncherOnlyIsAConsumedFlag(t *testing.T) {
 	args := []string{"install", "--install-launcher", "--instance", "dev"}
 	flags, rest, err := parseInstallFlags(args)
@@ -186,9 +173,6 @@ func TestLauncherOnlyIsAConsumedFlag(t *testing.T) {
 }
 
 // TestLauncherProblemIsWhatTheSummaryPrints guards the two places against drifting apart.
-//
-// The summary refuses to print a launcher line when the outcome is not installed, and falls through to the
-// problem. A reason is what makes that refusal useful rather than mysterious.
 func TestLauncherProblemIsWhatTheSummaryPrints(t *testing.T) {
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "orchicon") // no sibling anywhere
@@ -198,11 +182,8 @@ func TestLauncherProblemIsWhatTheSummaryPrints(t *testing.T) {
 	}
 }
 
-// TestSummaryReportsTheLauncherItActuallyInstalled is the OUTWARD-FACING claim, in both directions: the box a
-// person reads must name the launcher when it is there, and must NOT name it when it is not.
-//
-// This is the assertion the whole change exists for. Everything above tests the decision; this tests what the
-// decision turns into on screen, which is the only part an operator ever sees.
+// TestSummaryReportsTheLauncherItActuallyInstalled is the OUTWARD-FACING claim, in both directions:
+// the box a person reads must name the launcher when it is there.
 func TestSummaryReportsTheLauncherItActuallyInstalled(t *testing.T) {
 	summary := func(l orchLauncher) string {
 		return captureStdout(t, func() {

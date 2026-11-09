@@ -15,10 +15,7 @@ import (
 	"time"
 )
 
-// Client is the control-plane side of the daemon API. It talks to the
-// runtime daemon over a unix socket (the daemon's socket is bind-mounted
-// into the supervisor container). The control plane can only ever issue
-// the narrow, validated operations the daemon exposes.
+// Client is the control-plane side of the daemon API.
 type Client struct {
 	socketPath string
 	instance   string // owning instance ("dev"/"prod") — scopes List/Create
@@ -27,9 +24,6 @@ type Client struct {
 
 // NewClient returns a client for the daemon socket at socketPath (e.g.
 // /var/run/orchicon-runtime/runtime.sock inside the supervisor container).
-// instance labels every runtime container this client creates and scopes
-// List to that instance, so two control planes sharing one daemon never
-// reap each other's containers.
 func NewClient(socketPath, instance string) *Client {
 	dial := func(ctx context.Context, _ string, _ string) (net.Conn, error) {
 		var d net.Dialer
@@ -53,12 +47,8 @@ func NewClient(socketPath, instance string) *Client {
 	}
 }
 
-// NoDaemonOnThisHost is the diagnosis for a control plane constructed WITHOUT a runtime client — the headless
-// / no-daemon configuration, which on a native Windows host is the only configuration.
-//
-// It is an exported sentence rather than an error VALUE because the same answer is needed by more than one
-// surface (the image service's precondition, and anything else that offers a container operation), and two
-// phrasings of the same condition is how a UI ends up contradicting its own logs.
+// NoDaemonOnThisHost is the diagnosis for a control plane constructed WITHOUT a runtime client —
+// the headless / no-daemon configuration, which on a native Windows host is the only configuration.
 const NoDaemonOnThisHost = "this host has no workflow runtime daemon: runtime images are FETCHED and BUILT " +
 	"over a Unix socket by a daemon that runs this platform's per-run Linux containers, and a Windows host has " +
 	"neither. The plane, its projects and git-backed work all run here; fetching or building runtime images " +
@@ -90,11 +80,6 @@ type unreachableTransport struct {
 }
 
 // noDaemonNote is the diagnosis appended to a failed dial.
-//
-// IT NAMES THE PLATFORM FACT FIRST, because that is what the operator cannot infer: a runtime daemon speaks over
-// a Unix socket and runs the workflow RUNTIME CONTAINERS, so a Windows host has none — git, the project and the
-// plane all work, and only runs that need a container are unavailable. Then the two things they might do about
-// it. It does not say "this is a bug": it is a supported configuration, just an invisible one.
 const noDaemonNote = "the workflow runtime daemon is not running on this host. It speaks over a Unix socket " +
 	"(ORCHICON_RUNTIME_SOCKET) and manages the per-run Linux containers, so a Windows host has none: the plane, " +
 	"its projects and git-backed work all run there, but fetching or building runtime IMAGES requires Linux " +
@@ -109,12 +94,8 @@ func (t *unreachableTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return resp, &DaemonUnreachableError{SocketPath: t.socketPath, Err: err}
 }
 
-// isDialFailure reports whether err is a failure to ESTABLISH the connection, rather than a failure of the
-// request once established.
-//
-// net.OpError with Op "dial" is what a refused Unix socket, a missing socket file and a permission denial all
-// produce on every platform (on Windows the message wraps a WSAEACCES/ECONNREFUSED underneath). Anything with a
-// different Op had a live connection and is NOT a daemon-missing case, so it is left alone.
+// isDialFailure reports whether err is a failure to ESTABLISH the connection, rather than a failure
+// of the request once established.
 func isDialFailure(err error) bool {
 	var opErr *net.OpError
 	if !errors.As(err, &opErr) {
@@ -123,10 +104,8 @@ func isDialFailure(err error) bool {
 	return opErr.Op == "dial"
 }
 
-// DaemonUnreachableError is "there is no runtime daemon to talk to", with the socket and the reason.
-//
-// It is a TYPE rather than a formatted error so a caller can ask the question programmatically (errors.As) —
-// which is the difference between a UI that says "this host has no runtime" and one that prints a dial string.
+// DaemonUnreachableError is "there is no runtime daemon to talk to", with the socket and the
+// reason.
 type DaemonUnreachableError struct {
 	SocketPath string
 	Err        error
@@ -200,9 +179,7 @@ func (c *Client) Images(ctx context.Context) (*ImageList, error) {
 	return &out, nil
 }
 
-// BuildImage streams a `docker build` for a custom runtime image. Log
-// chunks arrive via fn; the final event carries the exit code. Returns
-// the build's exit code (0 = success).
+// BuildImage streams a `docker build` for a custom runtime image.
 func (c *Client) BuildImage(ctx context.Context, req BuildRequest, fn func(AgentEvent) error) (int, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -254,14 +231,8 @@ func (c *Client) BuildImage(ctx context.Context, req BuildRequest, fn func(Agent
 	return exit, nil
 }
 
-// PullImage streams `podman pull`/`docker pull` for one runtime image — the
-// on-demand FETCH, distinct from BuildImage (which BUILDS a spec from a
-// Dockerfile). Log chunks arrive via fn; the final event carries the exit
-// code. Returns the exit code (0 = success; an already-present image exits 0
-// without downloading anything, so a fetch is idempotent).
-//
-// A dropped stream is reported as StreamDroppedError, exactly like a build:
-// "we lost the log" must stay distinguishable from "the pull failed".
+// PullImage streams `podman pull`/`docker pull` for one runtime image — the on-demand FETCH,
+// distinct from BuildImage (which BUILDS a spec from a Dockerfile).
 func (c *Client) PullImage(ctx context.Context, ref string, fn func(AgentEvent) error) (exit int, skipped bool, err error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://runtime"+"/v1/images/pull?ref="+url.QueryEscape(ref), nil)
@@ -309,10 +280,7 @@ func (c *Client) PullImage(ctx context.Context, ref string, fn func(AgentEvent) 
 	return exit, skipped, nil
 }
 
-// ImagePresent reports whether a runtime image exists LOCALLY on the daemon's
-// host. Dispatch uses it to fail fast with an actionable message instead of
-// starting a container that cannot be created (and instead of downloading
-// multiple GB inside a workflow run).
+// ImagePresent reports whether a runtime image exists LOCALLY on the daemon's host.
 func (c *Client) ImagePresent(ctx context.Context, ref string) (bool, error) {
 	in, err := c.InspectImage(ctx, ref)
 	if err != nil {
@@ -399,11 +367,8 @@ func (c *Client) RemoveImage(ctx context.Context, ref string) error {
 	return nil
 }
 
-// Exec runs one shell command inside the run's leased runtime container
-// (always-container native transport) and returns the collected
-// stdout/stderr + exit code. A non-zero exit is a RESULT (returned with a
-// nil error); only transport failures error. The daemon streams the
-// supervisor's JSON-lines AgentEvents; Exec reassembles them.
+// Exec runs one shell command inside the run's leased runtime container (always-container native
+// transport) and returns the collected stdout/stderr + exit code.
 func (c *Client) Exec(ctx context.Context, workflowID string, req ExecRequest) (*ExecResult, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -505,9 +470,8 @@ func readError(r io.Reader) error {
 	var e map[string]string
 	if err := json.Unmarshal(body, &e); err == nil {
 		if msg, ok := e["error"]; ok && msg != "" {
-			// A CODE the retry loop must respect: a host with no linux container binary will not
-			// produce one on the next attempt, so the caller stops instead of re-reading this
-			// refusal for the whole serve-gate window (exe_resolve.go).
+			// A CODE the retry loop must respect: a host with no linux container binary will not produce one on
+			// the next attempt, so the caller stops instead of re-reading this refusal for the whole.
 			if e["code"] == ContainerBinaryErrCode {
 				return fmt.Errorf("runtime daemon: %s: %w", msg, ErrNoContainerBinary)
 			}

@@ -7,12 +7,6 @@ import (
 )
 
 // Regression for the operator's "every domain is blank / nothing is here".
-//
-// SwitchTo stages the newly-activated screen's first load (it cannot return a
-// tea.Cmd itself). The chord routes happened to flush that staged cmd, but the
-// MOUSE tab-click path returned nil — so clicking a tab never ran the screen's
-// load and the pane rendered its empty state forever. Update() now flushes
-// whatever a handler staged, so every path is covered.
 func TestMouseTabClickRunsScreenFirstLoad(t *testing.T) {
 	m := newTestApp()
 	work := &loadCountScreen{}
@@ -57,12 +51,8 @@ func TestMenuChordRunsScreenFirstLoad(t *testing.T) {
 	}
 }
 
-// Regression: clicking a pane must move focus to the CONTENT, so the screen's
-// own keys (v for the work-item view, arrows for the list cursor, n/e/x for
-// create/edit/delete) reach it instead of being typed into the chat composer —
-// which is the launch focus and otherwise keeps every key for itself.
-//
-// Update has a VALUE receiver, so every assertion reads the RETURNED model.
+// Regression: clicking a pane must move focus to the CONTENT, so the screen's own keys (v for the
+// work-item view, arrows for the list cursor.
 func TestClickingAPaneFocusesContent(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabWork, &stubScreen{id: "work"})

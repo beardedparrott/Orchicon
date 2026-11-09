@@ -64,33 +64,14 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// contextLimitReason is the AskCompactNotice reason for a reduction performed
-// because the model reported a context-limit overflow. It is part of that
-// vocabulary's documented set, and it is what compactionNoticeContent's own
-// "context_limit" paragraph describes — the seam this file finally produces.
+// contextLimitReason is the AskCompactNotice reason for a reduction performed because the model
+// reported a context-limit overflow.
 const contextLimitReason = "context_limit"
 
-// compactAfterContextLimit compacts a conversation whose turn just failed on a
-// context-limit error, so the collector can re-dispatch the same message.
-//
-// ok is true only when a compaction really happened and a retry is therefore
-// worth attempting. Every other outcome — no capability, a compaction error, a
-// conversation with nothing left to collapse — returns false with a reason, and
-// the caller surfaces the ORIGINAL failure, which names the real limit.
-//
-// sessionID is the session the failing turn was on. A session-ful adapter needs
-// it (and the model) to summarize anything at all; a sessionless one derives its
-// own id from the conversation id.
-//
-// The notice is recorded HERE rather than by the caller on purpose: compaction is
-// LOSSY, and the marker in the transcript is how an operator learns why the
-// assistant stopped remembering. That record must accompany the collapse, not
-// depend on the retry afterwards succeeding.
+// compactAfterContextLimit compacts a conversation whose turn just failed on a context-limit error,
+// so the collector can re-dispatch the same message.
 func (s *Service) compactAfterContextLimit(ctx context.Context, tenantID, convID, sessionID, modelRef string, client scheduler.ChatTurnClient) (ok bool, detail string) {
-	// THE TURN'S OWN CLIENT, passed in rather than resolved again. Resolving would be a second
-	// adapter lookup that could in principle answer differently from the one that just failed, and
-	// a resolution failure here would abandon a recovery that is standing on the failing turn's own
-	// handle. The caller already has the right object.
+	// THE TURN'S OWN CLIENT, passed in rather than resolved again.
 	if client == nil {
 		return false, "no chat client for this conversation"
 	}
@@ -114,9 +95,8 @@ func (s *Service) compactAfterContextLimit(ctx context.Context, tenantID, convID
 		return false, res.Detail
 	}
 
-	// Advisory by contract: the collapse has already happened, so a failure to
-	// write the marker is logged and never blocks the retry. WithoutCancel
-	// because the notice describes work ALREADY DONE.
+	// Advisory by contract: the collapse has already happened, so a failure to write the marker is
+	// logged and never blocks the retry.
 	if err := s.RecordCompactionNotice(context.WithoutCancel(ctx), scheduler.AskCompactNotice{
 		ConversationID: convID,
 		SessionID:      sessionID,
@@ -133,15 +113,8 @@ func (s *Service) compactAfterContextLimit(ctx context.Context, tenantID, convID
 	return true, res.Detail
 }
 
-// isContextLimitFailure reports whether a turn's failure is the model refusing
-// the prompt for its SIZE.
-//
-// It delegates to the ONE signature list (internal/orchicon's
-// OversizePromptSignatures) that the native ladder already maintains, rather than
-// keeping a shorter list here: the phrasings differ per provider and per gateway,
-// and the group most easily lost by a second copy is the transport 413 family. A
-// miss is not harmless — it means the operator is handed "reduce the length of
-// the messages" instead of a conversation that simply continued.
+// isContextLimitFailure reports whether a turn's failure is the model refusing the prompt for its
+// SIZE.
 func isContextLimitFailure(err error) bool {
 	return orchicon.IsOversizePromptError(err)
 }

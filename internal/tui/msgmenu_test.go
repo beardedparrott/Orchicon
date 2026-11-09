@@ -169,10 +169,6 @@ func TestOpeningRequiresAnID(t *testing.T) {
 var _ = apiv1.MessageDeleteMode_MESSAGE_DELETE_MODE_ONLY
 
 // TestTheSlashCommandsArmTheSameMenu — one destructive path, reached two ways.
-//
-// The operator asked for "a slash command or two" as well as the mouse gesture. A command that executed its
-// deletion on Enter would be a SECOND path to an irreversible act, and the second path is the one that forgets
-// the confirmation — so /undo and /revert open the menu with the matching entry armed instead.
 func TestTheSlashCommandsArmTheSameMenu(t *testing.T) {
 	for _, tc := range []struct {
 		cmd  string
@@ -235,13 +231,6 @@ func TestASlashCommandWithNoMessageSaysSo(t *testing.T) {
 }
 
 // TestRevertHandsTheMessageBackToTheComposer — the operator's addition to the feature.
-//
-// "a revert should also put the message you selected back into the composer". Revert REMOVES the message, so
-// without this its text is gone from the interface and the operator has to retype a question they had already
-// written — the one cost that removing it should not carry.
-//
-// The command is NOT executed here: it would call a nil client. What is asserted is the observable effect that
-// matters — the composer holds the message by the time the delete is dispatched.
 func TestRevertHandsTheMessageBackToTheComposer(t *testing.T) {
 	m := &App{}
 	m.chatConvID = "conv1"
@@ -266,9 +255,6 @@ func TestRevertHandsTheMessageBackToTheComposer(t *testing.T) {
 }
 
 // TestUndoLeavesTheComposerAlone — the other half of the rule.
-//
-// Undo keeps the message's REPLY, so restoring the question would leave the transcript reading as though it had
-// been asked and answered while the composer offered it again. The asymmetry is deliberate.
 func TestUndoLeavesTheComposerAlone(t *testing.T) {
 	m := &App{}
 	m.chatConvID = "conv1"

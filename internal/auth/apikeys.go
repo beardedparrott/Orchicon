@@ -9,13 +9,9 @@ import (
 )
 
 // APIKeyPrefix is the human-readable prefix on every issued API key.
-// Keys take the form "oc_<base64>" — the prefix identifies the key
-// family and is safe to log.
 const APIKeyPrefix = "oc_"
 
-// GenerateApiKey produces a new plaintext API key and its hash. Only the
-// hash is persisted; the plaintext is returned to the caller once and
-// never stored (AGENTS.md security standards: hashed at rest).
+// GenerateApiKey produces a new plaintext API key and its hash.
 func GenerateApiKey() (plaintext, prefix, hash string) {
 	raw := make([]byte, 32)
 	// rand.Read is imported in tokens.go via crypto/rand; reuse it here.
@@ -26,10 +22,7 @@ func GenerateApiKey() (plaintext, prefix, hash string) {
 	return plaintext, prefix, hash
 }
 
-// HashApiKey returns the hex SHA-256 hash of the plaintext key. SHA-256
-// is appropriate for API keys (high-entropy, unlike passwords); bcrypt
-// would be used for low-entropy human passwords, which Orchicon never
-// stores (OIDC handles authentication — docs/07 §6.1).
+// HashApiKey returns the hex SHA-256 hash of the plaintext key.
 func HashApiKey(plaintext string) string {
 	sum := sha256.Sum256([]byte(plaintext))
 	return hex.EncodeToString(sum[:])
@@ -42,10 +35,7 @@ func VerifyApiKeyHash(plaintext, hash string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(hash)) == 1
 }
 
-// ParseBearer extracts the credential from an Authorization header. The
-// scheme may be "Bearer" (OIDC access token or API key) — the middleware
-// distinguishes by trying the token verifier first, then the API-key
-// lookup. Returns the raw credential and the scheme.
+// ParseBearer extracts the credential from an Authorization header.
 func ParseBearer(authzHeader string) (scheme, credential string, err error) {
 	if authzHeader == "" {
 		return "", "", fmt.Errorf("auth: no authorization header")

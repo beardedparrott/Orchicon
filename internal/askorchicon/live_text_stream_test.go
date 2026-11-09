@@ -8,19 +8,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// TestDeltaOnlyTurnStreamsTextAsItArrives is the regression for the operator's report that Ask
-// Orchicon's reply never appears as it is typed — the pane shows the reasoning block and then the
-// finished message, with nothing streaming in between.
-//
-// WHY DELTA-ONLY IS THE RIGHT SHAPE. internal/opencode/chatsession.go emits the mid-generation
-// stream as Kind "delta" (TokenDeltaInfoFromBus — "session.text.delta", "message.part.delta"),
-// and internal/orchicon/chatturn.go's drainChatTurn does the same (bus.emit Kind "delta"),
-// accumulating the reply and emitting ONE consolidated completed part at Finish. So on a real turn
-// the collector sees DELTAS, not parts, for the whole generation.
-//
-// WHAT WAS WRONG. chat.go's `case "delta"` fed liveText/liveReasoning and the throttled mirror and
-// called no onStreamEvent, so a client rendering the stream had nothing to draw: it learned about
-// the reply only from the 2s ListMessages mirror poll or the final completed part.
+// WHY DELTA-ONLY IS THE RIGHT SHAPE.
 func TestDeltaOnlyTurnStreamsTextAsItArrives(t *testing.T) {
 	client := &fakeSessionClient{}
 
@@ -89,9 +77,7 @@ func TestDeltaOnlyTurnStreamsTextAsItArrives(t *testing.T) {
 }
 
 // TestDeltaForwardDoesNotLeakFoldedThink is the other half of the same rule, and the reason the
-// forward lives INSIDE the segmenter's emitText callback rather than in a raw `else` beside it: a
-// folded think body must never reach the visible reply, even now that the delta stream is streamed
-// on. The segmenter strips the body and hands emitText only the clean text.
+// forward lives INSIDE the segmenter's emitText callback rather than in a raw `else` beside it.
 func TestDeltaForwardDoesNotLeakFoldedThink(t *testing.T) {
 	client := &fakeSessionClient{}
 
@@ -140,23 +126,8 @@ func TestDeltaForwardDoesNotLeakFoldedThink(t *testing.T) {
 	}
 }
 
-// TestReasoningIsNotStreamedAsDeltas is the regression for "your reasoning block is repeating over and over
-// in the TUI as you stream".
-//
-// REASONING HAS EXACTLY ONE CLIENT-SIDE SOURCE: THE MIRROR ROW. The collector writes the accumulated
-// reasoning into the acked assistant message every ~200ms, and both clients render it from there — the TUI
-// through its 1s transcript poll (`conversationItems` -> `m.GetReasoning()`), the GUI through the list poll.
-//
-// Forwarding reasoning DELTAS on the stream as well gives the TUI a SECOND source, because it has an arm for
-// ChatStreamResponse_Reasoning that appends each chunk to the live buffer. The block is then appended once
-// from the stream AND again from every poll that re-reads the row, so it repeats and grows for the whole
-// turn. That is not a theoretical hazard: it shipped, briefly, as part of the live-text fix, and the operator
-// caught it immediately.
-//
-// TEXT IS THE OPPOSITE CASE, which is why the two are not symmetric: text had NO live path at all (the
-// report this work started from), so it must be forwarded. Reasoning already streamed through the mirror and
-// needed nothing. Asserting both directions here is the point — a future reader who "makes them consistent"
-// would reintroduce this bug.
+// TestReasoningIsNotStreamedAsDeltas is the regression for "your reasoning block is repeating over
+// and over in the TUI as you stream".
 func TestReasoningIsNotStreamedAsDeltas(t *testing.T) {
 	client := &fakeSessionClient{}
 

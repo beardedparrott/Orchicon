@@ -1,16 +1,6 @@
 package scheduler
 
 // worktree_restore_never_loses_test.go — the safety property of the post-run restore.
-//
-// restoreWorkTree resets a project's SHARED CHECKOUT — the operator's own working copy — and the
-// only signal the caller has is "`git status --porcelain` printed something". That is exactly what a
-// developer's own uncommitted work looks like, and nothing records which files a run touched, so the
-// two are indistinguishable. Before this change the function went straight to `git reset --hard HEAD`
-// + `git clean -fd`, which would discard the operator's modified files and DELETE their untracked
-// ones with no way back.
-//
-// These assertions are on the property, not the implementation: after a restore, the checkout is
-// clean AND everything that was there before is still recoverable.
 
 import (
 	"context"

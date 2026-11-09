@@ -10,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// Acceptance 3/4: transcript search (case-insensitive filter + count + no-match
-// state + Esc clear) and jump-to-top/bottom on the Ask transcript, without
-// hijacking the composer.
+// Acceptance 3/4: transcript search (case-insensitive filter + count + no-match state + Esc clear)
+// and jump-to-top/bottom on the Ask transcript, without hijacking the composer.
 
 func searchFixture(m *App) {
 	m.chatConvID = "c1"
@@ -206,13 +205,6 @@ func TestEscClearsTranscriptSearch(t *testing.T) {
 }
 
 // CTRL+F IS FIND (acceptance 1) — AND IT NOW OPENS A BOX RATHER THAN SEARCHING THE COMPOSER'S TEXT.
-//
-// That is a deliberate contract change, not a drift: the operator reported the old shape as
-// unintuitive ("you have to first type what you want then hit ctrl+f") and asked for the box. The
-// behaviour is asserted in findbox_test.go, where the box lives; what is pinned HERE is the part that
-// did NOT change — the chord must reach the search from EITHER focus, from the content pane AND while
-// the composer holds focus (the route is global AND a composer bypass), and what is typed must filter
-// through the same path /find uses. No duplicate search UI.
 func TestCtrlFReachesTheFindBoxFromEitherFocus(t *testing.T) {
 	for _, focus := range []focusMode{focusContent, focusComposer} {
 		focus := focus

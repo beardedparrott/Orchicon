@@ -2,11 +2,9 @@ package orchicon
 
 import "testing"
 
-// catalog_cost_test.go pins the SINGLE shared catalog-backed cost lookup
-// (CatalogModelCost) that closes Gap 4: the server's pricing resolver must be
-// able to answer for an anthropic model with NO opencode discoverer, from the
-// offline vendored catalog. The model-picker sourcing child consumes this same
-// function — do not add a second lookup.
+// catalog_cost_test.go pins the SINGLE shared catalog-backed cost lookup (CatalogModelCost) that
+// closes Gap 4: the server's pricing resolver must be able to answer for an anthropic model with
+// NO.
 
 // TestCatalogModelCostAnthropicSonnet4 pins the authored rates so a pricing
 // regression is caught at the source.
@@ -49,10 +47,8 @@ func TestCatalogModelCostHaiku4(t *testing.T) {
 	}
 }
 
-// TestCatalogModelCostFailsClosed is the AC's fail-CLOSED contract: a genuine
-// catalog miss (unknown model, or a model under the wrong provider) returns
-// (nil, false) so the caller keeps the adapter-reported cost — never a
-// fabricated price.
+// TestCatalogModelCostFailsClosed is the AC's fail-CLOSED contract: a genuine catalog miss (unknown
+// model, or a model under the wrong provider) returns (nil.
 func TestCatalogModelCostFailsClosed(t *testing.T) {
 	cases := []struct{ provider, model string }{
 		{"anthropic", "claude-nonexistent-9"},

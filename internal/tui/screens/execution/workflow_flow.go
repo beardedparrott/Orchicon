@@ -45,19 +45,14 @@ type flowStep struct {
 	WorkerVer int32  `json:"worker_version"`
 	GateRef   string `json:"gate_policy_ref"`
 	Config    string `json:"config"`
-	// DependsOn is decoded separately: the column is NOT type-consistent across
-	// rows (207 arrays, 12 nulls, 10 of something else in the live tenant), so a
-	// plain []string would fail the WHOLE unmarshal on one bad row.
+	// DependsOn is decoded separately: the column is NOT type-consistent across rows (207 arrays, 12
+	// nulls, 10 of something else in the live tenant).
 	DependsOn json.RawMessage `json:"depends_on"`
 
 	deps []string // parsed
 }
 
 // flowBranches are the named jumps a decision carries in its config JSON.
-//
-// They are read from the step's `config` because that is where they LIVE: the
-// real graph-ness of a workflow is not in depends_on (which is linear) but in a
-// decision naming the step it jumps to — including BACKWARDS, for a retry loop.
 type flowBranches struct {
 	Success  string `json:"success_branch"`
 	Loop     string `json:"loop_branch"`
@@ -132,10 +127,8 @@ func flowBranchOf(s flowStep) *flowBranches {
 	return &b
 }
 
-// flowOrder topologically orders the steps (Kahn), keeping the AUTHORED order
-// among steps that are simultaneously ready. A cycle (which the data should never
-// contain) appends the remainder rather than dropping it: a renderer must not
-// silently hide a node.
+// flowOrder topologically orders the steps (Kahn), keeping the AUTHORED order among steps that are
+// simultaneously ready.
 func flowOrder(steps []flowStep) []flowStep {
 	byID := make(map[string]flowStep, len(steps))
 	for _, s := range steps {
@@ -216,12 +209,8 @@ func renderWorkflowFlow(stepsJSON string, width int) string {
 	return body
 }
 
-// renderWorkflowFlowView renders the flow with a CURSOR marker on the selected
-// step, and returns the step→line map so an editor can keep that step on screen.
-//
-// The map is why the marker is part of the RENDERED text rather than an overlay:
-// the pane's viewport scrolls by line, so the offsets have to describe exactly
-// what was drawn. A cursor drawn outside the text could not be tracked.
+// renderWorkflowFlowView renders the flow with a CURSOR marker on the selected step, and returns
+// the step→line map so an editor can keep that step on screen.
 func renderWorkflowFlowView(stepsJSON string, width int, sel string) (string, map[string]int) {
 	steps := parseFlowSteps(stepsJSON)
 	if len(steps) == 0 {
@@ -240,9 +229,7 @@ func renderWorkflowFlowView(stepsJSON string, width int, sel string) (string, ma
 		}
 	}
 
-	// The cursor/selection marker: the step the operator is on. Passing it in
-	// keeps the marker in the RENDERED text, so the pane's line offsets (used for
-	// cursor-follow scrolling) stay correct.
+	// The cursor/selection marker: the step the operator is on.
 	cursorAt := -1
 	if sel != "" {
 		for i, s := range ordered {
@@ -281,9 +268,8 @@ func renderWorkflowFlowView(stepsJSON string, width int, sel string) (string, ma
 
 		// The dim meta line: kind, the worker/gate it names, and any fan-in.
 		meta := []string{strings.ToLower(s.Kind)}
-		// An approval's REVIEWER is operationally load-bearing — a human gate blocks
-		// the run until someone acts; an automated one does not — so it earns a
-		// place on the meta line when the config carries it.
+		// An approval's REVIEWER is operationally load-bearing — a human gate blocks the run until someone
+		// acts; an automated one does not.
 		if br := flowBranchOf(s); br != nil && br.Reviewer != "" {
 			meta = append(meta, "reviewer: "+br.Reviewer)
 		}
@@ -344,9 +330,8 @@ func branchTarget(nameOf map[string]string, id string) string {
 // flowStepCount is the parse count for the detail fields.
 func flowStepCount(stepsJSON string) int { return len(parseFlowSteps(stepsJSON)) }
 
-// pickFlowVersion chooses the version whose flow to show: the PUBLISHED one (what
-// a run would execute), else the newest by version number (a workflow that has
-// only ever been drafted).
+// pickFlowVersion chooses the version whose flow to show: the PUBLISHED one (what a run would
+// execute), else the newest by version number (a workflow that has only ever been drafted).
 func pickFlowVersion(versions []*apiv1.WorkflowVersion) *apiv1.WorkflowVersion {
 	var newest *apiv1.WorkflowVersion
 	for _, v := range versions {

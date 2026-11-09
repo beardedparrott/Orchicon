@@ -96,10 +96,7 @@ func TestParityRefusedCommandsAcrossBothAdapters(t *testing.T) {
 
 	for _, cmd := range refusedCommands {
 		t.Run("refused/"+cmd, func(t *testing.T) {
-			// The opencode side: some rule in ITS deny map matches. (The map has
-			// no defined rule ORDER — opencode evaluates it as a map — so what
-			// "the same deciding rule" can mean is that the rule claude names is
-			// ITSELF one of opencode's deny keys. That is asserted below.)
+			// The opencode side: some rule in ITS deny map matches.
 			ocDenied := false
 			for pat, v := range bashRules {
 				if v != "deny" {
@@ -141,9 +138,8 @@ func TestParityRefusedCommandsAcrossBothAdapters(t *testing.T) {
 	}
 }
 
-// TestParityExternalDirectoryCarveOuts asserts the two adapters reach the same
-// verdict for the SAME path targets, using opencode's own carve-out patterns
-// (evaluated with the doublestar library, which is what a path glob needs).
+// TestParityExternalDirectoryCarveOuts asserts the two adapters reach the same verdict for the SAME
+// path targets, using opencode's own carve-out patterns (evaluated with the doublestar library.
 func TestParityExternalDirectoryCarveOuts(t *testing.T) {
 	project := t.TempDir()
 	ext := opencodeWorkerExternalRules(t)
@@ -183,14 +179,8 @@ func TestParityExternalDirectoryCarveOuts(t *testing.T) {
 	}
 }
 
-// TestParityTheGuardShimRefusesToo is the third leg: the OS-level shim is on the
-// path that executes the command, so the refusal holds even for a command no
-// permission layer sees. The SAME command class is checked through the shim and
-// through claude's hook.
-//
-// Targets are TEMP SPACE (the rule internal/guard/guard_test.go documents): a
-// test whose safety depends on the verdict of the thing it tests fails open, so
-// the failure mode of a bad verdict is a directory this test owns.
+// TestParityTheGuardShimRefusesToo is the third leg: the OS-level shim is on the path that executes
+// the command, so the refusal holds even for a command no permission layer sees.
 func TestParityTheGuardShimRefusesToo(t *testing.T) {
 	project := t.TempDir()
 	outside := t.TempDir()
@@ -232,19 +222,11 @@ func TestParityTheGuardShimRefusesToo(t *testing.T) {
 	}
 }
 
-// TestParityProtectedPathsRefusedByTheShimAndTheHook is the protected-path leg of
-// the parity criterion. The opencode worker's protection against a destructive
-// PATH-SCOPED command is the OS-level shim (its permission config has no
-// protected-path rule), and the claude worker gets the SAME
-// internal/protectedpath declaration through the hook — so the property to pin
-// is: the shim refuses the target AND claude's hook refuses the same command,
-// by the SAME rule name, while ordinary work on the project itself stays allowed
-// in both layers.
+// TestParityProtectedPathsRefusedByTheShimAndTheHook is the protected-path leg of the parity
+// criterion.
 func TestParityProtectedPathsRefusedByTheShimAndTheHook(t *testing.T) {
 	project := t.TempDir()
 	// A PROPER ANCESTOR of the project: destroying it takes the project with it.
-	// No deny pattern covers this command, so the protected-root rule is what is
-	// under test on both sides.
 	ancestor := filepath.Dir(project)
 	dest := t.TempDir()
 
@@ -268,9 +250,8 @@ func TestParityProtectedPathsRefusedByTheShimAndTheHook(t *testing.T) {
 		t.Errorf("claude refused the protected path by rule %q, want %q — a different rule means a different declaration", cv.Rule, "protected_path")
 	}
 
-	// The FILE-TOOL half has no shim (the guard intercepts processes, not reads),
-	// so the hook is the only layer that can judge a Read/Write target — and it
-	// applies the same internal/protectedpath declaration.
+	// The FILE-TOOL half has no shim (the guard intercepts processes, not reads), so the hook is the
+	// only layer that can judge a Read/Write target.
 	if v := DecideTool(HookInput{ToolName: "Read", ToolInput: map[string]any{"file_path": ancestor}}, project, ""); v.Allow {
 		t.Fatalf("claude allows reading the protected ancestor %s", ancestor)
 	}

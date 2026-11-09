@@ -179,9 +179,6 @@ func TestActTreatsAnEmptyOutcomeAsFailure(t *testing.T) {
 }
 
 // INSTALL AND UNINSTALL BUILD THE CLI'S OWN COMMAND LINE, with pins in a stable order.
-//
-// They spawn (the work is minutes long), so this asserts the ARGS rather than a result: the args are the
-// contract with the single implementation.
 func TestInstallAndUninstallArgs(t *testing.T) {
 	withInstance(t, "dev")
 
@@ -232,15 +229,6 @@ func TestStatusExposesAStaleSetup(t *testing.T) {
 }
 
 // A DIRECTORY IS NOT AN INSTANCE.
-//
-// REPORTED: "on the TUI there is some weird desktop option showing up like it's a different server which is
-// wrong." It was real — `~/.local/share/orchicon-desktop` is where the DESKTOP APP keeps its WebView state
-// (hsts-storage.sqlite, localstorage, mediakeys, storage). Listing every `orchicon-*` directory made that a
-// server called "desktop": not startable, not stoppable, and wrong on a screen whose whole job is naming what
-// is running.
-//
-// The predicate is INSTANCE MARKERS, not the name, and any one is enough so a partially-created instance is
-// still visible.
 func TestADirectoryWithoutInstanceStateIsNotAServer(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

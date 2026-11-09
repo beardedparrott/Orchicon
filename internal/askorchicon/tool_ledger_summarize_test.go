@@ -10,26 +10,9 @@ import (
 )
 
 // The LEDGER -> SUMMARIZER seam.
-//
-// internal/toolclass.Summarize reads the `tool_calls` column by its JSON FIELD
-// NAMES, and internal/askorchicon is the only producer of those bytes. Nothing
-// else in either package's tests crosses that boundary: the toolclass fixture
-// is written in toolclass's own vocabulary, so if the ledger's tag drifts from
-// Summarize's tag, json.Unmarshal leaves the timestamp 0, every entry is
-// skipped as "no timestamp", and the activity line renders "" over a turn that
-// is plainly working — with NO error, NO failing fixture and NO failing ledger
-// test. These tests drive Summarize over a REAL snapshot, so that silent
-// divergence fails loudly here instead.
-//
-// This is the regression guard for exactly the bug the shared-tool-classifier
-// work item's own architect flagged as a risk (plan D5 "if child 1 names the
-// field differently …"), and it is the reason `issued_at_unix_ms` — not `ts` —
-// is pinned on both sides.
 
-// TestSummarizeCountsTheRealLedgerShape is the cross-package contract: a real
-// ledger snapshot, rendered by the real Summarize, produces the real counts.
-// The ledger's own field tag and the summarizer's reader tag must agree, or
-// the want below becomes "".
+// TestSummarizeCountsTheRealLedgerShape is the cross-package contract: a real ledger snapshot,
+// rendered by the real Summarize, produces the real counts.
 func TestSummarizeCountsTheRealLedgerShape(t *testing.T) {
 	withLedgerClock(t, 1_700_000_000_000)
 	led := newToolLedger()
@@ -92,9 +75,8 @@ func TestSummarizeSkipsAnUnstampedPreChangeRowOverRealLedgerBytes(t *testing.T) 
 	}
 }
 
-// TestSummarizeEmptyRealLedgerIsTheEmptyString pins the load-bearing AC6 rule
-// on the shape the clients actually hand it: snapshot() encodes an empty ledger
-// as "[]" (never nil), and that must render "" — never "0 modifies".
+// TestSummarizeEmptyRealLedgerIsTheEmptyString pins the load-bearing AC6 rule on the shape the
+// clients actually hand it: snapshot() encodes an empty ledger as "[]" (never nil).
 func TestSummarizeEmptyRealLedgerIsTheEmptyString(t *testing.T) {
 	led := newToolLedger()
 	calls, _ := led.snapshot()
@@ -106,21 +88,8 @@ func TestSummarizeEmptyRealLedgerIsTheEmptyString(t *testing.T) {
 	}
 }
 
-// TestTheIssueStampSurvivesTheWire is the SECOND half of the same seam: the
-// ledger's stamp has to survive `messageRowToProto` to reach a CLIENT at all.
-//
-// This is the gap the activity line's rolling counter would otherwise die in.
-// The stamp is written to the DB at tool_ledger.go and read back by the
-// summarizer's sibling test above — but a client never sees the column; it sees
-// the ChatMessage wire field. `toolCallsFromJSON` decodes the column into a
-// struct and rebuilds a proto ToolCall, so a field missing from THAT struct (or
-// from the proto) drops the stamp silently: every row arrives with
-// issued_at_unix_ms = 0, the client's SummarizeCalls skips every entry as
-// "no timestamp", and the line renders "" over a turn that is plainly working.
-//
-// No fixture in internal/toolclass can catch this, because that package never
-// crosses a proto boundary. This drives the real ledger bytes through the real
-// projection.
+// TestTheIssueStampSurvivesTheWire is the SECOND half of the same seam: the ledger's stamp has to
+// survive `messageRowToProto` to reach a CLIENT at all.
 func TestTheIssueStampSurvivesTheWire(t *testing.T) {
 	const stamp = int64(1_700_000_000_123)
 	withLedgerClock(t, stamp)
@@ -159,15 +128,6 @@ func TestTheIssueStampSurvivesTheWire(t *testing.T) {
 }
 
 // TestTheOperatorTurnIsFullyCounted is AC1 (the measurement) and AC2 (the fix) on a REAL ledger.
-//
-// The operator reported "3 bash and nothing else" on a turn that had plainly been working, because
-// the classifier's unknown-name default was `Ignore`: every native Ask product tool is emitted under
-// its BARE name (`native_tools.go:84` — the registry is keyed by bare name), so `list_projects`,
-// `get_work_item`, … fell straight through to Ignore and only the host-suite `bash` ever counted.
-//
-// This drives the REAL ledger (real `recordStart` stamps, real `snapshot()` bytes) through the real
-// `toolclass.Summarize` for a turn of 3 bash + 9 product calls, and pins that the line now accounts
-// for ALL TWELVE. Before the fix the same bytes rendered "3 bash · last 0s" — three of twelve.
 func TestTheOperatorTurnIsFullyCounted(t *testing.T) {
 	const nowMs int64 = 1_700_000_000_000
 	withLedgerClock(t, nowMs)

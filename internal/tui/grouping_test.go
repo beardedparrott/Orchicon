@@ -1,18 +1,6 @@
 package tui
 
 // grouping_test.go — a grouping the operator created must actually SHOW UP.
-//
-// THE REPORT: "I created a conversation category and assigned a conversation to it, but it is not
-// showing up in the UI."
-//
-// It was literally true, and the reason is worth restating because it is the whole of the bug:
-// ListCategories answers with the categories AND the assignments in one response, and the shell
-// collected only the first and DISCARDED the second — and on top of that, nothing anywhere rendered an
-// assignment on a row. So the grouping existed on the server, arrived in the response, was thrown away,
-// and had nowhere to appear. Two halves, one symptom.
-//
-// These tests drive the real path end to end: the stub answers ListCategories with an assignment, the
-// loader stores it, and the RENDERED rail row shows it.
 
 import (
 	"strings"
@@ -63,9 +51,8 @@ func TestAssignmentReachesTheShellCache(t *testing.T) {
 	}
 }
 
-// TestRailNestsAConversationUnderItsGrouping: the second half — and the one the operator was actually
-// looking at. Since the rail nests, the CONVERSATION sits INSIDE a folder named after its grouping,
-// which is how the GUI's Ask sidebar renders it.
+// TestRailNestsAConversationUnderItsGrouping: the second half — and the one the operator was
+// actually looking at.
 func TestRailNestsAConversationUnderItsGrouping(t *testing.T) {
 	cat := &apiv1.Category{
 		Id: "cat-1", Name: "Research",
@@ -185,16 +172,12 @@ func TestGroupingIsClearedWhenUnassigned(t *testing.T) {
 }
 
 // TestGroupedPaneNestsRowsUnderTheirCategory was removed rather than kept as a type assertion: the
-// arrangement it wanted to pin is the SHARED helper's job and is tested directly in
-// screenkit/group_test.go, while the WIRING (does the pane actually call it, with the right target
-// type, and refuse writes aimed at a category row?) lives in the execution package — which is where the
-// pane is. A test here could only have asserted that a method exists.
+// arrangement it wanted to pin is the SHARED helper's job and is tested directly.
 
 // --- managing a grouping from the pane that shows it -------------------------------------------------
 
-// TestRenameCategoryIsPrefilledAndWrites is the GUI's folder rename, reached from a pane: the box opens
-// with the CURRENT name and description (an empty box makes the operator retype a value they cannot
-// see) and the write carries the grouping's own id.
+// TestRenameCategoryIsPrefilledAndWrites is the GUI's folder rename, reached from a pane: the box
+// opens with the CURRENT name and description (an empty box makes the operator retype a value they.
 func TestRenameCategoryIsPrefilledAndWrites(t *testing.T) {
 	cat := &apiv1.Category{
 		Id: "cat-1", Name: "Research", Description: "deep dives",
@@ -309,9 +292,7 @@ func TestDeleteCategoryConfirmSaysWhereTheItemsGo(t *testing.T) {
 		t.Fatalf("dismissing must not delete, got %q", stub.deletedID)
 	}
 
-	// Confirming deletes exactly that grouping. The dialog RETURNS the operation's command rather than
-	// running it, so the test has to run it the way the shell does — merely receiving it would let a
-	// delete that never fires pass.
+	// Confirming deletes exactly that grouping.
 	m.OpenDeleteCategory("cat-1")
 	_, cmd := m.bulkConfirmKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -323,9 +304,8 @@ func TestDeleteCategoryConfirmSaysWhereTheItemsGo(t *testing.T) {
 	}
 }
 
-// TestManagingAGroupingWithAStaleRowRefuses: the grouping can be deleted (here or in the GUI) between
-// the fetch that drew the row and the keypress. Opening a form against an id that no longer exists
-// would write to nothing and report nothing.
+// TestManagingAGroupingWithAStaleRowRefuses: the grouping can be deleted (here or in the GUI)
+// between the fetch that drew the row and the keypress.
 func TestManagingAStaleGroupingRefuses(t *testing.T) {
 	m, stub := categoryApp(t)
 	m = loadCats(t, m)
@@ -348,8 +328,7 @@ func TestManagingAStaleGroupingRefuses(t *testing.T) {
 }
 
 // TestRailFolderRowManagesItsGrouping: the GUI's FolderItem affordances — onToggle, onStartRename,
-// onDelete — reached from the rail's own folder row. The shell must be handed the CATEGORY id, because
-// rename and delete address the grouping, not the row.
+// onDelete — reached from the rail's own folder row.
 func TestRailFolderRowManagesItsGrouping(t *testing.T) {
 	cat := &apiv1.Category{
 		Id: "cat-1", Name: "Research",
@@ -410,9 +389,8 @@ func TestRailFolderRowManagesItsGrouping(t *testing.T) {
 	}
 }
 
-// TestSpaceOnAFolderMarksItsMembers: "space marks what is under the cursor", and for a folder that is
-// everything inside it. Applying the same key to the folder's members is what makes a whole group one
-// gesture to select — and the reverse: space again clears the group.
+// TestSpaceOnAFolderMarksItsMembers: "space marks what is under the cursor", and for a folder that
+// is everything inside it.
 func TestSpaceOnAFolderMarksItsMembers(t *testing.T) {
 	cat := &apiv1.Category{
 		Id: "cat-1", Name: "Research",
@@ -441,12 +419,6 @@ func TestSpaceOnAFolderMarksItsMembers(t *testing.T) {
 
 // TestDeleteChordMatchesThePanes is the DRIFT GUARD for the one value that necessarily lives in two
 // packages.
-//
-// The shell draws the conversations rail and its folder rows; the execution screen draws the Workers and
-// Workflows panes; the shell imports the screen, not the other way round. So `ctrl+x` is written down in
-// both — and that is EXACTLY how the operator found Workers on `x` and Workflows on `shift+x` while every
-// test stayed green. Rather than add another comment asking people to keep them in step, this compares
-// them: change one without the other and the suite fails here, naming both values.
 func TestDeleteChordMatchesThePanes(t *testing.T) {
 	if got, want := categoryDeleteChord, execution.DeleteChord(); got != want {
 		t.Fatalf("the rail's folder-delete chord (%q) and the panes' delete chord (%q) have drifted", got, want)
@@ -473,10 +445,7 @@ func TestRailFolderDeleteAnswersTheSharedChord(t *testing.T) {
 			m.convSel = i
 		}
 	}
-	// The OLD chord must not delete a grouping any more. Note what it DOES do: with the rail up and the
-	// composer empty, a bare letter is TYPED — the rail's keys are driven from the composer, which is why
-	// its item chords are all modified — so the composer has to be cleared before the real chord is tried.
-	// Asserting this explicitly is what documents why the next line needs the clear.
+	// The OLD chord must not delete a grouping any more.
 	m = press(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(categoryDeleteChordOld)})
 	if m.bulkConfirm != nil {
 		t.Fatalf("%q still deletes a grouping — the chord must have MOVED, not been added to",

@@ -1,23 +1,6 @@
 package tui
 
 // plane_ops_single_source_test.go — the plane's ACTIONS have exactly one implementation.
-//
-// THE OPERATOR'S DESIGN (D1): "one operations contract … desktop and TUI are thin clients of it — no
-// second implementation".
-//
-// WHY IT IS ASSERTED RATHER THAN REMEMBERED. Before this guard the desktop drove internal/planebind
-// (its Wails binding) while the TUI called planecontrol directly. Two things that can STOP a plane must
-// not decide independently what "stopped" means, and we have already paid for exactly that divergence
-// once: `orchicon stop` reported "✓ dev is stopped" while a re-parented postgres backend still held the
-// database directory and port 5432. Two implementations of one verb is how a product ends up telling an
-// operator two different things about the same machine.
-//
-// A READ is deliberately out of scope. The TUI's footer chip and remedy messages are built from
-// planecontrol.Status, which planebind flattens into a DTO for JSON; both read through the same
-// planecontrol.StatusOf, so they cannot disagree. Actions mutate host state — reads cannot corrupt it.
-//
-// planebind is a leaf (stdlib + planecontrol + instance, enforced by its own imports_test), so adopting
-// it cannot pull the plane's HTTP server into the TUI.
 
 import (
 	"os"

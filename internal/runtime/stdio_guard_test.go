@@ -1,26 +1,6 @@
 package runtime
 
-// stdio_guard_test.go — the container-side half of the claude worker's OS-level
-// guard proof.
-//
-// runStdio is the transport a claude worker's container execution uses: the
-// claude adapter drives ONE long-lived child (internal/claude/proc.go,
-// runtime.Client.Stdio) and the supervisor runs it here, with the execution
-// guard built (guard.MakeGuard) and prepended to its PATH. That is what makes a
-// destructive command impossible INSIDE the run's container, and it is the only
-// guard a container execution gets — the claude adapter deliberately ships no
-// host-built shim into the container (see
-// internal/claude/guard_env_test.go:TestContainerTransportDoesNotShipAHostShimPath).
-//
-// The claim "runStdio applies the guard" was previously only a COMMENT (no test
-// drove the handler), so deleting those two lines would have left every
-// permission/parity suite green while every container worker — claude and
-// opencode alike — ran unguarded. This test drives the REAL handler with a REAL
-// child and asserts the refusal comes from the shim this path installed.
-//
-// Targets are TEMP SPACE (the rule internal/guard/guard_test.go documents): a
-// test whose safety depends on the verdict of the thing it tests fails open, so
-// the failure mode of a bad verdict is a directory this test owns.
+// stdio_guard_test.go — the container-side half of the claude worker's OS-level guard proof.
 
 import (
 	"bytes"
@@ -32,13 +12,8 @@ import (
 	"testing"
 )
 
-// shimFreePath is the ambient PATH with every Orchicon guard shim directory
-// removed. It is NOT cosmetic: the runner's own PATH in an Orchicon run already
-// begins with a guard shim (the worker process is itself guarded), so a child
-// that resolved `rm` through the inherited PATH would be refused by THAT shim
-// even if runStdio installed none — the assertion would pass with the guard
-// deleted from the code under test (verified: it did). Pinning the child's PATH
-// makes the guard under test the ONLY possible source of the refusal.
+// shimFreePath is the ambient PATH with every Orchicon guard shim directory removed. Pinning the
+// child's PATH makes the guard under test the ONLY possible source of the refusal.
 func shimFreePath(t *testing.T) string {
 	t.Helper()
 	var kept []string
@@ -54,10 +29,8 @@ func shimFreePath(t *testing.T) string {
 	return strings.Join(kept, string(os.PathListSeparator))
 }
 
-// stdioEvents drives runStdio for one argv with NO follow-up frames (the decoder
-// hits EOF immediately, so the child sees stdin close) and returns the decoded
-// event stream. The child's PATH is pinned shim-free (see shimFreePath), so the
-// shim it resolves is the one runStdio prepends and nothing else.
+// stdioEvents drives runStdio for one argv with NO follow-up frames (the decoder hits EOF
+// immediately, so the child sees stdin close) and returns the decoded event stream.
 func stdioEvents(t *testing.T, req AgentRequest) []AgentEvent {
 	t.Helper()
 	req.Env = append(append([]string(nil), req.Env...), "PATH="+shimFreePath(t))
@@ -103,9 +76,8 @@ func stdioExitCode(t *testing.T, events []AgentEvent) int {
 	return -1
 }
 
-// THE PIN: a subprocess command issued through the stdio transport — the path a
-// claude worker's Bash tool executes on inside the run's container — is refused
-// by the execution guard, while ordinary in-project cleanup still runs.
+// THE PIN: a subprocess command issued through the stdio transport — the path a claude worker's
+// Bash tool executes on inside the run's container — is refused by the execution guard.
 func TestStdioChildRunsUnderTheExecutionGuard(t *testing.T) {
 	project := t.TempDir()
 	outside := t.TempDir() // temp space ONLY
@@ -150,9 +122,8 @@ func TestStdioChildRunsUnderTheExecutionGuard(t *testing.T) {
 	}
 }
 
-// The guard is built from the request's project dir, not the container's cwd:
-// a command that stays inside the PROJECT but runs from elsewhere is allowed,
-// and the shim the child resolves is the one for THIS execution.
+// The guard is built from the request's project dir, not the container's cwd: a command that stays
+// inside the PROJECT but runs from elsewhere is allowed.
 func TestStdioGuardUsesTheRequestProjectDir(t *testing.T) {
 	project := t.TempDir()
 	target := filepath.Join(project, "dist")

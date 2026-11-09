@@ -33,9 +33,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// Owner is the row's owner — exactly one field non-empty (the server enforces
-// mcp_servers_owner_xor). It is the ONLY thing that distinguishes a
-// project-owned definition from a conversation-owned one.
+// It is the ONLY thing that distinguishes a project-owned definition from a conversation-owned one.
 type Owner struct {
 	ProjectID      string
 	ConversationID string
@@ -66,10 +64,8 @@ func mcpTransport(s string) apiv1.MCPServerTransport {
 	}
 }
 
-// parseKeyValue reads a "KEY=VALUE per line" field, the same shape the GUI
-// form's env/headers fields use (MCPServersPanel.tsx). ${SECRET_NAME} values are
-// passed through verbatim — they are resolved by the tenant secrets store at
-// session time, never here.
+// parseKeyValue reads a "KEY=VALUE per line" field, the same shape the GUI form's env/headers
+// fields use (MCPServersPanel.tsx).
 func parseKeyValue(s string) map[string]string {
 	var out map[string]string
 	for _, line := range strings.Split(s, "\n") {
@@ -103,19 +99,8 @@ func keyValueText(m map[string]string) string {
 	return strings.Join(lines, "\n")
 }
 
-// DefineForm is the typed MCP DEFINITION form — the TUI control for
-// command/args/env or url/headers, catalog-prefillable, owner-stamped.
-//
-// IT IS NOT THE OLD SELECT-FROM-TENANT FIELD. The removed ProjectMCPField
-// listed the tenant's entries and wrote a reference selection; this form builds
-// an OWNED create request, which is the capability the epic requires (AC 9).
-//
-// prefill, when non-nil, seeds the fields from a catalog entry — the TUI's
-// one-click add, mirroring the GUI's handleCatalogAdd.
-//
-// onSave receives the fully-built request (owner already stamped) and returns
-// the command that performs the write; the form itself never touches a client,
-// so a test can assert on the request without a plane.
+// DefineForm is the typed MCP DEFINITION form — the TUI control for command/args/env or
+// url/headers, catalog-prefillable, owner-stamped.
 func DefineForm(title string, owner Owner, prefill *apiv1.MCPServerCreateRequest, onSave func(*apiv1.MCPServerCreateRequest) tea.Cmd) *kit2.Form {
 	name, command, args, url := "", "", "", ""
 	env, headers := "", ""
@@ -178,13 +163,8 @@ func DefineForm(title string, owner Owner, prefill *apiv1.MCPServerCreateRequest
 	return f
 }
 
-// CatalogForm lists the curated registry and, on pick, opens DefineForm
-// prefilled from the catalog entry — the TUI's one-click add. The prefill RPC is
-// the caller's (it already has a client); this form only carries the choice.
-//
-// list returns the catalog entries, prefetch returns one entry's prefill. Both
-// are injected so the form is testable without a plane, and so the form does not
-// re-implement the catalog's install-mechanism logic.
+// CatalogForm lists the curated registry and, on pick, opens DefineForm prefilled from the catalog
+// entry — the TUI's one-click add.
 func CatalogForm(
 	owner Owner,
 	list func() []*apiv1.MCPCatalogEntry,
@@ -208,10 +188,8 @@ func CatalogForm(
 	)
 	f.Focused = true
 	f.Width = 64
-	// The chosen slug PREFILLS an owned create and saves it — a catalog pick is
-	// the TUI's one-click add, mirroring the GUI's handleCatalogAdd (which also
-	// prefills then creates). The prefill RPC is injected, so this form does not
-	// re-implement the catalog's install-mechanism logic.
+	// The chosen slug PREFILLS an owned create and saves it — a catalog pick is the TUI's one-click
+	// add, mirroring the GUI's handleCatalogAdd (which also prefills then creates).
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		slug := strings.TrimSpace(v["slug"])
 		if slug == "" {
@@ -249,12 +227,7 @@ func InstallForm(label string, onInstall func() tea.Cmd) *kit2.Form {
 
 // ── credentials: the SELECTION half ──────────────────────────────────────────────────────
 
-// SecretChoice is one SELECTABLE credential from the tenant secrets store: the NAME that goes into a
-// ${...} reference, and the ID the store needs in order to REPLACE the value.
-//
-// THE VALUE IS NEVER FETCHED, and that is why this type has no field for one. The store is
-// write-only from a client's side — ListSecrets returns names and metadata, GetSecret is never
-// called — the same rule the Control screen's Secrets list follows.
+// THE VALUE IS NEVER FETCHED, and that is why this type has no field for one.
 type SecretChoice struct {
 	ID   string
 	Name string
@@ -263,9 +236,7 @@ type SecretChoice struct {
 	Description string
 }
 
-// inlineSpecIsHTTP reports whether an inline spec speaks streamable HTTP. It mirrors
-// mcpsettings.specFromInline's inference (type first, URL as the fallback) so the reference lands in
-// the same map the spec's own transport reads from — env for stdio, headers for HTTP.
+// inlineSpecIsHTTP reports whether an inline spec speaks streamable HTTP.
 func inlineSpecIsHTTP(spec InlineSpec) bool {
 	switch spec.Type {
 	case "http", "streamable-http":
@@ -276,10 +247,8 @@ func inlineSpecIsHTTP(spec InlineSpec) bool {
 	return spec.URL != ""
 }
 
-// CredentialKeyOptions lists the keys the spec ALREADY carries for its transport, so the common case
-// — point this server's existing GITHUB_PERSONAL_ACCESS_TOKEN at a stored secret — is a PICK rather
-// than a retype. An empty list is normal (a catalog pick leaves a secret key out on purpose: the
-// prefill never writes a blank secret), and the field stays typable for exactly that case.
+// CredentialKeyOptions lists the keys the spec ALREADY carries for its transport, so the common
+// case — point this server's existing GITHUB_PERSONAL_ACCESS_TOKEN at a stored secret.
 func CredentialKeyOptions(spec InlineSpec) []kit2.Option {
 	m := spec.Env
 	if inlineSpecIsHTTP(spec) {
@@ -305,12 +274,6 @@ func CredentialKeyOptions(spec InlineSpec) []kit2.Option {
 }
 
 // AttachSecret points ONE key of an inline spec at a stored tenant secret, as ${NAME}.
-//
-// IT WRITES INTO THE MAP THE SPEC'S TRANSPORT READS: Env for stdio, Headers for streamable HTTP — the
-// same split InlineForm's own submit enforces, so the field the operator was shown is the field the
-// reference lands in. An existing value at that key is REPLACED (that is the point: a plaintext
-// credential becomes a reference), and the reference is passed through verbatim — it is resolved by
-// the tenant secrets store at session time (mcpsettings.ResolveSecretRefs), never here.
 func AttachSecret(spec *InlineSpec, key, secretName string) {
 	key, secretName = strings.TrimSpace(key), strings.TrimSpace(secretName)
 	if key == "" || secretName == "" {
@@ -357,28 +320,12 @@ func AttachSecret(spec *InlineSpec, key, secretName string) {
 // that is not in the tenant store cannot be referenced, so it needs a value to create it.
 // ── the credential surface: ONE definition, every scope ──────────────────────────────────
 
-// CustomSecretChoice is the stored-secret picker's entry that means "store a NEW secret, named and valued
-// in the fields below".
-//
-// IT IS AN EXPLICIT CHOICE RATHER THAN A PROPERTY OF A TYPED NAME, and that is the point. A stored secret
-// that is PICKED is the whole answer, while a value typed beside it used to be silently ignored — the
-// report: "if someone already went through the list and added a current secret, it doesn't matter what
-// value they put in the custom field, the stored secret supersedes it". Picking one and creating one are
-// different intentions, so they are now two controls: pick a name, OR choose Custom and fill in the pair.
+// CustomSecretChoice is the stored-secret picker's entry that means "store a NEW secret, named and
+// valued in the fields below".
 const CustomSecretChoice = "__custom__"
 
-// credentialFormFields is the ONE definition of the fields a credential form has at any scope: the KEY
-// (picked from the keys the server declares or already carries), the SECRET (picked from the store's names,
-// with Custom as the explicit new-secret choice), and the new-secret pair, which exists ONLY when Custom
-// was chosen.
-//
-// THE OPERATOR'S RULE IS A PROPERTY OF THE CREDENTIAL, NOT OF THE SCOPE — "everything should be driven from
-// the credential store", and "if the user wants to type in a NEW one to create one that is fine, otherwise
-// it should be static" — so an owned row and an inline spec are handed the same fields by the same code and
-// cannot drift into two different answers about what a credential is.
-//
-// It returns the names the store holds ALONGSIDE the fields, because the submit rule is about the list that
-// was just offered and belongs with the fields that offer it (credentialSubmit).
+// credentialFormFields is the ONE definition of the fields a credential form has at any scope: the
+// KEY (picked from the keys the server declares or already carries).
 func credentialFormFields(
 	initialKey, initialSecret string, keyOptions []kit2.Option, keyPlaceholder string, choices []SecretChoice,
 ) ([]kit2.FieldSpec, map[string]bool) {
@@ -393,10 +340,7 @@ func credentialFormFields(
 	return []kit2.FieldSpec{
 		{Name: "key", Label: "Credential key", Kind: kit2.KPicker, Required: true,
 			Initial: initialKey, Options: keyOptions, Placeholder: keyPlaceholder},
-		// SEEDED WITH WHAT THE SERVER ALREADY USES, when it already references one. Opening on a blank picker
-		// is what the operator saw as the credential not being kept ("when you save an MCP server and go back
-		// into it, it doesn't list the credential that was already created/added") — and the reference in the
-		// server's own env/headers IS the record of it.
+		// SEEDED WITH WHAT THE SERVER ALREADY USES, when it already references one.
 		{Name: "secret", Label: "Stored secret", Kind: kit2.KPicker, Required: true,
 			Initial: initialSecret, Options: names, Placeholder: "pick a stored secret, or choose Custom"},
 		// Hidden while a STORED secret is picked, so the two halves cannot be told at once — which is
@@ -409,13 +353,6 @@ func credentialFormFields(
 }
 
 // credentialSubmit is the shared submit: the rules the form owns, then the caller's write.
-//
-// They are all about the list the form just OFFERED — a name the store does not hold is not a reference,
-// and Custom is how an operator says they mean to STORE one instead. Everything ELSE about a credential
-// belongs to the plane, which can enforce it for every writer rather than only for this form: the key's
-// grammar is checked when a version is saved (mcpsettings.ValidateInlinePermissions, which reuses the
-// owned-row rule) and the reference resolving is checked when a session starts
-// (mcpsettings.ResolveSecretRefs). Restating either here would be a second copy of a rule the server owns.
 func credentialSubmit(
 	stored map[string]bool, onSave func(key, secret, value string) tea.Cmd,
 ) func(map[string]string, map[string][]string) (tea.Cmd, error) {
@@ -441,9 +378,7 @@ func credentialSubmit(
 				"choose Custom to store it", secret)
 		}
 		// A STORED SECRET IS REFERENCED WITH NO VALUE, and a value left over from before the pick is
-		// REFUSED rather than ignored. Ignoring it is what the report described — "it doesn't matter what
-		// value they put in the custom field, the stored secret supersedes it" — so the form says which of
-		// the two the operator actually wants instead of quietly dropping one of them.
+		// REFUSED rather than ignored.
 		if strings.TrimSpace(v["value"]) != "" {
 			return nil, fmt.Errorf("%s is already stored — its value is not re-sent. Choose Custom to store "+
 				"a new or rotated value", secret)
@@ -482,8 +417,7 @@ func CredentialForm(title string, spec InlineSpec, choices []SecretChoice, onSav
 }
 
 // secretRefName reads the ${NAME} reference a value carries, mirroring the plane's own
-// mcpsettings.secretRefName. The grammar is only a prefix and a suffix — `${}` is a reference to an empty
-// name there too — so callers test the RESULT for emptiness rather than treating the match as an attachment.
+// mcpsettings.secretRefName.
 func secretRefName(v string) string {
 	v = strings.TrimSpace(v)
 	if len(v) >= 3 && strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
@@ -492,11 +426,8 @@ func secretRefName(v string) string {
 	return ""
 }
 
-// attachedReference reports which key a server ALREADY points at a stored secret, and at which secret.
-//
-// The keys are walked in SORTED order so two reads of the same server agree: a map's iteration order is
-// random in Go, and a form that preselects a different key on each open would be worse than one that
-// preselects none.
+// attachedReference reports which key a server ALREADY points at a stored secret, and at which
+// secret.
 func attachedReference(env, headers map[string]string, isHTTP bool) (key, secretName string) {
 	m := env
 	if isHTTP {
@@ -520,13 +451,8 @@ func isHTTPRow(row *apiv1.MCPServer) bool {
 	return row.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP
 }
 
-// OwnedKeyOptions lists the keys a credential could fill for an OWNED row: what the catalog DECLARES the
-// entry needs (MCPServer.required_secrets, which the plane resolves onto the row, so no catalog read is
-// needed here) followed by the keys the row already carries for its transport.
-//
-// DECLARED FIRST, and the order is the useful one: for a catalog-added entry the declared key IS the answer
-// and is therefore the default, while the keys a row already carries are usually its non-secret ones
-// (PATH, LOG_LEVEL).
+// OwnedKeyOptions lists the keys a credential could fill for an OWNED row: what the catalog
+// DECLARES the entry needs (MCPServer.required_secrets, which the plane resolves onto the row.
 func OwnedKeyOptions(row *apiv1.MCPServer) []kit2.Option {
 	existing := row.GetEnv()
 	if row.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP {
@@ -558,19 +484,8 @@ func OwnedKeyOptions(row *apiv1.MCPServer) []kit2.Option {
 	return out
 }
 
-// OwnedCredentialForm points an OWNED row (a project's or a conversation's server) at a STORED credential.
-//
-// THE SAME THREE FIELDS AS CredentialForm, deliberately: the rule is about credentials, not scopes. It
-// replaces a form that typed a Credential key and a Value straight onto the row — the shape the operator
-// rejected ("it is still manually typed in key, value pair. We should not allow that option at all") — which
-// stored the value against the row's id under a plane-derived name, so the value was invisible to the
-// secrets store and could not be rotated from it.
-//
-// The write is STORE-THEN-REFERENCE, in that order and for the reason the inline path documents: the
-// reference ${NAME} is resolved when a session USES the server, so a row pointing at a secret nobody stored
-// fails that server's session rather than this form's submit. A name the store already holds is a ROTATION —
-// the value is replaced under the same name, so every row referencing it picks the new value up at once,
-// which the typed-value form could not express at all.
+// OwnedCredentialForm points an OWNED row (a project's or a conversation's server) at a STORED
+// credential.
 func OwnedCredentialForm(
 	label string, row *apiv1.MCPServer, choices []SecretChoice, onApply func(key, secret, value string) tea.Cmd,
 ) *kit2.Form {
@@ -612,20 +527,8 @@ func secretChoiceSuffix(desc string) string {
 	return " — " + desc
 }
 
-// SkillPathsForm edits a SKILL FILES path list — the control that sits in the same
-// scope surface as the MCP panel, which is why it lives here rather than beside
-// any one caller.
-//
-// IT IS THE PATH-LIST IDIOM, DELIBERATELY (see ParseSkillPaths): the GUI selects
-// skill files with a file-tree browser, the TUI has no file browser, and its
-// established control for a path list is a typed field — the same treatment
-// context_files already gets. Validation is the SERVER'S (contextfiles.Validate /
-// ValidateWithin), never a second client-side copy, so this form only has to
-// express what the operator wants.
-//
-// The field is PREFILLED with what the scope already holds, so changing one path
-// is an edit rather than a retype, and EMPTYING it clears the list — which is the
-// same write /skills clear performs.
+// SkillPathsForm edits a SKILL FILES path list — the control that sits in the same scope surface as
+// the MCP panel, which is why it lives here rather than beside any one caller.
 func SkillPathsForm(current string, onSave func(paths []string) tea.Cmd) *kit2.Form {
 	f := kit2.NewForm("Skill files for this conversation",
 		kit2.FieldSpec{
@@ -646,19 +549,8 @@ func SkillPathsForm(current string, onSave func(paths []string) tea.Cmd) *kit2.F
 	return f
 }
 
-// InlineSpecFromCreateRequest converts a CATALOG PREFILL (an owned-create shape) into an INLINE spec, so
-// the same catalog control can seed a WORKER VERSION's list.
-//
-// IT EXISTS BECAUSE THE CATALOG IS A PREFILL, NOT A CREATE. The GUI's catalog Add fills the add form and
-// opens it (MCPServersPanel.handleCatalogAdd → setShowForm(true)); what happens next is decided by the
-// FORM's save, which writes an owned row for a project/conversation and an INLINE spec for a version
-// (scope.kind === "workerVersion" → writeInline). Treating the catalog as "create a row" is what made an
-// earlier TUI cut refuse the catalog at the version scope: the capability was there, the assumption was
-// wrong.
-//
-// It is the inverse of screens/work.InlineSpecToCreateRequest, and mirrors the spec the GUI builds in its
-// submit branch field for field (type from the transport, argv = command + args, env for stdio,
-// url/headers for http).
+// InlineSpecFromCreateRequest converts a CATALOG PREFILL (an owned-create shape) into an INLINE
+// spec, so the same catalog control can seed a WORKER VERSION's list.
 func InlineSpecFromCreateRequest(req *apiv1.MCPServerCreateRequest) InlineSpec {
 	enabled := req.GetEnabled()
 	out := InlineSpec{ID: req.GetName(), Enabled: &enabled}
@@ -675,10 +567,8 @@ func InlineSpecFromCreateRequest(req *apiv1.MCPServerCreateRequest) InlineSpec {
 	return out
 }
 
-// InlineSpec mirrors db.InlineMCPServer (internal/db/mcp_servers.go) — the ONE
-// shape the server already parses out of a worker version's
-// permissions.mcp_servers. The worker-version placement writes THIS array rather
-// than an owned row, so a published version stays immutable.
+// InlineSpec mirrors db.InlineMCPServer (internal/db/mcp_servers.go) — the ONE shape the server
+// already parses out of a worker version's permissions.mcp_servers.
 type InlineSpec struct {
 	ID      string            `json:"id"`
 	Type    string            `json:"type,omitempty"` // "stdio" | "http"
@@ -690,9 +580,7 @@ type InlineSpec struct {
 	OnError string            `json:"onError,omitempty"`
 }
 
-// InlineForm edits one inline spec and writes it back through onSave — no RPC,
-// no row. command/args/env for stdio, url/headers for http, same as DefineForm;
-// the difference is purely the persistence target (AC 3: one UI, two targets).
+// InlineForm edits one inline spec and writes it back through onSave — no RPC, no row.
 func InlineForm(title string, src *InlineSpec, onSave func(InlineSpec)) *kit2.Form {
 	spec := InlineSpec{}
 	if src != nil {
@@ -741,21 +629,7 @@ func InlineForm(title string, src *InlineSpec, onSave func(InlineSpec)) *kit2.Fo
 	return f
 }
 
-// ParseInline decodes a permissions-sourced inline array. It accepts the THREE
-// shapes db.MCPServersFromPermissions accepts, so a legacy version round-trips:
-//
-//  1. full spec   {"id","type","command":["npx","-y","x"],…}
-//  2. legacy ref  {"id":"01H…","command":"npx -y x"}  (command is a string)
-//  3. bare id     "01H…"
-//
-// An empty or malformed input yields nil (a shape error must not block a form
-// from opening — the same degradation the server does).
-// It accepts the BARE ARRAY as well as the wrapped object, because the bare
-// array is what the TUI's own mcp_servers field shows and teaches (see
-// ProjectMCPDefinitionsField's Placeholder, and inlineJSONFromPermissions):
-// accepting only the wrapped form meant a definition typed exactly as the
-// placeholder demonstrates was silently dropped. MergeIntoPermissions already
-// accepted both, so this closes the disagreement rather than inventing a rule.
+// ParseInline decodes a permissions-sourced inline array.
 func ParseInline(permissionsJSON string) []InlineSpec {
 	t := strings.TrimSpace(permissionsJSON)
 	if t == "" {
@@ -823,9 +697,8 @@ func decodeInlineCommand(raw json.RawMessage) []string {
 	return nil
 }
 
-// MarshalInline encodes the specs back into the permissions JSON, replacing the
-// mcp_servers key and PRESERVING every other key (tools, model_providers, …) —
-// the panel owns one key of the blob, never the whole blob.
+// MarshalInline encodes the specs back into the permissions JSON, replacing the mcp_servers key and
+// PRESERVING every other key (tools, model_providers, …) — the panel owns one key of the blob.
 func MarshalInline(permissionsJSON string, specs []InlineSpec) (string, error) {
 	p := map[string]json.RawMessage{}
 	if strings.TrimSpace(permissionsJSON) != "" {
@@ -848,14 +721,8 @@ func MarshalInline(permissionsJSON string, specs []InlineSpec) (string, error) {
 	return string(out), nil
 }
 
-// ParseSkillPaths reads the skill_files path-list field: one path per line, with
-// commas also accepted (a single-line paste of "a, b" is the natural mistake) and
-// blanks dropped. It is the SAME rule context_files uses (screens/work.
-// ParseContextFiles); validation is the SERVER'S (contextfiles.Validate /
-// ValidateWithin), never a second client-side copy. The GUI selects skill files
-// with a file-tree browser; the TUI has no file browser, so it uses this typed
-// path-list idiom — the deliberate asymmetry documented on
-// screens/work/projects.go's skillFilesLabel.
+// ParseSkillPaths reads the skill_files path-list field: one path per line, with commas also
+// accepted (a single-line paste of "a, b" is the natural mistake) and blanks dropped.
 func ParseSkillPaths(text string) []string {
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
@@ -868,11 +735,8 @@ func ParseSkillPaths(text string) []string {
 	return out
 }
 
-// MergeIntoPermissions is MarshalInline under the name the worker-version
-// setters call: the panel OWNS the mcp_servers key of the permissions blob, so
-// the setters merge the form's inline array into whatever the permissions KJSON
-// field carries rather than replacing the blob. Documented here because the
-// ownership is the invariant that stops the two controls fighting.
+// MergeIntoPermissions is MarshalInline under the name the worker-version setters call: the panel
+// OWNS the mcp_servers key of the permissions blob.
 func MergeIntoPermissions(permissionsJSON, mcpJSON string) (string, error) {
 	var specs []InlineSpec
 	if strings.TrimSpace(mcpJSON) != "" && strings.TrimSpace(mcpJSON) != "[]" {

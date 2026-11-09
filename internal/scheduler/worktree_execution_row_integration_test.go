@@ -22,9 +22,8 @@ import (
 // detail view's worktree tiles always rendered nothing even for a
 // provisioned git-backed run.
 
-// TestWorktreeExecutionRowCarriesRunState dispatches a step of a run
-// whose worktree was provisioned to 'ready' and verifies the created
-// execution row records the same worktree status/path/branch as the run.
+// TestWorktreeExecutionRowCarriesRunState dispatches a step of a run whose worktree was provisioned
+// to 'ready' and verifies the created execution row records the same worktree status/path/branch.
 func TestWorktreeExecutionRowCarriesRunState(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -98,9 +97,8 @@ func TestWorktreeExecutionRowCarriesRunState(t *testing.T) {
 	}
 }
 
-// TestWorktreeExecutionRowSkippedRun records the neutral in-place state
-// for a non-repo run: the execution carries worktree_status=skipped and
-// no path/branch, so the UI renders "Runs in place" without branch info.
+// TestWorktreeExecutionRowSkippedRun records the neutral in-place state for a non-repo run: the
+// execution carries worktree_status=skipped and no path/branch.
 func TestWorktreeExecutionRowSkippedRun(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -144,10 +142,8 @@ func TestWorktreeExecutionRowSkippedRun(t *testing.T) {
 		t.Fatalf("commit step run: %v", err)
 	}
 
-	// A ready adapter of the seeded runtime kind so selectAdapter succeeds —
-	// without it the dispatch is held ("no suitable adapter") and no execution
-	// is ever linked to the step run, which is what this test asserts. (Its
-	// sibling above creates one; this test was missing the call.)
+	// A ready adapter of the seeded runtime kind so selectAdapter succeeds — without it the dispatch is
+	// held ("no suitable adapter") and no execution is ever linked to the step run.
 	_ = createTestAdapter(t, env.pool, "opencode", 8)
 
 	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))

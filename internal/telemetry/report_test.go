@@ -1,9 +1,7 @@
 package telemetry_test
 
-// report_test.go — TelemetryService.GetTelemetryReport, the reports view of
-// the native Telemetry page (token usage, cost, duration, failure rate per
-// project). Reads Postgres only, so it must keep working when a telemetry
-// store is down: that is what makes the UI's "partial" state truthful.
+// report_test.go — TelemetryService.GetTelemetryReport, the reports view of the native Telemetry
+// page (token usage, cost, duration, failure rate per project).
 
 import (
 	"context"
@@ -142,14 +140,8 @@ func TestGetTelemetryReportProjectGrouping(t *testing.T) {
 	}
 }
 
-// TestGetTelemetryReportCarriesOutcomesAndModels pins the two dimensions a
-// cost/window table cannot answer: how much work FINISHED and how it ended,
-// and which models did it.
-//
-// The mapping is asserted through the RPC rather than the db layer because the
-// failure mode being guarded is a proto field left nil — the counters exist,
-// they are counted correctly, and the page still shows nothing because nobody
-// wired them into the response.
+// TestGetTelemetryReportCarriesOutcomesAndModels pins the two dimensions a cost/window table cannot
+// answer: how much work FINISHED and how it ended, and which models did it.
 func TestGetTelemetryReportCarriesOutcomesAndModels(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {

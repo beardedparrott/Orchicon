@@ -35,11 +35,8 @@ func TestWSLModeMapsADrivePath(t *testing.T) {
 	}
 }
 
-// TestSpacesNeedNoQuotingBecauseTheSpecIsOneArgvElement pins the thing that looks like a problem and is not.
-//
-// mountArgv builds `source:dest:opts` as a SINGLE argv element and the engine parses the colons itself, so a
-// space in the path needs no escaping at either end. (This is why the operator's instinct — "handle spaces
-// properly" — is already satisfied by the argv shape, and adding quotes would actively break it.)
+// TestSpacesNeedNoQuotingBecauseTheSpecIsOneArgvElement pins the thing that looks like a problem
+// and is not.
 func TestSpacesNeedNoQuotingBecauseTheSpecIsOneArgvElement(t *testing.T) {
 	m := NewPathMapper("windows", "wsl")
 	spec := (MountSpec{Source: `C:\projects\my app`, Dest: `C:\projects\my app`})
@@ -57,9 +54,8 @@ func TestSpacesNeedNoQuotingBecauseTheSpecIsOneArgvElement(t *testing.T) {
 	}
 }
 
-// TestBothSidesOfEveryMountAreMapped is the correction that matters: Source and Dest happen to hold the same
-// string today, and BOTH have to move — the source because the VM must resolve it, the destination because the
-// in-container serve and every bash/file tool resolve the project through it.
+// TestBothSidesOfEveryMountAreMapped is the correction that matters: Source and Dest happen to hold
+// the same string today, and BOTH have to move — the source because the VM must resolve it.
 func TestBothSidesOfEveryMountAreMapped(t *testing.T) {
 	m := NewPathMapper("windows", "wsl")
 	in := []MountSpec{
@@ -225,10 +221,6 @@ func TestMappingIsIdempotent(t *testing.T) {
 // --- the security boundary, in the engine's view ---------------------------------------------------
 
 // TestAllowedRootsAreCheckedInTheEnginesView pins the bug mapping would otherwise introduce.
-//
-// The allowlist is a boundary, and it was compared in the HOST form while the mount handed to the engine is in
-// the GUEST form. On Windows those share no prefix at all, so every mapped mount would be refused no matter how
-// the roots were configured — a silent regression that only appears on the platform being fixed.
 func TestAllowedRootsAreCheckedInTheEnginesView(t *testing.T) {
 	d := &Daemon{
 		AllowedRoots: []string{`C:\projects`},

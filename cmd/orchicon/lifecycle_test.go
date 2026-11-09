@@ -24,9 +24,7 @@ import (
 	"testing"
 )
 
-// readSource reads a file from this package's directory, for the source-level pins
-// below. The package's other source pins read container.go through readContainerGo;
-// these need more than one file, so they take the name.
+// readSource reads a file from this package's directory, for the source-level pins below.
 func readSource(t *testing.T, file string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(file)
@@ -110,10 +108,7 @@ func TestParseInstanceTarget(t *testing.T) {
 	}
 }
 
-// THE REGRESSION ITSELF, stated as the two commands that lied. Each verb's instance
-// resolution is exercised through the parser with the argument an operator would
-// actually type, because "the parser works" is not the claim — "install/restart/start/
-// stop honour it" is.
+// THE REGRESSION ITSELF, stated as the two commands that lied.
 func TestLifecycleVerbsHonourTheInstanceArgument(t *testing.T) {
 	// Every verb that resolves an instance from args, with the argv shape the user types.
 	// `plane` and `services` pass their tail (the verb is args[0], consumed by the caller).
@@ -127,9 +122,7 @@ func TestLifecycleVerbsHonourTheInstanceArgument(t *testing.T) {
 	}
 	for verb, args := range verbs {
 		t.Run(verb, func(t *testing.T) {
-			// The environment deliberately says something ELSE. If a verb still preferred the
-			// env var, this would return "test" and the assertion below would fail — which is
-			// exactly how the original defect would have shown up.
+			// The environment deliberately says something ELSE.
 			t.Setenv("ORCHICON_INSTANCE", "test")
 			got, err := parseInstanceTarget(args, env("ORCHICON_INSTANCE", "dev"))
 			if err != nil {
@@ -144,9 +137,8 @@ func TestLifecycleVerbsHonourTheInstanceArgument(t *testing.T) {
 	}
 }
 
-// The env var is still the fallback, so an existing script that exports
-// ORCHICON_INSTANCE keeps working unchanged. A fix that broke that would be a regression
-// in the other direction.
+// The env var is still the fallback, so an existing script that exports ORCHICON_INSTANCE keeps
+// working unchanged.
 func TestLifecycleFallsBackToTheEnvironment(t *testing.T) {
 	t.Setenv("ORCHICON_INSTANCE", "prod")
 	got, err := parseInstanceTarget(nil, env("ORCHICON_INSTANCE", "dev"))
@@ -158,11 +150,8 @@ func TestLifecycleFallsBackToTheEnvironment(t *testing.T) {
 	}
 }
 
-// A SOURCE-LEVEL PIN on the thing that actually broke: the two verbs that ignored their
-// arguments must call the parser. This is deliberately not behavioural — `runInstall`
-// needs an engine, a network and a database to reach the point where the instance is
-// observable, so a behavioural test of it is not something CI can run. The failure being
-// pinned is "the parameter is never read", and that is visible in the source.
+// A SOURCE-LEVEL PIN on the thing that actually broke: the two verbs that ignored their arguments
+// must call the parser.
 func TestLifecycleVerbsParseTheirArguments(t *testing.T) {
 	for _, tc := range []struct{ file, fn string }{
 		{"install.go", "func runInstall(args []string, log *slog.Logger) error {"},
@@ -185,9 +174,7 @@ func TestLifecycleVerbsParseTheirArguments(t *testing.T) {
 	}
 }
 
-// functionBody returns one function's source, from its signature to the closing brace at
-// column 0. It stops at the next top-level `func ` so a match cannot run on into a
-// sibling and pass on that sibling's content.
+// functionBody returns one function's source, from its signature to the closing brace at column 0.
 func functionBody(t *testing.T, file, signature string) string {
 	t.Helper()
 	src := string(readSource(t, file))
@@ -202,16 +189,8 @@ func functionBody(t *testing.T, file, signature string) string {
 	return body
 }
 
-// THE LEGACY-INSTANCE CASE, which the first version of these verbs got wrong on the
-// operator's OWN host. `ports.json` and the residency record are written only by the
-// installer that shipped with #729/#730; both instances on this machine were installed
-// before that, have neither, and yet their planes run and serve. Keying "is it
-// installed?" on the record made `orchicon stop dev` report "nothing is installed for
-// it" — a successful no-op that stopped nothing, which is the exact failure mode these
-// verbs exist to remove.
-//
-// So the evidence is the DATA DIRECTORY, tested here on both sides: absent means nothing
-// to stop, present means stop it, and neither case consults a record.
+// THE LEGACY-INSTANCE CASE, which the first version of these verbs got wrong on the operator's OWN
+// host.
 func TestInstanceExistsUsesTheDataDirectoryNotTheInstallRecord(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -239,9 +218,8 @@ func TestInstanceExistsUsesTheDataDirectoryNotTheInstallRecord(t *testing.T) {
 		t.Fatal("something wrote a residency record; this test no longer proves the point")
 	}
 
-	// And the residency default for a record-free instance is HOST, never container —
-	// guessing "container" would run an engine command against a container these verbs
-	// do not own.
+	// And the residency default for a record-free instance is HOST, never container — guessing
+	// "container" would run an engine command against a container these verbs do not own.
 	if got := instanceResidency("prod"); got != residencyHost {
 		t.Errorf("instanceResidency(prod) with no record = %q, want %q", got, residencyHost)
 	}

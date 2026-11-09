@@ -33,16 +33,10 @@ import (
 )
 
 // ResultFormat is how a project's gate reports per-check results.
-//
-// THE ZERO VALUE IS DELIBERATE. `exit_code` (which parses nothing) is the format every project has even if it
-// declares nothing, so the zero value must be the SAFE one — not a format that would start parsing output
-// nobody promised was in that shape.
 type ResultFormat string
 
 const (
-	// FormatExitCode parses no results at all. The gate's exit status is the whole answer, which means the
-	// differential cannot run and every step records "not measured". This is NOT a failure to be fixed by
-	// guessing; it is a project that has not declared a machine-readable format, and the platform says so.
+	// FormatExitCode parses no results at all.
 	FormatExitCode ResultFormat = "exit_code"
 	// FormatJUnit is JUnit XML — the widest-supported machine-readable test format there is. Go (gotestsum),
 	// Python (pytest --junit-xml), Java (surefire), JS (jest-junit), Rust, .NET and Ruby all emit it.
@@ -58,10 +52,6 @@ const (
 )
 
 // ParseResultFormat resolves a declared format name, accepting the usual spellings.
-//
-// AN UNKNOWN FORMAT IS AN ERROR, not a silent fallback to exit_code. A project that declared `junit` with a typo
-// must be told, because the alternative — quietly not measuring — is the failure mode this whole file exists to
-// remove.
 func ParseResultFormat(s string) (ResultFormat, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "exit", "exit_code", "exitcode", "none":
@@ -82,10 +72,6 @@ func ParseResultFormat(s string) (ResultFormat, error) {
 func (f ResultFormat) ParsesResults() bool { return f != "" && f != FormatExitCode }
 
 // ParseResults turns a gate transcript into a per-check result map for the declared format.
-//
-// IT RETURNS AN ERROR RATHER THAN AN EMPTY MAP when the transcript is not the declared format. The distinction
-// is load-bearing: an empty map means "every check passed" to a naive caller, and a format mismatch would then
-// read as a clean run. The caller records the error as "not measured" instead.
 func ParseResults(format ResultFormat, out string) (map[string]bool, error) {
 	switch format {
 	case FormatJUnit:
@@ -126,10 +112,6 @@ type xmlNested struct {
 }
 
 // parseJUnit reads JUnit XML into a per-test result map.
-//
-// THE KEY IS classname.name, WHICH IS THE UNIQUE IDENTITY. Using the bare test name collides across packages —
-// every Go package has a TestMain, every Java class has its own setUp — and a collision makes one file's pass
-// silently overwrite another's failure.
 func parseJUnit(out string) (map[string]bool, error) {
 	body, err := xmlWindow(out)
 	if err != nil {
@@ -185,12 +167,6 @@ func collectJUnit(s *xmlSuite, into map[string]bool) {
 }
 
 // parseTAP reads TAP, including the numbered form the line parser dropped.
-//
-// THE POINT OF GETTING THIS RIGHT: "not ok 2 - division" carries the test NUMBER and the test NAME, and the old
-// parser keyed on whichever field it happened to land on. This key is the NAME, and the number is discarded —
-// it is positional and a runner that reorders or filters tests would renumber it.
-//
-// A test without a name falls back to its number, prefixed so it cannot collide with a real name.
 func parseTAP(out string) (map[string]bool, error) {
 	results := map[string]bool{}
 	sawTAP := false
@@ -284,10 +260,8 @@ type sarifLog struct {
 	} `json:"runs"`
 }
 
-// parseSARIF reads a SARIF log: each finding's rule becomes a check, failing when its level says so.
-//
-// A SARIF LOG LISTS PROBLEMS, so the absence of a rule is a pass and the presence of one at error/warning level
-// is a failure. "note" is not a failure — it is advisory by definition in the spec.
+// parseSARIF reads a SARIF log: each finding's rule becomes a check, failing when its level says
+// so.
 func parseSARIF(out string) (map[string]bool, error) {
 	body, err := jsonWindow(out)
 	if err != nil {
@@ -328,15 +302,8 @@ func parseSARIF(out string) (map[string]bool, error) {
 	return results, nil
 }
 
-// parseJSONResults reads a plain {"check": true} map, OR the NDJSON event stream that `go test -json` emits.
-//
-// THE EVENT STREAM IS WHY GO WORKS WITHOUT A WRAPPER. `go test -json` is Go's own machine-readable output and it
-// is a stream of events, not a map — so a JSON format that only understood maps would force every Go project to
-// install gotestsum just to be measurable, which is exactly the wrapper the operator said should not be needed.
-//
-// Each package's events collapse to ONE result: failing if any of its tests failed, or if the package's own
-// build failed. That is the granularity the differential needs — "did this package get worse" — and it is the
-// same unit `go test` itself reports per package.
+// parseJSONResults reads a plain {"check": true} map, OR the NDJSON event stream that `go test
+// -json` emits.
 func parseJSONResults(out string) (map[string]bool, error) {
 	if results, ok := parseGoTestJSON(out); ok {
 		return results, nil
@@ -371,10 +338,6 @@ func parseJSONResults(out string) (map[string]bool, error) {
 }
 
 // xmlWindow finds the XML document inside a transcript that may carry build chatter around it.
-//
-// GATES PRINT OTHER THINGS. `go build && go test` emits build output before the runner's document, and a runner
-// writing to stdout is not obliged to be the only writer. So the outermost element is located rather than
-// assuming the transcript starts with '<'.
 func xmlWindow(out string) (string, error) {
 	start := strings.IndexByte(out, '<')
 	if start < 0 {
@@ -390,11 +353,6 @@ func xmlWindow(out string) (string, error) {
 }
 
 // jsonWindow finds the JSON document inside a transcript that may carry other output.
-//
-// IT TRIES EACH LINE THAT STARTS A TOP-LEVEL OBJECT and accepts the first that decodes as a whole, because a
-// gate that prints "go build: ok" before a JSON report must not defeat the parse. Scanning backwards from the
-// last '{' is the cheap version and is wrong when the report contains nested objects (the last '{' is inside
-// it), so this tries every candidate in order.
 func jsonWindow(out string) (string, error) {
 	if strings.HasPrefix(strings.TrimSpace(out), "{") {
 		return strings.TrimSpace(out), nil
@@ -422,9 +380,6 @@ func jsonWindow(out string) (string, error) {
 }
 
 // FormatSummary renders a result map for a record: the failures, then a count.
-//
-// Failures first and named, because "3 of 120 checks failed" without saying which sends the operator back to a
-// terminal — the whole reason the record exists is to answer that question where they already are.
 func FormatSummary(results map[string]bool) string {
 	if len(results) == 0 {
 		return "no per-check results"
@@ -457,12 +412,7 @@ type goTestEvent struct {
 	Test    string `json:"Test"`
 }
 
-// parseGoTestJSON aggregates a `go test -json` stream into per-package results. ok is false when the output is not
-// that stream, so the caller can fall through to the plain-map form.
-//
-// PACKAGE-LEVEL, deliberately: the differential compares base against HEAD, and a test that is RENAMED would read
-// as one test disappearing and another appearing — never "this used to pass and now fails". Package granularity
-// survives renames, and it is the unit a build failure can be attributed to at all.
+// parseGoTestJSON aggregates a `go test -json` stream into per-package results.
 func parseGoTestJSON(out string) (map[string]bool, bool) {
 	results := map[string]bool{}
 	events := 0

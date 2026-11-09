@@ -1,11 +1,6 @@
 package neverallow
 
 // neverallow_test.go — THE DECLARATION, TESTED WHERE IT LIVES.
-//
-// The behavioural proof that the guard and the opencode config both READ this
-// declaration (rather than restating it) is in share_test.go. These cover the
-// declaration itself: that it stays dependency-free, and that its two halves —
-// the binary class and the command class — cannot drift apart.
 
 import (
 	"os"
@@ -13,9 +8,7 @@ import (
 	"testing"
 )
 
-// THE PACKAGE IMPORTS NOTHING INTERNAL. That is the whole reason the class was
-// moved out of the two consumers: a declaration with a dependency edge is one
-// the next consumer has to import a whole package to read.
+// THE PACKAGE IMPORTS NOTHING INTERNAL.
 func TestImportsNothingInternal(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -36,10 +29,8 @@ func TestImportsNothingInternal(t *testing.T) {
 	}
 }
 
-// EVERY SHIMMED NAME IS A REAL BASENAME AND APPEARS IN THE GUARD'S CASE ARM.
-// A `*` in a shimmed name would be a symlink literally named `mkfs.*` (nothing
-// would ever resolve through it), and a name missing from the case arm would
-// be a shim that falls through to the "unexpected invocation" branch.
+// A `*` in a shimmed name would be a symlink literally named `mkfs.*` (nothing would ever resolve
+// through it), and a name missing from the case arm would be a shim that falls through.
 func TestShimmedNamesAreRealAndCoveredByTheCasePattern(t *testing.T) {
 	seen := map[string]bool{}
 	for _, n := range strings.Split(CasePattern(), "|") {
@@ -63,9 +54,7 @@ func TestShimmedNamesAreRealAndCoveredByTheCasePattern(t *testing.T) {
 	}
 }
 
-// THE TWO HALVES ARE ONE CLASS. A member whose binary is refused but whose
-// command string is not (or the reverse) is a hole in the class — the layer
-// that happens to see the other spelling lets it through.
+// THE TWO HALVES ARE ONE CLASS.
 func TestEveryBinaryHasACommandPattern(t *testing.T) {
 	for _, b := range Binaries {
 		if strings.Contains(b.Name, "*") {
@@ -97,9 +86,7 @@ func patternCoversName(pattern, name string) bool {
 	return false
 }
 
-// DenyRules HANDS OUT A COPY. The worker profile APPENDS its own project
-// boundary rules to it; if that append aliased the declaration's backing array
-// a worker profile could silently rewrite the shared class.
+// DenyRules HANDS OUT A COPY.
 func TestDenyRulesIsACopy(t *testing.T) {
 	if len(CommandPatterns) == 0 {
 		t.Fatal("CommandPatterns is empty")

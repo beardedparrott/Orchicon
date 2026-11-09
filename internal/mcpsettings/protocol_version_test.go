@@ -1,11 +1,6 @@
 package mcpsettings
 
 // protocol_version_test.go — the operator's MCP protocol pin.
-//
-// The client handles a legacy server automatically now (internal/mcpclient/mcp_legacy_protocol.go), so this
-// field is an OPTIMISATION and an escape hatch rather than the fix. What it must not be is a field that
-// silently swallows a typo: a pin that cannot work should be rejected at write time, when the operator is
-// looking at the form, rather than surfacing later as a connect timeout.
 
 import "testing"
 

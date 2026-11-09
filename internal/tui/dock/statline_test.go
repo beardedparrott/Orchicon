@@ -7,13 +7,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// The operator: "/models ... Then it should show the current ask orchicon model
-// in text inside the text box on the bottom right side. We should also add
-// context count, token count, and cache hit ratio and current cost ... before
-// the brainstorm dropdown".
-//
-// So the stat row is right-aligned, the stats come BEFORE the mode pill, and the
-// pill (the CONTROL) always survives a narrow box.
+// The operator: "/models ...
 func TestStatRowRendersRightAlignedBeforeTheModePill(t *testing.T) {
 	m := New()
 	// Wide enough for the WHOLE strip plus the pill (the narrow case is its own
@@ -97,9 +91,8 @@ func TestStatRowWithoutAModePill(t *testing.T) {
 	}
 }
 
-// The stat row is split — model LEFT, stats + pill right — because a long model
-// ref prefixed to the right-aligned numbers pushed the tail off the pane edge
-// (the operator's "the context is off the screen").
+// The stat row is split — model LEFT, stats + pill right — because a long model ref prefixed to the
+// right-aligned numbers pushed the tail off the pane edge (the operator's "the context is off.
 func TestStatRowSplitsModelFromTheStats(t *testing.T) {
 	m := New()
 	m.Width = 100
@@ -146,17 +139,8 @@ func TestStatRowDropsTheModelBeforeTheNumbers(t *testing.T) {
 	}
 }
 
-// TestStatRowRendersFullsendLeftOfTheModePill pins the FULLSEND indicator's place and its
-// refusal to disappear.
-//
-// The operator placed the GUI's control "to the left of the ask mode drop down", so the TUI
-// draws the same two things in the same order — an operator who learned the shape in one
-// client should not have to learn it again in the other.
-//
-// AND IT IS NOT A DECORATION: this is the only thing on screen that says Orchicon has
-// stopped asking for permission, so it must survive a narrow box the way the pill does. A
-// badge that truncates away under pressure is worse than none, because it teaches the
-// operator that its absence means "the gate is up".
+// TestStatRowRendersFullsendLeftOfTheModePill pins the FULLSEND indicator's place and its refusal
+// to disappear.
 func TestStatRowRendersFullsendLeftOfTheModePill(t *testing.T) {
 	m := New()
 	m.Width = 140
@@ -203,9 +187,8 @@ func TestFullsendBadgeSurvivesANarrowBox(t *testing.T) {
 	}
 }
 
-// TestFullsendBadgeAloneReservesTheRow — the shell allocates rows from StatsRows, so a badge
-// that does not count there is drawn on a line that was never reserved, and is clipped by the
-// frame rather than by the row.
+// TestFullsendBadgeAloneReservesTheRow — the shell allocates rows from StatsRows, so a badge that
+// does not count there is drawn on a line that was never reserved.
 func TestFullsendBadgeAloneReservesTheRow(t *testing.T) {
 	blank := New()
 	if blank.StatsRows() != 0 {

@@ -39,10 +39,8 @@ import (
 // base32) and a NUL can never appear in one, so a group row's id can never collide with an item's.
 const groupRowIDPrefix = "\x00grp:"
 
-// UncategorizedGroupID and UncategorizedGroupName are the synthetic folder for items in no grouping.
-//
-// The id is the GUI's OWN sentinel (`category.id === "uncategorized"` in workers.tsx and
-// CategoryFolder.tsx) rather than a new one, so the two clients name the same thing the same way.
+// UncategorizedGroupID and UncategorizedGroupName are the synthetic folder for items in no
+// grouping.
 const (
 	UncategorizedGroupID   = "uncategorized"
 	UncategorizedGroupName = "Uncategorized"
@@ -58,8 +56,7 @@ type GroupSpec struct {
 }
 
 // SortGroupSpecs orders folders the way BOTH clients render them: the server's sort_order, then the
-// name as a tie-break (folders created in the same transaction share an order, and an unstable order
-// would shuffle them between reloads — the rolling refresh makes that visible every few seconds).
+// name as a tie-break (folders created in the same transaction share an order.
 func SortGroupSpecs(gs []GroupSpec) []GroupSpec {
 	out := append([]GroupSpec(nil), gs...)
 	sort.SliceStable(out, func(i, j int) bool {
@@ -74,10 +71,8 @@ func SortGroupSpecs(gs []GroupSpec) []GroupSpec {
 // GroupRowID is the synthetic row id for a category's folder row.
 func GroupRowID(categoryID string) string { return groupRowIDPrefix + categoryID }
 
-// GroupCategoryID recovers the category id from a folder row's synthetic id ("" when it is not one).
-//
-// The inverse of GroupRowID, and the reason a screen can act on the GROUPING behind the row it is
-// pointing at: rename and delete apply to the category, so the pane has to get its id back out.
+// GroupCategoryID recovers the category id from a folder row's synthetic id ("" when it is not
+// one).
 func GroupCategoryID(rowID string) string {
 	if !IsGroupRow(rowID) {
 		return ""
@@ -85,25 +80,15 @@ func GroupCategoryID(rowID string) string {
 	return rowID[len(groupRowIDPrefix):]
 }
 
-// IsGroupRow reports whether a row id belongs to a synthesized category row rather than to an entity.
-//
-// Callers that WRITE need this: a category row is not an item, so "edit the selected worker" on one
-// would aim at an id the server has never heard of. The lists use it to refuse with a reason instead —
-// except for the two chords that DO apply to a grouping (rename, delete).
+// IsGroupRow reports whether a row id belongs to a synthesized category row rather than to an
+// entity.
 func IsGroupRow(id string) bool {
 	return len(id) >= len(groupRowIDPrefix) && id[:len(groupRowIDPrefix)] == groupRowIDPrefix
 }
 
 // GroupItemsByCategory arranges a flat list into category folders.
-//
-// groups is every category to render, ALREADY IN DISPLAY ORDER (the shell sorts by the server's
-// sort_order). Empty ones are rendered as empty folders, matching the GUI.
-//
-// categoryOf maps an entity id to the category it is in ("" = ungrouped).
 func GroupItemsByCategory(items []Item, groups []GroupSpec, categoryOf func(entityID string) string) []Item {
-	// ADDITIVE: with no categories anywhere, every row is returned exactly as it came in. This is what
-	// lets the same helper serve three lists without changing any of them for a tenant that has never
-	// made a grouping.
+	// ADDITIVE: with no categories anywhere, every row is returned exactly as it came in.
 	if len(groups) == 0 || len(items) == 0 {
 		return items
 	}
@@ -145,9 +130,7 @@ func GroupItemsByCategory(items []Item, groups []GroupSpec, categoryOf func(enti
 		out = append(out, kids...)
 	}
 
-	// UNCATEGORIZED LAST, and only when it has members — the GUI's own rule. An assignment can name a
-	// category the caller did not pass in (a stale cache, a group deleted between fetches), so those
-	// items are treated as ungrouped rather than dropped: losing a row is worse than misfiling it.
+	// UNCATEGORIZED LAST, and only when it has members — the GUI's own rule.
 	ungrouped := func(i int) bool {
 		if inGroup[i] == "" {
 			return items[i].ID != ""

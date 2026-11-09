@@ -1,10 +1,6 @@
 package tui
 
 // ask_search_highlight_test.go — THE SEARCH HIGHLIGHT REACHES THE PAINTED TRANSCRIPT.
-//
-// The md package proves the band is drawn (internal/tui/md/search_highlight_test.go). This proves the pane
-// actually ASKS for it: the shell owns the query (m.askSearch) and the transcript is rendered by the shell,
-// so a highlight armed only in md's tests could be dead code in the app and every md test would still pass.
 
 import (
 	"strings"

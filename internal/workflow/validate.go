@@ -60,10 +60,8 @@ func validateTextField(s string, max int, field string) (string, error) {
 	return s, nil
 }
 
-// validateJSONField validates a JSON-encoded string field: trims, checks
-// size, and verifies valid JSON. Returns the canonical empty value for
-// empty input so the DB always stores well-formed JSON (AGENTS.md
-// security standards: JSON fields are validated).
+// validateJSONField validates a JSON-encoded string field: trims, checks size, and verifies valid
+// JSON.
 func validateJSONField(s, empty, field string, max int) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -78,10 +76,8 @@ func validateJSONField(s, empty, field string, max int) ([]byte, error) {
 	return []byte(s), nil
 }
 
-// validateStepsField validates the steps JSON: it must be a JSON array
-// (or empty for a fresh draft). Each element is a Step object; the
-// shape of each Step is validated by the editor, but here we ensure the
-// array is well-formed and bounded (AGENTS.md security standards).
+// validateStepsField validates the steps JSON: it must be a JSON array (or empty for a fresh
+// draft).
 func validateStepsField(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {

@@ -1,12 +1,6 @@
 package backup
 
 // pgclient_test.go — backup reaches Postgres with a LOCAL client, on every install.
-//
-// The retired single-container shape used to route the tools through `docker exec`.
-// The plane and its Postgres are host processes now, so these tests pin the one
-// remaining resolution order (the instance's own resolved record, then PATH) and the
-// argv that reaches the tool — "it resolved" is not the same claim as "the flags are
-// the same ones the local path used".
 
 import (
 	"context"
@@ -78,9 +72,8 @@ cat > %q
 	}
 }
 
-// installFakeTool writes an executable stub named `name` into a temp dir and
-// PREPENDS that dir to PATH, so exec.LookPath finds the stub and not the real
-// binary.
+// installFakeTool writes an executable stub named `name` into a temp dir and PREPENDS that dir to
+// PATH, so exec.LookPath finds the stub and not the real binary.
 func installFakeTool(t *testing.T, name, script string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -91,11 +84,8 @@ func installFakeTool(t *testing.T, name, script string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// ORCHICON_DATA_DIR names the instance's own state dir, and cmd/orchicon/binaries.go
-// records the resolved PostgreSQL distribution there. On a host whose Postgres came
-// from the DOWNLOAD path that distribution is at <DataDir>/bin/postgres/bin — on NO
-// PATH at all — so without this the local client is unfindable on the very install
-// the resolver provisioned. This is that case, pinned.
+// ORCHICON_DATA_DIR names the instance's own state dir, and cmd/orchicon/binaries.go records the
+// resolved PostgreSQL distribution there.
 func TestLocalClientPrefersTheResolvedRecord(t *testing.T) {
 	dataDir := t.TempDir()
 	toolsDir := filepath.Join(dataDir, "bin", "postgres", "bin")

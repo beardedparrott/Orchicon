@@ -1,20 +1,6 @@
 package runtime
 
 // opencode_store_platform_test.go — WHERE THE OPERATOR'S opencode STORE IS, PER PLATFORM.
-//
-// REPORTED ON WINDOWS: "Model unavailable: opencode-go/…" for every opencode-go model under the
-// opencode adapter, with the same key working under the orchicon adapter. The same report carried
-// opencode's own message for the free model — "Connect a provider or subscribe to OpenCode Go" —
-// which is opencode saying it does not consider the provider connected at all.
-//
-// The cause was here: the store path was the XDG layout on EVERY platform
-// (`<home>/.local/share/opencode`), and Windows does not use it. The resolver therefore read a
-// directory that does not exist, delivered no credentials, and reported nothing undeliverable
-// because it had read nothing to judge — so the serve started with an empty data dir and every
-// opencode-go turn was unauthenticated.
-//
-// These tests name the layouts explicitly rather than relying on the host they run on, because the
-// broken platform is the one CI does not run on.
 
 import (
 	"os"

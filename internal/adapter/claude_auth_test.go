@@ -5,10 +5,8 @@ import (
 	"testing"
 )
 
-// TestClaudeAuthFailureClassifiesAuthErrors pins the canonical vocabulary:
-// an auth-looking claude CLI/transport failure is rewritten to the ONE
-// actionable host sign-in message, and a non-auth failure is left untouched
-// (so a compile error or a rate limit is never misreported as "not signed in").
+// TestClaudeAuthFailureClassifiesAuthErrors pins the canonical vocabulary: an auth-looking claude
+// CLI/transport failure is rewritten to the ONE actionable host sign-in message.
 func TestClaudeAuthFailureClassifiesAuthErrors(t *testing.T) {
 	authLooking := []string{
 		"Invalid API key",
@@ -42,13 +40,8 @@ func TestClaudeAuthFailureClassifiesAuthErrors(t *testing.T) {
 	}
 }
 
-// TestClaudeAuthRequiredMessageActionable pins the message contents: the host-side remedy (run `claude` and
-// sign in), the ANTHROPIC_API_KEY fallback, AND the container-mode explanation.
-//
-// THE LAST PART WAS A REPORTED GAP. An operator in container mode was told to "sign in on the host, then
-// re-run" — accurate, but it said nothing about the credential being MOUNTED into the container, so a
-// host-side sign-in looked like it had done nothing, and the obvious next guess (sign in inside the
-// container) is not possible and is not something we may do for them.
+// TestClaudeAuthRequiredMessageActionable pins the message contents: the host-side remedy (run
+// `claude` and sign in), the ANTHROPIC_API_KEY fallback, AND the container-mode explanation.
 func TestClaudeAuthRequiredMessageActionable(t *testing.T) {
 	for _, want := range []string{
 		"not authenticated", "host", "claude", "ANTHROPIC_API_KEY",

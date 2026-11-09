@@ -84,9 +84,7 @@ type Surface struct {
 }
 
 var (
-	// renderMu guards the chip state for the duration of a Render. Renders are microseconds and
-	// already cheap; correctness under the "two transcripts on two goroutines" contract the parser
-	// comment describes is worth more than parallel rendering of a message.
+	// renderMu guards the chip state for the duration of a Render.
 	renderMu sync.Mutex
 
 	chipFg, chipBg string // set by SetCodeChip (the theme)
@@ -105,25 +103,16 @@ var (
 	// block line re-uses chipSurface for the same reason the chip does: `\x1b[39m` would drop the rest of the
 	// line — and the bubble band behind it — to the terminal's defaults.
 	blockFg, blockBg string
-	// blockGlyph is the optional COPY AFFORDANCE drawn on a block's label row. It is scoped per render (see
-	// RenderOnSpans) rather than configured once, because it must appear ONLY on a surface where clicking a
-	// block actually copies it — md is a leaf several callers share, and a copy marker on a pane that cannot
-	// copy would be a false promise.
+	// It is scoped per render (see RenderOnSpans) rather than configured once, because it must appear
+	// ONLY on a surface where clicking a block actually copies it — md is a leaf several callers share.
 	blockGlyph string
 
-	// hardBreaks, when true for the duration of a render, keeps a SOURCE NEWLINE inside a paragraph as a line
-	// break instead of collapsing it to a space. It is set per render by RenderUserOnSpans and is false on every
-	// other path, which is what leaves the assistant's prose reflowing as it always has. Scoped like blockGlyph
-	// (set inside the render lock, cleared by its defer) rather than being an argument threaded through the
-	// whole renderer, because the renderer's entry points differ only in this one bit.
+	// hardBreaks, when true for the duration of a render, keeps a SOURCE NEWLINE inside a paragraph as
+	// a line break instead of collapsing it to a space.
 	hardBreaks bool
 )
 
-// SetCodeChip sets the inline-code chip's colours. The theme calls it on every switch, so the chip
-// follows the palette like any other token.
-//
-// An empty background (the zero value) leaves the chip OFF, and a code span then renders as reverse
-// video exactly as before — the safe default for a caller that has not declared a surface.
+// SetCodeChip sets the inline-code chip's colours.
 func SetCodeChip(fg, bg string) {
 	renderMu.Lock()
 	defer renderMu.Unlock()
@@ -132,14 +121,6 @@ func SetCodeChip(fg, bg string) {
 
 // SetAccentColor sets the STRUCTURAL ACCENT — the colour of a heading and a list marker — and the
 // colour text returns to after it.
-//
-// The operator, wanting the transcript to read more like a richly-formatted client: "I would like to
-// make it more enhanced." Headings and bullets are the two biggest structural signals a terminal can
-// still add, since it cannot show the GUI's type scale.
-//
-// BOTH arguments are required for the accent to be used at all: an accent with nothing to restore to
-// would leave the rest of the line in the accent colour, so it is applied only when the pair is complete
-// AND parseable — the same rule the chip follows, and for the same reason.
 func SetAccentColor(fg, restore string) {
 	renderMu.Lock()
 	defer renderMu.Unlock()
@@ -147,10 +128,6 @@ func SetAccentColor(fg, restore string) {
 }
 
 // SetCodeBlock sets the code block's colours: the code's foreground and the raised fill behind it.
-//
-// The fill IS the block's containment — see codeBlock for why the border glyphs had to go. Both colours are
-// required for it to be used, the same fail-closed rule as the chip: a block drawn on a fill with no usable
-// foreground would be the illegibility this exists to avoid.
 func SetCodeBlock(fg, bg string) {
 	renderMu.Lock()
 	defer renderMu.Unlock()
@@ -167,14 +144,6 @@ var (
 )
 
 // blockActive reports whether a code block can be drawn on its fill.
-//
-// FOUR CONDITIONS, and the last two are the same fail-closed rule the chip follows. The block's own pair
-// has to PARSE — and, because the fill is closed by RESTORING the surface rather than resetting (see
-// codeBlockLine), that surface has to be restorable too. A render with no declared surface is exactly what
-// md.Render is, and several callers use it, so without this check a block on that path would paint a fill
-// it can never close: the rest of the ROW would keep the block's background, and the band behind it with
-// it. Degrading to plain indentation is the honest outcome there — the same choice the chip makes when it
-// falls back to reverse video.
 func blockActive() bool {
 	if blockFg == "" || blockBg == "" {
 		return false
@@ -189,15 +158,8 @@ func blockActive() bool {
 func blockOpen() string  { return sgr(38, blockFg) + sgr(48, blockBg) }
 func blockClose() string { return chipClose() }
 
-// blockLabelOpen/blockLabelClose style a code block's LABEL row — the `<lang> · ⧉ copyable` line above the fill.
-//
-// BOLD, and in the structural accent when the theme has configured one. The row used to be FAINT (`\x1b[2m`),
-// which made the one control on the block the quietest thing on the screen: the operator read it as decoration
-// and could not tell the block was clickable at all. A terminal cannot change the font, so weight and colour are
-// the levers — and the wording (see codeBlock) does the rest.
-//
-// `\x1b[22m` closes BOTH bold and faint, so it is the correct close for either open, and it is a TARGETED reset:
-// it cannot clear the colours of whatever surface hosts this row.
+// blockLabelOpen/blockLabelClose style a code block's LABEL row — the `<lang> · ⧉ copyable` line
+// above the fill.
 func blockLabelOpen() string  { return "\x1b[1m" + accentOpen() }
 func blockLabelClose() string { return accentClose() + "\x1b[22m" }
 
@@ -213,34 +175,22 @@ func accentActive() bool {
 func accentOpen() string  { return sgr(38, accentFg) }
 func accentClose() string { return sgr(38, accentRestore) }
 
-// SetSearchHighlight sets the in-transcript search MATCH colours: the band drawn behind a hit, and the
-// colour the text returns to after it. The theme calls it on every switch, like every other token.
-//
-// WHY A BAND RATHER THAN JUST A COLOUR. The operator: "it doesn't highlight the findings so it makes it
-// rather difficult in a large stream of text to find where the found item is on the page." On a full
-// transcript the words are already coloured (structure, code, reasoning), so a foreground-only cue would
-// vanish into prose that is coloured for other reasons. A background is unambiguous and reads at a glance,
-// which is the entire job.
-//
-// THE RESTORE ARGUMENT IS NOT OPTIONAL, and it is the reason this mirrors the chip and the accent: a
-// `[39m`/`[49m` close would drop the rest of the line to the TERMINAL's defaults — the band hole the
-// chip section documents — so the close re-asserts the colours the text was drawn inside.
+// SetSearchHighlight sets the in-transcript search MATCH colours: the band drawn behind a hit, and
+// the colour the text returns to after it.
 func SetSearchHighlight(fg, bg, restoreFg, restoreBg string) {
 	renderMu.Lock()
 	defer renderMu.Unlock()
 	hlFg, hlBg, hlRestoreFg, hlRestoreBg = fg, bg, restoreFg, restoreBg
 }
 
-// setSearchQuery arms the highlight for one render: every occurrence of q in rendered text is marked. It is
-// scoped to the render (like the chip surface) rather than kept as ambient state, so a caller that does not
-// pass a query cannot inherit one.
+// setSearchQuery arms the highlight for one render: every occurrence of q in rendered text is
+// marked.
 func setSearchQuery(q string) {
 	searchQ = strings.ToLower(strings.TrimSpace(q))
 }
 
-// highlightActive reports whether a match can be drawn: a non-empty query and a complete, parseable colour
-// set. Fail-closed, like the chip and the accent — a band whose close cannot restore the surface would leak
-// its background across the rest of the row.
+// highlightActive reports whether a match can be drawn: a non-empty query and a complete, parseable
+// colour set.
 func highlightActive() bool {
 	if searchQ == "" || hlFg == "" || hlBg == "" {
 		return false
@@ -254,11 +204,7 @@ func highlightActive() bool {
 func highlightOpen() string  { return sgr(38, hlFg) + sgr(48, hlBg) }
 func highlightClose() string { return sgr(38, hlRestoreFg) + sgr(48, hlRestoreBg) }
 
-// markSearchHits wraps every occurrence of the active query in the match band. It returns the string
-// unchanged when no query is armed or nothing matches, so the unsearched render is byte-for-byte as before.
-//
-// IT MATCHES CASE-INSENSITIVELY (the search's own rule) but PRESERVES THE ORIGINAL CASE in the output: the
-// offsets come from a lowercased copy, the text emitted comes from the original.
+// markSearchHits wraps every occurrence of the active query in the match band.
 func markSearchHits(text string) string {
 	if !highlightActive() || text == "" {
 		return text
@@ -285,9 +231,8 @@ func markSearchHits(text string) string {
 	return b.String()
 }
 
-// AccentMarker wraps a run of text — a list marker, which is written into an INDENT rather than emitted
-// as a span — in the structural accent. Returns the text unchanged when no accent is configured, so a
-// caller that has not set one renders exactly as before.
+// AccentMarker wraps a run of text — a list marker, which is written into an INDENT rather than
+// emitted as a span — in the structural accent.
 func AccentMarker(text string) string {
 	if !accentActive() {
 		return text
@@ -296,8 +241,7 @@ func AccentMarker(text string) string {
 }
 
 // sgr builds an SGR sequence for a #rrggbb colour with the given selector (38 foreground, 48
-// background). It returns "" for anything it cannot parse, so a malformed token degrades to no
-// colour rather than emitting a broken sequence.
+// background).
 func sgr(sel int, hex string) string {
 	if len(hex) != 7 || hex[0] != '#' {
 		return ""
@@ -316,33 +260,22 @@ func sgr(sel int, hex string) string {
 // inherit a stale one.
 func chipOpen() string { return sgr(38, chipFg) + sgr(48, chipBg) }
 
-// chipClose RESTORES the surface rather than resetting. `\x1b[39m`/`\x1b[49m` would drop the rest of
-// the line to the terminal's defaults — the band hole measured above — so the close re-asserts the
-// colours the chip was drawn inside. A surface with no background cannot be restored, which is why
-// chipActive requires one.
+// chipClose RESTORES the surface rather than resetting.
 func chipClose() string { return sgr(38, chipSurface.Fg) + sgr(48, chipSurface.Bg) }
 
 // chipActive reports whether a chip can be drawn: a surface background is known (so the close can
 // restore it) and the theme has supplied colours THAT PARSE.
-//
-// Both colours must be usable, not merely non-empty: a chip that drew its background but not its
-// foreground would put the theme's text on a fill chosen without checking the pair, which is exactly
-// the illegibility this exists to remove. Anything unusable falls back to reverse video, which is
-// always self-consistent.
 func chipActive() bool {
 	return chipOn && chipSurface.Bg != "" && sgr(38, chipFg) != "" && sgr(48, chipBg) != ""
 }
 
 // SurfaceOf reads the surface from the lipgloss style the output will be drawn INSIDE, so a caller
-// passes the style it is already using rather than restating its colours — which is how the two
-// would drift. A style with no background yields an empty Surface, and the chip stays off.
+// passes the style it is already using rather than restating its colours.
 func SurfaceOf(st lipgloss.Style) Surface {
 	return Surface{Fg: colorHex(st.GetForeground()), Bg: colorHex(st.GetBackground())}
 }
 
-// SurfaceTokens builds a Surface from two theme tokens directly. It exists because the theme's
-// package-level mirrors are lipgloss.TerminalColor (an interface), not the string a caller can hand
-// Surface, so `Surface{string(theme.Bg)}` does not compile.
+// SurfaceTokens builds a Surface from two theme tokens directly.
 func SurfaceTokens(fg, bg lipgloss.TerminalColor) Surface {
 	return Surface{Fg: colorHex(fg), Bg: colorHex(bg)}
 }
@@ -356,15 +289,11 @@ func colorHex(c lipgloss.TerminalColor) string {
 	return ""
 }
 
-// parser is the GFM parser: the same dialect the GUI renders (remark-gfm), so tables, strikethrough,
-// autolinks and task lists agree between the clients. goldmark documents Parser.Parse as safe for
-// concurrent use, which matters: the Ask transcript and an execution transcript can be rendered from
-// different goroutines.
+// parser is the GFM parser: the same dialect the GUI renders (remark-gfm), so tables,
+// strikethrough, autolinks and task lists agree between the clients.
 var parser = goldmark.New(goldmark.WithExtensions(extension.GFM)).Parser()
 
-// attr is the set of character attributes a span carries. It is a BIT SET rather than a style,
-// because attributes COMPOSE (bold inside a quote inside a list) and because each span emits its own
-// complete open/close pair — see the package comment on nesting.
+// attr is the set of character attributes a span carries.
 type attr uint8
 
 const (
@@ -391,8 +320,7 @@ var sgrCodes = []struct {
 }
 
 // open returns the SGR sequence that turns on every attribute in the set, and off returns the
-// matching sequence that turns them off again. Both are TARGETED resets: `off` never contains a full
-// reset, so a span cannot clobber the host's colours or background.
+// matching sequence that turns them off again.
 func (a attr) open() string {
 	var codes []string
 	for _, c := range sgrCodes {
@@ -433,34 +361,23 @@ func (s span) render() string {
 	if s.text == "" {
 		return s.text
 	}
-	// PLAIN PROSE IS THE COMMON CASE AND MUST STILL BE MARKED. This used to return `s.text` outright for a
-	// span with no attributes — which is every ordinary paragraph — so a search highlighted only hits that
-	// happened to land inside a styled run, and missed the plain text the operator is usually looking at.
-	// Caught by the first test that searched plain prose: `match bands = 0` on "alpha needle beta needle".
+	// PLAIN PROSE IS THE COMMON CASE AND MUST STILL BE MARKED.
 	if s.a == 0 {
 		return markSearchHits(s.text)
 	}
-	// A CODE SPAN GETS THE CHIP when one is configured, and reverse video otherwise. The chip is
-	// stripped out of the attribute set first: it is drawn with colours, not with SGR 7, so leaving
-	// the bit in would emit both.
+	// A CODE SPAN GETS THE CHIP when one is configured, and reverse video otherwise.
 	if s.a&aCode != 0 && chipActive() {
 		rest := s.a &^ aCode
 		return chipOpen() + rest.open() + s.text + rest.off() + chipClose()
 	}
 	// A STRUCTURAL ACCENT SPAN — a heading — is drawn in the theme's accent and then restored to the
-	// colour it sits inside, exactly as the chip does. Checked AFTER the chip, so a heading that
-	// contained a code span still renders its chip properly.
+	// colour it sits inside, exactly as the chip does.
 	if s.a&aAccent != 0 && accentActive() {
 		rest := s.a &^ aAccent
 		return accentOpen() + rest.open() + s.text + rest.off() + accentClose()
 	}
-	// SEARCH HITS ARE MARKED LAST, on the fully-styled text, so a hit is marked whether it lands in plain
-	// prose, a bold run, a heading or a code chip — and so the match is computed against the text as the
-	// operator sees it rather than against a source form that may have lost emphasis markers.
-	//
-	// MARKING HERE RATHER THAN IN THE PARSER is what keeps it exact: the parser transforms source (consuming
-	// emphasis and link syntax), and a mark applied before that could be split by a transformation, while one
-	// applied to the finished span cannot.
+	// SEARCH HITS ARE MARKED LAST, on the fully-styled text, so a hit is marked whether it lands in
+	// plain prose, a bold run, a heading or a code chip.
 	return markSearchHits(s.a.open() + s.text + s.a.off())
 }
 
@@ -489,17 +406,12 @@ func spansRender(spans []span) string {
 }
 
 // Render parses src as GFM and returns styled lines, each no wider than width columns.
-//
-// Every returned line satisfies lipgloss.Width(line) <= width: callers lay these out inside a pane,
-// so an over-wide line is not a cosmetic problem — the detail viewport TRUNCATES, which silently
-// hides content (see the package comment on why the transcript needed this at all).
 func Render(src string, width int) []string {
 	return render(src, width)
 }
 
 // render is the shared body: `Render` and `RenderOn` differ only in whether the chip state is set,
-// which the span renderer reads. Keeping one body means a fix to layout cannot land in one path and
-// miss the other.
+// which the span renderer reads.
 func render(src string, width int) []string {
 	lines, _ := renderSpans(src, width)
 	return lines
@@ -521,12 +433,7 @@ func renderSpans(src string, width int) ([]string, []CodeSpan) {
 	return clampWidth(r.out, width), r.codeSpans
 }
 
-// RenderOn renders with a declared SURFACE: the colours the output is drawn inside. It enables the
-// inline-code chip, whose close RESTORES those colours rather than resetting to the terminal defaults
-// (see the chip section for the band hole a reset leaves).
-//
-// A caller that does not know its surface keeps Render, which draws code spans as reverse video — the
-// behaviour before the chip — so nothing degrades by omission.
+// RenderOn renders with a declared SURFACE: the colours the output is drawn inside.
 func RenderOn(src string, width int, sf Surface) []string {
 	renderMu.Lock()
 	defer renderMu.Unlock()
@@ -535,14 +442,8 @@ func RenderOn(src string, width int, sf Surface) []string {
 	return render(src, width)
 }
 
-// RenderOnSearch is RenderOn with the in-transcript SEARCH armed: every occurrence of query in the rendered
-// text is drawn in the match band. An empty query renders exactly as RenderOn, which is the state before a
-// search starts and after it is cleared.
-//
-// THE QUERY IS RENDER-SCOPED, not ambient, for the same reason the chip surface is: the transcript is
-// rendered from several places and a caller that did not pass a query must not inherit one from a previous
-// paint. It is restored on the way out even on a panic, so a mid-render failure cannot leave the next
-// render marking hits.
+// RenderOnSearch is RenderOn with the in-transcript SEARCH armed: every occurrence of query in the
+// rendered text is drawn in the match band.
 func RenderOnSearch(src string, width int, sf Surface, query string) []string {
 	renderMu.Lock()
 	defer renderMu.Unlock()
@@ -553,9 +454,8 @@ func RenderOnSearch(src string, width int, sf Surface, query string) []string {
 	return render(src, width)
 }
 
-// RenderOnSpansSearch is RenderOnSpans with the in-transcript SEARCH armed — see RenderOnSearch for why the
-// query is render-scoped. It is the entry point the transcript uses while a search is active, so hits are
-// marked in both the model's band and the operator's own.
+// RenderOnSpansSearch is RenderOnSpans with the in-transcript SEARCH armed — see RenderOnSearch for
+// why the query is render-scoped.
 func RenderOnSpansSearch(src string, width int, sf Surface, query string, copyGlyph ...string) ([]string, []CodeSpan) {
 	return renderWithSearch(src, width, sf, false, query, copyGlyph...)
 }
@@ -587,27 +487,13 @@ func renderWithSearch(src string, width int, sf Surface, userBreaks bool, query 
 	return renderSpans(src, width)
 }
 
-// RenderOnSpans is RenderOn plus where each code block landed and what its source was, and an optional COPY
-// AFFORDANCE. copyGlyph, when non-empty, is drawn on each block's label row (see codeBlock) — the caller
-// passes it only for a surface where clicking a block actually copies it.
+// RenderOnSpans is RenderOn plus where each code block landed and what its source was, and an
+// optional COPY AFFORDANCE.
 func RenderOnSpans(src string, width int, sf Surface, copyGlyph ...string) ([]string, []CodeSpan) {
 	return renderWith(src, width, sf, false, copyGlyph...)
 }
 
 // RenderUserOnSpans is RenderOnSpans for text the OPERATOR TYPED: a newline in it is a LINE BREAK.
-//
-// The operator, about their own messages in both clients: "I would like the user sent message to be formatted
-// properly on the screen. Right now it's all just a bunch of text bunched up. It should respect the format that
-// it was typed in, including newlines, bullets, numbered lists, etc."
-//
-// BULLETS AND LISTS ALREADY RENDERED. The gap was the NEWLINE: CommonMark makes a single newline inside a
-// paragraph a SPACE, so a message typed across four lines became one flowing block, re-wrapped to the pane.
-//
-// IT IS A SEPARATE ENTRY POINT RATHER THAN A PACKAGE SETTING because md is a LEAF MANY CALLERS SHARE — the
-// assistant transcript, work-item descriptions, artifact previews and the execution panes all render through
-// here, and the same text is re-rendered whenever a pane is resized. Opting in per render is what stops this
-// from silently re-wrapping every stored description in the product. The GUI makes the identical distinction
-// behind markdown.tsx's preserveBreaks prop, so the two clients agree about whose newlines are load-bearing.
 func RenderUserOnSpans(src string, width int, sf Surface, copyGlyph ...string) ([]string, []CodeSpan) {
 	return renderWith(src, width, sf, true, copyGlyph...)
 }
@@ -642,11 +528,6 @@ func RenderString(src string, width int) string {
 }
 
 // LooksLikeMarkdown reports whether src contains a construct worth rendering.
-//
-// Callers use it to keep NON-markdown bodies on the plain path, which matters because rendering is
-// not free: emphasis and link markers are CONSUMED, so the characters disappear. A log line reading
-// "*** error ***" or a JSON dump containing "[a](b)" would come back subtly altered. The GUI draws
-// the same line (prose is markdown, tool output is a <pre>), so this is parity too.
 func LooksLikeMarkdown(src string) bool {
 	for _, ln := range strings.Split(src, "\n") {
 		t := strings.TrimSpace(ln)
@@ -684,9 +565,6 @@ func isDigits(s string) bool {
 }
 
 // indent carries the decoration a nested block draws at the start of each of its lines.
-//
-// first is drawn on the block's FIRST line and rest on every continuation, so a list item can hang
-// its wrapped text under its text (rather than under its bullet).
 type indent struct {
 	first string
 	rest  string
@@ -718,12 +596,8 @@ func (in indent) prefixWidth() int {
 	return b
 }
 
-// CodeSpan records where a fenced/indented code block landed in a render's output, AND carries its SOURCE.
-//
-// It exists so a click on a block can copy the CODE rather than the block's rendered cells — see
-// chat.ItemSpan.CodeAt. Copying the rendered form cannot be made clean: the band the block sits in indents
-// every line by a cell, and unlike trailing padding a leading space CANNOT be trimmed, because it is
-// indistinguishable from a real code indent. The source has none of it.
+// Copying the rendered form cannot be made clean: the band the block sits in indents every line by
+// a cell, and unlike trailing padding a leading space CANNOT be trimmed.
 type CodeSpan struct {
 	FirstRow, LastRow int    // row indexes into the []string the render returned
 	Lang              string // the fence's info string, when it had one
@@ -792,16 +666,6 @@ func (r *renderer) block(n ast.Node, in indent) {
 	switch n := n.(type) {
 	case *ast.Heading:
 		// Headings are BOLD plus the blank-line separation above — AND the theme's accent colour.
-		//
-		// A terminal cannot do the GUI's type scale (h1 20px → h3 16px), so weight and spacing are the
-		// signals both clients had, and a heading rendered flat would lose the structure the author
-		// wrote. That reasoning still holds; what it missed is that weight alone is a WEAK signal in a
-		// wall of text, which is the operator's "I would like to make it more enhanced." Colour is the
-		// one remaining signal a terminal has, and its absence was never a decision about the accent —
-		// only about the type scale.
-		//
-		// The accent is DECORATIVE here, never the only cue: a monochrome terminal, or one with no accent
-		// configured, still gets the bold and the spacing (see accentActive).
 		spans := inline(n, r.src, aBold|aAccent)
 		r.emit(in, spans)
 
@@ -834,9 +698,7 @@ func (r *renderer) block(n ast.Node, in indent) {
 		r.table(n, in)
 
 	case *ast.HTMLBlock:
-		// Raw HTML is written through as text. react-markdown without rehype-raw would DROP it, but
-		// silently dropping stored content is the one outcome worse than showing markup, and an
-		// HTML block in a transcript is still information the operator may need to see.
+		// Raw HTML is written through as text.
 		for i := 0; i < n.Lines().Len(); i++ {
 			seg := n.Lines().At(i)
 			r.emit(in, []span{{text: string(seg.Value(r.src))}})
@@ -861,19 +723,13 @@ func (r *renderer) block(n ast.Node, in indent) {
 
 // blockquote renders a quote as an indented, bar-prefixed, faint-italic block — the terminal
 // analogue of the GUI's `border-l-2 … italic text-muted-foreground`.
-//
-// This is the construct the operator reported. A quote in this product is not decoration: it is how a
-// proposal marks the passage it is quoting, and how work items mark the operator's VERBATIM words.
-// Leaving it as a literal ">" both looks like noise and destroys the attribution it encodes.
 func (r *renderer) blockquote(n ast.Node, in indent) {
 	q := in.quoted()
 	first := true
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		if !first {
-			// A blank row INSIDE the quote keeps the BAR, so the block reads continuous rather than
-			// looking like two separate quotes. This is the quote equivalent of the blank line
-			// blocks() puts between top-level blocks — without it two paragraphs in one quote run
-			// together and the author's paragraph break is lost.
+			// A blank row INSIDE the quote keeps the BAR, so the block reads continuous rather than looking
+			// like two separate quotes.
 			r.raw(strings.TrimRight(q.first, " "))
 		}
 		first = false
@@ -942,43 +798,8 @@ func taskCheckbox(item ast.Node) (checked bool, ok bool) {
 	return false, false
 }
 
-// codeBlock renders a fenced/indented block as a FILLED BLOCK — a raised background, no border glyphs.
-//
-// IT USED TO WEAR A `│`-AND-`┌─` FRAME, and that frame CORRUPTED EVERY COPY. The operator: "Code blocks
-// aren't really contained codeblocks that allow me to easily copy items, it has weird pipes and characters
-// and it screws up the copy." They are right, and the cause is structural: a copy takes the CELLS that were
-// painted, so a decorative `│ ` on every line and a `┌─`/`└─` around them land in the clipboard along with
-// the code. There is no way to have both — a glyph inside the selection is copied — so containment has to be
-// something the code block IS rather than something drawn beside it.
-//
-// A BACKGROUND FILL IS THAT CONTAINMENT, and it is the trick the inline-code chip already uses: the block is
-// visibly a block, each line is indented one space inside it, and there is not one character to corrupt a
-// selection. The optional language label stays, as a dim word ABOVE the fill and outside it, so selecting
-// the code does not pick the label up.
-//
-// THE BAND IS THE CODE'S WIDTH, NOT THE PANE'S. The operator, on the first version of this: "I am thinking
-// on top of odd characters it is printing tab/spaces all the way to the end of the width." They were reading
-// the FILL, which was padded to the pane's full width so the band always ran to the last column — a
-// screenful of trailing blanks behind a five-character command. Sizing the band to the widest line keeps the
-// containment and drops the blanks, and it is what the GUI's `<pre>` does anyway: it fits its CONTENT rather
-// than its container.
-//
-// AND THE PADDING IS ALL ON THE RIGHT, because the two sides behave differently in a copy and only one of
-// them is safe. The right padding exists solely to square off the rectangle, and a COPY trims trailing blanks
-// (see clipState.text), so it costs nothing. A left inset of one cell — which is what this had, for looks —
-// lands in the paste as a leading space on EVERY line, and a leading space is an IndentationError in Python:
-// the block would look contained and paste broken. So the fill's left edge IS the code's first column, and
-// there is nothing in front of the code to copy. (Measured: the copy came out " ls -la" before this.)
-//
-// (The GUI's padded, rounded `<pre>` is the shape this is imitating, less the frame.)
-//
-// LONG LINES ARE WRAPPED, NOT TRUNCATED. The operator's instruction — "we can scroll horizontally
-// some and also use word wrap when needed as long as it only takes up the width of the pane it is
-// currently in" — is satisfied in the only way a terminal allows here: there is no horizontal scroll
-// inside a viewport whose width it cannot exceed, and TRUNCATING code silently destroys it, which is
-// the failure this package exists to undo. A line that already fits is emitted VERBATIM (leading
-// whitespace is meaning in code); only an over-wide line is wrapped, at word boundaries with a hard
-// split for a token that cannot fit at all.
+// codeBlock renders a fenced/indented block as a FILLED BLOCK — a raised background, no border
+// glyphs.
 func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
 	avail := r.width - in.prefixWidth()
 	if avail < 4 {
@@ -987,17 +808,8 @@ func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
 	// THE SPAN STARTS AT THE LABEL, so a click on the dim `bash` line copies the block too — it is the block's
 	// own header, and a label would otherwise be a dead spot one row above a live one.
 	start := len(r.out)
-	// THE LABEL ROW CARRIES THE COPY AFFORDANCE, and the row is emitted whenever EITHER a language or an
-	// affordance is present — so a fence with no language still shows the operator that the block beneath it is
-	// clickable. Both sit ABOVE the fill and outside it, so selecting the code never picks up the label or the
-	// glyph.
-	//
-	// AND THE AFFORDANCE NOW SAYS WHAT IT IS. It used to be the bare glyph, drawn FAINT — and the operator, who
-	// could not tell what it meant: "That little symbol you have for both user chat and code blocks currently is
-	// too tiny and doesn't really tell me 'copyable'. Maybe the font should be different and something should
-	// actually say 'copyable'." A terminal cannot change the font, so the two levers left are WEIGHT and COLOUR,
-	// and both are now used: the row is BOLD and takes the theme's structural accent. And it carries the WORD,
-	// which is the part that actually answers the question.
+	// THE LABEL ROW CARRIES THE COPY AFFORDANCE, and the row is emitted whenever EITHER a language or
+	// an affordance is present.
 	label := string(lang)
 	if blockGlyph != "" {
 		if label != "" {
@@ -1008,9 +820,7 @@ func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
 	if label != "" {
 		r.raw(in.first + blockLabelOpen() + truncate(label, avail) + blockLabelClose())
 	}
-	// THE LINES ARE COLLECTED FIRST, because the band's width is derived from them — see below. Nothing about
-	// the output depends on this being a second pass; the widest line simply has to be known before the first
-	// one is painted.
+	// THE LINES ARE COLLECTED FIRST, because the band's width is derived from them — see below.
 	lines := make([]string, 0, n.Lines().Len())
 	widest := 0
 	for i := 0; i < n.Lines().Len(); i++ {
@@ -1022,9 +832,7 @@ func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
 			widest = w
 		}
 	}
-	// The band: as wide as the widest line, never wider than the pane. The floor keeps a one-word block from
-	// being an unreadable sliver — it only ever adds padding to the RIGHT, which a copy trims — and the
-	// re-clamp after it is what stops the floor from pushing the band past `avail` in a very narrow pane.
+	// The band: as wide as the widest line, never wider than the pane.
 	band := widest
 	if band > avail {
 		band = avail
@@ -1044,9 +852,8 @@ func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
 			r.raw(in.rest + codeBlockLine(part, band))
 		}
 	}
-	// THE SOURCE IS THE FENCE'S CONTENT, reassembled from the lines this block read — not scraped back out of
-	// r.out, which would carry the fill's padding, the indent and whatever colour codes the theme set. An
-	// EMPTY block writes no rows, so it records LastRow < FirstRow and is never resolved.
+	// THE SOURCE IS THE FENCE'S CONTENT, reassembled from the lines this block read — not scraped back
+	// out of r.out, which would carry the fill's padding.
 	r.codeSpans = append(r.codeSpans, CodeSpan{
 		FirstRow: start,
 		LastRow:  len(r.out) - 1,
@@ -1055,13 +862,8 @@ func (r *renderer) codeBlock(n ast.Node, in indent, lang []byte) {
 	})
 }
 
-// codeBlockLine renders one code line inside the block's fill, padded on the RIGHT to the BAND's width so the
-// fill is a rectangle rather than a ragged edge. The band is the block's own width, not the pane's, and the
-// code starts AT THE FILL'S LEFT EDGE — see codeBlock for why the padding is asymmetric.
-//
-// The padding sits INSIDE the colours, before the close, so the fill covers it — the same discipline the
-// inline chip follows. With no block colours configured the line degrades to plain text, which keeps this
-// renderer usable without a theme (md is a leaf several callers share).
+// codeBlockLine renders one code line inside the block's fill, padded on the RIGHT to the BAND's
+// width so the fill is a rectangle rather than a ragged edge.
 func codeBlockLine(part string, avail int) string {
 	if !blockActive() {
 		return part
@@ -1096,14 +898,7 @@ func inline(n ast.Node, src []byte, base attr) []span {
 		switch c := c.(type) {
 		case *ast.Text:
 			appendText(string(c.Segment.Value(src)), base)
-			// A SOFT break is a source newline INSIDE a paragraph. CommonMark (and therefore react-markdown,
-			// which the GUI uses) treats it as a space, so the clients agree by default — and for the MODEL'S
-			// prose that is right, because it is machine-wrapped and joining its lines is what lets it reflow.
-			//
-			// FOR TEXT THE OPERATOR TYPED IT IS WRONG: the line they broke is a line they meant, and collapsing
-			// it is the "bunch of text bunched up" they reported. hardBreaks is set only by RenderUserOnSpans,
-			// and emitting "\n" here reuses the HardLineBreak path below — the same newline wrapSpans already
-			// honours — rather than inventing a second way to break a line.
+			// A SOFT break is a source newline INSIDE a paragraph.
 			if c.SoftLineBreak() {
 				if hardBreaks {
 					appendText("\n", base)
@@ -1129,10 +924,8 @@ func inline(n ast.Node, src []byte, base attr) []span {
 		case *ast.Link:
 			text := spansText(inline(c, src, base|aUnderline))
 			dest := string(c.Destination)
-			// A link whose TEXT is not already the URL gets the destination appended, so the target
-			// is usable from a terminal (nothing here can click). A link that IS the URL is left
-			// alone. The GUI shows only the text because a browser supplies the href; a cell grid has
-			// no href, so an invisible target would be information lost.
+			// A link whose TEXT is not already the URL gets the destination appended, so the target is usable
+			// from a terminal (nothing here can click).
 			if dest != "" && dest != text {
 				out = append(out, span{text: text, a: base | aUnderline})
 				appendText(" ("+dest+")", base|aFaint)
@@ -1163,11 +956,8 @@ func inline(n ast.Node, src []byte, base attr) []span {
 
 // --- wrapping ------------------------------------------------------------------------------------
 
-// wrapSpans greedily wraps spans to width, collapsing runs of spaces and honouring explicit newlines.
-//
-// Wrapping happens on the PLAIN text, before styling, so no line can be measured wrongly by counting
-// escape bytes — the mistake the old transcript path made (it measured with len([]rune(s)), which
-// counts SGR bytes as columns and would shred styled output).
+// wrapSpans greedily wraps spans to width, collapsing runs of spaces and honouring explicit
+// newlines.
 func wrapSpans(spans []span, width int) [][]span {
 	if width < 1 {
 		width = 1
@@ -1326,11 +1116,7 @@ func codeRuneWidth(r rune, col int) int {
 }
 
 // wrapCode wraps one code line at width, breaking at WORD boundaries where possible and hard at the
-// boundary when a single token cannot fit (the operator asked for word wrap; a URL or a minified blob
-// still has to fit).
-//
-// codeWidth, not lipgloss.Width: a tab occupies the cells it paints, and a wrap measured without them lets
-// a tab-indented line run past the band it is drawn in.
+// boundary when a single token cannot fit (the operator asked for word wrap.
 func wrapCode(line string, width int) []string {
 	if width < 1 {
 		width = 1

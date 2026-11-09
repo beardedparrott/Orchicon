@@ -27,12 +27,8 @@ func asksWithRail(t *testing.T, titles ...string) (*App, *stubAskParity) {
 	return m, stub
 }
 
-// TestRenameOpensAPrefilledForm is the operator's report — "We can't rename conversations in the TUI."
-//
-// A rename box that opened EMPTY would make the operator retype a title they cannot see, which is why
-// the GUI prefills (startRenameConv selects the existing title). The RPC itself was already wired and
-// reachable by `/rename <title>`, but a command you have to know, which cannot show you the current
-// title, is not a rename UI.
+// TestRenameOpensAPrefilledForm is the operator's report — "We can't rename conversations in the
+// TUI."
 func TestRenameOpensAPrefilledForm(t *testing.T) {
 	m, _ := asksWithRail(t, "TUI FAILED COMPACT", "another test")
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
@@ -53,10 +49,8 @@ func TestRenameOpensAPrefilledForm(t *testing.T) {
 	}
 }
 
-// TestRenameSavesThroughTheRealKeys presses the actual keys — edit, then ctrl+s — and runs the command
-// that comes back, rather than driving the form's own methods. The distinction matters: a test that
-// sets a value and calls Submit proves the form works and proves NOTHING about whether ctrl+s reaches
-// it, which is the class of gap this session has already been bitten by.
+// TestRenameSavesThroughTheRealKeys presses the actual keys — edit, then ctrl+s — and runs the
+// command that comes back, rather than driving the form's own methods.
 func TestRenameSavesThroughTheRealKeys(t *testing.T) {
 	m, stub := asksWithRail(t, "old title")
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
@@ -176,9 +170,8 @@ func TestRenameEscCancels(t *testing.T) {
 	}
 }
 
-// TestRenameModalOwnsItsKeys: while the form is up, a keystroke aimed at it must not reach the composer
-// behind it — otherwise typing a title could also be composing a message, and a save chord could fire
-// into a screen.
+// TestRenameModalOwnsItsKeys: while the form is up, a keystroke aimed at it must not reach the
+// composer behind it — otherwise typing a title could also be composing a message.
 func TestRenameModalOwnsItsKeys(t *testing.T) {
 	m, _ := asksWithRail(t, "target")
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
@@ -245,14 +238,7 @@ func TestRenameChordNeedsTheRail(t *testing.T) {
 	}
 }
 
-// TestRailAdvertisesTheRenameChord: a chord nobody can see is the same as no chord. It is advertised
-// in the COMPOSER's affordance row, not inside the rail pane.
-//
-// It USED to be drawn in the rail, and that was wrong twice over: the rail's inner text width is 28
-// cells against a 34-cell chord list, so it was TRUNCATED mid-word — "ctrl+n: rename · ctrl+t: ca…"
-// in the operator's screenshot — and the rail is not where the keys live. The composer is: the rail's
-// keys are driven from there (an empty box is what makes the arrows move the rail at all), and the
-// operator asked for the move.
+// TestRailAdvertisesTheRenameChord: a chord nobody can see is the same as no chord.
 func TestRailAdvertisesTheRenameChord(t *testing.T) {
 	m, _ := asksWithRail(t, "one", "two")
 	m.refreshComposerHint()

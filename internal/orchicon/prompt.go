@@ -25,14 +25,8 @@ import (
 	"strings"
 )
 
-// NativeStaticLayer is the thin authoritative native block appended to
-// the composite prompt INSIDE the cached static prefix. It is a
-// constant so identical inputs produce byte-identical prefix bytes.
-// Covers exactly four topics and nothing more (the native-layer cap
-// test guards against prompt creep): identity authority, tool
-// discipline, todo/memory usage, environment facts (the dynamic
-// per-run part of the environment facts is rendered by envFactsBlock
-// from manifest fields — still constant within a run).
+// NativeStaticLayer is the thin authoritative native block appended to the composite prompt INSIDE
+// the cached static prefix.
 const NativeStaticLayer = `## Native Session Contract (Orchicon)
 
 ### Identity authority
@@ -68,9 +62,7 @@ back) — they survive per-execution isolation.`
 const maxMemoryNotes = 64
 
 // todoDigestArgs is the tolerant shape of a todowrite call's arguments:
-// {"todos":[{"content":...,"status":...,"priority":...}]}. Mirrors the
-// post-hoc parser in internal/execution/todos.go so the digest and the
-// UI's todo view agree on one payload shape.
+// {"todos":[{"content":...,"status":...,"priority":...}]}.
 type todoDigestArgs struct {
 	Todos []struct {
 		Content  string `json:"content"`
@@ -79,31 +71,23 @@ type todoDigestArgs struct {
 	} `json:"todos"`
 }
 
-// fingerprintPrefix is the sha256 (first 16 hex chars) of the static
-// prefix bytes — logged on change so an operator can correlate a cache
-// miss with a prefix edit (ADR-0009 D5).
+// fingerprintPrefix is the sha256 (first 16 hex chars) of the static prefix bytes — logged on
+// change so an operator can correlate a cache miss with a prefix edit (ADR-0009 D5).
 func fingerprintPrefix(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:8])
 }
 
-// AssembleSystem returns the session's two-zone system block list for a
-// turn request (ADR-0009 D2): block 0 is the static prefix (composite +
-// native layer + env facts) carrying the cache breakpoint; block 1 (when
-// non-empty) is the mutable zone (memory notes + latest todo digest) and
-// is NEVER cache-flagged. Deterministic given identical session state.
+// AssembleSystem returns the session's two-zone system block list for a turn request (ADR-0009 D2):
+// block 0 is the static prefix (composite + native layer + env facts) carrying the cache.
 func (s *Session) AssembleSystem() []SystemBlock {
 	blocks := make([]SystemBlock, 0, 2)
 	static := s.identity.SystemPrompt + "\n\n" + NativeStaticLayer
 	if s.envFacts != "" {
 		static += "\n\n" + s.envFacts
 	}
-	// Follow-up mode (2026-09-09): the standing worker contract tells the
-	// model "there is no human; work autonomously to completion" — so a
-	// follow-up message reads as noise on a DONE run and the model answers
-	// with one acknowledgment line and no tools. A follow-up is a live
-	// conversation with the user: override the standing contract with the
-	// conversation one (appended LAST so it wins over the prefix).
+	// Follow-up mode (2026-09-09): the standing worker contract tells the model "there is no human;
+	// work autonomously to completion".
 	if s.followUp {
 		static += "\n\n" + followUpSystemOverlay
 	}
@@ -114,10 +98,8 @@ func (s *Session) AssembleSystem() []SystemBlock {
 	return blocks
 }
 
-// followUpSystemOverlay is appended to the static system prefix in
-// follow-up mode (ContinueSession). It supersedes the autonomous-worker
-// contract: the human IS on the session, the prior summary is history,
-// and the user's message is a live instruction to act on with tools.
+// followUpSystemOverlay is appended to the static system prefix in follow-up mode
+// (ContinueSession).
 const followUpSystemOverlay = `## Follow-up mode (this overrides the worker contract above)
 
 The user is PRESENT on this session and is talking to you right now.
@@ -134,11 +116,9 @@ did (no ORCHICON WORKER SUMMARY needed — that gate is disabled in this
 mode). If a request is ambiguous, ask a short clarifying question instead
 of guessing.`
 
-// renderMutableZone renders the after-breakpoint mutable block from live
-// session state: durable-memory digest (D3), memory notes (insertion
-// order) and the latest todo digest (array order). Returns "" when there
-// is no mutable state, in which case AssembleSystem emits the single
-// cached block only.
+// renderMutableZone renders the after-breakpoint mutable block from live session state:
+// durable-memory digest (D3), memory notes (insertion order) and the latest todo digest (array
+// order).
 func (s *Session) renderMutableZone() string {
 	notes := s.MemoryNotes()
 	todos := s.TodosDigest()
@@ -149,9 +129,8 @@ func (s *Session) renderMutableZone() string {
 	var sb strings.Builder
 	sb.WriteString("## Session State (mutable — after the cache breakpoint)\n")
 	if digest != "" {
-		// The durable-memory digest is capped (titles+tags only, <=1 KiB)
-		// and injected AFTER the cache breakpoint — the static prefix
-		// bytes are untouched (D3 / prefix-stability contract).
+		// The durable-memory digest is capped (titles+tags only, <=1 KiB) and injected AFTER the cache
+		// breakpoint — the static prefix bytes are untouched (D3 / prefix-stability contract).
 		sb.WriteString("\n")
 		sb.WriteString(digest)
 	}
@@ -168,9 +147,7 @@ func (s *Session) renderMutableZone() string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// TodosDigest renders the latest todowrite payload as a stable
-// 1-line-per-item digest. Malformed payloads degrade to "" (the zone
-// must never carry nondeterministic bytes).
+// TodosDigest renders the latest todowrite payload as a stable 1-line-per-item digest.
 func (s *Session) TodosDigest() string {
 	s.noteMu.Lock()
 	raw := s.latestTodos
@@ -209,10 +186,8 @@ type envFactsFields struct {
 	ModelRef     string
 }
 
-// envFactsBlock renders the per-run environment facts that are constant
-// within a run (identical inputs → identical bytes, so they belong in
-// the cached static prefix). Built once at session construction from
-// manifest fields.
+// envFactsBlock renders the per-run environment facts that are constant within a run (identical
+// inputs → identical bytes, so they belong in the cached static prefix).
 func envFactsBlock(manifestFields envFactsFields) string {
 	image := manifestFields.RuntimeImage
 	if image == "" {
@@ -230,9 +205,9 @@ func envFactsBlock(manifestFields envFactsFields) string {
 		"- Model: " + manifestFields.ModelRef
 }
 
-// memoryNoteToolDef is the native session's memory tool: registered by
-// the loop itself (session-scoped, never the MCP registry) so the model
-// can persist durable notes into the mutable zone.
+// memoryNoteToolDef is the native session's memory tool: registered by the loop itself
+// (session-scoped, never the MCP registry) so the model can persist durable notes into the mutable
+// zone.
 func memoryNoteToolDef() ToolDef {
 	return ToolDef{
 		Name:        "orchicon_memory_note",

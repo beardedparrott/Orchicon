@@ -2,22 +2,7 @@
 
 package planecontrol
 
-// hostproc_unix.go — the host plane's PROCESS IDENTITY probe. It is Unix-shaped by construction: it
-// reads `/proc/<pid>/exe` to learn what a running plane is actually executing, and it asks
-// `syscall.Kill(pid, 0)` whether a PID from a stale PID file is still a live process. Neither exists
-// on Windows, and `syscall.Kill` is ABSENT from the Windows syscall package — so these three functions
-// sitting in the untagged install_host.go broke the BUILD for windows/amd64 and windows/arm64 rather
-// than degrading at runtime.
-//
-// THAT IS THE SAME BUG THIS REPOSITORY ALREADY FIXED ONCE, and serve_reap_unix.go states the lesson in
-// as many words: A FILE THAT SHELLS OUT TO /bin/sh OR CALLS syscall.Kill IS A UNIX FILE, and if it
-// lives in an untagged file it is a Windows build failure waiting for the next release. The warning did
-// not travel with the code, so the platform pair is re-stated here. hostproc_windows.go is the other
-// half, and the pair is what makes "Windows degrades deliberately" true in the compiler rather than in a
-// comment.
-//
-// THE PAIR MOVED HERE from cmd/orchicon so the TUI (`cmd/orch`) and the Wails app can reach it at all: a
-// `package main` cannot be imported, so a lifecycle layer left there was callable by exactly one caller.
+// hostproc_unix.go — the host plane's PROCESS IDENTITY probe.
 
 import (
 	"bytes"
@@ -31,9 +16,7 @@ import (
 	"time"
 )
 
-// processAlive is the POSIX liveness probe: signal 0 succeeds while the PID exists. It is a SEAM because
-// the same call is impossible on Windows (`syscall.Kill` does not exist, and `(*os.Process).Signal` refuses
-// every signal but Kill), where the equivalent is a process handle plus its exit code.
+// processAlive is the POSIX liveness probe: signal 0 succeeds while the PID exists.
 func processAlive(pid int) bool {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
@@ -42,9 +25,8 @@ func processAlive(pid int) bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
-// procStateChar reads the process state character from /proc/<pid>/stat, whose format is
-// `pid (comm) state ...` — and `comm` may itself contain spaces and parentheses, so the state is the first
-// field AFTER THE LAST ')' rather than a fixed offset.
+// procStateChar reads the process state character from /proc/<pid>/stat, whose format is `pid
+// (comm) state ...` — and `comm` may itself contain spaces and parentheses.
 func procStateChar(pid int) (byte, bool) {
 	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
@@ -57,23 +39,14 @@ func procStateChar(pid int) (byte, bool) {
 	return b[i+2], true
 }
 
-// procExe resolves /proc/<pid>/exe — the APEX of what a running process executes. It is what makes "is the
-// serving plane the binary in hand" answerable at all, and it is a seam so Status's binary reporting is
-// assertable without spawning processes.
+// procExe resolves /proc/<pid>/exe — the APEX of what a running process executes.
 func procExe(pid int) (string, error) { return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid)) }
 
-// drift identifies the serving plane from the instance's PID file and compares its executable with this
-// one.
-//
-// WHY THE PID FILE AND /proc: they are the only truthful source. A version endpoint would answer with
-// whatever the OLD process believes about itself, and a timestamp comparison cannot see a rebuilt binary of
-// the same version. `/proc/<pid>/exe` shows the APEX of the running process, and a replaced path reports
-// `(deleted)` — the exact fingerprint of "the installer overwrote the binary under a live plane".
+// drift identifies the serving plane from the instance's PID file and compares its executable with
+// this one.
 func Drift(instance string, out io.Writer) DriftState {
-	// THE PLANE BINARY, NOT MERELY THIS ONE: a thin client (`orch`, the desktop app) is not the binary that
-	// serves the plane, so comparing the live process against SELF would report every healthy plane as
-	// "serving from a different path" and collapse drift to Unknown from the TUI forever. See
-	// resolvePlaneBinary.
+	// THE PLANE BINARY, NOT MERELY THIS ONE: a thin client (`orch`, the desktop app) is not the binary
+	// that serves the plane.
 	self, err := planeBinary()
 	if err != nil {
 		return Unknown
@@ -82,9 +55,8 @@ func Drift(instance string, out io.Writer) DriftState {
 	if err != nil {
 		return Unknown
 	}
-	// effectivePlanePID, NOT ServingPlanePID: a plane that outlived its PID file is still a plane, and its
-	// drift is the reason it MUST be replaced rather than left — see the note on effectivePlanePID. Answering
-	// Unknown there is what let `Start` report success over a stale binary.
+	// effectivePlanePID, NOT ServingPlanePID: a plane that outlived its PID file is still a plane, and
+	// its drift is the reason it MUST be replaced rather than left — see the note on effectivePlanePID.
 	pid, ok := effectivePlanePID(instance)
 	if !ok {
 		return Unknown
@@ -99,26 +71,15 @@ func Drift(instance string, out io.Writer) DriftState {
 		return Drifted
 	}
 	if exe != self {
-		// Serving from a DIFFERENT path than the binary this install just placed in the install dir. It may
-		// be a dev checkout serving deliberately; only a plane the INSTALLER started is ours to restart, and
-		// the PID file is what distinguishes them.
+		// Serving from a DIFFERENT path than the binary this install just placed in the install dir.
 		fmt.Fprintf(out, "  (plane runs from %s, not %s — leaving it)\n", exe, self)
 		return Unknown
 	}
 	return Current
 }
 
-// UnrecordedPlanePID reports a plane that is SERVING this instance's control port but is named by no PID
-// file — the "it outlived its PID file" case.
-//
-// IT IS EXPORTED BECAUSE cmd/orchicon's `serve --stop` NEEDS IT TOO, and its absence there was a real bug: the
-// PID file is the ONLY source serveStop consulted, so a plane without one made `--stop` answer "serve is not
-// running" while :8091 kept serving. The shell then read `serve --status` (which DOES have this fallback, via
-// StatusOf) and reported "the plane is STILL running after stop", failing every `make instance-rebuild`.
-//
-// The identification is deliberately strict — the listener on the recorded control port must be an orchicon
-// plane BINARY and must carry THIS instance's tag in its environment (see unrecordedPlanePID). Stopping a
-// sibling instance's plane is far worse than reporting nothing to stop.
+// IT IS EXPORTED BECAUSE cmd/orchicon's `serve --stop` NEEDS IT TOO, and its absence there was a
+// real bug: the PID file is the ONLY source serveStop consulted.
 func UnrecordedPlanePID(instance string) (int, bool) { return unrecordedPlanePID(instance) }
 
 // ServingPlanePID reads the instance's detached-plane PID file and reports whether that process is alive.
@@ -147,20 +108,12 @@ func ServingPlaneAlive(instance string) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-// TerminateProcess asks a host process to stop. It is the ONE place that sends a signal to a host process
-// this layer started, so it lives in the Unix half with the other syscall.Kill users (see the file
-// header): a Windows build must not carry a SIGTERM it cannot send.
+// TerminateProcess asks a host process to stop.
 func TerminateProcess(pid int) error {
 	return syscall.Kill(pid, syscall.SIGTERM)
 }
 
 // TerminateProcessTree terminates a process AND EVERYTHING IT SPAWNED.
-//
-// ON UNIX THIS IS THE GROUP KILL, and it is exact: the services supervisor is started with
-// setProcAttrBackground (the setsid analogue), so it leads its own process group, and signalling
-// the group reaches every child — postgres, nats, the telemetry backends — at once.
-//
-// That is why the Windows half needs taskkill: there is no process-group signal there.
 func TerminateProcessTree(pid int) error {
 	return TerminateProcess(pid)
 }
@@ -191,10 +144,6 @@ type ProcInfo struct {
 }
 
 // ProcessesUnder returns every process whose executable resolves inside root.
-//
-// /proc/<pid>/exe IS A SYMLINK to the real path, and reading it fails for a process this user may not
-// inspect — which is correct: an uninspectable process is one we could not vouch for, so it must not
-// appear in a list whose only use is to justify a kill.
 func ProcessesUnder(root string) ([]ProcInfo, error) {
 	root = filepath.Clean(root)
 	if root == "" || root == "." {
@@ -249,12 +198,8 @@ func readPPID(pidDir string) int {
 	return n
 }
 
-// processStartTime reads a process's start time from /proc: field 22 of stat is the start time in clock
-// ticks since boot, and /proc/stat's btime is that boot.
-//
-// A zero time means "this platform could not say", and the callers treat that as NOT a leftover — the
-// conservative direction, because the cost of that mistake is a refusal that names the process, while the
-// cost of the other is a start that fights its own child.
+// processStartTime reads a process's start time from /proc: field 22 of stat is the start time in
+// clock ticks since boot, and /proc/stat's btime is that boot.
 func processStartTime(pidDir string) time.Time {
 	stat, err := os.ReadFile(filepath.Join("/proc", pidDir, "stat"))
 	if err != nil {
@@ -302,9 +247,8 @@ func bootTime() (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// TerminateSubtree terminates every process in procs that belongs to the tree rooted at root, or that
-// the caller's ownership test accepts. See the Windows half for why an ownership test is not optional:
-// a process we cannot vouch for is reported, never killed.
+// TerminateSubtree terminates every process in procs that belongs to the tree rooted at root, or
+// that the caller's ownership test accepts.
 func TerminateSubtree(root int, procs []ProcInfo, eligible func(ProcInfo) bool) []int {
 	if root <= 0 {
 		return nil
@@ -406,10 +350,6 @@ func effectivePlanePID(instance string) (int, bool) {
 }
 
 // unrecordedPlanePID finds the instance's plane when the PID file does not name it.
-//
-// Returns ok=false for every case it cannot PROVE: no port record, no listener, a listener that is not our
-// binary, or one whose environment names a different instance. Callers treat false as "not identifiable" —
-// never as "free" and never as "safe to kill".
 func unrecordedPlanePID(instance string) (int, bool) {
 	port := recordedControlPort(instance)
 	if port <= 0 {
@@ -423,9 +363,7 @@ func unrecordedPlanePID(instance string) (int, bool) {
 	if err != nil || !isPlaneBinaryName(exe) {
 		return 0, false
 	}
-	// THE INSTANCE CHECK IS NOT OPTIONAL. Two instances have different control ports, so a listener here that
-	// names ANOTHER instance means the port record is wrong or stale — and stopping that process would take
-	// down a sibling. Refusing is the only safe answer.
+	// THE INSTANCE CHECK IS NOT OPTIONAL.
 	if !carriesInstance(pid, instance) {
 		return 0, false
 	}
@@ -433,20 +371,12 @@ func unrecordedPlanePID(instance string) (int, bool) {
 }
 
 // isPlaneBinaryName reports whether exe is the binary that SERVES a plane.
-//
-// The `(deleted)` suffix is the COMMON case here rather than an edge one: replacing the binary is exactly what
-// leaves a process unnamed by its PID file, so the suffix is stripped rather than treated as a mismatch. Only
-// `orchicon` matches — `orch` is the thin client and never serves a plane.
 func isPlaneBinaryName(exe string) bool {
 	exe = strings.TrimSuffix(exe, " (deleted)")
 	return filepath.Base(exe) == planeBinaryName
 }
 
 // carriesInstance reports whether pid's environment names this instance.
-//
-// /proc/<pid>/environ is NUL-separated with a trailing NUL, so the tag is matched delimiter-terminated OR at
-// the end — the same rule cmd/orchicon's processBelongsTo applies, and for the same reason: a bare substring
-// would let `ORCHICON_INSTANCE=prod2` answer for `prod`.
 func carriesInstance(pid int, instance string) bool {
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
 	if err != nil {

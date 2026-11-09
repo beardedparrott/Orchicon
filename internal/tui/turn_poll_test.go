@@ -1,18 +1,6 @@
 package tui
 
 // turn_poll_test.go — LIVE STREAMING THAT DOES NOT DEPEND ON THE LIVE STREAM.
-//
-// The operator, on a pane that showed the watchdog's age resetting (so events WERE arriving) but never
-// the reply: "We NEED live streaming working... I don't even care if you have to find a brand new
-// method." The method was already in the server, built for exactly this: the running turn's collected
-// text, reasoning and tool ledger are mirrored into the ACKED assistant message every 250ms
-// (askorchicon.upsertPartialMessage), so a client that lost the socket — a refresh, another device —
-// polls ListMessages and WATCHES THE REPLY GROW.
-//
-// So the TUI polls during the turn. It does not replace the socket (which is faster when it works); it
-// removes the socket's ability to be the single point of failure for liveness. This file covers the
-// MERGE, which is where a poll can go wrong; the scheduling is covered beside the controller in
-// internal/tui/chat/turn_poll_test.go.
 
 import (
 	"testing"
@@ -20,14 +8,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// A GROWING PARTIAL RENDERS AS A GROWING REPLY — the whole point, and the property that makes the poll
-// safe to run once a second.
-//
-// Each poll returns the same assistant message id carrying MORE text. The merge must show the newest
-// content, once, in place: the previous generation of that key is already in the live buffer, so a
-// merge that could not tell "already seen" from "new" would stack generations instead of advancing
-// one. (That is the duplicate-message bug, which is why the idempotence fix had to land first — and it
-// is why this test failing would look exactly like that bug returning.)
+// A GROWING PARTIAL RENDERS AS A GROWING REPLY — the whole point, and the property that makes the
+// poll safe to run once a second.
 func TestAPolledPartialReplacesItsOwnEarlierGeneration(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	const conv = "c1"
@@ -78,11 +60,5 @@ func TestAPolledPartialReplacesItsOwnEarlierGeneration(t *testing.T) {
 	}
 }
 
-// A POLL DURING THE TURN IS THE SAME SHAPE AS THE COMPLETION POLL, so the transcript that grows while
-// streaming and the transcript that lands at the end cannot disagree.
-//
-// Both go through ListMessages → conversationItems → GroupByPhase, so the ordering guarantee they share
-// (reversal out of the server's newest-first page, millisecond timestamps, stable same-instant order)
-// is asserted once, where that mapping lives: internal/tui/chat (conversationItems, order_test.go and
-// reasoning_history_test.go). It is named here so a reader of this file knows the interleaving —
-// growing partial, then finalized reply — is covered rather than overlooked.
+// A POLL DURING THE TURN IS THE SAME SHAPE AS THE COMPLETION POLL, so the transcript that grows
+// while streaming and the transcript that lands at the end cannot disagree.

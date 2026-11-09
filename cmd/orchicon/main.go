@@ -37,11 +37,8 @@ import (
 )
 
 func main() {
-	// Wire the OTel slog bridge so the default-mode control plane
-	// (not just the dev subcommand) also streams its structured log
-	// records into the Telemetry logs tab. The OTel handler is a
-	// no-op until telemetry.Setup binds the global LoggerProvider
-	// inside server.New.
+	// Wire the OTel slog bridge so the default-mode control plane (not just the dev subcommand) also
+	// streams its structured log records into the Telemetry logs tab.
 	log := slog.New(telemetry.MultiHandler(
 		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}),
 		telemetry.NewOtelSlogHandler(),
@@ -75,8 +72,7 @@ func main() {
 			os.Exit(exitOnErr(runRuntimeClient(os.Args[2:], log)))
 		case "uninstall":
 			// Takes the instance state off this machine: stops everything, removes the binaries and the
-			// generated config, and KEEPS the data unless --purge. See uninstall.go for what is kept and
-			// why (the KEK above all).
+			// generated config, and KEEPS the data unless --purge.
 			os.Exit(exitOnErr(runUninstall(os.Args[2:], os.Stdout)))
 		case "install":
 			os.Exit(exitOnErr(runInstall(os.Args[2:], log)))
@@ -114,17 +110,6 @@ func main() {
 	}
 
 	// BARE `orchicon` IS NOW A LIFECYCLE COMMAND, NOT A PLANE.
-	//
-	// REPORTED: "whenever you start orchicon, it hangs in the logs. It should start in the
-	// background and then tell you how to tail the logs and how to stop/start it. Running
-	// orchicon.exe bare with a start/stop/status should do the full gambit."
-	//
-	// It used to run the control plane IN THE FOREGROUND, which is the wrong shape twice over:
-	// the operator's terminal became the plane's console (so the plane's logs interleaved with
-	// their prompt and Ctrl-C stopped the plane), and there was no start/stop/status to run
-	// instead. `orchicon start` already did the right thing — services then plane, both
-	// detached, with the log path and the stop command printed — so the bare command now says
-	// so and gets out of the way.
 	fmt.Fprintln(os.Stderr, "orchicon is a control-plane BINARY; it does not run the plane in your terminal.")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  orchicon start [instance]    start the services and the plane, in the background")
@@ -317,16 +302,6 @@ func printHelp() {
 	bin := filepath.Base(os.Args[0])
 
 	// THE ROWS ARE DATA, AND THE COMMAND COLUMN IS MEASURED FROM THEM.
-	//
-	// Both halves of that matter, and the first version of this function had neither. The list was
-	// a Printf with one positional argument per line (fifteen of them), maintained by hand — which
-	// is how `install` came to be absent from the help entirely. And the gap after each command was
-	// literal spaces, so the columns only lined up for a binary whose name happened to fit: with a
-	// longer name (a test binary, or `/usr/local/bin/orchicon` → still `orchicon`) the longest rows
-	// lost their gap and the line read as one run-on sentence.
-	//
-	// So: rows first, then the width is the longest command plus a gap. The rendered help is
-	// correct for ANY binary name.
 	type row struct {
 		section string // non-empty starts a new section
 		cmd     string
@@ -396,9 +371,7 @@ func printHelp() {
 		{cmd: bin + " mcp", desc: []string{"Run the MCP stdio server (for opencode tool integration)"}},
 		{cmd: bin + " claude-hook", desc: []string{"Run the PreToolUse permission hook for a claude worker session"}},
 
-		// INTERNAL COMMANDS ARE LISTED TOO. They are dispatched and they are real, so an operator can
-		// reach them; hiding them would recreate exactly the gap this help had (a command that exists
-		// and runs, absent from the list). The heading is what says "not for hand use".
+		// INTERNAL COMMANDS ARE LISTED TOO.
 		{section: "Internal (started by the installer and the daemon; not for hand use):"},
 		{cmd: bin + " runtime-daemon", desc: []string{"Run the runtime daemon (owns the container engine)"}},
 		{cmd: bin + " runtime-supervisor", desc: []string{"Run a workflow container's supervisor"}},
@@ -439,14 +412,6 @@ func printHelp() {
 }
 
 // mcpStderrLogger is the logger a stdio MCP server must use: JSON on STDERR.
-//
-// IT IS BUILT HERE RATHER THAN AT THE PROCESS ROOT because every other subcommand wants its records
-// on stdout, and a global change would move the plane's own logs. The invariant belongs to the one
-// function that owns the stdio transport, so a future caller cannot pick the wrong logger by
-// accident — which is how this defect happened.
-//
-// JSON rather than text: opencode's log capture expects it, and it keeps the format identical to the
-// rest of the product so an operator grepping both streams sees one shape.
 func mcpStderrLogger() *slog.Logger {
 	return mcpLogger(os.Stderr)
 }
@@ -488,24 +453,16 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 	log = mcpStderrLogger()
 	slog.SetDefault(log)
 
-	// Worktree-only mode: a worker's composite file tools (batch_read /
-	// batch_grep / batch_write) run against a base directory and need no
-	// Postgres or valid plane config. The control plane sets
-	// ORCHICON_MCP_WORKTREE_DIR when it wires this sidecar into a worker's
-	// opencode config, so the sidecar can run inside a DB-less runtime.
+	// Worktree-only mode: a worker's composite file tools (batch_read / batch_grep / batch_write) run
+	// against a base directory and need no Postgres or valid plane config.
 	if wd := os.Getenv("ORCHICON_MCP_WORKTREE_DIR"); wd != "" {
 		pr := os.Getenv("ORCHICON_MCP_PROJECT_DIR")
-		// SAY SO WHEN THE PROJECT DIR IS UNUSABLE, BY NAME. Everything derived from it (the run-state todo
-		// dir) is silently disabled when it is not absolute, and an operator reading a log line that names
-		// the raw value can find the producer. Quietly degrading here is how a directory named after a
-		// carved-up path went unexplained.
+		// SAY SO WHEN THE PROJECT DIR IS UNUSABLE, BY NAME.
 		if pr != "" && !filepath.IsAbs(pr) {
 			log.Warn("mcp sidecar: ORCHICON_MCP_PROJECT_DIR is NOT absolute — the run-state todo channel is disabled rather than creating .orchicon relative to the working directory",
 				"project_dir", pr, "worktree", wd)
 		}
 		// The run-state dir is where the todo snapshot the PLANE reads is written.
-		// Derived here from the same two vars the plane uses, so writer and reader
-		// agree by construction rather than by convention.
 		runState := worktree.RunStateDir(pr, os.Getenv("ORCHICON_MCP_WORKFLOW_RUN_ID"))
 		mcpSrv := mcp.New(log, nil, mcp.NewWorktreeRegistry(wd, pr, runState))
 		log.Info("mcp server started (worktree tools, stdio transport)",
@@ -517,11 +474,8 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 		return 0
 	}
 
-	// Plane-channel mode: the `orchicon-plane` MCP sidecar (role-bound
-	// worker executions) talks to the REAL instance's Connect API with a
-	// short-lived, role-scoped credential — no Postgres, no sandbox. The
-	// control plane sets ORCHICON_PLANE_URL + ORCHICON_PLANE_TOKEN when it
-	// mints the credential for the run.
+	// Plane-channel mode: the `orchicon-plane` MCP sidecar (role-bound worker executions) talks to the
+	// REAL instance's Connect API with a short-lived, role-scoped credential — no Postgres, no sandbox.
 	if url := os.Getenv("ORCHICON_PLANE_URL"); url != "" && os.Getenv("ORCHICON_PLANE_TOKEN") != "" {
 		mcpSrv := mcp.New(log, nil, mcp.NewPlaneRegistry(url, os.Getenv("ORCHICON_PLANE_TOKEN"), log))
 		log.Info("mcp server started (plane channel, stdio transport)", "url", url)
@@ -538,9 +492,8 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 		return 1
 	}
 
-	// Secrets KEK for the MCP surface's secret tools: explicit override
-	// wins, else the per-instance data-dir key (load-or-create on first
-	// boot) — same resolution as the control plane.
+	// Secrets KEK for the MCP surface's secret tools: explicit override wins, else the per-instance
+	// data-dir key (load-or-create on first boot) — same resolution as the control plane.
 	secretsKEK, kekErr := secretcrypto.ResolveKEK(cfg.SecretsKEK, cfg.DataDir)
 	if kekErr != nil {
 		log.Warn("secrets KEK unavailable (secret tools disabled)", "error", kekErr)

@@ -1,20 +1,6 @@
 package dock
 
 // composer_growth_boundary_test.go — THE BOX MUST GROW WHEN THE TEXT WRAPS, NOT A SENTENCE LATER.
-//
-// The operator: "if you type a long message, it does extend the message box but not right away, only after
-// you type a sentence about halfway does it stretch the box, leaving users to type blind for a short time."
-//
-// THE CAUSE, and it was documented in this file as a "cosmetic shortfall": visualRows() estimated the wrap
-// as `ceil(cells/width)` while bubbles' textarea WORD-WRAPS and — at the boundary — uses `>=`, so a line of
-// exactly the available width becomes TWO rows. The estimate therefore under-counted, the box lagged, and
-// for a stretch of characters the caret sat on a wrapped row that was not drawn.
-//
-// WHY IT READ AS "ABOUT HALFWAY": the box has a resting height (MinInputRows = 3), so the first two rows of
-// error are invisible — the operator only sees the lag once the real wrap passes the floor, which is a
-// sentence in. That is why a short-string test passes on the OLD code and is worthless as a regression test.
-//
-// These tests therefore drive the boundary directly and would fail on the old estimator.
 
 import (
 	"strings"

@@ -54,9 +54,7 @@ func RetryAfter(h string, now time.Time) (time.Duration, bool) {
 	return 0, false
 }
 
-// retryableStatus reports whether an HTTP status is transient per D11
-// (408/409/429/5xx). 403 is deliberately absent: it is a transport flip
-// signal, not a retry.
+// retryableStatus reports whether an HTTP status is transient per D11 (408/409/429/5xx).
 func retryableStatus(code int) bool {
 	switch code {
 	case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests:
@@ -65,9 +63,9 @@ func retryableStatus(code int) bool {
 	return code >= 500 && code <= 599
 }
 
-// isConnectionErr reports whether err is a transport-level failure (as
-// opposed to a provider response): net errors, timeouts, connection
-// resets/refused, TLS handshake failures, client timeouts.
+// isConnectionErr reports whether err is a transport-level failure (as opposed to a provider
+// response): net errors, timeouts, connection resets/refused, TLS handshake failures, client
+// timeouts.
 func isConnectionErr(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
@@ -112,11 +110,7 @@ func backoffDelay(p RetryPolicy, attempt int, retryAfter time.Duration) time.Dur
 	return p.BaseDelay + time.Duration(rand.Int63n(int64(d-p.BaseDelay)+1))
 }
 
-// doWithRetries runs fn for attempts 0..MaxAttempts-1. fn returns
-// (retryable, err, retryAfter): when retryable is true, err != nil and
-// attempts remain, sleep backoff (honoring retryAfter) and retry;
-// otherwise return the last error. The Retry-After hint from attempt N
-// shapes the delay before attempt N+1.
+// doWithRetries runs fn for attempts 0..MaxAttempts-1.
 func doWithRetries(ctx context.Context, p RetryPolicy, fn func(attempt int) (retryable bool, err error, retryAfter time.Duration)) error {
 	p = p.withDefaults()
 	var (

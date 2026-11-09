@@ -1,16 +1,6 @@
 package containerengine
 
 // PROVISIONING IS DELIBERATELY DELEGATED TO THE PLATFORM'S OWN INSTALLER (AC7).
-//
-// Podman is Apache-2.0, so bundling a runtime binary in our archive would be permitted by
-// the licence — we do not do it anyway. We install through the user's package manager
-// (`brew`, `winget`, or the distro's `dnf`/`apt-get`/`zypper`/`pacman`/`apk`) for three
-// reasons: (1) their package manager owns upgrades and security patches, so a Podman we
-// installed today is not an orphan tomorrow; (2) we never ship a second copy of a runtime
-// that can drift from the host's, which is the same "mount, never bake" posture the
-// adapter CLIs already follow; (3) nothing we redistribute can be complained about later.
-// Docker is DETECTED and never installed: Docker Desktop's licensing is not ours to accept
-// on a user's behalf.
 
 import (
 	"context"
@@ -22,15 +12,13 @@ import (
 	"strings"
 )
 
-// ErrDeclined means provisioning did not happen — declined by the operator, disabled by
-// policy, impossible on this host, or the installer failed. It is an EXPECTED outcome, not
-// a crash: every caller treats it as "containers unavailable, install continues in local
-// mode" (AC6). Callers test with errors.Is; the wrapping message says why.
+// ErrDeclined means provisioning did not happen — declined by the operator, disabled by policy,
+// impossible on this host, or the installer failed.
 var ErrDeclined = errors.New("container engine provisioning was not performed")
 
-// ProvisionMarkerFile is written in the instance data dir while an installer runs, so a
-// status surface can report "provisioning" truthfully instead of showing a spinner that
-// may be a lie (AC5's third state).
+// ProvisionMarkerFile is written in the instance data dir while an installer runs, so a status
+// surface can report "provisioning" truthfully instead of showing a spinner that may be a lie
+// (AC5's.
 const ProvisionMarkerFile = "engine-provisioning"
 
 // PodmanDocsURL is the manual path we point at when no supported installer is available.
@@ -73,15 +61,11 @@ func clearProvisioning(p Probe) {
 	}
 }
 
-// InstallPlan is the command that would install Podman on this host. It is data, not a
-// side effect, so the exact command can be PRINTED before anything runs (AC2: the user
-// always sees the action, even when they decline it).
+// InstallPlan is the command that would install Podman on this host.
 type InstallPlan struct {
 	Command string
 	Args    []string
-	// NeedsRoot marks a package manager that must run as root. We report those with the
-	// `sudo` prefix and never escalate ourselves: silently sudo-ing inside an installer is
-	// exactly the kind of invisible host modification this feature must not do.
+	// NeedsRoot marks a package manager that must run as root.
 	NeedsRoot bool
 	// Fallback is a secondary package id when the primary is unavailable (Windows: the
 	// Podman Desktop package ships the same binary).
@@ -132,13 +116,6 @@ func planInstall(p Probe, e Engine) (InstallPlan, error) {
 			return InstallPlan{}, fmt.Errorf("%w: winget was not found (not on PATH, and not at %%LOCALAPPDATA%%\\Microsoft\\WindowsApps), so podman cannot be installed automatically — install the App Installer (winget) or podman itself from %s", ErrDeclined, PodmanDocsURL)
 		}
 		// SILENT, AND THAT IS NOT COSMETIC.
-		//
-		// Without --silent, winget runs the package's own installer UI — a graphical window, on top of a console
-		// install the operator is watching, that has to be clicked through. Reported: "it also installs via a
-		// graphical interface." A GUI appearing mid-command reads as the install having gone wrong, and on a
-		// headless or remote session there is nobody to click it.
-		//
-		// The agreement flags stay because a silent install cannot accept a prompt it cannot show.
 		return InstallPlan{
 			// THE RESOLVED PATH, not the bare name. The child inherits this process's PATH — the very PATH that
 			// did not find winget — so a bare "winget" would fail to start even now that we know where it is.
@@ -162,9 +139,7 @@ func planInstall(p Probe, e Engine) (InstallPlan, error) {
 			{"pacman", []string{"-S", "--noconfirm", "podman"}, false},
 			{"apk", []string{"add", "podman"}, false},
 		} {
-			// THE SAME RULE AS WINDOWS. A minimal image can install a package manager somewhere that is not on
-			// this process's PATH (a service-manager environment is the usual way), and concluding "no supported
-			// package manager" on a host that has dnf at /usr/bin/dnf is the same defect in a different costume.
+			// THE SAME RULE AS WINDOWS.
 			if bin, ok := locatePackageManager(p, cand.bin); ok {
 				return InstallPlan{Command: bin, Args: cand.args, NeedsRoot: cand.needsRoot}, nil
 			}
@@ -176,17 +151,6 @@ func planInstall(p Probe, e Engine) (InstallPlan, error) {
 }
 
 // Provision installs Podman when it is absent, and ONLY when the operator opted in.
-//
-// ORDER, and why: detect (never reinstall over a working engine) → decide the plan → PRINT
-// THE EXACT COMMAND → ask → run → re-detect (the installer's exit code is not proof the
-// binary is on PATH) → CheckMinimum. Machine bring-up and the trivial-container proof are
-// the caller's next rungs, because the installer must report BETWEEN them ("installed, now
-// starting the VM") and because a machine failure is a different message from a failed
-// install.
-//
-// A nil `confirm` means THERE IS NO TERMINAL: the command is printed and nothing runs,
-// which is the same posture cmd/orchicon/install_ports.go takes for the port prompt. That is
-// what makes a piped install safe — it can never install a VM image silently.
 func Provision(ctx context.Context, p Probe, out io.Writer, confirm func(string) bool) (Engine, error) {
 	return ProvisionEngine(ctx, p, out, confirm, EngineNone)
 }
@@ -216,16 +180,13 @@ func Provision(ctx context.Context, p Probe, out io.Writer, confirm func(string)
 // want == EngineNone keeps the original "install whatever is absent" behaviour, so an install with NO engine
 // is unaffected.
 func ProvisionEngine(ctx context.Context, p Probe, out io.Writer, confirm func(string) bool, want Name) (Engine, error) {
-	// requireConfirm is TRUE here: ProvisionEngine is called by a caller that may genuinely want the question
-	// (a ladder deciding whether to offer an engine). The install's own path passes consent through the
-	// environment, so alreadyConsented short-circuits it.
+	// requireConfirm is TRUE here: ProvisionEngine is called by a caller that may genuinely want the
+	// question (a ladder deciding whether to offer an engine).
 	return provision(ctx, p, out, confirm, want, true)
 }
 
-// ProvisionEngineUnattended installs the named engine WITHOUT asking, for a caller that has already decided.
-//
-// IT EXISTS AS ITS OWN NAME so the decision is visible at the call site. A caller passing a nil confirm to
-// ProvisionEngine looks like an oversight; a caller calling this says what it means.
+// ProvisionEngineUnattended installs the named engine WITHOUT asking, for a caller that has already
+// decided.
 func ProvisionEngineUnattended(ctx context.Context, p Probe, out io.Writer, want Name) (Engine, error) {
 	return provision(ctx, p, out, nil, want, false)
 }
@@ -322,15 +283,8 @@ func provision(ctx context.Context, p Probe, out io.Writer, confirm func(string)
 	if err != nil {
 		return Engine{Name: EngineNone}, err
 	}
-	// A FRESH INSTALL IS NOT ON THIS PROCESS'S PATH YET, so the re-detect above can legitimately say "none".
-	//
-	// winget and brew commit to the REGISTRY (or the shell profile), not to the environment of the process that
-	// ran them, so the value we just watched install can be invisible to the very next probe. Concluding
-	// "reported success but no podman binary is on PATH" from that is how a working install gets reported as a
-	// failure and the operator is sent to open a new shell for nothing.
-	//
-	// WaitForBinary re-probes for a bounded window and only trusts a CONVENTIONAL location, so a winget stub
-	// that appears early cannot masquerade as a working engine (see isConventionalInstall).
+	// A FRESH INSTALL IS NOT ON THIS PROCESS'S PATH YET, so the re-detect above can legitimately say
+	// "none".
 	if e.Name == EngineNone {
 		if re, ok := e.WaitForBinary(p); ok {
 			fmt.Fprintf(out, "orchicon: podman appeared at %s after the install (PATH is refreshed at logon)\n", re.Bin)
@@ -350,26 +304,15 @@ func provision(ctx context.Context, p Probe, out io.Writer, confirm func(string)
 }
 
 // alreadyConsented reports whether this run has been told to provision without being asked.
-//
-// IT IS AN ALLOW-LIST OF VALUES THAT MEAN YES, never a denial of everything else: an operator who sets the
-// variable to something unrecognised gets the prompt (in an interactive run) rather than a surprise install.
-// ORCHICON_PROVISION_ENGINE=0 is handled earlier as a hard refusal.
 func alreadyConsented(p Probe) bool {
 	switch strings.ToLower(strings.TrimSpace(p.getenv(ProvisionEnv))) {
 	case "1", "yes", "on", "true":
 		return true
 	}
 	// NOTHING ELSE IMPLIES CONSENT, and this used to guess that it did.
-	//
-	// It read ORCHICON_INSTALL_CONTAINERS and treated "unset" as yes — which turned `orchicon install` run by
-	// hand into an unattended provisioner nobody had asked to be unattended. The installer is what sets that
-	// variable (and sets it to "1"), so its absence means no installer decided anything: fall back to a prompt
-	// where there is a terminal, and to a visible refusal where there is not. Both of those say what to run.
 	return false
 }
 
-// ContainersOptInEnv is the installer's container consent, set to "0" by -NoContainers / --no-containers.
-//
-// It lives here so the provisioner and the installers cannot disagree about what "the operator asked for
-// containers" is called.
+// ContainersOptInEnv is the installer's container consent, set to "0" by -NoContainers /
+// --no-containers.
 const ContainersOptInEnv = "ORCHICON_INSTALL_CONTAINERS"

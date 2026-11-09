@@ -1,14 +1,6 @@
 package project
 
 // git_setup_test.go — THE SETUP THAT WOULD HAVE PREVENTED THE WINDOWS RUN FAILURES.
-//
-// Every case below was a real state an operator reached by creating a project and choosing a git strategy:
-// nothing initialised, initialised with no commit, no commit identity (which a service-account control plane
-// routinely lacks), or a project directory sitting INSIDE someone else's repository. The last one is the
-// dangerous one — acting on it would commit into, or rewrite the identity of, a repository Orchicon does not own.
-//
-// These run REAL git in temp directories: the behaviour under test IS git's, and a stub would agree with
-// whatever assumption was wrong. Skipped where git is unavailable.
 
 import (
 	"context"
@@ -26,14 +18,8 @@ func requireGitBinary(t *testing.T) {
 	}
 }
 
-// withHermeticGit keeps the test off the operator's config: no global or system config, so there is no identity
-// to inherit — which is the state a service-account control plane is actually in, and the only state in which
-// the identity handling means anything.
-//
-// IT DOES NOT SET GIT_AUTHOR_NAME etc. TO EMPTY. An EMPTY identity variable is not the same as an absent one:
-// git takes it literally and refuses with "fatal: empty ident name (for <>)", so the fixture's own commits would
-// fail for a reason that has nothing to do with the code under test. The fixture commits below pass their
-// identity on the command line with -c instead.
+// withHermeticGit keeps the test off the operator's config: no global or system config, so there is
+// no identity to inherit — which is the state a service-account control plane is actually.
 func withHermeticGit(t *testing.T) {
 	t.Helper()
 	requireGitBinary(t)
@@ -43,11 +29,6 @@ func withHermeticGit(t *testing.T) {
 }
 
 // tempDirOutsideAnyRepo creates a temp directory that is NOT inside a git repository.
-//
-// THIS IS NOT TIDINESS. t.TempDir() honours GOTMPDIR, which this project sets to .dev/tools/gotmp — INSIDE the
-// Orchicon checkout. A project directory there IS inside a repository, so EnsureGitState's nested-repo guard
-// correctly declines to touch it and every test would silently assert the decline instead of the setup. Found
-// exactly that way: TestEnsureGitStateIsRepeatable reported "needed=false" for a supposedly empty directory.
 func tempDirOutsideAnyRepo(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp(os.TempDir(), "orchicon-gitsetup-")
@@ -70,10 +51,8 @@ func mustGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(out)
 }
 
-// mustGitAs runs git WITH an explicit identity, for fixture commits that are meant to belong to a person.
-//
-// The identity is passed with -c rather than through the environment, because the hermetic environment above
-// deliberately leaves git with no identity at all.
+// mustGitAs runs git WITH an explicit identity, for fixture commits that are meant to belong to a
+// person.
 func mustGitAs(t *testing.T, dir, name, email string, args ...string) string {
 	t.Helper()
 	full := append([]string{"-c", "user.name=" + name, "-c", "user.email=" + email}, args...)
@@ -187,9 +166,7 @@ func TestNoneStrategyTouchesNothing(t *testing.T) {
 	}
 }
 
-// TestAProjectInsideAnotherRepositoryIsNeverModified is THE DANGEROUS CASE. `rev-parse --is-inside-work-tree` is
-// true for any subdirectory, so a naive check would treat a nested project as "already a repo" and then write the
-// bootstrap commit and the identity INTO THE ENCLOSING REPOSITORY — silently changing someone else's history.
+// TestAProjectInsideAnotherRepositoryIsNeverModified is THE DANGEROUS CASE.
 func TestAProjectInsideAnotherRepositoryIsNeverModified(t *testing.T) {
 	withHermeticGit(t)
 	parent := tempDirOutsideAnyRepo(t)

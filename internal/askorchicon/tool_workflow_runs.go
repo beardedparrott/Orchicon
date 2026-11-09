@@ -78,14 +78,8 @@ func toolGetWorkflowRun(ctx context.Context, pool *db.Pool, args json.RawMessage
 	return json.Marshal(run)
 }
 
-// toolForceProgressWorkflowRun advances a stuck running run past its current
-// in-flight step run(s) regardless of their previous status — the Ask Orchicon
-// counterpart to the ForceProgressWorkflowRun RPC (a run can wedge "running"
-// forever after a reconcile pass errored on a LATER step and rolled back an
-// upstream step's terminal mark, e.g. a corrupted worker_versions index hid a
-// worker). Marks every active non-terminal step run succeeded with a
-// `_forced: true` note, terminates still-running linked executions, and lets
-// the reconciler advance the DAG on its next scan.
+// toolForceProgressWorkflowRun advances a stuck running run past its current in-flight step run(s)
+// regardless of their previous status.
 func toolForceProgressWorkflowRun(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		RunID string `json:"run_id"`
@@ -179,12 +173,8 @@ var succeededStatus = domain.StepRunSucceeded
 
 func strPtrTool(s string) *string { return &s }
 
-// toolRetryFailedWorkflowRun resumes a FAILED workflow run in place — the Ask
-// Orchicon counterpart to the RetryFailedWorkflowRun RPC. Resets the run back
-// to pending, re-arms every active failed/skipped/blocked step run as pending
-// (clearing result, worker execution ref, attempt, ended timestamp), flips the
-// bound work item back to running, and lets the reconciler re-drive the DAG
-// from where it left off (succeeded steps are kept).
+// toolRetryFailedWorkflowRun resumes a FAILED workflow run in place — the Ask Orchicon counterpart
+// to the RetryFailedWorkflowRun RPC.
 func toolRetryFailedWorkflowRun(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		RunID string `json:"run_id"`

@@ -1,36 +1,5 @@
-// Package agentmemory is the durable cross-session agent-memory channel
-// for native Orchicon worker sessions: a per-project SQLite FTS5 store at
-// <project_dir>/.orchicon/memory.db.
-//
-// # SQLite-vs-Postgres decision
-//
-// Memory is per-PROJECT durable knowledge (cross-session, cross-execution)
-// and the project directory is where the JSONL transcripts, session and
-// offload artifacts already live — a memory DB beside them inherits the
-// same backup/restore/delete lifecycle. Postgres is the CONTROL-PLANE
-// database: a memory tool executing inside a worker would need a Postgres
-// connection from the runtime container to the plane DB — a new
-// cross-boundary channel with secrets/network/tenant plumbing per
-// execution. SQLite is a local file: zero new channels, and it works in
-// the sandbox and in every runtime image. FTS5 (bm25 ranked full-text
-// search, phrase queries, highlight) is built into SQLite, so ranked
-// search needs zero extra services. A local embedded store has no
-// network/credential dependency: a write either lands in the file or
-// errors — it can never silently look alive via a remote fallback. The
-// trade-offs (single-writer file, no control-plane UI reader) are
-// accepted: memory is project-scoped and the memory tools ARE the query
-// surface.
-//
-// The package is a leaf: it imports database/sql + modernc.org/sqlite
-// only, never an adapter/scheduler/orchicon package, so both the native
-// engine and any future tool-suite can use it without import cycles.
-//
-// # Isolation semantics
-//
-// Entries are filtered by tenant_id + project_dir on EVERY query (SQL
-// level). Cross-session reads work because the DB lives at the true
-// project dir (not the per-run worktree) and later executions of the same
-// tenant+project read earlier entries through the same filters.
+// Package agentmemory is the durable cross-session agent-memory channel for native Orchicon worker
+// sessions: a per-project SQLite FTS5 store at <project_dir>/.orchicon/memory.db.
 package agentmemory
 
 import (
@@ -96,9 +65,7 @@ type WriteInput struct {
 	ID int64
 }
 
-// Store is one project's memory store (a single *sql.DB on the project's
-// memory.db). Writes are serialized by a mutex (single-writer file);
-// reads are concurrent.
+// Store is one project's memory store (a single *sql.DB on the project's memory.db).
 type Store struct {
 	db *sql.DB
 	mu sync.Mutex
@@ -107,14 +74,10 @@ type Store struct {
 // entryCols is the non-snippet SELECT column list shared by every query.
 const entryCols = `rowid, title, body, tags, created_at, updated_at, execution_id, worker_id`
 
-// Open opens (creating and migrating if needed) the memory DB at
-// <projectDir>/.orchicon/memory.db. The .orchicon directory is created if
-// missing. It returns an error only when the file cannot be created or the
-// schema cannot be applied — never a silent in-memory fallback.
+// Open opens (creating and migrating if needed) the memory DB at <projectDir>/.orchicon/memory.db.
 func Open(projectDir string) (*Store, error) {
 	// A RELATIVE projectDir IS REFUSED — see worktree.RunStateDir for the same rule and the measured
-	// damage it prevents: a relative value resolves against the process's working directory, so the
-	// memory DB lands somewhere nobody chose instead of failing.
+	// damage it prevents: a relative value resolves against the process's working directory.
 	if !filepath.IsAbs(projectDir) {
 		return nil, fmt.Errorf("agentmemory: refusing a relative project dir %q — the memory DB must have an absolute location, or it is created under whatever directory the process happens to have", projectDir)
 	}
@@ -155,11 +118,7 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// Write creates a new entry (in.ID <= 0) or replaces an existing one
-// (in.ID > 0). An FTS5 row cannot be updated in place, so a replace is a
-// delete + re-insert inside one transaction (the new row gets a fresh
-// rowid — callers must use the returned id, never assume id stability).
-// The returned id is the rowid of the written row.
+// Write creates a new entry (in.ID <= 0) or replaces an existing one (in.ID > 0).
 func (s *Store) Write(ctx context.Context, in WriteInput) (int64, error) {
 	if strings.TrimSpace(in.TenantID) == "" {
 		return 0, fmt.Errorf("agentmemory: tenant_id is required")
@@ -211,9 +170,7 @@ func (s *Store) Write(ctx context.Context, in WriteInput) (int64, error) {
 	return id, nil
 }
 
-// scanEntry scans entryCols (plus any extra dests) into an Entry. extra
-// destinations are appended to the single Scan call so queries with a
-// trailing snippet column pass one destination per result column.
+// scanEntry scans entryCols (plus any extra dests) into an Entry.
 func scanEntry(scan func(dest ...any) error, e *Entry, extra ...any) error {
 	var tags, created, updated string
 	dests := []any{&e.ID, &e.Title, &e.Body, &tags, &created, &updated,
@@ -230,10 +187,7 @@ func scanEntry(scan func(dest ...any) error, e *Entry, extra ...any) error {
 	return nil
 }
 
-// Search ranks entries by bm25 against a plain-text query. The query is
-// bound as a single FTS5 phrase (auto-quoted) so it is always literal —
-// raw user text can never inject FTS5 operators (AND/OR/quotes/*) or
-// cause a silent syntax error. limit is clamped to [1,50].
+// Search ranks entries by bm25 against a plain-text query.
 func (s *Store) Search(ctx context.Context, tenantID, projectDir, q string, limit int) ([]Entry, error) {
 	q = strings.TrimSpace(q)
 	if q == "" {
@@ -269,9 +223,7 @@ func (s *Store) Search(ctx context.Context, tenantID, projectDir, q string, limi
 	return out, rows.Err()
 }
 
-// Read fetches one entry by id, filtered by tenant + project. Returns
-// ErrNotFound when the id does not exist or belongs to another
-// tenant/project.
+// Read fetches one entry by id, filtered by tenant + project.
 func (s *Store) Read(ctx context.Context, tenantID, projectDir string, id int64) (Entry, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+entryCols+` FROM memory_entries WHERE rowid = ? AND tenant_id = ? AND project_dir = ?`,
@@ -290,9 +242,7 @@ func (s *Store) Read(ctx context.Context, tenantID, projectDir string, id int64)
 	return e, rows.Err()
 }
 
-// List returns the most recent entries (rowid DESC), newest first,
-// filtered by tenant + project. limit/offset bound the page; limit is
-// clamped to [1,50].
+// List returns the most recent entries (rowid DESC), newest first, filtered by tenant + project.
 func (s *Store) List(ctx context.Context, tenantID, projectDir string, limit, offset int) ([]Entry, error) {
 	if limit < 1 {
 		limit = 10
@@ -349,10 +299,8 @@ func (s *Store) Delete(ctx context.Context, tenantID, projectDir string, id int6
 	return nil
 }
 
-// quotePhrase wraps a plain-text query as a single FTS5 phrase so it is
-// matched literally: the raw string is escaped by doubling any embedded
-// double quotes, then surrounded by double quotes. This prevents FTS5
-// operator injection and silent syntax errors from arbitrary user text.
+// quotePhrase wraps a plain-text query as a single FTS5 phrase so it is matched literally: the raw
+// string is escaped by doubling any embedded double quotes, then surrounded by double quotes.
 func quotePhrase(q string) string {
 	return `"` + strings.ReplaceAll(q, `"`, `""`) + `"`
 }

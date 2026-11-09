@@ -1,13 +1,6 @@
 package main
 
 // install_desktop_test.go — the handover's DECISIONS, which are the part that can be wrong.
-//
-// The operator's proposal, which this implements: "Maybe we should launch the desktop in the install script
-// that pops up after it determines an environment is healthy?"
-//
-// The wizard could not host it (three failures, recorded in install_desktop.go), so the launch lives where the
-// health fact is: the install already WAITS for /healthz. These assertions pin the three decisions around it —
-// opt-in, healthy-only, and never fatal — without opening a window.
 
 import (
 	"os"
@@ -46,10 +39,6 @@ func TestLaunchDesktopIsOptIn(t *testing.T) {
 }
 
 // THE LAUNCH HAPPENS WHERE HEALTH IS KNOWN, AND ONLY THEN.
-//
-// Opening a GUI onto a plane that is not answering shows the operator a failure inside a window with no
-// context — worse than not opening it. Asserted as a property of the flow, because the alternative (run a real
-// install) is minutes long and needs a container engine this host may not have.
 func TestLaunchIsGuardedByHealth(t *testing.T) {
 	flow := enclosingFunc(readGoFile(t, "install.go"), "launchDesktop()")
 	if flow == "" {
@@ -69,9 +58,6 @@ func TestLaunchIsGuardedByHealth(t *testing.T) {
 }
 
 // A MISSING OR UNLAUNCHABLE GUI MUST NOT FAIL AN INSTALL THAT HAS ALREADY SUCCEEDED.
-//
-// launchDesktop returns a bool and the caller ignores it for exactly this reason; this pins that the function
-// has no path that can panic or block, and that its failure modes are messages.
 func TestLaunchDesktopIsNotFatalWhenTheAppIsAbsent(t *testing.T) {
 	dir := t.TempDir()
 	// A directory that looks like an install WITHOUT a desktop binary beside the running one.
@@ -116,9 +102,8 @@ func TestFirstRunLaunchesTheStartPageNotTheServersPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read install_desktop.go: %v", err)
 	}
-	// THE QUOTED LITERAL, not the bare word: the file legitimately MENTIONS the flag in the comment that
-	// explains why it is no longer passed. A naive substring check fails on its own documentation, which is a
-	// test that punishes the explanation rather than the behaviour.
+	// THE QUOTED LITERAL, not the bare word: the file legitimately MENTIONS the flag in the comment
+	// that explains why it is no longer passed.
 	if strings.Contains(string(src), `"--route"`) {
 		t.Error("the install's desktop launch still passes a route argument. Anything but the start page can " +
 			"land on /manage-server, which renders BARE without a session — a window with no tab bar and no " +
@@ -136,9 +121,7 @@ func TestFirstRunLaunchesTheStartPageNotTheServersPage(t *testing.T) {
 	}
 }
 
-// AND /manage-server STAYS PUBLIC. Moving the launch must not be "fixed" later by taking that route out of
-// PUBLIC_PATHS: it has to render precisely when NOTHING answers (no plane), which is the one case where
-// ensureSession cannot succeed. Removing it would make the page that starts a dead plane unreachable.
+// AND /manage-server STAYS PUBLIC.
 func TestManageServerStaysPublicForTheNoPlaneCase(t *testing.T) {
 	src, err := os.ReadFile("../../frontend/src/auth/route-guard.ts")
 	if err != nil {

@@ -1,10 +1,7 @@
 package worker
 
-// Unit tests for the ADR-0005 adapter-selection helpers in validate.go:
-// registered-kinds validation of the explicit adapter input, the
-// adapter/ref agreement contract, the adapter-change contract, and the
-// computed adapter exposure. No DB — the helpers are pure functions over
-// injected seams (SetAdapterKinds / SetModelRefRegistry).
+// Unit tests for the ADR-0005 adapter-selection helpers in validate.go: registered-kinds validation
+// of the explicit adapter input, the adapter/ref agreement contract, the adapter-change contract.
 
 import (
 	"context"
@@ -95,10 +92,8 @@ func TestValidateAdapterChange(t *testing.T) {
 	if err := validateAdapterChange(context.Background(), "", "opencode/anthropic/m", "orchicon/commandcode/deepseek/deepseek-v4-flash"); err != nil {
 		t.Fatalf("opencode to orchicon valid pair = %v; want nil", err)
 	}
-	// Adapter change keeping a provider unknown for the new kind is
-	// rejected with an actionable error naming the new kind's valid
-	// providers (the native bridge serves every built-in profile, so an
-	// unknown id like "mystery" is the invalid-pair case).
+	// Adapter change keeping a provider unknown for the new kind is rejected with an actionable error
+	// naming the new kind's valid providers (the native bridge serves every built-in profile.
 	err := validateAdapterChange(context.Background(), "", "opencode/anthropic/m", "orchicon/mystery/m")
 	if err == nil || !strings.Contains(err.Error(), "orchicon") || !strings.Contains(err.Error(), "commandcode") {
 		t.Fatalf("opencode to orchicon with unknown provider = %v; want error naming orchicon providers", err)
@@ -133,11 +128,8 @@ func TestAdapterKindOf(t *testing.T) {
 	}
 }
 
-// TestValidateAdapterChangePhantomKindIsLegacy: a current ref whose parsed
-// head is NOT a registered adapter kind (pre-namespace legacy data, e.g.
-// "commandcode/deepseek/x") never expressed an adapter selection — the
-// adapter-change gate is skipped entirely and any validated new ref saves.
-// Regression for the 2026-09 QA save-brick (phantom "commandcode" kind).
+// TestValidateAdapterChangePhantomKindIsLegacy: a current ref whose parsed head is NOT a registered
+// adapter kind (pre-namespace legacy data.
 func TestValidateAdapterChangePhantomKindIsLegacy(t *testing.T) {
 	origReg := modelRefRegistry
 	defer func() { modelRefRegistry = origReg }()
@@ -149,17 +141,15 @@ func TestValidateAdapterChangePhantomKindIsLegacy(t *testing.T) {
 	if err := validateAdapterChange(context.Background(), "", "commandcode/deepseek/deepseek-v4-flash", "orchicon/commandcode/deepseek/deepseek-v4-flash"); err != nil {
 		t.Fatalf("phantom-kind current ref blocked a native ref: %v", err)
 	}
-	// An EMPTY current ref is a FIRST selection, not phantom data: the
-	// full provider/model pair gate still applies (the existing service
-	// tests pin InvalidArgument for an invalid pair from empty).
+	// An EMPTY current ref is a FIRST selection, not phantom data: the full provider/model pair gate
+	// still applies (the existing service tests pin InvalidArgument for an invalid pair from empty).
 	if err := validateAdapterChange(context.Background(), "", "", "orchicon/mystery/m"); err == nil {
 		t.Fatal("first selection with an invalid pair passed; want gate applied")
 	}
 }
 
-// TestValidateAdapterChangeIdenticalResaveNoOp: re-saving the EXACT current
-// ref is a pure no-op — even when the stored ref would fail fresh grammar
-// validation (legacy data). Only a DIFFERENT ref triggers the gate.
+// TestValidateAdapterChangeIdenticalResaveNoOp: re-saving the EXACT current ref is a pure no-op —
+// even when the stored ref would fail fresh grammar validation (legacy data).
 func TestValidateAdapterChangeIdenticalResaveNoOp(t *testing.T) {
 	origReg := modelRefRegistry
 	defer func() { modelRefRegistry = origReg }()
@@ -179,9 +169,8 @@ func TestValidateAdapterChangeIdenticalResaveNoOp(t *testing.T) {
 	}
 }
 
-// TestValidateModelRefForUpdateNoOp: the update-aware ref validator passes
-// an identical legacy ref through WITHOUT grammar re-validation, and
-// validates any different ref fully.
+// TestValidateModelRefForUpdateNoOp: the update-aware ref validator passes an identical legacy ref
+// through WITHOUT grammar re-validation, and validates any different ref fully.
 func TestValidateModelRefForUpdateNoOp(t *testing.T) {
 	origReg := modelRefRegistry
 	defer func() { modelRefRegistry = origReg }()

@@ -8,20 +8,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
-// latestTodos returns the worker's most recent todo list for an execution by
-// walking its session-transcript tool_use parts from the highest sequence
-// downward and returning the FIRST todowrite payload's full todos array.
-//
-// Parts are passed in DESC-by-seq order (the shape LatestToolUseParts
-// returns), so the first todowrite payload is the LATEST recorded list —
-// later todowrite calls fully replace earlier ones (replacement semantics),
-// and a terminal execution naturally falls back to the last recorded list.
-//
-// The parser is deliberately tolerant: non-todowrite tool parts, parts with
-// missing/malformed payloads, and todowrite parts with a missing or
-// non-array todos field are all skipped rather than failing the parse — a
-// single malformed part must never break the RPC. Returns nil when no
-// todowrite call was ever recorded (or the transcript is empty).
+// latestTodos returns the worker's most recent todo list for an execution by walking its
+// session-transcript tool_use parts from the highest sequence downward and returning the FIRST
+// todowrite.
 func latestTodos(parts []db.SessionPart) []*apiv1.TodoItem {
 	for _, p := range parts {
 		if p.Kind != db.SessionPartToolUse {
@@ -44,9 +33,7 @@ func latestTodos(parts []db.SessionPart) []*apiv1.TodoItem {
 	return nil
 }
 
-// todosFromSnapshot maps the run-state snapshot's items to the proto shape the
-// RPC returns. Shared with the transcript parser's mapping so the two sources
-// cannot render the same list differently.
+// todosFromSnapshot maps the run-state snapshot's items to the proto shape the RPC returns.
 func todosFromSnapshot(items []worktree.TodoItem) []*apiv1.TodoItem {
 	if len(items) == 0 {
 		return nil
@@ -62,20 +49,15 @@ func todosFromSnapshot(items []worktree.TodoItem) []*apiv1.TodoItem {
 	return out
 }
 
-// rawTodo is the minimal shape of one todowrite todo entry. The parser keeps
-// status/priority as raw strings and maps them to the proto enums with
-// forward-compatible fallbacks (unknown values → UNSPECIFIED).
+// rawTodo is the minimal shape of one todowrite todo entry.
 type rawTodo struct {
 	Content  string `json:"content"`
 	Status   string `json:"status"`
 	Priority string `json:"priority"`
 }
 
-// todoItemsFromPayload decodes a persisted tool_use part payload
-// (`{"part": <opencode part>, "error": ...}`) and returns the todos array of
-// the part IF it is a completed todowrite call. ok=false means "not a usable
-// todowrite payload" (different tool, missing part, missing todos, malformed
-// JSON) — the caller skips it.
+// todoItemsFromPayload decodes a persisted tool_use part payload (`{"part": <opencode part>,
+// "error": ...}`) and returns the todos array of the part IF it is a completed todowrite call.
 func todoItemsFromPayload(payload []byte) ([]rawTodo, bool) {
 	if len(payload) == 0 {
 		return nil, false
@@ -116,8 +98,6 @@ func todoItemsFromPayload(payload []byte) ([]rawTodo, bool) {
 }
 
 // todoStatusFromString maps a todowrite status string to the proto enum.
-// Unknown values map to UNSPECIFIED (forward-compatible: the frontend renders
-// those as pending/dimmed rather than failing).
 func todoStatusFromString(s string) apiv1.TodoStatus {
 	switch s {
 	case "pending":

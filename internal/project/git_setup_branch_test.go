@@ -1,16 +1,6 @@
 package project
 
 // git_setup_branch_test.go — THE INTEGRATION BRANCH, AND THE TWO CONDITIONS THAT ONLY WARN.
-//
-// The gap this closes was found by the operator asking "will it automatically build the develop branch?" — and
-// the honest answer then was "no": `git init` puts the bootstrap commit on git's DEFAULT branch (`master` on a
-// host with no `init.defaultBranch`), while every git rule this platform injects into a worker's prompt and
-// every canned worker names `develop` as where work lands. The old code only named a branch when HEAD was
-// DETACHED — which on the normal fresh-repository path never happens, so the one case that needed it was the one
-// case that did not get it.
-//
-// The other two conditions do NOT stop a project being created; they stop its runs doing what the strategy
-// promises. They are therefore warnings, and they are loud.
 
 import (
 	"context"
@@ -141,10 +131,8 @@ func TestNoneStrategyIsNotWarnedAboutARemote(t *testing.T) {
 	}
 }
 
-// TestMissingGitIsItsOwnLoudState pins that "git is not installed" is distinguishable from a repository problem.
-//
-// The operator's action differs completely — install git versus fix a repository — and on Windows this is the
-// realistic shape: git inside WSL, while `orchicon serve` runs on the native host.
+// TestMissingGitIsItsOwnLoudState pins that "git is not installed" is distinguishable from a
+// repository problem.
 func TestMissingGitIsItsOwnLoudState(t *testing.T) {
 	// Emptying PATH makes exec.LookPath fail without touching anything else.
 	t.Setenv("PATH", "")

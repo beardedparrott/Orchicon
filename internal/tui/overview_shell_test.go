@@ -25,9 +25,8 @@ func (s *navStub) Close()                           {}
 func (s *navStub) EnsureSubscriptions()             { s.ensured++ }
 func (s *navStub) SelectSource(name string) bool    { s.selected = name; return true }
 
-// TestOverviewIsSecondDomain pins the domain's slot: Overview is the tab
-// directly after Ask Orchicon (the GUI's nav order), so its key label is F2
-// and every later one shifts by one (the key-labelled tab chrome).
+// TestOverviewIsSecondDomain pins the domain's slot: Overview is the tab directly after Ask
+// Orchicon (the GUI's nav order).
 func TestOverviewIsSecondDomain(t *testing.T) {
 	if len(Tabs) != 7 {
 		t.Fatalf("tabs = %d, want 7 (Ask + 6 GUI nav groups)", len(Tabs))
@@ -39,8 +38,7 @@ func TestOverviewIsSecondDomain(t *testing.T) {
 		t.Fatalf("tab[1] = %+v, want the Overview domain (%s)", Tabs[1], tabChord(TabOverview))
 	}
 	// The printed label is the CHORD'S OWN KEY ("F2" for "f2"), derived from the chord so the key and
-	// the label cannot drift. It used to be a bare number 1…7 — decoration that did not name the key
-	// that switches to the tab; the label is now the key itself, and each one is underlined.
+	// the label cannot drift.
 	for _, tab := range Tabs {
 		if want := strings.ToUpper(tab.Chord); tab.Ordinal != want {
 			t.Errorf("tab %s key label = %q, want %q (its chord is %q)", tab.ID, tab.Ordinal, want, tab.Chord)
@@ -143,9 +141,9 @@ func TestOverviewChordSwitches(t *testing.T) {
 	}
 }
 
-// TestOverviewTabBarFitsAt80 pins the 7th-tab width maths: at 80 columns
-// the bar drops the inter-tab gaps and then the ordinal prefixes so all
-// seven tabs stay inside the viewport AND remain clickable.
+// TestOverviewTabBarFitsAt80 pins the 7th-tab width maths: at 80 columns the bar drops the
+// inter-tab gaps and then the ordinal prefixes so all seven tabs stay inside the viewport AND
+// remain.
 func TestOverviewTabBarFitsAt80(t *testing.T) {
 	app := newCenterTestApp(80, 24)
 	bar := app.tabBarView()

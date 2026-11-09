@@ -30,9 +30,6 @@ func surfacesShell(t *testing.T, sv Servers) *Shell {
 }
 
 // A SERVERS REQUEST MUST BE ANSWERED BY THE SERVERS SURFACE, not by the control surface's 404.
-//
-// This is the regression, asserted through the real dispatcher: the 404 came from handleControl claiming a
-// path it does not implement.
 func TestServersRequestsAreNotSwallowedByControl(t *testing.T) {
 	s := surfacesShell(t, &fakeServers{list: []instancectl.Instance{{Name: "dev"}}})
 
@@ -55,9 +52,6 @@ func TestServersRequestsAreNotSwallowedByControl(t *testing.T) {
 }
 
 // AND NO PREFIX MAY SHADOW ANOTHER, at any future ordering.
-//
-// The table is sorted longest-first, so this holds by construction — but asserting it on the SORTED output is
-// what makes the property visible, and it stays true if someone adds a third surface.
 func TestNoOwnSurfaceShadowsAnother(t *testing.T) {
 	s := surfacesShell(t, &fakeServers{})
 	list := s.surfaces()

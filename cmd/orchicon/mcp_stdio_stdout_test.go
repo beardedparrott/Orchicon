@@ -56,12 +56,8 @@ func TestTheMCPLoggerWritesOnlyToItsWriter(t *testing.T) {
 	}
 }
 
-// TestRunMCPRoutesItsLoggerAwayFromStdout is the wiring assertion, at the source, because the failure
-// is a control-flow property of one function.
-//
-// It cannot be a behavioural test of runMCP itself: that would have to exec the built binary and
-// speak JSON-RPC to it, which is a slow and flaky thing to put in the unit gate — and the property
-// being pinned (which writer the logger is handed) is visible in four lines of source.
+// TestRunMCPRoutesItsLoggerAwayFromStdout is the wiring assertion, at the source, because the
+// failure is a control-flow property of one function.
 func TestRunMCPRoutesItsLoggerAwayFromStdout(t *testing.T) {
 	src := readFile(t, "main.go")
 
@@ -90,11 +86,6 @@ func TestRunMCPRoutesItsLoggerAwayFromStdout(t *testing.T) {
 	}
 
 	// AND NOTHING IN runMCP MAY REACH FOR STDOUT EXPLICITLY — checked on CODE lines only.
-	//
-	// The comment above this function NAMES os.Stdout while explaining why it is forbidden, and a
-	// Contains over the raw body matches that prose. (Measured: the first version of this assertion
-	// failed on its own documentation.) Stripping comments first is what makes the check about
-	// behaviour rather than about wording.
 	for _, line := range strings.Split(body, "\n") {
 		code := strings.TrimSpace(line)
 		if code == "" || strings.HasPrefix(code, "//") {
@@ -166,12 +157,7 @@ func TestEveryOrchiconMCPServerSpawnGoesThroughTheMCPSubcommand(t *testing.T) {
 }
 
 // TestTheOrchiconMCPChildWritesOnlyProtocolToStdout is the end-to-end shape of the same rule, run
-// against the REAL sidecar: speak JSON-RPC at it and require that every line on stdout parses as a
-// protocol frame.
-//
-// IT USES A SPAWNED BINARY rather than the logger in isolation, because the defect was not "the
-// logger is wrong" but "something printed a log record on the protocol channel" — and only the whole
-// process can prove that nothing else does it either.
+// against the REAL sidecar.
 func TestTheOrchiconMCPChildWritesOnlyProtocolToStdout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("spawns the sidecar and needs a reachable Postgres")

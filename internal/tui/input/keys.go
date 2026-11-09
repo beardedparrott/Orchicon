@@ -1,12 +1,5 @@
-// Package input adapts the bytes a terminal sends into the key vocabulary the
-// TUI's composer understands.
-//
-// THIS PACKAGE EXISTS BECAUSE THE TERMINAL'S VOCABULARY IS WIDER THAN THE LIBRARY'S,
-// and the failure mode is silent rather than loud: a sequence bubbletea cannot decode
-// is not rejected, it is read as ORDINARY CHARACTERS, so the symptom is litter typed
-// into whatever field has focus. Two spellings have needed adapting so far, both
-// legacy encodings that are entirely standard — Shift+Enter, and the SS3 form of
-// Home/End.
+// Package input adapts the bytes a terminal sends into the key vocabulary the TUI's composer
+// understands.
 package input
 
 import (
@@ -56,16 +49,13 @@ import (
 //     shell prompt.
 func TranslateTerminalKeys(f *os.File) *keyFile { return &keyFile{File: f} }
 
-// keyFile decorates a terminal input file, translating the sequences below as it is
-// read. Embedding *os.File is what keeps the raw-mode contract intact (see
-// TranslateTerminalKeys); only Read is overridden.
+// keyFile decorates a terminal input file, translating the sequences below as it is read.
 type keyFile struct {
 	*os.File
 }
 
-// The raw-mode contract, asserted rather than assumed: if this stops holding,
-// bubbletea silently leaves the terminal in cooked mode and the TUI breaks in a way
-// that is hard to trace back here.
+// The raw-mode contract, asserted rather than assumed: if this stops holding, bubbletea silently
+// leaves the terminal in cooked mode and the TUI breaks in a way that is hard to trace back here.
 var _ term.File = (*keyFile)(nil)
 
 func (f *keyFile) Read(p []byte) (int, error) {
@@ -76,15 +66,8 @@ func (f *keyFile) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// translateTerminalKeys applies every rewrite, IN PLACE in the caller's read buffer,
-// and returns the new length.
-//
-// ORDER: the Shift+Enter rewrite runs FIRST because it is the only one that CHANGES
-// the length (it shortens), so every later rewrite indexes into a buffer whose extent
-// is already settled. The rewrites cannot feed each other: one emits ESC CR and the
-// other ESC [ <letter>, and neither is a prefix of any sequence either one matches.
-//
-// Pure and byte-slice-only, so the translation is testable without a TTY.
+// translateTerminalKeys applies every rewrite, IN PLACE in the caller's read buffer, and returns
+// the new length.
 func translateTerminalKeys(p []byte) int {
 	n := translateShiftEnter(p)
 	return translateSS3HomeEnd(p[:n])
@@ -118,9 +101,8 @@ func translateShiftEnter(p []byte) int {
 }
 
 var (
-	// shiftEnterSequence is what Konsole 26.08 sends for Shift+Enter: the legacy
-	// keypad-Enter encoding (ESC O M), which is also what other terminals using the
-	// DEC application-keypad encoding send.
+	// shiftEnterSequence is what Konsole 26.08 sends for Shift+Enter: the legacy keypad-Enter encoding
+	// (ESC O M), which is also what other terminals using the DEC application-keypad encoding send.
 	shiftEnterSequence = []byte{0x1b, 'O', 'M'}
 	// newlineChordBytes is alt+enter (ESC CR).
 	newlineChordBytes = []byte{0x1b, '\r'}
@@ -162,11 +144,9 @@ var ss3KeyRewrites = [][2]string{
 	{"\x1bOF", "\x1b[F"}, // End
 }
 
-// translateSS3HomeEnd rewrites the SS3 Home/End spellings to their CSI equivalents IN
-// PLACE and returns the new length, which is always unchanged — every pair in
-// ss3KeyRewrites is the same length. That invariant is pinned by
-// TestSS3RewritesNeverChangeLength, because if it stopped holding, the copy below would
-// silently TRUNCATE the read buffer and eat whatever followed the keypress.
+// translateSS3HomeEnd rewrites the SS3 Home/End spellings to their CSI equivalents IN PLACE and
+// returns the new length, which is always unchanged — every pair in ss3KeyRewrites is the same
+// length.
 func translateSS3HomeEnd(p []byte) int {
 	n := len(p)
 	for _, rw := range ss3KeyRewrites {

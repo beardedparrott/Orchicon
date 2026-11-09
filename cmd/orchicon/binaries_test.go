@@ -19,24 +19,12 @@ import (
 	"testing"
 )
 
-// These cover the five cases the acceptance criteria name — present, absent,
-// partial, checksum-mismatch, wrong-version — plus the record's round trip and the
-// pure version parser.
-//
-// THERE IS NO NETWORK IN HERE. Every download test is served by an in-process
-// httptest server and every checksum is computed from the fixture it serves, so the
-// suite is deterministic and runs in CI with no outbound access. `RestrictToPath`
-// keeps the "absent" case honest: without it, a test asserting absence would pass or
-// fail depending on whether the machine running it happens to have PostgreSQL
-// installed, which is exactly the kind of test that is green for the wrong reason.
+// These cover the five cases the acceptance criteria name — present, absent, partial,
+// checksum-mismatch, wrong-version — plus the record's round trip and the pure version parser.
 
 // ----- fixtures -----
 
 // shim writes an executable file that prints `out` for `--version`.
-//
-// It is a real shell script, not a static file, because the version path actually
-// EXECS the binary: stubbing the exec away would leave the wrong-version case
-// (AC#7) untested, and that case is one of the five.
 func shim(t *testing.T, dir, name, out, goos string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -188,9 +176,8 @@ func downloadOptions(t *testing.T, srv *httptest.Server, bodies map[string][]byt
 	return opt
 }
 
-// pgFixtureBody and natsFixtureBody are archives shaped like the pinned releases:
-// one top-level directory, with bin/ underneath (PostgreSQL) and the single binary
-// at its root (nats-server).
+// pgFixtureBody and natsFixtureBody are archives shaped like the pinned releases: one top-level
+// directory, with bin/ underneath (PostgreSQL) and the single binary at its root (nats-server).
 func pgFixtureBody(t *testing.T, goos string) []byte {
 	t.Helper()
 	root := "postgresql-16.4.0-fixture/"
@@ -209,14 +196,8 @@ func natsFixtureBody(t *testing.T, goos string) []byte {
 	})
 }
 
-// newFixtureOptions assembles the download fixture: a server serving both
-// artifacts and options pointing at it.
-//
-// ONLY IS POSTGRES+NATS. These tests pin the postgres/nats contract and their
-// fixture serves only those two artifacts, so without the subset the four
-// telemetry backends would fall through to their PINNED URLs — the suite would
-// reach the network and report "mixed" where "detected" is expected. The
-// telemetry subset has its own fixture (telemetryFixtureOptions).
+// newFixtureOptions assembles the download fixture: a server serving both artifacts and options
+// pointing at it. ONLY IS POSTGRES+NATS.
 func newFixtureOptions(t *testing.T, dataDir string) (acquireOptions, *[]string) {
 	t.Helper()
 	bodies := map[string][]byte{
@@ -290,10 +271,8 @@ func TestAcquireDownloadsWhenBothAreAbsent(t *testing.T) {
 			t.Errorf("%q must exist as a file after acquisition: %v", p, err)
 		}
 	}
-	// The record must describe the SAME KIND OF THING on both acquisition paths: the
-	// version the binary itself reports, not the release tag (16.4.0 for a server that
-	// reports 16.4). A detected install records the reported string, so a downloaded
-	// one must too, or one record would carry two different formats.
+	// The record must describe the SAME KIND OF THING on both acquisition paths: the version the binary
+	// itself reports, not the release tag (16.4.0 for a server that reports 16.4).
 	for name, got := range map[string]string{"postgres": rec.PostgresVersion, "nats": rec.NatsVersion} {
 		if !strings.Contains(got, "16.4") && !strings.Contains(got, "2.10") {
 			t.Errorf("%s version in the record = %q, want the version the binary reports", name, got)
@@ -554,10 +533,8 @@ func TestPartitionBinsSplitsPresentFromMissing(t *testing.T) {
 	if strings.Join(present, ",") != "postgres,pg_ctl" {
 		t.Errorf("present = %v, want [postgres pg_ctl]", present)
 	}
-	// pg_dump AND psql ARE REQUIRED TOO, and this assertion is where that is pinned:
-	// they are what `orchicon db backup`/`restore` exec, and leaving them out of the
-	// required set is what made every backup on a downloaded host install fail with
-	// "pg_dump is not on this PATH and no Postgres container was reachable".
+	// pg_dump AND psql ARE REQUIRED TOO, and this assertion is where that is pinned: they are what
+	// `orchicon db backup`/`restore` exec.
 	if strings.Join(missing, ",") != "initdb,pg_isready,createdb,pg_dump,psql" {
 		t.Errorf("missing = %v, want [initdb pg_isready createdb pg_dump psql]", missing)
 	}
@@ -686,11 +663,8 @@ func TestDefaultAcquireOptionsHonorsTheEnvOverrides(t *testing.T) {
 	}
 }
 
-// TestCheckPostgresShareAcceptsBothLayouts pins the two real share-dir layouts,
-// because getting this wrong REJECTS a perfectly good distro install and forces an
-// unnecessary download. Debian/Ubuntu put it under /usr/share/postgresql/<major>
-// (the sibling of /usr/lib/postgresql/<major>/bin), which the distribution builds
-// instead keep beside bin/.
+// TestCheckPostgresShareAcceptsBothLayouts pins the two real share-dir layouts, because getting
+// this wrong REJECTS a perfectly good distro install and forces an unnecessary download.
 func TestCheckPostgresShareAcceptsBothLayouts(t *testing.T) {
 	t.Run("sibling-layout", func(t *testing.T) {
 		root := t.TempDir()
@@ -743,9 +717,8 @@ func TestRealPinnedArtifactsDownloadAndVerify(t *testing.T) {
 		t.Skip("set ORCHICON_TEST_REAL_DOWNLOAD=1 to fetch the real pinned artifacts")
 	}
 	dataDir := t.TempDir()
-	// The pinned linux/amd64 postgres+nats builds: this test is about THEIR
-	// checksums, and the four telemetry backends are ~300 MB that add nothing to
-	// what is asserted here.
+	// The pinned linux/amd64 postgres+nats builds: this test is about THEIR checksums, and the four
+	// telemetry backends are ~300 MB that add nothing to what is asserted here.
 	opt := defaultAcquireOptions(dataDir, "postgres", "nats-server")
 	// Detection off, so this exercises the download path for BOTH artifacts.
 	opt.PathEnv = filepath.Join(dataDir, "empty-path")
@@ -762,9 +735,8 @@ func TestRealPinnedArtifactsDownloadAndVerify(t *testing.T) {
 	if rec.Source != "downloaded" {
 		t.Fatalf("Source = %q, want \"downloaded\"", rec.Source)
 	}
-	// The real proof: the downloaded postgres must actually RUN and report the pinned
-	// version, and initdb must accept the unpacked tree (the share-dir check, end to
-	// end, on a real distribution).
+	// The real proof: the downloaded postgres must actually RUN and report the pinned version, and
+	// initdb must accept the unpacked tree (the share-dir check, end to end, on a real distribution).
 	out, err := exec.Command(rec.Postgres, "--version").Output()
 	if err != nil {
 		t.Fatalf("run the downloaded postgres: %v", err)
@@ -789,11 +761,8 @@ func TestRealPinnedArtifactsDownloadAndVerify(t *testing.T) {
 	}
 }
 
-// TestMountedBinDirIsDetected pins the install→container wiring: `orchicon install`
-// resolves the binaries into the instance's HOST state dir and mounts that dir at
-// <DataDir>/bin in the services container, so the container-side supervisor DETECTS what
-// the host already resolved and downloads nothing a second time. Without this the mount
-// would be decorative and the container would fetch its own copy.
+// TestMountedBinDirIsDetected pins the install→container wiring: `orchicon install` resolves the
+// binaries into the instance's HOST state dir and mounts that dir at <DataDir>/bin in the services.
 func TestMountedBinDirIsDetected(t *testing.T) {
 	host := t.TempDir()
 	guestData := t.TempDir()
@@ -810,9 +779,8 @@ func TestMountedBinDirIsDetected(t *testing.T) {
 		GOOS: "linux", GOARCH: "amd64", DataDir: guestData,
 		PathEnv: filepath.Join(guestData, "empty"), RestrictToPath: true,
 		Out: io.Discard,
-		// The mount carries postgres+nats only, and this test is about THAT mount
-		// being detected — without the subset the telemetry artifacts would go to
-		// their pinned URLs and the suite would reach the network.
+		// The mount carries postgres+nats only, and this test is about THAT mount being detected — without
+		// the subset the telemetry artifacts would go to their pinned URLs and the suite would reach.
 		Only: []string{"postgres", "nats-server"},
 	}
 	rec, err := acquireInfraBinaries(context.Background(), opt)
@@ -832,16 +800,7 @@ func TestMountedBinDirIsDetected(t *testing.T) {
 	}
 }
 
-// TestExtractRefusesALinkThatEscapesTheDestination pins the escape a NAME-ONLY
-// check cannot see.
-//
-// extractRelPath rejects absolute names and `..` segments, so the joined path is
-// textually inside dst — but an archive can create a symlink first and then write
-// THROUGH it, and filepath.Join cannot notice. Probed against a hand-built tampered
-// archive: `root/evil -> <a directory outside dst>` followed by `root/evil/pwned`
-// wrote outside the destination before the link/join checks existed. An archive is
-// untrusted input even when its checksum matches — the checksum proves which bytes
-// arrived, not that they are safe to unpack.
+// TestExtractRefusesALinkThatEscapesTheDestination pins the escape a NAME-ONLY check cannot see.
 func TestExtractRefusesALinkThatEscapesTheDestination(t *testing.T) {
 	t.Run("symlink-then-write-through-it", func(t *testing.T) {
 		dst := t.TempDir()
@@ -876,9 +835,8 @@ func TestExtractRefusesALinkThatEscapesTheDestination(t *testing.T) {
 		}
 	})
 
-	// The refusal must not be blanket: the pinned PostgreSQL build legitimately
-	// carries sibling symlinks in lib/ (libpq.so -> libpq.so.5.16), and rejecting
-	// those would break the download path the whole feature exists for.
+	// The refusal must not be blanket: the pinned PostgreSQL build legitimately carries sibling
+	// symlinks in lib/ (libpq.so -> libpq.so.5.16).
 	t.Run("sibling-links-are-still-accepted", func(t *testing.T) {
 		dst := t.TempDir()
 		archive := filepath.Join(t.TempDir(), "a.tar.gz")
@@ -941,19 +899,7 @@ func tarGzEntries(t *testing.T, entries []tarEntry) []byte {
 
 // ----- the real host (no fixture, no network) -----
 
-// TestRealHostInstallIsDetectedAndNotDownloaded is the one case a fixture CANNOT
-// make: that detection finds a REAL install on the machine running the suite, in
-// whatever layout that machine actually uses, and reaches for the network for
-// nothing.
-//
-// IT IS GUARDED SO IT CAN NEVER DOWNLOAD. The pre-flight bails on a host without a
-// complete install, and SkipDownload makes "did not download" a hard property of the
-// call rather than an assumption — if detection were wrong, this fails loudly
-// instead of fetching a build. That matters because the fixture tests can all pass
-// while a real host's layout is rejected: the Debian/Ubuntu server lives in
-// /usr/lib/postgresql/<major>/bin with its share dir at /usr/share/postgresql/<major>,
-// NOT beside bin/, so a share-dir check that only looked beside bin/ would reject a
-// perfectly good distro install and this would be the only test that noticed.
+// IT IS GUARDED SO IT CAN NEVER DOWNLOAD.
 func TestRealHostInstallIsDetectedAndNotDownloaded(t *testing.T) {
 	dataDir := t.TempDir()
 	opt := defaultAcquireOptions(dataDir, "postgres", "nats-server")
@@ -989,10 +935,8 @@ func TestRealHostInstallIsDetectedAndNotDownloaded(t *testing.T) {
 // The four telemetry backends: FLAT archives, port offsets, the Only subset.
 // ---------------------------------------------------------------------------
 
-// flatFixtureBody builds an archive shaped like the publisher's for one of the
-// four telemetry artifacts: the binary at the ARCHIVE ROOT (no top-level dir),
-// under the member name that platform ships. Loki's members carry a platform
-// suffix and are zipped; the other three are tarballs with the plain name.
+// flatFixtureBody builds an archive shaped like the publisher's for one of the four telemetry
+// artifacts: the binary at the ARCHIVE ROOT (no top-level dir).
 func flatFixtureBody(t *testing.T, a infraArtifact, goos, goarch string) []byte {
 	t.Helper()
 	member := memberFor(a, goos, goarch)
@@ -1032,17 +976,8 @@ func telemetryFixtureOptions(t *testing.T, dataDir string, only ...string) (acqu
 	return opt, hits
 }
 
-// TestFlatArchiveKeepsEntries is THE REGRESSION TEST for the bug this change
-// exists to fix. The pre-existing extractor stripped the archive's first path
-// segment and skipped entries with no slash — correct for PostgreSQL's and NATS's
-// single-top-level-directory layouts, and DESTRUCTIVE for a flat archive: the
-// entry "tempo" has no '/', so it was skipped and acquisition failed with "the
-// downloaded tempo archive did not contain tempo".
-//
-// It also pins the two things the flat path must do that the nested path must not:
-// take ONLY the declared member (tempo's tar carries tempo-cli, and a prefix match
-// would run the wrong binary), and install it under its CANONICAL name (Loki's
-// member is loki-linux-amd64, but the supervisor execs `loki`).
+// It also pins the two things the flat path must do that the nested path must not: take ONLY the
+// declared member (tempo's tar carries tempo-cli, and a prefix match would run the wrong binary).
 func TestFlatArchiveKeepsEntries(t *testing.T) {
 	cases := []struct {
 		name, goos, wantMember string
@@ -1089,10 +1024,8 @@ func TestFlatArchiveKeepsEntries(t *testing.T) {
 	}
 }
 
-// TestPinnedTelemetryArtifactsCoverPlatforms keeps the four new rows honest the
-// same way the loop in TestPinnedArtifactsCoverTheSupportedPlatforms does, and
-// additionally requires a member name wherever the archive's member is not the
-// executable's own name (Loki, VictoriaMetrics on windows).
+// TestPinnedTelemetryArtifactsCoverPlatforms keeps the four new rows honest the same way the loop
+// in TestPinnedArtifactsCoverTheSupportedPlatforms does.
 func TestPinnedTelemetryArtifactsCoverPlatforms(t *testing.T) {
 	platforms := []string{"linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64", "windows/amd64"}
 	for _, name := range telemetryArtifactNames {
@@ -1131,9 +1064,8 @@ func TestPinnedTelemetryArtifactsCoverPlatforms(t *testing.T) {
 	}
 }
 
-// TestAcquireDownloadsTelemetryBinaries pins AC1 and AC2's acquisition half: all
-// four backends resolve through the SAME detect-else-download mechanism as
-// postgres/nats, land under the instance data dir, and are recorded.
+// TestAcquireDownloadsTelemetryBinaries pins AC1 and AC2's acquisition half: all four backends
+// resolve through the SAME detect-else-download mechanism as postgres/nats.
 func TestAcquireDownloadsTelemetryBinaries(t *testing.T) {
 	dataDir := t.TempDir()
 	opt, _ := telemetryFixtureOptions(t, dataDir)
@@ -1187,9 +1119,8 @@ func TestAcquireOnlyHonoursTheSubset(t *testing.T) {
 			t.Errorf("%s was acquired even though this boot excluded it (%s)", name, p)
 		}
 	}
-	// A record with no telemetry paths must still LOAD: an ORCHICON_TELEMETRY=none
-	// boot writes exactly this record, and loadInfraBinaries refusing it would turn
-	// every such boot into a failed install.
+	// A record with no telemetry paths must still LOAD: an ORCHICON_TELEMETRY=none boot writes exactly
+	// this record, and loadInfraBinaries refusing it would turn every such boot into a failed install.
 	if _, err := loadInfraBinaries(dataDir); err != nil {
 		t.Errorf("a postgres+nats-only record must be loadable: %v", err)
 	}
@@ -1210,15 +1141,12 @@ func TestAcquireOnlyHonoursTheSubset(t *testing.T) {
 	}
 }
 
-// TestAcquireDetectsInstalledTelemetryBackends pins the OTHER half of AC1: a host
-// that already has the backends must DETECT them (no download, no network). It is
-// the mirror of TestRealTelemetryDetectionUsesAnInstalledBuild, done hermetically
-// with shims so it does not depend on what this machine happens to have.
+// TestAcquireDetectsInstalledTelemetryBackends pins the OTHER half of AC1: a host that already has
+// the backends must DETECT them (no download, no network).
 func TestAcquireDetectsInstalledTelemetryBackends(t *testing.T) {
 	dataDir := t.TempDir()
-	// Only the four: this test is about THEIR detection, and the fixture's
-	// postgres/nats would otherwise be downloaded (correctly) and muddy the
-	// "nothing was fetched" claim.
+	// Only the four: this test is about THEIR detection, and the fixture's postgres/nats would
+	// otherwise be downloaded (correctly) and muddy the "nothing was fetched" claim.
 	opt, hits := telemetryFixtureOptions(t, dataDir, telemetryArtifactNames...)
 
 	// A PATH holding every artifact under BOTH names the resolver accepts: the

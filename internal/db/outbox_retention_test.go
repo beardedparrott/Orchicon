@@ -7,9 +7,8 @@ import (
 	"time"
 )
 
-// newRetentionTestPool opens the sandbox-plane test DB (ORCHICON_TEST_DSN);
-// tests skip when unset — the same gate every DB-backed test in internal/db
-// uses.
+// newRetentionTestPool opens the sandbox-plane test DB (ORCHICON_TEST_DSN); tests skip when unset —
+// the same gate every DB-backed test in internal/db uses.
 func newRetentionTestPool(t *testing.T) *Pool {
 	t.Helper()
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
@@ -24,9 +23,8 @@ func newRetentionTestPool(t *testing.T) *Pool {
 	return pool
 }
 
-// eligiblePublishedAt is deliberately far in the past so the rows under test
-// sort ahead of any residue in the shared test table and always fall inside
-// the prune batch (the prune orders oldest-first).
+// eligiblePublishedAt is deliberately far in the past so the rows under test sort ahead of any
+// residue in the shared test table and always fall inside the prune batch (the prune orders.
 var eligiblePublishedAt = time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // insertOutboxRow writes one outbox row inside a tenant tx (RLS requires the
@@ -93,11 +91,8 @@ func deleteOutboxRows(t *testing.T, pool *Pool, tenants map[string][]string) {
 	}
 }
 
-// TestPrunePublishedOutboxAcrossTenants covers the retention acceptance
-// criteria that pruning is tenant-safe and RLS-verified: published rows older
-// than the cutoff are deleted for EVERY tenant (the relay prunes on the
-// non-tenant pool path exactly like PollOutbox/MarkPublished), while
-// unpublished rows are never pruned and recently published rows survive.
+// TestPrunePublishedOutboxAcrossTenants covers the retention acceptance criteria that pruning is
+// tenant-safe and RLS-verified.
 func TestPrunePublishedOutboxAcrossTenants(t *testing.T) {
 	pool := newRetentionTestPool(t)
 	ctx := context.Background()
@@ -149,9 +144,8 @@ func TestPrunePublishedOutboxAcrossTenants(t *testing.T) {
 	}
 }
 
-// TestPrunePublishedOutboxRespectsBatchBound verifies the prune deletes at
-// most batchLimit rows per statement — the batched-delete AC that bounds WAL
-// and lock duration on an 8M-row table.
+// TestPrunePublishedOutboxRespectsBatchBound verifies the prune deletes at most batchLimit rows per
+// statement — the batched-delete AC that bounds WAL and lock duration on an 8M-row table.
 func TestPrunePublishedOutboxRespectsBatchBound(t *testing.T) {
 	pool := newRetentionTestPool(t)
 	ctx := context.Background()
@@ -182,9 +176,8 @@ func TestPrunePublishedOutboxRespectsBatchBound(t *testing.T) {
 	}
 }
 
-// TestCountAndOldestUnpublished covers the observability data path: one query
-// returns both the depth and the age of the oldest unpublished row, which is
-// the relay stall signal.
+// TestCountAndOldestUnpublished covers the observability data path: one query returns both the
+// depth and the age of the oldest unpublished row, which is the relay stall signal.
 func TestCountAndOldestUnpublished(t *testing.T) {
 	pool := newRetentionTestPool(t)
 	ctx := context.Background()

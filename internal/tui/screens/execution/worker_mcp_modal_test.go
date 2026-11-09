@@ -1,10 +1,6 @@
 package execution
 
 // worker_mcp_modal_test.go — THE WORKERS PANE OPENS THE MCP + SKILLS MODAL.
-//
-// The operator: "It doesn't pop up a modal like /mcp or /scope does." The modal belongs to the shell (it
-// layers over every screen); what is asserted here is the wiring: `m` on the Workers pane asks for it for
-// the SELECTED worker.
 
 import (
 	"testing"
@@ -75,9 +71,7 @@ func TestMOnAnotherPaneIsNotTheModal(t *testing.T) {
 	}
 }
 
-// A WORKER WITH NO VERSION IS TOLD SO rather than opening a modal whose save would go nowhere. The check
-// lives on the shell (which does the fetch), so this asserts the pane still ASKS — the refusal is the
-// shell's, and the pane must not pre-empt it with a guess.
+// A WORKER WITH NO VERSION IS TOLD SO rather than opening a modal whose save would go nowhere.
 func TestMOnWorkersAsksEvenBeforeAVersionIsKnown(t *testing.T) {
 	m, host := workersPane(t)
 	m.Base.SelectItem(srcWorkers, "wk1")

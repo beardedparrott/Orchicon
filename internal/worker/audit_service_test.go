@@ -65,10 +65,8 @@ func seedAuditIdentity(t *testing.T, pool *db.Pool, tenantID, subject string) db
 	return ident
 }
 
-// auditServiceEnv opens a migration-applied pool, seeds an identity (the
-// audit FK target) and returns a service + context with tenant + resolved
-// identity (the middleware-equivalent actor). tenantID is caller-chosen so
-// sibling tests never share audit rows.
+// auditServiceEnv opens a migration-applied pool, seeds an identity (the audit FK target) and
+// returns a service + context with tenant + resolved identity (the middleware-equivalent actor).
 func auditServiceEnv(t *testing.T, tenantID string) (*db.Pool, *Service, context.Context, string, string) {
 	t.Helper()
 	pool := auditTestPool(t)
@@ -95,9 +93,8 @@ func auditEventCount(t *testing.T, pool *db.Pool, tenantID, action, targetType, 
 	return len(rows)
 }
 
-// TestAuditServiceWorkerMutations covers worker.created and
-// worker.published (create + the publish lifecycle action from the AC
-// "assign/publish/deprecate") and asserts reads write nothing.
+// TestAuditServiceWorkerMutations covers worker.created and worker.published (create + the publish
+// lifecycle action from the AC "assign/publish/deprecate") and asserts reads write nothing.
 func TestAuditServiceWorkerMutations(t *testing.T) {
 	pool, s, ctx, tenantID, _ := auditServiceEnv(t, "tnt_audit_wk_mut_"+strings.ToLower(db.NewID()))
 

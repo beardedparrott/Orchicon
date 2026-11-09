@@ -1,25 +1,7 @@
 package askorchicon
 
-// tool_ephemeral_toplevel_db_test.go — the top-level exemption for ephemeral
-// work items, end to end through the real create_work_item tool against
-// Postgres.
-//
-// Quick Work creates ONE ephemeral item per job. Two rules collide on it:
-// ephemeral items are TOP-LEVEL ONLY (validateEphemeralPlacement refuses a
-// parent, because a child would be invisible in the list yet rendered inside
-// its real parent's tree), and workitem.ValidateParent refuses a top-level
-// non-epic ("a task must have a parent; only epics can be top-level").
-// Together they made an ephemeral TASK impossible, so every ephemeral item
-// had to be created with kind=epic — which mislabels a transient unit of
-// work as a planning container. These tests pin the exemption that removes
-// the contradiction, and pin that it is scoped to ephemeral items only.
-//
-// The child half of the contract (an ephemeral item WITH a parent is still
-// refused) is pure and already pinned by
-// TestCreateWorkItemRefusesAnEphemeralChildBeforeTouchingThePool and
-// TestEphemeralPlacementRefusesAChildAndPermitsTopLevel in
-// tool_ephemeral_test.go; the placement guard is untouched by this change, so
-// those tests staying green is the assertion.
+// Two rules collide on it: ephemeral items are TOP-LEVEL ONLY (validateEphemeralPlacement refuses a
+// parent, because a child would be invisible in the list yet rendered inside its real parent's.
 
 import (
 	"context"
@@ -32,9 +14,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// AN EPHEMERAL TASK WITH NO PARENT IS CREATED. This is the acceptance
-// criterion: refused today with "a task must have a parent; only epics can be
-// top-level", created after the exemption.
+// AN EPHEMERAL TASK WITH NO PARENT IS CREATED.
 func TestCreateWorkItemEphemeralTopLevelTaskSucceeds(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -88,9 +68,7 @@ func TestCreateWorkItemEphemeralTopLevelTaskSucceeds(t *testing.T) {
 	}
 }
 
-// A NON-EPHEMERAL TASK WITH NO PARENT IS STILL REFUSED, with the unchanged
-// message. The exemption is scoped to ephemeral items; the ordinary orphan
-// task — the exact shape the hierarchy invariant forbids — is untouched.
+// A NON-EPHEMERAL TASK WITH NO PARENT IS STILL REFUSED, with the unchanged message.
 func TestCreateWorkItemNonEphemeralTopLevelTaskStillRefused(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)

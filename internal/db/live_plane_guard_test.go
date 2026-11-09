@@ -114,10 +114,8 @@ func TestTheLivePlaneGuardIsEscapable(t *testing.T) {
 	_ = os.Getenv
 }
 
-// TestLoopbackSpellingsAreTheSameDatabase is the defect found by RUNNING the guard rather than reading it.
-//
-// The plane is handed `localhost`; the README's own example DSN and most copy-pasted ones say `127.0.0.1`. Raw
-// string comparison never matched, so the guard did nothing on the exact workstation it was written for.
+// TestLoopbackSpellingsAreTheSameDatabase is the defect found by RUNNING the guard rather than
+// reading it.
 func TestLoopbackSpellingsAreTheSameDatabase(t *testing.T) {
 	same := [][2]string{
 		{"localhost:5432/orchicon", "127.0.0.1:5432/orchicon"},

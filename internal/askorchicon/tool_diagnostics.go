@@ -57,10 +57,6 @@ func toolDiagnoseFailure(ctx context.Context, pool *db.Pool, args json.RawMessag
 	if params.WorkflowRunID != "" {
 		// THE RUN ITSELF IS A DIAGNOSIS SOURCE, and leaving it out is why this tool returned an empty
 		// analysis for a run that had plainly failed.
-		//
-		// A PREFLIGHT REFUSAL fails the run before any step dispatches: no execution exists, so every branch
-		// below finds nothing, and the answer was `{"failure_analysis": [], "workflow_executions": null}` for
-		// a run whose reason was recorded the whole time. Reported exactly so.
 		if run, rerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, params.WorkflowRunID); rerr == nil {
 			diagnosis["run"] = map[string]any{
 				"id":            run.ID,
@@ -188,11 +184,8 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
 	}
-	// Validate the default model refs against the shared adapter/provider/model
-	// grammar BEFORE touching the DB (parity with the SettingsService RPC): a
-	// malformed or unknown-adapter ref must never persist through this
-	// agent-controlled second write path into tenant_settings. Empty/unset is
-	// valid (toolValidateModelRef treats it as such).
+	// Validate the default model refs against the shared adapter/provider/model grammar BEFORE touching
+	// the DB (parity with the SettingsService RPC).
 	if err := toolValidateModelRef(params.DefaultAskOrchiconModel); err != nil {
 		return nil, fmt.Errorf("default_ask_orchicon_model: %w", err)
 	}
@@ -235,26 +228,14 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		SessionRefreshTokenTtlSeconds:    params.SessionRefreshTokenTtlSeconds,
 	}
 	inRow.Budget = cur.Budget
-	// Preserve the current compaction/memory policy columns when the
-	// client's budget JSON omits the context_compaction/memory keys (D4
-	// partial-update semantics — absent keys must never clobber stored
-	// policy with zeros).
+	// Preserve the current compaction/memory policy columns when the client's budget JSON omits the
+	// context_compaction/memory keys (D4 partial-update semantics.
 	inRow.ContextCompactionEnabled = cur.ContextCompactionEnabled
 	inRow.ContextCompactionPressureFrac = cur.ContextCompactionPressureFrac
 	inRow.ContextRecentTurns = cur.ContextRecentTurns
 	inRow.MemoryEnabled = cur.MemoryEnabled
 	inRow.MemoryDigestEntries = cur.MemoryDigestEntries
-	// STALL THRESHOLDS ARE DIFFERENT, and this is the one place the difference
-	// can bite. db.UpdateTenantSettings writes them VERBATIM — a blank value
-	// means "use the built-in default" — which is correct for the Settings form
-	// (a full-form save: what you see is what you send) but WRONG for this tool,
-	// which is partial by nature. An agent call that sets only a model ref would
-	// otherwise blank every stall dimension it did not mention and silently reset
-	// detection to the defaults behind the operator's back.
-	//
-	// So guard them exactly as the budget and policy columns above are guarded:
-	// an OMITTED key preserves the stored value, and an explicit one — including
-	// 0, which means DISABLED — is applied.
+	// STALL THRESHOLDS ARE DIFFERENT, and this is the one place the difference can bite.
 	if params.StallNoProgressWindowSeconds == nil {
 		inRow.StallNoProgressWindowSeconds = cur.StallNoProgressWindowSeconds
 	}
@@ -291,19 +272,7 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		return nil, err
 	}
 
-	// THIS WRITE IS AUDITED, AND IT WAS NOT. The tool writes tenant_settings directly rather than through
-	// the SettingsService RPC, and that RPC is where the `settings.updated` audit row lived — so an
-	// agent-driven settings change left NO trail at all, while a human's did. An operator reviewing "who
-	// changed this?" would see their own edits and nothing else, which is the worse half of an audit gap:
-	// the trail looked complete.
-	//
-	// Same action name and the same snapshot shape as the RPC path (db.TenantSettingsRow.AuditFields), so
-	// one query covers both and a reader cannot tell — or needs to care — which path made the change. The
-	// actor comes from the request context (the tool runs on a turn's context), which is what makes an agent
-	// change attributable rather than anonymous.
-	//
-	// Written in the SAME transaction as the mutation, so the two commit together: an audit row for a write
-	// that rolled back would be a false record of a change that never happened.
+	// THIS WRITE IS AUDITED, AND IT WAS NOT.
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "settings.updated", "settings", tenantID,
 		nil, audit.Snapshot(settings.AuditFields())); err != nil {
 		return nil, fmt.Errorf("audit settings.updated: %w", err)

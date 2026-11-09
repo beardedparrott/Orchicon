@@ -23,10 +23,8 @@ import (
 // _ keeps the strings import honest if both tests below are ever reduced to one.
 var _ = strings.Builder{}
 
-// TestRecordReadyRefusesAMissingDirectory is the invariant, asserted at the one place the row is written.
-//
-// recordReady stats BEFORE opening a transaction, so a reconciler with no pool is enough: reaching the pool at
-// all would be a nil dereference, which is how this proves the check comes first.
+// TestRecordReadyRefusesAMissingDirectory is the invariant, asserted at the one place the row is
+// written.
 func TestRecordReadyRefusesAMissingDirectory(t *testing.T) {
 	r := &WorktreeReconciler{log: testLoggerTo(&strings.Builder{})}
 	missing := filepath.Join(t.TempDir(), "01M69SPRKBJ5NM10W7M3V86SMH")

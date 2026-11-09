@@ -1,26 +1,7 @@
 package claude
 
-// compact.go is the Claude-native context compaction + budget-ladder
-// enforcement for the claude bridge.
-//
-// Claude Code has NO in-container serve (servePortFor("claude") == 0, and
-// claude is a MOUNT-only boot-profile entry — never a serve-dependent kind),
-// so there is no summarize endpoint to call and no HTTP client here. The
-// compact is NATIVE: one directive turn written onto the same long-lived
-// stdio session, which makes the session summarize its own working context
-// in place (Claude Code's built-in auto-compact) while preserving the
-// goal/acceptance-criteria scope. It is the same soft, lossy compact the
-// opencode adapter's `summarize` produces, and it stays reversible: an
-// unfinished turn remains resumable with `--resume <session-id>`.
-//
-// ONE SOURCE OF TRUTH: every threshold and every message comes from the
-// SHARED budget ladder the opencode adapter parses out of the SAME merged
-// budget JSON (ExecutionManifest.Budgets → opencode.ParseBudgetLadder, i.e.
-// tenant defaults merged with the worker's budget_overrides). This file
-// holds NO threshold and NO ladder message text of its own — the
-// warn/escalate/final copy and the compact policy are read from the ladder,
-// so opencode and claude share the ladder AND the text, editable in
-// Settings → Defaults.
+// compact.go is the Claude-native context compaction + budget-ladder enforcement for the claude
+// bridge.
 
 import (
 	"context"
@@ -31,24 +12,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// budgetDims are the spend dimensions the claude bridge evaluates on the
-// shared ladder. Both grow with RE-SENT context — fresh tokens and the
-// cache-aware priced cost (claude reports total_cost_usd for the turn,
-// which prices cache reads at the provider's real cache rate) — which is
-// exactly what a compaction can relieve. tool_call_count / wall_clock are
-// deliberately not gated here: claude's ladder-driven abort is about
-// runaway cache-cost / transcript growth.
+// budgetDims are the spend dimensions the claude bridge evaluates on the shared ladder.
 var budgetDims = []string{"tokens", "cost_usd"}
 
-// observeTurnBudget folds one completed turn's LIVE provider-reported usage
-// into the shared spend accumulator and evaluates the ladder. It returns a
-// non-empty TERMINAL reason ("budget_abort:<dim>") when the abort tier has
-// been reached — the caller fails the execution (opencode parity: the
-// ladder ceiling is terminal; only the COMPACT action is best-effort).
-//
-// The cost is CACHE-AWARE: it is the provider's priced figure for the turn
-// (cache reads at the cache rate, included), and the cache-read tokens ride
-// along so the token dimension stays fresh-only exactly like opencode's.
+// observeTurnBudget folds one completed turn's LIVE provider-reported usage into the shared spend
+// accumulator and evaluates the ladder.
 func (s *session) observeTurnBudget(ctx context.Context) string {
 	s.mu.Lock()
 	s.step++
@@ -59,10 +27,8 @@ func (s *session) observeTurnBudget(ctx context.Context) string {
 	return s.maybeEnforceLadder(ctx)
 }
 
-// maybeEnforceLadder walks the shared ladder for this turn's accumulated
-// spend: the abort tier is terminal, and each warn/escalate/final tier
-// injects the ladder's OWN message (read from the merged budget JSON) and —
-// when the tier AND the dimension permit it — compacts.
+// maybeEnforceLadder walks the shared ladder for this turn's accumulated spend: the abort tier is
+// terminal, and each warn/escalate/final tier injects the ladder's OWN message (read.
 func (s *session) maybeEnforceLadder(ctx context.Context) string {
 	if s.ladder == nil {
 		return ""
@@ -93,18 +59,14 @@ func (s *session) maybeEnforceLadder(ctx context.Context) string {
 	return ""
 }
 
-// injectLadderMessage delivers one ladder warning to the live session. The
-// text is the ladder's own (never a literal here), and it rides the same
-// single write path as every other user turn.
+// injectLadderMessage delivers one ladder warning to the live session.
 func (s *session) injectLadderMessage(ctx context.Context, msg string) {
 	if err := s.SendTurn(ctx, msg); err != nil {
 		s.b.log.Warn("claude: budget warning injection failed", "execution", s.execID, "error", err)
 	}
 }
 
-// latchTier reports whether this (dimension, tier) pair already fired, and
-// latches it. The ladder is cumulative, so the latch is what keeps a
-// breached tier from re-firing its message every turn.
+// latchTier reports whether this (dimension, tier) pair already fired, and latches it.
 func (s *session) latchTier(dim, lvl string) bool {
 	key := dim + ":" + lvl
 	s.mu.Lock()
@@ -119,10 +81,8 @@ func (s *session) latchTier(dim, lvl string) bool {
 	return false
 }
 
-// maybeTurnCountCompact applies the orthogonal turn-count context-hygiene
-// gate (compact_max_turns, read from the SAME merged budget JSON): a chatty
-// session is compacted periodically even when no budget dimension breached,
-// because every turn re-sends the accumulated transcript. <= 0 disables it.
+// maybeTurnCountCompact applies the orthogonal turn-count context-hygiene gate (compact_max_turns,
+// read from the SAME merged budget JSON).
 func (s *session) maybeTurnCountCompact(ctx context.Context) {
 	if s.ladder == nil {
 		return
@@ -143,8 +103,6 @@ func (s *session) maybeTurnCountCompact(ctx context.Context) {
 }
 
 // doCompact fires the Claude-native compact subject to the shared guards.
-// It is best-effort and never terminal (opencode parity): a refused or
-// failed compaction logs and the session continues.
 func (s *session) doCompact(ctx context.Context, reason string) bool {
 	if err := s.armCompact(); err != nil {
 		s.b.log.Debug("claude: compaction not armed", "execution", s.execID, "reason", reason, "error", err)
@@ -153,12 +111,8 @@ func (s *session) doCompact(ctx context.Context, reason string) bool {
 	return s.writeCompactDirective(ctx, reason, s.remainingScope()) == nil
 }
 
-// armCompact applies every shared compaction guard and latches the
-// compaction when it passes:
-//   - never at session start (the ladder's min-turn floor),
-//   - at most ONCE per step,
-//   - the min-turn floor between two compactions,
-//   - the per-execution cap.
+// armCompact applies every shared compaction guard and latches the compaction when it passes: -
+// never at session start (the ladder's min-turn floor), - at most ONCE per step.
 func (s *session) armCompact() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -204,12 +158,8 @@ func (s *session) writeCompactDirective(ctx context.Context, reason, scope strin
 	return nil
 }
 
-// Compact performs the Claude-native context compaction on behalf of the
-// bridge/session API: the same soft, lossy compact the opencode adapter's
-// summarize performs, implemented as an in-session directive turn because
-// claude has no in-container serve to call. provider/model are the resolved
-// identity recorded on the compaction part; remainingScope directs what must
-// survive the collapse (empty = this session's own goal + AC).
+// Compact performs the Claude-native context compaction on behalf of the bridge/session API: the
+// same soft, lossy compact the opencode adapter's summarize performs.
 func (s *session) Compact(ctx context.Context, provider, model, remainingScope string) error {
 	scope := strings.TrimSpace(remainingScope)
 	if scope == "" {
@@ -219,20 +169,15 @@ func (s *session) Compact(ctx context.Context, provider, model, remainingScope s
 		return err
 	}
 	if err := s.writeCompactDirective(ctx, "bridge:"+provider+"/"+model, scope); err != nil {
-		// The session IS live (armCompact armed it): the directive write is
-		// what failed, so the true cause rides along rather than being
-		// flattened into a "no live session" diagnosis.
+		// The session IS live (armCompact armed it): the directive write is what failed, so the true cause
+		// rides along rather than being flattened into a "no live session" diagnosis.
 		return errCompactWriteFailed(s.execID, err)
 	}
 	return nil
 }
 
-// compactDirectiveText is the Claude-native compact directive: one user turn
-// that makes the session summarize its own working context in place
-// (Claude Code's own auto-compact) and continue in the SAME session
-// afterwards, so the collapse stays soft, lossy and reversible. The
-// remaining scope is directed through so the goal and the acceptance
-// criteria survive the compact.
+// compactDirectiveText is the Claude-native compact directive: one user turn that makes the session
+// summarize its own working context in place (Claude Code's own auto-compact) and continue.
 func (s *session) compactDirectiveText(remainingScope string) string {
 	var b strings.Builder
 	b.WriteString("CONTEXT COMPACTION — compact your working context now.\n")
@@ -245,9 +190,8 @@ func (s *session) compactDirectiveText(remainingScope string) string {
 	return b.String()
 }
 
-// remainingScope composes the goal + acceptance criteria the compact must
-// preserve, straight from the execution manifest (the same text the initial
-// turn carried).
+// remainingScope composes the goal + acceptance criteria the compact must preserve, straight from
+// the execution manifest (the same text the initial turn carried).
 func (s *session) remainingScope() string {
 	var b strings.Builder
 	if g := strings.TrimSpace(s.manifest.Goal); g != "" {

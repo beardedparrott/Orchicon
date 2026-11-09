@@ -10,12 +10,8 @@ import (
 	"testing"
 )
 
-// TestRealTelemetryArtifactsDownloadAndVerify is the AC1 PROOF for the four
-// backends, opt-in (ORCHICON_TEST_REAL_DOWNLOAD=1) because it fetches ~300 MB.
-// It exercises the whole pinned path against the publishers' own assets: URL,
-// CHECKSUM, FLAT-ARCHIVE extraction, the canonical-name install, the chmod, and
-// finally that the installed binary RUNS and reports its pinned version. The
-// fixture tests prove the mechanics; only this one proves the PINNING.
+// TestRealTelemetryArtifactsDownloadAndVerify is the AC1 PROOF for the four backends, opt-in
+// (ORCHICON_TEST_REAL_DOWNLOAD=1) because it fetches ~300 MB.
 func TestRealTelemetryArtifactsDownloadAndVerify(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_REAL_DOWNLOAD") != "1" {
 		t.Skip("opt-in")
@@ -49,10 +45,8 @@ func TestRealTelemetryArtifactsDownloadAndVerify(t *testing.T) {
 	}
 }
 
-// TestRealTelemetryDetectionUsesAnInstalledBuild is the detect half: a host that
-// already has the backends (this image ships them on PATH) must DETECT them and
-// download nothing. SkipDownload makes the "nothing was fetched" claim a hard
-// guarantee rather than an observation.
+// TestRealTelemetryDetectionUsesAnInstalledBuild is the detect half: a host that already has the
+// backends (this image ships them on PATH) must DETECT them and download nothing.
 func TestRealTelemetryDetectionUsesAnInstalledBuild(t *testing.T) {
 	dataDir := t.TempDir()
 	opt := defaultAcquireOptions(dataDir, telemetryArtifactNames...)

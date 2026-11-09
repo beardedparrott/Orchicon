@@ -66,13 +66,7 @@ func TestIsOurBinaryAcceptsOnlyOurExecutables(t *testing.T) {
 	}
 }
 
-// ourInstanceProcesses requires BOTH signals — our binary AND this instance's name. Either alone is too
-// wide: our binary alone matches a SIBLING instance's plane (stopping test must not take down dev), and a
-// name alone matches anything that happens to mention it.
-//
-// Exercised against a real process: this test spawns a short-lived sleep with a fake /proc-visible identity
-// is not possible without root, so the assertion is on the DECISION FUNCTION's inputs instead — that is
-// where the bug would be, and it is pure.
+// ourInstanceProcesses requires BOTH signals — our binary AND this instance's name.
 func TestOurInstanceProcessesNeedsOurBinaryAndTheInstanceName(t *testing.T) {
 	// The matching rule, stated once so a future edit has to change it deliberately.
 	match := func(exe, environ, args, instance string) bool {
@@ -96,9 +90,8 @@ func TestOurInstanceProcessesNeedsOurBinaryAndTheInstanceName(t *testing.T) {
 	}
 }
 
-// portHolders must be silent rather than wrong when /proc cannot answer, and must not invent a holder for a
-// port nothing is listening on. Both are properties of the FAILURE MESSAGE: naming the wrong pid is worse
-// than naming none.
+// portHolders must be silent rather than wrong when /proc cannot answer, and must not invent a
+// holder for a port nothing is listening on.
 func TestPortHoldersFindsNothingForAFreePort(t *testing.T) {
 	// A port in the ephemeral range that this test certainly does not hold.
 	if got := portHolders(1); len(got) != 0 {
@@ -110,16 +103,11 @@ func TestPortHoldersFindsNothingForAFreePort(t *testing.T) {
 	}
 }
 
-// THE RECORDED ANSWER. A rebuild runs install, and install used to ask which runtime images to fetch EVERY
-// time — so a developer who had declined once was asked again on every rebuild, and a script or CI had
-// nobody to answer. The answer is now recorded per instance, like ports.json and the residency record.
+// THE RECORDED ANSWER.
 func TestRuntimeImagesAnswerIsRecordedNotReasked(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// A HUMAN IS PRESENT, stated rather than assumed. This test is about the RECORD, so it must reach the
-	// prompt at all — and the install now refuses to prompt when its stdout is not a terminal (a test's
-	// stdout is a pipe), which is the fix in interactive_gate_test.go. Declaring interactivity is the same
-	// thing install.ps1 does for the Windows wrapper.
+	// A HUMAN IS PRESENT, stated rather than assumed.
 	t.Setenv("ORCHICON_INSTALL_INTERACTIVE", "1")
 	dir := filepath.Join(home, ".local", "share", "orchicon-dev")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -176,9 +164,7 @@ func TestRuntimeImagesAnswerIsRecordedNotReasked(t *testing.T) {
 	}
 }
 
-// THE WIRING. The functions above are only useful if the teardown actually calls them — the original defect
-// was not a wrong decision, it was a decision nothing made. Source-level pins, because driving servicesDown
-// end to end needs real services bound to real ports.
+// THE WIRING.
 func TestTeardownReclaimsItsOwnLeftovers(t *testing.T) {
 	for _, tc := range []struct {
 		file string

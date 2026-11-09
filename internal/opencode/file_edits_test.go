@@ -10,11 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// TestFileEditHookEngineOutput: a batch_write tool_use event hands the
-// hook the tool's structured output (the engine's file_edits payload) plus
-// the run's exec dir — the exact contract the server-side ledger hook
-// implements. The hook fires for EVERY mutating tool event; the payload is
-// passed verbatim (no pre-parsing in the adapter).
+// TestFileEditHookEngineOutput: a batch_write tool_use event hands the hook the tool's structured
+// output (the engine's file_edits payload) plus the run's exec dir.
 func TestFileEditHookEngineOutput(t *testing.T) {
 	execDir := t.TempDir()
 	manifest := scheduler.ExecutionManifest{ProjectDir: execDir}
@@ -80,15 +77,8 @@ func TestFileEditHookNilIsNoOp(t *testing.T) {
 	}
 }
 
-// TestFileEditHookBuiltinWriteArtifactBranch: opencode's built-in `write`
-// is intercepted as an artifact (content streamed + artifact card) AND still
-// reaches the file-edit hook — the hook runs before the artifact early-break
-// (adapter.go), so the plane-side observer takes a live after-snapshot for
-// the successful mutation. No double-recording with the file_diff fallback:
-// the fallback skips engine-payload paths via stats.engineEditedPaths, and a
-// built-in write carries no payload (registers nothing) but the server-side
-// observer cache already holds the fresh read, so the later file_diff
-// ObserveAfter sees no change and yields no second row.
+// TestFileEditHookBuiltinWriteArtifactBranch: opencode's built-in `write` is intercepted as an
+// artifact (content streamed + artifact card) AND still reaches the file-edit hook.
 func TestFileEditHookBuiltinWriteArtifactBranch(t *testing.T) {
 	execDir := t.TempDir()
 	manifest := scheduler.ExecutionManifest{ProjectDir: execDir}
@@ -123,12 +113,8 @@ func TestFileEditHookBuiltinWriteArtifactBranch(t *testing.T) {
 	}
 }
 
-// TestFileEditHookFileDiffFallback: a file_diff event for a path the engine
-// tools never ledgered reaches the hook with tool="file_diff" and the path
-// in the input map — the fallback entry the server computes from real file
-// state. Engine-covered paths are filtered adapter-side via stats.engineEditedPaths,
-// so the test passes a real execStreamState (production always does; parseEvent
-// nests the fallback under the stats != nil guard).
+// TestFileEditHookFileDiffFallback: a file_diff event for a path the engine tools never ledgered
+// reaches the hook with tool="file_diff" and the path in the input map.
 func TestFileEditHookFileDiffFallback(t *testing.T) {
 	execDir := t.TempDir()
 	manifest := scheduler.ExecutionManifest{ProjectDir: execDir}

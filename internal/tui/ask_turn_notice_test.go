@@ -1,22 +1,7 @@
 package tui
 
-// ask_turn_notice_test.go — the activity line ("Orchicon is thinking…", and its watchdog age) must show
-// whenever a turn is IN FLIGHT, not only while THIS client happens to hold a live stream for it.
-//
-// The operator: "I am no longer seeing the 'Orchicon is thinking...' and the watchdog countdown in the
-// TUI. The conversation text is going to the bottom."
-//
-// BOTH SYMPTOMS, ONE CAUSE. The notice was keyed to the client's own stream slot alone
-// (chat.IsStreaming), while a turn's real state lives on the PLANE and reaches the shell on the
-// conversation row (Conversation.TurnInFly, from turn_in_flight) — the same field the rail already uses
-// to mark the row as running (rightrail.go) and the same one re-attach reads (reattachRunningTurn). So
-// whenever the slot was not armed in THIS client — a turn started in the GUI, a re-attach that ran
-// before the row landed, a slot cleared by a superseded stream — the pane showed no line at all while
-// the rail beside it said the conversation was running.
-//
-// "THE TEXT IS GOING TO THE BOTTOM" IS THE SAME BUG, SEEN FROM THE OTHER SIDE. The notice takes a row
-// from the body (kit2.Stream.bodyRows), so an EMPTY notice hands the transcript the whole pane: the text
-// runs one row further down, to the pane's bottom edge — which is where the operator saw it land.
+// ask_turn_notice_test.go — the activity line ("Orchicon is thinking…", and its watchdog age) must
+// show whenever a turn is IN FLIGHT.
 
 import (
 	"fmt"
@@ -70,13 +55,6 @@ func TestActivityLineClearsWhenTheTurnEnds(t *testing.T) {
 
 // THE LINE'S ROWS ARE TAKEN OUT OF THE BODY, so the transcript can never run to the pane's bottom
 // edge and the line can never be squeezed out.
-//
-// This is the whole reason the line is a PANE FOOTER rather than a stream notice. As a notice it claimed
-// a body row INSIDE the stream (kit2.Stream.bodyRows), which meant the transcript got the whole pane
-// whenever the notice was empty — the operator's "the model's text is reach the bottom of the
-// conversation pane and this should never happen" — and the notice was drawn last, so any sizing
-// mistake clipped it. As a footer the PANE budgets it (screenkit.Detail.footerRows) and subtracts it
-// BEFORE the stream is measured, which is asserted here from both directions.
 func TestTheStatusLineIsBudgetedOutOfTheBody(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	for i := 0; i < 60; i++ {
@@ -129,14 +107,8 @@ func TestTheStatusLineIsBudgetedOutOfTheBody(t *testing.T) {
 	}
 }
 
-// SENDING PUTS BOTH THE ECHO AND THE ACTIVITY LINE IN THE FRAME, immediately — the operator's "the use
-// message doesn't append at the bottom right away anymore".
-//
-// Driven through the REAL funnel (sendFromComposer and the commands it returns, applied the way the
-// bubbletea runtime applies them), not by appending to the store and calling onChatWake by hand. That
-// distinction is the whole test: a funnel that appends but forgets to WAKE renders the message only when
-// some later event happens to repaint, which reads to the operator as a lag — and a hand-wired test
-// cannot see it.
+// SENDING PUTS BOTH THE ECHO AND THE ACTIVITY LINE IN THE FRAME, immediately — the operator's "the
+// use message doesn't append at the bottom right away anymore".
 func TestSendingAppendsTheEchoAndTheLineImmediately(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 
@@ -183,17 +155,6 @@ func applyCmds(m *App, cmd tea.Cmd) {
 }
 
 // A DRIFTED DETAIL ID MUST NOT SILENCE THE PANE.
-//
-// The guard in onChatWake (app.go) used to return nil whenever the Ask pane's detail id did not equal
-// the open conversation — painting NOTHING: no transcript update and no activity line, together, until
-// something incidental restored the id. The operator's report is exactly that shape: "I have to click
-// away and back again to see updates. No 'Orchicon is thinking...' block."
-//
-// The id does drift: kit2.Base stamps it on EVERY detail landing for a source it owns, and the rail's
-// row selection loads that row's detail — so a rail reload (the tick does one every 5s) can stamp the
-// id of whichever row the cursor is on, which need not be the open conversation. The Ask screen has ONE
-// source and a HOST-OWNED pane, so the pane is always the open conversation's transcript and the shell
-// re-asserts that rather than refusing to paint.
 func TestADriftedDetailIDDoesNotSilenceThePane(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat", TurnInFly: true, PendingReplyID: "m1"}}
@@ -226,20 +187,8 @@ func (m *App) detailIDOfAskScreen() string {
 	return ""
 }
 
-// THE OPERATOR'S OWN SEQUENCE, end to end: the echo appears immediately with the line, the line survives
-// EVERY kind of chunk the model produces, and it clears only when the turn is truly done.
-//
-// The operator's spec, verbatim: "A typical conversation should go: User sends message, message shows up
-// on the right side immediately, Orchicon is thinking... and a time of the last message from the model
-// (which resets automatically) should show up in the bottom left corner of the conversation pane. The
-// model's response should show up on the left (reasoning, thinking, and actual prose/work) ... The status
-// at the bottom indicating that actual thinking is occurring and how long since the last thought should
-// NEVER go away unless a turn is truly done."
-//
-// THE CHUNK LOOP IS THE POINT. The report this guards against is "After the initial 'Orchicon is
-// thinking...', streaming started and the 'Orchicon is thinking...' went away and never came back" — so a
-// single assertion after one chunk would not catch it. Each kind is streamed in turn, and the line is
-// checked after every one: reasoning, prose, a tool call, and prose again.
+// The status at the bottom indicating that actual thinking is occurring and how long since the last
+// thought should NEVER go away unless a turn is truly done." THE CHUNK LOOP IS THE POINT.
 func TestTheStatusLineSurvivesTheWholeTurn(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	for i := 0; i < 40; i++ {

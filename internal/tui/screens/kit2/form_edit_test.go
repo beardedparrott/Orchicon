@@ -12,10 +12,8 @@ func pressKey(f *Form, k tea.KeyMsg) { f.HandleKey(k) }
 
 func keyRune(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 
-// The operator: "Editing a work item pops up a modal and I can move through the
-// items but I can't actually edit anything." The form appended every keystroke
-// to the END of the prefilled value with no cursor and no clear, so an existing
-// value could not be corrected — only extended.
+// The operator: "Editing a work item pops up a modal and I can move through the items but I can't
+// actually edit anything." The form appended every keystroke to the END of the prefilled value.
 func TestFormCaretEditing(t *testing.T) {
 	f := NewForm("Edit",
 		FieldSpec{Name: "title", Label: "Title", Kind: KText, Initial: "Original"},
@@ -97,10 +95,8 @@ func TestFormLeftRightStillCyclesSelects(t *testing.T) {
 	}
 }
 
-// The caret must stay ON SCREEN: with a value far wider than the field, the
-// rendered line still shows the caret (and the line stays within the form
-// width). Before this the caret position did not exist at all and every
-// keystroke landed off the visible width.
+// The caret must stay ON SCREEN: with a value far wider than the field, the rendered line still
+// shows the caret (and the line stays within the form width).
 func TestFormCaretStaysVisibleOnALongValue(t *testing.T) {
 	long := strings.Repeat("abcdefghij", 12) // 120 chars
 	f := NewForm("Edit", FieldSpec{Name: "title", Label: "Title", Kind: KText, Initial: long})

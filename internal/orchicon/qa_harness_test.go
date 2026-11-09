@@ -1,8 +1,7 @@
 package orchicon
 
-// QA test harness: scripted mock provider + recording callbacks + mock
-// tool registry, shared by the session-engine loop tests. All loop tests
-// run against this mock — no live API in default tests.
+// QA test harness: scripted mock provider + recording callbacks + mock tool registry, shared by the
+// session-engine loop tests.
 
 import (
 	"context"
@@ -22,10 +21,8 @@ type scriptedTurn struct {
 	finish    StopReason
 	usage     Usage
 	streamErr error
-	// bare opts out of the harness's automatic decision-marker delivery:
-	// the scripted turn ends exactly as scripted (no synthesized
-	// ORCHICON WORKER SUMMARY text). Tests of the decision-signal gate
-	// set bare to script marker-less turns.
+	// bare opts out of the harness's automatic decision-marker delivery: the scripted turn ends exactly
+	// as scripted (no synthesized ORCHICON WORKER SUMMARY text).
 	bare bool
 	// markerSuffix overrides the auto-delivered marker body (StopStop
 	// turns only, bare=false). Empty → the harness default sign-off.
@@ -107,10 +104,8 @@ func (s *mockStream) Next(ctx context.Context) (Event, bool, error) {
 		return e, true, nil
 	}
 	if s.i == len(s.events) {
-		// Decision-signal parity: a scripted turn that ends StopStop
-		// without bare delivers the ORCHICON WORKER SUMMARY sign-off as
-		// its final text — the default shape of a legitimately-finished
-		// worker turn. Gate tests opt out via bare / markerSuffix.
+		// Decision-signal parity: a scripted turn that ends StopStop without bare delivers the ORCHICON
+		// WORKER SUMMARY sign-off as its final text.
 		if s.finish == StopStop && !s.bare && !s.markerDone {
 			s.markerDone = true
 			body := s.markerSuffix

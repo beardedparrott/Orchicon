@@ -5,11 +5,8 @@ import (
 	"testing"
 )
 
-// Regression for the operator's "looks like I'm tripping on acid" wordmark: a
-// single row came out one cell short, which shifted the H's crossbar and every
-// glyph after it on that row, shearing the whole lockup. Every row of the
-// composed wordmark must be EXACTLY the same width, and every glyph must
-// occupy exactly its cell so vertically aligned strokes line up.
+// Regression for the operator's "looks like I'm tripping on acid" wordmark: a single row came out
+// one cell short, which shifted the H's crossbar and every glyph after it on that row.
 func TestWelcomeBrandRowsAreUniform(t *testing.T) {
 	if len(welcomeBrand) != brandRows {
 		t.Fatalf("wordmark has %d rows, want %d", len(welcomeBrand), brandRows)

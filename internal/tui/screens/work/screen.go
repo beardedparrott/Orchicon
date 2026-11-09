@@ -44,10 +44,8 @@ const (
 // projectOpt / workflowOpt are the create form's select options.
 type projectOpt struct {
 	ID, Name string
-	// Mode is the project's execution mode, carried so the work-item form can say WHAT an
-	// inheriting item inherits — the GUI's "Inherit from project (<mode>)". Without it the
-	// inherit option can only say "from the project", which is the blank this field exists to
-	// remove.
+	// Mode is the project's execution mode, carried so the work-item form can say WHAT an inheriting
+	// item inherits — the GUI's "Inherit from project (<mode>)".
 	Mode apiv1.ExecutionMode
 }
 type workflowOpt struct{ ID, Name string }
@@ -67,14 +65,8 @@ type Model struct {
 	// are read from the fetch closure, which runs off the update loop).
 	viewMu sync.Mutex
 	view   viewMode
-	// projectFilter narrows the WORK ITEMS pane to one project, set by the shell from
-	// the active workspace (SetActiveProject). Empty = no filter, which is the only
-	// behaviour this screen had before, so every existing path is unchanged.
-	//
-	// IT IS A FILTER ON THE QUERY, NOT ON THE ROWS, deliberately: the work-items list is
-	// one page of up to workItemPageSize rows, and filtering a page in the client would
-	// show "no work items" for a project whose items fell past the page — a wrong answer
-	// that looks like an empty project.
+	// projectFilter narrows the WORK ITEMS pane to one project, set by the shell from the active
+	// workspace (SetActiveProject).
 	projectFilter string
 	// sort is the sibling DISPLAY order (the control next to the search box).
 	sort sortMode
@@ -86,21 +78,14 @@ type Model struct {
 	// image): references chosen from a filtered list rather than typed ids.
 	parents []kit2.Option
 	images  []kit2.Option
-	// parentKind maps a parent id to its kind, so the create form can DERIVE
-	// the child's kind from the chosen parent. The hierarchy is deterministic
-	// (epic > feature > task > subtask), so asking the operator to pick both
-	// invited combinations the server rejects — which is how a create read as
-	// "the item is nowhere to be found".
+	// parentKind maps a parent id to its kind, so the create form can DERIVE the child's kind from the
+	// chosen parent.
 	parentKind map[string]apiv1.WorkItemKind
-	// parentProject maps a parent id to its project. The server requires a
-	// parent to be in the SAME project as its child, so the picker must only
-	// offer parents from the chosen project (it used to list every project).
+	// parentProject maps a parent id to its project.
 	parentProject map[string]string
 
-	// names resolves the IDS the detail pane carries into the names an
-	// operator reads (workflow, project, parent). It is filled from the lists
-	// this screen ALREADY fetches — no extra request — and it is mutex-guarded
-	// because the pane it feeds is rendered off the update loop. See names.go.
+	// names resolves the IDS the detail pane carries into the names an operator reads (workflow,
+	// project, parent).
 	names nameIndex
 
 	// form is the open typed form (nil = closed).
@@ -108,34 +93,22 @@ type Model struct {
 	formMode string
 	formID   string
 
-	// dtPicker is the open combined calendar + clock modal (a KDateTime field activated), layered
-	// ABOVE the form it was opened from; dtField is the field it writes back into. Nil when closed.
-	//
-	// It is the screen's own modal, like the automation screen's calendar, for the reason
-	// kit2.ModelPicker.Done documents: a host callback closing a modal would mutate a copy of the model
-	// that bubbletea has already replaced, so the SCREEN owns both the open and the close.
+	// dtPicker is the open combined calendar + clock modal (a KDateTime field activated), layered ABOVE
+	// the form it was opened from; dtField is the field it writes back into.
 	dtPicker *kit2.DateTimePicker
 	dtField  string
 
-	// formLoading is true from the moment a modal is REQUESTED until its
-	// payload arrives. The create/edit forms need an option-list round trip
-	// (projects / workflows / images) before they can be drawn, and until
-	// ClaimsKeys reports true the vertical keys fell through to the list
-	// BEHIND the modal and scrolled it.
+	// formLoading is true from the moment a modal is REQUESTED until its payload arrives.
 	formLoading bool
 
 	// bulkSetIDs is the SNAPSHOT of the marked ids taken when the bulk workflow/image picker was
-	// opened. The modal owns the keys while it is up, so the write must target the selection the
-	// operator confirmed rather than whatever is marked when the confirm finally lands.
+	// opened.
 	bulkSetIDs []string
-	// parentIDs is the set of ids that have at least one child — the TUI's sequence-parent
-	// detector, the counterpart of the GUI's parentIdSet. Guarded by viewMu: it is written by
-	// fetchWorkItems, which runs off the update loop.
+	// parentIDs is the set of ids that have at least one child — the TUI's sequence-parent detector,
+	// the counterpart of the GUI's parentIdSet.
 	parentIDs map[string]bool
 
-	// runsByItem is the page's PR index: work item id -> its runs' PR surfaces, newest first. It feeds the
-	// list's `PR merged` mark and the details pane's `pr url` field. Written by fetchWorkItems and read by
-	// the detail pane, both off the update loop, so it is guarded by viewMu like parentIDs. See prindex.go.
+	// runsByItem is the page's PR index: work item id -> its runs' PR surfaces, newest first.
 	runsByItem prIndex
 
 	// pending is the action the open confirmation dialog will run.
@@ -166,54 +139,26 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m.Base.SetSourceEmpty(srcProjects, "no projects yet — press n to create one")
 	m.Base.SetSourceEmpty(srcWorkItems, "no work items in this view — press n to create one, or / to search")
 	m.Base.SetSourceEmpty(srcImages, "no runtime images yet — press n to define one, b to build")
-	// The mutation executor is installed HERE so every write has a feedback
-	// surface. Without it Base.Mutate fell back to a zero executor with a nil
-	// Sink, so a REJECTED write rolled back silently and the operator only saw
-	// an item that never appeared (the operator's "it is nowhere to be found").
+	// The mutation executor is installed HERE so every write has a feedback surface.
 	m.Base.SetExecutor(&mutate.Executor{Sink: workSink{m}})
 	// The Work Items list carries a search row ('/'), per the operator's "search
 	// box at the top of the work items page for filter".
 	m.Base.EnableFilter(srcWorkItems)
-	// A WORK ITEM TREE OPENS COLLAPSED. A four-level Epic → Feature → Task → Subtask
-	// hierarchy is unreadable when it opens fully expanded, and the GUI's tree has
-	// always defaulted to collapsed, so this is the two clients agreeing.
-	//
-	// IT IS APPLIED PER VIEW, NOT PER SOURCE, and the switchView call below is the
-	// other half. The ARCHIVE view must NOT open collapsed: its roots are usually GHOST
-	// ANCHORS (active parents shown only to keep the hierarchy connected), so collapsing
-	// them hides the archived items — the entire content of the view — behind rows
-	// labelled "not archived". Measured before this: the archive view opened showing a
-	// single "+ [epic] Live Epic  active ancestor — not archived", with the archived
-	// item it was anchored to folded underneath and no way to tell it was there.
-	//
-	// Scoped to this source on purpose: the table's OTHER tree is a category folder
-	// grouping (workers/workflows), whose members are the point of the group — a
-	// folder that opened collapsed would hide the rows the operator came for.
+	// A WORK ITEM TREE OPENS COLLAPSED.
 	m.Base.SetCollapsedByDefault(srcWorkItems, true)
-	// ...and a MODE label on that same row, right beside the search box: the
-	// operator's "When in archive or normal mode in the TUI, it should say so at the
-	// top near the search box to indicate what mode you are in."
-	//
-	// It names the view in the same words the switch notice uses, and it says what the
-	// rows ARE rather than only which grouping is on — that is the fact an operator
-	// needs, because the archive's rows are archived items (already out of every other
-	// view), and acting on them by mistake is acting on data rather than on a display.
+	// ...and a MODE label on that same row, right beside the search box: the operator's "When in
+	// archive or normal mode in the TUI.
 	m.Base.SetCaption(srcWorkItems, func() string {
 		if m.ViewMode() == viewArchive {
 			return "ARCHIVE (archived items)"
 		}
 		return "TREE (active items)"
 	})
-	// ...and a clickable collapse/expand-all control next to it. The control is
-	// installed here for the first paint and RE-installed on every landing via
-	// OnItemsLanded: whether it is worth drawing depends on the rows that arrived
-	// (a page with no parent has no tree to collapse), and the first fetch is
-	// asynchronous, so this call runs while the table is still empty.
+	// ...and a clickable collapse/expand-all control next to it.
 	m.syncRowActions()
 	m.Base.OnItemsLanded = func() tea.Cmd {
-		// Only the work-items pane has the control, and only its own landings matter —
-		// re-registering on another source's landing would swap the actions out from
-		// under a pane the operator is looking at.
+		// Only the work-items pane has the control, and only its own landings matter — re-registering on
+		// another source's landing would swap the actions out from under a pane the operator is looking at.
 		if m.Base.ActiveSourceName() == srcWorkItems {
 			m.syncRowActions()
 		}
@@ -254,12 +199,8 @@ func (m *Model) Close() {
 		m.buildCancel = nil
 	}
 	m.reg.CloseAll()
-	// CloseAll tears down EVERY subscription in the SHARED registry, so the
-	// screen must drop its own handle too. EnsureSubscriptions guards on that
-	// handle being nil, so a stale non-nil one meant the stream was never
-	// recreated after the first visit: no further events arrived AND the footer
-	// stayed frozen at the last status — the operator's "the connection status
-	// is CONSTANTLY saying disconnected or reconnecting".
+	// CloseAll tears down EVERY subscription in the SHARED registry, so the screen must drop its own
+	// handle too.
 	m.sub = nil
 }
 
@@ -275,52 +216,25 @@ func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.Load(), m.reg.WaitStatus("project-events"))
 }
 
-// DropKeyClaim releases the screen's key claim so the focus chord can return the
-// operator to the composer (see kit2.Base.DropKeyClaim). It clears the two
-// LATCHED reasons — a form still being PREPARED and the search box — and closes
-// the inline editor. A confirm dialog is deliberately left alone: that is a modal
-// decision the operator must resolve, and silently dismissing it on a focus
-// chord would be worse than the chord not working.
+// DropKeyClaim releases the screen's key claim so the focus chord can return the operator to the
+// composer (see kit2.Base.DropKeyClaim).
 func (m *Model) DropKeyClaim() {
 	m.formLoading = false
 	m.Base.DropKeyClaim()
 }
 
-// FormOpen reports whether a FORM is open — the inline details-pane editor or the
-// modal image-create form. The shell's Tab hard chord consults it so that, while the
-// operator is editing, Tab (and Shift+Tab) move through the FORM'S ITEMS rather than
-// walking the top tab menu.
-//
-// This screen was missing the method entirely, and the absence was not benign: the chord
-// does `if fs, ok := FormOpen(); ok && fs.FormOpen()` — with ok == false it falls through
-// to `m.closeTabMenu(); m.tabRingNext()`, so on Work (and only Work) Tab walked OUT of an
-// open editor instead of moving between its inputs. Every other screen with a form
-// already implements it.
-//
-// The operator settled the rule explicitly: "ONCE IN EDIT/NEW MODE using down/up OR
-// tab/shift+tab should move through the edit items as opposed to the top menu bar on
-// every screen. Once you ctrl+s to save or hit Esc to get out of the editing mode,
-// tab/shift+tab now affects the top tab menu again." Which is exactly what this does —
-// the moment the form closes, the claim drops and Tab belongs to the bar again.
+// FormOpen reports whether a FORM is open — the inline details-pane editor or the modal
+// image-create form.
 func (m *Model) FormOpen() bool {
 	return m.form != nil || m.Base.EditingDetail()
 }
 
 // ModalFormOpen reports a form drawn as its own centred WINDOW — on this screen only the
-// runtime-image create form. The distinction matters for the shell's Tab handling on
-// screens that treat a windowed modal and an inline editor differently; here both take
-// Tab for their fields, per the rule above.
+// runtime-image create form.
 func (m *Model) ModalFormOpen() bool { return m.form != nil }
 
-// ClaimsKeys reports whether the screen owns every key right now (a modal
-// form, an inline detail editor, a confirmation dialog, or a modal that is
-// still being PREPARED). The shell consults it before its own routes so a
-// typed character is never stolen ('q' would quit, space would open the tab
-// menu, '/' the palette).
-//
-// formLoading participates on purpose: the create/edit forms fetch their
-// option lists asynchronously, and in that window a form is not yet open —
-// so without this the arrow keys reached the list behind the modal.
+// ClaimsKeys reports whether the screen owns every key right now (a modal form, an inline detail
+// editor, a confirmation dialog, or a modal that is still being PREPARED).
 func (m *Model) ClaimsKeys() bool {
 	// dtPicker participates for the same reason a form does: while the calendar is up it owns every
 	// key, and a keystroke that reached the list behind it would act on the wrong thing.
@@ -328,16 +242,7 @@ func (m *Model) ClaimsKeys() bool {
 		m.Base.EditingDetail() || m.Base.Filtering()
 }
 
-// workSink adapts the screen to mutate.Sink. It is an adapter rather than
-// methods on Model because Model already has a `Notice() string` accessor the
-// shell reads; the Sink needs `Notice(msg string)`.
-//
-// EVERY outcome goes to the SHELL's dock as well as the screen's notice line,
-// and that is not cosmetic: the screen's notice is appended to the body and
-// then cut off by FitLines whenever the panes fill the height, so a successful
-// create reported NOTHING the operator could see — which read as "new work
-// items don't seem to be actually saving". The dock renders inside the composer
-// box, which is never truncated.
+// workSink adapts the screen to mutate.Sink.
 type workSink struct{ m *Model }
 
 func (s workSink) dock() (dockSink, bool) {
@@ -361,10 +266,7 @@ func (s workSink) Notice(msg string) {
 	}
 }
 
-// Fail surfaces a FAILED mutation. It is deliberately loud: a rejected write
-// must never look like nothing happened, which is exactly how a server-side
-// rejection ("a task must have a parent; only epics can be top-level") read as
-// an item that vanished.
+// Fail surfaces a FAILED mutation.
 func (s workSink) Fail(msg string) {
 	s.m.notice = "✗ " + msg
 	if d, ok := s.dock(); ok {
@@ -377,9 +279,7 @@ type dockSink interface {
 	DockNotice(msg string)
 }
 
-// mcpModalHost is the shell surface that owns the MCP + skills modal. The modal is LAYERED OVER every
-// screen, so it belongs to the shell (as it does in the GUI, where MCPServersPanel is imported by the
-// project page rather than reimplemented there) — a screen only asks for it.
+// mcpModalHost is the shell surface that owns the MCP + skills modal.
 type mcpModalHost interface {
 	OpenProjectMCPModal(projectID, name string) tea.Cmd
 }
@@ -390,9 +290,8 @@ func (m *Model) mcpModalHost() (mcpModalHost, bool) {
 	return h, ok
 }
 
-// ActiveForm returns the form currently open on this screen, whichever host
-// draws it — the modal form (creates) or the inline detail-pane editor (edits).
-// Tests and the shell read the in-progress input through it.
+// ActiveForm returns the form currently open on this screen, whichever host draws it — the modal
+// form (creates) or the inline detail-pane editor (edits).
 func (m *Model) ActiveForm() *kit2.Form {
 	if m.form != nil {
 		return m.form
@@ -403,13 +302,8 @@ func (m *Model) ActiveForm() *kit2.Form {
 // DialogOpen reports whether a confirmation dialog is up.
 func (m *Model) DialogOpen() bool { return m.Open != nil }
 
-// openDateTimePicker opens the host's combined calendar + clock for a KDateTime field, seeded from the
-// field's current value so editing starts where the operator left it.
-//
-// The seed is parsed as RFC3339 and handed over as an INSTANT; the picker converts to local wall clock
-// itself, which is the whole point — the operator edits the day and the time they think in, and the
-// value that comes back is the moment they meant. An EMPTY or unparseable seed falls back to now, so
-// the common case (scheduling something soon) opens on the current day rather than on the zero date.
+// openDateTimePicker opens the host's combined calendar + clock for a KDateTime field, seeded from
+// the field's current value so editing starts where the operator left it.
 func (m *Model) openDateTimePicker(field, current string) tea.Cmd {
 	var initial time.Time
 	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(current)); err == nil {
@@ -422,12 +316,8 @@ func (m *Model) openDateTimePicker(field, current string) tea.Cmd {
 	return nil
 }
 
-// finishDateTimePicker closes the calendar when it reports Done and writes the chosen instant into the
-// field that opened it. The SCREEN owns the close (see kit2.ModelPicker.Done for why a host callback
-// cannot).
-//
-// A CANCELLED modal writes nothing: esc must leave the field exactly as it was, or dismissing the
-// calendar would silently reschedule the item to whatever the cursor happened to be sitting on.
+// finishDateTimePicker closes the calendar when it reports Done and writes the chosen instant into
+// the field that opened it.
 func (m *Model) finishDateTimePicker() tea.Cmd {
 	if m.dtPicker == nil || !m.dtPicker.Done() {
 		return nil
@@ -437,10 +327,8 @@ func (m *Model) finishDateTimePicker() tea.Cmd {
 	if !committed {
 		return nil
 	}
-	// ActiveForm, NOT m.form: the scheduled-start field lives on the INLINE detail-pane editor (the
-	// `e` gesture), where m.form is nil and the form is Base.DetailForm(). Writing to m.form alone
-	// would have dropped every picked value on the one path the operator actually uses — the calendar
-	// would commit, close, and change nothing.
+	// ActiveForm, NOT m.form: the scheduled-start field lives on the INLINE detail-pane editor (the `e`
+	// gesture), where m.form is nil and the form is Base.DetailForm().
 	if f := m.ActiveForm(); f != nil && field != "" {
 		f.Set(field, value)
 	}
@@ -450,14 +338,8 @@ func (m *Model) finishDateTimePicker() tea.Cmd {
 // Notice returns the last action's status line ("" = none).
 func (m *Model) Notice() string { return m.notice }
 
-// projectLabel resolves a project id to its name from the in-memory index, or "" when it is not
-// known (the caller then renders the raw id — see named).
-//
 // It reads ONLY the mutex-guarded index, which is fed by BOTH sources the operator's projects can
-// arrive from: the Projects page (fetchProjects) and a work-item form prep (m.projects). Scanning
-// m.projects here instead would read a slice written on the update loop from the detail fetch,
-// which runs off it — the race the mutex exists to prevent — and would add nothing, since that
-// slice is already in the index.
+// arrive from: the Projects page (fetchProjects) and a work-item form prep (m.projects).
 func (m *Model) projectLabel(id string) string { return m.names.projectName(id) }
 
 // projectNameIndex / workflowNameIndex turn an option list into an id→name index for the name
@@ -548,14 +430,7 @@ func (m *Model) fetchProjects(ctx context.Context, pageToken string) ([]kit2.Ite
 // pretend more pages do not exist.
 const workItemPageSize = 1000
 
-// fetchWorkItems renders the work-items set through the selected display
-// grouping (tree / archive).
-//
-// ONE request, like the GUI (see workItemPageSize for why paging this RPC is broken and why that is
-// the SERVER's ordering being page-dependent rather than anything this screen does). The display
-// order is this screen's own: treeRows re-sorts every sibling set with its own sortSequence/sortTitle
-// /sortStatus/sortPriority, and stepNumber derives the step from the stored chain, so the ORDER the
-// server returns rows in has never mattered to what is drawn — only the cursor's reliability did.
+// fetchWorkItems renders the work-items set through the selected display grouping (tree / archive).
 func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.Item, string, error) {
 	view := m.ViewMode()
 	resp, err := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
@@ -569,16 +444,12 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	if err != nil {
 		return nil, "", err
 	}
-	// The workflow names are read HERE, inside a fetch this screen already makes, so the
-	// detail pane can resolve `workflow` on a cold screen — with no form ever opened —
-	// instead of only after a form prep populated m.workflows. TTL-cached: at most one
-	// extra request per nameIndexWorkflowTTL, never one per row (names.go).
+	// The workflow names are read HERE, inside a fetch this screen already makes, so the detail pane
+	// can resolve `workflow` on a cold screen — with no form ever opened.
 	m.loadWorkflowNames(ctx)
-	// THE ACTIVE PAGE, in the Archive view only: it is what the archive tree's ghost
-	// anchors are resolved from (an archived item whose parent is still active has no
-	// parent row in the archived set, so the edge has to come from here). ONE extra
-	// request, in one view, for the same reason the GUI makes it. Best effort: a
-	// failure degrades the archive to roots-plus-orphans rather than blanking it.
+	// THE ACTIVE PAGE, in the Archive view only: it is what the archive tree's ghost anchors are
+	// resolved from (an archived item whose parent is still active has no parent row in the archived
+	// set.
 	var active []*apiv1.WorkItem
 	if view == viewArchive {
 		if ar, aerr := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
@@ -591,11 +462,8 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 			active = ar.Msg.GetWorkItems()
 		}
 	}
-	// Index the RAW page (before rowsFor turns it into display rows) so the detail pane can
-	// resolve a `parent` to its title from what is already loaded — and, in the same pass, the
-	// sequence-parent SET: any item that is some other item's parent, which the bulk-set confirm
-	// uses to call out that a parent's OWN binding is inert (its children each run their own
-	// workflows). Both are free: it is the page this fetch just returned.
+	// Index the RAW page (before rowsFor turns it into display rows) so the detail pane can resolve a
+	// `parent` to its title from what is already loaded — and, in the same pass.
 	names := make(map[string]string, len(resp.Msg.GetWorkItems()))
 	parents := map[string]bool{}
 	for _, w := range resp.Msg.GetWorkItems() {
@@ -610,9 +478,8 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	m.viewMu.Lock()
 	m.parentIDs = parents
 	m.viewMu.Unlock()
-	// The PR surface for this page: one extra call, the same one the GUI makes for the same reason, so the list
-	// can say a run's PR merged and the details pane can carry its URL. Best effort — a failure leaves the list
-	// exactly as it was (see fetchItemPRs).
+	// The PR surface for this page: one extra call, the same one the GUI makes for the same reason, so
+	// the list can say a run's PR merged and the details pane can carry its URL.
 	prs := m.fetchItemPRs(ctx, resp.Msg.GetWorkItems())
 	m.viewMu.Lock()
 	m.runsByItem = prs
@@ -661,11 +528,8 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "created", Value: screenkit.FmtTime(p.GetCreatedAt())},
 			{Key: "updated", Value: screenkit.FmtTime(p.GetUpdatedAt())},
 		}
-		// The project's OWNED MCP servers, one row each — the TUI counterpart of
-		// the GUI panel's "Configured servers". They are owner-scoped rows
-		// (mcp_servers.project_id), so this list IS the project's MCP scope; the
-		// define/edit/secret/install controls live in projectActions(). A failed
-		// list degrades to no rows rather than failing the whole detail.
+		// The project's OWNED MCP servers, one row each — the TUI counterpart of the GUI panel's
+		// "Configured servers".
 		if m.cl != nil && m.cl.MCP != nil {
 			if lr, err := m.cl.MCP.ListMCPServers(ctx, connect.NewRequest(&apiv1.MCPServerListRequest{ProjectId: p.GetId()})); err == nil {
 				for _, s := range lr.Msg.GetServers() {
@@ -694,39 +558,30 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "kind", Value: kindBadge(w.GetKind())},
 			{Key: "status", Value: statusPill(w.GetStatus())},
 		}
-		// NO PR ON RECORD IS NO FIELD — never a blank row and never an invented value, the same discipline the
-		// workflow-run field follows. The URL comes from the run that actually landed when one did, because that
-		// is the change an operator is going to look at.
+		// NO PR ON RECORD IS NO FIELD — never a blank row and never an invented value, the same discipline
+		// the workflow-run field follows.
 		if url, state := m.itemPRLink(w.GetId()); url != "" {
 			fields = append(fields, kit2.Field{Key: "pr url", Value: prDisplay(url, state)})
 		}
 		fields = append(fields,
-			// The five IDENTIFIER fields below carry a resolved NAME with the id
-			// retained beside it, because that is what an operator can act on (the
-			// raw guid "won't mean anything to anyone") while the id is what support
-			// asks for. An id that does not resolve renders as the raw id.
+			// The five IDENTIFIER fields below carry a resolved NAME with the id retained beside it, because
+			// that is what an operator can act on (the raw guid "won't mean anything to anyone") while the id.
 			kit2.Field{Key: "parent", Value: named(m.names.itemTitle(w.GetParentId()), w.GetParentId())},
 			kit2.Field{Key: "project", Value: named(m.projectLabel(w.GetProjectId()), w.GetProjectId())},
 			kit2.Field{Key: "priority", Value: screenkit.FmtInt(int(w.GetPriority()))},
 			kit2.Field{Key: "budgets", Value: w.GetBudgets()},
 			kit2.Field{Key: "context window", Value: screenkit.FmtInt(int(w.GetContextWindow()))},
 			kit2.Field{Key: "runtime image", Value: w.GetRuntimeImage()},
-			// WHERE THIS ITEM'S EXECUTIONS RUN — the EFFECTIVE mode (item override -> project ->
-			// tenant default, resolved server-side in db.EffectiveExecutionMode), because that is
-			// the question the pane answers. The override is named beside it, so an inheriting item
-			// shows its resolved mode instead of a blank and an overridden one shows what it
-			// overrode: "inherit" is legible only when both halves are visible.
+			// WHERE THIS ITEM'S EXECUTIONS RUN — the EFFECTIVE mode (item override -> project -> tenant
+			// default, resolved server-side in db.EffectiveExecutionMode).
 			kit2.Field{Key: "execution mode", Value: executionModeDetail(w)},
 			kit2.Field{Key: "workflow", Value: named(m.names.workflowName(w.GetWorkflowId()), w.GetWorkflowId())},
-			// A workflow RUN has no name of its own — it is not a named entity — so it gets
-			// the GUI's rendering: a shortened id, not the 26-character ULID, and not an
-			// invented label.
+			// A workflow RUN has no name of its own — it is not a named entity — so it gets the GUI's
+			// rendering: a shortened id, not the 26-character ULID, and not an invented label.
 			kit2.Field{Key: "workflow run", Value: shortRunID(w.GetWorkflowRunId())},
 			kit2.Field{Key: "auto-start", Value: boolStr(w.GetAutoStartWorkflow())},
 			kit2.Field{Key: "scheduled", Value: screenkit.FmtTime(w.GetScheduledStartAt())},
-			// The numeric sort_order is deliberately NOT shown: a bare float is
-			// meaningless to a human. The step position is visible in the list
-			// itself, where it can be compared against its siblings.
+			// The numeric sort_order is deliberately NOT shown: a bare float is meaningless to a human.
 			kit2.Field{Key: "archived from", Value: w.GetArchivedFromStatus()},
 			kit2.Field{Key: "updated", Value: screenkit.FmtTime(w.GetUpdatedAt())},
 		)
@@ -770,36 +625,20 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 
 // ---------------- actions (confirm + mutation executor) ----------------
 
-// actionsForSelection builds the entity-bound actions for the focused row — or the BULK
-// actions, when the operator has multi-selected.
-//
-// The operator's rule is the whole design: "we need to have a consistent way to handle bulk
-// operations on all forms. My suggestion would be spacebar can do multi-select and Esc
-// clears the multi-select and then the bulk options shows up only after you have more than
-// one item selected."
-//
-// So bulk replaces single-row AT MORE THAN ONE. One marked row is not a bulk operation — it
-// is the row the cursor is on, and offering "archive 1 item" beside "archive" would just be
-// a slower way to do the same thing. The action BAR, the hint LINE and the key dispatch all
-// derive from this one list, so switching to bulk here switches everywhere at once.
+// actionsForSelection builds the entity-bound actions for the focused row — or the BULK actions,
+// when the operator has multi-selected.
 func (m *Model) actionsForSelection() []kit2.Action {
-	// The BULK rule is kit2's, in one place: more than one marked row means the operator is
-	// operating on a SELECTION, not on the cursor row, so the single-row actions are replaced
-	// rather than mixed with it. (This screen had its own `len(ids) > 1` until the Schedules pane
-	// needed the same rule — two copies of a threshold is how "consistent bulk operations" stops
-	// being consistent.)
+	// The BULK rule is kit2's, in one place: more than one marked row means the operator is operating
+	// on a SELECTION, not on the cursor row.
 	if ids := m.Base.BulkIDs(); len(ids) > 0 {
-		// ROUTED BY SOURCE, which it was not: every source went to bulkItemActions, so a
-		// projects selection was offered "delete" that called the WORK ITEM RPC with
-		// project ids — failing on every call for a reason the operator could not see. A
-		// row is a row to the table, but a project is not a work item.
+		// ROUTED BY SOURCE, which it was not: every source went to bulkItemActions, so a projects selection
+		// was offered "delete" that called the WORK ITEM RPC with project ids.
 		switch m.ActiveSourceName() {
 		case srcProjects:
 			return m.bulkProjectActions(ids)
 		default:
-			// PER VIEW, because the two views' bulk vocabularies are disjoint: the
-			// archive's operation is RESTORE, and archive/delete are no-ops or
-			// different outcomes there. See bulkArchiveActions.
+			// PER VIEW, because the two views' bulk vocabularies are disjoint: the archive's operation is
+			// RESTORE, and archive/delete are no-ops or different outcomes there.
 			if m.ViewMode() == viewArchive {
 				return m.bulkArchiveActions(ids)
 			}
@@ -817,25 +656,12 @@ func (m *Model) actionsForSelection() []kit2.Action {
 }
 
 // bulkItemActions are the operations that make sense on a whole selection.
-//
-// Deliberately only the ones the server can do per item and that an operator plausibly wants
-// in bulk: ARCHIVE and DELETE (delete being the GUI's PERMANENT delete — see itemActions;
-// the reversible status → cancelled change is a per-item status edit, not a bulk gesture).
-// A bulk status change or reassignment would need a form per item (each carries its own
-// acceptance review and worker binding), so it is not offered rather than offered
-// misleadingly.
-//
-// One action, one confirm, and the confirm NAMES THE COUNT: a destructive operation on ten
-// rows must not look like one on a single row. The writes are sequential and the FIRST
-// failure stops and reports, because a partial bulk operation must say what it did rather
-// than claim a clean sweep.
 func (m *Model) bulkItemActions(ids []string) []kit2.Action {
 	n := len(ids)
 	count := fmt.Sprintf("%d", n)
 	label := func(verb string) string { return verb + " " + count + " selected" }
-	// A write path must never PANIC on a missing client: a screen without a plane is a
-	// configuration the rest of this screen already refuses gracefully, and a crash in a
-	// destructive bulk operation would take the whole TUI with it.
+	// A write path must never PANIC on a missing client: a screen without a plane is a configuration
+	// the rest of this screen already refuses gracefully.
 	if m.cl == nil || m.cl.WorkItems == nil {
 		return []kit2.Action{{
 			Label: "no work-item client", Source: srcWorkItems,
@@ -844,9 +670,8 @@ func (m *Model) bulkItemActions(ids []string) []kit2.Action {
 	}
 	client := m.cl.WorkItems
 
-	// The rows are removed locally only AFTER the writes land (there is no rollback that can
-	// restore another item's server state), so these actions carry no optimistic Apply: a
-	// refresh is the honest reconciliation for a multi-row write.
+	// The rows are removed locally only AFTER the writes land (there is no rollback that can restore
+	// another item's server state), so these actions carry no optimistic Apply.
 	archive := kit2.Action{
 		Label: label("archive"), Key: "a", Danger: true, Source: srcWorkItems,
 		Confirm: "Archive " + count + " items?\n" +
@@ -895,12 +720,7 @@ func (m *Model) bulkItemActions(ids []string) []kit2.Action {
 			m.notice = "selection cleared"
 		},
 	}
-	// The bulk workflow/runtime-image set. It is the SCALAR case the comment above explicitly does
-	// not cover: a workflow binding is ONE picker, ONE value, identical for every selected item —
-	// nothing per item to review — which is the shape BulkUpdateWorkerModel already proved out for
-	// the Workers pane. It carries no Confirm of its own because the VALUES are chosen FIRST: the
-	// picker opens here (via openAction's interception) and the confirm that names the count and
-	// the values is raised from the form's submit.
+	// The bulk workflow/runtime-image set.
 	setwf := kit2.Action{
 		Label: label("set workflow & image"), Key: keyBulkSet, Source: srcWorkItems,
 		// No RPC of its own: openAction intercepts this action and opens the picker instead.
@@ -910,20 +730,6 @@ func (m *Model) bulkItemActions(ids []string) []kit2.Action {
 }
 
 // bulkArchiveActions is the ARCHIVE VIEW's bulk action set: RESTORE, and only restore.
-//
-// The operator: "I noticed there is no option to restore on bulk items."
-//
-// bulkItemActions offered archive + delete and knew nothing about the view, so a marked
-// selection in the archive was offered two operations that are both wrong there — `a:
-// archive` is a no-op on an already-archived item, and `x: delete` CANCELS it, which is a
-// different outcome from the restore the operator is looking at the view to perform. The
-// GUI has had "Restore selected" all along; this is the TUI's half of that parity.
-//
-// WHY IT IS A SEPARATE LIST RATHER THAN A BRANCH INSIDE bulkItemActions. The two views
-// have genuinely disjoint vocabularies, and the same reasoning that split itemActions
-// applies: an action that is a no-op in the view it is offered from is worse than an
-// absent one, because it reads as supported. Archive/delete return when the operator
-// switches back to the tree, where they belong.
 func (m *Model) bulkArchiveActions(ids []string) []kit2.Action {
 	n := len(ids)
 	count := fmt.Sprintf("%d", n)
@@ -965,20 +771,7 @@ func (m *Model) bulkArchiveActions(ids []string) []kit2.Action {
 	return []kit2.Action{restore, clear}
 }
 
-// restoreOrder returns the marked ids CHILD-FIRST, by each row's depth in the archive
-// tree.
-//
-// THE ORDER IS THE CORRECTNESS, not a nicety — the same reason the GUI sorts with
-// bottomUpOrder: a parent restored before its still-archived children leaves the
-// hierarchy briefly inconsistent, and an archived child whose parent has already returned
-// to the active views is exactly the cross-boundary state the ghost-anchor machinery
-// exists to paper over. Restoring deepest-first means every item lands among siblings that
-// are all in the same partition as it is.
-//
-// Depth comes from the ROW the table already holds (RowByID), so it is the depth the tree
-// was built with rather than a second derivation that could disagree with it. The sort is
-// STABLE and ties keep the pane's order, which is MarkedIDs' order (screen order, top to
-// bottom) — so equal depths restore in the sequence the operator sees.
+// restoreOrder returns the marked ids CHILD-FIRST, by each row's depth in the archive tree.
 func (m *Model) restoreOrder(ids []string) []string {
 	t := m.Base.ActiveTable()
 	if t == nil {
@@ -1007,9 +800,7 @@ func (m *Model) restoreOrder(ids []string) []string {
 // openAction opens the confirmation dialog for an action that needs one, or
 // runs it immediately.
 func (m *Model) openAction(a kit2.Action) tea.Cmd {
-	// PICKER-FIRST: the VALUE is chosen before the confirm, so the confirm can name it. Every entry
-	// point (the action bar, the key chord) converges here, so this is the ONE place the picker
-	// needs to open — a second call site would be a second chance to drift.
+	// PICKER-FIRST: the VALUE is chosen before the confirm, so the confirm can name it.
 	if a.Key == keyBulkSet {
 		m.bulkSetIDs = m.Base.BulkIDs()
 		if len(m.bulkSetIDs) == 0 {
@@ -1062,21 +853,10 @@ func (m *Model) switchView(v viewMode) tea.Cmd {
 	m.viewMu.Lock()
 	m.view = v
 	m.viewMu.Unlock()
-	// THE COLLAPSE DEFAULT IS PER VIEW (see New): the Tree opens collapsed because a
-	// deep hierarchy is unreadable expanded, and the Archive opens EXPANDED because its
-	// roots are ghost anchors and a collapsed anchor hides the archived items the view
-	// exists to show.
-	//
-	// It is set HERE as well as at construction because the table is the same object
-	// across a switch, and a row that has already been seen keeps whatever state it had
-	// — including rows that were loaded while the OTHER view was active. Setting it on
-	// every switch means the default is right for the view being entered rather than
-	// whatever the last load happened to leave behind.
+	// THE COLLAPSE DEFAULT IS PER VIEW (see New): the Tree opens collapsed because a deep hierarchy is
+	// unreadable expanded.
 	m.Base.SetCollapsedByDefault(srcWorkItems, v == viewTree)
-	// …and RE-SEAT the rows already on screen. The default only decides a row the table
-	// has not seen before, and every row here has been seen (they were built under the
-	// view being left), so without this the archive opens with its archived items still
-	// folded under a ghost anchor.
+	// …and RE-SEAT the rows already on screen.
 	m.Base.ResetCollapseState(srcWorkItems)
 	m.notice = "work items: " + string(v) + " view"
 	m.syncRowActions()
@@ -1090,19 +870,14 @@ func (m *Model) SortMode() sortMode {
 	return m.sort
 }
 
-// cycleSort advances the sort control and RE-FETCHES so the new order is
-// actually applied — the bug the operator hit ("it goes through the different
-// orderings but it doesn't actually apply the sort") was that the control's
-// command was dropped.
+// cycleSort advances the sort control and RE-FETCHES so the new order is actually applied — the bug
+// the operator hit ("it goes through the different orderings but it doesn't actually apply.
 func (m *Model) cycleSort() tea.Cmd {
 	m.viewMu.Lock()
 	m.sort = m.sort.next()
 	next := m.sort
 	m.viewMu.Unlock()
 	// Re-ordering the list parks the cursor so the reload starts at the TOP.
-	// Without this the cursor was restored to the old row's NEW position and the
-	// window scrolled to keep it visible — the operator's "sort is working but
-	// jumping to the bottom of the screen".
 	if t := m.Base.ActiveTable(); t != nil {
 		t.ResetCursor()
 	}
@@ -1111,12 +886,6 @@ func (m *Model) cycleSort() tea.Cmd {
 }
 
 // syncRowActions (re)installs the pane's clickable controls.
-//
-// The collapse/expand-all control is offered in BOTH work-item views now: the
-// Archive view renders the archived hierarchy as a real tree (see archiveRows), so
-// it has nodes to collapse — and before that it was flat, which is why this used to
-// be Tree-only. It still hides on a pane with no parent at all, because on a flat
-// list the control would do nothing and a dead control is worse than none.
 func (m *Model) syncRowActions() {
 	if m.Base.ActiveSourceName() != srcWorkItems {
 		return
@@ -1168,19 +937,16 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			m.notice = "couldn't open the form: " + msg.err.Error()
 			return m, nil
 		}
-		// Only replace a list the message actually carries: the edit path
-		// fetches the item plus its pickers, and must not clobber the project
-		// list the create form told us about.
+		// Only replace a list the message actually carries: the edit path fetches the item plus its
+		// pickers, and must not clobber the project list the create form told us about.
 		if len(msg.projects) > 0 {
 			m.projects = msg.projects
 		}
 		if len(msg.workflows) > 0 {
 			m.workflows = msg.workflows
 		}
-		// The form prep carries the SAME two lists the pickers are built from, so it
-		// is the other half of the name index: workflows have no other source on this
-		// Model, and the prep's project list covers the projects source not having
-		// loaded yet.
+		// The form prep carries the SAME two lists the pickers are built from, so it is the other half of
+		// the name index: workflows have no other source on this Model.
 		m.names.setProjects(projectNameIndex(msg.projects))
 		m.names.setWorkflows(workflowNameIndex(msg.workflows))
 		if len(msg.parents) > 0 {
@@ -1199,12 +965,7 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 				m.notice = "no projects yet — a work item belongs to a project"
 				return m, nil
 			}
-			// Item 5: CREATE in the DETAILS PANE too, matching the worker forms and
-			// the edit path below. The operator: "if we are going to make new worker
-			// go into the detail pane for editing (which I do like), then we should
-			// mimic that for work items because work items still uses a popup
-			// modal." Both halves of the work-item flow now share one host, so the
-			// keys, the validation and the submit path cannot diverge between them.
+			// Item 5: CREATE in the DETAILS PANE too, matching the worker forms and the edit path below.
 			m.Base.BeginDetailEdit("New work item", m.newItemCreateForm())
 		case formEditItem:
 			// Edit in the DETAILS PANE, not a modal (the operator's ask).
@@ -1212,9 +973,7 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		case formStatusItem:
 			m.Base.BeginDetailEdit("Status & priority", m.newItemStatusForm(msg.item))
 		case formBulkSetItem:
-			// The MODAL host, not the details pane: a bulk write is not about the active row. The
-			// details pane is the active row's host; the modal is the screen's "not about this row"
-			// host (the runtime-image create form uses it too).
+			// The MODAL host, not the details pane: a bulk write is not about the active row.
 			m.form = m.newBulkSetForm(msg.workflows, msg.images)
 			if msg.hiddenWorkflows > 0 {
 				m.notice = fmt.Sprintf("%d workflow(s) hidden — not published, or has no steps", msg.hiddenWorkflows)
@@ -1286,11 +1045,6 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 	case tea.KeyMsg:
 		// THE CALENDAR IS THE TOPMOST MODAL, so it owns every key FIRST — above the search box and,
 		// critically, above the inline detail editor, which is the surface it is usually opened FROM.
-		//
-		// THIS ORDERING IS NOT A DETAIL. The scheduled-start field lives on the INLINE detail editor
-		// (the `e` gesture), and that editor claims every key before anything else — so with the
-		// calendar checked after it, enter and esc went to the FORM: the modal could be neither
-		// committed nor dismissed. It opened, and then ignored the operator entirely.
 		if m.dtPicker != nil {
 			_, cmd := m.dtPicker.HandleKey(msg)
 			return m, tea.Batch(cmd, m.finishDateTimePicker())
@@ -1408,9 +1162,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	case "n":
 		switch src {
 		case srcProjects:
-			// THROUGH THE PREP, not straight to the form: the create form now offers the
-			// MCP selection, whose options are a round trip. Building it synchronously
-			// would open a form that silently lacked the field.
+			// THROUGH THE PREP, not straight to the form: the create form now offers the MCP selection, whose
+			// options are a round trip.
 			return m.prepProjectForm(formCreateProject, ""), true
 		case srcImages:
 			return m.openForm(m.newImageCreateForm(), formCreateImage, ""), true
@@ -1431,26 +1184,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return m.prepEditProject(formProjectDir), true
 		}
 	case "m":
-		// MANAGE the project's MCP definitions and skill files in the ONE MODAL — the same surface a
-		// conversation gets from /scope, and the same panel the GUI mounts on a project page
-		// (MCPServersPanel with scope {kind:"project"}).
-		//
-		// ONE KEY FOR BOTH ADD PATHS. There used to be a second chord (`M`) that opened the modal
-		// straight on its catalog verb, which was a shortcut to a key INSIDE the surface the same key
-		// already opens — the operator: "Instead of 'm' and 'M' for add mcp server or add from catalog,
-		// can't we put both of those operations into 'm' and get rid of the additional control?"
-		// Conversations have always worked this way (one /scope, with add and catalog as keys within it),
-		// so this removes the divergence rather than inventing a rule.
-		//
-		// IT REPLACES A CREATE-ONLY FORM. `m` used to open a bare "define an MCP server" form, and the
-		// project's skill files were reachable only as an absolute-path text field inside the edit form —
-		// so an operator had a modal on one surface and hand-editing on another. The operator: "I simply
-		// want at least a similar modal to manage MCP and skills for projects and workers. Right now it's
-		// one line edit with absolute paths. It doesn't pop up a modal like /mcp or /scope does."
-		//
-		// The modal lists what the project actually owns, and its verbs are keys on visible rows: a add ·
-		// c catalog · enter/e edit · i install · k credential · d delete · s skill files. The old
-		// define/catalog forms are still what those verbs OPEN — one implementation, not a second one.
+		// IT REPLACES A CREATE-ONLY FORM.
 		if src == srcProjects {
 			if it, ok := m.ActiveItem(); ok {
 				if h, ok := m.mcpModalHost(); ok {
@@ -1473,25 +1207,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return m.switchView(m.ViewMode().next()), true
 		}
 	case "O":
-		// The OVERALL collapse/expand toggle ('o' is the single-node one,
-		// handled by the table itself). TREE AND ARCHIVE — both are trees now
-		// (the archive view renders the archived hierarchy), so both carry the
-		// control. It is a no-op on a flat list (no parents).
+		// The OVERALL collapse/expand toggle ('o' is the single-node one, handled by the table itself).
 		if src == srcWorkItems {
 			return m.toggleAllTreeNodes(), true
 		}
 	case "/":
-		// Focus the search box at the top of the list. While it is focused Base
-		// owns every key (typing narrows the list; esc clears the query and
-		// leaves the box), so there is no esc case here to shadow it.
+		// Focus the search box at the top of the list.
 		if m.Base.StartFilter() {
 			return nil, true
 		}
 	case "+", "=":
-		// Move the selected item one step EARLIER in its sibling sequence (its
-		// workflow then runs sooner). "=" is accepted because "+" is a shifted
-		// key on most layouts and the shifted/unshifted pair is easy to hit with
-		// the wrong finger.
+		// Move the selected item one step EARLIER in its sibling sequence (its workflow then runs sooner).
 		if src == srcWorkItems && m.ViewMode() == viewTree {
 			return m.reorderChildren(-1), true
 		}
@@ -1505,26 +1231,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return m.openAction(a), true
 		}
 		// keyBulkSet IS THE ONE CHORD IN THIS GROUP THAT IS NOT ALWAYS OFFERED, so it is the one that could
-		// fall through in silence. It exists only for a BULK selection (2+ marked): below that,
-		// actionsForSelection offers the single-row actions instead, actionByKey finds nothing, and the key
-		// did NOTHING AT ALL — indistinguishable from a dead key, which is how a chord stays undiscoverable
-		// however loudly the hint names it. Refused out loud, with the two routes to the thing they meant
-		// (the same shape as the Workers pane's bulk set-model refusal).
+		// fall through in silence.
 		if msg.String() == keyBulkSet {
 			m.notice = keyBulkSet + " sets a workflow + runtime image for SEVERAL items at once — " +
 				"space to mark 2 or more first, or e to set one item's fields"
 			return nil, true
 		}
 	case kit2.DeleteChord, kit2.DeleteChordAlias:
-		// ONE delete gesture, TWO keys. `ctrl+x` is the client's canonical delete chord
-		// (kit2.DeleteChord — the operator asked for it "across the board", and the
-		// Execution panes have answered it ever since) and a bare `x` is what these panes
-		// have always used. Accepting both is the point of this fix: the operator pressed
-		// the chord they had asked for and NOTHING HAPPENED, because this screen only knew
-		// its own.
-		//
-		// The action's Key is the canonical one, so the bar advertises `ctrl+x:delete` and
-		// every pane in the client names the same binding.
+		// ONE delete gesture, TWO keys.
 		if a, ok := m.actionByKey(kit2.DeleteChord); ok {
 			return m.openAction(a), true
 		}
@@ -1577,9 +1291,8 @@ func formBox(f *kit2.Form, w int) string {
 	if bw < 24 {
 		bw = 24
 	}
-	// The form's own width must reflect the box it is drawn in, or its
-	// horizontal window (and its caret) would be computed against the terminal
-	// rather than the dialog's inner width.
+	// The form's own width must reflect the box it is drawn in, or its horizontal window (and its
+	// caret) would be computed against the terminal rather than the dialog's inner width.
 	f.Width = bw - 4
 	d := &kit2.Dialog{Title: f.Title, Body: f.View(), Buttons: []string{"submit", "cancel"}}
 	return d.Box(bw, minInt(26, len(f.Specs)*2+5))
@@ -1594,9 +1307,8 @@ func (m *Model) refreshActionBar() {
 	m.Base.Bar = m.bar
 }
 
-// toggleAllTreeNodes flips every node of the work-item Tree at once — the
-// operator's "overall collapse and expand". A no-op on a flat list (no parents)
-// and on Board/Archive, which have no tree.
+// toggleAllTreeNodes flips every node of the work-item Tree at once — the operator's "overall
+// collapse and expand".
 func (m *Model) toggleAllTreeNodes() tea.Cmd {
 	t := m.Base.ActiveTable()
 	if t == nil || t.ExpandableCount() == 0 {
@@ -1622,20 +1334,7 @@ func (m *Model) HintLine() string {
 		return theme.HintText.Render("n: new image · e: edit spec · b: build (live logs) · " +
 			kit2.DeleteChord + ": delete · enter: detail")
 	default:
-		// THE BULK SET IS NAMED HERE, AND IT WAS NAMED NOWHERE. Its chord (keyBulkSet) existed, and the action
-		// bar offered it once a selection existed — but a chord that is only ever discoverable by already
-		// having done the thing it needs is not discoverable. The operator: "We recently added bulk workflow
-		// and runtime image setting but the workers didn't add a shortcut helper in the composer to tell
-		// people that they can and how to do it. We need one for W." So the chord, what it DOES, and HOW to
-		// get there (mark two or more) are all stated — one line when there is no selection, and the
-		// selection's own line once there is, which is the shape the Workers pane's bulk set-model already
-		// uses (see execution.markHint).
-		// THE MARKED LINE IS ALSO PER VIEW, for the same reason the unmarked one is: it
-		// named the chords of the TREE while the archive was on screen. Measured in the
-		// archive view with two rows marked, it read "2 marked · W: set workflow & image ·
-		// esc: clear" — `W` is not even OFFERED there (bulkArchiveActions returns restore
-		// and clear), so the line advertised a chord that does nothing and omitted the one
-		// the operator had just selected rows to use.
+		// THE BULK SET IS NAMED HERE, AND IT WAS NAMED NOWHERE.
 		if n := m.Base.MarkCount(); n > 1 {
 			if m.ViewMode() == viewArchive {
 				return theme.HintText.Render(fmt.Sprintf("%d marked", n) + " · " +
@@ -1644,24 +1343,13 @@ func (m *Model) HintLine() string {
 			return theme.HintText.Render(fmt.Sprintf("%d marked", n) + " · " +
 				keyBulkSet + ": set workflow & image · esc: clear · ↑↓: move · enter: detail")
 		}
-		// THE ARCHIVE VIEW GETS ITS OWN LINE, because half of the tree line's chords do
-		// not exist there and the one chord that DOES was named nowhere.
-		//
-		// The operator: "It doesn't look like there is a way to restore a work item from
-		// the archive in the TUI but you can in the GUI." They were right: the line
-		// advertised "a: archive" (which is a no-op in this view — itemActions offers
-		// restore INSTEAD of archive, not as well as) and never mentioned "R". So the
-		// only chord that works in the archive view was the only one not written down.
+		// THE ARCHIVE VIEW GETS ITS OWN LINE, because half of the tree line's chords do not exist there and
+		// the one chord that DOES was named nowhere.
 		if m.ViewMode() == viewArchive {
 			return theme.HintText.Render("R: restore · /: search · enter: detail · " +
 				"v: view (archive ⇄ tree) · o/O: collapse · ↑↓: move")
 		}
 		// THE STOP CHORD IS ADVERTISED ONLY WHEN THERE IS SOMETHING TO STOP.
-		//
-		// A hint that names a chord which does nothing is worse than a shorter hint:
-		// it teaches the operator that the row is unreliable. So `x: stop run` appears
-		// on a RUNNING row and nowhere else — derived from the selected item's status,
-		// which is the same state the pill on that row shows.
 		stop := ""
 		if it, ok := m.ActiveItem(); ok && itemIsRunning(it) {
 			stop = keyStopRun + ": stop execution · "
@@ -1694,17 +1382,13 @@ func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDet
 func (m *Model) ActiveSourceName() string           { return m.Base.ActiveSourceName() }
 func (m *Model) ActiveItem() (screenkit.Item, bool) { return m.Base.ActiveItem() }
 
-// itemIsRunning reports whether the pane's selected row is an item whose run is
-// live. The row's Meta carries the status pill (views.go workItemMeta), which is
-// the same string the row draws, so the hint and the row can never disagree.
+// itemIsRunning reports whether the pane's selected row is an item whose run is live.
 func itemIsRunning(it screenkit.Item) bool {
 	return strings.Contains(it.Meta, statusPill(apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING))
 }
 
-// StopRunHint reports the chord that stops the focused row's run, or "" when the
-// focused row is not running. It is the composer's probe (see App.stopRunHint): the
-// answer is derived from the same row state the hint line and the status pill use, so
-// the three can never disagree about whether there is something to stop.
+// StopRunHint reports the chord that stops the focused row's run, or "" when the focused row is not
+// running.
 func (m *Model) StopRunHint() string {
 	if m.ActiveSourceName() != srcWorkItems {
 		return ""

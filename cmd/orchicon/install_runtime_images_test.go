@@ -7,9 +7,8 @@ import (
 	"testing"
 )
 
-// TestParseRuntimeImageSelection pins the install's multi-select contract:
-// default NONE, "all", explicit indexes, and the base auto-include that keeps
-// a variant from being fetched without the image it derives FROM.
+// TestParseRuntimeImageSelection pins the install's multi-select contract: default NONE, "all",
+// explicit indexes, and the base auto-include that keeps a variant from being fetched.
 func TestParseRuntimeImageSelection(t *testing.T) {
 	cases := []struct {
 		in      string
@@ -53,9 +52,8 @@ func TestParseRuntimeImageSelection(t *testing.T) {
 	}
 }
 
-// TestInstallOffersEveryRuntimeImageAndDeclinesByDefault is AC 15/17: every
-// shipped runtime image is offered with its size, and an install that answers
-// nothing (a non-interactive install, EOF) downloads NOTHING.
+// TestInstallOffersEveryRuntimeImageAndDeclinesByDefault is AC 15/17: every shipped runtime image
+// is offered with its size, and an install that answers nothing (a non-interactive install.
 func TestInstallOffersEveryRuntimeImageAndDeclinesByDefault(t *testing.T) {
 	choices := installRuntimeImageChoices("latest")
 	// web-research is deliberately ABSENT: its tag is not published (see the comment on
@@ -102,15 +100,6 @@ func variantTag(v string) string {
 }
 
 // TestInstallImageRefsAgreeWithThePublishPolicy is the installer's half of the publish/build split.
-//
-// It used to assert that release.yml publishes the gui and dev variant tags, because the install PULLED them.
-// It does not any more: those images carry third-party adapter CLIs, so release.yml publishes the base alone
-// and the installer BUILDS the variants from the template embedded in the binary.
-//
-// So the assertion inverts. What must hold now is that each choice is OBTAINABLE by the route it names:
-// a published choice is a registry ref that release.yml actually pushes, and an unpublished one is a LOCAL
-// name with a build context — never a registry ref nothing publishes, which is the "manifest unknown" failure
-// an operator reported.
 func TestInstallImageRefsAgreeWithThePublishPolicy(t *testing.T) {
 	src, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {
@@ -146,10 +135,8 @@ func TestInstallImageRefsAgreeWithThePublishPolicy(t *testing.T) {
 	}
 }
 
-// TestAssumeYesAnswersTheRuntimeImagePrompt is AC 19 for the affirmative half: `--yes` reaches this prompt
-// through ORCHICON_ASSUME_YES (scripts/install.sh exports it, because the setup step runs `orchicon install`
-// with no flags), answers ALL of them, prints the total size BEFORE anything is fetched, and never overrides
-// an answer the instance already recorded.
+// TestAssumeYesAnswersTheRuntimeImagePrompt is AC 19 for the affirmative half: `--yes` reaches this
+// prompt through ORCHICON_ASSUME_YES (scripts/install.sh exports it.
 func TestAssumeYesAnswersTheRuntimeImagePrompt(t *testing.T) {
 	t.Setenv("ORCHICON_ASSUME_YES", "1")
 	var shown strings.Builder

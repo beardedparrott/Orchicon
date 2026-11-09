@@ -14,20 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// toolListProjectBranches reports a project's git identity — whether it is git-backed at all, its current branch,
-// its default branch, and the local + origin branch names — so a caller can OFFER real branches instead of asking
-// for one blind.
-//
-// WHY IT EXISTS. A dispatch must confirm, every time, which branch to cut the run from and which branch the PR
-// merges into. As an OPEN question that burdens the user with recalling exact branch names, and the cost of a
-// wrong answer is a run that pushes to the wrong place. Asking WITH the real list makes the confirmation concrete
-// and cheap.
-//
-// THE SAFETY SHAPE IS THE POINT, and it is deliberately narrow: fixed argv, exec'd WITHOUT a shell (so no branch
-// name and no argument can ever become a command), the directory pinned with `git -C`, a bounded timeout, and
-// `--format` output that needs no parsing of human-readable decoration. Quick Work has `bash` DENIED precisely so
-// the mode cannot run arbitrary commands; a tool that handed it one back through this surface would be that
-// denial undone. NOTHING here is user-controlled except the project id, and that only selects a directory.
+// toolListProjectBranches reports a project's git identity — whether it is git-backed at all, its
+// current branch, its default branch, and the local + origin branch names.
 func toolListProjectBranches(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID string `json:"project_id"`
@@ -57,9 +45,7 @@ func toolListProjectBranches(ctx context.Context, pool *db.Pool, args json.RawMe
 			"read — say so rather than guessing at branch names", dir)
 	}
 
-	// Fixed argv, no shell. `git -C` pins the directory; the timeout bounds a hung index or lock; and
-	// GIT_TERMINAL_PROMPT=0 guarantees a credential prompt can never block the turn waiting on input that will
-	// never come (a real failure mode for an unattended process).
+	// Fixed argv, no shell.
 	run := func(argv ...string) string {
 		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -166,17 +152,8 @@ func toolListProjectBranches(ctx context.Context, pool *db.Pool, args json.RawMe
 	return json.Marshal(out)
 }
 
-// integrationBranchFor picks the branch a run's work should LAND on: the conventional integration branch when
-// it exists (locally or on origin), else the repository's own default, else "" (nothing is invented — a caller
-// receiving "" must ask rather than assume).
-//
-// IT IS PURE, AND SEPARATED FOR THAT REASON: this is the decision the whole suggestion rests on and the one
-// that was wrong, so it is testable without a git binary, a work tree or a database. The execs around it are
-// deliberately narrow and fixed-argv; the JUDGEMENT is what needed a test.
-//
-// ORIGIN IS CHECKED AS WELL AS DISK. A run may cut from a branch that exists only on the remote, and the
-// local-only check is exactly how a repository whose develop has not been fetched yet loses its integration
-// branch. `remotes` carries `origin/<name>` as git reports it.
+// integrationBranchFor picks the branch a run's work should LAND on: the conventional integration
+// branch when it exists (locally or on origin), else the repository's own default.
 func integrationBranchFor(defaultBranch string, locals, remotes []string) string {
 	if branchListContains(locals, "develop") || branchListContains(remotes, "origin/develop") {
 		return "develop"

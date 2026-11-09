@@ -15,9 +15,8 @@ import (
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 )
 
-// new401Server builds a fake ProjectService whose handler rejects
-// "Bearer old-token" with 401 (the expired-access-token case) and accepts
-// everything else, plus a /auth/refresh exchange endpoint.
+// new401Server builds a fake ProjectService whose handler rejects "Bearer old-token" with 401 (the
+// expired-access-token case) and accepts everything else, plus a /auth/refresh exchange endpoint.
 func new401Server(t *testing.T, refreshCount *atomic.Int32, refreshOK bool) *httptest.Server {
 	t.Helper()
 	fake := &fakeProjects{}
@@ -46,10 +45,8 @@ func new401Server(t *testing.T, refreshCount *atomic.Int32, refreshOK bool) *htt
 	return srv
 }
 
-// TestRefreshOn401UnaryAndRetry pins the password-mode auto-refresh: the
-// first RPC 401s (access token expired), the interceptor POSTs
-// /auth/refresh with the stored token, swaps in the fresh access token,
-// and RETRIES — the caller never sees the 401.
+// TestRefreshOn401UnaryAndRetry pins the password-mode auto-refresh: the first RPC 401s (access
+// token expired), the interceptor POSTs /auth/refresh with the stored token.
 func TestRefreshOn401UnaryAndRetry(t *testing.T) {
 	var refreshes atomic.Int32
 	srv := new401Server(t, &refreshes, true)
@@ -78,9 +75,8 @@ func TestRefreshOn401UnaryAndRetry(t *testing.T) {
 	}
 }
 
-// TestRefreshFailureSurfaces401 pins the other half: when refresh itself
-// fails (expired refresh token) the ORIGINAL 401 surfaces — the
-// auth-expired state fires and drives the in-place /connect overlay.
+// TestRefreshFailureSurfaces401 pins the other half: when refresh itself fails (expired refresh
+// token) the ORIGINAL 401 surfaces.
 func TestRefreshFailureSurfaces401(t *testing.T) {
 	var refreshes atomic.Int32
 	srv := new401Server(t, &refreshes, false)
@@ -98,9 +94,8 @@ func TestRefreshFailureSurfaces401(t *testing.T) {
 	}
 }
 
-// TestAPIKeyModeNeverRefreshes pins api-key inertness: no refresh token
-// stored → no /auth/refresh call, no Session, and the stale credential
-// still surfaces its 401 as-is (no retry loop).
+// TestAPIKeyModeNeverRefreshes pins api-key inertness: no refresh token stored → no /auth/refresh
+// call, no Session, and the stale credential still surfaces its 401 as-is (no retry loop).
 func TestAPIKeyModeNeverRefreshes(t *testing.T) {
 	fake := &fakeProjects{}
 	path, _ := apiv1connect.NewProjectServiceHandler(fake)
@@ -132,10 +127,8 @@ func TestAPIKeyModeNeverRefreshes(t *testing.T) {
 	}
 }
 
-// TestLoginCapturesRefreshCookie pins the login-side half: POST
-// /auth/local-login returns the access token in the body and the refresh
-// token ONLY as the HttpOnly orchicon_refresh Set-Cookie — Login must
-// surface it for the profile to store.
+// TestLoginCapturesRefreshCookie pins the login-side half: POST /auth/local-login returns the
+// access token in the body and the refresh token ONLY as the HttpOnly orchicon_refresh Set-Cookie.
 func TestLoginCapturesRefreshCookie(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth/local-login", func(w http.ResponseWriter, r *http.Request) {
@@ -158,10 +151,8 @@ func TestLoginCapturesRefreshCookie(t *testing.T) {
 	}
 }
 
-// TestRefreshTokenRoundTrip pins the POST /auth/refresh body contract:
-// {"refresh_token": …} in, tokenResponse out. The refresh token is
-// replayed in the body (readRefreshToken accepts cookie OR body;
-// non-browser clients have no cookie jar).
+// TestRefreshTokenRoundTrip pins the POST /auth/refresh body contract: {"refresh_token": …} in,
+// tokenResponse out.
 func TestRefreshTokenRoundTrip(t *testing.T) {
 	mux := http.NewServeMux()
 	var gotBody atomic.Value

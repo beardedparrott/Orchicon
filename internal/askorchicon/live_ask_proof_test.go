@@ -1,14 +1,7 @@
 package askorchicon
 
-// Live Ask-path proof (operator-run, env-gated) — the acceptance run for
-// native-path file/shell parity: the RESTORED Ask tool surface itself
-// drives branch → edit → commit → push → PR → admin-squash-merge through
-// ExecuteAskTool (the exact entry point chatturn.go's tool loop calls),
-// against a throwaway GitHub repo (no product code touched).
-//
-// Gate: ORCHICON_TEST_LIVE_ASK_PROOF=1. Requires GH_TOKEN with repo scope
-// (PR create/merge) and a network path to github.com. Skipped in default
-// CI (never in the unit suite).
+// Live Ask-path proof (operator-run, env-gated) — the acceptance run for native-path file/shell
+// parity: the RESTORED Ask tool surface itself drives branch → edit → commit → push → PR →.
 
 import (
 	"context"

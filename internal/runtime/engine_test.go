@@ -1,12 +1,7 @@
 package runtime
 
-// The engine contract tests: which engine the daemon defaults to, what an ABSENT
-// engine reports (AC 2), and — flag by flag — where podman and docker differ.
-//
-// The flag differences cannot be verified by RUNNING an engine in CI (the image
-// ships no podman/docker), so they are pinned here as the exact argv the daemon
-// will emit, and the reasons live next to the code that emits them
-// (engine.go, daemon.go createFlagArgs).
+// The engine contract tests: which engine the daemon defaults to, what an ABSENT engine reports (AC
+// 2), and — flag by flag — where podman and docker differ.
 
 import (
 	"errors"
@@ -17,9 +12,7 @@ import (
 	"testing"
 )
 
-// TestEngineDefaultsToPodman pins the default. Everything downstream (the pool
-// key, the create argv, the image-label template) reads the SAME value, so the
-// default lives in exactly one place.
+// TestEngineDefaultsToPodman pins the default.
 func TestEngineDefaultsToPodman(t *testing.T) {
 	if got := DefaultEngineName(); got != "podman" {
 		t.Fatalf("DefaultEngineName() = %q, want podman", got)
@@ -48,10 +41,8 @@ func TestResolveEngineRejectsUnknownName(t *testing.T) {
 	}
 }
 
-// TestResolveEngineDefault is the environment-tolerant half: it asserts the
-// RESOLUTION CONTRACT (empty => the default engine, resolved to a real path) and
-// tolerates a host with no engine installed by asserting the actionable error
-// instead.
+// TestResolveEngineDefault is the environment-tolerant half: it asserts the RESOLUTION CONTRACT
+// (empty => the default engine.
 func TestResolveEngineDefault(t *testing.T) {
 	eng, err := ResolveEngine("")
 	if err != nil {
@@ -104,16 +95,14 @@ func TestEngineMissingErrorIsActionable(t *testing.T) {
 	}
 }
 
-// TestEngineFlagArgs pins the per-engine flag set (AC 3 / AC 6):
-// --user is preserved for BOTH engines, --userns=keep-id and the loopback
-// publish are podman-only, and the host alias is emitted for both.
+// TestEngineFlagArgs pins the per-engine flag set (AC 3 / AC 6): --user is preserved for BOTH
+// engines, --userns=keep-id and the loopback publish are podman-only.
 func TestEngineFlagArgs(t *testing.T) {
 	podman := Engine{Name: "podman", Bin: "podman"}
 	docker := Engine{Name: "docker", Bin: "docker"}
 
-	// AC 6: --userns=keep-id rides alongside --user so a rootless podman maps
-	// the container uid onto the HOST uid (project dirs written as the
-	// operator). Docker needs no equivalent.
+	// AC 6: --userns=keep-id rides alongside --user so a rootless podman maps the container uid onto
+	// the HOST uid (project dirs written as the operator).
 	if got, want := podman.UsernsArgs(), []string{"--userns=keep-id"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("podman UsernsArgs = %v, want %v", got, want)
 	}
@@ -145,9 +134,8 @@ func TestEngineFlagArgs(t *testing.T) {
 		}
 	}
 
-	// The image-label template DIFFERS: docker nests labels under the image
-	// config, podman exposes them at the top level. Getting this wrong does not
-	// error — it silently rejects every custom image.
+	// The image-label template DIFFERS: docker nests labels under the image config, podman exposes them
+	// at the top level.
 	if got := podman.ImageLabelFormat("org.orchicon.runtime-base"); got != `{{index .Labels "org.orchicon.runtime-base"}}` {
 		t.Errorf("podman ImageLabelFormat = %q", got)
 	}
@@ -156,9 +144,8 @@ func TestEngineFlagArgs(t *testing.T) {
 	}
 }
 
-// TestEngineNameInUseTokens pins the retry predicate against the REAL wordings
-// (ADR-0013 D5.2) — podman's phrasings are not covered by docker's, so an
-// unadjusted predicate would fail creates that used to retry.
+// TestEngineNameInUseTokens pins the retry predicate against the REAL wordings (ADR-0013 D5.2) —
+// podman's phrasings are not covered by docker's.
 func TestEngineNameInUseTokens(t *testing.T) {
 	podman := Engine{Name: "podman"}
 	docker := Engine{Name: "docker"}
@@ -185,9 +172,8 @@ func TestEngineNameInUseTokens(t *testing.T) {
 	}
 }
 
-// TestEngineHostEndpoint pins AC 4's resolution for both engines: podman parses
-// the published loopback port, docker reports the container IP and container
-// port (unchanged).
+// TestEngineHostEndpoint pins AC 4's resolution for both engines: podman parses the published
+// loopback port, docker reports the container IP and container port (unchanged).
 func TestEngineHostEndpoint(t *testing.T) {
 	podman := Engine{Name: "podman"}
 	var gotArgs []string
@@ -233,11 +219,7 @@ func TestEngineHostEndpoint(t *testing.T) {
 }
 
 // TestResolveEngineFromEnvHonoursTheProjectWideVariable pins the env precedence:
-// ORCHICON_RUNTIME_ENGINE (the ADR's spelling) wins, ORCHICON_ENGINE — which
-// scripts/lib/engine.sh, scripts/runtime.sh and the Makefile already read — is
-// honoured as a FALLBACK, and neither set means the default engine. The point is
-// that one host cannot build/pull its runtime images with one engine and create
-// containers with the other.
+// ORCHICON_RUNTIME_ENGINE (the ADR's spelling) wins, ORCHICON_ENGINE — which scripts/lib/engine.sh.
 func TestResolveEngineFromEnvHonoursTheProjectWideVariable(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -273,9 +255,8 @@ func TestResolveEngineFromEnvHonoursTheProjectWideVariable(t *testing.T) {
 		})
 	}
 
-	// A typo in the project-wide variable is REJECTED, not silently defaulted:
-	// a typo must not leave the daemon on podman while the operator believes it
-	// selected something else.
+	// A typo in the project-wide variable is REJECTED, not silently defaulted: a typo must not leave
+	// the daemon on podman while the operator believes it selected something else.
 	t.Setenv(EnvEngine, "")
 	t.Setenv(EnvEngineAlias, "containerd")
 	if _, err := ResolveEngineFromEnv(); err == nil {
@@ -283,11 +264,8 @@ func TestResolveEngineFromEnvHonoursTheProjectWideVariable(t *testing.T) {
 	}
 }
 
-// TestIsAbsentOutputBothEngines is the wording table behind the idempotent
-// DELETE /v1/images (AC 5): docker says "No such image", podman says "image not
-// known", and BOTH must read as the already-gone result rather than a 500.
-// Any other failure text stays an error, so the matcher cannot swallow a real
-// removal failure.
+// TestIsAbsentOutputBothEngines is the wording table behind the idempotent DELETE /v1/images (AC
+// 5): docker says "No such image", podman says "image not known".
 func TestIsAbsentOutputBothEngines(t *testing.T) {
 	for _, eng := range []Engine{{Name: "podman"}, {Name: "docker"}} {
 		for _, out := range []string{

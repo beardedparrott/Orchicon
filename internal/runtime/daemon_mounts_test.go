@@ -10,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
-// bootProfileTestHome builds a host home that has BOTH an opencode install
-// and the git identity/credential surface, and returns a daemon wired to it.
-// ghTokenFn is stubbed so the assertion never shells out to `gh`.
+// bootProfileTestHome builds a host home that has BOTH an opencode install and the git
+// identity/credential surface, and returns a daemon wired to it.
 func bootProfileTestHome(t *testing.T) (string, *Daemon) {
 	t.Helper()
 	home := t.TempDir()
@@ -60,9 +59,7 @@ func envValue(args []string, key, value string) bool {
 	return argValue(args, "-e", key+"="+value)
 }
 
-// opencodeAdapterMounts are the conditional HOST BINDS under home. The data
-// home is deliberately absent: it is not bind-mounted at all, it is a private
-// uid-owned directory (opencodePrivateDataHome).
+// opencodeAdapterMounts are the conditional HOST BINDS under home.
 func opencodeAdapterMounts(home string) []string {
 	out := make([]string, 0, 2)
 	for _, p := range []string{
@@ -74,15 +71,8 @@ func opencodeAdapterMounts(home string) []string {
 	return out
 }
 
-// tmpfsOwnershipSuffix is the ownership grammar a --tmpfs entry carries for a
-// given engine family, so the expectations below stay engine-aware instead of
-// hard-coding one engine's spelling.
-//
-// THE TWO ENGINES DO NOT ACCEPT THE SAME OPTIONS, and pinning docker's was the
-// defect: podman rejects uid=/gid= outright ("unknown mount option \"uid=1000\""),
-// so a test that asserted `uid=0,gid=0,mode=0755` on EVERY argv was asserting a
-// string the engine refuses — green tests over a container that could not be
-// created. The runtime uid reaches its mounts through the MODE under podman.
+// THE TWO ENGINES DO NOT ACCEPT THE SAME OPTIONS, and pinning docker's was the defect: podman
+// rejects uid=/gid= outright ("unknown mount option \"uid=1000\"").
 func tmpfsOwnershipSuffix(podman bool) string { return tmpfsOwnershipSuffixFor(podman, 0, 0) }
 
 // tmpfsOwnershipSuffixFor is the same grammar with an explicit uid/gid, for the
@@ -94,17 +84,14 @@ func tmpfsOwnershipSuffixFor(podman bool, uid, gid int) string {
 	return fmt.Sprintf(",uid=%d,gid=%d,mode=0755", uid, gid)
 }
 
-// opencodePrivateDataHome is the private data home an opencode-demanding run
-// gets: the same path inside and out, as every mount is, but a tmpfs the runtime
-// uid can write rather than the operator's directory.
+// opencodePrivateDataHome is the private data home an opencode-demanding run gets: the same path
+// inside and out, as every mount.
 func opencodePrivateDataHome(home string, podman bool) string {
 	return filepath.Join(home, ".local", "share", "opencode") + ":rw" + tmpfsOwnershipSuffix(podman)
 }
 
-// homeOwnedTmpfsOpts are the three tmpfs entries that make $HOME — and the
-// `.local` and `.config` a bind inside it forces the engine to create as root —
-// writable by the runtime uid. Without them the adapter CLI exits 1 at boot
-// (`EACCES mkdir $HOME/.cache` on 1.x, `mkdir $HOME/.local/state` on 2.x).
+// homeOwnedTmpfsOpts are the three tmpfs entries that make $HOME — and the `.local` and `.config` a
+// bind inside it forces the engine to create as root — writable by the runtime uid.
 func homeOwnedTmpfsOpts(home string, podman bool) []string {
 	suffix := ":rw" + tmpfsOwnershipSuffix(podman)
 	return []string{
@@ -114,11 +101,8 @@ func homeOwnedTmpfsOpts(home string, podman bool) []string {
 	}
 }
 
-// TestStandardHostMountArgsConditionalOpencode is AC 1/AC 3/AC 5: a
-// native-only run's container carries NO opencode config/auth/CLI mount and
-// no adapter PATH prefix, while an opencode-demanding run (explicit, mixed,
-// or the legacy absent profile) carries all three plus the prefix. The git
-// identity/credential surface is NOT adapter-gated and stays in every case.
+// TestStandardHostMountArgsConditionalOpencode is AC 1/AC 3/AC 5: a native-only run's container
+// carries NO opencode config/auth/CLI mount and no adapter PATH prefix.
 func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 	home, d := bootProfileTestHome(t)
 
@@ -128,9 +112,8 @@ func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 		filepath.Join(home, ".config", "gh") + ":" + filepath.Join(home, ".config", "gh") + ":ro",
 		filepath.Join(home, ".local", "share", "gh") + ":" + filepath.Join(home, ".local", "share", "gh") + ":ro",
 	}
-	// THE PREFIX CARRIES THE HOST'S INSTALL, because the container runs it: `opencode serve` is exec'd by
-	// name, so the dir must precede /usr/local/bin. It used to be suppressed as "image-supplied", which is
-	// the rule that left an image without the CLI unable to resolve the name at all.
+	// THE PREFIX CARRIES THE HOST'S INSTALL, because the container runs it: `opencode serve` is exec'd
+	// by name, so the dir must precede /usr/local/bin.
 	adapterPATH := filepath.Join(home, ".opencode", "bin") + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 	cases := []struct {
@@ -164,9 +147,8 @@ func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 					t.Errorf("adapter mount %s present=%v, want %v (args %v)", m, got, c.wantAdapter, args)
 				}
 			}
-			// The private data home follows the adapter demand like the host
-			// binds do; the uid-owned HOME trio does NOT (it is what makes the
-			// runtime's home writable at all, adapter or not).
+			// The private data home follows the adapter demand like the host binds do; the uid-owned HOME trio
+			// does NOT (it is what makes the runtime's home writable at all, adapter or not).
 			if got := argValue(args, "--tmpfs", opencodePrivateDataHome(home, true)); got != c.wantAdapter {
 				t.Errorf("private data home present=%v, want %v (args %v)", got, c.wantAdapter, args)
 			}
@@ -175,10 +157,7 @@ func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 					t.Errorf("missing uid-owned home tmpfs %s: %v", opt, args)
 				}
 			}
-			// THE HOST'S opencode IS WHAT THE CONTAINER RUNS WHEN IT IS DEMANDED. The supervisor's serve argv
-			// is the bare name `opencode`, so PATH is the only lever — and with an image that has no CLI in
-			// it, a PATH without the host dir is `opencode: not found` at serve time (measured on the
-			// :orchicon-dev image). It still follows the DEMAND: a native-only run has no opencode to find.
+			// THE HOST'S opencode IS WHAT THE CONTAINER RUNS WHEN IT IS DEMANDED.
 			if got := envValue(args, "PATH", adapterPATH); got != c.wantAdapter {
 				t.Errorf("host adapter bin dir on PATH = %v, want %v — the prefix follows the adapter demand "+
 					"(args %v)", got, c.wantAdapter, args)
@@ -187,14 +166,8 @@ func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 	}
 }
 
-// TestStandardHostMountArgsOpencodePrivateDataHome pins the two halves of the
-// fix for `serve handshake: exit status 1`: the CLI needs a WRITABLE data home
-// (2.x writes log/ and its SQLite DB there, and a read-only mount fails the
-// boot outright), and it needs one it OWNS, which is why the operator's
-// directory is never bind-mounted — not read-only, and not read-write either,
-// since that would hand a worker write access to the operator's credential
-// store. Both opencode 1.x and 2.x boot against this shape; only the credential
-// source differs by version (1.x reads auth.json, 2.x needs env).
+// TestStandardHostMountArgsOpencodePrivateDataHome pins the two halves of the fix for `serve
+// handshake: exit status 1`.
 func TestStandardHostMountArgsOpencodePrivateDataHome(t *testing.T) {
 	home, d := bootProfileTestHome(t)
 	args := d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"opencode"}, GitStrategy: "local"})
@@ -228,9 +201,8 @@ func TestStandardHostMountArgsNoHostHome(t *testing.T) {
 	}
 }
 
-// TestStandardHostMountArgsGitStrategyGate pins that the boot-profile change
-// did not disturb the git-strategy gate: a "none" run keeps the adapter
-// mounts (model auth is needed) but loses the whole push surface.
+// TestStandardHostMountArgsGitStrategyGate pins that the boot-profile change did not disturb the
+// git-strategy gate: a "none" run keeps the adapter mounts (model auth is needed) but loses.
 func TestStandardHostMountArgsGitStrategyGate(t *testing.T) {
 	home, d := bootProfileTestHome(t)
 	args := d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"opencode"}, GitStrategy: "none"})
@@ -252,9 +224,8 @@ func TestStandardHostMountArgsGitStrategyGate(t *testing.T) {
 	}
 }
 
-// claudeMountTestHome adds the claude surface (config home, ~/.claude.json,
-// the launcher symlink and its install root) to the standard boot-profile test
-// home, so a MIXED opencode+claude request can be exercised against one home.
+// claudeMountTestHome adds the claude surface (config home, ~/.claude.json, the launcher symlink
+// and its install root) to the standard boot-profile test home.
 func claudeMountTestHome(t *testing.T) (string, *Daemon) {
 	t.Helper()
 	home, d := bootProfileTestHome(t)
@@ -288,20 +259,15 @@ func claudeAdapterMounts(home string) []string {
 	p := func(parts ...string) string {
 		return filepath.Join(append([]string{home}, parts...)...)
 	}
-	// NO READ-WRITE HOST BIND. ~/.claude and ~/.claude.json are PRIVATE per container (a writable tmpfs at
-	// the same path), so concurrent runs cannot write into one tree on the operator's machine. Only the
-	// CLI launcher and install root remain host binds, read-only.
+	// NO READ-WRITE HOST BIND.
 	return []string{
 		p(".local", "bin", "claude") + ":" + p(".local", "bin", "claude") + ":ro",
 		p(".local", "share", "claude") + ":" + p(".local", "share", "claude") + ":ro",
 	}
 }
 
-// TestStandardHostMountArgsClaudeRWAndPath is the daemon-level half: a
-// claude-demanding run carries all four claude installs with the RW/RO split
-// and the ~/.local/bin PATH prefix; an opencode-only run carries neither the
-// claude mounts nor a claude PATH entry; and a MIXED run carries both mounts
-// and both PATH entries (opencode first, per requestedKinds' sort).
+// TestStandardHostMountArgsClaudeRWAndPath is the daemon-level half: a claude-demanding run carries
+// all four claude installs with the RW/RO split and the ~/.local/bin PATH prefix.
 func TestStandardHostMountArgsClaudeRWAndPath(t *testing.T) {
 	home, d := claudeMountTestHome(t)
 
@@ -330,10 +296,7 @@ func TestStandardHostMountArgsClaudeRWAndPath(t *testing.T) {
 			t.Errorf("claude's config/transcript home has no private writable mount — the CLI would fail to "+
 				"write its session state (args %v)", args)
 		}
-		// THE HOST PREFIX IS PRESENT, because the HOST'S claude is what the container execs. It used to be
-		// suppressed — the image was assumed to supply the CLI — and the adapter's argv[0] then went to that
-		// image by name, so an image without one killed every session with `executable file not found in
-		// $PATH`. The two now read one gate (adapter.PreferHostAdapterInContainer).
+		// THE HOST PREFIX IS PRESENT, because the HOST'S claude is what the container execs.
 		if !envValue(args, "PATH", clPATH) {
 			t.Errorf("the host's claude bin dir must be prepended: it is the install the container execs, and "+
 				"without it a `claude` reached by name resolves to nothing (args %v)", args)
@@ -361,10 +324,8 @@ func TestStandardHostMountArgsClaudeRWAndPath(t *testing.T) {
 	})
 }
 
-// TestClaudeCreatePreflightFailsActionably pins the create-time surfacing:
-// a claude-demanding run with no reachable host credential is rejected with
-// the canonical sign-in instruction, and each of the three credential sources
-// (host login, env var, create secret) satisfies the preflight.
+// TestClaudeCreatePreflightFailsActionably pins the create-time surfacing: a claude-demanding run
+// with no reachable host credential is rejected with the canonical sign-in instruction.
 func TestClaudeCreatePreflightFailsActionably(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	home := t.TempDir()

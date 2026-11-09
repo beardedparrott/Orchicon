@@ -52,11 +52,8 @@ func IsAwaitingAnswer(output string) bool {
 	return strings.TrimSpace(output) == AskAwaitingAnswerMarker
 }
 
-// promotedAskArgs returns the ask arguments carried by a tool RESULT, or "" when it is not a recorded ask.
-//
-// It requires all three of: `recorded: true`, a non-empty `question`, and the result parsing as the
-// tool's documented shape. A model quoting the tool's description, or an error mentioning it, cannot
-// satisfy that — which is why the anchor is the payload rather than a substring search for the name.
+// promotedAskArgs returns the ask arguments carried by a tool RESULT, or "" when it is not a
+// recorded ask.
 func promotedAskArgs(output string) string {
 	s := strings.TrimSpace(output)
 	if s == "" || !strings.Contains(s, askUserResultArgument) {
@@ -137,9 +134,6 @@ func boolOf(v any) bool {
 }
 
 // jsonCandidates yields every embedded JSON document in s, outermost first.
-//
-// Bounded on purpose: a tool output is capped before it reaches here (truncateLedgerString, 8000 bytes),
-// and this walks at most that many characters a fixed number of times.
 func jsonCandidates(s string) []string {
 	var out []string
 	for i := 0; i < len(s); i++ {

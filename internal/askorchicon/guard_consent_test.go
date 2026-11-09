@@ -1,13 +1,7 @@
 package askorchicon
 
-// guard_consent_test.go — AC-6 across the two layers: the guard shim the Ask
-// path execs and the consent core read the SAME policy accessor.
-//
-// The guard package's own equivalence test pins the READER (shim verdict =
-// permpolicy.Decide verdict). This one pins the WIRING: the environment the
-// real Service hands to bash carries the policy path, the conversation's project
-// and its session grants, and the shim's refusal names the same deny entry the
-// consent layer's Refusal would name.
+// guard_consent_test.go — AC-6 across the two layers: the guard shim the Ask path execs and the
+// consent core read the SAME policy accessor.
 
 import (
 	"context"
@@ -112,19 +106,8 @@ func TestGuardShimAndConsentCoreReadTheSamePolicy(t *testing.T) {
 	}
 }
 
-// TestAskBashInteractiveProfileThroughTheRealPlumbing pins the interactive
-// profile at the WIDEST layer: the environment the real Service hands to Ask
-// bash decides whether a path-scoped command runs or is refused, and the refusal
-// comes back as the tool's RESULT (not a transport error) so the model can
-// course-correct. AC-1 (allow in scope / refuse out of scope), AC-4 (fail closed
-// when the policy cannot be read) and AC-5 (refusal = tool result).
-//
-// The existing TestNativeAskBashGuardBlocksDestructive cannot assert this: it
-// runs with no policy file at permpolicy.DefaultPath(), so the shim fails CLOSED
-// (AC-4, correct) and its out-of-project rm case would pass without the scope
-// check ever firing. This test pins the policy file first, so the scope rule is
-// the thing under test — and then removes it again to pin the failing-closed
-// behaviour on the same plumbing.
+// TestAskBashInteractiveProfileThroughTheRealPlumbing pins the interactive profile at the WIDEST
+// layer: the environment the real Service hands to Ask bash decides whether a path-scoped command.
 func TestAskBashInteractiveProfileThroughTheRealPlumbing(t *testing.T) {
 	project := t.TempDir()
 	policy := filepath.Join(t.TempDir(), "permission-policy.yaml")
@@ -153,11 +136,8 @@ func TestAskBashInteractiveProfileThroughTheRealPlumbing(t *testing.T) {
 		t.Fatalf("the in-project target was not deleted: %v", err)
 	}
 
-	// Readable policy + out-of-project target: refused, naming the path, and the
-	// refusal is the scope rule — not the fail-closed message. The target is TEMP
-	// SPACE this test owns: the failure mode of a regressed verdict must be a
-	// directory the test created, never a system file the refusal was standing in
-	// front of.
+	// Readable policy + out-of-project target: refused, naming the path, and the refusal is the scope
+	// rule — not the fail-closed message.
 	outside := t.TempDir()
 	outsideVictim := filepath.Join(outside, "victim.txt")
 	if err := os.WriteFile(outsideVictim, []byte("x"), 0o644); err != nil {
@@ -174,9 +154,8 @@ func TestAskBashInteractiveProfileThroughTheRealPlumbing(t *testing.T) {
 		t.Fatalf("the scope check must be what refused, not the fail-closed policy read: %s", out)
 	}
 
-	// Unreadable policy: the shim REFUSES even an in-project target rather than
-	// running it unguarded (a guard that silently stops guarding is the failure
-	// this component exists to prevent).
+	// Unreadable policy: the shim REFUSES even an in-project target rather than running it unguarded (a
+	// guard that silently stops guarding is the failure this component exists to prevent).
 	t.Setenv("ORCHICON_PERMISSION_POLICY", filepath.Join(t.TempDir(), "absent.yaml"))
 	survivor := filepath.Join(project, "survivor.txt")
 	if err := os.WriteFile(survivor, []byte("x"), 0o644); err != nil {

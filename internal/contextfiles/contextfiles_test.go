@@ -44,10 +44,8 @@ func makePaths(n int) []string {
 	return out
 }
 
-// TestValidateWithin verifies the project-directory confinement rule: a
-// context path must be the project dir itself or a descendant, and an
-// empty project dir (no directory configured yet) skips the confinement
-// while still applying the base Validate rules.
+// TestValidateWithin verifies the project-directory confinement rule: a context path must be the
+// project dir itself or a descendant.
 func TestValidateWithin(t *testing.T) {
 	root := "/home/user/projects/MyApp"
 
@@ -226,10 +224,8 @@ func mustWrite(t *testing.T, path, content string) {
 	}
 }
 
-// TestRenderManifest pins the context-by-reference renderer: a small file is
-// inlined (the never-blind floor), a large file becomes a manifest entry with
-// a "read on demand" instruction, and a directory becomes a path+size listing
-// instead of "read EVERY file".
+// TestRenderManifest pins the context-by-reference renderer: a small file is inlined (the
+// never-blind floor), a large file becomes a manifest entry with a "read on demand" instruction.
 func TestRenderManifest(t *testing.T) {
 	root := t.TempDir()
 	small := filepath.Join(root, "small.go")
@@ -269,12 +265,8 @@ func TestRenderManifest(t *testing.T) {
 	}
 }
 
-// TestResolveWithin verifies the shared path resolver used by the
-// project-directory tools: it resolves a caller-supplied path against a
-// project root, accepting the root itself and descendants while rejecting
-// `..` escapes, absolute out-of-root paths, and name-prefix siblings.
-// These always-run tests are what the acceptance criteria
-// "unit tests cover traversal attempts" gates on.
+// TestResolveWithin verifies the shared path resolver used by the project-directory tools: it
+// resolves a caller-supplied path against a project root.
 func TestResolveWithin(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "proj")
 	mustWrite(t, filepath.Join(root, "a.txt"), "a")
@@ -350,10 +342,8 @@ func TestResolveWithin(t *testing.T) {
 	}
 }
 
-// TestResolveWithinSymlinkEscape verifies symlink escapes are rejected and
-// in-root symlinks are allowed. The EvalSymlinks pass resolves the target
-// and re-checks containment against the evaluated root, so a link that
-// points out of the root — file, directory, or nested — never resolves.
+// TestResolveWithinSymlinkEscape verifies symlink escapes are rejected and in-root symlinks are
+// allowed.
 func TestResolveWithinSymlinkEscape(t *testing.T) {
 	outside := t.TempDir()
 	mustWrite(t, filepath.Join(outside, "secret.txt"), "secret")
@@ -402,10 +392,8 @@ func TestResolveWithinSymlinkEscape(t *testing.T) {
 	}
 }
 
-// TestResolveWithinSymlinkedRoot verifies a project_dir that itself lives
-// under a symlinked path (e.g. a symlinked home) resolves correctly: the
-// root is evaluated once, targets inside it pass, and an escape through
-// the symlinked root's real path is still rejected.
+// TestResolveWithinSymlinkedRoot verifies a project_dir that itself lives under a symlinked path
+// (e.g. a symlinked home) resolves correctly: the root is evaluated once, targets inside it pass.
 func TestResolveWithinSymlinkedRoot(t *testing.T) {
 	realRoot := filepath.Join(t.TempDir(), "real")
 	mustWrite(t, filepath.Join(realRoot, "f.txt"), "f")
@@ -442,10 +430,8 @@ func TestIsNoiseDir(t *testing.T) {
 	}
 }
 
-// TestRenderCumulativeBudget verifies the cumulative inline budget: when
-// many per-file capped inlines exceed MaxInlineContextBytes together, later
-// files degrade to a "read from disk" note instead of being fully inlined —
-// so a large context selection can't re-inflate every turn's model context.
+// TestRenderCumulativeBudget verifies the cumulative inline budget: when many per-file capped
+// inlines exceed MaxInlineContextBytes together.
 func TestRenderCumulativeBudget(t *testing.T) {
 	root := t.TempDir()
 	// A file at the per-file cap: many of them sum past the cumulative
@@ -474,14 +460,6 @@ func TestRenderCumulativeBudget(t *testing.T) {
 }
 
 // TestSkillPolicyAlwaysInlines pins WHY the skill renderer does not use the context policy.
-//
-// A SKILL IS THE OPERATOR'S INSTRUCTION SET, NOT THE PLATFORM'S CONTEXT. The inline floor exists to protect a
-// token budget for context the platform injects; applying it to skills was a category error with a measurable
-// cost: this repository's own skills/ directory (7,275 bytes) rendered as a 446-byte path+size listing, so
-// every agent in every mode — Ask and worker alike — was told a skill existed and shown none of its contents.
-//
-// An operator who writes a large skill has made a deliberate choice about their own prompt. Silently degrading
-// it to a reference means the agent never reads it at all, which is strictly worse than a large prompt.
 func TestSkillPolicyAlwaysInlines(t *testing.T) {
 	root := t.TempDir()
 	big := filepath.Join(root, "big-skill.md")
@@ -503,9 +481,8 @@ func TestSkillPolicyAlwaysInlines(t *testing.T) {
 	}
 }
 
-// TestSkillPolicyInlinesADirectoryOfSkills covers the shape this project actually uses: skill_files names a
-// DIRECTORY. Listing its files would reproduce the same defect one level up — the operator pointed at a
-// directory of instructions and the agent got a table of contents.
+// TestSkillPolicyInlinesADirectoryOfSkills covers the shape this project actually uses: skill_files
+// names a DIRECTORY.
 func TestSkillPolicyInlinesADirectoryOfSkills(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "skills")
@@ -524,15 +501,6 @@ func TestSkillPolicyInlinesADirectoryOfSkills(t *testing.T) {
 }
 
 // TestDirectoryManifestIsCapped pins the prompt bound on directory expansion.
-//
-// MaxContextFiles (1000) is an INPUT bound; the manifest needs a PROMPT bound, and conflating them was
-// costing whole model windows. Measured on a real repository before this cap: a directory path at
-// internal/ rendered 94 KB (≈23,400 tokens) and a project root 137 KB (≈34,400 tokens) — four times the
-// entire static system prompt, for a nested tree an agent could just as well SEARCH.
-//
-// A manifest's job is to make a directory's shape legible and point at the right files. It is not a
-// filesystem dump, and no agent reads a thousand paths. Beyond the cap the block must say how to search,
-// because "…and more files" with no method is a dead end.
 func TestDirectoryManifestIsCapped(t *testing.T) {
 	root := t.TempDir()
 	// A tree bigger than the cap, spread across subdirectories.

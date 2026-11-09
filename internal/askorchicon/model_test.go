@@ -1,9 +1,4 @@
-// model_test.go — SetConversationModel: the per-conversation model_ref write
-// path. It is what lets `/models` (TUI) and the GUI's model chip retarget an
-// ALREADY-OPEN conversation instead of forcing a new one.
-//
-// DB-backed like its mode_test.go neighbours (chatDBTestPool skips without
-// ORCHICON_TEST_DSN).
+// model_test.go — SetConversationModel: the per-conversation model_ref write path.
 package askorchicon
 
 import (
@@ -19,9 +14,8 @@ import (
 
 const testModelRef = "orchicon/anthropic/claude-sonnet-4"
 
-// Setting a model writes it to the conversation row and echoes it back; an
-// EMPTY ref CLEARS the override (so the tenant default applies) rather than
-// being rejected.
+// Setting a model writes it to the conversation row and echoes it back; an EMPTY ref CLEARS the
+// override (so the tenant default applies) rather than being rejected.
 func TestSetConversationModel(t *testing.T) {
 	pool := chatDBTestPool(t)
 	s := newChatService(t, pool, &fakeSessionClient{})
@@ -100,9 +94,8 @@ func TestSetConversationModelValidation(t *testing.T) {
 	}
 }
 
-// A LEGACY 1/2-segment ref is accepted (the pinned grammar infers adapter
-// "opencode"), so an existing conversation is never un-settable just because
-// it carries a pre-namespace ref.
+// A LEGACY 1/2-segment ref is accepted (the pinned grammar infers adapter "opencode"), so an
+// existing conversation is never un-settable just because it carries a pre-namespace ref.
 func TestSetConversationModelAcceptsALegacyRef(t *testing.T) {
 	pool := chatDBTestPool(t)
 	s := newChatService(t, pool, &fakeSessionClient{})

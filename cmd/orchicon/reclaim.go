@@ -45,15 +45,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// instanceContainerName is the name this product gives an instance's container. It is a CONVENTION shared
-// with the installer and the lifecycle verbs, and reclaim depends on it being exact: a near-match is a
-// different instance.
+// instanceContainerName is the name this product gives an instance's container.
 func instanceContainerName(instance string) string { return "orchicon-cnt-" + instance }
 
-// instanceEngines returns the engine binaries a legacy instance container could live in — BOTH, because
-// which engine created it is a historical fact (docker for everything installed before the podman default,
-// podman for everything after). Asking only the current default is the same mistake that made the postgres
-// guard blind; see cmd/orchicon/postgres_legacy_volume.go.
+// instanceEngines returns the engine binaries a legacy instance container could live in — BOTH,
+// because which engine created it is a historical fact (docker for everything installed before.
 func instanceEngines() []string {
 	var bins []string
 	seen := map[string]bool{}
@@ -70,9 +66,8 @@ func instanceEngines() []string {
 	return bins
 }
 
-// stopInstanceContainer stops this instance's legacy container if one is running, and reports whether it
-// did. It never removes a container or a volume: stopping frees the ports, and an operator who wants the
-// data gone has `scripts/orchicon.sh uninstall` for that — a rebuild must not be a delete.
+// stopInstanceContainer stops this instance's legacy container if one is running, and reports
+// whether it did.
 func stopInstanceContainer(instance string, out io.Writer) bool {
 	name := instanceContainerName(instance)
 	for _, bin := range instanceEngines() {
@@ -85,8 +80,7 @@ func stopInstanceContainer(instance string, out io.Writer) bool {
 			continue
 		}
 		// BOUNDED, and the ports are re-checked by the caller: a container that was told to stop has not
-		// necessarily released its published ports yet, and reporting success before it does is the kind of
-		// claim this codebase treats as a bug.
+		// necessarily released its published ports yet.
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
 			if !containerRunningOn(bin, name) {
@@ -127,11 +121,8 @@ func isOurBinary(exe string) bool {
 	return base == "orchicon" || base == "orch"
 }
 
-// forceKillOurLeftovers terminates any process this instance owns that the graceful stop missed, and says
-// what it killed. Returns the pids, so a caller can re-verify.
-//
-// IT REFUSES TO TOUCH ANYTHING UNIDENTIFIED. The alternative — killing whatever holds the port — is a rule
-// that cannot tell an orphaned supervisor from the operator's own database.
+// forceKillOurLeftovers terminates any process this instance owns that the graceful stop missed,
+// and says what it killed.
 func forceKillOurLeftovers(instance string, out io.Writer) []int {
 	var killed []int
 	for _, pid := range ourInstanceProcesses(instance) {
@@ -151,11 +142,8 @@ type portHolder struct {
 	exe string
 }
 
-// portHeldByThisInstance reports whether a port is held by something belonging to THIS instance: its own
-// plane/supervisor process, or its own container-era container.
-//
-// It answers "may I keep my recorded port?" and nothing else — a false answer only costs a re-resolve, so it
-// errs toward false whenever the holder cannot be identified.
+// portHeldByThisInstance reports whether a port is held by something belonging to THIS instance:
+// its own plane/supervisor process, or its own container-era container.
 func portHeldByThisInstance(port int, instance string) bool {
 	name := instanceContainerName(instance)
 	for _, bin := range instanceEngines() {

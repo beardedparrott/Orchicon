@@ -33,9 +33,8 @@ func TestPasteTextInsertsIntoTheFocusedField(t *testing.T) {
 }
 
 func TestPasteTextCollapsesNewlinesInASingleLineField(t *testing.T) {
-	// THE REASON THIS IS NOT JUST insertRunes: a pasted token usually ends in a newline, and a KText field
-	// that accepted it would hold a line break the operator cannot see — which then fails validation or, far
-	// worse, is STORED with a newline inside a credential name.
+	// THE REASON THIS IS NOT JUST insertRunes: a pasted token usually ends in a newline, and a KText
+	// field that accepted it would hold a line break the operator cannot see.
 	f := NewForm("Key", FieldSpec{Name: "key", Label: "Key", Kind: KText, Initial: "PREFIX_"})
 	f.PasteText("MCP_TOKEN\r\n")
 	got := f.Values["key"]
@@ -79,11 +78,8 @@ func TestPasteTextIgnoresEmptyText(t *testing.T) {
 }
 
 func TestPasteTextReplacesAPickersValue(t *testing.T) {
-	// THE FIELD THAT MATTERS MOST IN PRACTICE: the credential form's first two fields are pickers (the env
-	// var/header key, and the stored secret), so pasting a token name into a picker IS the report.
-	//
-	// A picker has no caret, so "insert" would be meaningless — and APPENDING to one that already holds a
-	// selection yields a value matching no option. The paste is the whole choice, so it replaces.
+	// THE FIELD THAT MATTERS MOST IN PRACTICE: the credential form's first two fields are pickers (the
+	// env var/header key, and the stored secret), so pasting a token name into a picker IS the report.
 	f := NewForm("Credential key",
 		FieldSpec{Name: "key", Label: "Credential key", Kind: KPicker, Initial: "OLD_KEY",
 			Options: []Option{{Value: "OLD_KEY", Label: "OLD_KEY"}, {Value: "NEW_KEY", Label: "NEW_KEY"}}},

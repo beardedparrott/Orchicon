@@ -37,9 +37,8 @@ func TestChatStallMonitorNoProgress(t *testing.T) {
 	}
 }
 
-// TestChatStallMonitorActivityResetsClock verifies ANY activity (text,
-// reasoning, step_finish, tool_use) resets the no-progress clock — a model
-// producing output, even a long reasoning streak, is never reaped.
+// TestChatStallMonitorActivityResetsClock verifies ANY activity (text, reasoning, step_finish,
+// tool_use) resets the no-progress clock — a model producing output, even a long reasoning streak.
 func TestChatStallMonitorActivityResetsClock(t *testing.T) {
 	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", nil)
 	m.noProgressWindow = 100 * time.Millisecond
@@ -64,9 +63,8 @@ func TestChatStallMonitorActivityResetsClock(t *testing.T) {
 	}
 }
 
-// TestChatStallMonitorRepetition verifies the repetition signal: the same
-// tool_use signature repeated more than the count within the window trips,
-// while distinct signatures (or a single call) never do.
+// TestChatStallMonitorRepetition verifies the repetition signal: the same tool_use signature
+// repeated more than the count within the window trips.
 func TestChatStallMonitorRepetition(t *testing.T) {
 	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", nil)
 	m.noProgressWindow = time.Hour
@@ -103,13 +101,8 @@ func TestChatStallMonitorRepetition(t *testing.T) {
 	}
 }
 
-// TestChatStallMonitorRepetitionOpenCodeShape verifies the REGRESSION that
-// killed legitimate turns: opencode v1.x tool parts nest the tool input
-// under `state.input` (see LegacyEventFromBus), not `input`/`args`. Reading
-// the top-level fields collapsed every bash call to `bash|null`, so a model
-// running 8 DIFFERENT git commands looked like "8 repeats of bash|null" and
-// tripped the repetition detector. Distinct state.input values must produce
-// distinct signatures.
+// TestChatStallMonitorRepetitionOpenCodeShape verifies the REGRESSION that killed legitimate turns:
+// opencode v1.x tool parts nest the tool input under `state.input` (see LegacyEventFromBus).
 func TestChatStallMonitorRepetitionOpenCodeShape(t *testing.T) {
 	m := newChatStallMonitor("opencode/deepseek-v4-flash-free", nil)
 	m.noProgressWindow = time.Hour
@@ -153,15 +146,8 @@ func TestChatStallMonitorRepetitionOpenCodeShape(t *testing.T) {
 	}
 }
 
-// TestFoldReasoningTail pins the one piece of the exit path that can be silently wrong in
-// two opposite directions.
-//
-// The live reasoning tail and the segmenter's flush describe the SAME bytes from two
-// directions: the tail is everything that went into the live buffer, while `flushed` is the
-// single folded body the flush just committed to the durable slice. Appending the tail
-// unchanged duplicates that body (a doubled thinking bubble); dropping the tail loses the
-// native reasoning deltas, which nothing else ever commits (a missing one). Neither shows up
-// in a happy-path turn, so the rule is pinned here rather than inferred from one.
+// TestFoldReasoningTail pins the one piece of the exit path that can be silently wrong in two
+// opposite directions.
 func TestFoldReasoningTail(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -184,12 +170,8 @@ func TestFoldReasoningTail(t *testing.T) {
 		},
 		{
 			name: "native reasoning BEFORE a folded run keeps only the native part",
-			// The realistic mixed case, and the reason a SUFFIX strip is the right rule:
-			// a terminated folded body RESETS the live buffer and is committed at that
-			// moment (the segmenter's terminal callback), so a committed body can never sit
-			// in the MIDDLE of the tail — only an UNTERMINATED one is still in it, and that
-			// one is always its suffix. Native deltas that accumulated before the run opened
-			// are the part that must survive.
+			// The realistic mixed case, and the reason a SUFFIX strip is the right rule: a terminated folded
+			// body RESETS the live buffer and is committed at that moment (the segmenter's terminal callback).
 			tail:    "native firstfolded body",
 			flushed: "folded body",
 			want:    "native first",
@@ -217,13 +199,7 @@ func TestFoldReasoningTail(t *testing.T) {
 	}
 }
 
-// The operator: "The model is constantly losing its brain. It doesn't know it's already done things and then
-// tries to do them again. So holding onto sessions seems broken somewhere."
-//
-// A tool held by a HUMAN was counted as a wedged tool. The wedge clock is stamped when the tool is ISSUED and
-// awaitingConsent only suppressed the VERDICT while the ask was open — so the moment a decision landed, an
-// already-expired clock was re-read on the next tick, and the collector aborted the session and re-seeded a
-// fresh one from the last 50 messages. The wait, not the tool, destroyed the context.
+// The operator: "The model is constantly losing its brain.
 func TestChatStallToolWedgeDoesNotCountConsentTime(t *testing.T) {
 	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
 	m.noProgressWindow = time.Hour // isolate the wedge signal
@@ -273,9 +249,8 @@ func TestChatStallConsentDisarmWithoutAnOpenToolIsInert(t *testing.T) {
 	}
 }
 
-// The native adapter resolves a tool with a typed "tool_result" and emits no "tool_use" part, so the wedge
-// slot has to be closed by that event. Without it a bash call stayed open from its START, and a silent
-// command longer than the window — a build, a test suite — was recycled as an MCP wedge with no ask involved.
+// The native adapter resolves a tool with a typed "tool_result" and emits no "tool_use" part, so
+// the wedge slot has to be closed by that event.
 func TestChatStallCloseToolEndsTheWedgeSlot(t *testing.T) {
 	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
 	m.noProgressWindow = time.Hour
@@ -292,10 +267,8 @@ func TestChatStallCloseToolEndsTheWedgeSlot(t *testing.T) {
 	}
 }
 
-// The operator's prod plane carried 13 "session wedged on a tool — recycling to a fresh session" entries in two
-// days, every one of them tool="bash" on the native (in-process) transport — each destroying the session's
-// context over a shell command that was still running. The host suite's bash bounds itself (bashTimeoutDefault
-// 120s / bashTimeoutMax 600s), so a slow call is not a wedged call.
+// The operator's prod plane carried 13 "session wedged on a tool — recycling to a fresh session"
+// entries in two days, every one of them tool="bash" on the native (in-process) transport.
 func TestChatStallLocallyBoundedToolIsNeverAWedge(t *testing.T) {
 	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
 	m.noProgressWindow = time.Hour
@@ -313,9 +286,8 @@ func TestChatStallLocallyBoundedToolIsNeverAWedge(t *testing.T) {
 	}
 }
 
-// THE CONTROL, and the reason the exemption is per-tool and not per-adapter: the same transport also runs MCP
-// tools, which leave this process and CAN wedge with nothing to report. Recovery for the case the signal exists
-// for must survive.
+// THE CONTROL, and the reason the exemption is per-tool and not per-adapter: the same transport
+// also runs MCP tools, which leave this process and CAN wedge with nothing to report.
 func TestChatStallUnboundedToolStillWedgesOnAnInProcessTransport(t *testing.T) {
 	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
 	m.noProgressWindow = time.Hour
@@ -365,9 +337,9 @@ func TestInProcessToolRunnerOnlyForDeclaringTransports(t *testing.T) {
 	}
 }
 
-// inProcTransport / serveTransport are minimal declarations of the OPTIONAL capability: the embedded nil
-// interface supplies the rest of ChatTurnClient and panics if it is ever called (it never is — the capability
-// is read, not exercised).
+// inProcTransport / serveTransport are minimal declarations of the OPTIONAL capability: the
+// embedded nil interface supplies the rest of ChatTurnClient and panics if it is ever called (it
+// never.
 type inProcTransport struct {
 	scheduler.ChatTurnClient
 }
@@ -376,14 +348,8 @@ func (inProcTransport) ToolsRunInProcess() bool { return true }
 
 type serveTransport struct{ scheduler.ChatTurnClient }
 
-// THE OPERATOR'S REPORT, pinned: "No card ever came to me. That is why you may have been waiting for
-// approval."
-//
-// awaitingConsent gated ONLY the tool-wedge signal. The no-progress clock measures from lastActivity, which
-// an ASK does not advance — so a card sitting unanswered read as "no activity from the model", the turn was
-// aborted at the window, and the abort resolved the outstanding ask as consentCancelled. The model was then
-// told its APPROVAL had been cancelled when the STALL MONITOR had killed the turn: a conversation that died
-// waiting for a card surfaces as a consent error, and from the transcript the two are indistinguishable.
+// THE OPERATOR'S REPORT, pinned: "No card ever came to me. That is why you may have been waiting
+// for approval." awaitingConsent gated ONLY the tool-wedge signal.
 func TestChatStallNoProgressDoesNotCountConsentTime(t *testing.T) {
 	m := newChatStallMonitor("orchicon/deepseek/deepseek-flash", nil)
 	m.noProgressWindow = 2 * time.Minute
@@ -437,13 +403,6 @@ func TestChatStallRepetitionStillFiresWhileAwaitingConsent(t *testing.T) {
 }
 
 // THE DEFAULT MUST NOT BE STRICT ENOUGH TO ABORT A HEALTHY SESSION.
-//
-// The operator found this one in live use: "the Orchicon adapter sessions dying. It is the stall no
-// progress protection. It's at 2 minutes right now which is too strict. I set mine to 600 seconds now.
-// I think we should probably default to at least 300 seconds."
-//
-// The assertion is a FLOOR, not the exact value, so tuning it up later is allowed and tuning it back
-// down under the operator's own stated minimum is not.
 func TestAskStallNoProgressDefaultIsNotTooStrict(t *testing.T) {
 	const floor = 300 * time.Second
 	if defaultAskStallNoProgressWindow < floor {
@@ -455,10 +414,7 @@ func TestAskStallNoProgressDefaultIsNotTooStrict(t *testing.T) {
 			"the threshold and the stall monitor aborted the turn first.",
 			defaultAskStallNoProgressWindow, floor)
 	}
-	// AND IT MUST OUTLAST THE TRANSPORT'S BASH DEADLINE, or the monitor pre-empts a legal call. That
-	// deadline is 120s by default and 600s at most (internal/orchicon/hosttools.go); the max cannot be
-	// covered by any sane window, which is why the signal is SUSPENDED while such a call is open
-	// (TestChatStallNoProgressIsSuspendedWhileALocallyBoundedToolRuns) rather than merely widened.
+	// AND IT MUST OUTLAST THE TRANSPORT'S BASH DEADLINE, or the monitor pre-empts a legal call.
 	if defaultAskStallNoProgressWindow <= 120*time.Second {
 		t.Errorf("the no-progress default (%s) does not exceed the transport's default bash deadline (120s) — "+
 			"a bash call running for its own full deadline would be aborted by the stall monitor first",
@@ -467,10 +423,6 @@ func TestAskStallNoProgressDefaultIsNotTooStrict(t *testing.T) {
 }
 
 // THE REAL FIX: no_progress is SUSPENDED while a locally-bounded tool is running.
-//
-// Widening the window only moves the boundary. A build or a test suite can legitimately outlast ANY
-// fixed window, and during such a call the transport holds the deadline itself (exec.CommandContext) —
-// so this signal is judging a clock it does not own.
 func TestChatStallNoProgressIsSuspendedWhileALocallyBoundedToolRuns(t *testing.T) {
 	m := newChatStallMonitor("orchicon/ollama/deepseek-v4.1-flash", nil)
 	m.noProgressWindow = 30 * time.Second // short, so the test is sharp rather than slow
@@ -488,9 +440,7 @@ func TestChatStallNoProgressIsSuspendedWhileALocallyBoundedToolRuns(t *testing.T
 			"owns this call's deadline, so this signal must not judge it.", reason)
 	}
 
-	// AND THE RESOLUTION RESTARTS THE CLOCK. Without this the suspension just moves the death: after the
-	// build returns, lastActivity would still be stamped at the build's START, so the FIRST tick would
-	// measure five minutes of "silence" and abort the turn immediately after it finished.
+	// AND THE RESOLUTION RESTARTS THE CLOCK.
 	m.now = func() time.Time { return base.Add(5 * time.Minute) }
 	m.closeTool()
 	if reason := m.stallReason(); reason != "" {
@@ -637,9 +587,7 @@ func TestChatStallMonitorIgnoresUnidentifiableToolParts(t *testing.T) {
 	}
 }
 
-// TestChatStallMonitorStillCatchesAnIdentifiedLoop is the CONTROL for the guard
-// above. Dropping unidentifiable parts must not blunt the detector: a genuine
-// loop on a call we CAN identify still trips.
+// TestChatStallMonitorStillCatchesAnIdentifiedLoop is the CONTROL for the guard above.
 func TestChatStallMonitorStillCatchesAnIdentifiedLoop(t *testing.T) {
 	m := newChatStallMonitor("opencode/opencode-go/deepseek-v4.1-flash", nil)
 	m.noProgressWindow = time.Hour

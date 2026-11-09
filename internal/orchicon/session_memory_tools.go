@@ -1,11 +1,7 @@
 package orchicon
 
-// session_memory_tools.go registers the four durable memory tools
-// (memory_write / memory_search / memory_read / memory_list) as
-// session-scoped native tools backed by the agentmemory FTS5 store.
-// They are name-gated and answered by the loop's nativeToolName path —
-// never routed to the MCP registry. When no store is configured the
-// tools respond with a clear error (never a silent no-op).
+// session_memory_tools.go registers the four durable memory tools (memory_write / memory_search /
+// memory_read / memory_list) as session-scoped native tools backed by the agentmemory FTS5 store.
 
 import (
 	"context"
@@ -132,10 +128,8 @@ func (s *Session) execMemoryTool(ctx context.Context, name, argsJSON string) (st
 	return "", fmt.Errorf("unknown memory tool %q", name)
 }
 
-// memoryDigest renders the capped titles+tags digest of the most recent
-// memory entries for the post-breakpoint mutable zone (D3). Returns ""
-// when memory is disabled/unavailable or there are no entries. Capped at
-// DigestEntries entries and ~1 KiB — never leaks bodies.
+// memoryDigest renders the capped titles+tags digest of the most recent memory entries for the
+// post-breakpoint mutable zone (D3).
 func (s *Session) memoryDigest() string {
 	if s.memStore == nil || !s.mp.Enabled {
 		return ""

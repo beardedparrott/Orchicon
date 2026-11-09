@@ -1,17 +1,6 @@
 package askorchicon
 
 // hard_delete_tool_test.go — THE MISSING HARD DELETE.
-//
-// The operator: "I think the work item should be hard deleted once the work is complete. I don't want a ton of
-// invisible records out there. I think currently there is no MCP tool to do this only cancelling (soft
-// delete) so we will need to add that."
-//
-// They were exactly right, and the shape of the gap is worth recording: the `HardDeleteWorkItem` RPC, its
-// dependency cascade and its audit row ALL already existed. What did not exist was an MCP tool, so an agent
-// asked to clean up its own ephemeral work could only call `delete_work_item` — a status change to cancelled,
-// which is precisely the invisible record the operator was trying to avoid.
-//
-// The DB-backed cases skip unless ORCHICON_TEST_DSN is set, like the rest of this package's pool tests.
 
 import (
 	"context"
@@ -25,9 +14,6 @@ import (
 )
 
 // THE TOOL EXISTS AND SAYS WHAT IT DOES — including that it cannot be undone.
-//
-// The description is the agent's only warning, so it has to carry the two things that decide whether the call
-// is right: that it is IRREVERSIBLE, and that it is not the same act as cancelling.
 func TestHardDeleteWorkItemToolIsRegisteredAndHonest(t *testing.T) {
 	r := NewToolRegistry(nil, nil, nil)
 	td, ok := r.Get("hard_delete_work_item")
@@ -119,10 +105,6 @@ func TestHardDeleteWorkItemToolAudits(t *testing.T) {
 }
 
 // AN ITEM WITH CHILDREN IS REFUSED.
-//
-// `work_items.parent_id` has NO foreign key (the hierarchy is enforced in the service layer), so deleting a
-// parent does not fail — it ORPHANS the children, leaving rows whose parent no longer exists. That is silent
-// corruption, and an agent cannot see the children it would strand, so the tool refuses and says what to do.
 func TestHardDeleteWorkItemToolRefusesAnItemWithChildren(t *testing.T) {
 	pool := chatDBTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)

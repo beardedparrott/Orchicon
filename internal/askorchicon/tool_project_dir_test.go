@@ -331,11 +331,8 @@ func TestProjectDirMissingProjectAndNoDirDB(t *testing.T) {
 	}
 }
 
-// TestProjectDirToolsRegistered verifies the two project-directory tools are
-// registered read-only with MCP input schemas that match what the Fn actually
-// parses (AGENTS.md "Ask Orchicon — keep it in sync"): Properties/Required on
-// each ToolDefinition must match the tool's json.Unmarshal struct. This runs
-// without a DB — the registry only needs to enumerate allTools.
+// TestProjectDirToolsRegistered verifies the two project-directory tools are registered read-only
+// with MCP input schemas that match what the Fn actually parses (AGENTS.md "Ask Orchicon.
 func TestProjectDirToolsRegistered(t *testing.T) {
 	reg := NewToolRegistry(nil, slog.Default(), nil)
 

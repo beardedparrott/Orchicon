@@ -19,9 +19,6 @@ type footerModel struct {
 	ConnState     string // "connected" | "connecting" | "disconnected, retrying" | …
 	StreamStatus  stream.Status
 	// PLANE STATE — whether the plane this shell talks to is up, down, drifted or not even local.
-	// It is a SEPARATE chip from the stream state because the two answer different questions:
-	// "is my connection healthy" and "is there a plane, and is it the right build". A down plane
-	// is the common cause of a dead stream, and only this chip can say so.
 	PlaneState    planeState
 	PlaneInstance string // instance the state was read from ("" when not local)
 	PlaneWired    bool   // false in shells that never probe (tests/embedders): renders no chip
@@ -76,17 +73,8 @@ func (f footerModel) View() string {
 		ver += " " + theme.FooterVersionDrift.Render("⚠ drift: client "+f.ClientVersion)
 	}
 
-	// EVERY PART IS STYLED, and that is the fix for the operator's "the connection info
-	// at the bottom of the screen is also terminal colors". The URL, the server version
-	// and the identity were appended RAW, so they inherited nothing: the parts BESIDE
-	// them each end with an SGR reset (`\x1b[0m`), which clears the footer's own
-	// foreground — leaving those three rendered in whatever the TERMINAL's default
-	// foreground happens to be, which is exactly the class of bug the theme cannot
-	// reach. Only the outer theme.Footer.Render wrapped the line, and a reset inside
-	// it wins.
-	// The plane chip sits IMMEDIATELY AFTER the connection state (it is built from theme styles only —
-	// see planeChip), so a narrow terminal truncates the URL/version/drift before it truncates the two
-	// things that explain "why is nothing loading".
+	// EVERY PART IS STYLED, and that is the fix for the operator's "the connection info at the bottom
+	// of the screen is also terminal colors".
 	parts := []string{state}
 	if chip := planeChip(f); chip != "" {
 		parts = append(parts, chip)
@@ -108,11 +96,6 @@ func (f footerModel) View() string {
 	}
 	line := strings.Join(parts, theme.HintText.Render(" · "))
 	// Phase 2a (operator finding 5): the footer is ONE row on every screen.
-	// It truncates (ANSI-aware) to the terminal width instead of wrapping —
-	// a wrapping footer steals a budget row and breaks the composer-flush
-	// layout. Priority order: connection state · URL · version · drift ·
-	// identity · context chip · mouse · focus hint (the hint is the first
-	// casualty of a narrow terminal, never the connection state).
 	if f.Width > 0 {
 		line = ansi.Truncate(line, f.Width-2, "")
 	}

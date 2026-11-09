@@ -58,9 +58,8 @@ var procGenerateConsoleCtrlEvent = syscall.NewLazyDLL("kernel32.dll").NewProc("G
 // else — see the file header.
 func shutdownSignals() []os.Signal { return []os.Signal{os.Interrupt} }
 
-// sendGracefulStop asks a process to run its own shutdown path, which on Windows means a Ctrl-Break to its
-// process group. It only reaches a group attached to this console, so it routinely fails and the caller
-// escalates (see gracefulStopFailureIsFatal).
+// sendGracefulStop asks a process to run its own shutdown path, which on Windows means a Ctrl-Break
+// to its process group.
 func sendGracefulStop(proc *os.Process) error {
 	if proc == nil {
 		return os.ErrProcessDone

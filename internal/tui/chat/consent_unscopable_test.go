@@ -1,11 +1,6 @@
 package chat
 
 // consent_unscopable_test.go — an ask NO session grant could cover must not offer one.
-//
-// The server sends no directory for such an ask: its blocking target IS a volume root (`ls /`), or the
-// action resolved no path at all. A grant for an empty directory is refused by the store, so the row used
-// to promise a scope the system could not keep — the operator would have clicked it, been asked again, and
-// had no way to see why. The row is now DISABLED and the card says which reason applies.
 
 import (
 	"strings"

@@ -51,9 +51,8 @@ func TestBuiltinProvidersSharingSecretCoversSiblings(t *testing.T) {
 	}
 }
 
-// TestEveryBuiltinSecretNameResolvesBackToItsProvider is the reverse direction:
-// a name in the table that resolves to nothing would mean a provider whose
-// credential write invalidates no cache at all.
+// TestEveryBuiltinSecretNameResolvesBackToItsProvider is the reverse direction: a name in the table
+// that resolves to nothing would mean a provider whose credential write invalidates no cache.
 func TestEveryBuiltinSecretNameResolvesBackToItsProvider(t *testing.T) {
 	for id, name := range builtinSecretNames {
 		found := false
@@ -70,13 +69,6 @@ func TestEveryBuiltinSecretNameResolvesBackToItsProvider(t *testing.T) {
 }
 
 // TestTokenWritesInvalidateSiblings — the CALL SITE, not just the mapping.
-//
-// The mapping test above passes as long as builtinProvidersSharingSecret is
-// correct, even if SetProviderToken stops calling it — which is exactly the bug
-// (it called s.invalidate(tenantID, providerID): one id). Asserted at the source,
-// the repo's idiom for wiring contracts, because the effect is otherwise
-// invisible: the registry cache is unexported and its staleness only shows up as
-// a 401 on the OTHER provider.
 func TestTokenWritesInvalidateSiblings(t *testing.T) {
 	src, err := os.ReadFile("service.go")
 	if err != nil {

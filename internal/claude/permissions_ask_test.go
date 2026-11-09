@@ -1,23 +1,13 @@
 package claude
 
 // permissions_ask_test.go — THE ASK PROFILE'S PROMPT COMES FROM THE PERMISSION SYSTEM.
-//
-// This is the other half of the fix for "claude adapter ask sessions seem blocked by everything".
-// The hook no longer emits an `ask` verdict (the CLI turns that into a tool ERROR, not a host
-// prompt — see TestRunHookAbstainsSoThePermissionSystemCanAsk), so the tools that need an operator
-// decision must be named HERE, in `permissions.ask`. Without this list the hook abstains and nothing
-// raises a prompt: writes and commands would simply run with no card, which is the opposite failure
-// and a worse one.
-//
-// The two halves are only correct TOGETHER, so both are asserted.
 
 import (
 	"testing"
 )
 
-// launchArgs is the REAL argv for a profile, so the assertion is over the document the CLI is actually
-// handed rather than over a bare BuildSettings call. It reuses the package's own settingsDoc (which
-// digs the --settings value out of the argv — see permissions_test.go).
+// launchArgs is the REAL argv for a profile, so the assertion is over the document the CLI is
+// actually handed rather than over a bare BuildSettings call.
 func launchArgs(t *testing.T, profile string) []string {
 	t.Helper()
 	args, err := PermissionArgs(PermissionOptions{Profile: profile, ProjectDir: "/tmp/p"})
@@ -55,12 +45,7 @@ func TestAskProfileNamesTheToolsThatMustPrompt(t *testing.T) {
 			"The hook abstains on an ask verdict (a hook 'ask' becomes a tool ERROR, not a card), so without "+
 			"this list a write or a command would run with NO consent at all.\nargv: %v", args)
 	}
-	// Every tool the Ask rule table wants a decision on must be named. A missing entry is a silent
-	// hole: that tool falls to claude's default flow with nothing forcing a prompt.
-	// `mcp__*` is DELIBERATELY ABSENT now, and its absence is what this test is guarding: an entry
-	// here makes the permission system PROMPT, so an MCP entry would put the card back that the
-	// operator asked to remove. MCP is allowed by the HOOK instead (an explicit allow, which bypasses
-	// the permission system) — see TestDecideToolForAskAllowsEveryMCPTool.
+	// Every tool the Ask rule table wants a decision on must be named.
 	for _, want := range []string{"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"} {
 		found := false
 		for _, g := range got {

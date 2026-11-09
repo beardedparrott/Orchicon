@@ -1,14 +1,7 @@
 package main
 
-// install_launcher_copy_test.go — OWNERSHIP OF A COPIED `orch` MUST BE RECOGNISED ON EVERY PLATFORM.
-//
-// Reported from macOS, and BOTH claims in the installer's warning were false: <home>/.local/bin/orch
-// "exists and was not placed there by this install", and "the TUI is missing". The file was from that very
-// install and it ran.
-//
-// WHY IT HAPPENED. scripts/install.sh `mv`s the archive's `orch` into the install dir as a REGULAR FILE. The
-// ownership test then recognised a symlink (POSIX) or a byte-identical copy (Windows only) — so on macOS the
-// installer could not recognise the file it had just placed, and its clobber guard fired against itself.
+// install_launcher_copy_test.go — OWNERSHIP OF A COPIED `orch` MUST BE RECOGNISED ON EVERY
+// PLATFORM.
 
 import (
 	"os"

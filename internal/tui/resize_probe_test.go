@@ -1,12 +1,6 @@
 package tui
 
 // resize_probe_test.go — the two rules that keep the Windows size probe invisible.
-//
-// The probe exists because the input path that gives Windows bracketed paste and Shift+Enter COSTS bubbletea
-// its console resize event (reader_windows.go, resize_probe.go). It is a quarter-second poll, so the thing
-// that must be proved is that polling cannot be FELT: an unreadable size is ignored, and an unchanged size
-// never reaches the renderer — the standard renderer repaints on every WindowSizeMsg, so forwarding an
-// identical size four times a second would repaint an idle chat continuously.
 
 import (
 	"testing"

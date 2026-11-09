@@ -32,11 +32,6 @@ import (
 )
 
 // modelsStub writes a CLI double that behaves like a given opencode version.
-//
-// acceptsVerbose models the version difference: when false, any `--verbose` is rejected the way the
-// real 2.x CLI rejects it — a non-zero exit with the usage text on stderr — while a bare `models`
-// succeeds. callsPath, when non-empty, receives one line per invocation so a test can assert how many
-// times each form was tried.
 func modelsStub(t *testing.T, acceptsVerbose bool, callsPath string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -163,9 +158,8 @@ func TestTheVerboseDowngradeIsRemembered(t *testing.T) {
 }
 
 func TestAFailedProbeIsNotRemembered(t *testing.T) {
-	// The other half of the same rule, and the one that protects 1.x operators: a CLI that fails
-	// for a TRANSIENT reason must not be permanently downgraded to the metadata-free form, because
-	// that silently loses every model's cost and context window.
+	// The other half of the same rule, and the one that protects 1.x operators: a CLI that fails for a
+	// TRANSIENT reason must not be permanently downgraded to the metadata-free form.
 	calls := filepath.Join(t.TempDir(), "calls.txt")
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "opencode")
@@ -221,9 +215,8 @@ func TestSetModelsArgsOverridesAndDefaults(t *testing.T) {
 }
 
 func TestTheModelsArgvOverrideReachesTheSubprocess(t *testing.T) {
-	// THE ASSERTION THAT MATTERS MOST for the v2 hang: an override that never reaches the child
-	// process is a constant, not a behaviour. A stub CLI records exactly what it was invoked with,
-	// so this reads the argv off the wire rather than trusting the setter.
+	// THE ASSERTION THAT MATTERS MOST for the v2 hang: an override that never reaches the child process
+	// is a constant, not a behaviour.
 	cases := []struct {
 		name string
 		args []string
@@ -254,10 +247,8 @@ func TestTheModelsArgvOverrideReachesTheSubprocess(t *testing.T) {
 }
 
 func TestAnEmptyModelListNamesTheLikelyCause(t *testing.T) {
-	// opencode 2.x reports an empty model list by printing NOTHING and exiting 0 (its handler ends
-	// with `if (models.length > 0) process.stdout.write(...)`). So this error is reached by a CLI
-	// that SUCCEEDED, and "no models found" reads like a parse failure when the real cause is almost
-	// always "no provider is authenticated".
+	// opencode 2.x reports an empty model list by printing NOTHING and exiting 0 (its handler ends with
+	// `if (models.length > 0) process.stdout.write(...)`).
 	bin := stubCLI(t, "", "", 0) // exits 0, prints nothing — exactly the 2.x empty case
 	d := NewModelDiscoverer(discardLog(), bin)
 
@@ -283,9 +274,8 @@ func readFile(t *testing.T, path string) string {
 }
 
 func TestBothFormsFailingReportsTheMinimumInvocation(t *testing.T) {
-	// When neither works, the error must describe `models` alone — that is the invocation that
-	// cannot work at all — and carry the CLI's own words (see cli.go). Reporting the --verbose
-	// failure would suggest a flag problem where the command itself is broken.
+	// When neither works, the error must describe `models` alone — that is the invocation that cannot
+	// work at all — and carry the CLI's own words (see cli.go).
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "opencode")
 	script := "#!/bin/sh\necho 'this build has no models command' >&2\nexit " + strconv.Itoa(3) + "\n"

@@ -104,12 +104,8 @@ func TestBuildConfigContentDoesNotDenyReadGrepByDefault(t *testing.T) {
 	}
 }
 
-// TestRuntimeServeConfigCompositeToolsLiveOnDev verifies the composite
-// worktree tools are LIVE on dev runtime images: with a resolved project dir
-// the config registers the orchicon-worktree MCP AND denies the built-in
-// read/grep so the worker is forced onto batch_read/batch_grep. A base/gui
-// image (or an unresolved project dir) must NOT emit the deny, so a worker is
-// never locked out of file access with no batch tool to fall back on.
+// TestRuntimeServeConfigCompositeToolsLiveOnDev verifies the composite worktree tools are LIVE on
+// dev runtime images: with a resolved project dir the config registers the orchicon-worktree MCP.
 func TestRuntimeServeConfigCompositeToolsLiveOnDev(t *testing.T) {
 	dev := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{}, nil, nil)
 	var devCfg map[string]any
@@ -134,9 +130,8 @@ func TestRuntimeServeConfigCompositeToolsLiveOnDev(t *testing.T) {
 		t.Fatalf("dev config must deny grep (live composite), got %#v", perm[grepToolDeny])
 	}
 
-	// Composite tools are LIVE on base/gui images too: the worktree sidecar is
-	// DB-less and runs from the daemon's bind-mounted binary. Only the sandbox
-	// DB MCP (`orchicon`) stays dev-only.
+	// Composite tools are LIVE on base/gui images too: the worktree sidecar is DB-less and runs from
+	// the daemon's bind-mounted binary.
 	base := RuntimeServeConfig("orchicon-runtime:local", "/worktree", "", nil, mcpclient.Resolution{}, nil, nil)
 	var bcfg map[string]any
 	if err := json.Unmarshal([]byte(base), &bcfg); err != nil {
@@ -206,21 +201,8 @@ func TestBuildConfigContentMCPEnvAndBinaryPath(t *testing.T) {
 	}
 }
 
-// TestRuntimeServeConfigPlaneChannelOnEveryImage pins the plane-channel
-// guarantee: whenever the run's worker role grants plane access (planeEnv
-// non-empty — minted by the runtime lifecycle per run), the `orchicon-plane`
-// MCP server is registered in the serve config on EVERY runtime image —
-// base, gui, web-research, orchicon-dev — because plane access is
-// ROLE-gated, never image-gated. This is the regression lock behind "the
-// idea MCP tools are truly going to be available to any runtime container":
-// the dedicated idea tools (orchicon_plane_list_idea_items /
-// orchicon_plane_create_idea_item) live inside that plane registry, so the
-// tools' availability reduces to this registration surviving for every
-// image tag. The sidecar runs from the daemon bind-mounted binary
-// (never baked), so the tools on the wire are whatever the freshly built
-// binary ships — paired with the pool's binary fingerprint, a rebuilt
-// binary forces a fresh container so the registry contents are always
-// current.
+// TestRuntimeServeConfigPlaneChannelOnEveryImage pins the plane-channel guarantee: whenever the
+// run's worker role grants plane access (planeEnv non-empty.
 func TestRuntimeServeConfigPlaneChannelOnEveryImage(t *testing.T) {
 	planeEnv := map[string]string{
 		"ORCHICON_PLANE_URL":   "http://172.17.0.3:8080",
@@ -311,12 +293,8 @@ func TestRuntimeServeConfigSandboxMCPOnlyOnDevImages(t *testing.T) {
 	}
 }
 
-// TestBuildConfigContentCompactionPruneEnabled verifies every serve config —
-// host serve AND runtime-container serve — enables opencode context
-// compaction pruning, so a long step does not keep re-sending every past
-// tool output (read/grep/bash results) on every turn. Prune is
-// capability-safe: it removes stale tool RESULTS, not tool definitions,
-// prompts, or decisions; it does not enable lossy auto-compaction.
+// TestBuildConfigContentCompactionPruneEnabled verifies every serve config — host serve AND
+// runtime-container serve — enables opencode context compaction pruning.
 func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
 	// Host serve path.
 	host := BuildConfigContent(ConfigOptions{AgentName: workerAgent})
@@ -331,10 +309,8 @@ func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
 	if comp["prune"] != true {
 		t.Errorf("host serve compaction.prune = %#v, want true", comp["prune"])
 	}
-	// `auto` (opencode's OWN lossy auto-compaction) must be explicitly OFF so
-	// opencode is not a second, independent compaction driver on top of
-	// Orchicon's budget ladder — which would interrupt the worker mid-flight.
-	// Leaving it at opencode's default risks exactly that double-compaction.
+	// `auto` (opencode's OWN lossy auto-compaction) must be explicitly OFF so opencode is not a second,
+	// independent compaction driver on top of Orchicon's budget ladder.
 	if comp["auto"] != false {
 		t.Errorf("host serve compaction.auto = %#v, want false", comp["auto"])
 	}
@@ -356,11 +332,8 @@ func TestBuildConfigContentCompactionPruneEnabled(t *testing.T) {
 	}
 }
 
-// TestBuildConfigContentWorkerDefaultAgent verifies worker serves register a
-// minimal `orchicon-worker` agent prompt AND set it as default_agent, so
-// sessions do not run under opencode's large built-in `build` prompt. This
-// is the per-turn token win: Orchicon's real system prompt still rides the
-// per-message `system` field; the agent prompt is just a tool-guideline shell.
+// TestBuildConfigContentWorkerDefaultAgent verifies worker serves register a minimal
+// `orchicon-worker` agent prompt AND set it as default_agent.
 func TestBuildConfigContentWorkerDefaultAgent(t *testing.T) {
 	out := RuntimeServeConfig("orchicon-runtime:orchicon-dev", "/worktree", "", nil, mcpclient.Resolution{}, nil, nil)
 	var cfg map[string]any
@@ -389,15 +362,8 @@ func TestBuildConfigContentWorkerDefaultAgent(t *testing.T) {
 	}
 }
 
-// TestBuildConfigContentToolOutputAndBatchTool verifies the emitted config
-// carries the tool-output size settings (tool_output.max_bytes/max_lines —
-// the "smart size" settings that let a worker read a large file in ONE call
-// instead of chunking it into many small reads, which is itself the re-send
-// amplification) and the experimental batch_tool flag (ask opencode to emit
-// independent tool calls in a single assistant turn). These are the two
-// settings the worker is told to use to collapse the number of round-trips.
-// They are only effective when opencode honors them, so this test is a
-// regression lock on the config that is actually handed to opencode.
+// TestBuildConfigContentToolOutputAndBatchTool verifies the emitted config carries the tool-output
+// size settings (tool_output.max_bytes/max_lines.
 func TestBuildConfigContentToolOutputAndBatchTool(t *testing.T) {
 	for name, out := range map[string]string{
 		"host serve":  BuildConfigContent(ConfigOptions{AgentName: workerAgent}),
@@ -457,10 +423,8 @@ func TestStripJSONC(t *testing.T) {
 	}
 }
 
-// TestRuntimeServeConfigCarriesRunUnion proves AC 1/AC 2/AC 4 at the builder
-// level: the RUN's union (servers a step did NOT itself define included)
-// reaches the container's emitted config, and a run server whose id collides
-// with a BUILT-IN never overwrites it.
+// TestRuntimeServeConfigCarriesRunUnion proves AC 1/AC 2/AC 4 at the builder level: the RUN's union
+// (servers a step did NOT itself define included) reaches the container's emitted config.
 func TestRuntimeServeConfigCarriesRunUnion(t *testing.T) {
 	union := mcpclient.Resolution{
 		Servers: []mcpclient.ScopedServer{
@@ -540,9 +504,9 @@ func TestRunUnionDeterministic(t *testing.T) {
 	}
 }
 
-// TestRuntimeServeConfigEmitsRunSkills proves the run's skill-file union
-// reaches the emitted instructions: a path-only entry is emitted verbatim and
-// an inline-content entry is materialised under <worktree>/.orchicon/skills/.
+// TestRuntimeServeConfigEmitsRunSkills proves the run's skill-file union reaches the emitted
+// instructions: a path-only entry is emitted verbatim and an inline-content entry is materialised
+// under.
 func TestRuntimeServeConfigEmitsRunSkills(t *testing.T) {
 	worktree := t.TempDir()
 	out := RuntimeServeConfig("orchicon-runtime:local", worktree, "", nil, mcpclient.Resolution{
@@ -600,17 +564,8 @@ func TestProvenanceOfServeConfigNamesOnly(t *testing.T) {
 	}
 }
 
-// TestBuildConfigContentCodeModeDoesNotDenyReadGrep is the regression pin for the 2.x gate.
-//
-// THE DENY AND THE SURFACE MUST AGREE. Denying the built-in read/grep exists for exactly one reason:
-// to push the worker onto batch_read/batch_grep. That reasoning needs the worker to be ABLE to call
-// them, and on a Code Mode serve it cannot — every MCP tool is reachable only from inside `execute`
-// (opencode's own prompt: "They cannot be called directly"). So the deny stops redirecting anything
-// and instead deletes the worker's file-reading tools, leaving it with `shell` alone. Measured on a
-// verified 2.x run before this gate: 63 `shell` calls, zero `batch_*`.
-//
-// The other half matters as much: the worktree MCP server must STAY REGISTERED. The tools are not
-// broken on 2.x, only differently reached, so dropping the deny must not drop the server.
+// TestBuildConfigContentCodeModeDoesNotDenyReadGrep is the regression pin for the 2.x gate. THE
+// DENY AND THE SURFACE MUST AGREE.
 func TestBuildConfigContentCodeModeDoesNotDenyReadGrep(t *testing.T) {
 	out := BuildConfigContent(ConfigOptions{
 		AgentName:      workerAgent,

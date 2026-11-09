@@ -10,9 +10,8 @@ import (
 	"testing/fstest"
 )
 
-// THE DESKTOP SIGNAL MUST BE UNFORGEABLE FROM THE PAGE, so the injection is
-// asserted on the properties that make it so rather than on its existence
-// alone: writable:false + configurable:false + Object.freeze.
+// THE DESKTOP SIGNAL MUST BE UNFORGEABLE FROM THE PAGE, so the injection is asserted on the
+// properties that make it so rather than on its existence alone.
 func TestShellInjectsDesktopFlagNonConfigurable(t *testing.T) {
 	script := desktopScript(testInfo(), "test-token")
 	for _, want := range []string{
@@ -53,10 +52,7 @@ func TestServedIndexCarriesDesktopFlag(t *testing.T) {
 	}
 }
 
-// AND THE PLANE MUST NEVER INJECT IT: that is what keeps the flag off in a
-// browser. This is a SOURCE assertion on purpose — the plane's withFrontend
-// only injects when an index.html is embedded, so a behavioural test would pass
-// vacuously on a checkout that has not run `npm run build`.
+// AND THE PLANE MUST NEVER INJECT IT: that is what keeps the flag off in a browser.
 func TestPlaneNeverInjectsDesktopFlag(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "cmd", "orchicon", "*.go"))
 	if err != nil || len(files) == 0 {
@@ -73,9 +69,7 @@ func TestPlaneNeverInjectsDesktopFlag(t *testing.T) {
 	}
 }
 
-// No frontend embedded = no launch. Asserted because the alternative is an
-// empty window with no explanation (the plane's equivalent trap has burned this
-// repo once already).
+// No frontend embedded = no launch.
 func TestStartRefusesWhenNoFrontendIsEmbedded(t *testing.T) {
 	shell, err := New(Config{PlaneURL: "http://127.0.0.1:9999", FrontendFS: fstest.MapFS{}})
 	if err != nil {

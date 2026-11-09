@@ -1,25 +1,6 @@
 package orchicon
 
 // askreduce.go — deterministic context reduction for Ask turns.
-//
-// Native Ask sessions are SESSIONLESS: every turn re-sends the whole
-// accumulated history as the prompt (see dispatchTurnMessage in chatturn.go).
-// A long enough conversation therefore exceeds the model's context window and
-// EVERY subsequent send fails with a provider 400 — and it can never
-// self-heal, because the next turn re-sends the very same oversized history.
-//
-// This pass is the escape hatch. It is DETERMINISTIC (no model call, so it
-// cannot itself fail, hang, or cost anything) and it targets the two buckets
-// that actually dominate a bloated prompt: inline image data URLs and verbose
-// tool results. Conversation TEXT is preserved verbatim up to a generous
-// per-part cap, because text is the part a reader follows.
-//
-// Measured on the real wedge that motivated this work (a 1574-message Ask
-// conversation at ~1.02M prompt tokens against a 1,048,576-token window):
-// inline images were 46% of the prompt and tool results 37%, while ALL
-// conversation text together was 3.3%. Reducing the first two returns the
-// session to a size that fits any window — and small enough that a follow-up
-// summarize call can succeed in ONE request.
 
 import (
 	"context"
@@ -28,36 +9,19 @@ import (
 	"strings"
 )
 
-// contextReduceStages is the bounded escalation tried when a provider rejects a
-// turn for being TOO LARGE: first reduce all but the most recent turns
-// (surgical — the live thread stays intact), then, only if the provider still
-// refuses, reduce the whole history including the tail. Two stages, then give
-// up: an unbounded retry loop against a hard limit would burn the turn.
-//
-// "Too large" deliberately covers both the model's context window and a
-// transport body cap (413) — see oversizePromptSignatures for why one ladder
-// serves both.
+// contextReduceStages is the bounded escalation tried when a provider rejects a turn for being TOO
+// LARGE: first reduce all but the most recent turns (surgical — the live thread stays intact).
 var contextReduceStages = []int{6, 0}
 
 const (
-	// imageElidedMarker replaces an inline image data URL. The image is not
-	// recoverable from history, so the marker states WHY it is gone rather than
-	// leaving a silent hole the reader cannot explain.
+	// imageElidedMarker replaces an inline image data URL.
 	imageElidedMarker = "[image omitted: conversation history was reduced to fit the model's context window]"
 
 	// toolResultHeadChars is how much of a tool result survives elision — enough
 	// to keep the gist of what the tool returned.
 	toolResultHeadChars = 200
 
-	// toolArgsHeadChars is how much of a tool call's ARGUMENTS survive. This
-	// matters because a file-writing call (batch_write) carries the entire file
-	// body in its arguments — measured on the real wedged conversation, the
-	// arguments were the largest bucket the first version of this pass left
-	// untouched, which left the reduced history at ~285k tokens: comfortably
-	// inside a 1M window but still over a 200k one. Only the arguments are
-	// trimmed: the call id and the tool name stay verbatim, because the pairing
-	// (an assistant tool_use must be answered by its tool_result) and the record
-	// of WHICH tool ran both survive.
+	// toolArgsHeadChars is how much of a tool call's ARGUMENTS survive.
 	toolArgsHeadChars = 200
 
 	// textPartCapChars caps ONE text part. Conversation text is a small slice of
@@ -121,13 +85,8 @@ var OversizePromptSignatures = []string{
 	"request body too large",
 }
 
-// IsOversizePromptError reports whether err is a prompt rejected for its SIZE —
-// either the model's context window or a transport/CDN body limit (413). Both
-// are answered by the same remedy; see OversizePromptSignatures.
-//
-// It classifies an ERROR VALUE. Adapters that receive the failure as an already-
-// formatted MESSAGE (the opencode serve's session.error) use
-// IsOversizePromptMessage, which is the same test over the same list.
+// IsOversizePromptError reports whether err is a prompt rejected for its SIZE — either the model's
+// context window or a transport/CDN body limit (413).
 func IsOversizePromptError(err error) bool {
 	if err == nil {
 		return false
@@ -135,10 +94,8 @@ func IsOversizePromptError(err error) bool {
 	return IsOversizePromptMessage(err.Error())
 }
 
-// IsOversizePromptMessage is IsOversizePromptError for a bare message string —
-// the shape a serve session.error arrives in. It exists so a caller holding only
-// text classifies it against the SAME list rather than keeping a shorter one of
-// its own, which is how the 413 phrasings would eventually be lost.
+// IsOversizePromptMessage is IsOversizePromptError for a bare message string — the shape a serve
+// session.error arrives in.
 func IsOversizePromptMessage(msg string) bool {
 	if msg == "" {
 		return false
@@ -166,14 +123,8 @@ type ReduceStats struct {
 // Reclaimed reports the payload bytes the pass removed.
 func (s ReduceStats) Reclaimed() int { return s.BytesBefore - s.BytesAfter }
 
-// ReduceConversationHistoryForContext returns a copy of history with the
-// prompt-dominating payloads elided, leaving the conversation's substance in
-// place. keepTail is the number of trailing messages left VERBATIM (the live
-// thread a reader is following); 0 reduces the whole history.
-//
-// Structure is preserved exactly: roles, message order, and every tool_use /
-// tool_result id pairing survive, because a dropped pairing is itself a 400
-// (see sanitizeChatHistory). Only payload SIZE changes.
+// ReduceConversationHistoryForContext returns a copy of history with the prompt-dominating payloads
+// elided, leaving the conversation's substance in place.
 func ReduceConversationHistoryForContext(history []Message, keepTail int) ([]Message, ReduceStats) {
 	st := ReduceStats{BytesBefore: conversationBytes(history)}
 	out := make([]Message, 0, len(history))
@@ -195,9 +146,8 @@ func ReduceConversationHistoryForContext(history []Message, keepTail int) ([]Mes
 				nm.Content = append(nm.Content, Content{Text: &marker})
 			case c.ToolResult != nil:
 				st.ToolResultsElided++
-				// ToolCallID is carried through DELIBERATELY: the matching
-				// assistant tool_use must still find its result, or the provider
-				// rejects the turn for an unanswered tool call.
+				// ToolCallID is carried through DELIBERATELY: the matching assistant tool_use must still find its
+				// result, or the provider rejects the turn for an unanswered tool call.
 				elided := ContentToolResult{
 					ToolCallID: c.ToolResult.ToolCallID,
 					Content:    elideToolResult(c.ToolResult.Content),
@@ -205,9 +155,8 @@ func ReduceConversationHistoryForContext(history []Message, keepTail int) ([]Mes
 				}
 				nm.Content = append(nm.Content, Content{ToolResult: &elided})
 			case c.ToolUse != nil:
-				// The ID and the tool name are load-bearing (pairing + knowing
-				// what ran) and stay verbatim; only the ARGUMENTS are trimmed,
-				// because a file-writing call carries a whole file body there.
+				// The ID and the tool name are load-bearing (pairing + knowing what ran) and stay verbatim; only
+				// the ARGUMENTS are trimmed, because a file-writing call carries a whole file body there.
 				capped, truncated := capToolArgs(c.ToolUse.ArgsJSON)
 				if truncated {
 					st.ToolArgsTruncated++
@@ -245,10 +194,7 @@ func elideToolResult(s string) string {
 		head, int64(len([]rune(s))-toolResultHeadChars), len([]rune(s)))
 }
 
-// capToolArgs trims one oversized tool-call argument blob. The result stays
-// VALID JSON (a truncated argument string would be a malformed tool call, and
-// some providers validate the replay), so an oversize object is replaced by an
-// object that states the elision instead of a half-written one.
+// capToolArgs trims one oversized tool-call argument blob.
 func capToolArgs(args string) (string, bool) {
 	head, truncated := headRunes(args, toolArgsHeadChars)
 	if !truncated {
@@ -285,10 +231,8 @@ func headRunes(s string, n int) (string, bool) {
 	return string(r[:n]), true
 }
 
-// conversationBytes approximates the serialized size of a history — exactly
-// the accounting the reduce pass optimizes. It sums the payload fields that
-// dominate a prompt (text, image data, tool results and args) and ignores
-// envelope overhead, which is negligible at these sizes.
+// conversationBytes approximates the serialized size of a history — exactly the accounting the
+// reduce pass optimizes.
 func conversationBytes(history []Message) int {
 	n := 0
 	for _, m := range history {
@@ -308,14 +252,8 @@ func conversationBytes(history []Message) int {
 	return n
 }
 
-// startTurnWithContextRecovery starts the provider stream for a turn and, when
-// the provider refuses it for exceeding the context window, reduces the
-// session's replayed history and retries. Escalation is bounded
-// (contextReduceStages), and EVERY reduction is persisted, so a wedged session
-// heals permanently instead of failing on every subsequent send.
-//
-// req is mutated in place, so the caller drains against exactly the history the
-// provider accepted.
+// startTurnWithContextRecovery starts the provider stream for a turn and, when the provider refuses
+// it for exceeding the context window, reduces the session's replayed history and retries.
 func (b *NativeBridge) startTurnWithContextRecovery(turnCtx context.Context, prov Provider, req *TurnRequest, sessionID string) (TurnStream, error) {
 	stream, err := prov.StreamTurn(turnCtx, *req)
 	if err == nil || !IsOversizePromptError(err) {
@@ -349,10 +287,8 @@ func (b *NativeBridge) startTurnWithContextRecovery(turnCtx context.Context, pro
 	return nil, firstErr
 }
 
-// reduceSessionHistory applies one reduction stage to the session's history
-// under the lock, persists it, and returns the reduced history. ok is false
-// when there is nothing to reduce (an empty history, or a pass that reclaimed
-// nothing), so the caller knows not to retry that stage.
+// reduceSessionHistory applies one reduction stage to the session's history under the lock,
+// persists it, and returns the reduced history.
 func (b *NativeBridge) reduceSessionHistory(sessionID string, keepTail int) ([]Message, ReduceStats, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

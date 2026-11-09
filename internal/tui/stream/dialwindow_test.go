@@ -27,12 +27,8 @@ func collectStatuses(t *testing.T, ch <-chan Status, pred func(Status) bool, wit
 	}
 }
 
-// A server-streaming call does not return from Open until the server sends its
-// FIRST message (the client makes the request synchronously and waits for
-// response headers). A subscription whose server stays quiet must therefore
-// still read as CONNECTED — otherwise the footer showed "connecting…" forever
-// with no error, no retry and no explanation, while the app was perfectly
-// connected (the operator could see and edit work items the whole time).
+// A server-streaming call does not return from Open until the server sends its FIRST message (the
+// client makes the request synchronously and waits for response headers).
 func TestOpenWhileTheDialIsStillInFlight(t *testing.T) {
 	release := make(chan struct{})
 	statuses := make(chan Status, 32)
@@ -102,11 +98,6 @@ func TestDialErrorIsForwardedToOnError(t *testing.T) {
 }
 
 // Close must not wait forever for a recv() that ignores cancellation.
-//
-// Close runs on EVERY tab switch, so an unbounded wait there is a UI freeze, not
-// just a test problem. This is the exact shape that hung the suite for the full 10m
-// timeout (blocking `make rebuild-dev`): the loop sits in an uninterruptible recv()
-// and wg.Wait() never returns.
 func TestCloseIsBoundedWhenRecvIgnoresCancellation(t *testing.T) {
 	sub := New(Config[string]{
 		Name: "wedged",

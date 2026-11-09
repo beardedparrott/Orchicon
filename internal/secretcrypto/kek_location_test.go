@@ -1,15 +1,6 @@
 package secretcrypto
 
 // kek_location_test.go — the KEK's LOCATION must never depend on a process's working directory.
-//
-// REPORTED: a worker on a Claude container run found a `secrets/kek` file in the WORKTREE root — a
-// directory bind-mounted from the operator's own repo, and therefore visible to (and writable by) everything
-// in the container. The KEK path is filepath.Join(DataDir, "secrets", "kek"), so the only way it can land
-// in a process's working directory is a RELATIVE DataDir: filepath.Join("", "secrets", "kek") is
-// "secrets/kek", resolved against whatever CWD the process inherited — which, for a worker, is the worktree.
-//
-// Two layers now close that class: config.Default() resolves DataDir to an absolute path, and this package
-// refuses a relative one outright rather than resolving it against an unknown CWD.
 
 import (
 	"os"
@@ -20,12 +11,8 @@ import (
 
 // THE REPORTED FAILURE, at its exact point of harm: a relative data dir must not produce a CWD-relative KEK.
 func TestRelativeDataDirIsRefusedRatherThanWrittenIntoTheWorkingDirectory(t *testing.T) {
-	// RUN THE WHOLE TEST FROM A DIRECTORY THAT STANDS IN FOR THE WORKTREE the worker reported the file in.
-	//
-	// t.Chdir, not just a variable: it means a REGRESSION writes into throwaway space instead of the package
-	// directory. Measured while writing this fix — reverting the guard to prove the test catches the bug left a
-	// real `secrets/kek` in internal/secretcrypto/ and it was staged for commit. That is the reported defect
-	// reproducing itself during its own test, and the isolation is the only reason it cannot happen again.
+	// RUN THE WHOLE TEST FROM A DIRECTORY THAT STANDS IN FOR THE WORKTREE the worker reported the file
+	// in.
 	worktree := t.TempDir()
 	t.Chdir(worktree)
 	// Prove the hazard is real before asserting it cannot happen: this is where a relative data dir points.

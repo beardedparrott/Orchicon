@@ -11,8 +11,6 @@ import (
 // ToolIntent represents a detected tool call from the user's message.
 
 // ToolFn is the signature for every tool function.
-// It receives the tenant-scoped context, the DB pool, and JSON arguments,
-// and returns a JSON result or an error.
 type ToolFn func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error)
 
 // PropertySchema describes a single field in a tool's input schema.
@@ -39,9 +37,8 @@ type ToolRegistry struct {
 
 // NewToolRegistry creates the registry with all available tools.
 func NewToolRegistry(pool *db.Pool, log *slog.Logger, secretsKEK []byte) *ToolRegistry {
-	// Package-level logger for tools whose post-commit side effects (e.g.
-	// auto-starting a workflow) need a logger but receive none via the
-	// ToolFn signature.
+	// Package-level logger for tools whose post-commit side effects (e.g. auto-starting a workflow)
+	// need a logger but receive none via the ToolFn signature.
 	toolLogger = log
 	if toolLogger == nil {
 		toolLogger = slog.Default()
@@ -213,10 +210,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Properties:  map[string]PropertySchema{},
 		},
 		{
-			// ask_user — the interactive clarifying question the clients render as a card. It RECORDS the
-			// question and returns immediately (see tool_ask_user.go): the turn then ends normally and the user
-			// answers in their NEXT message, so it can never trip the stall guard's tool wedge. One registration
-			// here reaches BOTH transports (native via toolRegistry.List(); opencode via the orchicon mcp sidecar).
+			// ask_user — the interactive clarifying question the clients render as a card.
 			Name: "ask_user",
 			Description: "Ask the user a clarifying question and END YOUR TURN. Use this instead of writing a numbered " +
 				"list of choices in prose. Provide `question` and 2+ choice-shaped `options` (each {label, description?} " +
@@ -397,10 +391,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Required:    []string{"id"},
 		},
 		{
-			// THE HARD DELETE the operator asked for. It is a SEPARATE tool rather than a flag on
-			// delete_work_item, because the two differ in kind and not in degree: one is a reversible status
-			// change and the other destroys the row. An agent that has to name the destructive one has read
-			// the name, which is the only warning a function signature can give.
+			// THE HARD DELETE the operator asked for.
 			Name: "hard_delete_work_item",
 			Description: "PERMANENTLY remove a work item and its dependencies. IRREVERSIBLE — the row is gone, " +
 				"not cancelled, and cannot be restored. Refused for an item with children (delete them first) " +

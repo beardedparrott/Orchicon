@@ -1,15 +1,6 @@
 package dock
 
 // composer_click_test.go — CLICKING IN THE COMPOSER MOVES THE CARET.
-//
-// The operator: "I also just realized you can't use your mouse in the composer to change the position of your
-// cursor."
-//
-// The gesture cannot come from the terminal: orch enables tea.WithMouseCellMotion(), so every press is handed
-// to the program instead of placing the caret natively. The app therefore has to place it, and the placement
-// is arithmetic over the box's geometry — which is exactly the kind of arithmetic that drifts silently. So the
-// first test here derives the text's origin FROM THE RENDERED BOX rather than from the constants, and would
-// fail if the border or the padding changed.
 
 import (
 	"strings"
@@ -19,8 +10,6 @@ import (
 )
 
 // dockWith builds a focused dock of a known width holding one line of text.
-//
-// It returns the ADDRESS: ClickAt has a pointer receiver (it moves the caret), and New() hands back a value.
 func dockWith(text string) *Model {
 	m := New()
 	m.Width = 80
@@ -29,9 +18,7 @@ func dockWith(text string) *Model {
 	return &m
 }
 
-// THE GEOMETRY IS THE RENDERED ONE. The column the caret is placed from is found by locating the text in the
-// box's own paint, so a change to the border or the padding fails here rather than silently shifting every
-// click by a cell.
+// THE GEOMETRY IS THE RENDERED ONE.
 func TestTheComposerTextOriginMatchesThePaint(t *testing.T) {
 	m := dockWith("hello world")
 	row, col := m.TextOrigin()
@@ -123,14 +110,6 @@ func TestAClickOutsideTheInputRowsIsRefused(t *testing.T) {
 }
 
 // A SOFT-WRAPPED DRAFT IS RESOLVED EXACTLY, which it used to be REFUSED.
-//
-// The old behaviour was deliberately cautious: the wrap grid is unexported and a caret placed by guessing at
-// it would land somewhere plausible and wrong. The operator then hit the cost of that caution — "I pasted in a
-// large amount of text and then tried clicking somewhere and it did not move the cursor to that position" —
-// because ANY wrapped line disabled the gesture for the whole box.
-//
-// The map is now obtained from the widget's own cursor (caretRows) rather than computed, so it is exact
-// rather than guessed and the caution is no longer needed.
 func TestAClickOnAWrappedLinePlacesTheCaretExactly(t *testing.T) {
 	// One logical line, wide enough to wrap several times in an 80-cell box.
 	m := dockWith(strings.Repeat("word ", 60))
@@ -195,12 +174,6 @@ func TestAClickOnALaterWrappedRowPlacesTheCaretThere(t *testing.T) {
 }
 
 // A CLICK ON A SCROLLED AREA IS REFUSED WHEN THE OFFSET CANNOT BE KNOWN, and PLACED when it can.
-//
-// The widget's scroll offset is unexported and history-dependent, so it cannot be read from outside — but in
-// the state the operator is actually in after a paste (the caret at the end of the buffer) the widget pins
-// that caret to the BOTTOM row, which fixes the offset at `total - height` and makes the first visible row
-// exactly row `total - height`. This asserts that resolved case works, and that the same click with the caret
-// moved away from the end is refused rather than guessed at.
 func TestAClickInAScrolledComposerIsResolvedWhenTheCaretIsAtTheEnd(t *testing.T) {
 	m := dockWith(strings.Repeat("line of text\n", 200))
 	row, col := m.TextOrigin()
@@ -220,10 +193,7 @@ func TestAClickInAScrolledComposerIsResolvedWhenTheCaretIsAtTheEnd(t *testing.T)
 	if !m.ClickAt(col+2, row+1) {
 		t.Fatal("a click in a scrolled composer with the caret at the end was refused")
 	}
-	// THE LINE IS ASSERTED, not only the column. This fixture's lines are short and all start at rune 0, so a
-	// column-only assertion is satisfied by a caret placed on line 1 just as well as on the correct line —
-	// which is precisely the bug being fixed (the old code treated visual row 1 as logical line 1). The first
-	// version of this test checked only the column and passed with the old rules restored.
+	// THE LINE IS ASSERTED, not only the column.
 	if got := m.ta.Line(); got != wantRow.line {
 		t.Errorf("the caret is on line %d, want %d — the first visible row of a scrolled composer is row "+
 			"%d, not row %d", got, wantRow.line, offset, 1)
@@ -232,13 +202,7 @@ func TestAClickInAScrolledComposerIsResolvedWhenTheCaretIsAtTheEnd(t *testing.T)
 		t.Errorf("the caret is at buffer rune %d, want %d", got, wantCol)
 	}
 
-	// Now move the caret AWAY from the end and click again. This used to be REFUSED — the offset was
-	// "unobservable" once the caret was not at the end, which is the operator's bug: the first click
-	// worked and every one after it was silently ignored ("works sometimes and other times it does
-	// not"). The offset is now reconstructed from public API (Dock.scrollOffset), so the click lands.
-	//
-	// The assertion is the LANDING, not merely that a bool came back: a click that returns true and
-	// places the caret somewhere unrelated is the failure this whole area has been fighting.
+	// Now move the caret AWAY from the end and click again.
 	m2 := dockWith(strings.Repeat("line of text\n", 200))
 	row2, col2 := m2.TextOrigin()
 	for i := 0; i < 5; i++ {
@@ -267,9 +231,7 @@ func TestAClickOutsideTheInputIsStillRefused(t *testing.T) {
 	}
 }
 
-// THE WALK LEAVES THE CARET WHERE IT FOUND IT WHEN THE CLICK IS REFUSED. caretRows
-// mutates the cursor to read the layout, so a refused click must not have moved
-// anything.
+// THE WALK LEAVES THE CARET WHERE IT FOUND IT WHEN THE CLICK IS REFUSED.
 func TestARefusedClickLeavesTheCaretAlone(t *testing.T) {
 	m := dockWith(strings.Repeat("line of text\n", 200))
 	for i := 0; i < 5; i++ {

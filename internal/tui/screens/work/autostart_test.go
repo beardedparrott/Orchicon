@@ -84,9 +84,7 @@ func TestCreateFormAllowsAutoStartWithNoWorkflow(t *testing.T) {
 	}
 	f.Set("title", "No workflow, auto-start ticked")
 
-	// THE BOX MUST BE HOLDABLE. The coupling used to clear it the instant the workflow was
-	// empty, so the operator could not even express the state the plane accepts — the second
-	// half of the same defect, and it would have survived a fix to the refusal alone.
+	// THE BOX MUST BE HOLDABLE.
 	f.Set("auto_start", "true")
 	if got := f.Values["auto_start"]; got != "true" {
 		t.Fatalf("the create form must HOLD auto-start with no workflow (got %q) — the plane "+
@@ -106,11 +104,6 @@ func TestCreateFormAllowsAutoStartWithNoWorkflow(t *testing.T) {
 }
 
 // The edit form: same rule, and the same two surfaces.
-// THE EDIT FORM TAKES NO GATE EITHER, on ANY kind — leaf, feature, epic or parent.
-//
-// This replaces a test that asserted the opposite. The old rule refused "auto-start with no
-// workflow" on every save; the server asks that question only at a transition into a runnable
-// status, so the client was refusing writes that transitioned nothing.
 func TestEditFormAllowsAutoStartWithNoWorkflow(t *testing.T) {
 	for _, kind := range []apiv1.WorkItemKind{
 		apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
@@ -155,10 +148,6 @@ func TestEditFormAllowsAutoStartWithNoWorkflow(t *testing.T) {
 }
 
 // THE COUPLING IS GONE TOO, and it is the half that would be forgotten.
-//
-// Clearing auto-start when the workflow was emptied is not a neutral safety net: it removes the
-// exact state a sequential run needs. This asserts the box SURVIVES an emptied workflow on both
-// forms, which is the behaviour the operator asked for and the one neither earlier fix delivered.
 func TestAnEmptyWorkflowDoesNotClearAutoStart(t *testing.T) {
 	_, m := autoStartPlane(t)
 
@@ -227,11 +216,6 @@ func TestServerRejectionLandsOnTheDock(t *testing.T) {
 }
 
 // THE PLANE IS STILL THE DECIDER, and the client must not pre-empt it.
-//
-// Removing the client guard does NOT remove the server's rule: a transition into a runnable status
-// with no workflow is still refused by the plane, and that refusal must reach the operator on the
-// composer dock (the transport FitLines never truncates) rather than being swallowed or faked by a
-// client-side check.
 func TestThePlanesOwnRefusalStillReachesTheDock(t *testing.T) {
 	p, m := autoStartPlane(t)
 	shell := &fakeShell{}

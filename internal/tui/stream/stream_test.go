@@ -15,10 +15,8 @@ type testEvent struct {
 	Seq int64
 }
 
-// fakeStream serves a scripted sequence of events, then fails with the
-// scripted error (or blocks until ctx cancel). It honors from_sequence:
-// on redial it replays every event with seq > from, exactly like the
-// server's resume contract (docs/07 §4).
+// fakeStream serves a scripted sequence of events, then fails with the scripted error (or blocks
+// until ctx cancel).
 type fakeStream struct {
 	mu       sync.Mutex
 	events   []testEvent

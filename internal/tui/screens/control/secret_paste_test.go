@@ -1,18 +1,6 @@
 package control
 
 // secret_paste_test.go — PASTING INTO A SECRET FORM.
-//
-// The operator: "I can't copy and paste a value into a secret in the TUI under the secrets section when
-// creating a new or editing a secret."
-//
-// WHY IT WAS MISSED, and why this test lives at THIS level rather than in the shell. The shell's paste
-// support (tui.form_paste.go) enumerated the forms THE SHELL owns — the scope modal, the launch prompt, the
-// grouping forms. Every screen's own forms were missed, and screen forms are most of them, because they open
-// in the details pane via kit2.Base.BeginDetailEdit. The fix is a method on that shared host, so the
-// capability travels with the screen instead of sitting in a list somebody has to remember to extend.
-//
-// So what is pinned here is the REAL surface the report came from: the Control screen's secret form, opened
-// by `n` on the secrets pane, taking a paste through the assertion the shell itself makes.
 
 import (
 	"testing"

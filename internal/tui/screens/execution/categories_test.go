@@ -1,11 +1,6 @@
 package execution
 
 // categories_test.go — the Categorize chord on the Workers and Workflows panes.
-//
-// The operator: "For categories, we could assign a key to create new category and a key to assign an
-// item to a specific category." The screen's half of that is: resolve WHAT is selected, and hand it to
-// the shell with the right target type. The shell's half (the modal, the list, the write) is tested
-// there — and these tests assert the handover, which is the only part that lives in this package.
 
 import (
 	"testing"
@@ -27,16 +22,13 @@ func (s *categorizeSpy) OpenAssignCategory(entityID, _ string, target apiv1.Cate
 }
 
 // TestCategorizeChordOnTheWorkersPaneHandsTheSelectionToTheShell: `C` must pass the SELECTED worker
-// and the WORKER target type, because the target type is what selects which groupings the picker may
-// offer — getting it wrong would offer a conversation's groupings for a worker.
+// and the WORKER target type.
 func TestCategorizeChordOnTheWorkersPaneHandsTheSelectionToTheShell(t *testing.T) {
 	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1", Name: "Sweeper"}, nil)
 	if !m.Base.SelectSource(srcWorkers) {
 		t.Fatal("fixture: could not focus the Workers pane")
 	}
-	// THE ROW MUST EXIST. crudExec stubs the RPCs but seeds no rows, so without this the selection
-	// resolves to nothing, categorizeSelected refuses, and the test reads as "the chord is not wired"
-	// when the wiring is fine — the exact confusion this fixture comment exists to prevent.
+	// THE ROW MUST EXIST.
 	m.Base.LoadItems(srcWorkers, []kit2.Item{{ID: "w1", Title: "Sweeper"}}, "")
 	spy := &categorizeSpy{}
 	m.SetShell(spy)

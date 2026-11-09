@@ -1,11 +1,6 @@
 package tui
 
 // plane_lifecycle_test.go — the unit side of the TUI plane control surface.
-//
-// NOTHING HERE TOUCHES A REAL PLANE OR THE OPERATOR'S REAL $HOME. The one filesystem seam
-// (planeHomeDir) is redirected at t.TempDir(), and the lifecycle verbs are only ever reached through
-// the NOT-LOCAL refusal, which returns before calling internal/planecontrol at all. A test suite that
-// could signal a real process would be a worse bug than the one this feature fixes.
 
 import (
 	"os"
@@ -22,9 +17,6 @@ import (
 )
 
 // tempPlaneHome points the instance-discovery seam at a scratch directory for the test's lifetime.
-//
-// ORCHICON_INSTANCE is cleared in the same breath: it is the FIRST precedence rule, so an operator
-// shell that exports it would otherwise decide what these tests read.
 func tempPlaneHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
@@ -49,11 +41,6 @@ func writePorts(t *testing.T, home, instance string, controlPort int) {
 }
 
 // THE COMMAND-DRIFT GATE (acceptance criterion 4).
-//
-// A command that EXISTS but is absent from an enumeration surface is the exact drift this repo has
-// hit before — printHelp's comment in cmd/orchicon documents `install` missing from help for the same
-// reason. So every new command is asserted against ALL THREE surfaces the TUI enumerates commands on:
-// the registry (dispatch), /help (slashHelpText), and the palette rows the composer opens.
 func TestPlaneCommandsRegisteredEverywhere(t *testing.T) {
 	m := newDockTestApp()
 	names := []string{"/plane", "/plane-start", "/plane-stop", "/plane-restart"}
@@ -146,13 +133,7 @@ func TestPlaneStateFromStatus(t *testing.T) {
 		{"no pid file", planecontrol.Status{}, planeStateDown},
 		{"pid but dead", planecontrol.Status{PID: 42, Alive: false}, planeStateDown},
 		{"alive but not answering", planecontrol.Status{PID: 42, Alive: true, Healthy: false, Drift: planecontrol.Current}, planeStateDown},
-		// THE OPERATOR'S CASE. A plane started OUTSIDE `orchicon serve --detach` — in the field, by
-		// systemd as a user service — writes no PID file, so the footer said "plane down" with
-		// `/plane start` as the remedy, while the TUI was CONNECTED to it and loading data. The
-		// operator: "it still says 'plane down' even though I am connected."
-		//
-		// The health probe is the authoritative "is something serving this instance" signal and does
-		// not depend on how the plane was launched, so an answering plane IS up.
+		// THE OPERATOR'S CASE.
 		{"healthy but no pid file (started outside serve --detach)", planecontrol.Status{Healthy: true, Drift: planecontrol.Unknown}, planeStateUp},
 		// And the drift verdict still only applies to a LIVE process we can identify.
 		{"healthy, no pid, drifted verdict", planecontrol.Status{Healthy: true, Alive: false, Drift: planecontrol.Drifted}, planeStateUp},
@@ -195,8 +176,7 @@ func TestPlaneDownMessageNamesTheRemedy(t *testing.T) {
 		t.Errorf("the down notice repeated on a repeated probe (%d times): %q", n, m.dock.Err)
 	}
 	// AND THE STRIP SELF-HEALS: every slash command clears it (dispatchSlash), so a strip that came
-	// back empty while the plane is STILL down must carry the remedy again on the next probe. Without
-	// this, `/plane` reported "plane down" in the footer and nothing at all on the strip.
+	// back empty while the plane is STILL down must carry the remedy again on the next probe.
 	m.dock.SetError("")
 	m.applyPlaneState(info)
 	if !strings.Contains(m.dock.Err, "/plane-start") {
@@ -355,11 +335,6 @@ func TestPlaneCommandDispatch(t *testing.T) {
 }
 
 // THE STATE INDICATOR MUST NOT GO STALE (acceptance criteria 2 and 3).
-//
-// The first-layout probe answers "was there a plane when the shell started". A plane stopped from
-// another surface (the CLI, the desktop app) left the chip saying "plane up" and the strip with only
-// "connection refused" — the two failures this feature exists to remove. The rolling refresh tick is
-// where a failed connection becomes a re-probe.
 func TestPlaneReprobeWhenConnectionDrops(t *testing.T) {
 	tempPlaneHome(t)
 	m := newDockTestApp()
@@ -436,11 +411,6 @@ func TestPlaneUnknownVerbReported(t *testing.T) {
 }
 
 // THE REMEDY SURVIVES A STRIP CLEAR BETWEEN PROBES (acceptance criterion 3).
-//
-// The strip is shared writable state: connecting, reconnecting, pasting, /find, an ask-model switch and a
-// chat send all clear it. A shell with a HEALTHY CONNECTION never re-probes (planeReprobeCmd arms nothing
-// while the stream is up), so the only thing that can restore the remedy is the refresh tick — without it the
-// footer said "plane down" over an empty strip, and TestPTYPlaneStateCommand phase 1 failed on ordering.
 func TestPlaneDownRemedySurvivesAStripClearBetweenProbes(t *testing.T) {
 	m := newDockTestApp()
 	m.applyPlaneState(planeInfo{State: planeStateDown, Instance: "dev", Detail: "no plane PID file for instance dev"})

@@ -9,15 +9,11 @@ import (
 	"testing"
 )
 
-// hosttools_unrestricted_test.go pins BOTH halves of the boundary this change
-// moves: the interactive suite (NewHostToolsUnrestricted) reaches the real
-// filesystem, and the worker constructors (NewHostTools / NewContainerHostTools)
-// remain confined and cannot inherit the widening. They live together so a
-// future edit that lets the two converge fails here.
+// hosttools_unrestricted_test.go pins BOTH halves of the boundary this change moves: the
+// interactive suite (NewHostToolsUnrestricted) reaches the real filesystem.
 
-// TestUnrestrictedToolsReadOutsideWorktree: the interactive suite reads an
-// absolute path outside its anchoring directory, through read, batch_read,
-// list and glob — no escape error anywhere.
+// TestUnrestrictedToolsReadOutsideWorktree: the interactive suite reads an absolute path outside
+// its anchoring directory, through read, batch_read, list and glob — no escape error anywhere.
 func TestUnrestrictedToolsReadOutsideWorktree(t *testing.T) {
 	dir := t.TempDir()
 	outside := t.TempDir()
@@ -90,9 +86,8 @@ func TestUnrestrictedBashCwdAndCdAway(t *testing.T) {
 	}
 }
 
-// TestWorkerConstructorCannotInheritUnrestricted is the LEAK GATE: the widening
-// is constructor-only, so the worker constructors must build a confined base —
-// asserted structurally AND behaviourally.
+// TestWorkerConstructorCannotInheritUnrestricted is the LEAK GATE: the widening is
+// constructor-only, so the worker constructors must build a confined base.
 func TestWorkerConstructorCannotInheritUnrestricted(t *testing.T) {
 	dir := t.TempDir()
 	outside := t.TempDir()
@@ -125,9 +120,9 @@ func TestWorkerConstructorCannotInheritUnrestricted(t *testing.T) {
 	}
 }
 
-// TestWorkerSuiteRefusesAbsolutePathOutsideRoots is the worker-path statement
-// of acceptance criterion 4: a worker execution's suite refuses an absolute
-// path outside its worktree/project root, so the widening cannot leak.
+// TestWorkerSuiteRefusesAbsolutePathOutsideRoots is the worker-path statement of acceptance
+// criterion 4: a worker execution's suite refuses an absolute path outside its worktree/project
+// root.
 func TestWorkerSuiteRefusesAbsolutePathOutsideRoots(t *testing.T) {
 	dir := t.TempDir()
 	outside := t.TempDir()

@@ -2,14 +2,7 @@
 
 package main
 
-// signals_unix.go — the Unix half of THE SIGNAL SEAM. cmd/orchicon used to spell SIGTERM/SIGKILL out at
-// every site that stops a process (serve.go's stop ladder, container.go's supervisor shutdown, the two
-// signal.NotifyContext calls). Those compile on Windows — syscall.SIGTERM is just a number there — and then
-// DELIVER NOTHING: Go's Windows runtime supports os.Interrupt only, so a detached plane could never be
-// stopped and no supervisor child ever received a graceful stop. Silent, which is the worst kind.
-//
-// So the signal names live here, behind the build tag, and signals_windows.go says what the same three
-// verbs mean on a platform with no SIGTERM. The Unix bodies are byte-for-byte what the call sites did.
+// signals_unix.go — the Unix half of THE SIGNAL SEAM.
 
 import (
 	"fmt"
@@ -27,9 +20,7 @@ func sendGracefulStop(proc *os.Process) error { return proc.Signal(syscall.SIGTE
 // sendForceStop ends a process without letting it run its shutdown path. SIGKILL semantics.
 func sendForceStop(proc *os.Process) error { return proc.Signal(syscall.SIGKILL) }
 
-// gracefulStopFailureIsFatal reports whether a failed graceful stop is the END of the stop attempt. On Unix
-// it is: an EPERM from SIGTERM means we may not signal this process at all, and escalating to SIGKILL would
-// only fail differently.
+// gracefulStopFailureIsFatal reports whether a failed graceful stop is the END of the stop attempt.
 const gracefulStopFailureIsFatal = true
 
 // gracefulStopLabel names the graceful-stop mechanism, for logs that must not claim SIGTERM on a platform

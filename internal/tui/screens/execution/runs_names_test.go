@@ -1,13 +1,6 @@
 package execution
 
 // runs_names_test.go — the runs views show NAMES, not just ids.
-//
-// The operator: "Workflow Runs just show IDs right now. We should also show the name of the
-// workflow and the name of the work item associated with it in the view."
-//
-// A WorkflowRun carries workflow_id / work_item_id and no names (the proto has no name
-// fields), so the TUI resolves them client-side into a cached index — the same thing the GUI's
-// schedules history view does with itemsById / workflowsById.
 
 import (
 	"context"
@@ -58,13 +51,6 @@ func TestRunsListShowsWorkflowAndItemNames(t *testing.T) {
 		t.Errorf("row id = %q, want run-1", items[0].ID)
 	}
 	// The status is still the dim right-hand context — and it is the BARE word.
-	//
-	// THIS ASSERTION USED TO PIN THE BUG. It required "workflow_run_status_running", the raw lowered
-	// enum, which is both what the row printed (unreadable) and — far worse — what the pane's own
-	// chords compared against: the retry action is gated on `meta == "failed"` and force-progress on
-	// `meta == "running"`, so with the enum in Meta NEITHER ACTION COULD EVER BE OFFERED on real data.
-	// A test that asserts the current output cannot tell a correct value from a consistent one, which
-	// is exactly how that shipped.
 	if items[0].Meta != "running" {
 		t.Errorf("meta = %q, want the bare status word \"running\" — the row must PRINT what the pane's "+
 			"chords COMPARE against, or the retry and force-progress actions are unreachable", items[0].Meta)

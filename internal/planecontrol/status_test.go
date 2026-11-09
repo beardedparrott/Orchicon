@@ -67,11 +67,8 @@ func TestStatusWithoutAPIDFileStillNamesTheInstance(t *testing.T) {
 	_ = f
 }
 
-// A LIVE PID FILE IS ENOUGH TO REPORT THE PID AND THE BINARY, even when the liveness seam says the plane is
-// not alive. That is not a contradiction — it is exactly what makes `plane status` FIND a plane on a platform
-// whose liveness probe is weaker than Unix's: `StatusOf` gates the PID and the binary on `ServingPlanePID`
-// (the PID file naming a process the OS confirms exists) and only then asks `planeAlive` for the verdict. Pin
-// it, because the opposite arrangement (gate on liveness) turns a weak probe into "no plane here".
+// A LIVE PID FILE IS ENOUGH TO REPORT THE PID AND THE BINARY, even when the liveness seam says the
+// plane is not alive.
 func TestStatusReportsThePIDFileEvenWhenTheLivenessSeamSaysNo(t *testing.T) {
 	f := newFakeSeams(t)
 	f.writePortRecord(t, "dev", map[string]int{"ORCHICON_CONTROL_PORT": 18122})

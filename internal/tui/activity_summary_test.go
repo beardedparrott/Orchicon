@@ -30,9 +30,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// summaryFixture is the tool work these tests count: two modifies and one read, all issued three seconds
-// before the frozen "now". It is deliberately a MIXED set so a counter that collapsed every class into one
-// bucket would render a different string.
+// summaryFixture is the tool work these tests count: two modifies and one read, all issued three
+// seconds before the frozen "now".
 func summaryFixture(now time.Time) []toolclass.Call {
 	at := now.Add(-3 * time.Second).UnixMilli()
 	return []toolclass.Call{
@@ -42,9 +41,8 @@ func summaryFixture(now time.Time) []toolclass.Call {
 	}
 }
 
-// freezeNoticeNow pins the activity line's window clock to one instant for the duration of a test, so the
-// summary's trailing age is an exact string rather than a race against the wall clock. Same idiom the chat
-// controller uses (controller.go: `func now() int64`).
+// freezeNoticeNow pins the activity line's window clock to one instant for the duration of a test,
+// so the summary's trailing age is an exact string rather than a race against the wall clock.
 func freezeNoticeNow(t *testing.T, at time.Time) {
 	t.Helper()
 	prev := noticeNow
@@ -52,10 +50,8 @@ func freezeNoticeNow(t *testing.T, at time.Time) {
 	t.Cleanup(func() { noticeNow = prev })
 }
 
-// summaryTurnApp builds the Ask pane on a HEALTHY plane with a turn the SERVER reports in flight, which is
-// the state in which the activity line is up and the counter is allowed to speak. It deliberately does NOT
-// start a stream: the line's "either half" test accepts turn_in_flight, and not opening a socket keeps the
-// test free of background goroutines that could repaint under the assertions.
+// summaryTurnApp builds the Ask pane on a HEALTHY plane with a turn the SERVER reports in flight,
+// which is the state in which the activity line is up and the counter is allowed to speak.
 func summaryTurnApp(t *testing.T) *App {
 	t.Helper()
 	m, _ := askWithTranscript(t, "c1")
@@ -65,14 +61,6 @@ func summaryTurnApp(t *testing.T) *App {
 }
 
 // AC1 — THE LINE REPORTS THE WORK, AND IT REPORTS THE SAME STRING THE SHARED SUMMARIZER PRODUCES.
-//
-// The expectation is computed by CALLING toolclass.SummarizeCalls over the same calls, so the two cannot
-// drift: if the line ever stops deriving from the shared summarizer (a second ad-hoc counter, a different
-// window, a different order), this test fails rather than agreeing with the copy.
-//
-// ASSERTED ON THE PAINTED FRAME, which is the layer the operator's report is true at — the way
-// ask_refresh_test.go:127 asserts. A value set on the footer widget can be clipped away by the host's row
-// budget and never reach the screen; that is how the thinking indicator shipped twice.
 func TestTheLineReportsTheRollingToolSummary(t *testing.T) {
 	now := time.UnixMilli(1_700_000_130_000)
 	freezeNoticeNow(t, now)
@@ -145,8 +133,7 @@ func TestSummaryYieldsToEscalation(t *testing.T) {
 			t.Errorf("turnActivityNotice(%v, …, summary, 0) = %q, want %q (%s)", c.silent, got, c.want, c.name)
 		}
 		// THE YIELD RULE ITSELF, asserted independently of the exact wording: once silence crosses into
-		// warnAfter the counter must be ABSENT, not merely outranked. A line that showed both would still
-		// be a false claim of work.
+		// warnAfter the counter must be ABSENT, not merely outranked.
 		if hasCounter := strings.Contains(got, "modifies"); hasCounter != c.wantSumm {
 			t.Errorf("at %v silence the counter is present=%v, want present=%v (line = %q). The counter "+
 				"belongs to the HEALTHY band only: escalation is the watchdog's verdict and a tool tally "+
@@ -195,18 +182,13 @@ func TestSummaryYieldsToEscalation(t *testing.T) {
 }
 
 // AC5 — ZERO TOOL CALLS IS NOT "0 modifies".
-//
-// The summary's empty string is load-bearing (toolclass.Summarize's own doc): with nothing counted the line
-// must fall back to exactly what it said before the counter existed — the phase verb and the watchdog age.
-// A "0 modifies" would be a false claim that work is happening, which is worse than silence.
 func TestZeroToolCallsRendersTheBareVerb(t *testing.T) {
 	now := time.UnixMilli(1_700_000_130_000)
 	freezeNoticeNow(t, now)
 
 	m := summaryTurnApp(t)
-	// The store holds NO tool calls for this conversation — the state of a turn that has not called a tool
-	// yet, and of every conversation whose ledger rows predate the stamp field. The silence sits in the
-	// HEALTHY band (4s), which is precisely where the counter would appear if there were any.
+	// The store holds NO tool calls for this conversation — the state of a turn that has not called a
+	// tool yet, and of every conversation whose ledger rows predate the stamp field.
 	m.chat.SetSilenceForTest("c1", 4*time.Second)
 	m.chatStore.setToolCalls("c1", nil)
 	m.onChatWake()
@@ -228,15 +210,6 @@ func TestZeroToolCallsRendersTheBareVerb(t *testing.T) {
 }
 
 // AC8 — THE SUMMARY NEVER WRAPS OR OVERFLOWS THE ONE ROW, AND IT DEGRADES PREDICTABLY.
-//
-// The footer is a SINGLE row (screenkit.Detail.footerRows counts "\n") and the host Panel CLIPS its tail.
-// The tail is where the escalation band and the counter live, so a naive append on a narrow terminal would
-// silently eat the more important text. fitNotice therefore DEGRADES: the summary goes first, the band
-// second, and the verb never — mirroring the composer's own documented precedence, where the load-bearing
-// text outranks the informative text (internal/tui/dock/statline_test.go:134).
-//
-// ASSERTED AT TWO WIDTHS, because a one-width test cannot tell "degrades" from "happens to fit". The wide
-// pane keeps the counter; the narrow one must drop it and keep the verb.
 func TestTheSummaryNeverWrapsTheFooterRow(t *testing.T) {
 	now := time.UnixMilli(1_700_000_130_000)
 	freezeNoticeNow(t, now)
@@ -291,14 +264,7 @@ func TestTheSummaryNeverWrapsTheFooterRow(t *testing.T) {
 	}
 
 	// THE FLOOR, asserted on the pure function because a pane narrower than the VERB cannot be reached
-	// through the app's rail geometry. Three widths below the verb's own cells pin the LAST degradation
-	// step: when even the verb does not fit, fitNotice truncates it rather than WRAPPING — a wrapped
-	// footer is a SECOND row, which pushes the notice off the pane (ask/screen.go:293-298) and is the
-	// failure the one-row budget exists to prevent.
-	//
-	// The bare-verb arm (silent 0, the first second after send) is included deliberately: it returns
-	// through fitNotice too, so "the line never overflows" is true of EVERY state and not only of the
-	// states that happen to have something degradable in them.
+	// through the app's rail geometry.
 	const stamp int64 = activityTestServerTime
 	verb := "Orchicon is " + chat.VerbAt(stamp) + "…"
 	for _, w := range []int{1, 12, len([]rune(verb)) - 1} {
@@ -336,11 +302,6 @@ func TestTheSummaryNeverWrapsTheFooterRow(t *testing.T) {
 }
 
 // AC9 — THE PLAIN (ascii) PROFILE IS NOT GARBLED.
-//
-// The rotation's glyph discipline (chat.VerbCellCap, verbs_test.go's TestAskVerbsAreAsciiShortAndUnique) is
-// only half the promise: the counter's own separator (·), ellipsis (…), digits and hyphens must also draw on
-// a terminal that has no colour and no fancy glyph set. This asserts the RENDERED footer, not the source:
-// a character the profile cannot draw would appear as a replacement box or shift the row's width.
 func TestTheSummaryIsNotGarbledAtTheAsciiProfile(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
@@ -360,9 +321,7 @@ func TestTheSummaryIsNotGarbledAtTheAsciiProfile(t *testing.T) {
 		t.Errorf("the activity line carries escape sequences under the ascii profile: raw %q, stripped %q",
 			line, got)
 	}
-	// AND EVERY RUNE IS ONE THE PROFILE CAN DRAW. The permitted set is exactly what the two halves emit:
-	// lowercase a-z and a space (the verb), the middle dot and the ellipsis (the shared separators), digits
-	// (the counts and the age), and the hyphen (the re-dial sentence).
+	// AND EVERY RUNE IS ONE THE PROFILE CAN DRAW.
 	for _, r := range line {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
@@ -395,11 +354,6 @@ func TestTheSummaryIsNotGarbledAtTheAsciiProfile(t *testing.T) {
 }
 
 // AC10 — NO RPC IS ADDED FOR THE COUNTER; IT RIDES THE POLL THAT ALREADY RUNS.
-//
-// The claim the feature rests on is "the counter comes from data the client already polls". The mechanical
-// form of that claim: a real transcript poll fetches a page, and repainting the line over that page's work
-// issues NO FURTHER fetch — while the page with work renders a different line from the page without it. If
-// the summary ever grew its own fetch, the count would move between the two repaints and this fails.
 func TestTheSummaryAddsNoClientRPC(t *testing.T) {
 	now := time.UnixMilli(1_700_000_130_000)
 	freezeNoticeNow(t, now)
@@ -441,9 +395,7 @@ func TestTheSummaryAddsNoClientRPC(t *testing.T) {
 }
 
 // runCmdForSummary runs one command tree for the AC10 test: the command, then the TranscriptMsg it
-// produces, through the shell's own router (so onTranscript runs exactly as it does in the program). It
-// deliberately runs only the FIRST command and its message — enough to observe the fetch count, and short
-// enough that a re-arming tick cannot spin.
+// produces, through the shell's own router (so onTranscript runs exactly as it does.
 func runCmdForSummary(t *testing.T, m *App, cmd tea.Cmd) {
 	t.Helper()
 	if cmd == nil {
@@ -466,11 +418,6 @@ func runCmdForSummary(t *testing.T, m *App, cmd tea.Cmd) {
 }
 
 // AC4 — THE VERB IN THE FRAME IS THE ONE THE ROTATION NAMES FOR THE LAST HEARTBEAT'S SERVER TIME.
-//
-// The rotation is already merged (child 3, PR #655) and its selector is pure over the server stamp the
-// heartbeat carries. What this asserts is the WIRING at the line: the stamp recorded from a heartbeat is
-// the one the footer's word is derived from — a heartbeat that records nothing, or a line that indexes on
-// the local clock instead, would leave the word frozen or disagreeing between clients.
 func TestTheVerbInTheFrameComesFromTheLastHeartbeat(t *testing.T) {
 	now := time.UnixMilli(1_700_000_130_000)
 	freezeNoticeNow(t, now)

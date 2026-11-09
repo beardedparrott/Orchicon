@@ -23,9 +23,6 @@ import (
 )
 
 // A LONG, EXPENSIVE, TOOL-DRIVEN SESSION WITH NO CONFIGURED BUDGET SURVIVES.
-//
-// 40 tool rounds is past every old default (30 turns), and each turn reports usage far past the old 500k-token
-// and $0.50 ceilings, so any resurrected default fails this test loudly.
 func TestNoConfiguredBudgetLetsALongExpensiveSessionFinish(t *testing.T) {
 	dir := t.TempDir()
 	prov := &mockProvider{}

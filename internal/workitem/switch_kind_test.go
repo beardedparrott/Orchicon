@@ -62,11 +62,8 @@ func readItemTx(t *testing.T, pool *db.Pool) pgx.Tx {
 	return ttx.Tx
 }
 
-// TestKindSwitchPreconditions verifies the system-managed preconditions
-// without needing a DB: a running item and an active workflow run must be
-// rejected before any resolution happens. (The pool here only serves the
-// helper's transaction plumbing — these checks return before touching the
-// DB beyond BeginTenantTx.)
+// TestKindSwitchPreconditions verifies the system-managed preconditions without needing a DB: a
+// running item and an active workflow run must be rejected before any resolution happens.
 func TestKindSwitchPreconditions(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -97,9 +94,8 @@ func TestKindSwitchPreconditions(t *testing.T) {
 	}
 }
 
-// TestResolveKindSwitchDB exercises the shared resolution helper against a
-// real DB: parent walk-up, child reparenting, schedulability cleanup, and
-// the explicit-parent path.
+// TestResolveKindSwitchDB exercises the shared resolution helper against a real DB: parent walk-up,
+// child reparenting, schedulability cleanup, and the explicit-parent path.
 func TestResolveKindSwitchDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -168,9 +164,8 @@ func TestResolveKindSwitchDB(t *testing.T) {
 		t.Fatalf("epic → feature explicit parent = %v, want epic %s", plan.NewParentID, epic.ID)
 	}
 
-	// Explicit parent equal to the current parent is treated as "keep":
-	// task → feature while naming its current parent (feature) must NOT
-	// reject — the walk-up resolves it instead.
+	// Explicit parent equal to the current parent is treated as "keep": task → feature while naming its
+	// current parent (feature) must NOT reject — the walk-up resolves it instead.
 	plan, err = ResolveKindSwitch(ctx, ttx.Tx, validateParentTestTenant, task, domain.WorkItemKindFeature, strPtr(feature.ID), projectA)
 	if err != nil {
 		t.Fatalf("task → feature with same parent named: %v", err)
@@ -180,9 +175,8 @@ func TestResolveKindSwitchDB(t *testing.T) {
 	}
 }
 
-// TestKindSwitchChildrenReparentDB verifies that direct children that can
-// no longer sit under a switched item move under its resolved parent, and
-// that an explicit invalid parent is rejected.
+// TestKindSwitchChildrenReparentDB verifies that direct children that can no longer sit under a
+// switched item move under its resolved parent, and that an explicit invalid parent is rejected.
 func TestKindSwitchChildrenReparentDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -198,10 +192,8 @@ func TestKindSwitchChildrenReparentDB(t *testing.T) {
 	}
 	defer ttx.Rollback(ctx)
 
-	// Task (depth 3) with a Subtask child (depth 4) switched to Subtask
-	// (depth 4): the child (depth 4 <= 4) must move under the item's
-	// resolved parent. The item's parent is Epic (depth 1 < 4), so the
-	// child becomes a sibling under the Epic.
+	// Task (depth 3) with a Subtask child (depth 4) switched to Subtask (depth 4): the child (depth 4
+	// <= 4) must move under the item's resolved parent.
 	plan, err := ResolveKindSwitch(ctx, ttx.Tx, validateParentTestTenant, task, domain.WorkItemKindSubtask, nil, projectA)
 	if err != nil {
 		t.Fatalf("task → subtask: %v", err)
@@ -222,22 +214,16 @@ func TestKindSwitchChildrenReparentDB(t *testing.T) {
 		t.Fatalf("explicit same-depth parent should be rejected, got %v", err)
 	}
 
-	// An explicit SELF parent must be rejected even when the depth rule
-	// would pass (an epic switched to a feature has itself as a
-	// shallower row until the kind actually changes).
+	// An explicit SELF parent must be rejected even when the depth rule would pass (an epic switched to
+	// a feature has itself as a shallower row until the kind actually changes).
 	_, err = ResolveKindSwitch(ctx, ttx.Tx, validateParentTestTenant, epic, domain.WorkItemKindFeature, strPtr(epic.ID), projectA)
 	if err == nil || !strings.Contains(err.Error(), "its own parent") {
 		t.Fatalf("explicit self-parent should be rejected, got %v", err)
 	}
 }
 
-// TestKindSwitchBlockedItemStaysBlocked is the regression test for the
-// kind-switch cleanup edge: a BLOCKED item switched to a non-schedulable
-// kind is not in the ready/assigned/scheduled/recurring demote list, so it
-// keeps its blocked status. This is intentional and harmless — the
-// reconcilers still process blocked items and clear them when the gate
-// satisfies — but it must stay stable so operators never see the system
-// status silently rewritten by a kind switch.
+// TestKindSwitchBlockedItemStaysBlocked is the regression test for the kind-switch cleanup edge: a
+// BLOCKED item switched to a non-schedulable kind is not in the ready/assigned/scheduled/recurring.
 func TestKindSwitchBlockedItemStaysBlocked(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -297,12 +283,8 @@ func TestKindSwitchBlockedItemStaysBlocked(t *testing.T) {
 	}
 }
 
-// TestKindSwitchProjectMoveDB verifies the interaction between a kind
-// switch and a project move (ADR-WIT-1/2 + the carried-parent guard):
-// moving to another project with a kind switch requires a parent in the
-// target project, an explicit NEW parent is honored, a "keep the current
-// parent" request is rejected when the current parent does not live in
-// the target project, and the resolver's walk-up never crosses projects.
+// TestKindSwitchProjectMoveDB verifies the interaction between a kind switch and a project move
+// (ADR-WIT-1/2 + the carried-parent guard).
 func TestKindSwitchProjectMoveDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -324,12 +306,7 @@ func TestKindSwitchProjectMoveDB(t *testing.T) {
 	}
 	kind := func(k apiv1.WorkItemKind) *apiv1.WorkItemKind { return &k }
 
-	// 1. Kind switch + project move + explicit NEW parent in the target
-	// project succeeds and reparents to it. (Regression test: the
-	// carried-parent guard used to run after ResolveKindSwitch had
-	// already validated the explicit parent against the target project,
-	// falsely rejecting the request with "parent must be in the same
-	// project".)
+	// 1.
 	err := update(taskA, func(m *apiv1.UpdateWorkItemRequest) {
 		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE)
 		m.ProjectId = strPtr(projectB)
@@ -355,10 +332,7 @@ func TestKindSwitchProjectMoveDB(t *testing.T) {
 		t.Fatalf("switch+move without a parent should be rejected, got %v", err)
 	}
 
-	// 3. Kind switch + project move + "keep the current parent" (explicit
-	// parent == current parent, which still lives in the OLD project) is
-	// rejected — treating it as a reparent would let the walk-up write a
-	// cross-project parent.
+	// 3.
 	taskKeep := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &featureA.ID)
 	err = update(taskKeep, func(m *apiv1.UpdateWorkItemRequest) {
 		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE)
@@ -369,9 +343,7 @@ func TestKindSwitchProjectMoveDB(t *testing.T) {
 		t.Fatalf("switch+move keeping a parent from the old project should be rejected, got %v", err)
 	}
 
-	// 4. Kind switch + project move + keep the current parent when it
-	// ALREADY lives in the target project succeeds (the "parent moved
-	// first" pattern): the walk-up resolves within the target project.
+	// 4.
 	epicC := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindEpic, nil)
 	featureC := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindFeature, &epicC.ID)
 	if err := update(epicC, func(m *apiv1.UpdateWorkItemRequest) { m.ProjectId = strPtr(projectB) }); err != nil {
@@ -391,10 +363,7 @@ func TestKindSwitchProjectMoveDB(t *testing.T) {
 			cur.ProjectID, cur.Kind, cur.ParentID, projectB, epicC.ID)
 	}
 
-	// 5. The resolver's walk-up backstop: a keep-parent resolution that
-	// would cross back into the old project is rejected even when this
-	// request does not move the project (the item already lives in B but
-	// its parent chain was left behind when the parent moved back to A).
+	// 5.
 	epicD := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindEpic, nil)
 	featureD := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindFeature, &epicD.ID)
 	if err := update(epicD, func(m *apiv1.UpdateWorkItemRequest) { m.ProjectId = strPtr(projectB) }); err != nil {
@@ -422,14 +391,8 @@ func TestKindSwitchProjectMoveDB(t *testing.T) {
 	}
 }
 
-// TestKindSwitchAutoStartDB verifies that a kind switch never triggers the
-// post-commit auto-start on its own — the user re-typed the item, they did
-// not ask to start it now (ADR-WIT-2). This holds for switches to a
-// non-schedulable kind (which clears the schedule) AND between schedulable
-// kinds (Task → Subtask), where the destructive bug lived: nothing was
-// cleared, so the post-commit auto-start fired whenever the item had
-// auto_start_workflow=true stored (the old default) and no scheduled time.
-// An explicit autoStartWorkflow=true in the same request still wins.
+// TestKindSwitchAutoStartDB verifies that a kind switch never triggers the post-commit auto-start
+// on its own — the user re-typed the item, they did not ask to start it now (ADR-WIT-2).
 func TestKindSwitchAutoStartDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -508,12 +471,7 @@ func TestKindSwitchAutoStartDB(t *testing.T) {
 		t.Fatalf("explicit auto-start should fire once for sched2, got %v", started)
 	}
 
-	// 3. The reported bug: an IMMEDIATE auto-start task switched to a
-	// schedulable kind (Task → Subtask) with NO explicit autoStartWorkflow
-	// in the request must NOT auto-start. The old guard only suppressed
-	// when the switch cleared the schedule (non-schedulable kinds); here
-	// nothing is cleared and ScheduledStartAt is nil, so the post-commit
-	// auto-start fired and kicked off a run the user never asked for.
+	// 3.
 	immediate1 := mkImmediate()
 	if err := update(immediate1, func(m *apiv1.UpdateWorkItemRequest) {
 		m.Kind = kind(apiv1.WorkItemKind_WORK_ITEM_KIND_SUBTASK)
@@ -546,9 +504,8 @@ func boolPtr(b bool) *bool { return &b }
 
 func statusPtr(s apiv1.WorkItemStatus) *apiv1.WorkItemStatus { return &s }
 
-// TestUpdateWorkItemKindSwitchDB exercises the full UpdateWorkItem handler:
-// kind switching with parent walk-up, child reparenting, schedulability
-// cleanup, events, and the system-managed preconditions.
+// TestUpdateWorkItemKindSwitchDB exercises the full UpdateWorkItem handler: kind switching with
+// parent walk-up, child reparenting, schedulability cleanup, events.
 func TestUpdateWorkItemKindSwitchDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -568,9 +525,7 @@ func TestUpdateWorkItemKindSwitchDB(t *testing.T) {
 	}
 	kind := func(k apiv1.WorkItemKind) *apiv1.WorkItemKind { return &k }
 
-	// 1. Task → Feature: parent walks up to the Epic, worker binding and
-	// scheduled start are cleared, ready → pending. Give the task a worker
-	// binding and a ready status first.
+	// 1.
 	workerRef := []byte(`{"worker_id":"w1","version":1}`)
 	writeItem(t, pool, task.ID, task.Version, db.UpdateWorkItemFields{
 		AssignedWorkerRef: &workerRef,
@@ -674,10 +629,8 @@ func TestUpdateWorkItemKindSwitchDB(t *testing.T) {
 	}
 }
 
-// TestCreateWorkItemAutoStartDefaultDB verifies the bug-fix default: a new
-// work item created without an explicit autoStartWorkflow must have
-// auto_start_workflow = false ("Start immediately on save" is opt-in, never
-// the default). An explicit true in the create request still wins.
+// TestCreateWorkItemAutoStartDefaultDB verifies the bug-fix default: a new work item created
+// without an explicit autoStartWorkflow must have auto_start_workflow = false ("Start immediately.
 func TestCreateWorkItemAutoStartDefaultDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -724,14 +677,8 @@ func TestCreateWorkItemAutoStartDefaultDB(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkItemScheduleFlipsStatusDB verifies the bug-fix contract:
-// saving a scheduled_start_at in UpdateWorkItem flips the edited item's
-// status to "scheduled" (AC2), and ONLY the edited item — sibling
-// scheduled items are untouched (no bulk flip). Guarded against in-flight
-// runs (a running item keeps its run status so the reconciler cannot fire
-// a duplicate run) and against a kind switch that clears the schedule.
-// See architecture-notes/running-workflows-not-showing-in-schedules.md
-// (ADR-001).
+// TestUpdateWorkItemScheduleFlipsStatusDB verifies the bug-fix contract: saving a
+// scheduled_start_at in UpdateWorkItem flips the edited item's status to "scheduled" (AC2).
 func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -751,9 +698,7 @@ func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 	}
 	kind := func(k apiv1.WorkItemKind) *apiv1.WorkItemKind { return &k }
 
-	// 1. Item in `ready` + schedule set → status becomes `scheduled`.
-	// A leaf needs a workflow bound to be schedulable (a workflow-less leaf
-	// is rejected below).
+	// 1.
 	wfID := seedPublishedWorkflowForTest(t, pool, projectA, true)
 	readyItem := validateParentItem(t, ctx, pool, projectA, domain.WorkItemKindTask, &epic.ID)
 	writeItem(t, pool, readyItem.ID, readyItem.Version, db.UpdateWorkItemFields{
@@ -877,17 +822,8 @@ func TestUpdateWorkItemScheduleFlipsStatusDB(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkItemDisableRecurringDemotesToPendingDB verifies the
-// recurring-status invariant (AC: disabling recurring on a work item and
-// saving cancels upcoming schedules AND returns the status to pending).
-// The edit form unchecks the Recurring schedule toggle — an empty-but-present
-// RecurringSchedule, proto clear semantics — while its status dropdown still
-// reports "recurring", so the clear and the explicit recurring status arrive
-// in the SAME request and the clear wins. Also covered: the inverse hole
-// (a manual status=recurring pick with no schedule → pending), the keep path
-// (setting a new schedule stays recurring), the echo path (a recurring item
-// saved with status=recurring + schedule intact stays recurring), and the
-// explicit-other-status path (clear schedule + status=scheduled → scheduled).
+// TestUpdateWorkItemDisableRecurringDemotesToPendingDB verifies the recurring-status invariant (AC:
+// disabling recurring on a work item and saving cancels upcoming schedules AND returns the status.
 func TestUpdateWorkItemDisableRecurringDemotesToPendingDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -926,9 +862,7 @@ func TestUpdateWorkItemDisableRecurringDemotesToPendingDB(t *testing.T) {
 		return readItem(t, pool, item.ID)
 	}
 
-	// 1. The reported bug: disable the toggle while the dropdown still says
-	// "recurring" → empty-but-present schedule + status=recurring. The clear
-	// must win: status → pending, schedule + cursor NULL.
+	// 1.
 	item := seedRecurring()
 	if err := update(item, func(m *apiv1.UpdateWorkItemRequest) {
 		m.Status = statusPtr(apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING)
@@ -980,9 +914,7 @@ func TestUpdateWorkItemDisableRecurringDemotesToPendingDB(t *testing.T) {
 		t.Fatal("recurring_schedule should be persisted for the new schedule")
 	}
 
-	// 4. Echo path: the form always sends the dropdown status. A recurring
-	// item saved with status=recurring and its schedule intact stays
-	// recurring — the disable flow only demotes when the clear is present.
+	// 4.
 	item4 := seedRecurring()
 	if err := update(item4, func(m *apiv1.UpdateWorkItemRequest) {
 		m.Status = statusPtr(apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING)

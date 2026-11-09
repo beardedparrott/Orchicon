@@ -7,11 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/testfixtures"
 )
 
-// TestComputeUnifiedDiffVectors runs every shared test vector through the
-// diff engine and asserts byte-equal diff text. The TS side
-// (frontend/src/lib/fileedit/testvectors.test.ts) loads the SAME JSON files,
-// so a green pair of runs proves GUI and TUI renderers consume identical
-// ground truth.
+// TestComputeUnifiedDiffVectors runs every shared test vector through the diff engine and asserts
+// byte-equal diff text.
 func TestComputeUnifiedDiffVectors(t *testing.T) {
 	vecs, err := testfixtures.LoadFileEditVectors()
 	if err != nil {
@@ -63,9 +60,9 @@ func TestComputeUnifiedDiffVectors(t *testing.T) {
 	}
 }
 
-// TestIdenticalVectorsShareDiffText pins the AC that byte-identical repeated
-// edits produce identical diffs: the `modify` and `identical-repeat-edit`
-// vectors carry the same before/after pair under different names.
+// TestIdenticalVectorsShareDiffText pins the AC that byte-identical repeated edits produce
+// identical diffs: the `modify` and `identical-repeat-edit` vectors carry the same before/after
+// pair under.
 func TestIdenticalVectorsShareDiffText(t *testing.T) {
 	vecs, err := testfixtures.LoadFileEditVectors()
 	if err != nil {
@@ -126,11 +123,8 @@ func TestUnicodeSafety(t *testing.T) {
 	}
 }
 
-// TestTrailingNewlineToggle pins the AC that a change which ONLY toggles a
-// trailing newline is a real, diff-visible edit (size/sha differ; git emits a
-// hunk with the "\ No newline at end of file" marker). Comparing the dline
-// text alone would digest both sides as a common keep and emit a header-only
-// (empty) diff — this test guards the dlineEqual (text AND hasEOL) fix.
+// TestTrailingNewlineToggle pins the AC that a change which ONLY toggles a trailing newline is a
+// real, diff-visible edit (size/sha differ.
 func TestTrailingNewlineToggle(t *testing.T) {
 	// remove the trailing newline.
 	rm := ComputeUnifiedDiff([]byte("foo\n"), []byte("foo"), "f.txt")

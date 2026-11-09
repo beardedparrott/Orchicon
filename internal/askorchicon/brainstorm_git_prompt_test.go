@@ -1,15 +1,6 @@
 package askorchicon
 
 // brainstorm_git_prompt_test.go — REQUIREMENT 1: PROJECT CREATION ASKS FOR THE GIT STRATEGY.
-//
-// The operator's instruction: "add in a prompt in Brainstorm mode on project creation to send an ask card asking
-// what git strategy the user wants", and then, "if any git type is answered, ask 'Would you like me to initialize
-// the git repository' if it doesn't already exist and then have the MCP call run the EnsureGitState".
-//
-// This is prose, so it is pinned as prose — but pinned, because the ASK PATH is exactly what was missing: the
-// tool wrote the project row without ever offering a strategy or a repository, and the first run then had
-// nothing to branch from. A future edit that quietly drops the question would restore the original defect with
-// every test still green.
 
 import (
 	"log/slog"
@@ -28,9 +19,7 @@ func brainstormPromptForTest() string {
 func TestBrainstormPromptAsksForTheGitStrategy(t *testing.T) {
 	p := brainstormPromptForTest()
 	// "GIT STRATEGY" (uppercase) is how the drafting rule spells it; the lowercase spelling this test
-	// used to require came from the `create_project` TOOL DESCRIPTION, which was removed as a duplicate of
-	// the transport's own definition. The CONTRACT is that the strategy is asked for as a real choice, and
-	// that lives in the rule text — so the assertion follows the contract, not the removed duplicate.
+	// used to require came from the `create_project` TOOL DESCRIPTION.
 	for _, want := range []string{
 		"GIT STRATEGY",
 		"local", "pr", "none",

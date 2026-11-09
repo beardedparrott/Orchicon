@@ -158,10 +158,6 @@ type tableRow struct {
 }
 
 // tableShape returns the column count, the headers and the alignments.
-//
-// The alignments and the headers are not always on the same node — GFM records alignments per row as
-// well as on the header — so the widest source wins, and the column count is the MAXIMUM over the
-// header, the alignments and every row (a row with more cells than the header still renders).
 func (r *renderer) tableShape(n *east.Table) (int, tableAlign) {
 	var t tableAlign
 	cols := 0

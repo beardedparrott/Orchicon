@@ -1,17 +1,6 @@
 package runtime
 
 // hostpaths_test.go — THE CLASS, NOT THE INSTANCE, FOR PATHS THAT CROSS INTO A CONTAINER.
-//
-// Six Windows failures were one mistake: a host path crossing into a Linux container unconverted. The
-// allowlist compare, the -v spec, the --tmpfs dest, the entrypoint, the worktree .git pointer, and finally
-// the exec cwd. Each arrived as its own report, because the set of paths crossing the boundary lived in the
-// memory of whoever last edited the code.
-//
-// hostpaths.go moves that set onto the structs as a tag. These tests hold it there:
-//
-//  1. every tagged field on every request type is actually CONVERTED (behavioural, by reflection);
-//  2. the two handlers that turn a request into a container command call the walker (source audit);
-//  3. the specific reported failure — an exec with a Windows cwd — reaches the container in /mnt form.
 
 import (
 	"os"
@@ -29,10 +18,6 @@ var winPaths = map[string]string{
 }
 
 // TestEveryTaggedHostPathIsMapped is the regression assertion.
-//
-// IT ENUMERATES BY REFLECTION, so a field added to any of these structs with the hostpath tag is covered
-// without touching this test — and a field added to one of them WITHOUT the tag is caught by
-// TestNoRequestCarriesAnUntaggedPathField below.
 func TestEveryTaggedHostPathIsMapped(t *testing.T) {
 	m := NewPathMapper("windows", "wsl")
 
@@ -78,11 +63,7 @@ func TestEveryTaggedHostPathIsMapped(t *testing.T) {
 	}
 }
 
-// TestNoRequestCarriesAnUntaggedPathField — the OTHER half. A new path field without the tag is invisible to
-// the walker, so it crosses unmapped and the failure looks identical to the six before it.
-//
-// The rule is a naming convention on purpose: these structs name a host path `Cwd`, `ProjectDir`, `WorktreeDir`
-// or `<something>Dir`, and every such field must say so declaratively.
+// TestNoRequestCarriesAnUntaggedPathField — the OTHER half.
 func TestNoRequestCarriesAnUntaggedPathField(t *testing.T) {
 	pathish := func(name string) bool {
 		switch name {
@@ -117,10 +98,6 @@ func TestNoRequestCarriesAnUntaggedPathField(t *testing.T) {
 }
 
 // TestBothContainerHandlersMapTheRequest is the wiring assertion.
-//
-// The walker being correct is what made the original gap invisible: ResolveContainerExe and the ProjectDir
-// mapping both existed and worked, and the field beside them did not. A test of the walker alone cannot catch
-// a handler that never calls it.
 func TestBothContainerHandlersMapTheRequest(t *testing.T) {
 	b, err := os.ReadFile("daemon.go")
 	if err != nil {

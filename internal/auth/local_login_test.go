@@ -58,10 +58,8 @@ func testLocalLoginEnv(t *testing.T) (*httptest.Server, *db.Pool, *Handler) {
 	return srv, pool, h
 }
 
-// createLocalAccount seeds an identity + local credential directly through
-// the data-access layer (the boundary primitive), mirroring what the admin
-// SetLocalCredential path does. forceChange sets the forced-password-change
-// flag (the bootstrap-admin state) when true.
+// createLocalAccount seeds an identity + local credential directly through the data-access layer
+// (the boundary primitive), mirroring what the admin SetLocalCredential path does.
 func createLocalAccount(t *testing.T, pool *db.Pool, tenantID, subject, username, password string, forceChange bool) string {
 	t.Helper()
 	ctx := context.Background()
@@ -140,13 +138,8 @@ func TestLocalLoginCorrectCredentials(t *testing.T) {
 	}
 }
 
-// TestLocalLoginForcedChangeFlag pins the forced-password-change contract
-// (ADR-3/ADR-4): a flagged credential still gets a token issued on login
-// (the SPA gate needs a live session to call the change RPC), the flag
-// rides on BOTH the login response and /auth/session (so the gate survives
-// a full page load), and a successful SetLocalCredential clears the flag —
-// after which the old password no longer works and the new one logs in
-// unflagged.
+// TestLocalLoginForcedChangeFlag pins the forced-password-change contract (ADR-3/ADR-4): a flagged
+// credential still gets a token issued on login (the SPA gate needs a live session to call.
 func TestLocalLoginForcedChangeFlag(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	const tenantID = "tnt_dev"
@@ -302,10 +295,8 @@ func TestLocalLoginDisabledWithoutOP(t *testing.T) {
 	}
 }
 
-// TestLocalLoginCompletesOPFlow drives a full OIDC authorization-code flow
-// for a local account: /authorize → login bridge → local-login (password) →
-// authorize callback → token exchange. This is the end-to-end proof that a
-// local account completes the embedded-OP flow through the login bridge.
+// TestLocalLoginCompletesOPFlow drives a full OIDC authorization-code flow for a local account:
+// /authorize → login bridge → local-login (password) → authorize callback → token exchange.
 func TestLocalLoginCompletesOPFlow(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	const tenantID = "tnt_dev"

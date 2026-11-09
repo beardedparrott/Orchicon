@@ -11,10 +11,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// headerRoundTripper injects static request headers (e.g. Authorization)
-// into every outbound HTTP request. The go-sdk has no per-transport
-// header option, so header/bearer auth is plumbed through the http.Client
-// (ADR-0008: full OAuth dance deferred; header auth in v1).
+// headerRoundTripper injects static request headers (e.g. Authorization) into every outbound HTTP
+// request.
 type headerRoundTripper struct {
 	base    http.RoundTripper
 	headers map[string]string
@@ -28,14 +26,8 @@ func (h *headerRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) 
 	return h.base.RoundTrip(r2)
 }
 
-// newHTTPTransport builds the go-sdk StreamableClientTransport for a
-// remote streamable-HTTP MCP server. Header auth is applied via a custom
-// http.Client; the standalone-SSE fallback is disabled (the go-sdk only
-// enables SSE for compatibility with servers that do not implement the
-// modern streamable HTTP protocol — we always send
-// Accept: application/json, text/event-stream and disable the legacy
-// mode so a server that only speaks SSE surfaces an error instead of a
-// hang).
+// newHTTPTransport builds the go-sdk StreamableClientTransport for a remote streamable-HTTP MCP
+// server.
 func newHTTPTransport(spec ServerSpec) (*mcp.StreamableClientTransport, error) {
 	if spec.URL == "" {
 		return nil, fmt.Errorf("mcp server %q: http transport requires a URL", spec.ID)
@@ -65,9 +57,6 @@ func newHTTPTransport(spec ServerSpec) (*mcp.StreamableClientTransport, error) {
 const connectTimeoutEnv = "ORCHICON_MCP_CONNECT_TIMEOUT"
 
 // connectTimeout returns the context timeout for a lazy connect+discover.
-//
-// PRECEDENCE: the spec's own Timeout, then the deployment override, then the default. A spec that states a
-// timeout is an explicit per-server decision and outranks the deployment's blanket one.
 func connectTimeout(spec ServerSpec) time.Duration {
 	if spec.Timeout > 0 {
 		return spec.Timeout

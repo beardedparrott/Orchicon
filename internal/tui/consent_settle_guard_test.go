@@ -96,8 +96,7 @@ func TestDiscoveryStillDrawsACardItIsToldAbout(t *testing.T) {
 }
 
 // THE TRUTH-BASED SETTLE: the recorded outcome settles the card on the next transcript load, which
-// is what lets the gate above be strict without leaving a card live for an ask that is genuinely
-// dead (an expiry written at finalize, or a decision made in the other client).
+// is what lets the gate above be strict without leaving a card live for an ask that is genuinely.
 func TestAPageRecordedOutcomeSettlesTheCard(t *testing.T) {
 	m, _ := consentApp(t)
 	m.ShowConsentAsk(chat.PermissionAsk{
@@ -106,8 +105,7 @@ func TestAPageRecordedOutcomeSettlesTheCard(t *testing.T) {
 	})
 
 	// The returned batch is NOT applied: it carries the grant refresh, which needs a live Ask client
-	// this fixture deliberately has none of. The settle runs SYNCHRONOUSLY inside onTranscript, which
-	// is the behaviour under test.
+	// this fixture deliberately has none of.
 	_ = m.onTranscript(chat.TranscriptMsg{
 		ConvID:      "c1",
 		SettledAsks: []chat.AskOutcome{{AskID: "ask-1", Outcome: "expired"}},
@@ -116,11 +114,7 @@ func TestAPageRecordedOutcomeSettlesTheCard(t *testing.T) {
 	if m.chatStore.hasPendingConsent("c1") {
 		t.Fatal("the page records this ask as expired — the card must not still be a choice")
 	}
-	// AND THE CARD STAYS AS A RECORD, not as a live choice — "SETTLED, NOT REMOVED". The same load passes
-	// through onTranscript's durable re-read, which is a `replace` here (the turn is over); replace now
-	// KEEPS a settled card so the operator can see what was asked, and every choice path gates on
-	// Pending() so the retained record is inert (see replace's retention rule, and
-	// TestASettledCardStaysAsARecordAndNeverDoubles for the de-dupe against a durable twin).
+	// AND THE CARD STAYS AS A RECORD, not as a live choice — "SETTLED, NOT REMOVED".
 	if st := m.chatStore.consentState("c1", "ask-1"); st == nil || st.Pending() {
 		t.Fatalf("the card must survive as a settled RECORD, not a live choice, got %+v", st)
 	}
@@ -147,9 +141,7 @@ func TestAOutcomeForAnotherAskLeavesTheCardAlone(t *testing.T) {
 	}
 }
 
-// RECOVERY: a settled card is a RECORD of an ask, not a claim on its id. When the server still lists
-// that ask as OPEN — the only reason discovery or a watch replay would raise it again — the operator
-// must get the choice back, and must not end up with two cards for one ask.
+// RECOVERY: a settled card is a RECORD of an ask, not a claim on its id.
 func TestASettledCardIsReArmedRatherThanDuplicated(t *testing.T) {
 	m, _ := consentApp(t)
 	ask := chat.PermissionAsk{

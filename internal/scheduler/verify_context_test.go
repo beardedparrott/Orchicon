@@ -48,12 +48,8 @@ func priorRun(stepID string) map[string]db.WorkflowStepRunRow {
 	}
 }
 
-// TestVerifierPromptWithholdsTheImplementerSummary is the core assertion: the reviewer must not be pointed
-// at the implementer's own account of what it did.
-//
-// This is the clean-room property. A summary written by the model that believes the work is complete is
-// the CLAIM under review; handing it over primes the reviewer with the conclusion it exists to test
-// independently. The reviewer keeps everything checkable — diff, criteria, facts ledger, issues.
+// TestVerifierPromptWithholdsTheImplementerSummary is the core assertion: the reviewer must not be
+// pointed at the implementer's own account of what it did.
 func TestVerifierPromptWithholdsTheImplementerSummary(t *testing.T) {
 	r := &WorkflowReconciler{}
 	item := db.WorkItemRow{

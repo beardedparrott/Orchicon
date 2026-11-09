@@ -39,23 +39,14 @@ import (
 )
 
 // Command starts a helper tool that must never open a console window.
-//
-// USE IT FOR ANYTHING THIS PROGRAM RUNS FOR ITSELF: probes, one-off initialisers, engine calls, git and gh
-// reads, version queries, subprocess transports. A tool whose window the operator is meant to SEE does not
-// belong here, and nothing in this codebase spawns one except the interactive-console relaunch, which uses
-// CREATE_NEW_CONSOLE deliberately and says so.
 func Command(name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
 	Quiet(cmd)
 	return cmd
 }
 
-// Quiet applies the no-window attribute to a command the caller has already built — for the cases where the
-// command needs extra wiring (Env, Stdout, process-group ownership) that Command cannot know about.
-//
-// IT COMPOSES rather than assigns. Several call sites set SysProcAttr themselves (a process group for build
-// cancellation, a detach for a daemon), and an assignment here would silently drop that — turning a cosmetic
-// fix into a real one, which is the worst trade available.
+// Quiet applies the no-window attribute to a command the caller has already built — for the cases
+// where the command needs extra wiring (Env, Stdout.
 func Quiet(cmd *exec.Cmd) {
 	if cmd == nil {
 		return
@@ -63,9 +54,7 @@ func Quiet(cmd *exec.Cmd) {
 	applyNoWindow(cmd)
 }
 
-// CommandContext is Command with a deadline. Prefer it wherever the tool could hang: an engine whose socket is
-// wedged, a probe against a port that accepts but never answers, a `docker exec` into a container that is
-// being torn down.
+// CommandContext is Command with a deadline.
 func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	Quiet(cmd)

@@ -101,9 +101,6 @@ func TestUnparseableAddrIsNotRetried(t *testing.T) {
 }
 
 // THE RETRY ACTUALLY ENGAGES — asserted by failing the first attempts, not by reading the loop.
-//
-// Without this, "there is a retry" and "the retry never runs" are the same test result: the healthy-host
-// cases above pass either way, because they never reach the loop.
 func TestEphemeralRetryEngagesAfterTransientFailures(t *testing.T) {
 	prevAttempts, prevBackoff, prevFn := ephemeralBindAttempts, ephemeralBindBackoff, listenFn
 	ephemeralBindAttempts, ephemeralBindBackoff = 5, time.Millisecond

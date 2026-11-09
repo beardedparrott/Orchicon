@@ -13,14 +13,10 @@ func PaneGap() string { return theme.HintText.Render(" │ ") }
 // Hint renders dim helper text.
 func Hint(s string) string { return theme.HintText.Render(s) }
 
-// paneStride is the rendered width of the list pane + the gap (3 columns
-// of " │ " rendering). Single-pane layout: one list pane, then the gap,
-// then the detail — so any x past the pane + gap is the detail.
+// paneStride is the rendered width of the list pane + the gap (3 columns of " │ " rendering).
 func (b *Base) paneStride() int { return b.paneW + 3 }
 
 // mousePane returns 0 (the active list pane) or len(sources) (detail).
-// The strip row (y == 0 when stripH == 1) is NOT a pane — callers check
-// the strip first via stripSourceAt.
 func (b *Base) mousePane(x int) int {
 	if b.paneW <= 0 {
 		return 0
@@ -31,9 +27,7 @@ func (b *Base) mousePane(x int) int {
 	return len(b.sources) // detail
 }
 
-// stripSourceAt maps a strip-row click x to a source index. The strip
-// renders titles joined by " │ " (same construction as sourceStripView),
-// so walk the segments' visible widths. Returns -1 outside any segment.
+// stripSourceAt maps a strip-row click x to a source index.
 func (b *Base) stripSourceAt(x int) int {
 	if b.stripH == 0 || len(b.sources) == 0 || x < 0 {
 		return -1

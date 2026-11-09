@@ -242,13 +242,6 @@ func sessionOf(t *testing.T, pool *db.Pool, conversationID string) string {
 }
 
 // TestTruncationBreaksATimestampTieByID — the case the row comparison EXISTS for.
-//
-// created_at is `now()`, which is not unique: a user message and the reply that follows it can share a
-// millisecond, and rows written in one transaction always do. Without the (created_at, id) TIEBREAK a revert at the
-// SECOND of a tied pair would also delete the first — silently taking an extra message the operator asked to keep.
-//
-// This is why the seed above stamps DISTINCT timestamps for the ordering test and this one deliberately ties
-// them: the two properties are different, and a test with distinct timestamps cannot see this one at all.
 func TestTruncationBreaksATimestampTieByID(t *testing.T) {
 	pool := chatDBTestPool(t)
 	conv := createConversation(t, pool, "m")

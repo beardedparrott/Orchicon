@@ -2,15 +2,6 @@ package execution
 
 // execution_detail_test.go — the Executions detail: the run's facts, the worker's todo list, and
 // the follow-up box.
-//
-// The operator: "Executions should definitely mimic the GUI as much as possible in the detail pane
-// and also have the nudge/follow up box including the full recorded or live stream of the worker
-// and context, token, cost, tool, todo list etc. information just like in the GUI (within reason
-// of the limitation of a text interface of course)."
-//
-// The transcript and the nudge already existed (chat.MergeSessionItems feeds the body, and the `i`
-// interject form calls SendExecutionMessage exactly as the GUI's composer does). These tests cover
-// what was added: the run's own facts, the TODOS, and the FOLLOW-UP.
 
 import (
 	"context"
@@ -200,12 +191,6 @@ func TestFailedTodoFetchLeavesTheDetailWorking(t *testing.T) {
 // --- the message box (the retired `f` / `i` modals) -------------------------
 
 // The composer posts ContinueExecutionSession for a FINISHED execution, with the operator's text.
-//
-// This replaces the `f` modal: the operator's report was that the chord opened a box, they typed a
-// question, pressed ctrl+s, and NOTHING happened — and that the interface was "very weird" and "not
-// very intuitive". The box is now a position in the transcript (walk down past the last block) and
-// sending is `enter`, which is what they asked for: "type in your response and hit enter to send
-// it".
 func TestComposerSendsAFollowUpOnAFinishedExecution(t *testing.T) {
 	p := execPlane()
 	p.exec.Status = apiv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED
@@ -238,9 +223,6 @@ func TestComposerSendsAFollowUpOnAFinishedExecution(t *testing.T) {
 }
 
 // The composer messages a LIVE execution instead — the SAME box, the same key, decided by state.
-//
-// This is the operator's "(Interjects should work the same way on live executions)": one control
-// for both acts, which is also the GUI's model (a single textarea whose placeholder changes).
 func TestComposerMessagesALiveExecution(t *testing.T) {
 	p := execPlane()
 	p.exec.Status = apiv1.ExecutionStatus_EXECUTION_STATUS_RUNNING

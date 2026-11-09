@@ -7,11 +7,8 @@ import (
 	"testing"
 )
 
-// TestFileEditHookFiresOnToolUse: a completed mutating tool_use part reaches
-// the file-edit hook with the tool name, input map, and output — the Ask
-// conversation's ledger contract (owner_kind ask_conversation is applied
-// server-side by the hook implementation). Parts before the message was
-// accepted (sent == false) must NOT fire the hook.
+// TestFileEditHookFiresOnToolUse: a completed mutating tool_use part reaches the file-edit hook
+// with the tool name, input map, and output.
 func TestFileEditHookFiresOnToolUse(t *testing.T) {
 	s := New(nil, slog.Default(), nil, nil, nil)
 	var mu sync.Mutex
@@ -24,9 +21,8 @@ func TestFileEditHookFiresOnToolUse(t *testing.T) {
 	if s.fileEditHook == nil {
 		t.Fatalf("hook not stored")
 	}
-	// Direct contract check: the drain loop passes completed tool_use parts
-	// verbatim (chat.go's "part" case). The full SSE loop is covered by the
-	// session tests; this pins the setter + nil-safety contract.
+	// Direct contract check: the drain loop passes completed tool_use parts verbatim (chat.go's "part"
+	// case).
 	s.fileEditHook(context.Background(), "tnt-1", "conv-1", "batch_write", map[string]any{}, `{"file_edits":[]}`)
 	if len(calls) != 1 || calls[0] != "batch_write|{\"file_edits\":[]}" {
 		t.Fatalf("hook call wrong: %v", calls)

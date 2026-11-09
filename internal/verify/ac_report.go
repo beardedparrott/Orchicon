@@ -1,16 +1,6 @@
 package verify
 
 // ac_report.go — PARSING the AC REPORT block.
-//
-// The AC-evidence contract (db/acceptanceEvidenceBlock) asks a worker to answer each acceptance
-// criterion with a line carrying its own support. This file reads that block so the platform can tell
-// a report with evidence from a report with adjectives.
-//
-// THE HONEST BOUNDARY, stated here because it is easy to overclaim. This does NOT decide whether a
-// criterion is genuinely satisfied — it cannot, for an arbitrary project. It decides whether the worker
-// ANSWERED it, and whether the answer carries anything a human could check. That is the difference
-// between "six criteria, five evidenced, one answered 'satisfied'" being visible and it being a green
-// tick. Surfacing it is the entire win; judging it is not attempted.
 
 import (
 	"fmt"
@@ -80,15 +70,10 @@ func (r ACReport) Summary() string {
 }
 
 // acLineRe matches "AC1: PASS — evidence" with either hyphen style and optional leading bullet.
-// The separator after "AC1" may be a colon, a dash or a tab: workers reformat the template, and a parser
-// that accepts only "AC1:" reports "no criteria answered" for a report that is perfectly correct — which
-// teaches everyone the contract is pointless.
 var acLineRe = regexp.MustCompile(`(?i)^[\s\-*•]*(AC\d+)\s*[:.\-–—]\s*(PASS|FAIL|NOT\s+VERIFIED|UNVERIFIED)\b[\s—:\-–—]*(.*)$`)
 
-// evidenceHintRe recognises the KINDS of support a reviewer can actually re-check: a path, a command, a
-// file:line reference, or an explicit observed value. Deliberately broad — the cost of accepting weak
-// evidence is one un-caught optimistic report, whereas the cost of rejecting real evidence is a worker
-// that learns the contract is unsatisfiable and stops trying.
+// evidenceHintRe recognises the KINDS of support a reviewer can actually re-check: a path, a
+// command, a file:line reference, or an explicit observed value.
 var evidenceHintRe = regexp.MustCompile(
 	`(?i)(` +
 		`[\w./-]+\.(go|ts|tsx|js|jsx|py|sql|md|json|yaml|yml|png|jpg|sh)` + // a file path
@@ -113,11 +98,6 @@ func looksLikeEvidence(s string) bool {
 }
 
 // ParseACReport extracts the AC REPORT block from a worker's output.
-//
-// IT SCANS THE WHOLE OUTPUT rather than only an explicitly delimited block, because the contract asks for
-// the block but workers paste it wherever they finish — and a parser that misses a well-formed report
-// would report "no criteria answered" on a worker that did the right thing, which is the fastest way to
-// make the contract feel pointless.
 func ParseACReport(output string) ACReport {
 	var rep ACReport
 	for _, line := range strings.Split(output, "\n") {

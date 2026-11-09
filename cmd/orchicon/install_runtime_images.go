@@ -25,24 +25,11 @@ type runtimeImageChoice struct {
 	// none of their own files (the Dockerfile arrives on stdin), but docker still requires a context.
 	BuildContext string
 	Label        string
-	// SizeBytes is the approximate download size, used ONLY to render the
-	// prompt. The variants differ by an order of magnitude, so "do you want
-	// runtime images" is not an answerable question without them.
+	// SizeBytes is the approximate download size, used ONLY to render the prompt.
 	SizeBytes int64
 }
 
-// installRuntimeImageChoices lists the runtime images an install can offer, base first (every other variant
-// derives FROM it).
-//
-// ONLY THE BASE IS A REGISTRY REF, AND THAT IS THE POINT NOW RATHER THAN AN ACCIDENT. The variants carry
-// third-party adapter CLIs (opencode, Claude Code); an image Orchicon builds and serves would be Orchicon
-// DISTRIBUTING them, so release.yml publishes the base alone. A variant is therefore offered at its LOCAL tag
-// and BUILT from the template embedded in this binary — on the operator's machine, for their own use.
-//
-// THIS USED TO SAY "EVERY ENTRY HERE MUST EXIST IN THE REGISTRY", and it was right at the time: a variant
-// offered by a tag nothing publishes was a pull that could only fail with "manifest unknown". The invariant
-// survives, restated — every entry must be OBTAINABLE, by pull if it is published and by BUILD if it is not.
-// Published and the routing in ensureInstallRuntimeImages are what keep those two in step.
+// ONLY THE BASE IS A REGISTRY REF, AND THAT IS THE POINT NOW RATHER THAN AN ACCIDENT.
 func installRuntimeImageChoices(imageTag string) []runtimeImageChoice {
 	return []runtimeImageChoice{
 		{Variant: "base", Ref: "ghcr.io/beardedparrott/orchicon-runtime:" + imageTag, Published: true,
@@ -115,23 +102,8 @@ func humanSize(n int64) string {
 	return fmt.Sprintf("~%d KB", n/1_000)
 }
 
-// resolveInstallRuntimeImages asks which runtime images to download now and
-// returns the chosen ones. DEFAULT NONE, and a non-interactive install takes
-// the default rather than blocking: a project starts in local mode, so an
-// install that needs no runtime image is a complete install.
-//
-// The prompt is written to promptOut (the caller's console) and the answer is
-// read from answerIn.
-// runtimeImagesAnsweredFile records that this instance has ALREADY been asked which runtime images to fetch.
-//
-// THE PROMPT USED TO APPEAR ON EVERY INSTALL, and an install runs on every `make instance-up` /
-// `rebuild-<instance>`. So a developer who had answered it once — or declined, which is the recommended
-// default — was asked again on every rebuild, alongside the port prompts. That is the difference between a
-// first-run questionnaire and a command you cannot put in a script.
-//
-// The ANSWER is recorded, not just the fact of asking: "none" is recorded as "none", so declining stays
-// declined, while a later explicit `orchicon install` with a real selection still overrides it. Same shape as
-// ports.json and the residency record — per instance, written by the install, read back by the next one.
+// resolveInstallRuntimeImages asks which runtime images to download now and returns the chosen
+// ones.
 const runtimeImagesAnsweredFile = "runtime-images-answered"
 
 // runtimeImagesEnv is the EXPLICIT, non-interactive answer to "which runtime images?".
@@ -182,24 +154,15 @@ func explicitRuntimeImages(promptOut io.Writer, imageTag string) ([]runtimeImage
 }
 
 func resolveInstallRuntimeImagesFor(instance string, promptOut io.Writer, answerIn io.Reader, imageTag string, forcePrompt bool) ([]runtimeImageChoice, error) {
-	// THE MOST SPECIFIC SIGNAL WINS, and an environment answer is the most specific
-	// there is: an installer set it for THIS run, having just asked the operator. It
-	// therefore outranks both the interactivity gate below (which would discard it)
-	// and a recorded answer (which exists so a REBUILD does not re-ask, not to
-	// overrule someone who has just answered).
+	// THE MOST SPECIFIC SIGNAL WINS, and an environment answer is the most specific there is: an
+	// installer set it for THIS run, having just asked the operator.
 	if choices, answered, err := explicitRuntimeImages(promptOut, imageTag); err != nil {
 		return nil, err
 	} else if answered {
 		return choices, nil
 	}
 
-	// NOBODY TO ASK. A redirected/backgrounded install must not block on a question — the same rule the port
-	// prompt follows (install_ports.go promptTerminal), and for the same reason: the read would either hang
-	// or consume input that belongs to whatever is driving us.
-	//
-	// --yes STILL COUNTS HERE. It is an answer that never needed a terminal, and it is the documented way to
-	// make a non-interactive install decide something: `scripts/install.sh --yes` exports ORCHICON_ASSUME_YES
-	// and runs `orchicon install` with no flags, so the environment is the only channel it has.
+	// NOBODY TO ASK.
 	if !installIsInteractive() {
 		if choices, answered := assumeYesRuntimeImages(promptOut, imageTag); answered {
 			return choices, nil
@@ -215,9 +178,8 @@ func resolveInstallRuntimeImagesFor(instance string, promptOut io.Writer, answer
 				if recorded == "" || recorded == "none" {
 					return nil, nil
 				}
-				// A recorded selection is re-resolved against TODAY'S choice list rather than replayed
-				// verbatim: the list can change between versions, and a stale index would fetch the wrong
-				// image silently.
+				// A recorded selection is re-resolved against TODAY'S choice list rather than replayed verbatim:
+				// the list can change between versions, and a stale index would fetch the wrong image silently.
 				if idxs, err := parseRuntimeImageSelection(recorded, len(installRuntimeImageChoices(imageTag))); err == nil {
 					choices := installRuntimeImageChoices(imageTag)
 					out := make([]runtimeImageChoice, 0, len(idxs))
@@ -229,20 +191,15 @@ func resolveInstallRuntimeImagesFor(instance string, promptOut io.Writer, answer
 			}
 		}
 	}
-	// --yes IS AN ANSWER, and it is checked AFTER the record so that it can never override one: an instance
-	// that already answered "none" (or "1,3") keeps that answer, because a rebuild is not a first install and
-	// --yes must not turn every rebuild into a multi-GB download. On a first install, "all" is what an
-	// affirmative answer to "which of these?" means, and the total is printed BEFORE anything is fetched so a
-	// several-GB choice is never a surprise.
+	// --yes IS AN ANSWER, and it is checked AFTER the record so that it can never override one: an
+	// instance that already answered "none" (or "1,3") keeps that answer.
 	if choices, answered := assumeYesRuntimeImages(promptOut, imageTag); answered {
 		return choices, nil
 	}
 	return resolveInstallRuntimeImages(promptOut, answerIn, imageTag)
 }
 
-// assumeYesRuntimeImages returns every choice when ORCHICON_ASSUME_YES names an affirmative answer. The
-// second return says whether an answer was given AT ALL, so a caller can distinguish "--yes answered" from
-// "no opinion" without re-reading the environment.
+// assumeYesRuntimeImages returns every choice when ORCHICON_ASSUME_YES names an affirmative answer.
 func assumeYesRuntimeImages(promptOut io.Writer, imageTag string) ([]runtimeImageChoice, bool) {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("ORCHICON_ASSUME_YES"))) {
 	case "1", "true", "yes", "y":
@@ -310,12 +267,6 @@ func resolveInstallRuntimeImages(promptOut io.Writer, answerIn io.Reader, imageT
 }
 
 // runtimeImageTemplate is the shipped Dockerfile for a variant, as embedded in this binary.
-//
-// THE INSTALLER BUILDS FROM THE EMBEDDED TEMPLATE, not from a registry. Only the base is published; the
-// variants carry third-party adapter CLIs (opencode, Claude Code) and an image Orchicon builds and serves
-// would be Orchicon DISTRIBUTING them. Built here, on the operator's machine, for their own licensed use —
-// that is the operator installing for themselves, which is not distribution and is the same line this
-// project already draws for host-installed adapters.
 func runtimeImageTemplate(variant string) (dockerfile string, baseImage string, err error) {
 	file := map[string]string{
 		"gui": "deploy/runtime/Dockerfile.gui",
@@ -331,16 +282,8 @@ func runtimeImageTemplate(variant string) (dockerfile string, baseImage string, 
 	return string(b), "ghcr.io/beardedparrott/orchicon-runtime:" + env("ORCHICON_IMAGE_TAG", "latest"), nil
 }
 
-// ensureRuntimeImageVariant makes a variant image present LOCALLY, by building it from its shipped template
-// when it is not there.
-//
-// IT CANNOT PULL. Nothing publishes these tags any more, so a pull could only fail with "manifest unknown" —
-// the failure an operator already reported once. Routing on "is there anything to pull" is therefore not a
-// choice this function makes: a variant is a local name, and a local name is built.
-//
-// A build is minutes, not seconds, and that is the honest cost of not distributing an image containing
-// someone else's CLI. It is announced before it starts, for the same reason every other long step in this
-// installer is: a silent minute is indistinguishable from a hang.
+// ensureRuntimeImageVariant makes a variant image present LOCALLY, by building it from its shipped
+// template when it is not there. IT CANNOT PULL.
 func ensureRuntimeImageVariant(variant, ref, buildContext string) error {
 	if imagePresent(ref) {
 		fmt.Printf("image %s is already built on this host\n", ref)
@@ -350,9 +293,8 @@ func ensureRuntimeImageVariant(variant, ref, buildContext string) error {
 	if err != nil {
 		return err
 	}
-	// THE BASE MUST BE PRESENT FIRST, and this is structural: a variant's Dockerfile is
-	// `FROM ${BASE_IMAGE}`. Building without it fails late, inside the engine, with a tag error that names
-	// nothing the operator can act on.
+	// THE BASE MUST BE PRESENT FIRST, and this is structural: a variant's Dockerfile is `FROM
+	// ${BASE_IMAGE}`.
 	if !imagePresent(baseImage) {
 		return fmt.Errorf("%s builds FROM %s, which is not on this host yet — fetch the base image first", ref, baseImage)
 	}
@@ -369,10 +311,7 @@ func ensureRuntimeImageVariant(variant, ref, buildContext string) error {
 	fmt.Printf("built %s\n", ref)
 	return nil
 }
-// ensureInstallRuntimeImages downloads the chosen runtime images. Failures
-// WARN per image and never fail the install: a declined or failed image leaves
-// a fully working plane in local mode, which is exactly the state an install
-// that fetched nothing already has.
+// ensureInstallRuntimeImages downloads the chosen runtime images.
 func ensureInstallRuntimeImages(choices []runtimeImageChoice, out io.Writer) {
 	if len(choices) == 0 {
 		fmt.Fprintln(out, "orchicon: no runtime image downloaded — runs needing a container will ask for one on the Runtime Images page")
@@ -420,11 +359,6 @@ func selectionIndexes(picked []runtimeImageChoice) string {
 }
 
 // runtimeImageBuildContext is the directory `docker build` runs from for an unpublished variant.
-//
-// THE VARIANTS NEED NO FILES OF THEIR OWN — their Dockerfile arrives on stdin — but docker still requires a
-// context directory, and it must exist on every platform. It is created under the same per-instance runtime
-// socket dir the rest of the runtime plumbing uses, so an install leaves nothing behind in the working
-// directory and Windows does not need a POSIX-looking path.
 func runtimeImageBuildContext(variant string) string {
 	dir := filepath.Join(os.TempDir(), "orchicon-runtime-build", variant)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

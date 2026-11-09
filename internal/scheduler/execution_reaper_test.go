@@ -2,10 +2,8 @@ package scheduler
 
 import "testing"
 
-// TestReaperConsecutiveNotAlive verifies the reaper only crosses the reap
-// threshold after N consecutive not-alive probes, that an alive answer
-// resets the streak, and that pruning drops counters for executions that
-// are no longer running.
+// TestReaperConsecutiveNotAlive verifies the reaper only crosses the reap threshold after N
+// consecutive not-alive probes, that an alive answer resets the streak.
 func TestReaperConsecutiveNotAlive(t *testing.T) {
 	r := NewExecutionReaper(nil, nil, nil, nil)
 

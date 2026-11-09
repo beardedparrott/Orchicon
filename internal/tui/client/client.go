@@ -1,7 +1,4 @@
-// Package client builds the Connect client set orch uses to talk to a
-// remote Orchicon plane. It is a pure consumer of the buf-generated
-// clients (api/gen/go/orchicon/api/v1/apiv1connect) — the same API source
-// of truth the server and GUI build from — plus a /versionz probe.
+// Package client builds the Connect client set orch uses to talk to a remote Orchicon plane.
 package client
 
 import (
@@ -26,16 +23,8 @@ type VersionzResponse struct {
 	Version string `json:"version"`
 }
 
-// LoginRequest / LoginResponse mirror POST /auth/local-login
-// (internal/auth/handlers.go tokenResponse: snake_case JSON). The refresh
-// token arrives only as the HttpOnly orchicon_refresh cookie, and this client
-// CAPTURES it from the response (see the LoginResponse handling below) and
-// replays it on POST /auth/refresh — so a password session refreshes in place
-// and is not the poorer of the two modes. The old wording here ("a non-browser
-// client only gets the access token, which is why password mode is secondary to
-// API keys") was the stated reason for opening the connection screen in
-// API-key mode; it is corrected because it is not what the code does, and the
-// landing mode is now username+password (internal/tui/connection/screen.go).
+// LoginRequest / LoginResponse mirror POST /auth/local-login (internal/auth/handlers.go
+// tokenResponse: snake_case JSON).
 type LoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -48,18 +37,11 @@ type LoginResponse struct {
 	IdentityID  string `json:"identity_id"`
 	TenantID    string `json:"tenant_id"`
 	IsAdmin     bool   `json:"is_admin"`
-	// RefreshToken is extracted from the HttpOnly orchicon_refresh
-	// Set-Cookie (never in the JSON body). Stored in the profile so the
-	// client can auto-refresh the 900s access token for the 24h session.
+	// RefreshToken is extracted from the HttpOnly orchicon_refresh Set-Cookie (never in the JSON body).
 	RefreshToken string `json:"-"`
 }
 
-// bearerInterceptor injects `Authorization: Bearer <cred>` on every
-// request (unary + streams). Server-side auth is resolved at the HTTP
-// layer (internal/middleware/auth.go ResolveAuth), so covering the
-// transport covers every RPC including server-streams. Either a static
-// credential (cred) or a dynamic one (current — refreshable password-mode
-// sessions read the live token through the hook).
+// bearerInterceptor injects `Authorization: Bearer <cred>` on every request (unary + streams).
 type bearerInterceptor struct {
 	cred    string
 	current func() string
@@ -95,11 +77,8 @@ func (b *bearerInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFu
 	return next // client-side only; server half is a passthrough
 }
 
-// unaryDeadlineInterceptor bounds unary RPCs to d when the caller's
-// context carries no deadline of its own (call-site deadlines win).
-// Streaming RPCs pass through untouched — a whole-request deadline is
-// what killed every TUI live stream at exactly 30s (http.Client.Timeout
-// also caps response-body reads, which is a stream's entire lifetime).
+// unaryDeadlineInterceptor bounds unary RPCs to d when the caller's context carries no deadline of
+// its own (call-site deadlines win).
 type unaryDeadlineInterceptor struct{ d time.Duration }
 
 func (u *unaryDeadlineInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -122,21 +101,13 @@ func (u *unaryDeadlineInterceptor) WrapStreamingHandler(next connect.StreamingHa
 }
 
 // Options carries the resolved connection parameters.
-//
-// Timeout is the UNARY RPC deadline (0 → 30s). It must never cap
-// server-streams: a live stream (StreamExecutionEvents, ChatStream,
-// WatchTurnStream) outlives any sane whole-request deadline — heartbeats
-// keep it alive and contexts/Close bound its lifetime. The deadline is
-// enforced by unaryDeadlineInterceptor so call-site context deadlines
-// win; http.Client.Timeout is left at zero (it kills streaming bodies).
 type Options struct {
 	BaseURL            string
 	Token              string
 	InsecureSkipVerify bool
 	Timeout            time.Duration // unary RPC deadline (0 → 30s); streams never capped
-	// RefreshToken is password mode's stored refresh token (from the
-	// HttpOnly orchicon_refresh Set-Cookie on POST /auth/local-login).
-	// Empty (api-key mode) → the refresh interceptor is inert.
+	// RefreshToken is password mode's stored refresh token (from the HttpOnly orchicon_refresh
+	// Set-Cookie on POST /auth/local-login).
 	RefreshToken string
 }
 
@@ -167,16 +138,13 @@ type Clients struct {
 
 	HTTP *http.Client // underlying client (tests can stub transports)
 
-	// Session is the refreshable-session plumbing when a refresh token was
-	// stored (password mode); nil for api-key mode. The shell reads the
-	// live access token through Session.Token() (persisting it on exit)
-	// and redials streams via subs.ReconnectAll on OnRefreshed.
+	// Session is the refreshable-session plumbing when a refresh token was stored (password mode); nil
+	// for api-key mode.
 	Session *SessionClient
 }
 
-// sessionHolder returns the session's LIVE mutable token cell (tests read
-// the refreshed access token through it; SetToken mutates this exact cell).
-// Panics when there is no session — api-key mode has no refreshable state.
+// sessionHolder returns the session's LIVE mutable token cell (tests read the refreshed access
+// token through it; SetToken mutates this exact cell).
 func (c *Clients) sessionHolder() *tokenHolder {
 	if c.Session == nil {
 		return nil
@@ -184,13 +152,7 @@ func (c *Clients) sessionHolder() *tokenHolder {
 	return c.Session.Holder()
 }
 
-// New builds the client set for the given options. baseURL is normalized
-// (trailing slash trimmed). The HTTP client deliberately carries NO
-// whole-request Timeout — it would kill server-streams mid-flight at the
-// deadline (http.Client.Timeout caps body reads too). Unary RPCs are
-// bounded by the unary deadline interceptor; dial/handshake attempts are
-// bounded by the transport so a black-holed server cannot hang a dial
-// forever.
+// New builds the client set for the given options.
 func New(opts Options) *Clients {
 	httpClient := &http.Client{
 		Transport: &http.Transport{
@@ -213,11 +175,8 @@ func NewWithHTTPClient(opts Options, httpClient *http.Client) *Clients {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	// Refreshable session: when a refresh token is stored (password mode),
-	// the interceptor stack is [refresh, bearer, deadline] — the refresh
-	// interceptor wraps the bearer so a 401 can refresh + retry in place.
-	// The bearer reads the CURRENT token through the SessionClient hooks,
-	// so a refreshed token applies to every subsequent RPC (and re-dials).
+	// Refreshable session: when a refresh token is stored (password mode), the interceptor stack is
+	// [refresh, bearer, deadline].
 	var sc *SessionClient
 	interceptors := []connect.Interceptor{}
 	if opts.RefreshToken != "" {
@@ -259,11 +218,7 @@ func NewWithHTTPClient(opts Options, httpClient *http.Client) *Clients {
 	c.Webhooks = newClient(apiv1connect.NewWebhookServiceClient, httpClient, base, opts2)
 	c.Categories = newClient(apiv1connect.NewCategoryServiceClient, httpClient, base, opts2)
 	c.Adapters = newClient(apiv1connect.NewRuntimeAdapterServiceClient, httpClient, base, opts2)
-	// The streaming half of the token refresh. The bearer interceptor above already
-	// covers UNARY RPCs (connect retries a unary through the interceptor chain), but a
-	// server-stream is opened once, so a 401 surfaces at the first Receive with no
-	// interceptor left to run — that is what reDial exists for, and it was wired
-	// nowhere, so a live stream could never recover from an expired token.
+	// The streaming half of the token refresh.
 	if sc != nil {
 		c.wireStreamReDial()
 	}
@@ -310,10 +265,8 @@ func Ping(ctx context.Context, baseURL string, insecure bool) (*VersionzResponse
 	return &vr, nil
 }
 
-// ConnectRecv adapts a Connect server-stream into the recv-func shape the
-// tui/stream engine consumes: each call returns the next message (as a
-// pointer — proto messages must not be copied by value), or an error when
-// the stream ends (io.EOF = graceful server close).
+// ConnectRecv adapts a Connect server-stream into the recv-func shape the tui/stream engine
+// consumes: each call returns the next message (as a pointer.
 func ConnectRecv[Resp any](stream *connect.ServerStreamForClient[Resp]) func() (*Resp, error) {
 	return func() (*Resp, error) {
 		if !stream.Receive() {
@@ -327,10 +280,8 @@ func ConnectRecv[Resp any](stream *connect.ServerStreamForClient[Resp]) func() (
 	}
 }
 
-// Login performs POST /auth/local-login and returns the access token
-// response plus the refresh token from the HttpOnly orchicon_refresh
-// Set-Cookie (the body never carries it — docs/10 §7). Password mode only
-// — API keys skip this entirely.
+// Login performs POST /auth/local-login and returns the access token response plus the refresh
+// token from the HttpOnly orchicon_refresh Set-Cookie (the body never carries it — docs/10 §7).
 func Login(ctx context.Context, baseURL string, insecure bool, username, password string) (*LoginResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -359,9 +310,8 @@ func Login(ctx context.Context, baseURL string, insecure bool, username, passwor
 	if lr.AccessToken == "" {
 		return nil, fmt.Errorf("login failed: no access token in response")
 	}
-	// Store the refresh token (24h TTL) for the TUI's auto-refresh: the
-	// server sets it ONLY as the HttpOnly orchicon_refresh cookie; a
-	// non-browser client replays the value on POST /auth/refresh.
+	// Store the refresh token (24h TTL) for the TUI's auto-refresh: the server sets it ONLY as the
+	// HttpOnly orchicon_refresh cookie; a non-browser client replays the value on POST /auth/refresh.
 	for _, c := range resp.Cookies() {
 		if c.Name == "orchicon_refresh" && c.Value != "" {
 			lr.RefreshToken = c.Value

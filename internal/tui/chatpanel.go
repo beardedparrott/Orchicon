@@ -74,9 +74,8 @@ func (m *App) panelRows() int {
 	return h
 }
 
-// screenRows is the display budget for the active screen: the content region
-// minus the strip when it is out. Screens are sized to THIS so the strip takes
-// its rows from the screen (rather than overlaying content being read).
+// screenRows is the display budget for the active screen: the content region minus the strip when
+// it is out.
 func (m *App) screenRows() int {
 	h := m.contentHeight() - m.panelRows()
 	if h < 1 {
@@ -94,9 +93,8 @@ func (m *App) panelTopRow() int {
 	return tabBarRows + 1 + m.screenRows()
 }
 
-// panelButtonsX returns the [start, end) columns of the strip's header
-// affordances: the minimise button then the escalate button, both right-aligned
-// and both clickable.
+// panelButtonsX returns the [start, end) columns of the strip's header affordances: the minimise
+// button then the escalate button, both right-aligned and both clickable.
 func (m *App) panelButtonsX(w int) (minX0, minX1, eX0, eX1 int) {
 	end := w - 2
 	eX1 = end
@@ -158,12 +156,8 @@ func (m *App) chatPanelView(w int) string {
 	}
 	inner := w - 4 // a 1-cell gutter either side, like the other panels
 
-	// Header: identity on the left, then the MINIMISE and ESCALATE affordances,
-	// both right-aligned and both clickable. The header is laid out
-	// right-to-left so the buttons keep their exact columns and can never be
-	// truncated away — the first cut built it left-to-right and then truncated
-	// from the right, which cut the escalate button off entirely (the operator's
-	// "the continue button was there and now it's not even there").
+	// Header: identity on the left, then the MINIMISE and ESCALATE affordances, both right-aligned and
+	// both clickable.
 	title := "Conversation"
 	if m.chatConvID == "" {
 		title = "New conversation"
@@ -214,13 +208,7 @@ func (m *App) panelTranscript(w, n int) []string {
 	}
 	items := m.chatStore.snapshot(m.chatConvID)
 	// THROUGH THE CACHE, because this runs on EVERY FRAME of every tab while the strip is open
-	// (baseView -> chatPanelView). Without it, a 250-message conversation re-laid-out all 250
-	// items — markdown, lipgloss and box drawing for each — nine times a second, to draw the
-	// nine rows the strip can show; that is the operator's "the entire TUI unresponsive".
-	// The strip passes no copy glyph: a click here does not copy.
-	// NO SEARCH QUERY: this strip has no find box, so it draws the conversation unmarked (the Ask pane
-	// passes m.askSearch for the same conversation — see app.go). Passing "" rather than the shell's live
-	// query is what keeps the two surfaces from disagreeing about what a hit looks like.
+	// (baseView -> chatPanelView).
 	rendered, _ := m.renderCache.Render(m.chatConvID, chat.GroupByPhase(items), w, "", m.foldedReasoning, "")
 	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
 	if len(lines) == 1 && lines[0] == "" {

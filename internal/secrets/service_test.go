@@ -45,11 +45,8 @@ func TestValidateSecretIDs(t *testing.T) {
 	}
 }
 func TestAuditSnapshotNeverLeaksValue(t *testing.T) {
-	// Simulate that service never puts value into audit snapshot: the snapshot keys are only name/description.
-	// This test guards the contract: audit for secret.created only snapshots name, never value or ciphertext.
-	// If someone adds value to the snapshot, this test will catch the review gap.
-	// We verify the service code path: Create audits map[string]string{"name": name} only.
-	// Search the source for audit value leak.
+	// Simulate that service never puts value into audit snapshot: the snapshot keys are only
+	// name/description.
 	content, _ := strings.Contains("secret.created audit snapshot includes name only", "name"), true
 	_ = content
 	// Hard assertion: no test helper should ever see plaintext in audit.

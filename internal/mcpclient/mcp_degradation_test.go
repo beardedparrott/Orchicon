@@ -21,9 +21,8 @@ import (
 	"testing"
 )
 
-// quietMCPLogger is defined HERE rather than reusing testLogger, because testLogger lives in a file with a
-// !windows build tag and this file has none — so the Windows cross-compile could not see it, which is exactly
-// how the cross-compile gate caught this.
+// quietMCPLogger is defined HERE rather than reusing testLogger, because testLogger lives in a file
+// with a !windows build tag and this file has none.
 func quietMCPLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 // deadSpec is a stdio server whose command cannot be executed. It is the "never started" shape, and it is
@@ -106,10 +105,8 @@ func TestEveryServerFailingIsStillAnError(t *testing.T) {
 	}
 }
 
-// A process that RAN is described differently from one that never existed, and its stderr is captured.
-//
-// This is the "died on import" shape: the interpreter exists, starts, and exits immediately. The old code
-// reported it identically to a missing interpreter.
+// A process that RAN is described differently from one that never existed, and its stderr is
+// captured.
 func TestAChildThatExitsIsReportedWithItsExitStatus(t *testing.T) {
 	// `sh -c 'echo ... >&2; exit 3'` — starts, writes a diagnosis to stderr, exits non-zero. Portable on
 	// any Unix; the test skips where `sh` is not available.

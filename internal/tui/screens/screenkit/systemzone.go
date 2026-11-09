@@ -70,10 +70,6 @@ func SystemZoneName() string {
 }
 
 // isUnambiguousZone reports whether name identifies one zone the same way on every machine.
-//
-// UTC and GMT are unambiguous without a region. Anything else must be region-qualified ("Area/Location"),
-// which excludes both the pseudo-zone "Local" and the legacy bare abbreviations whose meaning depends on
-// which fixed offset the reader's database happens to carry.
 func isUnambiguousZone(name string) bool {
 	if name == "UTC" || name == "GMT" {
 		return true

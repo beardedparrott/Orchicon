@@ -1,8 +1,7 @@
 package scheduler
 
-// Tests for per-adapter enable/disable (AC 3): disabling a kind must fail
-// dispatches LOUDLY with a reason, and the caller must be able to tell a
-// permanent routing failure (retrying cannot help) from a transient one.
+// Tests for per-adapter enable/disable (AC 3): disabling a kind must fail dispatches LOUDLY with a
+// reason, and the caller must be able to tell a permanent routing failure (retrying cannot help).
 
 import (
 	"errors"
@@ -44,10 +43,8 @@ func TestDispatcherDisableFailsResolveLoudly(t *testing.T) {
 	}
 }
 
-// TestDispatcherDisableIsIdempotentAndIgnoresEmpty pins the seeding safety:
-// the server seeds from a comma-separated env var, so an empty entry (a
-// trailing comma, an unset var) must be a no-op rather than disabling the
-// empty kind.
+// TestDispatcherDisableIsIdempotentAndIgnoresEmpty pins the seeding safety: the server seeds from a
+// comma-separated env var, so an empty entry (a trailing comma.
 func TestDispatcherDisableIsIdempotentAndIgnoresEmpty(t *testing.T) {
 	d := NewDispatcher()
 	d.Disable("")
@@ -61,11 +58,8 @@ func TestDispatcherDisableIsIdempotentAndIgnoresEmpty(t *testing.T) {
 	}
 }
 
-// TestDispatcherUnregisteredKindIsPermanent pins the declared-but-unavailable
-// case ("claude" is a DECLARED kind in internal/adapter/providers.go but is not
-// dispatcher-registered): it must be identifiable as a PERMANENT routing
-// failure so the reconciler blocks the work item instead of requeueing
-// forever, and it must never silently fall back to another adapter.
+// TestDispatcherUnregisteredKindIsPermanent pins the declared-but-unavailable case ("claude" is a
+// DECLARED kind in internal/adapter/providers.go but is not dispatcher-registered).
 func TestDispatcherUnregisteredKindIsPermanent(t *testing.T) {
 	d := NewDispatcher()
 	d.Register("orchicon", &fakeBridge{name: "orchicon"})

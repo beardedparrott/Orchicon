@@ -1,7 +1,5 @@
-// Package config persists orch's per-instance connection profiles in
-// ~/.orchicon/config (TOML, 0600) and resolves the effective profile at
-// launch. Environment overrides (ORCHICON_URL / ORCHICON_TOKEN) win over
-// the file and are never persisted.
+// Package config persists orch's per-instance connection profiles in ~/.orchicon/config (TOML,
+// 0600) and resolves the effective profile at launch.
 package config
 
 import (
@@ -44,10 +42,7 @@ const (
 	// silent fallback is how an operator who asked for one instance ends up talking to
 	// another, which is the failure this exists to prevent.
 	EnvProfile = "ORCHICON_PROFILE"
-	// EnvTheme is an explicit palette override. It wins over the config file so
-	// the theme can be pinned in an environment where the config is not
-	// writable or not persisted (a launcher with an ephemeral HOME, a container,
-	// CI). When it is set, orch reports it rather than silently saving.
+	// EnvTheme is an explicit palette override.
 	EnvTheme = "ORCHICON_THEME"
 )
 
@@ -58,41 +53,16 @@ type Profile struct {
 	AuthMethod AuthMethod // apikey | password
 	Token      string     // API key (oc_…) or access token from local-login
 	Username   string     // password mode only; the password is never stored
-	// RefreshToken is password mode's refresh token from the HttpOnly
-	// orchicon_refresh Set-Cookie on local-login (24h TTL). Enables the
-	// client's auto-refresh of the 900s access token.
+	// RefreshToken is password mode's refresh token from the HttpOnly orchicon_refresh Set-Cookie on
+	// local-login (24h TTL).
 	RefreshToken string
 	// TokenExpiresIn is the access token's lifetime in seconds, as the server reported it
-	// (LoginResponse/RefreshResponse expires_in). It is what the shell schedules its keep-alive
-	// against, so a password-mode session never meets an expiry at all.
-	//
-	// 0 means "unknown" (an api-key profile, or a plane that did not say), and the keep-alive is then
-	// inert rather than guessing a period.
+	// (LoginResponse/RefreshResponse expires_in).
 	TokenExpiresIn     int64
 	InsecureSkipVerify bool // TLS skip-verify for self-signed dev instances
 	// Newline is the chat dock's newline-insertion chord: ctrl+j | alt+enter | backslash-enter | both.
-	//
-	// THE DEFAULT IS PER PLATFORM, because the chords available are decided by what the HOST delivers, not by
-	// preference: alt+enter on Linux/macOS (delivered normally), ctrl+j on Windows, where Windows Terminal binds
-	// alt+enter to toggleFullscreen and the console hands Shift+Enter to the program as a bare Enter. A profile
-	// carrying a chord this platform cannot deliver is refused at startup in favour of the platform default, and
-	// the operator is told why (see tui.applyProfile) — so a config written on one machine can be opened on
-	// another without silently leaving them with no newline chord.
-	//
-	// SHIFT+ENTER IS NOT A VALUE HERE, deliberately. It is not a setting we can honour: bubbletea v1.3.10 has no
-	// kitty/CSI-u keyboard-protocol support, so the only way it can arrive is a terminal that emits the old
-	// keypad-Enter sequence (ESC O M — Konsole does; Windows Terminal does not), and that is rewritten to a
-	// newline as input is read (internal/tui/input) regardless of this setting.
 	Newline string
-	// Theme selects the TUI palette. The TUI owns its palette set (see
-	// internal/tui/theme): the generated families, the hand-written community ports, and the transparent
-	// variants of both. These are chosen and validated for TERMINAL contrast — not copied from
-	// the GUI's CSS tokens, whose borders are hairlines that vanish on a
-	// terminal. /theme lists the installed set.
-	//
-	// The value is stored VERBATIM and never validated here: the palette set grows (it is 41 palettes as of
-	// the community ports), so a ring-fenced list in the config would turn every new theme into a migration,
-	// and a name this build does not know is resolved at Use() time where the fallback is the launch default.
+	// Theme selects the TUI palette.
 	Theme string
 }
 
@@ -100,60 +70,20 @@ type Profile struct {
 type Config struct {
 	Active   string              // name of the profile used at launch
 	Profiles map[string]*Profile // keyed by profile name
-	// Theme is the TUI palette preference, stored at the TOP LEVEL so it
-	// survives independently of any profile. It used to live only inside
-	// [profiles.<name>], which meant a theme never persisted when the session
-	// was env-driven (ORCHICON_URL/TOKEN resolve to a synthetic "env" profile
-	// that is deliberately never written), or on a first run with no config
-	// file yet — the operator's "themes are not saving when you exit orch and
-	// re-enter". A display preference is not a credential, so it no longer
-	// depends on one being saved.
+	// Theme is the TUI palette preference, stored at the TOP LEVEL so it survives independently of any
+	// profile.
 	Theme string
-	// CollapsedGroups is the set of COLLAPSED category folders across the TUI's
-	// grouped lists, keyed "<page>:<category-id>" (e.g. "conversations:cat-1").
-	//
-	// TOP LEVEL, for the same reason Theme is: it is a DISPLAY preference, not a
-	// credential, and it has to survive a session that was launched from
-	// ORCHICON_URL/TOKEN — where the profile is a synthetic "env" that is
-	// deliberately never written. The operator: "Conversation categories don't stay
-	// collapsed when you leave orch and come back in."
-	//
-	// IT STORES WHAT IS *CLOSED*, not what is open. That is the cheaper rule to keep
-	// correct: a grouping created later is absent from the set and therefore
-	// EXPANDED, which is what a new folder should be. Storing the open set would
-	// make every new grouping silently collapsed until the operator opened it.
+	// CollapsedGroups is the set of COLLAPSED category folders across the TUI's grouped lists, keyed
+	// "<page>:<category-id>" (e.g. "conversations:cat-1").
 	CollapsedGroups []string
-	// DiffRailWidth is the operator's width for the TUI's left DIFF RAIL, in
-	// cells (0 = auto/proportional). TOP LEVEL, for the same reason Theme and
-	// CollapsedGroups are: it is a DISPLAY preference, not a credential, and it
-	// has to survive a session launched from ORCHICON_URL/ORCHICON_TOKEN — where
-	// the profile is a synthetic "env" that is deliberately never written.
-	//
-	// 0 is written back on a reset-to-auto, so the file never pins a width the
-	// operator has abandoned.
+	// DiffRailWidth is the operator's width for the TUI's left DIFF RAIL, in cells (0 =
+	// auto/proportional).
 	DiffRailWidth int
-	// ProjectThemes binds a palette to a PROJECT, keyed by project ID (not name or slug — a slug can
-	// change and a name would churn this file on rename; the id is the stable key). TOP LEVEL, for the
-	// same reason Theme is: a per-operator display preference, not a tenant fact, that has to survive a
-	// session launched from ORCHICON_URL/ORCHICON_TOKEN where the profile is a synthetic "env" that is
-	// deliberately never written.
-	//
 	// This is a CLIENT-SIDE, TUI-ONLY preference, by design, not an oversight: a `theme` field on the
-	// project row was considered and rejected, because it would put a terminal-validated palette name
-	// into platform data the GUI cannot honour — the GUI's theming is CSS tokens with hairline borders
-	// (see Theme's doc above), not this palette set. Putting it there would cost a migration plus proto
-	// plus both clients' forms for a value only one client can ever use. So it lives here, same as Theme.
-	//
-	// Values are stored VERBATIM and resolved at Use() time, same as Theme: a project bound to a palette
-	// this build does not know (a removed palette, a hand-edit) degrades to the default rather than
-	// failing to load or rendering broken.
+	// project row was considered and rejected.
 	ProjectThemes map[string]string
-	// ListSharePct is the operator's width preference for the TREE/LIST pane of every master-detail screen
-	// (work items, executions, workers …), as a percentage of the content width (0 = the default even split).
-	//
-	// It is a DIFFERENT preference from DiffRailWidth and deliberately so: that one sizes the diff rail
-	// beside the content, this one sizes the list INSIDE a screen. Reading a long work-item name is a
-	// standing preference, not a per-session choice, which is why it persists.
+	// ListSharePct is the operator's width preference for the TREE/LIST pane of every master-detail
+	// screen (work items, executions, workers …).
 	ListSharePct int
 }
 
@@ -161,14 +91,7 @@ type Config struct {
 const (
 	DirName  = ".orchicon"
 	FileName = "config"
-	// EnvConfigDir overrides the config DIRECTORY. It exists because the
-	// default is derived from $HOME, and a $HOME that is not writable (a
-	// root-owned home, a read-only mount, a launcher with an ephemeral HOME)
-	// makes EVERY save fail — profile, token, theme, newline mode. The TUI
-	// reports that failure, but reporting is not fixing: the operator needs a
-	// way to say where the config may live. Set it to a directory this user
-	// owns and it survives rebuilds and container restarts ($HOME/.orchicon
-	// may not exist at all, and /tmp is a tmpfs that a restart wipes).
+	// EnvConfigDir overrides the config DIRECTORY.
 	EnvConfigDir = "ORCHICON_CONFIG_DIR"
 )
 
@@ -198,22 +121,7 @@ func Load(path string) (*Config, error) {
 	return parse(string(data))
 }
 
-// Save writes the config as TOML with 0600 perms (0700 dir). The file
-// holds bearer credentials, so perms are a security requirement, not style.
-//
-// THE WRITE IS ATOMIC — a temp file in the SAME directory, fsync, rename — and that is
-// a MULTI-PROCESS requirement, not fastidiousness. orch is meant to run more than once
-// at a time (one process per instance; see ORCHICON_PROFILE), and every one of those
-// processes READS and WRITES this single file: the display preferences on each toggle,
-// the profile on a connect. os.WriteFile truncates IN PLACE, so a second process
-// loading the config during a write could read a HALF-WRITTEN document — and a parse
-// failure is not harmless here, because the launch path's recovery from an unreadable
-// config is to start from an EMPTY one and then save it, destroying the other
-// instance's profile and credentials. A rename replaces the whole file in one step, so
-// a reader sees either the old document or the new one and never a partial one.
-//
-// fsync BEFORE the rename, so a crash cannot leave a renamed-but-empty file — the same
-// truncation reached by another route.
+// Save writes the config as TOML with 0600 perms (0700 dir).
 func Save(path string, cfg *Config) error {
 	if cfg == nil {
 		return errors.New("config: nil")
@@ -222,17 +130,16 @@ func Save(path string, cfg *Config) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	// The temp file goes in the SAME directory on purpose: a rename is only atomic within
-	// one filesystem, and /tmp is commonly a different one (a tmpfs), where it would
-	// silently degrade to copy-then-unlink and reopen the window this closes.
+	// The temp file goes in the SAME directory on purpose: a rename is only atomic within one
+	// filesystem, and /tmp is commonly a different one (a tmpfs).
 	tmp, err := os.CreateTemp(dir, FileName+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create config temp: %w", err)
 	}
 	tmpName := tmp.Name()
-	// A no-op after a successful rename (the source is gone) and the cleanup for every
-	// error path below, so a failed save cannot leave credential-bearing droppings in
-	// the operator's config directory.
+	// A no-op after a successful rename (the source is gone) and the cleanup for every error path
+	// below, so a failed save cannot leave credential-bearing droppings in the operator's config
+	// directory.
 	defer func() { _ = os.Remove(tmpName) }()
 	// CreateTemp already uses 0600, and this is stated anyway: these are the perms the
 	// file's own contract depends on, so they are not to be inherited from a helper.
@@ -260,24 +167,8 @@ func Save(path string, cfg *Config) error {
 // PreservedSuffix marks the path an unreadable config is moved aside to.
 const PreservedSuffix = ".unreadable"
 
-// PreserveUnreadable moves an unreadable config aside and returns the path it was
-// preserved at, so a caller that MUST start from an empty config can do so without
-// destroying what it could not read.
-//
-// WHY THIS EXISTS. The launch path's recovery from a load error is "start fresh, then
-// the connection screen saves a new config" — and that save OVERWRITES the file. Against
-// a genuinely corrupt file those bytes are already worthless; against a file this build
-// merely cannot PARSE it is destruction, and that is reachable in ordinary operation.
-// The parser deliberately rejects an unknown key (TestUnknownKeyStillRejected), and this
-// repo deliberately keeps TWO orch vintages sharing ONE config file — the dev-tracked
-// `orch` symlink and the frozen prod snapshot (see the Makefile's orch-launchers, whose
-// whole point is that the snapshot "moves only on prod rebuild"). So the newer client
-// writing a key the older one does not know makes every launch of the older one look
-// exactly like corruption. Preserving the file means the wipe is never silent and never
-// final — and proves what was there, which an overwrite cannot.
-//
-// RENAME, not copy: it is atomic, and it guarantees the next Save cannot clobber the
-// original, which is the entire point.
+// PreserveUnreadable moves an unreadable config aside and returns the path it was preserved at, so
+// a caller that MUST start from an empty config can do so without destroying what it could not.
 func PreserveUnreadable(path string) (string, error) {
 	stamp := time.Now().UTC().Format("20060102T150405")
 	backup := path + PreservedSuffix + "-" + stamp
@@ -298,9 +189,8 @@ func PreserveUnreadable(path string) (string, error) {
 	return backup, nil
 }
 
-// Resolve picks the effective profile: env overrides first (ephemeral,
-// never persisted), then the active profile from the file. Returns nil
-// when nothing is configured — the connection screen's cue.
+// Resolve picks the effective profile: env overrides first (ephemeral, never persisted), then the
+// active profile from the file.
 func Resolve(cfg *Config) *Profile { return ResolveNamed(cfg, "") }
 
 // ResolveNamed is Resolve with an EXPLICIT profile selection (ORCHICON_PROFILE, or the
@@ -351,10 +241,7 @@ func ResolveNamed(cfg *Config, name string) *Profile {
 	}
 	p, ok := cfg.Profiles[slot]
 	if !ok || p == nil {
-		// AN ABSENT NAMED PROFILE RESOLVES TO NOTHING — it does NOT fall back to
-		// `active`. Falling back would silently connect an operator who asked for one
-		// instance to a different one, which is precisely the confusion the explicit
-		// selection exists to remove (and the caller reports the name it could not find).
+		// AN ABSENT NAMED PROFILE RESOLVES TO NOTHING — it does NOT fall back to `active`.
 		return nil
 	}
 	cp := *p
@@ -378,9 +265,7 @@ func render(cfg *Config) string {
 	if cfg.Theme != "" {
 		fmt.Fprintf(&b, "theme = %q\n", cfg.Theme)
 	}
-	// The collapsed folders, SORTED so a rewrite of unchanged state is byte-identical. Without that, the
-	// map's iteration order would churn the file on every toggle and the diff would look like a change
-	// even when nothing did.
+	// The collapsed folders, SORTED so a rewrite of unchanged state is byte-identical.
 	if len(cfg.CollapsedGroups) > 0 {
 		keys := append([]string(nil), cfg.CollapsedGroups...)
 		sortStrings(keys)
@@ -452,9 +337,8 @@ func parse(data string) (*Config, error) {
 			inProjectThemes = false
 			continue
 		}
-		// MANDATORY, not optional: render() above writes this section whenever a binding exists, so
-		// without this case the operator's OWN config (the moment they bind one palette) would fail to
-		// load outright — the "default" key below rejects any key it does not recognise.
+		// MANDATORY, not optional: render() above writes this section whenever a binding exists, so without
+		// this case the operator's OWN config (the moment they bind one palette) would fail to load.
 		if line == "[project_themes]" {
 			cur = nil
 			inProjectThemes = true
@@ -463,9 +347,8 @@ func parse(data string) (*Config, error) {
 		if inProjectThemes {
 			id, value, ok := strings.Cut(line, "=")
 			if !ok {
-				// A malformed entry DEGRADES to "no binding for that project" rather than failing the
-				// whole load — same rule parseList follows below: a display preference must never be
-				// able to stop the operator connecting.
+				// A malformed entry DEGRADES to "no binding for that project" rather than failing the whole load —
+				// same rule parseList follows below.
 				continue
 			}
 			id = strings.TrimSpace(id)
@@ -528,9 +411,8 @@ func parse(data string) (*Config, error) {
 				cfg.CollapsedGroups = parseList(value)
 			}
 		case "diff_rail_width":
-			// MANDATORY, not optional: the `default` below REJECTS an unknown key, so
-			// without this case a file render() wrote would fail to load — a hard
-			// startup error, not a silent default.
+			// MANDATORY, not optional: the `default` below REJECTS an unknown key, so without this case a file
+			// render() wrote would fail to load — a hard startup error, not a silent default.
 			if cur == nil {
 				n, err := strconv.Atoi(value)
 				if err != nil {
@@ -587,9 +469,7 @@ func quoteList(ss []string) string {
 	return strings.Join(parts, ", ")
 }
 
-// parseList reads back a TOML array element list written by quoteList. It is deliberately tolerant:
-// a malformed entry is DROPPED rather than failing the whole config load, because a display preference
-// must never be able to stop the operator connecting.
+// parseList reads back a TOML array element list written by quoteList.
 func parseList(v string) []string {
 	v = strings.TrimSpace(v)
 	v = strings.TrimSuffix(strings.TrimPrefix(v, "["), "]")
@@ -622,12 +502,6 @@ func parseList(v string) []string {
 }
 
 // InstanceURL is the control URL of a named LOCAL instance.
-//
-// IT DELEGATES TO internal/controlport, WHICH IS THE POINT: the installer owns the
-// per-instance control ports (cmd/orchicon/install_ports.go), the desktop app already
-// consumes that table, and a third copy here would be a third thing to keep equal. An
-// unknown name yields "" — the caller must refuse rather than substitute another
-// instance, so "prod" can never quietly resolve to dev.
 func InstanceURL(instance string) string {
 	port, ok := controlport.Defaults()[instance]
 	if !ok {
@@ -636,18 +510,8 @@ func InstanceURL(instance string) string {
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
-// ProfileForInstance returns the SAVED profile whose URL points at that instance's
-// control port, or nil.
-//
-// WHY MATCH ON THE PORT RATHER THAN THE NAME: profiles are keyed by their host:port
-// (config.go's package note), not by instance name, because a profile can outlive a
-// moved port or describe a remote host. controlport.InstanceForURL is the one place
-// that mapping is defined, so this reuses it instead of re-deriving "which instance is
-// this URL".
-//
-// The returned profile is the SAVED one (not a copy) because the caller copies it before
-// retargeting — and that caller-side copy is deliberate: a switch must never rewrite the
-// operator's stored credentials.
+// ProfileForInstance returns the SAVED profile whose URL points at that instance's control port, or
+// nil.
 func ProfileForInstance(cfg *Config, instance string) *Profile {
 	if cfg == nil || instance == "" {
 		return nil

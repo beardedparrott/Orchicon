@@ -1,27 +1,4 @@
-// Package planebind is the Wails-bound face of PLANE CONTROL, and it adds no
-// mechanism of its own.
-//
-// # IT DELEGATES, ALWAYS
-//
-// Every action here calls internal/planecontrol — the same package the CLI
-// (`orchicon plane …`), the TUI (`orch`) and scripts/orchicon.sh drive. There is
-// deliberately NO lifecycle RPC and no second control path: a browser cannot reach
-// this package (the SPA's /manage-server route redirects in a browser, and there is
-// no API route to call), and internal/api's surface test keeps it that way.
-//
-// # THE FAIL-SAFE IS INHERITED, NOT RE-IMPLEMENTED
-//
-// planecontrol.Start leaves an UNIDENTIFIABLE plane alone (its `default:` arm);
-// Stop is idempotent; Start reports "already serving"; Start itself bounds the
-// /healthz wait and names the log path on failure. This package reuses all of it
-// rather than restating the semantics — a restatement is how the screen and the CLI
-// start disagreeing about what "started" means.
-//
-// # IT NEVER CLAIMS SUCCESS IT DID NOT VERIFY
-//
-// An action's OK is true only when planecontrol returned nil, which for Start means
-// /healthz answered inside the bounded window. The outcome text is derived from
-// planecontrol's OWN wording rather than invented here.
+// Package planebind is the Wails-bound face of PLANE CONTROL, and it adds no mechanism of its own.
 package planebind
 
 import (
@@ -104,9 +81,7 @@ func logPath(instanceName string) string {
 	return filepath.Join(planecontrol.HostDataDirFor(instanceName), "serve", "logs", "orchicon.log")
 }
 
-// statusOf builds one instance's DTO. It never claims a state planecontrol did not
-// observe: an unreadable port record yields an offline DTO naming the instance,
-// which is a STATE, not an error.
+// statusOf builds one instance's DTO.
 func statusOf(instanceName string) StatusDTO {
 	dto := StatusDTO{Instance: instanceName, LogPath: logPath(instanceName)}
 	st, err := statusFn(planecontrol.Defaults(instanceName, io.Discard))
@@ -132,9 +107,7 @@ func statusOf(instanceName string) StatusDTO {
 	return dto
 }
 
-// Instances reports every known instance, with its state. This is the data behind
-// the picker: with more than one plane running, the operator chooses, and the
-// screen can show each one's port and health.
+// Instances reports every known instance, with its state.
 func (s *Service) Instances() ([]StatusDTO, error) {
 	out := make([]StatusDTO, 0, len(instance.Order))
 	for _, name := range instance.Order {
@@ -156,12 +129,7 @@ func (s *Service) Status(instanceName string) (StatusDTO, error) {
 	return statusOf(instanceName), nil
 }
 
-// ResolveControlPort maps the configured plane URL's control port back to an
-// instance. THE PORT IS THE INSTANCE — there is no second notion of instance to
-// drift from the port table.
-//
-// Known=false is the "ask rather than guess" answer: the UI must prompt. Running
-// lists every instance that is actually up, which is the picker's data.
+// ResolveControlPort maps the configured plane URL's control port back to an instance.
 func (s *Service) ResolveControlPort(port int) (ResolutionDTO, error) {
 	res := ResolutionDTO{ControlPort: port}
 	for _, name := range instance.Order {
@@ -176,9 +144,7 @@ func (s *Service) ResolveControlPort(port int) (ResolutionDTO, error) {
 	return res, nil
 }
 
-// Start brings the instance's plane up and waits for /healthz. The wait, its bound
-// and the log path on failure all belong to planecontrol.Start — this method only
-// words the outcome.
+// Start brings the instance's plane up and waits for /healthz.
 func (s *Service) Start(instanceName string) (ActionDTO, error) {
 	return s.act(instanceName, "start", startFn)
 }
@@ -189,9 +155,7 @@ func (s *Service) Stop(instanceName string) (ActionDTO, error) {
 	return s.act(instanceName, "stop", stopFn)
 }
 
-// Restart stops and starts. A container-resident instance is REFUSED by
-// planecontrol.Restart rather than silently ignored, and that refusal is surfaced
-// here as a failed action with its message intact.
+// Restart stops and starts.
 func (s *Service) Restart(instanceName string) (ActionDTO, error) {
 	return s.act(instanceName, "restart", restartFn)
 }
@@ -212,9 +176,7 @@ func (s *Service) act(instanceName, action string, fn func(planecontrol.Options)
 	return actionDTO(instanceName, action, buf.String(), err), nil
 }
 
-// actionDTO words an outcome from planecontrol's own output. It is a pure function
-// so the wording is testable: "started" is reachable only on a nil error, which for
-// Start means /healthz confirmed inside the bound.
+// actionDTO words an outcome from planecontrol's own output.
 func actionDTO(instanceName, action, output string, err error) ActionDTO {
 	dto := ActionDTO{Instance: instanceName, Action: action, LogPath: logPath(instanceName), Message: strings.TrimSpace(output)}
 	if err != nil {
@@ -228,11 +190,7 @@ func actionDTO(instanceName, action, output string, err error) ActionDTO {
 		return dto
 	}
 	dto.OK = true
-	// THE WORDING IS SCOPED TO THE ACTION, because planecontrol's phrases are not
-	// unique across verbs. "serve is not running" is Stop's idempotent no-op — but a
-	// RESTART of a stopped plane prints it too (Stop is restart's first half) and then
-	// starts the plane, so reading it action-blind would report "already stopped" over
-	// a plane that is now serving.
+	// THE WORDING IS SCOPED TO THE ACTION, because planecontrol's phrases are not unique across verbs.
 	switch action {
 	case "start":
 		switch {

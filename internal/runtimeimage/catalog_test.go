@@ -1,9 +1,6 @@
 package runtimeimage
 
 // catalog_test.go — the shipped catalog, and how a fetch decides pull vs build.
-//
-// Two things here were got wrong before they were got right, and both are pure functions so both are
-// pinned here rather than discovered on a host.
 
 import (
 	"strings"
@@ -28,10 +25,7 @@ import (
 // created a row whose only possible action was a guaranteed failure.
 func TestPublishedStockTagsAreTheRegistrysOwn(t *testing.T) {
 	got := publishedStockTags()
-	// THE BASE ALONE, AND THAT IS NOW THE CONTRACT. release.yml used to push ":gui" and ":dev" too;
-	// it no longer does, because those images carry third-party adapter CLIs and an image Orchicon
-	// builds and serves is Orchicon distributing them. Names that exist in the registry, still — there
-	// is simply one of them.
+	// THE BASE ALONE, AND THAT IS NOW THE CONTRACT.
 	want := []string{"ghcr.io/beardedparrott/orchicon-runtime:latest"}
 	if len(got) != len(want) {
 		t.Fatalf("publishedStockTags() = %v, want %v (the variants are BUILT locally, see LocalTag)", got, want)
@@ -48,11 +42,6 @@ func TestPublishedStockTagsAreTheRegistrysOwn(t *testing.T) {
 }
 
 // TestUnpublishedVariantsAreBuiltLocallyNotPulled is the routing half of not publishing them.
-//
-// A variant's tag must NOT be a registry reference, because FetchRuntimeImage routes on exactly that:
-// a registry ref is PULLED, anything else is BUILT from the shipped template. If a local tag carried a
-// registry prefix, every fetch of a variant would try to pull something nothing publishes — the
-// reported "manifest unknown" failure, reintroduced by a naming detail.
 func TestUnpublishedVariantsAreBuiltLocallyNotPulled(t *testing.T) {
 	for _, v := range stockVariants {
 		tag := v.CatalogTag("ghcr.io/beardedparrott/orchicon-runtime")
@@ -75,10 +64,6 @@ func TestUnpublishedVariantsAreBuiltLocallyNotPulled(t *testing.T) {
 
 // TestPublishedStockTagsCoverEveryVariant — the catalog must name an artifact for EVERY shipped
 // template, or a variant exists as a Dockerfile nobody can fetch.
-//
-// This is what makes the Runtime Images page list all hosted images on a host that has never had a
-// container engine (Windows before WSL/podman): the rows are seeded from these tags, not from what a
-// daemon happens to report.
 func TestPublishedStockTagsCoverEveryVariant(t *testing.T) {
 	tags := publishedStockTags()
 	// ONE TAG PER *PUBLISHED* VARIANT — not per shipped variant. web-research has a template and no

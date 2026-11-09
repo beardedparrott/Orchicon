@@ -11,9 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// resumeHarness spawns a FRESH fake subprocess per spawn and captures every
-// argv, so a re-attach (`--resume <sid>`) and a restart-then-resume can be
-// asserted without a real claude process.
+// resumeHarness spawns a FRESH fake subprocess per spawn and captures every argv, so a re-attach
+// (`--resume <sid>`) and a restart-then-resume can be asserted without a real claude process.
 type resumeHarness struct {
 	b *Bridge
 
@@ -60,10 +59,8 @@ func (rh *resumeHarness) fake(i int) *fakeProc {
 	return rh.fakes[i]
 }
 
-// TestClaudeBridgeDeclaresEveryOptionalCapability pins the declared contract
-// surface: the bridge implements Start plus every optional capability this work
-// item adds or re-verifies — including ChatTurnClient, which Ask chat requires
-// and which this assertion previously required to be ABSENT.
+// TestClaudeBridgeDeclaresEveryOptionalCapability pins the declared contract surface: the bridge
+// implements Start plus every optional capability this work item adds or re-verifies.
 func TestClaudeBridgeDeclaresEveryOptionalCapability(t *testing.T) {
 	b := New(quietLogger())
 	for name, ok := range map[string]bool{
@@ -87,9 +84,9 @@ func implements[T any](v any) bool {
 	return ok
 }
 
-// TestClaudeOmittedCapabilitiesFailActionablyNeverPanic pins the contract
-// rule: a capability requested for an execution the bridge cannot serve
-// returns an actionable error (and never nil-panics).
+// TestClaudeOmittedCapabilitiesFailActionablyNeverPanic pins the contract rule: a capability
+// requested for an execution the bridge cannot serve returns an actionable error (and never
+// nil-panics).
 func TestClaudeOmittedCapabilitiesFailActionablyNeverPanic(t *testing.T) {
 	b := New(quietLogger())
 	ctx := context.Background()
@@ -111,9 +108,9 @@ func TestClaudeOmittedCapabilitiesFailActionablyNeverPanic(t *testing.T) {
 	}
 }
 
-// TestContinueSessionReusesTheLiveSession proves a follow-up runs in the SAME
-// conversation while the session is live: the message goes onto the same live
-// stdin and the SAME session identity comes back.
+// TestContinueSessionReusesTheLiveSession proves a follow-up runs in the SAME conversation while
+// the session is live: the message goes onto the same live stdin and the SAME session identity
+// comes.
 func TestContinueSessionReusesTheLiveSession(t *testing.T) {
 	fp := newFakeProc()
 	rec := &captureCallbacks{}
@@ -150,10 +147,8 @@ func TestContinueSessionReusesTheLiveSession(t *testing.T) {
 	}
 }
 
-// TestContinueSessionResumesTheRecordedIdentityAfterARestart proves recovery
-// end-to-end: with no live session (a control-plane restart, a lost runtime
-// container, an execution that already finished) the follow-up re-attaches by
-// SESSION ID — `--resume <sid>` — instead of starting a fresh conversation.
+// TestContinueSessionResumesTheRecordedIdentityAfterARestart proves recovery end-to-end: with no
+// live session (a control-plane restart, a lost runtime container.
 func TestContinueSessionResumesTheRecordedIdentityAfterARestart(t *testing.T) {
 	rh := newResumeHarness(t)
 	projDir := t.TempDir()
@@ -188,10 +183,9 @@ func TestContinueSessionResumesTheRecordedIdentityAfterARestart(t *testing.T) {
 	waitFor(t, func() bool { return !rh.b.IsExecutionActive("exec-resume") }, "follow-up session finished")
 }
 
-// TestSessionSurvivesARestartResumingBySessionID proves the same identity
-// re-attaches across a control-plane restart: a SECOND Start carrying
-// ContinueFromSessionID resumes the prior transcript rather than starting a
-// fresh conversation.
+// TestSessionSurvivesARestartResumingBySessionID proves the same identity re-attaches across a
+// control-plane restart: a SECOND Start carrying ContinueFromSessionID resumes the prior
+// transcript.
 func TestSessionSurvivesARestartResumingBySessionID(t *testing.T) {
 	rh := newResumeHarness(t)
 	rec := &captureCallbacks{}
@@ -252,9 +246,8 @@ func TestSessionSurvivesARestartResumingBySessionID(t *testing.T) {
 	}
 }
 
-// TestAbortSignalsIntThenTerm pins the cancellation contract for a stdio
-// session: SIGINT first (so an unfinished turn stays resumable), SIGTERM only
-// after the grace window.
+// TestAbortSignalsIntThenTerm pins the cancellation contract for a stdio session: SIGINT first (so
+// an unfinished turn stays resumable), SIGTERM only after the grace window.
 func TestAbortSignalsIntThenTerm(t *testing.T) {
 	fp := newFakeProc()
 	rec := &captureCallbacks{}
@@ -268,10 +261,8 @@ func TestAbortSignalsIntThenTerm(t *testing.T) {
 	}
 }
 
-// TestCompactExecutionCompactsALiveSession drives the bridge-level compact
-// API (the AC's Compact(provider, model, remaining_scope) surface) against a
-// live fake session: the directive turn is written and the compaction is
-// recorded, with no HTTP path involved.
+// TestCompactExecutionCompactsALiveSession drives the bridge-level compact API (the AC's
+// Compact(provider, model, remaining_scope) surface) against a live fake session.
 func TestCompactExecutionCompactsALiveSession(t *testing.T) {
 	fp := newFakeProc()
 	rec := &captureCallbacks{}
@@ -280,9 +271,8 @@ func TestCompactExecutionCompactsALiveSession(t *testing.T) {
 		Goal:        "bridge-level goal",
 		Budgets:     []byte(noAutoCompactBudgets),
 	}, rec)
-	// Two priced turns inject the ladder's own warnings (keeping the session
-	// alive) but cannot compact: this budget opts EVERY dimension out of
-	// compact_dims, so the only compaction here is the explicit bridge call.
+	// Two priced turns inject the ladder's own warnings (keeping the session alive) but cannot compact:
+	// this budget opts EVERY dimension out of compact_dims.
 	fp.push(initLine)
 	fp.push(cacheHeavyResult)
 	fp.push(cacheHeavyResult)
@@ -303,9 +293,8 @@ func TestCompactExecutionCompactsALiveSession(t *testing.T) {
 	if len(budgetCompactedParts(rec)) == 0 {
 		t.Fatal("the bridge-level compaction was not recorded in the transcript")
 	}
-	// The session survives its own compaction and can still terminate once
-	// the outstanding queued turns (two ladder warnings + the directive) have
-	// each produced a boundary.
+	// The session survives its own compaction and can still terminate once the outstanding queued turns
+	// (two ladder warnings + the directive) have each produced a boundary.
 	for i := 0; i < 4; i++ {
 		fp.push(freeResult)
 	}

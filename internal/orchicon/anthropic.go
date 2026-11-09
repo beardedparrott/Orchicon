@@ -10,10 +10,8 @@ import (
 	"strings"
 )
 
-// AnthropicClient is the native Anthropic Messages wire client (D3):
-// SSE streaming, tool_use block accumulation, cache_control breakpoints,
-// usage incl. cache_read_input_tokens / cache_creation_input_tokens.
-// Hand-written against the public API — no SDK.
+// AnthropicClient is the native Anthropic Messages wire client (D3): SSE streaming, tool_use block
+// accumulation, cache_control breakpoints, usage incl.
 type AnthropicClient struct {
 	BaseURL string // default https://api.anthropic.com (no /v1 — path adds it)
 	APIKey  string
@@ -32,12 +30,8 @@ type AnthropicClient struct {
 	// nil → catalog only.
 	ModelsFn func(ctx context.Context) ([]ModelInfo, error)
 
-	// CacheTTL is the Anthropic prompt-cache TTL for cache_control
-	// breakpoints: "" or "5m" = the API default (5-minute TTL); "1h" =
-	// the extended-TTL breakpoint (opt-in via
-	// ORCHICON_ANTHROPIC_CACHE_TTL — ADR-0009 D3, revisitable: 1h is
-	// priced higher per write, so it only pays off for sparse workflow
-	// cadences).
+	// CacheTTL is the Anthropic prompt-cache TTL for cache_control breakpoints: "" or "5m" = the API
+	// default (5-minute TTL).
 	CacheTTL string
 }
 
@@ -48,10 +42,7 @@ func (c *AnthropicClient) Capabilities() Capabilities {
 	return Capabilities{Streaming: true, Tools: true, ReasoningEfforts: true, ImageInput: true, CacheBreakpoints: true}
 }
 
-// ListModels resolves through the sourcing service. NO catalog fallback:
-// per the no-synthesized-models directive, a failed sourcing probe yields
-// no models — never the vendored snapshot (it would show models the
-// operator's endpoint does not actually serve).
+// ListModels resolves through the sourcing service.
 func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if c.ModelsFn != nil {
 		return c.ModelsFn(ctx)
@@ -63,9 +54,7 @@ func (c *AnthropicClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 
 type anthCacheCtrl struct {
 	Type string `json:"type"`
-	// TTL is the optional Anthropic prompt-cache TTL ("1h"); empty = the
-	// API default (5m). Opt-in via AnthropicClient.CacheTTL /
-	// ORCHICON_ANTHROPIC_CACHE_TTL (ADR-0009 D3).
+	// TTL is the optional Anthropic prompt-cache TTL ("1h"); empty = the API default (5m).
 	TTL string `json:"ttl,omitempty"`
 }
 
@@ -124,32 +113,8 @@ type anthRequest struct {
 	Temperature *float64          `json:"temperature,omitempty"`
 }
 
-// marshalAnthropicHistory converts normalized messages. Assistant reasoning
-// is NEVER replayed (D2): reasoning content has no normalized storage in
+// Assistant reasoning is NEVER replayed (D2): reasoning content has no normalized storage in
 // Message.Content — text-only + tool_use + tool_result round-trip here.
-// Anthropic has no "tool" role: tool_result blocks ride USER messages.
-//
-// The emitted wire history is kept strictly role-alternating: consecutive
-// normalized messages that marshal to the SAME wire role are coalesced into
-// one wire turn (their content blocks are appended in order, so no content is
-// ever dropped). This is the Anthropic training contract — the model is
-// trained on alternating user/assistant turns — and both compaction
-// (compaction.go middle eviction can leave adjacent same-role survivors) and
-// the mid-run injection path (a queued plain user turn drains after a tool
-// round's result user message) can otherwise produce adjacent plain user
-// turns. Coalescing at THIS boundary (the single place the wire shape is
-// produced) keeps every history — compacted or not — strictly alternating
-// without losing content.
-//
-// tool_result content is subject to Anthropic's isolation ordering rule: in a
-// user message the tool_result blocks must come FIRST and any text AFTER
-// them. So a plain-text user message that follows a tool-result user message
-// coalesces INTO that same wire user message with its text appended AFTER the
-// tool_result blocks (the documented valid shape — "text after all tool
-// results"), and consecutive tool-result user messages merge into one
-// tool_result user message. A plain text user can therefore never be emitted
-// as a standalone second user turn after a tool-result user, and text never
-// precedes a tool_result block in a shared user message.
 func marshalAnthropicHistory(messages []Message) []anthMessage {
 	out := make([]anthMessage, 0, len(messages))
 	appendContent := func(am *anthMessage, c Content) {
@@ -188,9 +153,8 @@ func marshalAnthropicHistory(messages []Message) []anthMessage {
 		if len(out) > 0 && out[len(out)-1].Role == role {
 			prev := &out[len(out)-1]
 			if isToolResult {
-				// A tool_result user message merges only into a preceding
-				// tool_result user message (never into a plain-text user —
-				// text must not precede tool_result).
+				// A tool_result user message merges only into a preceding tool_result user message (never into a
+				// plain-text user — text must not precede tool_result).
 				if lastHoldsToolResult() {
 					for _, c := range m.Content {
 						appendContent(prev, c)
@@ -198,10 +162,8 @@ func marshalAnthropicHistory(messages []Message) []anthMessage {
 					continue
 				}
 			} else if lastHoldsToolResult() {
-				// Plain user (or image) after a tool-result user: coalesce
-				// with the text appended AFTER the tool_result blocks — the
-				// documented valid shape. The merge keeps the wire strictly
-				// alternating instead of emitting a second standalone user.
+				// Plain user (or image) after a tool-result user: coalesce with the text appended AFTER the
+				// tool_result blocks — the documented valid shape.
 				for _, c := range m.Content {
 					appendContent(prev, c)
 				}
@@ -264,16 +226,8 @@ func parseDataURL(u string) (anthImageSource, bool) {
 	return anthImageSource{Type: "base64", MediaType: media, Data: tail[len(b64):]}, true
 }
 
-// buildAnthropicRequest shapes the wire request with cache_control
-// breakpoints (D3). Breakpoint rule for the two-zone system layout
-// (ADR-0009): when ANY system block carries an explicit Cache flag,
-// ONLY the flagged blocks get cache_control — never the last block by
-// default, because the mutable zone sits after the static prefix and a
-// blanket last-block rule would cache mutable content. When no block is
-// flagged (legacy single-block callers) the breakpoint stays on the
-// LAST system block. Under the system+tools policy the LAST tool
-// definition also carries a breakpoint. cacheTTL ("1h") is an opt-in
-// extended TTL emitted with each breakpoint; "" uses the API default.
+// Breakpoint rule for the two-zone system layout (ADR-0009): when ANY system block carries an
+// explicit Cache flag, ONLY the flagged blocks get cache_control — never the last block by default.
 func buildAnthropicRequest(req TurnRequest, cacheTTL string) anthRequest {
 	policy := req.CacheControl
 	if policy == "" {
@@ -348,8 +302,7 @@ func (c *AnthropicClient) StreamTurn(ctx context.Context, req TurnRequest) (Turn
 
 	var resp *http.Response
 	// Shared send loop (requestrepair.go): transient failures are retried, request-shape 400s are
-	// repaired and resent, everything else surfaces. One loop for every client so resilience cannot be
-	// added to one and forgotten in another.
+	// repaired and resent, everything else surfaces.
 	resp, serr := sendWithRepair(ctx, c.Retry, c.Logf,
 		func(ctx context.Context, b []byte) (*http.Response, error) {
 			return postJSON(ctx, httpc, url, c.requestHeaders(), b)
@@ -384,10 +337,6 @@ func (c *AnthropicClient) requestHeaders() map[string]string {
 }
 
 // postJSON is the shared POST helper (connection errors classify for retry).
-// The response body is wrapped in the idle-read watchdog (streamidle.go):
-// after the first body byte, a silent gap past ORCHICON_STREAM_IDLE_TIMEOUT
-// aborts the stream with ErrStreamIdle instead of hanging until the
-// wall-clock reaper. Pre-first-byte silence (the prefill) is exempt.
 func postJSON(ctx context.Context, httpc *http.Client, url string, headers map[string]string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
 	if err != nil {
@@ -425,10 +374,8 @@ type anthropicStream struct {
 	r    *sseReader
 	body io.Closer
 	st   anthStreamState
-	// think splits INLINE reasoning (the "think" tag pair inside a
-	// text_delta — some gateways inline chain-of-thought instead of using
-	// thinking blocks) into ReasoningDelta events (thinksplit.go), the
-	// same global routing every provider wire applies.
+	// think splits INLINE reasoning (the "think" tag pair inside a text_delta — some gateways inline
+	// chain-of-thought instead of using thinking blocks) into ReasoningDelta events (thinksplit.go).
 	think *thinkSplitter
 	// pending queues splitter output (+ the trailing Finish) so one
 	// decoded frame can surface several events across Next calls.
@@ -547,11 +494,8 @@ func (s *anthropicStream) Next(ctx context.Context) (Event, bool, error) {
 			}
 			switch d.Type {
 			case "text_delta":
-				// Inline-reasoning routing (thinksplit.go): a "think" tag pair
-				// inside the delta becomes ReasoningDelta (native thinking
-				// blocks still arrive as thinking_delta below and are
-				// untouched). A fully-held split-tag prefix yields no event
-				// yet — keep decoding.
+				// Inline-reasoning routing (thinksplit.go): a "think" tag pair inside the delta becomes
+				// ReasoningDelta (native thinking blocks still arrive as thinking_delta below and are untouched).
 				s.think.feed(d.Text, &s.pending)
 				if len(s.pending) > 0 {
 					ev := s.pending[0]
@@ -608,16 +552,12 @@ func (s *anthropicStream) Next(ctx context.Context) (Event, bool, error) {
 		case "message_stop":
 			s.st.finished = true
 			if s.st.stop == "" {
-				// message_stop without a prior message_delta stop_reason:
-				// the provider never delivered an end-of-response signal —
-				// a truncated/aborted response, not a completed one
-				// (parity: openaicompat/legacycc report StopOther here).
-				// The loop's success gate treats StopOther as a failure.
+				// message_stop without a prior message_delta stop_reason: the provider never delivered an
+				// end-of-response signal — a truncated/aborted response, not a completed one (parity.
 				s.st.stop = StopOther
 			}
-			// Drain any think-splitter holdback first so a truncated final
-			// tag cannot swallow the response tail; an unterminated think
-			// block drains to reasoning, never text.
+			// Drain any think-splitter holdback first so a truncated final tag cannot swallow the response
+			// tail; an unterminated think block drains to reasoning, never text.
 			s.think.drain(&s.pending)
 			s.pending = append(s.pending, Finish{StopReason: s.st.stop, Usage: s.st.usage})
 			ev := s.pending[0]
@@ -654,19 +594,14 @@ func mapAnthropicStop(reason string) StopReason {
 	case "refusal":
 		return StopContentFilter
 	default:
-		// An empty/unrecognized stop_reason is NOT an end_of-turn signal —
-		// StopOther is the honest terminal (the loop's success gate treats
-		// it as a failure). Synthesizing StopStop from "" recorded hollow
-		// successes on truncated responses.
+		// An empty/unrecognized stop_reason is NOT an end_of-turn signal — StopOther is the honest terminal
+		// (the loop's success gate treats it as a failure).
 		return StopOther
 	}
 }
 
-// anthropicCacheTTLOptIn reads the ORCHICON_ANTHROPIC_CACHE_TTL tenant
-// env (ADR-0009 D3, revisitable default OFF): "1h" opts the session's
-// cache breakpoints into the extended 1-hour TTL; "" or "5m" keep the
-// API default. Any other value is ignored (empty → default) — an
-// invalid opt-in must never break request assembly.
+// anthropicCacheTTLOptIn reads the ORCHICON_ANTHROPIC_CACHE_TTL tenant env (ADR-0009 D3,
+// revisitable default OFF): "1h" opts the session's cache breakpoints into the extended 1-hour TTL.
 func anthropicCacheTTLOptIn() string {
 	switch os.Getenv("ORCHICON_ANTHROPIC_CACHE_TTL") {
 	case "1h":

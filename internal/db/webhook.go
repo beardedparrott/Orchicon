@@ -11,18 +11,14 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// deliveryWriter is the minimal SQL surface shared by *Pool (the
-// dispatcher's pool-direct writes) and pgx.Tx (the service's tenant
-// transaction), so delivery mutations can commit atomically with an
-// audit row when the caller owns a transaction.
+// deliveryWriter is the minimal SQL surface shared by *Pool (the dispatcher's pool-direct writes)
+// and pgx.Tx (the service's tenant transaction).
 type deliveryWriter interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// EventSubscriptionRow is the data-access shape of an event_subscriptions
-// table row. SecretHash is the only secret material stored; the plaintext
-// secret is shown once on create and never persisted (AGENTS.md security).
+// EventSubscriptionRow is the data-access shape of an event_subscriptions table row.
 type EventSubscriptionRow struct {
 	ID          string
 	TenantID    string
@@ -186,10 +182,8 @@ func SoftDeleteSubscription(ctx context.Context, tx pgx.Tx, tenantID, id string,
 	return nil
 }
 
-// ListActiveSubscriptions returns all active subscriptions matching the
-// given event type, across all tenants. The dispatcher reads across
-// tenants (it runs outside RLS — like the outbox relay). The event
-// filter is a glob matched server-side for simplicity in v0.1.
+// ListActiveSubscriptions returns all active subscriptions matching the given event type, across
+// all tenants.
 func ListActiveSubscriptions(ctx context.Context, p *Pool, eventType string) ([]EventSubscriptionRow, error) {
 	const q = `SELECT id, tenant_id, name, target_url, event_filter, scope, scope_ref,
 		secret_hint, secret_hash, max_retries, status, version, created_at, updated_at
@@ -215,9 +209,7 @@ func ListActiveSubscriptions(ctx context.Context, p *Pool, eventType string) ([]
 	return out, rows.Err()
 }
 
-// matchGlob is a minimal glob matcher for event filters. "*" matches
-// everything; "project.*" matches "project.created" but not
-// "worker.published"; "project.created" matches exactly.
+// matchGlob is a minimal glob matcher for event filters.
 func matchGlob(filter, eventType string) bool {
 	if filter == "" || filter == "*" {
 		return true
@@ -251,9 +243,7 @@ type WebhookDeliveryRow struct {
 	OccurredAt     time.Time
 }
 
-// CreateDelivery inserts a new delivery attempt row. w is either a *Pool
-// (pool-direct, e.g. the dispatcher) or a pgx.Tx (the service's tenant
-// transaction, so the row commits atomically with an audit entry).
+// CreateDelivery inserts a new delivery attempt row.
 func CreateDelivery(ctx context.Context, w deliveryWriter, r WebhookDeliveryRow) (WebhookDeliveryRow, error) {
 	if r.ID == "" {
 		r.ID = NewID()
@@ -281,9 +271,8 @@ func CreateDelivery(ctx context.Context, w deliveryWriter, r WebhookDeliveryRow)
 	return r, nil
 }
 
-// UpdateDeliveryResult records the outcome of a delivery attempt and
-// schedules the next attempt if retrying. w is either a *Pool or a
-// pgx.Tx (see CreateDelivery).
+// UpdateDeliveryResult records the outcome of a delivery attempt and schedules the next attempt if
+// retrying.
 func UpdateDeliveryResult(ctx context.Context, w deliveryWriter, id string, statusCode int, status, errMsg string, nextAttempt *time.Time) error {
 	var nextAny any
 	if nextAttempt != nil {
@@ -347,9 +336,7 @@ func GetDelivery(ctx context.Context, tx pgx.Tx, tenantID, id string) (WebhookDe
 	return r, nil
 }
 
-// ReenqueueDelivery creates a fresh delivery attempt for replay. The
-// original delivery's status is left intact (audit trail preserved).
-// w is either a *Pool or a pgx.Tx (see CreateDelivery).
+// ReenqueueDelivery creates a fresh delivery attempt for replay.
 func ReenqueueDelivery(ctx context.Context, w deliveryWriter, r WebhookDeliveryRow) (WebhookDeliveryRow, error) {
 	r.ID = NewID()
 	r.Attempt = 0
@@ -360,9 +347,7 @@ func ReenqueueDelivery(ctx context.Context, w deliveryWriter, r WebhookDeliveryR
 	return CreateDelivery(ctx, w, r)
 }
 
-// PayloadEnvelope is the JSON envelope POSTed to webhook targets. It
-// carries enough context for the receiver to identify and verify the
-// delivery.
+// PayloadEnvelope is the JSON envelope POSTed to webhook targets.
 type PayloadEnvelope struct {
 	EventID    string          `json:"event_id"`
 	EventType  string          `json:"event_type"`

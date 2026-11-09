@@ -14,19 +14,10 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// These tools give Ask Orchicon (both conversation modes) filesystem
-// context for a project's project_dir — the one directory a worker is
-// guaranteed to be able to operate in. Ask Orchicon runs on a
-// directory-less session, so this tool surface is the ONLY route to a
-// project's files (the no-project execution guard blocks general-purpose
-// file tools). Both tools are read-only (Mutating: false) and resolve
-// every path through contextfiles.ResolveWithin, which rejects `..`
-// escapes, absolute out-of-root paths, and symlink escapes — see the
-// always-run traversal tests in internal/contextfiles.
+// Ask Orchicon runs on a directory-less session, so this tool surface is the ONLY route to a
+// project's files (the no-project execution guard blocks general-purpose file tools).
 
-// listProjectDirEntry is one entry in a list_project_dir response. Types
-// are derived from Lstat (never following symlinks), so a symlinked entry
-// is reported as "symlink" and its target is NOT listed or descended into.
+// listProjectDirEntry is one entry in a list_project_dir response.
 type listProjectDirEntry struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
@@ -41,11 +32,8 @@ type listProjectDirResult struct {
 	Truncated bool                  `json:"truncated"`
 }
 
-// toolListProjectDir lists the top-level entries of a project's
-// project_dir (or a subdirectory of it). The listing is shallow — the
-// model drills down by re-invoking with a subpath — and is capped at
-// contextfiles.MaxContextFiles entries (truncated=true beyond it), with
-// VCS/build noise directories skipped.
+// toolListProjectDir lists the top-level entries of a project's project_dir (or a subdirectory of
+// it).
 func toolListProjectDir(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID string `json:"project_id"`
@@ -85,9 +73,8 @@ func toolListProjectDir(ctx context.Context, pool *db.Pool, args json.RawMessage
 		Entries:   make([]listProjectDirEntry, 0, len(entries)),
 	}
 	for _, e := range entries {
-		// Skip VCS/build/runtime-cache directories (os.ReadDir does not
-		// follow symlinks, so a symlink named ".git" is NOT skipped here —
-		// it is reported as a symlink).
+		// Skip VCS/build/runtime-cache directories (os.ReadDir does not follow symlinks, so a symlink named
+		// ".git" is NOT skipped here — it is reported as a symlink).
 		if e.IsDir() && contextfiles.IsNoiseDir(e.Name()) {
 			continue
 		}
@@ -126,10 +113,8 @@ type readProjectFileResult struct {
 	Content   string `json:"content"`
 }
 
-// toolReadProjectFile reads a single file inside a project's project_dir,
-// bounded to maxBytes (default contextfiles.MaxInlineFileBytes, clamped to
-// [1, MaxInlineFileBytes]). The JSON envelope (not raw text) lets the model
-// distinguish real content from a truncation marker.
+// toolReadProjectFile reads a single file inside a project's project_dir, bounded to maxBytes
+// (default contextfiles.MaxInlineFileBytes, clamped to [1, MaxInlineFileBytes]).
 func toolReadProjectFile(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID string `json:"project_id"`
@@ -170,9 +155,9 @@ func toolReadProjectFile(ctx context.Context, pool *db.Pool, args json.RawMessag
 	if info.IsDir() {
 		return nil, fmt.Errorf("%q is a directory — use list_project_dir to explore it", file)
 	}
-	// Note: a symlink target is intentionally not rejected here —
-	// ResolveWithin already proved any followable symlink stays inside the
-	// root, and os.ReadFile follows it (or errors for a broken link).
+	// Note: a symlink target is intentionally not rejected here — ResolveWithin already proved any
+	// followable symlink stays inside the root, and os.ReadFile follows it (or errors for a broken
+	// link).
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", file, err)
@@ -191,9 +176,8 @@ func toolReadProjectFile(ctx context.Context, pool *db.Pool, args json.RawMessag
 	return json.Marshal(result)
 }
 
-// projectDirForTool fetches the project within the caller's tenant and
-// returns its project_dir, erroring when the project is unknown or has no
-// directory configured. The transaction is read-only and rolled back.
+// projectDirForTool fetches the project within the caller's tenant and returns its project_dir,
+// erroring when the project is unknown or has no directory configured.
 func projectDirForTool(ctx context.Context, pool *db.Pool, projectID string) (string, error) {
 	tenantID := tenant.FromContext(ctx)
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)

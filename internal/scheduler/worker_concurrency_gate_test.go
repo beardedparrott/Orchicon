@@ -19,9 +19,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// seedGateWorker creates a published worker + version pinned to the
-// given concurrency_limit, for exercising the gate in isolation from the
-// seeded dev workers (which are all limit=0).
+// seedGateWorker creates a published worker + version pinned to the given concurrency_limit, for
+// exercising the gate in isolation from the seeded dev workers (which are all limit=0).
 func seedGateWorker(t *testing.T, pool *db.Pool, concurrencyLimit int) string {
 	t.Helper()
 	ctx := context.Background()
@@ -91,11 +90,8 @@ func seedGateTask(t *testing.T, pool *db.Pool, projectID, workerID string) db.Wo
 	return created
 }
 
-// TestWorkerConcurrencyGateHoldsSecondUntilSlotFrees exercises the
-// standalone (selectWorker) path: with the resolved worker version's
-// concurrency_limit=1, a second task pinned to the SAME worker is held
-// (no execution, task stays ready) until the first execution reaches a
-// terminal state.
+// TestWorkerConcurrencyGateHoldsSecondUntilSlotFrees exercises the standalone (selectWorker) path:
+// with the resolved worker version's concurrency_limit=1.
 func TestWorkerConcurrencyGateHoldsSecondUntilSlotFrees(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
@@ -163,9 +159,8 @@ func TestWorkerConcurrencyGateHoldsSecondUntilSlotFrees(t *testing.T) {
 	}
 }
 
-// TestWorkerConcurrencyGateUnlimitedNeverDefers covers AC3 explicitly over
-// BOTH paths: concurrency_limit=0 never defers on the standalone
-// (selectWorker) path nor on the step (workerVersionForStepRun) path.
+// TestWorkerConcurrencyGateUnlimitedNeverDefers covers AC3 explicitly over BOTH paths:
+// concurrency_limit=0 never defers on the standalone (selectWorker) path nor on the step.
 func TestWorkerConcurrencyGateUnlimitedNeverDefers(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
@@ -210,11 +205,8 @@ func TestWorkerConcurrencyGateUnlimitedNeverDefers(t *testing.T) {
 	}
 }
 
-// TestWorkerConcurrencyGateStepPathSharesTheSingleGate covers AC4/5/6: a
-// workflow step whose PINNED worker (_worker_id on the step run) is
-// saturated routes through the SAME gate as the standalone path — it is
-// deferred, carries an attributed `_dispatch_wait` note, and the note is
-// cleared once a slot frees and the step actually dispatches.
+// TestWorkerConcurrencyGateStepPathSharesTheSingleGate covers AC4/5/6: a workflow step whose PINNED
+// worker (_worker_id on the step run) is saturated routes through the SAME gate as the standalone.
 func TestWorkerConcurrencyGateStepPathSharesTheSingleGate(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
@@ -287,11 +279,8 @@ func TestWorkerConcurrencyGateStepPathSharesTheSingleGate(t *testing.T) {
 	}
 }
 
-// seedGateWorkflowRunWithTwoSteps seeds a running, runtime-ready workflow
-// run with two independent ready step runs, each pinned to workerID via
-// `_worker_id`/`_worker_version` on the step run's result — exactly how
-// the WorkflowReconciler pins a dispatched step (reconciler.go's
-// workerVersionForStepRun contract).
+// seedGateWorkflowRunWithTwoSteps seeds a running, runtime-ready workflow run with two independent
+// ready step runs, each pinned to workerID via `_worker_id`/`_worker_version` on the step run's.
 func seedGateWorkflowRunWithTwoSteps(t *testing.T, pool *db.Pool, projectID, workerID string) (db.WorkflowRunRow, db.WorkflowStepRunRow, db.WorkflowStepRunRow, string) {
 	t.Helper()
 	ctx := context.Background()

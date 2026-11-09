@@ -1,15 +1,7 @@
 package opencode
 
-// ask_scope_test.go — an Ask turn must resolve the conversation's MCP scope, like every other adapter.
-//
-// REPORTED as one of three requirements: "Scoped MCP servers added by the user in Conversations should
-// work for all adapters."
-//
-// claude and the native bridge both resolved ScopeConversation (project-owned ∪ conversation-owned)
-// for an Ask turn. opencode did not resolve ANYTHING: it took a single pre-built Ask serve whose config
-// carries only the built-in Orchicon server, so a server the operator added to a project or to the
-// conversation was simply not there — with no error, because "no servers" and "servers I was never
-// told about" look identical from inside a session.
+// ask_scope_test.go — an Ask turn must resolve the conversation's MCP scope, like every other
+// adapter.
 
 import (
 	"context"
@@ -39,8 +31,7 @@ func TestAskResolvesTheConversationScope(t *testing.T) {
 	rr := &askScopeRecordingResolver{}
 	a.SetHostScopeResolver(rr)
 	// A POOL IS REQUIRED FOR RESOLUTION TO MEAN ANYTHING: without one there is no serve to put the
-	// resolved set on, so askServeFor correctly skips the work. A t.TempDir base keeps the pool from
-	// touching the real data dir; ServeFor only builds the entry, it does not start a serve.
+	// resolved set on, so askServeFor correctly skips the work.
 	a.SetAskHostServePool(NewHostServePool(a.log, t.TempDir(), "", ProfileInteractive))
 
 	// A turn context carrying what the Ask collector stamps: the conversation, its project, its tenant.

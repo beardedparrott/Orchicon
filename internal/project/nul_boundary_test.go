@@ -34,11 +34,7 @@ func TestNameWithANulIsRefusedByName(t *testing.T) {
 }
 
 func TestNoControlCharacterEverSurvivesValidation(t *testing.T) {
-	// THE PROPERTY, NOT ONE ROUTE TO IT. Every C0 control and DEL is equally unstorable in a text column and
-	// equally invisible, so the invariant is that NONE of them is in the value that gets inserted. Two
-	// routes satisfy it and both are correct: the value is refused with a message, or the character was
-	// whitespace and got trimmed. What must never happen is a control rune coming out the other side — that
-	// is the 22021.
+	// THE PROPERTY, NOT ONE ROUTE TO IT.
 	for _, r := range []rune{0x00, 0x01, 0x07, 0x0b, 0x1b, 0x7f} {
 		got, err := validateName("Temp" + string(r))
 		if err != nil {

@@ -9,10 +9,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 )
 
-// Operator Phase-3.5 finding 3: submenu activation. Pins BOTH entry
-// paths: (a) Enter/Space opens the active tab's dropdown (empty
-// composer), arrows navigate, Enter selects, (b) mouse click on a
-// dropdown row selects.
+// Operator Phase-3.5 finding 3: submenu activation.
 func TestTabSubmenuKeyboardActivation(t *testing.T) {
 	m := NewApp(nil, &config.Profile{URL: "http://localhost:8080", AuthMethod: config.AuthAPIKey, Token: "oc_test"}, "")
 	m.width, m.height = 120, 40
@@ -72,13 +69,6 @@ func TestTabSubmenuActivationWithTextInComposerSends(t *testing.T) {
 }
 
 // The /connect overlay must open a PASSWORD field that is EMPTY and typeable.
-//
-// The profile below is the real shape: in password mode its Token is the previous
-// session's minted ACCESS TOKEN. That token used to be loaded into the field
-// labelled "Password > ", so the field arrived pre-satisfied, submit sent the
-// stale token, and the plane answered 401 — while the operator could not work out
-// what was in the box or clear it. (This test previously asserted only that a
-// single Tab reached a typeable field, which pinned the old field ORDER.)
 func TestConnectOverlayPasswordFieldEmptyAndTypeable(t *testing.T) {
 	m := NewApp(nil, &config.Profile{
 		URL:        "http://localhost:8080",

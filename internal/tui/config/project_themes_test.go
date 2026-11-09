@@ -1,8 +1,7 @@
 package config
 
-// project_themes_test.go — the project->palette bindings, same contract as the other display preferences
-// in prefs_test.go: a round trip that does not disturb credentials, a sorted rewrite, an omitted key when
-// empty, and a malformed/unknown entry that degrades rather than failing the whole load.
+// project_themes_test.go — the project->palette bindings, same contract as the other display
+// preferences in prefs_test.go: a round trip that does not disturb credentials, a sorted rewrite.
 
 import (
 	"os"

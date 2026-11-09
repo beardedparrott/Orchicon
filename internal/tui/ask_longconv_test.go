@@ -1,23 +1,6 @@
 package tui
 
 // ask_longconv_test.go — A LONG CONVERSATION MUST STILL SHOW WHAT WAS JUST SENT.
-//
-// The operator, reporting the exact shape: "So conversation ID 01M4114WHDAE0T4M8064MJEX55 is working.
-// Your conversation 01M3XKG1JHE1WVYS5F4QZ02MT2 is not." — i.e. a SHORT conversation behaves and a LONG
-// one does not: "user messages are being swallowed up when I send them and they don't print to the
-// screen until the orchicon agent starts reasoning", and no activity line.
-//
-// SIZE-DEPENDENT, WHICH IS THE WHOLE CLUE. The transcript only becomes SCROLLABLE when it is taller than
-// the pane — so the only difference between the working conversation and the broken one is that the
-// broken one can be scrolled. And the stream's follow INTENT (kit2.Stream.follow) is cleared by exactly
-// one thing: the operator's own wheel/keyboard scroll, which a long transcript invites and a short one
-// cannot perform. Once follow is false, every later append — the optimistic echo, the reply, the
-// activity line, which is drawn last — lands BELOW the fold, so the pane keeps showing the rows the
-// operator scrolled to and nothing they just sent.
-//
-// The measured trace is unambiguous that the STORE and the PAINT are fine: the echo is appended 1ms
-// after the send and the pane is repainted 3ms later with the notice set. So this is the remaining
-// possibility, and it is the one the size-dependence points at.
 
 import (
 	"fmt"
@@ -42,12 +25,6 @@ func longConversation(t *testing.T) *App {
 }
 
 // SENDING SHOWS THE MESSAGE EVEN WHEN THE OPERATOR HAS SCROLLED BACK.
-//
-// Scrolling up is a reading gesture on a long transcript, and it is deliberately sticky (see
-// kit2.Stream.follow — an auto-follow that ignored it would yank a reader back down mid-sentence). But
-// a SEND is a new, deliberate act: the operator is no longer reading, they have just asked something and
-// the reply is about to arrive under it. Leaving the view parked in the middle of the history is what
-// makes their own message invisible.
 func TestSendingRepinsAScrolledTranscript(t *testing.T) {
 	m := longConversation(t)
 

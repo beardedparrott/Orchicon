@@ -1,18 +1,6 @@
 package db
 
 // project_cascade_test.go — DeleteProject must leave NOTHING behind.
-//
-// WHY THIS EXISTS. DeleteProject cascaded the work hierarchy (step runs, runs, versions, workflows,
-// dependencies, work items) but NOT the telemetry tables — and none of them has a foreign key to
-// projects, so a missing delete was SILENT rather than an error. Measured on the live dev tenant after
-// every project had been removed: 1264 orphaned worker_executions, 150 orphaned recovery_executions,
-// 9959 orphaned usage_records and 132 orphaned recurring_run_history rows, every one of them carrying
-// a project_id that no longer existed. Deleting a project in the GUI left all of it; the DB-backed
-// tests, which create and drop projects constantly, left a large share of the rest.
-//
-// The test builds a project that owns one row of EVERY kind the cascade is responsible for, runs the
-// real DeleteProject, and asserts the whole set is gone — so adding a table to the schema without
-// adding it to the cascade shows up here rather than as orphans in production.
 
 import (
 	"context"
@@ -181,9 +169,6 @@ func cascadeCounts(t *testing.T, pool *Pool, tenant, proj, run, wi, exec, rec st
 }
 
 // A delete of something already gone is not an error.
-//
-// The GUI's delete and a test's cleanup can both run, and the contract DeleteProject owes is "the
-// project and its data are gone" — which is true whether this call or an earlier one removed it.
 func TestDeleteProjectIsIdempotent(t *testing.T) {
 	pool := cascadeTestPool(t)
 	ctx := context.Background()
@@ -191,10 +176,7 @@ func TestDeleteProjectIsIdempotent(t *testing.T) {
 	proj := "zz_idem_probe_" + NewID()[:10]
 
 	// CLEANUP IS NOT REDUNDANT WITH THE DELETES BELOW, and its absence was a real leak: this test
-	// asserts that DeleteProject is harmless when called twice, so a FAILURE anywhere before the
-	// second call — or a failure of the second call itself — left the probe project behind in the
-	// shared tenant. It was the only test in this file without a t.Cleanup, and it did leak: two
-	// probes survived in the dev tenant from a single run while this was being written.
+	// asserts that DeleteProject is harmless when called twice.
 	t.Cleanup(func() {
 		cctx := context.Background()
 		if err := DeleteProjectByID(cctx, pool, tenant, proj); err != nil {

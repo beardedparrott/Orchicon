@@ -1,15 +1,7 @@
 package planecontrol
 
-// imports_test.go — AC8 and AC3, asserted mechanically: this package imports NO package that could drag the
-// plane's HTTP server in, so the TUI (`cmd/orch`) and a Wails app can depend on it; and no second copy of the
-// lifecycle re-exec is left behind in cmd/orchicon.
-//
-// "STDLIB ONLY" IS THE RULE, WITH ONE NAMED EXCEPTION — internal/containerengine, which is itself a
-// stdlib-only leaf (TestPermittedInternalDependencyIsStdlibOnly re-checks that, so the property holds
-// transitively rather than by promise). It is permitted because it is the ONE truth for "is there an
-// engine, and which binary is it": the installer and the plane's /enginez ask it too, and a private probe
-// here would eventually answer differently and describe an engine that is not there. What must NEVER be
-// importable from here is the plane's HTTP server, and that is what the test still forbids.
+// What must NEVER be importable from here is the plane's HTTP server, and that is what the test
+// still forbids.
 
 import (
 	"go/parser"
@@ -51,10 +43,8 @@ func TestPackageImportsOnlyTheStandardLibrary(t *testing.T) {
 	}
 }
 
-// permittedInternalImports are the module paths this package may import, and both are STDLIB-ONLY LEAVES —
-// see TestPermittedInternalDependencyIsStdlibOnly, which re-checks that so the permission cannot become a
-// loophole. containerengine is the one truth for "is there an engine"; procwin is the one place a console
-// window is suppressed (see that package's header for why it exists as a leaf).
+// permittedInternalImports are the module paths this package may import, and both are STDLIB-ONLY
+// LEAVES — see TestPermittedInternalDependencyIsStdlibOnly.
 var permittedInternalImports = map[string]bool{
 	"github.com/beardedparrott/orchicon/internal/containerengine": true,
 	"github.com/beardedparrott/orchicon/internal/procwin":         true,
@@ -69,9 +59,8 @@ func isStdlibPath(importPath string) bool {
 	return !strings.Contains(first, ".")
 }
 
-// TestPermittedInternalDependencyIsStdlibOnly keeps the exception from becoming a loophole: the permitted
-// import must itself be a stdlib-only leaf, so AC8 holds TRANSITIVELY — no chain of allowed imports can
-// reach the plane's HTTP server.
+// TestPermittedInternalDependencyIsStdlibOnly keeps the exception from becoming a loophole: the
+// permitted import must itself be a stdlib-only leaf, so AC8 holds TRANSITIVELY.
 func TestPermittedInternalDependencyIsStdlibOnly(t *testing.T) {
 	for _, dir := range []string{filepath.Join("..", "containerengine"), filepath.Join("..", "procwin")} {
 		testPermittedLeafIsStdlibOnly(t, dir)
@@ -96,9 +85,7 @@ func testPermittedLeafIsStdlibOnly(t *testing.T, dir string) {
 			for _, imp := range file.Imports {
 				seen++
 				importPath := strings.Trim(imp.Path.Value, "\"")
-				// STDLIB, OR ANOTHER PERMITTED LEAF. procwin is stdlib-only itself (checked when this loop
-				// reaches its own directory), so allowing one leaf to use another cannot reach the plane's
-				// HTTP server — which is the property AC8 actually cares about.
+				// STDLIB, OR ANOTHER PERMITTED LEAF.
 				if isStdlibPath(importPath) || permittedInternalImports[importPath] {
 					continue
 				}

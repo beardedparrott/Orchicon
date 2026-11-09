@@ -1,14 +1,6 @@
 package tui
 
 // ask_card_click_test.go — CLICKING AN OPTION ON A RECORDED ask_user CARD ANSWERS THE QUESTION.
-//
-// The `ask_user` tool RECORDS the question and the turn ENDS; the operator's answer is the next user message.
-// On this client that answer is a CLICK on an option, sent through the ordinary send path
-// (Controller.AnswerQuestion → Send) — so there is no rendezvous to wait on and nothing here may block.
-//
-// The same THREE COORDINATE SPACES the copy gestures use have to agree (frame row → body row → body line →
-// item), and the geometry comes from the render that drew the card. These tests find their rows by SCANNING the
-// real frame for the option text, so they cannot pass by agreeing with the formula they are checking.
 
 import (
 	"strings"
@@ -117,12 +109,7 @@ func TestAClickOnAnOptionIsWiredToTheSend(t *testing.T) {
 	}
 }
 
-// AN ANSWERED CARD IS SETTLED — and it is the ask's OWN RESULT that says so, not a
-// later message. It used to be "a later user message exists", which was right while
-// answering SENT the choice as the next message; with ask_user blocking, the answer
-// arrives as the tool result and nothing follows, so that test never went true and
-// the card stayed clickable forever — the operator's "the Orchicon asks card does not
-// go away when you select something".
+// AN ANSWERED CARD IS SETTLED — and it is the ask's OWN RESULT that says so, not a later message.
 func TestAnAnsweredCardIsNoLongerClickable(t *testing.T) {
 	m := askCardPlane(t)
 	for i := range m.chatStore.items["c1"] {

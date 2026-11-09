@@ -16,10 +16,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
-// These tests cover the two changes that make `orchicon install` legible while it
-// runs. They need no Docker daemon, which is why they can exist here at all: the
-// progress and the honesty of the summary are properties of the output, and the
-// output is what the operator has during a multi-minute unattended install.
+// These tests cover the two changes that make `orchicon install` legible while it runs.
 
 // captureStdout collects everything fn prints to os.Stdout.
 func captureStdout(t *testing.T, fn func()) string {
@@ -41,10 +38,8 @@ func captureStdout(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// TestTailWriterKeepsOnlyTheTail pins the bounded tail that lets a failed
-// `docker pull` still report WHY without holding an entire progress stream in
-// memory. Streaming the pull is what makes a working install distinguishable from
-// a hung one; the tail is what keeps the failure message useful.
+// TestTailWriterKeepsOnlyTheTail pins the bounded tail that lets a failed `docker pull` still
+// report WHY without holding an entire progress stream in memory.
 func TestTailWriterKeepsOnlyTheTail(t *testing.T) {
 	tw := &tailWriter{limit: 16}
 	if n, err := tw.Write([]byte("0123456789")); n != 10 || err != nil {
@@ -64,11 +59,8 @@ func TestTailWriterKeepsOnlyTheTail(t *testing.T) {
 	}
 }
 
-// TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane closes the "green but
-// broken" case in the summary. An install whose control plane never answered used
-// to print "Orchicon is installed and running." and nothing else, so the operator
-// opened a URL that did not respond with nothing to go on. The install IS real, so
-// the URLs stay; the claim about the plane does not.
+// TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane closes the "green but broken" case in the
+// summary.
 func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_POSTGRES_PORT": 5432}
 	call := func(healthy bool) string {
@@ -114,19 +106,11 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 	}
 }
 
-// TestPrintInstallInfoUsesTheInstallsEngineDecision pins the SINGLE-DECISION property the install asserts
-// everywhere else: the carrier is decided ONCE (install.go's `containersUsed`) and every downstream surface
-// reports THAT decision. printInstallInfo used to re-probe with containerEngineAvailable(), a SECOND decision
-// that can disagree with the one the install acted on — so the summary could describe a carrier the install
-// never created.
-//
-// The disagreement is made OBSERVABLE by construction: the install's thread says host services while the
-// environment has NO engine on PATH, so a re-probe would say something else. The summary must describe the
-// host shape the install produced, never a re-probe.
+// TestPrintInstallInfoUsesTheInstallsEngineDecision pins the SINGLE-DECISION property the install
+// asserts everywhere else.
 func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
 	// The disagreement is pinned, not inferred: an empty PATH alone still leaves the engine the
-	// detector finds in a conventional location (a CI runner's /usr/bin/docker), and then the
-	// re-probe would agree with the install and prove nothing.
+	// detector finds in a conventional location (a CI runner's /usr/bin/docker).
 	t.Setenv(containerengine.EnginePinEnv, string(containerengine.EngineNone))
 	t.Setenv("PATH", t.TempDir()) // no engine: a re-probe would answer "no containers"
 	if containerEngineAvailable() {
@@ -140,9 +124,7 @@ func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
 			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin",
 				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, pathHint{}, ports, true, true, containerengine.Status{})
 	})
-	// SERVICES ARE ALWAYS HOST NOW. The single-decision property is unchanged and still worth pinning: the
-	// summary must describe the shape the install PRODUCED (host services, host data dir), whatever a fresh
-	// engine probe would say. It must never claim a container.
+	// SERVICES ARE ALWAYS HOST NOW.
 	if strings.Contains(out, "the services run in orchicon-cnt-dev") {
 		t.Errorf("the summary claims a services container, which the install no longer creates; got:\n%s", out)
 	}
@@ -151,16 +133,8 @@ func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
 	}
 }
 
-// TestPrintInstallInfoIsHonestAboutTheNoEngineShape is the regression for a summary that CONTRADICTED its own
-// install. A host with no container engine is a supported shape this change introduced, and the run announces
-// it in step 1 ("runtime containers are unavailable (work runs in-process)") — but the summary's tail was
-// unconditional, so the SAME run then reported a runtime daemon for per-workflow runtime containers and
-// promised "every execution runs in its own short-lived container". On that host no runtime container can
-// ever be launched, so the closing advice described a carrier the install never produced — the same class of
-// defect as the dead `docker inspect` this item removes, arriving through the install's own output.
-//
-// BOTH DIRECTIONS ARE ASSERTED, because a summary gutted to the no-engine shape would stop reporting the
-// container carrier where it IS the truth.
+// TestPrintInstallInfoIsHonestAboutTheNoEngineShape is the regression for a summary that
+// CONTRADICTED its own install.
 func TestPrintInstallInfoIsHonestAboutTheNoEngineShape(t *testing.T) {
 	// No engine, so printInstallInfo's `containersUsed` is false — the install's threaded decision.
 	t.Setenv("PATH", t.TempDir())
@@ -204,14 +178,11 @@ func TestPrintInstallInfoIsHonestAboutTheNoEngineShape(t *testing.T) {
 
 // ----- the download failure posture (AC#6) -----
 
-// TestDownloadFailureReportsABoundedTail mirrors TestTailWriterKeepsOnlyTheTail for
-// the DOWNLOAD path. A failed download must report WHY, and the explanation must
-// stay bounded: a proxy's error page or a huge HTML 404 printed whole would bury the
-// actual failure in an unattended install's log.
+// TestDownloadFailureReportsABoundedTail mirrors TestTailWriterKeepsOnlyTheTail for the DOWNLOAD
+// path.
 func TestDownloadFailureReportsABoundedTail(t *testing.T) {
-	// A body much larger than the tail limit, with a distinctive marker at the END —
-	// which is the part a bounded tail must keep, since the last bytes are where a
-	// server puts its actual explanation.
+	// A body much larger than the tail limit, with a distinctive marker at the END — which is the part
+	// a bounded tail must keep, since the last bytes are where a server puts its actual explanation.
 	const marker = "THE-ACTUAL-REASON"
 	long := strings.Repeat("filler ", 4000)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -241,9 +212,8 @@ func TestDownloadFailureReportsABoundedTail(t *testing.T) {
 	}
 }
 
-// TestDownloadProgressIsStreamedOncePerChunk pins the other half of AC#6: progress is
-// STREAMED (so a working download is distinguishable from a hung one) but not per
-// read (so it does not flood the log).
+// TestDownloadProgressIsStreamedOncePerChunk pins the other half of AC#6: progress is STREAMED (so
+// a working download is distinguishable from a hung one) but not per read (so it does not flood.
 func TestDownloadProgressIsStreamedOncePerChunk(t *testing.T) {
 	// 3.5 steps worth of body: enough for a few progress lines, far short of noisy.
 	body := bytes.Repeat([]byte("x"), 3*downloadProgressStep+downloadProgressStep/2)

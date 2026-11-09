@@ -10,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// The operator's "there is no themes under settings": Control must expose a
-// Themes pane listing the TUI's palette set, marking the active one, and
-// offering an action that applies the selection.
+// The operator's "there is no themes under settings": Control must expose a Themes pane listing the
+// TUI's palette set, marking the active one, and offering an action that applies the selection.
 func TestThemesPaneListsPalettes(t *testing.T) {
 	t.Cleanup(func() { theme.Use(theme.DefaultName) })
 	theme.Use("dark")

@@ -55,9 +55,7 @@ const (
 	dateLayout = "2006-01-02"
 )
 
-// Timestamp is anything that yields an instant. The generated protobuf timestamps satisfy it (their
-// AsTime is nil-safe and IsValid reports a malformed one), and it is kept as an interface so the
-// callers did not have to change SHAPE when the rendering rule did.
+// Timestamp is anything that yields an instant.
 type Timestamp interface {
 	AsTime() time.Time
 	IsValid() bool
@@ -86,12 +84,6 @@ func FmtLocal(t time.Time) string { return t.In(time.Local).Format(timeLayout) }
 func FmtLocalFull(t time.Time) string { return FmtZoneFull(t, time.Local) }
 
 // FmtZoneFull renders an instant in a GIVEN zone, naming the zone and its offset.
-//
-// It exists because "local" is not always the right zone to show. A recurring schedule stores its own
-// zone, and its wall clock belongs to THAT zone: rendering a legacy UTC schedule's 09:00 through
-// FmtLocalFull would print the operator's local conversion of it — a different wall clock from the one
-// stored, which the form would then read back and save. A host showing a schedule's times passes the
-// schedule's zone here.
 func FmtZoneFull(t time.Time, loc *time.Location) string {
 	if loc == nil {
 		loc = time.UTC
@@ -117,11 +109,6 @@ func LocalZone() (string, time.Duration) {
 func LocalZoneLabel() string { return ZoneLabel(time.Now()) }
 
 // ZoneLabel names the zone AT A GIVEN INSTANT and gives its offset.
-//
-// IT TAKES THE INSTANT RATHER THAN READING "NOW", and that is deliberate: an offset is a property of
-// the MOMENT, not of the machine. Asking "now" and applying the answer to a January timestamp prints
-// "EDT" on a winter date — an hour out, and confidently so, which is the worst kind of wrong here.
-// Every caller has the instant in hand, so every caller passes it.
 func ZoneLabel(t time.Time) string {
 	name, _ := t.Zone()
 	if name == "" {
@@ -185,10 +172,6 @@ func FmtDuration(seconds int64) string {
 // not have to convert to seconds and back.
 
 // FmtElapsed renders a span the way the GUI's live-duration chip does.
-//
-// A NEGATIVE span renders as "<1s" rather than as a negative number: a span that ends before it starts
-// is a clock disagreement between this machine and the plane, and the operator wants to know the job is
-// running, not to read the arithmetic. The GUI clamps the same way (LiveDuration's Math.max(0, …)).
 func FmtElapsed(d time.Duration) string {
 	if d < 0 {
 		d = 0
@@ -230,9 +213,7 @@ func ElapsedSince(start Timestamp, now time.Time) (time.Duration, bool) {
 	return now.Sub(from), true
 }
 
-// ElapsedBetween measures a COMPLETED span: start → end, both from the record. An absent end means the
-// span is still running, which is the caller's distinction to make — this reads the record it is given
-// (a run with no ended_at in History is an in-flight run, and its row says so).
+// ElapsedBetween measures a COMPLETED span: start → end, both from the record.
 func ElapsedBetween(start, end Timestamp) (time.Duration, bool) {
 	if start == nil || !start.IsValid() {
 		return 0, false

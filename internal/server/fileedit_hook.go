@@ -40,12 +40,8 @@ import (
 // under that exact tuple or its live rows are unqueryable and only the
 // post-turn git sweep shows anything.
 func newFileEditHook(feSvc *fileedit.Service, log *slog.Logger, ownerKind string) opencode.FileEditHookFunc {
-	// Per-execution built-in tool observers: on the first opencode built-in
-	// write/edit for a run, an Observer is created rooted at the run's exec
-	// dir (worktree or project dir); it caches last-seen content per path
-	// (git-HEAD-seeded) so each ObserveAfter diffs real file state on both
-	// sides. Entries live for the process lifetime — bounded by one entry per
-	// execution that used built-in write tools.
+	// Per-execution built-in tool observers: on the first opencode built-in write/edit for a run, an
+	// Observer is created rooted at the run's exec dir (worktree or project dir).
 	var (
 		mu  sync.Mutex
 		obs = map[string]*fileedit.Observer{}
@@ -73,21 +69,14 @@ func newFileEditHook(feSvc *fileedit.Service, log *slog.Logger, ownerKind string
 	return func(ctx context.Context, execID, tenantID, execDir, toolName string, input map[string]any, output string) {
 		switch toolName {
 		case "write", "edit":
-			// Engine single-op wrapper output carries the exact in-engine
-			// diffs; genuine built-in output never contains "file_edits",
-			// so the branch is unambiguous. parsed > 0 claims the edit
-			// even when the funnel records 0 (an engine-observed no-op
-			// must NOT fall through to the HEAD-seeded observer, which
-			// would hallucinate a row for it).
+			// Engine single-op wrapper output carries the exact in-engine diffs; genuine built-in output never
+			// contains "file_edits", so the branch is unambiguous.
 			if parsed, recorded := feSvc.RecordEngineOutput(ctx, tenantID, ownerKind, execID, toolName, output); parsed > 0 {
 				log.Debug("file edit hook: engine payload claimed write/edit",
 					"execution", execID, "tool", toolName, "parsed", parsed, "recorded", recorded)
 				return
 			}
-			// opencode built-in write/edit (the runtime's native file tools):
-			// take a plane-side after-snapshot. "before" is the observer's
-			// last-seen content (git-HEAD-seeded on first sight), "after" is
-			// the fresh read — real file state on both sides.
+			// opencode built-in write/edit (the runtime's native file tools): take a plane-side after-snapshot.
 			if o := observer(execID, execDir); o != nil {
 				p := inputStr(input, "filePath")
 				if p == "" {
@@ -112,10 +101,8 @@ func newFileEditHook(feSvc *fileedit.Service, log *slog.Logger, ownerKind string
 					"execution", execID, "tool", toolName, "parsed", parsed, "recorded", recorded)
 			}
 		case "file_diff":
-			// Adapter fallback for paths no known mutating tool covered:
-			// the input carries the file_diff event's path. Real file
-			// state both sides (observer cache vs fresh read); no-op reads
-			// drop out inside ObserveAfter.
+			// Adapter fallback for paths no known mutating tool covered: the input carries the file_diff
+			// event's path.
 			if o := observer(execID, execDir); o != nil {
 				p := inputStr(input, "path")
 				if e := o.ObserveAfter(p, "file_diff"); e.Path != "" {

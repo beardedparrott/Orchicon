@@ -141,21 +141,15 @@ func toolCreateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	// THE REPOSITORY IS SET UP AFTER THE ROW IS COMMITTED, deliberately: the platform's git setup touches the
-	// FILESYSTEM, and a git failure must not roll back a project the user asked for. It is REPORTED instead, so
-	// the agent can say what happened and what it did about it.
+	// THE REPOSITORY IS SET UP AFTER THE ROW IS COMMITTED, deliberately: the platform's git setup
+	// touches the FILESYSTEM, and a git failure must not roll back a project the user asked for.
 	return marshalProjectWithGitSetup(ctx, project, params.InitGit)
 }
 
-// marshalProjectWithGitSetup returns the project plus the outcome of the platform's git setup when it was asked
-// for. The report rides the RESULT rather than a separate call so a project cannot be created as local/pr and
-// left without a repository — which is exactly how an Ask-created project came to behave differently from one
-// created in the console.
+// marshalProjectWithGitSetup returns the project plus the outcome of the platform's git setup when
+// it was asked for.
 func marshalProjectWithGitSetup(ctx context.Context, project db.ProjectRow, initGit bool) (json.RawMessage, error) {
-	// THE PROJECT'S OWN FIELDS STAY AT THE TOP LEVEL, with git_setup added beside them. The response is the
-	// project the caller asked for; wrapping it under a "project" key would break every existing consumer that
-	// unmarshals the result straight into a project row — including this package's own tests — for the sake of a
-	// report that is additive.
+	// THE PROJECT'S OWN FIELDS STAY AT THE TOP LEVEL, with git_setup added beside them.
 	base, berr := json.Marshal(project)
 	if berr != nil {
 		return nil, berr
@@ -249,10 +243,8 @@ func toolUpdateProject(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		update.DefaultRuntimeImage = &v
 	}
 	if params.ExecutionMode != nil {
-		// Route through the SAME parser as create: a raw switch here rejected
-		// spellings create accepts (" Runtime "), so the two paths disagreed
-		// about what a valid mode is. An absent/blank value is not a mode —
-		// reject it rather than handing "" to the column's CHECK constraint.
+		// Route through the SAME parser as create: a raw switch here rejected spellings create accepts ("
+		// Runtime "), so the two paths disagreed about what a valid mode is.
 		m, err := db.ParseExecutionMode(*params.ExecutionMode, "")
 		if err != nil {
 			return nil, err
@@ -401,9 +393,8 @@ func toolCreateProjectDir(ctx context.Context, pool *db.Pool, args json.RawMessa
 		"project_dir": absPath,
 		"scaffolded":  params.Scaffold,
 	}
-	// THE NATURAL HOME FOR git init: this tool is what CREATES the directory, so it is also the moment a
-	// local/pr project stops being able to branch unless something initialises a repository. Post-commit for the
-	// same reason as create_project — a git failure must not undo the directory the user asked for.
+	// THE NATURAL HOME FOR git init: this tool is what CREATES the directory, so it is also the moment
+	// a local/pr project stops being able to branch unless something initialises a repository.
 	if params.InitGit {
 		out["git_setup"] = gitSetupReportJSON(projectpkg.EnsureGitState(ctx, absPath, current.GitStrategy))
 	} else if db.RequiresRepository(current.GitStrategy) {

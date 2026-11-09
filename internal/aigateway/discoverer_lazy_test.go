@@ -25,11 +25,6 @@ import (
 )
 
 // countingFactory hands out a discoverer on the Nth call, and counts how many times it was asked.
-//
-// IT COUNTS RATHER THAN ASSERTS THE DISCOVERER directly because the property under test is about
-// WHEN resolution runs, not what it returns: "resolved on the request" and "resolved at
-// construction" are behaviourally identical from the outside on the happy path, and differ entirely
-// when the first attempt fails.
 type countingFactory struct {
 	mu     sync.Mutex
 	calls  int
@@ -75,9 +70,7 @@ func TestDiscoveryResolvesOnTheRequestNotJustAtBoot(t *testing.T) {
 	f := &countingFactory{model: NewModelDiscoverer(discardLogger(), "/fake/opencode")}
 	svc.SetDiscovererFactory(f.build)
 
-	// The first selection resolves. It will then try to RUN the fake binary and fail — but the failure
-	// must be an EXECUTION error, not Unimplemented: the difference is "the plane found opencode and
-	// could not run my stub" versus "the plane never looked".
+	// The first selection resolves.
 	_, err = svc.ListOpenCodeModels(context.Background(), connect.NewRequest(&apiv1.ListOpenCodeModelsRequest{}))
 	if got := connect.CodeOf(err); got == connect.CodeUnimplemented {
 		t.Fatalf("after installing opencode, ListOpenCodeModels is STILL Unimplemented — discovery "+
@@ -88,9 +81,7 @@ func TestDiscoveryResolvesOnTheRequestNotJustAtBoot(t *testing.T) {
 		t.Fatalf("factory called %d time(s), want exactly 1 for the first resolving request", n)
 	}
 
-	// AND IT IS NOT PROBED AGAIN ON SUBSEQUENT REQUESTS. Success is cached in the service; the
-	// discoverer has its own model TTL behind that. Re-probing per request would be waste, and on
-	// Windows it would hit the registry every time.
+	// AND IT IS NOT PROBED AGAIN ON SUBSEQUENT REQUESTS.
 	_, _ = svc.ListOpenCodeModels(context.Background(), connect.NewRequest(&apiv1.ListOpenCodeModelsRequest{}))
 	_, _ = svc.ListOpenCodeModels(context.Background(), connect.NewRequest(&apiv1.ListOpenCodeModelsRequest{}))
 	if n := f.count(); n != 1 {

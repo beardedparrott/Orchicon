@@ -1,12 +1,6 @@
 package instancectl
 
 // imports_test.go — the contract stays a LEAF, asserted mechanically.
-//
-// WHY THIS MATTERS HERE SPECIFICALLY. This package is imported by the Wails desktop shell and by cmd/orch
-// (the TUI). If it could import the api/db/server layers, then (a) the desktop would link the plane's
-// HTTP server, and (b) a second implementation of an operation could grow here — which is the exact
-// divergence this package exists to remove. The permitted set is deliberately the same shape
-// internal/planebind already enforces.
 
 import (
 	"go/parser"
@@ -21,9 +15,7 @@ var permittedInternal = map[string]bool{
 	"github.com/beardedparrott/orchicon/internal/planecontrol": true,
 	"github.com/beardedparrott/orchicon/internal/instance":     true,
 	// internal/procwin is a STDLIB-ONLY LEAF that suppresses a console window on Windows (see that
-	// package's header). It cannot reach the plane's HTTP server, and it implements no operation, so it
-	// adds none of the risk this test exists to bound — a child spawned from the desktop shell must not
-	// flash a command prompt, and that rule has now been reported three times.
+	// package's header).
 	"github.com/beardedparrott/orchicon/internal/procwin": true,
 }
 

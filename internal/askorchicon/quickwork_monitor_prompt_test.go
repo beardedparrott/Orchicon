@@ -1,23 +1,14 @@
 package askorchicon
 
 // quickwork_monitor_prompt_test.go — RUN-MONITORING DISCIPLINE IS IN THE PERSONA.
-//
-// Two real Quick Work dispatches reported a wedged run as healthy: the agent
-// watched TokenUsage, saw a large frozen number, and narrated poll after poll as
-// "still mid-turn" while HealthState had already gone to stalled — and its first
-// error was never reported until the run had ended. The class lives in the
-// prompt, so the rule is pinned here, in the same content-assertion style as the
-// neighbouring prompt tests, so a future edit cannot quietly drop it.
 
 import (
 	"strings"
 	"testing"
 )
 
-// The persona must teach the agent which signal says a run is ALIVE, that
-// staleness is the agent's own call to make, that an error is reported the
-// moment it appears, and that the run's own words matter more than its
-// counters — plus why an early commit is what makes work survive.
+// The persona must teach the agent which signal says a run is ALIVE, that staleness is the agent's
+// own call to make, that an error is reported the moment it appears.
 func TestQuickWorkPromptEnforcesRunMonitoring(t *testing.T) {
 	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), NewToolRegistry(nil, nil, nil), "")
 	for _, want := range []string{
@@ -43,9 +34,8 @@ func TestQuickWorkPromptEnforcesRunMonitoring(t *testing.T) {
 	}
 }
 
-// The dispatch-brief contract must require each worker brief to carry the rules
-// that stop a dead session from costing the work: commit before verify, an
-// explicit shell timeout, a narrowed build/test scope, and non-interactive gh.
+// The dispatch-brief contract must require each worker brief to carry the rules that stop a dead
+// session from costing the work: commit before verify, an explicit shell timeout.
 func TestQuickWorkDispatchBriefsCarryTheSurvivalRules(t *testing.T) {
 	var b strings.Builder
 	writeQuickWorkDispatchRules(&b)

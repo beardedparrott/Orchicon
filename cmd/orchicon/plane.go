@@ -1,15 +1,6 @@
 package main
 
 // plane.go — `orchicon plane <status|start|stop|restart> [instance]`.
-//
-// THIS IS THE REFERENCE CALLER of the shared local plane-control layer (internal/planecontrol), and the entry
-// point the shell launchers invoke — `scripts/container.sh` delegates its plane_start/plane_stop/plane_status
-// here whenever a built binary exists, so the shell stops being a second implementation of the lifecycle.
-//
-// IT CONTAINS NO LIFECYCLE LOGIC: argv parsing and printing only. A second copy of "how do we stop a plane,
-// and what do we do when we cannot identify it" is exactly what the shared layer exists to prevent. Richer
-// CLI UX (flags, JSON output, richer help) belongs to the CLI-verb work item; this is the mechanism's front
-// door, and it is deliberately the same mechanism the TUI and the desktop app call.
 
 import (
 	"fmt"
@@ -24,10 +15,8 @@ func runPlane(args []string) error {
 			env("ORCHICON_INSTANCE", "dev"))
 	}
 	verb := args[0]
-	// THE INSTANCE COMES FROM THE SHARED PARSER, so `plane start prod` and
-	// `plane start --instance prod` both work and an unknown flag is refused rather than
-	// read as an instance name. It also applies the path guard, which used to live here as
-	// its own copy.
+	// THE INSTANCE COMES FROM THE SHARED PARSER, so `plane start prod` and `plane start --instance
+	// prod` both work and an unknown flag is refused rather than read as an instance name.
 	instance, err := parseInstanceTarget(args[1:], env("ORCHICON_INSTANCE", "dev"))
 	if err != nil {
 		return err

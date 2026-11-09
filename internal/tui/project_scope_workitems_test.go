@@ -1,16 +1,6 @@
 package tui
 
 // project_scope_workitems_test.go — THE SHELL→SCREEN→QUERY PATH, END TO END.
-//
-// This is the test that was missing, and its absence is why a broken feature shipped looking finished: the
-// earlier tests proved that `work.Model.SetActiveProject` stores a value and that `fetchWorkItems` puts the
-// stored value in the request. Neither of those touches the question the operator actually asked — does the
-// SHELL tell the screen which project is active, at the moment the scope is set, and does the resulting page
-// carry it?
-//
-// MEASURED CONSEQUENCE OF THE GAP: the operator ran the TUI with the scope showing "WorkerTesting" (7 work
-// items) and saw 15 epics spanning every project in the tenant. The screen was there, the filter field was
-// there, and nothing connected them.
 
 import (
 	"context"
@@ -62,11 +52,8 @@ func (p *projectFilterPlane) sawProject() []string {
 	return append([]string(nil), p.project...)
 }
 
-// THE SCOPE REACHES THE WORK SCREEN AND THE QUERY, through nothing but the shell's own machinery: the project
-// list lands, the launch directory resolves to WorkerTesting, and the console shows WorkerTesting's items.
-//
-// THIS TEST FAILS WITHOUT THE WIRING. Measured by reverting pushProjectScope to a no-op: the plane is asked for
-// project_id "" — every project — while the status line says "scope: WorkerTesting".
+// THE SCOPE REACHES THE WORK SCREEN AND THE QUERY, through nothing but the shell's own machinery:
+// the project list lands, the launch directory resolves to WorkerTesting.
 func TestTheShellPushesTheScopeIntoTheWorkItemsQuery(t *testing.T) {
 	plane := &projectFilterPlane{}
 	mux := http.NewServeMux()
@@ -111,9 +98,7 @@ func TestTheShellPushesTheScopeIntoTheWorkItemsQuery(t *testing.T) {
 	}
 }
 
-// AND SWITCHING THE WORKSPACE RE-FILTERS IMMEDIATELY, without waiting for an unrelated message. setProjectScope is
-// called from key and mouse handlers that cannot return a command, so it stages one — and the staging has to be
-// drained for the switch to take effect.
+// AND SWITCHING THE WORKSPACE RE-FILTERS IMMEDIATELY, without waiting for an unrelated message.
 func TestSwitchingTheWorkspaceRefiltersTheWorkItems(t *testing.T) {
 	plane := &projectFilterPlane{}
 	mux := http.NewServeMux()
@@ -150,16 +135,8 @@ func TestSwitchingTheWorkspaceRefiltersTheWorkItems(t *testing.T) {
 	}
 }
 
-// THE SCOPE REACHES THE SCREEN IN THE SAME CYCLE IT IS SET — no Update in between.
-//
-// This test exists because the end-to-end one above does NOT isolate this property: it drives commands back through
-// App.Update, which re-runs rebindScreens, so the filter would be applied by the NEXT message even without the push.
-// That "eventually" path is not good enough on its own — rebindScreens runs at the TOP of dispatch, before
-// onRailProjects applies the scope in the same cycle, so the screen keeps the previous project's rows (or none)
-// until some unrelated message arrives. In a quiet session that is a visible flash of the wrong project's work
-// items, which is exactly the symptom reported.
-//
-// So: run ONLY the command onRailProjects returns, and nothing else.
+// THE SCOPE REACHES THE SCREEN IN THE SAME CYCLE IT IS SET — no Update in between. So: run ONLY the
+// command onRailProjects returns, and nothing else.
 func TestTheScopeReachesTheScreenWithoutAnotherMessage(t *testing.T) {
 	plane := &projectFilterPlane{}
 	mux := http.NewServeMux()
@@ -195,10 +172,8 @@ func TestTheScopeReachesTheScreenWithoutAnotherMessage(t *testing.T) {
 	}
 }
 
-// runCtxNoUpdate runs a command and its batched members WITHOUT feeding anything back through App.Update.
-//
-// It is the isolation this file needs: the shell's Update chain re-runs rebindScreens, which pushes the scope
-// anyway, so a test that goes through Update cannot tell whether the caller pushed it eagerly.
+// runCtxNoUpdate runs a command and its batched members WITHOUT feeding anything back through
+// App.Update.
 func runCtxNoUpdate(t *testing.T, m *App, cmd tea.Cmd) {
 	t.Helper()
 	queue := []tea.Cmd{cmd}

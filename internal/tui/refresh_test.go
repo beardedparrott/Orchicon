@@ -1,20 +1,7 @@
 package tui
 
-// refresh_test.go — the ROLLING REFRESH WINDOW.
-//
-// The operator: "when you send a message, nothing happens unless you move away from the execution and
-// then come back ... We need this to be refreshing every few seconds. That also brings up a good point
-// about all of the other screens. Are we currently implementing a rolling refresh window? If not we
-// should do that."
-//
-// The answer was no: before this, the ONLY timer in the TUI was the clipboard toast, and a pane could
-// repaint only on a NATS event poke — which five screens subscribed to and which the follow-up path
-// does not emit at all. These tests pin the window itself: that it exists, that it re-arms, that it
-// follows the operator's tab, that it does NOT disrupt an open form, and that it reaches the screen.
-//
-// They drive the SHELL's own dispatch, because the whole point of the feature is that the shell
-// owns the trigger — a test that called a screen's refresh directly would prove nothing about
-// whether anything ever asks it to.
+// If not we should do that." The answer was no: before this, the ONLY timer in the TUI was the
+// clipboard toast, and a pane could repaint only on a NATS event poke.
 
 import (
 	"testing"
@@ -60,10 +47,6 @@ func refreshProbeApp(t *testing.T) (*App, *refreshProbeScreen, *refreshProbeScre
 }
 
 // THE WINDOW EXISTS AND RE-ARMS: a tick refreshes the screen and produces another tick.
-//
-// Re-arming is the property that makes it a window rather than a one-shot, and it is the thing a
-// naive implementation gets wrong (a tick that fires once and never re-arms looks identical on the
-// first pass and is dead for the rest of the session).
 func TestRefreshTickRefreshesAndReArms(t *testing.T) {
 	brisk(t)
 	m, a, _ := refreshProbeApp(t)
@@ -188,8 +171,7 @@ func TestRefusingScreenDoesNotEndTheWindow(t *testing.T) {
 }
 
 // EVERY kit2 screen is refreshable WITHOUT each one writing the method: Base is embedded, so the
-// hook is promoted. This is the property that makes the window cover "all of the other screens"
-// rather than only the ones someone remembered to wire.
+// hook is promoted.
 func TestKit2ScreensAreRefreshableByEmbedding(t *testing.T) {
 	// The assertion the shell makes (tui.Refresher). A type that embeds kit2.Base — which every screen
 	// Model does — satisfies it with no method of its own.
@@ -209,9 +191,7 @@ type kit2BaseProbe struct {
 	kit2.Base
 }
 
-// brisk shortens the window for the duration of one test. The re-arm chain genuinely waits (tea.Tick
-// is a real timer), and five seconds per test is a cost the feature does not justify — the TIMING is
-// not what is under test, the re-arm, the generation and the guards are.
+// brisk shortens the window for the duration of one test.
 func brisk(t *testing.T) {
 	t.Helper()
 	prev := refreshPeriod

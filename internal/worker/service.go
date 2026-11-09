@@ -47,26 +47,20 @@ func New(pool *db.Pool, log *slog.Logger) *Service {
 	return &Service{pool: pool, log: log}
 }
 
-// SetAdapterKinds wires the Dispatcher's registered adapter kinds for
-// explicit-adapter-input validation (ADR-0005 D2). Called by the server
-// layer after construction; the package-level seam mirrors
-// SetModelRefRegistry.
+// SetAdapterKinds wires the Dispatcher's registered adapter kinds for explicit-adapter-input
+// validation (ADR-0005 D2).
 func (s *Service) SetAdapterKinds(fn func() []string) {
 	SetAdapterKinds(fn)
 }
 
-// SetCustomProviderIDs wires the tenant custom-provider source for
-// model-ref validation (ADR-0006 D6). Called by the server layer after
-// construction; the package-level seam mirrors SetAdapterKinds.
+// SetCustomProviderIDs wires the tenant custom-provider source for model-ref validation (ADR-0006
+// D6).
 func (s *Service) SetCustomProviderIDs(fn func(ctx context.Context, tenantID string) ([]string, error)) {
 	SetCustomProviderIDs(fn)
 }
 
-// CreateWorker validates input, inserts the worker header + its first
-// draft version, and enqueues a worker.created event — all in one
-// tenant-scoped transaction. The transactional create lives in
-// CreateWorkerTx (create.go) so the AskOrchicon tool path shares the
-// exact same implementation (one create core, no drift).
+// CreateWorker validates input, inserts the worker header + its first draft version, and enqueues a
+// worker.created event — all in one tenant-scoped transaction.
 func (s *Service) CreateWorker(ctx context.Context, req *connect.Request[apiv1.CreateWorkerRequest]) (*connect.Response[apiv1.CreateWorkerResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
@@ -180,9 +174,7 @@ func (s *Service) PublishWorkerVersion(ctx context.Context, req *connect.Request
 	}), nil
 }
 
-// DeprecateWorker transitions a published Worker to deprecated (docs/05
-// §4). Still dispatchable for in-flight Workflows; no new Workflows may
-// bind.
+// DeprecateWorker transitions a published Worker to deprecated (docs/05 §4).
 func (s *Service) DeprecateWorker(ctx context.Context, req *connect.Request[apiv1.DeprecateWorkerRequest]) (*connect.Response[apiv1.DeprecateWorkerResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -251,10 +243,8 @@ func (s *Service) RetireWorker(ctx context.Context, req *connect.Request[apiv1.R
 	if current.Status != domain.WorkerDeprecated {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker must be deprecated to retire (status=%s)", current.Status))
 	}
-	// docs/05 §4: "A Worker may be retired only when zero active
-	// executions pin its latest published version." Enforcement of the
-	// active-execution check arrives with the scheduler (Phase 5); for
-	// now the lifecycle transition is gated on status only.
+	// docs/05 §4: "A Worker may be retired only when zero active executions pin its latest published
+	// version." Enforcement of the active-execution check arrives with the scheduler (Phase 5).
 	updated, err := db.UpdateWorkerStatus(ctx, ttx.Tx, tenantID, req.Msg.WorkerId, current.Version, domain.WorkerRetired)
 	if err != nil {
 		return nil, mapDBError(err)
@@ -317,15 +307,8 @@ func (s *Service) UpdateWorker(ctx context.Context, req *connect.Request[apiv1.U
 		}
 		fields.Purpose = &purpose
 	}
-	// Header text is writable on any status except RETIRED, and it may ride in
-	// the SAME request as the role binding. It was draft-only until now, which
-	// — because workers.status never returns to draft — made a worker's name,
-	// purpose and description permanent at first publish (104 workers on the dev
-	// tenant). See db.UpdateWorker for the full reasoning.
-	//
-	// This check exists so a retired worker gets a CLEAR error. Without it the
-	// request would reach the DB gate, match no row, and surface as
-	// "worker not found" — telling the operator the worker does not exist.
+	// Header text is writable on any status except RETIRED, and it may ride in the SAME request as the
+	// role binding.
 	if current.Status == domain.WorkerRetired && (msg.Name != "" || msg.Description != "" || msg.Purpose != "") {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("a retired worker's name, purpose and description cannot be changed"))
@@ -473,9 +456,7 @@ func (s *Service) RevertWorkerVersionToDraft(ctx context.Context, req *connect.R
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	defer ttx.Rollback(ctx)
-	// The request only carries the version_id; resolve the owning worker
-	// for the audit target. RevertWorkerVersionToDraft updates by version
-	// id only.
+	// The request only carries the version_id; resolve the owning worker for the audit target.
 	workerID, err := db.GetWorkerIDForVersion(ctx, ttx.Tx, tenantID, req.Msg.VersionId)
 	if err != nil {
 		return nil, mapDBError(err)
@@ -529,10 +510,8 @@ func (s *Service) BulkUpdateWorkerModel(ctx context.Context, req *connect.Reques
 	if len(req.Msg.WorkerIds) > maxBulkUpdateWorkerModel {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("max %d workers per batch", maxBulkUpdateWorkerModel))
 	}
-	// Structural bounds only here: grammar validation is per-worker inside
-	// applyModelChange (the identical-ref no-op must be judged against each
-	// worker's CURRENT ref — a batch re-save of workers that already carry
-	// a legacy ref is a no-op for them, not a validation failure).
+	// Structural bounds only here: grammar validation is per-worker inside applyModelChange (the
+	// identical-ref no-op must be judged against each worker's CURRENT ref.
 	modelRef := strings.TrimSpace(req.Msg.ModelRef)
 	if modelRef == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("model_ref must not be empty"))
@@ -548,10 +527,7 @@ func (s *Service) BulkUpdateWorkerModel(ctx context.Context, req *connect.Reques
 		}
 		result, err := s.bulkUpdateOneWorker(ctx, tenantID, id, modelRef)
 		if err != nil {
-			// Per-worker logic never returns a hard error — it converts
-			// failures into an Error outcome. This branch is a defensive
-			// fallback so a future change cannot accidentally abort the
-			// whole batch.
+			// Per-worker logic never returns a hard error — it converts failures into an Error outcome.
 			s.log.Warn("bulk_update_worker_model: per-worker outcome errored", "worker_id", id, "error", err)
 			resp.Results = append(resp.Results, &apiv1.BulkUpdateWorkerModelResult{
 				WorkerId: id,
@@ -586,9 +562,8 @@ func (s *Service) BulkUpdateWorkerModel(ctx context.Context, req *connect.Reques
 	return connect.NewResponse(resp), nil
 }
 
-// bulkUpdateOneWorker runs the per-worker update-or-revert-and-publish
-// flow in its own tenant transaction. Failures are converted into
-// per-worker outcomes (Skipped / Error) so the batch keeps going.
+// bulkUpdateOneWorker runs the per-worker update-or-revert-and-publish flow in its own tenant
+// transaction.
 func (s *Service) bulkUpdateOneWorker(ctx context.Context, tenantID, workerID, modelRef string) (*apiv1.BulkUpdateWorkerModelResult, error) {
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -637,25 +612,17 @@ func (s *Service) bulkUpdateOneWorker(ctx context.Context, tenantID, workerID, m
 	}, nil
 }
 
-// applyModelChange applies the per-version update+publish flow:
-//   - draft: set model_ref on the row in place, then publish.
-//   - published: revert to draft, set model_ref, then republish.
-//
-// In both branches the version number is preserved and UpdateWorkerCurrentVersion
-// is called so current_version follows the latest published version (mirrors
-// PublishWorkerVersion).
+// applyModelChange applies the per-version update+publish flow: - draft: set model_ref on the row
+// in place, then publish.
 func (s *Service) applyModelChange(ctx context.Context, tx pgx.Tx, worker db.WorkerRow, latest db.WorkerVersionRow, modelRef string) (db.WorkerVersionRow, error) {
-	// Validation is per-worker here (not at the bulk request level): an
-	// IDENTICAL re-save is a pure no-op — no grammar re-validation (legacy
-	// refs re-save cleanly, ADR-0004 D5), no adapter-change gate. A
-	// CHANGED ref is fully validated as a fresh selection.
+	// Validation is per-worker here (not at the bulk request level): an IDENTICAL re-save is a pure
+	// no-op — no grammar re-validation (legacy refs re-save cleanly, ADR-0004 D5), no adapter-change
+	// gate.
 	if strings.TrimSpace(latest.ModelRef) != strings.TrimSpace(modelRef) {
 		if _, err := validateModelRef(ctx, worker.TenantID, modelRef); err != nil {
 			return db.WorkerVersionRow{}, err
 		}
-		// ADR-0005 D4: an adapter CHANGE must land on a provider/model pair
-		// valid for the NEW adapter. A violation becomes this worker's Error
-		// outcome (the batch keeps going — partial-success contract).
+		// ADR-0005 D4: an adapter CHANGE must land on a provider/model pair valid for the NEW adapter.
 		if err := validateAdapterChange(ctx, worker.TenantID, latest.ModelRef, modelRef); err != nil {
 			return db.WorkerVersionRow{}, err
 		}
@@ -748,9 +715,6 @@ func skippedOutcome(workerID string, reason apiv1.BulkUpdateWorkerModelSkipReaso
 }
 
 // recordBulkAudit writes a single audit row that ties the batch together.
-// It runs in its own (very small) tenant transaction so a failure here
-// never rolls back the per-worker work — the per-mutation audit rows
-// already form the granular trail.
 func (s *Service) recordBulkAudit(ctx context.Context, tenantID, modelRef string, ids []string, resp *apiv1.BulkUpdateWorkerModelResponse) error {
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -847,11 +811,7 @@ func (s *Service) ListWorkers(ctx context.Context, req *connect.Request[apiv1.Li
 		// Keep deprecated workers populated for wire-compat during rollout.
 		resp.Workers = append(resp.Workers, item.Worker)
 	}
-	// A TOKEN ONLY WHEN THE PAGE WAS FULL — i.e. when there might be more. This used to be "whenever any
-	// row came back", which handed the client a token on the LAST page too: every list load paid an extra
-	// round trip to be told there was nothing left, and any client that trusted the token without
-	// checking emptiness would walk for ever. It was not the cause of the duplicated rows (a mismatched
-	// cursor was), but it is the same mistake in miniature: a signal that does not mean what it says.
+	// A TOKEN ONLY WHEN THE PAGE WAS FULL — i.e. when there might be more.
 	if len(rows) == pageSize {
 		resp.NextPageToken = rows[len(rows)-1].ID
 	}
@@ -916,9 +876,6 @@ func (s *Service) GetWorkerVersion(ctx context.Context, req *connect.Request[api
 }
 
 // UpdateWorkerVersion updates the mutable fields of a draft WorkerVersion.
-// Only versions with status='draft' may be updated; published versions are
-// immutable. The service reads the current version first, then applies
-// only the fields set in the request, then writes back the merged row.
 func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[apiv1.UpdateWorkerVersionRequest]) (*connect.Response[apiv1.UpdateWorkerVersionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -939,15 +896,7 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// A draft is edited in place. republish EXTENDS the editable set to a
-	// PUBLISHED version, which is what makes "edit this worker and save"
-	// one operation instead of the manual revert → save → publish chain.
-	// The revert happens inside THIS transaction, so the intermediate draft
-	// is never observable by another connection and any failure after it
-	// rolls back to published — a cancelled or failed edit cannot strand the
-	// worker in draft. A deprecated version is not revertible and stays
-	// rejected, with the original message so the draft-only contract is
-	// unchanged for callers that did not ask for republish.
+	// A draft is edited in place.
 	if current.Status != domain.WorkerVersionDraft {
 		if !msg.Republish || current.Status != domain.WorkerVersionPublished {
 			return nil, connect.NewError(connect.CodeFailedPrecondition,
@@ -961,13 +910,8 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	// Build merged row: apply only non-nil proto fields over current.
 	merged := current
 	if msg.ModelRef != nil || msg.Adapter != nil {
-		// ADR-0005 D2: the explicit adapter input is a consistency
-		// affordance — it must be a registered kind and must agree with
-		// the resulting ref's adapter segment. It stays EMPTY unless the
-		// caller explicitly set it (a model_ref-only change — the picker's
-		// save path — never does), so the agreement check below only fires
-		// on an explicit selection and a ref-only adapter change is judged
-		// solely by the adapter-change validation above.
+		// ADR-0005 D2: the explicit adapter input is a consistency affordance — it must be a registered
+		// kind and must agree with the resulting ref's adapter segment.
 		var adapterSel string
 		if msg.Adapter != nil {
 			sel, err := validateAdapterInput(*msg.Adapter)
@@ -977,29 +921,21 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 			adapterSel = sel
 		}
 		if msg.ModelRef != nil {
-			// Identical re-save is a no-op (validateModelRefForUpdate);
-			// a changed ref is fully validated, then adapter-change
-			// validation runs against the merged value.
+			// Identical re-save is a no-op (validateModelRefForUpdate); a changed ref is fully validated, then
+			// adapter-change validation runs against the merged value.
 			modelRef, err := validateModelRefForUpdate(ctx, tenantID, current.ModelRef, *msg.ModelRef)
 			if err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
 			merged.ModelRef = modelRef
-			// ADR-0005 D4: an adapter CHANGE (parsed segment differs from
-			// the current ref's) must land on a provider/model pair valid
-			// for the NEW adapter — provider known for the kind, model
-			// non-empty (the parser enforces segment non-emptiness).
-			// Unchanged-adapter re-saves keep the ADR-0004 D5 semantics
-			// verbatim.
+			// ADR-0005 D4: an adapter CHANGE (parsed segment differs from the current ref's) must land on a
+			// provider/model pair valid for the NEW adapter — provider known for the kind.
 			if err := validateAdapterChange(ctx, tenantID, current.ModelRef, merged.ModelRef); err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
 		}
-		// Agreement runs against the MERGED ref so an explicit adapter
-		// with an unset ref checks against the version's current ref, and
-		// a set+set pair checks against the incoming pair. An empty
-		// adapter (input not sent) is a no-op — the ref alone defines the
-		// selection.
+		// Agreement runs against the MERGED ref so an explicit adapter with an unset ref checks against the
+		// version's current ref, and a set+set pair checks against the incoming pair.
 		if err := validateAdapterRefAgreement(adapterSel, merged.ModelRef); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -1028,10 +964,8 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	if msg.AgentsMd != nil {
 		merged.AgentsMD = *msg.AgentsMd
 	}
-	// Structured fields are the source of truth: when any changed, recompose
-	// the stored system_prompt from them so the DB column matches dispatch.
-	// A legacy client that only sends system_prompt leaves the structured
-	// fields untouched and the raw prompt is stored as-is.
+	// Structured fields are the source of truth: when any changed, recompose the stored system_prompt
+	// from them so the DB column matches dispatch.
 	if msg.Role != nil || msg.Skills != nil || msg.Behavior != nil || msg.AgentsMd != nil {
 		if merged.Role != "" || merged.Skills != "" || merged.Behavior != "" || merged.AgentsMD != "" {
 			merged.SystemPrompt = composeWorkerPrompt(merged)
@@ -1102,9 +1036,8 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	}), nil
 }
 
-// CreateWorkerVersion creates a new draft version for a Worker, copying
-// fields from the latest published version. The new version starts as a
-// draft. Optional fields in the request override the source values.
+// CreateWorkerVersion creates a new draft version for a Worker, copying fields from the latest
+// published version.
 func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[apiv1.CreateWorkerVersionRequest]) (*connect.Response[apiv1.CreateWorkerVersionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1161,11 +1094,8 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 		Labels:              source.Labels,
 	}
 	if msg.ModelRef != nil || msg.Adapter != nil {
-		// ADR-0005 D2: explicit adapter input must be a registered kind and
-		// agree with the resulting ref's adapter segment (the source ref
-		// when model_ref is unset). It stays EMPTY unless the caller
-		// explicitly set it, so a model_ref-only adapter change — the
-		// picker's save path — is judged solely by validateAdapterChange.
+		// ADR-0005 D2: explicit adapter input must be a registered kind and agree with the resulting ref's
+		// adapter segment (the source ref when model_ref is unset).
 		var adapterSel string
 		if msg.Adapter != nil {
 			sel, err := validateAdapterInput(*msg.Adapter)
@@ -1186,9 +1116,7 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
 		}
-		// Agreement runs against the MERGED ref (the source ref when
-		// model_ref is unset). An empty adapter (input not sent) is a
-		// no-op — the ref alone defines the selection.
+		// Agreement runs against the MERGED ref (the source ref when model_ref is unset).
 		if err := validateAdapterRefAgreement(adapterSel, newVer.ModelRef); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -1266,12 +1194,7 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 		nil, audit.Snapshot(workerVersionAuditSnapshot(created))); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit worker.version_created: %w", err))
 	}
-	// publish makes the new version live in the SAME transaction. Without it
-	// a caller that wanted a live version had to follow with
-	// PublishWorkerVersion, and a failure between the two calls left an
-	// unpublished draft behind — the exact state a plain "new version" save
-	// must not create. The version number advances as usual and
-	// current_version follows the newly published version.
+	// publish makes the new version live in the SAME transaction.
 	final := created
 	if msg.Publish {
 		published, _, err := publishVersionInTx(ctx, ttx.Tx, tenantID, msg.WorkerId, created.Version)
@@ -1293,22 +1216,8 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 	}), nil
 }
 
-// publishVersionInTx publishes a draft version and makes it the worker's
-// current version, inside the CALLER's transaction: the same three writes
-// PublishWorkerVersion performs (publish the row, advance current_version, emit
-// the worker.published event), so every path that publishes emits one identical
-// event and advances current_version the same way. Sharing it is what keeps the
-// republish/publish saves from becoming a fourth hand-rolled copy of this
-// sequence — the copies are how the paths drift apart.
-//
-// It returns both rows because the callers need different halves: the published
-// VERSION for the response and audit snapshot, the updated WORKER for the
-// worker.published payload and the header projection. Reading the header first
-// is required either way — UpdateWorkerCurrentVersion is optimistic on its
-// `version` CAS field, exactly as PublishWorkerVersion does it.
-//
-// Errors are returned raw so each caller maps them in its own vocabulary
-// (mapDBError for the RPC paths).
+// publishVersionInTx publishes a draft version and makes it the worker's current version, inside
+// the CALLER's transaction: the same three writes PublishWorkerVersion performs (publish the row.
 func publishVersionInTx(ctx context.Context, tx pgx.Tx, tenantID, workerID string, version int) (db.WorkerVersionRow, db.WorkerRow, error) {
 	worker, err := db.GetWorker(ctx, tx, tenantID, workerID)
 	if err != nil {
@@ -1328,9 +1237,7 @@ func publishVersionInTx(ctx context.Context, tx pgx.Tx, tenantID, workerID strin
 	return published, updatedWorker, nil
 }
 
-// AcquireEditLock acquires an exclusive edit lock on a Worker for the
-// visual editor (docs/07 §3.3). Returns acquired=false if already held
-// by another actor.
+// AcquireEditLock acquires an exclusive edit lock on a Worker for the visual editor (docs/07 §3.3).
 func (s *Service) AcquireEditLock(ctx context.Context, req *connect.Request[apiv1.AcquireEditLockRequest]) (*connect.Response[apiv1.AcquireEditLockResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1427,9 +1334,8 @@ func (s *Service) GetEditLock(ctx context.Context, req *connect.Request[apiv1.Ge
 
 // --- helpers ---------------------------------------------------------------
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -1456,9 +1362,7 @@ func workerAuditSnapshot(w db.WorkerRow) map[string]any {
 	}
 }
 
-// workerVersionAuditSnapshot is the non-secret projection of a worker
-// version for the audit trail. The composed system_prompt can embed
-// secrets (workers carry repo secrets); exclude it from snapshots.
+// workerVersionAuditSnapshot is the non-secret projection of a worker version for the audit trail.
 func workerVersionAuditSnapshot(v db.WorkerVersionRow) map[string]any {
 	return map[string]any{
 		"id":        v.ID,
@@ -1469,9 +1373,8 @@ func workerVersionAuditSnapshot(v db.WorkerVersionRow) map[string]any {
 	}
 }
 
-// enqueueWorkerEvent builds a worker event envelope, encodes it as
-// JSON, and enqueues it in the outbox within the current transaction
-// (mirrors internal/project/service.go).
+// enqueueWorkerEvent builds a worker event envelope, encodes it as JSON, and enqueues it in the
+// outbox within the current transaction (mirrors internal/project/service.go).
 func enqueueWorkerEvent(ctx context.Context, tx pgx.Tx, eventType string, w db.WorkerRow, v db.WorkerVersionRow) error {
 	payload, err := buildEventPayload(eventType, w, v)
 	if err != nil {
@@ -1524,9 +1427,7 @@ func mapDBError(err error) error {
 	return connect.NewError(connect.CodeInternal, err)
 }
 
-// uniqueSlug returns a tenant-unique slug for the requested slug, appending
-// "-2", "-3", ... until the workers_tenant_slug_idx constraint would accept
-// it. Guards clones and re-created workers against slug collisions.
+// uniqueSlug returns a tenant-unique slug for the requested slug, appending "-2", "-3", ...
 func uniqueSlug(ctx context.Context, tx pgx.Tx, tenantID, slug string) (string, error) {
 	if slug == "" {
 		return "", nil
@@ -1619,9 +1520,7 @@ func workerRowToProto(w db.WorkerRow) *apiv1.Worker {
 	}
 }
 
-// versionRowToProto maps a db.WorkerVersionRow to the generated proto
-// WorkerVersion. JSON []byte fields are converted to strings (the proto
-// uses string for JSON-typed fields).
+// versionRowToProto maps a db.WorkerVersionRow to the generated proto WorkerVersion.
 func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 	pv := &apiv1.WorkerVersion{
 		Id:           v.ID,
@@ -1655,9 +1554,8 @@ func versionRowToProto(v db.WorkerVersionRow) *apiv1.WorkerVersion {
 	return pv
 }
 
-// skillFilesFromJSON best-effort decodes the skill_files JSONB column into the
-// proto's repeated string field. A corrupt payload degrades to empty rather than
-// failing the read (mirrors contextFilesFromJSONOrEmpty in internal/project).
+// skillFilesFromJSON best-effort decodes the skill_files JSONB column into the proto's repeated
+// string field.
 func skillFilesFromJSON(data []byte) []string {
 	if len(data) == 0 {
 		return nil

@@ -34,11 +34,6 @@ import (
 type change struct{ tenant, name string }
 
 // recorder holds the hook's calls.
-//
-// A POINTER, DELIBERATELY: returning a bare []change would copy the slice header
-// at return time, so the closure's later appends would update the function's
-// local and leave the caller's copy nil — the test would read "no notifications"
-// while they were firing correctly.
 type recorder struct{ seen []change }
 
 func (r *recorder) hook(_ context.Context, tenantID, name string) {
@@ -89,9 +84,8 @@ func rotationService(t *testing.T) (*secrets.Service, *recorder) {
 	return svc, rec
 }
 
-// TestRotatedSecretFiresTheInvalidationHook is the regression: create then update
-// must each notify with the NAME, so the provider cache for OPENCODE_API_KEY is
-// dropped and the next turn uses the new key.
+// TestRotatedSecretFiresTheInvalidationHook is the regression: create then update must each notify
+// with the NAME, so the provider cache for OPENCODE_API_KEY is dropped and the next turn uses.
 func TestRotatedSecretFiresTheInvalidationHook(t *testing.T) {
 	svc, rec := rotationService(t)
 	ctx := context.Background()

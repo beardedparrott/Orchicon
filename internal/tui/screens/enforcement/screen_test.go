@@ -19,10 +19,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 )
 
-// fakePlane is one Connect handler set serving Policy + Approval + Recovery
-// (the three services the enforcement screen writes to). It records every
-// write request and mutates its own list state so the screen's post-write
-// reconciliation is observable.
+// fakePlane is one Connect handler set serving Policy + Approval + Recovery (the three services the
+// enforcement screen writes to).
 type fakePlane struct {
 	apiv1connect.UnimplementedPolicyServiceHandler
 	apiv1connect.UnimplementedApprovalServiceHandler
@@ -311,10 +309,8 @@ func sampleApproval(id string) *apiv1.ApprovalItem {
 	}
 }
 
-// TestApprovalApproveRejectReconcile is acceptance criterion 1: approve and
-// reject a pending step approval from the TUI (RPC asserted), the list
-// reconciles afterwards, and the detail carries the upstream + policy
-// context.
+// TestApprovalApproveRejectReconcile is acceptance criterion 1: approve and reject a pending step
+// approval from the TUI (RPC asserted), the list reconciles afterwards.
 func TestApprovalApproveRejectReconcile(t *testing.T) {
 	f := &fakePlane{
 		approvals: []*apiv1.ApprovalItem{sampleApproval("sr-1"), sampleApproval("sr-2")},
@@ -422,9 +418,8 @@ func TestApprovalApproveRejectReconcile(t *testing.T) {
 	}
 }
 
-// TestApprovalWriteDisabledWhileInFlight pins the idempotence guard: a
-// second press while the first write is in flight must not issue a second
-// RPC.
+// TestApprovalWriteDisabledWhileInFlight pins the idempotence guard: a second press while the first
+// write is in flight must not issue a second RPC.
 func TestApprovalWriteDisabledWhileInFlight(t *testing.T) {
 	f := &fakePlane{approvals: []*apiv1.ApprovalItem{sampleApproval("sr-1")}}
 	m, _ := newHarness(t, f)
@@ -446,12 +441,8 @@ func TestApprovalWriteDisabledWhileInFlight(t *testing.T) {
 	}
 }
 
-// TestRefusalsSurfaceVerbatimInDock is acceptance criterion 4: a plane refusal reaches the
-// dock verbatim — never a silent no-op.
-//
-// The POLICY half of this test went with the policy editor (policies are "coming soon", so
-// there is no create to refuse). The property is still covered by the approval path, which is
-// the surface the operator actually uses.
+// TestRefusalsSurfaceVerbatimInDock is acceptance criterion 4: a plane refusal reaches the dock
+// verbatim — never a silent no-op.
 func TestRefusalsSurfaceVerbatimInDock(t *testing.T) {
 	f := &fakePlane{
 		approvals:  []*apiv1.ApprovalItem{sampleApproval("sr-1")},
@@ -483,9 +474,8 @@ func TestRefusalsSurfaceVerbatimInDock(t *testing.T) {
 	}
 }
 
-// The POLICIES pane is a "coming soon" placeholder: it must list nothing, bind no chords and
-// SAY why. The operator: "I would like both the TUI and the GUI to just say 'Coming
-// soon...' for now."
+// The POLICIES pane is a "coming soon" placeholder: it must list nothing, bind no chords and SAY
+// why.
 func TestPoliciesPaneIsAComingSoonPlaceholder(t *testing.T) {
 	// The plane HAS policies — the pane must still show none, because the surface is not
 	// wired up. That is the difference between "empty" and "not available".
@@ -515,9 +505,7 @@ func TestPoliciesPaneIsAComingSoonPlaceholder(t *testing.T) {
 	}
 }
 
-// DECISIONS was cruft with no GUI counterpart and must be gone as a SOURCE. Its data is still
-// rendered where it belongs — as policy context on an approval — which this pins so the
-// removal cannot quietly take the useful half with it.
+// DECISIONS was cruft with no GUI counterpart and must be gone as a SOURCE.
 func TestDecisionsHasNoStandalonePane(t *testing.T) {
 	f := &fakePlane{
 		approvals: []*apiv1.ApprovalItem{sampleApproval("sr-1")},
@@ -658,9 +646,9 @@ func TestRecoveryActionsConfirmGated(t *testing.T) {
 	}
 }
 
-// TestRecoveryUnavailableActionIsNeverSilent pins the "no silent no-op"
-// rule for the *plane's* action surface: an action the plane does not allow
-// (no pending plan / terminal status) is refused with the reason in the dock.
+// TestRecoveryUnavailableActionIsNeverSilent pins the "no silent no-op" rule for the *plane's*
+// action surface: an action the plane does not allow (no pending plan / terminal status) is
+// refused.
 func TestRecoveryUnavailableActionIsNeverSilent(t *testing.T) {
 	f := &fakePlane{recoveries: []*apiv1.RecoveryExecution{{
 		Id: "rec-1", TaskId: "wi-1", Status: apiv1.RecoveryStatus_RECOVERY_STATUS_RESUMED, CurrentStep: "resume",
@@ -685,10 +673,8 @@ func TestRecoveryUnavailableActionIsNeverSilent(t *testing.T) {
 	}
 }
 
-// TestFormTypingSurvivesGlobalChords pins ClaimsKeys: while a form is open the screen claims
-// every key, so a rejection reason containing the global chords (q / d / y / ?) is typed
-// verbatim rather than firing a chord. Driven through the APPROVAL reject form — the form the
-// operator actually has (the policy editor's Rego body went with the policy surface).
+// TestFormTypingSurvivesGlobalChords pins ClaimsKeys: while a form is open the screen claims every
+// key, so a rejection reason containing the global chords (q / d / y / ?) is typed verbatim rather.
 func TestFormTypingSurvivesGlobalChords(t *testing.T) {
 	f := &fakePlane{approvals: []*apiv1.ApprovalItem{sampleApproval("sr-1")}}
 	m, _ := newHarness(t, f)
@@ -718,10 +704,6 @@ func TestFormTypingSurvivesGlobalChords(t *testing.T) {
 }
 
 // TestMultilineFieldAcceptsNewlines covers the overlay's MULTILINE branch directly.
-//
-// No screen action constructs a multiline field any more (the policy editor's Rego body was
-// its only user), so the branch is exercised on the widget rather than through a screen: it
-// stays covered for the next form that wants a prose field.
 func TestMultilineFieldAcceptsNewlines(t *testing.T) {
 	m, _ := newHarness(t, &fakePlane{})
 	m.ov = newForm("Prose", "hint", "test-multi",

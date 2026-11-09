@@ -39,11 +39,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/verify"
 )
 
-// verifyNoticePrefix marks an error_message as an advisory notice rather than a failure. Same
-// convention as worktreeNoticeKind: the UI and an operator must be able to tell a step that is fine
-// but unconfirmed from a step that broke.
-// verifyNoticePrefix is the shared marker, defined once in internal/verify so the UI can recognise a notice without
-// importing the scheduler. Kept as a local name because the rest of this file reads better for it.
+// verifyNoticePrefix marks an error_message as an advisory notice rather than a failure.
 const verifyNoticePrefix = verify.NoticePrefix
 
 // verifyResultKey is the step-run result key carrying the evidence record.
@@ -51,10 +47,6 @@ const verifyResultKey = "_verification"
 
 // verdictForOutcome decides the evidence verdict for an execution that the worker reported as a
 // SUCCESS.
-//
-// A worker that reported FAILURE is not verified: it already failed, its work is not being accepted,
-// and running the project's whole gate to establish that would burn minutes to learn nothing. So this
-// only runs on the success path — which is exactly the path that has been lying.
 func (r *TaskReconciler) verdictForOutcome(ctx context.Context, exec db.ExecutionRow, output string) (verify.Result, bool) {
 	// A follow-up execution continues an existing conversation; its "work" is a delta on a step that
 	// was already verified, and re-running the gate would double-count. Treat as not-applicable.
@@ -65,9 +57,7 @@ func (r *TaskReconciler) verdictForOutcome(ctx context.Context, exec db.Executio
 	if projectDir == "" {
 		return verify.Result{}, false
 	}
-	// No worktree means no isolated state to read. In-place runs (git_strategy=none, or a non-repo
-	// project) still get the declared gate measured against the project dir, because that is the only
-	// evidence available for them.
+	// No worktree means no isolated state to read.
 	worktreePath := ""
 	if exec.WorktreePath != nil {
 		worktreePath = *exec.WorktreePath
@@ -76,9 +66,7 @@ func (r *TaskReconciler) verdictForOutcome(ctx context.Context, exec db.Executio
 		worktreePath = "" // gatherEvidence abstains on the git checks when this is empty
 	}
 
-	// The step's contract decides whether a deliverable was expected. A plan-only step must not be
-	// failed for producing no commits — that is a correct outcome, and the decision function SKIPS
-	// those checks rather than abstaining.
+	// The step's contract decides whether a deliverable was expected.
 	declares, skipReason := r.stepDeclaresDeliverable(ctx, exec)
 
 	in := evidenceInput{
@@ -99,29 +87,14 @@ func (r *TaskReconciler) verdictForOutcome(ctx context.Context, exec db.Executio
 	res := verify.Collect(ctx, ev)
 
 	// AC REPORT — the semantic half, explicitly NOT a pass/fail gate.
-	//
-	// The repository checks above answer "did work happen and does the gate hold". They cannot answer
-	// "did the worker address each acceptance criterion", because that is semantic and not mechanically
-	// decidable. What IS decidable is whether the worker ANSWERED them and whether the answer carries
-	// anything checkable — so an unanswered or unevidenced criterion is surfaced to the operator rather
-	// than being rounded into a green step.
-	//
-	// It ABSTAINS rather than failing when criteria were reported without evidence, deliberately: the
-	// evidence heuristic can be wrong, and failing an honest step on a heuristic is worse than showing
-	// the operator. An explicit FAIL verdict in the worker's own report does contradict its own
-	// `success`, though, and that is a contradiction.
 	res = appendACReportCheck(res, output, skipReasonForNoDeliverable(declares, skipReason))
 
 	return res, true
 }
 
-// skipReasonForNoDeliverable converts the deliverable exemption into an AC-report skip reason, or "" when the
-// step DOES owe a deliverable (so a missing report is a real omission and must abstain).
-//
-// The two questions are the same question: a step that owes no code also owes no acceptance-criteria account,
-// because the criteria describe outcomes a LATER step produces. Deriving one from the other keeps them from
-// drifting — and it is what lets the architect's deliberate "no AC REPORT, and here is why" be recognised as
-// correct rather than as an omission.
+// skipReasonForNoDeliverable converts the deliverable exemption into an AC-report skip reason, or
+// "" when the step DOES owe a deliverable (so a missing report is a real omission and must
+// abstain).
 func skipReasonForNoDeliverable(declares bool, skipReason string) string {
 	if declares {
 		return ""
@@ -149,10 +122,7 @@ func appendACReportCheck(res verify.Result, output, skipReason string) verify.Re
 	rep := verify.ParseACReport(output)
 	switch {
 	case !rep.Present && skipReason != "":
-		// THE STEP OWES NO ACCEPTANCE-CRITERIA REPORT, and the caller said why. A plan-only or approval step
-		// cannot assert outcomes for work a LATER step performs, so skipping the block is correct behaviour
-		// rather than an omission — SKIP, not abstain. (An abstention would hold the step at `unverified` for
-		// declining a question that was never its job to answer.)
+		// THE STEP OWES NO ACCEPTANCE-CRITERIA REPORT, and the caller said why.
 		res.Add("acceptance_criteria", verify.CheckSkip, skipReason)
 		return res.Conclude()
 	case !rep.Present:
@@ -182,17 +152,6 @@ func appendACReportCheck(res verify.Result, output, skipReason string) verify.Re
 }
 
 // stepDeclaresDeliverable reports whether this execution's step is expected to change files.
-//
-// THE DEFAULT IS TRUE. An unknown step that might have changed code should be HELD TO the commit
-// check, because the failure mode of wrongly expecting a deliverable is a loud, obvious, immediately
-// fixable "no commits" — whereas wrongly NOT expecting one silently exempts a code step from the only
-// universal check there is. The two steps that legitimately produce nothing are named here, and the
-// list is deliberately short so adding an exemption requires a reason.
-//
-// The signal is the step's worker/name, because that is what decides the step's job:
-//   - the Principal Software Architect writes a gitignored plan note and commits nothing
-//   - a human approval step is a gate, not work
-//   - a loop_decision / end / parallel / project step is graph plumbing
 func (r *TaskReconciler) stepDeclaresDeliverable(ctx context.Context, exec db.ExecutionRow) (bool, string) {
 	if exec.WorkflowStepID == "" {
 		// Standalone dispatch: the worker was assigned a work item, so it owes a deliverable.
@@ -200,17 +159,14 @@ func (r *TaskReconciler) stepDeclaresDeliverable(ctx context.Context, exec db.Ex
 	}
 	stepID := exec.WorkflowStepID
 	// Graph-plumbing step kinds are identified by their step id prefix in practice, but the reliable
-	// signal is the worker: these step kinds carry no worker at all, so an execution with one is a
-	// task/approval step by construction.
+	// signal is the worker: these step kinds carry no worker at all.
 	if exec.WorkerName == "" {
 		return true, ""
 	}
 	lower := strings.ToLower(stepID + " " + exec.WorkerName)
 	switch {
 	case strings.Contains(lower, "architect"):
-		// The architect's deliverable is a plan. In this repository the plan directory is gitignored
-		// (`architecture-notes/`), so it commits nothing BY DESIGN — established repeatedly in the
-		// FACTS LEARNED ledger. Holding it to a commit check would fail every architect step.
+		// The architect's deliverable is a plan.
 		return false, "architect steps deliver a plan note, which this project gitignores"
 	case strings.Contains(lower, "approver"):
 		return false, "approval steps are gates, not work"
@@ -221,10 +177,6 @@ func (r *TaskReconciler) stepDeclaresDeliverable(ctx context.Context, exec db.Ex
 }
 
 // claimedFilesForExecution returns the paths the worker's own report said it touched.
-//
-// It reads the persisted `_touched_files` on the work item's results — the same set the prompt hands
-// DOWNSTREAM steps — rather than re-parsing the report here, so the platform and the next worker
-// cannot disagree about what was claimed.
 func (r *TaskReconciler) claimedFilesForExecution(ctx context.Context, exec db.ExecutionRow) map[string]struct{} {
 	if exec.TenantID == "" || exec.TaskID == "" {
 		return nil
@@ -260,36 +212,12 @@ func (r *TaskReconciler) claimedFilesForExecution(ctx context.Context, exec db.E
 }
 
 // integrationBranchForProject resolves the branch a run's work is measured against.
-//
-// It reuses integrationTarget's convention (`develop` when it exists, else the repo's own default) but
-// without the git probing: this is a name for a merge-base computation, and a wrong name simply makes
-// the differential abstain rather than lie.
 func (r *TaskReconciler) integrationBranchForProject(_ context.Context, projectID string) string {
 	_ = projectID
 	return defaultIntegrationBranch
 }
 
 // applyVerdict folds the evidence verdict into the outcome — as a RECORD, never as a status change.
-//
-// THE OPERATOR'S DECISION, and it is a real simplification of what this function used to do.
-//
-// The evidence gate was built to be able to FAIL a step whose claim the repository contradicted. That is a
-// powerful idea and it was the wrong shape for this product: to act on a contradiction the platform has to be
-// right about it, and being right means parsing output, comparing baselines and attributing failures — every one
-// of which can be wrong in a way the worker cannot control. The operator's verdict: "it is too strict, it is
-// language-specific, and it is holding people back instead of helping them get work done."
-//
-// So the verdict is now INFORMATION. It is computed, recorded on the execution and rendered in the acceptance
-// review, and it never changes whether a step succeeded. Success/failure is what it has always been: the worker's
-// own verdict plus the process exit code.
-//
-// WHAT IS LOST, stated plainly rather than buried: the smoking-gun case — a worker that reports success having
-// changed nothing — now lands GREEN with a notice attached, instead of failing. The evidence still says so; the
-// notice still says so; nothing blocks anyone. That is the trade, chosen deliberately.
-//
-// NOTHING IS SILENT, though, which is the half worth keeping. An unverified or contradicted step carries a
-// sentence saying what was and was not established, in the same slot the worktree reconciler uses for its
-// advisories.
 func applyVerdict(succeeded bool, res verify.Result) (bool, string) {
 	if !succeeded {
 		// A FAILED worker keeps its failure and gets no evidence notice: there is nothing to substantiate, and
@@ -299,17 +227,15 @@ func applyVerdict(succeeded bool, res verify.Result) (bool, string) {
 	switch res.Verdict {
 	case verify.VerdictUnsubstantiated:
 		// The strongest thing the platform can say without acting on it, so it says it plainly and does not
-		// soften it — the operator should be able to see that this run's account of itself does not match the
-		// repository.
+		// soften it — the operator should be able to see that this run's account of itself does not match.
 		reason := "the worker reported success but the repository does not support it"
 		if res.Reason != "" {
 			reason += " — " + res.Reason
 		}
 		return true, verifyNoticePrefix + reason
 	case verify.VerdictUnverified:
-		// THE OPENER MUST NOT OVERCLAIM, and the old one did: "nothing confirmed it" was printed for a step whose
-		// acceptance-criteria check had PASSED with evidence, because the sentence summarised the verdict rather
-		// than what the checks actually established. Naming the counts keeps it true whichever way it lands.
+		// THE OPENER MUST NOT OVERCLAIM, and the old one did: "nothing confirmed it" was printed for a step
+		// whose acceptance-criteria check had PASSED with evidence.
 		confirmed, total := countConfirmed(res)
 		reason := fmt.Sprintf("the platform could not confirm this step mechanically (%d of %d check(s) "+
 			"confirmed)", confirmed, total)
@@ -376,9 +302,7 @@ func (r *TaskReconciler) recordVerification(ctx context.Context, exec db.Executi
 	}
 }
 
-// verificationNotice renders the one-line notice an operator sees for an unverified step. Exported
-// shape kept simple (a string) because it rides the existing error_message field rather than needing
-// a schema change.
+// verificationNotice renders the one-line notice an operator sees for an unverified step.
 func verificationNotice(res verify.Result) string {
 	if res.Verdict == verify.VerdictVerified {
 		return ""
@@ -391,10 +315,6 @@ func verificationNotice(res verify.Result) string {
 }
 
 // loadExecutionRow reads the execution row OnResult was told about.
-//
-// OnResult's signature carries only an id, and every fact the evidence gate needs (project, worktree,
-// step, task) lives on the row. Reading it here keeps that lookup in one place instead of widening an
-// interface used by several callers.
 func (r *TaskReconciler) loadExecutionRow(ctx context.Context, execID string) (db.ExecutionRow, error) {
 	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
@@ -417,10 +337,6 @@ type verificationSummaryLine struct {
 }
 
 // collectVerificationSummaries extracts the `_verification` record from each step run.
-//
-// Sorted by the VERDICT ORDER that matters to a reader: unsubstantiated first (something is wrong),
-// then unverified (nobody checked), then verified. A review that lists the confirmed steps first
-// buries the two that need attention.
 func collectVerificationSummaries(stepRuns []db.WorkflowStepRunRow) []verificationSummaryLine {
 	var out []verificationSummaryLine
 	for _, sr := range stepRuns {
@@ -459,11 +375,6 @@ func collectVerificationSummaries(stepRuns []db.WorkflowStepRunRow) []verificati
 }
 
 // formatVerificationSummary renders the evidence block for the acceptance review.
-//
-// IT ALWAYS RENDERS. A run whose steps carry no verification record at all is itself the finding —
-// "nothing was checked" — and silently omitting the section is exactly the silent-success the whole
-// feature exists to remove. An empty block would be worse still, so the "no evidence recorded" case is
-// stated explicitly.
 func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
 	lines := collectVerificationSummaries(stepRuns)
 	if len(lines) == 0 {
@@ -487,10 +398,8 @@ func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
 			sym = "!" // advisory: nothing was failed on this
 			unsubstantiated++
 		case v == verify.VerdictNotApplicable:
-			// A step that produces no repository evidence (a plan, an approval) is neither confirmed nor
-			// at fault. It gets its own mark so it cannot be read as either — counting it as "verified"
-			// would inflate the confirmed total, and counting it as "unverified" would train the operator
-			// to ignore that word on the steps where it means something.
+			// A step that produces no repository evidence (a plan, an approval) is neither confirmed nor at
+			// fault.
 			sym = "·"
 			notApplicable++
 		default:
@@ -504,9 +413,7 @@ func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
 	}
 	b.WriteString("\n")
 	total := len(lines)
-	// NOTHING IN THIS SECTION CHANGED THE RUN'S OUTCOME, and it says so before it says anything else. Without
-	// that sentence an operator reads a `!` mark as a failure the platform chose to tolerate, when in fact the
-	// platform is not acting on it at all.
+	// NOTHING IN THIS SECTION CHANGED THE RUN'S OUTCOME, and it says so before it says anything else.
 	if unverified > 0 || unsubstantiated > 0 {
 		b.WriteString("This section is a RECORD. No step's status was changed by it.\n\n")
 	}
@@ -531,10 +438,8 @@ func formatVerificationSummary(stepRuns []db.WorkflowStepRunRow) string {
 	return b.String()
 }
 
-// countConfirmed reports how many of a result's checks reached a conclusion and how many there were.
-//
-// A check that passed is CONFIRMED; one that abstained was not measured; one that was skipped did not apply. The
-// count exists so a notice can say what WAS established instead of claiming nothing was.
+// countConfirmed reports how many of a result's checks reached a conclusion and how many there
+// were.
 func countConfirmed(res verify.Result) (confirmed, total int) {
 	for _, c := range res.Checks {
 		if c.Status == verify.CheckSkip {

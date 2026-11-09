@@ -1,15 +1,6 @@
 package main
 
 // help_test.go — the help must document every command the binary dispatches.
-//
-// THE BUG THIS PINS: `orchicon install` was absent from `--help` entirely. It is the single most
-// important entry point — the one-line installers call it, and it is what an operator is told to
-// run — and it was missing because the list was maintained BY HAND as a Printf with one positional
-// argument per line (fifteen of them). A hand-maintained list drifts silently: nothing errors, the
-// command simply is not mentioned, and the operator concludes it does not exist.
-//
-// So the expectation is DERIVED from the dispatch rather than restated here. A new subcommand that
-// is not documented fails this test, which is the only way to keep a hand-written help honest.
 
 import (
 	"os"
@@ -54,23 +45,10 @@ func dispatchedSubcommands(t *testing.T) []string {
 	return out
 }
 
-// helpDocuments reports whether the help has a ROW for cmd — the command in the command column,
-// not merely the word appearing somewhere in the text.
-//
-// THE DISTINCTION IS THE WHOLE TEST, and it was measured: the first version of this used
-// strings.Contains and PASSED with the `install` row renamed to `instal`, because the prose still
-// said "`install` alone will not refresh it". A documentation test that a prose mention satisfies is
-// not a documentation test.
+// helpDocuments reports whether the help has a ROW for cmd — the command in the command column, not
+// merely the word appearing somewhere in the text.
 func helpDocuments(out, bin, cmd string) bool {
-	// A documented command is one that appears in the COMMAND COLUMN: the first token of its own
-	// line. That is what distinguishes a row from a prose mention — the first version of this used
-	// strings.Contains and PASSED with the `install` row renamed, because the prose still said
-	// "`install` alone will not refresh it".
-	//
-	// Anchoring on the line start (rather than requiring the command to be the whole first token)
-	// is deliberate: `db` is documented by its subcommand rows (`db backup` …), which is how a
-	// command group is meant to read. No prose line begins with the binary's own name, so this
-	// cannot be satisfied by a sentence.
+	// A documented command is one that appears in the COMMAND COLUMN: the first token of its own line.
 	prefix := bin + " " + cmd
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), prefix) {
@@ -97,9 +75,7 @@ func TestTheHelpDocumentsEveryDispatchedCommand(t *testing.T) {
 	}
 }
 
-// TestTheHelpNamesInstallAndRestart is the direct regression pin for the report. It is deliberately
-// redundant with the loop above, because these two rows are the ones the operator asked for by name
-// and a derived test that silently stopped extracting would leave them uncovered.
+// TestTheHelpNamesInstallAndRestart is the direct regression pin for the report.
 func TestTheHelpNamesInstallAndRestart(t *testing.T) {
 	bin := filepath.Base(os.Args[0])
 	out := captureStdout(t, func() { printHelp() })
@@ -117,10 +93,8 @@ func TestTheHelpNamesInstallAndRestart(t *testing.T) {
 	}
 }
 
-// TestTheHelpSaysServeStatusIsTheSameSurface pins the claim the row now makes: `serve --status` is not a
-// second, weaker status surface — it reports what `orchicon plane status` reports, one surface with two
-// spellings. And `serve --start` must have NO row: a documented row would invite the command that must
-// not exist, and `start` is the verb (its row says so).
+// TestTheHelpSaysServeStatusIsTheSameSurface pins the claim the row now makes: `serve --status` is
+// not a second, weaker status surface — it reports what `orchicon plane status` reports.
 func TestTheHelpSaysServeStatusIsTheSameSurface(t *testing.T) {
 	bin := filepath.Base(os.Args[0])
 	out := captureStdout(t, func() { printHelp() })

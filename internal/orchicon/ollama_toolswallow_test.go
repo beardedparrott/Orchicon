@@ -1,17 +1,7 @@
 package orchicon
 
-// Regression tests for the 2026-09-10 ollama native tool-swallow incident
-// (work item 01M21PZE3QQEZ35418SXCQZZRQ root cause): ollama reports a
-// turn's tool calls in message.tool_calls and ends the turn with
-// done:true, done_reason:"stop". The old decoder returned the FIRST tool
-// call of the tool-calls loop before the Done branch was ever reached, so
-// (a) batched tool calls were dropped, and (b) on a
-// done-carrying-tool-calls chunk the Finish (stop reason + usage) never
-// surfaced — the next Next() failed with "stream ended without done
-// chunk". Separately, a loop-level guard now promotes StopStop turns
-// carrying pending tool calls to StopToolUse (the 2026-09-09
-// responses.go fix, made transport-independent), so counted-but-unexecuted
-// calls can never spin the count-and-drop budget_abort loop again.
+// Regression tests for the 2026-09-10 ollama native tool-swallow incident (work item
+// 01M21PZE3QQEZ35418SXCQZZRQ root cause).
 
 import (
 	"context"
@@ -60,9 +50,8 @@ func wantToolCall(t *testing.T, ev Event, name string) ToolCall {
 	return tc
 }
 
-// AC (decoder-level, 1/3): a tool-call chunk followed by a separate done
-// chunk must surface the ToolCall AND the Finish — today this already
-// worked when the chunks are separate; the test pins the invariant.
+// AC (decoder-level, 1/3): a tool-call chunk followed by a separate done chunk must surface the
+// ToolCall AND the Finish — today this already worked when the chunks are separate.
 func TestOllamaNativeToolCallChunkThenDone(t *testing.T) {
 	_, ts := newNativeTestClient(t, ndjsonLines(
 		`{"message":{"content":"Resuming, reading the file…"}}`,
@@ -92,10 +81,8 @@ func TestOllamaNativeToolCallChunkThenDone(t *testing.T) {
 	}
 }
 
-// AC (decoder-level, 2/3): the final NDJSON chunk carries BOTH
-// message.tool_calls AND done:true — the tool calls AND the Finish (stop
-// reason + usage) must ALL surface, with no "stream ended without done
-// chunk" false terminal. This was the incident's primary wire shape.
+// AC (decoder-level, 2/3): the final NDJSON chunk carries BOTH message.tool_calls AND done:true —
+// the tool calls AND the Finish (stop reason + usage) must ALL surface.
 func TestOllamaNativeDoneChunkCarriesToolCalls(t *testing.T) {
 	_, ts := newNativeTestClient(t, ndjsonLines(
 		`{"message":{"content":"I'm resuming a recovered session."}}`,
@@ -127,9 +114,9 @@ func TestOllamaNativeDoneChunkCarriesToolCalls(t *testing.T) {
 	}
 }
 
-// AC (decoder-level, 3/3): ollama batches MULTIPLE tool calls into one
-// chunk — every one must surface, in wire order, with unique indices and
-// ids (the old first-only early return silently lost all but the first).
+// AC (decoder-level, 3/3): ollama batches MULTIPLE tool calls into one chunk — every one must
+// surface, in wire order, with unique indices and ids (the old first-only early return silently
+// lost.
 func TestOllamaNativeMultiToolCallsInOneChunk(t *testing.T) {
 	_, ts := newNativeTestClient(t, ndjsonLines(
 		`{"message":{"tool_calls":[`+
@@ -162,10 +149,8 @@ func TestOllamaNativeMultiToolCallsInOneChunk(t *testing.T) {
 	}
 }
 
-// AC (loop-level): a StopStop turn with pending tool calls executes the
-// tools, feeds the results back into history, and loops — the calls are
-// never silently dropped. The guard is transport-independent (mirrors the
-// 2026-09-09 responses.go finalize fix at the loop level).
+// AC (loop-level): a StopStop turn with pending tool calls executes the tools, feeds the results
+// back into history, and loops — the calls are never silently dropped.
 func TestLoopStopStopWithPendingToolCallsExecutesTools(t *testing.T) {
 	tools := newMockTools()
 	tools.results["read"] = "file contents"
@@ -188,10 +173,8 @@ func TestLoopStopStopWithPendingToolCallsExecutesTools(t *testing.T) {
 	if len(results) != 1 || !results[0].succeeded {
 		t.Fatalf("OnResult = %+v, want success", results)
 	}
-	// The provider saw the tool round: turn 2's history carries the
-	// assistant tool_use message (its Text block precedes the ToolUse
-	// block — appendAssistantToolUse appends text first) and the tool
-	// result (results fed back).
+	// The provider saw the tool round: turn 2's history carries the assistant tool_use message (its
+	// Text block precedes the ToolUse block.
 	if prov.requestCount() != 2 {
 		t.Fatalf("provider turns = %d, want 2", prov.requestCount())
 	}
@@ -216,10 +199,8 @@ func TestLoopStopStopWithPendingToolCallsExecutesTools(t *testing.T) {
 	}
 }
 
-// AC (failure-signature regression): a session whose EVERY turn announces
-// text + emits one tool call + ends StopStop must make REAL progress —
-// the calls execute — instead of re-announcing until
-// budget_abort:tool_call_count. This is the incident's transcript shape.
+// AC (failure-signature regression): a session whose EVERY turn announces text + emits one tool
+// call + ends StopStop must make REAL progress — the calls execute.
 func TestLoopAnnounceAndToolCallStopStopMakesProgress(t *testing.T) {
 	tools := newMockTools()
 	prov := &mockProvider{turns: []scriptedTurn{
@@ -244,10 +225,8 @@ func TestLoopAnnounceAndToolCallStopStopMakesProgress(t *testing.T) {
 	}
 }
 
-// AC (end-to-end, ollama native path): a model that announces + issues one
-// tool call per turn makes real progress through the FULL native decoder
-// + loop stack — httptest serves real ollama NDJSON; the loop executes
-// the tool, feeds the result back, and the session completes.
+// AC (end-to-end, ollama native path): a model that announces + issues one tool call per turn makes
+// real progress through the FULL native decoder + loop stack.
 func TestOllamaNativeEndToEndAnnounceToolCallPerTurnProgresses(t *testing.T) {
 	var calls int64
 	var bodies []string

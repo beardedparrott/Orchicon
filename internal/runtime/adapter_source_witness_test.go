@@ -58,10 +58,7 @@ func TestBothSidesReadTheSameHostPreferenceGate(t *testing.T) {
 	}
 }
 
-// BOTH CLI ADAPTERS MUST BE COVERED BY THE PREFIX GATE. claude and opencode reach the container differently —
-// claude by the absolute path the ADAPTER builds, opencode by the bare name the SUPERVISOR builds — so a
-// switch that only names one kind silently leaves the other on the old image-first rule. That was the state
-// of the first version of this change, and the opencode hole was invisible from the claude tests.
+// BOTH CLI ADAPTERS MUST BE COVERED BY THE PREFIX GATE.
 func TestThePathPrefixGateNamesBothCLIAdapters(t *testing.T) {
 	body, err := os.ReadFile("bootprofile.go")
 	if err != nil {
@@ -72,9 +69,7 @@ func TestThePathPrefixGateNamesBothCLIAdapters(t *testing.T) {
 	if i < 0 {
 		t.Fatal("adapterPathPrefixFor is gone — it is where the container's adapter PATH is decided")
 	}
-	// THE SLICE MUST END AT THIS FUNCTION'S CLOSING BRACE. Slicing to the next `func` ran on into
-	// adapterBinDirs, which names both kinds for its OWN reasons — so the assertion passed while the gate
-	// named only claude. A source gate that reads the neighbouring function proves nothing.
+	// THE SLICE MUST END AT THIS FUNCTION'S CLOSING BRACE.
 	fn := src[i:]
 	if end := strings.Index(fn, "\n}\n"); end > 0 {
 		fn = fn[:end]

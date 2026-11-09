@@ -1,12 +1,7 @@
 package ask
 
-// askdraft_test.go — the RECORDED ask card's open free-text row: the keys, and where the answer goes.
-//
-// The screen-level half of askdraft.go. The shell's click opens the row (App.beginAskDraft sets
-// chat.ParsedAsk.Drafting on the ITEM); from there this screen owns the keys, and what Enter does is
-// the part worth pinning, because the two cards look identical and behave differently on purpose:
-// a CONSENT card's answer replies to a paused turn, while a RECORDED card's answer is the operator's
-// next MESSAGE.
+// askdraft_test.go — the RECORDED ask card's open free-text row: the keys, and where the answer
+// goes.
 
 import (
 	"testing"
@@ -36,8 +31,7 @@ func typeInto(m *Model, text string) {
 }
 
 // TestAnOpenFreeTextRowCollectsTheTypingAndSendsItAsTheNextMessage is the reported gap end to end:
-// the row takes the keys, what is typed lands in the ROW, and Enter sends it as the operator's next
-// message rather than settling the card.
+// the row takes the keys, what is typed lands in the ROW.
 func TestAnOpenFreeTextRowCollectsTheTypingAndSendsItAsTheNextMessage(t *testing.T) {
 	m, h := newTestModel(t)
 	items := []chat.ChatItem{recordedCard()}
@@ -97,10 +91,7 @@ func TestEscOnTheFreeTextRowKeepsTheQuestion(t *testing.T) {
 		t.Fatal("esc must not answer the question — the row is an input, not a decision")
 	}
 	// AND THE CARD IS STILL ANSWERABLE FROM THE KEYBOARD, which is a change this test has to state
-	// rather than assume. It used to assert that a closed row RELEASED the keys, because the card had no
-	// cursor and there was nothing for the keys to do. The card has one now (askcard.go), so closing the
-	// free-text row puts the operator back on the OPTIONS — the permission card's exact behaviour — and
-	// a second Esc is what releases.
+	// rather than assume.
 	if !m.ClaimsKeys() {
 		t.Fatal("closing the free-text row must return the operator to the card's OPTIONS, not to the " +
 			"composer — the cursor is back on the list and ↑/↓ must move it")
@@ -112,8 +103,7 @@ func TestEscOnTheFreeTextRowKeepsTheQuestion(t *testing.T) {
 }
 
 // TestCtrlGDefersTheRowAndAClickTakesItBack pins the chord's contract on this card too: ctrl+g
-// reaches the composer and does not discard what was typed, and clicking the row again is the
-// operator acting on the card, so the row takes the keys back.
+// reaches the composer and does not discard what was typed.
 func TestCtrlGDefersTheRowAndAClickTakesItBack(t *testing.T) {
 	m, _ := newTestModel(t)
 	items := []chat.ChatItem{recordedCard()}

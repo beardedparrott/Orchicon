@@ -20,10 +20,7 @@ accept:
   - /srv/shared/**
 `
 
-// newPolicyService builds a Service wired to a temp policy file. The pool is
-// nil on purpose: the policy lives in the state dir, not Postgres, and every
-// path exercised here is the file (plus, for the mutating RPCs, an audit row
-// that is best-effort by construction).
+// newPolicyService builds a Service wired to a temp policy file.
 func newPolicyService(t *testing.T, body string) (*Service, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "permission-policy.yaml")
@@ -37,9 +34,8 @@ func newPolicyService(t *testing.T, body string) (*Service, string) {
 
 func tenantCtx() context.Context { return tenant.WithID(context.Background(), "tnt_test") }
 
-// The list RPC both clients call: deny entries first, and a deny entry is
-// reported NOT overridable (the cue a UI needs to say a session grant cannot
-// override it).
+// The list RPC both clients call: deny entries first, and a deny entry is reported NOT overridable
+// (the cue a UI needs to say a session grant cannot override it).
 func TestGetPermissionPolicyListsEntriesAndMarksDenyNotOverridable(t *testing.T) {
 	s, path := newPolicyService(t, testPolicy)
 
@@ -68,9 +64,8 @@ func TestGetPermissionPolicyListsEntriesAndMarksDenyNotOverridable(t *testing.T)
 	}
 }
 
-// A hand-edit of the file is visible to the very next API call: the API is a
-// reader of the FILE, not the owner of a copy. This is the property that
-// makes a GUI change and a hand-edit the same change.
+// A hand-edit of the file is visible to the very next API call: the API is a reader of the FILE,
+// not the owner of a copy.
 func TestGetPermissionPolicySeesAHandEditImmediately(t *testing.T) {
 	s, path := newPolicyService(t, testPolicy)
 
@@ -86,10 +81,8 @@ func TestGetPermissionPolicySeesAHandEditImmediately(t *testing.T) {
 	}
 }
 
-// The write path a client uses (read → mutate → write through the SAME store
-// the handlers use) is visible to a reader that only knows the file — the
-// TUI's and the GUI's read. And the enforcement side (the shared accessor)
-// agrees with it.
+// The write path a client uses (read → mutate → write through the SAME store the handlers use) is
+// visible to a reader that only knows the file — the TUI's and the GUI's read.
 func TestAddedEntryIsVisibleToTheReaderAndToEnforcement(t *testing.T) {
 	s, path := newPolicyService(t, "deny: []\naccept: []\n")
 	store := s.permissionStore()

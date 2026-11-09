@@ -1,16 +1,7 @@
 package scheduler
 
-// Tests for the adapter-aware runtime-serve gate: a run whose worker steps
-// all resolve to serve-less adapter kinds (native "orchicon") must arm
-// with RuntimeReady=true and carry the runtime.NoServeImage sentinel, so
-// the run never gates on (or fails for) the in-container opencode serve it
-// never uses. Observed bug: an orchicon-only run failed at start with
-// "runtime opencode serve failed to become usable" and sat "waiting for
-// dispatch" until the serve deadline expired.
-//
-// runNeedsServe is DB-backed (worker versions come from worker_versions)
-// and is skipped without ORCHICON_TEST_DSN; imageForRun and the
-// sentinel round-trip are pure unit tests.
+// Tests for the adapter-aware runtime-serve gate: a run whose worker steps all resolve to
+// serve-less adapter kinds (native "orchicon") must arm with RuntimeReady=true and carry.
 
 import (
 	"context"
@@ -24,9 +15,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
-// stubLifecycle is the minimal RuntimeLifecycle stub for runNeedsServe
-// tests: ServeDependent mirrors runtime.Lifecycle's real rule
-// (opencode-only) so the unit behaves identically without a daemon.
+// stubLifecycle is the minimal RuntimeLifecycle stub for runNeedsServe tests: ServeDependent
+// mirrors runtime.Lifecycle's real rule (opencode-only) so the unit behaves identically without a
+// daemon.
 type stubLifecycle struct{}
 
 func (stubLifecycle) ServeDependent(kind string) bool {
@@ -41,16 +32,11 @@ func (stubLifecycle) EnsureServing(context.Context, db.WorkflowRunRow, bool) err
 }
 func (stubLifecycle) ReapForRun(context.Context, string) error { return nil }
 
-// ImagePresent reports the image PRESENT: these unit tests exercise the serve
-// gate and image resolution, not the missing-image fail-fast (see
-// image_absent_failover_test.go for that path).
+// ImagePresent reports the image PRESENT: these unit tests exercise the serve gate and image
+// resolution, not the missing-image fail-fast (see image_absent_failover_test.go for that path).
 func (stubLifecycle) ImagePresent(context.Context, string) (bool, error) { return true, nil }
 
-// TestImageForRun pins always-container stamping: imageForRun ALWAYS
-// returns the resolved image (serve or not); empty resolves to base. The
-// no-serve sentinel is never a freshly persisted image — it survives only
-// as the legacy-row serve-skip marker. The sentinel must NEVER equal a
-// real image tag an operator could configure.
+// The sentinel must NEVER equal a real image tag an operator could configure.
 func TestImageForRun(t *testing.T) {
 	if got := imageForRun("orchicon-runtime:orchicon-dev", true); got != "orchicon-runtime:orchicon-dev" {
 		t.Errorf("imageForRun(needsServe) = %q, want the resolved image", got)
@@ -58,12 +44,8 @@ func TestImageForRun(t *testing.T) {
 	if got := imageForRun("orchicon-runtime:orchicon-dev", false); got != "orchicon-runtime:orchicon-dev" {
 		t.Errorf("imageForRun(serveless) = %q, want the resolved image (always-container)", got)
 	}
-	// EMPTY RESOLVES TO THE LIVE FALLBACK, which is db.RuntimeBaseImage() — the base
-	// tag the runtime daemon on this host actually has. It used to be the
-	// db.BaseRuntimeImage CONSTANT ("orchicon-runtime:base"), a tag no host has, so
-	// this leg named an image the daemon refuses ("image not allowed"). The assertion
-	// is on the LIVE value because that is what makes the leg work; asserting the
-	// placeholder here would lock the defect back in.
+	// EMPTY RESOLVES TO THE LIVE FALLBACK, which is db.RuntimeBaseImage() — the base tag the runtime
+	// daemon on this host actually has.
 	if got := imageForRun("", false); got != db.RuntimeBaseImage() {
 		t.Errorf("imageForRun(empty, serveless) = %q, want the live fallback %q", got, db.RuntimeBaseImage())
 	}
@@ -107,9 +89,8 @@ func TestRunNeedsServeNonWorkerSteps(t *testing.T) {
 	}
 }
 
-// DB-backed: a step whose worker version carries an orchicon model_ref
-// yields no serve demand; an opencode ref (or an unresolvable worker)
-// does. Skipped without ORCHICON_TEST_DSN.
+// DB-backed: a step whose worker version carries an orchicon model_ref yields no serve demand; an
+// opencode ref (or an unresolvable worker) does.
 func TestRunNeedsServeAdapterKinds(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {
@@ -147,10 +128,9 @@ func TestRunNeedsServeAdapterKinds(t *testing.T) {
 		return w.ID
 	}
 
-	// runNeedsServe resolves each step's worker version through the DB exactly
-	// as dispatch does, and production always hands it the tenant tx (see the
-	// runNeedsServe callers in workflow_reconciler.go). A nil tx panics inside
-	// db.GetLatestWorkerVersion, so hold a real one open for the reads.
+	// runNeedsServe resolves each step's worker version through the DB exactly as dispatch does, and
+	// production always hands it the tenant tx (see the runNeedsServe callers in
+	// workflow_reconciler.go).
 	readTx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)

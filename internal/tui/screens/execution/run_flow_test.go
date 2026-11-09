@@ -2,12 +2,6 @@ package execution
 
 // run_flow_test.go — a workflow run rendered as a FLOW of its steps, and the jump from a step to
 // its execution.
-//
-// The operator: "I think we should change the view on workflow runs in the tui to mimic a similar
-// look to our new workflow view where we have the steps, and it should show next to the steps if
-// it succeeded, failed, how many retries, etc. and you should be able to see live runs and if you
-// hit enter on a particular step (whether it's complete or still running), it should take you to
-// the execution."
 
 import (
 	"context"
@@ -28,9 +22,7 @@ func stepRun(id, stepID, name string, kind apiv1.StepKind, status apiv1.StepRunS
 	}
 }
 
-// runStepRowsArrival orders rows with NO authored order — the fallback path. The server's own
-// arrival order stands in for the workflow definition, which is what runStepRows does when the
-// version cannot be read and is the right input for tests that are not about ordering.
+// runStepRowsArrival orders rows with NO authored order — the fallback path.
 func runStepRowsArrival(runs []*apiv1.WorkflowStepRun) []runStepRow {
 	return runStepRows(runs, nil)
 }
@@ -225,11 +217,7 @@ func TestEnterOnAStepJumpsToItsExecution(t *testing.T) {
 }
 
 // A step with NO execution explains itself rather than silently doing nothing — and the reason it
-// gives must MATCH THE STEP's state, which is the correction for a live case: on run
-// 01M2B8D9M0H8E59RKNADW9QH33 the Senior Software Engineer step is status=SUCCEEDED with
-// worker_execution_id NULL, and the old message told the operator a step that plainly succeeded
-// "has not been dispatched". A message that contradicts the status printed right beside it is
-// worse than no message.
+// gives must MATCH THE STEP's state, which is the correction for a live case.
 func TestEnterOnAStepWithoutAnExecutionExplainsItself(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -295,14 +283,6 @@ func TestEnterOnAStepWithoutAnExecutionExplainsItself(t *testing.T) {
 
 // A step the manual FORCE-PROGRESS escape hatch marked succeeded is identified as such, in the row
 // AND in the refusal.
-//
-// This is the one case where a green status does NOT mean the work happened: force-progress writes
-// `_forced: true` into the step run's result and marks the step terminal WITHOUT dispatching it, so
-// there is no execution because none was ever created. Live evidence — the three real "succeeded
-// task step with no execution" rows in the dev tenant all carry
-// `{"_forced": true, "_forced_reason": "manual force-progress"}`. The reconciler's own comment
-// records the failure mode this hides: "a force-progress marked the DevOps PR step succeeded
-// without ever dispatching it, and the PR was never merged".
 func TestForcedStepSaysItWasNotDispatched(t *testing.T) {
 	forced := stepRun("sr-1", "a", "DevOps Engineer", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "")
 	forced.Result = `{"_forced": true, "_forced_at": "2026-08-10T21:53:48Z", "_forced_reason": "manual force-progress"}`

@@ -23,11 +23,8 @@ func (stubRegistry) Execute(_ context.Context, _ *db.Pool, _ string, _ json.RawM
 	return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
 }
 
-// TestServerRunHandlesLargePayload pins the large-payload batch_write fix
-// (AC5): a single JSON-RPC tools/call line whose content is well over 64 KiB
-// (the old bufio.Scanner.MaxScanTokenSize cap) must be read and dispatched
-// without the server exiting with a "buffer too long" error. The old scanner
-// returned bufio.ErrTooLong for the whole line, killing the MCP server.
+// TestServerRunHandlesLargePayload pins the large-payload batch_write fix (AC5): a single JSON-RPC
+// tools/call line whose content is well over 64 KiB (the old bufio.Scanner.MaxScanTokenSize cap).
 func TestServerRunHandlesLargePayload(t *testing.T) {
 	big := strings.Repeat("x", 200_000)
 	payload, err := json.Marshal(map[string]any{
@@ -94,11 +91,8 @@ func (c *scopeCapturingRegistry) Execute(ctx context.Context, _ *db.Pool, _ stri
 	return json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`), nil
 }
 
-// driveToolCall runs one tools/call through the REAL stdio path (Run), so an
-// assertion covers everything between the env var and the tool's context.
-//
-// The pool is the SERVER's — handleToolsCall passes its own to the registry, not the
-// registry's — so a tool that reaches the DB needs it supplied here.
+// driveToolCall runs one tools/call through the REAL stdio path (Run), so an assertion covers
+// everything between the env var and the tool's context.
 func driveToolCall(t *testing.T, reg ToolRegistry, pool *db.Pool, toolName string) string {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{
@@ -136,12 +130,7 @@ func driveToolCall(t *testing.T, reg ToolRegistry, pool *db.Pool, toolName strin
 	return string(out)
 }
 
-// THE SIDECAR IS A CHILD PROCESS. An Ask turn stamps its conversation scope on the
-// turn's CONTEXT, which cannot cross a stdio boundary — so the scope arrives on the
-// ENVIRONMENT and must be restored onto each tool call. Without this every Orchicon
-// tool in a claude Ask session ran on an unstamped context, and get_current_conversation
-// (the only way Quick Work can read the model_ref to offer) failed with
-// "no conversation is stamped on this turn".
+// THE SIDECAR IS A CHILD PROCESS.
 func TestToolsCallRestoresTheConversationScopeFromEnv(t *testing.T) {
 	t.Setenv("ORCHICON_MCP_CONVERSATION_ID", "conv-ask-1")
 	t.Setenv("ORCHICON_MCP_CONVERSATION_PROJECT_ID", "proj-ask-1")
@@ -159,12 +148,8 @@ func TestToolsCallRestoresTheConversationScopeFromEnv(t *testing.T) {
 	}
 }
 
-// The OTHER half, and the one a careless implementation gets wrong: a sidecar that
-// serves NO conversation (a worker execution, or the plane's own MCP) must leave the
-// context UNSTAMPED. Filling in an empty scope would replace the honest zero value —
-// "not stamped", which a tool fails loud on — with a scope that CLAIMS to be a
-// conversation, and every worker's get_current_conversation would then answer about a
-// conversation that does not exist.
+// The OTHER half, and the one a careless implementation gets wrong: a sidecar that serves NO
+// conversation (a worker execution, or the plane's own MCP) must leave the context UNSTAMPED.
 func TestToolsCallLeavesTheScopeUnstampedWithoutTheEnv(t *testing.T) {
 	t.Setenv("ORCHICON_MCP_CONVERSATION_ID", "")
 	t.Setenv("ORCHICON_MCP_CONVERSATION_PROJECT_ID", "")
@@ -179,14 +164,7 @@ func TestToolsCallLeavesTheScopeUnstampedWithoutTheEnv(t *testing.T) {
 	}
 }
 
-// A PROJECT WITHOUT A CONVERSATION IS NOT A SCOPE, and this is the edge a lazy guard
-// gets wrong. "Stamp if EITHER var is set" looks equivalent to "stamp if the conversation
-// is set" when both are empty — a zero scope reads back as the zero value either way —
-// but it is not: an orphan project would then be stamped as this session's project, and a
-// tool that scopes its work by the conversation's project would act on a project
-// belonging to no session at all. The producer never emits that combination
-// (OrchiconMCPConversationEnv returns nil without a conversation id), so the invariant has
-// to be held HERE, where a hand-wired `orchicon mcp` also lands.
+// A PROJECT WITHOUT A CONVERSATION IS NOT A SCOPE, and this is the edge a lazy guard gets wrong.
 func TestToolsCallDoesNotStampAProjectWithoutAConversation(t *testing.T) {
 	t.Setenv("ORCHICON_MCP_CONVERSATION_ID", "")
 	t.Setenv("ORCHICON_MCP_CONVERSATION_PROJECT_ID", "p-orphan")

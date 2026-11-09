@@ -19,10 +19,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/migrate"
 )
 
-// testDualAuthEnv wires a real auth.Handler with BOTH the embedded OP (local
-// sign-up) and an external OIDC IdP configured, over a migrated test DB. This
-// is the surface for the unified first-admin guard: exactly one tenant admin
-// can exist regardless of which path runs first.
+// testDualAuthEnv wires a real auth.Handler with BOTH the embedded OP (local sign-up) and an
+// external OIDC IdP configured, over a migrated test DB.
 func testDualAuthEnv(t *testing.T) (*httptest.Server, *db.Pool, *Handler) {
 	t.Helper()
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
@@ -92,11 +90,8 @@ func oidcFirstLogin(t *testing.T, srv *httptest.Server, h *Handler) bool {
 	return claims.IsAdmin
 }
 
-// TestFirstAdminGuardLocalThenOIDC pins the unified first-admin guard: a
-// local first sign-up becomes the admin, and a subsequent external-OIDC
-// first login (a NEW identity, created=true) must NOT become admin — the
-// grant keys on "no admin binding exists", not on whether the identity row
-// was new. Exactly one admin exists.
+// TestFirstAdminGuardLocalThenOIDC pins the unified first-admin guard: a local first sign-up
+// becomes the admin, and a subsequent external-OIDC first login (a NEW identity.
 func TestFirstAdminGuardLocalThenOIDC(t *testing.T) {
 	srv, pool, h := testDualAuthEnv(t)
 	const tenantID = "tnt_dev"
@@ -127,10 +122,8 @@ func TestFirstAdminGuardLocalThenOIDC(t *testing.T) {
 	}
 }
 
-// TestFirstAdminGuardOIDCThenLocal pins the unified first-admin guard in the
-// other order: an external-OIDC first login becomes the admin, and a
-// subsequent local first sign-up must NOT become admin. Exactly one admin
-// exists regardless of which path ran first.
+// TestFirstAdminGuardOIDCThenLocal pins the unified first-admin guard in the other order: an
+// external-OIDC first login becomes the admin.
 func TestFirstAdminGuardOIDCThenLocal(t *testing.T) {
 	srv, pool, h := testDualAuthEnv(t)
 	const tenantID = "tnt_dev"

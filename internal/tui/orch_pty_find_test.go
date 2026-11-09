@@ -1,23 +1,6 @@
 package tui
 
 // orch_pty_find_test.go — THE FIND BOX IN A REAL TERMINAL.
-//
-// WHY THIS EXISTS ON TOP OF THE UNIT TESTS. findbox_test.go drives the real Update with real key
-// messages and asserts the search state, which pins the BEHAVIOUR. It cannot see the surface: whether
-// the box PAINTS, whether its rows survive the frame's compositing, whether the query actually holds
-// the caret, or whether the composer row the operator reads says the right thing while the box is up.
-// Those live in the renderer and the frame composition, which is one layer further out than a unit
-// test reaches — and the operator's report was about the surface ("I would prefer a modal pop up that
-// you can type in your search").
-//
-// So this drives the REAL bin/orch in a REAL pty against the activity-E2E fixture plane, opens a real
-// conversation, and reads the box off the replayed screen grid — the layer the operator looks at.
-// Opt-in (ORCH_PTY_SMOKE=1) and skipped otherwise, like every other pty gate here.
-//
-// THE NAVIGATION KEYS ARE NOT ASSERTED HERE, deliberately: their effect is the transcript's scroll
-// offset, and this fixture serves a TWO-message conversation that fits the pane — so home/end have
-// nowhere to travel and any assertion would be vacuous. That half is pinned by
-// findbox_test.go against a parked 80-line transcript, which is where it can actually be measured.
 
 import (
 	"strings"
@@ -41,9 +24,8 @@ func TestPTYFindBoxOverARealConversation(t *testing.T) {
 
 	scr := openActivityConversation(t, s, cols, rows)
 
-	// (1) THE COMPOSER ADVERTISES THE KEYS — the operator's second ask, on the row they look at:
-	// "no note in the composer about search or jumping to beginning to end is there so no one would
-	// know they exist."
+	// (1) THE COMPOSER ADVERTISES THE KEYS — the operator's second ask, on the row they look at: "no
+	// note in the composer about search or jumping to beginning to end is there so no one would know.
 	shell := screenText(scr)
 	for _, want := range []string{"ctrl+f: find", "home/end: top·bottom"} {
 		if !strings.Contains(shell, want) {
@@ -52,9 +34,7 @@ func TestPTYFindBoxOverARealConversation(t *testing.T) {
 		}
 	}
 
-	// (2) CTRL+F PAINTS THE BOX, with a live count of the conversation that is behind it. The
-	// fixture serves exactly two messages, so a real count is the assertion that the box is reading
-	// the conversation rather than rendering a placeholder.
+	// (2) CTRL+F PAINTS THE BOX, with a live count of the conversation that is behind it.
 	_, _ = s.tty.WriteString("\x06")
 	box := waitForFrame(t, s, cols, rows, 8*time.Second, "find in transcript")
 	boxText := screenText(box)
@@ -65,17 +45,14 @@ func TestPTYFindBoxOverARealConversation(t *testing.T) {
 	}
 	t.Logf("box on screen: %s", strings.Join(boxRows(boxText), " | "))
 
-	// AND IT SAYS THE BOX'S KEYS, not the transcript's — while the box holds the keyboard those
-	// chords are inert, and a row that kept advertising them would be describing a state the
-	// operator is not in.
+	// AND IT SAYS THE BOX'S KEYS, not the transcript's — while the box holds the keyboard those chords
+	// are inert, and a row that kept advertising them would be describing a state the operator is not.
 	if !strings.Contains(boxText, "enter: keep searching") {
 		t.Errorf("while the box is up the composer row must describe the BOX's keys.\n%s",
 			tailOfPlain(boxText, 2000))
 	}
 
-	// (3) TYPING FILTERS THE REAL TRANSCRIPT, live. A term that cannot match proves the filter RAN
-	// (an unfiltered box would still say "type a term to filter") without depending on the fixture's
-	// wording.
+	// (3) TYPING FILTERS THE REAL TRANSCRIPT, live.
 	_, _ = s.tty.WriteString("zzqqxx-not-in-this-conversation")
 	typed := waitForFrame(t, s, cols, rows, 6*time.Second, "no matches in")
 	if !strings.Contains(screenText(typed), "no matches in") {
@@ -91,10 +68,7 @@ func TestPTYFindBoxOverARealConversation(t *testing.T) {
 		t.Errorf("esc must close the box.\n%s", tailOfPlain(screenText(after), 2000))
 	}
 
-	// (5) ENTER KEEPS THE SEARCH AND HANDS THE KEYBOARD TO THE TRANSCRIPT. The footer is the one
-	// place that says which surface holds the keyboard, so it is what proves the handover happened in
-	// the real shell: with the composer focused it reads "— esc/ctrl+g content"; once focus is in the
-	// content it reads "ctrl+g composer".
+	// (5) ENTER KEEPS THE SEARCH AND HANDS THE KEYBOARD TO THE TRANSCRIPT.
 	_, _ = s.tty.WriteString("\x06")
 	waitForFrame(t, s, cols, rows, 6*time.Second, "find in transcript")
 	_, _ = s.tty.WriteString("\r")

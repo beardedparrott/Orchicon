@@ -1,15 +1,7 @@
 package execution
 
-// claude_task_family_parity_test.go — the QA end-to-end leg for the claude
-// TASK-family (TaskCreate/TaskUpdate) todo parity. The claude-package suite
-// (internal/claude/todo_test.go) asserts the emitted envelope with its own
-// decoder; this test closes the loop the same way
-// TestClaudeMapperPayloadParsesWithoutAdapterBranch does for TodoWrite: it
-// drives the REAL claude Mapper over a canned stream-json lifecycle, feeds the
-// payloads the mapper ACTUALLY persists into the shared parser the RPC path
-// uses (`latestTodos`), and asserts the rendered values. A drift in
-// emitTodos (tool name, envelope nesting, the todos key) therefore fails HERE
-// rather than only in a mirror that keeps matching itself.
+// claude_task_family_parity_test.go — the QA end-to-end leg for the claude TASK-family
+// (TaskCreate/TaskUpdate) todo parity.
 
 import (
 	"context"
@@ -21,9 +13,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// taskFamilyMapperParts drives the real mapper over the canned task-family
-// lifecycle below and returns every tool_use part it persisted, in emission
-// order, plus the raw JSON of each for failure output.
+// taskFamilyMapperParts drives the real mapper over the canned task-family lifecycle below and
+// returns every tool_use part it persisted, in emission order.
 func taskFamilyMapperParts(t *testing.T) ([]db.SessionPart, []string) {
 	t.Helper()
 	var parts []db.SessionPart
@@ -68,9 +59,9 @@ func taskFamilyMapperParts(t *testing.T) ([]db.SessionPart, []string) {
 	return parts, raw
 }
 
-// TestClaudeTaskFamilyLifecycleReachesLatestTodos is the end-to-end acceptance
-// check for normalization (AC2), full parity through the single parse site
-// (AC3) and the complete lifecycle including removal (AC5).
+// TestClaudeTaskFamilyLifecycleReachesLatestTodos is the end-to-end acceptance check for
+// normalization (AC2), full parity through the single parse site (AC3) and the complete lifecycle
+// including.
 func TestClaudeTaskFamilyLifecycleReachesLatestTodos(t *testing.T) {
 	parts, raw := taskFamilyMapperParts(t)
 	if len(parts) == 0 {
@@ -108,10 +99,8 @@ func TestClaudeTaskFamilyLifecycleReachesLatestTodos(t *testing.T) {
 	}
 }
 
-// TestClaudeTaskFamilyIntermediateStatesReachLatestTodos walks the SAME
-// persisted transcript prefix-by-prefix (as the live RPC would see it during the
-// run) and asserts the created→pending, activated→in_progress,
-// completed→completed transitions are all visible at the right step.
+// TestClaudeTaskFamilyIntermediateStatesReachLatestTodos walks the SAME persisted transcript
+// prefix-by-prefix (as the live RPC would see it during the run) and asserts the created→pending.
 func TestClaudeTaskFamilyIntermediateStatesReachLatestTodos(t *testing.T) {
 	parts, raw := taskFamilyMapperParts(t)
 	at := func(n int) []*apiv1.TodoItem {

@@ -44,11 +44,8 @@ func TestATypedNewlineStaysALineInUserText(t *testing.T) {
 	}
 }
 
-// EVERY line of a longer, hand-wrapped message survives — the case that produced "a bunch of text bunched up".
-//
-// THE BULLET MARKER IS THE RENDERER'S, not the source's: "- x" is a list item and md draws it with its own "• ".
-// So this asserts the CONTENT of each line, which is what "a line was lost" means — asserting the source's marker
-// would fail on a render that lost nothing.
+// EVERY line of a longer, hand-wrapped message survives — the case that produced "a bunch of text
+// bunched up".
 func TestALongHandWrappedMessageKeepsAllItsLines(t *testing.T) {
 	src := "Bug report:\n\n- the rail shows 1-0/0\n- the counter never moves\n\nPlease fix."
 	lines, _ := RenderUserOnSpans(src, 60, Surface{})
@@ -81,10 +78,7 @@ func TestAModelNewlineIsStillCollapsedToASpace(t *testing.T) {
 	}
 }
 
-// THE OPTION IS SCOPED TO ITS RENDER AND CANNOT LEAK. md is a leaf several callers share and renders are
-// serialized by renderMu, so a flag set for one render and not cleared would silently re-wrap the NEXT
-// surface's text — the assistant transcript, a work-item description, an artifact preview — depending on call
-// order.
+// THE OPTION IS SCOPED TO ITS RENDER AND CANNOT LEAK.
 func TestTheUserBreakOptionDoesNotLeakIntoTheNextRender(t *testing.T) {
 	if user, _ := RenderUserOnSpans("a\nb", 40, Surface{}); len(user) != 2 {
 		t.Fatalf("fixture: the user render produced %d lines, want 2", len(user))
@@ -96,9 +90,7 @@ func TestTheUserBreakOptionDoesNotLeakIntoTheNextRender(t *testing.T) {
 	}
 }
 
-// LISTS WERE NEVER THE PROBLEM, and the change must not disturb them. "- one / - two / - three" is already
-// three list items — the parser handles it — so both modes must render three lines. This pins that the newline
-// fix was scoped to PROSE and did not double-break structure that already worked.
+// LISTS WERE NEVER THE PROBLEM, and the change must not disturb them.
 func TestListsRenderIdenticallyInBothModes(t *testing.T) {
 	src := "- one\n- two\n- three"
 	user, _ := RenderUserOnSpans(src, 40, Surface{})

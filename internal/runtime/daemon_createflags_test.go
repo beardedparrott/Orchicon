@@ -1,12 +1,6 @@
 package runtime
 
-// AC 3 / AC 6 pinned as argv. The daemon cannot RUN an engine in CI, so the
-// proof that every flag was verified is the argv itself: each element below is
-// the element that was checked against both engines' CLIs, with the verdict
-// recorded next to the code that emits it (daemon.go createFlagArgs, engine.go).
-//
-// daemon_secrets_test.go covers the other half — that createContainer sends
-// THESE args plus its mounts/secrets/exe tail as one real `run` argv.
+// AC 3 / AC 6 pinned as argv.
 
 import (
 	"os"
@@ -29,9 +23,8 @@ func podmanCreateDaemon(t *testing.T) (*Daemon, string) {
 	return d, home
 }
 
-// TestCreateContainerFlagsPodman is the podman argv: every flag preserved from
-// the docker create, plus the two podman-only additions (keep-id, loopback
-// publish), and --user unchanged (AC 6).
+// TestCreateContainerFlagsPodman is the podman argv: every flag preserved from the docker create,
+// plus the two podman-only additions (keep-id, loopback publish), and --user unchanged (AC 6).
 func TestCreateContainerFlagsPodman(t *testing.T) {
 	d, home := podmanCreateDaemon(t)
 	args := d.createFlagArgs("orchicon-rt-1", CreateRequest{WorkflowID: "wf-1", InstanceID: "dev"})
@@ -79,16 +72,15 @@ func TestCreateContainerFlagsPodman(t *testing.T) {
 		}
 	}
 
-	// The flag block carries no bind at all — every -v comes from the validated
-	// mount set (standardHostMountArgs and the request's own mounts), so a
-	// positionally-misplaced -v cannot hide in here.
+	// The flag block carries no bind at all — every -v comes from the validated mount set
+	// (standardHostMountArgs and the request's own mounts), so a positionally-misplaced -v cannot hide
+	// in here.
 	if argvHas(args, "-v") {
 		t.Errorf("createFlagArgs must not emit -v: %v", args)
 	}
 
-	// The full create argv's writable-home tmpfs entries survive unchanged: they are
-	// what make $HOME writable by the runtime uid, and under podman the writability
-	// comes from MODE (uid=/gid= are refused by the engine — see TestCreateHarness...).
+	// The full create argv's writable-home tmpfs entries survive unchanged: they are what make $HOME
+	// writable by the runtime uid.
 	full := append(args, d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"opencode"}, GitStrategy: "local"})...)
 	for _, opt := range homeOwnedTmpfsOpts(home, true) {
 		if strings.HasPrefix(opt, home+":") {
@@ -101,9 +93,8 @@ func TestCreateContainerFlagsPodman(t *testing.T) {
 	}
 }
 
-// TestCreateContainerFlagsDocker pins the GRANDFATHERED docker path so the swap
-// cannot silently change it: no publish, no keep-id, and the same preserved
-// flags.
+// TestCreateContainerFlagsDocker pins the GRANDFATHERED docker path so the swap cannot silently
+// change it: no publish, no keep-id, and the same preserved flags.
 func TestCreateContainerFlagsDocker(t *testing.T) {
 	d, _ := podmanCreateDaemon(t)
 	d.Engine = Engine{Name: "docker", Bin: "docker"}
@@ -130,10 +121,8 @@ func TestCreateContainerFlagsDocker(t *testing.T) {
 	}
 }
 
-// TestHostBaseURL pins AC 4's addressing end to end at the daemon seam: podman
-// resolves the published loopback port (ServePort must be the HOST port —
-// lifecycle.go and the opencode adapter build http://127.0.0.1:<ServePort> from
-// it), docker keeps the container IP and its own port.
+// TestHostBaseURL pins AC 4's addressing end to end at the daemon seam: podman resolves the
+// published loopback port (ServePort must be the HOST port.
 func TestHostBaseURL(t *testing.T) {
 	podman := &Daemon{Engine: Engine{Name: "podman", Bin: "podman"}}
 	podman.engineFn = func(args ...string) (string, error) {
@@ -171,11 +160,8 @@ func argvHas(args []string, want string) bool {
 	return false
 }
 
-// TestCreateContainerWiredToPodmanEngine is the WIRING half of AC 3: the podman
-// argv is not merely what createFlagArgs RETURNS, it is what createContainer
-// actually hands the engine. The seam captures the real `run` call, so a future
-// refactor that stops calling createFlagArgs (or drops the publish flags on the
-// way) fails here instead of silently creating an unreachable container.
+// TestCreateContainerWiredToPodmanEngine is the WIRING half of AC 3: the podman argv is not merely
+// what createFlagArgs RETURNS, it is what createContainer actually hands the engine.
 func TestCreateContainerWiredToPodmanEngine(t *testing.T) {
 	tmp, _ := os.CreateTemp("", "orchicon-exe-*")
 	tmp.Close()
@@ -214,10 +200,8 @@ func TestCreateContainerWiredToPodmanEngine(t *testing.T) {
 		return "ok", nil
 	}
 
-	// The readiness ping that follows a successful create execs the engine
-	// OUTSIDE the seam and keeps failing (no supervisor socket here), so the
-	// create goroutine simply gives up at its own deadline — the argv under test
-	// has already been captured.
+	// The readiness ping that follows a successful create execs the engine OUTSIDE the seam and keeps
+	// failing (no supervisor socket here).
 	go func() {
 		_, _ = d.createContainer("orchicon-rt-wired", CreateRequest{WorkflowID: "wf-wired"})
 	}()

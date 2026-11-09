@@ -1,16 +1,6 @@
 package tui
 
 // rail_scope_notice_test.go — the automatic launch-directory scope must SAY WHAT IT HIDES.
-//
-// The defect this pins: `applyLaunchDirScope` narrows the rail to the launch directory's
-// project, and it was completely silent about it. Combined with a rail that loaded only its
-// first page, a tenant holding 184 conversations showed ONE row — and because the scope is
-// re-derived from the same launch directory on every launch, restarting orch did not clear
-// it. The operator read that as permanent data loss ("ALL conversations except this one
-// disappeared ... even after restarting orch they are missing").
-//
-// The scope LABEL stays quiet (this is an automatic default, not a declared switch), but the
-// consequence no longer is.
 
 import (
 	"strings"

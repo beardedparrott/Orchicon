@@ -42,9 +42,8 @@ func TestStepRunResultWithVerdictCarriesTheExecutionDecision(t *testing.T) {
 
 	const stepID = "step-reviewer"
 	execID := db.NewID()
-	// A step run whose Result carries ONLY dispatch-time keys — exactly the
-	// state the race leaves behind — whose execution succeeded with a signed-off
-	// summary.
+	// A step run whose Result carries ONLY dispatch-time keys — exactly the state the race leaves
+	// behind — whose execution succeeded with a signed-off summary.
 	dispatchOnly, _ := json.Marshal(map[string]any{
 		"_work_item_id":   ticket.ID,
 		"_worker_id":      "w_se_pr_reviewer",
@@ -64,10 +63,8 @@ func TestStepRunResultWithVerdictCarriesTheExecutionDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// CreateExecution does NOT persist `output` (db/execution.go:55-86 -- the
-	// column is absent from both the INSERT and its RETURNING); production
-	// writes it through UpdateExecution when the execution completes. Mirror
-	// that, or this fixture would prove nothing about the real path.
+	// CreateExecution does NOT persist `output` (db/execution.go:55-86 -- the column is absent from
+	// both the INSERT and its RETURNING).
 	out := "All gates green.\n\nORCHICON WORKER SUMMARY: success — reviewed the change.\n"
 	if _, err := db.UpdateExecution(ctx, ttx.Tx, approvalTestTenant, exec.ID, exec.Version,
 		db.UpdateExecutionFields{Output: &out}); err != nil {
@@ -116,10 +113,7 @@ func TestStepRunResultWithVerdictCarriesTheExecutionDecision(t *testing.T) {
 	}
 }
 
-// TestStepRunResultWithVerdictDoesNotClobberAnExistingDecision guards the OTHER
-// writer. The TaskReconciler may already have written the verdict (it won the
-// race); the helper must leave it untouched rather than re-deriving it, so the
-// two paths can never disagree about what the reviewer said.
+// TestStepRunResultWithVerdictDoesNotClobberAnExistingDecision guards the OTHER writer.
 func TestStepRunResultWithVerdictDoesNotClobberAnExistingDecision(t *testing.T) {
 	pool, _, run, ticket := newReconcileRun(t, nil, nil, func(t *testing.T, ttx *db.TenantTx, run db.WorkflowRunRow, ticket db.WorkItemRow) {})
 	ctx := context.Background()
@@ -189,9 +183,8 @@ func TestStepRunResultWithVerdictDoesNotClobberAnExistingDecision(t *testing.T) 
 	}
 }
 
-// TestStepRunResultWithVerdictHandlesNoExecution: a step run with no execution
-// link (a dispatch that never produced one) must be a no-op, not an error — the
-// terminal mark still has to land so the step does not wedge.
+// TestStepRunResultWithVerdictHandlesNoExecution: a step run with no execution link (a dispatch
+// that never produced one) must be a no-op, not an error.
 func TestStepRunResultWithVerdictHandlesNoExecution(t *testing.T) {
 	pool, _, run, ticket := newReconcileRun(t, nil, nil, func(t *testing.T, ttx *db.TenantTx, run db.WorkflowRunRow, ticket db.WorkItemRow) {})
 	ctx := context.Background()

@@ -38,9 +38,6 @@ import (
 )
 
 // apiShape describes one version of the serve's HTTP API.
-//
-// Every field is a PATH FRAGMENT, never a full URL: the client owns its base URL and the shape owns
-// only the routes, so a shape can be table-tested without a server.
 type apiShape struct {
 	// name is "v1" or "v2" — for logs, errors and test failures, never for logic.
 	name string
@@ -61,34 +58,20 @@ type apiShape struct {
 	codeMode bool
 	// prefix is prepended to every session route: "" on v1, "/api" on v2.
 	prefix string
-	// healthPath is the readiness probe. It is NOT prefix+something on either version: v1 uses
-	// /global/health and v2 replaced it with /api/info (the audit merged and renamed the old health
-	// and server endpoints into server.info).
+	// healthPath is the readiness probe.
 	healthPath string
 	// The suffixes that differ between versions, kept as data so a correction is one line.
 	promptSuffix  string // v1 "prompt_async" | v2 "prompt"
 	abortSuffix   string // v1 "abort"        | v2 "interrupt"
 	compactSuffix string // v1 "summarize"    | v2 "compact"
 	// approvalStyle selects the permission-reply ROUTE SHAPE, which is not a suffix swap: v1 nests a
-	// collection (/permissions/{id}) and v2 addresses the reply as a sub-resource
-	// (/permission/{id}/reply). Modelled as a flag rather than a builder func so the shape stays
-	// comparable and table-testable.
+	// collection (/permissions/{id}) and v2 addresses the reply as a sub-resource.
 	permissionReplyNested bool
-	// permissionReplyField is the JSON key carrying the decision: v1 "response", v2 "decision"
-	// (audit: "Renamed request field from `reply` to `decision`").
-	//
-	// ⚠ UNVERIFIED beyond the audit's note — see the file comment.
+	// permissionReplyField is the JSON key carrying the decision: v1 "response", v2 "decision" (audit:
+	// "Renamed request field from `reply` to `decision`").
 	permissionReplyField string
 
-	// promptPathOverride, when set, replaces promptPath() for a surface that carries a v2-STYLE prompt
-	// route ALONGSIDE its v1 routes.
-	//
-	// IT EXISTS INSTEAD OF A `prefix` CHANGE ON PURPOSE. opencode 1.18+ serves BOTH
-	// /session/{id}/prompt_async (v1) and /api/session/{id}/prompt (the v2-shaped route, which accepts
-	// `delivery`). Reaching the second by setting prefix="/api" would also move abort, compact and the
-	// permission reply onto /api paths that were never verified on 1.x — breaking the paths that work
-	// today in order to improve one. Overriding ONLY the prompt route keeps the blast radius at the one
-	// call being changed.
+	// Overriding ONLY the prompt route keeps the blast radius at the one call being changed.
 	promptPathOverride func(sessionID string) string
 	// promptStyle selects how a message is expressed, and the two are NOT interchangeable.
 	//
@@ -113,13 +96,8 @@ type apiShape struct {
 	// setModelPath builds the route that sets a session's model, for surfaces whose PROMPT body
 	// cannot carry it. Empty on v1, where the model rides each prompt.
 	setModelPath func(sessionID string) string
-	// setAgentPath builds the route that switches a session's AGENT, or is nil on a surface with
-	// no such route (v1).
-	//
-	// It is how a per-execution system prompt reaches the model on v2. An agent's `system` is the
-	// only channel that actually governs the model there (see adapter.WorkerAgent for the
-	// measurement), and it is fixed when the serve is configured — so the serve registers one
-	// agent per step worker and the execution selects its own HERE.
+	// setAgentPath builds the route that switches a session's AGENT, or is nil on a surface with no
+	// such route (v1).
 	setAgentPath func(sessionID string) string
 	// responseEnvelope is the key v2 wraps SESSION responses in, or "" when responses are bare.
 	//
@@ -161,9 +139,7 @@ type apiShape struct {
 	modelsArgs []string
 }
 
-// shapeV1 is the surface the adapter was written against, and the DEFAULT. It is default because it
-// is what every existing install in the field runs; a detection failure must not silently switch an
-// operator to a surface their serve does not implement.
+// shapeV1 is the surface the adapter was written against, and the DEFAULT.
 var shapeV1 = apiShape{
 	name:                  "v1",
 	prefix:                "",
@@ -218,10 +194,8 @@ var shapeV1APIPrompt = func() apiShape {
 	return sh
 }()
 
-// v1APIPromptMinMinor is the lowest 1.x MINOR measured to carry /api/session/{id}/prompt: 1.18.34 was
-// run and probed, 1.19.4 was run and probed. A 1.x below this keeps prompt_async and its existing
-// behaviour — a missed improvement rather than a break, which is the correct direction for a floor
-// that was measured on two versions rather than read from a changelog.
+// v1APIPromptMinMinor is the lowest 1.x MINOR measured to carry /api/session/{id}/prompt: 1.18.34
+// was run and probed, 1.19.4 was run and probed.
 const v1APIPromptMinMinor = 18
 
 // apiPromptUnsupportedVersion is the shape for 1.x versions below the measured floor.
@@ -256,8 +230,6 @@ var shapeV2 = apiShape{
 	// (session.switchModel, audit 055: POST /api/session/{sessionID}/model, body {model: Model.Ref}).
 	setModelPath: func(id string) string { return "/api/session/" + id + "/model" },
 	// session.switchAgent (audit 054: POST /api/session/{sessionID}/agent, body {agent: Agent.ID}).
-	// Present for the same reason setModelPath is — v2's prompt body cannot carry it — and it is
-	// what delivers the worker's prompt on 2.x.
 	setAgentPath: func(id string) string { return "/api/session/" + id + "/agent" },
 }
 
@@ -304,13 +276,7 @@ func (s apiShape) eventPath() string { return s.prefix + "/event" }
 // carries no flag at all, so it is the one thing every version must accept.
 func modelsFallbackArgs() []string { return []string{"models"} }
 
-// THE MAJOR IS THE ONLY THING THAT DECIDES. The audit is titled "V2", the two command trees agree
-// that the break is at 2.0, and reading a minor or patch would invent precision this project does not
-// have — there is no changelog entry that pins the switch to a patch release.
-//
-// An UNPARSEABLE version returns v1 and false rather than guessing: v1 is what the installed base
-// runs, so a version we cannot read must leave behaviour exactly as it was. The bool is what lets the
-// caller say so out loud instead of silently assuming.
+// THE MAJOR IS THE ONLY THING THAT DECIDES.
 func apiShapeForVersion(version string) (apiShape, bool) {
 	v := strings.TrimSpace(version)
 	v = strings.TrimPrefix(v, "v")
@@ -326,8 +292,7 @@ func apiShapeForVersion(version string) (apiShape, bool) {
 		return shapeV2, true
 	}
 	// 1.x: above the measured floor the serve also carries the v2-shaped PROMPT route, which is the
-	// only way to steer an interjection into the running turn (see shapeV1APIPrompt). Below it, the
-	// behaviour is exactly what it has always been.
+	// only way to steer an interjection into the running turn (see shapeV1APIPrompt).
 	if minor, ok := minorOf(v); ok && minor >= v1APIPromptMinMinor {
 		return shapeV1APIPrompt, true
 	}
@@ -349,11 +314,6 @@ func minorOf(v string) (int, bool) {
 }
 
 // detectAPIShape asks the binary which surface it serves.
-//
-// It runs `opencode --version` — a subprocess, so it is called ONCE per long-lived client rather than
-// per request. A failure is not fatal: the caller keeps v1 and should log the fact, because a client
-// that silently picked a surface it could not confirm would produce the endpoint-shaped mystery this
-// file exists to remove.
 func detectAPIShape(ctx context.Context, binary string) (shape apiShape, version string, ok bool) {
 	if strings.TrimSpace(binary) == "" {
 		return shapeV1, "", false
@@ -377,12 +337,7 @@ func detectAPIShape(ctx context.Context, binary string) (shape apiShape, version
 }
 
 // ModelsArgs returns the argv for LISTING MODELS with the opencode binary at path, in the form that
-// binary's API surface requires.
-//
-// EXPORTED BECAUSE THE RULE MUST NOT BE RE-DERIVED. The discoverer lives in another package and needs
-// the argv, and the version rule behind it lives here — v2 needs `--standalone` or the command starts
-// a background daemon (see apiShape.modelsArgs). A second copy of that rule in the caller is how the
-// two drift, and the symptom would be a hang that comes back.
+// binary's API surface requires. EXPORTED BECAUSE THE RULE MUST NOT BE RE-DERIVED.
 func ModelsArgs(ctx context.Context, log *slog.Logger, binary string) []string {
 	return shapeForBinary(ctx, log, binary).modelsArgs
 }
@@ -399,16 +354,6 @@ var (
 )
 
 // shapeForBinary returns the API surface served by the opencode binary at path, detecting it once.
-//
-// THE CACHE IS PROCESS-LIFETIME, which is sound HERE for a specific reason rather than by assumption:
-// replacing the binary is exactly what makes the installer RESTART the host plane — startHostPlane
-// compares /proc/<pid>/exe against the installed path and restarts a plane whose binary has drifted —
-// so a long-lived process is not left holding a verdict about a binary that was swapped underneath it.
-//
-// A FAILED DETECTION IS LOGGED, NOT SWALLOWED. Silently assuming v1 is the right DEFAULT (see
-// shapeV1) but the wrong SILENCE: on a 2.x install every session call would then fail against
-// endpoints that do not exist, and nothing would say why. The warning names the version output so an
-// operator can see what was unparseable.
 func shapeForBinary(ctx context.Context, log *slog.Logger, binary string) apiShape {
 	if strings.TrimSpace(binary) == "" {
 		return shapeV1

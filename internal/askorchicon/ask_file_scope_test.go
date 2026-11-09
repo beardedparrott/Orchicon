@@ -1,12 +1,7 @@
 package askorchicon
 
-// ask_file_scope_test.go — THE FILE/SHELL SUITE BINDS TO THE CONVERSATION'S PROJECT, and the probe says
-// which boundary it is on. No DB: the resolver seam (askFileRootStub) is stubbed, so these run everywhere.
-//
-// The defect this pins: AskFileRoot used to resolve the TENANT's first active project with a project_dir,
-// conversation-blind, while the prompt named the CONVERSATION's project. With two active projects the two
-// halves disagreed silently and every relative write landed in the wrong tree. The fix routes both halves
-// through one value (withAskConversationProject → AskFileScopeFor), and these tests hold that line.
+// ask_file_scope_test.go — THE FILE/SHELL SUITE BINDS TO THE CONVERSATION'S PROJECT, and the probe
+// says which boundary it is on.
 
 import (
 	"context"
@@ -47,9 +42,7 @@ func TestConversationProjectRidesTheTurnContext(t *testing.T) {
 	}
 }
 
-// THE PROBE ENVELOPE MUST NAME WHICH BOUNDARY IT IS ON. A fallback anchor presented as the conversation's own
-// project is exactly the silent lie the fix removes; the machine-readable `scope` is what the consent layer
-// (the next work item) branches on.
+// THE PROBE ENVELOPE MUST NAME WHICH BOUNDARY IT IS ON.
 func TestAskFileRootEnvelopeNamesTheScope(t *testing.T) {
 	p := (&Service{}).NativeAskTools()
 	ctx := context.Background()
@@ -97,9 +90,8 @@ func TestAskFileRootEnvelopeNamesTheScope(t *testing.T) {
 	}
 }
 
-// THE SUITE USES THE RESOLVED SCOPE, and resolves it EXACTLY ONCE PER CALL: the probe and every host-suite
-// call go through the same seam, and nothing is cached across calls (the per-execution resolution the work
-// item requires — and the "no extra DB round trip" AC: one resolution, not one per tool).
+// THE SUITE USES THE RESOLVED SCOPE, and resolves it EXACTLY ONCE PER CALL: the probe and every
+// host-suite call go through the same seam.
 func TestAskFileSuiteUsesTheResolvedScope(t *testing.T) {
 	p := (&Service{}).NativeAskTools()
 	dir := t.TempDir()

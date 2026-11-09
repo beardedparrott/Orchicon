@@ -8,9 +8,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/diffs"
 )
 
-// TestDiffToggleRequiresContentFocus: D / shift+D toggles the pane only
-// when focus is on the content (never while composing — `d` stays a literal
-// character in the composer; Ctrl+D is never bound).
+// TestDiffToggleRequiresContentFocus: D / shift+D toggles the pane only when focus is on the
+// content (never while composing — `d` stays a literal character in the composer; Ctrl+D is never
+// bound).
 func TestDiffToggleRequiresContentFocus(t *testing.T) {
 	m := newTestApp()
 
@@ -89,14 +89,6 @@ type diffStubOwner struct {
 func (s *diffStubOwner) DetailID() string { return s.detailID }
 
 // THE DIFF PANE IS SIZED TO THE TERMINAL, not fixed at 48.
-//
-// The operator: "the diff box is very tiny and cut off. Maybe we should increase the size of the diff
-// pane." At a fixed 48 a side-by-side diff gets ~18 cells of code per column after the line numbers,
-// which cannot show a line of Go — and on a 190-column terminal it wasted most of the width.
-//
-// This also pins the property that made the width a METHOD: the pane's drawn width and its clickable
-// region must be the same number, so a click near the right edge cannot land on the content pane while
-// looking like it is inside the diff.
 func TestDiffPaneWidthScalesWithTheTerminal(t *testing.T) {
 	m := newTestApp()
 	m.diffOpen = true

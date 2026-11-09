@@ -92,9 +92,8 @@ func createStuckTestProject(t *testing.T, pool *db.Pool) db.ProjectRow {
 	return proj
 }
 
-// TestReconcileRunFailsEmptyStepDag verifies a run on a workflow whose
-// published version has NO steps is failed at start by the reconciler
-// instead of sitting "running" forever (the container leak).
+// TestReconcileRunFailsEmptyStepDag verifies a run on a workflow whose published version has NO
+// steps is failed at start by the reconciler instead of sitting "running" forever (the container.
 func TestReconcileRunFailsEmptyStepDag(t *testing.T) {
 	pool := approvalTestPool(t)
 	proj := createStuckTestProject(t, pool)
@@ -146,9 +145,8 @@ func TestReconcileRunFailsEmptyStepDag(t *testing.T) {
 	}
 }
 
-// TestReconcileRunFailsMissingVersion verifies a run whose workflow
-// version row is gone (deleted workflow / raw-seeded run) is failed at
-// start rather than erroring every pass forever.
+// TestReconcileRunFailsMissingVersion verifies a run whose workflow version row is gone (deleted
+// workflow / raw-seeded run) is failed at start rather than erroring every pass forever.
 func TestReconcileRunFailsMissingVersion(t *testing.T) {
 	pool := approvalTestPool(t)
 	proj := createStuckTestProject(t, pool)
@@ -195,10 +193,8 @@ func TestReconcileRunFailsMissingVersion(t *testing.T) {
 	}
 }
 
-// TestPollTaskStepFailsOnDeletedWorkItem verifies a running task step
-// whose referenced work item was hard-deleted is failed terminal by
-// pollTaskStep instead of being waited on forever (the run then
-// terminalizes and its container is reaped).
+// TestPollTaskStepFailsOnDeletedWorkItem verifies a running task step whose referenced work item
+// was hard-deleted is failed terminal by pollTaskStep instead of being waited on forever (the run.
 func TestPollTaskStepFailsOnDeletedWorkItem(t *testing.T) {
 	pool := approvalTestPool(t)
 	proj := createStuckTestProject(t, pool)
@@ -256,9 +252,8 @@ func TestPollTaskStepFailsOnDeletedWorkItem(t *testing.T) {
 	}
 }
 
-// TestPollTaskStepRecoversOnDeletedExecution verifies a running task step
-// whose worker execution row was hard-deleted falls through to the
-// recovery block (retry) instead of being waited on forever.
+// TestPollTaskStepRecoversOnDeletedExecution verifies a running task step whose worker execution
+// row was hard-deleted falls through to the recovery block (retry) instead of being waited.
 func TestPollTaskStepRecoversOnDeletedExecution(t *testing.T) {
 	pool := approvalTestPool(t)
 	proj := createStuckTestProject(t, pool)

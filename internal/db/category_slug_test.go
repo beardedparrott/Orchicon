@@ -60,9 +60,8 @@ func categoryTestTx(t *testing.T) (context.Context, pgx.Tx, string) {
 	return ctx, ttx.Tx, tenant
 }
 
-// TestCategorySlugCreateRetriesPastACollision is the operator-visible defect: creating a grouping whose
-// name differs from an existing one only by CASE produced an opaque "transaction is aborted" error
-// instead of a grouping (and it is reachable from the assign modal's "＋ new category…").
+// TestCategorySlugCreateRetriesPastACollision is the operator-visible defect: creating a grouping
+// whose name differs from an existing one only by CASE produced an opaque "transaction is aborted".
 func TestCategorySlugCreateRetriesPastACollision(t *testing.T) {
 	ctx, tx, tenant := categoryTestTx(t)
 
@@ -166,9 +165,8 @@ func TestCategorySlugUpdateRetriesPastACollision(t *testing.T) {
 	}
 }
 
-// TestCategorySlugCreateIsScopedToItsTargetType: verified while answering "do the three share names?".
-// They do NOT — the constraints are per (tenant, target_type) — so a worker grouping named
-// "Automation" and a workflow grouping named "Automation" coexist, and neither is suffixed.
+// TestCategorySlugCreateIsScopedToItsTargetType: verified while answering "do the three share
+// names?".
 func TestCategorySlugCreateIsScopedToItsTargetType(t *testing.T) {
 	ctx, tx, tenant := categoryTestTx(t)
 

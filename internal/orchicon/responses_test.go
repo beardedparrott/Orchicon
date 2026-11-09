@@ -177,9 +177,8 @@ func TestResponsesRequestShaping(t *testing.T) {
 	if len(rr.Tools) != 1 || rr.Tools[0].Name != "fn" {
 		t.Fatalf("tools = %#v", rr.Tools)
 	}
-	// input: system, user, function_call, function_call_output — function
-	// payloads are top-level items (the wire rejects them nested inside a
-	// message content array).
+	// input: system, user, function_call, function_call_output — function payloads are top-level items
+	// (the wire rejects them nested inside a message content array).
 	if len(rr.Input) != 4 {
 		t.Fatalf("input = %#v, want 4 items", rr.Input)
 	}
@@ -221,15 +220,8 @@ func TestResponsesRequestShapingMixedAssistant(t *testing.T) {
 	}
 }
 
-// 2026-09-09 cross-provider resume regression: the Responses provider
-// REQUIRES the `output` field on every function_call_output item. A tool
-// result with empty content (a prior wire produced an empty result, or a
-// mid-session switch replayed history with a bare tool round) previously
-// serialized as `output,omitempty` — the field was dropped and the new
-// provider rejected the turn with "input[N] missing required field
-// `output`" (observed switching onto a muse-spark model). Empty output
-// must default to a present neutral placeholder and errors must be
-// prefixed so the field is ALWAYS present.
+// 2026-09-09 cross-provider resume regression: the Responses provider REQUIRES the `output` field
+// on every function_call_output item.
 func TestResponsesRequestShapingToolOutputAlwaysPresent(t *testing.T) {
 	base := []Message{
 		{Role: RoleAssistant, Content: []Content{{ToolUse: &ContentToolUse{ToolCallID: "c1", Name: "fn", ArgsJSON: `{}`}}}},
@@ -273,9 +265,8 @@ func TestResponsesRequestShapingToolOutputAlwaysPresent(t *testing.T) {
 	}
 }
 
-// Object-shaped deltas ({"delta":{"text":"Hi"}}) must decode like the
-// compact string form — otherwise a gateway that emits the object shape
-// fails every turn as "bad sse payload".
+// Object-shaped deltas ({"delta":{"text":"Hi"}}) must decode like the compact string form —
+// otherwise a gateway that emits the object shape fails every turn as "bad sse payload".
 func TestResponsesStreamObjectDelta(t *testing.T) {
 	body := sse(
 		`{"type":"response.output_text.delta","delta":{"text":"Hello"}}`,
@@ -304,9 +295,8 @@ func TestResponsesStreamObjectDelta(t *testing.T) {
 	}
 }
 
-// Done-only text (no deltas, text on output_text.done) must still produce
-// a reply — otherwise the Ask history commit is skipped (empty reply) and
-// the follow-up looks like a first message.
+// Done-only text (no deltas, text on output_text.done) must still produce a reply — otherwise the
+// Ask history commit is skipped (empty reply) and the follow-up looks like a first message.
 func TestResponsesStreamDoneOnlyText(t *testing.T) {
 	body := sse(
 		`{"type":"response.output_text.done","text":"full answer"}`,
@@ -331,9 +321,8 @@ func TestResponsesStreamDoneOnlyText(t *testing.T) {
 	}
 }
 
-// A replayed output_item.added frame for the same item must not produce a
-// second ToolCall: two results for one call_id make the wire reject the
-// turn as a duplicate function_call_output.
+// A replayed output_item.added frame for the same item must not produce a second ToolCall: two
+// results for one call_id make the wire reject the turn as a duplicate function_call_output.
 func TestResponsesStreamReplayedAddedIsDeduped(t *testing.T) {
 	body := sse(
 		`{"type":"response.output_item.added","item_id":"fc_1","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"fn"}}`,
@@ -366,9 +355,8 @@ func TestResponsesStreamReplayedAddedIsDeduped(t *testing.T) {
 	}
 }
 
-// The done item carries the COMPLETE arguments: they replace streamed
-// fragments (authoritative), never append — appending yields "{...}{...}",
-// which fails JSON validation and silently blanks the call's args.
+// The done item carries the COMPLETE arguments: they replace streamed fragments (authoritative),
+// never append — appending yields "{...}{...}".
 func TestResponsesStreamDoneArgsReplaceFragments(t *testing.T) {
 	body := sse(
 		`{"type":"response.output_item.added","item_id":"fc_1","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"fn"}}`,
@@ -401,10 +389,7 @@ func TestResponsesStreamDoneArgsReplaceFragments(t *testing.T) {
 	}
 }
 
-// The done frame echoes the COMPLETE output text after the deltas already
-// streamed it. Feeding both duplicates the whole reply (and re-splits
-// inline reasoning into text) — the done frame must be skipped when deltas
-// were seen for the output.
+// The done frame echoes the COMPLETE output text after the deltas already streamed it.
 func TestResponsesStreamDoneDoesNotDuplicateDeltas(t *testing.T) {
 	body := sse(
 		`{"type":"response.output_text.delta","output_index":0,"delta":"Got it"}`,

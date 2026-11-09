@@ -47,8 +47,8 @@ import (
 type findBox struct {
 	input textinput.Model
 	// prevQuery and prevMatch are WHAT ESC PUTS BACK — the search the operator had before the box
-	// opened, so a box opened to look at something can always be abandoned without losing a search
-	// they had already built.
+	// opened, so a box opened to look at something can always be abandoned without losing a search they
+	// had.
 	prevQuery string
 	prevMatch int
 }
@@ -57,30 +57,17 @@ type findBox struct {
 // than as a field, which is the same mistake the rail's chord list made when it was drawn in the rail.
 const findBoxPrompt = "find > "
 
-// findBoxKeysHint is the box's own key line. It names only keys the box actually honours — and it
-// deliberately does NOT name n/N, which are the transcript's chords rather than the box's: while the
-// box is up those are letters in the operator's search term.
+// findBoxKeysHint is the box's own key line.
 const findBoxKeysHint = "enter: keep searching · ↑/↓: step matches · esc: cancel"
 
 // openFindBox opens the transcript find box (ctrl+f).
-//
-// THE QUERY STARTS FROM THE ACTIVE SEARCH, NOT FROM THE COMPOSER. Seeding it from the composer is
-// exactly the "type the term first, then press ctrl+f" order the operator called unintuitive, and it
-// turned a half-written message into a search term. Re-opening with the CURRENT query is the useful
-// seed instead: ctrl+f then means "refine this search", and there is nothing to guess when no search
-// is active yet.
-//
-// The input's blink command is STAGED rather than returned, because a KeyRoute.Handle can only report
-// a bool — the same constraint pendingStopCmd exists for; drainStaged re-emits it.
 func (m *App) openFindBox() {
 	if m.chatConvID == "" {
 		m.dock.SetError("no conversation open — nothing to search")
 		return
 	}
 	if m.active != TabAsk {
-		// The box filters the OPEN CONVERSATION, which is only on screen on Ask. Opening an invisible
-		// filter from another tab would look like the chord did nothing while it quietly hid messages,
-		// so the notice says where the surface is instead.
+		// The box filters the OPEN CONVERSATION, which is only on screen on Ask.
 		m.dock.SetNotice("ctrl+f searches the open conversation — F1 opens Ask Orchicon")
 		return
 	}
@@ -88,12 +75,10 @@ func (m *App) openFindBox() {
 	in.Prompt = findBoxPrompt
 	in.PromptStyle = theme.DetailKey
 	// THE CARET IS THE COMPOSER'S, deliberately: theme.ComposerCursor is written PRE-REVERSED (bubbles
-	// reverses the style again before painting), so it is the one caret style in this codebase that is
-	// known legible on every palette. A fresh style here would be a second caret with its own bugs.
+	// reverses the style again before painting).
 	in.Cursor.Style = theme.ComposerCursor
 	// TextStyle carries the panel's own foreground: the box sits on a solid PANEL, so inheriting the
-	// terminal's default foreground would put light-theme text on a light panel — the exact legibility
-	// failure theme.PanelBg exists to prevent.
+	// terminal's default foreground would put light-theme text on a light panel.
 	in.TextStyle = lipgloss.NewStyle().Foreground(theme.Text)
 	in.SetValue(m.askSearch)
 	in.CursorEnd()
@@ -126,20 +111,11 @@ func (m *App) findBoxKey(k tea.KeyMsg) (bool, tea.Cmd) {
 		m.askSearchStep(1)
 		return true, nil
 	case "ctrl+c", "ctrl+g":
-		// THE HARD ESCAPES ARE NOT THE BOX'S TO EAT. Both are documented as working from ANY state —
-		// ctrl+c quits even mid-composition, and ctrl+g returns to the composer and DISMISSES whatever
-		// holds the keys. A modal that swallowed them would be the "ctrl+g is spotty and usually
-		// doesn't work" class of bug the chord exists to end. So the box closes first (cancel: the
-		// operator is leaving), and the key is handed back for the ONE implementation of each chord to
-		// run — it must be closed here, or it would still own the keyboard while the composer had the
-		// caret, which is the split-keyboard state ctrl+g is written to avoid.
+		// THE HARD ESCAPES ARE NOT THE BOX'S TO EAT.
 		m.cancelFindBox()
 		return false, nil
 	}
-	// EVERYTHING ELSE IS THE QUERY. This is why the box is claimed AHEAD of the composer, the slash
-	// palette and every route: the letters that are chords elsewhere ('q' quits, 'n' steps through
-	// matches, '/' opens the palette) are ordinary characters in a search term, and a find box that
-	// quits the shell when you search for "query" is not a find box.
+	// EVERYTHING ELSE IS THE QUERY.
 	before := m.findBox.input.Value()
 	next, cmd := m.findBox.input.Update(k)
 	m.findBox.input = next
@@ -187,14 +163,8 @@ func (m *App) findBoxView(base string, w, h int) string {
 	return m.overlayCentered(base, m.modalPanel(m.findBoxBody(m.modalInnerWidth()), m.modalWidth()))
 }
 
-// findBoxBody renders the box's interior: the title, the query with its caret, the live count, and the
-// keys.
-//
-// THE QUERY ROW IS SIZED FROM THE PANEL'S OWN INTERIOR WIDTH, so a long term scrolls INSIDE the input
-// instead of the panel clipping the caret off the end — a find field whose caret can be pushed out of
-// sight cannot be edited. The two text rows are truncated to the same width for the reason the rail's
-// chord list is: a body line is cut to the panel's interior, and a hint cut mid-word advertises a key
-// nobody can read.
+// findBoxBody renders the box's interior: the title, the query with its caret, the live count, and
+// the keys.
 func (m *App) findBoxBody(inner int) string {
 	m.findBox.input.Width = max(inner-lipgloss.Width(findBoxPrompt), 8)
 	return strings.Join([]string{
@@ -205,9 +175,8 @@ func (m *App) findBoxBody(inner int) string {
 	}, "\n")
 }
 
-// findBoxCountLine is the box's live count: what the query currently matches, or how much there is to
-// search when nothing has been typed yet. It is never blank, so the operator can always tell whether
-// the filter is doing anything.
+// findBoxCountLine is the box's live count: what the query currently matches, or how much there is
+// to search when nothing has been typed yet.
 func (m *App) findBoxCountLine() string {
 	q := strings.TrimSpace(m.findBox.input.Value())
 	items := m.chatStore.snapshot(m.chatConvID)

@@ -9,11 +9,7 @@ import (
 	"testing"
 )
 
-// hosttools_test.go: the host tool suite (ADR-0007's deferred tool-suite
-// task). Pins: the full core suite is advertised; read/write/edit/grep/
-// glob/list/bash round-trip against a real temp dir; every path escapes
-// the containment boundary; the bridge composes host + MCP (dedup, host
-// wins).
+// hosttools_test.go: the host tool suite (ADR-0007's deferred tool-suite task).
 
 func TestHostToolsDefsShape(t *testing.T) {
 	h := NewHostTools(t.TempDir(), "")
@@ -42,9 +38,9 @@ func TestHostToolsDefsShape(t *testing.T) {
 			t.Errorf("loop treats %q as a file-writing tool; not advertised", n)
 		}
 	}
-	// The native engine must advertise todowrite: the composite prompt
-	// orders a todowrite call every turn, so a missing def fails every turn
-	// with `unknown tool "todowrite"` (native-adapter runs only).
+	// The native engine must advertise todowrite: the composite prompt orders a todowrite call every
+	// turn, so a missing def fails every turn with `unknown tool "todowrite"` (native-adapter runs
+	// only).
 	if !seen["todowrite"] {
 		t.Error("todowrite must be advertised (composite prompt orders it every turn)")
 	}

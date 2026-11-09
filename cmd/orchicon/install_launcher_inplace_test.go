@@ -119,14 +119,8 @@ func TestReinstallOverARealFileOrchReportsAlreadyInstalled(t *testing.T) {
 	}
 }
 
-// IN THE IN-PLACE LAYOUT "FOREIGN" IS NOT A DISTINGUISHABLE STATE, and the safe action is the same either
-// way. The ownership test compares the candidate with sibling — which here is the same path, so it always
-// matches. That is not a hole: the installer places nothing at that path, because whatever is there already
-// occupies the location its launcher would. What must hold is that it is left EXACTLY as found.
-//
-// The genuine foreign case — a launcher this install did not place, in a DIFFERENT directory — is the one
-// where a wrong choice can hijack someone else's binary, and it is covered by
-// TestAForeignLauncherIsStillRefused.
+// IN THE IN-PLACE LAYOUT "FOREIGN" IS NOT A DISTINGUISHABLE STATE, and the safe action is the same
+// either way.
 func TestAnOrchAlreadyInPlaceIsLeftByteForByte(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fixture uses a shell script as the stand-in binary")
@@ -168,10 +162,7 @@ func TestAnOrchAlreadyInPlaceIsLeftByteForByte(t *testing.T) {
 
 // --- claim 1: the PATH entry -------------------------------------------------
 
-// A SUBSTRING MATCH ON THE DIRECTORY IS NOT "THE ENTRY IS THERE". The guard has to recognise the LINE it
-// would write, or a profile that merely mentions the directory — a commented-out line, a sibling path like
-// ~/.local/bin-old, a comment naming the install — suppresses the entry entirely and the operator gets the
-// silent no-op this whole mechanism exists to remove.
+// A SUBSTRING MATCH ON THE DIRECTORY IS NOT "THE ENTRY IS THERE".
 func TestProfileGuardMatchesTheLineNotASubstring(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -246,9 +237,8 @@ func TestPATHEntryIsNotWrittenWhenTheDirIsAlreadyOnPath(t *testing.T) {
 	}
 }
 
-// SHELL IS NOT ALWAYS SET, and on macOS a non-interactive context (a Finder-launched terminal, some CI) has
-// no SHELL at all — which used to leave the entry unwritten and fall back to the advice that caused this
-// report. The login shell is resolvable from the directory service regardless.
+// SHELL IS NOT ALWAYS SET, and on macOS a non-interactive context (a Finder-launched terminal, some
+// CI) has no SHELL at all.
 func TestLoginShellIsResolvedWithoutSHELL(t *testing.T) {
 	t.Setenv("SHELL", "")
 	shell := resolveLoginShell()

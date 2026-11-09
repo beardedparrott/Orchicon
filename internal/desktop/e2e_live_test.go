@@ -1,15 +1,6 @@
 //go:build desktop_e2e
 
 // Transport proof against a REAL planes — never a mock.
-//
-// Run: ORCHICON_DESKTOP_PLANE_URL=http://127.0.0.1:8080 go test -tags desktop_e2e ./internal/desktop -run TestLive -v
-//
-// WHAT THIS PROVES AND WHAT IT DOES NOT: it proves unary RPCs and a long-lived
-// Connect server-stream both survive the shell's loopback origin, using the
-// generated Go Connect client (the same Connect protocol the SPA's
-// createConnectTransport speaks). It does NOT prove WebKit's own fetch-body
-// streaming or the webview's cookie jar — that is the E2E task's job, and saying
-// so here keeps it from being assumed proven.
 package desktop
 
 import (
@@ -54,9 +45,8 @@ func TestLiveUnaryRPC(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if _, err := client.ListProjects(ctx, connect.NewRequest(&apiv1.ListProjectsRequest{})); err != nil {
-		// Unauthenticated is EXPECTED without a session: what this proves is that the
-		// request reached the plane through the shell and got a Connect-shaped answer
-		// rather than index.html.
+		// Unauthenticated is EXPECTED without a session: what this proves is that the request reached the
+		// plane through the shell and got a Connect-shaped answer rather than index.html.
 		if connect.CodeOf(err) == connect.CodeUnauthenticated || connect.CodeOf(err) == connect.CodePermissionDenied {
 			t.Logf("reached the plane through the shell origin (unauthenticated, as expected): %v", err)
 			return
@@ -100,9 +90,8 @@ func TestLiveServerStreaming(t *testing.T) {
 	if err := stream.Err(); err != nil {
 		t.Fatalf("stream error after %d events: %v", count, err)
 	}
-	// THREE EVENTS SPREAD OVER TIME is the assertion that catches the silent-stop
-	// failure: a stream that yields once and then stalls fails this, not a
-	// single-frame check.
+	// THREE EVENTS SPREAD OVER TIME is the assertion that catches the silent-stop failure: a stream
+	// that yields once and then stalls fails this, not a single-frame check.
 	if count < 3 {
 		t.Fatalf("only %d events arrived through the shell — a live execution view would look stalled", count)
 	}

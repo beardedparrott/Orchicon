@@ -1,17 +1,6 @@
 package server
 
 // TUI auth pinning test (architect plan §4 / step 6).
-//
-// orch is a pure HTTP/Connect client of the plane. Its entire auth story
-// rests on ONE invariant: API-key auth works on every RPC the TUI
-// consumes, INCLUDING server-streams, because auth is resolved at the
-// HTTP layer (middleware.ResolveAuth wraps the whole mux) and per-RPC RBAC
-// entitlements map Get*/List*/Stream* → <resource>:read. A future
-// refactor that moves auth per-RPC or drops WrapStreamingHandler would
-// silently break the TUI's streams — this test pins the invariant.
-//
-// DB-backed (skips without ORCHICON_TEST_DSN), following the
-// localLoginEnv pattern from internal/auth.
 
 import (
 	"context"
@@ -154,9 +143,8 @@ func (b *bearer) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect
 	return next
 }
 
-// TestTUIAuthFullScopeKeySucceedsOnEveryRPC asserts the invariant: the
-// full-scope API key authenticates + authorizes on every RPC the TUI
-// consumes, unary AND server-stream.
+// TestTUIAuthFullScopeKeySucceedsOnEveryRPC asserts the invariant: the full-scope API key
+// authenticates + authorizes on every RPC the TUI consumes, unary AND server-stream.
 func TestTUIAuthFullScopeKeySucceedsOnEveryRPC(t *testing.T) {
 	srv, _, fullKey, _ := testPlane(t)
 	ctx := context.Background()

@@ -80,11 +80,6 @@ func (m *App) openMsgMenu(conversationID, messageID, preview string) {
 }
 
 // openMsgMenuArmed opens the menu with one entry ALREADY ARMED.
-//
-// IT IS HOW THE SLASH COMMANDS REACH THIS FEATURE, and it is deliberately not a second destructive path: /undo
-// and /revert open the same menu with the matching entry chosen, so the operator still confirms once and there is
-// exactly one place a deletion can be dispatched from. A command that executed on Enter would be a second code
-// path to the same irreversible act — two things to keep safe instead of one.
 func (m *App) openMsgMenuArmed(conversationID, messageID, preview string, mode apiv1.MessageDeleteMode) {
 	m.openMsgMenu(conversationID, messageID, preview)
 	if m.msgMenu == nil {
@@ -104,9 +99,6 @@ func (m *App) openMsgMenuArmed(conversationID, messageID, preview string, mode a
 func (m *App) closeMsgMenu() { m.msgMenu = nil }
 
 // handleMsgMenuKey drives the menu and reports whether it consumed the key.
-//
-// IT SWALLOWS EVERY KEY WHILE OPEN. The composer must not receive a character typed at a menu — the same rule
-// the help overlay and the tab dropdown follow.
 func (m *App) handleMsgMenuKey(k tea.KeyMsg) tea.Cmd {
 	menu := m.msgMenu
 	if menu == nil {
@@ -114,9 +106,7 @@ func (m *App) handleMsgMenuKey(k tea.KeyMsg) tea.Cmd {
 	}
 	switch k.String() {
 	case "esc":
-		// Escape backs out ONE step: an armed entry returns to the list, and only a second Escape closes. That
-		// is what makes the first Escape after choosing a no-op rather than a dismissal the operator has to
-		// re-open the menu to undo.
+		// Escape backs out ONE step: an armed entry returns to the list, and only a second Escape closes.
 		if menu.armed != nil {
 			menu.armed = nil
 			return nil
@@ -141,21 +131,6 @@ func (m *App) handleMsgMenuKey(k tea.KeyMsg) tea.Cmd {
 		}
 		entry := msgMenuEntries[*menu.armed]
 		// A REVERT HANDS THE MESSAGE BACK TO THE COMPOSER.
-		//
-		// Revert removes the message, so without this its text is gone from the interface entirely and the
-		// operator has to retype a question they had already written — the one cost removing it should not carry.
-		// The composer is the natural home: the text comes back as a DRAFT, editable, and sending it restarts the
-		// conversation from exactly where it was cut.
-		//
-		// UNDO DOES NOT DO THIS, deliberately. Undo leaves the reply in place, so restoring the question would
-		// set up a duplicate — the transcript would already read as asked and answered.
-		//
-		// Set BEFORE the delete is dispatched: the RPC is asynchronous and its failure must not lose the text.
-		// The operator can then retry revert, or edit and send it unchanged.
-		//
-		// It is inside the `m.chat != nil` arm because that IS the dispatch path — with no controller there is
-		// no deletion, so there is nothing to hand back, and touching the dock would be a side effect on a
-		// composer that is not in use.
 		m.closeMsgMenu()
 		if m.chat == nil {
 			return nil

@@ -104,9 +104,6 @@ func TestMalformedRegistrationAndStrayTreeAreRepaired(t *testing.T) {
 }
 
 // IT DELETES NOTHING IT CANNOT PROVE IS OURS.
-//
-// The repair walks a directory tree and removes it, so the failure that matters is removing something real. A
-// drive-letter directory that holds ANY file other than a worktree pointer into this repository must survive.
 func TestARepairNeverDeletesRealContent(t *testing.T) {
 	h := newIntegrateHarness(t)
 	ctx := context.Background()
@@ -143,9 +140,6 @@ func TestAnEmptyDriveLetterDirectoryIsNotReclaimed(t *testing.T) {
 }
 
 // A MALFORMED-LOOKING REGISTRATION WHOSE PATH RESOLVES IS REPORTED, NEVER DELETED.
-//
-// A path that exists is a real worktree at a surprising name. Deleting it would destroy a checkout — so the
-// repair's precondition is "the recorded path does not exist", not "the path looks odd".
 func TestARealWorktreeAtAnOddNameIsNotPruned(t *testing.T) {
 	h := newIntegrateHarness(t)
 	ctx := context.Background()

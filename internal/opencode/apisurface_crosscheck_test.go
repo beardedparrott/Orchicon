@@ -1,15 +1,6 @@
 package opencode
 
 // apisurface_crosscheck_test.go — THE DAEMON'S PATHS AND THE CLIENT'S SHAPE TABLE MUST AGREE.
-//
-// internal/runtime keeps its own copy of the two paths its readiness gate probes, because the
-// dependency runs the wrong way for reuse: this package imports internal/runtime, so that package
-// cannot import this table. A duplicated list is only acceptable while something CHECKS it — and the
-// failure if it drifts is precisely the one this session spent hours removing: the client speaks one
-// surface while the gate probes another, and the symptom is an execution that never starts.
-//
-// So this asserts the two lists name the same routes, in the same order. It lives HERE because this
-// package is the one that can import the other.
 
 import (
 	"testing"

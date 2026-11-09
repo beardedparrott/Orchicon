@@ -8,14 +8,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/fileedit"
 )
 
-// fileEditReconciler is the server's implementation of
-// scheduler.FileEditReconciler: at an execution's terminal transition it
-// reconciles the durable ledger against the run worktree's git state
-// (AC 4). It resolves the reconciliation dir from the execution row —
-// WorktreePath when the run had a provisioned worktree, else ProjectDir
-// (in-place / Ask-local runs) — then delegates to fileedit.ReconcileGit.
-// Every failure is logged, never propagated: reconciliation must never
-// block or fail the terminal writeback (same posture as usage recording).
+// fileEditReconciler is the server's implementation of scheduler.FileEditReconciler: at an
+// execution's terminal transition it reconciles the durable ledger against the run worktree's git
+// state.
 type fileEditReconciler struct {
 	pool *db.Pool
 	log  *slog.Logger
@@ -38,10 +33,8 @@ func (f *fileEditReconciler) ReconcileExecutionGit(ctx context.Context, tenantID
 	}
 }
 
-// reconcileDir resolves the directory the run's git truth lives in: the
-// provisioned worktree when present, else the project dir (in-place runs).
-// Returns "" when neither exists (non-filesystem runs) — reconciliation is
-// then a no-op by contract.
+// reconcileDir resolves the directory the run's git truth lives in: the provisioned worktree when
+// present, else the project dir (in-place runs).
 func (f *fileEditReconciler) reconcileDir(ctx context.Context, tenantID, execID string) string {
 	ttx, err := f.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {

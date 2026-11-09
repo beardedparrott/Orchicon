@@ -150,9 +150,8 @@ func TestRecurringFireFiresLeafAndAdvancesNextRunAt(t *testing.T) {
 	}
 }
 
-// TestRecurringFireFiresSequenceParent verifies that a due recurring
-// sequence parent (has children, no bound workflow) is routed through the
-// sequence engine.
+// TestRecurringFireFiresSequenceParent verifies that a due recurring sequence parent (has children,
+// no bound workflow) is routed through the sequence engine.
 func TestRecurringFireFiresSequenceParent(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -299,9 +298,8 @@ func TestRecurringFireSkipsNonDueItems(t *testing.T) {
 	}
 }
 
-// TestRecurringFireIdempotency verifies that firing the same item twice
-// (simulating a reconcile retry) does not double-fire thanks to the
-// version lock on next_run_at advance.
+// TestRecurringFireIdempotency verifies that firing the same item twice (simulating a reconcile
+// retry) does not double-fire thanks to the version lock on next_run_at advance.
 func TestRecurringFireIdempotency(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -466,10 +464,7 @@ func TestRecurringAdvanceNextRunAt(t *testing.T) {
 	if updated.NextRunAt == nil {
 		t.Fatal("next_run_at is nil after advance")
 	}
-	// The next occurrence must be strictly in the future — the whole
-	// point of advanceNextRunAt. (Asserting ">30min in the future" would
-	// be time-of-day flaky: for an hourly/interval-2 schedule the next
-	// occurrence can land as little as ~1 minute from now.)
+	// The next occurrence must be strictly in the future — the whole point of advanceNextRunAt.
 	if !updated.NextRunAt.After(time.Now()) {
 		t.Errorf("next_run_at %v should be in the future after advance", updated.NextRunAt)
 	}
@@ -539,11 +534,8 @@ func TestRecurringFireBothLeafAndSequenceParent(t *testing.T) {
 	}
 }
 
-// TestRecurringFireLifecycle_CompletionReturnsToRecurring verifies the
-// critical lifecycle: fire a recurring item → run completes → item returns
-// to "recurring" status (not "succeeded"). This catches the bug where the
-// completion handler checked wi.Status == "recurring" but StartWorkflow
-// had already set it to "running".
+// TestRecurringFireLifecycle_CompletionReturnsToRecurring verifies the critical lifecycle: fire a
+// recurring item → run completes → item returns to "recurring" status (not "succeeded").
 func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -569,10 +561,8 @@ func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 	// through the same cascade the product uses, so it cannot leave residue behind.
 	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
 
-	// Seed a workflow with a REAL task step (not the empty step DAG that
-	// seedPublishedWorkflow publishes) so reconcileRun can actually
-	// complete the run below — an empty DAG fails the run at start
-	// (workflow_reconciler.go:258) and the item would end "failed".
+	// Seed a workflow with a REAL task step (not the empty step DAG that seedPublishedWorkflow
+	// publishes) so reconcileRun can actually complete the run below.
 	steps := []workflow.StepWire{
 		{ID: "step-1", Name: "Do work", Kind: domain.StepKindTask, DependsOn: []string{}},
 	}
@@ -610,9 +600,8 @@ func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 		t.Fatalf("after fire: next_run_at=%v, want future", fired.NextRunAt)
 	}
 
-	// Step 2: Simulate what StartWorkflowDirect does — create a run and
-	// transition the item to "running" (the bug trigger: status is no
-	// longer "recurring" when the completion handler fires).
+	// Step 2: Simulate what StartWorkflowDirect does — create a run and transition the item to
+	// "running" (the bug trigger: status is no longer "recurring" when the completion handler fires).
 	ttx2, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)
@@ -626,10 +615,9 @@ func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Flip the runtime-serve readiness gate (what the headless
-	// reconcileRun path does) so the reconciler doesn't bump the run's
-	// version mid-pass and leave the completion update with a stale
-	// version ("db: not found").
+	// Flip the runtime-serve readiness gate (what the headless reconcileRun path does) so the
+	// reconciler doesn't bump the run's version mid-pass and leave the completion update with a stale
+	// version.
 	if _, err := db.UpdateWorkflowRun(ctx, ttx2.Tx, approvalTestTenant, run.ID, run.Version, db.UpdateWorkflowRunFields{
 		RuntimeReady: boolPtr(true),
 	}); err != nil {
@@ -674,12 +662,8 @@ func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 	_ = stepRun // used in setup; verified via allSucceeded path
 }
 
-// TestRecurringRunFailureKeepsItemRecurring verifies the failure semantics
-// for a recurring leaf: when the bound run FAILS, the item returns to
-// "recurring" (not "failed") with its schedule + next_run_at intact, so the
-// NEXT occurrence still fires. The failed occurrence is recorded (run →
-// failed) and recoverable via the existing per-step recovery flow; the
-// cycle itself is never killed.
+// TestRecurringRunFailureKeepsItemRecurring verifies the failure semantics for a recurring leaf:
+// when the bound run FAILS.
 func TestRecurringRunFailureKeepsItemRecurring(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -823,12 +807,8 @@ func TestRecurringRunFailureKeepsItemRecurring(t *testing.T) {
 	}
 }
 
-// TestRecurringRunFailureAtStartKeepsItemRecurring covers the failRunAtStart
-// path: a recurring item whose run can never progress (here: the run
-// references a workflow version that does not exist) is failed at start by
-// the WorkflowReconciler. The item must return to "recurring" — a structural
-// failure of one occurrence is still just a failed cycle, never a terminal
-// one, and the next occurrence must fire on schedule.
+// TestRecurringRunFailureAtStartKeepsItemRecurring covers the failRunAtStart path: a recurring item
+// whose run can never progress (here.
 func TestRecurringRunFailureAtStartKeepsItemRecurring(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -950,10 +930,8 @@ func listLedger(t *testing.T, pool *db.Pool, itemID string) []db.RecurringRunHis
 	return entries
 }
 
-// TestRecurringFireRecordsLedgerOnFire verifies a successful fire writes a
-// 'fired' run-history entry on the recurring item (4.2 AC: each fire records
-// a run-history entry). A fire never auto-creates a work item — the dispatch
-// goes through the normal start path and the item remains "recurring".
+// TestRecurringFireRecordsLedgerOnFire verifies a successful fire writes a 'fired' run-history
+// entry on the recurring item (4.2 AC: each fire records a run-history entry).
 func TestRecurringFireRecordsLedgerOnFire(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -1007,11 +985,8 @@ func TestRecurringFireRecordsLedgerOnFire(t *testing.T) {
 	}
 }
 
-// TestRecurringFireFailedFireRecordsLedgerAndAdvances verifies the failure
-// semantics (4.2 AC): a fire whose dispatch fails writes a 'failed' ledger
-// entry carrying the error, next_run_at is still advanced (advance-before-
-// fire idempotency), and the item stays "recurring" — a failed fire must not
-// wedge the scheduler nor corrupt next_run_at.
+// TestRecurringFireFailedFireRecordsLedgerAndAdvances verifies the failure semantics (4.2 AC): a
+// fire whose dispatch fails writes a 'failed' ledger entry carrying the error.
 func TestRecurringFireFailedFireRecordsLedgerAndAdvances(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -1066,10 +1041,8 @@ func TestRecurringFireFailedFireRecordsLedgerAndAdvances(t *testing.T) {
 	}
 }
 
-// TestRecurringFireSkipsPausedItem verifies the enable/pause lifecycle
-// (4.2 AC): a paused recurring item (recurring_enabled=false) keeps its
-// schedule + next_run_at but is excluded from the due scan — it does NOT fire
-// and records no ledger entry.
+// TestRecurringFireSkipsPausedItem verifies the enable/pause lifecycle (4.2 AC): a paused recurring
+// item (recurring_enabled=false) keeps its schedule + next_run_at but is excluded from the due.
 func TestRecurringFireSkipsPausedItem(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()

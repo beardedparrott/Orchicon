@@ -31,10 +31,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// TestCompactTailBoundaryWouldOrphanOnABlindSlice pins the reproduction
-// independently of the fix: the message at the blind cut index really is a tool
-// result whose declaring assistant sits one index outside the window. If this
-// ever stops holding, the regression test below has stopped exercising the bug.
+// TestCompactTailBoundaryWouldOrphanOnABlindSlice pins the reproduction independently of the fix:
+// the message at the blind cut index really is a tool result whose declaring assistant sits one.
 func TestCompactTailBoundaryWouldOrphanOnABlindSlice(t *testing.T) {
 	hist := toolRoundHistory(5, true)
 	cut := len(hist) - askCompactTailMessages
@@ -54,10 +52,8 @@ func TestCompactTailBoundaryWouldOrphanOnABlindSlice(t *testing.T) {
 	}
 }
 
-// TestCompactConversationSessionTailNeverStartsOnOrphanedToolResult is the
-// regression: compaction must keep the round WHOLE (walking the cut back to the
-// declaring assistant) so the history the next turn re-sends is well-formed in
-// both directions.
+// TestCompactConversationSessionTailNeverStartsOnOrphanedToolResult is the regression: compaction
+// must keep the round WHOLE (walking the cut back to the declaring assistant) so the history.
 func TestCompactConversationSessionTailNeverStartsOnOrphanedToolResult(t *testing.T) {
 	prov := &chatTestProvider{events: []Event{TextDelta{Text: "SUMMARY"}}}
 	b := newCompactBridge(t, prov)
@@ -94,11 +90,8 @@ func TestCompactConversationSessionTailNeverStartsOnOrphanedToolResult(t *testin
 	if got[1].Role == RoleTool {
 		t.Fatalf("the compacted tail leads on a tool result: %s", describeHistory(got))
 	}
-	// The boundary round was kept WHOLE rather than split: aligning the cut back
-	// to the declaring assistant is what preserves call_2's result. Dropping it
-	// would also be "valid", but it would silently discard a tool result the
-	// operator paid for — the worker path's middle eviction sets the same
-	// precedent (keep the round, never orphan one half of it).
+	// The boundary round was kept WHOLE rather than split: aligning the cut back to the declaring
+	// assistant is what preserves call_2's result.
 	if !historyContainsToolResult(got, "call_2") {
 		t.Fatalf("the boundary round was dropped instead of kept whole: %s", describeHistory(got))
 	}
@@ -113,11 +106,8 @@ func TestCompactConversationSessionTailNeverStartsOnOrphanedToolResult(t *testin
 	}
 }
 
-// TestCompactConversationSessionTailAlignmentClampsAtZero covers a history
-// whose entire content is one unfinished round: there is no declaring message
-// before the cut, so the walk-back clamps at 0 and the sanitizer's backward half
-// (not the alignment) is what makes the result valid. Either way the compacted
-// history must never be the orphan shape.
+// TestCompactConversationSessionTailAlignmentClampsAtZero covers a history whose entire content is
+// one unfinished round: there is no declaring message before the cut.
 func TestCompactConversationSessionTailAlignmentClampsAtZero(t *testing.T) {
 	prov := &chatTestProvider{events: []Event{TextDelta{Text: "SUMMARY"}}}
 	b := newCompactBridge(t, prov)
@@ -128,9 +118,8 @@ func TestCompactConversationSessionTailAlignmentClampsAtZero(t *testing.T) {
 		t.Fatalf("create conversation session: %v", err)
 	}
 
-	// A long enough history to compact (>= askCompactMinMessages), whose trailing
-	// messages are all tool results of calls declared before them — so a walk-back
-	// from the cut crosses several tool messages.
+	// A long enough history to compact (>= askCompactMinMessages), whose trailing messages are all tool
+	// results of calls declared before them.
 	hist := toolRoundHistory(8, true)
 	b.mu.Lock()
 	b.chatHistory[sid] = hist
@@ -155,11 +144,9 @@ func TestCompactConversationSessionTailAlignmentClampsAtZero(t *testing.T) {
 	}
 }
 
-// toolRoundHistory builds the shape that wedges compaction: a user goal, then n
-// complete tool rounds (assistant call + its result), and — when textTail is set
-// — a final text-only assistant reply. With n rounds and a text tail the message
-// count is 1+2n+1, so a blind last-6 slice starts one index past a declaring
-// assistant whenever n >= 3: the cut falls between an assistant and its result.
+// toolRoundHistory builds the shape that wedges compaction: a user goal, then n complete tool
+// rounds (assistant call + its result), and — when textTail is set — a final text-only assistant
+// reply.
 func toolRoundHistory(rounds int, textTail bool) []Message {
 	hist := []Message{{Role: RoleUser, Content: []Content{{Text: compactTestStr("do the work")}}}}
 	for i := 0; i < rounds; i++ {

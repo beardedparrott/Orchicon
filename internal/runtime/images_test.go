@@ -5,11 +5,8 @@ import (
 	"testing"
 )
 
-// TestRewriteDockerfileBase verifies the base-inclusion guarantee: the
-// daemon ALWAYS rewrites the FROM line to its own base image and injects
-// the runtime-base label, regardless of what the author's Dockerfile
-// says. User FROM lines are stripped so a derived image can never point
-// at a different base.
+// TestRewriteDockerfileBase verifies the base-inclusion guarantee: the daemon ALWAYS rewrites the
+// FROM line to its own base image and injects the runtime-base label.
 func TestRewriteDockerfileBase(t *testing.T) {
 	df := "FROM ubuntu:24.04\nUSER root\nRUN apt-get install -y xyz\nUSER orchicon\n"
 	got := rewriteDockerfileBase(df, "orchicon-runtime:local", 0)
@@ -27,10 +24,8 @@ func TestRewriteDockerfileBase(t *testing.T) {
 	}
 }
 
-// TestRewriteDockerfileBaseSpecVersion verifies the spec-version label is
-// injected next to the runtime-base label when the build carries a spec
-// version, and omitted when it is unknown (0). The label records which
-// runtime_images.version the image was built from.
+// TestRewriteDockerfileBaseSpecVersion verifies the spec-version label is injected next to the
+// runtime-base label when the build carries a spec version, and omitted when it is unknown (0).
 func TestRewriteDockerfileBaseSpecVersion(t *testing.T) {
 	got := rewriteDockerfileBase("RUN echo hi\n", "base:1", 7)
 	if !strings.Contains(got, "LABEL org.orchicon.runtime.spec-version=7") {

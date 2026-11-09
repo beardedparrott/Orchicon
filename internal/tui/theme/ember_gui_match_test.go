@@ -1,20 +1,6 @@
 package theme
 
 // ember_gui_match_test.go — THE GUI'S EMBER NIGHT IS THE TUI'S EMBER PALETTE.
-//
-// The operator, after the first attempt: "You didn't really change the color scheme of the gui theme Ember
-// Night. I wanted the colors of that gui theme to match the theme of Ember in the TUI. It's close but not
-// quite the same."
-//
-// THEY WERE RIGHT AND "CLOSE" WAS THE PROBLEM. That attempt changed only the accent and asserted in a
-// comment that the rest "already matched exactly" — the background was 12 30% 8% against 14 32% 8%, the
-// card 12 25% 12% against 13 31% 12%, and the border 12 15% 17% against 12 29% 30%. Nobody would notice a
-// two-point hue shift; everybody notices a border at half the lightness.
-//
-// So the claim is tested instead of asserted. This reads frontend/src/index.css, finds the
-// `[data-theme="orchicon-dark-ember"]` block, and compares each token to the value the TUI derives for the
-// SAME palette — which makes the two clients' versions of "Ember" the same shape of thing to keep in step,
-// and turns a future divergence into a failing test rather than a screenshot.
 
 import (
 	"math"
@@ -140,27 +126,10 @@ func TestTheGUIEmberThemeMatchesTheTUIPalette(t *testing.T) {
 		{"--nav-active-to", string(ember.AccentIndigo), "the active tab pill's gradient end"},
 		{"--nav-active-border", string(ember.Accent), "the active tab pill's border"},
 		{"--nav-active-glow", string(ember.Accent), "the active tab pill's glow"},
-		// THE AMBIENT TRIO IS DELIBERATELY ABSENT. Three assertions stood here, pinning the GUI
-		// theme's --mesh-glow-1/2/3 to the TUI's Accent/AccentIndigo/AccentCyan. Those tokens
-		// were the only consumer of the radial "ambient" passes behind .bg-mesh, and that rule
-		// is now a SOLID ground: the passes read as swirls on the dark family (a coloured
-		// radial at 0.12 alpha against a dark ground is far more visible than 0.08 against
-		// near-white, which is why only dark themes showed them).
-		//
-		// Asserting parity for a token that renders nothing would be the parity claim lying, so
-		// the three went with the effect. The TUI's palette VALUES (Accent/AccentIndigo/
-		// AccentCyan) are unchanged and still asserted above wherever the GUI actually uses
-		// them — the tab pill's gradient and the focus ring.
+		// THE AMBIENT TRIO IS DELIBERATELY ABSENT.
 	}
-	// THE USER CONVERSATION BUBBLE IS THE TUI'S OWN USER BAND, and it is asserted HERE rather than left to
-	// inspection because that is exactly how it went wrong. The bubble was painted with `bg-primary`, so it
-	// inherited the accent — and when this theme's accent became ember's orange, every message the operator wrote
-	// turned into a wall of orange ("I am not a fan of the orange conversation bubble for users").
-	//
-	// The TUI derives its user band from bubbleFills(), not from the accent, so recomputing it here is what keeps
-	// the two clients showing the same thing — and it is a different value from --primary, which is the point.
-	// The palette's TEXT is passed because the lift is now bounded by it (see bubbleFills); this test would
-	// otherwise assert against a fill the runtime never produces.
+	// THE USER CONVERSATION BUBBLE IS THE TUI'S OWN USER BAND, and it is asserted HERE rather than left
+	// to inspection because that is exactly how it went wrong.
 	userFill, _ := bubbleFills(string(ember.Bg), string(ember.Accent))
 	if hslOf(t, userFill) == hslOf(t, string(ember.Accent)) {
 		t.Fatalf("fixture: the TUI's user band equals its accent (%s), so this assertion could not tell the two "+

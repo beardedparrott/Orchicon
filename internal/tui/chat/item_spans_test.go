@@ -1,12 +1,6 @@
 package chat
 
 // item_spans_test.go — THE CLICK GEOMETRY TILES THE BODY.
-//
-// RenderItemsSpans is what makes a click on the transcript resolvable to a message (internal/tui's
-// transcriptUserMessageAtFrameRow). It reports, for each item, the body lines it produced — so the
-// contract that matters is that the spans TILE the body exactly: no gaps, no overlaps, and a total
-// equal to the number of lines actually drawn. A gap would make a click on part of a message do nothing;
-// an overlap would make it copy the neighbouring message.
 
 import (
 	"strings"

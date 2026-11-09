@@ -11,13 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 )
 
-// resolveTenantID resolves the caller's tenant_id once via
-// Auth.ListIdentities (the same call the footer's probeIdentity uses) and
-// caches it. The FileEditService RPCs REQUIRE a non-empty tenant_id on the
-// request message (internal/fileedit/rpc.go → "tenant_id must not be
-// empty"), unlike the TUI's project/execution streams which let the plane
-// resolve the tenant from the bearer credential. So the diffs pane must
-// resolve it explicitly.
+// resolveTenantID resolves the caller's tenant_id once via Auth.ListIdentities (the same call the
+// footer's probeIdentity uses) and caches it.
 type tenantResolver struct {
 	cl     *client.Clients
 	mu     sync.Mutex
@@ -54,16 +49,11 @@ func (r *tenantResolver) resolve(ctx context.Context) (string, error) {
 // edits plus the owner's max durable sequence (the resume point).
 type Snapshot struct {
 	Edits []*apiv1.FileEdit
-	// MaxDurableSeq is the ledger's max seq as of the durable fetch. Live
-	// events with seq <= this are dropped by MergeEdits (durable is a
-	// superset).
+	// MaxDurableSeq is the ledger's max seq as of the durable fetch.
 	MaxDurableSeq int64
 }
 
-// Store owns the file-edit ledger RPC layer for one pane. It caches the
-// tenant, fetches the durable ledger (GetSessionFileEdits), exposes the
-// merge helper (MergeEdits), and tracks the owner so the pane can re-fetch
-// when the active session changes.
+// Store owns the file-edit ledger RPC layer for one pane.
 type Store struct {
 	cl        *client.Clients
 	tenant    *tenantResolver
@@ -80,12 +70,7 @@ func NewStore(cl *client.Clients) *Store {
 	}
 }
 
-// Fetch retrieves the durable file-edit ledger for one owner. It resolves
-// the tenant on first use (cached), then calls GetSessionFileEdits. onLive
-// is built by the caller (the pane) after Fetch so a running owner gets the
-// live StreamFileEdits merged on top.
-//
-// ownerKind is "execution" or "ask_conversation".
+// Fetch retrieves the durable file-edit ledger for one owner.
 func (s *Store) Fetch(ctx context.Context, ownerKind, ownerID string) (*Snapshot, error) {
 	tenant, err := s.tenant.resolve(ctx)
 	if err != nil {
@@ -124,12 +109,8 @@ func (s *Store) Tenant() string {
 	return s.tenant.tenant
 }
 
-// MergeEdits merges the durable ledger (GetSessionFileEdits) with the live
-// stream (StreamFileEdits) using the same discipline as the GUI's
-// mergeEdits: the durable fetch is a superset of everything up to ~2s ago,
-// so live events are appended only when their sequence exceeds the durable
-// max, and deduplicated by id (the stream's event_id == the ledger row id)
-// so a reconnect never double-applies. Stable sort ascending by seq.
+// MergeEdits merges the durable ledger (GetSessionFileEdits) with the live stream (StreamFileEdits)
+// using the same discipline as the GUI's mergeEdits.
 func MergeEdits(durable, live []*apiv1.FileEdit) []*apiv1.FileEdit {
 	byID := map[string]*apiv1.FileEdit{}
 	var maxDurableSeq int64

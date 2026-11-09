@@ -1,11 +1,7 @@
 package theme
 
-// theme_named_test.go — the hand-written community ports stay in the registry, and stay themselves.
-//
-// The palette gates in contrast_test.go iterate Names(), so they already cover these palettes' contrast.
-// What they CANNOT catch is a palette quietly disappearing from the list, or being edited into something
-// that is no longer the palette it claims to be — which is the specific risk of a set defined by its
-// upstream hexes rather than generated from a spec.
+// What they CANNOT catch is a palette quietly disappearing from the list, or being edited into
+// something that is no longer the palette it claims.
 
 import (
 	"github.com/charmbracelet/lipgloss"

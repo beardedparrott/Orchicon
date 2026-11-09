@@ -30,10 +30,8 @@ import (
 // writes — not on an internal field, because the internal field persisting
 // while the JSON drops it is exactly the failure mode this feature risks.
 
-// withLedgerClock installs a fixed clock for the duration of one test and
-// restores the real one afterwards. The ledger's clock seam is a package-level
-// var (askorchicon has no injectable clock), so this is only safe while no test
-// in the package calls t.Parallel().
+// withLedgerClock installs a fixed clock for the duration of one test and restores the real one
+// afterwards.
 func withLedgerClock(t *testing.T, ms int64) {
 	t.Helper()
 	prev := ledgerNowMillis
@@ -41,9 +39,7 @@ func withLedgerClock(t *testing.T, ms int64) {
 	t.Cleanup(func() { ledgerNowMillis = prev })
 }
 
-// ledgerCallJSON is the snapshot's per-call shape INCLUDING the stamp. It is
-// deliberately a separate local type from the production entry: the assertion
-// is about the JSON, and a reader of the column sees only JSON.
+// ledgerCallJSON is the snapshot's per-call shape INCLUDING the stamp.
 type ledgerCallJSON struct {
 	ID             string `json:"id"`
 	Type           string `json:"type"`
@@ -61,9 +57,8 @@ func decodeLedgerCalls(t *testing.T, calls []byte) []ledgerCallJSON {
 	return out
 }
 
-// opencodePart is the opencode-shaped `message.part.updated` Payload that
-// recordResolve reads (tool + state.status + state.input + state.output) — the
-// same shape busAskCompleted builds in the loop tests.
+// opencodePart is the opencode-shaped `message.part.updated` Payload that recordResolve reads (tool
+// + state.status + state.input + state.output).
 func opencodePart(tool, status, command, output string) map[string]any {
 	return map[string]any{
 		"tool": tool,
@@ -96,9 +91,7 @@ func TestToolLedgerRecordStartStampsIssueTime(t *testing.T) {
 	}
 }
 
-// AC 6: the wire shape gains EXACTLY one field. snapshot() re-copies only the
-// exported fields deliberately, so `resolved` must stay off the wire while the
-// new timestamp is deliberately ON it.
+// AC 6: the wire shape gains EXACTLY one field.
 func TestToolLedgerSnapshotWireShapeGainsExactlyOneField(t *testing.T) {
 	withLedgerClock(t, 1000)
 	led := newToolLedger()
@@ -178,10 +171,8 @@ func TestToolLedgerToolResolutionKeepsTheIssueTime(t *testing.T) {
 	}
 }
 
-// AC 3 (both synthesized branches): when no start was ever observed, the honest
-// issue time is "now" — the call is known to have happened by the time its
-// result arrived. Both resolve paths must stamp it, or a re-attached client's
-// calls would carry a phantom zero.
+// AC 3 (both synthesized branches): when no start was ever observed, the honest issue time is "now"
+// — the call is known to have happened by the time its result arrived.
 func TestToolLedgerSynthesizedCallsAreStampedNow(t *testing.T) {
 	withLedgerClock(t, 5555)
 
@@ -204,10 +195,7 @@ func TestToolLedgerSynthesizedCallsAreStampedNow(t *testing.T) {
 	}
 }
 
-// AC 5: a permission record is stamped. The choice is pinned here so a later
-// reader cannot be surprised either way. It is a real event with a real time,
-// and the window classifier excludes `permission.*` by name, so the stamp is
-// free.
+// AC 5: a permission record is stamped.
 func TestToolLedgerPermissionRecordIsStamped(t *testing.T) {
 	withLedgerClock(t, 7777)
 	led := newToolLedger()
@@ -224,11 +212,8 @@ func TestToolLedgerPermissionRecordIsStamped(t *testing.T) {
 	}
 }
 
-// AC 6, terminal path: the field must survive sanitizeAssistantToolLedger,
-// which DECODES into a fixed struct and RE-MARSHALS — a pass-through it is not.
-// This is the regression test for the trap: omit the field from askToolCallJSON
-// and the stamp is silently stripped from every persisted row while every
-// snapshot-level test above still passes.
+// AC 6, terminal path: the field must survive sanitizeAssistantToolLedger, which DECODES into a
+// fixed struct and RE-MARSHALS — a pass-through it is not.
 func TestToolLedgerSurvivesTheTerminalSanitizer(t *testing.T) {
 	withLedgerClock(t, 4242)
 	led := newToolLedger()
@@ -245,23 +230,8 @@ func TestToolLedgerSurvivesTheTerminalSanitizer(t *testing.T) {
 	}
 }
 
-// AC 2, RE-POINTED: the stamp RIDES THE WIRE, and the four original fields are
-// still byte-identical.
-//
-// THIS TEST USED TO ASSERT THE OPPOSITE — that a stamped payload and its
-// pre-change predecessor yielded byte-identical proto ToolCalls, i.e. that the
-// stamp DIED at the wire boundary. That was child 1's deliberate scope ("never
-// a wire contract"). It is no longer true, and the change is the whole point of
-// the activity line's rolling counter: a client never sees the ledger COLUMN,
-// only the ChatMessage wire field, so a stamp that stops at the boundary leaves
-// every client rendering "" over a turn that is plainly working.
-//
-// WHAT IS STILL PINNED HERE, unchanged: the four pre-existing fields. A reader
-// that lost `arguments`, or renamed `function_name`, would be a wire
-// regression — so the decode is asserted field by field, and the unstamped
-// predecessor (a row persisted before the stamp existed) still decodes to the
-// same four fields with a ZERO stamp, which the summarizer reads as "no
-// timestamp" rather than as the epoch.
+// AC 2, RE-POINTED: the stamp RIDES THE WIRE, and the four original fields are still
+// byte-identical.
 func TestToolCallsFromJSONCarriesTheStamp(t *testing.T) {
 	unstamped := []byte(`[{"id":"tc-1","type":"function","function_name":"bash","arguments":"{\"command\":\"ls\"}"}]`)
 	stamped := []byte(`[{"id":"tc-1","type":"function","function_name":"bash","arguments":"{\"command\":\"ls\"}","issued_at_unix_ms":1700000000123}]`)
@@ -292,9 +262,8 @@ func TestToolCallsFromJSONCarriesTheStamp(t *testing.T) {
 		t.Errorf("an unstamped legacy row decoded to issued_at_unix_ms = %d, want 0 (\"no timestamp\") — "+
 			"the summarizer must SKIP it, never count it as issued in 1970", before[0].GetIssuedAtUnixMs())
 	}
-	// proto.Equal must now DIFFER on the stamp alone, which is the mechanical statement of "it rides the
-	// wire". Asserted so a future refactor that silently strips it again fails HERE rather than in a
-	// client that renders an empty line.
+	// proto.Equal must now DIFFER on the stamp alone, which is the mechanical statement of "it rides
+	// the wire".
 	if proto.Equal(before[0], after[0]) {
 		t.Error("the stamped and unstamped wire ToolCalls are identical — the stamp is being stripped at " +
 			"the wire boundary again, which is what the rolling counter depends on")

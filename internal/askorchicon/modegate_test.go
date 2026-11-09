@@ -1,13 +1,7 @@
 package askorchicon
 
-// modegate_test.go — THE BOUNDARY IS ENFORCED BY THE PLATFORM, NOT ASKED FOR.
-//
-// The operator: "Each mode of Ask Orchicon must NEVER just do the work it is not supposed to do and must always
-// enforce the user switch the mode first no matter what the user says."
-//
-// The table below is the boundary, and the integration test is the part that matters: it drives the REAL tool
-// choke point (ExecuteAskTool) with a mode-stamped context, so a future change that moves the gate, reorders it
-// behind a branch, or loses the context stamp fails here rather than silently removing the boundary.
+// The operator: "Each mode of Ask Orchicon must NEVER just do the work it is not supposed to do and
+// must always enforce the user switch the mode first no matter what the user says." The table.
 
 import (
 	"context"
@@ -37,10 +31,6 @@ func TestBrainstormAndQuickWorkRefuseTheWork(t *testing.T) {
 }
 
 // AND THEY KEEP EVERYTHING THAT LETS THEM UNDERSTAND THE PROJECT.
-//
-// The operator's condition on denying bash: "That is fine as long as Brainstorm mode can learn about the project
-// and read the files." So the read-only suite is asserted positively — a gate that denied too much would satisfy
-// the boundary and destroy the mode.
 func TestTheReadOnlySuiteSurvivesInEveryMode(t *testing.T) {
 	reads := []string{
 		"read", "batch_read", "grep", "batch_grep", "glob", "list",
@@ -57,9 +47,6 @@ func TestTheReadOnlySuiteSurvivesInEveryMode(t *testing.T) {
 }
 
 // ITERATION MAY NOT AUTHOR OR DISPATCH THE PLAN.
-//
-// The operator, on the one they cared about: "Yes it is a hard block on create work item. That is brainstorm's
-// job or ephemeral work items for quick_work mode."
 func TestIterationRefusesThePlanAndTheDispatch(t *testing.T) {
 	for _, tool := range []string{
 		"create_work_item", "update_work_item",
@@ -125,10 +112,6 @@ func TestTheModeRidesTheContext(t *testing.T) {
 }
 
 // AND THE REFUSAL HAPPENS AT THE REAL CHOKE POINT, BEFORE ANY WORK.
-//
-// This is the integration half: it calls the tool surface the bridge calls, with a mode-stamped context, and
-// asserts the call is refused. The refusal must arrive as an ERROR because that is what the bridge turns into
-// the model-visible RESULT — so the model is handed the message and can relay it.
 func TestTheRealToolSurfaceRefusesTheWork(t *testing.T) {
 	svc := &Service{toolRegistry: testToolRegistry()}
 	p := svc.NativeAskTools()
@@ -142,9 +125,8 @@ func TestTheRealToolSurfaceRefusesTheWork(t *testing.T) {
 		t.Errorf("the refusal does not tell the model what happened and what to ask for: %v", err)
 	}
 
-	// THE MCP-STYLE PREFIX IS TOLERATED EVERYWHERE ELSE, so it must not be a way AROUND the gate: the system
-	// prompt advertises `orchicon_<tool>`, and a gate that only matched bare names would be bypassed by the
-	// spelling the prompt itself teaches.
+	// THE MCP-STYLE PREFIX IS TOLERATED EVERYWHERE ELSE, so it must not be a way AROUND the gate: the
+	// system prompt advertises `orchicon_<tool>`.
 	_, err = p.ExecuteAskTool(brainstorm, "orchicon_bash", `{"command":"git checkout main"}`)
 	if err == nil {
 		t.Fatal("the orchicon_ prefix bypassed the gate — a branch cut went through as Brainstorm")
@@ -162,14 +144,6 @@ func TestTheRealToolSurfaceRefusesTheWork(t *testing.T) {
 }
 
 // AND THE MODEL IS NEVER OFFERED WHAT IT MAY NOT RUN.
-//
-// The refusal makes "no matter what the user says" true; this is the other half. A model that is OFFERED write in
-// Brainstorm will try it, be refused, and can be talked into trying again — every attempt a wrong turn in the
-// transcript. Hiding it means the tool LIST states the boundary before any call exists to refuse, so a mode that
-// cannot do the work no longer advertises that it can.
-//
-// It also pins the two lists to ONE table: if the offered surface and the enforced surface were ever computed
-// separately, this test is where the drift shows up.
 func TestTheToolSurfaceHidesWhatTheModeRefuses(t *testing.T) {
 	svc := &Service{toolRegistry: testToolRegistry()}
 	p := svc.NativeAskTools()

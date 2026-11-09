@@ -2,9 +2,8 @@ package opencode
 
 import "testing"
 
-// Tag fragments are derived from the shared runtime table (sliced),
-// never typed verbatim — raw markup gets rewritten in transit through
-// some tooling paths.
+// Tag fragments are derived from the shared runtime table (sliced), never typed verbatim — raw
+// markup gets rewritten in transit through some tooling paths.
 var (
 	dOpen  = ThinkOpenTags[3]
 	dClose = ThinkCloseTags[3]
@@ -49,9 +48,9 @@ func TestCompletedThinkDemuxMultipleBlocks(t *testing.T) {
 }
 
 func TestCompletedThinkDemuxBlockSpansParts(t *testing.T) {
-	// A block opened in one completed part and closed in a later part
-	// still routes: the opening part contributes its tail as a body, the
-	// closing part contributes its head, and clean text stays clean.
+	// A block opened in one completed part and closed in a later part still routes: the opening part
+	// contributes its tail as a body, the closing part contributes its head, and clean text stays
+	// clean.
 	d := newCompletedThinkDemux()
 	clean1, bodies1 := d.segment("answer " + dOpen + "thinking part one")
 	if clean1 != "answer " {
@@ -70,9 +69,8 @@ func TestCompletedThinkDemuxBlockSpansParts(t *testing.T) {
 }
 
 func TestCompletedThinkDemuxUnterminatedStaysOutOfText(t *testing.T) {
-	// A block never closed (provider truncation) contributes its runs as
-	// reasoning and never leaks into clean text — no end-of-run flush
-	// needed because bodies emit eagerly per part.
+	// A block never closed (provider truncation) contributes its runs as reasoning and never leaks into
+	// clean text — no end-of-run flush needed because bodies emit eagerly per part.
 	d := newCompletedThinkDemux()
 	clean, bodies := d.segment("before " + dOpen + "never closed")
 	if clean != "before " {

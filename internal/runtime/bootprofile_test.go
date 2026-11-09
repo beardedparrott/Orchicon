@@ -11,11 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
-// TestRequestedKinds pins the boot-profile semantics, including the
-// mixed-version rollout rule: a NIL profile (a pre-change plane) is
-// "unspecified" and resolves to the default kind, so an opencode run never
-// silently loses its mounts/serve — while a NON-NIL profile (even an empty
-// one) is honored verbatim (AC 1/AC 3/AC 5).
+// TestRequestedKinds pins the boot-profile semantics, including the mixed-version rollout rule: a
+// NIL profile (a pre-change plane) is "unspecified" and resolves to the default kind.
 func TestRequestedKinds(t *testing.T) {
 	cases := []struct {
 		name string
@@ -62,9 +59,8 @@ func TestDemandsKind(t *testing.T) {
 	}
 }
 
-// TestServeKindsFor is the serve multiplexing filter: exactly the
-// serve-dependent kinds warm a serve, and today that is opencode alone
-// (AC 2/AC 5).
+// TestServeKindsFor is the serve multiplexing filter: exactly the serve-dependent kinds warm a
+// serve, and today that is opencode alone (AC 2/AC 5).
 func TestServeKindsFor(t *testing.T) {
 	cases := []struct {
 		in   []string
@@ -82,9 +78,8 @@ func TestServeKindsFor(t *testing.T) {
 	}
 }
 
-// TestServeDependentKindMatchesLifecycle pins that the boot profile's
-// serve-dependency predicate is the SAME evaluation the scheduler's
-// run-start gate uses (Lifecycle.ServeDependent), not a forked copy.
+// TestServeDependentKindMatchesLifecycle pins that the boot profile's serve-dependency predicate is
+// the SAME evaluation the scheduler's run-start gate uses (Lifecycle.ServeDependent).
 func TestServeDependentKindMatchesLifecycle(t *testing.T) {
 	l := &Lifecycle{}
 	for _, k := range []string{"", "opencode", "orchicon", "claude", "codex", "  "} {
@@ -94,12 +89,8 @@ func TestServeDependentKindMatchesLifecycle(t *testing.T) {
 	}
 }
 
-// TestAdapterInstallPathsTotalOverCatalog is AC 6(a)/(b): the classification
-// table must be TOTAL over the LIVE kind list (the builtin provider catalog,
-// which already declares "claude" while only opencode/orchicon are
-// dispatcher-registered). An unclassified declared kind fails loudly here,
-// so the NEXT adapter (codex-shaped growth) cannot slip past the
-// mount-never-bake invariant by construction.
+// TestAdapterInstallPathsTotalOverCatalog is AC 6(a)/(b): the classification table must be TOTAL
+// over the LIVE kind list (the builtin provider catalog.
 func TestAdapterInstallPathsTotalOverCatalog(t *testing.T) {
 	kinds := adapter.BuiltinAdapterKinds()
 	if len(kinds) < 3 {
@@ -117,18 +108,15 @@ func TestAdapterInstallPathsTotalOverCatalog(t *testing.T) {
 	if _, declared := adapterInstallPaths("/home/u", "codex-not-declared-yet"); declared {
 		t.Error("an unclassified kind must report declared=false")
 	}
-	// orchicon is the product binary: its mount-never-bake rule is the
-	// daemon's /usr/local/bin/orchicon bind mount, NOT an adapter install —
-	// so it is classified but contributes no host install.
+	// orchicon is the product binary: its mount-never-bake rule is the daemon's /usr/local/bin/orchicon
+	// bind mount, NOT an adapter install — so it is classified but contributes no host install.
 	if paths, declared := adapterInstallPaths("/home/u", "orchicon"); !declared || len(paths) != 0 {
 		t.Errorf("orchicon must be classified with no adapter install paths, got %v declared=%v", paths, declared)
 	}
 }
 
-// TestAdapterHostMountsConditional is the AC 1/AC 3 mount conditionality in
-// pure form: an opencode-demanding home yields the three install mounts in
-// the historical order; a native-only home yields none; each mount is
-// gated on the probe's existence and file/dir shape.
+// TestAdapterHostMountsConditional is the AC 1/AC 3 mount conditionality in pure form: an
+// opencode-demanding home yields the three install mounts in the historical order.
 func TestAdapterHostMountsConditional(t *testing.T) {
 	home := t.TempDir()
 	mkdir := func(parts ...string) {
@@ -167,22 +155,16 @@ func TestAdapterHostMountsConditional(t *testing.T) {
 	if got := adapterHostMounts("", "opencode"); len(got) != 0 {
 		t.Errorf("empty home must contribute no adapter mounts, got %v", got)
 	}
-	// Missing install: nothing (probe-gated, mirroring the original os.Stat).
-	//
-	// THE PATH MUST BE EMPTIED TOO, and that is a behaviour change rather than a test workaround: the resolver
-	// now ASKS THE OS's PATH (internal/adapter discovery) after the known install lists, so "absent" is only
-	// true of the fake HOME unless PATH is empty as well. On a machine that HAS opencode installed — a CI box or
-	// a developer's — the old assertion was testing the world, not the code. Emptying PATH states the
-	// precondition it always meant.
+	// THE PATH MUST BE EMPTIED TOO, and that is a behaviour change rather than a test workaround: the
+	// resolver now ASKS THE OS's PATH (internal/adapter discovery) after the known install lists.
 	t.Setenv("PATH", t.TempDir())
 	if got := adapterHostMounts(t.TempDir(), "opencode"); len(got) != 0 {
 		t.Errorf("absent install must contribute no adapter mounts, got %v", got)
 	}
 }
 
-// TestAdapterHostMountsFileShapeGate pins the probe's file/dir requirement:
-// a DIRECTORY where the CLI binary is expected is not a valid install (the
-// original daemon gate required ~/.opencode/bin/opencode to be a file).
+// TestAdapterHostMountsFileShapeGate pins the probe's file/dir requirement: a DIRECTORY where the
+// CLI binary is expected is not a valid install (the original daemon gate required.
 func TestAdapterHostMountsFileShapeGate(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".opencode", "bin", "opencode"), 0o755); err != nil {
@@ -196,16 +178,8 @@ func TestAdapterHostMountsFileShapeGate(t *testing.T) {
 	}
 }
 
-// TestAdapterKindsWireDistinction pins the rollout signal ACROSS THE WIRE:
-// the boot profile rides CreateRequest through JSON to the daemon, and the
-// nil-vs-empty distinction is load-bearing — a NIL profile (a pre-change
-// plane, or `"adapter_kinds":null`) is the legacy "unspecified" case and
-// resolves to the default (opencode) demand, while an explicitly EMPTY
-// profile means "this run demands no adapter kind" and mounts nothing
-// (AC 1/AC 3). Keeping the field free of `omitempty` is what preserves an
-// empty profile as `[]` instead of dropping it to an absent/null field;
-// this test fails if someone adds omitempty, which would silently re-mount
-// model config/auth into a native-only container.
+// TestAdapterKindsWireDistinction pins the rollout signal ACROSS THE WIRE: the boot profile rides
+// CreateRequest through JSON to the daemon, and the nil-vs-empty distinction is load-bearing.
 func TestAdapterKindsWireDistinction(t *testing.T) {
 	roundTrip := func(in []string) []string {
 		t.Helper()
@@ -240,36 +214,7 @@ func TestAdapterKindsWireDistinction(t *testing.T) {
 	}
 }
 
-// canonicalTempHome returns a throwaway home directory whose path contains NO
-// symlinked component.
-//
-// t.TempDir() cannot promise that, and on this project it usually will not:
-// `go test` inherits GOTMPDIR — the Makefile points it at $(DEV_TOOLS)/gotmp —
-// and os.MkdirTemp honours $TMPDIR, falling back to $GOTMPDIR when TMPDIR is
-// unset. In a WORKTREE, .dev/tools is a symlink to the main checkout, so the
-// temp dir is reached by a PATH THAT TRAVERSES A SYMLINK and has two spellings:
-// the worktree spelling a fixture hands out, and the realpath the kernel
-// reports for the same directory.
-//
-// That matters here because these fixtures are HOMES, and the code under test
-// emits bind-mount sources with filepath.Join (unresolved), while the tests
-// resolve the launcher symlink with filepath.EvalSymlinks (fully resolved). The
-// two then compare a symlinked spelling against a real one, find no common
-// prefix, and report that the launcher "would DANGLE inside the container" —
-// for the one mount that demonstrably does not, because the same spelling is
-// what the daemon actually passes as the bind source.
-//
-// Resolving the ROOT here is the narrow fix: every child of the fixture is then
-// reached through a symlink-free path, so the mount sources and the launcher's
-// resolved target share one spelling and cannot diverge below it. The
-// production rule is deliberately untouched — the daemon does NOT resolve
-// HostHome (internal/runtime/daemon.go passes it verbatim), so a test that
-// resolved only its own expectations would assert a behavior the product does
-// not have.
-//
-// /tmp is deliberately NOT the answer: its realpath differs on macOS
-// (/private/tmp), so a fixture pinned there would fail differently rather than
-// stop being path-dependent.
+// canonicalTempHome returns a throwaway home directory whose path contains NO symlinked component.
 func canonicalTempHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -280,11 +225,8 @@ func canonicalTempHome(t *testing.T) string {
 	return resolved
 }
 
-// claudeMountHome builds a fake host home laid out exactly as the claude
-// NATIVE installer leaves it: a writable config home (~/.claude/), the
-// rewritten ~/.claude.json, a launcher SYMLINK at ~/.local/bin/claude, and the
-// install root (~/.local/share/claude/versions/<ver>) the symlink resolves
-// into. Used by the mount and symlink-resolution tests.
+// claudeMountHome builds a fake host home laid out exactly as the claude NATIVE installer leaves
+// it: a writable config home (~/.claude/), the rewritten ~/.claude.json.
 func claudeMountHome(t *testing.T) (home, launcher, versionedBinary string) {
 	t.Helper()
 	home = canonicalTempHome(t)
@@ -317,16 +259,8 @@ func claudeMountHome(t *testing.T) (home, launcher, versionedBinary string) {
 	return home, launcher, versionedBinary
 }
 
-// TestAdapterHostMountsClaudeRW asserts the EXACT -v arg strings for claude.
-//
-// IT USED TO ASSERT TWO READ-WRITE HOST BINDS (~/.claude and ~/.claude.json), and that was the bug: every
-// concurrent container wrote into the SAME directories on the operator's machine, interleaving session state
-// and letting one run read another's transcripts. Both are now PRIVATE per container — a writable,
-// runtime-uid-owned directory at the same container path, with only the credential file bound read-only
-// inside it — so the host tree is never written by a container at all.
-//
-// The CLI launcher and install root stay READ-ONLY host binds (executing the image's adapter does not need
-// them, but an operator who named a host binary still gets it).
+// The CLI launcher and install root stay READ-ONLY host binds (executing the image's adapter does
+// not need them, but an operator who named a host binary still gets it).
 func TestAdapterHostMountsClaudeRW(t *testing.T) {
 	home, _, _ := claudeMountHome(t)
 	want := []string{
@@ -384,10 +318,8 @@ func TestAdapterHostMountsClaudeRW(t *testing.T) {
 	}
 }
 
-// TestClaudeLauncherSymlinkTargetMounted is the "the launcher cannot dangle
-// in-container" assertion: the launcher is a SYMLINK into the install root, so
-// the symlink's resolved target must live under one of the dirs the daemon
-// actually mounts (both are mounted at identical absolute host paths).
+// TestClaudeLauncherSymlinkTargetMounted is the "the launcher cannot dangle in-container"
+// assertion: the launcher is a SYMLINK into the install root.
 func TestClaudeLauncherSymlinkTargetMounted(t *testing.T) {
 	home, launcher, versioned := claudeMountHome(t)
 	if got, err := os.Readlink(launcher); err != nil || got != versioned {
@@ -416,21 +348,13 @@ func TestClaudeLauncherSymlinkTargetMounted(t *testing.T) {
 	if !mounted {
 		t.Fatalf("the launcher symlink target %s is under NONE of the mounted dirs %v — it would DANGLE inside the container", resolved, srcs)
 	}
-	// DIRECTION CHECK. The loop above compares paths that both live on the
-	// operator's HOST, which is the only comparison a unit test can make — but a
-	// bind mount resolves INSIDE the container, so a host-side spelling mismatch
-	// says nothing about whether the link dangles in there. Assert the direction
-	// that actually decides it: the target's path RELATIVE TO the mounted install
-	// root must survive the mount intact. If these two ever disagree, the host
-	// comparison is the one to distrust (and canonicalTempHome is why it should
-	// not).
+	// DIRECTION CHECK.
 	rel, err := filepath.Rel(filepath.Join(home, ".local", "share", "claude"), resolved)
 	if err != nil || rel == "." || rel == "" || strings.HasPrefix(rel, "..") {
 		t.Fatalf("the launcher target %s escapes the mounted install root: rel=%q err=%v", resolved, rel, err)
 	}
-	// The install root must be mounted as its own declaration (the design
-	// mounts at identical absolute paths, so the link resolves only if the
-	// root rides along).
+	// The install root must be mounted as its own declaration (the design mounts at identical absolute
+	// paths, so the link resolves only if the root rides along).
 	root := filepath.Join(home, ".local", "share", "claude")
 	found := false
 	for _, s := range srcs {
@@ -445,13 +369,8 @@ func TestClaudeLauncherSymlinkTargetMounted(t *testing.T) {
 
 // --- the container half: an unrunnable adapter must be refused, not started ------------------------
 
-// TestAnUnrunnableHostAdapterIsFineWhenTheImageSuppliesIt is the WINDOWS CONTAINER-MODE CASE, and it reverses
-// the test that stood here.
-//
-// The old test demanded a refusal whenever the host's adapter was a Windows .exe. That was right while the host
-// mount was the only source. Once the image installs the adapters, the host's binary format stops being the
-// question — and leaving the refusal in place made EVERY container create on Windows fail before the in-image
-// adapter could be reached, which is the whole feature being unavailable on the platform it was built for.
+// TestAnUnrunnableHostAdapterIsFineWhenTheImageSuppliesIt is the WINDOWS CONTAINER-MODE CASE, and
+// it reverses the test that stood here.
 func TestAnUnrunnableHostAdapterIsFineWhenTheImageSuppliesIt(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".local", "bin")
@@ -471,11 +390,6 @@ func TestAnUnrunnableHostAdapterIsFineWhenTheImageSuppliesIt(t *testing.T) {
 }
 
 // TestTheRefusalStillFiresWhenTheImageCannotCoverTheKind keeps the guard doing its real job.
-//
-// The rule is "the image supplies it, OR the host contributes a runnable binary, OR refuse". opencode and
-// claude are image-supplied, so the FIRST arm covers them and the refusal cannot fire — which is exactly why
-// the guard must be exercised through the decision function rather than only through its shipped inputs.
-// Otherwise the day the image stops installing an adapter, this check silently stops refusing anything.
 func TestTheRefusalStillFiresWhenTheImageCannotCoverTheKind(t *testing.T) {
 	problems := containerAdapterProblems(func(kind string) (string, error) { return "/host/thing.exe", nil },
 		func(string) (imageAdapterKind, bool) { return imageAdapterKind{}, false }, "claude")

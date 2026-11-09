@@ -1,14 +1,6 @@
 package mcpclient
 
 // mcp_legacy_protocol_test.go — the client must not treat a PROTOCOL MISMATCH as a broken server.
-//
-// REPORTED, after a whole session of misdiagnosis: "we are speaking a new MCP version and the aseprite is
-// speaking an old one." The client defaults to 2026-07-28, which sends `server/discover` before
-// `initialize`; an old server does not know that method, fails validation and EXITS. The connect then burns
-// its whole timeout and reports a timeout against a dead child.
-//
-// These tests run against internal/mcpclient/legacy_fixture_test.go, a hand-rolled OLD server that does
-// exactly that: dies on server/discover, fine on initialize.
 
 import (
 	"context"
@@ -59,9 +51,6 @@ func methodsSeen(t *testing.T, logPath string) []string {
 }
 
 // THE REPORTED BUG, end to end: an old-spec server yields its tools anyway.
-//
-// Before this fix the connect failed outright — and because one failing server used to abort the whole
-// union, the operator lost every other server's tools too.
 func TestALegacyServerStillYieldsItsTools(t *testing.T) {
 	spec, logPath := legacySpec(t, "legacy")
 	m := NewManager(quietMCPLogger())

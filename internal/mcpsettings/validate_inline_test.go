@@ -28,9 +28,6 @@ func permissionsWith(specs string) []byte {
 }
 
 // THE RULES AN OWNED ROW ALREADY HAS APPLY TO AN INLINE SPEC TOO.
-//
-// Each case is one rule, each names the spec it is about (an operator editing a version needs to know
-// WHICH server was refused), and each is the same message the owned-row path gives for the same fault.
 func TestInlineSpecsRefuseWhatAnOwnedRowRefuses(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -109,11 +106,8 @@ func TestInlineSpecsAcceptWhatResolves(t *testing.T) {
 	}
 }
 
-// ONLY WHAT THE EDIT CHANGES IS JUDGED, and this is the contract that keeps stored data working: every
-// client sends the permissions blob WHOLE, so validating the incoming set in full would refuse ANY edit
-// of a version that happens to carry a stale spec (a reference to a secret deleted since, a key typed
-// before this gate existed). A spec identical to the stored one is left alone; the moment it CHANGES,
-// the rules apply.
+// ONLY WHAT THE EDIT CHANGES IS JUDGED, and this is the contract that keeps stored data working:
+// every client sends the permissions blob WHOLE.
 func TestInlineSpecValidationJudgesOnlyTheChange(t *testing.T) {
 	ctx := context.Background()
 	stale := permissionsWith(`{"id":"gh","type":"stdio","command":["npx","-y","gh"],"env":{"NOT A KEY":"x"}}`)
@@ -140,9 +134,8 @@ func TestInlineSpecValidationJudgesOnlyTheChange(t *testing.T) {
 	}
 }
 
-// EVERY ${SECRET_NAME} AN INLINE SPEC CARRIES MUST EXIST, which is the rule that used to be discovered
-// only when the worker ran (ResolveSecretRefs reports an unset reference per server, at session time).
-// This one needs the store, so it is DB-backed like the rest of this suite.
+// EVERY ${SECRET_NAME} AN INLINE SPEC CARRIES MUST EXIST, which is the rule that used to be
+// discovered only when the worker ran (ResolveSecretRefs reports an unset reference per server.
 func TestInlineSpecSecretRefsMustExist(t *testing.T) {
 	svc, pool := newTestService(t)
 	_ = svc

@@ -14,9 +14,6 @@ import (
 )
 
 // THE SOURCE IS ABSENT WHEN MANAGEMENT IS NOT AVAILABLE.
-//
-// `orch` is a REMOTE client by design. Offering install/remove against a plane on another machine would
-// either fail per button or act on the wrong host, so the section must be absent — not present-and-broken.
 func TestServersSourceIsAbsentUnlessEnabled(t *testing.T) {
 	m := New(nil, nil) // no WithServers
 	for _, src := range m.Base.Sources() {

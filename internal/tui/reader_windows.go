@@ -87,11 +87,6 @@ import (
 )
 
 // NewWindowsInputReader returns the reader bubbletea should use on Windows.
-//
-// in is the process's stdin. The returned reader reads a SEPARATE console file, decorated with the byte
-// rewrites of internal/tui/input. When CONIN$ cannot be opened — a redirected stdin, or a console this
-// process cannot reopen — stdin is returned unchanged: a TUI that still works the old way (with the two
-// decoding faults) is strictly better than one that cannot start at all.
 func NewWindowsInputReader(in *os.File) io.Reader {
 	if in == nil {
 		return nil

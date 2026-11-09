@@ -36,9 +36,6 @@ import (
 
 // registryPathDirs returns the directories named in the PERSISTED user and machine PATH, in that
 // order (user first, mirroring how a shell resolves).
-//
-// IT IS APPENDED TO THE PROCESS PATH, NOT A REPLACEMENT FOR IT: a process whose PATH carries
-// something the registry does not (an injected dev shell, a CI harness) keeps working.
 func registryPathDirs() []string {
 	var dirs []string
 	// USER FIRST. On Windows the user's Path is what a package manager installs into without

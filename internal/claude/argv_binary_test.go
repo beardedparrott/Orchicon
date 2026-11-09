@@ -9,24 +9,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// THE REPORTED FAILURE, PINNED. Every claude container dispatch on Windows died in ~400ms with 0
-// tokens and "claude session exited without a terminal result message (exit code 1); the CLI emitted
-// no stderr at all before exiting".
-//
-// The cause was argv[0]. Claude was the only adapter using the daemon's duplex STDIO transport, and it
-// sent ClaudeBinaryPath() — a HOST path. On Windows that is C:\Users\...\claude.exe, which is not a
-// path that exists inside a Linux container. The supervisor refuses anything whose basename is not in
-// runtimeBinAllowlist (internal/runtime/agent.go runStdio), and on Linux filepath.Base splits on "/"
-// ONLY — so the basename of a Windows path is the WHOLE string and the request is refused before any
-// child is spawned. No child means no stderr, which is why the failure read as a silent CLI exit.
-//
-// These tests assert the CONTRACT rather than the symptom: whatever the plane sends as argv[0] for a
-// container session must survive the supervisor's basename rule.
+// The supervisor refuses anything whose basename is not in runtimeBinAllowlist
+// (internal/runtime/agent.go runStdio), and on Linux filepath.Base splits on "/" ONLY.
 const reportedWindowsClaudePath = `C:\Users\justi\AppData\Local\Microsoft\WinGet\Packages\Anthropic.ClaudeCode\claude.exe`
 
-// supervisorAllowlist mirrors internal/runtime's runtimeBinAllowlist. It is duplicated ON PURPOSE:
-// the point of the test is that the claude adapter emits a name the DAEMON accepts, and importing the
-// daemon's set would make the assertion true by construction even if the two drifted apart.
+// supervisorAllowlist mirrors internal/runtime's runtimeBinAllowlist.
 var supervisorAllowlist = map[string]bool{
 	"opencode": true,
 	"claude":   true,
@@ -42,9 +29,7 @@ func acceptedBySupervisor(argv0 string) (string, bool) {
 	return base, supervisorAllowlist[base]
 }
 
-// containerSession builds a session whose transport is the runtime container. It uses the REAL
-// isContainer predicate (Bridge + rt + a run id + a non-local execution mode), not a stub, so a change
-// to that predicate cannot silently stop these tests from covering the container case.
+// containerSession builds a session whose transport is the runtime container.
 func containerSession(t *testing.T, projectDir string) *session {
 	t.Helper()
 	b := New(quietLogger())
@@ -85,9 +70,7 @@ func hostSession(t *testing.T, projectDir string) *session {
 
 // The regression itself: a container session must not send a host path.
 func TestContainerSessionSendsAGuestBinaryNameNotAHostPath(t *testing.T) {
-	// A WINDOWS install path is forced regardless of the host running this test. On Linux the fallback
-	// for a missing install is the bare name "claude", which the supervisor happens to accept — so
-	// without this the test would pass on Linux while Windows stayed broken.
+	// A WINDOWS install path is forced regardless of the host running this test.
 	t.Setenv(ClaudeBinEnv, reportedWindowsClaudePath)
 
 	s := containerSession(t, t.TempDir())

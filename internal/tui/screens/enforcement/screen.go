@@ -60,9 +60,8 @@ type Model struct {
 	sub         *stream.Sub[*apiv1.StreamRecoveryEventsResponse]
 	reconnected bool
 
-	// Source detail caches: the list RPCs carry the rich rows and the
-	// screen has no Get-RPC for approvals/decisions, so the list hit is the
-	// detail source of truth.
+	// Source detail caches: the list RPCs carry the rich rows and the screen has no Get-RPC for
+	// approvals/decisions, so the list hit is the detail source of truth.
 	approvalItems map[string]*apiv1.ApprovalItem
 	recoveries    map[string]*apiv1.RecoveryExecution
 	planStatus    map[string]apiv1.PlanStatus
@@ -109,14 +108,7 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	return m
 }
 
-// FormOpen reports whether the open overlay is a FIELD FORM. The shell's Tab hard chord
-// consults it, and without it the chord intercepted Tab BEFORE the overlay saw it — so
-// this screen's form fields could not be tabbed through at all, even though
-// handleFormKey has handled `tab`/`shift+tab` all along. Same defect class as the Work
-// screen's missing method.
-//
-// Only ovForm: a picker, viewer or confirm overlay has no fields, so Tab means nothing to
-// them and must keep walking the tab menu.
+// FormOpen reports whether the open overlay is a FIELD FORM.
 func (m *Model) FormOpen() bool { return m.ov != nil && m.ov.kind == ovForm }
 
 // Overlay exposes the open modal for tests (nil = none).
@@ -133,9 +125,6 @@ func (m *Model) EnsureSubscriptions() {
 }
 
 // Close unsubscribes (tab switch = unsubscribe).
-// Close unsubscribes and drops the handle: CloseAll tears down the SHARED
-// registry, and EnsureSubscriptions guards on the handle being nil, so a stale
-// one would leave this screen stream-less after its first visit.
 func (m *Model) Close() {
 	m.reg.CloseAll()
 	m.sub = nil
@@ -147,10 +136,8 @@ func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.Load(), m.reg.WaitStatus("recovery-events"))
 }
 
-// ClaimsKeys reports whether the screen owns the keyboard: while a modal
-// (form / Confirm / picker / viewer) is open the shell must hand over every
-// key verbatim, so a Rego body or reason containing q / d / y / ? is never
-// eaten by a global chord.
+// ClaimsKeys reports whether the screen owns the keyboard: while a modal (form / Confirm / picker /
+// viewer) is open the shell must hand over every key verbatim.
 func (m *Model) ClaimsKeys() bool { return m.ov != nil }
 
 // activeID returns the focused source's selected item id ("" = none).
@@ -165,19 +152,9 @@ func (m *Model) activeID() string {
 // --- list panes ------------------------------------------------------------
 
 // ComingSoonText is the whole Policies surface while the design is unsettled.
-//
-// The operator asked for exactly this string: "both the TUI and the GUI to just say
-// 'Coming soon...' for now." It is shared with the GUI (frontend/src/routes/policies.tsx
-// renders the same words) so the two clients cannot disagree about the state of the feature.
 const ComingSoonText = "Coming soon..."
 
 // fetchPolicies intentionally FETCHES NOTHING.
-//
-// It is a policy placeholder, not an oversight: the pane must list no rows and offer no
-// chords, and issuing a ListPolicies call behind a "coming soon" pane would be a request
-// nothing can act on. Keeping the source registered (rather than deleting it) is what keeps
-// the section DISCOVERABLE — the operator can see that policies exist as a surface and are
-// coming, instead of the nav entry silently disappearing.
 func (m *Model) fetchPolicies(context.Context, string) ([]screenkit.Item, string, error) {
 	return nil, "", nil
 }
@@ -192,9 +169,8 @@ func (m *Model) fetchApprovals(ctx context.Context, pageToken string) ([]screenk
 	}
 	items := make([]screenkit.Item, 0, len(resp.Msg.Items))
 	for _, a := range resp.Msg.Items {
-		// Cache the full ApprovalItem: it is the ONLY carrier of the
-		// upstream context (summary / AC / touched files / reason) — v1 has
-		// no GetApproval RPC.
+		// Cache the full ApprovalItem: it is the ONLY carrier of the upstream context (summary / AC /
+		// touched files / reason) — v1 has no GetApproval RPC.
 		m.approvalItems[a.GetStepRunId()] = a
 		items = append(items, screenkit.Item{
 			ID:    a.GetStepRunId(),
@@ -231,15 +207,13 @@ func (m *Model) fetchRecoveries(ctx context.Context, pageToken string) ([]screen
 func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit.Field, string, error) {
 	switch src {
 	case "policies":
-		// The pane lists nothing while policies are "coming soon", so this is only
-		// reached if a stale selection survives a reload. Say the same thing as the
-		// empty state rather than fetching a policy the surface no longer offers.
+		// The pane lists nothing while policies are "coming soon", so this is only reached if a stale
+		// selection survives a reload.
 		return "Policies", []screenkit.Field{{Key: "status", Value: ComingSoonText}}, "", nil
 
 	case "approvals":
-		// The list response carries the full ApprovalItem (no GetApproval
-		// RPC in v1) — render its upstream context, plus the policy
-		// decision(s) recorded for the step run.
+		// The list response carries the full ApprovalItem (no GetApproval RPC in v1) — render its upstream
+		// context, plus the policy decision(s) recorded for the step run.
 		if a, ok := m.approvalItems[id]; ok {
 			fields := []screenkit.Field{
 				{Key: "step run", Value: a.GetStepRunId()},

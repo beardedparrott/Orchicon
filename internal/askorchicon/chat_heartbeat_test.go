@@ -15,12 +15,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// TestChatStreamHeartbeatKeepsIdleTurnAlive verifies acceptance C: an
-// idle-but-running turn (collector waiting on the serve bus, no chunks)
-// still emits wire traffic within the heartbeat window. The test drives the
-// REAL ChatStream RPC over httptest with a 50ms heartbeat interval, reads
-// the TurnStarted ack, then asserts a Heartbeat arrives BEFORE the reply is
-// fed — proving silent phases generate socket traffic.
+// TestChatStreamHeartbeatKeepsIdleTurnAlive verifies acceptance C: an idle-but-running turn
+// (collector waiting on the serve bus, no chunks) still emits wire traffic within the heartbeat
+// window.
 func TestChatStreamHeartbeatKeepsIdleTurnAlive(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_HEARTBEAT_INTERVAL", "50ms")
 	pool, s, client, tenantID, actorID, convID := auditConvEnv(t, "tnt_dev")
@@ -91,9 +88,9 @@ func TestChatStreamHeartbeatKeepsIdleTurnAlive(t *testing.T) {
 	}
 }
 
-// TestTurnHubPublishSubscribe verifies the broadcast hub fan-out unit:
-// published responses reach every subscriber, slow watchers drop (never
-// park the collector), and close terminates subscribers.
+// TestTurnHubPublishSubscribe verifies the broadcast hub fan-out unit: published responses reach
+// every subscriber, slow watchers drop (never park the collector), and close terminates
+// subscribers.
 func TestTurnHubPublishSubscribe(t *testing.T) {
 	r := newTurnHubRegistry()
 	h := r.create("c1")

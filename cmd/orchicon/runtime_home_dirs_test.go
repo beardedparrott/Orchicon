@@ -7,11 +7,8 @@ import (
 	"testing"
 )
 
-// The runtime container's $HOME directories are created FROM $HOME at start, not baked into the image
-// at build time. The image used to `mkdir -p /home/<the author's username>/...`, which is fixed while
-// HOME is not — so on any other machine the directories were created where nothing looked for them
-// and the operator's real home had none, leaving the runtime uid unable to write `$HOME/.config` and
-// the rest. Reading $HOME here is correct for every user by construction.
+// The runtime container's $HOME directories are created FROM $HOME at start, not baked into the
+// image at build time.
 func TestEnsureHomeDirsUsesTheHomeItWasGiven(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

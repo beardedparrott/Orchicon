@@ -1,12 +1,6 @@
 package reconciler
 
 // backoff_reenqueue_test.go — A RE-ENQUEUED FAILURE MUST NOT COME BACK IMMEDIATELY.
-//
-// Reported as log noise and diagnosed as worse than noise: a workflow run that could not progress was retried
-// (and warned about) on every 200ms heartbeat, 5552 times in 22 minutes. The queue already computed an
-// exponential backoff in markFailed — and enqueue threw it away, because it hardcoded readyAt = now.
-//
-// These tests pin the two halves: enqueue honours a recorded failure, and the backoff is the documented shape.
 
 import (
 	"context"

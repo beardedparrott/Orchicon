@@ -40,20 +40,15 @@ import (
 )
 
 const (
-	// staleVersionAttempts bounds the retries. Three is deliberate: the
-	// conflict is between two reconcilers, so it resolves on the next read in
-	// virtually every case, and a long retry inside a reconcile transaction
-	// holds row locks the other reconciler needs.
+	// staleVersionAttempts bounds the retries.
 	staleVersionAttempts = 3
-	// staleVersionDelay is the wait between attempts AFTER the first, which is
-	// immediate. Default 2s balances "give the other pass time to commit"
-	// against "do not hold this transaction open".
+	// staleVersionDelay is the wait between attempts AFTER the first, which is immediate.
 	defaultStaleVersionDelay = 2 * time.Second
 )
 
 // staleVersionDelay is the inter-attempt wait, overridable for operators
-// (ORCHICON_STALE_VERSION_RETRY_DELAY, a Go duration) because the right value is
-// a property of the deployment's reconciler cadence, not of the code.
+// (ORCHICON_STALE_VERSION_RETRY_DELAY, a Go duration) because the right value is a property of the
+// deployment's reconciler.
 func staleVersionDelay() time.Duration {
 	if v := os.Getenv("ORCHICON_STALE_VERSION_RETRY_DELAY"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
@@ -63,13 +58,7 @@ func staleVersionDelay() time.Duration {
 	return defaultStaleVersionDelay
 }
 
-// retryStaleVersion runs fn until it stops losing the optimistic-concurrency
-// race. fn is expected to re-read whatever it writes, on every attempt — the
-// helper cannot do that for it, and an fn that reuses a captured version will
-// simply burn all its attempts.
-//
-// Only db.ErrNotFound is retried: any other error is a genuine failure and is
-// returned at once, so this can never mask a real problem behind a delay.
+// retryStaleVersion runs fn until it stops losing the optimistic-concurrency race.
 func retryStaleVersion[T any](ctx context.Context, log *slog.Logger, op string, fn func() (T, error)) (T, error) {
 	var zero T
 	var lastErr error
@@ -86,10 +75,7 @@ func retryStaleVersion[T any](ctx context.Context, log *slog.Logger, op string, 
 			break
 		}
 		if log != nil {
-			// Warn, not Debug: this is the signal that a write nearly became a
-			// silent loss. It is the log line an operator needs when a PR link
-			// or a terminal mark goes missing, and before this helper existed
-			// there was no such line at all on the best-effort path.
+			// Warn, not Debug: this is the signal that a write nearly became a silent loss.
 			log.Warn("stale-version write lost the race, refetching and retrying",
 				"op", op, "attempt", attempt, "of", staleVersionAttempts, "error", err)
 		}

@@ -1,16 +1,6 @@
 package control
 
 // budget_warning_text_test.go — the budget ladder's MESSAGES on the settings form.
-//
-// "Under settings, I see the budget settings now but none of the budget warning
-// text settings are there."
-//
-// The gates and the ladder THRESHOLDS had been expanded out of the blob; the
-// twelve per-tier message strings had not, so an operator could tune when the
-// ladder fired but not a word of what the worker reads when it does. The GUI has
-// carried these since the ladder shipped (frontend/src/routes/settings.tsx,
-// BudgetWarningsEditor), which is what made this a parity gap rather than a new
-// feature.
 
 import (
 	"encoding/json"
@@ -26,9 +16,8 @@ var allWarningMessageFields = []string{
 	"warn_msg_time", "esc_msg_time", "final_msg_time",
 }
 
-// The complaint was that the settings were MISSING, so this asserts the form
-// RENDERS a field for each one. Testing only budgetInitials/buildBudgetJSON would
-// pass just as happily on a form that displays nothing.
+// The complaint was that the settings were MISSING, so this asserts the form RENDERS a field for
+// each one.
 func TestSettingsFormCarriesEveryWarningMessageField(t *testing.T) {
 	f := (&Model{}).settingsForm()
 	have := map[string]bool{}
@@ -82,9 +71,8 @@ func TestWarningMessagesAreSeededFromTheBlob(t *testing.T) {
 	}
 }
 
-// A save that changes nothing reproduces the messages: the form seeds them from
-// the blob and composes them back. A one-way conversion would wipe the operator's
-// copy on every unrelated settings save.
+// A save that changes nothing reproduces the messages: the form seeds them from the blob and
+// composes them back.
 func TestWarningMessagesRoundTripUnchanged(t *testing.T) {
 	blob := `{"warnings":{"messages":{
 	  "tokens":["a","b","c"],
@@ -137,10 +125,8 @@ func TestMessagesAndFractionsShareTheWarningsBlock(t *testing.T) {
 	}
 }
 
-// An untouched message block writes NO warnings key at all, so an unrelated
-// settings save cannot overwrite stored copy with blanks. (An absent key means
-// "keep" to the server; the columns are NOT NULL DEFAULT, so they are never
-// legitimately empty.)
+// An untouched message block writes NO warnings key at all, so an unrelated settings save cannot
+// overwrite stored copy with blanks.
 func TestUntouchedMessagesWriteNoWarningsBlock(t *testing.T) {
 	out := buildBudgetJSON(map[string]string{})
 	var got map[string]any
@@ -152,10 +138,8 @@ func TestUntouchedMessagesWriteNoWarningsBlock(t *testing.T) {
 	}
 }
 
-// A dimension with only ONE tier filled writes the whole triple — the server reads
-// `messages.<dim>` as a unit. The unfilled tiers go as "", which SILENCES them
-// (the adapter assigns each string verbatim), so this is a real edit and the
-// behaviour is deliberate rather than a fallback.
+// A dimension with only ONE tier filled writes the whole triple — the server reads `messages.<dim>`
+// as a unit.
 func TestOneFilledTierWritesTheWholeTriple(t *testing.T) {
 	out := buildBudgetJSON(map[string]string{"esc_msg_tokens": "tighter now"})
 	var got struct {

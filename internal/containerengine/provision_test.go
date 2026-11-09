@@ -23,9 +23,7 @@ func TestPlanInstallPerGOOS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("darwin plan: %v", err)
 	}
-	// THE RESOLVED PATH IS THE COMMAND, AND THAT IS THE POINT OF THE CHANGE. The child inherits THIS process's
-	// PATH — the same one that just failed to find brew — so a bare "brew" would not start. The assertion used to
-	// demand the bare name, which is exactly the assumption that broke the MSI's install on Windows.
+	// THE RESOLVED PATH IS THE COMMAND, AND THAT IS THE POINT OF THE CHANGE.
 	if plan.Command != "/fake/brew" || plan.String() != "/fake/brew install podman" {
 		t.Fatalf("darwin plan must run the RESOLVED brew: %q", plan.String())
 	}
@@ -55,9 +53,8 @@ func TestPlanInstallPerGOOS(t *testing.T) {
 	}
 }
 
-// TestPlanInstallWithoutAnInstaller is the actionable-error case: no brew/winget/package
-// manager still tells the operator exactly where to get podman, and it is ErrDeclined so no
-// install path treats it as fatal.
+// TestPlanInstallWithoutAnInstaller is the actionable-error case: no brew/winget/package manager
+// still tells the operator exactly where to get podman.
 func TestPlanInstallWithoutAnInstaller(t *testing.T) {
 	noRun := func(bin string, args []string) (string, error) {
 		t.Fatalf("planning must not run anything, ran %s %v", bin, args)
@@ -144,9 +141,8 @@ func TestProvisionRootRequirementIsReported(t *testing.T) {
 	}
 }
 
-// TestProvisionInstallsThenDetects is the happy path end to end: absent → confirm → run the
-// package manager → re-detect finds podman. Re-detection is the point: an installer's exit
-// code is not proof the binary is on PATH.
+// TestProvisionInstallsThenDetects is the happy path end to end: absent → confirm → run the package
+// manager → re-detect finds podman.
 func TestProvisionInstallsThenDetects(t *testing.T) {
 	installed := false
 	run := func(bin string, args []string) (string, error) {
@@ -258,10 +254,8 @@ func TestProvisionMarkersTheInstall(t *testing.T) {
 // nothing to call and nothing to block on. This test would fail to compile if a prompt were reintroduced.
 func TestUnattendedProvisionNeverReads(t *testing.T) {
 	ran := false
-	// THE POST-INSTALL RESOLUTION IS PART OF THE CONTRACT: provisioning now re-detects, because a package manager
-	// commits to the registry rather than to this process's PATH. A probe whose PATH never gains podman correctly
-	// reports "reported success but no podman binary is on PATH" — so this fake gains it, the way a real host
-	// does once the registry is read.
+	// THE POST-INSTALL RESOLUTION IS PART OF THE CONTRACT: provisioning now re-detects, because a
+	// package manager commits to the registry rather than to this process's PATH.
 	bins := map[string]string{"winget": `C:\winget.exe`}
 	p := testProbe("windows", nil, bins, func(bin string, args []string) (string, error) {
 		ran = true

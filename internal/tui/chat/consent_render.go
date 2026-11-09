@@ -7,12 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// consent_render.go draws a KindConsent item in the transcript: the CARD while
-// the ask is pending, a one-line RECORD once it has been decided.
-//
-// The box itself is drawn by kit2 (kit2.CardLines), so the border, the padding
-// and the selection highlight come from the shared primitives rather than from
-// a second renderer that would drift from them.
+// consent_render.go draws a KindConsent item in the transcript: the CARD while the ask is pending,
+// a one-line RECORD once it has been decided.
 
 // consentLines renders one consent item at the given pane width.
 func consentLines(it ChatItem, width int) string {
@@ -20,18 +16,8 @@ func consentLines(it ChatItem, width int) string {
 	return text
 }
 
-// consentLineSpans is consentLines plus WHERE EACH OPTION ROW LANDED, so a CLICK on
-// the card resolves to the row under it — the same contract the clarifying-question
-// card has had.
-//
-// The operator: "I saw the card and actually selected accept but I also noticed I
-// couldn't click on it in the TUI. I had to click into the card then use the
-// keyboard to select it." Two cards for the same kind of decision, one clickable
-// and one keyboard-only, is a coin-flip for the operator rather than a design.
-//
-// The offsets come from the widget that DREW the card (kit2.CardLinesSpans), never
-// from a counter here: a drifted offset means a click answers with the row the
-// operator did not choose.
+// consentLineSpans is consentLines plus WHERE EACH OPTION ROW LANDED, so a CLICK on the card
+// resolves to the row under it — the same contract the clarifying-question card has had.
 func consentLineSpans(it ChatItem, width int) (string, []AskOptionSpan) {
 	st := it.Consent
 	if st == nil {
@@ -100,18 +86,14 @@ func consentRecord(st *ConsentState) string {
 		// able to see the card. The outcome was decided somewhere it cannot observe.
 		return "no longer pending · " + subject
 	case DecisionUnanswered:
-		// A QUESTION THE TURN DIED WAITING ON. It names the question, because the
-		// question is the CONTEXT that must survive: a record saying only "unanswered"
-		// would leave the operator scrolling back to find what they were asked, and the
-		// point of this state is that they can still answer it.
+		// A QUESTION THE TURN DIED WAITING ON.
 		if q := strings.TrimSpace(a.Question); q != "" {
 			return "unanswered · " + q + " — the turn ended while it was waiting on you; reply in your own words and it will be sent as your next message"
 		}
 		return "unanswered · the turn ended while it was waiting on you"
 	default:
-		// An UNRECOGNISED decision must not silently claim "allow once" — that was the
-		// previous default, which would report a permission as granted on the strength
-		// of a value it did not understand.
+		// An UNRECOGNISED decision must not silently claim "allow once" — that was the previous default,
+		// which would report a permission as granted on the strength of a value it did not understand.
 		return "consent resolved (" + string(st.Decision) + ") · " + subject
 	}
 }
@@ -126,14 +108,8 @@ func consentSpec(st *ConsentState) kit2.CardSpec {
 		spec.Body = a.Question
 	default:
 		spec.Title = "Permission"
-		// THE BODY NAMES THE TOOL AND THE TARGET, which is the whole content of
-		// the decision: "approve" is meaningless without what is being approved.
-		//
-		// The SERVER's summary is preferred when present because it names EVERY
-		// target — Target is a single path, so a batch_write touching two files
-		// showed only the first. The operator: "the GUI showed what file/directory
-		// batch_write was modifying but the TUI did not." The GUI renders the
-		// summary, so the TUI does too and the two describe the same action.
+		// THE BODY NAMES THE TOOL AND THE TARGET, which is the whole content of the decision: "approve" is
+		// meaningless without what is being approved.
 		spec.Body = a.Summary
 		if spec.Body == "" {
 			spec.Body = strings.TrimSpace(a.Tool + " " + a.Target)

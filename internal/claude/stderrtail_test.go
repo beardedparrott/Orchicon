@@ -1,10 +1,6 @@
 package claude
 
 // stderrtail_test.go — THE DIAGNOSTIC IS THE LAST LINE, NOT THE FIRST.
-//
-// Reported as six executions of "claude session exited without a terminal result message (exit code 1)" with
-// no further detail, while the CLI had written the actual cause to stderr at exit. The old capture kept the
-// FIRST 512 bytes and read them on demand, so it systematically missed the fatal line.
 
 import (
 	"strings"
@@ -40,8 +36,6 @@ func TestTheTailKeepsTheLastLines(t *testing.T) {
 }
 
 // TestTheDrainDoesNotBlockTheWriter — the child's fd 2 must never back up on an undrained channel.
-//
-// The pump channel is buffered at 64; without a drain the 65th write blocks the pump, which blocks the child.
 func TestTheDrainDoesNotBlockTheWriter(t *testing.T) {
 	ch := make(chan []byte, 4)
 	r := startStderrDrain(ch)

@@ -1,29 +1,7 @@
 package server
 
-// The instance-binding of a plane credential — the ONLY thing standing
-// between a misconfigured ORCHICON_PLANE_URL and an automation worker writing
-// into the WRONG instance's database.
-//
-// A plane credential is minted into (and resolved from) the minting
-// instance's OWN database: database.A holds the key's hash for a run on A. If
-// that run's container is pointed at instance B's plane — a stale
-// ORCHICON_PLANE_PUBLIC_URL exported from a shared profile, a launcher that
-// hands one instance's URL to the other's workers — B holds no matching hash,
-// so B REJECTS the call (401). The result is a loud, broken run; not a silent
-// cross-instance write.
-//
-// That is a property nobody can see in the code, and it disappears the moment
-// a future change shares a database between instances (then B WOULD resolve
-// the key and accept the write). Hence the explicit test.
-//
-// Gated on the DB-backed pattern this package already uses
-// (adapter_kind_test.go): ORCHICON_TEST_DSN for THIS instance's database plus
-// ORCHICON_TEST_PLANE_PROD_URL for the OTHER instance's plane base URL. A
-// missing prerequisite is a loud SKIP, never a silent pass.
-//
-// Optional: set ORCHICON_TEST_PLANE_URL (this instance's own plane base URL)
-// to also assert the positive direction on the wire — the same key IS
-// accepted by the plane that minted it.
+// The instance-binding of a plane credential — the ONLY thing standing between a misconfigured
+// ORCHICON_PLANE_URL and an automation worker writing into the WRONG instance's database.
 
 import (
 	"context"
@@ -54,9 +32,7 @@ func (t *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(clone)
 }
 
-// dialListWorkItems presents token to planeURL's Connect API. It returns the
-// connect error code (0 for success) so the assertions read as
-// "rejected/accepted", not as string matching.
+// dialListWorkItems presents token to planeURL's Connect API.
 func dialListWorkItems(t *testing.T, planeURL, token string) (connect.Code, error) {
 	t.Helper()
 	hc := &http.Client{
@@ -111,11 +87,7 @@ func TestCrossInstancePlaneCredentialIsRejected(t *testing.T) {
 		Name:       "xinstance-guard-key",
 		KeyPrefix:  prefix,
 		KeyHash:    hash,
-		// The REAL entitlement string is "workitem:read" (no underscore —
-		// see internal/db/seed_workers.go). A scope the plane does not
-		// recognise makes the MINTING plane reject the key with
-		// permission_denied, so both directions would look "rejected" and the
-		// cross-instance assertion would become a vacuous pass.
+		// The REAL entitlement string is "workitem:read" (no underscore — see internal/db/seed_workers.go).
 		Scopes: []string{"workitem:read"},
 	}); err != nil {
 		_ = ttx.Rollback(ctx)
@@ -144,9 +116,8 @@ func TestCrossInstancePlaneCredentialIsRejected(t *testing.T) {
 		t.Fatalf("resolved key tenant = %q, want %q", row.TenantID, tenant)
 	}
 
-	// THE ASSERTION: the other instance's plane holds no matching hash, so it
-	// rejects the credential instead of honouring it. Rejected — not a
-	// success-shaped response.
+	// THE ASSERTION: the other instance's plane holds no matching hash, so it rejects the credential
+	// instead of honouring it.
 	code, err := dialListWorkItems(t, otherURL, plaintext)
 	switch code {
 	case connect.CodeUnauthenticated, connect.CodePermissionDenied:
@@ -158,9 +129,8 @@ func TestCrossInstancePlaneCredentialIsRejected(t *testing.T) {
 			"instances now share a database, this guard is gone and must be replaced deliberately.", otherURL, code, err)
 	}
 
-	// Positive direction (optional): the plane that minted it does accept it,
-	// which is what makes the rejection above a statement about instance
-	// binding rather than about the key being dead.
+	// Positive direction (optional): the plane that minted it does accept it, which is what makes the
+	// rejection above a statement about instance binding rather than about the key being dead.
 	if ownURL := strings.TrimRight(os.Getenv("ORCHICON_TEST_PLANE_URL"), "/"); ownURL != "" {
 		ownCode, ownErr := dialListWorkItems(t, ownURL, plaintext)
 		if ownCode == connect.CodeUnauthenticated || ownCode == connect.CodePermissionDenied {

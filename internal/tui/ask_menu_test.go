@@ -6,10 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// The Ask tab's dropdown is the operator's spec: two rows, "New" and
-// "Conversations". New loads the launch page (what orch shows on start);
-// Conversations shows the transcript view with the conversation list on the
-// right, so previous sessions can be continued.
+// The Ask tab's dropdown is the operator's spec: two rows, "New" and "Conversations".
 func TestAskMenuIsNewAndConversations(t *testing.T) {
 	m := phase3App(120, 40)
 	entries := m.navEntries(TabAsk)

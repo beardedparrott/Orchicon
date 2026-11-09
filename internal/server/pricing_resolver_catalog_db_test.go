@@ -15,15 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/migrate"
 )
 
-// pricing_resolver_catalog_db_test.go is the DB-backed half of the Gap-4 proof:
-// on this plane there is NO opencode binary, so the pricing resolver's ONLY
-// source is the offline vendored catalog. A claude/anthropic sample recorded
-// through the REAL recorder into REAL Postgres must land with the catalog-priced
-// cost_usd (cache reads at the cache-read rate) and the four cache-aware
-// buckets — i.e. the exact values `get_usage` / the cost explorer read back.
-//
-// FIXTURES ONLY: no live Claude session, no spend. Guarded by ORCHICON_TEST_DSN
-// like the other DB-backed tests, so it is skipped in DSN-less CI.
+// FIXTURES ONLY: no live Claude session, no spend.
 func TestClaudeUsageRowIsCatalogPricedInPostgres(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {
@@ -117,11 +109,8 @@ func TestClaudeUsageRowIsCatalogPricedInPostgres(t *testing.T) {
 		t.Fatalf("persisted rows = %d, want 1: %+v", len(rows), rows)
 	}
 	got := rows[0]
-	// Attribution parity on the read path: provider/model are what `get_usage`
-	// and the cost explorer surface. NOTE: ListUsageRecords does not SELECT the
-	// adapter_kind column (a pre-existing read-path gap that affects the
-	// opencode rows identically — the INSERT does persist it), so it is not
-	// asserted here.
+	// Attribution parity on the read path: provider/model are what `get_usage` and the cost explorer
+	// surface.
 	if got.Provider != "anthropic" || got.Model != "claude-sonnet-4" {
 		t.Fatalf("attribution = provider %q model %q, want anthropic/claude-sonnet-4", got.Provider, got.Model)
 	}

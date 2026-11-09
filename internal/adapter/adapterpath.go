@@ -31,19 +31,13 @@ import (
 	"strings"
 )
 
-// canonicalKind lowercases a kind so a caller spelling it "OpenCode" or "CLAUDE" resolves the same entry.
-//
-// The kind vocabulary is two constants (KindOpencode / KindClaude) and the model-ref parser is LEFT-GREEDY
-// on case already, so this is a normalisation rather than a new concept — it exists so the three switches in
-// this file cannot disagree about spelling.
+// canonicalKind lowercases a kind so a caller spelling it "OpenCode" or "CLAUDE" resolves the same
+// entry.
 func canonicalKind(kind string) string {
 	return strings.ToLower(strings.TrimSpace(kind))
 }
 
 // BinEnv names the environment override for a kind, or "" when the kind has none.
-//
-// An explicit operator choice always wins in resolution, and it is the documented remedy in every error
-// message — so it lives here rather than being rediscovered per package.
 func BinEnv(kind string) string {
 	switch canonicalKind(kind) {
 	case DefaultAdapterKind:
@@ -76,13 +70,6 @@ func declaredBinDir(home, kind string) string {
 }
 
 // extraBinDirs are the kind-specific directories worth probing beyond the declared one.
-//
-// EACH ENTRY IS EVIDENCE, not a guess. The opencode entries come from that resolver's own history (the
-// operator's `C:\...\AppData\Roaming\npm\opencode.ps1`, and the real `node_modules\opencode-ai\bin\opencode.exe`
-// one level down); the claude entry is the WinGet package directory from the operator's `Get-Command claude`.
-//
-// A CYCLE IS NOT INTRODUCED BY DUPLICATING THESE SMALL LISTS — the alternative was leaving the mount
-// hardcoded, which is what broke. When one of these moves, the resolver's own tests still catch it.
 func extraBinDirs(goos, home, kind string, getenv func(string) string) []string {
 	if goos != "windows" {
 		return nil
@@ -102,11 +89,7 @@ func extraBinDirs(goos, home, kind string, getenv func(string) string) []string 
 	}
 	switch canonicalKind(kind) {
 	case DefaultAdapterKind:
-		// THE NPM GLOBAL PREFIXES, and the two package names in use. The shim lives at the prefix root;
-		// the executable one or two levels down.
-		// npm's global prefix is %APPDATA%\npm; pnpm's is %LOCALAPPDATA%\pnpm; an all-users npm lives
-		// under the node install. Built through `add` so an EMPTY base cannot produce a rooted `\npm`
-		// that then passes the IsAbs check and resolves against the drive root.
+		// THE NPM GLOBAL PREFIXES, and the two package names in use.
 		add(env("APPDATA"), "npm", "node_modules", "opencode-ai", "bin")
 		add(env("APPDATA"), "npm", "node_modules", "@opencode", "cli", "bin")
 		add(env("LOCALAPPDATA"), "pnpm", "node_modules", "opencode-ai", "bin")
@@ -129,9 +112,6 @@ func extraBinDirs(goos, home, kind string, getenv func(string) string) []string 
 }
 
 // winGetPackageExes finds an executable inside a WinGet PACKAGE directory.
-//
-// WinGet's package directories are CONTENT-ADDRESSED (`publisher.package_source_hash`), so they cannot be
-// spelled out — they are enumerated. This is the shape the operator's own `Get-Command claude` reported.
 func winGetPackageExes(goos, home, kind string, getenv func(string) string) []string {
 	if goos != "windows" {
 		return nil
@@ -177,10 +157,8 @@ func winGetPackageExes(goos, home, kind string, getenv func(string) string) []st
 	return out
 }
 
-// winGetPackagePrefix is the directory-name prefix WinGet gives a kind's package, or "" when it has none.
-//
-// MEASURED from the operator's own output: `Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe`.
-// The prefix (publisher.package) is stable; the suffix is the source and a hash.
+// winGetPackagePrefix is the directory-name prefix WinGet gives a kind's package, or "" when it has
+// none.
 func winGetPackagePrefix(kind string) string {
 	switch canonicalKind(kind) {
 	case KindClaude:
@@ -189,25 +167,11 @@ func winGetPackagePrefix(kind string) string {
 	return ""
 }
 
-// ResolveBinary returns the adapter executable for a kind, or "" when none was found.
-//
-// ORDER, each step load-bearing:
-//
-//  1. The kind's ORCHICON_*_BIN override — an explicit operator or deployment choice.
-//  2. The DECLARED directory, so the common POSIX install pays for one stat.
-//  3. The platform's conventional install directories, then the WinGet package directories.
-//
-// IT NEVER RETURNS A SHIM. Go cannot execute a .cmd/.bat/.ps1, so resolving one converts a clean "not found"
-// into a dispatch that dies elsewhere — the failure that resolver's own comments describe. Shims are
-// reported separately by ShimHint so "not found" is never a lie about an install the operator can see.
-//
-// IT RETURNS THE HOST PATH. Whether that path is usable INSIDE a container is a different question, answered
-// by ContainerUsable — a Windows .exe is a perfectly good host adapter and cannot run in a Debian container.
+// ResolveBinary returns the adapter executable for a kind, or "" when none was found. IT NEVER
+// RETURNS A SHIM.
 func ResolveBinary(goos, home, kind string, getenv func(string) string) string {
-	// THE FULL ORDER: an explicit override, then what the OS's PATH reports, then the known-install lists.
-	// Discovery is tried FIRST after the override because it is the agnostic answer — it covers Chocolatey,
-	// nix, a portable zip, anything the OS knows — and the lists are the fallback for an install no PATH
-	// entry mentions.
+	// THE FULL ORDER: an explicit override, then what the OS's PATH reports, then the known-install
+	// lists.
 	if p := ResolveBinaryDeclared(goos, home, kind, getenv); p != "" {
 		return p
 	}
@@ -221,10 +185,6 @@ func ResolveBinary(goos, home, kind string, getenv func(string) string) string {
 }
 
 // ResolveBinaryDeclared is the OVERRIDE-plus-known-lists resolver, without discovery.
-//
-// It exists because two callers need different halves: the container MSM derivation wants the KNOWN install (it
-// is mounting a directory), while host resolution wants everything. Keeping them one function would make the
-// mount code perform a PATH search per create for an answer it does not use.
 func ResolveBinaryDeclared(goos, home, kind string, getenv func(string) string) string {
 	env := func(k string) string {
 		if getenv == nil {
@@ -257,12 +217,6 @@ func resolveKnown(home, kind, goos string, getenv func(string) string) string {
 // resolveKnownInner is the candidate-list search: declared dir, conventional dirs, WinGet packages.
 func resolveKnownInner(goos, home, kind string, getenv func(string) string) (string, bool) {
 	// NO HOME MEANS NO ADAPTER, not "whatever this process happens to reach".
-	//
-	// Every candidate below is derived from the caller's home, and an empty one would make the ORCHICON_*_BIN
-	// override and the ambient environment decide the answer INSTEAD of the container's own view. That is
-	// wrong in the direction that matters: the daemon asks this question about the home it mounts, and a
-	// daemon with no home configured mounts no adapter — so an adapter found here would be mounted nowhere
-	// and reported as present.
 	if strings.TrimSpace(home) == "" {
 		return "", false
 	}
@@ -301,9 +255,6 @@ func resolveKnownInner(goos, home, kind string, getenv func(string) string) (str
 }
 
 // exesIn returns the executables in dir whose stem is the kind or the kind followed by "-".
-//
-// BOUNDED (an explicit name set, .exe only) and SORTED, so two installs resolve the same one every time
-// rather than by directory order.
 func exesIn(dir, kind string) []string {
 	if dir == "" {
 		return nil
@@ -331,11 +282,8 @@ func exesIn(dir, kind string) []string {
 	return out
 }
 
-// ShimHint reports a shell shim that WOULD have been resolved, naming it and the override that fixes it.
-//
-// Empty when there is nothing to add. The purpose is narrow and worth stating: "claude was not found" is a
-// lie when `claude` answers in the operator's shell, and the honest answer names the shim and why Go cannot
-// launch it.
+// ShimHint reports a shell shim that WOULD have been resolved, naming it and the override that
+// fixes it.
 func ShimHint(goos, home, kind string, getenv func(string) string) string {
 	if goos != "windows" {
 		return ""
@@ -375,16 +323,8 @@ func ShimHint(goos, home, kind string, getenv func(string) string) string {
 	return ""
 }
 
-// ContainerUsable reports whether a resolved adapter path can execute INSIDE a runtime container, and why
-// not when it cannot.
-//
-// THIS IS THE CHECK THAT STOPS A SILENT CONTAINER FAILURE. A runtime container is Linux; a Windows `.exe`
-// resolves perfectly on the host and is unrunnable inside. Without this, the mount succeeds, the PATH entry
-// points at it, and the adapter dies at spawn — inside the container, far from the operator's command.
-//
-// The remedy is the operator's, and it is stated: install the adapter's LINUX build and point the kind's
-// ORCHICON_*_BIN at it. Orchicon deliberately does not download or redistribute an adapter CLI (licensing:
-// Claude Code's terms prohibit bundling), so this is a documented requirement rather than a missing feature.
+// ContainerUsable reports whether a resolved adapter path can execute INSIDE a runtime container,
+// and why not when it cannot.
 func ContainerUsable(hostPath, containerGOOS string) (bool, string) {
 	if hostPath == "" {
 		return false, "no adapter binary was resolved on this host"

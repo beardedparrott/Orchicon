@@ -1,18 +1,7 @@
 package tui
 
-// conv_loaded_latch_test.go — ONE FAILED RELOAD MUST NOT DISABLE THE ROLLING RAIL REFRESH (AC 16).
-//
-// `reloadConversations` used to set `convLoaded = false`, and only a SUCCESSFUL `onConversations` sets it back
-// true — the error branch returns before reaching that line. So ONE failed reload (a blip, a 401) left the flag
-// false for the rest of the session, and `refreshActiveView`'s extra list reload (gated on `convLoaded` in
-// refresh.go) NEVER FIRED AGAIN — silently disabling the rolling refresh of the rail, which is exactly the
-// freshness the "running" marker depends on.
-//
-// The candidate that might have covered it — `ask.Model.RefreshView` (screens/ask/screen.go) — reloads the
-// SCREEN's screenkit list (the pane's own source), not the shell's `m.conversations`, which is what the rail
-// and every turn-state read use. So it does NOT keep the rail current, and the latch is a real defect. The fix
-// is the one line: `reloadConversations` no longer clears the flag ("a load is in flight" is `convLoading`'s
-// job; a successful-load marker must survive a re-read).
+// So ONE failed reload (a blip, a 401) left the flag false for the rest of the session, and
+// `refreshActiveView`'s extra list reload (gated on `convLoaded` in refresh.go) NEVER FIRED AGAIN.
 
 import (
 	"testing"

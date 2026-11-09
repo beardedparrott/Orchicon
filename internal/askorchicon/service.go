@@ -41,97 +41,60 @@ type Service struct {
 	// adapterKinds returns the adapter kinds registered with the
 	// Dispatcher (ADR-0004 D1) — powers the list_adapter_kinds tool.
 	adapterKinds func() []string
-	// chatKinds returns the adapter kinds whose bridge implements the
-	// ChatTurnClient (Ask chat) capability (ADR-0004 D1). The conversation
-	// creation + tenant-default save guards use it to reject a registered
-	// but not-Ask-capable kind before the first message send.
+	// chatKinds returns the adapter kinds whose bridge implements the ChatTurnClient (Ask chat)
+	// capability (ADR-0004 D1).
 	chatKinds func() []string
-	// dispatcher is the shared adapter routing substrate the Ask path uses
-	// to resolve a conversation's adapter kind to its ChatTurnClient
-	// capability (ADR-0003). When nil (tests / pre-wiring) the Ask path
-	// falls back to the host opencode serve client. Wired by SetDispatcher.
+	// dispatcher is the shared adapter routing substrate the Ask path uses to resolve a conversation's
+	// adapter kind to its ChatTurnClient capability (ADR-0003).
 	dispatcher *scheduler.Dispatcher
-	// sendMessage injects a mid-run message into a live worker session
-	// (Stage 3). Wired by the server to the opencode adapter; nil when
-	// the session transport is unavailable.
+	// sendMessage injects a mid-run message into a live worker session (Stage 3).
 	sendMessage func(ctx context.Context, execID, message string) error
-	// hostServe is the always-on host opencode serve. Chat turns run as
-	// persistent sessions on it; nil when the transport is disabled or the
-	// serve could not start — ChatStream fails the turn fast with a clean
-	// message (the one-shot `opencode run` path was removed).
+	// hostServe is the always-on host opencode serve.
 	hostServe *opencode.HostServe
-	// usageRecorder captures Ask session LLM usage via the canonical
-	// aigateway dual-write (Postgres + OTel), mirroring worker executions.
-	// Wired by the server via SetUsageRecorder; nil means Ask records no
-	// usage. Interface so tests inject a spy.
+	// usageRecorder captures Ask session LLM usage via the canonical aigateway dual-write (Postgres +
+	// OTel), mirroring worker executions.
 	usageRecorder usageRecorder
 	// turns is the in-flight turn registry (one turn per conversation):
 	// the one-turn gate + the Stop path's deterministic collector cancel.
 	turns *turnRegistry
-	// grants is the in-memory, directory-keyed, per-conversation session
-	// grant store ("allow for this directory" answers). In memory by design:
-	// a plane restart clears it and a new conversation asks again.
+	// grants is the in-memory, directory-keyed, per-conversation session grant store ("allow for this
+	// directory" answers).
 	grants *grantStore
-	// fullsend records the conversations in FULLSEND: the operator has waived the
-	// permission PROMPT for them. Per conversation and in memory, exactly like
-	// grants — a bypass that survives a restart is one the operator has forgotten
-	// is on. See fullsend.go.
+	// fullsend records the conversations in FULLSEND: the operator has waived the permission PROMPT for
+	// them.
 	fullsend *fullsendStore
-	// once records the absolute targets the operator answered ALLOW_ONCE for,
-	// per conversation: the execution guard's shim cannot ask, so the command
-	// the operator just approved must be armed for it (while a sibling path a
-	// subprocess inside it targets stays refused).
+	// once records the absolute targets the operator answered ALLOW_ONCE for, per conversation: the
+	// execution guard's shim cannot ask.
 	once *onceStore
-	// pending is the registry of asks awaiting a human decision, keyed
-	// (conversation, ask id). The turn is not blocked by us — opencode holds
-	// the tool call; we record and await a reply on the turn's stream.
+	// pending is the registry of asks awaiting a human decision, keyed (conversation, ask id).
 	pending *pendingAskRegistry
-	// followUps holds an injected message that the running turn could not take, so the next turn answers it.
-	// See interject_queue.go — this is what makes a NON-queueing adapter (the native bridge) behave the way
-	// the operator asked: the message lands in the chat at once and is folded into the context at the next
-	// turn.
+	// followUps holds an injected message that the running turn could not take, so the next turn
+	// answers it.
 	followUps *followUpQueue
-	// hubs is the live-turn broadcast registry (one hub per conversation
-	// with a running turn): every response drained to the dispatch stream
-	// is also published here so WatchTurnStream can re-attach a dropped
-	// socket to the SAME turn without dispatching.
+	// hubs is the live-turn broadcast registry (one hub per conversation with a running turn): every
+	// response drained to the dispatch stream is also published here so WatchTurnStream can re-attach.
 	hubs *turnHubRegistry
-	// testServeClient is a test-only injection point that bypasses the real
-	// host serve so handler tests can drive ChatStream/Abort with a fake
-	// session client. Never set outside tests.
+	// testServeClient is a test-only injection point that bypasses the real host serve so handler tests
+	// can drive ChatStream/Abort with a fake session client.
 	testServeClient scheduler.ChatTurnClient
-	// validationRegistry is the model-ref validation catalog (ADR-0003)
-	// threaded into the update_settings tool write path (the Ask-own second
-	// write into tenant_settings.default_ask_orchicon_model). nil = the
-	// static builtin catalog.
+	// validationRegistry is the model-ref validation catalog (ADR-0003) threaded into the
+	// update_settings tool write path (the Ask-own second write into
+	// tenant_settings.default_ask_orchicon_model).
 	validationRegistry adapter.ProviderRegistry
 
-	// fileEditHook is the diff-pipeline ledger hook for Ask turns (optional,
-	// wired by the server over the shared fileedit.Service): invoked for
-	// every completed mutating tool_use part so Ask conversations ledger
-	// file edits from real file-state snapshots (owner_kind
-	// ask_conversation). Nil = no ledger (tests / DB-less planes).
+	// fileEditHook is the diff-pipeline ledger hook for Ask turns (optional, wired by the server over
+	// the shared fileedit.Service).
 	fileEditHook func(ctx context.Context, tenantID, convID, toolName string, input map[string]any, output string)
-	// fileEditReconciler is the terminal-turn git reconciliation hook
-	// (optional, same diff pipeline): invoked once when a turn finalizes so
-	// the conversation's ledger reconciles against the project dir's git
-	// state. Nil = skipped.
+	// fileEditReconciler is the terminal-turn git reconciliation hook (optional, same diff pipeline):
+	// invoked once when a turn finalizes so the conversation's ledger reconciles against the project.
 	fileEditReconciler func(ctx context.Context, tenantID, convID string)
 
 	// mcpResolver is the ONE scope-addressed MCP resolver (internal/mcpsettings).
-	// An Ask conversation resolves SCOPE CONVERSATION — project ∪ conversation —
-	// from it, which is the whole of the native Ask MCP surface's input. Nil
-	// (tests / unwired planes) resolves nothing: no MCP tools, never an error.
 	mcpResolver mcpclient.ScopeResolver
-	// kek is the tenant-secrets key used to expand ${SECRET_NAME} references in a
-	// resolved MCP definition's env/headers before connect. Without it an Ask
-	// conversation whose server carries a reference cannot start, while every
-	// other path can — so it is wired from the server's own KEK.
+	// kek is the tenant-secrets key used to expand ${SECRET_NAME} references in a resolved MCP
+	// definition's env/headers before connect.
 	kek []byte
-	// askMCP caches one LIVE MCP client per conversation (see ask_mcp.go). Ask
-	// turns are long-lived, so the client is created once and closed only at
-	// conversation teardown or plane shutdown — never per turn (per-turn close
-	// would re-spawn stdio children on every message).
+	// askMCP caches one LIVE MCP client per conversation (see ask_mcp.go).
 	askMCP   map[string]*askMCPEntry
 	askMCPMu sync.Mutex
 
@@ -160,22 +123,8 @@ func New(pool *db.Pool, log *slog.Logger, blobStore blobstore.Store, modelDisc *
 	return s
 }
 
-// startSweeper launches the background turn-registry sweeper (ADR-ASK-3): it
-// ticks every interval, evicts entries older than the TTL (cancelling the
-// collector with errTurnExpired), and for each evicted conversation aborts
-// the serve session — belt-and-suspenders on top of the stall monitor. This
-// is the "every turn has a hard backstop" guarantee: a collector that can
-// never finalize is reaped in bounded time instead of blocking the
-// conversation forever (the reported server-restart-required behaviour).
-//
-// A TURN PARKED ON A CARD IS NOT REAPED. It is quiet because the OPERATOR has
-// the call, not because the collector is wedged — and reaping it finalizes the
-// ask, so the operator returns to a card that can no longer be answered (their
-// report: "if an ask or permission card has been waiting for awhile (i.e. away
-// from keyboard), I can no longer click into it or use the keyboard to select
-// it"). The backstop for that turn is the operator's own decision or stop, which
-// is the posture the stall monitor already takes for the same state — see
-// turnRegistry.sweep and the reply window in chat.go.
+// startSweeper launches the background turn-registry sweeper (ADR-ASK-3): it ticks every interval,
+// evicts entries older than the TTL (cancelling the collector with errTurnExpired).
 func (s *Service) startSweeper() {
 	go func() {
 		ticker := time.NewTicker(askSweepInterval())
@@ -204,36 +153,25 @@ func (s *Service) startSweeper() {
 	}()
 }
 
-// SetSendExecutionMessage wires the live-session message router (the
-// opencode adapter's SendExecutionMessage) into the send_execution_message
-// tool.
+// SetSendExecutionMessage wires the live-session message router (the opencode adapter's
+// SendExecutionMessage) into the send_execution_message tool.
 func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, message string) error) {
 	s.sendMessage = fn
 }
 
-// SetHostServe wires the always-on host opencode serve into the chat so
-// conversation turns run as persistent sessions on it (first message
-// CreateSession, follow-ups prompt_async on the same session). The service
-// treats a nil serve as "fail the turn fast" (no one-shot fallback).
+// SetHostServe wires the always-on host opencode serve into the chat so conversation turns run as
+// persistent sessions on it (first message CreateSession.
 func (s *Service) SetHostServe(hs *opencode.HostServe) {
 	s.hostServe = hs
 }
 
-// usageRecorder records an LLM usage sample from an Ask step_finish. The
-// concrete *aigateway.UsageRecorder satisfies this in production; tests inject
-// a spy to assert the captured sample (adapter kind, provider/model attribution,
-// token/cost buckets, session id).
+// usageRecorder records an LLM usage sample from an Ask step_finish.
 type usageRecorder interface {
 	Record(ctx context.Context, in aigateway.UsageInput) (db.UsageRecordRow, error)
 }
 
-// SetUsageRecorder wires the shared worker usage recorder into the chat so
-// Ask sessions capture live token/cost usage per adapter — the same canonical
-// aigateway dual-write (Postgres + OTel) worker executions use, tagged with
-// the adapter kind and attributed to the Ask session (conversation id).
-// Live-usage-only: only real step_finish tokens/cost are recorded; a nil
-// recorder means Ask records no usage (matching the current no-recorder
-// state).
+// SetUsageRecorder wires the shared worker usage recorder into the chat so Ask sessions capture
+// live token/cost usage per adapter.
 func (s *Service) SetUsageRecorder(rec *aigateway.UsageRecorder) {
 	s.usageRecorder = rec
 }
@@ -244,71 +182,49 @@ func (s *Service) SetRuntimeClient(rt *runtime.Client) {
 	toolRuntimeClient = rt
 }
 
-// SetScopeResolver wires the ONE MCP scope resolver (internal/mcpsettings) into
-// the native Ask path. Mirroring the bridges' setter of the same name is
-// deliberate: ONE resolution, one place the platform decides which servers a
-// session gets. Nil resolves nothing (tests / unwired planes).
+// SetScopeResolver wires the ONE MCP scope resolver (internal/mcpsettings) into the native Ask
+// path.
 func (s *Service) SetScopeResolver(src mcpclient.ScopeResolver) {
 	s.mcpResolver = src
 }
 
-// SetSecretKEK wires the tenant-secrets key the native Ask path uses to expand
-// ${SECRET_NAME} references in a resolved MCP definition. Every other path
-// (worker bridge, claude bridge) already resolves secrets; without this the
-// native path alone would fail on a server that carries a reference.
+// SetSecretKEK wires the tenant-secrets key the native Ask path uses to expand ${SECRET_NAME}
+// references in a resolved MCP definition.
 func (s *Service) SetSecretKEK(kek []byte) {
 	s.kek = kek
 }
 
-// SetAdapterKinds wires the Dispatcher's registered adapter kinds (ADR-0004
-// D1) into the list_adapter_kinds tool. Nil falls back to the default
-// adapter kind.
+// SetAdapterKinds wires the Dispatcher's registered adapter kinds (ADR-0004 D1) into the
+// list_adapter_kinds tool.
 func (s *Service) SetAdapterKinds(fn func() []string) {
 	s.adapterKinds = fn
 }
 
-// SetChatKinds wires the Dispatcher's Ask-capable adapter kinds (ADR-0004
-// D1) into the conversation-creation + tenant-default-save guards. A kind
-// that registers but does not implement Ask chat (ChatTurnClient) is
-// rejected before the first message send. Nil disables the guard (no
-// capability knowledge — don't block).
+// SetChatKinds wires the Dispatcher's Ask-capable adapter kinds (ADR-0004 D1) into the
+// conversation-creation + tenant-default-save guards.
 func (s *Service) SetChatKinds(fn func() []string) {
 	s.chatKinds = fn
 }
 
-// SetDispatcher wires the shared Dispatcher into the Ask path. The Ask
-// conversation resolves its adapter kind from the model_ref and routes
-// through the resulting ChatTurnClient capability (ADR-0003 §3/§5). A nil
-// dispatcher (tests / pre-wiring) keeps the legacy host-serve-client fallback
-// so behavior is unchanged when no adapter namespace is configured.
+// SetDispatcher wires the shared Dispatcher into the Ask path.
 func (s *Service) SetDispatcher(d *scheduler.Dispatcher) {
 	s.dispatcher = d
 }
 
-// SetValidationRegistry injects the model-ref validation catalog into the
-// Ask-own update_settings write path (a second write path into
-// tenant_settings.default_ask_orchicon_model besides the SettingsService
-// RPC). The tool validator shares the same injected registry (builtin ∪
-// CLI-discovered ∪ tenant-custom providers) so a ref the picker offers is
-// accepted at save and a malformed/unknown-adapter ref is rejected before
-// it persists. nil restores the static builtin catalog.
+// SetValidationRegistry injects the model-ref validation catalog into the Ask-own update_settings
+// write path (a second write path into tenant_settings.default_ask_orchicon_model besides.
 func (s *Service) SetValidationRegistry(reg adapter.ProviderRegistry) {
 	s.validationRegistry = reg
 	toolValidateModelRef = func(ref string) error { return s.validateModelRef(ref) }
 }
 
-// SetFileEditHook wires the diff-pipeline ledger hook into Ask turns. When
-// set, every completed mutating tool_use part on a conversation turn is
-// ledgered (owner_kind ask_conversation) from real file-state snapshots —
-// the same ground truth executions ledger. Nil (tests / DB-less planes) =
-// Ask records no ledger entries.
+// SetFileEditHook wires the diff-pipeline ledger hook into Ask turns.
 func (s *Service) SetFileEditHook(hook func(ctx context.Context, tenantID, convID, toolName string, input map[string]any, output string)) {
 	s.fileEditHook = hook
 }
 
-// SetFileEditReconciler wires the terminal-turn git reconciliation hook
-// (diff pipeline AC 4): once a turn finalizes, the conversation's ledger
-// reconciles against the conversation project dir's git state. Nil = skipped.
+// SetFileEditReconciler wires the terminal-turn git reconciliation hook (diff pipeline AC 4): once
+// a turn finalizes, the conversation's ledger reconciles against the conversation project dir's.
 func (s *Service) SetFileEditReconciler(rec func(ctx context.Context, tenantID, convID string)) {
 	s.fileEditReconciler = rec
 }
@@ -331,12 +247,8 @@ func (s *Service) validateModelRef(ref string) error {
 	if _, err := adapter.ParseModelRef(ref, s.registry()); err != nil {
 		return err
 	}
-	// Ask-capability guard (ADR-0004 D1): a ref whose adapter kind is
-	// registered but does NOT implement Ask chat (ChatTurnClient) is
-	// rejected here so the tenant-default save path never persists a ref
-	// that would fail at first message. Unknown kinds are left to
-	// dispatch-time resolveChatClient for the actionable "register an
-	// adapter" error.
+	// Ask-capability guard (ADR-0004 D1): a ref whose adapter kind is registered but does NOT implement
+	// Ask chat (ChatTurnClient) is rejected here so the tenant-default save path never persists a ref.
 	if s.dispatcher != nil && s.chatKinds != nil {
 		kind := adapter.AdapterKind(ref)
 		if kind != "" && s.kindRegistered(kind) && !s.kindAskCapable(kind) {
@@ -346,9 +258,7 @@ func (s *Service) validateModelRef(ref string) error {
 	return nil
 }
 
-// kindRegistered reports whether the adapter kind is registered with the
-// Dispatcher. Unknown kinds are NOT guarded here (dispatch-time resolution
-// surfaces the actionable "register an adapter" error).
+// kindRegistered reports whether the adapter kind is registered with the Dispatcher.
 func (s *Service) kindRegistered(kind string) bool {
 	if s.dispatcher == nil {
 		return false
@@ -371,11 +281,8 @@ func (s *Service) kindAskCapable(kind string) bool {
 	return false
 }
 
-// toolValidateModelRef is the package-global validation hook used by the
-// update_settings tool (tool_diagnostics.go). It defaults to the builtin
-// catalog; Service.SetValidationRegistry reassigns it to a closure over the
-// service so the tool's write path shares the SAME injected registry as the
-// settings RPC (never a forked splitter — the shared adapter.ParseModelRef).
+// toolValidateModelRef is the package-global validation hook used by the update_settings tool
+// (tool_diagnostics.go).
 var toolValidateModelRef = func(ref string) error {
 	if strings.TrimSpace(ref) == "" {
 		return nil
@@ -516,11 +423,8 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// Ask-capability guard (ADR-0004 D1): reject a conversation whose
-	// model_ref adapter kind is registered but does NOT implement Ask chat
-	// (ChatTurnClient) BEFORE the first message send. Unknown kinds are left
-	// to dispatch-time resolveChatClient for the actionable "register an
-	// adapter" error.
+	// Ask-capability guard (ADR-0004 D1): reject a conversation whose model_ref adapter kind is
+	// registered but does NOT implement Ask chat (ChatTurnClient) BEFORE the first message send.
 	if req.Msg.ModelRef != "" && s.dispatcher != nil && s.chatKinds != nil {
 		kind := adapter.AdapterKind(req.Msg.ModelRef)
 		if kind != "" && s.kindRegistered(kind) && !s.kindAskCapable(kind) {
@@ -545,11 +449,8 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 		Mode:      mode,
 		ProjectID: strings.TrimSpace(req.Msg.ProjectId),
 	}
-	// THE PROJECT MUST EXIST — the "active or otherwise" rule the operator set. GetProject filters on tenant and
-	// id ONLY (no status predicate), so an ARCHIVED project is a valid home for a conversation and only an
-	// unknown id is refused. A create that named a project nobody could resolve would land the conversation in a
-	// folder the rail could never render, which is worse than refusing it here with a message that names the
-	// problem.
+	// GetProject filters on tenant and id ONLY (no status predicate), so an ARCHIVED project is a valid
+	// home for a conversation and only an unknown id is refused.
 	if convRow.ProjectID != "" {
 		if _, err := db.GetProject(ctx, ttx.Tx, tenantID, convRow.ProjectID); err != nil {
 			if errors.Is(err, db.ErrNotFound) {
@@ -626,14 +527,7 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	if err := db.DeleteConversation(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// De-link usage attributed to this conversation — deliberately NOT delete
-	// it. usage_records is the tenant's real spend ledger (Cost Explorer and
-	// Telemetry roll up from it), so removing these rows would retroactively
-	// rewrite historical cost: a deleted conversation's spend would silently
-	// vanish from reports. Clearing session_id removes the only pointer to the
-	// deleted conversation while preserving the money, and is space-neutral
-	// (an in-place UPDATE). In-tx, so a rollback can never leave a
-	// half-applied de-link.
+	// De-link usage attributed to this conversation — deliberately NOT delete it.
 	delinkedUsage, err := db.ClearUsageSessionIDs(ctx, ttx.Tx, tenantID, req.Msg.Id, conv.SessionID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -652,16 +546,8 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// Best-effort teardown on the conversation's resolved adapter: abort the
-	// live session/turn, then purge any durable session history the adapter
-	// owns. There is no delete-session API on the opencode serve; abort
-	// cancels any running turn while keeping the session, and is safe to
-	// ignore on error (the durable record is already gone; the serve will
-	// reclaim the session eventually). The native adapter instead holds a
-	// persisted JSON history file per session — the only on-disk artifact of a
-	// conversation — which nothing else reclaims, so it must be purged here.
-	// Both steps are advisory: a failure is logged, never surfaced as an RPC
-	// error, because the durable DB record is already committed as deleted.
+	// Best-effort teardown on the conversation's resolved adapter: abort the live session/turn, then
+	// purge any durable session history the adapter owns.
 	if client := s.resolveClientForAbort(conv.ModelRef); client != nil {
 		if conv.SessionID != "" {
 			_ = client.AbortConversationSession(ctx, conv.SessionID)
@@ -673,22 +559,18 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 			}
 		}
 	}
-	// Cancel any in-flight collector for this conversation so it finalizes
-	// immediately and never persists into the deleted conversation (the
-	// collector's persist path also re-checks the conversation and would
-	// skip the write — this just makes it prompt and clean).
+	// Cancel any in-flight collector for this conversation so it finalizes immediately and never
+	// persists into the deleted conversation (the collector's persist path also re-checks the
+	// conversation.
 	if token, ok := s.turns.cancel(req.Msg.Id, errUserStop); ok {
 		s.turns.remove(req.Msg.Id, token)
 	}
-	// Conversation end clears the conversation's consent state (C9): its
-	// in-memory directory grants (a new conversation must ask again) and any
-	// ask still awaiting a decision (a late reply then reports expired).
+	// Conversation end clears the conversation's consent state (C9): its in-memory directory grants (a
+	// new conversation must ask again) and any ask still awaiting a decision (a late reply.
 	s.grants.ClearConversation(req.Msg.Id)
 	s.once.ClearConversation(req.Msg.Id)
 	s.pending.removeConversation(req.Msg.Id)
-	// And its MCP client (child 6): the conversation's stdio children must not
-	// outlive it. Closed here rather than per turn — an Ask turn is long-lived, so
-	// a per-turn close would re-spawn every server on every message.
+	// And its MCP client (child 6): the conversation's stdio children must not outlive it.
 	s.closeAskMCP(req.Msg.Id)
 	return connect.NewResponse(&apiv1.DeleteConversationResponse{}), nil
 }
@@ -729,11 +611,8 @@ func (s *Service) UpdateConversationTitle(ctx context.Context, req *connect.Requ
 	}), nil
 }
 
-// SetConversationMode switches a conversation's persona (see BuildSystemPrompt for the three modes).
-// The new mode is persisted on the conversation and takes effect
-// on the NEXT message: the turn reads it at dispatch time and applies it as
-// the opencode per-turn system prompt — no session change or serve restart
-// needed (the F4 task 9 toggle surface).
+// SetConversationMode switches a conversation's persona (see BuildSystemPrompt for the three
+// modes).
 func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[apiv1.SetConversationModeRequest]) (*connect.Response[apiv1.SetConversationModeResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -774,11 +653,7 @@ func (s *Service) SetConversationMode(ctx context.Context, req *connect.Request[
 	}), nil
 }
 
-// SetConversationModel retargets a conversation's model_ref. The ref is
-// validated against the pinned grammar (and the Ask-capability guard) before
-// the write, so a conversation can never hold a ref that cannot serve Ask. An
-// empty ref is legal: it CLEARS the per-conversation override so the tenant
-// default applies.
+// SetConversationModel retargets a conversation's model_ref.
 func (s *Service) SetConversationModel(ctx context.Context, req *connect.Request[apiv1.SetConversationModelRequest]) (*connect.Response[apiv1.SetConversationModelResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -789,9 +664,6 @@ func (s *Service) SetConversationModel(ctx context.Context, req *connect.Request
 	}
 	ref := strings.TrimSpace(req.Msg.ModelRef)
 	// Empty clears the override; anything else must be a ref Ask can serve.
-	// validateModelRef applies both the pinned grammar AND the Ask-capability
-	// guard, and deliberately leaves an UNKNOWN adapter to dispatch-time
-	// resolution (which surfaces the actionable "register an adapter" error).
 	if err := s.validateModelRef(ref); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -807,10 +679,8 @@ func (s *Service) SetConversationModel(ctx context.Context, req *connect.Request
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// The adapter kind is what the dispatcher resolves on, so it belongs in the
-	// audit row: a model change can silently move a conversation between
-	// adapters, and that is exactly the kind of change an operator needs to be
-	// able to reconstruct later.
+	// The adapter kind is what the dispatcher resolves on, so it belongs in the audit row: a model
+	// change can silently move a conversation between adapters.
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.model_changed", "conversation", row.ID,
 		nil, audit.Snapshot(map[string]any{
 			"model_ref": ref,
@@ -829,17 +699,7 @@ func (s *Service) SetConversationModel(ctx context.Context, req *connect.Request
 	}), nil
 }
 
-// SetConversationFullsend turns FULLSEND on or off for one conversation. See
-// fullsend.go for what the mode does and does not waive.
-//
-// THE FLAG IS NOT A COLUMN, so this RPC does not write the conversation — but it does
-// verify the conversation exists IN THIS TENANT first. An in-memory flag keyed on an id
-// nobody owns would arm a mode for a conversation that cannot be addressed, and it would
-// let a caller discover which ids exist by the difference between a 404 and a 200.
-//
-// IT IS AUDITED. Every other setting changes what Orchicon DOES; this one changes what
-// Orchicon will not ASK, which is the one change whose whole purpose is to make a
-// decision not happen. "Who turned the gate off, and when" has to be reconstructible.
+// SetConversationFullsend turns FULLSEND on or off for one conversation.
 func (s *Service) SetConversationFullsend(ctx context.Context, req *connect.Request[apiv1.SetConversationFullsendRequest]) (*connect.Response[apiv1.SetConversationFullsendResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -871,22 +731,8 @@ func (s *Service) SetConversationFullsend(ctx context.Context, req *connect.Requ
 	// flag set before a failed commit would be a bypass with no record of who armed it.
 	s.fullsend.Set(row.ID, req.Msg.Enabled)
 
-	// ENABLING FULLSEND ALSO CLEARS A CARD ALREADY ON SCREEN.
-	//
-	// The operator's decision: "Clear it too — fullsend means stop asking." And it is the
-	// consistent behaviour rather than a convenience: a card exists ONLY because fullsend was
-	// OFF when the call was raised — with it on, that same call would never have produced one
-	// — so approving it is exactly what fullsend would have decided a moment earlier. Leaving
-	// it would also leave the TURN blocked on an answer, waiting out the consent window, for a
-	// decision the operator has just told us to stop making.
-	//
-	// A QUESTION IS NOT A PERMISSION, and fullsend cannot clear one: a question's reply is the
-	// operator's own WORDS, which the mode has no way to supply. It stays theirs to answer.
-	//
-	// ALLOW_ONCE, never a session grant: fullsend already covers every later call, so granting
-	// the DIRECTORY here would widen the operator's grants beyond anything they chose, and it
-	// would outlive the mode. The approval is also MARKED as fullsend's (autoApproveOnce), so
-	// the recorded verdict does not claim the operator clicked something they never saw.
+	// The operator's decision: "Clear it too — fullsend means stop asking." And it is the consistent
+	// behaviour rather than a convenience.
 	if req.Msg.Enabled {
 		s.approvePendingForFullsend(row.ID)
 	}
@@ -894,28 +740,22 @@ func (s *Service) SetConversationFullsend(ctx context.Context, req *connect.Requ
 	preview, _ := db.LastMessagePreview(ctx, ttx.Tx, tenantID, row.ID)
 	st := s.turnStatus(row.ID, s.chatStallWindow(ctx, ttx.Tx, tenantID))
 	return connect.NewResponse(&apiv1.SetConversationFullsendResponse{
-		// The conversation is returned so the caller renders the state the SERVER holds
-		// rather than the one it hoped for — fullsend is read back off the store by
-		// conversationRowToProto, so this is the authoritative value.
+		// The conversation is returned so the caller renders the state the SERVER holds rather than the one
+		// it hoped for — fullsend is read back off the store by conversationRowToProto.
 		Conversation: s.conversationRowToProto(row, count, preview, st),
 	}), nil
 }
 
-// approvePendingForFullsend clears the permission cards a conversation already has on screen,
-// and returns how many it cleared.
-//
-// Split out from the RPC so it can be tested without a database: the behaviour worth pinning is
-// WHICH asks it approves and which it leaves, and that has nothing to do with the transaction
-// that verifies the conversation.
+// approvePendingForFullsend clears the permission cards a conversation already has on screen, and
+// returns how many it cleared.
 func (s *Service) approvePendingForFullsend(convID string) int {
 	if s == nil || convID == "" {
 		return 0
 	}
 	cleared := 0
 	for _, a := range s.pending.list(convID) {
-		// A QUESTION IS NOT A PERMISSION, and fullsend cannot clear one: a question's reply is
-		// the operator's own WORDS, which the mode has no way to supply. It stays theirs.
-		// An ask that is no longer open is already decided — never overwritten.
+		// A QUESTION IS NOT A PERMISSION, and fullsend cannot clear one: a question's reply is the
+		// operator's own WORDS, which the mode has no way to supply.
 		if a.isQuestion() || !a.isOpen() {
 			continue
 		}
@@ -1066,9 +906,8 @@ func (s *Service) GetModelCapabilities(ctx context.Context, req *connect.Request
 
 // --- helpers ---
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -1091,12 +930,6 @@ func requireTenant(ctx context.Context) (string, error) {
 }
 
 // conversationRowToProto maps a stored conversation onto the wire.
-//
-// IT IS A METHOD because one of the fields it fills is not a column: FULLSEND is read
-// from the plane's in-memory store at read time. The alternative — a caller decorating
-// the message afterwards — makes "every conversation answer says whether fullsend is
-// on" a thing each call site must remember, which is exactly how one list path ends up
-// rendering a bypass as off.
 func (s *Service) conversationRowToProto(r db.ConversationRow, messageCount int, lastPreview string, st turnStatusInfo) *apiv1.Conversation {
 	p := &apiv1.Conversation{
 		Id:        r.ID,
@@ -1105,9 +938,8 @@ func (s *Service) conversationRowToProto(r db.ConversationRow, messageCount int,
 		ModelRef:  r.ModelRef,
 		SessionId: r.SessionID,
 		Mode:      conversationModeToProto(r.Mode),
-		// FULLSEND is COMPUTED, never stored: it rides the same read-time seam as
-		// turn_in_flight below, so every list/get answers with the state the plane holds
-		// right now rather than a column someone could forget to update.
+		// FULLSEND is COMPUTED, never stored: it rides the same read-time seam as turn_in_flight below, so
+		// every list/get answers with the state the plane holds right now rather than a column someone.
 		Fullsend:  s.fullsend.Enabled(r.ID),
 		ProjectId: r.ProjectID,
 		// SkillFiles is the SELECTABLE skill path array (real on-disk paths),
@@ -1270,33 +1102,18 @@ func skillFilesFromJSON(data []byte) []string {
 	return out
 }
 
-// turnStatusInfo is the server-confirmed snapshot of a conversation's running
-// turn, computed at read time from the in-memory turn registry (the same
-// authoritative source as the one-turn gate). It is what a refreshed frontend
-// uses to re-attach the Stop button + completion poll (turn_in_flight /
-// pending_assistant_message_id) AND to show an ACCURATE
-// progressing-vs-stalled state (turn_progressing / turn_last_activity_at)
-// instead of the misleading "connection lost — still working" (AC2, D3).
+// turnStatusInfo is the server-confirmed snapshot of a conversation's running turn, computed at
+// read time from the in-memory turn registry (the same authoritative source as the one-turn gate).
 type turnStatusInfo struct {
 	inFlight     bool
 	pendingMsgID string
-	// progressing is true when the running turn is making genuine progress:
-	// it produced activity within the no-progress window and is not wedged on
-	// an unresolved tool. False (while inFlight) ⇒ the turn is stalled/wedged.
+	// progressing is true when the running turn is making genuine progress: it produced activity within
+	// the no-progress window and is not wedged on an unresolved tool.
 	progressing  bool
 	lastActivity *timestamppb.Timestamp
 }
 
-// turnStatus returns the server-confirmed snapshot of a conversation's running
-// turn. Read from the in-memory turn registry — the same authoritative source
-// as the one-turn gate. This is how a refreshed frontend learns "a turn is
-// running here" and re-attaches the Stop button + the completion poll, plus
-// whether that turn is genuinely progressing or stalled/wedged (D3).
-//
-// noProgressWindow is the effective chat stall window (resolved from the
-// tenant's stall_no_progress_window_seconds via chatStallWindow) so the
-// progressing signal uses the SAME window as the turn's stall monitor — they
-// must agree on when "no progress" starts.
+// turnStatus returns the server-confirmed snapshot of a conversation's running turn.
 func (s *Service) turnStatus(convID string, noProgressWindow time.Duration) turnStatusInfo {
 	entry, ok := s.turns.get(convID)
 	if !ok {
@@ -1306,16 +1123,13 @@ func (s *Service) turnStatus(convID string, noProgressWindow time.Duration) turn
 	if !entry.lastActivity.IsZero() {
 		info.lastActivity = timestamppb.New(entry.lastActivity)
 	}
-	// Progress = recent activity AND the session is not wedged. If the turn
-	// has been quiet for longer than the no-progress window, the server no
-	// longer claims "still working" — the frontend shows a stalled/retry state.
+	// Progress = recent activity AND the session is not wedged.
 	info.progressing = !entry.wedged && time.Since(entry.lastActivity) < noProgressWindow
 	return info
 }
 
-// chatStallWindow resolves the tenant's effective chat no-progress stall
-// window from its settings row (best-effort: any read failure falls back to
-// the env/default resolution, matching the dispatch path's behavior).
+// chatStallWindow resolves the tenant's effective chat no-progress stall window from its settings
+// row (best-effort: any read failure falls back to the env/default resolution.
 func (s *Service) chatStallWindow(ctx context.Context, tx pgx.Tx, tenantID string) time.Duration {
 	settings, err := db.GetTenantSettings(ctx, tx, tenantID)
 	if err != nil {
@@ -1324,29 +1138,15 @@ func (s *Service) chatStallWindow(ctx context.Context, tx pgx.Tx, tenantID strin
 	return resolveChatStallNoProgressWindow(settings.StallNoProgressWindowSeconds)
 }
 
-// conversationMode constants mirror the DB column's text values ('brainstorm'
-// default). Every mode is stored as a plain text value — the column has no
-// CHECK constraint, so adding one needs no migration, which is why the three
-// modes below could land as a pure code change.
-//
-// The Orchicon mode was REMOVED 2026-08-26 (its governed persona was folded
-// into the identity every mode shares). What replaced it is a set of modes
-// that differ in DISPOSITION TOWARD ACTION rather than in knowledge: they
-// share one identity, one project awareness and one tool surface, and differ
-// in what they DO with a request.
+// conversationMode constants mirror the DB column's text values ('brainstorm' default).
 const (
-	// ALIASED TO internal/askmode, not restated. The policy table is keyed by these strings, so a mode spelled
-	// one way here and another way there would be a mode the boundary silently does not apply to — and "both are
-	// "brainstorm"" is not a property a test can be relied on to notice. One definition, two names.
+	// ALIASED TO internal/askmode, not restated.
 	modeBrainstorm = askmode.Brainstorm
 	modeIteration  = askmode.Iteration
 	modeQuickWork  = askmode.QuickWork
 )
 
-// conversationModeFromProto validates + normalizes a proto ConversationMode
-// to its DB text value. UNSPECIFIED (and the wire's empty/absent value) maps
-// to the brainstorm default; an unknown enum value on the wire is rejected
-// with CodeInvalidArgument (never silently coerced).
+// conversationModeFromProto validates + normalizes a proto ConversationMode to its DB text value.
 func conversationModeFromProto(m apiv1.ConversationMode) (string, error) {
 	switch m {
 	case apiv1.ConversationMode_CONVERSATION_MODE_UNSPECIFIED,
@@ -1363,8 +1163,6 @@ func conversationModeFromProto(m apiv1.ConversationMode) (string, error) {
 }
 
 // conversationModeToProto maps a DB mode text value back to the proto enum.
-// Unknown/empty (defensive — the boundary validator keeps these out) maps to
-// UNSPECIFIED.
 func conversationModeToProto(mode string) apiv1.ConversationMode {
 	switch mode {
 	case modeBrainstorm:
@@ -1380,10 +1178,7 @@ func conversationModeToProto(mode string) apiv1.ConversationMode {
 
 func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
 	meta := &apiv1.MessageMetadata{}
-	// injected marks a USER message that was interjected into an ALREADY RUNNING
-	// turn. The client uses it to place that message before the assistant reply it
-	// was injected into: created_at cannot, because the assistant row was created
-	// when the turn started and the interjection arrived mid-turn.
+	// injected marks a USER message that was interjected into an ALREADY RUNNING turn.
 	injected := false
 	if len(r.Metadata) > 0 {
 		var raw map[string]any
@@ -1417,9 +1212,6 @@ func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
 }
 
 // openAskIDs is the set of asks the server currently holds OPEN for a conversation.
-//
-// It is the "current truth" half of the settle rule: the transcript ledger records what HAPPENED to an ask,
-// and the pending registry records what is happening NOW. Where they disagree, NOW wins.
 func (s *Service) openAskIDs(convID string) map[string]bool {
 	open := map[string]bool{}
 	for _, a := range s.pending.list(convID) {
@@ -1430,11 +1222,8 @@ func (s *Service) openAskIDs(convID string) map[string]bool {
 	return open
 }
 
-// permissionResolutionVerdicts are the ledger verdicts that SETTLE a card — the same vocabulary the clients
-// treat as an outcome (frontend settleFromLedger's outcomeFromRecord, and the TUI's
-// askOutcomeFromLedgerRow). A raise (`permission.ask`, `permission.question`) and a call that proceeded
-// WITHOUT a card (`session_grant`, `fullsend`, `accept`, `project`) are deliberately absent: they say nothing
-// about whether a card was answered.
+// permissionResolutionVerdicts are the ledger verdicts that SETTLE a card — the same vocabulary the
+// clients treat as an outcome (frontend settleFromLedger's outcomeFromRecord.
 var permissionResolutionVerdicts = map[string]bool{
 	"permission.user_PERMISSION_CHOICE_ALLOW_ONCE":    true,
 	"permission.user_PERMISSION_CHOICE_ALLOW_SESSION": true,
@@ -1447,28 +1236,8 @@ var permissionResolutionVerdicts = map[string]bool{
 	"permission.fullsend_approved":                    true,
 }
 
-// withholdStaleResolutions drops any recorded resolution whose ask is OPEN RIGHT NOW.
-//
-// WHY THIS EXISTS, AND WHY IT IS THE HALF THAT FINISHES THE JOB. Ask ids are now globally unique
-// (orchicon.NativeBridge.nextPermID), so a NEW ask can never inherit an OLD ask's recorded outcome. But the
-// ids written BEFORE that fix are still in this ledger — native-ask-1 carries both an ALLOW_ONCE from one
-// day and a live raise from another — and a card raised against such an id is still settled from the stale
-// record, then re-armed from the open list: the settle/re-arm flicker, on legacy data only.
-//
-// The rule is deliberately narrow. A resolution is withheld ONLY when the server itself is currently holding
-// that exact ask open. That is a contradiction the server can see and the client cannot: the ledger says the
-// ask is finished, the registry says a turn is parked on it. The registry is right — the ledger entry belongs
-// to an earlier ask that reused the id — so the historical record must not be allowed to settle the live card.
-//
-// IT IS WITHHELD FROM THE WIRE, not deleted from the ledger. The durable row is the audit trail and stays
-// exactly as written; only the client-facing view is filtered, so nothing about the past is rewritten.
-//
-// A genuinely resolved ask is unaffected: it is no longer open, so its resolution reaches the clients and the
-// card settles normally. And the moment the live ask resolves, the registry drops it and the record flows
-// again on the next poll — self-healing, with no cleanup step and no migration.
-//
-// It cannot mask a lost card either. Withholding only ever makes a client LESS likely to settle, and a card
-// that stays answerable is the safe direction: clicking it answers the live ask, which is exactly right.
+// withholdStaleResolutions drops any recorded resolution whose ask is OPEN RIGHT NOW. A resolution
+// is withheld ONLY when the server itself is currently holding that exact ask open.
 func withholdStaleResolutions(msg *apiv1.ChatMessage, open map[string]bool) {
 	if msg == nil || len(open) == 0 || len(msg.ToolCalls) == 0 {
 		return
@@ -1483,10 +1252,8 @@ func withholdStaleResolutions(msg *apiv1.ChatMessage, open map[string]bool) {
 	msg.ToolCalls = kept
 }
 
-// toolCallsFromJSON maps the ask_orchicon_messages.tool_calls column
-// (written live by the turn's tool ledger in ToolCall proto shape) onto the
-// ChatMessage wire field. Unknown/corrupt payloads yield nil — the ledger is
-// durability data, never a read-path failure.
+// toolCallsFromJSON maps the ask_orchicon_messages.tool_calls column (written live by the turn's
+// tool ledger in ToolCall proto shape) onto the ChatMessage wire field.
 func toolCallsFromJSON(raw []byte) []*apiv1.ToolCall {
 	if len(raw) == 0 {
 		return nil
@@ -1496,12 +1263,7 @@ func toolCallsFromJSON(raw []byte) []*apiv1.ToolCall {
 		Type         string `json:"type"`
 		FunctionName string `json:"function_name"`
 		Arguments    string `json:"arguments"`
-		// IssuedAtUnixMs is child 1's per-entry issue stamp, written by
-		// toolCallEntry (tool_ledger.go). The field name must match that tag
-		// byte for byte: a drift silently leaves every stamp 0, which the
-		// rolling-window summarizer (internal/toolclass.Summarize) reads as
-		// "unstamped" and skips — the activity line would then count nothing
-		// over a turn that is plainly working, with no error anywhere.
+		// IssuedAtUnixMs is child 1's per-entry issue stamp, written by toolCallEntry (tool_ledger.go).
 		IssuedAtUnixMs int64 `json:"issued_at_unix_ms"`
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil || len(rows) == 0 {
@@ -1578,20 +1340,8 @@ func agentConfigProtoToRow(p *apiv1.AgentConfig) db.AgentConfigRow {
 	}
 }
 
-// DeleteConversationMessage removes one message, or that message and everything after it, and RECYCLES the
-// conversation's model session.
-//
-// THE SESSION RESET IS THE WHOLE FEATURE, not a detail. A turn is CONTINUED on the stored session id
-// (SendTurnMessage(..., conv.SessionID, ...)), so the provider's context is the LIVE SESSION, not the rows in
-// this database. Deleting rows alone would remove the message from the transcript the operator sees while
-// leaving it fully present in what the model is reasoning about — the worst possible outcome, because the
-// screen would say it is gone. Clearing session_id makes the next turn start a fresh session, which replays
-// the (now truncated) history from the database, and the deleted text is gone from both.
-//
-// A TURN IN FLIGHT IS REFUSED. The collector writes the assistant reply as the turn proceeds (UpsertMessage),
-// so deleting a row underneath it would either resurrect the message or persist a reply to something the
-// operator just removed. One message per conversation would already refuse a second send; this refuses the
-// delete instead, with the action the operator can take.
+// DeleteConversationMessage removes one message, or that message and everything after it, and
+// RECYCLES the conversation's model session.
 func (s *Service) DeleteConversationMessage(ctx context.Context, req *connect.Request[apiv1.DeleteConversationMessageRequest]) (*connect.Response[apiv1.DeleteConversationMessageResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1652,9 +1402,7 @@ func (s *Service) DeleteConversationMessage(ctx context.Context, req *connect.Re
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// THE RESET, unconditionally — even when deleted is 0. A no-op deletion still leaves the operator certain
-	// they removed something; recycling costs one replayed history and guarantees the transcript and the
-	// model's context agree.
+	// THE RESET, unconditionally — even when deleted is 0.
 	hadSession := strings.TrimSpace(conv.SessionID) != ""
 	if hadSession {
 		if err := db.UpdateConversationSessionID(ctx, ttx.Tx, tenantID, req.Msg.ConversationId, ""); err != nil {

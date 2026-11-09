@@ -5,12 +5,7 @@ import (
 	"fmt"
 )
 
-// cannedWorkflow defines a pre-canned template workflow to seed into the
-// dev tenant on every boot. Idempotent — the workflow is created if it
-// does not exist. If the workflow already exists AND the current version
-// is still the original seed (same VersionID), the steps are updated so
-// seed improvements (e.g. edge_handles) propagate. If the user has
-// created new versions, their work is preserved untouched.
+// cannedWorkflow defines a pre-canned template workflow to seed into the dev tenant on every boot.
 type cannedWorkflow struct {
 	ID          string
 	VersionID   string
@@ -18,26 +13,10 @@ type cannedWorkflow struct {
 	VersionNote string
 	StepsJSON   string // JSON array of step objects
 	// GitStrategy pins the workflows row's git_strategy (local|pr|none).
-	// Empty = NULL = INHERIT the effective strategy (project -> default), which is what
-	// every canned workflow now does.
-	//
-	// QUICK WORK USED TO PIN "pr", AND IT IS THE REASON THIS FIELD IS EMPTY EVERYWHERE.
-	// A pinned strategy BEATS the project (db.effectiveGitStrategyValue: workflow wins over
-	// project), so every install carried a template that forced PR mode regardless of what
-	// the operator had configured — reported on Windows as being "stuck with that mode".
-	// An allowlist entry that overrides the operator's own project setting is a trap, not a
-	// default: inherit means the project decides, which is what "driven from their project"
-	// has to mean.
 	GitStrategy string
 
-	// UnpinGitStrategy, when true, CLEARS a previously pinned git_strategy on an existing
-	// row (sets it back to NULL/inherit).
-	//
-	// SEEDING "" IS NOT ENOUGH ON ITS OWN, and this is the subtle half: the propagation
-	// below only runs `UPDATE … SET git_strategy` when the seed PINS a value, so a workflow
-	// that has already been installed keeps whatever it was created with. Without this flag
-	// the Quick Work fix would apply to fresh installs only — and every existing host,
-	// including the one that reported the problem, would stay pinned to "pr" forever.
+	// UnpinGitStrategy, when true, CLEARS a previously pinned git_strategy on an existing row (sets it
+	// back to NULL/inherit).
 	UnpinGitStrategy bool
 }
 
@@ -135,11 +114,8 @@ type retiredCannedWorkflow struct {
 	VersionID string // the seed version — the workflow is seed-managed only while this is still its current version
 }
 
-// retiredCannedWorkflows lists workflow templates that were seeded in earlier
-// builds but removed from cannedWorkflows. SeedDevWorkflows hard-deletes any
-// still-seed-managed instance on boot so retired templates don't linger in
-// tenants. A workflow whose current version is no longer the original seed
-// version has been forked by a user and is left untouched.
+// retiredCannedWorkflows lists workflow templates that were seeded in earlier builds but removed
+// from cannedWorkflows.
 var retiredCannedWorkflows = []retiredCannedWorkflow{
 	{
 		ID:        "01KZB0CONFLICT000000000001",
@@ -175,9 +151,8 @@ var retiredCannedWorkflows = []retiredCannedWorkflow{
 	},
 }
 
-// SeedDevWorkflows creates or updates all canned workflow templates in the
-// dev tenant and retires templates that have been removed from
-// cannedWorkflows. Idempotent — safe to call on every boot.
+// SeedDevWorkflows creates or updates all canned workflow templates in the dev tenant and retires
+// templates that have been removed from cannedWorkflows.
 func SeedDevWorkflows(ctx context.Context, p *Pool) error {
 	for _, w := range cannedWorkflows {
 		ttx, err := p.BeginTenantTx(ctx, "tnt_dev")
@@ -195,10 +170,8 @@ func SeedDevWorkflows(ctx context.Context, p *Pool) error {
 		}
 	}
 
-	// Retired canned templates: workflows that used to be seeded but have
-	// been removed. Delete them ONLY when they are still seed-managed
-	// (their current version is the original seed version) — a user who
-	// forked one keeps their workflow.
+	// Delete them ONLY when they are still seed-managed (their current version is the original seed
+	// version) — a user who forked one keeps their workflow.
 	for _, r := range retiredCannedWorkflows {
 		ttx, err := p.BeginTenantTx(ctx, "tnt_dev")
 		if err != nil {
@@ -235,10 +208,8 @@ func SeedDevWorkflows(ctx context.Context, p *Pool) error {
 	return nil
 }
 
-// workflowIsSeedManaged reports whether the workflow still carries its
-// original seed version (its current version id matches the seed's
-// VersionID). A workflow the user has forked by publishing new versions is
-// no longer seed-managed.
+// workflowIsSeedManaged reports whether the workflow still carries its original seed version (its
+// current version id matches the seed's VersionID).
 func workflowIsSeedManaged(ctx context.Context, ttx *TenantTx, workflowID, seedVersionID string) (bool, error) {
 	var currentVer int
 	if err := ttx.QueryRow(ctx,
@@ -256,10 +227,8 @@ func workflowIsSeedManaged(ctx context.Context, ttx *TenantTx, workflowID, seedV
 	return verID == seedVersionID, nil
 }
 
-// deleteWorkflowByID hard-deletes a workflow and its owned rows (versions,
-// runs, step runs, edit locks) inside the seeder's tenant transaction.
-// Mirrors db.DeleteWorkflow but scoped to the seeded tenant so the seeder
-// can purge retired templates.
+// deleteWorkflowByID hard-deletes a workflow and its owned rows (versions, runs, step runs, edit
+// locks) inside the seeder's tenant transaction.
 func deleteWorkflowByID(ctx context.Context, ttx *TenantTx, workflowID string) error {
 	if _, err := ttx.Exec(ctx,
 		`DELETE FROM workflow_step_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = 'tnt_dev' AND workflow_id = $1)`, workflowID); err != nil {
@@ -292,9 +261,7 @@ func seedWorkflow(ctx context.Context, ttx *TenantTx, w cannedWorkflow) error {
 	).Scan(&existingID)
 
 	if err == nil {
-		// Workflow exists. Only update the original seed version
-		// (matching VersionID) — newer versions are user-created
-		// and must be preserved.
+		// Workflow exists.
 		var currentVer int
 		_ = ttx.QueryRow(ctx,
 			`SELECT current_version FROM workflows WHERE id = $1 AND tenant_id = 'tnt_dev'`, w.ID,
@@ -323,9 +290,8 @@ func seedWorkflow(ctx context.Context, ttx *TenantTx, w cannedWorkflow) error {
 			if err != nil {
 				return fmt.Errorf("update seed workflow name: %w", err)
 			}
-			// Propagate a pinned git_strategy so the harness keeps its
-			// strategy on seed-managed tenants (NULL = inherit; only set
-			// when the seed pins one).
+			// Propagate a pinned git_strategy so the harness keeps its strategy on seed-managed tenants (NULL =
+			// inherit; only set when the seed pins one).
 			if w.GitStrategy != "" {
 				_, err = ttx.Exec(ctx,
 					`UPDATE workflows SET git_strategy = $1, updated_at = now()
@@ -337,13 +303,6 @@ func seedWorkflow(ctx context.Context, ttx *TenantTx, w cannedWorkflow) error {
 				}
 			} else if w.UnpinGitStrategy {
 				// A SEED THAT NO LONGER PINS MUST BE ABLE TO UNDO A PIN IT ONCE SET.
-				//
-				// The branch above only ever WRITES a value, so removing a pin from the seed
-				// left every existing install carrying the old value — the fix would apply to
-				// fresh installs only and the reporting host would stay stuck. This clears it
-				// back to NULL so the project decides, which is what inherit means
-				// (db.effectiveGitStrategyValue: an empty workflow strategy falls through to
-				// the project).
 				_, err = ttx.Exec(ctx,
 					`UPDATE workflows SET git_strategy = NULL, updated_at = now()
 					 WHERE id = $1 AND tenant_id = 'tnt_dev' AND git_strategy IS NOT NULL`,

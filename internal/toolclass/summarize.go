@@ -8,27 +8,9 @@ import (
 )
 
 // DefaultWindow is the rolling window the activity line counts over.
-//
-// 30s IS THE OPERATOR'S CHOICE, and the reasoning is this line's own cadence: the transcript's
-// activity line is repainted about once a second and the server heartbeats every 15s, so 30s is
-// the shortest span that (a) still shows a burst of work after it has stopped — long enough not
-// to blink out between repaints — and (b) is not outlived by the stall the same line is already
-// reporting (the re-dial notice fires at 35s, internal/tui/app.go). It is a named constant, not a
-// literal, because the Go caller and the GUI must count the SAME span.
 const DefaultWindow = 30 * time.Second
 
-// ledgerCall is the subset of the tool_calls JSON this package reads. The shape is
-// internal/askorchicon/tool_ledger.go (id/type/function_name/arguments) plus the issue timestamp
-// child 1 adds to each entry: `issued_at_unix_ms`, epoch MILLISECONDS — the clients' existing
-// convention (chat.ParsedTool.At, internal/tui/chat/grouping.go).
-//
-// THE FIELD NAME IS NOT NEGOTIABLE, and it is the ONE thing this package must agree with the
-// ledger on. internal/askorchicon/toolCallEntry stamps `json:"issued_at_unix_ms"`
-// (tool_ledger.go:37) and carries it through askToolCallJSON in chathistory.go; if this tag ever
-// drifts from that one, json.Unmarshal silently leaves the field 0, every entry is skipped as
-// "no timestamp", and the line renders "" over a turn that is plainly working — with no error and
-// no failing fixture, because the fixture is written in this package's own vocabulary. That is why
-// TestSummarizeCountsTheRealLedgerShape (askorchicon side) unmarshals a REAL ledger snapshot.
+// ledgerCall is the subset of the tool_calls JSON this package reads.
 type ledgerCall struct {
 	FunctionName   string `json:"function_name"`
 	IssuedAtUnixMs int64  `json:"issued_at_unix_ms"`
@@ -64,14 +46,6 @@ func Summarize(callsJSON []byte, now time.Time, window time.Duration) string {
 
 // Call is one tool call the ACTIVITY LINE can count: the name to classify and the epoch-ms instant
 // it was issued.
-//
-// WHY THIS SHAPE EXISTS. The ledger column is not the only place a client meets a tool call. The
-// TUI's Ask pane receives the durable tool rows over the wire (the ListMessages poll) as a proto
-// ToolCall with a name and a stamp, not as JSON text — and re-encoding them to []byte purely to
-// satisfy Summarize's signature would be a needless round trip through the encoder, and a place
-// for a tag to drift. So the counting RULE lives here, once, over the shape both callers have in
-// hand: Summarize decodes the ledger column into []Call and delegates, and a wire-side caller
-// builds []Call directly.
 type Call struct {
 	// ToolName is the tool's name as the model issued it ("write", "orchicon_bash", …). It is
 	// classified by Classify, so an unknown name is Ignore rather than a new bucket.
@@ -82,13 +56,11 @@ type Call struct {
 }
 
 // SummarizeCalls is Summarize over calls the caller already holds: the SAME rendering rule, no
-// JSON. The trailing age, the window boundary, the fixed modify→read→bash order and the
-// load-bearing empty string are all Summarize's (see its doc); this is that body.
+// JSON.
 func SummarizeCalls(calls []Call, now time.Time, window time.Duration) string {
 	if window <= 0 {
-		// A non-positive window is a caller slip, not a request for a blank line: "the last
-		// zero seconds" is not a display anybody wants. Fall back to the named default rather
-		// than silently rendering "" over a turn that is plainly working.
+		// A non-positive window is a caller slip, not a request for a blank line: "the last zero seconds"
+		// is not a display anybody wants.
 		window = DefaultWindow
 	}
 	nowMs := now.UnixMilli()
@@ -122,9 +94,8 @@ func SummarizeCalls(calls []Call, now time.Time, window time.Duration) string {
 		default:
 			continue // Ignore: ask_user, permission.*, todowrite, the empty name.
 		}
-		// Track the NEWEST COUNTED entry explicitly rather than seeding a 0 sentinel and taking
-		// the max: a malformed negative stamp would then leave `newest` at 0 and the trailing age
-		// would be measured from the epoch, not from the entry that was just counted.
+		// Track the NEWEST COUNTED entry explicitly rather than seeding a 0 sentinel and taking the max: a
+		// malformed negative stamp would then leave `newest` at 0 and the trailing age would be measured.
 		if !counted || c.AtMs > newest {
 			newest = c.AtMs
 		}
@@ -148,10 +119,8 @@ func SummarizeCalls(calls []Call, now time.Time, window time.Duration) string {
 		parts = append(parts, countLabel(bashes, "bash", "bash"))
 	}
 	if others > 0 {
-		// The catch-all goes LAST (it is the residual bucket) and the three named buckets precede
-		// it, so the line still never reorders as counts change (AC6). "other tool" / "other tools"
-		// pluralises correctly and collides with no bucket word; `calls` would have to total
-		// modifies+reads+bash too, a redundant second total that breaks the omit-a-zero rule.
+		// The catch-all goes LAST (it is the residual bucket) and the three named buckets precede it, so
+		// the line still never reorders as counts change (AC6).
 		parts = append(parts, countLabel(others, "other tool", "other tools"))
 	}
 	ageMs := nowMs - newest

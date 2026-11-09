@@ -51,14 +51,6 @@ func portOf(t *testing.T, url string) int {
 }
 
 // A DEAD TELEMETRY CHILD MUST NOT BE REPORTED AS "SERVICES UP".
-//
-// This is the operator's Windows failure in one test. All four telemetry children had crash-looped
-// on a config they could not parse, and the install — which asked only about postgres and nats —
-// reported "services ready" and went on to start the plane. The Logs and Traces views then reported
-// their backends unreachable on an instance that had just been declared healthy.
-//
-// THE ASSERTION IS COMPONENT-NAMED, because "not ready" is what the old code would already have said
-// if anything had asked. What has to be true now is that the missing component is NAMED.
 func TestServicesHealthNamesEveryDeadComponent(t *testing.T) {
 	// pg_isready is a stub that always succeeds; nats, tempo and victoriametrics answer 200.
 	// LOKI and the COLLECTOR are pointed at closed ports, so exactly those two are down.
@@ -114,11 +106,7 @@ func TestServicesHealthRequiredDownFailsTheGate(t *testing.T) {
 	ports := map[string]int{
 		"ORCHICON_POSTGRES_PORT":     5432, // the fake pg_isready below will FAIL
 		// deadServicePort, NOT closedPort: this assertion requires the port to be DOWN, and closedPort
-		// RELEASES its number, which the kernel may hand to a later listener — including one of the
-		// serveOK(t) calls in this same test. When that happened here the declared-dead component
-		// answered 200 and requiredServicesReady correctly returned true, failing the assertion. Measured
-		// as a CI failure of the whole go-ci gate for the sibling case at line ~171; see deadServicePort's
-		// own comment for the experiment that confirmed the mechanism.
+		// RELEASES its number, which the kernel may hand to a later listener.
 		"ORCHICON_NATS_MONITOR_PORT": deadServicePort(t),
 		"ORCHICON_TEMPO_PORT":        serveOK(t),
 		"ORCHICON_LOKI_PORT":         serveOK(t),
@@ -140,10 +128,6 @@ func TestServicesHealthRequiredDownFailsTheGate(t *testing.T) {
 }
 
 // LOKI'S /ready IS 503 WHILE IT REPLAYS ITS WAL, and that must read as NOT READY.
-//
-// Measured on the affected host: loki took 15.3s to answer 200 from a cold start, while its port was
-// bound and its process was alive the whole time. A probe that accepted a bound socket would tell
-// the install the log backend was ready and then hand the operator a Logs view that fails.
 func TestLokiReplayingIsNotReady(t *testing.T) {
 	t.Setenv(telemetryEnv, "embedded")
 	t.Setenv("PATH", writeFakePgIsReady(t, 0))
@@ -163,10 +147,6 @@ func TestLokiReplayingIsNotReady(t *testing.T) {
 }
 
 // TELEMETRY=none MUST NOT REPORT FOUR PERMANENTLY-MISSING COMPONENTS.
-//
-// A `none` boot is a supported shape (the plane degrades by design), so the optional set is empty
-// and the instance is neither degraded nor faulted. Without this, `status` and the install's own
-// degradation note would cry wolf on every headless instance.
 func TestTelemetryNoneHasNoOptionalComponents(t *testing.T) {
 	t.Setenv(telemetryEnv, "none")
 	t.Setenv("PATH", writeFakePgIsReady(t, 0))
@@ -174,8 +154,6 @@ func TestTelemetryNoneHasNoOptionalComponents(t *testing.T) {
 		"ORCHICON_POSTGRES_PORT":     5432,
 		"ORCHICON_NATS_MONITOR_PORT": serveOK(t),
 		// Deliberately dead: a `none` boot must not ask about them at all.
-		// These four are asserted DOWN, so they must stay reserved — see the comment on the nats
-		// port above and deadServicePort's.
 		"ORCHICON_TEMPO_PORT":       deadServicePort(t),
 		"ORCHICON_LOKI_PORT":        deadServicePort(t),
 		"ORCHICON_VM_PORT":          deadServicePort(t),
@@ -194,15 +172,6 @@ func TestTelemetryNoneHasNoOptionalComponents(t *testing.T) {
 }
 
 // THE FORWARDED-KNOB LIST MUST COVER EVERY KNOB THE SUPERVISOR READS.
-//
-// hostServicesPortEnvs is what startHostServices exports into the `host-services` child.
-// servicePortsFromEnv is what that child reads. A knob in the second list and not the first is a
-// silent disagreement between the process that PROBES a port and the process that BINDS it — the
-// bug the whole port table exists to prevent, arriving through a list that looks maintained.
-//
-// This is asserted rather than trusted because it HAS drifted: ORCHICON_TEMPO_GRPC_PORT and
-// ORCHICON_OTEL_SELF_METRICS_PORT were both honoured by the child and forwarded by nobody, which
-// only stayed harmless because each child's own default happened to equal the table's value.
 func TestHostServicesPortEnvsCoversEveryKnob(t *testing.T) {
 	forwarded := map[string]bool{}
 	for _, k := range hostServicesPortEnvs {
@@ -225,8 +194,7 @@ func TestHostServicesPortEnvsCoversEveryKnob(t *testing.T) {
 }
 
 // writeFakePgIsReady puts a fake `pg_isready` on PATH that exits with the given code, and returns
-// the directory. pgIsReadyBin falls back to PATH when the instance has no binaries record, which is
-// the case in a test with no install.
+// the directory.
 func writeFakePgIsReady(t *testing.T, exitCode int) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -240,17 +208,8 @@ func writeFakePgIsReady(t *testing.T, exitCode int) string {
 	return dir
 }
 
-// closedPort returns a port with NOTHING listening on it: the honest way to model a child that is dead,
-// rather than a port that merely refuses on some platforms and hangs on others.
-//
-// IT RELEASES THE PORT, and that is what its callers need: this is the helper for "ask who owns this port and
-// find nobody", so a listener of our own would make the answer wrong. (That is a real constraint, not a
-// preference — lookupPortOwners reads LISTEN sockets with lsof, so a held port reports the test process as the
-// owner and TestReportPortOwnerStaysQuietWhenThePortIsFree correctly fails.)
-//
-// A CALLER THAT ONLY NEEDS "NOTHING ANSWERS" SHOULD USE deadServicePort INSTEAD. Releasing the number puts it
-// back in the ephemeral pool, where a later "any free port" request can be handed it — which is exactly how a
-// test that declared Loki dead ended up with Loki answering.
+// closedPort returns a port with NOTHING listening on it: the honest way to model a child that is
+// dead, rather than a port that merely refuses on some platforms and hangs on others.
 func closedPort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -304,15 +263,6 @@ func deadServicePort(t *testing.T) int {
 }
 
 // THE PORTS RECORD MUST BE COMPLETE, AND "COMPLETE" MEANS EVERY PORT THE INSTANCE BINDS.
-//
-// portsRecordIsComplete asked activeInstallPorts, which filters to the ports a residency EXPOSES on a
-// host interface — the right question for "what may collide" and the wrong one for "is this record
-// coherent". Five ports are bound but not published (Tempo's gRPC listener and its two OTLP
-// receivers, the collector's health extension and its self-metrics exporter), so no REAL ports.json
-// ever named them, the completeness test answered false for every correct install, and the record
-// was therefore never trusted by anything that read it. The only caller fell back to the defaults —
-// identical, so nothing broke — but a readiness probe asking the record for
-// ORCHICON_OTEL_HEALTH_PORT got 0 and reported a healthy collector as "not answering".
 func TestPortsRecordIsCompleteCoversUnpublishedPorts(t *testing.T) {
 	// A record containing only the PUBLISHED ports — i.e. what every install wrote before this fix.
 	publishedOnly := map[string]int{}
@@ -355,10 +305,6 @@ func TestPortsRecordIsCompleteCoversUnpublishedPorts(t *testing.T) {
 }
 
 // A MISSING PORT IN THE RECORD MUST NOT MANUFACTURE A NEGATIVE.
-//
-// This is the trap the fix above leaves behind if the probe is careless: a 0 port is the ABSENCE of
-// an address, not a component listening on 0. Probing it can only ever fail, so a healthy collector
-// would be reported down and a correct instance would look degraded for ever.
 func TestServicesHealthSkipsComponentsWithNoRecordedPort(t *testing.T) {
 	t.Setenv(telemetryEnv, "embedded")
 	t.Setenv("PATH", writeFakePgIsReady(t, 0))
@@ -385,15 +331,6 @@ func TestServicesHealthSkipsComponentsWithNoRecordedPort(t *testing.T) {
 }
 
 // THE SERVICES LOG MUST BE BOUNDED.
-//
-// It was raw stdout behind a launcher's redirect: a component crash-looping writes a restart cycle
-// every 32 seconds for as long as the machine is up, so nothing ever capped it. Measured on a real
-// Windows instance it reached 1,560,928,277 bytes — 1.45 GB — from loki and tempo restarting for
-// hours, plus nats cycling behind an orphaned process that held its port.
-//
-// The assertion is on the CONFIGURATION the supervisor hands the rotating writer, because that is
-// what decides the bound: a rotation with no ceiling is the bug, and a ceiling with no retention is
-// the same bug a day later.
 func TestServicesLogRotationIsBounded(t *testing.T) {
 	cfg := servicesLogRotation
 	if cfg.MaxSizeBytes <= 0 {

@@ -8,13 +8,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
-// TestV2RegistersOneAgentPerWorker pins the mechanism the per-execution prompt
-// depends on: each step worker becomes an agent whose `system` is that worker's
-// REAL prompt, while the constant tool shell remains the default.
-//
-// The default matters as much as the per-worker entries: a session that never
-// gets switched must still land on a worker agent, because the alternative is
-// opencode's own `build` agent and its large default prompt.
+// TestV2RegistersOneAgentPerWorker pins the mechanism the per-execution prompt depends on: each
+// step worker becomes an agent whose `system` is that worker's REAL prompt.
 func TestV2RegistersOneAgentPerWorker(t *testing.T) {
 	withShape(t, ConfigShapeV2, func() {
 		out := BuildConfigContent(ConfigOptions{
@@ -59,10 +54,7 @@ func TestV2RegistersOneAgentPerWorker(t *testing.T) {
 	})
 }
 
-// TestV2WorkerAgentsAreV2Only pins that the per-worker agents do NOT leak into a
-// v1 document. On 1.x the same prompt rides the prompt body's `system` field per
-// message, so emitting agents there would be redundant config 1.x has no use for
-// — and the 1.x document must stay byte-identical.
+// TestV2WorkerAgentsAreV2Only pins that the per-worker agents do NOT leak into a v1 document.
 func TestV2WorkerAgentsAreV2Only(t *testing.T) {
 	doc := decodeDoc(t, BuildConfigContent(ConfigOptions{
 		AgentName:    workerAgent,

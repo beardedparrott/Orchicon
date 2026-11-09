@@ -47,12 +47,8 @@ func workItemKindTestPool(t *testing.T) *db.Pool {
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	// The tenant ROOT row must exist before any tenant-scoped write: mcp_servers
-	// carries a `(tenant_id) REFERENCES tenants(id)` FK, so a freshly-migrated
-	// database (CI, or any DB the sandbox daemon has not booted against) rejects
-	// an UpsertMCPServer for tnt_dev with SQLSTATE 23503. Seeding the tenant here
-	// makes the DB-backed askorchicon suites self-sufficient instead of depending
-	// on the daemon's boot path having run first.
+	// The tenant ROOT row must exist before any tenant-scoped write: mcp_servers carries a `(tenant_id)
+	// REFERENCES tenants(id)` FK, so a freshly-migrated database (CI.
 	if err := db.SeedDevTenant(ctx, pool, "tnt_dev"); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
@@ -92,10 +88,8 @@ func createProjectForTest(t *testing.T, ctx context.Context, pool *db.Pool) stri
 	return proj.ID
 }
 
-// createWorkItemViaTool invokes the real toolCreateWorkItem with the given
-// raw kind value and returns the created row's kind. The tool enforces the
-// same hierarchy rule as the API (only epics are top-level), so a parent
-// epic is created first when the requested kind is not epic.
+// createWorkItemViaTool invokes the real toolCreateWorkItem with the given raw kind value and
+// returns the created row's kind.
 func createWorkItemViaTool(t *testing.T, ctx context.Context, pool *db.Pool, projectID, kind string) (db.WorkItemRow, error) {
 	t.Helper()
 	var parentID string
@@ -179,9 +173,8 @@ func TestCreateWorkItemKindDefaultsToTask(t *testing.T) {
 	}
 }
 
-// TestCreateWorkItemKindRejectsUnknown verifies unknown kinds are
-// rejected with an error that names the four canonical kinds — the tool
-// never stores a value the strict read path would map to UNSPECIFIED.
+// TestCreateWorkItemKindRejectsUnknown verifies unknown kinds are rejected with an error that names
+// the four canonical kinds.
 func TestCreateWorkItemKindRejectsUnknown(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -278,9 +271,8 @@ func callToolUpdate(t *testing.T, ctx context.Context, pool *db.Pool, args map[s
 	return item, nil
 }
 
-// TestCreateWorkItemAllFieldsDB verifies create exposes the full mutable
-// field set: budgets, context_window, workflow_id, scheduled_start_at
-// (status flips to scheduled), auto_start_workflow, runtime_image.
+// TestCreateWorkItemAllFieldsDB verifies create exposes the full mutable field set: budgets,
+// context_window, workflow_id, scheduled_start_at (status flips to scheduled), auto_start_workflow.
 func TestCreateWorkItemAllFieldsDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -376,9 +368,8 @@ func TestCreateWorkItemOverlongTitleRejectedDB(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkItemAllFieldsDB verifies update exposes the full mutable
-// field set: budgets, context_window, workflow_id, scheduled_start_at
-// (status flips to scheduled), runtime_image, workflow_run_id, project_id.
+// TestUpdateWorkItemAllFieldsDB verifies update exposes the full mutable field set: budgets,
+// context_window, workflow_id, scheduled_start_at (status flips to scheduled), runtime_image.
 func TestUpdateWorkItemAllFieldsDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -479,9 +470,8 @@ func TestUpdateWorkItemClearContextFilesDB(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkItemAutoStartClearsScheduleDB verifies setting
-// auto_start_workflow=true without a scheduled time clears any prior
-// schedule and stores the flag (service.go behavior replicated).
+// TestUpdateWorkItemAutoStartClearsScheduleDB verifies setting auto_start_workflow=true without a
+// scheduled time clears any prior schedule and stores the flag (service.go behavior replicated).
 func TestUpdateWorkItemAutoStartClearsScheduleDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -671,9 +661,8 @@ func TestUpdateWorkItemProjectReassignDB(t *testing.T) {
 	}
 }
 
-// TestAssignUnassignWorkerDB verifies the assign_worker / unassign_worker
-// tools persist the worker ref and clear it, matching AssignWorker /
-// UnassignWorker.
+// TestAssignUnassignWorkerDB verifies the assign_worker / unassign_worker tools persist the worker
+// ref and clear it, matching AssignWorker / UnassignWorker.
 func TestAssignUnassignWorkerDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -754,10 +743,8 @@ func TestUpdateWorkItemWorkflowRunIDDB(t *testing.T) {
 	}
 }
 
-// TestReorderWorkItemsToolDB verifies the reorder_work_items tool renumbers
-// sort_order for the siblings under a parent in one transaction — mirroring
-// the ReorderWorkItems RPC (architecture-notes §1). Only explicit drags
-// change sort_order; display sort never does.
+// TestReorderWorkItemsToolDB verifies the reorder_work_items tool renumbers sort_order for the
+// siblings under a parent in one transaction.
 func TestReorderWorkItemsToolDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -877,10 +864,8 @@ func callToolArchive(t *testing.T, ctx context.Context, pool *db.Pool, id string
 	return item, nil
 }
 
-// TestArchiveWorkItemToolDB verifies the archive_work_item tool hides a
-// terminal item (status → archived, archived_at set, archived_from_status
-// preserved) and that restore_work_item returns it to its prior terminal
-// status.
+// TestArchiveWorkItemToolDB verifies the archive_work_item tool hides a terminal item (status →
+// archived, archived_at set.
 func TestArchiveWorkItemToolDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -952,10 +937,8 @@ func TestArchiveWorkItemToolRejectsNonTerminal(t *testing.T) {
 	}
 }
 
-// TestCreateWorkItemToolRejectsScheduledWithoutWorkflowDB — the Ask Orchicon
-// surface mirrors the Connect Create gate (AGENTS.md: the two surfaces cannot
-// drift): a scheduled create with no workflow binding has nothing to run, so
-// it is rejected loudly instead of landing a zombie 'scheduled' row.
+// TestCreateWorkItemToolRejectsScheduledWithoutWorkflowDB — the Ask Orchicon surface mirrors the
+// Connect Create gate (AGENTS.md: the two surfaces cannot drift).
 func TestCreateWorkItemToolRejectsScheduledWithoutWorkflowDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)

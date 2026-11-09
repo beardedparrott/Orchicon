@@ -104,9 +104,8 @@ func TestCreateWorkerUnknownRoleRejected(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkerRoleRefOnPublished: the role binding is editable on
-// published workers (it lives on the header, not the version) — bind and
-// clear both work.
+// TestUpdateWorkerRoleRefOnPublished: the role binding is editable on published workers (it lives
+// on the header, not the version) — bind and clear both work.
 func TestUpdateWorkerRoleRefOnPublished(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	roleID := createTestRole(t, pool, tenantID)
@@ -127,15 +126,8 @@ func TestUpdateWorkerRoleRefOnPublished(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkerPublishedHeaderTextAndRoleInOneCall: a published worker
-// accepts header text AND the role binding in ONE request.
-//
-// This INVERTS the previous contract (TestUpdateWorkerPublishedMixedFieldsRejected,
-// which asserted the pair was refused). The refusal made a published worker's
-// name, purpose and description permanently unfixable — workers.status never
-// returns to draft, so no path could reopen them (104 workers on the dev
-// tenant). Header text is a label, not versioned content: workflow steps
-// reference a worker by ID, and the slug is immutable after create.
+// TestUpdateWorkerPublishedHeaderTextAndRoleInOneCall: a published worker accepts header text AND
+// the role binding in ONE request.
 func TestUpdateWorkerPublishedHeaderTextAndRoleInOneCall(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	roleID := createTestRole(t, pool, tenantID)
@@ -164,10 +156,8 @@ func TestUpdateWorkerPublishedHeaderTextAndRoleInOneCall(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkerRetiredHeaderTextRejected: RETIRED is the one status that
-// still refuses header text, and it must say so clearly. Without the explicit
-// check the request would reach the DB gate, match no row, and surface as
-// "worker not found" — telling the operator the worker does not exist.
+// TestUpdateWorkerRetiredHeaderTextRejected: RETIRED is the one status that still refuses header
+// text, and it must say so clearly.
 func TestUpdateWorkerRetiredHeaderTextRejected(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWorker(t, ctx, s, "retired-header")

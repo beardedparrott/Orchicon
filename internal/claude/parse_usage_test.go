@@ -7,11 +7,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// parse_usage_test.go drives the claude USAGE path on canned stream-json
-// fixtures ONLY (no live session, no spend): the four Anthropic wire buckets
-// must be recorded DISTINCTLY through the SHARED aigateway.UsageFromAnthropic
-// transform, attributed to the right execution, and a replayed terminal result
-// must not double-charge.
+// parse_usage_test.go drives the claude USAGE path on canned stream-json fixtures ONLY (no live
+// session, no spend): the four Anthropic wire buckets must be recorded DISTINCTLY through the
+// SHARED.
 
 const (
 	// Terminal `result` carrying the authoritative per-turn aggregate.
@@ -24,9 +22,8 @@ const (
 	claudeMessageStartUsage = `{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":11,"output_tokens":1,"cache_read_input_tokens":33,"cache_creation_input_tokens":44}}}}`
 )
 
-// (a) A terminal `result` records ONE usage record with the four buckets
-// DISTINCT, the anthropic provider, the claude adapter kind, and THIS
-// execution's id.
+// (a) A terminal `result` records ONE usage record with the four buckets DISTINCT, the anthropic
+// provider, the claude adapter kind, and THIS execution's id.
 func TestClaudeTerminalResultRecordsFourDistinctBuckets(t *testing.T) {
 	m, rec := newTestMapper(t, scheduler.ExecutionManifest{})
 	if !feed(t, m, claudeResultUsage) {

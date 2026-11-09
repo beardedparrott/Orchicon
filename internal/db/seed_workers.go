@@ -15,34 +15,16 @@ import (
 // bt is a helper to include backticks in otherwise-backtick-delimited strings.
 const bt = "`"
 
-// cannedWorkerIdentity is the identity sentence prepended to every canned
-// worker's Role so the stored worker carries the same self-definition the
-// scheduler injects at dispatch (db.WorkerIdentityPreamble, the full
-// paragraph of which this is the first sentence). Kept in sync with that
-// preamble: "autonomous worker inside Orchicon, not a human operator, reports
-// via ORCHICON WORKER SUMMARY".
+// cannedWorkerIdentity is the identity sentence prepended to every canned worker's Role so the
+// stored worker carries the same self-definition the scheduler injects at dispatch.
 const cannedWorkerIdentity = "You are an autonomous worker running inside the Orchicon orchestration platform. "
 
-// seedSafetyMarker is the versioned marker the seeder scans for on the
-// current published worker version to decide whether the seed's CURRENT
-// context (safety rules + prompt guidance) is present. When the seed's
-// canned-worker context changes — safety content, prompt guidance, or the
-// git recipe blocks — bump the version here; the seed rolls a new published
-// version forward so the update reaches every canned worker exactly once. A
-// plain presence check (not content diffing) is used so a user's unrelated
-// edits to a worker are never clobbered by the seed.
-//
-// The marker travels in seedMarkerComment, which seedAgentsMD persists into
-// every canned worker's AGENTS.md in place of the safety rules. The rules
-// themselves now ship in the composite's stable prompt prefix
-// (StablePromptPrefix) so they are not duplicated per worker.
+// seedSafetyMarker is the versioned marker the seeder scans for on the current published worker
+// version to decide whether the seed's CURRENT context (safety rules + prompt guidance) is present.
 const seedSafetyMarker = "orchicon.safety=v24"
 
-// safetyBlock is the shared safety-rules block delivered to every worker via
-// the stable prompt prefix (StablePromptPrefix in prompt.go). It carries the
-// "## Safety rules" heading but NOT the seed roll-forward marker — that lives
-// in seedMarkerComment so the persisted AGENTS.md can be marked without
-// repeating the rules.
+// safetyBlock is the shared safety-rules block delivered to every worker via the stable prompt
+// prefix (StablePromptPrefix in prompt.go).
 const safetyBlock = "\n\n## Safety rules (HARD limits)\n" +
 	"- **NEVER run destructive or system-modifying commands.** This includes `rm -rf` / `rm -fr` (any target outside the project directory — `/`, `~`, `$HOME`, `/*`), `sudo`, `dd`, `mkfs`/`fdisk`/`parted`/`shred`/`wipefs`, `chmod -R` / `chown -R` outside the project directory, and redirection to `/dev/sd*`.\n" +
 	"- **Never test destructive behavior, even as a \"security test\".** If a task asks you to verify a destructive command, refuse, flag it in your summary, and escalate to a human. The execution guard blocks these commands anyway — a \"test\" of them proves nothing.\n" +
@@ -52,28 +34,16 @@ const safetyBlock = "\n\n## Safety rules (HARD limits)\n" +
 	"- **NEVER work in the prod instance of Orchicon.** You ONLY work inside the runtime container and launch your own disposable `orchicon serve` sandbox instance from there — never against the live/prod plane, never against `127.0.0.1:5432/8080` from outside a container. DB/migration/API test writes land in the container sandbox plane only.\n" +
 	"- **Free models ONLY for any cloud use.** ABSOLUTELY never use a cloud model that is not free: only models ending in `-free`, `ollama/*`, `local-models/*`, or the tenant default free model. If a model is not free, you cannot use it for testing — fail closed and flag it in your summary.\n\n"
 
-// seedMarkerComment is the bare roll-forward marker persisted into every
-// canned worker's AGENTS.md. The seeder's needSync check and
-// workerIsSeedManaged scan agents_md for it, so it must survive the move of
-// the safety rules into the stable prompt prefix.
+// seedMarkerComment is the bare roll-forward marker persisted into every canned worker's AGENTS.md.
 const seedMarkerComment = "\n<!-- " + seedSafetyMarker + " -->\n"
 
-// seedAgentsMD returns the AGENTS.md content the seeder actually persists for
-// a canned worker. The safety rules are stripped — they are delivered to every
-// worker via the stable prompt prefix (StablePromptPrefix) — and replaced with
-// the bare roll-forward marker comment so the seeder can still detect the seed
-// context. Keeping the safety rules out of the stored AGENTS.md avoids
-// duplicating them in every composite prompt (the whole point of the prompt
-// overhead reduction).
+// seedAgentsMD returns the AGENTS.md content the seeder actually persists for a canned worker.
 func seedAgentsMD(w cannedWorker) string {
 	return seedAgentsMDBase(w) + cannedSeedFingerprintMarker(w)
 }
 
-// seedAgentsMDBase is seedAgentsMD WITHOUT the fingerprint comment — the text the fingerprint is computed over.
-//
-// IT MUST NOT BE THE MARKER-BEARING FORM. The first version of this hashed seedAgentsMD, which appends the
-// marker, which hashes seedAgentsMD: infinite recursion, caught immediately by the stack overflowing in the
-// test. The fingerprint therefore covers the CONTENT and the marker carries it.
+// seedAgentsMDBase is seedAgentsMD WITHOUT the fingerprint comment — the text the fingerprint is
+// computed over. IT MUST NOT BE THE MARKER-BEARING FORM.
 func seedAgentsMDBase(w cannedWorker) string {
 	md := w.AgentsMD
 	if i := strings.Index(md, safetyBlock); i >= 0 {
@@ -82,26 +52,8 @@ func seedAgentsMDBase(w cannedWorker) string {
 	return md
 }
 
-// cannedSeedFingerprint is a short digest of EVERY field the seeder syncs onto a canned worker's version.
-//
-// WHY THIS EXISTS. The roll-forward used to be keyed on hand-written marker STRINGS — seedSafetyMarker,
-// sandboxPlaneMarker, and per-worker RollMarkers like "GATED ON A GREEN RESULT". A marker is a presence check,
-// so it can only detect a change someone INVENTED A NEW MARKER for. That works for a wording change that
-// happens to touch a marker, and silently fails for every other edit: the marker is still in the stored text,
-// needSync is false, and the new prompt never reaches a worker that already exists.
-//
-// MEASURED, on the change this guards: the Quick Software Engineer's shipping section was rewritten to be
-// mode-aware (commit-only for a local-strategy project, push + PR only when there is a remote). Its RollMarker
-// is a static phrase the edit left untouched, so the seeder saw nothing to do and the fix was dead on every
-// install made before it. A test of the prompt text cannot catch that — the source is right, the delivery was
-// not.
-//
-// So the key is the CONTENT. Any edit to a canned worker's role, skills, behavior, agents_md or concurrency
-// rolls one new published version on the next boot and is then idempotent, with no marker to remember.
-//
-// IT DOES REPLACE A LOCAL EDIT to a canned worker when the seed changes. That is the same rule the markers
-// already applied (the seed is the source of truth for seed-managed workers), and the sync logs it; an
-// operator who wants a permanent customisation should create their own worker.
+// cannedSeedFingerprint is a short digest of EVERY field the seeder syncs onto a canned worker's
+// version.
 func cannedSeedFingerprint(w cannedWorker) string {
 	h := sha256.New()
 	for _, part := range []string{w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMDBase(w), strconv.Itoa(w.ConcurrencyLimit)} {
@@ -117,16 +69,7 @@ func cannedSeedFingerprintMarker(w cannedWorker) string {
 	return "\n<!-- orchicon.seed-fingerprint=" + cannedSeedFingerprint(w) + " -->\n"
 }
 
-// sandboxPlaneBlock is the per-worker instruction explaining the runtime
-// environment. Workers run inside an isolated workflow runtime container. On
-// the :orchicon-dev image the container boots a disposable in-container
-// sandbox plane (Postgres -> NATS -> `orchicon serve`) for building and
-// DB-testing the Orchicon repo; it dies with the container and never touches
-// the real instance's database. The real instance (the plane the work item
-// was created on) holds the actual work items, runs, and data; a worker's
-// access to it is deny-by-default through the worker's identity — no role
-// binding means no plane channel, and that absence is expected, never a
-// reason to invent a real-instance write.
+// sandboxPlaneBlock is the per-worker instruction explaining the runtime environment.
 const sandboxPlaneBlock = "> **Sandbox vs plane.** You run inside an isolated workflow runtime container " +
 	"(projects in `local` execution_mode run in-process on the host instead — your `## Runtime environment` prompt block states which mode this run uses; when it says in-process, there is NO container and `127.0.0.1:5432/8080` is the LIVE plane). " +
 	"The `:orchicon-dev` runtime image boots a **disposable in-container sandbox plane** (Postgres → NATS → `orchicon serve` on container-local ports) for building and DB-testing the project — it dies with the container and never touches the real instance's database. " +
@@ -138,15 +81,8 @@ const sandboxPlaneBlock = "> **Sandbox vs plane.** You run inside an isolated wo
 	"Only role-bound research workers use idea-item tools: `orchicon_plane_list_idea_items` reads the Idea Cloud (state=\"active\" = pending triage; state=\"rejected\" = previously dismissed spawns — the rejection memory checked before spawning) and `orchicon_plane_create_idea_item` spawns an idea item (IDEA landing is forced by the tool — the run's trusted context supplies provenance, never call arguments); a refused spawn or a non-idea landed state is a LOUD platform error to record, never a success. " +
 	"Never use sandbox tools to inspect real work items, and never use plane tools to create throwaway records or test migrations.\n\n"
 
-// playwrightBlock instructs UI-focused workers how to drive headless
-// Chromium for REAL visual verification. The Orchicon dev runtime image
-// preinstalls Playwright + Chromium (/ms-playwright, PLAYWRIGHT_BROWSERS_PATH
-// + NODE_PATH set), so a worker can launch the browser, screenshot the app it
-// is building, and READ the screenshot back — that is how the model actually
-// "looks at the browser". The runtime container has no root process, so
-// Chromium's setuid sandbox cannot run and every launch must pass
-// --no-sandbox. The scripts/browser.cjs helper (created on first use) bakes
-// the flag + a shot() function so it is never forgotten.
+// playwrightBlock instructs UI-focused workers how to drive headless Chromium for REAL visual
+// verification.
 const playwrightBlock = "\n## Browser automation (Playwright) — VISUAL verification\n" +
 	"- The Orchicon dev runtime image preinstalls Playwright + headless Chromium (" + bt + "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright" + bt + "). Use the " + bt + ":orchicon-dev" + bt + " (or a custom image derived from it) runtime image for UI work.\n" +
 	"- **The runtime container has no root process, so Chromium's setuid sandbox cannot run.** Every launch MUST pass " + bt + "args: [\"--no-sandbox\"]" + bt + " or the browser fails to start.\n" +
@@ -183,169 +119,68 @@ type cannedWorker struct {
 	Behavior    string
 	AgentsMD    string
 	RoleRef     string // RBAC role binding (plane-channel entitlements); empty = none
-	// NOTE: worker-level RuntimeRef is retired (ADR-0003 single source of
-	// truth) — the model_ref's adapter segment alone governs dispatch.
-	// BudgetOverrides is the per-worker execution-budget fence merged over the
-	// tenant defaults at dispatch (scheduler mergeBudgets). Canned SDLC
-	// workers carry wall_clock fences that give their prompt time-boxes
-	// ~33% grace: the box (prompt) expires first and the worker ships what
-	// it has; the fence (budget) is the emergency stop, never the plan.
+	// NOTE: worker-level RuntimeRef is retired (ADR-0003 single source of truth) — the model_ref's
+	// adapter segment alone governs dispatch.
 	BudgetOverrides []byte
-	// RecreateSlugOwner deletes any worker that owns the canned slug but is
-	// NOT the canned ID, then recreates fresh under the canned ID. Used by
-	// workers that were adopted under ULID ids before they were canned — the
-	// user explicitly wants those gone (stale UUID canned workers have caused
-	// problems). Deleting breaks workflow step refs that point at the old id;
-	// the operator updates those manually.
+	// RecreateSlugOwner deletes any worker that owns the canned slug but is NOT the canned ID, then
+	// recreates fresh under the canned ID.
 	RecreateSlugOwner bool
-	// ConcurrencyLimit caps concurrent executions against this worker's
-	// dispatch. 0 = unlimited (the platform convention in
-	// dispatch_limits.go). Every canned worker seeds 0 (unlimited); carried
-	// into worker_versions.concurrency_limit by the seeder on install and
-	// re-roll so a seeded worker is never accidentally serialized at 1.
+	// ConcurrencyLimit caps concurrent executions against this worker's dispatch.
 	ConcurrencyLimit int
-	// RollMarker, when set, is an additional per-worker roll-forward key: a
-	// canned worker whose current published agents_md lacks this fragment is
-	// re-synced to its seed definition on boot. Use it for seed changes that
-	// apply to a SUBSET of canned workers (e.g. the automation-research
-	// trio's contract) so a wording change never re-rolls the whole fleet —
-	// the global markers (seedSafetyMarker/sandboxPlaneMarker) stay reserved
-	// for content pushed to EVERY canned worker via sandboxPlaneBlock.
+	// RollMarker, when set, is an additional per-worker roll-forward key: a canned worker whose current
+	// published agents_md lacks this fragment is re-synced to its seed definition on boot.
 	RollMarker string
 }
 
-// sandboxPlaneMarker is the roll-forward key the seeder checks alongside
-// the safety marker: a canned worker whose current published agents_md
-// lacks this fragment is re-synced to its seed definition on boot. The
-// fragment must exist in sandboxPlaneBlock (the seed content pushed to
-// EVERY canned worker) and NOT in the content already out there — then
-// exactly the stale workers re-roll, and once present everywhere the
-// seeder is idempotent again. The current generation pins the
-// deny-by-default plane stance (no routine `orchicon_plane_*` writes for
-// implementer/approver/QA roles; sandbox-only for throwaway/DB-test data)
-// — the prior generation's "platform bug / ship manifests for the UI"
-// fallback rationalized real-instance writes and is gone. Future content
-// changes must bump it to a new present-in-seed/absent-in-old fragment.
+// sandboxPlaneMarker is the roll-forward key the seeder checks alongside the safety marker: a
+// canned worker whose current published agents_md lacks this fragment is re-synced to its seed.
 const sandboxPlaneMarker = "deny-by-default"
 
-// researchMarketMarker is the Automation Research trio's per-worker roll
-// marker (cannedWorker.RollMarker): it pins the MARKET-FIRST research
-// contract — the Planner goes online itself (research/market-map.md) before
-// planning, the feature-vs-hardening classification (BUG-R capped at ≤1 per
-// fire), and the "cite an external reference describing the capability as a
-// standalone feature elsewhere" spawn gate. Added after two days of fires
-// kept yielding small hardening items: the old plan-first model let the
-// pipeline confirm local hypotheses instead of scanning the competitive
-// landscape outward. Fragment chosen from the new planner section text so
-// exactly the stale trio re-rolls.
+// researchMarketMarker is the Automation Research trio's per-worker roll marker
+// (cannedWorker.RollMarker): it pins the MARKET-FIRST research contract.
 const researchMarketMarker = "market-map.md"
 
-// researchRejectedGateMarker is the per-worker roll-forward fragment for the
-// Automation Research SYNTHESIZER only: it pins the rejected-ideas dedupe
-// gate — before spawning, the Synthesizer must read the Idea Cloud's
-// REJECTED section (state="rejected" on orchicon_plane_list_idea_items) so
-// a human's dismissal is durable memory and a rejected idea is never
-// re-proposed. Distinct from researchMarketMarker so this wording change
-// re-rolls ONLY the Synthesizer, never the Planner/Analyst.
+// Distinct from researchMarketMarker so this wording change re-rolls ONLY the Synthesizer, never
+// the Planner/Analyst.
 const researchSynthesizerRejectedMarker = "state=\"rejected\""
 
-// researchEphemeralMarker is the Automation Research trio's roll-forward
-// fragment. The Automation Research workflow runs with git_strategy=none
-// (ephemeral): the run worktree is a detached HEAD — no branch is created,
-// nothing is pushed to origin. The old hygiene block's "commit + push to the
-// run branch" contract is the research leak class (17 branches in ~48h), so
-// it is replaced by the ephemeral wording below. This marker fragment appears
-// in the NEW researchHygieneBlock only (and not in the old, which shipped
-// "commit + push to the run branch"), so exactly the trio re-rolls — never
-// the whole fleet via seedSafetyMarker/sandboxPlaneMarker.
+// researchEphemeralMarker is the Automation Research trio's roll-forward fragment.
 const researchEphemeralMarker = "git_strategy=none"
 
-// devopsShipMarker is the shipping DevOps worker's OWN roll-forward fragment. That worker
-// shares sdlcWorkhorseMarker with the SSE / PR Reviewer / Principal Architect, so reusing it
-// would re-roll all four for a wording change that belongs to one. The fragment appears only
-// in the NEW agents_md content (the merge gate), so exactly the shipping DevOps worker
-// re-rolls — which is the rule RollMarker documents.
+// devopsShipMarker is the shipping DevOps worker's OWN roll-forward fragment.
 const devopsShipMarker = "GATED ON A GREEN RESULT"
 
-// sdlcWorkhorseMarker is the rollout fragment for the work-budget reversal: every worker that
-// previously carried a hard prompt time-box now carries workBudgetBlock instead.
-//
-// WHY THE FRAGMENT HAD TO CHANGE WITH THE CONTENT. The old value was "Hard time-box", which appears in
-// exactly the text being removed. Roll-forward is a PRESENCE check — a worker whose published agents_md
-// still contains the old fragment is considered current, so leaving the marker alone would mean the new
-// text never reaches a single deployed worker: the seeder would find "Hard time-box" in the old content,
-// conclude the rollout was already applied, and skip it. The marker must therefore be a fragment that
-// exists ONLY in the new content.
-//
-// It is a phrase from workBudgetBlock's guidance rather than from a single worker's section, so the SSE,
-// Principal Architect and QA Engineer all re-roll on it. The PR Reviewer no longer shares it (it carries
-// reviewerVerdictMarker), so a future review-only change cannot re-roll the implementers.
+// The marker must therefore be a fragment that exists ONLY in the new content.
 const sdlcWorkhorseMarker = "not to license an unfinished deliverable"
 
 // qaSurfaceImpactMarker is the QA Engineer's per-worker roll-forward fragment
-// (cannedWorker.RollMarker): it pins the mandatory surface-impact check — UI
-// verification is triggered by whether the change affects anything the user
-// can see or interact with (displayed data, budgets, costs, tokens, statuses,
-// counts), NOT by whether the diff edits frontend files. A Go-only diff that
-// feeds displayed values (usage/telemetry/budget wiring) is UI-affecting and
-// must be screenshotted via the Playwright loop. Added after the native
-// usage/telemetry/budget run (2026-09-03): its QA step verified the change
-// entirely at the code level and never opened the UI, although the work item
-// itself named budget display in the UI. Fragment chosen from the new
-// workflow-step text so exactly the QA Engineer re-rolls — never the SSE,
-// PR Reviewer, or Architect.
+// (cannedWorker.RollMarker): it pins the mandatory surface-impact check.
 const qaSurfaceImpactMarker = "Surface-impact check — mandatory, before any verdict"
 
-// preExistingRemedyMarker is the roll-forward fragment (cannedWorker.RollMarker)
-// pinning the pre-existing-failure remedy contract on the SSE, PR Reviewer,
-// and QA Engineer: a test that already fails without the change is remedied
-// AUTONOMOUSLY by the worker — it owns the decision and executes it (fix the
-// cause by default; remove or correct the test only when its own
-// investigation proves the test no longer protects anything needed), never
-// left red, never proposed upward, with the decision + rationale recorded as
-// a FACTS LEARNED line. Added after the native-adapter branch exposed 3
-// pre-existing askorchicon failures that had been dismissed as 'pre-existing'
-// (2026-09-04): a red suite makes every green signal meaningless, and
-// 'pre-existing' is not an acceptable terminal state for any worker. Fragment
-// appears only in the new content so exactly these three re-roll on boot.
+// preExistingRemedyMarker is the roll-forward fragment (cannedWorker.RollMarker) pinning the
+// pre-existing-failure remedy contract on the SSE, PR Reviewer, and QA Engineer.
 const preExistingRemedyMarker = "failures are yours to remedy"
 
-// reviewerVerdictMarker is the PR Reviewer's per-worker roll-forward fragment. THE REVIEWER NO
-// LONGER FIXES CODE, and this marker is what rolls that reversal out to already-published workers.
-//
-// WHY THE MARKER HAD TO CHANGE. The old reviewer carried preExistingRemedyMarker and instructed it to
-// "fix, don't bounce" — so its verdict was structurally incapable of being `failure` for the class of
-// defect it exists to catch, and a loop_decision gate downstream never saw a rejection. Re-wording the
-// seed without changing the marker would leave every deployed reviewer on its old published text,
-// because the seeder only re-rolls a worker whose agents_md LACKS the marker: the old text contains
-// the old fragment, so the presence check passes and nothing updates.
-//
-// The fragment appears only in the new reviewer text, so exactly the reviewer re-rolls.
+// reviewerVerdictMarker is the PR Reviewer's per-worker roll-forward fragment.
 const reviewerVerdictMarker = "You are a REVIEWER. Your job is to find what is wrong"
 
-// qaVerifierMarker is the QA Engineer's roll-forward fragment for the same reversal: QA verifies and
-// rejects, it does not repair. Distinct from qaSurfaceImpactMarker so a future QA-only wording change
-// in either direction re-rolls only QA.
+// qaVerifierMarker is the QA Engineer's roll-forward fragment for the same reversal: QA verifies
+// and rejects, it does not repair.
 const qaVerifierMarker = "You are a VERIFIER, not a fixer"
 
 // verifierSplitRollouts maps a canned worker's ID to the marker that must supersede the shared
-// preExistingRemedyMarker rollout for it. The seeder consults this BEFORE the shared marker, so a
-// worker in this map re-rolls on ITS OWN fragment and a shared-marker bump never drags it back to
-// remedy wording it no longer carries.
+// preExistingRemedyMarker rollout for it.
 var verifierSplitRollouts = map[string]string{
 	"w_se_pr_reviewer": reviewerVerdictMarker,
 	"w_se_qa_engineer": qaVerifierMarker,
 }
 
-// PreExistingRemedyMarker is the exported twin of preExistingRemedyMarker so
-// package-external seeder tests can pin the remedy-contract roll-forward
-// fragment. Keep in sync by construction (assigned from the internal one).
+// PreExistingRemedyMarker is the exported twin of preExistingRemedyMarker so package-external
+// seeder tests can pin the remedy-contract roll-forward fragment.
 var PreExistingRemedyMarker = preExistingRemedyMarker
 
-// QASurfaceImpactMarker is the exported twin of qaSurfaceImpactMarker so the
-// package-external seeder tests can pin the QA Engineer's roll-forward
-// fragment. Keep in sync by construction (the exported value is assigned
-// from the internal one in init).
+// QASurfaceImpactMarker is the exported twin of qaSurfaceImpactMarker so the package-external
+// seeder tests can pin the QA Engineer's roll-forward fragment.
 var QASurfaceImpactMarker = qaSurfaceImpactMarker
 
 // SDLCWorkhorseMarker is the exported form, for the same tooling and for tests that must
@@ -386,9 +221,8 @@ const workBudgetBlock = "## Your time and how to spend it\n" +
 var (
 	ReviewerVerdictMarker = reviewerVerdictMarker
 	QAVerifierMarker      = qaVerifierMarker
-	// SafetyMarker / SandboxPlaneMarker are the GLOBAL roll-forward fragments every canned worker
-	// must carry. Exported so the seed-integrity test can assert the mechanism holds for all workers
-	// without the test living in this package.
+	// SafetyMarker / SandboxPlaneMarker are the GLOBAL roll-forward fragments every canned worker must
+	// carry.
 	SafetyMarker       = seedSafetyMarker
 	SandboxPlaneMarker = sandboxPlaneMarker
 )
@@ -397,9 +231,8 @@ var (
 // tests can assert every merging canned worker carries it.
 var MergeGateMarker = mergeGateMarker
 
-// CannedWorkers returns the canned-worker seed definitions (read-only view
-// for tooling: out-of-band roll-forward generators, prompt-diff utilities).
-// The returned slice must not be mutated.
+// CannedWorkers returns the canned-worker seed definitions (read-only view for tooling: out-of-band
+// roll-forward generators, prompt-diff utilities).
 func CannedWorkers() []cannedWorker { return cannedWorkers }
 
 // SeedAgentsMD is the exported form of seedAgentsMD for the same tooling.
@@ -409,14 +242,7 @@ func SeedAgentsMD(w *cannedWorker) string { return seedAgentsMD(*w) }
 // definition struct (field-for-field identical; used by prompt tooling).
 type CannedWorker = cannedWorker
 
-// researchHygieneBlock is the worktree discipline for the automation
-// research workers. The Automation Research workflow runs with
-// git_strategy=none (ephemeral): the run worktree is a detached HEAD — no
-// branch is created, nothing is pushed to origin, and no remote branch is
-// retained. Deliverables are written only inside the run worktree, never to
-// the main checkout, and the worker must NOT create a branch, commit a
-// branch, or push anything to origin (the old "commit + push to the run
-// branch" recipe is exactly the leak this replaces).
+// researchHygieneBlock is the worktree discipline for the automation research workers.
 const researchHygieneBlock = "## Worktree hygiene\n" +
 	"- This run is **ephemeral** (`git_strategy=none`): the run worktree is a **detached HEAD** — no branch is created, nothing is pushed to origin, and no remote branch is retained.\n" +
 	"- Write research deliverables (`research/plan.md`, `research/evidence/*`, `research/findings.md`, `research/brief-<date>.md`) **only inside the run worktree** — never to the main checkout.\n" +
@@ -620,11 +446,7 @@ var cannedWorkers = []cannedWorker{
 			"## Workflow\n\n" +
 			"### Verify, don't assume\n" +
 			"Every claim you make about the repository, branch, PR, or merge state MUST come from an actual " + bt + "git" + bt + "/" + bt + "gh" + bt + " command you ran. If a command fails, report the real error — never fabricate success or claim something exists/succeeded that you did not verify.\n\n" +
-			// GIT MODE FIRST. Everything below this block assumes a remote: it derives owner/repo from
-			// `git remote get-url origin`, verifies with `gh repo view`, creates a PR and merges it. On a
-			// `git_strategy=local` project NONE of those can succeed — there is no remote — so a worker that
-			// ran the flow spent its time-box on impossible commands and reported `failure` on green,
-			// committed work. The mode is established by ONE command before any of it is attempted.
+			// GIT MODE FIRST.
 			"### Git mode — resolve this FIRST, before any git operation\n" +
 			"Run " + bt + "git remote -v" + bt + ".\n\n" +
 			"**REMOTE mode** — it printed at least one remote. Continue with *Identify the repository* and the " +
@@ -705,18 +527,16 @@ var cannedWorkers = []cannedWorker{
 			"Your steps in this workflow are **identifying the repository** (verify it exists via the remote) and **PR & merge** (final: after approval). " +
 			"The platform provisions your branch and worktree before you start — do not create or switch branches. " +
 			"Everything between — implementation, review, testing — belongs to other workers' steps. " +
-			// YOU ARE THE LAST GATE BEFORE develop, AND THIS SENTENCE USED TO CONTRADICT ITSELF:
-			// "testing belongs to other workers" + "create the PR and merge it" is precisely how a
-			// red PR reaches the integration branch. You still do not WRITE code; you do refuse to
-			// merge red.
+			// YOU ARE THE LAST GATE BEFORE develop, AND THIS SENTENCE USED TO CONTRADICT ITSELF: "testing
+			// belongs to other workers" + "create the PR and merge it" is precisely how a red PR reaches.
 			"You do not WRITE the code or run the implementation's tests — but you are the **last gate before `develop`**, so you DO refuse to merge a red result: if the project's checks are failing, still running, or absent, do not merge. Report `failure` naming the check instead of merging to unblock yourself. " +
 			"**Never write application code yourself**, even when the work item reads like an implementation deliverable: " +
 			"identify the repo and hand the item to the engineer. " +
 			"The engineer implements, the reviewer reviews, and the QA engineer tests. You open the PR and merge only when work is passed to you after approval.\n",
 		ConcurrencyLimit: 0,
-		// ITS OWN MARKER: this worker had NONE, so without this the new gate would never
-		// reach the published version — the seeder only rolls a canned worker forward when its
-		// current agents_md lacks the marker fragment.
+		// ITS OWN MARKER: this worker had NONE, so without this the new gate would never reach the
+		// published version — the seeder only rolls a canned worker forward when its current agents_md
+		// lacks.
 		RollMarker: devopsShipMarker,
 	},
 	{
@@ -801,10 +621,8 @@ var cannedWorkers = []cannedWorker{
 			"- **Classification rule**: feature-class = the kind of capability a competitor advertises as a headline feature; internal hardening = BUG-R, cap ONE per fire, never crowd out market-driven features. State this rule in the plan.\n\n" +
 			researchHygieneBlock,
 		RoleRef: automationResearchRoleID,
-		// Worker-level runtime_ref is retired (ADR-0003): the model_ref's
-		// adapter segment alone governs dispatch. The former
-		// "orchicon-runtime:web-research" here was an image tag read as an
-		// adapter kind — a dispatch black hole for these canned workers.
+		// Worker-level runtime_ref is retired (ADR-0003): the model_ref's adapter segment alone governs
+		// dispatch.
 		RollMarker:       researchEphemeralMarker,
 		ConcurrencyLimit: 0,
 	},
@@ -851,11 +669,6 @@ var cannedWorkers = []cannedWorker{
 			researchHygieneBlock,
 		RoleRef: automationResearchRoleID,
 		// runtime_ref retired — see the Planner note above.
-		// Trio roll marker: the ephemeral (git_strategy=none) hygiene
-		// contract. Fragment present in the NEW researchHygieneBlock only,
-		// so exactly the trio re-rolls for this wording change — the
-		// market-map/rejected-idea content still ships (it re-syncs along
-		// with the refreshed definition).
 		RollMarker:       researchEphemeralMarker,
 		ConcurrencyLimit: 0,
 	},
@@ -871,9 +684,7 @@ var cannedWorkers = []cannedWorker{
 		Name: "Quick Software Engineer",
 		Slug: "quick-software-engineer",
 		// THE PROFILE FIELDS TRAVEL INTO THE PROMPT TOO (WorkerIdentityBlock emits Role/Skills/Behavior/
-		// AGENTS.md), so a header that asserts "push and merge the PR" contradicts the mode-aware shipping
-		// section below on a project with no remote — and the worker reads both. Stated per git strategy
-		// instead, in the same words the delivery block uses.
+		// AGENTS.md), so a header that asserts "push and merge the PR" contradicts the mode-aware shipping.
 		Description: "An all-in-one software engineer for the Quick Work path: implements the work item, verifies the build and tests are green, commits to the run branch, and ships it per the project's git strategy — push + PR + merge when there is a remote, the commit and its SHA when the project integrates locally.",
 		Purpose:     "Implements and ships the work item end to end in a single step — code, build, test, commit, then ship by the project's git strategy (PR when there is a remote; otherwise the commit is the hand-off).",
 		Role:        cannedWorkerIdentity + "You are a workhorse with one goal: complete the task CORRECTLY. Deliver what the acceptance criteria require and verify it — a fast wrong answer costs the whole run a second cycle.",
@@ -894,11 +705,8 @@ var cannedWorkers = []cannedWorker{
 			"The platform creates the branch and checks out your worktree before you start — you are already on your branch. **Never create a branch** and never switch branches. `main` is release-only and human-managed — never target it.\n\n" +
 			"## Shipping\n" +
 			"Implement, verify the build and tests are green, and commit to the run branch. Then ship it — the Quick Work workflow is a SINGLE worker step (step-quick → step-end), so you are the whole pipeline; there is no separate DevOps Engineer step.\n\n" +
-			// THE SHIPPING SHAPE DEPENDS ON THE PROJECT'S GIT STRATEGY, and this prompt used to assume the
-			// PR one unconditionally. A project with `git_strategy=local` has no remote, so `git push`,
-			// `gh pr create` and `gh pr merge` can only fail — and a worker that tried them spent its
-			// time-box and then reported `failure` on fully green, fully committed work. That single
-			// mismatch was three of the reported run failures.
+			// THE SHIPPING SHAPE DEPENDS ON THE PROJECT'S GIT STRATEGY, and this prompt used to assume the PR
+			// one unconditionally.
 			"**FIRST, ESTABLISH WHICH SHAPE APPLIES** (the `## Git discipline` block in your prompt states it):\n" +
 			"- **`git_strategy=local` (no remote)** — commit everything to your branch, record the SHA with `git rev-parse --short HEAD`, and report `success`. Do NOT push, do NOT touch `gh`, and do NOT merge or move `develop` yourself: `develop` is checked out in the operator's own working tree, so a worker that moves it either fails or fights the platform. The platform integrates your branch into `develop` once the run completes — your hand-off is the clean, committed run branch.\n" +
 			"- **`git_strategy=pr`** — push to origin, then open and merge the PR as described below.\n\n" +
@@ -909,18 +717,13 @@ var cannedWorkers = []cannedWorker{
 			"- **A MERGED PR** — the work is already shipped. Emit that PR's real `PR_URL:` and `PR_STATE: merged` from the list output and STOP: do not create, re-open, or re-merge anything, and do not run the merge command again.\n" +
 			"- **An OPEN PR** — reuse it: push your commits and merge THAT one; never open a second.\n" +
 			"- **Nothing** — only then `gh pr create --base develop` (head is your pushed branch), then merge with `gh pr merge --squash --admin`.\n\n" +
-			// THE GATE, immediately before the only command that can land a red branch. It goes
-			// here rather than in the completion section because this is where the decision is
-			// made — see mergeGateBlock for the incident it answers.
+			// THE GATE, immediately before the only command that can land a red branch.
 			mergeGateBlock + "\n" +
 			"Take `PR_URL:` / `PR_STATE:` in your summary from the PR you actually verified above, never from what you intended to create. If the merge conflicts, resolve it on the branch (merge `develop` into your branch, fix, add/commit/push) and re-attempt the MERGE only — never open a second PR.\n\n" +
 			"## Completion\n" +
 			"**Never report success with a failing build or failing tests.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green, committed, and SHIPPED — where \"shipped\" means the thing your `## Git discipline` block describes for this project. `failure` only if the task proved unimplementable (say exactly where it broke down).\n\n" +
 			// THE SUCCESS BAR HAD NO LOCAL FORM, and the gap was not cosmetic: it read as "PR merged into
-			// develop", so in a `git_strategy=local` project — which has no PR — a bare `success` was the
-			// only thing left to say, and it read as "merged" to everyone downstream while nothing had
-			// merged at all. Observed: a green, committed local run reported `success`, which was true,
-			// and was indistinguishable from a shipped one, which was not.
+			// develop", so in a `git_strategy=local` project — which has no PR.
 			"**In `git_strategy=local` mode (no remote), `success` means:** the change is implemented, green, " +
 			"and COMMITTED TO THE RUN BRANCH. Your completion line must also state the branch you are " +
 			"leaving, its short SHA, and this exact line:\n" +
@@ -939,29 +742,10 @@ var cannedWorkers = []cannedWorker{
 }
 
 // SeedDevWorkers creates or updates all canned workers in the dev tenant.
-// Idempotent — safe to call on every boot. A single failing worker (e.g. a
-// slug owned by a user-created worker that isn't adoptable) is logged and
-// skipped; the remaining canned workers still seed.
-// automationResearchRoleID is the role that grants the Automation Research
-// workers their plane-channel entitlements: read work items/usage and
-// create work items. Idea spawning goes through the DEDICATED idea tools
-// (orchicon_plane_create_idea_item forces IDEA landing from the run's
-// trusted context; orchicon_plane_list_idea_items is the dedupe gate) —
-// the generic create is for normal (non-idea) writes. The canned
-// Automation Research trio carries the role via their RoleRef profile
-// field; the seeder fills empty role_ref bindings on boot (COALESCE) and
-// never clobbers a human-assigned role. Deny-by-default: everything else
-// has no role_ref and gets no plane channel.
 const automationResearchRoleID = "r_se_automation_research"
 
-// seedAutomationResearchRole creates the automation-research role
-// (idempotent) for the tenant the caller names.
-//
-// The tenant is a PARAMETER because this helper used to hardcode "tnt_dev": a test running against a
-// non-dev tenant still seeded the role into the dev tenant, so a fixture could pass while its own
-// tenant had no role at all — and every DB-backed test that called the seed wrote a row into the
-// operator's real tenant. The SQL inside the transaction defers to current_setting('app.tenant_id')
-// (which BeginTenantTx sets), so this Go-level value is the only place the tenant has to be named.
+// seedAutomationResearchRole creates the automation-research role (idempotent) for the tenant the
+// caller names.
 func seedAutomationResearchRole(ctx context.Context, tx pgx.Tx, tenantID string) error {
 	if _, err := GetRole(ctx, tx, tenantID, automationResearchRoleID); err == nil {
 		return nil
@@ -979,22 +763,9 @@ func seedAutomationResearchRole(ctx context.Context, tx pgx.Tx, tenantID string)
 }
 
 // SeedDevWorkers seeds the canned worker identities for a tenant.
-//
-// THE TENANT IS A PARAMETER. It used to be hardcoded to "tnt_dev" in five places, which meant every
-// caller — including 46 DB-backed test fixtures — wrote into the OPERATOR'S REAL TENANT regardless of
-// which tenant it was testing. A fixture that intended to exercise a scratch tenant still landed rows
-// in dev, so the dev tenant accumulated test fixtures (100 projects, 1078 work items and 1264 orphaned
-// executions were the measured residue) while the tenant under test had no seeded workers at all.
-//
-// The SQL inside this function no longer names a tenant either: it defers to
-// current_setting('app.tenant_id'), which BeginTenantTx sets per transaction, so the value flows from
-// this one argument rather than from 29 string literals.
 func SeedDevWorkers(ctx context.Context, p *Pool, tenantID string) error {
 	var errs []error
-	// Plane channel: seed the automation-research role (idempotent). The
-	// canned Automation Research trio binds it via RoleRef in its profiles —
-	// the canned sync fills empty role_ref bindings and never clobbers a
-	// human-assigned role.
+	// Plane channel: seed the automation-research role (idempotent).
 	{
 		ttx, terr := p.BeginTenantTx(ctx, tenantID)
 		if terr != nil {
@@ -1031,11 +802,8 @@ func SeedDevWorkers(ctx context.Context, p *Pool, tenantID string) error {
 		}
 	}
 
-	// Retired canned workers: identities that used to be seeded but have
-	// been removed (replaced by the Vision variants). Delete them ONLY
-	// when they are still seed-managed (carry the safety marker) — a user
-	// who customized one keeps their worker. The operator is responsible
-	// for repointing any workflow step refs before the delete takes hold.
+	// Delete them ONLY when they are still seed-managed (carry the safety marker) — a user who
+	// customized one keeps their worker.
 	for _, retiredID := range retiredCannedWorkers {
 		ttx, err := p.BeginTenantTx(ctx, tenantID)
 		if err != nil {
@@ -1077,12 +845,8 @@ func SeedDevWorkers(ctx context.Context, p *Pool, tenantID string) error {
 	return errors.Join(errs...)
 }
 
-// retiredCannedWorkers lists worker IDs that were once seeded as canned
-// workers but have been removed from cannedWorkers. The seeder deletes any
-// still-seed-managed instance on boot so retired identities don't linger.
-// The Vision trio (SSE/Architect/QA) was retired 2026-09-02: visual UI
-// verification moved into the base QA Engineer via the Playwright block,
-// so vision-capable model variants are no longer needed.
+// retiredCannedWorkers lists worker IDs that were once seeded as canned workers but have been
+// removed from cannedWorkers.
 var retiredCannedWorkers = []string{
 	"w_ui_design_architect",
 	"w_ui_developer",
@@ -1093,20 +857,12 @@ var retiredCannedWorkers = []string{
 	"w_se_qa_vision",
 }
 
-// errSeedSkipWorker marks a canned worker that must not be seeded: its slug
-// is owned by a user-created worker with real content. The seeder skips it
-// quietly (the user's customized worker keeps the slug).
+// errSeedSkipWorker marks a canned worker that must not be seeded: its slug is owned by a
+// user-created worker with real content.
 var errSeedSkipWorker = errors.New("canned worker skipped (slug owned by a customized worker)")
 
-// cannedSeedNeedsSync reports whether this canned worker's current PUBLISHED version must be re-synced from
-// the seed.
-//
-// Split out of seedWorker so the decision is testable without a database: it is the mechanism that decides
-// whether a prompt change ever reaches a worker, and it silently failed once already (see
-// cannedSeedFingerprint).
-//
-// A DRAFT current version is never synced here — the promote block owns publishing it, so re-syncing would
-// race that path.
+// cannedSeedNeedsSync reports whether this canned worker's current PUBLISHED version must be
+// re-synced from the seed.
 func cannedSeedNeedsSync(w cannedWorker, storedAgentsMD string, draftCurrent bool) bool {
 	if draftCurrent {
 		return false
@@ -1124,12 +880,8 @@ func cannedSeedNeedsSync(w cannedWorker, storedAgentsMD string, draftCurrent boo
 }
 
 func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
-	// Resolve the worker to sync against. Prefer the canned ID; if it is
-	// free but a user-created worker already owns the canned slug (e.g. the
-	// user built a UI worker before it was canned), adopt that worker ONLY
-	// when it is an empty shell — the canned profile then lands on the worker
-	// the user already references (its ID is preserved, so workflow step
-	// refs stay valid) without ever clobbering a customized worker.
+	// Prefer the canned ID; if it is free but a user-created worker already owns the canned slug (e.g.
+	// the user built a UI worker before it was canned).
 	targetID, err := seedTargetWorkerID(ctx, ttx, w)
 	if errors.Is(err, errSeedSkipWorker) {
 		return nil
@@ -1167,23 +919,6 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	).Scan(&pubID, &curAgents)
 
 	// The seed is the source of truth for canned-worker prompt context.
-	// When the current published version is missing the safety marker —
-	// e.g. the worker predates this seed change, or a user edit dropped
-	// the safety rules — or is missing the current sandbox-plane wording
-	// (the block text changed), roll a new published version forward
-	// carrying the seed's full context. This ensures safety AND wording
-	// updates reach EVERY canned worker, not just untouched v1s.
-	// Idempotent: once both markers are present no further versions are
-	// created.
-	// Repair a dangling current_version BEFORE any content sync: the
-	// version row the pointer names may be gone (crashed boot between
-	// the worker upsert and the version insert, or a deleted publish).
-	// The old code copy-inserted from a source row that did not exist
-	// (affected 0 rows, no error) and then set current_version to a
-	// version that was never created — a dispatch black hole. Repair
-	// re-points at the highest PUBLISHED version, else the highest
-	// version of any status, and only when NO version rows exist at all
-	// inserts a fresh published v1 carrying the seed content.
 	draftCurrent := false
 	if verErr != nil {
 		var bestVer int
@@ -1253,25 +988,11 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	}
 
 	// The seed is the source of truth for canned-worker prompt context.
-	// When the current published version is missing the safety marker —
-	// e.g. the worker predates this seed change, or a user edit dropped
-	// the safety rules — or is missing the current sandbox-plane wording
-	// (the block text changed), sync the seed context onto it. This
-	// ensures safety AND wording updates reach EVERY canned worker, not
-	// just untouched v1s. Idempotent: once all markers are present no
-	// further changes are made. A DRAFT current version is never synced
-	// here — the promote block below owns publishing it (converges on
-	// the next boot's marker check).
 	needSync := verErr == nil && cannedSeedNeedsSync(w, curAgents, draftCurrent)
 
 	if needSync {
-		// Every statement below is checked: a swallowed error poisons
-		// the seed transaction — it aborts and only COMMIT surfaces the
-		// failure, as the opaque pgx 'commit unexpectedly resulted in
-		// rollback'. (The 2026-09-04 seed-test wedge was exactly this:
-		// a version collision at curVer+1 errored, was swallowed, and
-		// every test that seeded died with the commit message instead
-		// of the real constraint violation.)
+		// Every statement below is checked: a swallowed error poisons the seed transaction — it aborts and
+		// only COMMIT surfaces the failure, as the opaque pgx 'commit unexpectedly resulted in rollback'.
 		var maxVer int
 		if err := ttx.QueryRow(ctx,
 			`SELECT COALESCE(max(version), 0) FROM worker_versions
@@ -1292,17 +1013,8 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				return fmt.Errorf("seed worker %s: sync v1: %w", w.ID, err)
 			}
 		} else {
-			// Newer versions are user-created; preserve them and append
-			// a new published version carrying the seed context, copied
-			// from the current published version (model_ref included).
-			// The new version number must clear EVERY existing version —
-			// a preserved user draft (or stray residue from a killed
-			// run) at curVer+1 collides with the UNIQUE
-			// (worker_id, version) index and aborts the seed
-			// transaction. max(version)+1 across ALL statuses is
-			// collision-free by construction. BudgetOverrides: nil =
-			// keep the current version's; a canned JSON value overrides
-			// it.
+			// Newer versions are user-created; preserve them and append a new published version carrying the
+			// seed context, copied from the current published version (model_ref included).
 			newVer := maxVer + 1
 			var budgetParam any
 			if len(w.BudgetOverrides) > 0 {
@@ -1339,17 +1051,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 		}
 	}
 
-	// Keep the canned worker published without clobbering the user's
-	// draft-edit workflow. Previously every stray draft was force-
-	// published on boot — a user mid-edit on a canned worker (e.g. a new
-	// draft version) had it silently published by the next restart.
-	// Now a draft is only promoted when the worker has NO published
-	// version left at all (the seeder's own v1 is always published, so
-	// this only fires after a user deletes every published version), and
-	// only the latest draft is promoted — user drafts alongside a
-	// published version are left untouched. When a draft is promoted,
-	// current_version follows it so dispatch never points at a missing
-	// version.
+	// Keep the canned worker published without clobbering the user's draft-edit workflow.
 	pubTag, err := ttx.Exec(ctx,
 		`UPDATE worker_versions SET status = 'published',
 			model_ref = COALESCE(NULLIF(model_ref, ''), '')
@@ -1411,12 +1113,8 @@ func seedTargetWorkerID(ctx context.Context, ttx *TenantTx, w cannedWorker) (str
 		return "", fmt.Errorf("lookup slug owner: %w", oerr)
 	}
 
-	// Some canned workers demand a clean slate: any worker that owns the
-	// canned slug but is NOT the canned ID is deleted (versions + worker)
-	// and recreated fresh under the canned ID. This is how stale ULID UI
-	// workers (adopted before the UI workers were canned) are purged. The
-	// operator accepts that workflow step refs pointing at the old ids
-	// need manual updating.
+	// Some canned workers demand a clean slate: any worker that owns the canned slug but is NOT the
+	// canned ID is deleted (versions + worker) and recreated fresh under the canned ID.
 	if w.RecreateSlugOwner {
 		if ownerID != w.ID {
 			if err := deleteWorkerByID(ctx, ttx, ownerID); err != nil {
@@ -1436,19 +1134,15 @@ func seedTargetWorkerID(ctx context.Context, ttx *TenantTx, w cannedWorker) (str
 		return "", fmt.Errorf("inspect slug owner %s: %w", ownerID, err)
 	}
 	if empty || seedManaged {
-		// Adopt an empty shell (so the canned profile lands on the worker the
-		// user already references) OR keep syncing a worker the seeder already
-		// adopted (its content carries the seed safety marker — it is a canned
-		// worker under a non-canned id and must keep rolling forward).
+		// Adopt an empty shell (so the canned profile lands on the worker the user already references) OR
+		// keep syncing a worker the seeder already adopted (its content carries the seed safety marker.
 		return ownerID, nil
 	}
 	return "", errSeedSkipWorker // user customized this slug — leave their worker untouched
 }
 
-// workerIsEmptyShell reports whether a worker's current version carries no
-// prompt content at all (role/skills/behavior/agents_md/system_prompt all
-// blank). Empty shells are adoptable by the canned seeder; anything with
-// content is a real user worker and is never touched.
+// workerIsEmptyShell reports whether a worker's current version carries no prompt content at all
+// (role/skills/behavior/agents_md/system_prompt all blank).
 func workerIsEmptyShell(ctx context.Context, ttx *TenantTx, workerID string) (bool, error) {
 	var curVer int
 	if err := ttx.QueryRow(ctx,
@@ -1474,11 +1168,8 @@ func workerIsEmptyShell(ctx context.Context, ttx *TenantTx, workerID string) (bo
 		strings.TrimSpace(sp) == "", nil
 }
 
-// workerIsSeedManaged reports whether a worker's current version carries the
-// seed safety marker in its AGENTS.md. A slug owner that is seed-managed is a
-// canned worker living under a non-canned id (an adopted worker) — it must
-// keep being synced by the seeder. A worker without the marker is a genuine
-// user worker and is never touched.
+// workerIsSeedManaged reports whether a worker's current version carries the seed safety marker in
+// its AGENTS.md.
 func workerIsSeedManaged(ctx context.Context, ttx *TenantTx, workerID string) (bool, error) {
 	var curVer int
 	if err := ttx.QueryRow(ctx,
@@ -1501,10 +1192,8 @@ func workerIsSeedManaged(ctx context.Context, ttx *TenantTx, workerID string) (b
 	return strings.Contains(agents, "orchicon.safety="), nil
 }
 
-// deleteWorkerByID hard-deletes a worker and its owned rows (versions,
-// edit locks) inside the seeder's tenant transaction. Mirrors db.DeleteWorker
-// but scoped to the seeded tenant so the seeder can purge stale slug owners
-// (e.g. adopted ULID UI workers) before recreating under the canned ID.
+// deleteWorkerByID hard-deletes a worker and its owned rows (versions, edit locks) inside the
+// seeder's tenant transaction.
 func deleteWorkerByID(ctx context.Context, ttx *TenantTx, workerID string) error {
 	if _, err := ttx.Exec(ctx,
 		`DELETE FROM worker_versions WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id')`, workerID); err != nil {
@@ -1521,10 +1210,8 @@ func deleteWorkerByID(ctx context.Context, ttx *TenantTx, workerID string) error
 	return nil
 }
 
-// seedNewWorker inserts a brand-new canned worker (its slug is confirmed
-// free) with a published v1 carrying the canned profile. model_ref is seeded
-// blank so dispatch falls back to the tenant default_worker_model — model
-// selection is fully user-owned after creation.
+// seedNewWorker inserts a brand-new canned worker (its slug is confirmed free) with a published v1
+// carrying the canned profile.
 func seedNewWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	// Create worker.
 	_, err := ttx.Exec(ctx,

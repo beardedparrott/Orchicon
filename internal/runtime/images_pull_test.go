@@ -8,10 +8,8 @@ import (
 	"testing"
 )
 
-// TestPullSkipsWhenImageIsPresent pins fetch IDEMPOTENCY (AC 12): an image that
-// is already present locally is reported skipped with exit 0 and NO `pull`
-// command runs at all. That is what makes the Fetch action safe to press twice
-// and what keeps a fetch from ever re-downloading multiple GB.
+// TestPullSkipsWhenImageIsPresent pins fetch IDEMPOTENCY (AC 12): an image that is already present
+// locally is reported skipped with exit 0 and NO `pull` command runs at all.
 func TestPullSkipsWhenImageIsPresent(t *testing.T) {
 	const ref = "ghcr.io/beardedparrott/orchicon-runtime:gui"
 	d := &Daemon{Image: ref}

@@ -162,9 +162,8 @@ func TestPosixBehaviourUnchanged(t *testing.T) {
 	}
 }
 
-// TestClaudePathIsAbsoluteWhenResolved pins that no candidate can be a RELATIVE path, which os.Stat would
-// resolve against the process's working directory — the same class of bug opencode documents ("found"
-// relative to wherever the app happens to be running).
+// TestClaudePathIsAbsoluteWhenResolved pins that no candidate can be a RELATIVE path, which os.Stat
+// would resolve against the process's working directory.
 func TestClaudePathIsAbsoluteWhenResolved(t *testing.T) {
 	env := newFakeWindowsEnv(t)
 	want := env.writeFile(t, "AppData", "Local", "Microsoft", "WinGet", "Packages",
@@ -181,11 +180,6 @@ func TestClaudePathIsAbsoluteWhenResolved(t *testing.T) {
 
 // TestClaudeResolvesAnAliasLauncher covers the seam the operator named: "no matter where they are
 // instead of hardcoding stuff".
-//
-// An MSIX/alias install puts its launcher in an alias directory under a name we cannot enumerate ahead of
-// time — the operator's own resolution was `…\WinGet\Packages\Anthropic.ClaudeCode_…\claude.exe`, one
-// directory shape away from `WinGet\Links\claude-<something>.exe`. The scan tolerates that; a fixed name
-// probe cannot.
 func TestClaudeResolvesAnAliasLauncher(t *testing.T) {
 	env := newFakeWindowsEnv(t)
 	links := filepath.Join(env.root, "AppData", "Local", "Microsoft", "WinGet", "Links")

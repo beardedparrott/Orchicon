@@ -24,9 +24,6 @@ import (
 )
 
 // withPathDirs makes freshPathDirs return a controlled set, restoring the real one afterwards.
-//
-// It swaps the platform hook rather than the filesystem, so the POSIX and Windows seams are both testable from
-// one host — which is the point of the seam existing.
 func withPathDirs(t *testing.T, dirs ...string) {
 	t.Helper()
 	prev := freshPathDirsHook

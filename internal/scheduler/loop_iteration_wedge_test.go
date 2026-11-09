@@ -51,12 +51,8 @@ func TestReconcileRunProgressesLoopDecisionActiveIteration(t *testing.T) {
 
 	ctx := context.Background()
 
-	// The downstream QA task step needs a bound work item to dispatch
-	// against (dispatchStep resolves the work item from run.WorkItemID
-	// when there is no WORK_ITEM marker upstream). Without it QA fails
-	// "no upstream work_item" and the run is marked failed — which is
-	// independent of the same-created_at tie this test exercises. Give
-	// the run a ticket so the DAG can progress through the loop.
+	// The downstream QA task step needs a bound work item to dispatch against (dispatchStep resolves
+	// the work item from run.WorkItemID when there is no WORK_ITEM marker upstream).
 	ttxSeed, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)
@@ -91,12 +87,8 @@ func TestReconcileRunProgressesLoopDecisionActiveIteration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Pre-admit the run the way the product does: runtime_ready=true (headless
-	// tests are always serve-ready) and worktree_status='ready'. Without the
-	// worktree admission the dispatch section holds EVERY step of a pending
-	// non-branch run until the WorktreeReconciler admits it, which this fixture
-	// never runs — so the loop iteration would never dispatch. Assign the
-	// reloaded row so the local version is not stale.
+	// Pre-admit the run the way the product does: runtime_ready=true (headless tests are always
+	// serve-ready) and worktree_status='ready'.
 	run, err = db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, run.ID, run.Version, db.UpdateWorkflowRunFields{
 		RuntimeReady:   boolPtr(true),
 		WorktreeStatus: strPtr(domain.WorktreeReady),
@@ -166,9 +158,8 @@ func TestReconcileRunProgressesLoopDecisionActiveIteration(t *testing.T) {
 		t.Fatalf("reconcileRun: %v", err)
 	}
 
-	// The active loop iteration must no longer be pending (it should have
-	// dispatched and re-evaluated — the loop_decision with an upstream
-	// "success" decision proceeds forward). Fetch its state.
+	// The active loop iteration must no longer be pending (it should have dispatched and re-evaluated —
+	// the loop_decision with an upstream "success" decision proceeds forward).
 	ttx2, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)

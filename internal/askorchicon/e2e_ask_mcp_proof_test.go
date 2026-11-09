@@ -1,19 +1,7 @@
 package askorchicon
 
-// e2e_ask_mcp_proof_test.go — AC 4 (a LIVE Ask turn: native + claude) and AC 5.2
-// (the native Ask per-conversation client negative).
-//
-// IT EXTENDS child 6's ACCEPTED REAL-TURN HARNESS rather than re-inventing it.
-// ask_mcp_live_test.go already owns the real pieces — `seedLiveMCPRows`, the
-// scripted `liveTurnProvider`, the ONE-reader `drainLive` with inline consent —
-// so this file adds what criterion 4 needs on top: the project's server coming
-// from the SAME shared seed the worker legs use (testfixtures), the project's and
-// conversation's SKILL FILES reaching the model's actual system prompt, and the
-// mode policy re-observed on a real turn.
-//
-// The bridge, the turn, the tool loop and the per-conversation MCP client are
-// all the production ones; only the model is scripted (no permitted model exists
-// in this container — recorded in the evidence).
+// e2e_ask_mcp_proof_test.go — AC 4 (a LIVE Ask turn: native + claude) and AC 5.2 (the native Ask
+// per-conversation client negative).
 
 import (
 	"context"
@@ -31,9 +19,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/testfixtures"
 )
 
-// AC 4 (native Ask): a LIVE conversation in a project can CALL the project's MCP
-// tool, and the model's system prompt carries the project's (and the
-// conversation's) SKILL FILES.
+// AC 4 (native Ask): a LIVE conversation in a project can CALL the project's MCP tool, and the
+// model's system prompt carries the project's (and the conversation's) SKILL FILES.
 func TestE2EAskTurnSeesSkillAndCallsProjectServer(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	url := mcpclient.E2EHTTPFixtureT(t)
@@ -125,10 +112,8 @@ func TestE2EAskTurnSeesSkillAndCallsProjectServer(t *testing.T) {
 	})
 }
 
-// AC 4 (native Ask, mode policy per child 6): in a mode that may NOT act, the
-// project's opaque MCP tool is NEITHER offered NOR executed, and the refusal is
-// the platform's own wording. Consent is answered "once" inline so the MODE guard
-// is what stops the call, not the consent gate.
+// AC 4 (native Ask, mode policy per child 6): in a mode that may NOT act, the project's opaque MCP
+// tool is NEITHER offered NOR executed, and the refusal is the platform's own wording.
 func TestE2EAskTurnRefusesTheProjectServerOutsideAModeThatActs(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	url := mcpclient.E2EHTTPFixtureT(t)
@@ -230,9 +215,8 @@ func TestE2EClaudeAskArgvCarriesTheProjectServer(t *testing.T) {
 	})
 }
 
-// AC 5.2 (native Ask negative): the per-conversation MCP client is RECONCILED
-// per turn, so removing the definition removes it from the NEXT turn — the cache
-// risk this criterion exists to catch.
+// AC 5.2 (native Ask negative): the per-conversation MCP client is RECONCILED per turn, so removing
+// the definition removes it from the NEXT turn — the cache risk this criterion exists to catch.
 func TestE2EAskClientReconcilesWhenAServerIsDeleted(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	url := mcpclient.E2EHTTPFixtureT(t)
@@ -319,9 +303,8 @@ func e2eFingerprintOf(e *askMCPEntry) string {
 	return e.fingerprint
 }
 
-// TestE2EAskToolListHasNoTenantTier is AC 6's Ask half: the Ask tool registry
-// exposes NO tenant-tier MCP tool. The list is read from the REAL registry the
-// service builds, so a tool re-added under the retired name fails here.
+// TestE2EAskToolListHasNoTenantTier is AC 6's Ask half: the Ask tool registry exposes NO
+// tenant-tier MCP tool.
 func TestE2EAskToolListHasNoTenantTier(t *testing.T) {
 	reg := NewToolRegistry(nil, slog.Default(), nil)
 	names := make([]string, 0, len(reg.List()))

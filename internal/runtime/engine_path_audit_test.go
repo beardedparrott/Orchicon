@@ -30,24 +30,12 @@ import (
 var engineCallRe = regexp.MustCompile(`(d\.engine\(|procwin\.Command\(d\.engineBin\(\)|procwin\.CommandContext\([^,]+, d\.engineBin\(\))`)
 
 // positionalPathRe finds the OTHER way a path reaches the engine: as a bare positional argument.
-//
-// `docker build -t TAG CONTEXT` names the build context with no flag at all, so a flag-only audit sails past
-// exactly the shape that hid the second audited bug. These identifiers are the ones this package uses for
-// directory arguments.
 var positionalPathRe = regexp.MustCompile(`\b(ctxDir|contextDir|buildCtx|rootfs|bundleDir)\b`)
 
 // pathFlagRe finds the flags whose argument is a filesystem path. Adding a member here extends the audit.
 var pathFlagRe = regexp.MustCompile(`"(?:-v|--volume|--tmpfs|--mount|--workdir|-w|--rootfs)"`)
 
 // TestNoEngineCallSitePassesAnUnmappedPathLiteral is the audit.
-//
-// AUDIT AT FUNCTION SCOPE, not at the call expression. The first version took a fixed window around the engine
-// call and found nothing, because create's flags are assembled hundreds of lines above the call it feeds — a
-// window is the wrong unit. A function that mentions a path-taking flag AND calls the engine is the unit, and
-// inside it the mapper must appear.
-//
-// It cannot prove correctness; it flags the shape all three failures shared: a function that builds a
-// path-carrying argv without consulting the mapper anywhere.
 func TestNoEngineCallSitePassesAnUnmappedPathLiteral(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -126,9 +114,8 @@ func goFunctions(src string) []goFunc {
 	return out
 }
 
-// TestTmpfsBuilderMapsInternally pins the fix at the builder, which is what makes every caller correct without
-// remembering. The reported failure was a tmpfs whose caller did not map; a builder that maps cannot be got
-// wrong by its callers.
+// TestTmpfsBuilderMapsInternally pins the fix at the builder, which is what makes every caller
+// correct without remembering.
 func TestTmpfsBuilderMapsInternally(t *testing.T) {
 	b, err := os.ReadFile("daemon.go")
 	if err != nil {
@@ -157,9 +144,7 @@ func TestProjectDirIsMappedBeforeTheContainerSeesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(b)
-	// THE WALKER IS THE MAPPING NOW. It converts every field tagged orchicon:"hostpath" — ProjectDir, and the
-	// Cwd beside it that this audit previously could not see. Asserting the CALL rather than the literal line
-	// keeps this test valid as the set of path fields grows, which is the whole point of the tag.
+	// THE WALKER IS THE MAPPING NOW.
 	mapAt := strings.Index(src, "mapHostPathFields(d.Paths, &req)")
 	if mapAt < 0 {
 		t.Fatal("createContainer never maps the request's host paths — the in-container supervisor would be " +

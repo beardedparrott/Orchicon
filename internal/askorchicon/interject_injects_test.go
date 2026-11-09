@@ -1,19 +1,6 @@
 package askorchicon
 
 // interject_injects_test.go — interjecting ADDS to the running turn; it does not interrupt it.
-//
-// THE OPERATOR: "I would much rather just do the injecting instead. It should still look like a chat message
-// in the stream to the user, and it should inject in the context that the model is constantly pulling back in
-// … I want it to 'interject' by adding it to the overall context as a user message but NOT abort."
-//
-// THE OLD BEHAVIOUR, and why it broke: supersede cancelled the collector and ABORTED the provider session
-// mid-generation. What survives an abort is the EVIDENCE of the cut-off turn — tool results, file changes,
-// transcript — without the assistant turn that produced it, so the model inherits finished work it has no
-// record of doing. Reported as "seems to think the current work may have been done by someone else" and "loses
-// track of what it was already working on".
-//
-// These drive the real collector through the fake serve bus, so they assert the behaviour rather than the
-// wiring.
 
 import (
 	"context"
@@ -25,23 +12,20 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// testInterjectModelRef is set on the conversation rather than left to the tenant default, so these tests are
-// self-contained: an unseeded tenant has no DefaultAskOrchiconModel and every dispatch would fail before it
-// reached the behaviour under test.
+// testInterjectModelRef is set on the conversation rather than left to the tenant default, so these
+// tests are self-contained.
 const testInterjectModelRef = "opencode/test-model"
 
 // TestInterjectInjectsWithoutAborting is the core contract change.
 func TestInterjectInjectsWithoutAborting(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
-	// THE QUEUEING PATH (opencode): the serve holds a prompt for the running turn's boundary, so delivery IS a
-	// send onto the live session. The non-queueing path (the native bridge) is covered by
-	// TestNativeAdapterHoldsTheInjectionForTheNextTurn.
+	// THE QUEUEING PATH (opencode): the serve holds a prompt for the running turn's boundary, so
+	// delivery IS a send onto the live session.
 	client := &fakeSessionClient{}
 	s := newChatService(t, pool, client)
-	// DECLARE THE QUEUEING CAPABILITY (the opencode shape) so the injection DELIVERS by sending onto the live
-	// session. The non-queueing shape — the native bridge, which is the one that actually failed — is covered
-	// by TestNativeAdapterHoldsTheInjectionForTheNextTurn.
+	// DECLARE THE QUEUEING CAPABILITY (the opencode shape) so the injection DELIVERS by sending onto
+	// the live session.
 	s.testServeClient = queueingClient{client}
 
 	convID := createConversation(t, pool, testInterjectModelRef)
@@ -119,10 +103,7 @@ func TestInterjectInjectsWithoutAborting(t *testing.T) {
 			"predates the injection, and the operator's message is answered by nobody", seq)
 	}
 
-	// 8. THE TURN THEN CONTINUES AND FINISHES WITH BOTH PARTS under the ORIGINAL assistant message.
-	//
-	// IN THE ORDER THE SERVE PRODUCES IT: the idle for the step the injection landed on comes first (and is
-	// deferred by the guard), then the work for the injected message, then the idle that completes the turn.
+	// 8.
 	client.sub.feed(busIdle("ses_keep"))
 	client.sub.feed(busText("ses_keep", "and the logs are clean"))
 	client.sub.feed(busIdle("ses_keep"))
@@ -137,22 +118,15 @@ func TestInterjectInjectsWithoutAborting(t *testing.T) {
 }
 
 // TestAStaleIdleDoesNotEndTheTurn is the race injection introduces, and the reason for the counter.
-//
-// `idle` means "no work in flight" and the serve emits it between steps. An injection accepted at that boundary
-// can arrive before the idle is consumed, in which case the idle describes the state BEFORE the operator's
-// message existed. Finalising on it would leave the injected message in the transcript with its reply
-// persisted nowhere and streamed to nobody.
 func TestAStaleIdleDoesNotEndTheTurn(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
-	// THE QUEUEING PATH (opencode): the serve holds a prompt for the running turn's boundary, so delivery IS a
-	// send onto the live session. The non-queueing path (the native bridge) is covered by
-	// TestNativeAdapterHoldsTheInjectionForTheNextTurn.
+	// THE QUEUEING PATH (opencode): the serve holds a prompt for the running turn's boundary, so
+	// delivery IS a send onto the live session.
 	client := &fakeSessionClient{}
 	s := newChatService(t, pool, client)
-	// DECLARE THE QUEUEING CAPABILITY (the opencode shape) so the injection DELIVERS by sending onto the live
-	// session. The non-queueing shape — the native bridge, which is the one that actually failed — is covered
-	// by TestNativeAdapterHoldsTheInjectionForTheNextTurn.
+	// DECLARE THE QUEUEING CAPABILITY (the opencode shape) so the injection DELIVERS by sending onto
+	// the live session.
 	s.testServeClient = queueingClient{client}
 
 	convID := createConversation(t, pool, testInterjectModelRef)
@@ -191,21 +165,17 @@ func TestAStaleIdleDoesNotEndTheTurn(t *testing.T) {
 	waitForNoTurn(t, s, convID)
 }
 
-// TestInjectionCarriesTheRunningTurnsPromptAndModel pins what the injected message is delivered WITH.
-//
-// opencode applies `system` and `model` per message, so sending them as empty (or rebuilt) would hand this
-// message a different persona or model than the turn it is joining.
+// TestInjectionCarriesTheRunningTurnsPromptAndModel pins what the injected message is delivered
+// WITH.
 func TestInjectionCarriesTheRunningTurnsPromptAndModel(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
-	// THE QUEUEING PATH (opencode): the serve holds a prompt for the running turn's boundary, so delivery IS a
-	// send onto the live session. The non-queueing path (the native bridge) is covered by
-	// TestNativeAdapterHoldsTheInjectionForTheNextTurn.
+	// THE QUEUEING PATH (opencode): the serve holds a prompt for the running turn's boundary, so
+	// delivery IS a send onto the live session.
 	client := &fakeSessionClient{}
 	s := newChatService(t, pool, client)
-	// DECLARE THE QUEUEING CAPABILITY (the opencode shape) so the injection DELIVERS by sending onto the live
-	// session. The non-queueing shape — the native bridge, which is the one that actually failed — is covered
-	// by TestNativeAdapterHoldsTheInjectionForTheNextTurn.
+	// DECLARE THE QUEUEING CAPABILITY (the opencode shape) so the injection DELIVERS by sending onto
+	// the live session.
 	s.testServeClient = queueingClient{client}
 
 	convID := createConversation(t, pool, testInterjectModelRef)
@@ -268,9 +238,8 @@ func waitForNoTurn(t *testing.T, s *Service, convID string) {
 	}
 }
 
-// TestOnlyAWedgedTurnIsEverSuperseded pins the branch table, which is where this behaviour can regress
-// silently: an injection that fell through to supersede would look identical to a working interjection until
-// the model started re-doing work.
+// TestOnlyAWedgedTurnIsEverSuperseded pins the branch table, which is where this behaviour can
+// regress silently: an injection that fell through to supersede would look identical to a working.
 func TestOnlyAWedgedTurnIsEverSuperseded(t *testing.T) {
 	src := readChatSource(t)
 
@@ -323,25 +292,12 @@ type queueingClient struct {
 func (queueingClient) QueuesPrompts() bool { return true }
 
 // TestNativeAdapterHoldsTheInjectionForTheNextTurn is THE REPORTED FAILURE, pinned.
-//
-// The native bridge does not queue (scheduler.SessionQueuesPrompts == false): its SendTurnMessage starts a new
-// provider turn and takes over the running turn's cancel handle. Delivering an interjection that way ran a
-// SECOND concurrent stream, which the provider rejected while the turn waited on an ask_user answer — the
-// operator's "error message saying the message could not be sent", draft restored, and then a user card with
-// no reply.
-//
-// The contract now: nothing is sent mid-turn, the message is held, and a follow-up turn answers it — the
-// operator's own words: "send it immediately into the chat, no error message, and then fit it into the
-// context when it is possible (a turn occurs)".
 func TestAnAdapterThatCannotQueueHoldsTheInjectionForTheNextTurn(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
 	s := newChatService(t, pool, client)
-	// NO queueing declaration: an adapter that has no prompt queue of its own. The NATIVE BRIDGE used to be
-	// this shape and no longer is (it queues, see TestTheNativeBridgeDeclaresItQueues); the branch still
-	// exists because a future adapter may not be able to queue, and it must degrade to "held, not an error"
-	// rather than to a rejected stream.
+	// NO queueing declaration: an adapter that has no prompt queue of its own.
 	s.testServeClient = client
 
 	convID := createConversation(t, pool, testInterjectModelRef)

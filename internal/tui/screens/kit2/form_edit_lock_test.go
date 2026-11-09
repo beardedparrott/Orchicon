@@ -31,9 +31,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// tallForm builds a form whose one multi-line field holds `n` numbered lines, with
-// the caret left at the END — which is where typing continues from, and where the
-// caret used to be invisible.
+// tallForm builds a form whose one multi-line field holds `n` numbered lines, with the caret left
+// at the END — which is where typing continues from, and where the caret used to be invisible.
 func tallForm(t *testing.T, n int) *Form {
 	t.Helper()
 	var b strings.Builder
@@ -90,9 +89,6 @@ func TestFocusedMultiLineFieldKeepsTheCaretVisible(t *testing.T) {
 }
 
 // ENTER GOES INTO A MULTI-LINE FIELD; ESC COMES BACK OUT.
-//
-// "we should not make 'enter' drop the next line ... instead, we should make enter
-// edit that field ... locked until you hit Esc to break out of it."
 func TestEditLockEnterAndEsc(t *testing.T) {
 	f := tallForm(t, 40)
 
@@ -186,9 +182,6 @@ func TestEditLockArrowsMoveTheCaretThroughTheValue(t *testing.T) {
 }
 
 // UP/DOWN STEP BY LOGICAL LINE, NOT BY WRAPPED ROW.
-//
-// A long line that soft-wraps into three rows is still ONE line to the operator;
-// stepping by wrapped row would drop the caret at an arbitrary column mid-sentence.
 func TestEditLockStepsByLogicalLine(t *testing.T) {
 	f := NewForm("Edit", FieldSpec{Name: "d", Label: "D", Kind: KTextArea})
 	// Line 1 is short; line 2 is long enough to wrap in a 20-cell field.
@@ -213,9 +206,6 @@ func TestEditLockStepsByLogicalLine(t *testing.T) {
 }
 
 // ENTER INSIDE THE LOCK INSERTS A NEWLINE.
-//
-// It is the only way to type one: Enter is the key that locks the field, so without
-// this a text area could only ever hold a single line unless the text was pasted.
 func TestEditLockEnterInsertsANewline(t *testing.T) {
 	f := tallForm(t, 3)
 	f.HandleKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -260,10 +250,7 @@ func TestMovingOffALockedFieldReleasesIt(t *testing.T) {
 	}
 }
 
-// THE WHEEL SCROLLS THE LOCKED FIELD — "scroll vertically with ... the mouse wheel".
-//
-// It moves the CARET, because the caret IS the scroll position: a separate offset
-// could drift and leave the cursor off screen, which is the bug being fixed.
+// THE WHEEL SCROLLS THE LOCKED FIELD — "scroll vertically with ...
 func TestWheelScrollsALockedField(t *testing.T) {
 	f := tallForm(t, 40)
 
@@ -297,13 +284,8 @@ func TestWheelScrollsALockedField(t *testing.T) {
 	}
 }
 
-// THE FOOTER NAMES ctrl+p — the operator's second report: "there is no hint in the
-// detail pane saying ctrl+p shows markdown preview".
-//
-// The field's OWN hint sits below its value, so on a tall field it is pushed off the
-// pane exactly when the value is long enough to want a preview. The footer is always
-// visible, so the chord is named there too — but only when the focused field can
-// actually preview, so it never advertises a chord that would do nothing.
+// THE FOOTER NAMES ctrl+p — the operator's second report: "there is no hint in the detail pane
+// saying ctrl+p shows markdown preview".
 func TestFooterNamesThePreviewChord(t *testing.T) {
 	// A prose field with markdown in it: the chord is offered AND named.
 	f := NewForm("Edit worker", FieldSpec{Name: "role", Label: "Role", Kind: KTextArea,

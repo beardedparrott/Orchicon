@@ -1,11 +1,6 @@
 package askmode
 
 // askmode_test.go — THE NEUTRAL POLICY, TESTED WHERE IT LIVES.
-//
-// The adapter-level tests (askorchicon's modegate_test.go) cover the REFUSAL: the message, the withholding, and
-// the fact that the real tool surface honours it. These cover the POLICY itself — the table, the vocabulary, and
-// the two defaults — because that is the part every adapter will now share, and a fault here is a fault in all of
-// them at once.
 
 import (
 	"context"
@@ -48,9 +43,7 @@ func TestTheBoundaryTable(t *testing.T) {
 	}
 }
 
-// THE READ-ONLY SUITE SURVIVES EVERYWHERE. The operator's condition on denying bash: "That is fine as long as
-// Brainstorm mode can learn about the project and read the files." A policy that denied too much would satisfy the
-// boundary and destroy the mode.
+// THE READ-ONLY SUITE SURVIVES EVERYWHERE.
 func TestEveryModeKeepsTheReadOnlySuite(t *testing.T) {
 	for _, mode := range []string{Brainstorm, Iteration, QuickWork} {
 		for _, tool := range []string{
@@ -64,9 +57,7 @@ func TestEveryModeKeepsTheReadOnlySuite(t *testing.T) {
 	}
 }
 
-// AND THE PLATFORM TOOLS STAY AVAILABLE TO EVERY MODE. The operator: "for in-Orchicon work it is fine but no
-// cutting of branches, file editing, pull requests" — so only the ACTION phase is locked, and a gate that started
-// refusing projects or workers would be a different, unrequested change.
+// AND THE PLATFORM TOOLS STAY AVAILABLE TO EVERY MODE.
 func TestInOrchiconWorkStaysAvailable(t *testing.T) {
 	for _, mode := range []string{Brainstorm, Iteration, QuickWork} {
 		for _, tool := range []string{
@@ -82,12 +73,6 @@ func TestInOrchiconWorkStaysAvailable(t *testing.T) {
 }
 
 // THE DISPATCH PATH'S OWN TOOLS ARE NEVER ON A DENY LIST.
-//
-// A mode that builds a worker, a workflow and a work item for a job has to be able to PUBLISH what it built and
-// READ the facts it must ask the user about. Those tools are new, so they are allowed today by the table's shape
-// (it is a deny list) — which is exactly why this is asserted rather than assumed: a future edit that added one of
-// them to the denials would leave Quick Work able to create a draft workflow it can never start, and nothing else
-// in the suite would notice.
 func TestTheDispatchPathToolsAreNeverDenied(t *testing.T) {
 	for _, mode := range []string{Brainstorm, QuickWork} {
 		for _, tool := range []string{
@@ -138,9 +123,8 @@ func TestEveryPolicyNamesADifferentTarget(t *testing.T) {
 	}
 }
 
-// DeniedNames IS SORTED AND COMPLETE, because an adapter that applies the policy through its own mechanism (a
-// config block, a flag) is handed this list — and an unsorted one would make a generated policy non-deterministic
-// and its test flaky.
+// DeniedNames IS SORTED AND COMPLETE, because an adapter that applies the policy through its own
+// mechanism (a config block, a flag) is handed this list.
 func TestDeniedNamesIsSortedAndComplete(t *testing.T) {
 	for _, mode := range []string{Brainstorm, Iteration, QuickWork} {
 		names := DeniedNames(mode)

@@ -1,17 +1,6 @@
 package desktop
 
 // prefs.go — WHAT THE APP REMEMBERS BETWEEN RUNS.
-//
-// Deliberately one field, and deliberately a separate file from window.json: a
-// corrupt preference must never cost the operator their window geometry, and
-// vice versa. Both load best-effort — losing a preference must never stop the app
-// opening.
-//
-// THIS IS NOT A CACHE OF INSTANCE STATE. It records only which instance the
-// person last CHOSE. It is never used to decide whether that instance is running
-// (internal/planebind answers that, live), so a stale file can point the window at
-// a stopped plane — which the Manage Server page then shows, correctly, as
-// offline.
 
 import (
 	"crypto/rand"
@@ -21,9 +10,7 @@ import (
 	"path/filepath"
 )
 
-// DefaultInstance is where the app points when nothing else says otherwise. Dev,
-// because that is the instance a developer is working against, and because it is
-// the one the tree can rebuild.
+// DefaultInstance is where the app points when nothing else says otherwise.
 const DefaultInstance = "dev"
 
 // PrefsPath is the remembered-choice file, beside the window geometry.
@@ -39,9 +26,7 @@ type prefs struct {
 	Instance string `json:"instance"`
 }
 
-// LoadChosenInstance returns the remembered instance, or "" when there is no
-// usable record. A corrupt file is NOT an error: the caller falls back to the
-// default, because a bad preference must not be fatal.
+// LoadChosenInstance returns the remembered instance, or "" when there is no usable record.
 func LoadChosenInstance(path string) string {
 	if path == "" {
 		return ""
@@ -73,15 +58,11 @@ func SaveChosenInstance(path, instance string) error {
 	return os.WriteFile(path, append(b, '\n'), 0o644)
 }
 
-// NewControlToken returns a per-run credential for the shell's plane-control
-// endpoints. It is injected into the SPA only (see spa.go) and is never written
-// to disk, so a token from a previous run is worthless.
+// NewControlToken returns a per-run credential for the shell's plane-control endpoints.
 func NewControlToken() string {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// A token we cannot generate is worse than none only if we pretend it is
-		// secret. Returning "" makes the endpoints reply 404/403 rather than
-		// accepting an empty header, which is the safe direction.
+		// A token we cannot generate is worse than none only if we pretend it is secret.
 		return ""
 	}
 	return hex.EncodeToString(b[:])

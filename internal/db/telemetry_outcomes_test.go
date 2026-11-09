@@ -30,10 +30,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/migrate"
 )
 
-// outcomeTestPool opens the test database and applies migrations. This file is
-// in package db_test (not package db) because migrate imports db, so an
-// internal test file that imported migrate would be an import cycle — the same
-// reason credentials_test.go lives out here.
+// outcomeTestPool opens the test database and applies migrations.
 func outcomeTestPool(t *testing.T) *db.Pool {
 	t.Helper()
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
@@ -158,9 +155,8 @@ func TestGetOutcomeCountsSeparatesEveryTerminalState(t *testing.T) {
 	}
 }
 
-// TestGetOutcomeCountsHonoursTheWindow pins the window rule: work that moved
-// outside it is excluded, so a 24h report on a long-lived instance does not
-// report all-time totals.
+// TestGetOutcomeCountsHonoursTheWindow pins the window rule: work that moved outside it is
+// excluded, so a 24h report on a long-lived instance does not report all-time totals.
 func TestGetOutcomeCountsHonoursTheWindow(t *testing.T) {
 	pool := outcomeTestPool(t)
 	ctx := context.Background()

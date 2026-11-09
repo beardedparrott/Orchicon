@@ -36,9 +36,8 @@ func scratchPool(t *testing.T) *db.Pool {
 
 func strptr(s string) *string { return &s }
 
-// TestProjectRuntimeDefaults pins acceptance A: new projects default to
-// runtime mode with a NULL default image; updates set both fields;
-// optimistic concurrency is preserved.
+// TestProjectRuntimeDefaults pins acceptance A: new projects default to runtime mode with a NULL
+// default image; updates set both fields; optimistic concurrency is preserved.
 func TestProjectRuntimeDefaults(t *testing.T) {
 	pool := scratchPool(t)
 	ctx := context.Background()
@@ -81,9 +80,8 @@ func TestProjectRuntimeDefaults(t *testing.T) {
 	}
 }
 
-// TestWorkItemAutofill pins acceptance A: a bare create inherits the
-// project default; an explicit value wins; updating the project default
-// does NOT retro-mutate existing items.
+// TestWorkItemAutofill pins acceptance A: a bare create inherits the project default; an explicit
+// value wins; updating the project default does NOT retro-mutate existing items.
 func TestWorkItemAutofill(t *testing.T) {
 	pool := scratchPool(t)
 	ctx := context.Background()
@@ -141,9 +139,8 @@ func TestWorkItemAutofill(t *testing.T) {
 	}
 }
 
-// TestResolutionChain pins acceptance A: explicit -> project default ->
-// base, never empty, never no-serve. resolveProjectDefaultImage is the
-// project leg; resolveImageFromValues is the agreement leg.
+// TestResolutionChain pins acceptance A: explicit -> project default -> base, never empty, never
+// no-serve.
 func TestResolutionChain(t *testing.T) {
 	pool := scratchPool(t)
 	ctx := context.Background()
@@ -165,11 +162,7 @@ func TestResolutionChain(t *testing.T) {
 	if got := resolveProjectDefaultImage(ctx, ttx.Tx, approvalTestTenant, p.ID); got != "orchicon-runtime:orchicon-dev" {
 		t.Errorf("project leg = %q, want dev default", got)
 	}
-	// THE LIVE FALLBACK, not the placeholder constant. Before #849 the chain returned
-	// db.BaseRuntimeImage ("orchicon-runtime:base"), a tag no host has — the daemon rejected
-	// it with "image not allowed", which is the defect #849 fixed. The fallback is now the
-	// base tag the daemon actually has (db.RuntimeBaseImage()), so asserting the placeholder
-	// here would lock that defect back in.
+	// THE LIVE FALLBACK, not the placeholder constant.
 	if got := resolveProjectDefaultImage(ctx, ttx.Tx, approvalTestTenant, "prj_missing"); got != db.RuntimeBaseImage() {
 		t.Errorf("missing project leg = %q, want the live fallback %q", got, db.RuntimeBaseImage())
 	}

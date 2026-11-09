@@ -30,9 +30,7 @@ import (
 	"time"
 )
 
-// retentionSeq makes ids unique under ULID truncation. ULID's monotonic entropy increments in its
-// TRAILING characters, so `NewID()[:16]` returns the SAME string for every id minted within one
-// millisecond — which is every id a fast test mints. A counter is immune to that.
+// retentionSeq makes ids unique under ULID truncation.
 var retentionSeq int
 
 func uniqID(prefix string) string {
@@ -373,10 +371,7 @@ func TestPruneLeavesNoChildOfADeletedExecution(t *testing.T) {
 	project := uniqID("proj_retention_classes")
 	ctx := context.Background()
 
-	// The DELETABLE classes — the prunable set, which no longer contains `terminating`. That status is what
-	// forced this correction: it HOLDS a dispatch slot (so the live guard refuses it) while not being terminal
-	// (so the old negated predicate admitted it to the candidate set, and the delete — which had no filter at
-	// all — took it while the child steps skipped it). It is covered by the REFUSAL test below instead.
+	// The DELETABLE classes — the prunable set, which no longer contains `terminating`.
 	statuses := []string{"succeeded", "failed", "failed_to_start", "terminated", "completed"}
 
 	now := time.Now().UTC()
@@ -430,8 +425,7 @@ func TestPruneLeavesNoChildOfADeletedExecution(t *testing.T) {
 			`SELECT count(*) FROM usage_records WHERE tenant_id=$1 AND execution_id=$2`, tenant, id)
 
 		// BIDIRECTIONAL, and the second half is what the first version of this test was missing: asserting
-		// only "deleted ⇒ no children" lets a row that SURVIVES with its children stripped pass unnoticed,
-		// which is exactly what a child step keyed on the wrong set produces.
+		// only "deleted ⇒ no children" lets a row that SURVIVES with its children stripped pass unnoticed.
 		if execs != 0 {
 			if parts != 1 {
 				t.Errorf("%s: execution SURVIVED but its session part is gone (%d present) — a child step "+
@@ -460,9 +454,6 @@ func TestPruneLeavesNoChildOfADeletedExecution(t *testing.T) {
 }
 
 // THE OTHER HALF: a live execution makes the prune refuse, and it deletes nothing.
-//
-// Separate test, because one fixture cannot assert both — the refusal short-circuits the delete, which is
-// what made the first version of the test above pass while the bug was present.
 func TestPruneRefusesRatherThanDeleteHistoryAroundALiveRow(t *testing.T) {
 	pool := retentionTestPool(t)
 	tenant := uniqID("tnt_retention_refuse")

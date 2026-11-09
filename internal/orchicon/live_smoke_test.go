@@ -30,9 +30,8 @@ func TestLiveSmokeOrchicon(t *testing.T) {
 		t.Skip("live smoke disabled: set ORCHICON_TEST_LIVE_ORCHICON=1 + provider keys (cost-capped, single tiny call per provider)")
 	}
 
-	// Registry wired to env-credential resolution (secret -> env fallback)
-	// and a live-truth SourcingService: Registry.Get builds each provider
-	// with ModelsFn = the real endpoint probe, exactly as production does.
+	// Registry wired to env-credential resolution (secret -> env fallback) and a live-truth
+	// SourcingService: Registry.Get builds each provider with ModelsFn = the real endpoint probe.
 	reg := NewRegistry(NewCredentialResolver(nil, nil), NewSourcingService(nil, nil), nil, nil)
 
 	tests := []struct {
@@ -59,12 +58,9 @@ func TestLiveSmokeOrchicon(t *testing.T) {
 		})
 	}
 
-	// One custom OpenAI-compat (llama-server class): configured via env,
-	// since a custom profile has no built-in registry entry. The base URL
-	// MUST include the version root (…/v1):
-	//   ORCHICON_LIVE_CUSTOM_BASE_URL=http://<host>:<port>/v1
-	//   ORCHICON_LIVE_CUSTOM_API_KEY=…
-	//   ORCHICON_LIVE_CUSTOM_MODEL=…
+	// The base URL MUST include the version root (…/v1):
+	// ORCHICON_LIVE_CUSTOM_BASE_URL=http://<host>:<port>/v1 ORCHICON_LIVE_CUSTOM_API_KEY=…
+	// ORCHICON_LIVE_CUSTOM_MODEL=…
 	t.Run("custom_openai_compat", func(t *testing.T) {
 		base := os.Getenv("ORCHICON_LIVE_CUSTOM_BASE_URL")
 		if base == "" || os.Getenv("ORCHICON_LIVE_CUSTOM_MODEL") == "" {
@@ -99,9 +95,8 @@ func liveModelOverride(providerID, def string) string {
 	return def
 }
 
-// liveProviderSmoke asserts the live-truth contract for one provider:
-// endpoint models non-empty, one tiny streamed turn with real usage, and
-// a follow-up probe still non-empty (cleanup/no-leak).
+// liveProviderSmoke asserts the live-truth contract for one provider: endpoint models non-empty,
+// one tiny streamed turn with real usage, and a follow-up probe still non-empty (cleanup/no-leak).
 func liveProviderSmoke(t *testing.T, prov Provider, model string) {
 	t.Helper()
 
@@ -145,9 +140,7 @@ func liveProviderSmoke(t *testing.T, prov Provider, model string) {
 	if !sawText || !sawFinish {
 		t.Fatalf("live smoke incomplete: text=%v finish=%v", sawText, sawFinish)
 	}
-	// 3. Real usage captured. Output must be > 0 on a completed turn;
-	// cache read/write may be 0 on a cold one-shot (never assumed), but
-	// must never go negative and must stay internally consistent.
+	// 3.
 	if usage.OutputTokens <= 0 {
 		t.Fatalf("live usage zeroed: %+v", usage)
 	}

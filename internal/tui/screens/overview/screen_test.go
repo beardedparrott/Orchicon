@@ -411,10 +411,8 @@ func TestTelemetryLiveStreamDeliversEvents(t *testing.T) {
 
 // ---- Cost Explorer + Usage -------------------------------------------
 
-// The Cost Explorer reads the SERVER-SIDE roll-up (GetCost) at the GUI's
-// drill-down levels: a grand total, per-model and per-project groups, and the
-// per-workflow view. It used to aggregate the first page of raw usage records
-// client-side, which is why its breakdowns did not match the GUI.
+// The Cost Explorer reads the SERVER-SIDE roll-up (GetCost) at the GUI's drill-down levels: a grand
+// total, per-model and per-project groups, and the per-workflow view.
 func TestCostExplorerBreakdownAndTotal(t *testing.T) {
 	m := load(t, newModel(t, populatedPlane()))
 	m.SelectSource("cost-explorer")
@@ -470,9 +468,7 @@ func TestEmptyStatesNameWhyEachPaneIsEmpty(t *testing.T) {
 	}
 }
 
-// The operator's read of Telemetry was "just a bunch of traces". The pane now
-// opens on an at-a-glance SUMMARY row (traces, spans, errored spans, slowest)
-// and each trace row flags its own errored span count.
+// The operator's read of Telemetry was "just a bunch of traces".
 func TestTelemetrySummaryAndErrorFlagging(t *testing.T) {
 	m := load(t, newModel(t, populatedPlane()))
 	m.SelectSource("telemetry")
@@ -503,9 +499,8 @@ func TestTelemetryEmptyWindowKeepsItsExplanation(t *testing.T) {
 
 // ---- Telemetry's three signals ---------------------------------------
 
-// The operator's ask: the pane must show traces, METRICS and LOGS as sections
-// (it was "just a bunch of traces"), and selecting a row must open that item's
-// details in the right-hand pane.
+// The operator's ask: the pane must show traces, METRICS and LOGS as sections (it was "just a bunch
+// of traces"), and selecting a row must open that item's details in the right-hand pane.
 func TestTelemetryShowsAllThreeSignalSections(t *testing.T) {
 	m := load(t, newModel(t, populatedPlane()))
 	m.SelectSource("telemetry")

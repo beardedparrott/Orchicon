@@ -29,9 +29,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "canned worker not found:", id)
 		os.Exit(1)
 	}
-	// Exactly what the seeder persists: full AgentsMD for the roll-forward
-	// INSERT (the safety rules ship via the stable prompt prefix, not the
-	// stored agents_md), and the seed-stripped agents_md.
+	// Exactly what the seeder persists: full AgentsMD for the roll-forward INSERT (the safety rules
+	// ship via the stable prompt prefix, not the stored agents_md), and the seed-stripped agents_md.
 	fmt.Printf("===FIELD_ROLE===\n%s\n===FIELD_SKILLS===\n%s\n===FIELD_BEHAVIOR===\n%s\n===FIELD_AGENTSMD===\n%s\n===FIELD_SEEDAGENTS===\n%s\n",
 		w.Role, w.Skills, w.Behavior, w.AgentsMD, db.SeedAgentsMD(w))
 }

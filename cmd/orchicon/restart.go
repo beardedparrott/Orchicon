@@ -13,35 +13,11 @@ import (
 )
 
 // runRestart implements `orchicon restart`.
-//
-// WHY IT EXISTS, and it is the whole reason the name matters. `orchicon install` is idempotent, but it
-// deliberately does NOT restart a plane that is already healthy and running the installed binary (see
-// startHostPlane's planeCurrent arm). That is right for what install is FOR — replacing a superseded
-// binary — and wrong for the other thing operators use it for: REFRESHING THE ENVIRONMENT. A plane
-// inherits its PATH when it starts (startHostPlane passes os.Environ() on, and serveDetach does the
-// same), so installing an adapter CLI afterwards changes nothing until the plane restarts, and
-// re-running `install` does not restart it. Reported: opencode on PATH in the shell, absent from the
-// plane's /proc/<pid>/environ, model discovery "not configured" for ever.
-//
-// The only way to refresh it before this was `orchicon serve --stop` followed by an install — a
-// restart in disguise, nested under a command about serving. Now it is named.
-//
-// THE PORTS ARE READ BACK, never re-resolved: a restart must not ask a question, and the ports it must
-// bind are already recorded (writeResolvedPorts at install time).
-//
-// THE SHAPE IS READ BACK TOO (recordedResidency), never asked of an engine: with the container removed from
-// the install path there may be no engine to ask, and the record is per-instance. The container arm below
-// therefore only ever touches a container when an engine-backed container shape was RECORDED — a host-
-// resident instance never restarts a container, and a host with no engine never runs a docker command at all.
 func runRestart(args []string, log *slog.Logger) error {
 	bin := filepath.Base(os.Args[0])
 
-	// THE INSTANCE IS NAMED THE SAME WAY HERE AS ON EVERY OTHER LIFECYCLE VERB, and it is
-	// parsed from the ARGUMENTS as well as the environment. It used to come from
-	// ORCHICON_INSTANCE alone — `args` was accepted and never read — so `orchicon restart
-	// --instance prod` restarted DEV while USERGUIDE.md documented the flag as working. A
-	// restart is exactly the verb where acting on the wrong instance is invisible: both
-	// come back healthy, and the one you meant to refresh kept its old environment.
+	// THE INSTANCE IS NAMED THE SAME WAY HERE AS ON EVERY OTHER LIFECYCLE VERB, and it is parsed from
+	// the ARGUMENTS as well as the environment.
 	instance, err := parseInstanceTarget(args, env("ORCHICON_INSTANCE", "dev"))
 	if err != nil {
 		return err
@@ -49,11 +25,9 @@ func runRestart(args []string, log *slog.Logger) error {
 	name := "orchicon-cnt-" + instance
 	socketDir := env("ORCHICON_RUNTIME_SOCKET_DIR", filepath.Join(os.TempDir(), "orchicon-runtime"))
 
-	// NOT validateInstance: that is a PORT-DEFAULTS table check ("has no port defaults (known:
-	// dev, prod, test)"), and a restart needs no port defaults — it reads the ports that were
-	// actually bound, from the record. Running it here rejected any instance outside the table,
-	// including a legitimate one with pinned ports, and answered a question about ports that a
-	// restart never asks. parseInstanceTarget above applies the PATH guard that matters instead.
+	// NOT validateInstance: that is a PORT-DEFAULTS table check ("has no port defaults (known: dev,
+	// prod, test)"), and a restart needs no port defaults — it reads the ports that were actually
+	// bound.
 
 	residency, ok := recordedResidency(instance)
 	if !ok {
@@ -67,9 +41,7 @@ func runRestart(args []string, log *slog.Logger) error {
 		return err
 	}
 	if residency == residencyHost {
-		// THE PLANE IS ON THIS HOST, so restarting the services container does not touch it. Saying so
-		// out loud, because that mismatch is exactly what made this hard to diagnose: the container was
-		// restarted, the plane was not, and nothing pointed at the plane.
+		// THE PLANE IS ON THIS HOST, so restarting the services container does not touch it.
 		fmt.Printf("instance %s is host-resident: the plane runs on THIS host, so the PLANE restarts and the services container is left running\n", instance)
 		if err := stopHostPlane(instance, os.Stdout); err != nil {
 			return err
@@ -84,9 +56,7 @@ func runRestart(args []string, log *slog.Logger) error {
 		}
 	}
 
-	// REPORT WHETHER IT CAME BACK. A restart that silently did not take effect is the same class of
-	// failure this command exists to remove, so it is not reported as success here. The wait itself is
-	// shared with `start` (awaitHealthy) — one poll loop, two different claims.
+	// REPORT WHETHER IT CAME BACK.
 	if url, up := awaitHealthy(instance, ports, 60*time.Second); up {
 		fmt.Printf("✓ %s is serving %s\n", instance, url)
 		fmt.Printf("  It re-read its environment on this restart, so a PATH change — a newly installed adapter CLI, for instance — has taken effect.\n")

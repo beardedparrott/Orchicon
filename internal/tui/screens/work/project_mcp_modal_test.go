@@ -1,10 +1,6 @@
 package work
 
 // project_mcp_modal_test.go — THE PROJECTS PANE OPENS THE MCP + SKILLS MODAL.
-//
-// The operator: "It doesn't pop up a modal like /mcp or /scope does." The modal itself is tested in the
-// tui package (it is the shell's); what is asserted HERE is the wiring an operator actually presses: `m`
-// on the Projects pane asks the shell to open it, for the SELECTED project.
 
 import (
 	"testing"
@@ -54,12 +50,7 @@ func TestMOnProjectsOpensTheMCPModal(t *testing.T) {
 	}
 }
 
-// THERE IS NO SECOND CHORD FOR THE CATALOG. The modal offers both add paths as keys inside itself
-// (`a` add, `c` catalog), so a shortcut that jumped straight to one of them was a key to a key — and it
-// made the project surface differ from the conversation one, which has only ever had the single opener.
-//
-// The operator: "Instead of 'm' and 'M' for add mcp server or add from catalog, can't we put both of
-// those operations into 'm' and get rid of the additional control?"
+// THERE IS NO SECOND CHORD FOR THE CATALOG.
 func TestThereIsNoSeparateCatalogChord(t *testing.T) {
 	m, host := projectsPane(t)
 	// `M` must now be INERT on this pane rather than opening the modal on a verb the operator can reach

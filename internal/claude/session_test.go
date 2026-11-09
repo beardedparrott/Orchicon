@@ -13,9 +13,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// fakeProc is an in-memory ProcSession. It proves the long-lived streaming
-// session end to end with ZERO real Anthropic spend: the test owns the
-// stdout line channel and drives canned fixtures.
+// fakeProc is an in-memory ProcSession.
 type fakeProc struct {
 	lines  chan []byte
 	stderr chan []byte
@@ -69,9 +67,7 @@ func (p *fakeProc) turnCount() int {
 	return len(p.turns)
 }
 
-// turnsSnapshot returns a copy of every frame written to the child's stdin, as
-// strings. The Ask tests need to inspect the exact bytes of a control_response
-// (its nesting is the contract), not just count them.
+// turnsSnapshot returns a copy of every frame written to the child's stdin, as strings.
 func (p *fakeProc) turnsSnapshot() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -166,14 +162,7 @@ func newHarness(t *testing.T, factory func() *fakeProc) *harness {
 		h.argv = spec.Argv
 		return factory(), nil
 	})
-	// EVERY SESSION THIS HARNESS BUILDS IS RETIRED WHEN THE TEST ENDS. A live Ask
-	// session owns an OS-level guard shim — a temp dir built by ensureGuard() — and
-	// only teardown() removes it, so a test that drives a session and then abandons
-	// it leaves that directory in $TMPDIR for the life of the host while every
-	// assertion still passes. Measured before this line existed: 11 tests in this
-	// package leaked one shim dir each, on EVERY run, silently. Retiring here means
-	// no test has to remember; guard_leak_test.go fails the suite if one ever does
-	// anyway.
+	// EVERY SESSION THIS HARNESS BUILDS IS RETIRED WHEN THE TEST ENDS.
 	t.Cleanup(h.b.CloseAsk)
 	return h
 }
@@ -199,9 +188,8 @@ const (
 	resultOne = `{"type":"result","subtype":"success","session_id":"sess-1","result":"ok","total_cost_usd":0.02,"usage":{"input_tokens":5,"output_tokens":7}}`
 )
 
-// TestStartLongLivedSession proves the core acceptance: ONE spawn, callbacks
-// in order, a turn boundary on `result` (NOT process exit), a mid-run
-// injected turn on the SAME stdin, and a clean terminal OnResult.
+// TestStartLongLivedSession proves the core acceptance: ONE spawn, callbacks in order, a turn
+// boundary on `result` (NOT process exit), a mid-run injected turn on the SAME stdin.
 func TestStartLongLivedSession(t *testing.T) {
 	fp := newFakeProc()
 	h := newHarness(t, func() *fakeProc { return fp })
@@ -303,9 +291,8 @@ func TestStartLongLivedSession(t *testing.T) {
 	}
 }
 
-// TestStartFailureCapturesSessionAndResumes proves the fail→capture→resume
-// round trip: an exit WITHOUT a terminal result is a failure, the captured
-// session id is persisted, and the retry is spawned with --resume.
+// TestStartFailureCapturesSessionAndResumes proves the fail→capture→resume round trip: an exit
+// WITHOUT a terminal result is a failure, the captured session id is persisted.
 func TestStartFailureCapturesSessionAndResumes(t *testing.T) {
 	fp1 := newFakeProc()
 	var stored []db.SessionPart

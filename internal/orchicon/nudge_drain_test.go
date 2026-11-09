@@ -1,10 +1,7 @@
 package orchicon
 
-// Tests for mid-run nudge delivery on the native orchicon adapter
-// (epic: nudges sent via SendExecutionMessage during a text-only turn).
-// The injection queue must drain at EVERY turn boundary — StopStop (turn
-// that ends WITHOUT tool calls), not just between tool rounds — and on
-// every terminal exit path a dropped queued nudge must be visible.
+// Tests for mid-run nudge delivery on the native orchicon adapter (epic: nudges sent via
+// SendExecutionMessage during a text-only turn).
 
 import (
 	"context"
@@ -14,11 +11,8 @@ import (
 	"testing"
 )
 
-// AC: a nudge queued during a TEXT-ONLY turn (StopStop, no tool calls) is
-// delivered at the turn boundary: it is appended as a user message (source
-// "human"), the loop CONTINUES (a further provider turn happens — the
-// session answers the nudge), and the session settles on the next clean
-// stop.
+// AC: a nudge queued during a TEXT-ONLY turn (StopStop, no tool calls) is delivered at the turn
+// boundary: it is appended as a user message (source "human").
 func TestNudgeDuringTextOnlyTurnAnswered(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
 		// Turn 1: a text-only final report (the previous broken path —
@@ -125,9 +119,8 @@ func TestNudgeBurstDeliveredInOrder(t *testing.T) {
 	}
 }
 
-// AC: a terminal exit with a queued nudge records a VISIBLE error part
-// naming the undelivered message (no silent drop). A provider stream error
-// with a queued nudge → TransError names the drop.
+// AC: a terminal exit with a queued nudge records a VISIBLE error part naming the undelivered
+// message (no silent drop).
 func TestNudgeDroppedOnStreamErrorVisible(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
 		{events: []Event{TextDelta{Text: "partial"}}, finish: StopStop, usage: Usage{InputTokens: 1, OutputTokens: 1}, streamErr: fmt.Errorf("mid-stream failure")},

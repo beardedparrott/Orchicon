@@ -1,18 +1,6 @@
 package orchicon
 
 // askrefusal_test.go — a refused clarifying question reaches the MODEL as an error.
-//
-// The question half of consentDenialError. The consent layer refuses a malformed ask_user before any
-// card exists (the tool's own validator rejects it) and must hand the adapter something back, because
-// the adapter is blocked on the call. It used to hand back a bare sentence, which arrived as the
-// ask_user RESULT — i.e. as the operator's answer — so the model was told the operator had said
-// "ask_user could not be asked: `question` is required…", and the plane stored it as a SUCCESSFUL tool
-// call (`is_error: false`). Three such rows were on the prod plane.
-//
-// The permission path already carried a marker for exactly this (ConsentRefusedPrefix, whose own doc
-// says "the OPERATOR never saw this call, so reporting it as their refusal is a false statement about
-// them"). A question now uses the SAME marker, and this pins the other half: the bridge must turn it
-// into a tool ERROR, or the model still reads it as content.
 
 import (
 	"context"

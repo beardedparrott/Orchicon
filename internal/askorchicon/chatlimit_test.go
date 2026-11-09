@@ -97,16 +97,12 @@ func TestContextLimitRecoversByCompactingAndResending(t *testing.T) {
 	}
 }
 
-// TestContextLimitFailureIsReportedWhenCompactionCannotRecover pins the other half: a non-recovering failure
-// reaches the operator VERBATIM. Swallowing it would leave a dead turn with no explanation at all, and the
-// original text is what tells them the real limit.
+// TestContextLimitFailureIsReportedWhenCompactionCannotRecover pins the other half: a
+// non-recovering failure reaches the operator VERBATIM.
 func TestContextLimitFailureIsReportedWhenCompactionCannotRecover(t *testing.T) {
 	cases := []struct {
 		name string
 		// client returns the chat client AND, for the compacting cases, the handle the assertions need.
-		// It is not typed to *limitFakeClient because the "cannot compact" arm must be a client that
-		// genuinely lacks scheduler.ChatCompactor — a limitFakeClient always has it, so using one there
-		// would silently test nothing.
 		client func() (scheduler.ChatTurnClient, *fakeSessionClient, func() int)
 	}{
 		{"compaction errors", func() (scheduler.ChatTurnClient, *fakeSessionClient, func() int) {
@@ -118,9 +114,7 @@ func TestContextLimitFailureIsReportedWhenCompactionCannotRecover(t *testing.T) 
 			return c, c.fakeSessionClient, func() int { return len(c.compactions) }
 		}},
 		{"adapter cannot compact", func() (scheduler.ChatTurnClient, *fakeSessionClient, func() int) {
-			// The plain fake implements ChatTurnClient and NOTHING else: no ChatCompactor. This is the
-			// arm that must say "the adapter does not support compaction" internally and still hand the
-			// operator the PROVIDER'S text, which names the real limit.
+			// The plain fake implements ChatTurnClient and NOTHING else: no ChatCompactor.
 			f := &fakeSessionClient{}
 			return f, f, func() int { return 0 }
 		}},

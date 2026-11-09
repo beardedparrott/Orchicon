@@ -1,12 +1,6 @@
 package askorchicon
 
 // ask_promoted_reply.go — answering a card that came from an MCP-served ask.
-//
-// The ask tool runs in the `orchicon mcp` SIDECAR, which returns immediately: the ask never enters this
-// process's in-memory pending registry, so ReplyPermissionAsk finds nothing to apply. The card is
-// derived from the transcript instead (tool_ledger.promoteRecordedAsk), and the answer is delivered as
-// the conversation's next message — which is what the tool's own contract promises: "the question is
-// recorded … the user answers in their next message".
 
 import (
 	"context"
@@ -16,15 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// findPromotedAsk locates an ask by ID in the conversation's transcript and reports whether it is still
-// awaiting an answer, plus the row it lives on.
-//
-// IT QUERIES BY ID, NOT BY SCANNING A WINDOW — and that is the fix for the card that would not go away.
-// The first version read the newest 200 rows; once the ask fell outside that window the lookup returned
-// nothing, ReplyPermissionAsk answered "expired", the server never replaced the awaiting marker, and the
-// card stayed open FOREVER. A settle path that can silently stop finding its own ask is a card that
-// sticks, so the lookup is a jsonb containment match on the id — exact, and independent of how long the
-// conversation is.
+// findPromotedAsk locates an ask by ID in the conversation's transcript and reports whether it is
+// still awaiting an answer, plus the row it lives on.
 func (s *Service) findPromotedAsk(ctx context.Context, tenantID, convID, askID string) (msgID string, awaiting bool, ok bool) {
 	if s.pool == nil || askID == "" {
 		return "", false, false
@@ -80,14 +67,7 @@ func (s *Service) findPromotedAsk(ctx context.Context, tenantID, convID, askID s
 	_ = json.Unmarshal(results, &rs)
 	for _, r := range rs {
 		if r.ToolCallID == askID {
-			// A result exists. It is awaiting an answer only if it is the marker; anything else means
-			// it has been answered already and must not be answered twice.
-			//
-			// AN EMPTY RESULT IS NOT AN ANSWER, AND IT IS THE OLD-ROW CASE. claude's transcripts recorded
-			// before this fix carry a DUPLICATE ask whose first call holds "" — the phantom the client now
-			// correctly declines to treat as answered, and which it will therefore draw as an open card.
-			// Refusing the reply here would make that card permanently unanswerable: drawn as a question,
-			// dead when clicked. Nothing was said, so nobody answered it.
+			// A result exists.
 			return id, IsAwaitingAnswer(r.Output) || strings.TrimSpace(r.Output) == "", true
 		}
 	}

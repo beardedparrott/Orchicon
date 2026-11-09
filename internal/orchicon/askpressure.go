@@ -43,13 +43,6 @@ const defaultAskPressureFrac = 0.95
 const askPressureEnv = "ORCHICON_ASK_COMPACT_PRESSURE_FRAC"
 
 // askPressureThreshold resolves the trigger fraction (>0 and <=1).
-//
-// NOTE: the worker compaction ladder reads its pressure fraction from the
-// tenant/worker budget JSON (context_compaction.pressure_frac, default 0.8),
-// which the Ask path has no equivalent of — a chat turn carries no work item and
-// no merged budget. An env knob is the honest interim: it is explicit,
-// operator-visible and globally consistent. Plumbing a tenant-level Ask
-// compaction policy is a separate change, not a silent default here.
 func askPressureThreshold() float64 {
 	raw := strings.TrimSpace(os.Getenv(askPressureEnv))
 	if raw == "" {
@@ -62,37 +55,13 @@ func askPressureThreshold() float64 {
 	return v
 }
 
-// promptOccupancy is the FULL input side of one provider round: the fresh,
-// cache-read and cache-write buckets summed.
-//
-// This is the numerator of the proactive context-pressure gate, and the buckets are
-// DISJOINT by construction — every protocol mapping normalizes InputTokens down to
-// the UNCACHED portion (openaicompat.go/responses.go "Normalize InputTokens to the
-// FRESH bucket", legacycc.go "normalizes to noCache = total − cacheRead −
-// cacheWrite", anthropic's input_tokens excludes cache reads), so summing them
-// recovers the true prompt size without double-counting. legacycc's own arithmetic
-// is the proof: it SUBTRACTS both cache buckets from a cache-inclusive total, so
-// adding them back is exactly the inverse.
-//
-// Measuring InputTokens alone (the previous behaviour here) made the gate blind: a
-// real Ask conversation is overwhelmingly cache READS — observed 168 fresh against
-// 976,384 cached — so the gate computed 0.016% against a 0.95 threshold and could
-// never fire, while the composer strip (summing the same three buckets) correctly
-// showed the context at 93% of the window. The worker compaction ladder has always
-// summed input+cache-read for its occupancy (compaction.go: "the input+cache-read
-// tokens of the request just sent"); this brings the Ask gate in line with it.
-//
-// Cache WRITES are included on top of that precedent. They are genuinely part of the
-// prompt on the turn that stores them, and the gate's failure mode is asymmetric:
-// under-counting misses the trigger and can overflow the window, while
-// over-counting only compacts slightly early.
+// promptOccupancy is the FULL input side of one provider round: the fresh, cache-read and
+// cache-write buckets summed.
 func promptOccupancy(u Usage) int64 {
 	return u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
 }
 
 // recordAskPromptTokens stores the newest MEASURED prompt size for a session.
-// Called from the per-round usage sink, so the value always reflects a real
-// provider report. Guarded by mu.
 func (b *NativeBridge) recordAskPromptTokens(sessionID string, promptTokens int64) {
 	if sessionID == "" || promptTokens <= 0 {
 		return
@@ -105,19 +74,16 @@ func (b *NativeBridge) recordAskPromptTokens(sessionID string, promptTokens int6
 	b.mu.Unlock()
 }
 
-// askLastPromptTokens returns the newest measured prompt size for a session, or
-// 0 when nothing has been measured yet (a fresh session, or a server restart
-// that lost the in-memory sample). 0 disarms the gate — never estimated.
+// askLastPromptTokens returns the newest measured prompt size for a session, or 0 when nothing has
+// been measured yet (a fresh session, or a server restart that lost the in-memory sample).
 func (b *NativeBridge) askLastPromptTokens(sessionID string) int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.askPromptTokens[sessionID]
 }
 
-// resolveAskContextWindow resolves the conversation model's real context window
-// from its provider, cached once per session (a ListModels call per turn would be
-// wasteful, and the window does not change under a live session). 0 means "no
-// live hint" and carries a reason for the log.
+// resolveAskContextWindow resolves the conversation model's real context window from its provider,
+// cached once per session (a ListModels call per turn would be wasteful.
 func (b *NativeBridge) resolveAskContextWindow(ctx context.Context, prov Provider, sessionID, model string) (int64, string) {
 	b.mu.Lock()
 	if w, ok := b.askWindowTokens[sessionID]; ok {
@@ -153,26 +119,8 @@ func (b *NativeBridge) resolveAskContextWindow(ctx context.Context, prov Provide
 	return 0, NoContextWindow + ":model_not_found:" + model
 }
 
-// resolveAskPricing resolves the conversation model's PRICING, cached once per
-// session through the same provider ListModels the context window uses.
-//
-// WHY THE ASK TURN NEEDS THIS AT ALL. The worker execution loop prices its turn
-// before handing it to the usage sink (loop.go: `usage.CostUSD = s.priceUsage(...)`)
-// and the sinks record whatever they are given. The Ask turn has its own turn loop
-// with its own sink, and that sink was recording the provider-reported cost
-// verbatim — which for this NativeBridge is ALWAYS ZERO, because the wire clients
-// decode tokens off the provider's response and never a price. So every Ask usage
-// record landed at cost_usd = 0. MEASURED on the operator's own conversation: 4,673
-// session-scoped rows, 218 priced (all before the Ask turn loop landed) and the
-// rest zero, while the tokens and cache counters in the same rows were correct —
-// which is why the composer's strip kept showing 155.8M tokens and $0.0000.
-//
-// nil means "resolved, and this model carries no pricing" — a free or
-// catalog-missing model. The caller then records the round unpriced rather than
-// inventing rates; prices are never synthesized.
-//
-// A lookup FAILURE is not cached, for the reason resolveAskContextWindow gives: a
-// transient provider error must not leave the conversation permanently unpriced.
+// resolveAskPricing resolves the conversation model's PRICING, cached once per session through the
+// same provider ListModels the context window uses.
 func (b *NativeBridge) resolveAskPricing(ctx context.Context, prov Provider, sessionID, model string) *Pricing {
 	b.mu.Lock()
 	if p, ok := b.askPricing[sessionID]; ok {
@@ -211,14 +159,8 @@ func (b *NativeBridge) resolveAskPricing(ctx context.Context, prov Provider, ses
 	return nil
 }
 
-// maybeCompactForPressure compacts a native Ask conversation BEFORE its next turn
-// when its measured prompt size has crossed the configured fraction of the
-// model's live context window.
-//
-// Best-effort by design: a compaction failure never blocks the turn (the turn
-// still runs, and the reactive path in askreduce.go remains the backstop). Any
-// decision NOT to compact is logged with its reason, so a disarmed gate is
-// visible rather than mysterious.
+// maybeCompactForPressure compacts a native Ask conversation BEFORE its next turn when its measured
+// prompt size has crossed the configured fraction of the model's live context window.
 func (b *NativeBridge) maybeCompactForPressure(ctx context.Context, prov Provider, conversationID, sessionID, modelRef, model string) {
 	last := b.askLastPromptTokens(sessionID)
 	if last <= 0 {
@@ -259,14 +201,9 @@ func (b *NativeBridge) maybeCompactForPressure(ctx context.Context, prov Provide
 	b.log.Warn("orchicon: Ask pressure compaction result",
 		"session", sessionID, "compacted", res.Compacted, "detail", res.Detail)
 	if res.Compacted {
-		// The measurement describes the PRE-compaction history. Drop it so the
-		// next turn cannot re-trigger on a stale number; a fresh measurement
-		// arrives from that turn's own usage report.
+		// The measurement describes the PRE-compaction history.
 		b.recordAskPromptTokens(sessionID, 0)
-		// AND TELL THE TRANSCRIPT. A collapse this consequential must not exist
-		// only as a WARN in a log the operator has no reason to read: this is the
-		// same event the card in the UI is about, so it is recorded where the work
-		// is.
+		// AND TELL THE TRANSCRIPT.
 		b.reportAskCompaction(ctx, conversationID, sessionID, "pressure", res)
 	}
 }

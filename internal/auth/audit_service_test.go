@@ -45,10 +45,8 @@ func auditTestPool(t *testing.T) *db.Pool {
 	return pool
 }
 
-// auditServiceEnv returns a service + context carrying tenant + a resolved
-// identity (the middleware-equivalent actor). The actor identity is seeded
-// so the audit FK resolves. tenantID is caller-chosen so sibling tests
-// never share audit rows.
+// auditServiceEnv returns a service + context carrying tenant + a resolved identity (the
+// middleware-equivalent actor).
 func auditServiceEnv(t *testing.T, tenantID string) (*db.Pool, *Service, context.Context, string, string) {
 	t.Helper()
 	pool := auditTestPool(t)
@@ -219,10 +217,8 @@ func TestAuditServiceCreateTenant(t *testing.T) {
 	}
 }
 
-// TestAuditServiceTimeRangeFilter covers the ListAuditEvents time window:
-// start_time is an inclusive lower bound, end_time an exclusive upper bound
-// on occurred_at, and absent bounds select all rows. Rows are written with
-// explicit occurred_at timestamps so the window assertions are exact.
+// TestAuditServiceTimeRangeFilter covers the ListAuditEvents time window: start_time is an
+// inclusive lower bound, end_time an exclusive upper bound on occurred_at.
 func TestAuditServiceTimeRangeFilter(t *testing.T) {
 	tenantID := "tnt_audit_tr_" + strings.ToLower(db.NewID())
 	pool, svc, ctx, _, actorID := auditServiceEnv(t, tenantID)

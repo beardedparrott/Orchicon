@@ -1,20 +1,6 @@
 package askorchicon
 
 // tool_askmcptools.go — "WHAT AM I OFFERED RIGHT NOW?", ANSWERABLE IN ONE CALL.
-//
-// THE FAILURE THIS EXISTS FOR. A session concluded that its mcp__aseprite__* tools were unavailable, concluded it
-// from a LIST of definitions rather than from its own mounted surface, and then spent the whole session driving
-// the server over stdio JSON-RPC through bash — which flattens image results to text, producing blind drawing and
-// two rejected drafts. The platform's log for the same turns recorded two registered servers; the plumbing was
-// fine. The model had no way to ask what it had actually been given.
-//
-// list_mcp_servers answers a different question: what is DEFINED, and for which owner. A definition can be
-// disabled, can fail to connect, can advertise zero tools, or can be dropped by the mode filter — so "defined"
-// and "mounted in this turn" are different facts, and only the second one tells a model whether it can call
-// something.
-//
-// This answers the second, from the SAME live entry the turn itself uses (askMCPFor → the manager's own Defs),
-// so it cannot disagree with reality: if a tool is listed here, the model was offered it in this turn.
 
 import (
 	"context"
@@ -33,9 +19,7 @@ type askMCPToolsView struct {
 	// Servers is one entry per mounted server, with its provenance ("project:<id>" / "conversation:<id>") — the
 	// same label the platform log prints, so a model and an operator read one vocabulary.
 	Servers []askMCPToolsServer `json:"servers"`
-	// Tools is EVERY callable name, including ones this mode hides. A withheld tool is reported in `hosted`
-	// below rather than silently absent, so "the mode refused it" and "the server does not have it" are
-	// distinguishable.
+	// Tools is EVERY callable name, including ones this mode hides.
 	Tools []string `json:"tools"`
 	// Mode is the mode the filter was applied with, and Hosted lists names that exist but were not offered.
 	Mode   string   `json:"mode,omitempty"`
@@ -55,11 +39,8 @@ type askMCPToolsServer struct {
 	Tools int `json:"tools"`
 }
 
-// toolAskMCPTools answers "what MCP surface do I have in this turn?".
-//
-// IT IS READ-ONLY AND NON-MUTATING, and it is deliberately allowed in EVERY mode: a mode that may not ACT can
-// still tell the operator what it can see, and a tool that vanished in the mode where a model is most likely to
-// be reasoning about capability would be the same unfalsifiable surface this file exists to remove.
+// IT IS READ-ONLY AND NON-MUTATING, and it is deliberately allowed in EVERY mode: a mode that may
+// not ACT can still tell the operator what it can see.
 func toolAskMCPTools(ctx context.Context, svc *Service) (json.RawMessage, error) {
 	view := askMCPToolsView{
 		Conversation: askConversationFromContext(ctx),
@@ -130,9 +111,6 @@ func toolAskMCPTools(ctx context.Context, svc *Service) (json.RawMessage, error)
 }
 
 // hasToolPrefix reports whether name belongs to server id, using the shared naming grammar.
-//
-// It composes the prefix through mcpclient.ToolName rather than trimming a hand-written "mcp__" literal, so a
-// change to that grammar cannot leave this counting the wrong server.
 func hasToolPrefix(name, serverID string) bool {
 	prefix := mcpclient.ToolName(serverID, "")
 	return len(name) >= len(prefix) && name[:len(prefix)] == prefix

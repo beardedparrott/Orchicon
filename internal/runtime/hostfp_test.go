@@ -17,14 +17,8 @@ import (
 
 var hexDigestRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// TestDaemonBinaryFingerprintInvalidatesPoolKey: the daemon's own compiled
-// binary is bind-mounted read-only into every runtime container (the MCP
-// sidecar and supervisor exec it), so a REBUILT binary must invalidate warm
-// pooled containers — a container pinned to a pre-fix binary replays the
-// old code forever (the 2026-08-31 04:12 run: a stale sidecar create
-// envelope was misread as IDEA confirmation). The fingerprint also applies
-// when HostHome is unset (the mount is unconditional) and reflects content
-// changes (same size differs → different key).
+// TestDaemonBinaryFingerprintInvalidatesPoolKey: the daemon's own compiled binary is bind-mounted
+// read-only into every runtime container (the MCP sidecar and supervisor exec it).
 func TestDaemonBinaryFingerprintInvalidatesPoolKey(t *testing.T) {
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "orchicon")
@@ -52,9 +46,8 @@ func TestDaemonBinaryFingerprintInvalidatesPoolKey(t *testing.T) {
 		t.Fatal("a rebuilt binary must change the pool env key — the warm container pinned to the old binary must never be handed out")
 	}
 
-	// Missing binary → yet another key (fails toward fresh, never empty),
-	// and HostHome="" still colors the key because the mount is
-	// unconditional for every runtime container.
+	// Missing binary → yet another key (fails toward fresh, never empty), and HostHome="" still colors
+	// the key because the mount is unconditional for every runtime container.
 	if err := os.Remove(exe); err != nil {
 		t.Fatal(err)
 	}
@@ -79,11 +72,8 @@ func writeTestFile(t *testing.T, path, content string) {
 	}
 }
 
-// TestHostInputsFingerprintStabilityAndInvalidation drives the pure
-// fingerprint function through every read-once host input: each component
-// change (config content, auth content, adapter binary mtime, provider
-// package add) must flip the fingerprint, while a change to a NOT-stale
-// input (~/.gitconfig — git reads it per invocation) must NOT.
+// TestHostInputsFingerprintStabilityAndInvalidation drives the pure fingerprint function through
+// every read-once host input: each component change (config content, auth content.
 func TestHostInputsFingerprintStabilityAndInvalidation(t *testing.T) {
 	home := t.TempDir()
 	cfgJSON := filepath.Join(home, ".config", "opencode", "opencode.json")
@@ -163,9 +153,8 @@ func TestHostInputsFingerprintStabilityAndInvalidation(t *testing.T) {
 	}
 }
 
-// TestHostInputsFingerprintEmptyAndExclusions covers the degenerate cases:
-// an empty home, or a home holding only NOT-stale inputs, yields "" (the pool
-// key reduces to image+mounts), and the return value is always a hex digest.
+// TestHostInputsFingerprintEmptyAndExclusions covers the degenerate cases: an empty home, or a home
+// holding only NOT-stale inputs, yields "" (the pool key reduces to image+mounts).
 func TestHostInputsFingerprintEmptyAndExclusions(t *testing.T) {
 	home := t.TempDir()
 
@@ -187,9 +176,9 @@ func TestHostInputsFingerprintEmptyAndExclusions(t *testing.T) {
 	}
 }
 
-// TestGhTokenFingerprint verifies the non-sensitive token digest: only the
-// length + first-12-char prefix feed it, so rotation (prefix/length change)
-// is detected while the full token never appears in the output.
+// TestGhTokenFingerprint verifies the non-sensitive token digest: only the length + first-12-char
+// prefix feed it, so rotation (prefix/length change) is detected while the full token never
+// appears.
 func TestGhTokenFingerprint(t *testing.T) {
 	tok := "ghp_abcdefghij123456789"
 	fp := ghTokenFingerprint(tok)
@@ -221,10 +210,8 @@ func TestGhTokenFingerprint(t *testing.T) {
 	}
 }
 
-// TestGhTokenTTLCache verifies the TTL-cached resolver: repeated resolution
-// within the TTL calls the resolver once (no `gh auth token` subprocess per
-// checkout), and cache expiry re-resolves — so a rotation is picked up within
-// the bounded staleness window.
+// TestGhTokenTTLCache verifies the TTL-cached resolver: repeated resolution within the TTL calls
+// the resolver once (no `gh auth token` subprocess per checkout), and cache expiry re-resolves.
 func TestGhTokenTTLCache(t *testing.T) {
 	val := "ghp_abcdefghij123456789"
 	calls := 0
@@ -287,9 +274,6 @@ func containsName(names []string, name string) bool {
 }
 
 // waitForPoolKey blocks until the clean list for env key has >= want entries.
-// Key-scoped: the pool can simultaneously hold containers under the OLD key
-// (a stale warm container awaiting idle-reap), so count-based waits are
-// ambiguous.
 func waitForPoolKey(t *testing.T, p *daemonPool, key string, want int, what string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -302,21 +286,15 @@ func waitForPoolKey(t *testing.T, p *daemonPool, key string, want int, what stri
 	t.Fatalf("timed out waiting for %s (clean[%s]=%v)", what, key, poolCleanNamesForKey(p, key))
 }
 
-// TestPoolCheckoutReuseAndInvalidation is the behavioral acceptance test: with
-// unchanged read-once host inputs the pool reuses a warm container across
-// runs (no fresh create — no perf regression); changing a read-once host
-// input forces the next checkout to create a FRESH container, and the stale
-// old-key clean entry is never handed out. Docker and createContainer are
-// stubbed; a live httptest server stands in for the serve (serveUsableAt
-// performs a real /global/health + /session round-trip).
+// TestPoolCheckoutReuseAndInvalidation is the behavioral acceptance test: with unchanged read-once
+// host inputs the pool reuses a warm container across runs (no fresh create — no perf regression).
 func TestPoolCheckoutReuseAndInvalidation(t *testing.T) {
 	home := t.TempDir()
 	cfgJSON := filepath.Join(home, ".config", "opencode", "opencode.json")
 	writeTestFile(t, cfgJSON, `{"provider":{"baseURL":"https://one.example"}}`)
 
-	// Live stand-in for the container's opencode serve: checkout's
-	// reuse-path liveness check (serveUsableAt) needs /global/health and
-	// /session to answer.
+	// Live stand-in for the container's opencode serve: checkout's reuse-path liveness check
+	// (serveUsableAt) needs /global/health and /session to answer.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/global/health", "/session":
@@ -349,13 +327,8 @@ func TestPoolCheckoutReuseAndInvalidation(t *testing.T) {
 	}
 	d.pool = newDaemonPool(d)
 	req := func(runID string) CreateRequest { return CreateRequest{WorkflowID: runID, Image: "img:v1"} }
-	// hostFp reads the DAEMON's fingerprint: checkout folds in the compiled
-	// daemon binary (ExePath) alongside the host inputs, so expected keys
-	// must come from the daemon method — a package-level
-	// hostInputsFingerprint(home, ghFp) would disagree and the reset wait
-	// would key-hop forever. Writing to the ExePath path in this test
-	// changes its content → changes the daemon fingerprint → the same
-	// invalidation signal the pool relies on.
+	// hostFp reads the DAEMON's fingerprint: checkout folds in the compiled daemon binary (ExePath)
+	// alongside the host inputs, so expected keys must come from the daemon method.
 	hostFp := func() string { return d.hostInputsFingerprint() }
 	key1 := poolEnvKey(req("run-1"), hostFp())
 
@@ -436,11 +409,8 @@ func TestPoolCheckoutReuseAndInvalidation(t *testing.T) {
 	}
 }
 
-// TestAdapterInstallFingerprintCoversClaude is the pool-freshness half for
-// claude: a CLI install that exists ONLY under the claude roots (no opencode)
-// must color the pool key, and both a version-dir swap (upgrade/reinstall) and
-// a launcher-symlink change must flip the fingerprint — otherwise a warm pooled
-// container keeps serving a stale CLI.
+// TestAdapterInstallFingerprintCoversClaude is the pool-freshness half for claude: a CLI install
+// that exists ONLY under the claude roots (no opencode) must color the pool key.
 func TestAdapterInstallFingerprintCoversClaude(t *testing.T) {
 	home := t.TempDir()
 	// Neither adapter installed → nothing fingerprinted (unchanged behavior).

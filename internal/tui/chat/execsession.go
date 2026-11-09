@@ -62,9 +62,8 @@ func strOfJSON(v any) string {
 	}
 }
 
-// HistoryItems converts GetExecutionSession parts into ChatItems
-// (SessionChatPane.tsx transcriptItems). The result is phase-grouped so
-// per-chunk reasoning/text parts of one step converge into one bubble.
+// HistoryItems converts GetExecutionSession parts into ChatItems (SessionChatPane.tsx
+// transcriptItems).
 func HistoryItems(parts []*apiv1.ExecutionSessionPart) []ChatItem {
 	if len(parts) == 0 {
 		return nil
@@ -119,18 +118,15 @@ func HistoryItems(parts []*apiv1.ExecutionSessionPart) []ChatItem {
 				}
 			}
 		case "session_info":
-			// The part is rendered as a session identity row when it carries
-			// EITHER a session id or an adapter kind: a native execution has no
-			// serve/session id to point at, only the adapter it ran on.
+			// The part is rendered as a session identity row when it carries EITHER a session id or an adapter
+			// kind: a native execution has no serve/session id to point at, only the adapter it ran on.
 			sid := strOf(pl, "session_id")
 			adapterKind := strOf(pl, "adapter_kind")
 			if sid != "" || adapterKind != "" {
 				out = append(out, ChatItem{Kind: KindSession, SessionID: sid, ServeURL: strOf(pl, "serve_url"), AdapterKind: adapterKind, At: at, Key: key})
 			}
 		case "compacted":
-			// The platform collapsed this execution's context mid-run. Every adapter writes this part
-			// (opencode, claude, and now the native engine) and NONE of the two renderers drew it, so the one
-			// event that rewrites the conversation a provider must accept was the one event with no row.
+			// The platform collapsed this execution's context mid-run.
 			if txt := compactedNotice(pl); txt != "" {
 				out = append(out, ChatItem{Kind: KindNotice, Text: txt, At: at, Key: key})
 			}
@@ -149,13 +145,8 @@ func HistoryItems(parts []*apiv1.ExecutionSessionPart) []ChatItem {
 	return GroupByPhase(out)
 }
 
-// compactedNotice renders a `compacted` session part — from ANY adapter — as the platform notice it is.
-//
-// The payload shapes differ (the native engine reports messages/tool rounds evicted and the spend that fired
-// the trigger; opencode and claude report step/reason/provider/model, and claude also a scope or an
-// auto-compact source), so this reads what is there rather than assuming one adapter's fields. A part with
-// nothing recognisable still says the context was compacted: that is the fact the operator needs, and losing
-// it because an adapter named its fields differently is how the collapse went unseen in the first place.
+// compactedNotice renders a `compacted` session part — from ANY adapter — as the platform notice it
+// is.
 func compactedNotice(pl map[string]any) string {
 	var b strings.Builder
 	b.WriteString("Context compacted mid-run")
@@ -203,10 +194,9 @@ func numOf(pl map[string]any, key string) int {
 	return 0
 }
 
-// LiveItems converts StreamExecutionEvents responses into ChatItems
-// (SessionChatPane.tsx liveItems): TELEMETRY text / reasoning-wrapped
-// JSON chunks, TOOL_CALL rows, ERROR rows, ARTIFACT rows. The live
-// phase counter bumps on tool/error boundaries.
+// LiveItems converts StreamExecutionEvents responses into ChatItems (SessionChatPane.tsx
+// liveItems): TELEMETRY text / reasoning-wrapped JSON chunks, TOOL_CALL rows, ERROR rows, ARTIFACT
+// rows.
 func LiveItems(events []*apiv1.StreamExecutionEventsResponse) []ChatItem {
 	out := []ChatItem{}
 	phase := 0

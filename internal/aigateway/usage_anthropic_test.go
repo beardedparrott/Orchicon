@@ -7,12 +7,8 @@ import (
 	"testing"
 )
 
-// TestAnthropicUsageMapsToCanonical pins the canonical usage-sample
-// contract (docs canonical-usage-sample-contract §6): an Anthropic / Claude
-// Code usage object maps to the canonical UsageInput with the expected
-// bucket semantics, the four-bucket total rule holds (reasoning NOT added),
-// and the gateway's row-build is source-agnostic — it applies the same
-// TotalTokens formula to the canonical input with no provider branch.
+// TestAnthropicUsageMapsToCanonical pins the canonical usage-sample contract (docs
+// canonical-usage-sample-contract §6).
 func TestAnthropicUsageMapsToCanonical(t *testing.T) {
 	// 1. Anthropic-shaped sample (docs §3, §6): input_tokens=1000,
 	//    cache_read_input_tokens=5000, cache_creation_input_tokens=200,

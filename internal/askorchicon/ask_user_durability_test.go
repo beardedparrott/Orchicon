@@ -8,19 +8,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// ask_user durability: the recorded call is a DURABLE TRANSCRIPT ROW, so it
-// survives compaction and resume and the clients can render the card from
-// history rather than from a live-only signal (AC: "The call is recorded in the
-// durable transcript with its question and options intact, and survives
-// compaction and resume").
-//
-// Compaction rewrites ADAPTER state, not DB rows (conversation_compact.go:
-// "it rewrites adapter state, not DB rows"), and db.ListMessages has no
-// compaction filter — so the row itself is never rewritten by a compaction. The
-// one transform that DOES touch the row's tool ledger on its way into the next
-// turn is sanitizeHistoryRows (chat.go), which repairs call/result pairing on
-// the history window every turn replays. That is therefore exactly where a
-// recorded clarifying question could be silently lost, and this test pins it.
+// ask_user durability: the recorded call is a DURABLE TRANSCRIPT ROW, so it survives compaction and
+// resume and the clients can render the card from history rather than from a live-only signal.
 
 type persistedToolCall struct {
 	ID           string `json:"id"`
@@ -29,10 +18,8 @@ type persistedToolCall struct {
 	Arguments    string `json:"arguments"`
 }
 
-// TestAskUserRecordedCallSurvivesHistoryRepair drives the REAL history repair
-// over a persisted assistant row carrying a recorded ask_user call (plus a
-// second, dangling call), and asserts the clarifying question comes out the
-// other side intact and re-parseable — the state the card is rebuilt from.
+// TestAskUserRecordedCallSurvivesHistoryRepair drives the REAL history repair over a persisted
+// assistant row carrying a recorded ask_user call (plus a second, dangling call).
 func TestAskUserRecordedCallSurvivesHistoryRepair(t *testing.T) {
 	// The arguments exactly as the tool handler echoes them back and the live
 	// ledger persists them.
@@ -82,9 +69,9 @@ func TestAskUserRecordedCallSurvivesHistoryRepair(t *testing.T) {
 		t.Fatalf("the recorded ask_user arguments were emptied by the repair: %q", ask.Arguments)
 	}
 
-	// The question and every option are still there, and still parse with the
-	// SAME validation the handler applies — i.e. the persisted row alone is
-	// enough to rebuild the card the operator answers.
+	// The question and every option are still there, and still parse with the SAME validation the
+	// handler applies — i.e. the persisted row alone is enough to rebuild the card the operator
+	// answers.
 	question, options, allowOther, perr := parseAskUserArgs([]byte(ask.Arguments))
 	if perr != nil {
 		t.Fatalf("the persisted arguments no longer parse (%v): %q", perr, ask.Arguments)
@@ -103,20 +90,16 @@ func TestAskUserRecordedCallSurvivesHistoryRepair(t *testing.T) {
 	}
 }
 
-// persistedToolCallStamped is the STAMPED sibling of persistedToolCall: the
-// same four wire fields plus the ledger's issue time. Its existence pins that
-// the stamped row shape is a superset the history repair passes through.
+// persistedToolCallStamped is the STAMPED sibling of persistedToolCall: the same four wire fields
+// plus the ledger's issue time.
 type persistedToolCallStamped struct {
 	persistedToolCall
 	IssuedAtUnixMs int64 `json:"issued_at_unix_ms"`
 }
 
 // TestPersistedToolCallStampedRowStillRepairs is the sibling of
-// TestAskUserRecordedCallSurvivesHistoryRepair for the STAMPED row shape: the
-// ledger now stamps every entry, so the repair must carry BOTH the issue time
-// and the arguments/options the card is rebuilt from. The unstamped test is
-// left byte-for-byte unchanged, because its inertness is itself the property
-// being asserted (Go ignores unknown JSON keys).
+// TestAskUserRecordedCallSurvivesHistoryRepair for the STAMPED row shape: the ledger now stamps
+// every entry.
 func TestPersistedToolCallStampedRowStillRepairs(t *testing.T) {
 	args := `{"question":"Which branch should the run clone off?",` +
 		`"options":[{"label":"develop","description":"the integration branch"},{"label":"main"}],` +

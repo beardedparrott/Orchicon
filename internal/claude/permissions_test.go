@@ -1,8 +1,6 @@
 package claude
 
-// permissions_test.go — T1: the launch shape. NO live claude session, no
-// Anthropic spend: every assertion is over the argv the adapter would emit and
-// the settings JSON document inside it.
+// permissions_test.go — T1: the launch shape.
 
 import (
 	"encoding/json"
@@ -38,10 +36,7 @@ func settingsDoc(t *testing.T, args []string) map[string]any {
 	return nil
 }
 
-// THE HEADLINE PIN. A blanket bypass launch would silently discard every
-// restriction this package exists to express, so the test must FAIL the moment
-// one is introduced — in the argv, in the settings document, or as the value of
-// --permission-mode.
+// THE HEADLINE PIN.
 func TestNoBypassPermissionFlagIsEverEmitted(t *testing.T) {
 	project := t.TempDir()
 	args, err := PermissionArgs(PermissionOptions{
@@ -62,9 +57,8 @@ func TestNoBypassPermissionFlagIsEverEmitted(t *testing.T) {
 		t.Fatalf("the launch argv carries a skip-permissions spelling: %v", args)
 	}
 
-	// --permission-mode must be present and must be `default` (NOT acceptEdits,
-	// NOT bypassPermissions): an unanswerable ask in -p mode is a refusal, which
-	// is the honest worker semantic.
+	// --permission-mode must be present and must be `default` (NOT acceptEdits, NOT bypassPermissions):
+	// an unanswerable ask in -p mode is a refusal, which is the honest worker semantic.
 	mode := ""
 	for i, a := range args {
 		if a == "--permission-mode" && i+1 < len(args) {
@@ -161,10 +155,8 @@ func TestSettingsExpressThePlatformRestrictions(t *testing.T) {
 	}
 }
 
-// The operator's policy deny entries are expressed as read AND edit denies, and a
-// MALFORMED policy is RETURNED as an error (never silently dropped) while the
-// launch shape stays restrictive — the fail-closed behaviour
-// internal/permpolicy/policy_load_failure_test.go pins, preserved at this layer.
+// The operator's policy deny entries are expressed as read AND edit denies, and a MALFORMED policy
+// is RETURNED as an error (never silently dropped) while the launch shape stays restrictive.
 func TestSettingsCarryThePolicyDeniesAndFailClosedOnLoadFailure(t *testing.T) {
 	project := t.TempDir()
 
@@ -225,10 +217,8 @@ func TestSessionArgvCarriesTheRestrictions(t *testing.T) {
 	if !contains(argv, "--disallowedTools") {
 		t.Fatalf("session argv does not deny the built-in subagent tool: %v", argv)
 	}
-	// The PRODUCTION line is what actually runs, so the headline pin has to hold
-	// here too — not only over PermissionArgs. Every --permission-mode value must
-	// be `default` (a second, later bypass mode flag would win), and no bypass
-	// spelling may appear on the line at all.
+	// The PRODUCTION line is what actually runs, so the headline pin has to hold here too — not only
+	// over PermissionArgs.
 	modes := 0
 	for i, a := range argv {
 		if a == "--permission-mode" && i+1 < len(argv) {

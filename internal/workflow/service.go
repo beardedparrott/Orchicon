@@ -43,11 +43,8 @@ type Service struct {
 	subscriber eventbus.Subscriber
 	apiv1connect.UnimplementedWorkflowServiceHandler
 
-	// abortSession stops a terminated execution's live opencode session when a
-	// run is aborted (wired to the opencode adapter's AbortExecution). Without
-	// it, aborting a run leaves every in-flight worker session generating in
-	// the background — the "terminated but still active" token burn. Nil =
-	// abort only marks the executions terminal.
+	// abortSession stops a terminated execution's live opencode session when a run is aborted (wired to
+	// the opencode adapter's AbortExecution).
 	abortSession func(ctx context.Context, execID, reason string) error
 }
 
@@ -59,18 +56,13 @@ func New(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber) *Service {
 	return &Service{pool: pool, log: log, subscriber: sub}
 }
 
-// SetAbortExecution injects the live-session abort hook (the opencode
-// adapter's AbortExecution). Nil = aborting a run only marks its executions
-// terminal.
+// SetAbortExecution injects the live-session abort hook (the opencode adapter's AbortExecution).
 func (s *Service) SetAbortExecution(fn func(ctx context.Context, execID, reason string) error) {
 	s.abortSession = fn
 }
 
-// CreateWorkflow validates input, inserts the workflow header + its first
-// draft version, and enqueues a workflow.created event — all in one
-// tenant-scoped transaction. The transactional create lives in
-// CreateWorkflowTx (create.go) so the AskOrchicon tool path shares the
-// exact same implementation (one create core, no drift).
+// CreateWorkflow validates input, inserts the workflow header + its first draft version, and
+// enqueues a workflow.created event — all in one tenant-scoped transaction.
 func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1.CreateWorkflowRequest]) (*connect.Response[apiv1.CreateWorkflowResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
@@ -109,9 +101,8 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	}
 	defer ttx.Rollback(ctx)
 
-	// Preserve the exact FailedPrecondition mapping for a missing/inactive
-	// project; CreateWorkflowTx re-checks inside the same transaction for
-	// the tool path (one extra indexed lookup, exact RPC parity).
+	// Preserve the exact FailedPrecondition mapping for a missing/inactive project; CreateWorkflowTx
+	// re-checks inside the same transaction for the tool path (one extra indexed lookup.
 	if msg.ProjectId != "" {
 		if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, msg.ProjectId); err != nil {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("project not active: %w", err))
@@ -132,9 +123,7 @@ func (s *Service) CreateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	}), nil
 }
 
-// PublishWorkflow publishes the draft version, making the workflow
-// runnable (docs/02 §2.4). The version becomes immutable and the
-// Workflow transitions to published.
+// PublishWorkflow publishes the draft version, making the workflow runnable (docs/02 §2.4).
 func (s *Service) PublishWorkflow(ctx context.Context, req *connect.Request[apiv1.PublishWorkflowRequest]) (*connect.Response[apiv1.PublishWorkflowResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -192,11 +181,8 @@ func (s *Service) PublishWorkflow(ctx context.Context, req *connect.Request[apiv
 	}), nil
 }
 
-// CreateWorkflowVersion creates a new draft version from the latest
-// published version of a published or deprecated workflow (docs/02 §2.4).
-// If the workflow is deprecated, it's transitioned back to draft so the
-// user can edit and republish. Published workflows keep their status; the
-// new draft version sits ahead of the published one.
+// CreateWorkflowVersion creates a new draft version from the latest published version of a
+// published or deprecated workflow (docs/02 §2.4).
 func (s *Service) CreateWorkflowVersion(ctx context.Context, req *connect.Request[apiv1.CreateWorkflowVersionRequest]) (*connect.Response[apiv1.CreateWorkflowVersionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -277,9 +263,7 @@ func (s *Service) CreateWorkflowVersion(ctx context.Context, req *connect.Reques
 	}), nil
 }
 
-// DeprecateWorkflow transitions a published Workflow to deprecated
-// (docs/02 §2.4). Still runnable for in-flight runs; no new runs may
-// start.
+// DeprecateWorkflow transitions a published Workflow to deprecated (docs/02 §2.4).
 func (s *Service) DeprecateWorkflow(ctx context.Context, req *connect.Request[apiv1.DeprecateWorkflowRequest]) (*connect.Response[apiv1.DeprecateWorkflowResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -319,9 +303,8 @@ func (s *Service) DeprecateWorkflow(ctx context.Context, req *connect.Request[ap
 	return connect.NewResponse(&apiv1.DeprecateWorkflowResponse{Workflow: workflowRowToProto(updated)}), nil
 }
 
-// DeleteWorkflow hard-deletes a workflow and all its child rows (steps,
-// runs, versions, edit locks). This is irreversible — use DeprecateWorkflow
-// for a soft hide (docs/02 §2.4).
+// DeleteWorkflow hard-deletes a workflow and all its child rows (steps, runs, versions, edit
+// locks).
 func (s *Service) DeleteWorkflow(ctx context.Context, req *connect.Request[apiv1.DeleteWorkflowRequest]) (*connect.Response[apiv1.DeleteWorkflowResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -381,9 +364,8 @@ func (s *Service) GetWorkflow(ctx context.Context, req *connect.Request[apiv1.Ge
 	return connect.NewResponse(resp), nil
 }
 
-// ListWorkflows returns a page of workflows for the tenant, optionally
-// scoped to a project, with search/filter and configurable sort
-// (docs/07 §5.2).
+// ListWorkflows returns a page of workflows for the tenant, optionally scoped to a project, with
+// search/filter and configurable sort (docs/07 §5.2).
 func (s *Service) ListWorkflows(ctx context.Context, req *connect.Request[apiv1.ListWorkflowsRequest]) (*connect.Response[apiv1.ListWorkflowsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -456,11 +438,7 @@ func (s *Service) ListWorkflowVersions(ctx context.Context, req *connect.Request
 	return connect.NewResponse(resp), nil
 }
 
-// UpdateWorkflowVersion saves edits to a draft version's steps (and
-// inputs/outputs). Only draft versions are mutable;
-// published versions are immutable (docs/02 §2.4). This is the "save"
-// action in the visual editor. The steps JSON is validated as a
-// well-formed JSON array (AGENTS.md security standards).
+// UpdateWorkflowVersion saves edits to a draft version's steps (and inputs/outputs).
 func (s *Service) UpdateWorkflowVersion(ctx context.Context, req *connect.Request[apiv1.UpdateWorkflowVersionRequest]) (*connect.Response[apiv1.UpdateWorkflowVersionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -538,8 +516,6 @@ func (s *Service) UpdateWorkflowVersion(ctx context.Context, req *connect.Reques
 }
 
 // UpdateWorkflow updates mutable workflow header fields (e.g. name).
-// Unlike UpdateWorkflowVersion which edits a draft version's steps,
-// this updates the workflow itself and is allowed in any lifecycle state.
 func (s *Service) UpdateWorkflow(ctx context.Context, req *connect.Request[apiv1.UpdateWorkflowRequest]) (*connect.Response[apiv1.UpdateWorkflowResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -608,10 +584,8 @@ func (s *Service) UpdateWorkflow(ctx context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(&apiv1.UpdateWorkflowResponse{Workflow: workflowRowToProto(updated)}), nil
 }
 
-// StartWorkflow creates a WorkflowRun from a published version, seeds a
-// WorkflowStepRun for each step in the DAG, and enqueues a run_started
-// event (docs/02 §2.4, docs/03 §2). The WorkflowReconciler picks up the
-// run and progresses the step DAG.
+// StartWorkflow creates a WorkflowRun from a published version, seeds a WorkflowStepRun for each
+// step in the DAG, and enqueues a run_started event (docs/02 §2.4, docs/03 §2).
 func (s *Service) StartWorkflow(ctx context.Context, req *connect.Request[apiv1.StartWorkflowRequest]) (*connect.Response[apiv1.StartWorkflowResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -768,9 +742,7 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	// The executions are now terminal in the DB. Abort their live opencode
-	// sessions so the model stops generating — without this, aborting a run
-	// leaves every in-flight worker session turning in the background.
+	// The executions are now terminal in the DB.
 	if s.abortSession != nil {
 		for _, eid := range abortedExecs {
 			if aerr := s.abortSession(ctx, eid, "workflow run aborted"); aerr != nil {
@@ -782,19 +754,8 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	return connect.NewResponse(&apiv1.AbortWorkflowResponse{Run: runRowToProto(updated)}), nil
 }
 
-// abortRunInTx aborts a workflow run and everything in flight in the
-// given tenant transaction: run → aborted, in-flight step runs → failed,
-// linked running worker executions → terminated, and the bound work item
-// → the given status (typically cancelled for a direct abort, pending for
-// a sequence-stop so the item can be re-run). This is the shared core used
-// by the AbortWorkflow RPC and the sequence engine's StopSequence — a
-// single abort path so behavior can't drift. It is intentionally NOT a
-// method: the sequence reconciler calls it inside its own transaction.
-// AbortRunInTx aborts a workflow run: the run → aborted, in-flight step runs
-// → failed, and linked running/dispatching worker executions → terminated. It
-// returns the IDs of the executions it terminated so the caller can abort
-// their live sessions (a terminated execution's opencode session would
-// otherwise keep generating — the "terminated but still active" bug).
+// abortRunInTx aborts a workflow run and everything in flight in the given tenant transaction: run
+// → aborted, in-flight step runs → failed, linked running worker executions → terminated.
 func AbortRunInTx(ctx context.Context, tx pgx.Tx, tenantID, runID, workItemStatus string) ([]string, error) {
 	now := time.Now().UTC()
 	current, err := db.GetWorkflowRun(ctx, tx, tenantID, runID)
@@ -875,21 +836,14 @@ func (s *Service) GetWorkflowRun(ctx context.Context, req *connect.Request[apiv1
 	}
 	proto := runRowToProto(run)
 	// THE RECORD REFINES THE STATUS ON THE VIEW AN OPERATOR OPENS WHEN THEY WANT TO KNOW WHY.
-	//
-	// `integrationStatus` can only answer merged / not_merged, from whether a branch still exists. The record
-	// knows more: that the work is QUEUED behind an unlanded predecessor, that it is CONFLICTED and needs a
-	// human, or that it landed as a specific commit — and it knows it BEFORE the run is terminal, which is
-	// exactly when a stall is worth seeing. The vocabulary rides the existing field so nothing in the wire
-	// format changes and the run page's notice renders it unchanged.
 	if rec, rerr := db.GetLocalIntegrationForRun(ctx, ttx.Tx, tenantID, run.ID); rerr == nil {
 		proto.IntegrationStatus = integrationStatusWithRecord(run, &rec)
 	}
 	return connect.NewResponse(&apiv1.GetWorkflowRunResponse{Run: proto}), nil
 }
 
-// ListWorkflowRuns returns a page of WorkflowRuns scoped by tenant and any
-// combination of workflow / project / work item (all optional). Sorted by id
-// descending by default, or by the run's real started_at when sort_by set.
+// ListWorkflowRuns returns a page of WorkflowRuns scoped by tenant and any combination of workflow
+// / project / work item (all optional).
 func (s *Service) ListWorkflowRuns(ctx context.Context, req *connect.Request[apiv1.ListWorkflowRunsRequest]) (*connect.Response[apiv1.ListWorkflowRunsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -941,9 +895,7 @@ func (s *Service) ListWorkflowRuns(ctx context.Context, req *connect.Request[api
 	return connect.NewResponse(resp), nil
 }
 
-// GetWorkflowStepRuns returns all step runs for a WorkflowRun. Used by
-// the run view to overlay live step transitions on the canvas
-// (docs/10 §5.1).
+// GetWorkflowStepRuns returns all step runs for a WorkflowRun.
 func (s *Service) GetWorkflowStepRuns(ctx context.Context, req *connect.Request[apiv1.GetWorkflowStepRunsRequest]) (*connect.Response[apiv1.GetWorkflowStepRunsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1037,39 +989,8 @@ func (s *Service) RetryStepRun(ctx context.Context, req *connect.Request[apiv1.R
 	return connect.NewResponse(&apiv1.RetryStepRunResponse{}), nil
 }
 
-// ForceProgressWorkflowRun advances a stuck running run past its current
-// in-flight step run(s) regardless of their previous status. A run can wedge
-// "running" forever even though the underlying worker execution succeeded:
-// when a LATER step's dispatch fails, reconcileRun errors and rolls back the
-// ENTIRE pass — including this step's terminal mark — leaving the step
-// "running" with a succeeded execution underneath (field incident: a
-// corrupted worker_versions index hid a worker, dispatch of a downstream step
-// failed, the pass rolled back, and the run sat "running" for hours).
-//
-// This is a manual escape hatch: it marks every active non-terminal step run
-// (pending/ready/running/approval_pending) of the run as succeeded with a
-// `_forced: true` result note, terminates any still-running linked executions,
-// and enqueues a workflow.step_succeeded event so the reconciler advances the
-// DAG on its next pass.
-// ForceProgressWorkflowRun advances a stuck running run past its current
-// in-flight step run(s) regardless of their previous status. A run can wedge
-// "running" forever even though the underlying worker execution succeeded:
-// when a LATER step's dispatch fails, reconcileRun errors and rolls back the
-// ENTIRE pass — including this step's terminal mark — leaving the step
-// "running" with a succeeded execution underneath (field incident: a
-// corrupted worker_versions index hid a worker, dispatch of a downstream step
-// failed, the pass rolled back, and the run sat "running" for hours).
-//
-// This is a manual escape hatch. Unlike the original all-or-nothing version
-// (which force-succeeded EVERY active non-terminal step and so skipped real
-// downstream work), it force-succeeds only the STUCK steps — the ones that
-// are in-flight (running/ready/approval_pending/recovering) or that are
-// pending with all DAG dependencies already satisfied (the reconciler wedged
-// before dispatching them). Steps still waiting on an unsatisfied dependency
-// are LEFT PENDING so the reconciler's next pass dispatches them normally —
-// the loop DAG keeps progressing instead of a downstream task/approval step
-// being skipped (the observed bug: a force-progress marked the DevOps PR step
-// succeeded without ever dispatching it, and the PR was never merged).
+// ForceProgressWorkflowRun advances a stuck running run past its current in-flight step run(s)
+// regardless of their previous status.
 func (s *Service) ForceProgressWorkflowRun(ctx context.Context, req *connect.Request[apiv1.ForceProgressWorkflowRunRequest]) (*connect.Response[apiv1.ForceProgressWorkflowRunResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1093,9 +1014,8 @@ func (s *Service) ForceProgressWorkflowRun(ctx context.Context, req *connect.Req
 			fmt.Errorf("run is already terminal (status=%s) — nothing to force", run.Status))
 	}
 
-	// Load the published version's steps so we can evaluate DAG deps and
-	// decide which pending steps are genuinely stuck (deps satisfied but
-	// never dispatched) vs still waiting on an upstream.
+	// Load the published version's steps so we can evaluate DAG deps and decide which pending steps are
+	// genuinely stuck (deps satisfied but never dispatched) vs still waiting on an upstream.
 	var stepByID map[string]StepWire
 	version, verr := db.GetWorkflowVersion(ctx, ttx.Tx, tenantID, run.WorkflowID, run.WorkflowVersion)
 	if verr == nil {
@@ -1149,11 +1069,8 @@ func (s *Service) ForceProgressWorkflowRun(ctx context.Context, req *connect.Req
 		case domain.StepRunSucceeded, domain.StepRunFailed, domain.StepRunSkipped, domain.StepRunBlocked:
 			continue // already terminal — leave alone
 		case domain.StepRunPending:
-			// A pending step is only "stuck" if its DAG deps are already
-			// satisfied (the reconciler should have dispatched it). If it is
-			// still waiting on an upstream that hasn't resolved, forcing it
-			// would SKIP real work — leave it for the reconciler. If we
-			// can't resolve the step's deps, stay conservative and leave it.
+			// A pending step is only "stuck" if its DAG deps are already satisfied (the reconciler should have
+			// dispatched it).
 			step, ok := stepByID[sr.StepID]
 			if !ok || !depsSatisfied(step, activeByStep) {
 				continue
@@ -1224,16 +1141,8 @@ func (s *Service) ForceProgressWorkflowRun(ctx context.Context, req *connect.Req
 	}), nil
 }
 
-// RetryFailedWorkflowRun resumes a FAILED WorkflowRun in place: the run is
-// reset back to pending (clearing its ended timestamp), every ACTIVE
-// failed/skipped/blocked step run is reset to pending (clearing result,
-// worker execution ref, attempt, and ended timestamp so the reconciler
-// re-dispatches it), and the bound work item is flipped back to running so
-// the ticket reflects the resumed run. Succeeded step runs stay succeeded —
-// the DAG resumes from where it left off instead of restarting. The
-// reconciler's scan picks the run up within ~200ms and its pending→running
-// block re-resolves the runtime image and re-creates the (previously reaped)
-// runtime container.
+// RetryFailedWorkflowRun resumes a FAILED WorkflowRun in place: the run is reset back to pending
+// (clearing its ended timestamp).
 func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Request[apiv1.RetryFailedWorkflowRunRequest]) (*connect.Response[apiv1.RetryFailedWorkflowRunResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1283,13 +1192,8 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 			StartedAt:         &now,
 			ClearEndedAt:      true,
 		}
-		// Re-provision pruned OR FAILED worktrees on retry: keep the branch for re-attach but reset status to
-		// pending and clear the stale path so the WorktreeReconciler re-creates the worktree before dispatch.
-		//
-		// FAILED IS THE REPORTED CASE. A run whose provisioning failed keeps worktree_status=failed AND its
-		// path; retrying it without this reset left it failed-with-a-path, which is exactly the state that (a)
-		// skipped the dispatch gate and (b) made the provisioner classify its own leftover as foreign —
-		// "path … is occupied by a non-worktree directory". PRUNED was handled; FAILED is the same need.
+		// Re-provision pruned OR FAILED worktrees on retry: keep the branch for re-attach but reset status
+		// to pending and clear the stale path so the WorktreeReconciler re-creates the worktree before.
 		if sr.WorktreeStatus == domain.WorktreePruned || sr.WorktreeStatus == domain.WorktreeFailed {
 			pending := domain.WorktreePending
 			emptyPath := ""
@@ -1310,12 +1214,8 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 			errors.New("no failed/skipped/blocked step runs to retry"))
 	}
 
-	// Flip the run back to pending so the reconciler's pending→running block
-	// re-resolves the runtime image and re-creates the (reaped) container.
-	// If the run's worktree was pruned, reset it to pending (keep branch)
-	// so the WorktreeReconciler re-provisions the worktree before any
-	// re-dispatched step runs. Without this the re-armed steps would fall
-	// back to the project dir.
+	// Flip the run back to pending so the reconciler's pending→running block re-resolves the runtime
+	// image and re-creates the (reaped) container.
 	runFields := db.UpdateWorkflowRunFields{
 		Status:       strPtr(domain.WorkflowRunPending),
 		ClearEndedAt: true,
@@ -1325,9 +1225,7 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 		emptyPath := ""
 		runFields.WorktreeStatus = &pending
 		runFields.WorktreePath = &emptyPath
-		// The recorded REFUSAL belongs to the attempt that failed, not to the retry. Leaving it would label a
-		// freshly-armed run with an error about a provision it has not attempted yet — and it is the same stale
-		// verdict the completion path used to re-stamp onto a run that actually ran.
+		// The recorded REFUSAL belongs to the attempt that failed, not to the retry.
 		emptyErr := ""
 		runFields.ErrorMessage = &emptyErr
 		runFields.ErrorKind = &emptyErr
@@ -1337,9 +1235,8 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 		return nil, mapDBError(err)
 	}
 
-	// The bound work item was failed at run end — flip it back to running so
-	// the ticket reflects the resumed run (per-step executions never mutate
-	// it; it reaches a terminal state only when the run re-terminalizes).
+	// The bound work item was failed at run end — flip it back to running so the ticket reflects the
+	// resumed run (per-step executions never mutate it.
 	if run.WorkItemID != "" {
 		if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
 			status := domain.WorkItemRunning
@@ -1368,22 +1265,6 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 }
 
 // DeleteWorkflowRun hard-deletes one workflow run.
-//
-// WHY IT DID NOT EXIST, AND WHY THE OBVIOUS SUBSTITUTE IS WRONG. DeleteWorkflow cascades from a WORKFLOW
-// to its ENTIRE run history. So the only way to remove one finished run was to delete the workflow that
-// produced it — an act that takes every other run with it. The operator, mid-live-test: "Executions and
-// Workflow Runs do not have a delete operation (single and bulk)." Executions had DeleteExecution and
-// BatchDeleteExecutions all along; runs had nothing at any layer.
-//
-// A RUNNING RUN IS STOPPED FIRST, and that is the part worth being careful about. Removing a live run
-// would leave the WorkflowReconciler advancing a DAG whose run row no longer exists — it would either
-// error against a missing run on every pass or, worse, re-create state for it. So a non-terminal run is
-// aborted through AbortRunInTx (the SAME path the AbortWorkflow RPC uses: status → aborted, ended_at,
-// in-flight step runs closed, linked worker executions terminated) BEFORE the row is removed. That
-// gives a delete exactly one meaning — "this run is gone" — whether or not it was still going, and it
-// reuses the abort semantics already tested rather than inventing a second way to stop a run.
-//
-// It is irreversible; the audit entry carries the run's status so the trail says what was removed.
 func (s *Service) DeleteWorkflowRun(ctx context.Context, req *connect.Request[apiv1.DeleteWorkflowRunRequest]) (*connect.Response[apiv1.DeleteWorkflowRunResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1467,9 +1348,8 @@ func (s *Service) StreamWorkflowEvents(ctx context.Context, req *connect.Request
 	}
 }
 
-// AcquireEditLock acquires an exclusive edit lock on a Workflow for the
-// visual editor (docs/07 §3.3). Returns acquired=false if already held
-// by another actor.
+// AcquireEditLock acquires an exclusive edit lock on a Workflow for the visual editor (docs/07
+// §3.3).
 func (s *Service) AcquireEditLock(ctx context.Context, req *connect.Request[apiv1.AcquireWorkflowEditLockRequest]) (*connect.Response[apiv1.AcquireWorkflowEditLockResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1564,9 +1444,7 @@ func (s *Service) GetEditLock(ctx context.Context, req *connect.Request[apiv1.Ge
 	return connect.NewResponse(&apiv1.GetWorkflowEditLockResponse{Lock: lockRowToProto(lock)}), nil
 }
 
-// DeleteWorkflowVersion hard-deletes a single draft version. Published
-// versions are immutable; use CreateWorkflowVersion to iterate. At least
-// one version must remain (docs/02 §2.4).
+// DeleteWorkflowVersion hard-deletes a single draft version.
 func (s *Service) DeleteWorkflowVersion(ctx context.Context, req *connect.Request[apiv1.DeleteWorkflowVersionRequest]) (*connect.Response[apiv1.DeleteWorkflowVersionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1602,9 +1480,8 @@ func (s *Service) DeleteWorkflowVersion(ctx context.Context, req *connect.Reques
 
 // --- helpers ---------------------------------------------------------------
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -1630,9 +1507,8 @@ func workflowAuditSnapshot(w db.WorkflowRow) map[string]any {
 	}
 }
 
-// workflowVersionAuditSnapshot is the non-secret projection of a
-// workflow version for the audit trail. Steps/inputs/outputs can embed
-// secrets (workflow steps carry prompt context); exclude the bodies.
+// workflowVersionAuditSnapshot is the non-secret projection of a workflow version for the audit
+// trail.
 func workflowVersionAuditSnapshot(v db.WorkflowVersionRow) map[string]any {
 	return map[string]any{
 		"id":          v.ID,
@@ -1642,11 +1518,8 @@ func workflowVersionAuditSnapshot(v db.WorkflowVersionRow) map[string]any {
 	}
 }
 
-// StepWire is the JSON shape of a Step stored in workflow_versions.steps
-// (mirrors the proto Step message — docs/02 §2.4). Used to parse the
-// steps JSON when seeding step runs and when the reconciler progresses
-// the DAG. Exported so the WorkflowReconciler (internal/scheduler) can
-// parse the same shape without duplicating the schema.
+// StepWire is the JSON shape of a Step stored in workflow_versions.steps (mirrors the proto Step
+// message — docs/02 §2.4).
 type StepWire struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
@@ -1660,13 +1533,7 @@ type StepWire struct {
 	PositionY     float64  `json:"position_y"`
 }
 
-// ParseSteps decodes the steps JSON (an array of Step messages) into a
-// slice of StepWire. Returns an empty slice for empty/null input.
-// Exported for use by the WorkflowReconciler.
-//
-// Old kind strings from before the v1 palette rework (e.g. "worker"
-// instead of "task") are normalized to the current domain constants
-// for backward compatibility.
+// ParseSteps decodes the steps JSON (an array of Step messages) into a slice of StepWire.
 func ParseSteps(data []byte) ([]StepWire, error) {
 	if len(data) == 0 {
 		return nil, nil
@@ -1690,9 +1557,8 @@ func parseSteps(data []byte) ([]StepWire, error) {
 	return ParseSteps(data)
 }
 
-// enqueueWorkflowEvent builds a workflow event envelope, encodes it as
-// JSON, and enqueues it in the outbox within the current transaction
-// (mirrors internal/worker/service.go).
+// enqueueWorkflowEvent builds a workflow event envelope, encodes it as JSON, and enqueues it in the
+// outbox within the current transaction (mirrors internal/worker/service.go).
 func enqueueWorkflowEvent(ctx context.Context, tx pgx.Tx, eventType string, w db.WorkflowRow, v db.WorkflowVersionRow, r db.WorkflowRunRow, stepID string) error {
 	payload, err := buildWorkflowEventPayload(eventType, w, v, r, stepID)
 	if err != nil {
@@ -1719,10 +1585,7 @@ func enqueueWorkflowEvent(ctx context.Context, tx pgx.Tx, eventType string, w db
 	return db.EnqueueOutbox(ctx, tx, row)
 }
 
-// buildWorkflowEventPayload returns the JSON-encoded workflow event
-// envelope. The envelope carries the workflow id, run id, step id, and
-// status fields so streaming clients can route and render events without
-// re-parsing the full payload.
+// buildWorkflowEventPayload returns the JSON-encoded workflow event envelope.
 func buildWorkflowEventPayload(eventType string, w db.WorkflowRow, v db.WorkflowVersionRow, r db.WorkflowRunRow, stepID string) ([]byte, error) {
 	evt := map[string]any{
 		"event_type":  eventType,
@@ -2041,9 +1904,8 @@ func lockRowToProto(l db.EditLockRow) *apiv1.EditLock {
 
 func strPtr(s string) *string { return &s }
 
-// StartWorkflowDirect starts a workflow run for a bound work item without
-// a Connect request wrapper. Used by the WorkItem service and the
-// ScheduledRunReconciler for inline dispatch (docs/11 §5.2).
+// StartWorkflowDirect starts a workflow run for a bound work item without a Connect request
+// wrapper.
 func StartWorkflowDirect(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, workflowID, projectID, workItemID string) error {
 	s := New(pool, log, nil)
 	req := connect.NewRequest(&apiv1.StartWorkflowRequest{
@@ -2059,12 +1921,8 @@ func StartWorkflowDirect(ctx context.Context, pool *db.Pool, log *slog.Logger, t
 	return err
 }
 
-// StartWorkflowDirectWithContext starts a workflow run for a bound work item
-// and stamps the given extra run_context into the run's run_context. It is
-// the provenance-aware variant used by the recurring fire so that any work
-// item created during the run is tagged with spawned_by / spawned_by_run_id /
-// outputs_mode (feature 4.1, D3). The run id is only known after creation, so
-// it is merged back into the run_context post-create (best-effort).
+// StartWorkflowDirectWithContext starts a workflow run for a bound work item and stamps the given
+// extra run_context into the run's run_context.
 func StartWorkflowDirectWithContext(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, workflowID, projectID, workItemID string, extra map[string]any) error {
 	rc := "{}"
 	if len(extra) > 0 {
@@ -2143,9 +2001,7 @@ func integrationStatusWithRecord(r db.WorkflowRunRow, rec *db.LocalIntegrationRo
 		// platform's own check failed — a tree that was not materialised, or the project's declared check.
 		return "failed"
 	case db.LocalIntegrationSkipped:
-		// Nothing to land. On a completed run that means the branch is gone (already merged and swept) or the
-		// project has no usable integration branch — the record's last_error says which, and the run page shows
-		// that text.
+		// Nothing to land.
 		return "not_merged"
 	default: // pending, integrating, adopted
 		if r.Status == domain.WorkflowRunCompleted {

@@ -1,14 +1,6 @@
 package scheduler
 
 // stale_checkout_test.go — the main checkout must be refreshable when it LAGS its own HEAD.
-//
-// REPORTED: "develop's ref is 066279b, but C:\projects\weatherapp contains only .git, .orchicon,
-// .orchicon-worktrees — no src/, no index.html." A ref moved under its own checkout leaves every tracked file
-// reported as DELETED, which the old readiness check read as "uncommitted changes" and therefore refused to
-// refresh — so the staleness was permanent.
-//
-// The distinction that matters: a MISSING tracked file is recoverable from git; a MODIFIED or UNTRACKED one is
-// work that exists nowhere else. Only the first may be refreshed.
 
 import "testing"
 

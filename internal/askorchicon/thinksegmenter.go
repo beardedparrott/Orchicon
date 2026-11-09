@@ -6,13 +6,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// Folded-think boundary markers are the SHARED opencode tag table
-// (opencode.ThinkOpenTags / ThinkCloseTags): pipe-delimited GLM markers
-// ("|<thinking>", "|think") AND plain model spellings ("<think>",
-// "<thought>", "<reasoning>"). The segmenter recognizes these with
-// carry-over state so a tag split across multiple token deltas is still
-// demuxed. A newly observed spelling is added once in the shared table —
-// the two paths can never drift again.
+// Folded-think boundary markers are the SHARED opencode tag table (opencode.ThinkOpenTags /
+// ThinkCloseTags): pipe-delimited GLM markers ("|<thinking>".
 
 // thinkSegState is the segmenter's carry-over state across deltas.
 type thinkSegState int
@@ -70,10 +65,8 @@ func (seg *thinkSegmenter) reset() {
 	seg.bodyStarted = false
 }
 
-// feed consumes one text delta, emitting plain text via emitText, think-body
-// content via growThink (incremental), and the completed body via commitThink.
-// Any of the three callbacks may be nil. State carries ACROSS calls so a tag
-// split over multiple deltas is recognized.
+// feed consumes one text delta, emitting plain text via emitText, think-body content via growThink
+// (incremental), and the completed body via commitThink.
 func (seg *thinkSegmenter) feed(delta string, emitText func(string), growThink func(string), commitThink func(string)) {
 	for i := 0; i < len(delta); {
 		switch seg.state {
@@ -155,11 +148,8 @@ func (seg *thinkSegmenter) commit(commitThink func(string)) {
 	seg.bodyStarted = false
 }
 
-// flushBody closes an unterminated think block (provider truncation / abort /
-// supersede at turn end) by committing any buffered body. The state resets to
-// plain text so subsequent deltas (in the same turn) are treated as text. Only
-// confirmed think-body content is emitted — tag fragments never reach the text
-// channel.
+// flushBody closes an unterminated think block (provider truncation / abort / supersede at turn
+// end) by committing any buffered body.
 func (seg *thinkSegmenter) flushBody(commitThink func(string)) {
 	if seg.bodyStarted {
 		seg.commit(commitThink)
@@ -167,10 +157,8 @@ func (seg *thinkSegmenter) flushBody(commitThink func(string)) {
 	seg.reset()
 }
 
-// inThink reports whether the segmenter currently has a think run open
-// (a fully recognized open tag with no close yet). Callers gate text
-// emission on it: while a think run is open, suspect-kind deltas must stay
-// on the segmenter road and never be raw-appended to text.
+// inThink reports whether the segmenter currently has a think run open (a fully recognized open tag
+// with no close yet).
 func (seg *thinkSegmenter) inThink() bool {
 	return seg.state == thinkSegInBody || seg.state == thinkSegInCloseTag || seg.bodyStarted
 }

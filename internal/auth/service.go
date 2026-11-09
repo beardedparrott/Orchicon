@@ -21,10 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Service implements the AuthService Connect handler
-// (docs/07_API_Specification.md §3.12). It manages API keys (hashed,
-// scoped entitlements), identity info, RBAC roles + role bindings, the
-// tenants list, and the audit view.
+// Service implements the AuthService Connect handler (docs/07_API_Specification.md §3.12).
 type Service struct {
 	pool *db.Pool
 	log  *slog.Logger
@@ -42,8 +39,6 @@ func NewService(pool *db.Pool, log *slog.Logger) *Service {
 // --- API keys --------------------------------------------------------------
 
 // CreateApiKey mints a new hashed API key with scoped entitlements.
-// The plaintext key is returned exactly once (ApiKeySecret); only the
-// hash is persisted (AGENTS.md security standards: hashed at rest).
 func (s *Service) CreateApiKey(ctx context.Context, req *connect.Request[apiv1.CreateApiKeyRequest]) (*connect.Response[apiv1.CreateApiKeyResponse], error) {
 	msg := req.Msg
 	actor := ActorFromContext(ctx)
@@ -293,18 +288,11 @@ func (s *Service) ListIdentities(ctx context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(resp), nil
 }
 
-// serviceAccountSubjectRE bounds an explicitly-supplied service-account
-// subject to the slug charset (mirrors the project/tenant slug rule so
-// machine identifiers stay URL-safe and predictable).
+// serviceAccountSubjectRE bounds an explicitly-supplied service-account subject to the slug charset
+// (mirrors the project/tenant slug rule so machine identifiers stay URL-safe and predictable).
 var serviceAccountSubjectRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
-// CreateIdentity provisions a new identity (user or service account) in
-// the caller's tenant. The RBAC interceptor gates this to auth:write.
-// For identity_type "user" the subject is the login handle and must match
-// the local-account username charset so the identity can immediately get
-// a SetLocalCredential whose username matches its subject. For "service"
-// the subject is optional; when omitted the server generates a synthetic
-// "sa-<ULID>" subject.
+// CreateIdentity provisions a new identity (user or service account) in the caller's tenant.
 func (s *Service) CreateIdentity(ctx context.Context, req *connect.Request[apiv1.CreateIdentityRequest]) (*connect.Response[apiv1.CreateIdentityResponse], error) {
 	msg := req.Msg
 	actor := ActorFromContext(ctx)
@@ -386,10 +374,7 @@ func (s *Service) CreateIdentity(ctx context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(&apiv1.CreateIdentityResponse{Identity: identityRowToProto(row)}), nil
 }
 
-// UpdateIdentity edits an identity's display_name with optional
-// optimistic concurrency. A version supplied on the request must match
-// the current row or the update fails with NotFound (mirrors
-// UpdateApiKeyStatus semantics).
+// UpdateIdentity edits an identity's display_name with optional optimistic concurrency.
 func (s *Service) UpdateIdentity(ctx context.Context, req *connect.Request[apiv1.UpdateIdentityRequest]) (*connect.Response[apiv1.UpdateIdentityResponse], error) {
 	msg := req.Msg
 	actor := ActorFromContext(ctx)
@@ -442,10 +427,6 @@ func (s *Service) UpdateIdentity(ctx context.Context, req *connect.Request[apiv1
 }
 
 // SetIdentityStatus flips an identity between "active" and "disabled".
-// Only those two values are writable; the column is unconstrained text
-// so the handler validates the enum even though the schema does not. A
-// version supplied on the request must match the current row or the
-// update fails with NotFound.
 func (s *Service) SetIdentityStatus(ctx context.Context, req *connect.Request[apiv1.SetIdentityStatusRequest]) (*connect.Response[apiv1.SetIdentityStatusResponse], error) {
 	msg := req.Msg
 	actor := ActorFromContext(ctx)
@@ -493,12 +474,8 @@ func (s *Service) SetIdentityStatus(ctx context.Context, req *connect.Request[ap
 	return connect.NewResponse(&apiv1.SetIdentityStatusResponse{Identity: identityRowToProto(row)}), nil
 }
 
-// DeleteIdentity hard-deletes an identity plus its role bindings, API
-// keys, and local credentials in one tenant-scoped transaction. Two
-// guards protect the admin surface: the caller may not delete their own
-// identity (self-lockout), and an "active" identity must be disabled
-// first (two-phase delete, matching the AC's disable-then-delete flow and
-// preventing accidental mass deletion).
+// DeleteIdentity hard-deletes an identity plus its role bindings, API keys, and local credentials
+// in one tenant-scoped transaction.
 func (s *Service) DeleteIdentity(ctx context.Context, req *connect.Request[apiv1.DeleteIdentityRequest]) (*connect.Response[apiv1.DeleteIdentityResponse], error) {
 	msg := req.Msg
 	actor := ActorFromContext(ctx)
@@ -509,9 +486,8 @@ func (s *Service) DeleteIdentity(ctx context.Context, req *connect.Request[apiv1
 	if msg.Id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
 	}
-	// Guard A: never let the caller delete the identity they are
-	// authenticated as (would strand the session mid-request and can lock
-	// an admin out of the plane).
+	// Guard A: never let the caller delete the identity they are authenticated as (would strand the
+	// session mid-request and can lock an admin out of the plane).
 	if ident, ok := FromContext(ctx); ok && ident.IdentityID == msg.Id {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("cannot delete your own identity"))
 	}
@@ -641,12 +617,7 @@ func (s *Service) CreateRole(ctx context.Context, req *connect.Request[apiv1.Cre
 	return connect.NewResponse(&apiv1.CreateRoleResponse{Role: roleRowToProto(row)}), nil
 }
 
-// UpdateRole edits a role's name and/or entitlements. scope/scope_ref
-// are immutable in this UI (project-scoped bindings are a non-goal). The
-// role named "admin" cannot be edited at all: it carries entitlements
-// ["*"] and ListIdentityEntitlements treats a bound role named exactly
-// "admin" as the tenant-admin bypass, so renaming it would strand the
-// plane and re-entitling it could weaken the bypass.
+// UpdateRole edits a role's name and/or entitlements.
 func (s *Service) UpdateRole(ctx context.Context, req *connect.Request[apiv1.UpdateRoleRequest]) (*connect.Response[apiv1.UpdateRoleResponse], error) {
 	msg := req.Msg
 	actor := ActorFromContext(ctx)
@@ -711,9 +682,7 @@ func (s *Service) UpdateRole(ctx context.Context, req *connect.Request[apiv1.Upd
 	return connect.NewResponse(&apiv1.UpdateRoleResponse{Role: roleRowToProto(row)}), nil
 }
 
-// DeleteRole hard-deletes a role and its role bindings. The role named
-// "admin" cannot be deleted (it is the tenant-admin carrier and deleting
-// it would strand the plane without an admin).
+// DeleteRole hard-deletes a role and its role bindings.
 func (s *Service) DeleteRole(ctx context.Context, req *connect.Request[apiv1.DeleteRoleRequest]) (*connect.Response[apiv1.DeleteRoleResponse], error) {
 	msg := req.Msg
 	actor := ActorFromContext(ctx)
@@ -904,10 +873,7 @@ func (s *Service) ListRoleBindings(ctx context.Context, req *connect.Request[api
 
 // --- Tenants (admin) -------------------------------------------------------
 
-// ListTenants returns a page of tenants. The tenants table has no
-// tenant_id (it IS the tenant — docs/09 §3.1); this is the one admin
-// read that crosses tenants. The RBAC interceptor gates this to admin
-// identities (auth:read).
+// ListTenants returns a page of tenants.
 func (s *Service) ListTenants(ctx context.Context, req *connect.Request[apiv1.ListTenantsRequest]) (*connect.Response[apiv1.ListTenantsResponse], error) {
 	rows, err := db.ListTenants(ctx, s.pool, int(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
@@ -923,11 +889,7 @@ func (s *Service) ListTenants(ctx context.Context, req *connect.Request[apiv1.Li
 	return connect.NewResponse(resp), nil
 }
 
-// CreateTenant provisions a new tenant. Admin-only path (the RBAC
-// interceptor enforces auth:write + tenant:create before this is
-// reached). Slug is validated server-side; the same regex the project
-// service uses ([a-z0-9]+(?:-[a-z0-9]+)*) so URLs and identifiers
-// stay consistent across the codebase.
+// CreateTenant provisions a new tenant.
 func (s *Service) CreateTenant(ctx context.Context, req *connect.Request[apiv1.CreateTenantRequest]) (*connect.Response[apiv1.CreateTenantResponse], error) {
 	msg := req.Msg
 	actor := ActorFromContext(ctx)
@@ -957,10 +919,8 @@ func (s *Service) CreateTenant(ctx context.Context, req *connect.Request[apiv1.C
 	if budget != "" && !json.Valid([]byte(budget)) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("budget_envelope_json is not valid JSON"))
 	}
-	// The tenants table has no tenant_id column and no RLS, so the audit
-	// row is scoped to the ACTOR's tenant (the admin's own tenant). Begin
-	// the tx in the actor's tenant so the audit row + tenant insert commit
-	// atomically.
+	// The tenants table has no tenant_id column and no RLS, so the audit row is scoped to the ACTOR's
+	// tenant (the admin's own tenant).
 	ttx, err := s.pool.BeginTenantTx(ctx, actor.TenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -1006,19 +966,11 @@ func tenantAuditSnapshot(r db.TenantRow) map[string]any {
 
 // --- Local-account credentials (embedded IdP boundary) ---------------------
 
-// localUsernameRE bounds the login handle charset. Lowercase alphanumerics
-// plus the separators common to email-style handles (. _ @ + -); the
-// display surface mirrors the slug convention so login identifiers stay
-// predictable.
+// localUsernameRE bounds the login handle charset.
 var localUsernameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._@+-]*$`)
 
-// SetLocalCredential creates or updates the local-account credential bound
-// to an identity (upsert by tenant + identity). It is the admin write path
-// for the embedded IdP's local accounts and stays inside the identity-
-// provider boundary: the plaintext password is hashed with argon2id here and
-// the stored hash is never returned. The RBAC interceptor gates this to
-// auth:write (admin). No control-plane service or Ask Orchicon tool has a
-// credential write path.
+// SetLocalCredential creates or updates the local-account credential bound to an identity (upsert
+// by tenant + identity).
 func (s *Service) SetLocalCredential(ctx context.Context, req *connect.Request[apiv1.SetLocalCredentialRequest]) (*connect.Response[apiv1.SetLocalCredentialResponse], error) {
 	msg := req.Msg
 	actor := ActorFromContext(ctx)
@@ -1149,12 +1101,8 @@ func (s *Service) ListAuditEntries(ctx context.Context, req *connect.Request[api
 	return connect.NewResponse(resp), rows.Err()
 }
 
-// ListAuditEvents returns a page of audit_events rows (the actor-based
-// trail written by internal/audit.Record). Distinct from ListAuditEntries
-// (policy decisions): this is "who did what", keyset-paginated on
-// (occurred_at, id), newest first. All filters are optional; start_time is
-// an inclusive lower bound, end_time an exclusive upper bound on
-// occurred_at (absent = unbounded, the 'epoch' sentinel convention).
+// ListAuditEvents returns a page of audit_events rows (the actor-based trail written by
+// internal/audit.Record).
 func (s *Service) ListAuditEvents(ctx context.Context, req *connect.Request[apiv1.ListAuditEventsRequest]) (*connect.Response[apiv1.ListAuditEventsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1204,9 +1152,8 @@ func requireTenant(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-// auditStartTime converts the optional lower time bound to a time.Time;
-// nil → zero time, which the data-access layer treats as unbounded via
-// the 'epoch' sentinel (same convention as usage.go's StartTime).
+// auditStartTime converts the optional lower time bound to a time.Time; nil → zero time, which the
+// data-access layer treats as unbounded via the 'epoch' sentinel (same convention as usage.go's.
 func auditStartTime(ts *timestamppb.Timestamp) time.Time {
 	if ts == nil {
 		return time.Time{}
@@ -1220,11 +1167,8 @@ func auditEndTime(ts *timestamppb.Timestamp) time.Time {
 	return auditStartTime(ts)
 }
 
-// expectedVersion converts the optional version field on an identity
-// mutation request into the data-access sentinel: nil (caller supplied
-// no version) → -1 disables the optimistic-concurrency check; a present
-// value must match the current row version or the update is a no-op
-// (NotFound). The proto field is int32; the data-access layer uses int.
+// expectedVersion converts the optional version field on an identity mutation request into the
+// data-access sentinel: nil (caller supplied no version) → -1 disables the optimistic-concurrency.
 func expectedVersion(v *int32) int {
 	if v == nil {
 		return -1
@@ -1242,16 +1186,9 @@ func mapDBError(err error) error {
 var roleNameRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // validEntitlementRE matches a well-formed "resource:action" entitlement.
-// Wildcards are permitted (and consumed by rbac.Has): "*" (tenant admin),
-// "*:action", "resource:*", and "resource:action". Anything else is
-// rejected so dead strings like "project:create" cannot persist.
 var validEntitlementRE = regexp.MustCompile(`^(?:\*|[\w-]+):(?:\*|[\w.-]+)$`)
 
-// validateEntitlements normalizes + bounds-checks a list of
-// "resource:action" entitlements. Only `*`, `*:action`, `resource:*`, and
-// `resource:action` forms are accepted (the exact set the RBAC interceptor
-// enforces); any malformed string is rejected with InvalidArgument so the
-// picker cannot persist dead entitlements.
+// validateEntitlements normalizes + bounds-checks a list of "resource:action" entitlements.
 func validateEntitlements(ents []string) ([]string, error) {
 	if len(ents) > 200 {
 		return nil, errors.New("too many entitlements")
@@ -1411,9 +1348,6 @@ func nullableStr(s string) string { return s }
 var _ = pgx.ErrNoRows
 var _ = json.Valid
 
-// slugRE defines the canonical slug character set: lowercase
-// alphanumerics and hyphens, must start and end alphanumeric. Mirrors
-// the project service's slug regex so tenant and project slugs follow
-// the same rules (a tenant's slug becomes the path prefix for the
-// projects, workers, etc. nested under it).
+// slugRE defines the canonical slug character set: lowercase alphanumerics and hyphens, must start
+// and end alphanumeric.
 var slugRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)

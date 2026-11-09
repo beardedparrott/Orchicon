@@ -38,9 +38,7 @@ func env(name, def, desc string, secret bool) CatalogEnvVar {
 	return CatalogEnvVar{Name: name, Default: def, Description: desc, Secret: secret}
 }
 
-// catalog is the curated registry (16 entries, matching the work item's
-// "and similar"). One-click add prefills the create form; install specs
-// drive auto-install (explicit-only, dry-run capable).
+// catalog is the curated registry (16 entries, matching the work item's "and similar").
 var catalog = []CatalogEntry{
 	{
 		Slug: "filesystem", DisplayName: "Filesystem",

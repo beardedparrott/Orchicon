@@ -1,12 +1,6 @@
 package planebind
 
 // service_test.go — the binding's DECISIONS, without spawning a process.
-//
-// The behaviours asserted here are the ones the brief calls out as load-bearing:
-//   * control goes through internal/planecontrol and NOWHERE else (no second path);
-//   * an unidentifiable instance is REFUSED, never guessed;
-//   * an unrecognised port resolves to NO instance (the UI must ask);
-//   * an action never claims success over a plane it did not verify.
 
 import (
 	"errors"
@@ -44,12 +38,8 @@ func withSeams(t *testing.T, start, stop, restart func(planecontrol.Options) err
 	}
 }
 
-// TestStartNeverBypassesTheFailSafe proves the binding ADDS NO CONTROL PATH: a
-// Start delegates exactly once to planecontrol, with the validated instance, and
-// never reaches for Stop/Restart behind the fail-safe's back. The "leave an
-// unidentifiable plane alone" behaviour itself is planecontrol's, already proven by
-// internal/planecontrol's plane_unknown_test.go — and it can only stay true if this
-// layer does not invent an alternative route to a restart.
+// TestStartNeverBypassesTheFailSafe proves the binding ADDS NO CONTROL PATH: a Start delegates
+// exactly once to planecontrol, with the validated instance.
 func TestStartNeverBypassesTheFailSafe(t *testing.T) {
 	var startOpts []planecontrol.Options
 	stopCalls, restartCalls := 0, 0
@@ -183,9 +173,8 @@ func TestStatusReportsWhatItFound(t *testing.T) {
 	}
 }
 
-// TestActionOutcomesAreWordedFromPlanecontrolsOwnReporting — the page reports
-// started / already-running / left-alone-unidentified / failed, and never invents
-// "started" for a plane it did not verify.
+// TestActionOutcomesAreWordedFromPlanecontrolsOwnReporting — the page reports started /
+// already-running / left-alone-unidentified / failed.
 func TestActionOutcomesAreWordedFromPlanecontrolsOwnReporting(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -201,9 +190,8 @@ func TestActionOutcomesAreWordedFromPlanecontrolsOwnReporting(t *testing.T) {
 		{"unidentifiable plane left alone", "start", "host plane already serving http://localhost:8080/healthz (could not identify the process; leaving it)\n", nil, "left-alone-unidentified", true, false},
 		{"stop of a stopped plane", "stop", "serve is not running\n", nil, "already-stopped", true, false},
 		{"stopped", "stop", "", nil, "stopped", true, false},
-		// Stop is restart's FIRST HALF, so a restart of a stopped plane emits Stop's
-		// no-op wording and then starts it. Reading "not running" action-blind would
-		// report "already stopped" over a plane that is now serving.
+		// Stop is restart's FIRST HALF, so a restart of a stopped plane emits Stop's no-op wording and then
+		// starts it.
 		{"restart of a stopped plane still started it", "restart", "serve is not running\nhost plane ready: http://localhost:8080/healthz\n", nil, "started", true, false},
 		{"restart after a verified start", "restart", "host plane ready: http://localhost:8080/healthz\n", nil, "started", true, false},
 		{"restart that never became ready", "restart", "", errors.New("the host plane did not answer http://localhost:8080/healthz within 60s"), "failed", false, true},

@@ -91,9 +91,7 @@ func TestAllowlistAgreesWithThePublishPolicy(t *testing.T) {
 		local := !strings.Contains(ref[:i], "/")
 
 		if local {
-			// A LOCAL name is BUILT. It must not also be published under a registry ref, because then the
-			// same variant would exist twice and the catalogue would reconcile the row to whichever the
-			// daemon happened to report.
+			// A LOCAL name is BUILT.
 			if pushed[tag] {
 				t.Errorf("the allowlist names the LOCAL tag %q, but release.yml also pushes a tag %q — one "+
 					"variant would exist as both a pull and a build", ref, tag)
@@ -115,16 +113,8 @@ func keysOf(m map[string]bool) []string {
 	return out
 }
 
-// TestAllowlistNamesLocalVariantTags is the routing guarantee, and it reverses an earlier expectation
-// deliberately.
-//
-// The variants used to be published, so the allowlist emitted "<repo>:gui-<tag>". They are not published any
-// more — they carry third-party adapter CLIs — so RELEASE publishes the base alone and the variants are BUILT
-// on the operator's machine. The allowlist therefore has to name their LOCAL tags.
-//
-// THIS IS NOT COSMETIC: the catalogue seeder reconciles each stock row's tag to whatever the daemon reports,
-// and FetchRuntimeImage routes on isRegistryRef — registry ref means PULL. A registry ref here would make every
-// variant row something to pull from a repository that no longer publishes it, i.e. "manifest unknown" again.
+// TestAllowlistNamesLocalVariantTags is the routing guarantee, and it reverses an earlier
+// expectation deliberately.
 func TestAllowlistNamesLocalVariantTags(t *testing.T) {
 	for _, image := range []string{
 		"",                                                      // the default
@@ -139,9 +129,7 @@ func TestAllowlistNamesLocalVariantTags(t *testing.T) {
 			t.Fatalf("image %q: want 2 variant refs, got %v", image, refs)
 		}
 		for _, ref := range refs {
-			// A registry ref is "host/path:tag"; a local one is "name:tag". The distinguishing feature is
-			// the SLASH before the first colon, which is exactly what internal/runtimeimage's
-			// isRegistryRef tests for.
+			// A registry ref is "host/path:tag"; a local one is "name:tag".
 			name := ref[:strings.LastIndex(ref, ":")]
 			if strings.Contains(name, "/") {
 				t.Errorf("image %q: the allowlist names %q, which is a REGISTRY reference — the fetch would "+

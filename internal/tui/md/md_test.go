@@ -38,12 +38,7 @@ func plain(lines []string) []string {
 // --- the width promise --------------------------------------------------------------------------
 
 // TestNoLineExceedsWidth is THE contract the operator set: "A table or codeblock can stretch
-// horizontally but only to the end of a pane's current width, otherwise we need to use a word wrap
-// and render it properly." There is no horizontal scroll to fall back on, and the detail viewport
-// TRUNCATES silently — so an over-wide line is invisible data loss, not a cosmetic wobble.
-//
-// The corpus is deliberately hostile: unbreakable tokens, wide runes, tables with many columns, deep
-// nesting, empty structures, and the real constructs found in the tenant.
+// horizontally but only to the end of a pane's current width.
 func TestNoLineExceedsWidth(t *testing.T) {
 	corpus := []string{
 		"# Heading that is long enough to need wrapping across several lines of a narrow pane indeed",
@@ -188,8 +183,7 @@ func TestInlineConstructsAreStyled(t *testing.T) {
 }
 
 // TestNoFullResetIsEverEmitted is the reason this package can be embedded inside the transcript's
-// full-width background band. A full reset (\x1b[0m) would clear the band's background from that cell
-// to the end of the line, leaving a hole in the fill. Only TARGETED off-codes are allowed.
+// full-width background band.
 func TestNoFullResetIsEverEmitted(t *testing.T) {
 	src := "# H\n\ntext with **bold**, *italic*, `code`, [a](https://x.example), ~~gone~~\n\n> quote\n\n- list\n\n```\ncode\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |"
 	got := strings.Join(Render(src, 40), "\n")
@@ -250,8 +244,7 @@ func TestNarrowTableFallsBackWithoutLosingValues(t *testing.T) {
 	lines := plain(Render(src, 12))
 	joined := strings.Join(lines, "\n")
 	// The values are checked with whitespace REMOVED, because at this width a cell legitimately wraps
-	// mid-word ("thr" + "ee" on the next line). Asserting on the contiguous string would fail on a
-	// correct render and push the fix toward truncation, which is the opposite of the requirement.
+	// mid-word ("thr" + "ee" on the next line).
 	squashed := strings.NewReplacer(" ", "", "\n", "", "\t", "").Replace(joined)
 	for _, want := range []string{"one", "two", "three", "four"} {
 		if !strings.Contains(squashed, want) {
@@ -418,13 +411,7 @@ func TestNoOverflowAtEveryWidthInRange(t *testing.T) {
 // --- the code block's containment -------------------------------------------------------------------
 
 // A CODE BLOCK IS A FILLED BLOCK WITH NO FRAME — the operator: "Code blocks aren't really contained
-// codeblocks that allow me to easily copy items, it has weird pipes and characters and it screws up the
-// copy."
-//
-// The frame glyphs are asserted ABSENT, which is the assertion that would have caught the original: `│`
-// and `┌` are ordinary printable cells, so a selection over the block copies them into whatever the
-// operator pastes into. And the FILL is asserted PRESENT as a real SGR background, so "no glyphs" cannot
-// be satisfied by rendering nothing at all.
+// codeblocks that allow me to easily copy items.
 func TestCodeBlockDrawsAFillAndNoFrameGlyphs(t *testing.T) {
 	SetCodeBlock("#c0c0c0", "#202020")
 	defer SetCodeBlock("", "")
@@ -443,9 +430,8 @@ func TestCodeBlockDrawsAFillAndNoFrameGlyphs(t *testing.T) {
 	}
 }
 
-// AND WITHOUT A DECLARED SURFACE THE FILL IS NOT DRAWN, because it could not be closed — the fail-closed
-// rule in blockActive. md.Render is the path several callers use, and a fill it cannot close would leave
-// the rest of each row wearing the block's background.
+// AND WITHOUT A DECLARED SURFACE THE FILL IS NOT DRAWN, because it could not be closed — the
+// fail-closed rule in blockActive.
 func TestCodeBlockNeedsASurfaceToFill(t *testing.T) {
 	SetCodeBlock("#c0c0c0", "#202020")
 	defer SetCodeBlock("", "")
@@ -460,13 +446,7 @@ func TestCodeBlockNeedsASurfaceToFill(t *testing.T) {
 
 // --- the band's WIDTH --------------------------------------------------------------------------------
 
-// A SHORT COMMAND GETS A SHORT BAND. The operator, after the first version: "I am thinking on top of odd
-// characters it is printing tab/spaces all the way to the end of the width."
-//
-// They were reading the FILL, which was padded to the PANE so the band always ran to the last column. This is
-// the assertion that stops it coming back, and it is stated as the exact number rather than "less than the
-// width": a band that drifted narrower or wider by a cell is a band whose margin changed, and the margin is
-// the only thing making the block readable as a block.
+// A SHORT COMMAND GETS A SHORT BAND.
 func TestCodeBlockBandIsTheCodesWidthNotThePanes(t *testing.T) {
 	SetCodeBlock("#c0c0c0", "#202020")
 	defer SetCodeBlock("", "")
@@ -517,11 +497,6 @@ func TestALongCodeLineStillFillsThePane(t *testing.T) {
 }
 
 // A TAB IS AS WIDE AS IT PAINTS.
-//
-// lipgloss.Width scores a tab as zero, so a band sized from it is short by one tab stop per tab — and the
-// lines that suffer are the tab-indented ones, i.e. Python and Makefile bodies. At eight-column tab stops
-// the line below paints 17 cells and measures 9, so the fill ended eight cells before the text did. The band
-// has to be sized in the cells the terminal will actually paint.
 func TestATabbedLineSizesTheBandToItsTrueWidth(t *testing.T) {
 	SetCodeBlock("#c0c0c0", "#202020")
 	defer SetCodeBlock("", "")

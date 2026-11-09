@@ -1,23 +1,7 @@
 package chat
 
-// turn_gate_send_test.go — A SEND THE SERVER REFUSES BECAUSE A TURN IS RUNNING IS DELIVERED, NOT BOUNCED.
-//
-// The service allows ONE turn per conversation and answers a second ChatStream with FailedPrecondition
-// ("a reply is still in progress for this conversation — wait for it to complete or stop it first":
-// internal/askorchicon/chat.go, turnRegistry.register) — and it names the remedy in the same breath: the
-// client interjects (supersedes) instead. That is already this client's documented rule ("sending while a
-// reply streams interjects (supersedes the turn) instead" — internal/tui/help.go) and the whole point of
-// the `interject` decision in SendWithAttachments.
-//
-// That decision is GUESSED FROM THE CLIENT'S OWN SLOT (`interject := st.streaming`), and the slot goes
-// stale across a leave-and-return — the re-attach reads the rail row (app.reattachRunningTurn), so a row
-// that predates the turn leaves the slot saying "idle" while the server says "busy". The send is then
-// refused with nothing on the wire, and the operator: "if I leave a conversation in the TUI and come back,
-// it doesn't actually send my message and I have to send it twice."
-//
-// The refusal is diagnosed in dropStream (it arrives ON the server-streaming call, not at the call site),
-// where the turn is re-issued on the supersede path — once — and a failure the supersede path cannot fix
-// is REPORTED instead of retried.
+// turn_gate_send_test.go — A SEND THE SERVER REFUSES BECAUSE A TURN IS RUNNING IS DELIVERED, NOT
+// BOUNCED.
 
 import (
 	"context"
@@ -93,8 +77,7 @@ func (s *turnGateAsk) setInFlight(convID string) {
 }
 
 // runPostedChatCommands pumps the controller's command channel the way the SHELL does (chatCmdMsg →
-// Update), until stop() reports the outcome or the budget runs out. It returns every message the posted
-// commands produced.
+// Update), until stop() reports the outcome or the budget runs out.
 func runPostedChatCommands(t *testing.T, cmds chan tea.Cmd, stop func() bool) []tea.Msg {
 	t.Helper()
 	var out []tea.Msg
@@ -156,10 +139,7 @@ func TestSendRefusedByTheTurnGateIsDeliveredAsAnInterjection(t *testing.T) {
 	}
 }
 
-// A REFUSAL THIS FIX CANNOT CURE MUST STILL FAIL LOUDLY. The retry can itself fail (an unresolvable
-// adapter also answers FailedPrecondition), and then the operator is TOLD — the shell's dock error strip
-// and the draft put back in the composer, the same handling every failed send gets — rather than the turn
-// vanishing or the retry looping.
+// A REFUSAL THIS FIX CANNOT CURE MUST STILL FAIL LOUDLY.
 func TestSendThatCannotBeDeliveredReportsTheFailure(t *testing.T) {
 	stub := &failingInterjectAsk{turnGateAsk: newTurnGateAsk()}
 	stub.setInFlight("c1")

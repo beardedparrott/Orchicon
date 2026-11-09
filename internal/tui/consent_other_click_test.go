@@ -32,10 +32,6 @@ import (
 
 // otherCardPlane builds a shell holding a pending QUESTION card whose ask allowed free text — the
 // shape the operator's screenshot shows.
-//
-// It uses the SAME fixture the option-click tests use (askRelaunched + healthyPlane + onChatWake),
-// so the card is reached through the real wake path onto a LIVE pane rather than planted in a store
-// nothing repaints.
 func otherCardPlane(t *testing.T) (*App, []chat.ChatItem) {
 	t.Helper()
 	m := askRelaunched(t, "c1")
@@ -83,8 +79,7 @@ func clickRow(m *App, row int) *App {
 }
 
 // TestAClickOnOtherOpensTheFreeTextRow is the reported bug: the Other row exists on the card (the
-// operator's screenshot), so a click on it must open the input the row promises — and must NOT
-// answer the question in the operator's name.
+// operator's screenshot), so a click on it must open the input the row promises.
 func TestAClickOnOtherOpensTheFreeTextRow(t *testing.T) {
 	m, items := otherCardPlane(t)
 	row := rowCarryingFrame(t, m, chat.ConsentOther)
@@ -108,8 +103,7 @@ func TestAClickOnOtherOpensTheFreeTextRow(t *testing.T) {
 }
 
 // TestTypingAfterAClickOnOtherBecomesTheAnswer is the other half of the report ("...and type in a
-// response there"): once the row is open by click, typing goes into the CARD and Enter submits the
-// typed words as the answer — not as a message, and not as the literal "Other".
+// response there"): once the row is open by click.
 func TestTypingAfterAClickOnOtherBecomesTheAnswer(t *testing.T) {
 	m, items := otherCardPlane(t)
 	m = clickRow(m, rowCarryingFrame(t, m, chat.ConsentOther))
@@ -134,8 +128,7 @@ func TestTypingAfterAClickOnOtherBecomesTheAnswer(t *testing.T) {
 }
 
 // TestAClickOnAnOptionStillAnswersTheQuestion is the CONTROL for the gate above: a click on a
-// canned option is still a choice and still settles the ask with that option's label. Without it,
-// "open the input row" could be satisfied by making every click on the card inert.
+// canned option is still a choice and still settles the ask with that option's label.
 func TestAClickOnAnOptionStillAnswersTheQuestion(t *testing.T) {
 	m, items := otherCardPlane(t)
 	m = clickRow(m, rowCarryingFrame(t, m, "develop"))
@@ -150,11 +143,6 @@ func TestAClickOnAnOptionStillAnswersTheQuestion(t *testing.T) {
 }
 
 // TestAClickOnOtherTakesTheKeyboardBackFromADeferredCard pins the RE-ARM.
-//
-// ctrl+g releases the claim without deciding anything, so the operator can reach the composer while
-// a question is up (ask.Model.DropKeyClaim — TestCtrlGWhileACardIsPendingDoesNotDeny). A click on
-// the card's own Other row is the operator acting ON the card, so the row it opens must be the thing
-// that collects the typing — not the composer behind it.
 func TestAClickOnOtherTakesTheKeyboardBackFromADeferredCard(t *testing.T) {
 	m, items := otherCardPlane(t)
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})

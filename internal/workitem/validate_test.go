@@ -38,17 +38,8 @@ func TestValidateTopLevelKind(t *testing.T) {
 	}
 }
 
-// TestValidateParentTopLevelExemptions pins the two documented exemptions
-// from the "only epics are top-level" rule. They are predicates the caller
-// passes INTO the shared validator — never a second, parallel code path —
-// and every other top-level shape stays refused with the unchanged message.
-//
-// PURE, and that is the point: the rule is a predicate. ValidateParent
-// returns before it touches the database when the item is parentless, so
-// this needs no pool and no migrations — a nil tx is passed deliberately to
-// prove the parentless path never reaches the database. (The DB half of the
-// helper — the parent is loaded in-tenant and depth-checked — is covered by
-// TestValidateParentDB below.)
+// TestValidateParentTopLevelExemptions pins the two documented exemptions from the "only epics are
+// top-level" rule.
 func TestValidateParentTopLevelExemptions(t *testing.T) {
 	ctx := context.Background()
 	const tenantID, projectID = "tnt_predicate", "prj_predicate"
@@ -175,9 +166,8 @@ func TestValidateKindDepth(t *testing.T) {
 	}
 }
 
-// TestValidateKindDepthSelfParent verifies the cycle-safety property: a
-// node can never be its own parent or its own descendant's child because
-// the parent chain is strictly ordered by depth.
+// TestValidateKindDepthSelfParent verifies the cycle-safety property: a node can never be its own
+// parent or its own descendant's child because the parent chain is strictly ordered by depth.
 func TestValidateKindDepthSelfParent(t *testing.T) {
 	for _, kind := range []string{
 		domain.WorkItemKindEpic,
@@ -191,10 +181,8 @@ func TestValidateKindDepthSelfParent(t *testing.T) {
 	}
 }
 
-// TestValidateAcceptanceReview verifies the acceptance review validator
-// trims whitespace, accepts empty strings (a work item without a
-// completed run has no review), and bounds the length like the other
-// markdown fields (maxDescLen).
+// TestValidateAcceptanceReview verifies the acceptance review validator trims whitespace, accepts
+// empty strings (a work item without a completed run has no review).
 func TestValidateAcceptanceReview(t *testing.T) {
 	if got, err := ValidateAcceptanceReview(""); err != nil {
 		t.Fatalf("empty should be allowed, got %v", err)
@@ -289,9 +277,8 @@ func validateParentItem(t *testing.T, ctx context.Context, pool *db.Pool, projec
 	return item
 }
 
-// TestValidateParentDB exercises the shared helper against a real DB:
-// valid reparenting, depth violations, cross-project parents, clearing
-// rules, and the cross-tenant NotFound guarantee.
+// TestValidateParentDB exercises the shared helper against a real DB: valid reparenting, depth
+// violations, cross-project parents, clearing rules, and the cross-tenant NotFound guarantee.
 func TestValidateParentDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -345,9 +332,8 @@ func TestValidateParentDB(t *testing.T) {
 		t.Errorf("cross-project error = %q, want 'same project'", msg)
 	}
 
-	// The ephemeral exemption relaxes ONLY the parentless case: with a parent
-	// present the ordinary depth rule applies in full, so the flag can never
-	// buy an item a deeper placement.
+	// The ephemeral exemption relaxes ONLY the parentless case: with a parent present the ordinary
+	// depth rule applies in full, so the flag can never buy an item a deeper placement.
 	if err := ValidateParent(ctx, ttx.Tx, validateParentTestTenant, task.ID, domain.WorkItemKindFeature, projectA, false, true); err == nil {
 		t.Error("a feature under a task must stay rejected even when the item is ephemeral")
 	}
@@ -370,10 +356,8 @@ func TestValidateParentDB(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkItemReparent exercises the full UpdateWorkItem handler:
-// explicit reparenting (same-project, depth rules), clearing rules, and
-// the carried-parent guard that rejects moving a child to another project
-// when its parent does not already live there.
+// TestUpdateWorkItemReparent exercises the full UpdateWorkItem handler: explicit reparenting
+// (same-project, depth rules), clearing rules.
 func TestUpdateWorkItemReparent(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -411,9 +395,8 @@ func TestUpdateWorkItemReparent(t *testing.T) {
 		t.Fatalf("feature parent = %v, want %s", cur.ParentID, epicA2.ID)
 	}
 
-	// A deeper parent (feature under its own task) is rejected — this is
-	// also the cycle-safety check (feature → task → feature would be a
-	// 2-cycle, impossible because the depth rule forbids it).
+	// A deeper parent (feature under its own task) is rejected — this is also the cycle-safety check
+	// (feature → task → feature would be a 2-cycle, impossible because the depth rule forbids it).
 	err = update(feature, func(m *apiv1.UpdateWorkItemRequest) { m.ParentId = strPtr(task.ID) })
 	if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("feature under task (deeper parent) should be rejected, got %v", err)
@@ -463,12 +446,8 @@ func TestUpdateWorkItemReparent(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkItemEphemeralTopLevelTask verifies the UPDATE path carries
-// the SAME exemption as the create path. An ephemeral item is top-level only,
-// so clearing its (absent) parent is the ordinary edit for it; without the
-// exemption the shared validator refuses it with a create-path message and
-// the two paths disagree about the same row. The flag is derived from the
-// ROW here, because the Connect update request has no ephemeral field.
+// TestUpdateWorkItemEphemeralTopLevelTask verifies the UPDATE path carries the SAME exemption as
+// the create path.
 func TestUpdateWorkItemEphemeralTopLevelTask(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -512,9 +491,7 @@ func TestUpdateWorkItemEphemeralTopLevelTask(t *testing.T) {
 			"shared validator, so the update path derives it from current.Ephemeral.", err)
 	}
 
-	// Still refused: the same edit on an ORDINARY top-level task. This is the
-	// scoping assertion — the exemption did not become a general "non-epics
-	// may be top-level on update".
+	// Still refused: the same edit on an ORDINARY top-level task.
 	err := clearParent(newTopLevel(false))
 	if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("clearing an ordinary top-level task's parent must stay refused, got %v", err)
@@ -738,9 +715,8 @@ func TestComputeNextRunAt_DailyInPast(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected non-nil next run")
 	}
-	// Start date is 2 days ago at 09:00, so next occurrence >= now is
-	// 2026-08-12 09:00 (yesterday) — no, that's before now (10:00).
-	// Next is 2026-08-13 09:00.
+	// Start date is 2 days ago at 09:00, so next occurrence >= now is 2026-08-12 09:00 (yesterday) —
+	// no, that's before now (10:00).
 	expected := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 	if !got.Equal(expected) {
 		t.Errorf("expected %v, got %v", expected, got)
@@ -889,9 +865,6 @@ func TestComputeNextRunAt_WeeklyWithDays_AnchorNotInDays(t *testing.T) {
 
 func TestComputeNextRunAt_WeeklyWithDays_Biweekly(t *testing.T) {
 	// Anchor Mon 08-10, interval=2 (every 2 weeks), days=[Mon, Wed].
-	// now=Thu 08-13 08:00. The current cadence week is 08-10 to 08-16.
-	// Wed 08-12 09:00 is past. Next cadence week starts 08-24.
-	// Mon 08-24 09:00 should be returned.
 	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC) // Thu 08:00
 	msg := &apiv1.RecurringSchedule{
 		Frequency: "weekly",
@@ -912,8 +885,6 @@ func TestComputeNextRunAt_WeeklyWithDays_Biweekly(t *testing.T) {
 
 func TestComputeNextRunAt_WeeklyWithDays_WrongAnchorDay(t *testing.T) {
 	// Anchor Mon 08-10, days=[Wed] only, interval=2.
-	// now=Tue 08-11 08:00. Wed 08-12 is in the future AND in the same
-	// cadence week as the anchor (offset 2 from Mon, mod 14 = 2, valid).
 	now := time.Date(2026, 8, 11, 8, 0, 0, 0, time.UTC) // Tue 08:00
 	msg := &apiv1.RecurringSchedule{
 		Frequency: "weekly",
@@ -934,8 +905,6 @@ func TestComputeNextRunAt_WeeklyWithDays_WrongAnchorDay(t *testing.T) {
 
 func TestComputeNextRunAt_WeeklyEmptyDays_Daily(t *testing.T) {
 	// Anchor Mon 08-10, empty days = every day, interval=1.
-	// now=Tue 08-11 08:00. Tue 08-11 09:00 is >= now and is day offset 1
-	// from anchor (valid since all offsets are valid with empty days).
 	now := time.Date(2026, 8, 11, 8, 0, 0, 0, time.UTC) // Tue 08:00
 	msg := &apiv1.RecurringSchedule{
 		Frequency: "weekly",
@@ -955,8 +924,6 @@ func TestComputeNextRunAt_WeeklyEmptyDays_Daily(t *testing.T) {
 
 func TestComputeNextRunAt_WeeklyEmptyDays_Biweekly(t *testing.T) {
 	// Anchor Mon 08-10, empty days = every day, interval=2 (every 14 days).
-	// now=Sat 08-15 08:00. Anchor weekday Mon (offset 0). Day offset 5
-	// (Sat) from anchor: 5%14=5, valid (all offsets valid).
 	now := time.Date(2026, 8, 15, 8, 0, 0, 0, time.UTC) // Sat 08:00
 	msg := &apiv1.RecurringSchedule{
 		Frequency: "weekly",
@@ -1219,9 +1186,8 @@ func TestComputeNextRunAt_MinuteWindow(t *testing.T) {
 	if got == nil || !got.Equal(want) {
 		t.Fatalf("minute window 01:20: want %v got %v", want, got)
 	}
-	// now 01:50 → next window next-day 01:00 (01:45 is last inside, but 02:00 exclusive, next grid 02:00 outside → next-day).
-	// Actually 01:45 is inside, so 01:50 → next grid 02:00 outside → next-day 01:00.
-	// Let's verify: 00:00 + k*15: 01:45 is k=7, 02:00 k=8 outside → jump to next-day 01:00 grid-aligned to 01:00? 01:00 is grid (k=4)?? 00:00 + 4*15=01:00 yes, but next-day 01:00 is not grid-aligned? Align should give next-day 01:00 (since anchor 00:00 next-day 01:00 is 1500 min diff, 1500%15=0).
+	// now 01:50 → next window next-day 01:00 (01:45 is last inside, but 02:00 exclusive, next grid
+	// 02:00 outside → next-day).
 	now2 := time.Date(2026, 8, 12, 1, 50, 0, 0, time.UTC)
 	got2 := ComputeNextRunAt(schedule, now2)
 	want2 := time.Date(2026, 8, 13, 1, 0, 0, 0, time.UTC)
@@ -1441,11 +1407,8 @@ func TestRecurringWindowHourly_DB(t *testing.T) {
 
 // --- Blocked status mapping ---
 
-// TestBlockedStatusMapping pins the blocked/waiting-state status switches:
-// the proto→domain and domain→proto maps accept the new BLOCKED enum value
-// so it round-trips through the API, while user-facing ValidateStatus (used
-// by the Ask Orchicon tools and board drops) rejects it — blocked is
-// system-managed and only the reconcilers may set it.
+// TestBlockedStatusMapping pins the blocked/waiting-state status switches: the proto→domain and
+// domain→proto maps accept the new BLOCKED enum value so it round-trips through the API.
 func TestBlockedStatusMapping(t *testing.T) {
 	if got := validateStatus(apiv1.WorkItemStatus_WORK_ITEM_STATUS_BLOCKED); got != domain.WorkItemBlocked {
 		t.Errorf("validateStatus(BLOCKED) = %q, want %q", got, domain.WorkItemBlocked)
@@ -1464,13 +1427,9 @@ func TestBlockedStatusMapping(t *testing.T) {
 	}
 }
 
-// TestSkippedStatusMapping pins the skip-status interplay round-trip: the
-// proto→domain and domain→proto maps accept the new SKIPPED enum value so
-// a skipped work item round-trips through the API, and user-facing
-// ValidateStatus ALSO accepts it — skipped is user-assignable through the
-// same generic update path as succeeded/cancelled (the sequence engine
-// consumes it as terminal-success and passes over it), unlike blocked
-// which remains system-managed.
+// TestSkippedStatusMapping pins the skip-status interplay round-trip: the proto→domain and
+// domain→proto maps accept the new SKIPPED enum value so a skipped work item round-trips through
+// the API.
 func TestSkippedStatusMapping(t *testing.T) {
 	if got := validateStatus(apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED); got != domain.WorkItemSkipped {
 		t.Errorf("validateStatus(SKIPPED) = %q, want %q", got, domain.WorkItemSkipped)

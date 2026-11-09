@@ -8,13 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// GetMCPServerByNameForOwner resolves a server row by its OWNER-SCOPED name
-// (the uniqueness the partial indexes mcp_servers_project_name_key /
-// mcp_servers_conversation_name_key now enforce). Two projects may each own
-// a `postgres`-named server; one owner may not hold two.
-//
-// conversationID is used for the conversation scope and projectID for the
-// project scope; pass the unused one as "".
+// GetMCPServerByNameForOwner resolves a server row by its OWNER-SCOPED name (the uniqueness the
+// partial indexes mcp_servers_project_name_key / mcp_servers_conversation_name_key now enforce).
 func GetMCPServerByNameForOwner(ctx context.Context, tx pgx.Tx, tenantID, projectID, conversationID, name string) (MCPServerRow, error) {
 	const q = `SELECT ` + mcpServerCols + ` FROM mcp_servers
 		WHERE tenant_id=$1 AND name=$2

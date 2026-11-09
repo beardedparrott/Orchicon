@@ -1,17 +1,5 @@
-// Package logging provides a size/time-bounded rotating file writer for
-// the control plane's on-disk logs.
-//
-// Background: `orchicon serve --detach` previously redirected the serve
-// child's stdout/stderr straight into a single append-only file
-// (.dev/logs/orchicon.log) with no rotation or retention. A runaway
-// component could grow that file into the hundreds of gigabytes with no
-// safety valve. RotatingWriter is the replacement sink: it owns the file,
-// rotates it when it exceeds a size ceiling OR when a time interval
-// elapses (whichever comes first), and prunes old rotated files by
-// retention age and/or a maximum file count. It is safe for concurrent
-// use (slog handlers call Write from many goroutines) and can be
-// reconfigured live via Apply so Settings → Defaults changes take effect
-// without a restart.
+// Package logging provides a size/time-bounded rotating file writer for the control plane's on-disk
+// logs.
 package logging
 
 import (
@@ -77,10 +65,7 @@ type RotatingWriter struct {
 	closed   bool
 }
 
-// New opens (creating if needed) the active log file and starts the
-// maintenance sweep. If the existing file is already over the size
-// ceiling, it is rotated immediately so a bloated file from a prior run
-// is quarantined on the first boot.
+// New opens (creating if needed) the active log file and starts the maintenance sweep.
 func New(cfg Config) (*RotatingWriter, error) {
 	c := normalize(cfg)
 	if err := os.MkdirAll(c.Dir, 0o755); err != nil {
@@ -185,18 +170,15 @@ func (w *RotatingWriter) Current() *os.File {
 	return w.f
 }
 
-// SetOnRotate registers a callback invoked after every rotation, outside
-// the writer's lock. Used by serve to re-dup the new file onto stdout/
-// stderr so panics and stray prints keep landing in the current log.
+// SetOnRotate registers a callback invoked after every rotation, outside the writer's lock.
 func (w *RotatingWriter) SetOnRotate(fn func()) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.onRotate = fn
 }
 
-// rotate renames the active file to a timestamped sibling and reopens a
-// fresh active file, then prunes old generations. Safe to call with the
-// lock held (the onRotate callback is deferred until the lock is free).
+// rotate renames the active file to a timestamped sibling and reopens a fresh active file, then
+// prunes old generations.
 func (w *RotatingWriter) rotate() {
 	w.mu.Lock()
 	cb := w.rotateLocked()
@@ -206,10 +188,8 @@ func (w *RotatingWriter) rotate() {
 	}
 }
 
-// rotateLocked performs the rename + reopen + prune and returns the
-// onRotate callback to invoke AFTER the caller releases the lock (the
-// callback typically dup2's the new file onto fd 1/2 — it must never run
-// under the writer's lock).
+// rotateLocked performs the rename + reopen + prune and returns the onRotate callback to invoke
+// AFTER the caller releases the lock (the callback typically dup2's the new file onto fd 1/2.
 func (w *RotatingWriter) rotateLocked() func() {
 	if w.f != nil {
 		_ = w.f.Close()
@@ -248,9 +228,7 @@ func (w *RotatingWriter) sweep() {
 	}
 }
 
-// pruneLocked deletes rotated files older than RetentionDays and, beyond
-// MaxFiles, the oldest ones. The active file (no dot suffix) is never a
-// candidate.
+// pruneLocked deletes rotated files older than RetentionDays and, beyond MaxFiles, the oldest ones.
 func (w *RotatingWriter) pruneLocked(now time.Time) {
 	entries, err := os.ReadDir(w.cfg.Dir)
 	if err != nil {
@@ -292,10 +270,7 @@ func (w *RotatingWriter) pruneLocked(now time.Time) {
 	}
 }
 
-// Apply live-reconfigures the writer. A changed directory or base name
-// reopens the active file at the new path; a changed ceiling/interval/
-// retention/maxfiles takes effect immediately. Then it prunes so an old
-// generation is cleaned up as soon as the policy tightens.
+// Apply live-reconfigures the writer.
 func (w *RotatingWriter) Apply(cfg Config) {
 	c := normalize(cfg)
 	w.mu.Lock()
@@ -325,9 +300,8 @@ func (w *RotatingWriter) Apply(cfg Config) {
 			}
 			return
 		}
-		// The active file moved (Settings → Defaults log directory
-		// change); re-point fd 1/2 so panics and stray prints follow the
-		// writer to the new location.
+		// The active file moved (Settings → Defaults log directory change); re-point fd 1/2 so panics and
+		// stray prints follow the writer to the new location.
 		cb = w.onRotate
 	}
 	w.pruneLocked(time.Now())

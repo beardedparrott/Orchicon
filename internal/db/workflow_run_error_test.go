@@ -1,14 +1,6 @@
 package db_test
 
 // workflow_run_error_test.go — the run's FAILURE round-trips through every read path.
-//
-// WHY THIS EXISTS AS A DB TEST. Adding a column to workflow_runs means editing SIXTEEN select lists and every
-// scan that consumes them, and Go cannot check SQL: a list with one more column than its destinations compiles
-// perfectly and fails at runtime with "number of field descriptions must equal number of destinations".
-//
-// That is exactly what happened while building this — CreateWorkflowRun went to 22 columns and 20 destinations,
-// every structural check I ran in the editor passed, and the Database caught it. This test is the assertion
-// that makes the next one fail in CI instead of on an operator's first run.
 
 import (
 	"context"

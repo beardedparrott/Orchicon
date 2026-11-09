@@ -1,16 +1,7 @@
 package workitem
 
-// Idea Cloud (feature 5.1) service tests: ListIdeas / PromoteIdea /
-// DismissIdea on top of the 4.1 idea-state primitives. These assert the
-// anti-leakage contract — idea-state items are excluded from the normal
-// Work Items scope and only PromoteIdea moves one into the normal scope;
-// DismissIdea discards; both transitions are audited + outboxed; the generic
-// update/delete/archive/hard-delete paths are gated for idea items so no
-// path other than Promote/Dismiss can act on an idea.
-//
-// Skipped unless ORCHICON_TEST_DSN points at a disposable database (repo
-// convention — validateParentTestPool applies the embedded migrations on
-// every run).
+// Idea Cloud (feature 5.1) service tests: ListIdeas / PromoteIdea / DismissIdea on top of the 4.1
+// idea-state primitives.
 
 import (
 	"context"
@@ -243,10 +234,8 @@ func TestDismissIdeaRejectsNonIdea(t *testing.T) {
 	}
 }
 
-// TestIdeaExcludedFromNormalScope pins the anti-leakage invariant from both
-// directions: idea-state items do not appear in the normal Work Items list
-// (4.1 exclusion), and ListIdeas returns exactly the idea-state items —
-// never a normal item, never a promoted/dismissed item.
+// TestIdeaExcludedFromNormalScope pins the anti-leakage invariant from both directions: idea-state
+// items do not appear in the normal Work Items list (4.1 exclusion).
 func TestIdeaExcludedFromNormalScope(t *testing.T) {
 	pool, s, ctx, tenantID, projectID := ideaEnv(t)
 	spawn := createPlainItem(t, pool, tenantID, projectID, "Automation Z", domain.WorkItemPending)
@@ -327,9 +316,8 @@ func TestListIdeasPaginationSearchSort(t *testing.T) {
 	}
 }
 
-// TestGenericMutationPathsRejectIdea locks every generic mutation path from
-// acting on an idea-state item (the centralized not-idea guard), so the ONLY
-// sanctioned ways out of idea state are PromoteIdea and DismissIdea.
+// TestGenericMutationPathsRejectIdea locks every generic mutation path from acting on an idea-state
+// item (the centralized not-idea guard).
 func TestGenericMutationPathsRejectIdea(t *testing.T) {
 	pool, s, ctx, tenantID, projectID := ideaEnv(t)
 	spawn := createPlainItem(t, pool, tenantID, projectID, "Automation", domain.WorkItemPending)
@@ -379,13 +367,8 @@ func TestGenericMutationPathsRejectIdea(t *testing.T) {
 	}
 }
 
-// TestListIdeasRejectedScope pins the Idea Cloud REJECTED section
-// (IdeaStateScope=REJECTED): the graveyard is EXACTLY dismissed idea spawns
-// (status='cancelled' WITH spawned provenance — what DismissIdea writes), a
-// plain (human-created) cancelled item never leaks in, an approved idea
-// that was subsequently cancelled still reads as rejected history ("tried
-// and killed" — the dedupe signal), and the ACTIVE list is unchanged by any
-// of it.
+// TestListIdeasRejectedScope pins the Idea Cloud REJECTED section (IdeaStateScope=REJECTED): the
+// graveyard is EXACTLY dismissed idea spawns (status='cancelled' WITH spawned provenance.
 func TestListIdeasRejectedScope(t *testing.T) {
 	pool, s, ctx, tenantID, projectID := ideaEnv(t)
 	spawn := createPlainItem(t, pool, tenantID, projectID, "Automation R", domain.WorkItemPending)

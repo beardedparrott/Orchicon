@@ -1,16 +1,6 @@
 package chat
 
 // turn_poll_test.go — THE MID-TURN POLL IS ARMED WITH THE TURN AND STOPS WITH IT.
-//
-// The merge half of the live-streaming fix lives in internal/tui (it owns chatStore); this file covers
-// the SCHEDULING, which is here because it reads the controller's own per-conversation state.
-//
-// Why the poll exists at all is worth restating where the scheduling lives: the live socket delivered
-// heartbeats and nothing else, so the pane showed a thinking notice whose age kept resetting and never
-// a reply. The server already mirrors the running turn's text, reasoning and tool ledger into the
-// acked assistant message every 250ms — for exactly this audience, "a client that lost the live stream
-// (refresh, another tab/device) polls ListMessages and watches the reply grow" — so the TUI polls, and
-// liveness stops depending on a long-lived connection.
 
 import (
 	"testing"
@@ -20,11 +10,6 @@ import (
 )
 
 // THE POLL RUNS WHILE THE TURN STREAMS, and stops as soon as it does not.
-//
-// Asserted through the real command channel the shell drains, because that is the wiring that matters:
-// a poll that fired into nothing would be indistinguishable from no poll at all. The interval is a
-// constant (askTurnPollInterval), so this waits on real time — once, for the behaviour that makes the
-// feature exist.
 func TestTheTurnPollPushesCommandsWhileStreamingAndStopsAfter(t *testing.T) {
 	c := NewController(nil)
 	cmds := make(chan tea.Cmd, 8)
@@ -116,26 +101,7 @@ func TestTheTurnPollStopsWhenTheTurnCompletes(t *testing.T) {
 	}
 }
 
-// ⚠️ THE POLL IS ARMED BY THE SEND, NOT BY THE STREAM OPENING. THIS IS THE BUG.
-//
-// The operator's discovery, which cracked it: "When I click into a conversation and send a message, I
-// see the 'Orchicon is thinking...' and the watchdog notification, but NO other messages show up.
-// However, when I click away from the conversation and go back into it, reasoning shows up and the
-// stream is now streaming live!" — and their hypothesis, "is it possible the 'Orchicon is thinking...'
-// message is what was preventing the live streaming?"
-//
-// The notice was the SYMPTOM, not the cause. Both liveness goroutines used to be armed inside
-// startStream's command, AFTER `ChatStream` returned. That call blocks until the server's response
-// headers arrive — so when a proxy buffers the streaming response, it blocks FOREVER: `consume` never
-// runs, neither goroutine is ever started, and `streaming` (set true synchronously before the call) stays
-// true, which is exactly why the pane showed the thinking notice and its watchdog age and nothing else.
-//
-// EVERY SAFETY NET WAS GATED BEHIND THE FAILURE IT EXISTED TO COVER — including the durable poll I added
-// for it. Armed at the send instead, the poll runs whatever the transport does.
-//
-// A nil client is the cleanest stand-in for "the stream never opens": ChatStream cannot succeed, so
-// startStream's command never arms anything. If the poll pushes a command anyway, it was armed by the
-// send — which is the property.
+// ⚠️ THE POLL IS ARMED BY THE SEND, NOT BY THE STREAM OPENING.
 func TestThePollIsArmedEvenWhenTheStreamNeverOpens(t *testing.T) {
 	c := NewController(nil)
 	cmds := make(chan tea.Cmd, 8)
@@ -155,10 +121,6 @@ func TestThePollIsArmedEvenWhenTheStreamNeverOpens(t *testing.T) {
 
 // AND THE WATCHDOG'S CLOCK IS STAMPED BY THE SEND, so a handshake that never completes is caught as
 // SILENCE rather than waiting forever for a first event that will never arrive.
-//
-// Without this stamp `lastActivity` stays zero, which livenessCheck deliberately treats as "not started
-// yet" — correct for a stream still opening, and exactly wrong here: it is the case where the stream
-// never opens at all, so the watchdog would have waited for ever alongside the poll.
 func TestTheSendStampsTheWatchdogsClock(t *testing.T) {
 	c := NewController(nil)
 	c.SendWithAttachments("c1", "hello", "", nil)

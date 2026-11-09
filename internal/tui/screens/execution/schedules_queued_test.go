@@ -2,13 +2,6 @@ package execution
 
 // schedules_queued_test.go — the UPCOMING lens's SECOND membership source: the queued sequence
 // children.
-//
-// The operator: "In the TUI, it is not showing the upcoming runs but the GUI does. It says 'nothing
-// scheduled here — v switches to running / finished'." A sequence parent is the only item carrying
-// a scheduled_start_at (the engine keeps its children PENDING and arms one at a time), so the
-// children never matched the SCHEDULED query the pane used to issue alone. These tests pin the
-// second source, the chain-order, the two-key behaviour on a queued row, and the parity of the
-// predicate with the GUI's model over one shared fixture.
 
 import (
 	"context"
@@ -254,9 +247,7 @@ func upcomingItemsFor(t *testing.T, m *Model, view schedView) []screenkit.Item {
 	return items
 }
 
-// 8. THE PARITY AC: the SAME fixture file the GUI's vitest reads
-// (frontend/src/lib/schedules-fixture.test.ts) is run through THIS pane's predicate, so the two
-// clients cannot drift on membership or on chain order.
+// 8.
 func TestUpcomingMembershipMatchesTheGuiModel(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..",
 		"frontend", "src", "lib", "schedules-fixture.json"))
@@ -295,13 +286,7 @@ func TestUpcomingMembershipMatchesTheGuiModel(t *testing.T) {
 	}
 }
 
-// 9. A QUEUED CHILD THAT STILL CARRIES AN OLD RUN ID IS STILL QUEUED — and `g` must STILL refuse.
-//
-// resetSubtree (internal/scheduler/sequence_reconciler.go) resets a non-terminal descendant to
-// PENDING with a STATUS-ONLY update, so a re-run sequence's previously-failed child keeps its old
-// workflow_run_id. The predicate is the child's STATUS, so that child is queued like any other — and
-// the row must not promise a run it has not got. Binding the stale id would make `g` jump to a
-// FINISHED run of an earlier attempt while the row says "waits for the current step".
+// 9.
 func TestSchedulesUpcomingQueuedChildWithAStaleRunIDStillRefusesToJump(t *testing.T) {
 	p := &fakePlane{
 		items: []*apiv1.WorkItem{

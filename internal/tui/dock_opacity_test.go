@@ -9,9 +9,8 @@ import (
 	"github.com/muesli/termenv"
 )
 
-// gapCount counts cells that render on the TERMINAL's background: a run of
-// printable/space cells after an SGR reset that is not immediately re-opened
-// by another escape.
+// gapCount counts cells that render on the TERMINAL's background: a run of printable/space cells
+// after an SGR reset that is not immediately re-opened by another escape.
 func gapCount(s string) int {
 	gaps := 0
 	rest := s
@@ -34,10 +33,8 @@ func gapCount(s string) int {
 	}
 }
 
-// The composer must be fully opaque in BOTH states — with the placeholder
-// (nothing typed) and with typed text — because the operator reported a hole
-// peering into the terminal in both. The placeholder row and the input row
-// carry styled spans whose resets would otherwise clear the box background.
+// The composer must be fully opaque in BOTH states — with the placeholder (nothing typed) and with
+// typed text — because the operator reported a hole peering into the terminal in both.
 func TestComposerIsOpaqueEmptyAndTyping(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })

@@ -8,13 +8,6 @@ import (
 )
 
 // TestChatBusNeverDropsTerminalEvents is the guard for the turn-ending signal.
-//
-// The bus is small (32 slots) and drops best-effort when full, which is fine for
-// progress reporting and FATAL for `idle`: a dropped idle leaves the collector
-// waiting forever, so the turn wedges with no error to diagnose. Emitting a
-// tool_result per tool call made a full buffer reachable in an ordinary
-// multi-tool turn (TestChatTurnClientManyToolRoundsUnbounded reported "no idle at
-// turn end"), so the rule is now explicit: a terminal event waits for room.
 func TestChatBusNeverDropsTerminalEvents(t *testing.T) {
 	b := newChatBus()
 	defer b.Close()
@@ -24,9 +17,8 @@ func TestChatBusNeverDropsTerminalEvents(t *testing.T) {
 		b.emit(scheduler.SessionEvent{Kind: "delta", Text: "x"})
 	}
 
-	// CONTROL: a non-terminal signal is still best-effort — it returns at once
-	// and is dropped, which is the documented behaviour for progress reporting.
-	// Without this, the assertion below could pass for the wrong reason.
+	// CONTROL: a non-terminal signal is still best-effort — it returns at once and is dropped, which is
+	// the documented behaviour for progress reporting.
 	ordinary := make(chan struct{})
 	go func() { b.emit(scheduler.SessionEvent{Kind: "delta", Text: "dropped"}); close(ordinary) }()
 	select {
@@ -68,9 +60,8 @@ func TestChatBusNeverDropsTerminalEvents(t *testing.T) {
 	}
 }
 
-// TestChatBusTerminalEventWaitsAreBoundedByDone: a consumer that has gone away
-// must not hang the emitting goroutine. This is what the done arm of the wait is
-// for.
+// TestChatBusTerminalEventWaitsAreBoundedByDone: a consumer that has gone away must not hang the
+// emitting goroutine.
 func TestChatBusTerminalEventWaitsAreBoundedByDone(t *testing.T) {
 	b := newChatBus()
 	for i := 0; i < cap(b.events); i++ {

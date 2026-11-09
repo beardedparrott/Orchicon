@@ -1,15 +1,6 @@
 package askorchicon
 
 // handshake_retry_test.go — the plane must retry an un-accepted message itself.
-//
-// The operator: "this message 'turn failed: the opencode serve did not accept the message within 1m0s —
-// please try again' Let's ensure we are doing our keep alive/retries as well. If not we should add them.
-// Users should very rarely see these messages. Orchicon should be trying to handle these timeouts and
-// other issues itself first. It's frustrating."
-//
-// They were right: a serve that has not accepted the message is usually still coming up (binding,
-// replaying its session store) or busy, and BOTH resolve within one more window. The turn used to fail
-// on the first timeout, making the operator do the retry work the loop could do.
 
 import (
 	"strings"
@@ -43,9 +34,6 @@ func TestHandshakeAttemptsOverride(t *testing.T) {
 }
 
 // THE RETRY MUST CANCEL THE IN-FLIGHT ATTEMPT BEFORE RE-DISPATCHING.
-//
-// Without it, attempt N can still be in flight when attempt N+1 succeeds, and the serve receives the
-// SAME user message twice — a duplicate reply is worse than the timeout it avoids.
 func TestHandshakeRetryCancelsBeforeRedispatch(t *testing.T) {
 	src := readChatSource(t)
 	cancel := indexOf(src, "cancelSend()\n\t\t\t\t\tsendCtx, cancelSend = context.WithCancel(subCtx)")

@@ -1,40 +1,5 @@
-// Package recovery implements the Recovery Workflow Engine
-// (docs/06_Recovery_Workflow_Engine.md, docs/02 §2.6).
-//
-// Recovery is a workflow, not a function. When a WorkerExecution becomes
-// unhealthy, stalls, exhausts its context, or breaches a retry budget,
-// the engine creates a RecoveryExecution and progresses it through the
-// default 6-step workflow (capture → summarize → preserve → review →
-// plan → resume) to preserve progress, minimize context loss, and resume
-// forward motion (docs/06 §1).
-//
-// Recovery is opt-out, not opt-in (docs/06 §1). The TaskReconciler calls
-// TriggerOnFailure when an execution fails; operators call
-// RecoveryService.TriggerRecovery for manual triggers. The
-// RecoveryReconciler (registered with the reconciler manager) scans
-// pending recoveries and progresses them.
-//
-// Resumption path (docs/06 §4): the engine attempts direct checkpoint
-// replay when a compatible adapter accepts the prior checkpoint;
-// otherwise it runs the full summarize-resume path. The choice and
-// outcome are recorded as telemetry.
-//
-// Bounded auto-relax (docs/06 §11): recovery may increase a Task's
-// budget by up to 25% of the original automatically (with an audit
-// event); beyond 150% of the original, human approval is required.
-//
-// Task completion (docs/06 §11, docs/02 §4 #2): a Task may be marked
-// succeeded by the completion Policy, by the Reviewer Worker during
-// recovery, or by a human (MarkTaskSucceeded). All three paths produce
-// an audit event with the actor recorded.
-//
-// Recovery never bypasses the Scheduler (docs/06 §10 invariant #1): the
-// resume step transitions the Task to ready and the TaskReconciler
-// dispatches the replacement. Recovery never bypasses Policy (invariant
-// #2): the resumed execution is subject to the same dispatch/budget/
-// completion Policies. The original execution's history is immutable
-// once recovering (invariant #4): recovery writes a new execution, it
-// does not rewrite the old one.
+// Package recovery implements the Recovery Workflow Engine (docs/06_Recovery_Workflow_Engine.md,
+// docs/02 §2.6).
 package recovery
 
 import (
@@ -54,10 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Engine is the Recovery Workflow Engine. It triggers recoveries and
-// progresses them through the default 6-step workflow. The
-// RecoveryReconciler embeds it and is registered with the reconciler
-// manager so pending recoveries are scanned each tick.
+// Engine is the Recovery Workflow Engine.
 type Engine struct {
 	pool *db.Pool
 	log  *slog.Logger
@@ -68,9 +30,8 @@ func New(pool *db.Pool, log *slog.Logger) *Engine {
 	return &Engine{pool: pool, log: log}
 }
 
-// Recovery strategy constants persisted to recovery_executions.strategy
-// (PR C — recovery as work items). The engine reads this column and
-// routes accordingly in progressRecovery.
+// Recovery strategy constants persisted to recovery_executions.strategy (PR C — recovery as work
+// items).
 const (
 	RecoveryStrategySummarizeRestart = "summarize_restart" // default — 6-step flow
 	RecoveryStrategyStop             = "stop"              // PR C
@@ -78,28 +39,11 @@ const (
 	RecoveryStrategyRetryN           = "retry_n"           // PR C
 
 	// Default retry budget: max 5 recovery attempts for the same task chain.
-	//
-	// There are NO env overrides for these. An earlier revision of this comment
-	// claimed ORCHICON_RECOVERY_MAX_RETRIES and ORCHICON_RECOVERY_RETRY_DELAY_SECONDS;
-	// neither name is read anywhere in the tree, so they were documented but never
-	// implemented.
-	//
-	// The delay is gone entirely (see the note on retry_delay_seconds below).
 	defaultMaxRetries = 5
 )
 
-// strategyForWorkItem maps a work item's kind to the recovery strategy
-// that should run when a worker fails on a task it is associated with.
-// The regular hierarchy kinds default to summarize_restart (preserves
-// existing behavior); the recovery_X kinds in the enum trigger their
-// corresponding strategy. New recovery kinds can be added without
-// touching this function (they'll default to summarize_restart).
-// deterministicStopErrorPatterns are error signatures of deterministic
-// infrastructure / configuration failures whose retry is guaranteed to fail
-// identically. Recovery of these is pure waste (a resume loop burns cycles
-// and produces noise acceptance reviews) — they must be classified as a
-// non-retryable stop: fail the item loudly with the exact error and clear
-// operator guidance to fix the config, then re-run. See WI-4 class 3.
+// strategyForWorkItem maps a work item's kind to the recovery strategy that should run when a
+// worker fails on a task it is associated with.
 var deterministicStopErrorPatterns = []string{
 	`model ref "" has no provider/model`, // empty/invalid model ref
 	`has no provider/model`,              // orchicon bridge: empty provider or model
@@ -113,30 +57,16 @@ var deterministicStopErrorPatterns = []string{
 	"image pull failed",                  // image pull failure
 	"failed_to_start",                    // execution failed before the model even ran
 	"no provider",                        // provider unresolved
-	// THE REPORTED SIGNATURE, AND IT MATCHED NOTHING HERE BEFORE. Reported: six executions, 0 tokens each,
-	// ~280ms apart, every one "claude session exited without a terminal result message (exit code 1)". The
-	// adapter CLI never reached the model — a launch/credential failure — so resuming it five times could
-	// only reproduce it, and did.
+	// THE REPORTED SIGNATURE, AND IT MATCHED NOTHING HERE BEFORE.
 	"exited without a terminal result message",
-	// THE PLATFORM REJECTING THE WORK IS A DETERMINISTIC CAUSE, and it was missing from this list — which is
-	// why run 01M6TB0MQ2EXDRW6EX8GAR0DT3 burned six attempts on one objection.
-	//
-	// The reasoning is the same as every other entry here: resuming the SAME model with the SAME brief
-	// against a rejection the PLATFORM made reproduces it. The worker did not crash; it was examined and
-	// refused. Re-running it unchanged is not a retry, it is a repetition.
-	//
-	// Two forms, because the message is written in two places: the evidence gate's own wording, and the
-	// gate's per-check prefix (`not substantiated: …`). Either is proof the platform, not the environment,
-	// rejected the work.
+	// THE PLATFORM REJECTING THE WORK IS A DETERMINISTIC CAUSE, and it was missing from this list —
+	// which is why run 01M6TB0MQ2EXDRW6EX8GAR0DT3 burned six attempts on one objection.
 	"the worker reported success but the evidence contradicts it",
 	"not substantiated:",
 }
 
-// isDeterministicStopError reports whether a failed execution's error is a
-// deterministic configuration/infrastructure failure that a recovery resume
-// loop cannot fix. Such failures are treated as stop-class: no recovery
-// loop, a loud item-level failure carrying the exact error, and a retry
-// only once the underlying config changes.
+// isDeterministicStopError reports whether a failed execution's error is a deterministic
+// configuration/infrastructure failure that a recovery resume loop cannot fix.
 func isDeterministicStopError(errText string) bool {
 	if errText == "" {
 		return false
@@ -150,25 +80,15 @@ func isDeterministicStopError(errText string) bool {
 	return false
 }
 
-// recoveryStrategyFor resolves the strategy, adding the evidence-based stop: a failure whose text is IDENTICAL
-// to the previous execution's is not retried, whatever it says. Patterns name known causes; this catches a new
-// one on its first repetition rather than after its fifth.
+// recoveryStrategyFor resolves the strategy, adding the evidence-based stop: a failure whose text
+// is IDENTICAL to the previous execution's is not retried, whatever it says.
 func recoveryStrategyFor(ctx context.Context, tx pgx.Tx, tenantID, taskID, failedExecID string,
 	exec *db.ExecutionRow, kind string) string {
 	if stoppedIdenticallyBefore(ctx, tx, tenantID, taskID, failedExecID) {
 		return RecoveryStrategyStop
 	}
-	// AN EVIDENCE REJECTION GETS EXACTLY ONE MORE ATTEMPT — and only because that attempt now carries the
-	// reason.
-	//
-	// The pattern list makes a rejection stop-class, which is right in principle: resuming the same model
-	// against the same brief against a judgement the PLATFORM made reproduces it. But stopping on the FIRST
-	// rejection throws away the one retry that can now succeed, because the seed carries WHY. So the first
-	// rejection is retried with the reason attached; every subsequent one stops.
-	//
-	// Without this second clause the run would end on the first rejection with no operator signal that a
-	// retry was ever reasonable; without the pattern it would loop six times as it did on
-	// 01M6TB0MQ2EXDRW6EX8GAR0DT3. The pair is the difference between repeating and correcting.
+	// AN EVIDENCE REJECTION GETS EXACTLY ONE MORE ATTEMPT — and only because that attempt now carries
+	// the reason.
 	if exec != nil && isEvidenceRejection(exec.ErrorMessage) {
 		if prior, _ := countTaskChainRecoveries(ctx, tx, tenantID, taskID); prior >= 1 {
 			return RecoveryStrategyStop
@@ -178,12 +98,8 @@ func recoveryStrategyFor(ctx context.Context, tx pgx.Tx, tenantID, taskID, faile
 	return strategyForFailure(exec, kind)
 }
 
-// isEvidenceRejection reports whether a failure was the PLATFORM refusing the delivered work, rather than a
-// crash, a stall, or an environment fault.
-//
-// The distinction decides whether a resume is a retry or a repetition. A stalled session lost its transcript
-// and may well finish next time; a rejected report was read, judged, and refused — so only a CHANGED report
-// can pass, and change requires knowing the objection.
+// isEvidenceRejection reports whether a failure was the PLATFORM refusing the delivered work,
+// rather than a crash, a stall, or an environment fault.
 func isEvidenceRejection(errText string) bool {
 	if errText == "" {
 		return false
@@ -200,15 +116,7 @@ func isEvidenceRejection(errText string) bool {
 	return false
 }
 
-// stoppedIdenticallyBefore reports whether the PREVIOUS execution of this task failed with the same error text.
-//
-// PATTERNS CANNOT KEEP UP, so this is the evidence-based half of the stop-class decision. The credential
-// failure that looped six times carried "claude session exited without a terminal result message" — a sentence
-// no pattern list anticipated, because it is a SYMPTOM with no cause in it. But a resume that produced the
-// identical sentence is proof that resuming did not help: whatever the cause, it did not change.
-//
-// Deliberately conservative: it compares only the IMMEDIATELY previous execution (not a chain), it requires a
-// non-empty message on both sides, and a read failure answers false so recovery proceeds exactly as before.
+// PATTERNS CANNOT KEEP UP, so this is the evidence-based half of the stop-class decision.
 func stoppedIdenticallyBefore(ctx context.Context, tx pgx.Tx, tenantID string, taskID, failedExecID string) bool {
 	execs, err := db.ListExecutions(ctx, tx, db.ListExecutionsFilter{
 		TenantID: tenantID, TaskID: taskID, PageSize: 2, SortBy: "created_at", SortOrder: "desc",
@@ -224,21 +132,12 @@ func stoppedIdenticallyBefore(ctx context.Context, tx pgx.Tx, tenantID string, t
 	return a != "" && a == b
 }
 
-// normaliseFailureText makes two failure messages comparable: lowercased, whitespace collapsed. Timestamps and
-// ids inside a message would otherwise make every repetition look different, which is exactly the noise this
-// check exists to see through — but nothing here strips so much that two different causes could compare equal.
+// normaliseFailureText makes two failure messages comparable: lowercased, whitespace collapsed.
 func normaliseFailureText(s string) string {
 	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
 }
 
 // effectiveStrategy resolves the recovery strategy for a failed execution.
-// The work item's kind drives the default (PR C), but a deterministic
-// config/infra failure (stop-class) ALWAYS resolves to stop — resuming
-// against a broken model ref / credential / image retries the identical
-// failure and burns the resume budget to no end (observed: the Quick Work
-// canned worker with a blank model_ref looped 6 recoveries per run on the
-// same instant 0-token failure). The exact error text is surfaced in the
-// failure summary so the operator sees precisely what must be fixed.
 func strategyForFailure(exec *db.ExecutionRow, kind string) string {
 	if exec != nil && isDeterministicStopError(exec.ErrorMessage) {
 		return RecoveryStrategyStop
@@ -299,9 +198,7 @@ func (r *Reconciler) applyStrategy(ctx context.Context, tx pgx.Tx, tenantID stri
 			return true, fmt.Errorf("applyStrategy(stop): %w", err)
 		}
 		*rec = updated
-		// Mark the task terminal-cancelled; do not requeue. The
-		// workflow run's next poll will see the failed task and
-		// end the run.
+		// Mark the task terminal-cancelled; do not requeue.
 		task, err := db.GetWorkItem(ctx, tx, tenantID, rec.TaskID)
 		if err == nil {
 			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, rec.TaskID, task.Version, db.UpdateWorkItemFields{
@@ -333,10 +230,8 @@ func (r *Reconciler) applyStrategy(ctx context.Context, tx pgx.Tx, tenantID stri
 		return true, nil
 
 	case RecoveryStrategyRetryN:
-		// Bypass the capture / summarize flow entirely; requeue the
-		// task so the TaskReconciler dispatches a fresh execution
-		// right away. The work item's own description is what the
-		// worker sees (no failure summary attached at this level).
+		// Bypass the capture / summarize flow entirely; requeue the task so the TaskReconciler dispatches a
+		// fresh execution right away.
 		task, err := db.GetWorkItem(ctx, tx, tenantID, rec.TaskID)
 		if err != nil {
 			return true, fmt.Errorf("applyStrategy(retry_n): get task: %w", err)
@@ -368,38 +263,15 @@ func (r *Reconciler) applyStrategy(ctx context.Context, tx pgx.Tx, tenantID stri
 	}
 }
 
-// boolPtr is declared in engine.go via the helper at the bottom of
-// this file (line ~1064). The local helper used by applyStrategy
-// shares that definition.
+// boolPtr is declared in engine.go via the helper at the bottom of this file (line ~1064).
 
 // TriggerOnFailure is called when a WorkerExecution fails (docs/06 §2).
-// It creates a RecoveryExecution (idempotent — if an active recovery
-// already exists for the same failed execution, it is a no-op) and seeds
-// the default 6-step workflow. Recovery is scoped per failing execution:
-// stepRunID is the workflow step run the failure belongs to ("" for
-// standalone, non-workflow failures). A step-run recovery leaves the work
-// item (the shared ticket) untouched — it stays "running" for the whole
-// run and its terminal status is set when the run completes; the failed
-// step run itself is the unit that waits and re-dispatches. Standalone
-// recoveries keep the legacy task → recovering transition. Recovery is
-// opt-out, not opt-in (docs/06 §1).
-//
-// auditEntry, when non-nil, is recorded in the engine's own transaction
-// right before commit so the recovery.triggered row commits atomically
-// with the recovery creation (transactional outbox — AC1). nil means no
-// audit row: the reconciler/scheduler system path has no user actor.
-// A nil entry also means the idempotent no-op (an active recovery already
-// exists) writes nothing — the first trigger's row already covers it.
 func (e *Engine) TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string, auditEntry *audit.Entry) error {
 	return e.trigger(ctx, tenantID, taskID, failedExecID, stepRunID, triggerReason, domain.RecoveryLevelL1, auditEntry)
 }
 
-// stepRunForFailedExecution resolves the workflow step run a failed
-// execution belongs to, keyed by the execution's own
-// (workflow_run_id, workflow_step_id) — NOT the step run's transient
-// worker_execution_id link (which is cleared when the step re-dispatches,
-// so it cannot be relied on by the time recovery resumes). Returns nil for
-// non-workflow (standalone) executions.
+// stepRunForFailedExecution resolves the workflow step run a failed execution belongs to, keyed by
+// the execution's own (workflow_run_id, workflow_step_id).
 func stepRunForFailedExecution(ctx context.Context, tx pgx.Tx, tenantID, failedExecID string) *db.WorkflowStepRunRow {
 	if failedExecID == "" {
 		return nil
@@ -415,12 +287,8 @@ func stepRunForFailedExecution(ctx context.Context, tx pgx.Tx, tenantID, failedE
 	return &sr
 }
 
-// recordAuditEntry writes the audit entry into tx, filling nil
-// before/after snapshots from the pre/post states the engine observed
-// (the caller owns the actor/action/target; the engine owns the reads,
-// so the exact status transition lands in the trail — D4). A nil entry
-// writes nothing (system/reconciler path). A Record failure must fail
-// the mutation (D4): the audit row exists iff the mutation committed.
+// recordAuditEntry writes the audit entry into tx, filling nil before/after snapshots from the
+// pre/post states the engine observed (the caller owns the actor/action/target.
 func recordAuditEntry(ctx context.Context, tx pgx.Tx, entry *audit.Entry, before, after json.RawMessage) error {
 	if entry == nil {
 		return nil
@@ -435,10 +303,8 @@ func recordAuditEntry(ctx context.Context, tx pgx.Tx, entry *audit.Entry, before
 	return audit.Record(ctx, tx, e)
 }
 
-// trigger creates the RecoveryExecution + step runs (idempotent) and, for
-// standalone failures, transitions the task to recovering. Runs in its
-// own transaction. auditEntry (non-nil) is recorded atomically with the
-// commit; a nil entry writes no audit row (system/reconciler path).
+// trigger creates the RecoveryExecution + step runs (idempotent) and, for standalone failures,
+// transitions the task to recovering.
 func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string, level int32, auditEntry *audit.Entry) error {
 	ttx, err := e.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -446,12 +312,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 	}
 	defer ttx.Rollback(ctx)
 
-	// Resolve whether this failure belongs to a workflow step run. The
-	// step run is derived from the failed execution's
-	// (workflow_run_id, workflow_step_id) — NOT the step run's
-	// worker_execution_id link, which is cleared the moment the step
-	// re-dispatches (so it is unreliable by the time recovery resumes).
-	// stepRunID is accepted as a fast path.
+	// Resolve whether this failure belongs to a workflow step run.
 	var stepRun *db.WorkflowStepRunRow
 	if stepRunID != "" {
 		if sr, err := db.GetWorkflowStepRun(ctx, ttx.Tx, tenantID, stepRunID); err == nil {
@@ -466,16 +327,9 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		}
 	}
 
-	// Idempotency (docs/06 §9): one recovery per failing step run (per
-	// failed execution), not per ticket — two steps failing on the same
-	// shared ticket in the same window each get their own recovery. R6: the
-	// dedup is keyed on (task, failed_execution_id) and covers TERMINAL rows
-	// too — a second failure event for the SAME dead execution whose
-	// recovery already reached `resumed`/`failed`/`cancelled`/`escalated`
-	// must not silently re-seed a fresh L1 recovery (a duplicate
-	// recovery/summarize path on one dead run). GetLatestRecoveryForExecution
-	// (any status) backs that: a row still pending/running holds; a row that
-	// already went terminal is a no-op, not a re-trigger.
+	// Idempotency (docs/06 §9): one recovery per failing step run (per failed execution), not per
+	// ticket — two steps failing on the same shared ticket in the same window each get their own
+	// recovery.
 	if stepRun != nil {
 		if existing, err := db.GetLatestRecoveryForExecution(ctx, ttx.Tx, tenantID, taskID, failedExecID); err == nil {
 			e.log.Info("recovery already recorded for execution (idempotent)",
@@ -499,9 +353,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		return fmt.Errorf("recovery trigger: get execution: %w", err)
 	}
 
-	// Bounded retry: count how many previous recovery attempts exist
-	// across this task's ancestor chain. If the limit is exceeded,
-	// escalate to human (L3) instead of retrying indefinitely.
+	// Bounded retry: count how many previous recovery attempts exist across this task's ancestor chain.
 	maxRetries := defaultMaxRetries
 	retryCount, err := countTaskChainRecoveries(ctx, ttx.Tx, tenantID, taskID)
 	if err != nil {
@@ -513,15 +365,11 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		level = domain.RecoveryLevelL3
 	}
 
-	// Determine the resumption path (docs/06 §4): direct checkpoint
-	// replay when a checkpoint exists + a compatible adapter is
-	// available; otherwise summarize-resume.
+	// Determine the resumption path (docs/06 §4): direct checkpoint replay when a checkpoint exists + a
+	// compatible adapter is available; otherwise summarize-resume.
 	resumptionPath := domain.ResumptionPathSummarizeResume
 	if exec.CheckpointRef != nil && *exec.CheckpointRef != "" {
-		// A checkpoint exists — attempt direct replay. (Full adapter
-		// compatibility check is a v0.2 refinement; v0.1 selects
-		// checkpoint replay when a checkpoint is present, recording the
-		// choice as telemetry.)
+		// A checkpoint exists — attempt direct replay.
 		resumptionPath = domain.ResumptionPathCheckpoint
 	}
 
@@ -531,14 +379,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 
 	recoveryID := db.NewID()
 	now := time.Now().UTC()
-	// NOTE: there is no retry_delay_seconds here, deliberately. The COLUMN exists on
-	// recovery_executions (NOT NULL DEFAULT 10, from 20260721000000_recovery_retry_config.sql)
-	// and this row used to set it from a constant — but nothing ever READ it. There is no
-	// deferral mechanism for execution dispatch at all, so every retry went out
-	// immediately and the value described a wait that never happened. The knob was
-	// removed rather than left advertising behaviour the system does not have. The column
-	// is retained only because migrations are additive-only (no destructive DDL);
-	// 20260925000000_retire_recovery_retry_delay.sql corrects its stale comment.
+	// NOTE: there is no retry_delay_seconds here, deliberately.
 	row := db.RecoveryExecutionRow{
 		ID:                 recoveryID,
 		TenantID:           tenantID,
@@ -597,11 +438,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		}
 	}
 
-	// Standalone recovery: transition the task to recovering (docs/02
-	// §2.2). A workflow step-run recovery leaves the shared ticket
-	// untouched — it stays "running" for the whole run; the step run's
-	// own "recovering" status (set by the workflow reconciler) is the
-	// signal that its recovery is in flight.
+	// Standalone recovery: transition the task to recovering (docs/02 §2.2).
 	if stepRun == nil {
 		if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, taskID, task.Version, db.UpdateWorkItemFields{
 			Status: strPtr(domain.WorkItemRecovering),
@@ -615,9 +452,8 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		return fmt.Errorf("recovery trigger: enqueue: %w", err)
 	}
 
-	// Audit row in the same transaction as the recovery creation: an
-	// audit row exists iff the mutation committed (AC1 transactional
-	// outbox). A Record failure fails the mutation (D4).
+	// Audit row in the same transaction as the recovery creation: an audit row exists iff the mutation
+	// committed (AC1 transactional outbox).
 	if err := recordAuditEntry(ctx, ttx.Tx, auditEntry, nil, nil); err != nil {
 		return fmt.Errorf("recovery trigger: audit: %w", err)
 	}
@@ -631,13 +467,8 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 	return nil
 }
 
-// MarkTaskSucceeded marks a Task succeeded by the Reviewer Worker (during
-// recovery) or a human (docs/06 §11, docs/02 §4 #2). Emits an audit
-// event with the actor recorded. If an active recovery exists, it is
-// marked resumed (the recovery's job is done — the task is complete).
-// auditEntry, when non-nil, is recorded in the engine's own transaction
-// right before commit (atomic with the task update — AC1); nil skips the
-// audit row.
+// MarkTaskSucceeded marks a Task succeeded by the Reviewer Worker (during recovery) or a human
+// (docs/06 §11, docs/02 §4 #2).
 func (e *Engine) MarkTaskSucceeded(ctx context.Context, tenantID, taskID, actorType, actorID, reason string, auditEntry *audit.Entry) (string, error) {
 	ttx, err := e.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -696,11 +527,8 @@ func (e *Engine) MarkTaskSucceeded(ctx context.Context, tenantID, taskID, actorT
 		_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventResumed, updated, "", "", rec.TriggerReason, "task marked succeeded by "+actorType+"/"+actorID, "")
 	}
 
-	// Audit row in the same transaction as the task update: the
-	// recovery.task_marked_succeeded row commits atomically with the
-	// mutation (AC1 transactional outbox); before/after reflect the
-	// task status transition the engine observed. A Record failure
-	// fails the mutation (D4).
+	// Audit row in the same transaction as the task update: the recovery.task_marked_succeeded row
+	// commits atomically with the mutation (AC1 transactional outbox).
 	if err := recordAuditEntry(ctx, ttx.Tx, auditEntry,
 		audit.SnapshotStatus(task.Status), audit.SnapshotStatus(domain.WorkItemSucceeded)); err != nil {
 		return "", fmt.Errorf("mark task succeeded: audit: %w", err)
@@ -713,10 +541,8 @@ func (e *Engine) MarkTaskSucceeded(ctx context.Context, tenantID, taskID, actorT
 	return auditID, nil
 }
 
-// ApproveContinuationPlan approves a pending continuation plan (L3 human
-// escalation, docs/06 §7, §8) and resumes the recovery. auditEntry,
-// when non-nil, is recorded in the engine's own transaction right before
-// commit (atomic with the plan/recovery update — AC1); nil skips it.
+// ApproveContinuationPlan approves a pending continuation plan (L3 human escalation, docs/06 §7,
+// §8) and resumes the recovery.
 func (e *Engine) ApproveContinuationPlan(ctx context.Context, tenantID, recoveryID, actor string, auditEntry *audit.Entry) (db.ContinuationPlanRow, db.RecoveryExecutionRow, error) {
 	ttx, err := e.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -743,10 +569,8 @@ func (e *Engine) ApproveContinuationPlan(ctx context.Context, tenantID, recovery
 		return plan, rec, fmt.Errorf("approve plan: update recovery: %w", err)
 	}
 	_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventPlanApproved, updated, "", "", rec.TriggerReason, "continuation plan approved by "+actor, "")
-	// Audit row in the same transaction as the plan/recovery update:
-	// before/after reflect the recovery status transition the engine
-	// observed (blocked → running). A Record failure fails the mutation
-	// (D4).
+	// Audit row in the same transaction as the plan/recovery update: before/after reflect the recovery
+	// status transition the engine observed (blocked → running).
 	if err := recordAuditEntry(ctx, ttx.Tx, auditEntry,
 		audit.SnapshotStatus(rec.Status), audit.SnapshotStatus(updated.Status)); err != nil {
 		return plan, rec, fmt.Errorf("approve plan: audit: %w", err)
@@ -757,10 +581,7 @@ func (e *Engine) ApproveContinuationPlan(ctx context.Context, tenantID, recovery
 	return plan, updated, nil
 }
 
-// RejectContinuationPlan rejects a pending plan; the recovery fails /
-// escalates (docs/06 §8). auditEntry, when non-nil, is recorded in the
-// engine's own transaction right before commit (atomic with the
-// plan/recovery update — AC1); nil skips it.
+// RejectContinuationPlan rejects a pending plan; the recovery fails / escalates (docs/06 §8).
 func (e *Engine) RejectContinuationPlan(ctx context.Context, tenantID, recoveryID, actor, reason string, auditEntry *audit.Entry) (db.ContinuationPlanRow, db.RecoveryExecutionRow, error) {
 	ttx, err := e.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -787,10 +608,8 @@ func (e *Engine) RejectContinuationPlan(ctx context.Context, tenantID, recoveryI
 		return plan, rec, fmt.Errorf("reject plan: update recovery: %w", err)
 	}
 	_ = enqueueRecoveryEvent(ctx, ttx.Tx, domain.RecoveryEventPlanRejected, updated, "", "", rec.TriggerReason, "continuation plan rejected by "+actor+": "+reason, "")
-	// Audit row in the same transaction as the plan/recovery update:
-	// before/after reflect the recovery status transition the engine
-	// observed (blocked → failed). A Record failure fails the mutation
-	// (D4).
+	// Audit row in the same transaction as the plan/recovery update: before/after reflect the recovery
+	// status transition the engine observed (blocked → failed).
 	if err := recordAuditEntry(ctx, ttx.Tx, auditEntry,
 		audit.SnapshotStatus(rec.Status), audit.SnapshotStatus(updated.Status)); err != nil {
 		return plan, rec, fmt.Errorf("reject plan: audit: %w", err)
@@ -804,8 +623,6 @@ func (e *Engine) RejectContinuationPlan(ctx context.Context, tenantID, recoveryI
 // --- RecoveryReconciler ----------------------------------------------------
 
 // Reconciler implements reconciler.Reconciler for the "recovery" kind.
-// It scans pending/running recoveries and progresses them through the
-// 6-step default workflow (docs/06 §3, §9).
 type Reconciler struct {
 	*Engine
 }
@@ -845,14 +662,9 @@ func (r *Reconciler) scanRecoveries(ctx context.Context, tenantID string) error 
 	for _, rec := range pending {
 		if err := r.progressRecovery(ctx, tenantID, rec.ID); err != nil {
 			r.log.Warn("recovery reconcile failed", "recovery", rec.ID, "error", err)
-			// RC3 — isolate a poisoned-tx recovery (SQLSTATE 25P01/25P02, or
-			// any "current transaction is aborted" error), which would
-			// otherwise be re-read + re-retried on the SAME static recovery id
-			// every scan, flooding the log (~20/s) and pinning the sequential
-			// scan (scanRecoveries proceeds one id at a time). Mark it
-			// terminal-failed so ListPendingRecoveries stops returning it; a
-			// genuinely transient error is re-triggered by the next failure,
-			// bounded rather than a permanent wedge.
+			// RC3 — isolate a poisoned-tx recovery (SQLSTATE 25P01/25P02, or any "current transaction is
+			// aborted" error), which would otherwise be re-read + re-retried on the SAME static recovery id
+			// every.
 			if isPoisonedRecoveryTx(err) {
 				if merr := r.quarantineRecovery(ctx, tenantID, rec.ID, err); merr != nil {
 					r.log.Warn("recovery reconcile: quarantine failed", "recovery", rec.ID, "error", merr)
@@ -863,9 +675,9 @@ func (r *Reconciler) scanRecoveries(ctx context.Context, tenantID string) error 
 	return nil
 }
 
-// isPoisonedRecoveryTx reports whether a progressRecovery error is a
-// PostgreSQL tx-abort / failed-transaction-commit error that poisons the
-// tx and will deterministically re-fail on the same row next scan.
+// isPoisonedRecoveryTx reports whether a progressRecovery error is a PostgreSQL tx-abort /
+// failed-transaction-commit error that poisons the tx and will deterministically re-fail on the
+// same row.
 func isPoisonedRecoveryTx(err error) bool {
 	if err == nil {
 		return false
@@ -876,10 +688,8 @@ func isPoisonedRecoveryTx(err error) bool {
 		strings.Contains(msg, "SQLSTATE 25P02")
 }
 
-// quarantineRecovery terminally fails a recovery that hit a poisoned tx so
-// it drops out of the pending scan. Only a non-terminal recovery is
-// touched; terminal rows are left alone (idempotent, and never resurrected
-// into a re-trigger by R6 dedup).
+// quarantineRecovery terminally fails a recovery that hit a poisoned tx so it drops out of the
+// pending scan.
 func (r *Reconciler) quarantineRecovery(ctx context.Context, tenantID, recoveryID string, cause error) error {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -909,12 +719,9 @@ func (r *Reconciler) quarantineRecovery(ctx context.Context, tenantID, recoveryI
 	return nil
 }
 
-// foldRecoverySummaryToFacts appends the recovery's summary into the
-// run's .orchicon/<run>/facts_learned as a step-attributed entry so ALL of
-// a run's steps see the recovery summary — not just the restarted execution
-// (which receives it via the composite prompt's `_recovery_summary`).
-// Best-effort: a failure to resolve the project dir / run id, or a file
-// error, is logged and never blocks the resume.
+// foldRecoverySummaryToFacts appends the recovery's summary into the run's
+// .orchicon/<run>/facts_learned as a step-attributed entry so ALL of a run's steps see the recovery
+// summary.
 func (r *Reconciler) foldRecoverySummaryToFacts(ctx context.Context, tenantID string, rec db.RecoveryExecutionRow) {
 	if rec.Summary == "" {
 		return
@@ -979,9 +786,7 @@ func (r *Reconciler) foldRecoverySummaryToFacts(ctx context.Context, tenantID st
 	}
 }
 
-// progressRecovery advances a single recovery through its step DAG
-// (docs/06 §3, §9). Idempotent: re-running resumes from the last
-// completed step.
+// progressRecovery advances a single recovery through its step DAG (docs/06 §3, §9).
 func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID string) error {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -1006,10 +811,7 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 		return nil
 	}
 
-	// PR C: route on the strategy at the very top of the reconciler
-	// loop. Strategies that don't run the 6-step DAG (stop, retry_n,
-	// human_escalation) mutate the recovery + task directly and
-	// commit. summarize_restart falls through.
+	// PR C: route on the strategy at the very top of the reconciler loop.
 	handled, err := r.applyStrategy(ctx, ttx.Tx, tenantID, &rec)
 	if err != nil {
 		return fmt.Errorf("applyStrategy: %w", err)
@@ -1042,9 +844,7 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 		runByStep[sr.StepID] = sr
 	}
 
-	// Progress each non-skipped, non-terminal step in order. A step runs
-	// when all prior non-skipped steps are succeeded (linear DAG —
-	// docs/06 §3 default workflow is sequential).
+	// Progress each non-skipped, non-terminal step in order.
 	progressed := false
 	for _, stepID := range domain.DefaultRecoverySteps {
 		sr, ok := runByStep[stepID]
@@ -1060,9 +860,7 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 		if !priorStepsSucceeded(stepID, runByStep) {
 			break
 		}
-		// Run the step. rec is passed by pointer so steps that mutate
-		// the recovery (summarize, plan) refresh the version for the next
-		// step + escalate (avoids stale-version "not found" errors).
+		// Run the step.
 		if err := r.runStep(ctx, ttx.Tx, tenantID, &rec, &sr); err != nil {
 			return err
 		}
@@ -1088,9 +886,8 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 		}
 	}
 	if allDone && !anyFailed {
-		// Resume: transition the task back to ready so the
-		// TaskReconciler dispatches the replacement (docs/06 §10
-		// invariant #1: recovery never bypasses the Scheduler).
+		// Resume: transition the task back to ready so the TaskReconciler dispatches the replacement
+		// (docs/06 §10 invariant #1: recovery never bypasses the Scheduler).
 		now := time.Now().UTC()
 		updated, err := db.UpdateRecoveryExecution(ctx, ttx.Tx, tenantID, recoveryID, rec.Version, db.UpdateRecoveryExecutionFields{
 			Status:  strPtr(domain.RecoveryResumed),
@@ -1118,17 +915,9 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 			if rec.Summary != "" {
 				merged["_recovery_summary"] = rec.Summary
 			}
-			// Publish the dead execution's identity + worker so the
-			// dispatch path can (a) gate the .orchicon/worker.recovery
-			// file on the SAME worker being re-dispatched and (b) read
-			// the dead session's transcript back into it. Written beside
-			// _recovery_summary so the scheduler's single recoverySeedFor
-			// predicate reads them all from the same result JSON.
-			// _recovery_worker_version + _recovery_adapter pin the exact
-			// version/adapter the dead execution ran on: same worker ID
-			// with a different version may resolve a different adapter
-			// (e.g. v3 opencode vs v4 orchicon), and the dispatch gate
-			// must fail fast instead of resuming cross-adapter.
+			// Publish the dead execution's identity + worker so the dispatch path can (a) gate the
+			// .orchicon/worker.recovery file on the SAME worker being re-dispatched and (b) read the dead
+			// session's.
 			merged["_recovery_execution_id"] = rec.FailedExecutionID
 			failedWorkerID := ""
 			failedWorkerVersion := 0
@@ -1143,9 +932,8 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 			merged["_recovery_worker_id"] = failedWorkerID
 			merged["_recovery_worker_version"] = failedWorkerVersion
 			merged["_recovery_adapter"] = failedAdapter
-			// THE REASON TRAVELS WITH THE IDENTITY, from the SAME read, so the two cannot disagree about
-			// which failure is being described. Written here (not derived later) because this is the only
-			// point that holds the failed execution row while publishing the seed keys.
+			// THE REASON TRAVELS WITH THE IDENTITY, from the SAME read, so the two cannot disagree about which
+			// failure is being described.
 			if failureReason != "" {
 				merged["_recovery_failure_reason"] = failureReason
 			}
@@ -1209,13 +997,7 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 	return nil
 }
 
-// runStep executes a single recovery step (docs/06 §3). v0.1: the engine
-// drives each step directly (the recovery workflow driver is the engine
-// itself), recording the full narrative (why/what/how/where/when —
-// docs/06 §11). Real Reviewer Worker dispatch for steps 2/4/5 is the
-// v0.2 path; v0.1 validates the end-to-end recovery arc. rec is a
-// pointer so steps that mutate the recovery refresh its version for
-// subsequent steps + escalate.
+// runStep executes a single recovery step (docs/06 §3).
 func (r *Reconciler) runStep(ctx context.Context, tx pgx.Tx, tenantID string, rec *db.RecoveryExecutionRow, sr *db.RecoveryStepRunRow) error {
 	now := time.Now().UTC()
 	// Mark running.
@@ -1230,9 +1012,7 @@ func (r *Reconciler) runStep(ctx context.Context, tx pgx.Tx, tenantID string, re
 	*sr = updated
 	_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventStepStarted, *rec, sr.StepID, sr.ID, rec.TriggerReason, stepAction(sr.StepID), "")
 
-	// Execute the step logic. stepSummarize + stepPlan mutate rec
-	// (summary, plan link, relax) and refresh its version via the
-	// pointer so the next step + escalate see the current version.
+	// Execute the step logic.
 	var stepResult []byte
 	var stepErr error
 	switch sr.StepID {
@@ -1292,9 +1072,8 @@ func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string
 	if err != nil {
 		return nil, fmt.Errorf("get failed execution: %w", err)
 	}
-	// Spend comes from the usage-records sum (the worker_executions row
-	// columns are write-never and always read zero); fall back to the row
-	// on query failure so capture never fails for telemetry.
+	// Spend comes from the usage-records sum (the worker_executions row columns are write-never and
+	// always read zero); fall back to the row on query failure so capture never fails for telemetry.
 	tokens, cost := exec.TokenUsage, exec.CostUSD
 	if t, c, uerr := db.SumUsageForExecution(ctx, tx, tenantID, exec.ID); uerr == nil {
 		tokens, cost = t, c
@@ -1315,11 +1094,7 @@ func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string
 	return result, nil
 }
 
-// stepSummarize produces a concise summary of completed work (docs/06 §3
-// step 2). v0.1: the engine produces a textual summary from the
-// execution snapshot; v0.2 dispatches a Reviewer-class Worker. rec is a
-// pointer so the version bump from the summary update is visible to the
-// next step + escalate.
+// stepSummarize produces a concise summary of completed work (docs/06 §3 step 2).
 func (r *Reconciler) stepSummarize(ctx context.Context, tx pgx.Tx, tenantID string, rec *db.RecoveryExecutionRow) ([]byte, error) {
 	exec, err := db.GetExecution(ctx, tx, tenantID, rec.FailedExecutionID)
 	if err != nil {
@@ -1344,39 +1119,30 @@ func (r *Reconciler) stepSummarize(ctx context.Context, tx pgx.Tx, tenantID stri
 	return result, nil
 }
 
-// stepPreserve writes artifacts, traces, file-diff refs, and the summary
-// to durable storage (docs/06 §3 step 3). v0.1: the summary is already
-// persisted on the recovery row; this step records that preservation
-// occurred. v0.2 writes to the object store.
+// stepPreserve writes artifacts, traces, file-diff refs, and the summary to durable storage
+// (docs/06 §3 step 3).
 func (r *Reconciler) stepPreserve(ctx context.Context, tx pgx.Tx, tenantID string, rec db.RecoveryExecutionRow) ([]byte, error) {
 	result, _ := json.Marshal(map[string]string{"preserved": "summary+snapshot persisted on recovery row"})
 	return result, nil
 }
 
-// stepReview validates completed work against acceptance criteria;
-// produces a verdict (accept | reject | needs-human) (docs/06 §3 step 4).
-// v0.1: default verdict is accept (the Reviewer Worker dispatch is the
-// v0.2 path). A reject verdict would fail the step → escalate.
+// stepReview validates completed work against acceptance criteria; produces a verdict (accept |
+// reject | needs-human) (docs/06 §3 step 4).
 func (r *Reconciler) stepReview(ctx context.Context, tx pgx.Tx, tenantID string, rec db.RecoveryExecutionRow) ([]byte, error) {
 	verdict := "accept"
 	result, _ := json.Marshal(map[string]string{"verdict": verdict})
 	return result, nil
 }
 
-// stepPlan produces a continuation_plan describing remaining work and
-// corrections (docs/06 §3 step 5, §8). The plan is persisted as a
-// ContinuationPlan row and linked to the recovery. If the recovery
-// needs human approval (budget > 150% — docs/06 §11), the plan status
-// is pending and the recovery blocks at L3. rec is a pointer so the
-// version bump is visible to escalate + the next step.
+// stepPlan produces a continuation_plan describing remaining work and corrections (docs/06 §3 step
+// 5, §8).
 func (r *Reconciler) stepPlan(ctx context.Context, tx pgx.Tx, tenantID string, rec *db.RecoveryExecutionRow) ([]byte, error) {
 	task, err := db.GetWorkItem(ctx, tx, tenantID, rec.TaskID)
 	if err != nil {
 		return nil, fmt.Errorf("get task: %w", err)
 	}
-	// Bounded auto-relax (docs/06 §11): if the task's budget has been
-	// exceeded, attempt to relax by up to 25% automatically. Beyond
-	// 150% of the original, require human approval.
+	// Bounded auto-relax (docs/06 §11): if the task's budget has been exceeded, attempt to relax by up
+	// to 25% automatically.
 	relaxFraction := rec.BudgetRelaxFraction
 	needsHuman := rec.NeedsHumanApproval
 	if rec.BudgetTokensUsed > rec.BudgetTokensLimit && rec.BudgetTokensLimit > 0 {
@@ -1442,12 +1208,7 @@ func (r *Reconciler) stepPlan(ctx context.Context, tx pgx.Tx, tenantID string, r
 	return result, nil
 }
 
-// stepResume launches the replacement (docs/06 §3 step 6). The
-// continuation plan is handed to the replacement via the task's
-// run_context. Recovery never bypasses the Scheduler (docs/06 §10
-// invariant #1): this step records the handoff; the actual dispatch
-// happens when the task transitions to ready (in progressRecovery's
-// allDone branch). v0.1: the resume step records the handoff.
+// stepResume launches the replacement (docs/06 §3 step 6).
 func (r *Reconciler) stepResume(ctx context.Context, tx pgx.Tx, tenantID string, rec db.RecoveryExecutionRow) ([]byte, error) {
 	result, _ := json.Marshal(map[string]string{
 		"handoff": "task transitioned to ready; TaskReconciler will dispatch the replacement",
@@ -1457,10 +1218,7 @@ func (r *Reconciler) stepResume(ctx context.Context, tx pgx.Tx, tenantID string,
 	return result, nil
 }
 
-// escalate handles L1 → L2 → L3 (docs/06 §7). L1 stalls or the Reviewer
-// produced needs-human for the recovery → L2 (tighter budget,
-// summary-only resume). L2 stalls or budget exhausted → L3 (human
-// escalation: pause task, await approval).
+// escalate handles L1 → L2 → L3 (docs/06 §7).
 func (r *Reconciler) escalate(ctx context.Context, tx pgx.Tx, tenantID string, rec db.RecoveryExecutionRow) error {
 	now := time.Now().UTC()
 	switch rec.Level {
@@ -1571,9 +1329,8 @@ func adapterRef(exec db.ExecutionRow) string {
 	return ""
 }
 
-// deriveRecoveryBudget computes the recovery budget from the task's
-// budgets JSON (docs/06 §6: 25% of the Task's token/cost budget,
-// capped). Returns (tokenLimit, costLimit).
+// deriveRecoveryBudget computes the recovery budget from the task's budgets JSON (docs/06 §6: 25%
+// of the Task's token/cost budget, capped).
 func deriveRecoveryBudget(taskBudgets []byte) (int64, float64) {
 	if len(taskBudgets) == 0 {
 		return 0, 0
@@ -1631,9 +1388,8 @@ func strPtr(s string) *string { return &s }
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 
-// countTaskChainRecoveries walks the work item's parent chain to find
-// all ancestor task IDs, then counts terminal recovery executions for
-// any task in the chain. This prevents unbounded retry loops.
+// countTaskChainRecoveries walks the work item's parent chain to find all ancestor task IDs, then
+// counts terminal recovery executions for any task in the chain.
 func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (int, error) {
 	// Collect all task IDs in the chain.
 	taskIDs := []string{taskID}

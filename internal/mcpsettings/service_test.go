@@ -25,9 +25,7 @@ import (
 
 const testKEK = "0123456789abcdef0123456789abcdef" // 32 bytes
 
-// testTenant is UNIQUE PER RUN. A fixed id makes two concurrent test
-// processes contend on the same tenants row (mcp_servers' FK takes a
-// key-share lock on it) and DEADLOCK instead of failing.
+// testTenant is UNIQUE PER RUN.
 var testTenant = "tnt_mcp_test_" + db.NewID()[10:22]
 
 func newTestService(t *testing.T) (*mcpsettings.Service, *db.Pool) {
@@ -390,10 +388,8 @@ func TestMCPSecretsWriteOnly(t *testing.T) {
 	}
 }
 
-// TestMCPUnionResolutionFourCases is the FOUR-CASE UNION test for BOTH
-// scopes: project-only, own-only, both, neither. The resolution is a UNION
-// now, not a precedence chain — project-owned and scope-owned definitions
-// are BOTH present when both exist, and neither is overridden.
+// TestMCPUnionResolutionFourCases is the FOUR-CASE UNION test for BOTH scopes: project-only,
+// own-only, both, neither.
 func TestMCPUnionResolutionFourCases(t *testing.T) {
 	svc, pool := newTestService(t)
 	ctx := context.Background()
@@ -435,9 +431,8 @@ func TestMCPUnionResolutionFourCases(t *testing.T) {
 		t.Fatalf("conversation scope did not inherit the project's server: %+v", got.Servers)
 	}
 
-	// OWN-ONLY (a conversation-owned definition with no project one would be
-	// own-only; here it is the second half of BOTH, so use a fresh project
-	// scope to isolate it).
+	// OWN-ONLY (a conversation-owned definition with no project one would be own-only; here it is the
+	// second half of BOTH, so use a fresh project scope to isolate it).
 	otherProj, _ := seedOwner(t, pool)
 	ownSrv, err := svc.Create(ctx, testTenant, httpEntry("conv-srv", "https://mcp.example.com/own", convID))
 	if err != nil {
@@ -490,10 +485,8 @@ func hasServer(r mcpclient.Resolution, id string) bool {
 	return false
 }
 
-// TestMCPCreateOwnerValidation pins the owner XOR and the existence checks:
-// both owners set, neither set, an unknown project, and an unknown
-// conversation are all rejected; an existing project and an existing
-// conversation are both accepted.
+// TestMCPCreateOwnerValidation pins the owner XOR and the existence checks: both owners set,
+// neither set, an unknown project, and an unknown conversation are all rejected.
 func TestMCPCreateOwnerValidation(t *testing.T) {
 	svc, pool := newTestService(t)
 	ctx := context.Background()
@@ -555,9 +548,8 @@ func TestMCPOwnerIsImmutable(t *testing.T) {
 	}
 }
 
-// TestMCPDeleteIsUnguardedAndPurgesSecrets pins the removal of the reference
-// guard: an owner-scoped definition deletes cleanly (its owner is its only
-// reference) and its derived secrets go with it.
+// TestMCPDeleteIsUnguardedAndPurgesSecrets pins the removal of the reference guard: an owner-scoped
+// definition deletes cleanly (its owner is its only reference) and its derived secrets go with it.
 func TestMCPDeleteIsUnguardedAndPurgesSecrets(t *testing.T) {
 	svc, pool := newTestService(t)
 	ctx := context.Background()

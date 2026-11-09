@@ -1,13 +1,6 @@
 package main
 
 // install_engine_test.go — the engine BINARY the installer drives.
-//
-// The ladder (resolveContainerEngine) decides the engine and records it in engineCLI, but
-// several paths never run the ladder — `orchicon restart` on a recorded container shape, the
-// bridge probe, the port read-back. Those paths used to hardcode "docker", which on the
-// podman-only host this feature exists to produce is a command that is not there. These tests
-// pin the two halves of the seam: the install's decision wins when there is one, and a lazy
-// resolution through internal/containerengine is what stands in when there is not.
 
 import (
 	"os"
@@ -43,13 +36,8 @@ func TestEngineCommandUsesTheInstallsDecision(t *testing.T) {
 	}
 }
 
-// TestEngineCommandResolvesWithoutRunningTheLadder is the regression this file exists for: a
-// path that never runs the ladder must NOT assume "docker". With podman the only engine
-// visible, `orchicon restart` has to call podman — on the host this feature creates there is
-// no docker binary at all.
-//
-// The fake binary is a file in a t.TempDir() on PATH and is never executed (Detect is a
-// LookPath/stat probe), which is this repo's posture for engine probing.
+// TestEngineCommandResolvesWithoutRunningTheLadder is the regression this file exists for: a path
+// that never runs the ladder must NOT assume "docker".
 func TestEngineCommandResolvesWithoutRunningTheLadder(t *testing.T) {
 	resetEngineBinary(t)
 

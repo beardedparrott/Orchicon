@@ -24,17 +24,6 @@ import (
 )
 
 // liveTestModel is the model a live test uses.
-//
-// IT DEFAULTS TO THE CHEAPEST AVAILABLE, and that is a correction: these tests
-// exercise FLAG BEHAVIOUR (does an id resume, does a transcript exist), which no
-// model capability contributes to. I originally hard-coded a frontier model, and
-// several of my probes omitted --model entirely and silently ran on the account
-// default (Opus) — including one that loaded 87 MCP tool definitions per call.
-// That combination exhausted the operator's five-hour window.
-//
-// The live model IS overridable, because a smoke test against a specific model is
-// occasionally what you want — but it is never the DEFAULT, so a careless run
-// cannot be expensive.
 func liveTestModel() string {
 	if m := strings.TrimSpace(os.Getenv("ORCHICON_TEST_LIVE_CLAUDE_MODEL")); m != "" {
 		return m
@@ -44,20 +33,8 @@ func liveTestModel() string {
 	return "claude-haiku-4-5-20251001"
 }
 
-// minimalLiveArgv is the SMALLEST argv that exercises a session FLAG: no settings
-// document, no permission flags, no --mcp-config.
-//
-// WHY THIS EXISTS, with the measurement. The Orchicon MCP surface is 87 tools /
-// ~55 KB of JSON schema ≈ ~14,000 tokens that ride EVERY request (measured from
-// the sidecar's tools/list, no model call needed), and with MCP connected claude
-// also does a ToolSearch round trip to find a tool. The CLI's own baseline is
-// another ~16,000 tokens. So a live test that loads MCP while checking which
-// session flag is used pays roughly double the context — plus extra turns — for a
-// behaviour no tool schema contributes to.
-//
-// The flag choice is verified on the REAL argv by the unit tests
-// (TestAskArgvResumesAnExistingSessionInsteadOfRecreatingIt); what only a live run
-// can prove is that the CLI HONOURS the flag, and that needs none of the rest.
+// minimalLiveArgv is the SMALLEST argv that exercises a session FLAG: no settings document, no
+// permission flags, no --mcp-config.
 func minimalLiveArgv(model, flag, sid string) []string {
 	return []string{
 		ClaudeBinaryPath(), "-p",
@@ -87,9 +64,7 @@ func TestLiveAskReopenResumes(t *testing.T) {
 	s.sid = uuid.NewString()
 	s.model = liveTestModel()
 
-	// TURN 1 — the adapter must CHOOSE --session-id (no transcript yet), and the
-	// CLI must honour it. The choice is asserted off the real argv; the call uses
-	// the minimal shape so the live cost is the CLI baseline, not baseline + MCP.
+	// TURN 1 — the adapter must CHOOSE --session-id (no transcript yet), and the CLI must honour it.
 	flag1 := flagOf(t, s.argv())
 	if flag1 != "--session-id" {
 		t.Fatalf("turn 1 flag = %q, want --session-id (no transcript yet)", flag1)
@@ -135,9 +110,7 @@ func TestLiveWorkerResume(t *testing.T) {
 	sid := uuid.NewString()
 	b := New(quietLogger())
 
-	// Establish a transcript the way a first execution would. A worker does not
-	// pin --session-id (the CLI assigns ids there), so the setup pins one
-	// explicitly to have a known id to continue from.
+	// Establish a transcript the way a first execution would.
 	argv := minimalLiveArgv(liveTestModel(), "--session-id", sid)
 	out1 := runLive(t, argv, dir, "Reply with exactly: OK")
 	if !strings.Contains(out1, `"is_error":false`) {
@@ -147,9 +120,7 @@ func TestLiveWorkerResume(t *testing.T) {
 		t.Fatal("the adapter cannot see the worker transcript")
 	}
 
-	// Now a CONTINUATION. The adapter's argv must carry --resume (asserted off the
-	// REAL argv); the CALL uses the minimal shape, since a worker's full argv adds
-	// the settings document and 87 MCP tool schemas for no benefit to this check.
+	// Now a CONTINUATION.
 	cont := &session{b: b, resumeID: sid, model: liveTestModel()}
 	if got := flagOf(t, cont.argv()); got != "--resume" {
 		t.Fatalf("the worker continuation chose %q, want --resume", got)
@@ -159,10 +130,8 @@ func TestLiveWorkerResume(t *testing.T) {
 		t.Fatalf("worker continuation failed: %s", truncateForLog(out2))
 	}
 
-	// A continuation ALWAYS carries --resume, even with no local transcript: that
-	// is the worker contract (see TestWorkerAlwaysResumesTheRecordedSession). The
-	// CLI reports "No conversation found" and the execution fails VISIBLY, which
-	// is the recovery system's cue — not something the adapter papers over.
+	// A continuation ALWAYS carries --resume, even with no local transcript: that is the worker
+	// contract (see TestWorkerAlwaysResumesTheRecordedSession).
 	gone := &session{b: b, resumeID: uuid.NewString(), model: liveTestModel()}
 	joined := strings.Join(gone.argv(), " ")
 	if !strings.Contains(joined, "--resume") {
@@ -194,11 +163,7 @@ func runLive(t *testing.T, argv []string, dir, prompt string) string {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	body := string(out)
-	// A RATE LIMIT IS NOT A TEST FAILURE. The CLI reports one as a normal-looking
-	// result with is_error=true and a "session limit" message, plus a
-	// rate_limit_event whose utilization is over 1 — and it exits non-zero. Failing
-	// here would send the next person hunting a code bug that is not there (it did
-	// exactly that to me, after my own probing exhausted the five-hour window).
+	// A RATE LIMIT IS NOT A TEST FAILURE.
 	if isRateLimited(body) {
 		t.Skipf("the account is rate-limited (a probe consumed the window); re-run after the reset — this is NOT a code failure.\n%s", truncateForLog(body))
 	}
@@ -271,9 +236,7 @@ func TestIsRateLimited(t *testing.T) {
 	}
 }
 
-// A live test must not default to an expensive model, and must not leave the
-// choice implicit. Pinned because the cost of getting this wrong is the
-// operator's quota, not a failing assertion.
+// A live test must not default to an expensive model, and must not leave the choice implicit.
 func TestLiveTestModelIsCheapByDefault(t *testing.T) {
 	t.Setenv("ORCHICON_TEST_LIVE_CLAUDE_MODEL", "")
 	got := liveTestModel()

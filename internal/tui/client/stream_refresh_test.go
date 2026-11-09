@@ -43,10 +43,8 @@ import (
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 )
 
-// rotatingProjects rejects any bearer but the CURRENT one, so the first stream open is
-// refused with UNAUTHENTICATED and the retry succeeds only if it carries the refreshed
-// token. It records every Authorization header it saw, so the test can prove the re-dial
-// used the NEW credential rather than repeating the stale one.
+// rotatingProjects rejects any bearer but the CURRENT one, so the first stream open is refused with
+// UNAUTHENTICATED and the retry succeeds only if it carries the refreshed token.
 type rotatingProjects struct {
 	apiv1connect.UnimplementedProjectServiceHandler
 
@@ -90,10 +88,6 @@ func (f *rotatingProjects) StreamProjectEvents(
 }
 
 // A STREAM OPENED WITH A STALE TOKEN RE-DIALS WITH THE REFRESHED ONE.
-//
-// This is the whole point of reDial: the stream must come back, and on the connection it
-// must carry the NEW bearer. Asserting only "an error did not surface" would pass on a
-// re-dial that repeated the stale header, so the header is asserted too.
 func TestAStreamReDialsWithTheRefreshedToken(t *testing.T) {
 	projects := &rotatingProjects{}
 	projects.setToken("oc_fresh")
@@ -150,9 +144,8 @@ func TestAStreamReDialsWithTheRefreshedToken(t *testing.T) {
 	}
 }
 
-// A STALE TOKEN ALONE DOES NOT SAVE YOU: when the refresh itself fails, the ORIGINAL 401
-// is what surfaces (it is the meaningful failure — the session is over, not the stream),
-// and the shell must be able to see it and route the operator to /connect.
+// A STALE TOKEN ALONE DOES NOT SAVE YOU: when the refresh itself fails, the ORIGINAL 401 is what
+// surfaces (it is the meaningful failure — the session is over, not the stream).
 func TestAFailedRefreshSurfacesTheOriginalUnauthenticated(t *testing.T) {
 	projects := &rotatingProjects{}
 	projects.setToken("oc_fresh") // nothing the client can ever present
@@ -220,13 +213,6 @@ func TestAPIKeyModeStreamDoesNotTryToRefresh(t *testing.T) {
 }
 
 // EVERY STREAM THE TUI SUBSCRIBES TO HAS A RE-DIAL.
-//
-// wireStreamReDial is an explicit mapping (procedure → client call) rather than a
-// reflective one, so a NEW stream RPC would silently fall through to "no streaming client
-// for …" and its 401 recovery would be broken in exactly the way this file was written to
-// prevent. The list below is what the TUI actually opens, derived from the stream
-// constructors in subs.go and the chat controller, so adding a subscription without adding
-// its re-dial fails HERE rather than in the field.
 func TestEveryStreamTheTUIDialsHasAReDial(t *testing.T) {
 	// A client set with a session, so the wiring runs.
 	c := NewWithHTTPClient(Options{BaseURL: "http://x.invalid", Token: "oc_t", RefreshToken: "rt"}, http.DefaultClient)

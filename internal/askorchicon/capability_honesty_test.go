@@ -1,17 +1,6 @@
 package askorchicon
 
 // capability_honesty_test.go — THE RULE ABOUT AN APPARENTLY MISSING CAPABILITY, IN EVERY MODE.
-//
-// REPORTED: an Ask session concluded that its mcp__aseprite__* tools were unavailable — from a LIST of
-// definitions, which answers a different question from "what am I offered" — and spent the whole session driving
-// the MCP server over stdio JSON-RPC through bash. That flattens structured and binary results to text, so every
-// image arrived as prose: blind drawing, two rejected drafts. The platform's own log recorded the servers
-// registered the whole time.
-//
-// Two things had to change for that not to repeat: a tool that answers "what do I have" honestly (ask_mcp_tools,
-// tested in ask_mcp_tools_test.go) and this rule, which is the part that tells a model to use it rather than build
-// a workaround. It is written ONCE, in the session-contract writer every mode goes through, so a fourth mode
-// cannot miss it.
 
 import (
 	"strings"
@@ -46,10 +35,6 @@ func TestEveryModeIsToldToCheckBeforeWorkingAroundAGap(t *testing.T) {
 }
 
 // TestTheRuleNamesTheWithheldCase — the third state a model must be able to tell apart.
-//
-// "Do I have this?" has three answers, and conflating them is the whole failure: it is absent, it is mounted and
-// offered, or it is mounted and WITHHELD BY THE MODE. Without the third, a mode refusal reads as a missing
-// capability and invites a workaround for something the platform is deliberately gating.
 func TestTheRuleNamesTheWithheldCase(t *testing.T) {
 	reg := NewToolRegistry(nil, nil, nil)
 	p := BuildSystemPrompt(modeBrainstorm, db.AgentConfigRow{}, reg, "")

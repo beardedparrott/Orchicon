@@ -1,13 +1,6 @@
 package main
 
 // serve_status_test.go — `serve --status` is the SAME surface as `orchicon plane status`.
-//
-// WHY THIS EXISTS: there used to be two status answers. `serve --status` read the PID file itself and
-// printed "serve is running (PID n)", while `plane status` printed the instance, the residency, the
-// serving binary, drift and health. Two surfaces that can disagree is the defect class this epic exists
-// to close, and the fix is delegation — so what must never come back is a SECOND implementation inside
-// serveStatus. The source pin below is what stops that, and the output pin is what proves the two
-// spellings agree on every field they share.
 
 import (
 	"io"
@@ -40,10 +33,8 @@ func captureStderr(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// TestServeStatusDelegatesToTheSharedStatusSurface is a SOURCE-level pin, because the defect it guards
-// is invisible in behaviour: a re-implemented status body can agree with `plane status` today and drift
-// tomorrow. The body must call the shared surface and must read neither the PID file nor `procRunning`
-// itself — those are the two ingredients of the second answer this task removed.
+// TestServeStatusDelegatesToTheSharedStatusSurface is a SOURCE-level pin, because the defect it
+// guards is invisible in behaviour.
 func TestServeStatusDelegatesToTheSharedStatusSurface(t *testing.T) {
 	body := functionBody(t, "serve.go", "func serveStatus() int {")
 
@@ -59,9 +50,8 @@ func TestServeStatusDelegatesToTheSharedStatusSurface(t *testing.T) {
 	}
 }
 
-// hermeticServeHome gives the test an instance of its own: both status surfaces derive every path from
-// <home>/.local/share/orchicon-<instance>, so a temporary HOME is what keeps the developer's own planes
-// out of the answer.
+// hermeticServeHome gives the test an instance of its own: both status surfaces derive every path
+// from <home>/.local/share/orchicon-<instance>.
 func hermeticServeHome(t *testing.T) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -73,8 +63,7 @@ func hermeticServeHome(t *testing.T) string {
 }
 
 // TestServeStatusOutputMatchesPlaneStatus is AC5's pin: for ONE instance the two spellings cannot
-// disagree — same instance, residency, PID, serving binary, drift and health — and the exit code is the
-// machine-read contract `scripts/orchicon.sh` depends on (0 iff the PID file names a live process).
+// disagree — same instance, residency, PID, serving binary, drift and health.
 func TestServeStatusOutputMatchesPlaneStatus(t *testing.T) {
 	instance := hermeticServeHome(t)
 
@@ -91,9 +80,7 @@ func TestServeStatusOutputMatchesPlaneStatus(t *testing.T) {
 	var rc int
 	out := captureStdout(t, func() { rc = serveStatus() })
 
-	// THE OTHER SPELLING, DRIVEN THROUGH ITS REAL COMMAND ARM. Comparing against StatusOf twice would only
-	// prove the library agrees with itself; going through runPlane is what pins that the two COMMANDS an
-	// operator types cannot disagree.
+	// THE OTHER SPELLING, DRIVEN THROUGH ITS REAL COMMAND ARM.
 	assertPlaneStatusAgrees(t, instance, out)
 
 	// THE EXPECTED STRING IS COMPUTED WITH THE SAME WRITER THE COMMANDS USE, and getting that wrong is
@@ -171,9 +158,8 @@ func assertPlaneStatusAgrees(t *testing.T, instance, serveOut string) {
 	}
 }
 
-// TestServeStartIsRefusedAndNamesTheReplacement pins AC1 at the surface a reader would actually try. An
-// unrecognised `serve` flag falls through to serveForeground() — a BLOCKING foreground plane — so silence
-// here is not neutral: it starts the wrong thing and looks like a hang.
+// TestServeStartIsRefusedAndNamesTheReplacement pins AC1 at the surface a reader would actually
+// try.
 func TestServeStartIsRefusedAndNamesTheReplacement(t *testing.T) {
 	var rc int
 	errOut := captureStderr(t, func() { rc = runServe([]string{"--start"}) })

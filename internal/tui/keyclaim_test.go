@@ -31,10 +31,8 @@ func (c *claimStub) Close()           {}
 // ClaimsKeys reports the screen owns every key right now.
 func (c *claimStub) ClaimsKeys() bool { return c.claim }
 
-// TestScreenKeyClaimBypassesShellRoutes pins the input-modal contract: a
-// screen whose form is open claims every key, so a typed character is
-// never a shell shortcut ('q' would quit the process, space would open the
-// tab menu, '/' the palette) — and stops claiming when the form closes.
+// TestScreenKeyClaimBypassesShellRoutes pins the input-modal contract: a screen whose form is open
+// claims every key, so a typed character is never a shell shortcut ('q' would quit the process.
 func TestScreenKeyClaimBypassesShellRoutes(t *testing.T) {
 	m := NewApp(&client.Clients{}, &config.Profile{Name: "default", URL: "https://x.example.com"}, "v9.9.9")
 	m.width, m.height = 120, 40
@@ -65,15 +63,8 @@ func TestScreenKeyClaimBypassesShellRoutes(t *testing.T) {
 		t.Fatalf("claimed keys must reach the screen, got %v", cs.keys)
 	}
 
-	// With the claim released the shell routes own their keys again — asserted with CTRL+C, which is the
-	// quit binding. `q` deliberately does NOT appear here: it was removed as a quit entirely (the operator:
-	// "if you hit it outside of the composer then it still quits. We should remove that completely."), so a
-	// test that reached for it would be asserting a binding that no longer exists.
-	//
-	// The composer is also why this needs a precondition rather than just a key: it holds the focus by
-	// default and is a TEXT INPUT, so while it has focus a printable key belongs to the operator's message.
-	// ctrl+c sidesteps the whole question — it is never text, and it is documented as the hard escape that
-	// "always works, even mid-composition".
+	// With the claim released the shell routes own their keys again — asserted with CTRL+C, which is
+	// the quit binding.
 	m.setFocus(focusContent)
 	cs.claim = false
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})

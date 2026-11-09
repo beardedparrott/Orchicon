@@ -22,10 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Service implements the ProjectService Connect handler
-// (apiv1connect.ProjectServiceHandler). Each mutation writes an outbox
-// row in the same transaction as the state change (AGENTS.md invariant
-// #3); the relay publishes it to NATS asynchronously.
+// Service implements the ProjectService Connect handler (apiv1connect.ProjectServiceHandler).
 type Service struct {
 	pool       *db.Pool
 	log        *slog.Logger
@@ -154,9 +151,8 @@ func (s *Service) GetProject(ctx context.Context, req *connect.Request[apiv1.Get
 	return connect.NewResponse(&apiv1.GetProjectResponse{Project: rowToProto(p)}), nil
 }
 
-// ListProjects returns a page of projects for the tenant with optional
-// search, status filter, and sort. Deleted projects are excluded by
-// default. Pagination is cursor-based on ULID id ordering (docs/07 §5.2).
+// ListProjects returns a page of projects for the tenant with optional search, status filter, and
+// sort.
 func (s *Service) ListProjects(ctx context.Context, req *connect.Request[apiv1.ListProjectsRequest]) (*connect.Response[apiv1.ListProjectsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -264,17 +260,8 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.MaxConcurrentRuns = &limit
 	}
-	// SETTING A PROJECT TO LOCAL CLEARS ITS DEFAULT RUNTIME IMAGE — the same rule the work
-	// item follows, and for the same reason: a local run executes on the host, so a
-	// project-level image is a setting that cannot apply. Leaving it stored makes the
-	// project claim a container default it will never use, and it silently becomes live
-	// again on the next switch back to runtime.
-	//
-	// LOCAL WINS over an image in the same request, because the GUI's picker is prefilled
-	// from the row and rounds the value back on every save — see the work-item handler
-	// (internal/workitem/service.go) where this exact shape defeated the clear. The
-	// difference here is that the clear is expressed as an EMPTY STRING, which is what
-	// "no image" already means for this column.
+	// SETTING A PROJECT TO LOCAL CLEARS ITS DEFAULT RUNTIME IMAGE — the same rule the work item
+	// follows, and for the same reason: a local run executes on the host.
 	clearImageForLocal := false
 	if msg.ExecutionMode != nil {
 		if m, merr := executionModeFromProto(*msg.ExecutionMode, ""); merr == nil && m == db.ExecutionModeLocal {
@@ -290,9 +277,8 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		fields.DefaultRuntimeImage = &v
 	}
 	if msg.ExecutionMode != nil {
-		// A present mode is explicit: UNSPECIFIED or an unknown enum value is
-		// a client bug, rejected with the shared message. An absent field still
-		// means "unchanged", so an update never re-defaults an existing project.
+		// A present mode is explicit: UNSPECIFIED or an unknown enum value is a client bug, rejected with
+		// the shared message.
 		m, err := executionModeFromProto(*msg.ExecutionMode, "")
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -347,10 +333,8 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// Context files must live inside the (effective) project directory — the
-	// only path guaranteed to be mounted where workers run. A path outside it
-	// is invisible to the worker, so reject it. Uses the NEW project_dir when
-	// this request changes it, else the current one.
+	// Context files must live inside the (effective) project directory — the only path guaranteed to be
+	// mounted where workers run.
 	if msg.ContextFiles != nil {
 		effDir := current.ProjectDir
 		if fields.ProjectDir != nil {
@@ -360,11 +344,8 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 	}
-	// Skill files are held to the SAME boundary as context files, and for the
-	// same reason: the project directory is the only directory mounted into a
-	// worker's container, so a skill path outside it is invisible to the worker.
-	// Rejecting it at save time (with the project dir NAMED in the error) beats
-	// letting it render as a dead "could not read" note in every prompt.
+	// Skill files are held to the SAME boundary as context files, and for the same reason: the project
+	// directory is the only directory mounted into a worker's container.
 	if msg.SkillFiles != nil {
 		effDir := current.ProjectDir
 		if fields.ProjectDir != nil {
@@ -388,9 +369,7 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	// A SAVED PROJECT IS RE-CHECKED, not only a new one. The git state can go wrong after creation — a repo
-	// deleted, a directory moved onto a drive this plane cannot reach, a strategy switched from none to pr —
-	// and the moment the operator is looking at the project form is the moment they can act on it.
+	// A SAVED PROJECT IS RE-CHECKED, not only a new one.
 	s.ensureProjectGitState(ctx, updated)
 	s.log.Info("project updated", "id", updated.ID, "version", updated.Version)
 	// Project dir / context files changed → refresh the container mount
@@ -471,9 +450,7 @@ func (s *Service) DeleteProject(ctx context.Context, req *connect.Request[apiv1.
 	return connect.NewResponse(&apiv1.DeleteProjectResponse{}), nil
 }
 
-// PauseProject is a lifecycle transition. It reuses the update path to
-// set status=paused. (Full lifecycle handling arrives with the
-// reconciler framework in Phase 3.)
+// PauseProject is a lifecycle transition.
 func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.PauseProjectRequest]) (*connect.Response[apiv1.PauseProjectResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -576,25 +553,14 @@ func (s *Service) ActivateProject(ctx context.Context, req *connect.Request[apiv
 	return connect.NewResponse(&apiv1.ActivateProjectResponse{Project: rowToProto(p)}), nil
 }
 
-// StreamProjectEvents is the server-stream RPC that fans out project
-// events from NATS to connected clients (docs/07 §4, docs/10 §4). It
-// subscribes to the orchicon.events.project.* subject filter and streams
-// each event as a StreamProjectEventsResponse. If from_sequence is
-// provided, the consumer resumes from that JetStream sequence
-// (docs/07 §4: resume after reconnect).
-//
-// The stream stays open until the client disconnects (context
-// cancelled) or the subscriber is unavailable. When NATS is down, the
-// RPC returns Unavailable (docs/08 §8: "frontend realtime degrades —
-// reconnect on recovery").
+// StreamProjectEvents is the server-stream RPC that fans out project events from NATS to connected
+// clients (docs/07 §4, docs/10 §4).
 func (s *Service) StreamProjectEvents(ctx context.Context, req *connect.Request[apiv1.StreamProjectEventsRequest], stream *connect.ServerStream[apiv1.StreamProjectEventsResponse]) error {
 	if s.subscriber == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("event streaming is unavailable (NATS subscriber not connected)"))
 	}
 
-	// Subject filter: project events only. If project_id is specified,
-	// the client filters further on its side (the NATS subject does
-	// not encode project_id in v0.1 — events carry it in the payload).
+	// Subject filter: project events only.
 	filter := "orchicon.events.project.>"
 
 	var fromSeq uint64
@@ -634,8 +600,6 @@ func (s *Service) StreamProjectEvents(ctx context.Context, req *connect.Request[
 }
 
 // ListProjectFiles returns the immediate children of a directory.
-// When dir_path is set, lists that directory directly (filesystem
-// browsing mode). Otherwise uses the project's project_dir + subpath.
 func (s *Service) ListProjectFiles(ctx context.Context, req *connect.Request[apiv1.ListProjectFilesRequest]) (*connect.Response[apiv1.ListProjectFilesResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -684,9 +648,8 @@ func (s *Service) ListProjectFiles(ctx context.Context, req *connect.Request[api
 	}), nil
 }
 
-// parseProjectEvent decodes the JSON event payload from the outbox/NATS
-// into a ProjectEvent proto message. The payload is the envelope written
-// by buildEventPayload.
+// parseProjectEvent decodes the JSON event payload from the outbox/NATS into a ProjectEvent proto
+// message.
 func parseProjectEvent(data []byte) (*apiv1.ProjectEvent, error) {
 	var env struct {
 		EventType    string `json:"event_type"`
@@ -714,9 +677,8 @@ func parseProjectEvent(data []byte) (*apiv1.ProjectEvent, error) {
 	return evt, nil
 }
 
-// enqueueProjectEvent builds a ProjectEvent envelope, encodes it as JSON,
-// and enqueues it in the outbox within the current transaction. The
-// relay publishes it to NATS asynchronously.
+// enqueueProjectEvent builds a ProjectEvent envelope, encodes it as JSON, and enqueues it in the
+// outbox within the current transaction.
 func enqueueProjectEvent(ctx context.Context, tx pgx.Tx, eventType string, p db.ProjectRow) error {
 	payload, err := buildEventPayload(eventType, p)
 	if err != nil {
@@ -756,9 +718,8 @@ func buildEventPayload(eventType string, p db.ProjectRow) ([]byte, error) {
 	return b, nil
 }
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -772,9 +733,7 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 	return audit.Record(ctx, tx, e)
 }
 
-// projectAuditSnapshot is the non-secret projection of a project row
-// for the audit trail. Goals and context_files can embed secrets;
-// excluded here (keep the trail compact and credential-free).
+// projectAuditSnapshot is the non-secret projection of a project row for the audit trail.
 func projectAuditSnapshot(p db.ProjectRow) map[string]any {
 	return map[string]any{
 		"id":                    p.ID,
@@ -796,9 +755,6 @@ func stringOrEmptyAudit(s *string) string {
 }
 
 // mapDBError translates a data-access error into a Connect error code.
-// ErrNotFound → NotFound; everything else is Internal (the data-access
-// layer does not surface business-logic errors — those are caught at the
-// service layer before the query runs).
 func mapDBError(err error) error {
 	if errors.Is(err, db.ErrNotFound) {
 		return connect.NewError(connect.CodeNotFound, errors.New("project not found"))
@@ -807,12 +763,6 @@ func mapDBError(err error) error {
 }
 
 // executionModeFromProto maps a wire execution mode to the stored string.
-//
-// `unset` decides what an EXECUTION_MODE_UNSPECIFIED caller means: create
-// passes db.DefaultExecutionMode (an absent mode means "the default", local),
-// while update passes "" so an absent field still means "leave it unchanged".
-// An UNSPECIFIED value with no unset default, or any unknown enum value, is a
-// client bug and is rejected with the shared db.ExecutionModeInvalidMsg.
 func executionModeFromProto(v apiv1.ExecutionMode, unset string) (string, error) {
 	switch v {
 	case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
@@ -828,15 +778,6 @@ func executionModeFromProto(v apiv1.ExecutionMode, unset string) (string, error)
 }
 
 // ensureProjectGitState runs the git-state setup for a saved project and REPORTS what it did.
-//
-// BEST-EFFORT BY CONTRACT, and the reason is in the ordering: this runs AFTER the project's transaction has
-// committed. A project whose directory is on an unreachable share, or whose host has no git, must still be
-// creatable — refusing the save would leave the operator unable to record the project at all, when the useful
-// response is to keep it and tell them what to fix. The report reaches them two ways: the log line here, and
-// the project's own event stream when the setup actually corrected something.
-//
-// A git event is only emitted when git state was CHANGED. A healthy project would otherwise emit a no-op event
-// on every single save, which is noise in a stream whose value is that everything in it means something.
 func (s *Service) ensureProjectGitState(ctx context.Context, proj db.ProjectRow) {
 	rep := EnsureGitState(ctx, proj.ProjectDir, proj.GitStrategy)
 
@@ -864,14 +805,6 @@ func (s *Service) ensureProjectGitState(ctx context.Context, proj db.ProjectRow)
 	}
 
 	// AND THE OPERATOR IS TOLD, IN THE TRANSCRIPT, WHENEVER IT MATTERS.
-	//
-	// Loud() is exactly the set of outcomes they must act on: a host without git, a setup that failed, or a
-	// warning that the chosen strategy cannot deliver what it promises. Reporting only to the log was the defect
-	// this whole PR set out to fix — a condition named in a file nobody reads, discovered instead as a failure
-	// at the end of a run.
-	//
-	// Advisory write, own transaction: the change it describes is already committed, so a failed notice must
-	// never fail a save that succeeded.
 	if rep.Loud() {
 		msg := "Git setup for this project could not finish, and its git-backed runs will not work as chosen: " +
 			rep.Summary()
@@ -893,14 +826,6 @@ func (s *Service) ensureProjectGitState(ctx context.Context, proj db.ProjectRow)
 }
 
 // enqueueProjectNotice writes one project-scoped event carrying a notice, in its own transaction.
-//
-// Its own transaction for the same reason the audit is: the change it describes is already committed, so it must
-// not be able to roll anything back.
-//
-// THE NOTICE TEXT RIDES BOTH. The event carries it under "notice" so a live watcher can display it without
-// re-reading the project, and the audit row carries it as "detail" so the record survives without a subscriber.
-// Both, because they answer different questions and one of them is routinely absent (nothing is subscribed, or
-// the operator is reading the audit trail hours later).
 func (s *Service) enqueueProjectNotice(ctx context.Context, proj db.ProjectRow, msg string) error {
 	tenantID := proj.TenantID
 	if tenantID == "" || proj.ID == "" {

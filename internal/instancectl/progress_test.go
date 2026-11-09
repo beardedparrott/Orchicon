@@ -1,12 +1,7 @@
 package instancectl
 
-// progress_test.go — the setup record must be trustworthy, because it is the ONLY thing telling a GUI
-// what a detached install is doing.
-//
-// The failure this prevents is specific: a detached setup that is killed outright cannot write "failed".
-// The record is then a `running` line with a frozen timestamp, which renders as an eternally-spinning
-// progress bar and tells the operator nothing. Two independent signals catch it — the recorded PID is
-// gone, or the timestamp has not moved — and both are asserted here.
+// progress_test.go — the setup record must be trustworthy, because it is the ONLY thing telling a
+// GUI what a detached install is doing.
 
 import (
 	"os"
@@ -69,12 +64,6 @@ func TestMissingProgressIsNotAnError(t *testing.T) {
 }
 
 // A STALE "running" RECORD MUST READ AS STALE, NOT AS RUNNING.
-//
-// THE RECORD IS WRITTEN AS RAW JSON, deliberately. WriteSetupProgress stamps UpdatedAt itself — the writer
-// is the passage of time, and letting a caller set it would let a caller lie about freshness. So a stale
-// record cannot be produced through the writer; it can only be LEFT BEHIND by a process that died. Writing
-// the bytes directly is what faithfully simulates that, and it is the only way to test the rule that
-// catches it.
 func TestStaleRunningRecordReadsAsStale(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

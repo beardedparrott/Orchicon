@@ -1,9 +1,7 @@
 package askorchicon
 
-// MCP server management tools (ADR-0008, adapter-settings MCP management):
-// thin wrappers over internal/mcpsettings so the Ask Orchicon / MCP surface
-// mirrors the platform's MCPService. Credentials are write-only via the
-// tenant secrets store (${SECRET_NAME} refs, never plaintext values).
+// MCP server management tools (ADR-0008, adapter-settings MCP management): thin wrappers over
+// internal/mcpsettings so the Ask Orchicon / MCP surface mirrors the platform's MCPService.
 
 import (
 	"context"
@@ -21,8 +19,6 @@ func mcpSvc(pool *db.Pool, kek []byte) *mcpsettings.Service {
 }
 
 // compactMCPServer is the value-less, compact row returned by the list tool.
-// Plaintext credentials never appear — env/header values may be ${SECRET_NAME}
-// references and has_secret_stored reports whether any required secret exists.
 type compactMCPServer struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
@@ -34,19 +30,13 @@ type compactMCPServer struct {
 	Headers     map[string]string `json:"headers,omitempty"`
 	Enabled     bool              `json:"enabled"`
 	CatalogSlug string            `json:"catalog_slug,omitempty"`
-	// ProtocolVersion is the operator's pin, "" meaning negotiate. SHOWN because it is the answer to the
-	// question an operator asks when a third-party server yields no tools: is the client speaking a version
-	// this server understands?
+	// ProtocolVersion is the operator's pin, "" meaning negotiate.
 	ProtocolVersion string                     `json:"protocol_version,omitempty"`
 	InstallStatus   string                     `json:"install_status"`
 	InstallResult   *mcpsettings.InstallResult `json:"install_result,omitempty"`
 	RequiredSecrets []string                   `json:"required_secrets,omitempty"`
 	HasSecretStored bool                       `json:"has_secret_stored"`
 	// OwnedBy says WHICH SCOPE supplies this definition — "conversation" or "project".
-	//
-	// WITHOUT IT THE ANSWER IS UNREADABLE. A conversation inherits its project's servers, so a list that mixes
-	// both without saying which is which cannot be checked against what the turn actually gets, and "is this
-	// mine or inherited?" is the question an operator asks when a tool is missing.
 	OwnedBy string `json:"owned_by"`
 }
 
@@ -88,12 +78,8 @@ func ownerOf(e mcpsettings.Entry) string {
 }
 
 func toolListMCPServers(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
-	// SCOPE-ADDRESSED, mirroring the MCPService RPC (MCPServerListRequest's
-	// project_id / conversation_id → Service.ListForScope): pass an owner to
-	// list that owner's definitions (project ∪ conversation), or neither to
-	// list every definition in the tenant. Before this the tool called
-	// ListForTenant unconditionally, so the Ask surface listed every owner's
-	// definitions — a drift from the platform surface it mirrors.
+	// SCOPE-ADDRESSED, mirroring the MCPService RPC (MCPServerListRequest's project_id /
+	// conversation_id → Service.ListForScope).
 	var params struct {
 		ProjectID      string `json:"project_id"`
 		ConversationID string `json:"conversation_id"`
@@ -105,19 +91,6 @@ func toolListMCPServers(ctx context.Context, pool *db.Pool, args json.RawMessage
 	tenantID := tenant.FromContext(ctx)
 
 	// A CONVERSATION'S SCOPE INCLUDES ITS PROJECT, AND LEAVING THAT OUT MADE THIS TOOL LIE.
-	//
-	// The TURN resolves project ∪ conversation (mcpsettings.Resolver.resolveConversation →
-	// ListMCPServersByOwner with BOTH ids). This tool passed only the conversation, so the query's project arm
-	// matched nothing and it answered with the conversation's own rows alone — which for a conversation that
-	// inherits everything from its project is ZERO.
-	//
-	// REPORTED as the root cause of a whole wasted session: a model asked what MCP servers it had, was told
-	// none, concluded its aseprite tools were unavailable, and spent the session driving the server over stdio
-	// JSON-RPC through bash — flattening every image result to text, while the platform log for the same turns
-	// recorded two registered servers. The tool contradicted the runtime, and the model believed the tool.
-	//
-	// So a conversation_id is EXPANDED to its project here, through the conversation's own row — the same
-	// source the turn reads — rather than asking the caller to pass both and hoping it does.
 	projectID := strings.TrimSpace(params.ProjectID)
 	conversationID := strings.TrimSpace(params.ConversationID)
 	if conversationID != "" && projectID == "" {

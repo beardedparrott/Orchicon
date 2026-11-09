@@ -8,34 +8,14 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// Decision-signal guard + completion probe for native sessions
-// (opencode parity — the opencode session engine's realDecisionMarkerIn /
-// completionProbe semantics, ADR parity contract). A native session that
-// reaches a settle-point WITHOUT a real ORCHICON WORKER SUMMARY marker must
-// never be recorded as a clean success: the marker is the worker's contract
-// sign-off, and its absence means the final response was truncated (the
-// MaxTokens cap cutting the model mid-monologue — the reported hollow
-// successes), the model idled early, or the marker was echoed as a plan
-// placeholder.
-//
-// The completion probe mirrors the opencode completion probe: when the
-// session settles without the marker, interject ONE user turn asking for
-// the sign-off. The probe turn either delivers the marker (the loop
-// continues; the next StopStop turn settles with the marker present) or the
-// budget exhausts and the execution fails honestly
-// (stalled:missing_decision_signal:completion_probe_no_response).
+// Decision-signal guard + completion probe for native sessions (opencode parity — the opencode
+// session engine's realDecisionMarkerIn / completionProbe semantics, ADR parity contract).
 
-// decisionMarker is the single marker signal every worker execution ends
-// with — identical to the opencode adapter's decisionMarker
-// (internal/opencode/session_run.go) and the scheduler's summaryMarker
-// (internal/scheduler/reconciler.go). One contract, three consumers.
+// decisionMarker is the single marker signal every worker execution ends with — identical to the
+// opencode adapter's decisionMarker (internal/opencode/session_run.go) and the scheduler's.
 const decisionMarker = "ORCHICON WORKER SUMMARY:"
 
-// completionProbeMaxTurns bounds the completion-probe budget. Two probes:
-// the first asks for the sign-off, the second asks again (a model that
-// replies with more work gets exactly one more chance). After that the
-// session is failed — the workflow's loop decision / re-ask / fail path is
-// the correct owner of a missing signal, never a hollow success.
+// completionProbeMaxTurns bounds the completion-probe budget.
 const completionProbeMaxTurns = 2
 
 // probeReplyKind classifies the model's reply to a completion probe.
@@ -49,29 +29,17 @@ const (
 	probeReplyWorking
 )
 
-// probeWorkingToken is the literal single-word answer the completion probe
-// offers a still-working model: reply WORKING and you will be left alone
-// to continue. Checked as a token (word-bounded, case-insensitive) so a
-// word like "networking" or a phrase containing "working on it" does NOT
-// match — only the standalone token does.
+// probeWorkingToken is the literal single-word answer the completion probe offers a still-working
+// model: reply WORKING and you will be left alone to continue.
 const probeWorkingToken = "working"
 
-// completionProbeReply classifies whether the session output ANSWERS a
-// completion probe. Returns (probeReplySummary, idx>=0) when a real
-// ORCHICON WORKER SUMMARY marker is present, (probeReplyWorking, idx>=0)
-// when the probe reply is the WORKING token, and (probeReplyNone, -1)
-// otherwise (including bare status lines — those are NOT answers; see the
-// 2026-09-09 probe-loop incident). The WORKING token is only credited when
-// it appears AFTER the probe was sent — implemented by the caller passing
-// the probe-time output; here it is checked anywhere in the tail, because
-// the probe reply is by construction the LAST turn's output.
+// completionProbeReply classifies whether the session output ANSWERS a completion probe.
 func completionProbeReply(output string) (int, int) {
 	if idx := realDecisionMarkerIn(output); idx >= 0 {
 		return probeReplySummary, idx
 	}
-	// WORKING token: word-bounded scan of the output tail (the probe
-	// reply is the latest turn; earlier turns may legitimately contain the
-	// word, so only the last ~200 chars are considered).
+	// WORKING token: word-bounded scan of the output tail (the probe reply is the latest turn; earlier
+	// turns may legitimately contain the word, so only the last ~200 chars are considered).
 	tail := output
 	if len(tail) > 200 {
 		tail = tail[len(tail)-200:]
@@ -103,37 +71,23 @@ func completionProbeReply(output string) (int, int) {
 	return probeReplyNone, -1
 }
 
-// completionProbeText mirrors the opencode completion probe (opencode
-// session_run.go completionProbeText). 2026-09-09 probe-loop incident: the
-// old "report your current status and then continue" phrasing made
-// mid-work models reply with a bare status line (no marker), which re-armed
-// the probe instantly — an infinite probe loop that never let the worker
-// start (transcripts: 15 "I need to re-sync" replies, zero tool calls). The
-// probe now DEMANDS the marker in the next response: the only acceptable
-// answers are the summary itself or the literal WORKING token (a real
-// continue turns into tool work, which re-enters the normal loop and
-// delivers the marker when it finishes).
+// completionProbeText mirrors the opencode completion probe (opencode session_run.go
+// completionProbeText).
 const completionProbeText = "Your response appears to have been cut off before your final ORCHICON WORKER SUMMARY was captured. " +
 	"Please do not restart your work and do NOT reply with a status update. " +
 	"Your NEXT reply must be one of exactly two things: " +
 	"(1) your final summary, in this form: ORCHICON WORKER SUMMARY: success — <summary>  (or  failure — <reason>), or " +
 	"(2) the single word WORKING (nothing else) if you still have work to do — you will then be left alone to continue working."
 
-// placeholderMarkerBody reports whether the text following an
-// ORCHICON WORKER SUMMARY marker is a doc/plan placeholder ("success — <summary>",
-// "<reason>", an empty body) rather than a real worker-written summary. A
-// worker that echoes the marker as an example inside its plan must not be
-// treated as having delivered the signal. Keep in sync with
-// internal/opencode/session_run.go placeholderMarkerBody and
-// internal/scheduler/reconciler.go placeholderSummaryBody.
+// placeholderMarkerBody reports whether the text following an ORCHICON WORKER SUMMARY marker is a
+// doc/plan placeholder ("success — <summary>", "<reason>".
 func placeholderMarkerBody(rest string) bool {
 	rest = strings.TrimSpace(rest)
 	if rest == "" {
 		return true
 	}
-	// Inline code (backtick-quoted) markers are seed/instruction echo, never
-	// a real sign-off — strip a leading backtick from the first word; a bare
-	// success/failure in backticks is a placeholder, not a delivery.
+	// Inline code (backtick-quoted) markers are seed/instruction echo, never a real sign-off — strip a
+	// leading backtick from the first word; a bare success/failure in backticks is a placeholder.
 	words := strings.Fields(rest)
 	if len(words) > 0 {
 		raw := words[0]
@@ -159,17 +113,14 @@ func placeholderMarkerBody(rest string) bool {
 	return false
 }
 
-// decisionMarkerPresent reports whether the session output carries a REAL
-// ORCHICON WORKER SUMMARY sign-off (last real occurrence wins — a worker
-// may plan with the marker as an example and then deliver it later).
+// decisionMarkerPresent reports whether the session output carries a REAL ORCHICON WORKER SUMMARY
+// sign-off (last real occurrence wins.
 func (s *Session) decisionMarkerPresent() bool {
 	return realDecisionMarkerIn(s.output.String()) >= 0
 }
 
-// realDecisionMarkerIn reports the index of the LAST real ORCHICON WORKER
-// SUMMARY marker in output — one whose body is actual content, not a
-// placeholder/template echo. Returns -1 when no real marker exists. Keep in
-// sync with internal/opencode/session_run.go realDecisionMarkerIn.
+// realDecisionMarkerIn reports the index of the LAST real ORCHICON WORKER SUMMARY marker in output
+// — one whose body is actual content, not a placeholder/template echo.
 func realDecisionMarkerIn(output string) int {
 	idx := strings.LastIndex(output, decisionMarker)
 	for idx >= 0 {
@@ -183,37 +134,16 @@ func realDecisionMarkerIn(output string) int {
 	return -1
 }
 
-// runCompletionProbe interjects the completion-probe user turn when a
-// session reached the settle-point without the decision marker. Returns
-// true when the probe was delivered and the loop should continue (the
-// probe turn's StopStop re-enters the success gate with fresh output);
-// false when the probe budget is exhausted — the execution has been failed
-// (OnResult fired) and the caller must return immediately.
+// runCompletionProbe interjects the completion-probe user turn when a session reached the
+// settle-point without the decision marker.
 func (s *Session) runCompletionProbe(ctx context.Context, callbacks scheduler.ExecutionCallbacks) bool {
-	// Budget gate (2026-09-09 liveness-kill fix): a probe only counts
-	// against the budget once its PREVIOUS probe was actually answered
-	// (completionProbeAwaiting false). A probe that is still awaiting a
-	// reply must not spend a slot — the model is mid-reply to it right now,
-	// and the very next StopStop (the probe reply landing) would otherwise
-	// burn budget #2 or fail outright for a response that had not yet
-	// arrived. Parity with the opencode cooldown-wait fix
-	// (completionProbeDecision).
-	//
-	// 2026-09-09 probe-loop fix: a NON-EMPTY turn that streamed since the
-	// probe but did not answer it (a bare status line — transcript
-	// 01M23C2MTF1ZYYHE8ACK17PMKV) is NOT "still waiting". Falling into the
-	// defer branch there looped the probe (re-queue → new status line →
-	// defer → …) without ever spending budget. When SawReply is set the
-	// gate FALLS THROUGH to the budget check: the non-answer spends the
-	// slot, so after completionProbeMaxTurns probes the session fails
-	// honestly instead of probing forever.
+	// Budget gate (2026-09-09 liveness-kill fix): a probe only counts against the budget once its
+	// PREVIOUS probe was actually answered (completionProbeAwaiting false).
 	if s.completionProbeAwaiting && !s.completionProbeSawReply {
 		s.log.Info("native completion probe still awaiting a reply — deferring, not spending budget",
 			"execution", s.id, "probes", s.completionProbesSent, "max", completionProbeMaxTurns)
-		// Bound the deferral: the probe reply usually lands as deltas
-		// (nudgeObserved clears the flag), so reaching here twice in a row
-		// means the provider returned EMPTY turns for the probe — fail
-		// honestly after one retry instead of looping forever.
+		// Bound the deferral: the probe reply usually lands as deltas (nudgeObserved clears the flag), so
+		// reaching here twice in a row means the provider returned EMPTY turns for the probe.
 		s.completionProbeDeferrals++
 		if s.completionProbeDeferrals > 1 {
 			msg := "stalled:missing_decision_signal:completion_probe_no_response"
@@ -226,9 +156,8 @@ func (s *Session) runCompletionProbe(ctx context.Context, callbacks scheduler.Ex
 			s.closeDoneCh()
 			return false
 		}
-		// Re-queue the SAME probe turn so the model gets its full reply
-		// window: the settle re-enters with the reply's output. (The probe
-		// text is already in history; loop continues to let it stream.)
+		// Re-queue the SAME probe turn so the model gets its full reply window: the settle re-enters with
+		// the reply's output.
 		return true
 	}
 	if s.completionProbesSent >= completionProbeMaxTurns {

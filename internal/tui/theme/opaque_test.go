@@ -8,10 +8,8 @@ import (
 	"github.com/muesli/termenv"
 )
 
-// Regression for the operator's "I can see the Konsole matrix through the
-// frame" report: a composed row carries inner styles whose \x1b[0m resets turn
-// the background OFF for every cell after them. Opaque must re-assert the
-// background so no cell is left on the terminal's own background.
+// Regression for the operator's "I can see the Konsole matrix through the frame" report: a composed
+// row carries inner styles whose \x1b[0m resets turn the background OFF for every cell after them.
 func TestOpaqueLeavesNoUnpaintedCells(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
@@ -28,12 +26,8 @@ func TestOpaqueLeavesNoUnpaintedCells(t *testing.T) {
 		t.Fatalf("Opaque width = %d, want exactly 40", w)
 	}
 
-	// Walk the row: after every reset, the next state must be a background
-	// SGR (or another escape) — never printable content on the terminal's bg.
-	//
-	// The local counter is named `resetCount` and NOT `resets`, which is now a package-level list (see
-	// theme.go) — the shadow compiled, but two different meanings for one name in the same package is
-	// exactly the kind of thing that costs someone an hour later.
+	// Walk the row: after every reset, the next state must be a background SGR (or another escape) —
+	// never printable content on the terminal's bg.
 	rest := out
 	resetCount := 0
 	for {
@@ -79,29 +73,6 @@ func TestOpaqueDegradesSafely(t *testing.T) {
 }
 
 // BOTH RESET SPELLINGS ARE REPAIRED, which they were not — and the gap had a visible symptom.
-//
-// The operator: "every theme has a weird color in the whitespace in work items. It just doesn't look great.
-// We shouldn't be filling in spaces with colors like that."
-//
-// A bubbles VIEWPORT pads every short line by writing `\x1b[m` — a reset with an OMITTED parameter, identical
-// in effect to `\x1b[0m` — and THEN the spaces. The pane's tint comes from the OUTER style, so that inner reset
-// cleared it and the padding carried no background at all: on a pane whose tint differs from the terminal's
-// own background, the whitespace rendered in the TERMINAL's colour. Every markdown line shorter than the pane
-// showed it (a heading, a bullet's last wrap, a paragraph's tail), which is why it read as coloured bands and
-// why it was never theme-specific — the hole was punched in whatever palette was active.
-//
-// `RepairAfterResets` existed to close exactly this hole and looked for ONE spelling. This pins both, so the
-// next producer that emits a reset in yet another form is caught by a failing test rather than by the operator.
-//
-// PROVEN BY DISABLING: narrowing `resets` back to `[]string{"\x1b[0m"}` fails this test on the viewport case
-// with "the reset spelling \x1b[m was NOT repaired", which is the reported symptom in miniature.
-//
-// THE SPELLINGS ARE HARDCODED HERE ON PURPOSE, and the first version of this test got it wrong in a way worth
-// recording: it iterated the production `resets` list, so narrowing that list to one spelling ALSO removed the
-// case that tests the other — and the test passed with the bug restored. A test that derives its cases from the
-// value it is checking cannot detect a change to that value; it is the same "comparing a constant to itself"
-// trap this codebase has hit before. The literals below are the contract, and the last assertion keeps the
-// production list honest against them.
 func TestRepairAfterResetsCatchesEveryResetSpelling(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })

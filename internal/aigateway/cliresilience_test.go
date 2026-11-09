@@ -2,12 +2,6 @@ package aigateway
 
 // cliresilience_test.go — ONE retry policy for every CLI call, and the line between transient and
 // deterministic drawn where it belongs.
-//
-// THE OPERATOR: "resilience across the board, not just on one provider or one model type." The gateway had it
-// on the model catalog and NOT on the MCP config — same CLI, same managed service, same eviction window — so
-// a blip the model list absorbed as a retry surfaced on the MCP list as a failure. These tests pin the shared
-// policy and, just as importantly, pin the refusals: a deterministic failure must be reported at once, because
-// retrying it turns a precise diagnosis into a slow, vague one.
 
 import (
 	"context"
@@ -91,9 +85,7 @@ func TestTransientFailureIsRetriedUntilItClears(t *testing.T) {
 	}
 }
 
-// AN EMPTY RESULT IS TRANSIENT ONLY WHERE IT IS KNOWN TO BE A RACE. The model catalog reports an empty list
-// when the service is re-booting; the MCP config's empty result is a legitimate answer (no servers), so it
-// must NOT be retried — the caller states which, rather than the loop guessing.
+// AN EMPTY RESULT IS TRANSIENT ONLY WHERE IT IS KNOWN TO BE A RACE.
 func TestEmptyIsTransientOnlyWhenTheCallerSaysSo(t *testing.T) {
 	t.Run("empty is a race", func(t *testing.T) {
 		attempts := 0
@@ -145,11 +137,6 @@ func TestMCPDiscoveryRetriesATransientFailure(t *testing.T) {
 	bin := filepath.Join(dir, "opencode")
 	calls := filepath.Join(dir, "calls.txt")
 	// Fails twice with an exit that SAYS NOTHING, then returns a valid config.
-	//
-	// "Says nothing" is the transient shape and it is deliberate: a CLI that exits non-zero WITH a message
-	// has explained itself, and an explained failure is deterministic (retrying collects the same words).
-	// Writing a message here made this stub deterministic and the test correctly failed — the classifier was
-	// right and the fixture was wrong, which is worth keeping in the test as a note.
 	script := "#!/bin/sh\n" +
 		"printf 'call\\n' >> " + calls + "\n" +
 		"n=$(wc -l < " + calls + ")\n" +
@@ -166,9 +153,8 @@ func TestMCPDiscoveryRetriesATransientFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MCP discovery failed despite a transient failure that clears: %v", err)
 	}
-	// The result is the stub's configured server MERGED WITH the well-known catalog (mergeMCPs always adds
-	// those, so the picker is never empty), so the assertion is on the stub's server being PRESENT rather than
-	// on the list being exactly one — which is what the first version of this test got wrong.
+	// The result is the stub's configured server MERGED WITH the well-known catalog (mergeMCPs always
+	// adds those, so the picker is never empty).
 	var found bool
 	for _, sv := range servers {
 		if sv.Id == "my-server" && sv.Command == "run-me" {

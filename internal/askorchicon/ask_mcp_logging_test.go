@@ -57,9 +57,6 @@ func TestTheToolCountIsLogged(t *testing.T) {
 }
 
 // TestAnEmptyResolutionIsLoggedWithTheDisabledSet is fix 2's second half.
-//
-// The disabled ids are what turn "no MCP tools this turn" from a dead end into an action: definitions that exist
-// and are switched off are a misconfiguration someone can fix.
 func TestAnEmptyResolutionIsLoggedWithTheDisabledSet(t *testing.T) {
 	pool := chatDBTestPool(t)
 	convID, projectID, serverID := projectOnlyConversation(t, pool)

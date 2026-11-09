@@ -45,21 +45,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// refreshInterval is the rolling window's period. It matches the GUI's own cadence (its list queries
-// poll at `refetchInterval: 5_000`), so the two clients show the same freshness — an operator moving
-// between them should not be able to tell which one refreshes faster.
+// refreshInterval is the rolling window's period.
 const refreshInterval = 5 * time.Second
 
-// refreshTickMsg is the rolling window's timer. It carries the GENERATION it belongs to, so a tick
-// armed before a tab switch cannot refresh the tab the operator has since moved to (and a stale tick
-// cannot re-arm a second chain, which would double the refresh rate on every switch).
+// refreshTickMsg is the rolling window's timer.
 type refreshTickMsg struct{ gen uint64 }
 
 // Refresher is the optional screen hook the shell calls on every tick.
-//
-// A screen returns the command that re-reads what is ON SCREEN, and returns nil when a refresh would
-// be disruptive (a form is open) or when there is nothing to re-read. The POLICY lives with the
-// screen because only it knows what it is in the middle of; the shell only knows when to ask.
 type Refresher interface {
 	RefreshView() tea.Cmd
 }
@@ -70,26 +62,16 @@ func refreshCmd(gen uint64) tea.Cmd {
 }
 
 // handleRefreshTick runs one turn of the rolling window and re-arms it.
-//
-// THERE IS EXACTLY ONE CHAIN, armed once at Init and re-armed HERE, always with the CURRENT
-// generation. That is simpler than restarting a chain on every tab switch and it is strictly
-// correct: a single chain cannot multiply, and because it is generation-agnostic at re-arm time it
-// needs no restart to follow the operator. The generation is still carried on the message so a tick
-// armed BEFORE a switch (by a previous incarnation, or a test) is ignored rather than acted on —
-// refreshing the tab the operator has just left would be wasted work and a visible flicker.
 func (m *App) handleRefreshTick(msg refreshTickMsg) (*App, tea.Cmd) {
 	if msg.gen != m.refreshGen {
 		return m, refreshCmd(m.refreshGen) // adopt the live generation: exactly one chain survives
 	}
-	// THE DOWN REMEDY IS RE-ASSERTED EVERY TICK, not only on a probe: the strip is shared writable state and
-	// any writer that clears it (connect, reconnect, paste, /find, an ask-model switch) would leave a footer
-	// saying "plane down" over an empty strip until the next probe — which a CONNECTED shell never arms.
-	// See assertPlaneRemedy.
+	// THE DOWN REMEDY IS RE-ASSERTED EVERY TICK, not only on a probe: the strip is shared writable
+	// state and any writer that clears it (connect, reconnect, paste, /find.
 	m.assertPlaneRemedy()
 	cmd := m.refreshActiveView()
 	// A FAILED STREAM IS THE SHELL'S EVIDENCE THAT THE PLANE MAY HAVE GONE — re-probe it, so the plane
-	// chip and the remedy stop describing a plane that is no longer there (planeReprobeCmd throttles,
-	// and a connected shell arms nothing).
+	// chip and the remedy stop describing a plane that is no longer there (planeReprobeCmd throttles.
 	probe := m.planeReprobeCmd()
 	// Re-arm unconditionally, even when the refresh did nothing: a skipped tick must not end the
 	// window, or one open form would stop every screen refreshing for the rest of the session.
@@ -103,9 +85,7 @@ func (m *App) refreshActiveView() tea.Cmd {
 	if s == nil {
 		return nil
 	}
-	// A MODAL OWNS THE SCREEN. The shell's own overlays (the model picker, the help overlay, the
-	// connect form, a slash palette) are typing surfaces: refreshing underneath them would move rows
-	// the operator is choosing from.
+	// A MODAL OWNS THE SCREEN.
 	if m.refreshBlocked() {
 		return nil
 	}
@@ -208,30 +188,13 @@ func (m *App) refreshBlocked() bool {
 	case m.modelPicker != nil:
 		return true
 	case m.scope != nil:
-		// THE SCOPE MODAL BLOCKS TOO. It is a list of the very things a background reload would move
-		// under the operator's cursor (definitions being added, installs landing, skill paths changing),
-		// and its own writes already re-read it — so a concurrent refresh could only add churn the
-		// operator did not ask for. Its data is fetched by the modal itself, so nothing here goes stale.
+		// THE SCOPE MODAL BLOCKS TOO.
 		return true
 	}
 	return false
 }
 
-// refreshPeriod is the window's live period. It is a VARIABLE only so a test can shorten it: a test
-// that had to wait the real five seconds would make the suite slower than the feature is worth, and
-// the timing is not what is under test (the re-arm, the generation and the guards are).
-//
-// IT IS DELIBERATELY NOT SHORTENED ON WINDOWS, even though the shell also polls the terminal SIZE there
-// (resize_probe.go). This tick re-reads the ACTIVE VIEW — real queries against the plane — so making it a
-// quarter-second poll to serve a resize probe would multiply backend load to serve a cosmetic need. The
-// probe has its own cheap chain instead.
+// refreshPeriod is the window's live period.
 
-// refreshPeriod is the window's live period. It is a VARIABLE only so a test can shorten it: a test
-// that had to wait the real five seconds would make the suite slower than the feature is worth, and
-// the timing is not what is under test (the re-arm, the generation and the guards are).
-//
-// IT IS DELIBERATELY NOT SHORTENED ON WINDOWS, even though the shell also polls the terminal SIZE there
-// (resize_probe.go). This tick re-reads the ACTIVE VIEW — real queries against the plane — so making it a
-// quarter-second poll to serve a resize probe would multiply backend load to serve a cosmetic need. The
-// probe has its own cheap chain instead.
+// refreshPeriod is the window's live period.
 var refreshPeriod = refreshInterval

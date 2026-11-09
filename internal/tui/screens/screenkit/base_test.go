@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// TestFriendlyFetchErrClassifications pins the auth-cascade cleanup: a
-// bare "unauthenticated" RPC error is rewritten to a human-readable retry
-// state naming /connect (never shown raw); other classes name their fix.
+// TestFriendlyFetchErrClassifications pins the auth-cascade cleanup: a bare "unauthenticated" RPC
+// error is rewritten to a human-readable retry state naming /connect (never shown raw).
 func TestFriendlyFetchErrClassifications(t *testing.T) {
 	cases := []struct{ in, wantContains, wantNotContains string }{
 		{"rpc error: code = Unauthenticated desc = invalid token", "run /connect", "Unauthenticated"},
@@ -30,9 +29,8 @@ func TestFriendlyFetchErrClassifications(t *testing.T) {
 	}
 }
 
-// TestListErrRendersRetryState pins the List pane's error render: never a
-// bare "error: …" line — an explicit retry hint accompanies the friendly
-// error text.
+// TestListErrRendersRetryState pins the List pane's error render: never a bare "error: …" line — an
+// explicit retry hint accompanies the friendly error text.
 func TestListErrRendersRetryState(t *testing.T) {
 	l := &List{Title: "Projects", Width: 40, Height: 10, Err: "session needs re-authentication — run /connect"}
 	out := l.View(false)

@@ -5,17 +5,14 @@ import (
 	"strings"
 )
 
-// errUnconfiguredCommand is returned for a stdio spec selected without a
-// configured command (selected-but-unconfigured — actionable, never
-// silent).
+// errUnconfiguredCommand is returned for a stdio spec selected without a configured command
+// (selected-but-unconfigured — actionable, never silent).
 func errUnconfiguredCommand(spec ServerSpec) error {
 	return fmt.Errorf("mcp server %q: selected but no command configured", spec.ID)
 }
 
-// splitCommandLine splits a command string into argv the way a shell
-// would for the simple quoting we accept (whitespace-separated, with
-// double-quote groups). It exists because permissions.mcp_servers entries
-// carry the command as a single string (frontend MCPPicker shape).
+// splitCommandLine splits a command string into argv the way a shell would for the simple quoting
+// we accept (whitespace-separated, with double-quote groups).
 func splitCommandLine(s string) []string {
 	var out []string
 	var cur strings.Builder

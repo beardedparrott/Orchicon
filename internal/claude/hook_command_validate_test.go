@@ -1,14 +1,6 @@
 package claude
 
 // hook_command_validate_test.go — a hook command that a shell would mis-split must fail at STARTUP.
-//
-// REPORTED as a non-durable permission grant: "run 1 refused every write, run 2 wrote everything, and
-// permission-policy.yaml on disk is unchanged (deny list only, accept: [])". There is no stored grant to be
-// non-durable — nothing in the codebase writes an accept list during a run — so the difference between those
-// runs was whether the hook RAN. A failing PreToolUse hook blocks every gated tool, and the os.Stat checks in
-// PreflightHookExecutable cannot see it: the FILE is perfect and only the COMMAND is wrong.
-//
-// The fix is a claim about the command itself, checked before the session starts.
 
 import (
 	"os"
@@ -71,10 +63,8 @@ func TestHookCommandSplitterGroupsQuotedSpans(t *testing.T) {
 	}
 }
 
-// THE END-TO-END CASE FOR THE REPORTED HOST: a binary whose path CONTAINS A SPACE must still preflight
-// clean, because the renderer quotes it. This is the assertion that would have failed before the quoting fix
-// and passes after it — the preflight now checks the RENDERED command, so a path with a space is proven
-// usable rather than assumed usable.
+// THE END-TO-END CASE FOR THE REPORTED HOST: a binary whose path CONTAINS A SPACE must still
+// preflight clean, because the renderer quotes it.
 func TestPreflightAcceptsABinaryPathWithASpace(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "Program Files")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

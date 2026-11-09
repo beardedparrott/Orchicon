@@ -50,11 +50,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// resolveMCP is THE resolution step: exactly one scope, the RAW result WITH
-// its provenance. Nothing here renders, expands secrets, or adds the built-in —
-// a resolution is an observation, and the log line and the parity test both
-// read THIS value (never a post-expansion copy, which would carry plaintext
-// credentials).
+// resolveMCP is THE resolution step: exactly one scope, the RAW result WITH its provenance.
 func (b *Bridge) resolveMCP(ctx context.Context, tenantID string, ref mcpclient.ScopeRef) (mcpclient.Resolution, error) {
 	if b.mcpResolver == nil {
 		return mcpclient.Resolution{}, nil
@@ -68,15 +64,8 @@ func (b *Bridge) resolveMCP(ctx context.Context, tenantID string, ref mcpclient.
 	return res, nil
 }
 
-// renderMCP renders a resolution into claude's config list: the built-in
-// Orchicon sidecar FIRST, then the resolved servers (rendered by
-// MCPServersFromSpecs), with ${SECRET_NAME} refs expanded. The built-in is added
-// ON TOP, never instead: a tenant with no configured servers must still get the
-// orchicon_* surface.
-//
-// A missing selection is the native bridge's documented failure and is kept
-// here — a worker whose MCP selection silently did not apply looks healthy and
-// cannot do its job.
+// renderMCP renders a resolution into claude's config list: the built-in Orchicon sidecar FIRST,
+// then the resolved servers (rendered by MCPServersFromSpecs), with ${SECRET_NAME} refs expanded.
 func (b *Bridge) renderMCP(ctx context.Context, tenantID string, res mcpclient.Resolution, builtin MCPServer) ([]MCPServer, error) {
 	if len(res.Missing) > 0 {
 		return nil, fmt.Errorf("claude: MCP server(s) selected but not configured (project / version permissions): %v — fix the project's or this version's MCP definitions", res.Missing)
@@ -97,20 +86,8 @@ func (b *Bridge) renderMCP(ctx context.Context, tenantID string, res mcpclient.R
 	return out, nil
 }
 
-// resolveMCPServers returns every MCP server an ASK conversation gets:
-// the built-in Orchicon sidecar, then the tenant-resolved PROJECT set.
-//
-// It is the project-scope wrapper kept for Ask's caller (ask.go); a worker
-// execution goes through resolveMCP + renderMCP with the WORKER scope so the
-// version's inline specs are in the union. Callers that must LOG provenance
-// call resolveMCP/renderMCP directly and read mcpclient.ProvenanceString off
-// the RAW resolution.
-//
-// `builtin` is the platform's own Orchicon entry, built by the CALLER because
-// only the caller knows its transport: a worker in a runtime container needs the
-// daemon's bind-mounted binary and the in-container sandbox Postgres, while an
-// Ask session runs this process's own executable. Resolution is shared; the
-// built-in's shape is not.
+// resolveMCPServers returns every MCP server an ASK conversation gets: the built-in Orchicon
+// sidecar, then the tenant-resolved PROJECT set.
 func (b *Bridge) resolveMCPServers(ctx context.Context, tenantID, workerID, projectID string, builtin MCPServer) ([]MCPServer, error) {
 	res, err := b.resolveMCP(ctx, tenantID, mcpclient.ScopeRef{
 		Kind:      mcpclient.ScopeProject,
@@ -139,14 +116,8 @@ func (b *Bridge) resolveMCPSpecSecrets(ctx context.Context, tenantID string, spe
 	return nil
 }
 
-// logMCPResolution records what the session actually got, because an MCP surface
-// that is absent is otherwise invisible: the model simply reports it cannot call
-// a tool, and nothing in the log says why.
-//
-// `provenance` names WHICH SCOPE supplied each server ("gh=inline:w1@3"), because
-// "the server is missing" and "the server resolved from the WRONG scope" are
-// different problems with different fixes. It is built from the RAW resolution
-// (before ${SECRET} expansion), so it can never carry a credential.
+// logMCPResolution records what the session actually got, because an MCP surface that is absent is
+// otherwise invisible: the model simply reports it cannot call a tool.
 func logMCPResolution(where string, servers []MCPServer, provenance string) {
 	names := make([]string, 0, len(servers))
 	for _, s := range servers {
@@ -167,27 +138,17 @@ func mcpServerNames(servers []mcpclient.ScopedServer) string {
 	return strings.Join(names, ",")
 }
 
-// recordMCPFingerprint stores the resolved set the child is being launched with,
-// tagged with whether the mode could act (which is what decided whether the
-// operator's opaque servers were offered). The value is built by mcpFingerprint,
-// the SAME function the comparator uses, so the two cannot drift.
+// recordMCPFingerprint stores the resolved set the child is being launched with, tagged with
+// whether the mode could act (which is what decided whether the operator's opaque servers were
+// offered).
 func (s *askSession) recordMCPFingerprint(fp string) {
 	s.mu.Lock()
 	s.mcpFingerprint = fp
 	s.mu.Unlock()
 }
 
-// sessionMCPStale reports whether the conversation's CURRENT MCP resolution (or the
-// mode's may-act, which decides whether the operator's servers are offered) differs
-// from what the live child was launched with.
-//
-// WHY THIS EXISTS RATHER THAN BEING IMPLIED. claude's Ask child is long-lived per
-// conversation and takes its servers as `--mcp-config` at SPAWN, so a live child
-// cannot see a server added afterwards, nor a mode switch that flips MayAct. Without
-// this check, AC2/AC4 ("a conversation receives its project's and its own servers")
-// would hold only for a set that was complete before the first message. A false result
-// on any resolution failure is deliberate: argv() reports that failure at spawn, so
-// re-resolving here must not turn a reporting concern into a respawn loop.
+// sessionMCPStale reports whether the conversation's CURRENT MCP resolution (or the mode's may-act,
+// which decides whether the operator's servers are offered) differs from what the live child.
 func (s *askSession) sessionMCPStale() bool {
 	s.mu.Lock()
 	alive, fp, mode := s.alive, s.mcpFingerprint, s.mode
@@ -207,22 +168,14 @@ func (s *askSession) sessionMCPStale() bool {
 	return mcpFingerprint(askmode.MayAct(mode), res.Servers) != fp
 }
 
-// mcpFingerprint is the ONE rendering of "what the child was launched with": the
-// may-act flag (which decides whether the operator's opaque servers were offered) and
-// the resolved server ids. Both producer and comparator call it, so they cannot drift.
+// mcpFingerprint is the ONE rendering of "what the child was launched with": the may-act flag
+// (which decides whether the operator's opaque servers were offered) and the resolved server ids.
 func mcpFingerprint(mayAct bool, servers []mcpclient.ScopedServer) string {
 	return fmt.Sprintf("mayact=%v;%s", mayAct, mcpServerNames(servers))
 }
 
-// withholdOpaqueMCP drops every server from an Ask render EXCEPT the platform's own
-// Orchicon sidecar. It is the OFFERED half of the opaque-MCP mode rule for this
-// adapter: the operator's servers are opaque, so a mode that may not act is not
-// offered them at all.
-//
-// The platform's sidecar is kept unconditionally: its tools ARE classified by the
-// table (`mcp__orchicon__create_work_item` etc.), so the hook's mode gate governs
-// them precisely, and withholding them in Brainstorm/Quick Work would remove the
-// in-Orchicon work those modes exist to do.
+// withholdOpaqueMCP drops every server from an Ask render EXCEPT the platform's own Orchicon
+// sidecar.
 func withholdOpaqueMCP(servers []MCPServer) []MCPServer {
 	out := make([]MCPServer, 0, 1)
 	for _, s := range servers {

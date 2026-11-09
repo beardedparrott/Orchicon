@@ -16,13 +16,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// TestBudgetBreachedCostGate verifies the PRIMARY gate: accumulated
-// cache-aware cost trips when it reaches the configured cost_usd, with no
-// margin or fraction — the configured number is the threshold.
+// TestBudgetBreachedCostGate verifies the PRIMARY gate: accumulated cache-aware cost trips when it
+// reaches the configured cost_usd, with no margin or fraction.
 func TestBudgetBreachedCostGate(t *testing.T) {
-	// tokens explicitly disabled so this test isolates the cost gate — an
-	// unset tokens field would otherwise resolve to the built-in 1,000,000
-	// default and mask the assertion below.
+	// tokens explicitly disabled so this test isolates the cost gate — an unset tokens field would
+	// otherwise resolve to the built-in 1,000,000 default and mask the assertion below.
 	spec := budgetSpec{costUSD: float64Ptr(4.0), tokens: float64Ptr(0)}
 	// At the threshold → breach.
 	if !budgetBreached(spec, &budgetAccumulator{costUSD: 4.0}) {
@@ -39,12 +37,8 @@ func TestBudgetBreachedCostGate(t *testing.T) {
 	}
 }
 
-// TestBudgetBreachedTokenFreshWeight verifies the token gate counts FRESH
-// tokens only (prompt+completion+reasoning) and EXCLUDES cache reads. Cache
-// reads re-send already-counted context, so a cache-heavy code worker must
-// not be able to trip the token abort by re-sending context it already holds
-// — that path is instead governed by the cost gate, which still prices cache
-// reads (at the provider's discounted rate).
+// TestBudgetBreachedTokenFreshWeight verifies the token gate counts FRESH tokens only
+// (prompt+completion+reasoning) and EXCLUDES cache reads.
 func TestBudgetBreachedTokenFreshWeight(t *testing.T) {
 	// 100 input + 50 output + 10 reasoning = 160 fresh; cache 40 is excluded.
 	acc := &budgetAccumulator{prompt: 100, completion: 50, reasoning: 10, cacheRead: 40}
@@ -54,16 +48,14 @@ func TestBudgetBreachedTokenFreshWeight(t *testing.T) {
 	if !budgetBreached(budgetSpec{tokens: float64Ptr(160)}, acc) {
 		t.Fatal("expected breach once fresh token count reaches the token budget")
 	}
-	// A cache-heavy session with LOTS of cache reads but small fresh tokens
-	// must NOT breach by cache alone. 5k prompt + 2k completion + 100
-	// reasoning = 7.1k fresh, 1.1M cache — the cache reads are excluded.
+	// A cache-heavy session with LOTS of cache reads but small fresh tokens must NOT breach by cache
+	// alone.
 	if budgetBreached(budgetSpec{tokens: float64Ptr(200_000)},
 		&budgetAccumulator{prompt: 5_000, completion: 2_000, reasoning: 100, cacheRead: 1_100_000}) {
 		t.Fatal("expected cache reads to be excluded from the token budget")
 	}
-	// But a cache-heavy session can still breach via the COST gate, which
-	// prices cache reads (cheap but not free). $200k tokens of cache read is
-	// real money; a tiny cost ceiling must trip.
+	// But a cache-heavy session can still breach via the COST gate, which prices cache reads (cheap but
+	// not free).
 	if !budgetBreached(budgetSpec{costUSD: float64Ptr(0.01), tokens: float64Ptr(200_000)},
 		&budgetAccumulator{prompt: 5_000, completion: 2_000, reasoning: 100, cacheRead: 1_100_000, costUSD: 0.02}) {
 		t.Fatal("expected cache-heavy session to breach the cost gate")
@@ -71,12 +63,6 @@ func TestBudgetBreachedTokenFreshWeight(t *testing.T) {
 }
 
 // THERE ARE NO BUILT-IN SPEND CEILINGS ANY MORE, and this pins it.
-//
-// tokens / cost_usd / tool_call_count / wall_clock_seconds used to fall back to
-// 500,000 fresh tokens, $0.50, 100 calls and 3600s when unset — numbers no
-// operator had chosen. The 4-minute DeepSeek run that motivated this change had
-// a $10 cost gate stored and NO token gate, and it died on a ceiling it never
-// configured. A nil accumulator (no usage recorded yet) still never breaches.
 func TestNoConfiguredBudgetMeansNoGate(t *testing.T) {
 	if budgetBreached(budgetSpec{}, nil) {
 		t.Fatal("expected no breach on a nil accumulator")
@@ -118,11 +104,8 @@ func TestConfiguredCeilingsStillApply(t *testing.T) {
 	}
 }
 
-// TestBudgetBreachedExplicitZeroDisables verifies that an explicit 0 (or
-// negative) cost_usd/tokens value opts a worker/tenant OUT of that gate
-// entirely, rather than resolving to the built-in default — mirroring
-// wallClockDeadline's "0 disables" convention so operators have a way to
-// turn a dimension off instead of just leaving it unset.
+// TestBudgetBreachedExplicitZeroDisables verifies that an explicit 0 (or negative) cost_usd/tokens
+// value opts a worker/tenant OUT of that gate entirely.
 func TestBudgetBreachedExplicitZeroDisables(t *testing.T) {
 	zero := float64Ptr(0)
 	acc := &budgetAccumulator{costUSD: 999, prompt: 5_000_000, completion: 5_000_000}
@@ -131,9 +114,8 @@ func TestBudgetBreachedExplicitZeroDisables(t *testing.T) {
 	}
 }
 
-// TestBudgetAccumulatorAdd verifies the accumulator folds a step_finish's
-// tokens + cost exactly (same bucket semantics as recordUsage) and counts
-// the step.
+// TestBudgetAccumulatorAdd verifies the accumulator folds a step_finish's tokens + cost exactly
+// (same bucket semantics as recordUsage) and counts the step.
 func TestBudgetAccumulatorAdd(t *testing.T) {
 	acc := &budgetAccumulator{}
 	acc.add(map[string]any{
@@ -145,10 +127,8 @@ func TestBudgetAccumulatorAdd(t *testing.T) {
 	}
 }
 
-// TestParseBudgetSpec verifies the single merged-budget parse yields the
-// cost + token + wall-clock gates AND the optional warning ladder
-// (fractions + messages), with empty/unparseable budgets yielding no gate
-// (built-in defaults apply downstream).
+// TestParseBudgetSpec verifies the single merged-budget parse yields the cost + token + wall-clock
+// gates AND the optional warning ladder (fractions + messages).
 func TestParseBudgetSpec(t *testing.T) {
 	spec := parseBudgetSpec([]byte(`{"cost_usd":0.5,"tokens":1000,"wall_clock_seconds":3600}`))
 	if spec.costUSD == nil || *spec.costUSD != 0.5 {
@@ -172,9 +152,8 @@ func TestParseBudgetSpec(t *testing.T) {
 	}
 }
 
-// TestParseBudgetSpecWarnings verifies the optional `warnings` block is
-// parsed into the ladder thresholds + message templates, with defaults
-// falling back to the built-in schedule.
+// TestParseBudgetSpecWarnings verifies the optional `warnings` block is parsed into the ladder
+// thresholds + message templates, with defaults falling back to the built-in schedule.
 func TestParseBudgetSpecWarnings(t *testing.T) {
 	spec := parseBudgetSpec([]byte(`{
 	  "tokens": 1000,
@@ -203,10 +182,8 @@ func TestParseBudgetSpecWarnings(t *testing.T) {
 	}
 }
 
-// TestParseBudgetSpecCompactTiers verifies the optional `compact_tiers`
-// [warn, escalate, final] policy is parsed, defaulting to the built-in
-// {false, true, true} when absent (warn does not compact, escalate + final
-// do). Partial arrays are not accepted — a full 3-element array is required.
+// TestParseBudgetSpecCompactTiers verifies the optional `compact_tiers` [warn, escalate, final]
+// policy is parsed, defaulting to the built-in {false, true.
 func TestParseBudgetSpecCompactTiers(t *testing.T) {
 	// Absent → built-in default: warn off, escalate + final on.
 	def := parseBudgetSpec([]byte(`{"tokens":1000}`))
@@ -228,9 +205,8 @@ func TestParseBudgetSpecCompactTiers(t *testing.T) {
 	}
 }
 
-// TestParseBudgetSpecCompactDims verifies the per-dimension compaction
-// policy: absent → built-in default (tokens + cost compact; tools + time do
-// not), while a present `compact_dims` array is the COMPLETE allowed set.
+// TestParseBudgetSpecCompactDims verifies the per-dimension compaction policy: absent → built-in
+// default (tokens + cost compact; tools + time do not).
 func TestParseBudgetSpecCompactDims(t *testing.T) {
 	def := parseBudgetSpec([]byte(`{"tokens":1000}`))
 	if def.compactDims != [dimCount]bool{true, true, false, false} {
@@ -286,17 +262,15 @@ func TestLevelForAndMessage(t *testing.T) {
 	if !strings.Contains(msg, "60%") {
 		t.Fatalf("warning message missing {pct} substitution, got %q", msg)
 	}
-	// The reformed copy is calm-but-severe and instructive: it names the
-	// driver and tells the worker what to do, rather than panicking. It
-	// must carry the concrete remediation (batch into a round-trip).
+	// The reformed copy is calm-but-severe and instructive: it names the driver and tells the worker
+	// what to do, rather than panicking.
 	if !strings.Contains(msg, "round-trip") {
 		t.Fatalf("warning message should give concrete batching guidance, got %q", msg)
 	}
 }
 
-// compactTestServer spins an httptest server that records POST
-// /session/{id}/summarize calls (method, path, body) so a test can assert the
-// Compact client contract and the session-run gate behaviour.
+// compactTestServer spins an httptest server that records POST /session/{id}/summarize calls
+// (method, path, body) so a test can assert the Compact client contract and the session-run gate.
 type compactRecorder struct {
 	mu     sync.Mutex
 	calls  []compactCall
@@ -429,9 +403,8 @@ func TestMaybeCompactMinTurnFloor(t *testing.T) {
 	}
 }
 
-// TestMaybeCompactFiresOncePerExecution verifies the turn-count gate
-// compacts once, and the per-execution cap (default 1) prevents a compact
-// loop even though the cadence keeps tripping.
+// TestMaybeCompactFiresOncePerExecution verifies the turn-count gate compacts once, and the
+// per-execution cap (default 1) prevents a compact loop even though the cadence keeps tripping.
 func TestMaybeCompactFiresOncePerExecution(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)
@@ -448,9 +421,7 @@ func TestMaybeCompactFiresOncePerExecution(t *testing.T) {
 		budgetSpec: budgetSpec{compactMaxTurns: float64Ptr(2)},
 		done:       make(chan struct{}),
 	}
-	// Note: parseEvent feeds budget.steps; here we set it directly. Advance
-	// the accumulator to simulate a session that stays over the turn cadence
-	// for many steps — the cap must hold it to a single compact.
+	// Note: parseEvent feeds budget.steps; here we set it directly.
 	t.Setenv("ORCHICON_COMPACT_MIN_TURNS", "1")
 	t.Setenv("ORCHICON_COMPACT_MAX", "1")
 	for r.budget.steps < 8 {
@@ -462,10 +433,8 @@ func TestMaybeCompactFiresOncePerExecution(t *testing.T) {
 	}
 }
 
-// TestMaybeCompactReArmsAcrossForwardProgress verifies the re-arm rule: with a
-// higher per-execution cap, compacts are separated by the minimum-turn floor
-// across normal forward progress (never back-to-back on the same step), so a
-// fresh post-compact summary gets to run before the gate can fire again.
+// TestMaybeCompactReArmsAcrossForwardProgress verifies the re-arm rule: with a higher per-execution
+// cap, compacts are separated by the minimum-turn floor across normal forward progress (never.
 func TestMaybeCompactReArmsAcrossForwardProgress(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)
@@ -562,12 +531,8 @@ func TestMaybeCompactMalformedModelRef(t *testing.T) {
 	}
 }
 
-// TestMaybeCompactTurnCountTriggerWithNoBudgetBreach verifies the turn-count
-// gate fires compaction on its own cadence even when cost/tokens never
-// breach — the scenario a cheap-cache provider (DeepSeek) produces: many
-// turns, individually inexpensive, but cumulatively resending an
-// ever-growing cached prefix. costUSD/tokens are explicitly disabled (0) so
-// only the turn-count gate is live.
+// TestMaybeCompactTurnCountTriggerWithNoBudgetBreach verifies the turn-count gate fires compaction
+// on its own cadence even when cost/tokens never breach.
 func TestMaybeCompactTurnCountTriggerWithNoBudgetBreach(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)
@@ -592,10 +557,7 @@ func TestMaybeCompactTurnCountTriggerWithNoBudgetBreach(t *testing.T) {
 		r.budget.steps = step
 		r.maybeCompact()
 	}
-	// Turns 1-3: below the 4-turn cap → no compact. Turn 4: compact #1.
-	// Turns 5-7: within the re-arm window of the NEXT floor, but the
-	// turn-count gate re-checks turnsSinceLastCompact every call, so it
-	// re-fires once turnsSinceLastCompact reaches 4 again at turn 8.
+	// Turns 1-3: below the 4-turn cap → no compact.
 	if rec.summarizeCount() != 2 {
 		t.Fatalf("expected 2 turn-count-triggered compacts over 9 steps (cap=4), got %d", rec.summarizeCount())
 	}
@@ -605,10 +567,8 @@ func TestMaybeCompactTurnCountTriggerWithNoBudgetBreach(t *testing.T) {
 	}
 }
 
-// TestMaybeCompactTurnCountGateDisabled verifies an explicit 0 for
-// compact_max_turns disables the turn-count trigger, leaving only
-// cost/tokens as live signals (so a worker/tenant can opt back into the
-// pre-fix one-shot-only-on-breach behavior for a specific dimension).
+// TestMaybeCompactTurnCountGateDisabled verifies an explicit 0 for compact_max_turns disables the
+// turn-count trigger, leaving only cost/tokens as live signals (so a worker/tenant can opt back.
 func TestMaybeCompactTurnCountGateDisabled(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)
@@ -638,9 +598,8 @@ func TestMaybeCompactTurnCountGateDisabled(t *testing.T) {
 	}
 }
 
-// TestEffectiveCompactMaxTurns verifies the turn-count gate resolver: unset →
-// DISABLED (this is the default that collapsed a healthy run at turn 30),
-// configured → that value, explicit 0/negative → disabled.
+// TestEffectiveCompactMaxTurns verifies the turn-count gate resolver: unset → DISABLED (this is the
+// default that collapsed a healthy run at turn 30), configured → that value.
 func TestEffectiveCompactMaxTurns(t *testing.T) {
 	if turns, ok := effectiveCompactMaxTurns(budgetSpec{}); ok {
 		t.Fatalf("unset compactMaxTurns = (%d, %v), want (_, false): an unset turn-count "+
@@ -657,9 +616,8 @@ func TestEffectiveCompactMaxTurns(t *testing.T) {
 	}
 }
 
-// TestEffectiveToolCallLimit verifies the tool-call HARD-abort gate resolver:
-// unset → DISABLED (100 was a ceiling nobody chose, and 120 honest calls is not
-// a loop), configured → that value, explicit 0/negative → disabled.
+// TestEffectiveToolCallLimit verifies the tool-call HARD-abort gate resolver: unset → DISABLED (100
+// was a ceiling nobody chose, and 120 honest calls is not a loop), configured → that value.
 func TestEffectiveToolCallLimit(t *testing.T) {
 	if limit, ok := effectiveToolCallLimit(budgetSpec{}); ok {
 		t.Fatalf("unset toolCallCount = (%d, %v), want (_, false): an unset tool-call gate "+
@@ -676,12 +634,8 @@ func TestEffectiveToolCallLimit(t *testing.T) {
 	}
 }
 
-// TestLadderToolCallAbortsAtLimit verifies the tool-call dimension hard-aborts
-// once stats.toolUses reaches a CONFIGURED limit — the abort tier of the unified
-// ladder (reason budget_abort:tool_call_count). The gate is configured here
-// explicitly because it has no built-in default any more (see
-// TestNoConfiguredBudgetMeansNoGate); a ceiling that fires must be one somebody
-// set.
+// TestLadderToolCallAbortsAtLimit verifies the tool-call dimension hard-aborts once stats.toolUses
+// reaches a CONFIGURED limit.
 func TestLadderToolCallAbortsAtLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	defer srv.Close()
@@ -721,9 +675,8 @@ func TestLadderToolCallAbortsAtLimit(t *testing.T) {
 	}
 }
 
-// TestLadderToolCallDisabled verifies an explicit 0 for tool_call_count
-// disables the tool-call dimension entirely (fraction -1 → levelNone), even
-// with a huge tool-call count.
+// TestLadderToolCallDisabled verifies an explicit 0 for tool_call_count disables the tool-call
+// dimension entirely (fraction -1 → levelNone), even with a huge tool-call count.
 func TestLadderToolCallDisabled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	defer srv.Close()
@@ -767,13 +720,8 @@ func TestLadderNilBudgetNoop(t *testing.T) {
 	}
 }
 
-// TestLadderTokenTiersGatedByCompactPolicy verifies the unified ladder for
-// the token dimension respects the DEFAULT per-tier compaction policy:
-// warn ALWAYS injects a warning message but does NOT compact (compaction at
-// the earliest tier is disabled by default — the lossy collapse interrupts
-// the worker mid-flight and force a re-read/re-derive, which is itself more
-// tool calls and more re-sent context), while escalate and final inject AND
-// compact subject to the shared re-arm latch. Each tier fires once (latched).
+// TestLadderTokenTiersGatedByCompactPolicy verifies the unified ladder for the token dimension
+// respects the DEFAULT per-tier compaction policy.
 func TestLadderTokenTiersGatedByCompactPolicy(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)
@@ -829,12 +777,8 @@ func TestLadderTokenTiersGatedByCompactPolicy(t *testing.T) {
 	}
 }
 
-// TestLadderCompactTiersAllOff verifies an operator can disable compaction at
-// EVERY tier (compact_tiers=[false,false,false]) — the ladder still injects
-// warnings and still hard-aborts at the ceiling, but never collapses the
-// session mid-flight. This is the knob that takes compaction out of the
-// spend ladder entirely and leaves the turn-count hygiene gate + hard abort
-// as the only context-management mechanisms.
+// TestLadderCompactTiersAllOff verifies an operator can disable compaction at EVERY tier
+// (compact_tiers=[false,false,false]).
 func TestLadderCompactTiersAllOff(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)
@@ -872,10 +816,8 @@ func TestLadderCompactTiersAllOff(t *testing.T) {
 	}
 }
 
-// TestLadderCompactReArm verifies the shared re-arm latch: after a ladder
-// compact, a DIFFERENT trigger cannot compact again until min-turn turns have
-// passed — so two dimensions (or a tier + the turn-count gate) cannot
-// collapse the session on consecutive steps before the worker can recover.
+// TestLadderCompactReArm verifies the shared re-arm latch: after a ladder compact, a DIFFERENT
+// trigger cannot compact again until min-turn turns have passed.
 func TestLadderCompactReArm(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)
@@ -904,9 +846,8 @@ func TestLadderCompactReArm(t *testing.T) {
 	if rec.summarizeCount() != 1 {
 		t.Fatalf("tokens escalate should compact, summarize=%d", rec.summarizeCount())
 	}
-	// tools escalate on the NEXT step (step 3) must inject its warning but NOT
-	// compact: within the re-arm window (lastCompactStep=2, minT=2 → next
-	// compact needs step >= 4).
+	// tools escalate on the NEXT step (step 3) must inject its warning but NOT compact: within the
+	// re-arm window (lastCompactStep=2, minT=2 → next compact needs step >= 4).
 	r.stats.toolUses = 50 // 50% of 100 → escalate
 	r.budget.steps = 3
 	r.maybeEnforceLadder(dimTools)
@@ -925,12 +866,8 @@ func TestLadderCompactReArm(t *testing.T) {
 	}
 }
 
-// TestLadderToolDimensionNeverCompacts verifies the per-dimension compaction
-// gate: a budget that crosses the tool-call escalate tier is warned but NEVER
-// compacts, even with compact_tiers all-on and outside the re-arm window —
-// because a tool call already made cannot be compacted away, and the lossy
-// collapse would force the worker to re-derive state (more tool calls). Cost,
-// by contrast, still compacts at escalate.
+// TestLadderToolDimensionNeverCompacts verifies the per-dimension compaction gate: a budget that
+// crosses the tool-call escalate tier is warned but NEVER compacts.
 func TestLadderToolDimensionNeverCompacts(t *testing.T) {
 	rec := newCompactRecorder(http.StatusOK)
 	srv := httptest.NewServer(rec)

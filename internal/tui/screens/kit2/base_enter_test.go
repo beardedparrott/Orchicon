@@ -90,9 +90,8 @@ func TestEnterStillFocusesTheDetail(t *testing.T) {
 	}
 }
 
-// A row whose detail is ALREADY showing must not be re-fetched on Enter: Enter there
-// means "move me into what I am looking at". Re-loading would re-run the detail hook —
-// and for a live surface that is a transcript reset, not a refresh.
+// A row whose detail is ALREADY showing must not be re-fetched on Enter: Enter there means "move me
+// into what I am looking at".
 func TestEnterDoesNotReloadTheRowAlreadyShowing(t *testing.T) {
 	b, asked := enterHarness(t)
 
@@ -129,11 +128,6 @@ func fetchOrNil(t *testing.T, b *Base) tea.Msg {
 }
 
 // SPACE MARKS ONLY WHERE A BULK ACTION CAN CONSUME THE MARK.
-//
-// The operator: "spacebar does multi-select even on theme lists. That doesn't make
-// any sense as there isn't any bulk operations on themes." A mark is only meaningful
-// because something acts on it; on a list with nothing to act, it is invisible state
-// the operator can neither use nor explain. There, Space does what Enter does.
 func TestSpaceMarksOnlyOnAMarkableList(t *testing.T) {
 	build := func(markable bool) (*Base, *int) {
 		b := &Base{}
@@ -159,9 +153,8 @@ func TestSpaceMarksOnlyOnAMarkableList(t *testing.T) {
 	t.Run("markable list: space marks", func(t *testing.T) {
 		b, activations := build(true)
 		b.Update(tea.KeyMsg{Type: tea.KeySpace})
-		// MarkCount, not BulkIDs: BulkIDs reports a BULK SELECTION (>1 marked) and is
-		// deliberately nil for a single mark, so asserting on it would test the
-		// threshold rather than whether space marked anything.
+		// MarkCount, not BulkIDs: BulkIDs reports a BULK SELECTION (>1 marked) and is deliberately nil for
+		// a single mark, so asserting on it would test the threshold rather than whether space marked.
 		if got := b.curTable().MarkCount(); got != 1 {
 			t.Errorf("space marked %d rows, want 1", got)
 		}

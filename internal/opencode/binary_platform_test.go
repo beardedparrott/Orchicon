@@ -1,18 +1,6 @@
 package opencode
 
 // binary_platform_test.go — the Windows probe table, tested from ANY host.
-//
-// NOT NAMED binary_windows_test.go: a `_windows` filename suffix is a GOOS BUILD CONSTRAINT, so the file
-// would be compiled only for Windows and these tests would be silently skipped everywhere else. Measured —
-// the first version of this file was named that way and `go test` reported "no tests to run" on Linux.
-//
-// REPORTED: "I installed opencode desktop and opencode command line on the windows box and when I tried to
-// select opencode models it claimed opencode was not on PATH."
-//
-// The $HOME candidate list is POSIX-SHAPED (no file extension), and os.Stat never appends one — only the
-// command interpreter does. So on Windows every candidate missed a real install whatever the operator did.
-// These tables are pure functions of (goos, environment), which is why this can be pinned from Linux: a table
-// that only a Windows machine can check is a table that will not be checked.
 
 import (
 	"path/filepath"
@@ -88,10 +76,7 @@ func TestUnixHasNoExtraPlatformCandidates(t *testing.T) {
 }
 
 func TestTheShimIsReportedRatherThanResolved(t *testing.T) {
-	// THE TRAP THIS AVOIDS. An npm global install on Windows lands `opencode.cmd`, and Go cannot execute a
-	// .cmd directly. Resolving it would make discovery start offering models while the first dispatch dies
-	// somewhere else — the exact failure mode binary.go exists to prevent. So the shim must be REPORTED, and
-	// never returned as a resolution.
+	// THE TRAP THIS AVOIDS.
 	env := winEnv(map[string]string{"APPDATA": `C:\Users\operator\AppData\Roaming`})
 	shims := openCodeShimCandidates("windows", env)
 	if len(shims) == 0 {

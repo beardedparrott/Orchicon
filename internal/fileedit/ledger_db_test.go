@@ -24,10 +24,8 @@ func testPool(t *testing.T) *db.Pool {
 	return pool
 }
 
-// TestLedgerAppendListSeq: two entries append with monotonically allocated
-// seq per owner, list returns them in order, and a re-append of identical
-// entries (replay / dedup) does not corrupt the sequence — the durable-ledger
-// acceptance criteria (survive restart, fetch returns the full ledger).
+// TestLedgerAppendListSeq: two entries append with monotonically allocated seq per owner, list
+// returns them in order, and a re-append of identical entries (replay / dedup) does not corrupt.
 func TestLedgerAppendListSeq(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()

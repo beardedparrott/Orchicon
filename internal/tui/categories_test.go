@@ -19,10 +19,6 @@ import (
 )
 
 // stubCategories is a CategoryService that records what it was asked to do.
-//
-// The tests assert on the RPC PAYLOAD rather than on the message that came back, because the payload
-// is the thing the server acts on: a test that only checks "a mutation happened" passes with the
-// wrong target, the wrong type, or the wrong id.
 type stubCategories struct {
 	apiv1connect.UnimplementedCategoryServiceHandler
 
@@ -31,9 +27,6 @@ type stubCategories struct {
 	assignedCategory, assignedEntity string
 	assignedTarget                   apiv1.CategoryTargetType
 	// assignCalls records EVERY AssignToCategory entity id, in call order.
-	//
-	// The single assignedEntity field above cannot express a BULK write — it keeps only the last one —
-	// so a bulk test asserting on it would pass with one call and fail to notice four missing.
 	assignCalls []string
 	// unassignCalls likewise records every UnassignFromCategory entity id, in call order.
 	unassignCalls []string
@@ -225,9 +218,7 @@ func TestAssignWritesTheChosenCategory(t *testing.T) {
 		apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKER)
 
 	// The picker's own cursor navigation is already covered by the form's tests (form_picker_test.go);
-	// WHAT THIS TEST IS ABOUT is that the chosen grouping reaches the RPC intact. So the value is set
-	// through the form's own Setter and the SAVE is pressed for real — the key path that this layer
-	// owns, and the one a test that called Submit directly would skip.
+	// WHAT THIS TEST IS ABOUT is that the chosen grouping reaches the RPC intact.
 	m.assignForm.Set(assignPickField, "w2")
 
 	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
@@ -275,8 +266,7 @@ func TestUncategorizedUnassigns(t *testing.T) {
 }
 
 // TestCreateAndAssignInOneGesture is the other half of the operator's ask — "a key to create new
-// category AND a key to assign an item" — in ONE save: the grouping is created, then the item is put
-// in it, and both halves are reported as one result.
+// category AND a key to assign an item" — in ONE save: the grouping is created.
 func TestCreateAndAssignInOneGesture(t *testing.T) {
 	m, stub := categoryApp(t)
 	m = loadCats(t, m)
@@ -285,10 +275,6 @@ func TestCreateAndAssignInOneGesture(t *testing.T) {
 		apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKER)
 
 	// Choose "＋ new category…", then move to the NAME field and type it.
-	//
-	// The move is not incidental: choosing the option reveals the field but leaves the cursor on the
-	// picker (the form's conditional-field rule), so typing without moving would be a picker QUERY — the
-	// first version of this test did exactly that and the name arrived empty.
 	m.assignForm.Set(assignPickField, assignNewValue)
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = nm.(*App)
@@ -337,9 +323,7 @@ func TestNewCategoryWithoutANameIsRefusedWithTheFormOpen(t *testing.T) {
 			m.assignForm.Values[assignPickField], m.assignForm.Values[assignNewField], m.assignForm.Errors)
 	}
 	// The invariant is that NOTHING WAS WRITTEN, asked of the SERVER rather than of the returned
-	// command: App.Update also drains the composer's caret-blink starter, so a non-nil cmd can be a
-	// blink timer with no write behind it — an earlier version of this test asserted `cmd != nil` and
-	// failed on exactly that. Running whatever came back and checking the stub is the honest check.
+	// command: App.Update also drains the composer's caret-blink starter.
 	m = runCmdDelivering(t, m, cmd)
 	if stub.createdName != "" {
 		t.Fatalf("CreateCategory was called anyway: %q", stub.createdName)

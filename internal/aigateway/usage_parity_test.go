@@ -13,10 +13,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-// TestEmitParityAdapterKindAndSession asserts the OTel metrics carry the
-// adapter parity attribute (which adapter drove the model call) and the Ask
-// session attribute (conversation id), so telemetry spans/logs/metrics identify
-// the adapter used and the Ask session, matching the acceptance criteria.
+// TestEmitParityAdapterKindAndSession asserts the OTel metrics carry the adapter parity attribute
+// (which adapter drove the model call) and the Ask session attribute (conversation id).
 func TestEmitParityAdapterKindAndSession(t *testing.T) {
 	prev := otel.GetMeterProvider()
 	reader := metric.NewManualReader()

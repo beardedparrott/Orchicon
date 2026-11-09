@@ -1,12 +1,6 @@
 package desktop
 
 // relaunch_test.go — the self-restart a server switch performs.
-//
-// REPORTED: "If you close the desktop app and re-open, THEN you are connected to the other instance. We may
-// want to build in an ability to just auto restart the desktop app once someone hits connect."
-//
-// These assert the two parts that can be got wrong silently: the argv a replacement is started with, and the
-// wait that keeps two windows off the screen at once.
 
 import (
 	"strings"

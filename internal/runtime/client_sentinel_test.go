@@ -3,16 +3,6 @@
 package runtime
 
 // client_sentinel_test.go — A REFUSAL THE RETRY LOOP MUST RESPECT HAS TO SURVIVE THE WIRE.
-//
-// The create refusals for a host with no linux container binary wrap ErrNoContainerBinary, which is only useful
-// if the CALLER can still see it. It cannot travel as a wrapped Go error across the daemon's HTTP boundary, so
-// it rides as a "code" beside "error" in the JSON body and the client re-wraps it.
-//
-// If that link breaks, the run-start serve gate goes back to retrying a permanent host failure once every two
-// seconds for its whole window, which is the wall of identical errors the operator reported.
-//
-// The assertions run a REAL http server on a REAL unix socket and drive the REAL client, because the thing
-// under test is the encoding at both ends — a unit test of either half alone would not catch a rename.
 
 import (
 	"context"
@@ -46,11 +36,6 @@ func daemonAnswering(t *testing.T, body string) *Client {
 }
 
 // shortSocketDir returns a directory short enough to hold a unix socket path.
-//
-// A unix socket address is bounded (104 bytes on macOS, 108 on Linux) and t.TempDir() is NOT short:
-// `make test` redirects TMPDIR into <repo>/.dev/tools/gotmp/<TestName>/001, which overruns the limit
-// and makes bind fail with EINVAL — the tests passed outside the gate and failed inside it. /tmp is
-// used when it exists, which is both short and always present on the platforms this file is built for.
 func shortSocketDir(t *testing.T) string {
 	t.Helper()
 	if fi, err := os.Stat("/tmp"); err == nil && fi.IsDir() {

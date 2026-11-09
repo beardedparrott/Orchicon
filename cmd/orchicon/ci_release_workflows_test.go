@@ -9,20 +9,9 @@ import (
 )
 
 // ci_release_workflows_test.go — the release and canary workflows must agree on what they build.
-//
-// THE CANARY IS A SECOND COPY OF THE RELEASE MATRIX, deliberately: `release.yml` IS the release path, and
-// refactoring it into a reusable workflow to share four lines would put risk on the one thing that must
-// not break. The cost of duplicating it is that the two can drift — and a canary that builds a different
-// platform set (or a differently shaped archive) than the release tests a DIFFERENT PATH than the one that
-// ships, which is the failure mode that makes a test worthless rather than loud.
-//
-// So the agreement is asserted here instead of left to care, the same way TestRuntimeVariantRefMatches
-// ReleaseWorkflow pins the installer's image refs against release.yml and
-// TestInstallPortDefaultsMatchShellInstanceTable pins the port table against the shell table.
 
-// matrixPlatforms reads the `- os: <x>` / `arch: <y>` pairs out of a workflow's build matrix, in order.
-// Deliberately a line scanner rather than a YAML parse: the property is "the same platforms, listed the
-// same way", and a scanner says exactly that without depending on a YAML library's shape.
+// matrixPlatforms reads the `- os: <x>` / `arch: <y>` pairs out of a workflow's build matrix, in
+// order.
 func matrixPlatforms(t *testing.T, path string) [][2]string {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -30,8 +19,7 @@ func matrixPlatforms(t *testing.T, path string) [][2]string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	// AN `os:` LINE IS FOLLOWED BY ITS `arch:` LINE, in both files — the pairing is asserted rather
-	// than the two keys being scanned independently, which would pick up the `GOARCH` that appears in
-	// the build steps of both workflows.
+	// than the two keys being scanned independently.
 	var out [][2]string
 	lines := strings.Split(string(b), "\n")
 	for i, line := range lines {
@@ -64,18 +52,7 @@ func TestCanaryMatchesReleaseMatrix(t *testing.T) {
 			"A canary that builds something other than what ships tests a different install path than the "+
 			"one users get.", release, canary)
 	}
-	// WINDOWS IS IN BOTH, and the exclusion that used to live here is dead. It read "nothing consumes a
-	// Windows artifact (the stack runs in WSL2 there, and the installer installs the Linux binary into the
-	// distro)" — which stopped being true when the plane became a HOST process: on Windows `orchicon
-	// install` and `orchicon serve` run a NATIVE orchicon.exe, and WSL2 is left with only the runtime
-	// CONTAINERS, which need a Linux kernel. So the release publishes
-	// orchicon_<version>_windows_amd64.zip, and a release that stopped building it would silently take
-	// Windows support away from a platform the plane now serves.
-	//
-	// windows/arm64 is deliberately ABSENT from the release matrix: Windows on ARM runs the amd64 zip under
-	// emulation, so a second artifact would be published for nobody. It is still in `make cross-compile`'s
-	// CROSS_PLATFORMS, so an arm64 break fails the gate rather than a release — that difference between the
-	// SHIP list and the COMPILE list is the decision asserted here.
+	// WINDOWS IS IN BOTH, and the exclusion that used to live here is dead.
 	wantWindows := [2]string{"windows", "amd64"}
 	gotWindows := false
 	for _, p := range release {
@@ -94,12 +71,8 @@ func TestCanaryMatchesReleaseMatrix(t *testing.T) {
 	}
 }
 
-// TestReleaseWorkflowPackagesTheWindowsZip — a matrix entry alone does NOT produce the file AC2 promises.
-// The target, the `.exe` suffix and the zip branch are three separate wirings in release.yml (and two in
-// canary.yml), each of which can rot on its own: a `windows` matrix entry whose build step loses its
-// `.exe` branch packages a binary Windows cannot run, and one whose archive selector is `tar.gz` publishes
-// an archive the documented install command does not fetch. Asserted by string because the alternative is
-// a release run — the point is to fail before one.
+// TestReleaseWorkflowPackagesTheWindowsZip — a matrix entry alone does NOT produce the file AC2
+// promises.
 func TestReleaseWorkflowPackagesTheWindowsZip(t *testing.T) {
 	release := readWorkflow(t, "../../.github/workflows/release.yml")
 	canary := readWorkflow(t, "../../.github/workflows/canary.yml")
@@ -140,9 +113,8 @@ func readWorkflow(t *testing.T, path string) string {
 	return string(b)
 }
 
-// THE STABLE ASSET NAME IS A CONTRACT WITH THE DOCUMENTED COMMAND, not a style choice: the canary's whole
-// usability rests on `-Version canary` resolving to these exact files, so a version number creeping into
-// the asset name would break the published instructions silently.
+// THE STABLE ASSET NAME IS A CONTRACT WITH THE DOCUMENTED COMMAND, not a style choice: the canary's
+// whole usability rests on `-Version canary` resolving to these exact files.
 func TestCanaryAssetsUseTheStableName(t *testing.T) {
 	b, err := os.ReadFile("../../.github/workflows/canary.yml")
 	if err != nil {
@@ -187,18 +159,12 @@ func mustRead(t *testing.T, path string) string {
 	return string(b)
 }
 
-// TestReleaseMatrixIsStillCliOnly pins the decision that the desktop builds are SEPARATE
-// single-OS jobs rather than matrix entries.
-//
-// This is not style. matrixPlatforms scans EVERY `- os:` line in the file, so a desktop
-// matrix would be read as a CLI platform and TestCanaryMatchesReleaseMatrix would fail with
-// a message about the canary — pointing at the wrong file. The clean separation is also what
-// keeps the CLI release independent of the desktop builds (AC6).
+// TestReleaseMatrixIsStillCliOnly pins the decision that the desktop builds are SEPARATE single-OS
+// jobs rather than matrix entries.
 func TestReleaseMatrixIsStillCliOnly(t *testing.T) {
 	got := matrixPlatforms(t, releaseWorkflowPath)
 	// windows/amd64 IS a CLI platform now: the plane and its host services run as native host
-	// processes, so a released orchicon.exe is what a Windows user installs. What this guard is
-	// about is unchanged — no DESKTOP entry here, because the app is CGO + a native webview.
+	// processes, so a released orchicon.exe is what a Windows user installs.
 	want := [][2]string{{"linux", "amd64"}, {"linux", "arm64"}, {"darwin", "amd64"}, {"darwin", "arm64"}, {"windows", "amd64"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("the release build matrix is no longer the CLI-only set:\n  got:  %v\n  want: %v\n"+
@@ -207,9 +173,8 @@ func TestReleaseMatrixIsStillCliOnly(t *testing.T) {
 	}
 }
 
-// TestReleasePublishesDesktopArtifacts asserts AC1 (macOS signed + notarised + stapled),
-// AC2 (Windows installer carries the WebView2 Evergreen bootstrapper), AC3 (Linux declares
-// WebKitGTK) and AC4 (a desktop artifact per platform, from the right runner).
+// TestReleasePublishesDesktopArtifacts asserts AC1 (macOS signed + notarised + stapled), AC2
+// (Windows installer carries the WebView2 Evergreen bootstrapper).
 func TestReleasePublishesDesktopArtifacts(t *testing.T) {
 	src := mustRead(t, releaseWorkflowPath)
 	var mac, win, linux = -1, -1, -1
@@ -242,11 +207,7 @@ func TestReleasePublishesDesktopArtifacts(t *testing.T) {
 		}
 	}
 
-	// AC1: the job builds a UNIVERSAL .app and runs the sign → notarise → staple →
-	// assert chain. The chain itself is asserted against the SCRIPT it calls, not
-	// against this file: a substring check on the workflow would be satisfied by a
-	// comment mentioning `spctl`, which is exactly the kind of vacuous pass these
-	// guards exist to avoid.
+	// AC1: the job builds a UNIVERSAL .app and runs the sign → notarise → staple → assert chain.
 	macBody := jobs[mac].body
 	for _, want := range []string{"-platform darwin/universal", "deploy/desktop/macos/sign-and-notarize.sh"} {
 		if !strings.Contains(macBody, want) {
@@ -305,13 +266,8 @@ func TestReleasePublishesDesktopArtifacts(t *testing.T) {
 	}
 }
 
-// TestReleaseDownloadsDesktopArtifactsOptional asserts AC6: desktop packaging can never
-// block the CLI release.
-//
-// The release job takes BOTH its inputs and its `ASSETS` list from one download-artifact +
-// `find artifacts` pair, so a desktop artifact can only join the release by a SECOND, optional
-// download — and only if the `needs:` list does not mention a desktop job, because a failed
-// dependency skips the job entirely rather than running it without those artifacts.
+// TestReleaseDownloadsDesktopArtifactsOptional asserts AC6: desktop packaging can never block the
+// CLI release.
 func TestReleaseDownloadsDesktopArtifactsOptional(t *testing.T) {
 	src := mustRead(t, releaseWorkflowPath)
 	if !strings.Contains(src, "pattern: 'orchicon-desktop-*'") {
@@ -363,18 +319,8 @@ func TestReleaseDownloadsDesktopArtifactsOptional(t *testing.T) {
 	}
 }
 
-// TestReleaseUploadsEachDesktopAssetOnce — the release must never hand `gh release create`
-// the same ASSET NAME twice.
-//
-// WHY THIS IS NOT HYPOTHETICAL, and why it is the AC6 failure in its least obvious form: the
-// release job's FIRST `download-artifact` carries no `pattern`, so it already pulls EVERY
-// artifact of the run — the CLI archives AND the three `orchicon-desktop-*` ones — into
-// `artifacts/`. The optional desktop download below then puts the same files in
-// `desktop-artifacts/`, so a naive `find artifacts desktop-artifacts` yields each desktop
-// package twice. `gh release create` names an asset after its BASENAME, and the second upload
-// of one name fails the whole release with HTTP 422 "already_exists" — with all three desktop
-// builds GREEN, i.e. in the happy path. Packaging must not break the release, so the asset
-// list has to be deduplicated.
+// TestReleaseUploadsEachDesktopAssetOnce — the release must never hand `gh release create` the same
+// ASSET NAME twice.
 func TestReleaseUploadsEachDesktopAssetOnce(t *testing.T) {
 	var release *job
 	jobs := jobsIn(mustRead(t, releaseWorkflowPath))
@@ -418,10 +364,8 @@ func TestReleaseUploadsEachDesktopAssetOnce(t *testing.T) {
 	}
 }
 
-// TestDesktopWebviewDependencyDeclared pins the two halves of AC3, because either half alone
-// is worthless: a .deb that declares the dependency but an app that fails opaquely when it is
-// missing is half a fix, and a launcher that explains the problem but a package that pulls in
-// nothing is the other half.
+// TestDesktopWebviewDependencyDeclared pins the two halves of AC3, because either half alone is
+// worthless: a .deb that declares the dependency but an app that fails opaquely when it is missing.
 func TestDesktopWebviewDependencyDeclared(t *testing.T) {
 	nfpm := mustRead(t, "../../deploy/desktop/nfpm.yaml")
 	if !strings.Contains(nfpm, "libwebkit2gtk-4.0-37") {
@@ -449,13 +393,8 @@ func TestDesktopWebviewDependencyDeclared(t *testing.T) {
 	}
 }
 
-// TestDesktopSigningChainIsInTheScript — the sign → notarise → staple → assert chain must live in the
-// SCRIPT the macOS job runs, and the job must actually RUN it.
-//
-// The distinction is the whole point: a substring check against release.yml would be satisfied by a YAML
-// COMMENT that mentions `spctl` while the job shipped an unsigned .app. So this reads
-// deploy/desktop/macos/sign-and-notarize.sh for the chain, and release.yml only for the invocation itself
-// (a `bash deploy/desktop/macos/…` line, which is a run: command, not prose).
+// TestDesktopSigningChainIsInTheScript — the sign → notarise → staple → assert chain must live in
+// the SCRIPT the macOS job runs, and the job must actually RUN it.
 func TestDesktopSigningChainIsInTheScript(t *testing.T) {
 	script := mustRead(t, "../../deploy/desktop/macos/sign-and-notarize.sh")
 
@@ -501,15 +440,8 @@ func TestDesktopSigningChainIsInTheScript(t *testing.T) {
 	}
 }
 
-// TestNoWorkflowPublishesASingleContainerImage — the retired single-container deployment must not come
-// back as a published artifact.
-//
-// WHY THIS IS AN ABSENCE ASSERTION: every release used to build and push
-// ghcr.io/beardedparrott/orchicon:<version> and :latest, a single-container image of the whole stack with
-// the binary as PID 1 — while the product installs host processes and no longer runs that image at all. The
-// mismatch was user-visible: the registry advertised a shape the installer refuses. The image job, its
-// build context (deploy/container/) and the launcher that drove it are deleted, so the assertion is that
-// they stay deleted — and that the per-workflow RUNTIME image, which does still exist, keeps being built.
+// TestNoWorkflowPublishesASingleContainerImage — the retired single-container deployment must not
+// come back as a published artifact.
 func TestNoWorkflowPublishesASingleContainerImage(t *testing.T) {
 	for _, path := range []string{"../../.github/workflows/release.yml", "../../.github/workflows/canary.yml"} {
 		b, err := os.ReadFile(path)
@@ -549,20 +481,6 @@ func TestNoWorkflowPublishesASingleContainerImage(t *testing.T) {
 }
 
 // TestEveryJobThatBuildsTheBinaryBuildsTheFrontendFirst — the silent-embed trap.
-//
-// THE FRONTEND IS EMBEDDED WITH `//go:embed all:frontend/dist`, and `frontend/dist/.gitkeep` is tracked
-// EXACTLY SO THE EMBED ALWAYS HAS A TARGET. The consequence is brutal: a job that skips the frontend build
-// COMPILES PERFECTLY and produces a valid archive whose binary serves NO UI — the embed matched the
-// placeholder and nothing else. Nothing fails anywhere. The defect is visible only to whoever installs it
-// and opens the URL.
-//
-// That is exactly what the canary did: its binary job packaged a frontend-less binary, a canary install
-// replaced the operator's working host plane with it, and the browser got `{"error":"missing credentials"}`
-// — the request fell through to the auth-guarded catch-all, because there was no static asset to serve.
-//
-// So the rule is asserted over EVERY job in BOTH workflows rather than for the one that broke: a job that
-// builds ./cmd/orchicon must build the frontend earlier in the same job. The set is enumerated by scanning
-// the files, so a job added later is covered the moment it exists.
 func TestEveryJobThatBuildsTheBinaryBuildsTheFrontendFirst(t *testing.T) {
 	for _, wf := range []string{"../../.github/workflows/release.yml", "../../.github/workflows/canary.yml"} {
 		b, err := os.ReadFile(wf)
@@ -681,10 +599,8 @@ func TestEveryWorkflowThatRunsGhCanResolveTheRepo(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		// COMMENTS ARE STRIPPED BEFORE EVERY CHECK HERE, and it is not tidiness: the note this
-		// change adds to prune-releases.yml QUOTES both "GH_REPO" and "actions/checkout" while
-		// explaining the bug, so a raw substring test kept passing after the real env var was
-		// deleted — a detector tripped by its own documentation. Caught by negative control.
+		// COMMENTS ARE STRIPPED BEFORE EVERY CHECK HERE, and it is not tidiness: the note this change adds
+		// to prune-releases.yml QUOTES both "GH_REPO" and "actions/checkout" while explaining the bug.
 		var code []string
 		for _, line := range strings.Split(string(b), "\n") {
 			code = append(code, stripComment(line))
@@ -710,12 +626,6 @@ func TestEveryWorkflowThatRunsGhCanResolveTheRepo(t *testing.T) {
 }
 
 // isPipe reports whether a line contains a shell PIPE — a `|` that is not part of `||`.
-//
-// THE DISTINCTION IS NOT PEDANTRY. `||` is logical OR, and `cmd || true` is the standard way to
-// tolerate a failure, which is the OPPOSITE of what this guard is looking for: the first draft
-// of it counted `cp README.md "$ASSET/" 2>/dev/null || true` as a pipeline and demanded
-// pipefail for a block that has no pipeline at all. A detector that cries wolf on a common
-// idiom is a detector people turn off.
 func isPipe(l string) bool {
 	for i := 0; i < len(l); i++ {
 		if l[i] != '|' {
@@ -729,10 +639,8 @@ func isPipe(l string) bool {
 	return false
 }
 
-// shellIsPowerShell reports whether the step owning the `run:` at index i declares a
-// PowerShell shell. Steps are YAML list items, so the owning step starts at the nearest
-// preceding line beginning with "- " and the shell key, if any, sits between them.
-// An absent key is GitHub's default (bash on Linux runners), which is NOT PowerShell.
+// shellIsPowerShell reports whether the step owning the `run:` at index i declares a PowerShell
+// shell.
 func shellIsPowerShell(lines []string, runIdx int) bool {
 	for i := runIdx - 1; i >= 0; i-- {
 		trimmed := strings.TrimSpace(lines[i])
@@ -748,9 +656,8 @@ func shellIsPowerShell(lines []string, runIdx int) bool {
 	return false
 }
 
-// TestEveryWorkflowPipelineUsesPipefailAtLeastWhereItMatters pins the second half: a `run:`
-// block containing a shell pipeline must set `pipefail`, or a failing command's status is
-// discarded in favour of the last command's — which is how a hard failure becomes a green run.
+// TestEveryWorkflowPipelineUsesPipefailAtLeastWhereItMatters pins the second half: a `run:` block
+// containing a shell pipeline must set `pipefail`.
 func TestEveryWorkflowPipelineUsesPipefailAtLeastWhereItMatters(t *testing.T) {
 	for _, path := range workflowFiles(t) {
 		b, err := os.ReadFile(path)
@@ -788,16 +695,8 @@ func TestEveryWorkflowPipelineUsesPipefailAtLeastWhereItMatters(t *testing.T) {
 			if !hasPipe {
 				continue
 			}
-			// THE REQUIREMENT IS PER SHELL, because `pipefail` is a BASH concept and
-			// demanding it of a PowerShell block is unsatisfiable — the block can never
-			// comply. PowerShell's equivalent guard is $ErrorActionPreference = 'Stop':
-			// a non-terminating error is otherwise written to the error stream and the
-			// step still exits 0, which is the SAME swallowed-failure this test exists
-			// to prevent, in the other shell's vocabulary.
-			//
-			// Found by adding the first `shell: pwsh` step that contains a pipeline (the
-			// MSI job's `| Out-File ... GITHUB_PATH`): every earlier pwsh step here
-			// happened to use no pipe, so the false positive had never been hit.
+			// THE REQUIREMENT IS PER SHELL, because `pipefail` is a BASH concept and demanding it of a
+			// PowerShell block is unsatisfiable — the block can never comply.
 			if shellIsPowerShell(lines, i) {
 				if !strings.Contains(strings.Join(body, "\n"), "ErrorActionPreference") {
 					t.Errorf("%s line %d: a `shell: pwsh` block contains a pipeline but does not set "+
@@ -897,9 +796,7 @@ func TestReleaseBuildsDesktopAppPerOS(t *testing.T) {
 	}
 }
 
-// TestDesktopMatrixCoversLinuxMacOSWindows — AC1's build matrix. Three operating
-// systems, each on its own runner, because the webview is a per-OS native
-// library.
+// TestDesktopMatrixCoversLinuxMacOSWindows — AC1's build matrix.
 func TestDesktopMatrixCoversLinuxMacOSWindows(t *testing.T) {
 	got := desktopMatrixOSes(t, "../../.github/workflows/release.yml")
 	want := []string{"ubuntu-latest", "macos-latest", "windows-latest"}
@@ -908,9 +805,8 @@ func TestDesktopMatrixCoversLinuxMacOSWindows(t *testing.T) {
 	}
 }
 
-// TestDesktopJobBuildsFrontendBeforeBinary — the silent-embed trap, asserted for
-// the job that `TestEveryJobThatBuildsTheBinaryBuildsTheFrontendFirst` cannot see
-// (it has no `go build`, so that scanner skips it).
+// TestDesktopJobBuildsFrontendBeforeBinary — the silent-embed trap, asserted for the job that
+// `TestEveryJobThatBuildsTheBinaryBuildsTheFrontendFirst` cannot see (it has no `go build`.
 func TestDesktopJobBuildsFrontendBeforeBinary(t *testing.T) {
 	b, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {
@@ -934,9 +830,8 @@ func TestDesktopJobBuildsFrontendBeforeBinary(t *testing.T) {
 	t.Fatal("no desktop job found")
 }
 
-// TestDesktopNotInCrossPlatforms — the brief's explicit constraint: the desktop
-// app is NOT a CGO_ENABLED=0 cross-compile and must not be folded into the loop
-// that is.
+// TestDesktopNotInCrossPlatforms — the brief's explicit constraint: the desktop app is NOT a
+// CGO_ENABLED=0 cross-compile and must not be folded into the loop that is.
 func TestDesktopNotInCrossPlatforms(t *testing.T) {
 	b, err := os.ReadFile("../../Makefile")
 	if err != nil {
@@ -971,12 +866,9 @@ func TestDesktopNotInCrossPlatforms(t *testing.T) {
 	}
 }
 
-// TestDesktopBuildRunsInTheWailsProjectDirectory — the Wails CLI has NO project-dir
-// flag: `wails build` loads ./wails.json from its WORKING DIRECTORY
-// (wails/v2/internal/project.Load -> os.Getwd). wails.json lives in
-// cmd/orchicon-desktop, so a job that runs the CLI from the repo root dies on a
-// missing project file and the desktop artifact is never produced — the failure
-// this assertion exists to prevent.
+// TestDesktopBuildRunsInTheWailsProjectDirectory — the Wails CLI has NO project-dir flag: `wails
+// build` loads ./wails.json from its WORKING DIRECTORY (wails/v2/internal/project.Load ->
+// os.Getwd).
 func TestDesktopBuildRunsInTheWailsProjectDirectory(t *testing.T) {
 	const projectDir = "cmd/orchicon-desktop"
 	b, err := os.ReadFile("../../.github/workflows/release.yml")
@@ -1025,10 +917,6 @@ const (
 )
 
 // guidanceBlock returns the lines between the guidance markers, markers included.
-//
-// It fails loudly when a marker is missing: a block that silently vanished would pass a naive
-// "both files contain the same thing (nothing)" comparison, which is the failure mode of every
-// copy-paste equality check.
 func guidanceBlock(t *testing.T, path string) []string {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -1055,8 +943,7 @@ func guidanceBlock(t *testing.T, path string) []string {
 }
 
 // TestInstallersPrintTheSameVerificationGuidance pins ACM-4: the outcome must not depend on which
-// installer was used. The two installers are separate programs in separate languages, so the only way
-// they can be held to the same words is to compare the words.
+// installer was used.
 func TestInstallersPrintTheSameVerificationGuidance(t *testing.T) {
 	sh := guidanceBlock(t, "../../scripts/install.sh")
 	ps := guidanceBlock(t, "../../scripts/install.ps1")
@@ -1067,9 +954,7 @@ func TestInstallersPrintTheSameVerificationGuidance(t *testing.T) {
 			strings.Join(sh, "\n    "), strings.Join(ps, "\n    "))
 		return
 	}
-	// AND IT MUST ACTUALLY SAY THE THINGS. An identical block that had been emptied would satisfy the
-	// comparison above and tell the user nothing, so the substance is asserted too: the exact macOS
-	// command, the fact that it does not disable Gatekeeper, and the Windows SmartScreen route out.
+	// AND IT MUST ACTUALLY SAY THE THINGS.
 	body := strings.Join(sh, "\n")
 	for _, want := range []string{
 		"xattr -d com.apple.quarantine",
@@ -1089,11 +974,6 @@ func TestInstallersPrintTheSameVerificationGuidance(t *testing.T) {
 
 // TestReleasePublishesChecksums pins both halves of the checksum story, because the halves fail
 // independently and the SECOND one fails silently.
-//
-// `artifacts/` is flat (`merge-multiple: true`), the checksums are generated there — and then the upload
-// manifest is the `find` in the Create GitHub Release step. Generating the file without adding it to that
-// find produces a perfectly good SHA256SUMS that is published to nobody, and every installer would then
-// quietly skip verification forever ("older releases predate it"). So the find is asserted, not assumed.
 func TestReleasePublishesChecksums(t *testing.T) {
 	b, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {
@@ -1129,10 +1009,8 @@ func TestReleasePublishesChecksums(t *testing.T) {
 	}
 }
 
-// TestMacOSSigningJobRunsOnAMacOSRunner pins ACM-2 — and it is written as a CLASS check, because the
-// failure it guards is silent: `codesign` does not exist on ubuntu-latest, so a signing step that drifted
-// onto a Linux runner fails to sign, and the release still publishes an unsigned archive that everyone
-// downstream calls "signed".
+// TestMacOSSigningJobRunsOnAMacOSRunner pins ACM-2 — and it is written as a CLASS check, because
+// the failure it guards is silent: `codesign` does not exist on ubuntu-latest.
 func TestMacOSSigningJobRunsOnAMacOSRunner(t *testing.T) {
 	b, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {
@@ -1150,14 +1028,7 @@ func TestMacOSSigningJobRunsOnAMacOSRunner(t *testing.T) {
 			"downloaded macOS binary runnable without the quarantine override, and it must be designed now " +
 			"even while it is dormant")
 	}
-	// THE RUNNER IS ASSERTED BY KIND, NOT BY VERSION. It used to demand the literal "runs-on: macos-14",
-	// which is a guard that fails for the WRONG REASON the moment the image is updated — and images are
-	// retired on a schedule (GitHub retires macOS 14 on 2 November 2026 and browns it out beforehand,
-	// failing jobs that still use the label). The property that actually matters is that this job runs on
-	// SOME macOS runner: `codesign` and `notarytool` are macOS-only, so any other host fails.
-	//
-	// HARDCODING THE VERSION HERE IS HOW A GUARD BECOMES AN OBSTACLE. The same retirement would have
-	// happened for macOS 15 or 26; this assertion is now indifferent to which one we are on.
+	// THE RUNNER IS ASSERTED BY KIND, NOT BY VERSION.
 	if !strings.Contains(signing.body, "runs-on: macos-") {
 		t.Errorf("the sign-macos job does not run on a macOS runner:\n`codesign`/`notarytool` are "+
 			"macOS-only, so any other host fails. Body:\n%s", signing.body)
@@ -1168,11 +1039,6 @@ func TestMacOSSigningJobRunsOnAMacOSRunner(t *testing.T) {
 		}
 	}
 	// THE CLASS: nothing that signs or notarises may run anywhere but a macOS runner.
-	//
-	// COMMENTS ARE STRIPPED FIRST, and it is load-bearing: `jobsIn` attributes the comment block that
-	// explains a job to the job ABOVE it, so the `build` job's body carries the paragraph that mentions
-	// `codesign` and `notarytool` while explaining why the signing job exists. A detector tripped by its
-	// own documentation is worse than none.
 	for _, j := range jobs {
 		var code []string
 		for _, line := range strings.Split(j.body, "\n") {
@@ -1260,30 +1126,10 @@ func TestReleaseInstallsTheSignedMacOSArchivesOverTheUnsignedOnes(t *testing.T) 
 }
 
 // TestTheInstallerReportsADesktopAppItDidNotInstall — the silent-skip bug, and it was reported.
-//
-// The operator: "Shouldn't the canary download/install also install the desktop automatically
-// somewhere? I did run that."
-//
-// It should, and on Linux it could not: `canary` published no Linux AppImage, so install_desktop's
-// download 404'd, warned once, and `return 0`ed — and the install went on to print
-// "Installed. Next step:" having put a CLI and a TUI on the machine and no GUI. The only evidence
-// was one warning in the middle of the output, between the checksum guidance and the PATH hint.
-//
-// THIS TEST IS ABOUT THE REPORTING, NOT THE ASSET. Whether a given release carries an AppImage is a
-// release question (canary now builds one — see TestCanaryPublishesTheWindowsDesktopApp). This is
-// the other half: a run that did NOT install one must SAY SO in the result, so "everything you
-// asked for is there" and "the binary is there and the app is not" can never look the same.
-//
-// ASSERTED ON THE SOURCE, deliberately. The behaviour needs a real 404 from a real release to
-// exercise end to end, and a test that stubs curl would be testing the stub. The strings here are
-// the ones the summary actually prints, and the state variables are what install_desktop sets on
-// every exit path — a `return 0` that forgets to set one is exactly the silent skip coming back.
 func TestTheInstallerReportsADesktopAppItDidNotInstall(t *testing.T) {
 	src := readFile(t, "../../scripts/install.sh")
 
-	// The three outcomes are one record, set on EVERY path out of install_desktop. A boolean would
-	// collapse "this release has none" (no flag helps) into "you said no" (your choice), and the
-	// operator needs to be able to tell those apart.
+	// The three outcomes are one record, set on EVERY path out of install_desktop.
 	for _, want := range []struct{ what, sub string }{
 		{"the result record", "DESKTOP_RESULT="},
 		{"the reason beside it", "DESKTOP_RESULT_WHY="},
@@ -1298,9 +1144,7 @@ func TestTheInstallerReportsADesktopAppItDidNotInstall(t *testing.T) {
 		}
 	}
 
-	// THE SUMMARY MUST PRINT IT, and print it as a RESULT. This is the half that failed: the
-	// outcome existed, in a warning that scrolled. The assertion is on the summary block's own
-	// shape, because a case statement nobody prints is the same silence in a new variable.
+	// THE SUMMARY MUST PRINT IT, and print it as a RESULT.
 	for _, want := range []struct{ what, sub string }{
 		{"the summary names the missing app", "Desktop app: NOT INSTALLED"},
 		{"the summary names a skipped app", "Desktop app: not installed"},
@@ -1316,10 +1160,7 @@ func TestTheInstallerReportsADesktopAppItDidNotInstall(t *testing.T) {
 	}
 
 	// EVERY EXIT FROM install_desktop MUST RECORD AN OUTCOME — this is the assertion that actually
-	// catches the bug. A "contains DESKTOP_RESULT=unavailable" check passes while one of the five
-	// exit paths silently `return 0`s, because the other four still set it. (Verified: deleting the
-	// 404 path's assignment left a contains-based test GREEN.) So the function is walked, and every
-	// `return 0` inside it must have a DESKTOP_RESULT write close above it.
+	// catches the bug.
 	fn := funcBody(t, src, "install_desktop() {")
 	lines := strings.Split(fn, "\n")
 	for i, line := range lines {
@@ -1364,10 +1205,7 @@ func TestTheInstallerReportsADesktopAppItDidNotInstall(t *testing.T) {
 		}
 	}
 
-	// AND A MISSING DESKTOP APP MUST NOT FAIL THE INSTALL. The binary, the TUI and the plane are
-	// the product; the GUI is a client of it. A `die` here would turn "this channel carries no
-	// Linux app" into "the install failed", which is false and would stop an operator who only
-	// wanted a server. Asserted by absence around the failure site.
+	// AND A MISSING DESKTOP APP MUST NOT FAIL THE INSTALL.
 	if strings.Contains(src, `die "the desktop app is not in release`) {
 		t.Error("a missing desktop app now FAILS the install. The plane, the CLI and the TUI are the " +
 			"product; the GUI is a client, and --no-setup installs on servers where it can never run. " +
@@ -1376,8 +1214,7 @@ func TestTheInstallerReportsADesktopAppItDidNotInstall(t *testing.T) {
 }
 
 // funcBody returns the source of a shell function, from its declaration to its closing brace at
-// column 0. Assertions about "every exit inside this function" need the function, not the file:
-// a file-wide strings.Contains cannot tell a path that records its outcome from one that does not.
+// column 0.
 func funcBody(t *testing.T, src, decl string) string {
 	t.Helper()
 	i := strings.Index(src, decl)

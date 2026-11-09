@@ -1,22 +1,6 @@
 package tui
 
 // connection_loss_test.go — THE TUI TELLS YOU WHEN THE CONNECTION DIES.
-//
-// The operator: "If a connection dies, the gui tells you, but the TUI conversation does not. We need
-// similar notifications."
-//
-// TWO SURFACES, because there were two gaps and only one of them was a rendering problem.
-//
-// THE FOOTER said "connected" on the Ask tab regardless of the plane's health. streamStatus() aggregated
-// only over the statuses the ACTIVE SCREEN declares, and Ask declares NONE — its conversation list is the
-// shell's rail and it subscribes to no stream of its own — so the worst-wins loop started and ended at
-// "open". Measured before the fix: a dead plane reported "reconnecting" on the Work tab and "open" on
-// Ask. The connection is not a property of the tab the operator happens to be looking at.
-//
-// THE CONVERSATION PANE said nothing at all, and the footer is easy to miss while reading a transcript —
-// it is the TRANSCRIPT that looks broken when a reply cannot arrive. Its notice slot carried only
-// "reconnecting…", which is set when a TURN loses its socket; a dead PLANE is a different failure and had
-// no banner anywhere near the conversation.
 
 import (
 	"strings"
@@ -99,10 +83,6 @@ func TestConnectingIsNotTreatedAsDead(t *testing.T) {
 }
 
 // THE CONVERSATION PANE ITSELF SAYS THE CONNECTION IS DOWN.
-//
-// This is the operator's actual ask: the notification has to be where the conversation is, not only in the
-// shell's footer. It is the PANE'S fixed footer now (see App.transcriptStatusLine) — the one band the pane
-// reserves for exactly this, and the one place a status line cannot be pushed out by transcript content.
 func TestConversationPaneWarnsWhenThePlaneIsUnreachable(t *testing.T) {
 	m, _ := newAskApp(t)
 	scr := ask.New(m.clients, m.reg)
@@ -158,13 +138,8 @@ func TestConnectionBannerClearsOnRecovery(t *testing.T) {
 	}
 }
 
-// THE BANNER OUTRANKS A TRANSIENT NOTICE WHILE THE PLANE IS DOWN, and the strip returns to EMPTY when it
-// recovers rather than restoring a stale message.
-//
-// The one-line strip holds ONE thing, and the priority is deliberate: a send ack or a context-injection
-// notice is informational, while "the connection is gone" is the reason nothing the operator does will
-// work. So the banner takes the slot while it applies — and when the connection returns the slot is
-// cleared, not re-filled with a notice from minutes ago that has long since stopped being true.
+// THE BANNER OUTRANKS A TRANSIENT NOTICE WHILE THE PLANE IS DOWN, and the strip returns to EMPTY
+// when it recovers rather than restoring a stale message.
 func TestConnectionBannerOutranksATransientNotice(t *testing.T) {
 	m, _ := newAskApp(t)
 	m.RegisterScreen(TabAsk, ask.New(m.clients, m.reg))

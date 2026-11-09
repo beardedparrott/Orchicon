@@ -13,11 +13,8 @@ import (
 // untouched by provenance stamping unless outputs_mode is idea.
 const baseStatus = domain.WorkItemBlocked
 
-// TestApplyAutomationProvenanceAC2 pins the feature 4.1 / AC2 contract: a work
-// item created from inside a recurring fire's run is stamped with the fire's
-// provenance block, and (only when the fire's outputs_mode is idea) lands in
-// IDEA state. Plain creates (empty run_context) are untouched — backward
-// compatible.
+// TestApplyAutomationProvenanceAC2 pins the feature 4.1 / AC2 contract: a work item created from
+// inside a recurring fire's run is stamped with the fire's provenance block.
 func TestApplyAutomationProvenanceAC2(t *testing.T) {
 	ctx := context.Background()
 

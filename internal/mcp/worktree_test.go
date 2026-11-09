@@ -11,13 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
-// allToolNames is the full worktree tool suite: 3 batch tools, 4 single-op
-// wrappers, `list`, and the `todowrite`/`todoread` todo pair (D1/D2).
-//
-// `todowrite` is OURS as of the 2.x work: opencode 1.x had it natively and this
-// registry exposed only the read half, but 2.x deleted the tool outright, so a
-// prompt that orders it every turn (ours does) was ordering a tool that does not
-// exist. See the tool's comment in worktree.go.
+// allToolNames is the full worktree tool suite: 3 batch tools, 4 single-op wrappers, `list`, and
+// the `todowrite`/`todoread` todo pair (D1/D2).
 var allToolNames = []string{
 	"batch_read", "batch_grep", "batch_write",
 	"read", "grep", "write", "edit",
@@ -39,15 +34,8 @@ func TestWorktreeRegistryExposesFullToolSuite(t *testing.T) {
 			t.Fatalf("missing tool %s", n)
 		}
 	}
-	// The batch tools must be present in the registry; the single-op
-	// wrappers must be Mutating=false/true as appropriate.
-	//
-	// todowrite is deliberately NOT in this map: it writes only the ephemeral
-	// todo sidecar under .orchicon/, never project content — the same
-	// bookkeeping class as todoread's sibling state. "Mutating" describes a
-	// change to the worker's deliverable, and marking the todo list as one would
-	// be a false claim about it (and a gate-tripping lie if a caller ever
-	// enforces the field).
+	// The batch tools must be present in the registry; the single-op wrappers must be
+	// Mutating=false/true as appropriate.
 	mutating := map[string]bool{"batch_write": true, "write": true, "edit": true}
 	for _, d := range defs {
 		if d.Mutating != mutating[d.Name] {
@@ -178,13 +166,8 @@ func TestWorktreeRegistryExecuteUnknownTool(t *testing.T) {
 	}
 }
 
-// TestWorktreeRegistryExecuteProjectRootRead pins AC1 at the registry level
-// with a NON-EMPTY project root (the exact wiring RuntimeServeConfig injects:
-// worktree under <proj>/.orchicon-worktrees/<run>, project root = <proj>). A
-// worker must be able to batch_read a run-state .orchicon/<run>/ file by both
-// a `..`-relative path and an absolute project-root path — without the tools
-// it would shell out (or re-derive facts). This closes the coverage gap the
-// PR step noted (the worktree unit tests cover the mechanism, not the wiring).
+// TestWorktreeRegistryExecuteProjectRootRead pins AC1 at the registry level with a NON-EMPTY
+// project root (the exact wiring RuntimeServeConfig injects.
 func TestWorktreeRegistryExecuteProjectRootRead(t *testing.T) {
 	proj := t.TempDir()
 	run := "run-qa"
@@ -225,9 +208,8 @@ func TestWorktreeRegistryExecuteProjectRootRead(t *testing.T) {
 	}
 }
 
-// TestWorktreeRegistryExecuteScratchWrite pins AC2 at the registry level: a
-// batch_write (and its read-back) to the sanctioned scratch dir /tmp/orchicon
-// must be permitted — the tools are not confined to the worktree for scratch.
+// TestWorktreeRegistryExecuteScratchWrite pins AC2 at the registry level: a batch_write (and its
+// read-back) to the sanctioned scratch dir /tmp/orchicon must be permitted.
 func TestWorktreeRegistryExecuteScratchWrite(t *testing.T) {
 	if err := os.MkdirAll(worktree.DefaultScratchDir, 0o755); err != nil {
 		t.Skipf("cannot create scratch dir %s: %v", worktree.DefaultScratchDir, err)
@@ -247,15 +229,8 @@ func TestWorktreeRegistryExecuteScratchWrite(t *testing.T) {
 	}
 }
 
-// TestWorktreeTodowriteTodoreadRoundTrip proves the todo pair works end to end
-// over MCP: a worker writes its list and reads the SAME list back.
-//
-// This is the regression guard for opencode 2.x having REMOVED the native
-// `todowrite`. Our composite prompt orders a todowrite at every turn boundary,
-// so on 2.x that obligation had no tool to satisfy it: the model's calls came
-// back as errors, and repeated error-status calls are exactly what the
-// repetition stall counts. Owning the tool here makes the todo list independent
-// of which tools the agent surface happens to ship.
+// TestWorktreeTodowriteTodoreadRoundTrip proves the todo pair works end to end over MCP: a worker
+// writes its list and reads the SAME list back.
 func TestWorktreeTodowriteTodoreadRoundTrip(t *testing.T) {
 	base := t.TempDir()
 	r := NewWorktreeRegistry(base, "", "")
@@ -285,9 +260,8 @@ func TestWorktreeTodowriteTodoreadRoundTrip(t *testing.T) {
 	}
 }
 
-// TestWorktreeTodowriteRejectsMalformedArgs pins the failure mode: bad args are
-// a tool error the model can read and correct, not a silent no-op. A todowrite
-// that quietly did nothing would leave the operator staring at a stale plan.
+// TestWorktreeTodowriteRejectsMalformedArgs pins the failure mode: bad args are a tool error the
+// model can read and correct, not a silent no-op.
 func TestWorktreeTodowriteRejectsMalformedArgs(t *testing.T) {
 	r := NewWorktreeRegistry(t.TempDir(), "", "")
 	if _, err := r.Execute(context.Background(), nil, "todowrite", json.RawMessage(`{"todos":"not-an-array"}`)); err == nil {
@@ -295,13 +269,8 @@ func TestWorktreeTodowriteRejectsMalformedArgs(t *testing.T) {
 	}
 }
 
-// TestTodowriteWritesTheRunStateSnapshotAndTodoreadSeesIt is the round trip
-// through the RUN-STATE file — the copy the execution view's todo panel reads.
-//
-// It has to be this file and not the worktree one: the worktree is PRUNED when
-// the run ends, so a worktree-scoped snapshot is unreadable by the time anyone
-// looks at the run's plan. The run-state dir (<project>/.orchicon/<runID>/) is
-// where the plane already keeps facts_learned/status/summary, and it survives.
+// TestTodowriteWritesTheRunStateSnapshotAndTodoreadSeesIt is the round trip through the RUN-STATE
+// file — the copy the execution view's todo panel reads.
 func TestTodowriteWritesTheRunStateSnapshotAndTodoreadSeesIt(t *testing.T) {
 	project := t.TempDir()
 	runState := worktree.RunStateDir(project, "01RUN")
@@ -317,9 +286,7 @@ func TestTodowriteWritesTheRunStateSnapshotAndTodoreadSeesIt(t *testing.T) {
 		t.Fatalf("todowrite: %v", err)
 	}
 
-	// THE FILE ITSELF, at the path the plane derives — not merely "something was
-	// written somewhere". The reader and the writer must agree by construction, so
-	// this asserts the plane's own resolution, not a copy of it.
+	// THE FILE ITSELF, at the path the plane derives — not merely "something was written somewhere".
 	path := filepath.Join(runState, worktree.TodoSnapshotName)
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -344,15 +311,8 @@ func TestTodowriteWritesTheRunStateSnapshotAndTodoreadSeesIt(t *testing.T) {
 	}
 }
 
-// TestTodowriteSaysSoWhenTheRunStateChannelIsMissing pins the failure mode that
-// made this invisible.
-//
-// When the sidecar is not told its run, the run-state write cannot happen. The
-// tool must STILL succeed (the worktree copy is a legitimate fallback for
-// todoread, and the worker's next move must not be blocked), but it must SAY the
-// panel will not update. The previous behaviour returned `ok:true` and nothing
-// else, which is exactly how an empty panel coexisted with a successful tool call
-// for as long as it did.
+// TestTodowriteSaysSoWhenTheRunStateChannelIsMissing pins the failure mode that made this
+// invisible.
 func TestTodowriteSaysSoWhenTheRunStateChannelIsMissing(t *testing.T) {
 	r := NewWorktreeRegistry(t.TempDir(), "", "")
 	args, _ := json.Marshal(map[string]any{"todos": []map[string]any{
